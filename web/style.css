@@ -4468,8 +4468,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     to { transform: rotate(360deg); }
 }
 
-#skills-refresh.is-loading::after,
-#widgets-refresh.is-loading::after {
+#skills-refresh.is-loading::after {
     content: '';
     display: inline-block;
     width: 10px;

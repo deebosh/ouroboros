@@ -5,7 +5,7 @@
    retained or not — is never reloaded by it. widgets.js owns persisting the
    order through `/api/ui/preferences` and relayouting with it. Disclosed
    residual: the Tab / focus order follows the DOM, so after a visual reorder it
-   can differ from the visible order until the hard reset rebuilds the cards;
+   can differ from the visible order until a window reload rebuilds the cards;
    keyboard reorder through the handle follows the key order. */
 
 import { widgetKey } from './widget_list.js';

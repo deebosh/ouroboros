@@ -732,7 +732,7 @@ navigation, a kept widget card's at the next Widgets entry or lifecycle event �
 so a hidden instance whose reason lapsed is released then, and this rule
 promises no earlier release. For a kept widget card the force-destroy
 boundaries are the owner's Stop, its skill leaving the live list (also while
-hidden), Refresh, a window reload and closing Ouroboros; a server reconnect
+hidden), a window reload and closing Ouroboros; a server reconnect
 with the same served SHA keeps the frame when its skill is live again with the
 same `revision` (a changed revision stops it in order and re-mounts it — at
 once while Widgets is visible, at the next Widgets entry while the page is
@@ -2566,7 +2566,7 @@ relevant real consumer flow. A stored screenshot alone is not verification;
 mobile or WebKit is not a universal requirement and is selected from risk.
 Disclosed residual: a Widgets reorder changes the visible order without moving
 DOM nodes (a moved frame would reload), so after a reorder the Tab/focus order
-may differ from the visible order until the hard reset rebuilds the cards;
+may differ from the visible order until a window reload rebuilds the cards;
 keyboard reorder through the card handle follows the key order.
 
 ### Browser dialogs
@@ -2597,8 +2597,7 @@ disposer to the `mountTab` dispatcher in `widgets.js`, which keeps the card regi
 renderer. The framed card's chrome — the effective launch policy (owner override
 > author `render.start` > kind default), whether it keeps the card running while
 Widgets is hidden (`retain`, framed cards only), the one primary Start / Stop
-control, the launch-policy menu, the stopped card's facade and the Refresh
-confirmation that counts the cards kept running — lives in
+control, the launch-policy menu and the stopped card's facade — lives in
 `web/modules/widget_card.js`; the card reorder handles live in
 `web/modules/widget_reorder.js` (a reorder is a pure move in the key order handed
 back to the page; no node moves); the declarative `chart` helpers, the table

@@ -1,8 +1,8 @@
 """Widgets lifecycle phase 2–4 browser smoke: launch policy (auto / manual /
 owner override), the ordered dispose → acknowledgement handshake, session-local
 Stop suppression, force-stop on skill disable, the ``retain`` keep-alive
-(frame identity and progress across pages, honest badge, Refresh confirmation,
-reorder without a reload, hidden force-stop) and the one streaming module
+(frame identity and progress across pages, honest badge, the window reload as
+the only hard reset, reorder without a reload, hidden force-stop) and the one streaming module
 bridge (binary bodies byte-identical, in-process streaming observed chunk by
 chunk, abort, opt-in timeout, skill WebSocket events, prefix refusal, null
 bodies, dispose with an open stream) on chromium and webkit. Kept apart from
@@ -584,7 +584,7 @@ def test_ui_smoke_widget_launch_policy_and_ordered_stop(direct_server_with_data,
                 assert page.locator(f"{card('manual')} [data-widget-start-mode=\"auto\"]").get_attribute("aria-checked") == "true"
 
                 # Owner override through the API beats the author default in both directions
-                # after the hard reset: the author-auto card waits, the author-manual card runs.
+                # on the next Widgets entry: the author-auto card waits, the author-manual card runs.
                 saved = page.evaluate(
                     """async (payload) => (await fetch('/api/ui/preferences', {
                         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
@@ -592,7 +592,9 @@ def test_ui_smoke_widget_launch_policy_and_ordered_stop(direct_server_with_data,
                     {"widget_start_mode": {f"{skill}:manual": "auto", f"{skill}:auto": "manual"}},
                 )
                 assert saved == 200
-                page.click("#widgets-refresh")
+                _click_nav(page, "dashboard")
+                page.wait_for_timeout(300)
+                _click_nav(page, "widgets")
                 wait_frame(page, "hang", True, timeout=15_000)
                 wait_frame(page, "manual", True, timeout=15_000)
                 page.locator(f"{card('auto')} [data-widget-facade]").wait_for(state="visible", timeout=10_000)
@@ -634,9 +636,10 @@ def test_ui_smoke_widget_retain_keeps_running_across_pages(direct_server_with_da
     only: Chromium pauses animation frames of a hidden frame, no rate is
     promised) and its bridged ticks still reaching the host while the
     declarative poll issues nothing. A keyboard reorder changes the visible
-    position without moving the node or reloading the frame. Refresh asks
-    first while a kept card runs (Cancel keeps it, Restart rebuilds it) and
-    asks nothing once none runs. Owner Stop frees the frame and its timers.
+    position without moving the node or reloading the frame. The page carries
+    no Refresh control: the window reload is the only hard reset, it ends the
+    kept frame with its window, and it forgets an owner Stop (which lives in
+    the page session only). Owner Stop frees the frame and its timers.
     Disabling the skill while Widgets is hidden force-stops the kept frame
     before the next visit."""
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
@@ -805,31 +808,20 @@ def test_ui_smoke_widget_retain_keeps_running_across_pages(direct_server_with_da
                 assert kept_frame(page).evaluate("() => window.__keptMark") == "same-window"
                 assert page.evaluate("document.activeElement?.hasAttribute('data-widget-reorder-handle')")
 
-                # Refresh while a kept card runs: the confirm dialog; Cancel changes nothing.
-                page.click("#widgets-refresh")
-                dialog = page.locator(".confirm-dialog")
-                dialog.wait_for(state="visible", timeout=5_000)
-                dialog_text = dialog.inner_text()
-                assert "Restart all widgets?" in dialog_text, dialog_text
-                assert "1 program kept running in the background will be stopped." in dialog_text, dialog_text
-                page.screenshot(path=str(evidence_dir / f"widget-retain-refresh-{browser_name}.png"), full_page=True)
-                dialog.locator(".marketplace-modal-actions [data-confirm-cancel]").click()
-                dialog.wait_for(state="detached", timeout=5_000)
-                page.wait_for_timeout(300)
+                # Owner decision Q20: the page carries no Refresh control, so nothing in it
+                # stops a kept-running program behind the owner's back.
+                assert page.locator("#widgets-refresh").count() == 0
+                page.screenshot(path=str(evidence_dir / f"widget-retain-no-refresh-{browser_name}.png"), full_page=True)
                 assert frame_count(page, "kept") == 1
                 assert same_frame(page)
                 assert kept_frame(page).evaluate("() => window.__keptMark") == "same-window"
 
-                # Refresh → Restart: the hard reset rebuilds every card, the kept one too.
-                page.click("#widgets-refresh")
-                dialog.wait_for(state="visible", timeout=5_000)
-                dialog.locator("[data-confirm-ok]").click()
-                dialog.wait_for(state="detached", timeout=5_000)
-                page.wait_for_function(
-                    "(selector) => { const frame = document.querySelector(`${selector} iframe`); return Boolean(frame) && frame.__ouroKeptFrame !== true; }",
-                    arg=card("kept"),
-                    timeout=15_000,
-                )
+                # The window reload is the hard reset that remains: the kept frame dies
+                # with the window and the card starts a fresh one on the next entry.
+                page.reload(wait_until="domcontentloaded", timeout=30_000)
+                page.click('[data-nav-page="widgets"]')
+                page.locator(card("kept")).wait_for(state="visible", timeout=30_000)
+                wait_frame(page, "kept", True, timeout=15_000)
                 wait_status(page, "kept", "Keeps running", timeout=15_000)
                 assert kept_frame(page).evaluate("() => window.__keptMark ?? null") is None
                 assert frame_count(page, "kept") == 1
@@ -844,11 +836,11 @@ def test_ui_smoke_widget_retain_keeps_running_across_pages(direct_server_with_da
                 late = [row for row in page.evaluate("window.__hostFetchLog") if "ping?tick=" in row["url"]]
                 assert late == [], late
 
-                # Refresh with no kept card running: no dialog, straight hard reset —
-                # which forgets the owner Stop, so the retain card starts again.
-                page.click("#widgets-refresh")
-                page.wait_for_timeout(400)
-                assert page.locator(".confirm-dialog").count() == 0
+                # The owner Stop lives in the page session only: a window reload forgets it
+                # and the retain card starts again on the next entry.
+                page.reload(wait_until="domcontentloaded", timeout=30_000)
+                page.click('[data-nav-page="widgets"]')
+                page.locator(card("kept")).wait_for(state="visible", timeout=30_000)
                 wait_frame(page, "kept", True, timeout=15_000)
                 wait_status(page, "kept", "Keeps running", timeout=15_000)
 

@@ -48,8 +48,9 @@ def test_widgets_support_declarative_schema_components():
     assert "type === 'action'" in source
     assert "type === 'table'" in source
     assert "type === 'markdown'" in source
-    # Lifecycle / cleanup discipline: the hard reset stops everything; leaving
-    # stops everything except the frames the owner keeps running (phase 3).
+    # Lifecycle / cleanup discipline: a list rebuild disposes every mounted
+    # card first; leaving stops everything except the frames the owner keeps
+    # running (phase 3).
     assert "disposeMountedWidgets();" in source
     assert "let widgetsMounted = false;" in source
     assert "let renderGeneration = 0;" in source
@@ -66,10 +67,9 @@ def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
     signature: unchanged → not one ``<article>`` is touched; changed → keyed
     patch (``web/modules/widget_list.js`` holds the pure helpers). The same
     sync runs on a visible ``extension_lifecycle`` event and on every WebSocket
-    (re)connect, never on a timer. Refresh keeps the hard-reset semantics
-    (dispose everything, refetch, rebuild all) and says so in its tooltip; since
-    phase 3 it asks first — through the shared confirm dialog, strict boolean —
-    only while a kept-running (`retain`) card would be stopped by it."""
+    (re)connect, never on a timer. The page has no Refresh control (owner
+    decision Q20): the window reload is the only hard reset, so nothing in the
+    page stops every kept-running card behind the owner's back."""
     source = _widgets_js()
     helpers = _read("web/modules/widget_list.js")
     assert "apiClient.widgets()" in source
@@ -84,20 +84,23 @@ def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
     assert "ctx.ws.on('extension_lifecycle', reconcileWidgetList);" in source
     assert "ctx.ws.on('open', reconcileWidgetList);" in source
     assert "setInterval(" not in source
-    # Entry paints the shell before the first await; Refresh is the hard reset:
-    # it forgets every owner Stop and lets the ordered stops settle before it
-    # rebuilds the cards (destroying a frame mid-flush would skip its ack window).
+    # Entry paints the shell before the first await, then syncs.
     assert source.index("paintShell(lastTabs);") < source.index("await syncWidgets(generation);")
-    force_branch = source.split("if (force) {", 1)[1].split("}", 1)[0]
-    assert "stoppedByOwner.clear();" in force_branch
-    assert "await disposeMountedWidgets();" in force_branch
-    assert "refreshBtn.addEventListener('click', refreshWidgets);" in source
-    assert "if (await confirmWidgetsRestart(keptRunning().length)) render(true);" in source
+    # Owner decision Q20: the page has no Refresh control at all. A window reload
+    # is the only hard reset, so nothing in the page can stop every kept-running
+    # program behind the owner's back, and no confirmation dialog is needed.
+    css = (REPO_ROOT / "web" / "style.css").read_text(encoding="utf-8")
     card = _read("web/modules/widget_card.js")
-    assert "export async function confirmWidgetsRestart(keptRunning, { dialogImpl = openConfirmDialog } = {})" in card
-    assert "if (!count) return true;" in card
-    assert "return confirmed === true;" in card
-    assert 'title="Reload the list and restart all widgets"' in source
+    for absent in ("widgets-refresh", "refreshBtn", "refreshWidgets", "confirmWidgetsRestart"):
+        assert absent not in source, absent
+    assert "confirmWidgetsRestart" not in card
+    assert "openConfirmDialog" not in card
+    assert "widgets-refresh" not in css
+    assert "actionsHtml" not in source
+    # `render()` takes no force flag: there is no path that clears every owner
+    # Stop and rebuilds every card while the page stays open.
+    assert "async function render() {" in source
+    assert "stoppedByOwner.clear()" not in source
 
 
 def test_widgets_escape_and_sanitize_untrusted_content():
@@ -326,13 +329,13 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     ``render.start`` > kind default (``widget_card.js``, node-tested). A card
     that is not to run shows a facade at the declared frame height through
     the frame's own custom property. Owner Stop is remembered for the page
-    session only; Start, a policy change to Auto / Keep running, and Refresh
-    forget it. A vanished card is stopped in order and evicts its session
+    session only; Start, a policy change to Auto / Keep running, and a window
+    reload forget it. A vanished card is stopped in order and evicts its session
     state. Phase 3: a FRAMED card whose effective policy is `retain` keeps its
     frame mounted in the hidden page when the owner leaves (declarative cards
     always dispose), its badge says "Keeps running", a lifecycle event while
-    hidden force-stops a kept frame whose skill left the list, and the hard
-    reset still stops everything."""
+    hidden force-stops a kept frame whose skill left the list, and the window
+    reload still ends every frame with its window."""
     page = _widgets_js()
     card = _read("web/modules/widget_card.js")
     style = _read("web/style.css")
@@ -435,16 +438,6 @@ def test_widgets_use_design_radius_tokens():
     assert "border-radius: 9px;" not in block
 
 
-def test_widgets_refresh_button_shows_loading_state():
-    source = _widgets_js()
-    css = (REPO_ROOT / "web" / "style.css").read_text(encoding="utf-8")
-
-    assert "refreshBtn.classList.add('is-loading')" in source
-    assert "refreshBtn.classList.remove('is-loading')" in source
-    assert "refreshBtn.disabled = true" in source
-    assert "#widgets-refresh.is-loading::after" in css
-
-
 def test_widgets_cards_do_not_stretch_to_row_height():
     """Masonry packs unequal cards by absolute position. Phase 3: `layout()`
     packs the cards in the page's explicit key order (`widget_order`), never the
@@ -509,7 +502,7 @@ def test_widgets_card_order_is_owner_ui_preference():
     page, which re-sorts, relayouts through masonry and persists — no
     ``<article>`` is ever moved, so a running frame never reloads on reorder.
     Disclosed residual: the Tab/focus order follows the DOM and may differ from
-    the visible order until the hard reset rebuilds the cards."""
+    the visible order until a window reload rebuilds the cards."""
     source = _widgets_js()
     reorder = _read("web/modules/widget_reorder.js")
     css = (REPO_ROOT / "web" / "style.css").read_text(encoding="utf-8")

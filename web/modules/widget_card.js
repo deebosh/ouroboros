@@ -1,13 +1,12 @@
 /* Widgets card chrome for framed (module / route-iframe) cards: the effective
    launch policy (and whether it keeps the card running while Widgets is
    hidden), the card's ONE primary control (Start / Stop), the secondary
-   launch-policy menu, the facade a stopped card shows in place of its frame,
-   and the page-level Refresh confirmation that counts the cards kept running.
+   launch-policy menu, and the facade a stopped card shows in place of its
+   frame.
    widgets.js owns the registry and decides WHEN a card mounts or stops; this
    module only renders and reads the controls. Declarative cards are host-drawn
    and get none of this. */
 
-import { openConfirmDialog } from './confirm_dialog.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { widgetKey } from './widget_list.js';
@@ -55,24 +54,6 @@ export function effectiveStartMode(tab, prefs) {
  */
 export function isRetainedWidget(tab, prefs) {
     return isFramedWidget(tab) && effectiveStartMode(tab, prefs) === 'retain';
-}
-
-/**
- * Refresh is the hard reset: every card restarts, including the ones the owner
- * keeps running. Ask first only while such a card is running — with none there
- * is nothing to lose and no dialog. Confirm mode returns a strict boolean, and
- * anything but `true` (Cancel, Close, Escape, backdrop, supersession) keeps
- * every frame as it is.
- */
-export async function confirmWidgetsRestart(keptRunning, { dialogImpl = openConfirmDialog } = {}) {
-    const count = Math.max(0, Math.trunc(Number(keptRunning) || 0));
-    if (!count) return true;
-    const confirmed = await dialogImpl({
-        title: 'Restart all widgets?',
-        body: `${count} ${count === 1 ? 'program' : 'programs'} kept running in the background will be stopped.`,
-        confirmLabel: 'Restart',
-    });
-    return confirmed === true;
 }
 
 /** Whole-map replace payload for `POST /api/ui/preferences` (the `widget_order` shape). */

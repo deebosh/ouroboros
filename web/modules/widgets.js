@@ -13,7 +13,6 @@ import { mountModuleWidget, mountRouteIframeWidget } from './widget_module.js';
 import { planWidgetListPatch, widgetKey, widgetTabsSignature } from './widget_list.js';
 import {
     bindWidgetCardMenus,
-    confirmWidgetsRestart,
     effectiveStartMode,
     isFramedWidget,
     isRetainedWidget,
@@ -55,7 +54,6 @@ function pageTemplate() {
                 title: 'Widgets',
                 icon: PAGE_ICONS.widgets,
                 description: 'Reviewed extension UI surfaces live here, separate from the skill catalogue.',
-                actionsHtml: '<button id="widgets-refresh" class="btn btn-default btn-sm" title="Reload the list and restart all widgets">Refresh</button>',
             })}
             <div class="widgets-scroll scroll-fade-y">
                 <div id="widgets-list" class="widgets-list"></div>
@@ -89,7 +87,7 @@ function renderCardHtml(tab) {
         `;
 }
 
-// Full paint — only for a list without cards yet and for the hard reset.
+// Full paint — only for a list that has no cards yet.
 function renderShell(host, tabs) {
     if (!tabs.length) {
         host.innerHTML = '<div class="muted">No live widgets yet. Review and enable an extension that registers a UI tab.</div>';
@@ -435,8 +433,9 @@ const widgetMountControllers = new Set();
 const widgetMessageHandlers = new Set();
 const widgetSessionState = new Map();
 // Owner pressed Stop on this card in this page session: re-entering Widgets
-// shows its facade instead of auto-starting it again. Start, a launch-policy
-// change to Auto / Keep running, and Refresh clear it. Never persisted.
+// shows its facade instead of auto-starting it again. Start and a launch-policy
+// change to Auto / Keep running clear it. Never persisted, so a window reload
+// forgets it.
 const stoppedByOwner = new Set();
 let widgetsWsBridgeBound = false;
 
@@ -1039,9 +1038,9 @@ function disposeWidgetByKey(key) {
 }
 
 // Issue the stop for every mounted card except the keys `keep` answers true for
-// (the frames the owner keeps running while Widgets is hidden; the hard reset
-// passes nothing and stops them too); resolves once every ordered stop in
-// flight has settled (they run in parallel, each bounded by the ack timeout).
+// (the frames the owner keeps running while Widgets is hidden; a caller that
+// passes nothing stops them too); resolves once every ordered stop in flight
+// has settled (they run in parallel, each bounded by the ack timeout).
 function disposeMountedWidgets(keep = null) {
     widgetMountControllers.forEach((controller) => controller.abort());
     widgetMountControllers.clear();
@@ -1133,7 +1132,7 @@ async function mountTabOnce(card, tab, key, isCurrent) {
     try {
         const dispose = await mountTab(card, tab, mountController.signal);
         if (typeof dispose === 'function') {
-            // Stale (page left, hard reset, card replaced meanwhile): stop it in
+            // Stale (page left, list rebuilt, card replaced meanwhile): stop it in
             // order instead of registering a frame nobody can reach.
             if (!isCurrent() || !card.isConnected) {
                 trackSettling(key, dispose());
@@ -1151,7 +1150,6 @@ export function initWidgets(ctx = {}) {
     page.innerHTML = pageTemplate();
     document.getElementById('content').appendChild(page.firstElementChild);
     const list = document.getElementById('widgets-list');
-    const refreshBtn = document.getElementById('widgets-refresh');
     let renderGeneration = 0;
     let widgetsVisible = false;
     let widgetsMounted = false;
@@ -1194,23 +1192,17 @@ export function initWidgets(ctx = {}) {
         relayout();
     }
 
-    // Page entry, or the hard reset behind Refresh (`force`): the shell is on
-    // screen before the first await. Leaving disposed the mounted work but kept
-    // the cards, so a plain entry reuses them and only mounts into them again.
-    // The hard reset also forgets every owner Stop and lets the ordered stops
-    // settle (≤ 1 s) before it rebuilds the cards.
-    async function render(force = false) {
+    // Page entry: the shell is on screen before the first await. Leaving
+    // disposed the mounted work but kept the cards, so an entry reuses them and
+    // only mounts into them again. A window reload is the only hard reset there
+    // is; nothing in the page rebuilds every card behind the owner's back.
+    async function render() {
         const generation = ++renderGeneration;
         widgetsVisible = true;
-        if (widgetsMounted && !force) return;
-        if (force) {
-            stoppedByOwner.clear();
-            await disposeMountedWidgets();
-            if (!isCurrentFor(generation)()) return;
-        }
+        if (widgetsMounted) return;
         if (!lastTabs) {
             list.innerHTML = '<div class="muted">Loading widgets…</div>';
-        } else if (force || !hasCards()) {
+        } else if (!hasCards()) {
             paintShell(lastTabs);
         } else {
             relayout();
@@ -1255,8 +1247,6 @@ export function initWidgets(ctx = {}) {
     async function syncWidgets(generation) {
         const isCurrent = isCurrentFor(generation);
         activeSync = generation;
-        refreshBtn.disabled = true;
-        refreshBtn.classList.add('is-loading');
         try {
             do {
                 listDirty = false;
@@ -1318,10 +1308,6 @@ export function initWidgets(ctx = {}) {
             widgetsMounted = false;
         } finally {
             if (activeSync === generation) activeSync = 0;
-            if (isCurrent()) {
-                refreshBtn.disabled = false;
-                refreshBtn.classList.remove('is-loading');
-            }
         }
     }
 
@@ -1436,14 +1422,6 @@ export function initWidgets(ctx = {}) {
         else startWidgetByOwner(card, tab);
     });
 
-    // Refresh is the hard reset; it asks first only while a kept-running card
-    // would be stopped by it (`confirmWidgetsRestart` — strict boolean; Cancel
-    // changes nothing).
-    async function refreshWidgets() {
-        if (await confirmWidgetsRestart(keptRunning().length)) render(true);
-    }
-
-    refreshBtn.addEventListener('click', refreshWidgets);
     window.addEventListener('ouro:page-shown', (event) => {
         if (event.detail?.page === 'widgets') {
             render();

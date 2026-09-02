@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    confirmWidgetsRestart,
     effectiveStartMode,
     isFramedWidget,
     isRetainedWidget,
@@ -93,29 +92,6 @@ test('the status badge is honest about keep-alive: "Keeps running" only for a ru
     syncWidgetCardControls(card, 'stopped', 'retain');
     assert.equal(card.status.hidden, true);
     assert.equal(card.power.textContent, 'Start');
-});
-
-test('Refresh asks only while a kept-running card would be stopped, and only a strict true restarts', async () => {
-    const calls = [];
-    const dialogImpl = async (options) => { calls.push(options); return true; };
-    // Nothing kept running: no dialog, straight to the hard reset.
-    assert.equal(await confirmWidgetsRestart(0, { dialogImpl }), true);
-    assert.equal(await confirmWidgetsRestart(undefined, { dialogImpl }), true);
-    assert.equal(await confirmWidgetsRestart(-3, { dialogImpl }), true);
-    assert.equal(calls.length, 0);
-    assert.equal(await confirmWidgetsRestart(1, { dialogImpl }), true);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].title, 'Restart all widgets?');
-    assert.equal(calls[0].body, '1 program kept running in the background will be stopped.');
-    assert.equal(calls[0].confirmLabel, 'Restart');
-    assert.equal(calls[0].input, undefined, 'confirm mode: a strict boolean comes back');
-    await confirmWidgetsRestart(2, { dialogImpl });
-    assert.equal(calls[1].body, '2 programs kept running in the background will be stopped.');
-    // Cancel, Close, Escape, backdrop and supersession all resolve false → nothing happens.
-    assert.equal(await confirmWidgetsRestart(1, { dialogImpl: async () => false }), false);
-    // Anything that is not the strict boolean true keeps every frame as it is.
-    assert.equal(await confirmWidgetsRestart(1, { dialogImpl: async () => ({ confirmed: true, value: '' }) }), false);
-    assert.equal(await confirmWidgetsRestart(1, { dialogImpl: async () => 'yes' }), false);
 });
 
 test('only framed cards carry Start/Stop and the launch-policy menu', () => {

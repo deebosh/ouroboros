@@ -910,7 +910,7 @@ declaration, so every framed or declarative widget tab carries an explicit value
 |---|---|---|
 | `auto` | Starts when the Widgets page is shown; leaving the page stops it. For cheap instruments (a quota gauge, a status board). | `declarative` — the only value it accepts: the host draws it, there is nothing to start |
 | `manual` | The card shows the title, icon, and a Start button; the program runs only after the owner presses Start. Leaving the page is an ordered Stop: for `kind: module` the host sends the dispose message and gives the widget up to one second to save before the frame is removed; a `kind: iframe` route frame has no bridge and is removed at once. | `module`, `iframe` |
-| `retain` | "Keep running": starts on the first Widgets visit like `auto` and keeps running while the owner is on other pages; the card's status reads "Keeps running". It stops on the owner's Stop, on skill disable / unload / delete (also while Widgets is hidden), on the page's Refresh (the owner confirms first while a kept card runs), when the window reloads, and when Ouroboros closes. A server reconnect with the same served code keeps the frame when the skill is live again with the same revision; a changed revision stops it in order and starts it again. | — |
+| `retain` | "Keep running": starts on the first Widgets visit like `auto` and keeps running while the owner is on other pages; the card's status reads "Keeps running". It stops on the owner's Stop, on skill disable / unload / delete (also while Widgets is hidden), when the window reloads, and when Ouroboros closes. A server reconnect with the same served code keeps the frame when the skill is live again with the same revision; a changed revision stops it in order and starts it again. | — |
 
 Rules every module author follows:
 
@@ -961,8 +961,8 @@ What the host does today: all three policies are honoured — an `auto` card
 mounts when Widgets is shown and stops when the owner leaves, a `manual` card
 waits behind its Start button, and a `retain` card starts on the first visit
 and stays mounted while the owner is elsewhere with a "Keeps running" status
-until Stop, the skill leaving the live list (even while Widgets is hidden),
-Refresh (after the owner confirms) or the window going away; the owner's
+until Stop, the skill leaving the live list (even while Widgets is hidden) or
+the window going away; the owner's
 per-card override wins over your declaration; and the dispose →
 acknowledgement handshake is live for `kind: module`: your
 `__ouroWidgetOnDispose` hooks may be async and may use the fetch bridge, and
