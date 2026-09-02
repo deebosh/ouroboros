@@ -926,8 +926,8 @@ def _retrieving_packet_projection(evidence: Dict[str, Any]) -> Dict[str, Any]:
         if stripped:
             packet["artifacts"] = rows
             omissions.append({"section": "artifact_previews", "omitted": stripped, "reason": "retrieving_delivery"})
-    if omissions:
-        packet["omissions_manifest"] = omissions
+    if omissions or (manifest is not None and not isinstance(manifest, list)):
+        packet["omissions_manifest"] = omissions  # a malformed manifest never travels as-is, omitted or not
     return packet
 
 
@@ -988,7 +988,8 @@ def acceptance_retrieving_work_order(
             packet = native_packet
         _stable, task_stable, dynamic = _render_prompt_parts(dataclasses.replace(request, evidence=packet), slot)
         slot_line = f"Slot: {slot.slot_id}"
-        if dynamic.endswith(slot_line):  # the executor labels the slot itself
+        dynamic = dynamic.rstrip()  # the renderer's tail may grow a newline; the executor labels the slot itself
+        if dynamic.endswith(slot_line):
             dynamic = dynamic[: -len(slot_line)].rstrip()
         request.slot_session_tasks[slot.slot_id] = "\n\n".join((
             preamble,

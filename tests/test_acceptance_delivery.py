@@ -453,6 +453,8 @@ def test_acceptance_request_carries_the_route_owned_work_order(structured_env, t
     _stable, task_stable, _dynamic = _render_prompt_parts(request, api)
     assert task_stable.rstrip() in order["t_sess"] and task_stable.rstrip() in order["t_actor"]
     assert request.evidence["tool_trajectory"][0]["result"] == "TRAJECTORY-RESULT-3-passed"
+    # The executor labels the slot itself: a work order carries no `Slot:` line of its own.
+    assert "Slot:" not in order["t_sess"] and "Slot:" not in order["t_actor"]
     # The api pack states the contract once: route-owned keys never enter its rendered Policy JSON.
     assert "native_data_root" not in task_stable and "output_contract" not in task_stable
 
@@ -715,6 +717,10 @@ def test_native_projection_never_turns_a_malformed_manifest_into_its_keys():
     # A well-formed manifest is extended, never replaced.
     kept = _retrieving_packet_projection({**_ACCEPTANCE_PACKET, "omissions_manifest": [{"section": "x", "reason": "y"}]})
     assert kept["omissions_manifest"][0] == {"section": "x", "reason": "y"} and len(kept["omissions_manifest"]) == 3
+    # Nothing to omit: a malformed manifest is still normalized, an absent one is not invented.
+    bare = {k: v for k, v in _ACCEPTANCE_PACKET.items() if k not in ("tool_trajectory", "artifacts")}
+    assert _retrieving_packet_projection({**bare, "omissions_manifest": "junk"})["omissions_manifest"] == []
+    assert "omissions_manifest" not in _retrieving_packet_projection(bare)
 
 
 def _raw_timing(events, fields: str):
