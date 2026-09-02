@@ -838,9 +838,7 @@ def test_all_delegated_triad_writes_no_fallback_record_and_reaches_acceptance(mo
         "scope": [{"slot_id": "s1", "route": {"kind": "agent_session", "target_id": "codex"}}],
         "advisory": {"enabled": True, "route": {"kind": "agent_session", "target_id": "codex"}},
     }
-    for retired in ("api_fallback_disclosure", "reviewer_slot_api_fallback_warning",
-                    "_fallback_warning_text", "_record_api_fallback_substitution"):
-        assert not hasattr(importlib.reload(rsc), retired), retired
+    importlib.reload(rsc)  # the retired names are pinned absent repository-wide below
     # R12: the FIRST save that makes the triad retrieve discloses once, with the
     # measured numbers and the rows; a save that keeps it retrieving is silent.
     disclosure = reviewer_slot_save_check(json.dumps(payload))
@@ -854,6 +852,42 @@ def test_all_delegated_triad_writes_no_fallback_record_and_reaches_acceptance(mo
     assert [(s.slot_id, s.route.value, s.session_target) for s in slots] == [("t1", "agent_session", "codex")]
     with pytest.raises(ValueError, match="triad needs at least one slot"):
         reviewer_slot_save_check(json.dumps({**payload, "triad": []}))
+
+
+# The acceptance API-pin apparatus retired with owner R2/R12 (2026-09-01): a
+# name that survives anywhere — code, docstring, comment, test prose — is a
+# hook for the fallback to grow back. Scanned as TEXT over every file under the
+# roots the phase touched; this file is the assertion and is excluded.
+_RETIRED_API_PIN_NAMES = (
+    "_fallback_warning_text",
+    "_record_api_fallback_substitution",
+    "api_fallback_disclosure",
+    "reviewer_slot_api_fallback_warning",
+    "reviewer_slot_api_fallback.json",
+)
+_RETIRED_NAME_SCAN_ROOTS = ("ouroboros", "web/modules", "web/tests", "tests")
+
+
+def test_the_retired_acceptance_api_pin_names_are_gone_repository_wide():
+    """Pure file reads, no globals, no imports of the scanned modules — safe
+    under xdist. Binary fixtures (undecodable) carry no prose and are skipped."""
+    import pathlib
+
+    here = pathlib.Path(__file__).resolve()
+    repo = here.parents[1]
+    hits = []
+    for root in _RETIRED_NAME_SCAN_ROOTS:
+        for path in sorted((repo / root).rglob("*")):
+            if not path.is_file() or path.resolve() == here:
+                continue
+            if "__pycache__" in path.parts or "node_modules" in path.parts:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            hits.extend(f"{path.relative_to(repo)}: {name}" for name in _RETIRED_API_PIN_NAMES if name in text)
+    assert hits == [], hits
 
 
 def test_mixed_triad_reaches_acceptance_in_row_order(monkeypatch):
