@@ -290,7 +290,11 @@ def _chat_send_command(args: argparse.Namespace) -> int:
 
 
 def _chat_history_command(args: argparse.Namespace) -> int:
-    _print_json(_client(args).request("GET", f"/api/chat/history?limit={int(args.limit)}"))
+    # `n_human` is the server's quota for conversation (non-progress) rows. An
+    # omitted --limit sends no quota so the server's own window governs (one
+    # owner for the default); legacy `limit` still works for shipped CLIs.
+    query = "" if args.limit is None else f"?n_human={int(args.limit)}"
+    _print_json(_client(args).request("GET", f"/api/chat/history{query}"))
     return 0
 
 
@@ -552,7 +556,10 @@ def build_parser() -> argparse.ArgumentParser:
     chat_send.add_argument("text", nargs=argparse.REMAINDER)
     chat_send.set_defaults(func=_chat_send_command)
     chat_history = chat_sub.add_parser("history")
-    chat_history.add_argument("--limit", type=int, default=100)
+    chat_history.add_argument(
+        "--limit", type=int, default=None,
+        help="conversation rows to fetch (server-capped; omitted = the server's default window)",
+    )
     chat_history.set_defaults(func=_chat_history_command)
 
     logs = subparsers.add_parser("logs", help="read runtime logs")
