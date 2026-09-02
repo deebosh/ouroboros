@@ -1290,10 +1290,11 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         self._run_id = facts["run_id"]
         conformance = facts["conformance"]
         self._conformance_passed = conformance == "passed"
-        if not facts["schema_asked"]:
-            # This route always REQUESTS the structured verdict; an effective
+        if not facts["schema_asked"] and review_session_output_schema(request.surface) is not None:
+            # Array/object surfaces REQUEST the structured verdict; an effective
             # transport that cannot carry the schema is a landing below the
-            # ask, disclosed rather than silently downgraded to prose (D4).
+            # ask, disclosed rather than silently downgraded to prose (D4). A
+            # report surface asks for no schema, so its absence is no landing.
             self._deltas.append({
                 "kind": "capability_delta",
                 "requested": "outputSchema (structured verdict)",
