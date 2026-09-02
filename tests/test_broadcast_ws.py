@@ -46,7 +46,13 @@ def test_a_closed_loop_does_not_leak_the_unawaited_broadcast_coroutine(monkeypat
     running when the object was collected. That is how the warning surfaced
     inside unrelated tests (tests/test_extensions_api.py::test_api_extension*,
     where an earlier test left a finished loop in the module global): a leak
-    reported against an innocent bystander.
+    reported against an innocent bystander. On the pre-fix code that mechanism
+    reproduces only under the CI-shaped FULL run — not from that file alone,
+    and not on every full run: the loop is left behind deterministically (by
+    the `with TestClient(server.app)` lifespan tests, which are the only
+    writers of the module global), but whether a broadcast then fires, and
+    which test is running when the object is collected, is not. Hence a pin on
+    the leaking line itself rather than on the bystander.
 
     The stale-loop case itself is deliberate: a broadcast with no live loop is
     a no-op, not an error.
