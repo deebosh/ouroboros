@@ -5614,3 +5614,13 @@ Cross-cutting disclosures:
    surfaces are the two pinned suites and the lock/liveness consumers above,
    all run), and the Windows LockFileEx mechanics remain owed to the 3-OS CI
    matrix.
+
+## From the C6 micro-round 5.4 close-out (operator, base b4938c31; owner batch №12 A)
+
+Three read-only lenses on the 5.4 delta: NEEDS_FIXES × 3, no HIGH (3 MEDIUM, 7 LOW). The operator closed them without a further agent round (the owner bound was one micro-round):
+
+1. **R1 blast radius (MEDIUM, two lenses) — fixed.** Round 5.4 had moved `ENOLCK` out of the unsupported set so the probe kept the enforced tier and EVERY live acquisition failed closed. The primitive is shared (state singletons, task results, custody, claims, …), so a lockd-less NFS `state/` would have refused every locked write in the product, where the name protocol had always worked. Now `ENOLCK` selects the name tier like a filesystem that cannot, the probe records the errno beside the verdict, and `acquire_exclusive_file_lock(refuse_name_tier_errnos=…)` lets a caller fail closed on it — only `usage_ledger._named_lock` names `ENOLCK`. Red-first: `platform_layer.py`/`usage_ledger.py` @ `b4938c31` → `assert True == (True, 5)`, `assert True is False`.
+2. **R4 typed resolution (MEDIUM) — fixed.** `_segment_path` resolves with the non-strict `os.path.realpath` inside the typed `try` (`except (OSError, RuntimeError)`). Red-first: a self-loop segment link → `RuntimeError: Symlink loop` / `OSError [Errno 40]` escaped @ `b4938c31`.
+3. **R3 stamp-less symlink levels (LOW) — fixed**, pin deferred (suite at its 1600-line cap; mutation-verified by hand). **R5 witness inode tie + `_Abort` on a vanished ledger (LOW) — fixed**, no pin (disclosed). **R6 heartbeat-ownership pin (LOW) — disclosed, not fixed.** **R1 uncached unprobeable directory, R7 shared liveness primitive, R8d epoch-floor duration, R8e socket shape (LOW) — docs corrected** in DESIGN §8/§10/§12.5, packet §5.9/§5.10/§9/§10, ARCHITECTURE row.
+
+Gates at the close-out tip: `tests/test_lockfile_helpers.py` + `tests/test_usage_compaction.py` + `tests/test_usage_*` + `tests/test_persistence_inventory.py` rc 0 (107 passed, 1 skipped Windows-only); `ruff --select F` rc 0; `scripts/check_domains.py` rc 0; `scripts/regenerate_size_ratchet.py --check` rc 0 (`platform_layer.py` 1500, `tests/test_usage_compaction.py` 1600 — both AT their ceilings); `git diff --check` rc 0. The CI-shape battery and `-m serial` run on the integration tree after the lane merges.

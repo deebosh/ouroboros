@@ -264,7 +264,8 @@ rounding, folding of dispatched rows — each flips at least one pin.
    `O_NONBLOCK`, so it cannot hang the question either *(qualified, round 5.4:
    an entry that OPENS but is not a regular file is skipped; one the kernel
    refuses to open at all — a UNIX socket, ENXIO — is corruption like any
-   other unopenable entry)*; an entry the scan
+   other unopenable entry on the dir-fd shape; the path shape's stat-before-open
+   classifies a socket as not regular and skips it)*; an entry the scan
    cannot list, open or read IS corruption — the scan did not complete, the
    data root's own handle included since round 5.3, and since round 5.4 every
    path inspection the reader makes (the symlink bounds on both archive levels
@@ -273,8 +274,10 @@ rounding, folding of dispatched rows — each flips at least one pin.
    escaping as a bare `OSError` or a silent empty answer. Disclosed since
    round 5.4: with a stamp-less live file every parsable regular file in the
    archive that is not its byte-prefix is `generation newer`, so a ledger
-   reset beside a surviving archive is a PERMANENT corruption verdict on every
-   history question (reset both together) and an operator's stray JSON file
+   reset beside a surviving archive is a `generation newer` corruption verdict
+   on every history question until the fresh ledger's epoch passes the
+   surviving segments, which are then silently ignored (reset both together)
+   and an operator's stray JSON file
    there is corruption on a stamp-less ledger only; and the readers being
    lock-free, a compaction that commits between a question's live-header read
    and its anchor scan makes that ONE question UNKNOWN (`generation newer`),
@@ -303,11 +306,16 @@ rounding, folding of dispatched rows — each flips at least one pin.
     EOPNOTSUPP/ENOTSUP/ENOSYS *(correction, round 5.4: ENOLCK was in the set
     until then — "no locks available" is a missing lock daemon OR an exhausted
     kernel lock table, not a capability answer, and it selected the tier where
-    the round-3 race returns; it now keeps the enforced tier and every live
-    acquisition the kernel refuses with it fails closed, so a lockd-less NFS
-    refuses every monetary write with `UsageAccountingError` instead of running
-    the name protocol; the per-directory verdict is decided ONCE under a module
-    lock, so racing threads share one probe — §9 "Round 5.4", R1)*, and since
+    the round-3 race returns; round 5.4 made it keep the enforced tier and fail
+    EVERY live acquisition closed — product-wide, the lenses showed, since the
+    primitive is shared — so the close-out made ENOLCK the name tier with its
+    errno RECORDED and a per-caller refusal: only the monetary lock names it
+    (`refuse_name_tier_errnos={ENOLCK}`), so a lockd-less NFS refuses every
+    monetary write with `UsageAccountingError` instead of running the name
+    protocol while every other lock keeps the protocol it always ran there;
+    the per-directory verdict is decided ONCE under a module lock, so racing
+    threads share one probe; an unprobeable directory answers enforced for
+    that call, uncached — §9 "Round 5.4" and §10, R1)*, and since
     round 5.3 the two Win32 answers of a volume without byte-range locks —
     ERROR_INVALID_FUNCTION, which LockFileEx answers on `\\wsl$`
     (microsoft/WSL#5762), and ERROR_NOT_SUPPORTED, error 50 on a Samba share —
@@ -334,7 +342,9 @@ rounding, folding of dispatched rows — each flips at least one pin.
     mechanism: `pid_is_alive` read EPERM as DEAD, so another user's recycled
     pid was reclaimed through the age path (flock-guarded on the enforced
     tier) and only a same-uid recycle wedged — the opposite of what round 5.3
-    wrote; EPERM now reads alive (the process exists), so ANY live impostor —
+    wrote; EPERM now reads alive (the process exists) — in `pid_is_alive`, the
+    one liveness primitive shared by every consumer (custody settlements, claim
+    reclaims, staging reaps defer for such a pid too) — so ANY live impostor —
     same uid or another — wedges the lock from the 90 s staleness window
     (`usage_ledger._locked`, `stale_sec=90.0`) until it exits, the probe
     flock deliberately unconsulted while the pid reads alive (a mixed-tier
@@ -857,3 +867,21 @@ change), `d99ff6a9` (R3 + R4), `ea4d4337` (R5), `9306f962` (R6),
 ARCHITECTURE row, PERSISTENCE, this section and the ledger — follows. Gate
 evidence: `docs/v7next/LEDGER_CORRECTIONS.md` §"From the C6 micro-round 5.4
 (owner batch №12 A, base 096437c2)".
+
+## 10. Round 5.4 close-out — three read-only lenses on `b4938c31`, operator disposition (owner batch №12 A)
+
+Verdicts: 3 × NEEDS_FIXES, no HIGH; 3 MEDIUM + 7 LOW. Fixed here (base `b4938c31`), pinned red-first:
+
+| finding | disposition | pin → pre-fix shape → observed red |
+|---|---|---|
+| MEDIUM R1 (two lenses) — ENOLCK fail-closed landed in the SHARED primitive: on a lockd-less NFS `state/` every `acquire_exclusive_file_lock` caller failed, no model call could dispatch; the owner decided "compaction refuses", not this | **fixed**: ENOLCK is the name tier with its errno recorded beside the verdict (`_KERNEL_LOCK_TIER[dir] = (enforced, errno)`); `acquire_exclusive_file_lock(refuse_name_tier_errnos=…)` lets a caller fail closed on a recorded errno; only `usage_ledger._named_lock` names ENOLCK. Ordinary locks keep the name protocol they always ran there; money refuses typed | `test_the_capability_probe_decides_once_and_leaves_no_residue` (ENOLCK clause) and `test_enolck_is_the_name_tier_for_ordinary_locks_and_a_typed_refusal_for_money` → `platform_layer.py`/`usage_ledger.py` @ `b4938c31` → `assert True == (True, 5)` (a bare bool cached, ENOLCK enforced) / `assert True is False` |
+| MEDIUM R4 — `_segment_path` resolved with `Path.resolve(strict=False)` one line BEFORE the typed `is_symlink()`: a symlink loop escaped as `RuntimeError("Symlink loop …")`, a readlink race as bare `OSError` | **fixed**: `os.path.realpath` (non-strict, never raises on a loop) inside the same `try`, `except (OSError, RuntimeError)` → `UsageLedgerCorrupt` | `test_a_path_inspection_the_reader_cannot_make_is_typed_corruption` (self-loop clause) → `usage_compaction.py` @ `b4938c31` → `RuntimeError: Symlink loop from …` and `OSError: [Errno 40] Too many levels of symbolic links` |
+| LOW R3 — the stamp-less ENOENT exemption used a FOLLOWING `stat`: a dangling link at either archive level answered a silent empty set where the stamped reader answers corruption | **fixed**: `lstat` both levels first; `S_ISLNK` → typed `usage archive path is a symlink`, other `OSError` → typed `cannot be inspected`; pin deferred (the compaction suite sits at its 1600-line cap, disclosed below); mutation-verified by hand on this host (dangling link at `archive/` → typed) | — |
+| LOW R5 — the old-inode witness was opened by PATH before the proof and not tied to the inode the precondition proved; a vanished ledger at the witness open was a bare `OSError` | **fixed**: `owned_and_intact` also proves `fstat(old_fd)` and `stat(path)` name one inode; the witness open is wrapped into `_Abort` (an abort by policy) | — (behaviour-preserving strengthening; no pin, disclosed) |
+| LOW R1 — DESIGN §8 "decides once … cached" was absolute; an unprobeable directory answers enforced UNCACHED | **docs**: DESIGN §8, packet §5.10/§9, ARCHITECTURE row | — |
+| LOW R6 — the strengthened heartbeat pin proves renewal + True, not ownership: a lock-TOUCHING stub survives it | **disclosed, not fixed**: the pin proves the callable renews THIS lock file's age (the production wire's only observable) — a stub that touches the production lock path is a contrived mutation; the suite is at its line cap | — |
+| LOW R7 — EPERM→alive is a flip of a primitive shared by 12 non-test consumers, disclosed only for the monetary lock | **docs**: DESIGN §8 residual, packet §9 R7, ARCHITECTURE/PERSISTENCE wording name the shared primitive and the consumers that now defer | — |
+| LOW R8d — "PERMANENT … for the life of the install" over-stated: the verdict lasts until the fresh ledger's epoch passes the surviving segments, which are then silently ignored | **docs**: DESIGN §10, packet §5.9, ARCHITECTURE row | — |
+| LOW R8e — the socket qualification introduced its own absolute: a UNIX socket is corruption on the dir-fd shape only; the path shape's stat-before-open skips it | **docs**: DESIGN §10/§12.5, packet §5.9, ARCHITECTURE row | — |
+
+Sizes after the close-out: `platform_layer.py` 1500/1500 (band ceiling; net +3 on the policy, paid by rewrapping two prose blocks — no contract text dropped), `usage_compaction.py` 1262 (band), `tests/test_usage_compaction.py` **1600/1600** (owner decision still owed: the next pin in this suite needs either the archive-reader tests moved to their own module — a natural organ boundary, `archived_attempt_ids` vs the pass — or a cap decision), `tests/test_lockfile_helpers.py` 568.

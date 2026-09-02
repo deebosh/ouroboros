@@ -211,17 +211,25 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   own winerror→errno table lands both on `EINVAL` and would leave the name
   tier structurally unreachable there: a Windows volume without byte-range
   locks would fail EVERY monetary append closed instead of degrading to it.
-  `ENOLCK` ("no locks available") is NOT in that set (round 5.4; until then
-  it selected the name tier): a filesystem without a lock daemon answers it,
-  but so does an exhausted kernel lock table, and neither is the kernel
-  saying this filesystem cannot — the probe keeps the enforced tier and every
-  live acquisition the kernel refuses with it fails closed, so an install
-  whose `state/` answers ENOLCK persistently (bare NFS without lockd) refuses
-  every monetary write with `UsageAccountingError` — no lock, no append, no
-  pass — instead of running the name protocol; moving `state/` onto a
-  filesystem that locks is the repair. The verdict is cached per process per
-  directory under one module lock, so racing threads share one probe and one
-  answer rather than two probes that could disagree.
+  `ENOLCK` ("no locks available" — a filesystem without a lock daemon, or an
+  exhausted kernel lock table) is the third answer (round 5.4 close-out; round
+  5.4 proper made it fail EVERY caller closed, which the lenses showed to be
+  product-wide: the same primitive locks state singletons, task results and
+  custody, so a lockd-less NFS `state/` would have stopped every locked write
+  and every model dispatch — a capability the name protocol had always
+  provided there): it selects the **name tier** like a filesystem that cannot,
+  but the probe RECORDS the errno beside the verdict, and a caller may refuse
+  that tier by errno (`acquire_exclusive_file_lock(refuse_name_tier_errnos=…)`).
+  Only the monetary lock does: `usage_ledger._named_lock` names `ENOLCK`, so on
+  such an install every monetary write refuses typed (`UsageAccountingError` —
+  no lock, no append, no pass; money never runs the name protocol where locks
+  might merely be unavailable) while every other lock keeps the name protocol
+  it always ran there; moving `state/` onto a filesystem that locks is the
+  repair. The verdict is cached per process per directory under one module
+  lock, so racing threads share one probe and one answer rather than two
+  probes that could disagree — except a directory where the scratch probe
+  cannot be created, which answers enforced for that call and is probed again
+  next time (not cached).
   *Enforced tier* (POSIX `fcntl.flock`, Windows `LockFileEx` — both held on
   the lock fd): every other hold of this lock is milliseconds; a compaction
   pass over a multi-megabyte ledger can legitimately exceed its 90 s
@@ -286,7 +294,11 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
   reclaimed through the age path — the probe flock guarding it on the
   enforced tier — while only a same-uid recycle wedged; this note named the
   opposite mechanism). So a lock whose owner died and whose pid was reused
-  is never reclaimed by age while the impostor lives: the wedge begins once
+  is never reclaimed by age while the impostor lives (`pid_is_alive` is the
+  ONE liveness primitive, shared by every consumer — custody settlements,
+  claim reclaims, staging reaps — so a pid recycled onto another user's
+  process reads alive everywhere and those defer while the impostor lives,
+  exactly as they do for a same-uid recycle): the wedge begins once
   the dead owner's file is older than the 90 s staleness window
   (`usage_ledger._locked`, `stale_sec=90.0` — a literal there, not a
   `config.py` constant) and ends when the impostor exits, even though the
@@ -473,7 +485,9 @@ the live replay, so this lane ships the join surface the sweep must use:
     FIFO, a device — is no segment: segments are regular files by
     construction, no generation lives there, and it is skipped; one the
     kernel refuses to open at all (a UNIX socket, `ENXIO`) is corruption like
-    any other unopenable entry. Where a dir-fd is held that classification is
+    any other unopenable entry — on the dir-fd shape; without a held handle
+    (Windows, no `O_DIRECTORY`) the `stat` before the open classifies a socket
+    as not regular and skips it. Where a dir-fd is held that classification is
     an `fstat` after an `O_NONBLOCK` open; where none is (Windows, or any os
     without `O_DIRECTORY`) it is a `stat` BEFORE the open, because there the
     open is the step a directory refuses and a writer-less FIFO blocks on. A
@@ -494,8 +508,10 @@ the live replay, so this lane ships the join surface the sweep must use:
     regular file in `archive/usage_ledger/` that is not a byte-prefix of a
     stamp-less live file is `generation newer` — a fresh ledger started
     beside a surviving archive (a reset that deleted the ledger alone) leaves
-    every history question a PERMANENT corruption verdict for the life of the
-    install, and an operator's stray `notes.jsonl` there is skipped on a
+    every history question a `generation newer` corruption verdict until the
+    fresh ledger has compacted as many times as the old one had — after which
+    the surviving segments fall under the epoch floor and are silently ignored,
+    their ids absent from every history question — and an operator's stray `notes.jsonl` there is skipped on a
     stamped ledger but is corruption on a stamp-less one; move or delete the
     archive with the ledger, or keep both. Disclosed, lock-free readers: a
     compaction that commits between a question's live-header read and its
@@ -614,7 +630,8 @@ byte authority.
    the archive — an entry that opens but is not a regular file — is no
    segment and is skipped on both shapes of the scan (the FIFO cannot hang
    the question; an entry the kernel refuses to open at all, a UNIX socket,
-   is corruption), and the chain union is built once per chain and cached
+   is corruption on the dir-fd shape and skipped by the path shape's
+   stat-before-open), and the chain union is built once per chain and cached
    within a bound.
 6. **Idempotency survives**: subscription/external replays after compaction
    dedup (no double charge) and still conflict-check; legacy import stays
