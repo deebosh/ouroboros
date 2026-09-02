@@ -229,7 +229,9 @@ def project_task_acceptance_review_capacity(
         )
         # Observe only: the predicate is pure; a launch admitted at the floor is
         # disclosed on the panel's dispatch fact, never by a projection that
-        # every poll calls.
+        # every poll calls. This is the REVIEW-LAUNCH window (1x) alone: an
+        # improvement pass admitted at the floor under the adaptive 2x window
+        # is not projected here, it only enables the next pass.
         launch_ok, launch_reason = task_pacing.review_launch_allowed(
             budget,
             estimated_sec=task_pacing.acceptance_review_estimate_sec(

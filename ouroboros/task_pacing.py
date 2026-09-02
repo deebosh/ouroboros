@@ -70,8 +70,11 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # AFTER the paid seam fired, whenever it ran under a floor admission by time
 # (`launched_at_floor`, `launch_gate` = review_launch | null, launch seconds —
 # the review-launch gate hands its decision into THIS panel's context; an
-# improvement pass admitted at the floor is visible only as the projection's
-# `launch_disclosure`), by money (`wave_at_floor`, wave prices) or both. The
+# improvement pass admitted at the floor under the adaptive 2x window is NOT
+# separately projected — the capacity projection evaluates
+# `review_launch_allowed` alone (1x window) and carries no
+# `launch_disclosure` for it; that admission only enables the next pass,
+# whose own panel discloses its floor admission here), by money (`wave_at_floor`, wave prices) or both. The
 # per-send wallet binding at dispatch and the review's
 # logical window remain the protection, and the honest event of the dispatched
 # panel decays the estimate (its excess halves per panel).
@@ -290,8 +293,9 @@ def launch_at_floor_payload(snapshot: BudgetSnapshot, *, estimated_sec: float) -
     spendable — computed purely for the panel it admits (loop.py hands it in
     through the panel context). The panel attaches it to its ONE dispatch fact
     after the paid seam fired; nothing records it earlier. An improvement pass
-    admitted at the floor has no payload: it is visible only as the capacity
-    projection's `launch_disclosure`."""
+    admitted at the floor has no payload and is not projected either: the
+    capacity projection evaluates `review_launch_allowed` alone (1x window),
+    so its adaptive 2x admission never becomes a `launch_disclosure`."""
     return {
         "gate": "review_launch", "estimated_sec": round(float(estimated_sec), 3),
         "floor_sec": round(_acceptance_floor_sec(), 3),
@@ -500,8 +504,10 @@ def improvement_pass_allowed(
         return True, ""
     if snapshot.spendable_sec > floor * scale:
         # R36: the history-derived reserve never refuses what the floor admits.
-        # Pure here; the capacity projection surfaces the reason as its
-        # `launch_disclosure` — nothing is recorded.
+        # Pure here, and NOT projected: the capacity projection asks
+        # `review_launch_allowed` alone (1x window), so this 2x-window
+        # admission never becomes a `launch_disclosure` — it only enables the
+        # next pass, whose own panel discloses its floor admission.
         return True, REASON_LAUNCHED_AT_FLOOR
     return False, "improvement_window_inside_reserve"
 

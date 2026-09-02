@@ -504,10 +504,12 @@ def _apply_task_acceptance_result(
         ctx=ctx.tools._ctx,
     )
     # R36/R47: an improvement pass admitted at the floor (`pass_reason ==
-    # REASON_LAUNCHED_AT_FLOOR`) stores NOTHING — it is visible only as the
-    # capacity projection's `launch_disclosure`; whether this pass leads to a
-    # panel is decided below, and only the review-launch gate that admits THAT
-    # panel hands a launch decision into it.
+    # REASON_LAUNCHED_AT_FLOOR`) stores NOTHING and is not projected either —
+    # the capacity projection evaluates `review_launch_allowed` alone (1x
+    # window), so this 2x-window admission never becomes a
+    # `launch_disclosure`; whether this pass leads to a panel is decided
+    # below, and only the review-launch gate that admits THAT panel hands a
+    # launch decision into it.
     # A DEGRADED panel (no valid verdict quorum) cannot "judge" the dialogue:
     # a lone terminal vote from the one contributing slot must NOT shadow the
     # review_degraded path below, which is the only surface carrying the
