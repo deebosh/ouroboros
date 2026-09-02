@@ -531,6 +531,73 @@ def test_project_last_task_result_breaks_an_mtime_tie_by_the_durable_ts(tmp_path
     assert server._latest_project_task_result(_ctx(tmp_path), "racer")["task_id"] == "new1"
 
 
+@pytest.mark.parametrize("shape", ["group_crosses_the_window", "group_in_the_self_heal_tail", "equal_ts", "empty_ts"])
+def test_project_last_task_result_tie_order_is_total(tmp_path, monkeypatch, shape):
+    """The tie order is TOTAL: an equal-mtime group that crosses the 64-entry
+    search window is read to its end, a group met in the self-heal tail obeys
+    the same rule, a present `ts` beats an absent one, and equal `ts` falls
+    back to the task id deterministically — the listing order never decides."""
+    import json
+    import os
+
+    import server
+    from ouroboros import task_results as task_results_module
+    from ouroboros.projects_registry import create_project, update_project
+    from ouroboros.task_results import task_results_dir, write_task_result
+
+    create_project(tmp_path, "racer", name="Racer")
+    if shape == "group_crosses_the_window":
+        write_task_result(tmp_path, "old1", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
+        foreign = [f"boat{i:02d}" for i in range(63)]
+        for name in foreign:
+            write_task_result(tmp_path, name, "completed", project_id="boat", objective="c", ts="2026-08-10T00:00:03Z")
+        write_task_result(tmp_path, "new1", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:02Z")
+        listing = ["old1"] + foreign + ["new1"]  # new1 sits at index 64, past the window
+        expected = "new1"
+    elif shape == "group_in_the_self_heal_tail":
+        foreign = [f"boat{i:02d}" for i in range(64)]
+        for name in foreign:
+            write_task_result(tmp_path, name, "completed", project_id="boat", objective="c", ts="2026-08-10T00:00:03Z")
+        write_task_result(tmp_path, "old1", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
+        write_task_result(tmp_path, "new1", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:02Z")
+        listing = foreign + ["old1", "new1"]  # both project rows beyond the window
+        expected = "new1"
+    elif shape == "equal_ts":
+        write_task_result(tmp_path, "a", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
+        write_task_result(tmp_path, "b", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:01Z")
+        listing = ["a", "b"]
+        expected = "b"  # equal ts: the greater task id, whatever the listing order
+    else:
+        write_task_result(tmp_path, "stamped", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
+        write_task_result(tmp_path, "unstamped", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:02Z")
+        unstamped = task_results_dir(tmp_path, create=False) / "unstamped.json"
+        stripped = json.loads(unstamped.read_text(encoding="utf-8"))
+        for key in ("ts", "updated_at"):  # the store always stamps both; a foreign/legacy row may lack them
+            stripped.pop(key, None)
+        unstamped.write_text(json.dumps(stripped), encoding="utf-8")
+        listing = ["unstamped", "stamped"]
+        expected = "stamped"  # a present ts beats an absent one
+    real_dir = task_results_dir(tmp_path, create=False)
+    tick = 1_700_000_000 * 10**9
+    for path in real_dir.glob("*.json"):
+        os.utime(path, ns=(tick, tick))  # every result in ONE tie group
+
+    class _Listing:  # the real directory with a controlled listing order
+        def __init__(self, order):
+            self.paths = [real_dir / f"{name}.json" for name in order]
+
+        def glob(self, pattern):
+            return iter(self.paths)
+
+        def __truediv__(self, name):
+            return real_dir / name
+
+    for order in (listing, list(reversed(listing))):
+        update_project(tmp_path, "racer", last_task_result_id="")  # the scan, not the pointer, is under test
+        monkeypatch.setattr(task_results_module, "task_results_dir", lambda root, create=True, order=order: _Listing(order))
+        assert server._latest_project_task_result(_ctx(tmp_path), "racer")["task_id"] == expected
+
+
 def test_project_last_task_result_lookup_is_bounded(tmp_path, monkeypatch):
     """Finding 1: the one-row query parses newest-first by mtime and STOPS at
     the first project match — never a full task_results replay per interaction
