@@ -2023,6 +2023,12 @@ body.resizing-panels { user-select: none; }
     visibility: hidden;
 }
 
+/* A finished card receives no more narration, so an empty band is dead air:
+   it folds, and the one-time height change lands with the finish re-render. */
+.chat-live-card[data-finished="1"]:not([data-expanded="1"]) > .chat-live-summary-button .chat-live-activity:empty {
+    display: none;
+}
+
 .chat-live-count {
     color: var(--text-muted);
     font-size: var(--type-meta);

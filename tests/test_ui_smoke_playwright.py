@@ -1109,6 +1109,34 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                         assert all(low <= bands[task_id][slot]["lines"] <= low + 0.3 for task_id in bands), bands
                     assert bands["unnamed-act"]["activity"]["display"] != "none", bands
                     assert bands["unnamed-act"]["activity"]["visibility"] == "hidden", bands
+                    # D23 (owner, 2026-09-02): a FINISHED card folds an empty activity
+                    # band; a running card keeps the two-line reserve (31.08 seam).
+                    _emit_ws_frame(page, {
+                        "type": "chat", "role": "assistant", "is_progress": True,
+                        "chat_id": 1, "task_id": "done-empty", "suggested_name": "Quick task",
+                        "content": "", "ts": "2026-07-29T10:00:03+00:00",
+                    })
+                    done_empty = page.locator('.chat-live-card[data-task-id="done-empty"]')
+                    done_empty.wait_for(state="attached", timeout=30_000)
+                    _emit_ws_frame(page, {
+                        "type": "chat", "role": "system", "system_type": "task_summary",
+                        "chat_id": 1, "task_id": "done-empty", "content": "Done",
+                        "ts": "2026-07-29T10:00:04+00:00",
+                    })
+                    page.wait_for_function(
+                        "() => document.querySelector('.chat-live-card[data-task-id=\"done-empty\"]')"
+                        "?.dataset.finished === '1'",
+                        timeout=30_000,
+                    )
+                    fold = done_empty.evaluate(
+                        """card => { const node = card.querySelector('[data-live-activity]');
+                            return {text: node.textContent, display: getComputedStyle(node).display,
+                                height: card.getBoundingClientRect().height}; }"""
+                    )
+                    assert fold["text"].strip() == "", fold
+                    assert fold["display"] == "none", fold
+                    running_height = running.evaluate("el => el.getBoundingClientRect().height")
+                    assert fold["height"] <= running_height - 20, (fold, running_height)
                     assert all(bands[task_id]["meta"]["lines"] >= 0.9 for task_id in bands), bands
                     button_height = "el => el.getBoundingClientRect().height"
                     before_reviews = running.locator(":scope > [data-live-summary-button]").evaluate(button_height)
