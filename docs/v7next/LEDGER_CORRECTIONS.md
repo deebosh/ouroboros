@@ -8878,3 +8878,10 @@ concurrency tests stayed red on every name-tier leg — see «From the Windows C
    15 = B — mutating delegation E2E scenarios and the copy-back race (O3) are fixed now (upstream
    `a76961de..cc2eac50` carries no fix for either); 17 = B — TEST_DISPOSITION/nav20 is withdrawn from the
    spec by this record. Item 13 was not read by the owner (too long) and is re-asked in a shorter form.
+4. **Records landed with this section (items 7, 8, 17).** F23: row DEFER-F23-ACCEPTANCE is `done`
+   with the release bar as its hook and the gaps in its `residual:` clause. §6.4 paths/roots: row
+   DEFER-SPEC64-PATHS keeps `post-release`, authority now OWNER (quote in the row). Item 17 = B: the
+   spec's «test split/delete disposition» artifact and the «навигационное упражнение 20 вопросов»
+   (OUROBOROS_V7_SPEC_v72.md, «Human artifacts», ~:947-950) are WITHDRAWN from the 7.0 acceptance by
+   the owner's decision; what stands in for them: the hook inventory (`docs/v7next/*INVENTORY*`, the
+   validator's AST-resolved nodeids) and the owner's manual test of the packaged pre-release.

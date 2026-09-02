@@ -116,8 +116,7 @@ DEFERRED_OUT_OF_V70 = {
     "DEFER-E2E-DELEG-MUT": OPERATOR,
     "DEFER-E2E-PAID-LANE": OPERATOR,
     "DEFER-TYPED-PROC-5": OPERATOR,
-    "DEFER-SPEC64-PATHS": OPERATOR,
-    "DEFER-F23-ACCEPTANCE": OPERATOR,
+    "DEFER-SPEC64-PATHS": OWNER,  # batch №13 item 8 = A
 }
 # Post-cutoff upstream adoption trains: id -> (upstream tip, campaign merge).
 # A frozen inventory rather than a git derivation, and the history is the
