@@ -407,7 +407,17 @@ test('chat bubble heading clamp is scoped in style.css', () => {
     // size (DESIGN.md §2); the global md-h1 page-size rule stays for non-chat
     // surfaces, and the live-card timeline carries its own inline clamp.
     assert.match(styleSource, /\.chat-bubble \.message \.md-h1,\n\.chat-bubble \.message \.md-h2,\n\.chat-bubble \.message \.md-h3 \{\n\s+font-size: var\(--type-body\);\n\s+font-weight: 600;\n\}/);
-    assert.match(styleSource, /\.chat-live-line-body \.md-h3 \{\n(\s+[^\n]+\n)*\s+display: inline;/);
+    // The timeline label follows its row's size: collapsed rows are meta size,
+    // an expanded row is body size (DESIGN.md §5, "summary outranks details").
+    // Unambiguous block scan (indent, then a non-space start): the `(\s+[^\n]+\n)*`
+    // shape backtracks exponentially when an earlier same-named indented rule
+    // (the @container copy of .chat-live-line-title) has no such declaration.
+    const decl = (selector, declaration) => new RegExp(`\\n${selector} \\{\\n(?:[ \\t]+\\S[^\\n]*\\n)*?[ \\t]+${declaration}`);
+    assert.match(styleSource, decl('\\.chat-live-line-body \\.md-h3', 'display: inline;'));
+    assert.match(styleSource, decl('\\.chat-live-line-body \\.md-h3', 'font-size: inherit;'));
+    assert.match(styleSource, decl('\\.chat-live-line-title', 'font-size: var\\(--type-meta\\);'));
+    assert.match(styleSource, decl('\\.chat-live-line\\[data-expanded="1"\\] \\.chat-live-line-body', 'font-size: var\\(--type-body\\);'));
+    assert.match(styleSource, decl('\\.chat-live-activity', 'font-size: var\\(--type-body\\);'));
     // The rich bubble renderer demotes h4-h6 to the smallest label so the clamp reaches them.
     const richSource = readFileSync(new URL('../modules/chat_markdown.js', import.meta.url), 'utf8');
     assert.match(richSource, /querySelectorAll\('h1, h2, h3, h4, h5, h6'\)[\s\S]{0,160}Math\.min\(Number\(heading\.tagName\.slice\(1\)\), 3\)/);

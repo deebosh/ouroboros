@@ -2,6 +2,7 @@
 // live-card presentation projections (moved verbatim from chat.js) plus the
 // in-flight direct/ephemeral turn status reducer and snapshot hydration.
 import { compactModel } from './log_events.js';
+import { joinMarkdownHeadings } from './utils.js';
 import { REUSABLE_TASK_IDS } from './task_control_menu.js';
 import {
     accountedUpperBound,
@@ -467,19 +468,20 @@ export const COLLAPSED_ACTIVITY_MAX = 240;
  * strikethrough, headings, bullets, links, table pipes. It strips line by line
  * without the renderer's block context, so a stray pipe row or list marker the
  * timeline would show literally is dropped here too: over-stripping is the
- * accepted side of that trade, a leaked marker is not. A headline that is
- * nothing but markers keeps its source text: an empty projection would flip
- * the reserved activity band's `:empty` rules.
+ * accepted side of that trade, a leaked marker is not. Headings follow the
+ * renderer's own rule (`joinMarkdownHeadings`: markers off, ` — ` before the
+ * text under a real heading). A headline that is nothing but markers keeps its
+ * source text: an empty projection would flip the reserved activity band's
+ * `:empty` rules.
  */
 export function plainActivityText(text = '') {
     const source = String(text || '');
-    const plain = source
+    const plain = joinMarkdownHeadings(source)
         .replace(/```\w*\n([\s\S]*?)```/g, '$1')
         .replace(/(``|`)(.+?)\1/g, '$2')
         .replace(/\*\*(.+?)\*\*/g, '$1')
         .replace(/\*(.+?)\*/g, '$1')
         .replace(/~~(.+?)~~/g, '$1')
-        .replace(/^#{1,6} (.+)$/gm, '$1')
         .replace(/^- (.+)$/gm, '$1')
         .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
         .replace(/^\|(.+)\|$/gm, (_, row) => row.split('|').map((cell) => cell.trim()).join(' '))
