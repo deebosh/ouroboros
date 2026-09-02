@@ -706,7 +706,10 @@ def test_task_metadata_deadline_narrows_session_engine_horizon(
         drive_root=tmp_path, llm=FakeLLM(), usage_ctx=ctx,
     )
 
-    assert 1 <= fake_route.instances[0].start_requests[0]["maxSeconds"] <= 300
+    # The horizon is the ceiling of the seconds left; a coarse clock (Windows CI)
+    # can leave a sub-second remainder after the 300 s the test just added, so
+    # the ceiling may read 301 — one second, never a wider horizon.
+    assert 1 <= fake_route.instances[0].start_requests[0]["maxSeconds"] <= 301
 
 def test_light_extraction_transport_is_narrowed_by_the_request_deadline(monkeypatch):
     from datetime import datetime, timedelta, timezone
