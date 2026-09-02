@@ -154,7 +154,6 @@ BAND_PATHS = {
     "ouroboros/request_wire_recovery.py": "E4 (#447): typed CustomToolProjectionError fallback keeps the wire-recovery ladder alive; includes the one-site-sufficient decision record at both retry catch sites",
     "ouroboros/review.py": "Entered the band from 952 lines: re-anchoring the size ratchet on the official line added the candidate and pairwise base-vs-tip transition validators (validate_size_ratchet_candidate/validate_size_ratchet_transition_against_base) with merge-aware previous-manifest resolution, replacing the retired first-parent history audit (update-flow-redesign sprint, Q7-C/Q18-A/Q19-A owner decisions).",
     "ouroboros/review_custody.py": "Review custody now owns the shared typed retry-rail history and frozen actor reconstruction so physical outcomes cannot be lost between the substrate and reconciliation.",
-    "ouroboros/review_execution.py": "Verdict extraction and the native tool-round executor moved to their own modules (generic reviewer-actor sprint); the transport seam re-enters the band smaller and more cohesive.",
     "ouroboros/reviewer_slot_config.py": "Absorbed the reviewer_slots() builder from review_substrate (altitude) and configured-subagent row resolution for the generic reviewer-actor bridge.",
     "ouroboros/safety.py": "Entered the band from 954 lines with the safety-supervisor rate-limit fix: ONE shared model-call helper now serves both the primary and repair safety calls (it already deletes the duplicated call block), recognising a provider rate limit in BOTH wire shapes, taking one bounded deadline-capped backoff plus one retry, then blocking that one call with the typed non-verdict SAFETY_UNAVAILABLE outcome plus a durable audit row (a short storm latch answers further checks in the window without provider calls); the bounded newest-first conversation budget is the second half.",
     "ouroboros/skill_review_runner.py": None,
@@ -235,6 +234,6 @@ BYTE_BASELINE_DEBT = {
 BYTE_DEBT = {
     "ouroboros/loop.py": 284435,
     "tests/test_delegated_subagent_transport.py": 320337,
-    "tests/test_devtools_benchmarks.py": 328116,
+    "tests/test_devtools_benchmarks.py": 328084,
     "web/modules/chat.js": 208394,
 }

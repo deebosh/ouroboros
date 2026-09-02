@@ -180,6 +180,29 @@ def test_all_model_actor_is_durable_before_tb_external_probe(tmp_path, monkeypat
     ]) == 0
 
 
+def test_malformed_reviewer_panel_is_a_typed_refusal_on_the_durable_manifest(tmp_path, monkeypatch):
+    """The launcher structural gate: nothing reads files before admission, so a
+    malformed panel (here: in the host settings file the adapter forwards) is
+    refused INSIDE the finalize seam — recorded on the durable manifest with the
+    launcher's own vocabulary, no traceback, and no submission tree built."""
+    model = "openai/gpt-5.5"
+    run_root = tmp_path / "run"
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"OUROBOROS_REVIEWER_SLOTS": "{not json"}), encoding="utf-8")
+    _poison_fixed_actor_env(monkeypatch)
+    monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
+    monkeypatch.setattr(run_tb, "harbor_version", lambda _binary: "test-harbor")
+    assert run_tb.main([
+        "--model", model, "--allow-low-k", "--allow-dirty-seed",
+        "--run-root", str(run_root), "--submission-root", str(tmp_path / "submission"),
+        "--settings-path", str(settings),
+    ]) == 1
+    manifest_text = (run_root / "run_manifest.json").read_text(encoding="utf-8")
+    assert '"leaderboard_metadata"' in manifest_text and '"refused"' in manifest_text
+    assert "OUROBOROS_REVIEWER_SLOTS" in manifest_text  # the typed reason names the key
+    assert not list((tmp_path / "submission").rglob("metadata.yaml"))
+
+
 def test_adapter_forwards_fixed_model_execution_contract(tmp_path, monkeypatch):
     import devtools.benchmarks.terminal_bench.harbor_installed_agent as tb_agent
 
@@ -339,7 +362,9 @@ def test_metadata_declares_what_the_container_executes_from_the_structured_panel
     assert "foreign/stale-triad" not in roles and "foreign/stale-scope" not in roles
     assert roles["openai/gpt-5.5"] == "agent+commit_review_triad"
     assert "codex=gpt-5.6-sol" not in roles  # a session row does not execute in a TB task today
-    assert roles["google/gemini-3.5-pro"] == "scope_review"
+    # Scope review is a commit-time gate: it never fires inside a task, so its
+    # rows are not declared (the same honesty rule as the advisory).
+    assert "google/gemini-3.5-pro" not in roles and "scope_review" not in roles.values()
     assert roles["google/gemini-3.5-flash"] == "light_safety_post_task_synthesis"
 
     # An all-retrieving triad projects to the shipped defaults — the models
@@ -355,7 +380,7 @@ def test_metadata_declares_what_the_container_executes_from_the_structured_panel
     roles = dict(run_tb._effective_helper_models(
         "openai/gpt-5.5", "google/gemini-3.5-flash", disable_agent_web=True,
         settings={"OUROBOROS_REVIEWER_SLOTS": json.dumps(_PANEL)}))
-    assert roles["google/gemini-3.5-pro"] == "scope_review" and "foreign/stale-scope" not in roles
+    assert roles["openai/gpt-5.5"] == "agent+commit_review_triad" and "foreign/stale-triad" not in roles
 
 
 def test_metadata_parses_the_panel_under_the_container_roster(monkeypatch):

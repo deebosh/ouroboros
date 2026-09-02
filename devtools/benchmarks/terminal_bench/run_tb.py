@@ -131,8 +131,9 @@ def _effective_helper_models(
 
     With ``task_review_mode=required`` the host forces a multi-model
     task-acceptance review whose feedback re-enters the measured agent's
-    context, so the review triad / scope / light / web-search models genuinely
-    assist the run. Declaring only the measured model in metadata.yaml would
+    context, so the acceptance triad / light / web-search models genuinely
+    assist the run. Scope review and the advisory pre-review are commit-time
+    gates that never fire inside a task and are NOT declared. Declaring only the measured model in metadata.yaml would
     misrepresent the submission. Values mirror what the container EXECUTES:
     the structured reviewer panel (``OUROBOROS_REVIEWER_SLOTS``) is read the
     way the container adapter forwards it — operator env first, else the host
@@ -155,7 +156,6 @@ def _effective_helper_models(
 
     review_default = str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
     websearch_default = str(SETTINGS_DEFAULTS["OUROBOROS_WEBSEARCH_MODEL"])
-    scope_default = str(SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODELS"])
     websearch = os.environ.get("OUROBOROS_WEBSEARCH_MODEL", websearch_default) or websearch_default
     ordered: list[tuple[str, str]] = [(measured_model, "agent")]
     structured = os.environ.get(REVIEWER_SLOTS_ENV)
@@ -166,21 +166,13 @@ def _effective_helper_models(
         with roster_env_override(single_model_subagents_setting(measured_model)):
             panel = parse_reviewer_slots(structured)
         api_triad = [row.target_id for row in panel.triad if not row.retrieves]
-        api_scope = [row.target_id for row in panel.scope if not row.retrieves]
         for model_id in api_triad or review_default.split(","):
             ordered.append((model_id.strip(), "commit_review_triad"))
-        for model_id in api_scope or scope_default.split(","):
-            ordered.append((model_id.strip(), "scope_review"))
     else:
         review = os.environ.get("OUROBOROS_REVIEW_MODELS", review_default) or review_default
-        scope = (os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS")
-                 or os.environ.get("OUROBOROS_SCOPE_REVIEW_MODEL") or scope_default)
         for m in review.split(","):
             if m.strip():
                 ordered.append((m.strip(), "commit_review_triad"))
-        for m in scope.split(","):
-            if m.strip():
-                ordered.append((m.strip(), "scope_review"))
     if light_model.strip():
         ordered.append((light_model.strip(), "light_safety_post_task_synthesis"))
     # Only declare a web_search model if web tools are actually available this run. With
@@ -1028,8 +1020,8 @@ def main(argv: list[str] | None = None) -> int:
             "leaderboard-faithful (reward-hacking guard off).",
             file=sys.stderr,
         )
-    # Resolved BEFORE the first mkdir below: an escaping subtree must refuse while nothing exists
-    # yet, not after `ensure_outside_repo` has already created the run and submission roots.
+    # Resolved BEFORE anything is written: an escaping subtree must refuse while nothing exists
+    # yet (`assert_outside_repo` below is pure; `run_root` materializes only with the manifest).
     subtree = confined_submission_subtree(args.submission_subtree, dataset=args.dataset)
 
     repo = repo_root_from_devtools()
@@ -1038,17 +1030,6 @@ def main(argv: list[str] | None = None) -> int:
         repo,
     )
     settings_path = pathlib.Path(args.settings_path).expanduser() if args.settings_path else default_settings_path()
-    # Rendered BEFORE any run/submission directory exists: a malformed reviewer
-    # panel (or a row the container roster cannot resolve) is a typed refusal
-    # here, not a traceback inside the manifest finalizer.
-    try:
-        metadata_text = leaderboard_metadata(
-            agent_name=args.agent_name, org_name=args.org_name, model=args.model,
-            light_model=args.light_model, disable_agent_web=bool(args.disable_agent_web),
-            settings=_host_settings(settings_path),
-        )
-    except ValueError as exc:
-        raise SystemExit(f"leaderboard metadata cannot be rendered: {exc}") from exc
     submission_root = assert_outside_repo(
         pathlib.Path(args.submission_root).expanduser()
         if args.submission_root
@@ -1084,11 +1065,11 @@ def main(argv: list[str] | None = None) -> int:
     if report_grade_warning:
         print(report_grade_warning, file=sys.stderr)
     manifest_path = run_root / "run_manifest.json"
-    # Admission is the outermost REFUSAL point, not the outermost side effect: `ensure_outside_repo`
-    # above already created `run_root` and `submission_root` (both mkdir). What still happens INSIDE
-    # the block below is everything that costs or publishes — the submission skeleton's CONTENTS,
-    # harbor's job config and the `harbor --version` probe — so a refused run leaves two empty
-    # directories and the persisted refusal, never a half-built submission tree.
+    # Admission is the outermost REFUSAL point and the first side effect: the manifest write below
+    # is what materializes `run_root`. Everything that costs or publishes — the leaderboard
+    # metadata render, the submission skeleton's CONTENTS, harbor's job config and the
+    # `harbor --version` probe — happens INSIDE the finalize seam, so a refused run leaves one
+    # directory with the persisted refusal, never a half-built submission tree.
     manifest = admit_benchmark_run(
         manifest_path,
         benchmark="terminal_bench",
@@ -1154,6 +1135,23 @@ def main(argv: list[str] | None = None) -> int:
         # Durable before job-config discovery/version probes and the Harbor subprocess.
         write_json(manifest_path, manifest)
     with finalize_run_manifest(manifest_path, manifest) as final:
+        # Rendered FIRST inside the seam (after admission, before the submission
+        # skeleton exists): a malformed reviewer panel, or a row the container
+        # roster cannot resolve, is a typed refusal recorded on the durable
+        # manifest — never a traceback, never a half-built submission tree.
+        try:
+            metadata_text = leaderboard_metadata(
+                agent_name=args.agent_name, org_name=args.org_name, model=args.model,
+                light_model=args.light_model, disable_agent_web=bool(args.disable_agent_web),
+                settings=_host_settings(settings_path),
+            )
+        except ValueError as exc:
+            final.update({
+                "outcome": "refused", "exit_code": 1,
+                "refusal": {"stage": "leaderboard_metadata", "reason": str(exc), "exit_code": 1},
+            })
+            print(f"[run_tb] REFUSED: leaderboard metadata cannot be rendered: {exc}", file=sys.stderr)
+            return 1
         job_dir.mkdir(parents=True, exist_ok=True)
         metadata_path.write_text(metadata_text, encoding="utf-8")
         harbor_config = HarborCommandConfig(
