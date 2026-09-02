@@ -901,8 +901,19 @@ def _segment_path(root: pathlib.Path, archive_rel: str) -> pathlib.Path:
     return path
 
 
+def _open_archive_entry(path: pathlib.Path, dir_fd: Optional[int]) -> int:
+    """Open one archive entry for reading: POSIX opens ``path.name``
+    ``O_NOFOLLOW`` relative to the held archive handle, so the file read is a
+    plain file inside the directory that was checked — a link planted after
+    any path-based look is an open error, never a read through it. Without a
+    handle (Windows) the open is path-based, best effort, by the predicate."""
+    if dir_fd is None:
+        return os.open(str(path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    return os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+
+
 def _load_segment(
-    root: pathlib.Path, header: Dict[str, Any]
+    root: pathlib.Path, header: Dict[str, Any], dir_fd: Optional[int]
 ) -> Tuple[frozenset, Optional[Dict[str, Any]]]:
     """Read one archived segment named (and fully described) by ``header``.
 
@@ -915,22 +926,11 @@ def _load_segment(
     expected_sha256 = str(header.get("source_sha256") or "")
     path = _segment_path(root, str(header.get("archive_rel") or ""))
     key = str(path)
-    fds: list = []
-    fd: Optional[int] = None
     try:
-        # POSIX opens the segment O_NOFOLLOW through the dir-fd handles, so
-        # the file fingerprinted AND read is one plain file inside the checked
-        # archive directory — a link planted after `_segment_path`'s look is
-        # an open error here, never a read through it. Windows stays
-        # path-based, best effort, by the platform predicate.
-        try:
-            if _dir_fd_capable():
-                fds = _archive_dir_fds(root, create=False)
-                fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fds[-1])
-            else:
-                fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_BINARY", 0))
-        except OSError as exc:
-            raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
+        fd = _open_archive_entry(path, dir_fd)
+    except OSError as exc:
+        raise UsageLedgerCorrupt(f"usage archive segment unreadable: {path}") from exc
+    try:
         info = os.fstat(fd)
         fingerprint = (info.st_ino, info.st_dev, info.st_size, info.st_mtime_ns)
         now = time.time()
@@ -951,10 +951,7 @@ def _load_segment(
             chunks.append(chunk)
         payload = b"".join(chunks)
     finally:
-        if fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-        _close_fds(fds)
+        os.close(fd)
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise UsageLedgerCorrupt(f"usage archive segment hash mismatch: {path}")
     if len(payload) != int(header.get("source_size_bytes") or -1):
@@ -978,7 +975,7 @@ def _load_segment(
 
 
 def _no_newer_archived_epoch(
-    root: pathlib.Path, live_header: Dict[str, Any], walked: set
+    root: pathlib.Path, live_header: Dict[str, Any], walked: set, dir_fd: Optional[int]
 ) -> None:
     """Refuse a live stamp the archive itself knows to be an older generation.
 
@@ -990,35 +987,43 @@ def _no_newer_archived_epoch(
     the epoch N-1 header (none at all for epoch 1), so a segment's generation
     is read from its CONTENT, never from its name.
 
-    One generation newer is the legal case, not tampering: a pass that lost
-    the snapshot race, or died before its swap, leaves a segment holding THIS
-    generation's bytes — its embedded leading row IS the live header. A file
-    whose first row cannot be read is no evidence of any generation (a torn
-    segment from a crashed write) and is left to the walk, which verifies
-    every segment the answer actually depends on.
+    The scan runs in the directory the chain was walked in — through the held
+    ``dir_fd`` on POSIX, so a directory swapped after the walk cannot hide a
+    generation from it; by path elsewhere. An entry the scan cannot list, open
+    or read is typed corruption: the scan did not complete, so the history
+    question is UNKNOWN. One generation newer is the legal case, not
+    tampering: a pass that lost the snapshot race, or died before its swap,
+    leaves a segment holding THIS generation's bytes — its embedded leading
+    row IS the live header. A first row that reads but does not parse is a
+    torn segment from a crashed write: no evidence of any generation, left to
+    the walk, which verifies every segment the answer actually depends on.
     """
     live_epoch = int(live_header.get("compaction_epoch") or 0)
+    directory = root / ARCHIVE_SEGMENT_DIR_REL
     try:
-        entries = sorted((root / ARCHIVE_SEGMENT_DIR_REL).iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        if entry.name in walked:
-            continue
-        try:
-            with open(entry, "rb") as handle:
-                row = json.loads(handle.readline().decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(row, dict):
-            continue
-        prior = row.get("compaction_epoch") if str(row.get("kind") or "") == "usage_baseline" else 0
-        if isinstance(prior, bool) or not isinstance(prior, int) or prior < 0:
-            continue
-        if prior + 1 > live_epoch and row != live_header:
-            raise UsageLedgerCorrupt(
-                f"usage archive holds a generation newer than the live baseline: {entry.name}"
-            )
+        for name in sorted(os.listdir(directory if dir_fd is None else dir_fd)):
+            if name in walked:
+                continue
+            fd = _open_archive_entry(directory / name, dir_fd)
+            try:
+                first = os.read(fd, 1 << 16).split(b"\n", 1)[0]
+            finally:
+                os.close(fd)
+            try:
+                row = json.loads(first.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            prior = row.get("compaction_epoch") if str(row.get("kind") or "") == "usage_baseline" else 0
+            if isinstance(prior, bool) or not isinstance(prior, int) or prior < 0:
+                continue
+            if prior + 1 > live_epoch and row != live_header:
+                raise UsageLedgerCorrupt(
+                    f"usage archive holds a generation newer than the live baseline: {name}"
+                )
+    except OSError as exc:
+        raise UsageLedgerCorrupt(f"usage archive anchor scan could not complete: {exc}") from exc
 
 
 def _union_segment_ids(segment_ids: list) -> frozenset:
@@ -1047,38 +1052,46 @@ def archived_attempt_ids(root: pathlib.Path | str | None = None) -> frozenset:
     evidence of an orphan."""
     root = pathlib.Path(_drive_root(root))
     live_header = _live_baseline_header(root)
+    # POSIX holds the archive directory handles for the WHOLE question: the
+    # chain walk and the epoch anchor read one and the same directory, whatever
+    # the path names by the time the anchor runs.
+    fds = _archive_dir_fds(root, create=False) if live_header is not None and _dir_fd_capable() else []
+    dir_fd = fds[-1] if fds else None
     header = live_header
     chain: list = []
     segments: list = []
     seen: set = set()
     expected_epoch: Optional[int] = None
-    while header is not None:
-        archive_rel = str(header.get("archive_rel") or "")
-        expected = str(header.get("source_sha256") or "")
-        epoch = header.get("compaction_epoch")
-        if not archive_rel or not expected or isinstance(epoch, bool) or not isinstance(
-            epoch, int
-        ) or epoch < 1:
-            raise UsageLedgerCorrupt("usage baseline header lacks archive provenance")
-        if expected_epoch is not None and epoch != expected_epoch:
-            raise UsageLedgerCorrupt(
-                f"usage archive chain epoch break: expected {expected_epoch}, found {epoch}"
+    try:
+        while header is not None:
+            archive_rel = str(header.get("archive_rel") or "")
+            expected = str(header.get("source_sha256") or "")
+            epoch = header.get("compaction_epoch")
+            if not archive_rel or not expected or isinstance(epoch, bool) or not isinstance(
+                epoch, int
+            ) or epoch < 1:
+                raise UsageLedgerCorrupt("usage baseline header lacks archive provenance")
+            if expected_epoch is not None and epoch != expected_epoch:
+                raise UsageLedgerCorrupt(
+                    f"usage archive chain epoch break: expected {expected_epoch}, found {epoch}"
+                )
+            if archive_rel in seen:
+                raise UsageLedgerCorrupt(f"usage archive segment cycle at {archive_rel}")
+            seen.add(archive_rel)
+            segment_ids, header = _load_segment(root, header, dir_fd)
+            chain.append((archive_rel, expected))
+            segments.append(segment_ids)
+            expected_epoch = epoch - 1
+            if header is None and expected_epoch != 0:
+                raise UsageLedgerCorrupt(
+                    f"usage archive chain ends before epoch {expected_epoch}"
+                )
+        if live_header is not None:
+            _no_newer_archived_epoch(
+                root, live_header, {pathlib.PurePosixPath(rel).name for rel in seen}, dir_fd
             )
-        if archive_rel in seen:
-            raise UsageLedgerCorrupt(f"usage archive segment cycle at {archive_rel}")
-        seen.add(archive_rel)
-        segment_ids, header = _load_segment(root, header)
-        chain.append((archive_rel, expected))
-        segments.append(segment_ids)
-        expected_epoch = epoch - 1
-        if header is None and expected_epoch != 0:
-            raise UsageLedgerCorrupt(
-                f"usage archive chain ends before epoch {expected_epoch}"
-            )
-    if live_header is not None:
-        _no_newer_archived_epoch(
-            root, live_header, {pathlib.PurePosixPath(rel).name for rel in seen}
-        )
+    finally:
+        _close_fds(fds)
     key = tuple(chain)
     cached = _CHAIN_UNION_CACHE.get(key)
     if cached is not None:

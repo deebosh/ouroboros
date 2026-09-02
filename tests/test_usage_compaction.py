@@ -969,6 +969,59 @@ def test_an_orphan_segment_of_the_live_generation_is_not_a_rollback(data_root, m
     uc._CHAIN_UNION_CACHE.clear()
     assert uc.archived_attempt_ids(data_root) == known
 
+@pytest.mark.skipif(
+    platform_layer.IS_WINDOWS,
+    reason="the held dir-fd scan is POSIX; Windows keeps the path-based scan, fail-closed",
+)
+def test_the_epoch_anchor_scans_the_directory_the_chain_was_walked_in(data_root, monkeypatch):
+    """The chain walk and the anchor scan must look at the SAME directory: a
+    directory swapped between them (renamed away, a look-alike holding only
+    the older generations put in its place) hides the newer generation from
+    a path-based scan and admits a forged rollback. The scan therefore runs
+    through the dir-fd the walk held — the renamed directory is still the one
+    that handle names."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    for generation in ("gen2", "gen3"):
+        _settle(data_root, cost=0.75, cost_final=True, task_id=generation)
+        assert _compact(data_root) is not None
+    header3 = _ledger_rows(data_root)[0]
+    header2 = _embedded_header(data_root, header3)
+    _rewrite_header(
+        data_root, {**header3, **{key: header2[key] for key in _SOURCE_PROVENANCE_KEYS}})
+    archive_dir = data_root / "archive" / "usage_ledger"
+    hidden = archive_dir.with_name("usage_ledger.hidden")
+    real_anchor = uc._no_newer_archived_epoch
+
+    def swapping_anchor(*args, **kwargs):
+        # After the walk, before the anchor: the real directory goes away and a
+        # look-alike without the epoch-3 segment takes its name.
+        archive_dir.rename(hidden)
+        archive_dir.mkdir()
+        for segment in hidden.glob("segment_ep000[12]_*.jsonl"):
+            shutil.copy2(segment, archive_dir / segment.name)
+        return real_anchor(*args, **kwargs)
+
+    monkeypatch.setattr(uc, "_no_newer_archived_epoch", swapping_anchor)
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+
+
+def test_an_archive_entry_the_anchor_cannot_open_is_typed_corruption(data_root):
+    """An entry the anchor scan cannot open or read is not "no evidence": the
+    scan did not complete, so the history question is UNKNOWN (typed) — never
+    an answer built on the part of the archive that could be read."""
+    _seed_mixed_ledger(data_root)
+    assert _compact(data_root) is not None
+    assert uc.archived_attempt_ids(data_root)
+    planted = data_root / "archive" / "usage_ledger" / "segment_ep0009_planted.jsonl"
+    planted.symlink_to(data_root / "nowhere.jsonl")  # dangling: unopenable either way
+    uc._SEGMENT_CACHE.clear()
+    uc._CHAIN_UNION_CACHE.clear()
+    with pytest.raises(UsageLedgerCorrupt):
+        uc.archived_attempt_ids(data_root)
+
+
 
 def test_pre_compaction_seq_must_name_a_row_the_named_source_held(data_root):
     """The claim is provenance about an archived range, not a free number."""
