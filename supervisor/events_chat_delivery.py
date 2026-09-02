@@ -30,19 +30,6 @@ from supervisor.log_addressing import bound_project_chat_id as _bound_project_ch
 from ouroboros.subagent_messages import subagent_message_meta
 
 
-def _events():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from supervisor import events
-
-    return events
-
-
 HOST_NARRATION = "host_narration"
 
 

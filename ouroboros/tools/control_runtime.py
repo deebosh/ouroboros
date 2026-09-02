@@ -23,19 +23,6 @@ log = logging.getLogger(__name__)
 from pathlib import Path
 
 
-def _ctl():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from ouroboros.tools import control
-
-    return control
-
-
 def _evolution_restart_block_reason(ctx: ToolContext) -> str:
     if str(ctx.current_task_type or "") != "evolution":
         return ""

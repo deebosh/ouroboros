@@ -27,19 +27,6 @@ log = logging.getLogger(__name__)
 # re-persisted to events.jsonl by _handle_log_event, a double file write).
 
 
-def _pool():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from supervisor import workers
-
-    return workers
-
-
 WORKER_LOG_SINK_SUPPRESSED_TYPES = frozenset({
     "tool_call", "llm_round", "task_checkpoint", "task_done", "llm_usage",
     "provider_incomplete_response", "llm_empty_response", "provider_body_error",

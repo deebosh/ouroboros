@@ -15,19 +15,6 @@ from ouroboros.utils import utc_now_iso
 log = logging.getLogger(__name__)
 
 
-def _events():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from supervisor import events
-
-    return events
-
-
 def _handle_deep_self_review_request(evt: Dict[str, Any], ctx: Any) -> None:
     ctx.queue_deep_self_review_task(
         reason=str(evt.get("reason") or "agent_self_review"),

@@ -23,19 +23,6 @@ from supervisor.log_addressing import address_ctx_event as _address_ctx
 from ouroboros.cost_projection import live_root_cost_projection
 
 
-def _events():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from supervisor import events
-
-    return events
-
-
 def _handle_task_heartbeat(evt: Dict[str, Any], ctx: Any) -> None:
     task_id = str(evt.get("task_id") or "")
     if task_id and task_id in ctx.RUNNING:

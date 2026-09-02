@@ -26,19 +26,6 @@ from ouroboros.utils import truncate_review_artifact
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 
 
-def _ctl():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from ouroboros.tools import control
-
-    return control
-
-
 def disclosable_capability_delta(data: Dict[str, Any]) -> Dict[str, Any]:
     """The child's delta when it has something to SAY, else ``{}`` — ONE predicate.
 

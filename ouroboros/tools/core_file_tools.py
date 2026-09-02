@@ -39,19 +39,6 @@ from ouroboros.utils import read_text, safe_relpath
 log = logging.getLogger(__name__)
 
 
-def _core():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from ouroboros.tools import core
-
-    return core
-
-
 _SKILL_OWNER_STATE_FILENAMES = SKILL_OWNER_STATE_FILENAMES
 
 

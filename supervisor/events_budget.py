@@ -21,19 +21,6 @@ from supervisor.log_addressing import address_ctx_event as _address_ctx
 from supervisor.log_addressing import address_task_event as _address_task_event
 
 
-def _events():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from supervisor import events
-
-    return events
-
-
 def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
     usage_raw = evt.get("usage")
     usage: Dict[str, Any] = usage_raw if isinstance(usage_raw, dict) else {}

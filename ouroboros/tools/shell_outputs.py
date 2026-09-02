@@ -49,19 +49,6 @@ from ouroboros.workspace_executor import map_backend_path as executor_map_backen
 from ouroboros.workspace_executor import map_backend_path_lexical as executor_map_backend_path_lexical
 
 
-def _shell():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from ouroboros.tools import shell
-
-    return shell
-
-
 log = logging.getLogger(__name__)
 
 _OUTPUT_DIR_MAX_FILES = 1000

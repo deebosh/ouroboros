@@ -21,19 +21,6 @@ from supervisor.events_chat_delivery import _bound_project_chat_id
 log = logging.getLogger(__name__)
 
 
-def _events():
-    """The parent module, read at call time.
-
-    The parent owns the rebindable module state and the members tests
-    monkeypatch there; reading them through the module at each call keeps
-    one binding, where a from-import would freeze the value this leaf saw
-    at import time (the owner-approved D18/D33 mechanical exception).
-    """
-    from supervisor import events
-
-    return events
-
-
 _GIT_UNBORN_HEAD = "(unborn)"
 
 
