@@ -89,9 +89,10 @@ reads that feed source-text regexes are touched.
    leg) and, for the full matrix, since run 33569841899 (`8b27b507`) — four
    consecutive green 3-OS matrices are logged there, and three more on the later
    branch tips. Class 17 is decided, fixed and proved. What is genuinely open is
-   FRESHNESS, not colour: the matrix dispatched on the newest tip (the sync #3
-   merge `f4abe0a5`, run 33644668074) has not reported, so the newest bytes are
-   not yet covered by a read verdict.
+   FRESHNESS, not colour: the matrix dispatched on the sync #3 merge `f4abe0a5`
+   (run 33644668074) reported green on all three OS with `system-e2e-mock` green
+   on its first attempt (verdict read 2026-09-02 15:00Z); the tips after it (C6
+   merge, the stage-2 fix lanes) await their own dispatch on the release candidate.
 
 ## 3-OS matrix runs
 
@@ -113,7 +114,7 @@ The row's re-prove needs a green full-test 3-OS matrix on a frozen branch SHA
 | [33579445704](https://github.com/razzant/ouroboros/actions/runs/33579445704) | `1072a317` | green | green | green | re-prove holds |
 | [33624546416](https://github.com/razzant/ouroboros/actions/runs/33624546416) | `ac17fa03` | green | green | green | re-prove holds |
 | [33626834806](https://github.com/razzant/ouroboros/actions/runs/33626834806) | `43dcc1d2` | green | green | green | re-prove holds — full-test 3-OS green on the FIRST attempt; the separate `system-e2e-mock` job was red 2/57 on attempt 1 and green on rerun (see below) |
-| [33644668074](https://github.com/razzant/ouroboros/actions/runs/33644668074) | `f4abe0a5` (the sync #3 merge) | pending | pending | pending | **pending** — dispatched, no verdict read; recorded as pending because a verdict nobody read is not evidence |
+| [33644668074](https://github.com/razzant/ouroboros/actions/runs/33644668074) | `f4abe0a5` (the sync #3 merge) | success | success | success | **green** — full-test on all three OS, `system-e2e-mock` green on the first attempt, integration-test green (verdict read 2026-09-02 15:00Z) |
 
 The windows failure in run 33555971481, read from the run's own log rather than
 from its exit code: two subtests of `web/tests/chat_plain_system_rows.test.js`

@@ -426,8 +426,7 @@ exactly the per-row branch taken `weight` times with the sums pre-added.
 
 ## 10. History readers: CPL-5 reconcile sweep, audits
 
-CPL-5 (`DESIGN_MODEL_VISIBLE_LOGGED.md` §3.3, implementation not yet landed on
-this base) reconciles `model_send` seals against "an attempt row in the
+CPL-5 (`DESIGN_MODEL_VISIBLE_LOGGED.md` §3.3, implementation landed on the integration tip as `ouroboros/model_send_seal.py`, wired and swept) reconciles `model_send` seals against "an attempt row in the
 usage-accounting replay". After compaction a folded attempt is no longer in
 the live replay, so this lane ships the join surface the sweep must use:
 
