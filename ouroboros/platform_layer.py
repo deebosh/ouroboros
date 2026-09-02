@@ -229,7 +229,9 @@ def acquire_exclusive_file_lock(
     kernel lock (flock / LockFileEx): exclusion rests on the fd, not on the
     O_EXCL name alone, and a kernel refusal that is not contention fails
     CLOSED — no descriptor, our own file removed.  The name tier is selected
-    by that predicate, never by a refusal.
+    by that predicate, never by a refusal.  On either tier a freshly won
+    lock is returned only if the path still names the descriptor: a creator
+    evicted while it was still lock-less re-contends instead.
 
     Authority streams opt into ``owner_aware_stale`` so elapsed time alone
     never steals a lock from a live writer; a dead/malformed legacy owner
@@ -247,23 +249,28 @@ def acquire_exclusive_file_lock(
     while (time.time() - started) < timeout_sec:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            if enforced:
-                try:
+            try:  # the owner pid goes in BEFORE the kernel lock, so an owner-aware
+                os.write(fd, (metadata or f"pid={os.getpid()} ts={time.time()}\n").encode("utf-8"))
+            except Exception:  # reclaimer never judges a live creator's fresh file empty
+                log.debug("Failed to write lock metadata to %s", lock_path, exc_info=True)
+            try:
+                if enforced:
                     file_lock_exclusive_nb(fd)
-                except OSError as exc:
-                    if exc.errno in _LOCK_HELD_ERRNOS:
-                        os.close(fd)  # a racing evictor's probe kernel-locked the
-                        time.sleep(poll_sec)  # file we created: the name alone is
-                        continue  # not ownership — stand down and re-contend
+            except OSError as exc:
+                if exc.errno not in _LOCK_HELD_ERRNOS:
                     release_exclusive_file_lock(lock_path, fd)  # ours, yet never a hold
                     log.warning("Kernel lock refused at %s (errno %s): no lock taken", lock_path, exc.errno)
                     return None
-            try:
-                text = metadata or f"pid={os.getpid()} ts={time.time()}\n"
-                os.write(fd, text.encode("utf-8"))
-            except Exception:
-                log.debug("Failed to write lock metadata to %s", lock_path, exc_info=True)
-            return fd
+            else:
+                # A creator stalled between its create and its lock (SIGSTOP, a
+                # suspend, clock skew) can be judged abandoned — aged by the stall,
+                # no hold yet to refuse the evictor — and evicted: the lock it then
+                # takes is on an inode the path no longer names. Not a hold.
+                if _lock_identity(fd)[:2] == _lock_identity(lock_path)[:2]:
+                    return fd
+            os.close(fd)  # the file we created was kernel-locked by a racing
+            time.sleep(poll_sec)  # evictor's probe, or evicted: the name alone is
+            continue  # not ownership — stand down and re-contend
         except (FileExistsError, PermissionError):
             stale = refused = None
             try:

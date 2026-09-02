@@ -215,6 +215,44 @@ def test_two_racing_reclaimers_never_yield_two_holders(tmp_path, monkeypatch):
     release_exclusive_file_lock(lock_path, holders[0])
 
 
+@pytest.mark.skipif(
+    platform_layer.IS_WINDOWS,
+    reason="flock-held eviction is POSIX; Windows cannot unlink a creator's open file",
+)
+def test_a_creator_evicted_while_lock_less_never_returns_a_descriptor(tmp_path, monkeypatch):
+    """Between its O_EXCL create and its kernel lock a creator holds nothing an
+    evictor must respect: stalled there past ``stale_sec`` (SIGSTOP, a suspend,
+    clock skew) its fresh file is judged abandoned and evicted, and the lock it
+    then takes lands on an inode the path no longer names. That is not a hold:
+    the acquisition proves the path still names its descriptor and re-contends.
+    Belt: the owner pid is written BEFORE the lock, so an owner-aware reclaimer
+    never judges the live creator's file empty."""
+    lock_path = tmp_path / "state.lock"
+    monkeypatch.setattr(platform_layer, "_KERNEL_LOCK_TIER", {})
+    assert platform_layer.kernel_file_locks_enforced(lock_path) is True  # decided before the hook
+    real_flock = platform_layer.file_lock_exclusive_nb
+    seen: dict = {}
+
+    def stalled_creator_flock(fd):
+        if not seen:  # the creator's own first kernel lock: it stalls here
+            seen["metadata"] = lock_path.read_text(encoding="utf-8")
+            seen["reclaimer"] = None
+            os.utime(lock_path, (0.0, 0.0))  # the stall aged its lock-less file
+            seen["reclaimer"] = acquire_exclusive_file_lock(  # an age-only reclaimer
+                lock_path, timeout_sec=2.0, stale_sec=1.0, poll_sec=0.01,
+            )
+        return real_flock(fd)
+
+    monkeypatch.setattr(platform_layer, "file_lock_exclusive_nb", stalled_creator_flock)
+    creator = acquire_exclusive_file_lock(lock_path, timeout_sec=0.5, stale_sec=1.0, poll_sec=0.01)
+
+    holders = [fd for fd in (creator, seen["reclaimer"]) if fd is not None]
+    assert len(holders) == 1, "two descriptors believed to be one lock"
+    assert refresh_exclusive_file_lock(lock_path, holders[0]) is True
+    assert f"pid={os.getpid()}" in seen["metadata"]  # known to any owner-aware evictor
+    release_exclusive_file_lock(lock_path, holders[0])
+
+
 # --- Tiers: kernel-enforced or name-only, chosen by predicate, never by a refusal
 
 
