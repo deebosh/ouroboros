@@ -1530,8 +1530,15 @@ by "Provider Independence" above. Call-site imperatives:
   variant of an otherwise identical request rebuilds the whole provider
   prefix, and a `tool_choice` change rebuilds the messages tier, so a
   wrap-up call keeps the schemas, the server-web flag and `tool_choice`
-  identical to the working round and instructs in text instead. Review
-  gate: CHECKLISTS item 22 (`cache_friendliness`).
+  identical to the working round and instructs in text instead.
+  `context_fit.seal_task_transcript` owns the single message-side
+  breakpoint -- the task message until the rolling tool-result seal
+  qualifies, migrated in the same call -- preserved on the
+  direct-Anthropic lane by `_anthropic_blocks_from_content` and on
+  OpenRouter by `supports_message_cache_control`, and pinned by
+  `tests/test_review_prompt_caching.py`;
+  `review_substrate.assert_cache_breakpoint_cap` covers only the review
+  builders. Review gate: CHECKLISTS item 22 (`cache_friendliness`).
 - Provider fallback is disabled only when the transcript carries a SEALED
   reasoning artifact
   (`ouroboros/reasoning_artifacts.py::transcript_has_sealed_reasoning`),
