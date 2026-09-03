@@ -1176,9 +1176,9 @@ def _integrate_delegated_patch(
         # refusal, index-free apply into the live NON-Git payload — no staging.
         from ouroboros.tools.delegate_integration import integrate_payload_patch
 
-        return orphan_note + integrate_payload_patch(
+        return integrate_payload_patch(
             ctx, drive=drive, entry=entry, rid=rid, decision=decision,
-            reason=reason, cap_dir=cap_dir, manifest=manifest, patch_path=patch_path)
+            reason=reason, cap_dir=cap_dir, manifest=manifest, patch_path=patch_path) + (f"\n{orphan_note.rstrip()}" if orphan_note else "")
     touched = [str(p) for p in (manifest.get("tracked_changed") or [])]
     touched += [str(p) for p in (manifest.get("untracked_included") or [])]
 
@@ -1561,8 +1561,7 @@ def get_tools() -> List[ToolEntry]:
             {
                 "name": "integrate_delegated_patch",
                 "description": (
-                    "EXPLICITLY apply or reject the captured patch of ONE of your own delegated "
-                    "runs (delegate_start). A mutating delegated run edits a PRIVATE execution "
+                    "EXPLICITLY apply or reject the captured patch of ONE of your own delegated runs (delegate_start), or a terminal owner's orphan. Applying requires the caller's active Git root or fresh payload binding to equal the run's recorded target. Rejecting a terminal-owner orphan requires only the owner's terminality; it exists to release a dead task's locks and snapshot. A mutating delegated run edits a PRIVATE execution "
                     "snapshot; its diff is captured at terminal, and NOTHING reaches your tree "
                     "until you call this. apply = stage the run's diff into your active root "
                     "(sha256-verified; under the repo git lock every touched path is first "

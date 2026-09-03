@@ -186,6 +186,10 @@ def test_integrate_schema_states_the_finalization_consequence_and_the_reject_exi
     assert "Done with warnings" in description
     assert "delegated_custody_unreconciled" in description
     assert "reject is the closing move" in description
+    assert "terminal owner's orphan" in description
+    assert "Applying requires the caller's active Git root or fresh payload binding" in description
+    assert "Rejecting a terminal-owner orphan requires only the owner's terminality" in description
+    assert "release a dead task's locks and snapshot" in description
     assert entry.schema["parameters"]["properties"]["decision"]["enum"] == [
         "apply", "reject"]
 
@@ -336,6 +340,53 @@ def test_top_level_task_may_apply_a_terminal_owners_payload_orphan(
     custody._CUSTODY.clear()
 
 
+def test_executor_classifies_an_orphan_payload_no_op_as_a_failure(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import ouroboros.tools.delegate_integration as integration
+    from ouroboros.loop_tool_execution import _execute_single_tool
+    from ouroboros.task_results import STATUS_FAILED, write_task_result
+    from ouroboros.tools.subagent_integration import _integrate_delegated_patch
+
+    owner, skill, handle, entry, capture = _captured(tmp_path, monkeypatch)
+    assert capture["status"] == "ready_with_changes", capture
+    write_task_result(tmp_path / "data", "t-payload", STATUS_FAILED)
+    second = _other_task_ctx(tmp_path, monkeypatch)
+    real = integration.payload_content_hash
+    calls = {"n": 0}
+
+    def _baseline_after_apply(root):
+        calls["n"] += 1
+        return handle.payload_hash if calls["n"] >= 2 else real(root)
+
+    monkeypatch.setattr(integration, "payload_content_hash", _baseline_after_apply)
+    tools = SimpleNamespace(
+        CODE_TOOLS=set(),
+        _ctx=second,
+        execute=lambda _name, args: _integrate_delegated_patch(
+            second, args["run_id"], args["decision"], ""),
+    )
+    logs = tmp_path / "executor-logs"
+    logs.mkdir()
+    executed = _execute_single_tool(
+        tools,
+        {"id": "orphan-no-op", "function": {"name": "integrate_delegated_patch",
+                                               "arguments": json.dumps({
+                                                   "run_id": "run-p1", "decision": "apply"})}},
+        logs,
+        task_id="t-second",
+    )
+
+    assert executed["result"].splitlines()[0].startswith("⚠️ INTEGRATE_APPLY_NO_OP")
+    assert "orphan of terminal task t-payload" in executed["result"]
+    assert executed["is_error"] is True
+    assert executed["result_meta"]["status"] == "integration_blocked"
+    assert entry.patch_disposed == ""
+    assert (skill / "notes.txt").read_text(encoding="utf-8") == "DONE\n"
+    custody._CUSTODY.clear()
+
+
 def test_a_live_owners_run_is_still_not_owned_by_another_task(tmp_path, monkeypatch):
     from ouroboros.task_results import write_task_result
     from ouroboros.tools.subagent_integration import _integrate_delegated_patch
@@ -421,7 +472,7 @@ def test_git_lane_orphan_is_disposable_by_a_top_level_task_on_the_same_root(
     custody._CUSTODY.clear()
 
 
-def test_git_lane_orphan_from_a_different_active_root_is_a_target_mismatch(
+def test_git_lane_orphan_from_a_different_root_cannot_apply_but_may_reject(
         tmp_path, monkeypatch):
     from ouroboros.task_results import STATUS_FAILED, write_task_result
     from ouroboros.subagent_worktrees import provision_execution_snapshot
@@ -448,4 +499,13 @@ def test_git_lane_orphan_from_a_different_active_root_is_a_target_mismatch(
     assert "INTEGRATE_DELEGATED_TARGET_MISMATCH" in out, out
     assert not (target / "newfile.py").exists()
     assert entry.patch_disposed == ""
+
+    rejected = _integrate_delegated_patch(second, "run-1", "reject", "release orphan")
+    assert "🚫 Rejected" in rejected, rejected
+    assert "orphan of terminal task t-nanny" in rejected, rejected
+    assert entry.patch_disposed == "rejected"
+    rows = [row for row in custody._iter_rows(
+        custody.event_log_path(custody.custody_root(ctx)))
+        if str(row.get("type") or "") == custody.PATCH_DISPOSED]
+    assert [row["disposed_by_task_id"] for row in rows] == ["t-second"], rows
     custody._CUSTODY.clear()
