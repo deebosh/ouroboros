@@ -236,7 +236,7 @@ def _build_advisory_prompt(
     expected_items = prompt_context.get("expected_items")
     checklist_name = "Skill Review Checklist" if review_surface == "skill" else "Repo Commit Checklist"
     if governance_by_retrieval:
-        # agent_session delivery: do NOT inline the ~830KB governance bodies —
+        # agent_session delivery: do NOT inline the governance bodies (hundreds of KB) —
         # each becomes a resolvable absolute pointer plus a mandatory-read
         # instruction, and the session reads the docs itself with its own
         # tools. The authority for this form is the plan-review agent_session

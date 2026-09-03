@@ -141,7 +141,8 @@ Residue — parenthesized version stamps, decision codenames, "used to /
 previously" narrative — is caught by the shrink-only residue check in
 `tests/test_docs_sync.py`, which enforces only the explicit, case-sensitive
 matches in `DOC_RESIDUE_PATTERNS`, outside its declared skipped subsections and
-language-tagged fences; semantically equivalent historical prose stays
+language-tagged fences (the untagged module-tree fence in ARCHITECTURE §1 IS
+scanned — an owner decision); semantically equivalent historical prose stays
 review-only under CHECKLISTS item 7.
 
 ### Generality and emergence (P13)

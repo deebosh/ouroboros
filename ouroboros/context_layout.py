@@ -156,7 +156,9 @@ def reference_doc_sections(
     on-demand pointer. The structural signal is the active repo binding, never
     project membership: an external worktree, a subagent, or an api/cli/scheduled
     surface gets the pointer, while a direct turn inside a project room with no
-    workspace bound keeps the handbook (see ``context.py`` D-DEV).
+    workspace bound keeps the handbook; an explicit ``context_requires_development``
+    or ``context_requires_self_body_docs`` on the task wins in either direction
+    (see ``context.py`` D-DEV).
     """
     parts: List[str] = []
     on_demand: List[str] = []

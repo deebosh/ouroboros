@@ -110,9 +110,11 @@ on every restart, but one personality that remembers its path.
   stays RESIDENT in owner-`max` for every task class, and `docs/DEVELOPMENT.md`
   stays resident when the work addresses Ouroboros's own body — a binding to an
   external working tree, a subagent, or an external API/CLI/scheduled surface
-  receives a visible on-demand pointer instead, while project membership alone
-  is not the signal (an owner-level horizon decision, not a silent default; any
-  further narrowing for a task class is likewise the owner's decision);
+  receives a visible on-demand pointer instead unless the task itself
+  explicitly requires the handbook (that per-task requirement wins in either
+  direction), while project membership alone is not the signal (an owner-level
+  horizon decision, not a silent default; any further narrowing for a task
+  class is likewise the owner's decision);
   reduction is by relocation to on-demand reads with a visible pointer, or by
   deeper consolidation, never silent truncation; the
   memory horizon is preserved (only granularity varies); whether the blocking

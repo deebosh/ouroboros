@@ -402,76 +402,13 @@ def doc_residue_counts(rel: str, text: str) -> dict:
     return counts
 
 
-# Zero-residue ceilings recorded after the 07b53365 cleanup. Regenerate a section's row ONLY
-# downward, in the same commit that removed the residue; a section absent here
-# must stay at zero.
+# Zero-residue ceilings recorded after the 07b53365 cleanup: an absent section or kind is a
+# zero ceiling, so both documents are held at zero everywhere. A section row exists only
+# while a re-baseline records a temporary non-zero ceiling, and such a row may only shrink;
+# an absent section stays at zero.
 DOC_RESIDUE_BASELINE = {
-    "docs/ARCHITECTURE.md": {
-        "## 1. High-Level Architecture": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## 2. Startup / Onboarding Flow": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## 3. Web UI Pages & Buttons": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## 4. Server API Endpoints": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## 5. Supervisor Loop": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## 6. Agent Core": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## 7. Configuration (ouroboros/config.py)": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## 11. Frozen Contracts v1 (`ouroboros/contracts/`)": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        },
-        "## 13. External Skills Layer": {
-            "version_stamp": 0,
-            "version_narrative": 0,
-            "narrative": 0,
-            "codename_paren": 0,
-            "codename_word": 0
-        }
-    },
-    "docs/DEVELOPMENT.md": {}
+    "docs/ARCHITECTURE.md": {},
+    "docs/DEVELOPMENT.md": {},
 }
 
 
