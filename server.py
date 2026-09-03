@@ -2344,7 +2344,7 @@ def _run_supervisor(settings: dict) -> None:
                 break  # this generation is dead: the shared exit below stops its watchdog
             # Backoff on the stop event, not time.sleep, so a shutdown is prompt.
             _supervisor_stop.wait(min(30, 2 ** crash_count))
-    _watchdog_stop.set()  # every exit (restart, shutdown, crash death) stops this generation's watchdog
+    _watchdog_stop.set()  # every ordinary exit (restart, shutdown, crash death) stops this generation's watchdog
     _supervisor_thread = None
 
 
@@ -2834,6 +2834,7 @@ async def lifespan(app):
     except Exception:
         log.warning("Project registry boot reconcile failed", exc_info=True)
 
+    _supervisor_stop.clear()  # a fresh lifespan owns a fresh generation (symmetric with the teardown set)
     if has_startup_ready_provider(settings):
         _start_supervisor_if_needed(settings)
     else:
@@ -2988,6 +2989,14 @@ async def lifespan(app):
             await ws_heartbeat_task
 
         log.info("Server shutting down...")
+        # Let the loop leave its current tick BEFORE workers are killed and the
+        # bridge/Manager go down: a tick still running would otherwise respawn
+        # a killed worker or meet BrokenPipe/EOF. Bounded well inside the
+        # launcher's force-exit budget; the stop flag already suppresses the
+        # crash counter if the join times out.
+        supervisor_thread = _supervisor_thread
+        if supervisor_thread is not None and supervisor_thread.is_alive():
+            supervisor_thread.join(timeout=2)
         try:
             from ouroboros.local_model import get_manager
             get_manager().stop_server()
@@ -3042,11 +3051,6 @@ async def lifespan(app):
             )
         except Exception:
             pass
-        # Let the loop leave its current tick BEFORE the bridge/Manager go
-        # down: a tick still running would otherwise meet BrokenPipe/EOF.
-        supervisor_thread = _supervisor_thread
-        if supervisor_thread is not None and supervisor_thread.is_alive():
-            supervisor_thread.join(timeout=5)
         try:
             from supervisor.message_bus import get_bridge
             get_bridge().shutdown()

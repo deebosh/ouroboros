@@ -449,8 +449,12 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
         def stop(self):
             pass
 
+    import time as time_mod
+
     noop = lambda *_a, **_k: None  # noqa: E731
     monkeypatch.setattr(server, "DATA_DIR", tmp_path)
+    # Patch the module's bound name, not the process-wide time.sleep.
+    monkeypatch.setattr(server, "time", SimpleNamespace(sleep=noop, monotonic=time_mod.monotonic, time=time_mod.time))
     monkeypatch.setattr(server, "_supervisor_stop", rec.stop)
     monkeypatch.setattr(server, "_restart_requested", rec.restart)
     monkeypatch.setattr(server, "_supervisor_ready", rec.ready)
@@ -470,7 +474,6 @@ def _supervisor_harness(monkeypatch, tmp_path, steps):
                         lambda _liveness, stop_event=None: rec.watchdog_stops.append(stop_event))
     monkeypatch.setattr(server, "_process_bridge_updates", lambda _bridge, offset, _ctx: offset)
     monkeypatch.setattr(server, "_check_pending_restart_drain", lambda _ctx: True)
-    monkeypatch.setattr(server.time, "sleep", noop)
     monkeypatch.setattr(bus_mod, "init", noop)
     monkeypatch.setattr(bus_mod, "LocalChatBridge", _Bridge)
     monkeypatch.setattr(bus_mod, "send_with_budget", lambda chat_id, text: rec.alerts.append((chat_id, text)))
@@ -575,18 +578,21 @@ def test_healthy_tick_between_crashes_resets_the_count(monkeypatch, tmp_path):
 
 def test_lifespan_teardown_stops_and_joins_the_loop_before_the_bus_goes_down():
     """Source-order pin (the file's style for lifespan ordering): the stop flag is
-    the FIRST teardown statement, and the bounded join precedes both the bridge
-    shutdown and the event-bus shutdown."""
+    the FIRST teardown statement, and the bounded join precedes the worker kill,
+    the bridge shutdown and the event-bus shutdown; a fresh lifespan clears the
+    flag before it starts a generation."""
     import inspect
     import server
 
     source = inspect.getsource(server.lifespan)
-    finally_idx = source.index("    finally:\n")
+    assert source.index("_supervisor_stop.clear()") < source.index("_start_supervisor_if_needed(settings)")
+    finally_idx = source.index("\n    finally:\n") + 1
     stop_idx = source.index("_supervisor_stop.set()")
-    join_idx = source.index("supervisor_thread.join(timeout=5)")
+    join_idx = source.index("supervisor_thread.join(timeout=2)")
+    kill_idx = source.index("kill_workers(")
     bridge_idx = source.index("get_bridge().shutdown()")
     bus_idx = source.index("_shutdown_supervisor_event_bus()")
-    assert finally_idx < stop_idx < join_idx < bridge_idx < bus_idx
+    assert finally_idx < stop_idx < join_idx < kill_idx < bridge_idx < bus_idx
     # Nothing between `finally:` and the stop flag but whitespace.
     assert source[finally_idx + len("    finally:\n"):stop_idx].strip() == ""
 
@@ -603,9 +609,12 @@ def test_supervisor_revival_clears_a_stale_stop_flag(monkeypatch):
         def start(self):
             started.append(self.kwargs["target"])
 
+    import threading
+
     monkeypatch.setattr(server, "has_startup_ready_provider", lambda _s: True)
     monkeypatch.setattr(server, "_supervisor_thread", None)
-    monkeypatch.setattr(server.threading, "Thread", _Thread)
+    monkeypatch.setattr(server, "_supervisor_error", "stale")
+    monkeypatch.setattr(server, "threading", SimpleNamespace(Thread=_Thread, Event=threading.Event))
     server._supervisor_stop.set()
     try:
         assert server._start_supervisor_if_needed({}) is True
