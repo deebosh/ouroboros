@@ -188,3 +188,94 @@ def test_integrate_schema_states_the_finalization_consequence_and_the_reject_exi
     assert "reject is the closing move" in description
     assert entry.schema["parameters"]["properties"]["decision"]["enum"] == [
         "apply", "reject"]
+
+
+# -- PC-F11E: a terminal owner stops holding the payload hostage ----------------
+
+
+def _other_task_ctx(tmp_path, monkeypatch, task_id: str = "t-second"):
+    """A SECOND live top-level context on the same drive. It must carry a
+    different task_id: the same actor hits the per-actor
+    ``replacement_requires_settlement`` gate before the busy check runs."""
+    ctx = _payload_ctx(tmp_path, monkeypatch)
+    ctx.task_id = task_id
+    ctx.task_metadata = {"root_task_id": task_id}
+    return ctx
+
+
+def _held_payload(tmp_path, monkeypatch):
+    """A settled, UNDISPOSED payload run owned by ``t-payload``."""
+    ctx = _payload_ctx(tmp_path, monkeypatch)
+    skill = _seed_skill(tmp_path / "data")
+    payload, _ = _start_payload_run(ctx, monkeypatch)
+    assert payload["status"] == "started", payload
+    waited = _terminal_wait(ctx, monkeypatch)
+    assert waited.get("state") == "succeeded", waited
+    return ctx, skill
+
+
+def test_settled_run_of_a_terminal_owner_releases_the_payload(tmp_path, monkeypatch):
+    from ouroboros.task_results import STATUS_FAILED, write_task_result
+
+    ctx, skill = _held_payload(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    second = _other_task_ctx(tmp_path, monkeypatch)
+
+    # While the owner is LIVE the lock holds and the refusal names the owner.
+    write_task_result(data, "t-payload", "running")
+    refused = json.loads(_exact_payload_start(
+        second, "second", root="skill_payload", bucket="external",
+        skill_name="alpha"))
+    assert refused["reason"] == "payload_delegation_busy", refused
+    assert refused["holder_owner_task_id"] == "t-payload", refused
+    assert "owner task is still live" in refused["detail"]
+    assert "delegate_wait it and integrate_delegated_patch its capture" \
+        not in refused["detail"]
+
+    # Once the owner task is terminal the payload is free again.
+    write_task_result(data, "t-payload", STATUS_FAILED)
+    started, _ = _start_payload_run(second, monkeypatch)
+    assert started["status"] == "started", started
+    custody._CUSTODY.clear()
+
+
+def test_pending_invocation_of_a_terminal_owner_releases_the_payload(
+        tmp_path, monkeypatch):
+    """The second projection: a worker death between the accepted POST and the
+    STARTED row leaves only a request row, which had NO liveness axis at all."""
+    from ouroboros.task_results import STATUS_FAILED, write_task_result
+
+    ctx = _payload_ctx(tmp_path, monkeypatch)
+    skill = _seed_skill(tmp_path / "data")
+    data = tmp_path / "data"
+    assert custody.emit(data, custody.START_REQUESTED, {
+        "invocation_id": "inv-dead", "task_id": "t-dead",
+        "authority_source": "skill_payload", "target_root": str(skill.resolve()),
+        "request": {"mode": "agent"},
+    })
+    second = _other_task_ctx(tmp_path, monkeypatch)
+
+    write_task_result(data, "t-dead", "running")
+    refused = json.loads(_exact_payload_start(
+        second, "second", root="skill_payload", bucket="external",
+        skill_name="alpha"))
+    assert refused["reason"] == "payload_delegation_busy", refused
+    assert refused["holder"] == "inv-dead", refused
+
+    write_task_result(data, "t-dead", STATUS_FAILED)
+    started, _ = _start_payload_run(second, monkeypatch)
+    assert started["status"] == "started", started
+    custody._CUSTODY.clear()
+
+
+def test_unprovable_owner_terminality_keeps_the_payload_locked(tmp_path, monkeypatch):
+    """Fail-closed: no task_result row at all means unknown, and unknown keeps
+    the lock. There is deliberately no time-based release."""
+    ctx, skill = _held_payload(tmp_path, monkeypatch)
+    second = _other_task_ctx(tmp_path, monkeypatch)
+    refused = json.loads(_exact_payload_start(
+        second, "second", root="skill_payload", bucket="external",
+        skill_name="alpha"))
+    assert refused["reason"] == "payload_delegation_busy", refused
+    assert "terminality cannot be proven" in refused["detail"]
+    custody._CUSTODY.clear()
