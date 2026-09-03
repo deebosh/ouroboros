@@ -593,7 +593,14 @@ content measurement includes the measured document's bottom padding and border
 Feedback-sensitive verification is event-driven on the relevant engine: it
 proves temporal convergence to a quiet fixed point with a real consumer or
 production-derived fixture that crosses the known wrapping threshold, rather
-than comparing two snapshots. Module source loading and declarative requests
+than comparing two snapshots. A module widget's own faults are declared error semantics, not silence: an
+in-frame script error, an unhandled rejection or a CSP refusal reaches the
+card's status slot as one bounded, deduplicated line, while the lifecycle
+state stays running because the frame really is still mounted. There is no
+server-side widget fault ledger, so those faults are visible only while the
+Widgets page is open; that is safe to defer because the browser is the
+verification path for a widget in the first place.
+Module source loading and declarative requests
 have a bounded host timeout; declarative job widgets keep their `job_id` and
 bounded retry/timeout behavior visible in the refresh contract. Missing or
 malformed job status is an immediate protocol error, while unknown non-empty

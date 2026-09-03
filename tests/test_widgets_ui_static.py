@@ -699,6 +699,7 @@ def test_widgets_module_bridge_is_one_streaming_grammar():
     for name in (
         "type: 'ouro-widget-fetch'", "type: 'ouro-widget-fetch-abort'", "type: 'ouro-widget-events'",
         "'ouro-widget-fetch-chunk'", "'ouro-widget-event'", "type: 'ouro-widget-disposed'",
+        "type: 'ouro-widget-error'",
     ):
         assert name in child, name
     assert "new ReadableStream({" in child
@@ -748,3 +749,42 @@ def test_widgets_module_bridge_is_one_streaming_grammar():
         assert forbidden not in child, forbidden
     jobs = _read("web/modules/widget_job.js")
     assert "BRIDGE" not in jobs and "bridge" not in jobs.split("Ordered stop", 1)[0]
+
+
+def test_widgets_module_frame_faults_reach_the_card_status_slot():
+    """A module widget's frame has a bounded fault channel, and the height cap is
+    readable from the DOM.
+
+    In-frame script errors, unhandled rejections and CSP refusals are posted as
+    one ``ouro-widget-error`` message per distinct kind+message (deduplicated,
+    capped, clipped) through the existing nonce-bound ``post`` helper, and the
+    parent writes them into the card's own ``[data-widget-status]`` slot. The
+    lifecycle state is deliberately untouched: the frame is still mounted, so
+    ``syncWidgetCardControls`` is NOT called with an error state, which would
+    flip a live Stop button back to Start. All three listeners are registered on
+    ``window`` (``securitypolicyviolation`` bubbles there, and the child bridge
+    runs in hosts with no ``document``) and all three are removed in the single
+    ``dispose()``. The two height-cap attributes are stamped BEFORE the
+    ``nextHeight === appliedHeight`` early return, which is exactly the case they
+    exist to explain."""
+    child = _read("web/modules/widget_frame.js")
+    parent = _read("web/modules/widget_module.js")
+    card = _read("web/modules/widget_card.js")
+
+    # Child: three window listeners, one bounded post, removed on dispose.
+    for listener in ("'error'", "'unhandledrejection'", "'securitypolicyviolation'"):
+        assert f"window.addEventListener({listener}" in child, listener
+        assert f"window.removeEventListener({listener}" in child, listener
+    assert "document.addEventListener('error'" not in child
+    assert "if (faultCount >= 10 || seenFaults.has(key)) return;" in child
+    assert ".slice(0, 500)" in child and ".slice(0, 200)" in child
+
+    # Parent: routed to the status slot only; no lifecycle flip.
+    assert "msg.type === 'ouro-widget-error'" in parent
+    assert "setWidgetCardFault(mount.closest('[data-widget-key]')" in parent
+    assert "syncWidgetCardControls(card, 'error'" not in parent
+    assert "export function setWidgetCardFault(card, text)" in card
+    assert "status.dataset.tone = 'error';" in card
+
+    # Ordering regression pin: the stamps precede the early return.
+    assert parent.index("widgetFrameCapped") < parent.index("nextHeight === appliedHeight")

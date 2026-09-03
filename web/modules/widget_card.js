@@ -86,6 +86,20 @@ export function renderWidgetCardControls(tab) {
 const STATUS_TEXT = { starting: 'Starting…', running: 'Running', stopping: 'Stopping…' };
 
 /**
+ * Show a widget fault in the card's own status slot. Only the status span is
+ * written: the lifecycle state is untouched, because the frame really is still
+ * mounted and its Stop button must keep saying Stop. The next lifecycle
+ * transition rewrites the tone and the sentence, so the fault self-clears.
+ */
+export function setWidgetCardFault(card, text) {
+    const status = card?.querySelector('[data-widget-status]');
+    if (!status) return;
+    status.hidden = false;
+    status.dataset.tone = 'error';
+    status.textContent = text;
+}
+
+/**
  * Keep the head controls truthful. `state` is one of stopped | starting |
  * running | stopping — expressed through the button label, `disabled` while a
  * transition is in flight, and the status sentence; no state machine object.
