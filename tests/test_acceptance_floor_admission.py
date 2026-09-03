@@ -10,9 +10,11 @@ equivalence with the pre-deletion tree, the paid claim that asks the wallet and
 cancellation only (owner R55: the floor is evaluated ONCE, at loop admission,
 so a panel whose evidence build ate the margin dispatches — the disclosed
 residual, bounded by the R23 deadline clamps), and the purity of every
-read-only poll (whose one inherited write, the usage ledger's torn-tail
-quarantine after a single crash mid-append, is pinned in that single-crash
-shape; only an ABSENT ledger file answers without the reader). A separate
+read-only poll (whose two inherited filesystem effects — the usage ledger's
+torn-tail quarantine after a single crash mid-append, pinned in that
+single-crash shape, and the empty `state/` directory the ledger lock creates on
+a never-initialized root — are pinned as exactly those; every ledger state,
+absent included, goes through the canonical reader). A separate
 module from the three-delivery contract suite on purpose: the subject here is
 what may START and what may be SPENT, not what a delivery row receives. Every
 offline fixture — the fake triads, the scripted ledger-crossing reviewer, the
@@ -496,14 +498,21 @@ def test_a_panel_whose_evidence_build_ate_the_margin_dispatches_and_the_deadline
 # ---------------------------------------------------------------------------
 
 
-def test_an_absent_ledger_polls_known_zero_and_creates_nothing(tmp_path):
-    """Owner R54 (3): on a fresh root with NO usage ledger, the coordination
-    poll answers a KNOWN zero settled spend without opening the ledger reader
-    — whose lock file would create `state/` on an untouched root — and the
-    directory tree stays byte-identical (here: empty), on a repeat poll too."""
+def test_an_absent_ledger_polls_known_zero_through_the_reader_and_creates_only_state_dir(
+        tmp_path):
+    """Owner R56 (2): on a fresh root with NO usage ledger the coordination
+    poll answers a KNOWN zero settled spend THROUGH the canonical locked reader
+    (no fast path answers ahead of it), and the ONLY change to the tree is the
+    empty `state/` directory the reader's lock lives in — the lock file itself
+    is released and unlinked before the poll returns. Pinned as the EXACT
+    observed set: one empty directory, no file with content, no events row, no
+    ctx attribute, and a second poll leaves the tree byte-identical to the
+    first. The relayed numbers are the reader's own projection, key by key."""
     import queue
 
+    from ouroboros import delegate_custody as custody
     from ouroboros.delegate_supervision import coordination_live_context
+    from ouroboros.usage_accounting import usage_breakdown
 
     ctx = SimpleNamespace(
         task_id="root-empty", root_task_id="root-empty", drive_root=tmp_path,
@@ -511,24 +520,40 @@ def test_an_absent_ledger_polls_known_zero_and_creates_nothing(tmp_path):
             "root_task_id": "root-empty", "budget_drive_root": str(tmp_path)},
         pending_events=[], event_queue=queue.Queue(),
     )
-    assert sorted(tmp_path.rglob("*")) == []  # genuinely fresh
+    root = custody.custody_root(ctx)
+    assert sorted(root.rglob("*")) == []  # genuinely fresh
+    attrs_before = set(vars(ctx))
+    known_zero = {
+        "state": "known", "settled_usd": 0.0, "accounted_usd": 0.0,
+        "cost_final": True, "unknown_unmetered": 0, "integrity_degraded": False,
+    }
 
-    for _ in range(2):
-        live = coordination_live_context(ctx)
-        assert live["settled_spend"] == {
-            "state": "known", "settled_usd": 0.0, "accounted_usd": 0.0,
-            "cost_final": True, "unknown_unmetered": 0, "integrity_degraded": False,
-        }
-    assert sorted(tmp_path.rglob("*")) == []  # no state/, no lock, nothing at all
+    def _tree():
+        return [(path.relative_to(root).as_posix(), path.is_dir(), path.is_file())
+                for path in sorted(root.rglob("*"))]
+
+    assert coordination_live_context(ctx)["settled_spend"] == known_zero
+    after_first = _tree()
+    assert after_first == [("state", True, False)]  # the empty lock directory, and nothing else
+    assert list((root / "state").iterdir()) == []  # the lock file was released and unlinked
+
+    assert coordination_live_context(ctx)["settled_spend"] == known_zero
+    assert _tree() == after_first  # the second poll changed nothing
+    assert set(vars(ctx)) == attrs_before
+    assert ctx.event_queue.empty() and ctx.pending_events == []
+
+    # The answer IS the reader's: the same projection, key by key.
+    projection = usage_breakdown(root, root_task_id="root-empty")
+    assert {key: projection[key] for key in known_zero if key != "state"} == {
+        key: value for key, value in known_zero.items() if key != "state"}
 
 
 def test_a_directory_at_the_ledger_path_is_the_readers_verdict_not_known_zero(tmp_path):
-    """ONLY an ABSENT ledger file answers known-zero without the reader. A
-    DIRECTORY at the ledger path is not absent: the fact goes through the
-    canonical reader and reports exactly the reader's own typed refusal
-    (`UsageAccountingError` → `state: unknown`, no confident $0), on a repeat
-    poll too — pinned against the reader called directly, so the fact cannot
-    drift from the verdict it relays."""
+    """Every ledger state goes through the canonical reader — there is no fast
+    path ahead of it — so a DIRECTORY at the ledger path reports exactly the
+    reader's own typed refusal (`UsageAccountingError` → `state: unknown`, no
+    confident $0), on a repeat poll too — pinned against the reader called
+    directly, so the fact cannot drift from the verdict it relays."""
     import queue
 
     from ouroboros import delegate_custody as custody
