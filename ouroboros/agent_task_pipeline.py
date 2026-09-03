@@ -1254,7 +1254,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
         trace = build_trace_summary(llm_trace)
         try:
             from ouroboros.review_evidence import format_review_evidence_for_prompt
-            review_section = format_review_evidence_for_prompt(review_evidence or {}, max_chars=8000)
+            review_section = format_review_evidence_for_prompt(review_evidence or {}, max_chars=8000, acceptance_panels=review_projection.get("panels"))
         except Exception:
             review_section = "(review evidence unavailable)"
         prompt = _TASK_SUMMARY_PROMPT.format(

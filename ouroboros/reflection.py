@@ -387,7 +387,9 @@ def generate_reflection(
     )
     try:
         from ouroboros.review_evidence import format_review_evidence_for_prompt
-        review_evidence_text = format_review_evidence_for_prompt(review_evidence or {}, max_chars=8000)
+        from ouroboros.review_substrate import compact_review_projection
+        panels = compact_review_projection(llm_trace.get("review_runs") or []).get("panels")
+        review_evidence_text = format_review_evidence_for_prompt(review_evidence or {}, max_chars=8000, acceptance_panels=panels)
     except Exception:
         review_evidence_text = "(review evidence unavailable)"
 

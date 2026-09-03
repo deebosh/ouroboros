@@ -1512,7 +1512,10 @@ by "Provider Independence" above. Call-site imperatives:
   at rare cache-breaking decision surfaces, never per round or inside a
   stable cached prefix (`tests/test_budget_limits.py`). Post-task
   consolidation/synthesis reads `usage_breakdown` once per root subtree and
-  passes the same snapshot to summary and reflection; it is explicitly
+  passes the same snapshot to summary and reflection; both prompts also
+  receive the task's own acceptance-panel projection (typed counts plus a
+  bounded reason preview, never full reviewer prose), and a host-supplied
+  absence statement names the lens it describes; it is explicitly
   non-final because those flows have not spent yet — treating a read
   failure as `$0` would create false accounting certainty. No second
   ledger, no reconciliation LLM call.

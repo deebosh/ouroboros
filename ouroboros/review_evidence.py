@@ -1350,10 +1350,17 @@ def collect_review_evidence(
     return evidence
 
 
+_ACCEPTANCE_PANEL_ROW_KEYS = (
+    "panel_id", "surface", "authority", "aggregate_signal", "transport_status",
+    "parse_status", "quorum", "superseded",
+)
+
+
 def format_review_evidence_for_prompt(
     evidence: Dict[str, Any],
     *,
     max_chars: int = 0,
+    acceptance_panels: Any = None,
     **_kwargs,
 ) -> str:
     """Format review evidence as JSON for prompt injection.
@@ -1362,10 +1369,27 @@ def format_review_evidence_for_prompt(
     Callers that inject evidence into bounded prompts (summaries, reflections)
     can pass a positive *max_chars* to get an explicit omission note instead
     of silent clipping.
+
+    ``acceptance_panels`` appends the task's OWN acceptance-panel projection.
+    The commit/advisory lens knows nothing about it, so its absence statement
+    names the lens it describes rather than claiming the task bought no review.
     """
-    if not evidence or not evidence.get("has_evidence"):
-        return "(no structured review evidence)"
-    full = json.dumps(evidence, ensure_ascii=False, indent=2)
+    sections: List[str] = []
+    if evidence and evidence.get("has_evidence"):
+        sections.append(json.dumps(evidence, ensure_ascii=False, indent=2))
+    rows = [
+        {key: panel.get(key) for key in _ACCEPTANCE_PANEL_ROW_KEYS if key in panel}
+        | ({"reason": str(panel.get("reason") or "")[:300]} if panel.get("reason") else {})
+        for panel in (acceptance_panels if isinstance(acceptance_panels, list) else [])
+        if isinstance(panel, dict)
+    ]
+    if rows:
+        sections.append(
+            "TASK ACCEPTANCE PANELS:\n" + json.dumps(rows, ensure_ascii=False, indent=2)
+        )
+    if not sections:
+        return "(no commit/advisory review evidence recorded for this task)"
+    full = "\n\n".join(sections)
     if max_chars > 0 and len(full) > max_chars:
         return full[:max_chars] + f"\n⚠️ OMISSION NOTE: review evidence truncated at {max_chars} chars; original length {len(full)}"
     return full
