@@ -829,7 +829,7 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
         clause = f"Reason: {reason}"
     else:
         return ""
-    return clause if clause.endswith((".", "!", "…")) else clause + "."
+    return clause if clause.endswith((".", "!", "?", "…")) else clause + "."
 
 
 def _run_lives_in_its_project(

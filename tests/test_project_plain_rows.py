@@ -409,6 +409,17 @@ def test_host_verdict_flattens_and_strips_a_markdown_rationale():
     for marker in ("#", "**", "`", "\n"):
         assert marker not in verdict
 
+    # A rationale that already terminates itself keeps its own punctuation: a
+    # question mark is as terminal as a period, and appending one would render
+    # "…did the tests run?." to the owner.
+    asking = _a4_result(outcome_axes={
+        "execution": {"status": "ok"},
+        "review": {"status": "degraded", "acceptance_decision": {
+            "status": "revision_requested", "rationale": "Did the tests ever run?",
+        }},
+    })
+    assert _completion_verdict(asking, {}) == "Acceptance: revision_requested — Did the tests ever run?"
+
 
 def test_host_verdict_states_a_decision_without_a_rationale_alone():
     from ouroboros.project_dialogue import _completion_verdict
