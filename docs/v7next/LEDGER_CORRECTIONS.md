@@ -9353,3 +9353,10 @@ cause only in `data/logs/server.log`.
   bash` under bash 3.2; ubuntu/windows passed the same step; rc.4 also predates the sixth lane
   (626b48b7). rc.5 is cut from the integrated tip with the portable form and a pin against bash-4
   builtins in the workflow (stage-3 delta lens H1/H2, `mega_review/stage3/DELTA_72bb4949_099dab0d.md`).
+- **rc.5 → rc.6 → rc.7.** rc.5 (55d347f9) was pushed with a red test: the new no-bash-4-builtins pin
+  matched its own explanatory comment in `ci.yml` — the operator's chain did not gate the push on the
+  pin run (the d348ea46 lesson repeated; run cancelled). rc.6 (2eca3f4d) carried the fix but the
+  branch matrix on 099dab0d (run 33732134815) showed the sixth lane's new pin
+  `test_pid_env_wait_rides_out_the_post_exec_empty_environ_window` reading `/proc` on macOS and
+  Windows — the sibling pin already carried `skipif(sys.platform != "linux")`, this one did not (run
+  cancelled). rc.7 carries the skip; every step of its chain is gated on the pins' rc.

@@ -150,6 +150,7 @@ def test_pids_with_env_value_sees_and_loses_a_marked_child():
     assert child.pid not in pids_with_env_value(marker)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc environ scan is Linux-only")
 def test_pid_env_wait_rides_out_the_post_exec_empty_environ_window(monkeypatch):
     """The exact CI interleaving (33671108287): ``Popen`` has returned — the exec
     succeeded — but the kernel has not published the new image's env_start/env_end
