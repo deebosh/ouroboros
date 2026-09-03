@@ -54,15 +54,17 @@ def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "") -> 
     row) stays in the hidden partition, where an unknown positive id would
     instead leak into Main.
 
-    An explicit id is the caller's, ``HIDDEN_CHAT_ID`` included: 0 is a real
-    session, never "missing" — the same rule ``address_task_event`` enforces at
-    runtime — and asking for it is asking to run quietly. What a caller may NOT
-    do is address a project-scoped run into some OTHER conversation: that is the
-    shape that puts a card in Main whose project room holds none of its work, so
-    it is refused loudly rather than honoured or silently overridden. A malformed
-    value raises too, so the caller keeps its typed 400 either way. Lifecycle is
-    NOT consulted here: ``queue.enqueue_task`` fences a non-active project before
-    an address can matter, and a project deleted mid-run keeps its reserved chat.
+    A registered project's run has exactly ONE destination, so an explicit
+    ``chat_id`` may only agree with it; anything else — the hidden partition
+    included — is refused with a typed conflict rather than honoured or silently
+    overridden, because a run addressed away from its room is the shape that puts
+    a card in Main whose project holds none of its work. Without such a project
+    the explicit id is the caller's, ``HIDDEN_CHAT_ID`` included: 0 is a real
+    session, never "missing", the same rule ``address_task_event`` enforces at
+    runtime. A value that is not a whole number (a JSON boolean or fraction
+    included) raises, so the caller keeps its typed 400. Lifecycle is NOT
+    consulted here: ``queue.enqueue_task`` fences a non-active project before an
+    address can matter, and a project deleted mid-run keeps its reserved chat.
     """
     project_chat = None
     pid = str(project_id or "").strip()
@@ -77,12 +79,16 @@ def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "") -> 
             log.debug("ingress project chat lookup failed for %s", pid, exc_info=True)
     if raw_chat_id is None:
         return project_chat if project_chat is not None else HIDDEN_CHAT_ID
+    if isinstance(raw_chat_id, bool):
+        raise ValueError("chat_id must be an integer, not a boolean")
     chat_id = int(raw_chat_id)
-    if project_chat is not None and chat_id not in (project_chat, HIDDEN_CHAT_ID):
+    if isinstance(raw_chat_id, float) and chat_id != raw_chat_id:
+        raise ValueError("chat_id must be a whole number")
+    if project_chat is not None and chat_id != project_chat:
         raise ProjectThreadConflict(
-            "chat_id conflicts with the task's project thread: a project-scoped run "
-            "belongs in that project's thread or in the hidden partition, never in "
-            "another conversation"
+            "chat_id conflicts with the task's project thread: a run scoped to a "
+            "registered project is admitted into that project's thread, and cannot "
+            "be addressed anywhere else"
         )
     return chat_id
 

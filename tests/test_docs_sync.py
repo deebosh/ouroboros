@@ -80,6 +80,7 @@ def test_chat_id_addressing_docs_match_the_code_that_routes_it():
     # The headless address is decided at admission, and both outcomes are stated.
     assert "log_addressing.ingress_chat_id" in arch
     assert "is refused with a typed 400 rather than honoured" in arch
+    assert "has exactly ONE destination" in arch
     assert "admitted into that project's thread" in arch
     assert "stays in the hidden partition, silent in every chat" in arch
     # Scoped is not bound, so the absent conversion button is documented intent.

@@ -1356,11 +1356,12 @@ def _apply_window_quotas(
             # host project lifecycle row does not.
             return task_id if str(m.get("system_type") or "") in ("", "task_summary") else ""
 
-        represented = {
-            owner for owner in map(
-                _represents, (*other_tail, *folded_reviews, *review_references, *human_tail),
-            ) if owner
-        }
+        # Seeded OUTSIDE the lineage being decided: an unanchored child's own
+        # final must not represent it to its children before the window has
+        # decided whether that child belongs here at all.
+        seed = (*other_tail, *folded_reviews, *review_references,
+                *(m for m in human_tail if not _is_subagent_lineage(m)))
+        represented = {owner for owner in map(_represents, seed) if owner}
         try:
             from ouroboros.task_status import FINAL_STATUSES
 
@@ -1389,11 +1390,14 @@ def _apply_window_quotas(
                     task_id = str(m.get("task_id") or "")
                     if task_id in anchored_children:
                         continue
+                    # The IMMEDIATE parent only: anchoring to a represented tree
+                    # ROOT would keep a leaf whose own parent is absent and dead,
+                    # and the client mints that missing parent's card from the
+                    # leaf's lineage — a card this response cannot close. The
+                    # fixed point carries a live root down one real link at a time.
                     parent = str(m.get("parent_task_id") or "")
-                    root = str(m.get("root_task_id") or "")
                     if (
                         (parent and (parent in represented or parent in anchored_children))
-                        or (root and root != task_id and root in represented)
                         or _alive(task_id)
                         or (parent and parent != task_id and _alive(parent))
                     ):

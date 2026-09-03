@@ -17,7 +17,6 @@ import pathlib
 import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
-from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, WEB_UI_CHAT_ID
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.utils import append_jsonl, iter_jsonl_objects, jsonl_append_lock_path, replace_atomic, strip_markdown, utc_now_iso
@@ -804,7 +803,6 @@ def enqueue_project_completion_summary(
         from ouroboros.projects_registry import task_presentation_snapshot
         from ouroboros.task_results import resolve_task_lineage
         from ouroboros.task_status import SETTLED_STATUSES
-        from supervisor.message_bus import coerce_chat_identity
         from supervisor.terminal_delivery import enqueue_terminal_delivery
 
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
@@ -828,16 +826,6 @@ def enqueue_project_completion_summary(
             # workspace has no room, so Main stays silent instead of offering an
             # "Open Project" that lands in an empty duplicate of itself. The same
             # holds once a project is deleting or tombstoned.
-            return False
-        if coerce_chat_identity(
-            result.get("chat_id") if result.get("chat_id") is not None else task.get("chat_id"),
-            WEB_UI_CHAT_ID,
-        ) == HIDDEN_CHAT_ID:
-            # The room exists, but this run was addressed AWAY from it (a caller
-            # asked for the hidden partition explicitly). Announcing "Open the
-            # Project" would point at a room holding none of its rows — the very
-            # artifact this sprint removed. A converted/bound task keeps its own
-            # visible chat and is unaffected.
             return False
         excerpt = _completion_excerpt(result)
         event = {
