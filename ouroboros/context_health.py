@@ -408,10 +408,11 @@ def build_health_invariants(env: Any, task_id: str = "") -> str:
             if task_id and run.task_id and task_id != run.task_id:
                 decide_clause = (
                     f"Only its owner task {run.task_id} can decide it while that task "
-                    f"is live; once that task is terminal, a live top-level task holding "
-                    f"the same target may integrate_delegated_patch(run_id=..., "
-                    f"decision='apply'|'reject') it (a live-owner foreign call is "
-                    f"still refused as run_not_owned)."
+                    f"is live; once that task is terminal, a live top-level task may dispose it: "
+                    f"apply requires the caller's active Git root or fresh payload binding to equal "
+                    f"the run's recorded target, while reject requires only terminality and reject "
+                    f"may release it even from a different active root; the disposition row records "
+                    f"who acted (a live-owner foreign call is still refused as run_not_owned)."
                 )
             else:
                 decide_clause = (
