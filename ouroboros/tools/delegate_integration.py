@@ -768,15 +768,18 @@ def _payload_mutation_authority(
     if busy:
         # Name the HOLDER'S OWNER, not a call the refused caller cannot make:
         # delegate_wait and integrate_delegated_patch both refuse a non-owner.
+        # A PENDING (START_REQUESTED-only) holder has no replayed run row.
         holder_owner = str(
-            getattr(custody.lookup(drive, "", busy)[1], "task_id", "") or "")
+            getattr(custody.lookup(drive, "", busy)[1], "task_id", "") or "") or next(
+            (str(r.get("task_id") or "") for r in custody.pending_invocations(drive)
+             if str(r.get("invocation_id") or "") == busy), "")
         return None, None, _fail(
             "delegate_start", "payload_delegation_busy",
             "Another delegated run holds this exact payload open: its custody is "
-            "not yet settled AND disposed, and its owner task is still live (or "
-            "its terminality cannot be proven from task results). Wait for that "
-            "task to finish, or pick another skill: a non-owner can neither "
-            "delegate_wait that run nor integrate its capture.",
+            "not yet settled AND disposed, and its owner task is still live (or its "
+            "terminality cannot be proven from task results). Wait for that task to "
+            "finish, or pick another skill: a non-owner can neither delegate_wait "
+            "that run nor integrate its capture.",
             holder=busy, holder_owner_task_id=holder_owner,
             target_root=str(target))
     record = {
@@ -1515,9 +1518,8 @@ def integrate_payload_patch(
             "integrate_delegated_patch(decision='reject') to release the snapshot "
             "while keeping the patch artifact. Finalizing your task while this run is "
             "neither applied nor rejected leaves your custody audit unreconciled (Done "
-            "with warnings, reason delegated_custody_unreconciled). Residual: a patch "
-            "that changes ONLY a file mode can land here, because the payload content "
-            f"hash does not cover the mode bit. Verdict: {verdict_path or '(unwritten)'}.")
+            "with warnings, reason delegated_custody_unreconciled). "
+            f"Verdict: {verdict_path or '(unwritten)'}.")
     if result_hash and live_after != result_hash:
         try:
             from ouroboros.review_state import invalidate_advisory_after_mutation

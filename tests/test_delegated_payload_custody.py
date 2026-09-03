@@ -261,6 +261,9 @@ def test_pending_invocation_of_a_terminal_owner_releases_the_payload(
         skill_name="alpha"))
     assert refused["reason"] == "payload_delegation_busy", refused
     assert refused["holder"] == "inv-dead", refused
+    # A pending holder has no replayed run row, so the owner must come off the
+    # invocation record — `custody.lookup` alone answers UNKNOWN here.
+    assert refused["holder_owner_task_id"] == "t-dead", refused
 
     write_task_result(data, "t-dead", STATUS_FAILED)
     started, _ = _start_payload_run(second, monkeypatch)
