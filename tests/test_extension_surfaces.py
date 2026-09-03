@@ -353,8 +353,9 @@ def test_register_ui_tab_promotes_legacy_iframe_geometry(tmp_path):
         ({"kind": "iframe", "route": "view", "max_height": 1000}, "module widgets only"),
         ({"kind": "declarative", "schema_version": 1, "components": [], "height": 640}, "framed widgets only"),
         ({"kind": "declarative", "schema_version": 1, "components": [], "max_height": 640}, "framed widgets only"),
+        ({"kind": "iframe", "height": 640}, "requires route"),
     ],
-    ids=["below-min", "above-max", "bool", "contradictory", "legacy-max", "declarative-height", "declarative-max"],
+    ids=["below-min", "above-max", "bool", "contradictory", "legacy-max", "declarative-height", "declarative-max", "iframe-no-route"],
 )
 def test_frame_geometry_validation_rejects_ambiguous_values(render, expected):
     with pytest.raises(ExtensionRegistrationError, match=expected):

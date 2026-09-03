@@ -361,9 +361,13 @@ dropped in silence.
 When you are writing a skill (or repairing one in heal mode),
 `skill_preflight` runs cheap, offline syntax validators on the
 payload — in-process Python `compile()` for `.py` files (no
-`__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs`,
+`__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs` (a
+declared module-widget entry is instead parsed as a classic script, the
+grammar the widget frame runs it in, so top-level `import`/`export` in the
+entry fails preflight),
 `bash -n` for `.sh`/`.bash`, plus a manifest parse, explicit
-entry/script existence checks, and static widget render-schema
+entry/script existence checks (including a module widget's `render.entry`
+existence and containment), and static widget render-schema
 validation. It validates manifest `ui_tab.render` plus actual
 `register_ui_tab` and `register_settings_section` calls in `plugin.py`
 through the same runtime validator as `extension_loader`. The static
