@@ -444,7 +444,6 @@ def _is_url(locator: str) -> bool:
 def _is_path_locator(locator: str) -> bool:
     return bool(locator) and not _is_url(locator) and not locator.startswith(_TASK_LOCATOR_PREFIX)
 
-
 def _resolve_locator_path(locator: str, root: pathlib.Path) -> tuple[Optional[pathlib.Path], str]:
     """Relative → under ``root``; absolute (or ``file://`` absolute) as-is. Returns
     ``(path, "")`` or ``(None, reason)`` — ``symlink_loop`` (RuntimeError from resolve) or
@@ -500,6 +499,7 @@ def resolve_constitutional(
     true. Returns ``(constitutional, note)`` — the note names the deciding
     locator for disclosure.
     """
+    from ouroboros.tools.plan_evidence import _split_selector
     system = pathlib.Path(system_repo_root).resolve(strict=False)
     active = pathlib.Path(active_root).resolve(strict=False)
     # Payload roots are supplied by the FROZEN skill-payload predicate
@@ -518,7 +518,7 @@ def resolve_constitutional(
             locator = str(raw or "").strip()
             if not _is_path_locator(locator):
                 continue
-            resolved, _reason = _resolve_locator_path(locator, active)
+            resolved, _reason = _resolve_locator_path(_split_selector(locator)[0], active)
             if resolved is None or any(_under(resolved, payload) for payload in payloads):
                 continue
             if resolved == system or _under(resolved, system):

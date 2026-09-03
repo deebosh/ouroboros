@@ -243,6 +243,23 @@ def test_constitutional_declared_paths_relative_absolute_and_file_scheme(tmp_pat
     assert ok is True and "file://" in note
 
 
+def test_constitutional_evidence_selector_classifies_the_source_path(tmp_path):
+    system = tmp_path / "repo"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    evidence = _write(system / "docs" / "ARCHITECTURE.md", "# Architecture\n")
+
+    ok, note = plan_spec.resolve_constitutional(
+        active_root=workspace,
+        system_repo_root=system,
+        affected_resources=[],
+        evidence=[f"{evidence}::lines=1-1"],
+    )
+
+    assert ok is True
+    assert f"{evidence}::lines=1-1" in note
+
+
 def test_constitutional_payload_exempt_url_task_never_and_empty_false(tmp_path):
     system = tmp_path / "repo"
     workspace = tmp_path / "workspace"
