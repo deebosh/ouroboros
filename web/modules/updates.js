@@ -298,7 +298,7 @@ function letterProvenance({ authorVersion, targetVersion, ageText }) {
 
 /** Content identity of a rendered letter: re-render only when this changes. */
 function letterContentKey(view) {
-    return [view.state, view.relation, view.meta.writtenAt, view.markdown.length].join(' ');
+    return [view.state, view.relation, view.meta.writtenAt, view.markdown.length].join('|');
 }
 
 // Mirrors the two boot-recovery phases admitted by server.py's serialized

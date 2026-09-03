@@ -853,10 +853,12 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
             }
     except Exception:
         log.debug("Failed to inject answer_protocol rule", exc_info=True)
-    from ouroboros.update_letter import official_update_projection  # lazy: never raises
-    runtime_data["official_update"] = official_update_projection(git_sha)
-    runtime_ctx = json.dumps(runtime_data, ensure_ascii=False, indent=2)
-    out = "## Runtime context\n\n" + runtime_ctx
+    try:  # a fact must never take the whole context with it (lazy import: no cycle)
+        from ouroboros.update_letter import official_update_projection
+        runtime_data["official_update"] = official_update_projection(git_sha)
+    except Exception:
+        log.debug("Failed to inject official_update", exc_info=True)
+    out = "## Runtime context\n\n" + json.dumps(runtime_data, ensure_ascii=False, indent=2)
     try:
         from ouroboros.task_tree_ledger import tree_ledger_tail_digest
         _root_id = str(task.get("root_task_id") or task.get("id") or "")

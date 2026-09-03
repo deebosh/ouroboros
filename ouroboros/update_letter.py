@@ -44,11 +44,6 @@ UPDATE_LETTER_MAX_TOKENS = 1024
 COMMIT_BODY_MAX_CHARS = 1200
 DEFAULT_MAX_COMMITS = 200
 
-ERROR_KINDS = (
-    "no_credentials", "budget_exhausted", "context_overflow", "timeout",
-    "provider_unavailable", "empty_response",
-)
-
 _ROW_RE = re.compile(r"^\+\|\s*(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)\s*\|")
 _UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 _REFRESH_LOCK = threading.Lock()
@@ -95,19 +90,21 @@ def collect_range_material(
     ``commits`` are newest-first and capped at ``max_commits`` (``omitted_commits``
     discloses the rest); ``releases`` are every row added anywhere in the range,
     newest-first with first-wins per version; malformed rows are counted in
-    ``omitted_rows``. An empty range yields empty lists.
+    ``omitted_rows``; ``versions`` are the VERSION files at both ends. Divergence
+    counts stay on the status dict that triggered the letter — nothing is
+    collected that neither the model nor the record reads. An empty range yields
+    empty lists.
     """
     capture = git or _default_git()
     spec = f"{base_sha}..{target_sha}"
     material: Dict[str, Any] = {
         "base_sha": base_sha, "target_sha": target_sha,
         "commits": [], "omitted_commits": 0, "releases": [], "omitted_rows": 0,
-        "stats": {}, "tags": [],
+        "versions": {},
     }
     rc, out, _err = capture([
         "git", "log", "--first-parent", "--format=%H%x1f%aI%x1f%s%x1f%b%x1e", spec,
     ])
-    all_shas: List[str] = []
     commits: List[Dict[str, Any]] = []
     if rc == 0 and out.strip():
         for chunk in out.split("\x1e"):
@@ -119,7 +116,6 @@ def collect_range_material(
                 continue
             sha = parts[0].strip()
             body = parts[3].strip() if len(parts) > 3 else ""
-            all_shas.append(sha)
             commits.append({
                 "sha": sha, "date": parts[1].strip(), "subject": parts[2].strip(),
                 "body": truncate_within_limit(body, COMMIT_BODY_MAX_CHARS) if body else "",
@@ -153,36 +149,9 @@ def collect_range_material(
             seen_versions.add(version)
             releases.append({"version": version, "date": date, "text": text, "commit": current_sha})
     material["releases"] = releases
-
-    stats: Dict[str, Any] = {"first_parent_count": len(all_shas)}
-    rc, out, _err = capture(["git", "rev-list", "--left-right", "--count", f"{base_sha}...{target_sha}"])
-    if rc == 0:
-        try:
-            ahead, behind = (int(part) for part in out.split())
-            stats["ahead"], stats["behind"] = ahead, behind
-        except ValueError:
-            pass
-    rc, _out, _err = capture(["git", "merge-base", "--is-ancestor", base_sha, target_sha])
-    stats["base_is_ancestor"] = rc == 0
-    for label, sha in (("base_version", base_sha), ("target_version", target_sha)):
+    for label, sha in (("base", base_sha), ("target", target_sha)):
         rc, out, _err = capture(["git", "show", f"{sha}:VERSION"])
-        stats[label] = out.strip() if rc == 0 else ""
-    material["stats"] = stats
-
-    # for-each-ref has no %xNN escapes; tag names carry no whitespace, so split on it.
-    rc, out, _err = capture([
-        "git", "for-each-ref", "--format=%(refname:short) %(objectname) %(*objectname)",
-        "refs/tags/v*", "refs/ouroboros-managed/tags/v*",
-    ])
-    if rc == 0 and out.strip():
-        in_range = set(all_shas)
-        for line in out.splitlines():
-            parts = line.split()
-            if len(parts) < 2:
-                continue
-            peeled = parts[2].strip() if len(parts) > 2 else parts[1].strip()
-            if peeled in in_range:
-                material["tags"].append({"tag": parts[0].strip().split("/")[-1], "sha": peeled})
+        material["versions"][label] = out.strip() if rc == 0 else ""
     return material
 
 
@@ -296,7 +265,6 @@ def write_letter(
     material: Dict[str, Any],
     *,
     drive_root: Optional[pathlib.Path] = None,
-    repo_dir: Optional[pathlib.Path] = None,
     llm_client: Any = None,
 ) -> Dict[str, Any]:
     """One accounted LIGHT-slot call; returns the letter record (``ready`` or ``failed``)."""
@@ -304,9 +272,9 @@ def write_letter(
     from ouroboros.config import DATA_DIR, REPO_DIR, get_light_model
 
     data_root = pathlib.Path(drive_root or DATA_DIR)
-    repo_root = pathlib.Path(repo_dir or REPO_DIR)
+    repo_root = pathlib.Path(REPO_DIR)
     key = _key_from_status(status)
-    target_version = str(material.get("stats", {}).get("target_version") or "")
+    target_version = str((material.get("versions") or {}).get("target") or "")
     record: Dict[str, Any] = {
         "schema": 1,
         "key": key,
@@ -407,7 +375,6 @@ def refresh_after_check(
     status: Dict[str, Any],
     *,
     drive_root: Optional[pathlib.Path] = None,
-    repo_dir: Optional[pathlib.Path] = None,
     llm_client: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Write the letter after a successful FETCHING check; never raise, never delete.
@@ -429,9 +396,10 @@ def refresh_after_check(
             material = collect_range_material(key["base_sha"], key["target_sha"])
             if not material.get("commits") and not material.get("releases"):
                 return current
-            record = write_letter(status, material, drive_root=drive_root, repo_dir=repo_dir,
-                                  llm_client=llm_client)
-            if record.get("state") != "ready" and current and current.get("key") == key:
+            record = write_letter(status, material, drive_root=drive_root, llm_client=llm_client)
+            if record.get("state") != "ready" and current:
+                # D-KEEP for the supersede case too: a good letter is never lost to a
+                # failed rewrite, whatever range the failed attempt was for.
                 previous_good = current if current.get("state") == "ready" else current.get("last_good")
                 record["last_good"] = previous_good or None
             atomic_write_json(record_path(drive_root), record)
@@ -469,15 +437,16 @@ def project_letter(
         relation = "other"
     text = str(record.get("text") or "")
     last_good = record.get("last_good") if isinstance(record.get("last_good"), dict) else None
+    provenance = record
     if record.get("state") != "ready" and not text and last_good:
-        text = str(last_good.get("text") or "")
+        text, provenance = str(last_good.get("text") or ""), last_good
     return {
         "state": "ready" if record.get("state") == "ready" else "failed",
         "relation": relation,
         "text": text,
-        "author_version": str(record.get("author_version") or ""),
-        "target_version": str(record.get("target_version") or ""),
-        "written_at": str(record.get("written_at") or ""),
+        "author_version": str(provenance.get("author_version") or ""),
+        "target_version": str(provenance.get("target_version") or ""),
+        "written_at": str(provenance.get("written_at") or ""),
         "error_kind": str(record.get("error_kind") or ""),
         "error_text": str(record.get("error_text") or ""),
         "key": dict(key),
@@ -497,15 +466,19 @@ def official_update_projection(
     checked official target, ``update_available`` only when the letter was written for
     this exact HEAD, ``moved_since_check`` when HEAD matches neither, ``unchecked`` when
     no fetching check has completed. ``status_as_of`` names the check the fact comes from.
+    ``head_sha`` is the HEAD the caller already resolved for its own repository; a
+    child worktree that committed reads ``moved_since_check`` for its own tree, which
+    is a true statement about that tree, not about the canonical body.
     """
     try:
         from ouroboros import get_version
+        from ouroboros.config import DATA_DIR
 
         head = str(head_sha or "")
         if state is None:
-            from supervisor.state import load_state
-
-            state = load_state() or {}
+            # Lock-free read, like the neighbouring drive-state section: this runs on
+            # every task round and consciousness cycle, never under the state lock.
+            state = read_json_dict(pathlib.Path(drive_root or DATA_DIR) / "state" / "state.json") or {}
         cache = state.get("managed_update_cache") if isinstance(state, dict) else None
         cache = cache if isinstance(cache, dict) else {}
         record = read_record(drive_root)
