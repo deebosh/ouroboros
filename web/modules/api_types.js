@@ -807,6 +807,7 @@
  * @property {string} description
  * @property {string=} task_id
  * @property {string=} type
+ * @property {string=} title Owner-facing run name; omitted, admission derives one from the description's first line.
  * @property {number=} chat_id
  * @property {number=} depth
  * @property {string=} session_id

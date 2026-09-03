@@ -25,7 +25,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from ouroboros.contracts.chat_id_policy import project_chat_id
 from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.project_facts import sanitize_project_id
-from ouroboros.utils import atomic_write_json, iter_jsonl_objects, read_json_dict, utc_now_iso
+from ouroboros.utils import atomic_write_json, iter_jsonl_objects, read_json_dict, utc_now_iso, strip_markdown
 
 log = logging.getLogger(__name__)
 
@@ -596,7 +596,9 @@ def task_presentation_snapshot(drive_root: Any, task_id: str, *, task: Any = Non
     task_name = ""
     for field in ("title", "suggested_name", "objective", "description"):
         for source in sources:
-            task_name = _bounded_presentation_name(source.get(field))
+            # Strip markdown BEFORE the name is flattened: the task half is a raw
+            # request line, and ARCHITECTURE promises this label is plain text.
+            task_name = _bounded_presentation_name(strip_markdown(str(source.get(field) or "")))
             if task_name:
                 break
         if task_name:

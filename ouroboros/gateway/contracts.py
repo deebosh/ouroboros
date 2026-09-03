@@ -1020,6 +1020,10 @@ class _TaskCreateRequestRequired(TypedDict):
 class TaskCreateRequest(_TaskCreateRequestRequired, total=False):
     task_id: str
     type: str
+    # v6.115.0: the run's owner-facing name. Supplied, it fills both name slots
+    # like a promoted chat turn; omitted, admission derives a display-only name
+    # from the request's first line. `metadata.title` is refused (400).
+    title: str
     chat_id: int
     depth: int
     session_id: str
