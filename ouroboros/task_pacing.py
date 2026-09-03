@@ -60,10 +60,19 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # exceeds the bounded estimate; when it does not but exceeds the configured floor
 # (max(200 s, OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC)) it launches at the floor — the
 # predicates are pure and return the `launched_at_floor` reason, and the
-# read-only capacity projection evaluates BOTH of them — the review-launch
-# rule over its 1x window and the improvement-pass rule over the adaptive 2x
-# window, with `ctx=None` so nothing is ever emitted — reporting each floor
-# admission in its own field; a spendable window at or below the floor is
+# read-only capacity projection evaluates BOTH of them through ONE reducer
+# (`acceptance_admission_projection`) — the review-launch rule over its 1x
+# window and the improvement-pass rule over the adaptive 2x window, over the
+# EFFECTIVE profile (the owner-hurry overlay the acceptance path resolves), the
+# durable completed-improvement count (paid cycles − 1) and the real
+# Required+Blocking predicate, with `ctx=None` so nothing is ever emitted —
+# reporting each floor admission in its own field. That projection writes
+# nothing and mutates no context: it reads through `observe_budget_profile` and
+# `observe_budget_snapshot`, so neither the deprecation row nor the
+# fallback-anchor latch can fire from a poll, and a metadata-poor task simply
+# has no window facts to make a floor claim from. A raising improvement gate
+# omits its own disclosure (`improvement_admission_unknown`) rather than
+# degrading the launch answer. A spendable window at or below the floor is
 # refused `review_skipped_deadline_reserve`. Likewise the acceptance wave gate
 # DECIDES on one work-order send per paid row; the rounds-priced wave is a
 # read-only check; only a floor that does not fit is refused
@@ -324,9 +333,10 @@ def launch_at_floor_payload(snapshot: BudgetSnapshot, *, estimated_sec: float) -
     through the panel context). The panel attaches it to its ONE dispatch fact
     after the paid seam fired; nothing records it earlier. An improvement pass
     admitted at the floor has no payload of its own: the read-only capacity
-    projection evaluates that gate too — purely, over the adaptive 2x window,
-    with `ctx=None` — and reports it in its own `improvement_launch_disclosure`
-    field, never in this payload and never as a `launch_disclosure`."""
+    projection evaluates that gate too — through `acceptance_admission_projection`,
+    over the adaptive 2x window, with `ctx=None` and without any write or ctx
+    mutation — and reports it in its own `improvement_launch_disclosure` field,
+    never in this payload and never as a `launch_disclosure`."""
     return {
         "gate": "review_launch", "estimated_sec": round(float(estimated_sec), 3),
         "floor_sec": round(_acceptance_floor_sec(), 3),
@@ -555,10 +565,13 @@ def improvement_pass_allowed(
     if snapshot.spendable_sec > floor * scale:
         # R36: the history-derived reserve never refuses what the floor admits.
         # Pure here, and PROJECTED: the read-only capacity projection asks this
-        # gate too (with `ctx=None`, so the escalation above can never fire
-        # from it) and reports this 2x-window admission in its own
-        # `improvement_launch_disclosure` field, beside the review-launch
-        # gate's `launch_disclosure`; nothing is recorded either way.
+        # gate too, through `acceptance_admission_projection` and at the count
+        # this gate's contract means — COMPLETED improvement passes, derived
+        # from the durable paid-cycle ledger as cycles - 1 — with `ctx=None`, so
+        # the escalation above can never fire from it. It reports this
+        # 2x-window admission in its own `improvement_launch_disclosure` field,
+        # beside the review-launch gate's `launch_disclosure`; nothing is
+        # recorded either way.
         return True, REASON_LAUNCHED_AT_FLOOR
     return False, "improvement_window_inside_reserve"
 

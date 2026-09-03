@@ -505,12 +505,13 @@ def _apply_task_acceptance_result(
     )
     # R36/R47/R49: an improvement pass admitted at the floor (`pass_reason ==
     # REASON_LAUNCHED_AT_FLOOR`) stores NOTHING here — the read-only capacity
-    # projection evaluates this same gate purely (with `ctx=None`, so nothing
-    # is emitted) and reports the admission in its own
+    # projection evaluates this same gate purely, through
+    # `task_pacing.acceptance_admission_projection` and at the SAME count this
+    # call passes (`ctx.passes_done` = its `paid_cycles - 1`), with `ctx=None`
+    # so nothing is emitted, and reports it in its own
     # `improvement_launch_disclosure` field, beside the review-launch gate's
-    # `launch_disclosure`; whether this pass leads to a panel is decided
-    # below, and only the review-launch gate that admits THAT panel hands a
-    # launch decision into it.
+    # `launch_disclosure`; whether this pass leads to a panel is decided below,
+    # and only the review-launch gate admitting THAT panel hands it a decision.
     # A DEGRADED panel (no valid verdict quorum) cannot "judge" the dialogue:
     # a lone terminal vote from the one contributing slot must NOT shadow the
     # review_degraded path below, which is the only surface carrying the
