@@ -359,7 +359,7 @@ def doc_residue_counts(rel: str, text: str) -> dict:
     return counts
 
 
-# Shrink-only baseline (07b53365, 2026-09-02). Regenerate a section's row ONLY
+# Zero-residue ceilings recorded after the 07b53365 cleanup. Regenerate a section's row ONLY
 # downward, in the same commit that removed the residue; a section absent here
 # must stay at zero.
 DOC_RESIDUE_BASELINE = {
@@ -452,7 +452,7 @@ def _architecture_section(text: str, heading_prefix: str) -> str:
     return "\n".join(lines[start:end])
 
 
-def test_architecture_endpoint_table_mirrors_route_registries():
+def test_architecture_endpoint_table_mirrors_route_registries(tmp_path):
     """Every mounted browser/CLI route and Host Service route has exactly one table
     row in ARCHITECTURE §4, and no row names a route that is not mounted."""
     from ouroboros.gateway.endpoint_index import HTTP_ENDPOINTS
@@ -476,13 +476,17 @@ def test_architecture_endpoint_table_mirrors_route_registries():
     expected_public = {e for e in expected_public if not e.endswith("/api/extensions/{skill}/{rest:path}")}
     expected_public.add("ANY /api/extensions/{skill}/{rest:path}")
 
-    host_src = _read("ouroboros/gateway/host_service.py")
+    from ouroboros.gateway.host_service import create_host_service_app
+
     expected_host = set()
-    for path, methods in re.findall(r'Route\("([^"]+)",\s*_api_\w+,\s*methods=\[([^\]]+)\]', host_src):
-        method = methods.strip().strip("\"'")
-        expected_host.add(f"{method} {path}")
-    for path in re.findall(r'WebSocketRoute\("([^"]+)"', host_src):
-        expected_host.add(f"WS {path}")
+    for route in create_host_service_app(tmp_path).routes:
+        methods = getattr(route, "methods", None)
+        if methods is None:
+            expected_host.add(f"WS {route.path}")
+            continue
+        expected_host.update(
+            f"{method} {route.path}" for method in methods if method not in {"HEAD", "OPTIONS"}
+        )
 
     assert documented_public == expected_public, (
         f"missing rows: {sorted(expected_public - documented_public)}; "

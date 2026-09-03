@@ -137,7 +137,7 @@ text and defaults belong to their owners (ARCHITECTURE, CHECKLISTS, BIBLE,
 endpoint tables are test-checked registries of those owners, not second
 authorities. A change REPLACES the description of the node it touched; release
 history lives in git and the README history table, leftovers go to issues.
-Residue — version stamps, decision codenames, "used to / previously" narrative —
+Residue in the exact spellings of `DOC_RESIDUE_PATTERNS` — parenthesized version stamps, decision codenames, "used to / previously" narrative —
 is caught by the shrink-only residue check in `tests/test_docs_sync.py`.
 
 ### Generality and emergence (P13)
@@ -836,7 +836,7 @@ usage reservation and blocks every parallel panel slot rather than degrading
 hard authority into fail-open cost telemetry. Task acceptance remains
 API-only.
 
-Never pay for byte-identical review material (`ouroboros/commit_gate.py` owns
+Never pay for byte-identical review material (`ouroboros/tools/commit_gate.py` owns
 the mechanism): the commit gate refuses a byte-identical staged diff for free
 from the FIRST verdict-block (`identical_diff_refused`, quoting the recorded
 verdict), and skill review replays a recorded substantive verdict for an
@@ -855,9 +855,10 @@ typed disclosure; blocking refuses it.
 Scope of the review-contract fingerprint (deliberate): it covers the reviewer
 roster, routes, enforcement, resolved efforts, and prompt constants —
 including the session serialization only when Skill Review actually contains
-an agent-session row — while governance-document CONTENTS (BIBLE.md,
-CHECKLISTS.md, ARCHITECTURE.md) are deliberately outside it, so editing those
-documents neither lapses recorded verdicts nor frees replays. The accepted
+an agent-session row — while governance-document CONTENTS — `BIBLE.md`,
+`docs/CHECKLISTS.md`, `docs/ARCHITECTURE.md`, this handbook and
+`docs/DESIGN.md` — are deliberately outside it, so editing those documents
+neither lapses recorded verdicts nor frees replays. The accepted
 trade-off is that an old verdict can replay under amended governance text;
 this keeps routine documentation maintenance from repricing every recorded
 review.
