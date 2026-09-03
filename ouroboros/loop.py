@@ -2578,6 +2578,10 @@ class _RoundLimitContext:
     incoming_messages: Optional[queue.Queue] = None
     owner_msg_seen: Optional[set] = None
     forced_service_evidence_fingerprint: str = ""
+    # The round's exact tool envelope, so a forced wrap-up call keeps the same
+    # provider prefix as the working round instead of rebuilding it tool-less.
+    # LAST field: existing positional construction (tests included) stays valid.
+    tool_schemas: Optional[List[Dict[str, Any]]] = None
 
 
 def _account_compaction_usage(
@@ -4304,7 +4308,7 @@ def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
         ctx.llm,
         ctx.messages,
         ctx.active_model,
-        None,
+        getattr(ctx, "tool_schemas", None),
         ctx.active_effort,
         ctx.max_retries,
         ctx.drive_logs,
@@ -4317,6 +4321,9 @@ def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
         deadline_ts=ctx.deadline_ts,
         response_meta_out=response_meta,
         transport_reserve_sec=0.0,
+        allow_server_web_search=_server_web_allowed_by_task(
+            getattr(getattr(ctx, "tools", None), "_ctx", None)
+        ),
     )
     ctx.accumulated_usage["_forced_response_meta"] = response_meta
     return str((final_msg or {}).get("content") or "").strip()
@@ -6136,7 +6143,8 @@ def run_llm_loop(
                 messages, llm, active_model, active_effort, max_retries, drive_logs,
                 task_id, round_idx, event_queue, accumulated_usage, task_type,
                 active_use_local, MAX_ROUNDS, drive_root=drive_root, llm_trace=llm_trace,
-                incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen)
+                incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen,
+                tool_schemas=tool_schemas)
             _finalize_limit_ctx(limit_ctx, tools, llm_trace)
             if round_idx > MAX_ROUNDS:
                 # Live hold: a paid [ROUND_LIMIT] dial would be a resend (no wake receipt) — no-call unknown terminal.

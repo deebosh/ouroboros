@@ -1517,8 +1517,12 @@ by "Provider Independence" above. Call-site imperatives:
   fewer; `tests/test_review_prompt_caching.py`); only
   `LLMClient._normalize_payload_cache_ttl` finalizes the assembled wire
   payload. Prompt-cache support stays deliberately narrow — no provider
-  hops, body rerouting, or a generic cache/retry framework. Review gate:
-  CHECKLISTS item 22 (`cache_friendliness`).
+  hops, body rerouting, or a generic cache/retry framework. A tool-less
+  variant of an otherwise identical request rebuilds the whole provider
+  prefix, and a `tool_choice` change rebuilds the messages tier, so a
+  wrap-up call keeps the schemas, the server-web flag and `tool_choice`
+  identical to the working round and instructs in text instead. Review
+  gate: CHECKLISTS item 22 (`cache_friendliness`).
 - Provider fallback is disabled only when the transcript carries a SEALED
   reasoning artifact
   (`ouroboros/reasoning_artifacts.py::transcript_has_sealed_reasoning`),

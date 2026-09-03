@@ -2590,3 +2590,109 @@ def test_forced_bypass_probe_failure_records_unknown_eligibility(tmp_path, monke
     }
     assert "acceptance_decision" not in trace
 
+
+
+def test_forced_final_sends_the_round_tool_envelope(tmp_path, monkeypatch):
+    """The forced wrap-up call reuses the round's exact tool envelope."""
+
+    loop, registry, limit_ctx, _trace = _forced_test_context(tmp_path)
+    schemas = [{"type": "function", "function": {"name": "read_file"}}]
+    limit_ctx.tool_schemas = schemas
+    seen: dict = {}
+
+    def _capture(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return {"role": "assistant", "content": "wrapped up"}, 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", _capture)
+
+    loop._handle_round_limit(limit_ctx)
+
+    assert seen["args"][3] is schemas
+    assert seen["kwargs"]["allow_server_web_search"] == loop._server_web_allowed_by_task(
+        registry._ctx
+    )
+    assert "tool_choice" not in seen["kwargs"]
+
+
+def test_forced_final_tool_call_only_reply_falls_back_to_host_text(tmp_path, monkeypatch):
+    """A tool-calls-only reply on a budget rail degrades to the host fallback text."""
+
+    loop, _registry, limit_ctx, _trace = _forced_test_context(tmp_path)
+    limit_ctx.tool_schemas = [{"type": "function", "function": {"name": "read_file"}}]
+    monkeypatch.setattr(
+        loop,
+        "call_llm_with_retry",
+        lambda *_args, **_kwargs: (
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            0.0,
+        ),
+    )
+
+    text, usage, trace = loop._handle_round_limit(limit_ctx)
+
+    assert text
+    assert not usage.get("_best_effort_extracted")
+    assert trace.get("forced_finalization", {}).get("source") != "forced_model_incomplete"
+
+
+def test_forced_final_mixed_content_and_tool_calls_publishes_as_model_final(
+    tmp_path, monkeypatch
+):
+    """A reply carrying both content and tool calls publishes as an ordinary final."""
+
+    loop, _registry, limit_ctx, _trace = _forced_test_context(tmp_path)
+    limit_ctx.tool_schemas = [{"type": "function", "function": {"name": "read_file"}}]
+    monkeypatch.setattr(
+        loop,
+        "call_llm_with_retry",
+        lambda *_args, **_kwargs: (
+            {
+                "role": "assistant",
+                "content": "here is the answer",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            0.0,
+        ),
+    )
+
+    text, usage, trace = loop._handle_round_limit(limit_ctx)
+
+    assert "here is the answer" in text
+    assert usage.get("_best_effort_extracted") is True
+    assert trace.get("forced_finalization", {}).get("source") == "model"
+
+
+def test_web_forbidding_contract_keeps_the_forced_call_web_free(tmp_path, monkeypatch):
+    """A task that forbids web never gets server web search on the forced call."""
+
+    loop, registry, limit_ctx, _trace = _forced_test_context(tmp_path)
+    registry._ctx.task_contract = {"allowed_resources": {"web": False}}
+    seen: dict = {}
+
+    def _capture(*args, **kwargs):
+        seen.update(kwargs)
+        return {"role": "assistant", "content": "wrapped up"}, 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", _capture)
+
+    loop._handle_round_limit(limit_ctx)
+
+    assert seen["allow_server_web_search"] is False
