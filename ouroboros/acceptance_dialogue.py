@@ -1015,7 +1015,6 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     from ouroboros.tools.review import _owner_deadline_at
     from ouroboros.review_dispatch import (
         TaskAcceptanceDispatchUnavailable,
-        TaskAcceptanceLaunchRefused,
         bind_task_acceptance_paid_dispatch,
         run_zero_physical_task_acceptance as _free_dispatch,
         task_acceptance_preclaim_refusal,
@@ -1113,29 +1112,17 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     refusal = task_acceptance_preclaim_refusal(ctx)
     if refusal is not None:
         return refusal
-    # Owner R53: the launch rule is asked again INSIDE the paid claim
-    # (`review_dispatch.task_acceptance_paid_dispatch_stamp._claim`),
-    # immediately before the wallet row — the moment money is committed — not
-    # here at assembly. The wallet projection above stays wallet-and-
-    # cancellation only.
+    # Owner R55: the launch floor was evaluated once, at loop admission; the
+    # paid claim below checks cancellation and the wallet only, and a running
+    # panel is bounded by the R23 deadline clamps and the per-send wallet fence.
     # Q6: bind the exact tree wallet to the target's physical-dispatch stamp.
     # Route/candidate refusals remain free; one strict stamp gates every slot.
     started = time.monotonic()
     try:
         with bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:
-            stamp = usage_ctx._review_paid_stamp
             result = run_review_request(request, slots=slots, drive_root=drive_root, usage_ctx=usage_ctx)
-    except TaskAcceptanceLaunchRefused:
-        raise  # the loop's launch-gate skip owns this typed control result
     except TaskAcceptanceDispatchUnavailable as exc:
         return _refused(f"{exc} (no reviewer was called)")
-    # A route-owned stamp fires inside a per-slot worker whose exception
-    # convention turns the claim's refusal into an error actor; the once-only
-    # stamp keeps the typed refusal itself, so the deadline-admission control
-    # result reaches the loop whatever the buried worker reported.
-    launch_refusal = stamp.typed_launch_refusal()
-    if launch_refusal is not None:
-        raise launch_refusal
     duration_sec = round(time.monotonic() - started, 3)
     try:
         from ouroboros.review_cycles import review_max_cycles, review_max_cycles_source

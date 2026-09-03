@@ -1283,10 +1283,10 @@ def _skip_task_acceptance_for_launch_reason(
     passes_done: int,
     emit_progress: Callable[[str], None],
 ) -> bool:
-    """The launch rule's ONE skip terminal, shared by both of its evaluation
-    sites — the loop's admission gate and the paid claim's typed refusal
-    (owner R53): no reviewer run is recorded, and `outcomes.derive_loop_outcome`
-    keys on the (status, typed REASON) pair below with source `task_pacing`."""
+    """The launch rule's skip terminal for its ONE evaluation site — the loop's
+    admission gate (owner R55): no reviewer run is recorded, and
+    `outcomes.derive_loop_outcome` keys on the (status, typed REASON) pair
+    below with source `task_pacing`."""
     tools_ctx._task_acceptance_reviewed = True
     _end_task_acceptance_fence(tools_ctx, outcome="terminal")
     _mark_root_acceptance_checkpoint(
@@ -1458,7 +1458,6 @@ def _run_task_acceptance_review_once(
     try:
         from types import SimpleNamespace
 
-        from ouroboros.review_dispatch import TaskAcceptanceLaunchRefused
         from ouroboros.review_evidence import task_acceptance_evidence_revision
         from ouroboros.review_substrate import build_review_binding
 
@@ -1511,17 +1510,7 @@ def _run_task_acceptance_review_once(
         passes_before_apply = int(
             getattr(tools._ctx, "_task_acceptance_improvement_passes", 0) or 0
         )
-        try:
-            panel_result = reused_result or _execute_task_acceptance_panel(review_ctx)
-        except TaskAcceptanceLaunchRefused as exc:
-            # R53: the paid claim refused on the launch floor — nothing was
-            # attempted (marker dropped); the launch gate's own skip ends it.
-            seen_bindings.pop(binding_hash, None)
-            return _skip_task_acceptance_for_launch_reason(
-                tools._ctx, llm_trace, launch_reason=exc.launch_reason,
-                snapshot=task_pacing.build_budget_snapshot(tools._ctx, profile=budget_profile),
-                passes_done=passes_done, emit_progress=emit_progress,
-            )
+        panel_result = reused_result or _execute_task_acceptance_panel(review_ctx)
         run_record = (
             prior_run
             if reused_result is not None

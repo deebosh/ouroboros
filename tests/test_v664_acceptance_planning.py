@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import pytest
-
 from ouroboros.contracts.task_contract import normalize_budget_profile
 from ouroboros.review_evidence import build_task_acceptance_evidence
 from ouroboros.review_substrate import (
@@ -280,33 +278,35 @@ def test_acceptance_cancellation_recheck_precedes_wallet_claim(
     assert state["claims_by_binding"] == {}
 
 
-def test_the_paid_claim_rechecks_the_wallet_and_the_floor(tmp_path, monkeypatch):
-    """Owner R53: wallet, cancellation (the test above) and the launch FLOOR
-    are all re-checked AT THE PAID CLAIM (`_claim` in the dispatch stamp), the
-    moment money is committed — the stub fires the write-ahead stamp exactly
-    as a route does before its first physical send, so the floor check
-    provably lives at the claim, not at panel assembly; the refusal is FREE
-    (no claim row, no reviewer call) and TYPED, never a DEGRADED verdict."""
+def test_the_paid_claim_rechecks_the_wallet_and_never_the_floor(tmp_path, monkeypatch):
+    """Owner R55: the paid claim (`_claim` in the dispatch stamp, which the
+    stub fires exactly where a route does, before its first physical send)
+    rechecks the WALLET and cancellation (the test above); time belongs to the
+    loop gate, so `review_launch_allowed` is armed to fail the test if the
+    claim asks it. The wallet is exhausted for REAL between admission and the
+    send (another binding buys the tree's only cycle); the refusal is FREE —
+    no claim row for this binding, no reviewer call — and typed DEGRADED."""
     import ouroboros.loop as loop
     import ouroboros.review_substrate as substrate
-    from ouroboros.review_dispatch import TaskAcceptanceLaunchRefused
-    from ouroboros.task_results import load_task_acceptance_review_state
+    from ouroboros.task_results import claim_task_acceptance_review_cycle, load_task_acceptance_review_state
 
     ctx = _root_acceptance_context(tmp_path, {"evidence": "complete"})
     _allow_acceptance_wave(monkeypatch)
-    monkeypatch.setattr(
-        task_pacing, "review_launch_allowed",
-        lambda *_args, **_kwargs: (False, "review_skipped_deadline_reserve"))
+    monkeypatch.setattr(task_pacing, "review_launch_allowed", lambda *_a, **_k: (_ for _ in ()).throw(
+        AssertionError("the launch floor is the loop gate's, never the claim's")))
+    other = substrate.build_review_binding(candidate="another", evidence={}, fence_token_or_state="wallet-gate")
 
-    def _fire_stamp_then_refuse(_request, *, usage_ctx, **_kwargs):
-        usage_ctx._review_paid_stamp()  # the route's write-ahead call: raises first
+    def _exhaust_wallet_then_fire_stamp(_request, *, usage_ctx, **_kwargs):
+        claimed = claim_task_acceptance_review_cycle(tmp_path, ctx.task_id, other, claimed_by_task_id=ctx.task_id)
+        assert claimed["status"] == "claimed"  # the tree's one cycle is now spent
+        usage_ctx._review_paid_stamp()  # the route's write-ahead call: refuses first
         raise AssertionError("reviewer must not be called")
 
-    monkeypatch.setattr(substrate, "run_review_request", _fire_stamp_then_refuse)
-    with pytest.raises(TaskAcceptanceLaunchRefused) as refused:
-        loop._execute_task_acceptance_panel(ctx)
-    assert refused.value.launch_reason == "review_skipped_deadline_reserve"
-    assert load_task_acceptance_review_state(tmp_path, ctx.task_id)["claims_by_binding"] == {}
+    monkeypatch.setattr(substrate, "run_review_request", _exhaust_wallet_then_fire_stamp)
+    result = loop._execute_task_acceptance_panel(ctx)
+    assert result.degraded is True and result.degraded_reasons[0].startswith("review_cycles_exhausted")
+    claims = load_task_acceptance_review_state(tmp_path, ctx.task_id)["claims_by_binding"]
+    assert set(claims) == {other["binding_hash"]}  # the other binding's row, never this one's
 
 
 def test_acceptance_corrupt_cancellation_projection_is_unknown_without_claim(

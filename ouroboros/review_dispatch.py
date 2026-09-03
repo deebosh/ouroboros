@@ -147,22 +147,6 @@ class TaskAcceptanceDispatchUnavailable(RuntimeError):
     """A task-acceptance panel was refused before reviewer transport."""
 
 
-class TaskAcceptanceLaunchRefused(TaskAcceptanceDispatchUnavailable):
-    """The paid claim refused on the launch floor (owner R53).
-
-    The SAME ``task_pacing.review_launch_allowed`` rule the loop's admission
-    gate ran, re-evaluated inside ``_claim`` at the moment money is about to be
-    committed. A typed deadline-admission control result, distinct from the
-    wallet and cancellation refusals: the loop answers it with its own
-    launch-gate skip (``review_skipped_deadline_reserve``, source
-    ``task_pacing``, no reviewer run recorded), never with a recorded panel.
-    """
-
-    def __init__(self, launch_reason: str) -> None:
-        self.launch_reason = str(launch_reason or "")
-        super().__init__(self.launch_reason)
-
-
 class ReviewPaidStamp:
     """Idempotent, thread-safe once-only wrapper around one durable write.
 
@@ -191,11 +175,6 @@ class ReviewPaidStamp:
         with self._lock:
             if self.fired:
                 if self.fail_closed and self._failure is not None:
-                    if isinstance(self._failure, TaskAcceptanceLaunchRefused):
-                        # The typed deadline-admission control result must
-                        # reach every racing route as ITSELF, not a wrapper:
-                        # the loop keys its launch-gate skip on this type.
-                        raise self._failure
                     raise TaskAcceptanceDispatchUnavailable(
                         str(self._failure)
                     ) from self._failure
@@ -208,16 +187,6 @@ class ReviewPaidStamp:
             finally:
                 self.fired = True
 
-    def typed_launch_refusal(self) -> "TaskAcceptanceLaunchRefused | None":
-        """Public typed outcome of the once-only claim (owner R53).
-
-        A route worker's exception convention swallows the claim's raise into
-        an error actor, so the panel reads the deadline-admission refusal back
-        here after the wave returns; wallet/cancellation refusals stay on
-        their existing paths and never surface through this accessor."""
-        failure = self._failure
-        return failure if isinstance(failure, TaskAcceptanceLaunchRefused) else None
-
 
 def task_acceptance_paid_dispatch_stamp(
     ctx: Any,
@@ -228,9 +197,10 @@ def task_acceptance_paid_dispatch_stamp(
 ) -> ReviewPaidStamp:
     """Build the strict once-only wallet claim for a physical panel dispatch.
 
-    The claim re-asks the launch rule (owner R53) immediately before the wallet
-    row: the moment money is committed, whatever route preparation ran between
-    the loop's admission gate and the first physical send."""
+    The claim checks cancellation and the paid-cycle wallet only (owner R55):
+    the launch floor is evaluated once per panel, at loop admission, and a
+    running panel is bounded by the R23 deadline clamps and the per-send
+    wallet fence."""
 
     def _claim() -> None:
         refusal = task_acceptance_preclaim_refusal(ctx)
@@ -239,19 +209,6 @@ def task_acceptance_paid_dispatch_stamp(
             raise TaskAcceptanceDispatchUnavailable(
                 reasons[0] if reasons else "review_dispatch_refused"
             )
-        # Owner R53: the SAME pure predicate over the SAME root context and
-        # effective profile the loop's admission gate read, re-read here so a
-        # panel whose evidence build or route preparation ate the margin
-        # refuses for $0 (no claim row, no send) instead of dispatching into a
-        # window the deadline will cut. Free replay/reuse never reaches this
-        # stamp, so it cannot refuse a free path.
-        from ouroboros import task_pacing
-
-        launch_ok, launch_reason = task_pacing.review_launch_allowed(
-            task_pacing.build_budget_snapshot(ctx.tools._ctx, profile=ctx.budget_profile),
-        )
-        if not launch_ok:
-            raise TaskAcceptanceLaunchRefused(launch_reason)
         claim = claim_task_acceptance_dispatch(
             drive_root, root_task_id, task_id, binding,
         )

@@ -6,15 +6,18 @@ The module that used to pin an estimate, its disclosures and a read-only
 preview of both gates now pins the three surviving boundaries themselves — the
 launch gate exactly at the floor, the improvement window exactly at floor ×
 scale, the money fence per send, the count cap — plus the local predicate
-equivalence with the pre-deletion tree, the paid claim that re-asks the launch
-rule immediately before the wallet row (on every delivery), and the purity of
-every read-only poll (whose one inherited write, the usage ledger's torn-tail
+equivalence with the pre-deletion tree, the paid claim that asks the wallet and
+cancellation only (owner R55: the floor is evaluated ONCE, at loop admission,
+so a panel whose evidence build ate the margin dispatches — the disclosed
+residual, bounded by the R23 deadline clamps), and the purity of every
+read-only poll (whose one inherited write, the usage ledger's torn-tail
 quarantine after a single crash mid-append, is pinned in that single-crash
-shape). A separate module from the three-delivery contract suite
-on purpose: the subject here is what may START and what may be SPENT, not what
-a delivery row receives. Every offline fixture — the fake triads, the scripted
-ledger-crossing reviewer, the seeded wallet, the priced catalog row — is the
-delivery suite's, imported by name; nothing here is a copy.
+shape; only an ABSENT ledger file answers without the reader). A separate
+module from the three-delivery contract suite on purpose: the subject here is
+what may START and what may be SPENT, not what a delivery row receives. Every
+offline fixture — the fake triads, the scripted ledger-crossing reviewer, the
+seeded wallet, the priced catalog row — is the delivery suite's, imported by
+name; nothing here is a copy.
 """
 
 from __future__ import annotations
@@ -29,10 +32,8 @@ from tests.test_acceptance_delivery import (
     _CLEAN_VERDICT,
     _ROW_API,
     _ROW_NATIVE,
-    _ROW_SESSION,
     _EpisodeLLM,
     _acceptance_ctx,
-    _fake_session,
     _offline_env,
     _priced_offline_model,
     _real_panel,
@@ -368,87 +369,39 @@ def test_the_admission_matrix_is_local_predicate_equivalence_with_the_base_tree(
 
 
 # ---------------------------------------------------------------------------
-# The paid claim (owner R53): the SAME launch rule again, inside the dispatch
-# stamp at the moment money is about to be committed — driven end to end on
-# the real panel path, on every delivery.
+# The paid claim checks cancellation and the wallet only (owner R55): the
+# launch floor is evaluated ONCE, at loop admission. What that leaves — the
+# disclosed residual, and the R23 clamp that bounds it — is driven end to end
+# on the real panel path.
 # ---------------------------------------------------------------------------
 
 
-def _deadline_panel_ctx(monkeypatch, tmp_path, *, over_floor, row=_ROW_API, evidence=None,
-                        **tool_ctx_fields):
-    """A REAL panel on a REAL deadline: the 200 s configured floor, the 120 s
-    grace as the WHOLE reserve (pct 0), and a spendable window `over_floor`
-    seconds ABOVE the floor when the loop gate asks. Returns `(ctx, clock)`;
-    raising `clock["offset"]` moves the pacing clock forward without touching
-    the recorded deadline — an injected clock, not a rewritten task. `row`
-    picks the delivery; a pre-bound `evidence` skips the host packet builder,
-    and `tool_ctx_fields` carry the roots a retrieving row's work order needs."""
+def _deadline_panel_ctx(monkeypatch, tmp_path, *, over_floor):
+    """A REAL packet panel on a REAL deadline: the 200 s configured floor, the
+    120 s grace as the WHOLE reserve (pct 0), and a spendable window
+    `over_floor` seconds ABOVE the floor when the loop gate asks. Returns
+    `(ctx, clock)`; raising `clock["offset"]` moves BOTH clocks the panel reads
+    — the pacing rails' and the R23 deadline clamps' — forward without touching
+    the recorded deadline: an injected clock, not a rewritten task."""
     from datetime import timedelta
 
-    from ouroboros import task_pacing
+    from ouroboros import deadline_utils, task_pacing
     from ouroboros.deadline_utils import utc_now
 
     monkeypatch.setenv("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", "200")  # the floor
     monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "120")  # the whole reserve (pct 0)
     monkeypatch.setenv("OUROBOROS_ACCEPTANCE_RESERVE_PCT", "0")
     monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
-    _offline_env(monkeypatch, *(row if isinstance(row, tuple) else (row,)))
+    _offline_env(monkeypatch, _ROW_API)
     now = utc_now()
     clock = {"offset": 0.0}
-    monkeypatch.setattr(
-        task_pacing, "utc_now", lambda: utc_now() + timedelta(seconds=clock["offset"]))
-    ctx = _acceptance_ctx(tmp_path, evidence={} if evidence is None else evidence, task_metadata={
+    for module in (task_pacing, deadline_utils):
+        monkeypatch.setattr(module, "utc_now", lambda: utc_now() + timedelta(seconds=clock["offset"]))
+    ctx = _acceptance_ctx(tmp_path, evidence={}, task_metadata={
         "created_at": (now - timedelta(seconds=60)).isoformat(),
         "deadline_at": (now + timedelta(seconds=120 + 200 + over_floor)).isoformat(),
-    }, **tool_ctx_fields)
+    })
     return ctx, clock
-
-
-def _clock_jump_before_stamp(monkeypatch, clock, *, burns_sec):
-    """Advance the injected clock IMMEDIATELY before the write-ahead stamp
-    fires, at the narrowest seam every route shares: `invoke_review_paid_stamp`.
-    The packet and native routes reach it through `usage_accounting.mark_dispatched`
-    → `invoke_bound_api_review_paid_stamp` (a lookup on the `review_dispatch`
-    module); the session route calls its own imported binding right before its
-    replayable START_REQUESTED row. Returns the list of stamps the seam saw, so a
-    refusal can prove the jump really happened at the stamp and not earlier."""
-    from ouroboros import review_dispatch, review_execution, review_native_episode
-
-    original = review_dispatch.invoke_review_paid_stamp
-    fired = []
-
-    def _jump_then_stamp(stamp):
-        fired.append(stamp)
-        clock["offset"] += float(burns_sec)
-        return original(stamp)
-
-    for module in (review_dispatch, review_execution, review_native_episode):
-        monkeypatch.setattr(module, "invoke_review_paid_stamp", _jump_then_stamp)
-    return fired
-
-
-def _route_panel(monkeypatch, root, row, *, over_floor):
-    """One REAL panel on `row`'s delivery (or a tuple of rows) over the
-    injected deadline clock, in its own `root` (arms of one test must not
-    share a wallet). Returns `(ctx, clock, sends)`; `sends()` counts the
-    PHYSICAL sends — scripted reviewer calls for the packet and native rows
-    plus `/v2/runs` starts for the agent-session row."""
-    root.mkdir(exist_ok=True)
-    governance, workspace = _roots(root)
-    rows = row if isinstance(row, tuple) else (row,)
-    gateway = _fake_session(monkeypatch) if _ROW_SESSION in rows else None
-    llm = _EpisodeLLM(
-        root, [{"content": json.dumps(_CLEAN_VERDICT)}] * sum(r is not _ROW_SESSION for r in rows))
-
-    def sends():
-        starts = sum(len(inst.start_requests) for inst in gateway.instances) if gateway else 0
-        return len(llm.calls) + starts
-
-    _real_panel(monkeypatch, llm)
-    ctx, clock = _deadline_panel_ctx(
-        monkeypatch, root, over_floor=over_floor, row=row, evidence=dict(_ACCEPTANCE_PACKET),
-        repo_dir=str(governance), workspace_root=str(workspace), workspace_mode="project")
-    return ctx, clock, sends
 
 
 def _evidence_build(clock, *, burns_sec):
@@ -463,231 +416,79 @@ def _evidence_build(clock, *, burns_sec):
     return _build
 
 
-def test_a_panel_whose_evidence_build_ate_the_margin_refuses_free_at_the_paid_claim(
-        monkeypatch, tmp_path):
-    """End to end on the real panel with an injected clock. The loop gate's own
-    predicate admits at floor + 60 s; the evidence build then burns 130 s of
-    that window, so by the time money is about to be committed the spendable
-    window is 130 s — at or below the 200 s floor — and the paid claim refuses
-    for $0: no `claims_by_binding` row, no reviewer send, and the panel hands
-    the loop the TYPED deadline-admission control result carrying the launch
-    gate's own `review_skipped_deadline_reserve` (never a DEGRADED reviewer
-    verdict). The control arm runs the SAME scenario with a build that burns
-    nothing and dispatches for real, so the refusal cannot pass vacuously."""
-    from ouroboros import acceptance_dialogue, loop as loop_mod, task_pacing
-    from ouroboros.review_dispatch import TaskAcceptanceLaunchRefused
-    from ouroboros.task_results import load_task_acceptance_review_state
+def _admitted_panel(monkeypatch, root, *, burns_sec):
+    """One REAL packet panel in its own `root` (arms of one test must not share
+    a wallet: the same binding claims once), admitted by the loop gate's OWN
+    predicate at floor + 60 s, whose host packet builder then CONSUMES
+    `burns_sec` of that window. Returns `(ctx, clock, llm)`."""
+    from ouroboros import acceptance_dialogue, task_pacing
 
-    ctx, clock = _deadline_panel_ctx(monkeypatch, tmp_path, over_floor=60)
-    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}])
+    root.mkdir(exist_ok=True)
+    ctx, clock = _deadline_panel_ctx(monkeypatch, root, over_floor=60)
+    llm = _EpisodeLLM(root, [{"content": json.dumps(_CLEAN_VERDICT)}])
     _real_panel(monkeypatch, llm)
     monkeypatch.setattr(
-        acceptance_dialogue, "_build_host_acceptance_evidence", _evidence_build(clock, burns_sec=130))
+        acceptance_dialogue, "_build_host_acceptance_evidence",
+        _evidence_build(clock, burns_sec=burns_sec))
     # The loop gate, on exactly what loop.py feeds it: ADMIT at floor + 60 s.
     admitted = task_pacing.build_budget_snapshot(ctx.tools._ctx, profile=ctx.budget_profile)
     assert admitted.spendable_sec > 200.0
     assert task_pacing.review_launch_allowed(admitted) == (True, "")
-
-    with pytest.raises(TaskAcceptanceLaunchRefused) as refused:
-        loop_mod._execute_task_acceptance_panel(ctx)
-
-    assert refused.value.launch_reason == "review_skipped_deadline_reserve"
-    assert llm.calls == []  # no reviewer was called
-    assert load_task_acceptance_review_state(
-        tmp_path, "root-delivery")["claims_by_binding"] == {}
-    # The claim really did re-read the clock the build moved.
-    assert task_pacing.build_budget_snapshot(
-        ctx.tools._ctx, profile=ctx.budget_profile).spendable_sec <= 200.0
-
-    # CONTROL: the same fixture, the same window, a build that burns nothing.
-    control, control_clock = _deadline_panel_ctx(monkeypatch, tmp_path, over_floor=60)
-    monkeypatch.setattr(
-        acceptance_dialogue, "_build_host_acceptance_evidence",
-        _evidence_build(control_clock, burns_sec=0))
-
-    dispatched = loop_mod._execute_task_acceptance_panel(control)
-
-    assert dispatched.aggregate_signal == "PASS"
-    assert len(llm.calls) == 1  # the reviewer really was sent the work order
-    assert len(load_task_acceptance_review_state(
-        tmp_path, "root-delivery")["claims_by_binding"]) == 1
+    return ctx, clock, llm
 
 
-@pytest.mark.parametrize("row", [_ROW_API, _ROW_NATIVE, _ROW_SESSION],
-                         ids=["packet_api", "native_episode", "agent_session"])
-def test_every_delivery_refuses_free_when_the_clock_jumps_right_before_the_stamp(
-        monkeypatch, tmp_path, row):
-    """Post-seam, per delivery: the loop gate admits at floor + 60 s and the
-    evidence is already bound, so nothing between admission and the route
-    moves the clock — until the route itself is about to fire the write-ahead
-    stamp, where the injected clock jumps 130 s (the margin eaten by route
-    preparation). The claim inside the stamp must refuse for $0 on the packet,
-    native and session deliveries alike: the typed control result, no
-    `claims_by_binding` row, no physical send (no reviewer call, no `/v2/runs`
-    start) — and the stamp really was the seam that saw the jump. The control
-    arm (run first, in its own root, with the clock untouched) dispatches for
-    real with exactly one claim, so the refusal cannot pass vacuously."""
+def test_a_panel_whose_evidence_build_ate_the_margin_dispatches_and_the_deadline_bounds_it(
+        monkeypatch, tmp_path):
+    """The DISCLOSED residual of owner R55, end to end on the real panel with
+    an injected clock. The loop gate's own predicate admits at floor + 60 s;
+    the evidence build then burns 130 s of that window, so by the time money
+    is committed the spendable window is 130 s — at or below the 200 s floor —
+    and the panel DISPATCHES anyway: the paid claim asks the wallet and
+    cancellation only, so there is one `claims_by_binding` row and one
+    physical send (the cost is one floor-priced wave, never a second). What
+    bounds such a panel is the R23 deadline clamp (the third arm): a build
+    that eats the margin AND the reserve leaves the owner window exhausted
+    before the send, and the row is cut typed and $0 — `not_dispatched`, no
+    claim row, no send, a DEGRADED panel — never a free skip. The control arm
+    (a build that burns nothing) dispatches exactly as before, so neither the
+    dispatch nor the cut can pass vacuously."""
     from ouroboros import loop as loop_mod, task_pacing
-    from ouroboros.review_dispatch import TaskAcceptanceLaunchRefused
     from ouroboros.task_results import load_task_acceptance_review_state
 
-    # CONTROL first: same delivery, same window, the clock never jumps. Its
-    # own monkeypatch context unwinds its patches so the race arm patches a
-    # pristine `run_review_request` rather than wrapping the wrapper.
-    with monkeypatch.context() as control_patch:
-        control, _clock, control_sends = _route_panel(
-            control_patch, tmp_path / "control", row, over_floor=60)
-        dispatched = loop_mod._execute_task_acceptance_panel(control)
+    # CONTROL: the same fixture, the same window, a build that burns nothing.
+    with monkeypatch.context() as arm:
+        ctx, _clock, llm = _admitted_panel(arm, tmp_path / "control", burns_sec=0)
+        dispatched = loop_mod._execute_task_acceptance_panel(ctx)
         assert dispatched.aggregate_signal == "PASS"
-        assert control_sends() == 1
+        assert len(llm.calls) == 1  # the reviewer really was sent the work order
         assert len(load_task_acceptance_review_state(
             tmp_path / "control", "root-delivery")["claims_by_binding"]) == 1
 
-    ctx, clock, sends = _route_panel(monkeypatch, tmp_path / "race", row, over_floor=60)
-    fired = _clock_jump_before_stamp(monkeypatch, clock, burns_sec=130)
-    admitted = task_pacing.build_budget_snapshot(ctx.tools._ctx, profile=ctx.budget_profile)
-    assert task_pacing.review_launch_allowed(admitted) == (True, "")
+    # RESIDUAL (R55): the build ate the margin; the claim never asks the floor.
+    with monkeypatch.context() as arm:
+        ctx, _clock, llm = _admitted_panel(arm, tmp_path / "residual", burns_sec=130)
+        dispatched = loop_mod._execute_task_acceptance_panel(ctx)
+        # The window really shrank below the floor: asked again, the loop gate
+        # would refuse — nothing asks it again.
+        shrunk = task_pacing.build_budget_snapshot(ctx.tools._ctx, profile=ctx.budget_profile)
+        assert shrunk.spendable_sec <= 200.0
+        assert task_pacing.review_launch_allowed(shrunk) == (False, "review_skipped_deadline_reserve")
+        assert dispatched.aggregate_signal == "PASS"
+        assert len(llm.calls) == 1  # ONE physical send: one floor-priced wave
+        assert len(load_task_acceptance_review_state(
+            tmp_path / "residual", "root-delivery")["claims_by_binding"]) == 1  # ONE claim row
 
-    with pytest.raises(TaskAcceptanceLaunchRefused) as refused:
-        loop_mod._execute_task_acceptance_panel(ctx)
-
-    assert refused.value.launch_reason == "review_skipped_deadline_reserve"
-    assert fired and clock["offset"] >= 130.0  # the jump happened AT the stamp
-    assert sends() == 0  # no physical send on this delivery
-    assert load_task_acceptance_review_state(
-        tmp_path / "race", "root-delivery")["claims_by_binding"] == {}
-
-
-def _loop_level_panel(monkeypatch, tmp_path, *, jump_sec):
-    """Drive the REAL `_run_task_acceptance_review_once` — eligibility, fence,
-    quiescence, the loop's own launch gate, binding, the real packet panel —
-    with the host packet builder pre-bound and the clock jumping `jump_sec`
-    right before the stamp fires (0 = no jump). Returns `(out, tools_ctx,
-    trace, notes, llm)`."""
-    from ouroboros import acceptance_dialogue, loop as loop_mod
-
-    monkeypatch.setattr(loop_mod, "get_task_review_mode", lambda: "required")
-    ctx, clock = _deadline_panel_ctx(monkeypatch, tmp_path, over_floor=60)
-    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}])
-    _real_panel(monkeypatch, llm)
-    # Both bindings: loop.py re-exports the builder, so it holds its own name.
-    for module in (loop_mod, acceptance_dialogue):
-        monkeypatch.setattr(
-            module, "_build_host_acceptance_evidence", lambda _ctx: dict(_ACCEPTANCE_PACKET))
-    if jump_sec:
-        _clock_jump_before_stamp(monkeypatch, clock, burns_sec=jump_sec)
-    trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
-    notes = []
-    out = loop_mod._run_task_acceptance_review_once(
-        tools=ctx.tools, content="deliverable", task_id="root-delivery", task_type="task",
-        llm_trace=trace, drive_root=tmp_path,
-        messages=[{"role": "system", "content": "policy"}, {"role": "user", "content": "goal"}],
-        emit_progress=notes.append,
-    )
-    return out, ctx.tools._ctx, trace, notes, llm
-
-
-def test_the_claim_side_refusal_takes_the_loop_gates_own_skip_terminal(monkeypatch, tmp_path):
-    """R53 part b, at the loop: a claim-side floor refusal is the launch gate's
-    OWN skip — `_run_task_acceptance_review_once` answers the typed control
-    result BEFORE `_record_host_acceptance_run`, so the trace and
-    `derive_loop_outcome` read exactly what a loop-gate refusal produces
-    (compare `test_review_skipped_inside_reserve_finalizes_loudly`): no
-    `review_runs` at all, `review_skipped_deadline_reserve` from source
-    `task_pacing`, review axis `skipped` with `run_count == 0`, the objective
-    degraded by `task_acceptance_deadline_reserve` — never `review_degraded`
-    with a synthetic DEGRADED run. Nothing was attempted, so the process-local
-    binding marker is gone too. The control arm (no jump) buys the panel: one
-    recorded run, one claim, one send, a clean acceptance."""
-    from ouroboros.outcomes import derive_loop_outcome
-    from ouroboros.task_results import load_task_acceptance_review_state
-
-    with monkeypatch.context() as race_patch:
-        out, tools_ctx, trace, notes, llm = _loop_level_panel(race_patch, tmp_path, jump_sec=130)
-
-    assert out is False
-    assert llm.calls == [] and load_task_acceptance_review_state(
-        tmp_path, "root-delivery")["claims_by_binding"] == {}
-    assert "review_runs" not in trace  # the claim refused: no reviewer run recorded
-    assert trace["review_decision"]["eligibility"] == "eligible"
-    assert trace["review_decision"]["skipped"] == "review_skipped_deadline_reserve"
-    assert trace["acceptance_decision"]["status"] == "finalized_unaccepted"
-    assert trace["acceptance_decision"]["reason"] == "review_skipped_deadline_reserve"
-    assert trace["acceptance_decision"]["source"] == "task_pacing"
-    assert trace["acceptance_decision"]["rationale"].startswith("Spendable ")
-    assert "at or below the 200s floor" in trace["acceptance_decision"]["rationale"]
-    assert notes == ["Task acceptance skipped: spendable at or below floor."]
-    assert tools_ctx._task_acceptance_reviewed is True
-    assert tools_ctx._task_acceptance_seen_bindings == {}  # nothing was attempted
-    axes = derive_loop_outcome("FINAL ANSWER: best available answer", {}, trace)["outcome_axes"]
-    assert axes["execution"]["status"] == "degraded"
-    assert axes["execution"]["reason_code"] == "review_skipped_deadline_reserve"
-    assert axes["objective"] == {
-        "status": "degraded",
-        "source": "task_acceptance_deadline_reserve",
-        "review_status": "skipped",
-    }
-    assert axes["review"]["status"] == "skipped" and axes["review"]["run_count"] == 0
-    assert "aggregate_signals" not in axes["review"]  # no synthetic reviewer verdict
-
-    # CONTROL: the same loop path with the clock left alone buys the panel.
-    out, _tools_ctx, trace, _notes, llm = _loop_level_panel(monkeypatch, tmp_path, jump_sec=0)
-    assert out is False and len(llm.calls) == 1
-    assert len(load_task_acceptance_review_state(tmp_path, "root-delivery")["claims_by_binding"]) == 1
-    assert trace["acceptance_decision"]["status"] == "accepted"
-    assert len(trace["review_runs"]) == 1
-    axes = derive_loop_outcome("FINAL ANSWER: deliverable", {}, trace)["outcome_axes"]
-    assert axes["review"]["status"] == "pass" and axes["review"]["run_count"] == 1
-
-
-def test_a_mixed_panel_race_first_stamp_refusal_is_one_typed_skip_for_all_rows(
-        monkeypatch, tmp_path):
-    """A panel running api_chat + native + agent_session rows IN PARALLEL,
-    where the clock jump makes the FIRST stamp invocation cross the floor:
-    the once-only claim refuses whoever fires first, every later row replays
-    the SAME typed refusal (never a generic wrapper — pinned by re-invoking
-    the shared stamp below), and the loop records the launch gate's own skip:
-    zero claim rows, zero physical sends on any route, zero reviewer runs,
-    and `derive_loop_outcome` reads `review_skipped_deadline_reserve`,
-    source `task_pacing`, `run_count == 0`."""
-    from ouroboros import acceptance_dialogue, loop as loop_mod
-    from ouroboros.outcomes import derive_loop_outcome
-    from ouroboros.review_dispatch import TaskAcceptanceLaunchRefused
-    from ouroboros.task_results import load_task_acceptance_review_state
-
-    monkeypatch.setattr(loop_mod, "get_task_review_mode", lambda: "required")
-    ctx, clock, sends = _route_panel(
-        monkeypatch, tmp_path, (_ROW_API, _ROW_NATIVE, _ROW_SESSION), over_floor=60)
-    for module in (loop_mod, acceptance_dialogue):  # loop.py re-exports the builder
-        monkeypatch.setattr(
-            module, "_build_host_acceptance_evidence", lambda _ctx: dict(_ACCEPTANCE_PACKET))
-    fired = _clock_jump_before_stamp(monkeypatch, clock, burns_sec=130)
-    trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
-
-    out = loop_mod._run_task_acceptance_review_once(
-        tools=ctx.tools, content="deliverable", task_id="root-delivery", task_type="task",
-        llm_trace=trace, drive_root=tmp_path,
-        messages=[{"role": "system", "content": "policy"}, {"role": "user", "content": "goal"}],
-        emit_progress=lambda _m: None,
-    )
-
-    assert out is False
-    assert sends() == 0  # no reviewer call and no /v2/runs start, on ANY route
-    assert load_task_acceptance_review_state(
-        tmp_path, "root-delivery")["claims_by_binding"] == {}
-    assert "review_runs" not in trace  # zero reviewer runs recorded
-    assert trace["acceptance_decision"]["reason"] == "review_skipped_deadline_reserve"
-    assert trace["acceptance_decision"]["source"] == "task_pacing"
-    # Every racing row shares ONE stamp; the once-only claim hands the later
-    # rows the SAME typed refusal, not a generic wrapper. (A `None` entry is
-    # custody's pre-fanout no-op — task acceptance hides the stamp there.)
-    stamps = [stamp for stamp in fired if stamp is not None]
-    assert stamps and all(stamp is stamps[0] for stamp in stamps)
-    with pytest.raises(TaskAcceptanceLaunchRefused):
-        stamps[0]()
-    axes = derive_loop_outcome("FINAL ANSWER: deliverable", {}, trace)["outcome_axes"]
-    assert axes["execution"]["reason_code"] == "review_skipped_deadline_reserve"
-    assert axes["review"]["status"] == "skipped" and axes["review"]["run_count"] == 0
+    # R23: the build ate the margin AND the reserve; the deadline clamp cuts
+    # the row before its send — typed, $0, DEGRADED — nothing about it a skip.
+    with monkeypatch.context() as arm:
+        ctx, _clock, llm = _admitted_panel(arm, tmp_path / "cut", burns_sec=260)
+        cut = loop_mod._execute_task_acceptance_panel(ctx)
+        (actor,) = cut.actors
+        assert actor["status"] == "not_dispatched"
+        assert cut.aggregate_signal == "DEGRADED" and cut.degraded is True
+        assert llm.calls == []  # no send
+        assert load_task_acceptance_review_state(
+            tmp_path / "cut", "root-delivery")["claims_by_binding"] == {}  # no claim row
 
 
 # ---------------------------------------------------------------------------
@@ -850,8 +651,8 @@ def test_a_descendant_poll_gets_the_wallet_axis_and_no_time_axis_at_all(monkeypa
     payload carries the wallet and the cancellation state — and NOTHING about
     time. Pinned as the exact key set, so a new field cannot be added back
     without this test: the descendant reads its own window from the adjacent
-    `time` fact, and the launch rule is evaluated where it belongs — at loop
-    admission and at the paid claim — never inside this projection."""
+    `time` fact, and the launch rule is evaluated where it belongs — once, at
+    loop admission (owner R55) — never inside this projection."""
     from ouroboros.task_results import project_task_acceptance_review_capacity
 
     ctx, _events = _floor_band_ctx(monkeypatch, tmp_path, seconds_left=620)
