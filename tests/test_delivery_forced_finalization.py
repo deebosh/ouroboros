@@ -1012,6 +1012,51 @@ def test_production_budget_wrapup_propagates_budget_exceeded(tmp_path, monkeypat
         )
 
 
+def test_wrapup_is_forced_while_real_ledger_admission_still_fits(tmp_path, monkeypatch):
+    """The post-round rail reserves the last affordable send before another
+    ordinary round could consume it; the forced call crosses real admission."""
+    from ouroboros import task_pacing
+    import ouroboros.usage_accounting as accounting
+
+    loop, _registry, ctx, _trace = _forced_test_context(
+        tmp_path, usage={"cost": 1.0, "_context_prompt_estimate": 1000},
+    )
+    scope = accounting.UsageScope(
+        drive_root=tmp_path, task_id="parent1", root_task_id="parent1",
+        global_limit_usd=1000.0, root_limit_usd=100.0,
+    )
+    with accounting.usage_scope(scope):
+        prior = accounting.reserve_attempt(accounting.AttemptRequest(
+            model="test-model", provider="openrouter", reservation_usd=96.5,
+        ))
+        accounting.mark_dispatched(prior)
+        accounting.settle_attempt(prior, {}, cost_usd=96.5, cost_final=True)
+
+        monkeypatch.setattr(accounting, "_reservation_cost", lambda _request: 2.0)
+        admitted = []
+
+        def forced_model(*_args, **_kwargs):
+            reservation = accounting.reserve_attempt(accounting.AttemptRequest(
+                model="test-model", provider="openrouter", reservation_usd=2.0,
+            ))
+            accounting.mark_dispatched(reservation)
+            accounting.settle_attempt(reservation, {}, cost_usd=2.0, cost_final=True)
+            admitted.append(reservation.attempt_id)
+            return {"role": "assistant", "content": "Affordable final answer."}, 0.0
+
+        monkeypatch.setattr(loop, "call_llm_with_retry", forced_model)
+        result = loop._check_budget_limits(
+            ctx, budget_remaining_usd=900.0,
+            cost_ceiling=task_pacing.resolve_cost_ceiling(
+                900.0, {"cost_hard_stop_pct": 50}, root_cap_usd=100.0,
+            ),
+        )
+
+    assert result is not None and result[0].startswith("Affordable final answer.")
+    assert len(admitted) == 1
+    assert accounting.usage_projection(tmp_path, root_task_id="parent1")["accounted_usd"] == 98.5
+
+
 def test_forced_owner_arrival_gets_one_complete_refresh(tmp_path, monkeypatch):
     import hashlib
 

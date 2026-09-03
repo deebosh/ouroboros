@@ -307,11 +307,6 @@ def _check_budget_limits(
             fallback_text=finish_reason,
             reason_code="budget_exhausted",
         )
-    # The pre-v6.91 per-task soft "[COST NOTE]" is gone: since v6.64.0 the
-    # same settings key hard-fences the whole TREE at the ledger, so an
-    # own-cost note keyed to it could never fire before the fence (proven
-    # live: silent through two tree deaths); v6.56.0 milestones are the nudge.
-
     if cost_ceiling is None or cost_ceiling.state != task_pacing.COST_CEILING_ACTIVE:
         return None
     tree_info = _loop_tree_accounting(refresh=True, max_age_sec=_TREE_ACCOUNTING_MAX_STALE_SEC)
@@ -322,7 +317,25 @@ def _check_budget_limits(
         root_cap_usd=cost_ceiling.root_cap_usd,
     )
     ceiling_usd = cost_ceiling.ceiling_usd
+    prompt_estimate = int(accumulated_usage.get("_context_prompt_estimate") or 0)
+    wrapup_fits = None
+    if cost_ceiling.root_cap_usd is not None and deciding is not None and prompt_estimate > 0:
+        wrapup_args = dict(model=ctx.active_model, prompt_tokens=prompt_estimate,
+                           root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding)
+        wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
+        if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
+            **wrapup_args, reservation_count=2,
+        ) is False:
+            finish_reason = task_pacing.wrapup_last_fit_text(deciding, cost_ceiling)
+            accumulated_usage["cost_stop_spend_basis"] = spend_basis
+            accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
+            return _forced_final_answer(
+                ctx, prompt=f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}",
+                fallback_text=finish_reason, reason_code="budget_exhausted",
+            )
     if deciding is not None and ceiling_usd is not None and deciding > ceiling_usd:
+        if wrapup_fits is False:
+            return None
         if spend_basis == task_pacing.SPEND_BASIS_TREE:
             spent_text = (
                 f"Task tree spent ${deciding:.3f} (ledger-accounted incl. in-flight holds, "
@@ -357,19 +370,6 @@ def _check_budget_limits(
             fallback_text=finish_reason,
             reason_code="budget_exhausted",
         )
-    prompt_estimate = int(accumulated_usage.get("_context_prompt_estimate") or 0)
-    if cost_ceiling.root_cap_usd is not None and deciding is not None and prompt_estimate > 0:
-        if task_pacing.wrapup_reservation_fits(
-            model=ctx.active_model, prompt_tokens=prompt_estimate,
-            root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding,
-        ) is False:
-            finish_reason = task_pacing.wrapup_unaffordable_text(deciding, cost_ceiling)
-            accumulated_usage["cost_stop_spend_basis"] = spend_basis
-            accumulated_usage["cost_stop_rail"] = "wrapup_reservation_unaffordable"
-            return _forced_final_answer(
-                ctx, prompt=f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}",
-                fallback_text=finish_reason, reason_code="budget_exhausted",
-            )
     # The old round-gated "[INFO] ... Wrap up if possible" nudge is replaced by
     # the latched cost milestones in task_pacing (transport: _inject_round_checkpoints).
 

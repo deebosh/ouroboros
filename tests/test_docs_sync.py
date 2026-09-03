@@ -48,6 +48,19 @@ def test_architecture_mentions_shared_log_grouping_and_direct_provider_review_fa
     assert "claudeRuntimeHasError" not in arch
 
 
+def test_architecture_maps_cache_split_and_total_budget_authorities():
+    arch = _read("docs/ARCHITECTURE.md")
+
+    assert "_usage_cache_splits.py" in arch
+    assert "process-local" in next(
+        line for line in arch.splitlines() if "_usage_cache_splits.py" in line
+    )
+    settings_row = next(
+        line for line in arch.splitlines() if "settings_setup_contract.py" in line
+    )
+    assert "resolve_total_budget_usd" in settings_row
+
+
 def test_architecture_documents_skill_schedule_lifecycle_and_evolution_light_block():
     arch = _read("docs/ARCHITECTURE.md")
 

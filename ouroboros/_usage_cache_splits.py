@@ -12,13 +12,13 @@ from __future__ import annotations
 import time
 from typing import Dict, Optional, Tuple
 
-# (task_id, route identity) -> (observed cached prompt tokens, monotonic stamp, horizon)
-_SPLITS: Dict[Tuple[str, str], Tuple[int, float, float]] = {}
+# (task_id, provider, route identity) -> (cached prompt tokens, monotonic stamp, horizon)
+_SPLITS: Dict[Tuple[str, str, str], Tuple[int, float, float]] = {}
 _SPLITS_CAP = 64
 
 
-def _key(task_id: str, model: str) -> Tuple[str, str]:
-    """One key per (task, route), whatever spelling of the route the caller holds.
+def _key(task_id: str, provider: str, model: str) -> Tuple[str, str, str]:
+    """One key per (task, provider, route), normalizing only model spelling.
 
     The two sides of this store reach it by different names for the same model:
     the fence settles under the ledger's qualified identity
@@ -27,33 +27,33 @@ def _key(task_id: str, model: str) -> Tuple[str, str]:
     default direct-Anthropic install miss its own split on every read, so both
     sides normalize through the identity the fence itself uses -- one leading
     ``~`` probe marker stripped first, exactly as the reservation's own
-    model-family test does.
+    model-family test does. Provider remains a separate key component because
+    direct and OpenRouter caches are not shared.
     """
     from ouroboros.provider_models import normalize_model_identity
 
     route = normalize_model_identity(str(model or "").strip().removeprefix("~"))
-    return (str(task_id or "").strip(), route)
+    return (str(task_id or "").strip(), str(provider or "").strip().lower(), route)
 
 
 def stash_task_cache_split(
-    task_id: str, model: str, cached_tokens: int, *, ttl_seconds: float
+    task_id: str, model: str, cached_tokens: int, *, provider: str = "", ttl_seconds: float
 ) -> None:
-    """Remember what one task+model send actually read from the provider cache."""
-    key = _key(task_id, model)
-    if not key[0] or not key[1]:
+    """Remember what one task+provider+model send read from the provider cache."""
+    key = _key(task_id, provider, model)
+    if not key[0] or not key[2]:
         return
     if key not in _SPLITS and len(_SPLITS) >= _SPLITS_CAP:
         _SPLITS.clear()
     _SPLITS[key] = (max(0, int(cached_tokens or 0)), time.monotonic(), float(ttl_seconds))
 
 
-def last_task_cache_split(task_id: str, model: str) -> Optional[int]:
+def last_task_cache_split(task_id: str, model: str, *, provider: str = "") -> Optional[int]:
     """The task's own last observed cached-token count, or None once it lapsed.
 
-    None also covers a different model or route: the key carries the route, so a
-    route change never inherits another route's cache split.
+    None also covers a different provider, model, or route.
     """
-    split = _SPLITS.get(_key(task_id, model))
+    split = _SPLITS.get(_key(task_id, provider, model))
     if split is None or time.monotonic() - split[1] > split[2]:
         return None
     return split[0]

@@ -150,7 +150,7 @@ def _project_naming_usage_scope(drive_root: Optional[Any], task_id: str):
         parent_task_id=parent_task_id,
         category="project_naming",
         source="project_naming",
-        global_limit_usd=global_limit if global_limit > 0 else None,
+        global_limit_usd=global_limit,
         root_limit_usd=root_limit if root_limit > 0 else None,
     )
 

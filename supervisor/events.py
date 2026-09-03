@@ -2558,10 +2558,8 @@ def _find_duplicate_task(
             source="task_duplicate_check",
         )
     else:
-        try:
-            global_limit = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-        except (TypeError, ValueError):
-            global_limit = 0.0
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+        global_limit = resolve_total_budget_usd()
         try:
             root_limit = float(os.environ.get("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
         except (TypeError, ValueError):
@@ -2573,7 +2571,7 @@ def _find_duplicate_task(
             parent_task_id=prospective_parent_id,
             category="planning",
             source="task_duplicate_check",
-            global_limit_usd=global_limit if global_limit > 0 else None,
+            global_limit_usd=global_limit,
             root_limit_usd=root_limit if root_limit > 0 else None,
         )
 

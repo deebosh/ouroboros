@@ -3013,6 +3013,73 @@ def test_one_llm_usage_row_per_physical_reviewer_call(tmp_path):
     assert {event["source"] for event in usage_events} == {"review_substrate:multi_model_review"}
 
 
+def test_format_repair_emits_one_usage_row_per_send_without_aggregate(tmp_path):
+    class RepairLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {"content": "malformed"}, {"prompt_tokens": 3, "ledger_attempt_ids": ["a1"]}
+            return {"content": "[]"}, {"prompt_tokens": 4, "ledger_attempt_ids": ["a2"]}
+
+    ctx = SimpleNamespace(task_id="repair-usage", event_queue=None, pending_events=[])
+    llm = RepairLLM()
+    run_review_request(
+        ReviewRequest(surface="task_acceptance", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=llm, usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert llm.calls == 2
+    assert [row["ledger_attempt_ids"] for row in rows] == [["a1"], ["a2"]]
+
+
+def test_failed_physical_reviewer_send_still_emits_its_usage_row(tmp_path):
+    from ouroboros.usage_accounting import PhysicalAttemptCapture
+
+    class FailedLLM:
+        def chat(self, **_kwargs):
+            error = RuntimeError("provider failed after dispatch")
+            error.physical_attempt_capture = PhysicalAttemptCapture(
+                attempt_id="failed-a1", model="same/model", provider="openrouter",
+                state="unresolved", candidate_measurement_kind="opaque",
+            )
+            raise error
+
+    ctx = SimpleNamespace(task_id="failed-usage", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="plan_review", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=FailedLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(rows) == 1
+    assert rows[0]["ledger_attempt_ids"] == ["failed-a1"]
+
+
+def test_internal_reviewer_transport_attempts_each_get_one_usage_row(tmp_path):
+    class RetriedLLM:
+        def chat(self, **_kwargs):
+            return {"content": "[]"}, {
+                "prompt_tokens": 4, "ledger_attempt_ids": ["wire-a1", "wire-a2"],
+            }
+
+    ctx = SimpleNamespace(task_id="wire-retry", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="plan_review", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=RetriedLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert [row["ledger_attempt_ids"] for row in rows] == [["wire-a1"], ["wire-a2"]]
+    assert [row["usage"]["prompt_tokens"] for row in rows] == [0, 4]
+
+
 def test_the_single_usage_row_carries_the_reviewer_attribution(tmp_path):
     """The surviving row is traceable to its wave and slot, not just its task.
 

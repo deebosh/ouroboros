@@ -1,8 +1,8 @@
 """One deciding money number per task tree, and the wrap-up affordability rail.
 
 Covers the graceful in-task cost stop that borrows the ledger fence's own
-per-attempt reservation, the cache-aware shape of that reservation, the single
-root-resolved ceiling every tree member shares, and the global-budget default.
+per-attempt reservation, the cache-aware shape of that reservation, the root
+ceiling no tree member may exceed, and the global-budget default.
 """
 from __future__ import annotations
 
@@ -87,30 +87,50 @@ class TestCacheAwareReservation:
     def test_observed_split_lowers_the_reservation(self):
         cold = usage_accounting._reservation_cost(_request(task_id="t1"))
         usage_accounting.stash_task_cache_split(
-            "t1", "anthropic/claude-test", 95_000, ttl_seconds=300.0,
+            "t1", "anthropic/claude-test", 95_000, provider="openrouter", ttl_seconds=300.0,
         )
         warm = usage_accounting._reservation_cost(_request(task_id="t1"))
         assert warm is not None and warm < cold
 
     def test_direct_route_and_ledger_identity_share_a_split(self):
         usage_accounting.stash_task_cache_split(
-            "t1", "anthropic/claude-test", 95_000, ttl_seconds=300.0,
+            "t1", "anthropic/claude-test", 95_000, provider="anthropic", ttl_seconds=300.0,
         )
         assert usage_accounting.last_task_cache_split(
-            "t1", "anthropic::claude-test",
+            "t1", "anthropic::claude-test", provider="anthropic",
         ) == 95_000
+
+    def test_direct_split_is_cold_after_openrouter_fallback(self):
+        direct = _request(
+            task_id="t1", provider="anthropic", model="anthropic::claude-test",
+        )
+        fallback = _request(
+            task_id="t1", provider="openrouter", model="anthropic/claude-test",
+        )
+        cold = usage_accounting._reservation_cost(fallback)
+        usage_accounting.stash_task_cache_split(
+            "t1", direct.model, 95_000, provider=direct.provider, ttl_seconds=300.0,
+        )
+
+        assert usage_accounting.last_task_cache_split(
+            "t1", direct.model, provider=direct.provider,
+        ) == 95_000
+        assert usage_accounting.last_task_cache_split(
+            "t1", fallback.model, provider=fallback.provider,
+        ) is None
+        assert usage_accounting._reservation_cost(fallback) == cold
 
     def test_a_split_of_another_model_is_never_inherited(self):
         cold = usage_accounting._reservation_cost(_request(task_id="t1"))
         usage_accounting.stash_task_cache_split(
-            "t1", "anthropic/other-model", 95_000, ttl_seconds=300.0,
+            "t1", "anthropic/other-model", 95_000, provider="openrouter", ttl_seconds=300.0,
         )
         assert usage_accounting._reservation_cost(_request(task_id="t1")) == cold
 
     def test_a_lapsed_split_is_never_inherited(self):
         cold = usage_accounting._reservation_cost(_request(task_id="t1"))
         usage_accounting.stash_task_cache_split(
-            "t1", "anthropic/claude-test", 95_000, ttl_seconds=-1.0,
+            "t1", "anthropic/claude-test", 95_000, provider="openrouter", ttl_seconds=-1.0,
         )
         assert usage_accounting._reservation_cost(_request(task_id="t1")) == cold
 
@@ -122,7 +142,7 @@ class TestCacheAwareReservation:
         reservation silently degrades to a full write on every live round.
         """
         usage_accounting.stash_task_cache_split(
-            "live-task", "anthropic/claude-test", 95_000, ttl_seconds=300.0,
+            "live-task", "anthropic/claude-test", 95_000, provider="openrouter", ttl_seconds=300.0,
         )
         cold = usage_accounting._reservation_cost(_request(task_id="unknown-task"))
         with _scoped("live-task", "live-task"):
@@ -209,7 +229,8 @@ class TestWrapupAffordabilityRail:
         monkeypatch.setattr(
             "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
         )
-        monkeypatch.setattr(task_pacing, "wrapup_reservation_fits", lambda **_k: False)
+        answers = iter((True, False))
+        monkeypatch.setattr(task_pacing, "wrapup_reservation_fits", lambda **_k: next(answers))
         monkeypatch.setattr(
             "ouroboros.loop._forced_final_answer",
             lambda ctx_, **kwargs: ("wrapped up", ctx_.accumulated_usage, {"kwargs": kwargs}),
@@ -218,7 +239,7 @@ class TestWrapupAffordabilityRail:
         result = _check_budget_limits(ctx, None, self._ceiling(50.0))
 
         assert result is not None
-        assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_unaffordable"
+        assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_last_fit"
         assert result[2]["kwargs"]["reason_code"] == "budget_exhausted"
 
     def test_a_missing_prompt_estimate_keeps_the_rail_silent(self, monkeypatch):
@@ -246,30 +267,30 @@ class TestWrapupAffordabilityRail:
         assert _check_budget_limits(ctx, None, disabled) is None
 
     def test_the_stop_text_names_the_cap_and_the_reason(self):
-        text = task_pacing.wrapup_unaffordable_text(49.9, self._ceiling(50.0))
+        text = task_pacing.wrapup_last_fit_text(49.9, self._ceiling(50.0))
 
         assert "$49.900" in text and "$50.00" in text
         assert "wrap-up call" in text
 
 
 class TestOneCeilingPerTree:
-    """Every member of one tree decides on the same money number."""
+    """Every member stays at or below its root's deciding money number."""
 
     def _profile(self):
         return normalize_budget_profile(None)
 
-    def test_a_non_root_member_under_a_root_cap_drops_the_global_component(self):
-        root = task_pacing.resolve_cost_ceiling(20.0, self._profile(), root_cap_usd=50.0)
+    def test_a_non_root_member_never_exceeds_the_root_deciding_number(self):
+        root = task_pacing.resolve_cost_ceiling(40.0, self._profile(), root_cap_usd=50.0)
         member = task_pacing.resolve_cost_ceiling(
-            20.0, self._profile(), root_cap_usd=50.0, non_root_member=True,
+            40.0, self._profile(), root_cap_usd=50.0, non_root_member=True,
         )
 
         assert "global_pct" in root.basis
-        assert "global_pct" not in member.basis
+        assert "global_pct" in member.basis
         assert "non_root_member" in member.basis
-        assert member.ceiling_usd == 50.0 - task_pacing.COST_PLANNING_MARGIN_USD
+        assert member.ceiling_usd <= root.ceiling_usd == 20.0
 
-    def test_a_descendant_ceiling_does_not_move_when_global_remaining_falls(self):
+    def test_a_descendant_tightens_when_global_remaining_falls(self):
         early = task_pacing.resolve_cost_ceiling(
             40.0, self._profile(), root_cap_usd=50.0, non_root_member=True,
         )
@@ -277,7 +298,7 @@ class TestOneCeilingPerTree:
             4.0, self._profile(), root_cap_usd=50.0, non_root_member=True,
         )
 
-        assert early.ceiling_usd == late.ceiling_usd
+        assert late.ceiling_usd < early.ceiling_usd
 
     def test_without_a_root_cap_the_global_component_still_binds(self):
         member = task_pacing.resolve_cost_ceiling(
@@ -297,7 +318,7 @@ class TestOneCeilingPerTree:
             ceiling = task_pacing.resolve_task_cost_ceiling(SimpleNamespace(), 40.0)
 
         assert "non_root_member" in ceiling.basis
-        assert ceiling.ceiling_usd == 50.0 - task_pacing.COST_PLANNING_MARGIN_USD
+        assert ceiling.ceiling_usd == 20.0
 
     def test_the_root_of_the_tree_keeps_both_components(self):
         with _scoped("root", "root", 50.0):
@@ -341,6 +362,21 @@ class TestOneCeilingPerTree:
         assert ceiling_binds == "$8.00 budget left (in-task cost ceiling binds)"
         assert wallet_binds == "$3.00 budget left (wallet binds)"
         assert task_pacing._headroom_phrase(None, None, None) == "budget left unknown"
+
+    def test_acceptance_rails_use_tree_spend_for_ceiling_headroom(self, monkeypatch):
+        monkeypatch.setattr(
+            usage_accounting, "usage_projection",
+            lambda *_a, **_k: {"accounted_usd": 42.0, "remaining_known_usd": 58.0},
+        )
+        with _scoped("child", "root", 47.0):
+            line = task_pacing._acceptance_rails_line_inner(
+                SimpleNamespace(has_deadline=False), self._profile(), 0,
+                {"task_cost_usd": 2.0, "cost_ceiling_usd": 47.0},
+                required_blocking=False,
+            )
+
+        assert "$2.00 spent this task" in line
+        assert "$5.00 budget left (in-task cost ceiling binds)" in line
 
 
 class TestGlobalBudgetDefault:

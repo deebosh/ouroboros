@@ -327,10 +327,12 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                         capture = getattr(exc, "physical_attempt_capture", None)
                         if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
+                        self._observe_failed_send(exc)
                         raise
                 self._rounds_used = round_idx
                 tool_calls = (msg.get("tool_calls") or []) if isinstance(msg, dict) else []
                 usage = dict(usage or {})
+                self._observe_usage(usage)
                 # Pop the wire-validation sidecar BEFORE accumulation, exactly
                 # like the existing bounded loops — receipts are per-round
                 # execution facts, not usage numbers.

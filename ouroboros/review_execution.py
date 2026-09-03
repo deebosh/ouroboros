@@ -306,6 +306,30 @@ class ReviewSlotExecutor:
     def __init__(self, assignment: ReviewAssignment, *, llm: Any = None):
         self.assignment = assignment
         self.llm = llm
+        self.usage_observer: Optional[Callable[[Dict[str, Any]], None]] = None
+
+    def _observe_usage(self, usage: Optional[Dict[str, Any]]) -> None:
+        if self.usage_observer is None:
+            return
+        row = dict(usage or {})
+        attempt_ids = [str(value) for value in (row.get("ledger_attempt_ids") or []) if value]
+        for attempt_id in attempt_ids[:-1]:
+            self.usage_observer({
+                "resolved_model": row.get("resolved_model"), "provider": row.get("provider"),
+                "ledger_attempt_ids": [attempt_id],
+            })
+        if attempt_ids:
+            row["ledger_attempt_ids"] = attempt_ids[-1:]
+        self.usage_observer(row)
+
+    def _observe_failed_send(self, exc: BaseException) -> None:
+        capture = getattr(exc, "physical_attempt_capture", None)
+        if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
+            self._observe_usage({
+                "resolved_model": str(getattr(capture, "model", "") or ""),
+                "provider": str(getattr(capture, "provider", "") or ""),
+                "ledger_attempt_ids": [str(getattr(capture, "attempt_id", "") or "")],
+            })
 
     def prompt_payload(self) -> Dict[str, Any]:
         """Route-owned projection of what will actually be sent (for the durable
@@ -402,9 +426,11 @@ class ApiChatReviewExecutor(ReviewSlotExecutor):
                 capture = getattr(exc, "physical_attempt_capture", None)
                 if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                     invoke_review_paid_stamp(self.assignment.dispatch_stamp)
+                self._observe_failed_send(exc)
                 raise
         # Null/non-object provider messages follow the caller's empty-response rail.
         raw_text = str(msg.get("content") or "") if isinstance(msg, dict) else ""
+        self._observe_usage(usage)
         return ReviewAttemptResult(message=msg, usage=usage, raw_text=raw_text)
 
 
@@ -1116,6 +1142,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             if not self._retry_state.get("pending_invocation_id"):
                 self._settled_failure = exc
             raise
+        self._observe_usage(self._session_usage)
         return self._verdict_result()
 
     def failure_custody(self) -> Dict[str, Any]:

@@ -700,7 +700,7 @@ class BackgroundConsciousness:
             root_task_id="bg-consciousness",
             category="consciousness",
             source="background_consciousness",
-            global_limit_usd=total_budget if total_budget > 0 else None,
+            global_limit_usd=total_budget,
             root_limit_usd=root_limit,
         )):
             return self._think_scoped()

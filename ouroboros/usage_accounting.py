@@ -549,7 +549,7 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
     if cache_write_tokens:
         # Price the task's OWN last observed split, not a full write every round;
         # a missing, stale or other-model split keeps today's full-write reservation.
-        cached_tokens = min(prompt_tokens, last_task_cache_split(request.task_id, request.model) or 0)
+        cached_tokens = min(prompt_tokens, last_task_cache_split(request.task_id, request.model, provider=request.provider) or 0)
         cache_write_tokens = prompt_tokens - cached_tokens
     prompt_cache_ttl: Optional[str] = None
     if cache_write_tokens:
@@ -1068,7 +1068,7 @@ def settle_attempt(
         prompt_cache_ttl=str(normalized.get("prompt_cache_ttl") or ""),
     )
     stash_task_cache_split(
-        (_CURRENT_SCOPE.get() or UsageScope()).task_id, reservation.model, int(cached_tokens or 0),
+        (_CURRENT_SCOPE.get() or UsageScope()).task_id, reservation.model, int(cached_tokens or 0), provider=reservation.provider,
         ttl_seconds=3600.0 if str(normalized.get("prompt_cache_ttl") or "") == "1h" else 300.0,
     )
 

@@ -461,11 +461,9 @@ def resolve_cost_ceiling(
     min(available components); NEVER a computed $0 — a root cap at or below the
     margin resolves to ``exhausted_soft_land`` instead.
 
-    ONE deciding number per task tree: a non-root member under a root cap skips
-    the global component entirely, because that component is each member's own
-    view of the shared wallet and would hand every later descendant a tighter
-    ceiling than its parent for spending the same tree's money. Without a root
-    cap the global component is all there is, so it stays.
+    A non-root member keeps both components: its own global resolution is
+    intersected with the root-cap resolution, so it can never exceed the root's
+    deciding number as the shared wallet drains.
 
     Stated plainly rather than implied: the ``room <= 0`` bail is the owner's
     "$0 ceiling" rule EXACTLY, no wider. A cap just ABOVE the margin therefore
@@ -494,12 +492,7 @@ def resolve_cost_ceiling(
             )
         components: list[float] = []
         basis_parts: list[str] = []
-        has_root_cap = root_cap_usd is not None and float(root_cap_usd) > 0
-        if (
-            not (non_root_member and has_root_cap)
-            and budget_remaining_start_usd is not None
-            and float(budget_remaining_start_usd) > 0
-        ):
+        if budget_remaining_start_usd is not None and float(budget_remaining_start_usd) > 0:
             components.append(float(budget_remaining_start_usd) * (pct / 100.0))
             basis_parts.append("global_pct")
         margin: Optional[float] = None
@@ -577,8 +570,8 @@ def cost_ceiling_disclosure(ceiling: CostCeiling) -> Dict[str, Any]:
         "rule": (
             "The graceful in-task cost stop of THIS task's whole tree, resolved once at task "
             "start: the root resolves min(configured share of global remaining, hard tree cap "
-            "minus a planning margin) and every other member of the tree gets the same cap "
-            "minus that margin, so one tree has one deciding number. Crossing it asks for a "
+            "minus a planning margin); every other member keeps that root-cap component and "
+            "intersects it with its own global resolution, so it never exceeds the root. Crossing it asks for a "
             "best-effort final answer; the ledger fence at the full cap still binds "
             "independently. Budget checkpoints during the task report the live tree spend."
         ),
@@ -626,13 +619,13 @@ def tree_spend_line(tree_info: Any, ceiling: Optional[CostCeiling] = None) -> st
     )
 
 
-def wrapup_unaffordable_text(deciding_usd: float, ceiling: CostCeiling) -> str:
-    """The owner-facing reason a task soft-lands on wrap-up affordability."""
+def wrapup_last_fit_text(deciding_usd: float, ceiling: CostCeiling) -> str:
+    """The owner-facing reason a task claims the last affordable wrap-up send."""
     cap = ceiling.root_cap_usd
     cap_text = f" of the ${cap:.2f} hard tree cap" if cap is not None else ""
     return (
-        f"Task tree spent ${deciding_usd:.3f}{cap_text}, and one more wrap-up call "
-        "would no longer be admitted by the ledger. Budget exhausted."
+        f"Task tree spent ${deciding_usd:.3f}{cap_text}; one wrap-up call is still "
+        "admissible, but another similarly reserved work call would consume that room."
     )
 
 
@@ -642,6 +635,7 @@ def wrapup_reservation_fits(
     prompt_tokens: int,
     root_cap_usd: Optional[float],
     deciding_usd: float,
+    reservation_count: int = 1,
 ) -> Optional[bool]:
     """Whether one more wrap-up call would still be admitted under the root cap.
 
@@ -649,7 +643,8 @@ def wrapup_reservation_fits(
     and the fence can never disagree about what a wrap-up call costs: the same
     function, the same cache split, the same arithmetic. Returns None -- fail
     open, the axis stays silent -- when there is no bound task scope, no root
-    cap, or no known price for the route; a False is the only stop signal.
+    cap, or no known price for the route. ``reservation_count=2`` detects the
+    last-fit window while one final call is still admissible.
 
     Deliberately does NOT read ``usage_projection``: the deciding spend is
     passed in by the caller that already measured it, never re-scanned per
@@ -672,7 +667,8 @@ def wrapup_reservation_fits(
         ))
         if bound is None:
             return None
-        return bool(float(deciding_usd) + float(bound) <= float(root_cap_usd) + 1e-9)
+        return bool(float(deciding_usd) + float(bound) * max(1, int(reservation_count))
+                    <= float(root_cap_usd) + 1e-9)
     except Exception:
         log.warning("Wrap-up affordability check failed; axis stays silent", exc_info=True)
         return None
@@ -933,7 +929,7 @@ def _acceptance_rails_line_inner(
                     scope.drive_root, root_task_id=scope.root_task_id,
                 )
                 remaining = projection.get("remaining_known_usd")
-                money_bits.append(_headroom_phrase(remaining, rails.get("cost_ceiling_usd"), cost))
+                money_bits.append(_headroom_phrase(remaining, rails.get("cost_ceiling_usd"), projection.get("accounted_usd")))
         except Exception:
             log.debug("rails: budget projection unavailable", exc_info=True)
         if money_bits:

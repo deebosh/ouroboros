@@ -1293,6 +1293,7 @@ class ReviewCoordinator:
             dispatch_stamp=self._review_paid_stamp,
         )
         executor = _review_route_executor(assignment, llm=self.llm)
+        executor.usage_observer = lambda usage: self._emit_usage(request, slot, usage, prompt_chars=executor.prompt_chars())
         executor._logical_deadline_monotonic = logical_deadline_monotonic
         # The physical session and the logical waiter must share this exact
         # mutable cell.  A fresh cell is normally empty, so ``state or {}``
@@ -1491,7 +1492,6 @@ class ReviewCoordinator:
                         break
                     if actor_attempt + 1 >= actor_attempts:
                         break
-            self._emit_usage(request, slot, usage, prompt_chars=executor.prompt_chars())
             try:
                 response_ref = persist_call(
                     self.drive_root,
