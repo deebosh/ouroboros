@@ -1715,7 +1715,12 @@ by "Provider Independence" above. Call-site imperatives:
   closed set AND check every value-keyed reader —
   `outcomes.derive_loop_outcome` keys degradations and blocked terminals on
   status+reason PAIRS, and breaking a pairing is a silent false green. The
-  reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
+  Every forced rail closes a dangling `revision_requested` through
+  `acceptance_dialogue.terminalize_dangling_revision`: it promises a pass the
+  rail cannot take. `accepted` and `finalized_unaccepted` are never
+  overwritten, no bypass reason is stamped over a panel that ran, and the
+  resulting pair stays outside `_ACCEPTANCE_BLOCKED_TERMINAL_REASONS`.
+  The reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
   `adaptive_quorum` applies, any contributing FAIL fails, DEGRADED abstains,
   and no quorum is a terminal HOST decision. Chat and Logs use the same
   severity reducer; degraded review or a best-effort objective must never

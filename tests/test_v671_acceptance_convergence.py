@@ -573,3 +573,57 @@ def test_a_task_with_no_wave_at_all_stays_silent():
     )
     assert "acceptance_claims_source" not in ev
     assert "plan_claims_exhibit" not in ev
+
+
+# ── AP6: a forced rail closes a dangling revision request ────────────────────
+
+def _decision(status: str, reason: str = "") -> dict:
+    trace: dict = {"acceptance_decision": {
+        "status": status, "reason": reason,
+        "agent_disposition": "deferred", "agent_rationale": "the host decides",
+    }, "review_decision": {"run_count": 2}}
+    return trace
+
+
+def test_a_terminal_decision_is_never_overwritten():
+    from ouroboros.acceptance_dialogue import terminalize_dangling_revision
+
+    for status in ("accepted", "finalized_unaccepted"):
+        trace = _decision(status, reason="clean_quorum")
+        assert terminalize_dangling_revision(trace, rail="round_limit") is False
+        assert trace["acceptance_decision"]["status"] == status
+        assert trace["acceptance_decision"]["reason"] == "clean_quorum"
+        assert "acceptance_bypassed_round_limit" not in json.dumps(trace)
+
+
+def test_a_dangling_revision_terminalizes_on_every_forced_rail():
+    from ouroboros.acceptance_dialogue import terminalize_dangling_revision
+
+    for rail, prior in (
+        ("round_limit", "delivery_binding_superseded"),
+        ("budget_exhausted", "improvement_capsule"),
+        ("children_unabsorbed", "improvement_capsule"),
+    ):
+        trace = _decision("revision_requested", reason=prior)
+        assert terminalize_dangling_revision(trace, rail=rail) is True
+        decision = trace["acceptance_decision"]
+        assert decision["status"] == "finalized_unaccepted"
+        assert decision["reason"] == "revision_unavailable_on_forced_rail"
+        assert decision["source"] == "forced_finalization"
+        # The rationale names the PRIOR reason: "the panel requested an
+        # improvement pass" is false for the superseded-binding shape.
+        assert prior in decision["rationale"]
+        assert rail in decision["rationale"]
+        # The agent's own stance survives, and no bypass reason is stamped over
+        # a panel that really ran.
+        assert decision["agent_disposition"] == "deferred"
+        assert decision["agent_rationale"] == "the host decides"
+        assert "acceptance_bypassed" not in json.dumps(decision)
+        # The paid audit trail is untouched.
+        assert trace["review_decision"]["run_count"] == 2
+
+
+def test_the_terminal_pair_keeps_the_objective_best_effort():
+    from ouroboros.outcomes import _ACCEPTANCE_BLOCKED_TERMINAL_REASONS
+
+    assert "revision_unavailable_on_forced_rail" not in _ACCEPTANCE_BLOCKED_TERMINAL_REASONS

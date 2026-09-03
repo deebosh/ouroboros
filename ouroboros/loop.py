@@ -34,6 +34,7 @@ from ouroboros.acceptance_dialogue import (  # noqa: F401 — re-export
     _set_acceptance_decision,
     acceptance_dialogue_history,
     bind_acceptance_paid_identity,
+    terminalize_dangling_revision,
 )
 from ouroboros.config import adaptive_quorum, get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode, resolve_effort
 from ouroboros.outcomes import ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_DELIVERY_CONTROL_DEGRADED, REASON_OWNER_REQUESTED_FINALIZATION, RESULT_INFRA_FAILED, extract_final_answer, latest_agent_defined_verification, latest_unreconciled_failed_verification, latest_unreconciled_masked_verification, reviewable_effect_projection, should_nudge_verification, turn_has_reviewable_effects
@@ -3349,6 +3350,9 @@ def _record_forced_acceptance_bypass(
     # bypass unrecorded when owed); `_set_acceptance_decision` stamps.
     decision = llm_trace.get("acceptance_decision")
     if isinstance(decision, dict) and str(decision.get("status") or "") in ACCEPTANCE_DECISION_STATUSES:
+        # A revision request is not a terminal host decision: this rail cannot
+        # take the pass it promised, so close it instead of leaving it dangling.
+        terminalize_dangling_revision(llm_trace, rail=str(reason_code or ""))
         return
     if getattr(tools_ctx, "_task_acceptance_reviewed", False):
         return
@@ -3893,20 +3897,9 @@ def _run_forced_children_acceptance(
             return
         tools_ctx._task_acceptance_reviewed = True
         _end_task_acceptance_fence(tools_ctx, outcome="terminal")
-        decision = llm_trace.get("acceptance_decision")
-        status = str(decision.get("status") or "") if isinstance(decision, dict) else ""
-        if status == ACCEPTANCE_REVISION_REQUESTED:
-            # A panel DID run and asked for an improvement pass; record the honest
-            # terminal state instead of leaving a dangling revision request.
-            _set_acceptance_decision(llm_trace, {
-                "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
-                "reason": "revision_unavailable_on_forced_rail",
-                "source": "forced_finalization",
-                "rationale": (
-                    "The acceptance panel requested an improvement pass, but the "
-                    "forced children_unabsorbed rail cannot take another model round."
-                ),
-            })
+        # This rail records its bypass BEFORE its panel, so the terminalisation
+        # belongs here rather than in the bypass recorder.
+        if terminalize_dangling_revision(llm_trace, rail="children_unabsorbed"):
             emit_progress(
                 "Task acceptance ran on the forced rail; the requested improvement "
                 "pass is unavailable, finalizing unaccepted."
