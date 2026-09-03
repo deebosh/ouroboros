@@ -1086,11 +1086,11 @@ skip. An
 unavailable claim releases the usage reservation and blocks every parallel
 panel slot before reviewer transport rather than degrading hard authority into
 fail-open cost telemetry. Disclosed residual (pre-existing release behaviour,
-b9bcc2da; tracked as issue #29, out of this change's scope): a compatibility
-transport that raises with positive physical capture invokes the paid stamp
-after the send; if the tree's last paid cycle is consumed concurrently at that
-late stamp, the wallet refusal replaces the captured exception and the
-substrate may resend.
+b9bcc2da; draft issue #29, publication pending; out of this change's scope):
+a compatibility transport that raises with positive physical capture invokes
+the paid stamp after the send; if the tree's last paid cycle is consumed
+concurrently at that late stamp, the wallet refusal replaces the captured
+exception and the substrate may resend.
 
 Anti-pattern: paying for byte-identical review material. Never dispatch a paid
 reviewer wave for material a gate has already reviewed under the same review
@@ -1516,13 +1516,17 @@ Before every commit, verify the following:
   them, so a metadata-poor task (no `created_at`/`started_at` and no anchor
   latched yet) honestly reports `time.state = "not_set"` until a path that owns
   a mutation — the acceptance launch — latches the anchor, and a poll can
-  never change its own next answer. Polling writes nothing of its own — the two
-  filesystem effects it can trigger are (i) the usage ledger's torn-tail
-  quarantine after a SINGLE crash mid-append, which every reader performs
-  identically (a crash inside that repair itself — a torn quarantine sink — is
-  a known residual tracked as issue #27), and (ii) on a never-initialized root,
-  the empty `state/` directory the ledger lock lives in; every ledger state, an
-  absent file included, is answered through the canonical reader.
+  never change its own next answer. Polling writes nothing of its own; it
+  inherits the canonical usage-ledger reader's own bounded maintenance — today:
+  the torn-tail quarantine after a SINGLE crash mid-append, which every reader
+  performs identically (a crash inside that repair itself — a torn quarantine
+  sink — is a known residual, draft issue #27, publication pending), the empty
+  `state/` directory the reader's lock lives in on a never-initialized root,
+  and removal of a stale `usage_attempts.lock` older than the reader's 90 s
+  stale window (`usage_ledger._locked` →
+  `platform_layer.acquire_exclusive_file_lock`, whose stale-age branch unlinks
+  the lock file and retries) — each pinned by a regression; every ledger
+  state, an absent file included, is answered through the canonical reader.
   Vendor-internal descendants stay opaque.
   Persist this context inside the pending wake so replay is identical; recompute only
   after acknowledgement on a later wake. When the combined wake spills, preserve the

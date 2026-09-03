@@ -140,14 +140,14 @@ def _time_fact(ctx: Any) -> dict[str, Any]:
 
 
 def _settled_spend_fact(ctx: Any, root_task_id: str) -> dict[str, Any]:
-    """The tree's ledger-accounted spend, read through the canonical locked
-    reader (``usage_accounting.usage_breakdown``) in every state — an absent
-    ledger is the reader's own known-zero. The fact writes nothing of its own;
-    the two filesystem effects the read can trigger are (i) the ledger's
-    torn-tail quarantine after a SINGLE crash mid-append, which every reader
-    performs identically (a crash inside that repair — a torn quarantine sink —
-    is a known residual, issue #27), and (ii) on a never-initialized root, the
-    empty ``state/`` directory the reader's lock lives in."""
+    """The tree's ledger-accounted spend, read through the canonical locked reader
+    (``usage_accounting.usage_breakdown``) in every state — an absent ledger is the reader's own
+    known-zero. The fact writes nothing of its own; it inherits the reader's bounded maintenance —
+    today: the torn-tail quarantine after a SINGLE crash mid-append (a crash inside that repair, a
+    torn quarantine sink, is a known residual, draft issue #27, publication pending), the empty
+    ``state/`` lock directory on a never-initialized root, and removal of a stale
+    ``usage_attempts.lock`` past the 90 s window (``usage_ledger._locked`` →
+    ``platform_layer.acquire_exclusive_file_lock``, stale-age unlink) — each pinned by a regression."""
     try:
         from ouroboros.usage_accounting import usage_breakdown
 
@@ -261,13 +261,13 @@ def _active_descendants_fact(ctx: Any) -> dict[str, Any]:
 def coordination_live_context(ctx: Any) -> dict[str, Any]:
     """One LLM-first planning snapshot for startup and meaningful nanny wakes.
 
-    Polling writes nothing of its own — the two filesystem effects it can
-    trigger are (i) the usage ledger's torn-tail quarantine after a SINGLE
-    crash mid-append, performed identically by every reader
-    (``usage_ledger._read_records_locked``; a crash inside that repair itself —
-    a torn quarantine sink — is a known residual, issue #27), and (ii) on a
-    never-initialized root, the empty ``state/`` directory the ledger lock
-    lives in; the settled-spend fact reads the ledger through that reader.
+    Polling writes nothing of its own; it inherits the canonical usage-ledger reader's bounded
+    maintenance — today: the torn-tail quarantine after a SINGLE crash mid-append
+    (``usage_ledger._read_records_locked``, identical for every reader; a crash inside that repair
+    is a known residual, draft issue #27, publication pending), the empty ``state/`` lock directory
+    on a never-initialized root, and removal of a stale ``usage_attempts.lock`` past the 90 s window
+    (``usage_ledger._locked`` → ``platform_layer.acquire_exclusive_file_lock``, stale-age unlink) —
+    each pinned by a regression; the settled-spend fact reads the ledger through that reader.
     """
 
     root_task_id = _coordination_root_id(ctx)
