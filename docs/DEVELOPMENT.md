@@ -825,9 +825,7 @@ Paid review cycles across the gates are bounded by one shared owner knob,
 `OUROBOROS_REVIEW_MAX_CYCLES` — a STRING, positive integer or `unlimited`,
 default `"2"` (Settings → Behavior → "Max Review Cycles"). Its SSOT is
 `ouroboros/review_cycles.py`, whose docstring defines the per-gate meaning
-(plan panels per task; acceptance passes = cycles − 1 with the retired legacy
-key migrated at settings load; commit cycles per ROOT task; skill-review
-dispatches per ceiling key). `unlimited` removes only the local count —
+(the retired legacy key is migrated at settings load). `unlimited` removes only the local count —
 deadline, budget, and lifecycle rails still bind — and a malformed value fails
 closed to the default, logged once.
 
@@ -980,7 +978,8 @@ skill review gate (`skill_preflight` → `skill_review`).
 - `type: extension` skills with reviewed isolated dependency envs must not
   import `plugin.py` or execute handlers inside `server.py`, even when the
   dependency tree looks pure-Python; payload-native marker files (`.so`,
-  `.dylib`, `.dll`, `.pyd`) also force child dispatch. Keep the split
+  `.dylib`, `.dll`, `.pyd`) also force child dispatch — containment, not
+  admission: a native payload still faces the skill-review checklist. Keep the split
   explicit: no-dependency pure-Python extensions may use `extension_loader`'s
   in-process PluginAPI; isolated-dep/native-marker extensions are cataloged
   and dispatched by `extension_process_runner` short-lived child processes.
@@ -1004,9 +1003,8 @@ Enforcement: `tests/test_extension_dispatch_threaded.py`,
 - Observable Acceptance Claims are bounded, advisory, task-general criteria
   (`id`, `claim`, `surface`, `support`, `priority`); `success_criteria` is an
   input alias, not a second persisted carrier, and
-  `effective_acceptance_claims` is the only binder (ingress-contract claims
-  win, otherwise the current closed plan wave's frozen claims apply at read
-  time; neither path mutates the live contract). A child receives only claims
+  `effective_acceptance_claims` is the only binder; its read-time semantics
+  live in ARCHITECTURE §11.1. A child receives only claims
   explicitly passed to its own `schedule_subagent` call. Reviewer
   `evidence_refs` resolve by exact membership in the already-built host
   packet — no fuzzy matching, filesystem reads, or re-execution — and
@@ -1076,9 +1074,8 @@ devtool files).
 
 ### Light mode and external deliverables
 
-- `runtime_mode=light` is a self-modification boundary, not an OS sandbox
-  (`ouroboros/config.py` owns the semantics; ARCHITECTURE "Safety and runtime
-  mode"). User-visible deliverables are allowed when they are outside the
+- `runtime_mode=light` is a self-modification boundary (`ouroboros/config.py`
+  owns the semantics; ARCHITECTURE "Safety and runtime mode" states why). User-visible deliverables are allowed when they are outside the
   Ouroboros repo/control-plane.
 - Preferred flow: `task_drive` for scratch, `artifact_store` for canonical
   deliverables, `user_files` for the owner's visible copy.
@@ -1093,8 +1090,8 @@ devtool files).
   immediate child target. The undeclared-output audit is best-effort, not a
   full shell parser: in-command `cd`, variable/indirect destinations, and
   inline-code path construction are disclosed parser residuals, and hardlinks
-  remain a disclosed filesystem residual (`ouroboros/shell_guards.py`,
-  `ouroboros/deliverables_shell.py`).
+  remain a disclosed filesystem residual (`ouroboros/tools/shell_guards.py`,
+  `ouroboros/tools/deliverables_shell.py`).
 - `scratch=[...]` is a DISTINCT channel from `outputs=[...]`: ephemeral
   in-cwd verification files, exempt from the undeclared-output guard, never
   registered as artifacts, adopted only with a declaration-time sha through
@@ -1108,7 +1105,12 @@ devtool files).
   light use an explicit external/task/artifact cwd, and declared service
   `outputs` are copied when the service stops. Directory outputs become a
   bounded manifest plus zip; hidden/control/credential-shaped files and
-  excessive counts/bytes fail closed.
+  excessive counts/bytes fail closed. `run_script` stages its temporary
+  script under the active workspace (`.ouroboros/tmp_scripts`) for a
+  workspace-bound script and under the task drive otherwise — never the
+  system-repo temp path — so relative imports, generated files and toolchain
+  discovery observe the requested cwd (`ouroboros/tools/shell.py`;
+  `tests/test_shell_run_shell.py`).
 - Policy denials stay separate from execution failures:
   `user_files_path_blocked`, `cwd_blocked`, and `artifact_output_undeclared`
   are non-failure outcomes; failing to register a declared output remains
@@ -1143,6 +1145,12 @@ devtool files).
 - Do not recommend `runtime_data/uploads`, skill payloads, or owner state
   directories as generic artifact transport.
 
+Enforcement: `tests/test_v674_light_mode_cwd.py` (cwd selection and what light
+refuses), `tests/test_deliverables_layout.py` (deliverable placement and the
+output manifest), `tests/test_git_shell_policy.py` and
+`tests/test_shell_redirect_guard.py` (the shell surfaces); the
+successor-parity and artifact-transport rules are review-only.
+
 ### Runtime cleanup and retention
 
 - Age-based GC of disposable runtime artifacts shares ONE owner knob,
@@ -1166,7 +1174,7 @@ devtool files).
   seven-day threshold, and no recorded obligation remains open; any
   uncertainty or move error leaves the live record intact.
 
-Enforcement: `tests/test_observability_retention.py`.
+Enforcement: `tests/test_phase3c_observability_gc.py` (the unified knob and the cutoff math) and `tests/test_observability_retention.py` (blob pruning); the review-continuation archive rule has no automated surface — review-only.
 
 ### Live subagents
 
@@ -1743,6 +1751,12 @@ commit review.
   a local recovery branch before reset. Promotion resolves the development
   SHA once and uses that exact SHA for both the local QA ref and any remote
   push.
+
+Enforcement: `tests/test_update_merge_policy.py` (what the merge policy
+refuses), `tests/test_update_dirty_stash.py` (the dirty-tree path),
+`tests/test_update_hardening.py` and
+`tests/test_update_tx_corrupt_quarantine.py` (transaction integrity and
+quarantine).
 
 ## Mutation Attribution Rule
 
