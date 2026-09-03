@@ -134,11 +134,9 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Hard ceiling (seconds) a provider call waits for a concurrency slot when the task has
     # NO deadline; past it the call proceeds WITHOUT a slot (never blocks forever). SSOT here.
     "OUROBOROS_MODEL_SLOT_MAX_WAIT_SEC": 180,
-    # Project-naming LIGHT-call provider transport and gateway hard wait. SSOT here
-    # (not project_naming.py magic numbers) per DEVELOPMENT "Timeout & Wait Control".
+    # LIGHT one-shot ceilings (naming, its gateway wait, the update letter): SSOT here, never consumer magic numbers.
     "OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC": 60,
     "OUROBOROS_PROJECT_NAMING_ASYNC_TIMEOUT_SEC": 8,
-    # Update-letter LIGHT-call provider transport ceiling (update_letter.py); SSOT here.
     "OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC": 120,
     # Skill lifecycle lane deadline (wedged-job loud-failure bound).
     "OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC": 1800,
@@ -371,15 +369,6 @@ def _main_model() -> str:
 def get_light_model() -> str:
     """Light slot; empty falls back to Main (heavy/consciousness stay empty->main)."""
     return str(os.environ.get("OUROBOROS_MODEL_LIGHT", "") or "").strip() or _main_model()
-
-
-def get_update_letter_timeout_sec() -> float:
-    """Transport ceiling for the update-letter LIGHT call (default IS the SSOT value)."""
-    default = SETTINGS_DEFAULTS["OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC"]
-    try:
-        return float(os.environ.get("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", default))
-    except (TypeError, ValueError):
-        return float(default)
 
 
 def get_heavy_model() -> str:

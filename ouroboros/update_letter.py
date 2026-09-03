@@ -254,6 +254,17 @@ def _context_messages(env: Any, memory: Any, task: Dict[str, Any]) -> List[Dict[
     return messages
 
 
+def _letter_timeout_sec() -> float:
+    """Transport ceiling for the LIGHT call; the config default IS the SSOT value."""
+    from ouroboros.config import SETTINGS_DEFAULTS
+
+    default = SETTINGS_DEFAULTS["OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC"]
+    try:
+        return float(os.environ.get("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def _chat(client: Any, *, drive_root: pathlib.Path, **kwargs: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     from ouroboros.llm_observability import chat_observed
 
@@ -290,7 +301,7 @@ def write_letter(
 ) -> Dict[str, Any]:
     """One accounted LIGHT-slot call; returns the letter record (``ready`` or ``failed``)."""
     from ouroboros import get_version
-    from ouroboros.config import DATA_DIR, REPO_DIR, get_light_model, get_update_letter_timeout_sec
+    from ouroboros.config import DATA_DIR, REPO_DIR, get_light_model
 
     data_root = pathlib.Path(drive_root or DATA_DIR)
     repo_root = pathlib.Path(repo_dir or REPO_DIR)
@@ -351,7 +362,7 @@ def write_letter(
                 msg, usage = _chat(
                     client, drive_root=data_root, messages=messages, model=model, tools=None,
                     reasoning_effort="low", max_tokens=UPDATE_LETTER_MAX_TOKENS,
-                    use_local=use_local, timeout=get_update_letter_timeout_sec(),
+                    use_local=use_local, timeout=_letter_timeout_sec(),
                 )
         attempt_ids = list((usage or {}).get("ledger_attempt_ids") or [])
         record["attempt_id"] = str(attempt_ids[-1]) if attempt_ids else ""
