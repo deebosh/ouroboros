@@ -1126,11 +1126,23 @@ devtool files).
 - For argv-visible targets, the shell guard checks lexical Deliverables origin
   before generic workspace or executor roots, then the symlink-resolved
   destination; direct `cp`/`mv`/`ln` directory destinations derive their
-  immediate child target. The undeclared-output audit is best-effort, not a
-  full shell parser: in-command `cd`, variable/indirect destinations, and
-  inline-code path construction are disclosed parser residuals, and hardlinks
-  remain a disclosed filesystem residual (`ouroboros/tools/shell_guards.py`,
-  `ouroboros/tools/deliverables_shell.py`).
+  immediate child target. The pre-execution workspace lane uses
+  `shell_parse.split_redirections` as its one redirect grammar and emits one
+  `(segment_argv, targets, inline_code, unprovable)` row per shell segment. It
+  recurses through shell `-c` bodies at most three levels, takes Python body
+  targets and uncertainty from `_python_write_targets_and_unknown`, and treats
+  a `cd`/`pushd` operand as a candidate only when a later segment writes. A
+  write-shaped row with no parsed target is `unprovable`: its candidate scan
+  widens to the legacy raw mentions rather than interpreting an empty target
+  list as permission. The raw mention lane remains separate so POSIX shlex
+  cannot erase Windows drive/UNC spellings; the light fence likewise retains
+  its unfiltered inline-body signal.
+- This is conservative target extraction, not a full shell interpreter.
+  Variable/indirect destinations, path construction performed at runtime,
+  wrapper grammars beyond the bounded shell-body recursion, and inode aliases
+  remain parser residuals. The post-execution undeclared-output audit also
+  cannot reconstruct post-`cd` relative writes or unwalked recursive copies
+  (`ouroboros/tools/shell_guards.py`, `ouroboros/tools/deliverables_shell.py`).
 - `scratch=[...]` is a DISTINCT channel from `outputs=[...]`: ephemeral
   in-cwd verification files, exempt from the undeclared-output guard, never
   registered as artifacts, adopted only with a declaration-time sha through
