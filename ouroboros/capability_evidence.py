@@ -1031,9 +1031,14 @@ def probe(
     return ev
 
 
-# Cache-inclusive prompt totals are measurable; GigaChat's semantics remain unknown.
+# Cache-inclusive prompt totals are measurable; GigaChat's and MiniMax's
+# semantics remain unknown. DeepSeek probed 2026-09-01: prompt_tokens =
+# prompt_cache_hit_tokens + prompt_cache_miss_tokens, i.e. cache-inclusive —
+# and its automatic cache makes nearly every warm call cache-bearing, so
+# excluding it would starve the route of density witnesses entirely.
 _CACHE_INCLUSIVE_PROMPT_TOKEN_PROVIDERS = frozenset({
     "openrouter", "openai", "openai-compatible", "cloudru", "local", "anthropic",
+    "deepseek",
 })
 
 
