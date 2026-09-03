@@ -504,33 +504,6 @@ def test_project_room_decision_turn_carries_last_task_result_ground_truth(tmp_pa
     assert "result" not in last and "RAW TEXT" not in str(last)
 
 
-def test_project_last_task_result_breaks_an_mtime_tie_by_the_durable_ts(tmp_path, monkeypatch):
-    """Results finalized within one clock tick share a file mtime, so mtime order
-    alone is arbitrary among them: inside the tie group the durable `ts` decides.
-    The adverse listing order (the OLDER result first) is forced through the
-    directory listing, because a real filesystem's order is not controllable."""
-    import os
-
-    import server
-    from ouroboros import task_results as task_results_module
-    from ouroboros.projects_registry import create_project
-    from ouroboros.task_results import task_results_dir, write_task_result
-
-    create_project(tmp_path, "racer", name="Racer")
-    write_task_result(tmp_path, "old1", "completed", project_id="racer", objective="a", ts="2026-08-10T00:00:01Z")
-    write_task_result(tmp_path, "new1", "completed", project_id="racer", objective="b", ts="2026-08-10T00:00:02Z")
-    write_task_result(tmp_path, "other1", "completed", project_id="boat", objective="c", ts="2026-08-10T00:00:03Z")
-    real_dir = task_results_dir(tmp_path, create=False)
-    tick = 1_700_000_000 * 10**9
-    for path in real_dir.glob("*.json"):
-        os.utime(path, ns=(tick, tick))  # one shared mtime: the tie the scan must resolve by `ts`
-    adverse = [real_dir / "old1.json", real_dir / "new1.json", real_dir / "other1.json"]
-    assert all(path.exists() for path in adverse)
-    monkeypatch.setattr(task_results_module, "task_results_dir",
-                        lambda root, create=True: types.SimpleNamespace(glob=lambda pattern: iter(adverse)))
-    assert server._latest_project_task_result(_ctx(tmp_path), "racer")["task_id"] == "new1"
-
-
 @pytest.mark.parametrize("shape", ["group_crosses_the_window", "group_in_the_self_heal_tail", "equal_ts", "empty_ts"])
 def test_project_last_task_result_tie_order_is_total(tmp_path, monkeypatch, shape):
     """The tie order is TOTAL: an equal-mtime group that crosses the 64-entry

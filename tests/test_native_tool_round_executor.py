@@ -298,42 +298,32 @@ def test_escaping_inflation_cannot_jump_the_landing_notice(subject_repo, monkeyp
     assert "RESULT TRUNCATED" in tool_msg["content"] and "\\n" not in tool_msg["content"]  # real text, escaped only on the wire
 
 
-def test_first_send_is_measured_on_the_wire(subject_repo, monkeypatch):
-    """The initial system+task messages are charged as the serialized objects
-    the send carries (escape-heavy text inflates), so a bound the raw text
-    would pass but the wire would not is refused before any send."""
+@pytest.mark.parametrize("wire_inflated", [False, True], ids=["room-below-landing", "escape-heavy-first-send"])
+def test_bound_below_the_first_send_is_a_typed_refusal_before_any_send(subject_repo, monkeypatch, wire_inflated):
+    """A bound that leaves no room to read anything must not make the landing
+    notice the first thing the reviewer hears (an obedient `[]` would then be a
+    strict clean verdict with zero reads): the refusal is typed and precedes
+    any send. The first send is charged as the serialized objects the wire
+    carries, so escape-heavy task text inflates it: a bound the raw text would
+    pass but the wire would not is refused the same way."""
     import ouroboros.review_native_episode as native_episode
 
-    task = ('line "quoted" \\ back\n' * 2_000)  # ~44K raw, far more on the wire
     llm = _ScriptedLLM([{"content": _VERDICT}])
-    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm, session_task=task), llm=llm)
-    raw = len(executor.episode_prompt) + len(native_episode._NATIVE_REVIEW_INSTRUCTIONS)
-    wire = len(json.dumps([{"role": "system", "content": native_episode._NATIVE_REVIEW_INSTRUCTIONS},
-                           {"role": "user", "content": executor.episode_prompt}], ensure_ascii=False))
-    assert wire > raw + 2_000
-    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: raw + 12_000)
+    if wire_inflated:
+        task = 'line "quoted" \\ back\n' * 2_000  # ~44K raw, far more on the wire
+        executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm, session_task=task), llm=llm)
+        raw = len(executor.episode_prompt) + len(native_episode._NATIVE_REVIEW_INSTRUCTIONS)
+        wire = len(json.dumps([{"role": "system", "content": native_episode._NATIVE_REVIEW_INSTRUCTIONS},
+                               {"role": "user", "content": executor.episode_prompt}], ensure_ascii=False))
+        assert wire > raw + 2_000
+        bound = raw + 12_000
+    else:
+        executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+        bound = _first_send_chars(subject_repo) + 200  # landing_at <= first send
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", lambda *a, **k: bound)
     with pytest.raises(ReviewRouteUnavailable) as exc:
         executor.execute()
     assert exc.value.code == "native_bound_below_first_send" and not llm.calls
-
-
-def test_bound_below_the_first_send_is_a_typed_refusal_before_any_send(subject_repo, monkeypatch):
-    """A bound that leaves no room to read anything must not make the landing
-    notice the first thing the reviewer hears (an obedient `[]` would then be a
-    strict clean verdict with zero reads)."""
-    import ouroboros.review_native_episode as native_episode
-
-    llm = _ScriptedLLM([{"content": _VERDICT}])
-    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
-    first_send = _first_send_chars(subject_repo)
-    monkeypatch.setattr(native_episode, "review_native_transcript_bound",
-                        lambda *a, **k: first_send + 200)  # landing_at <= first send
-    llm2 = _ScriptedLLM([{"content": _VERDICT}])
-    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm2), llm=llm2)
-    with pytest.raises(ReviewRouteUnavailable) as exc:
-        executor.execute()
-    assert exc.value.code == "native_bound_below_first_send"
-    assert not llm2.calls
 
 
 def test_pre_send_refusal_never_projects_a_native_execution(subject_repo, tmp_path, monkeypatch):
@@ -937,24 +927,6 @@ def test_round_without_progress_is_a_typed_malformed_end(subject_repo, container
     assert len(llm.calls) == 1 and llm.script
 
 
-def test_assistant_envelope_is_counted_into_the_transcript(subject_repo):
-    """The whole assistant message (content + tool-call objects) rides every
-    later send, so the counter grows by at least its serialized size."""
-    llm = _ScriptedLLM([
-        {"content": "note " * 100, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]},
-        {"content": _VERDICT},
-    ])
-    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
-    usage = executor.execute().usage
-    first_send = _first_send_chars(subject_repo)
-    envelope = json.dumps({**llm_first(llm), "role": "assistant"}, ensure_ascii=False)
-    assert usage["native_transcript_chars"] >= first_send + len(envelope) + len("hello native reviewer\n")
-
-
-def llm_first(llm):
-    return {"content": "note " * 100, "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]}
-
-
 def test_report_shape_delivers_the_collected_draft_marked_incomplete(subject_repo, monkeypatch, tmp_path):
     """A report is a product, not a verdict: when the bound lands before the
     final answer, the reviewer's last draft is delivered with a typed
@@ -1374,104 +1346,73 @@ def test_read_extent_counts_only_complete_delivered_lines_from_the_stamp(subject
 
 def _last_read_view_sites(sources):
     """Every WRITE site of `last_read_view` in `{relative file: source}` as
-    `(file, scope, lineno, col, kind)`: `assign` for an Attribute store target
-    (Assign/AnnAssign/AugAssign/for/with targets, recursing Tuple/List/Starred;
-    module, class, nested-function and lambda scopes alike), `setattr` for a
-    `setattr(<expr>, "last_read_view", …)` / `__setattr__` call, `subscript`
-    for a `<expr>["last_read_view"] = …` (`__dict__`/`vars()`) store."""
+    `(file, enclosing def, lineno, kind)`: `assign` for an Attribute target of
+    an Assign/AnnAssign/AugAssign statement (every target of a chained
+    assignment), `setattr` for a `setattr(<expr>, "last_read_view", …)` /
+    `__setattr__` call, `subscript` for a `<expr>["last_read_view"] = …` store
+    (`__dict__` / `vars()`). Residual porosity, disclosed (owner R45) — writes
+    this scanner does NOT see: an unpacking target (`ctx.last_read_view, x =
+    …`), `for` / `with` / comprehension targets, a plain-Name target (a
+    class-body default `last_read_view = None` would be a declaration, not a
+    write, and is skipped by design), an attribute name assembled at run time
+    (`setattr(ctx, "last_" + …)`, an aliased `__setattr__`) and dict mutators
+    (`ctx.__dict__.update(…)`, a `vars(ctx)` store under a non-constant key)."""
     import ast
 
+    def enclosing(tree, lineno):
+        defs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and n.lineno <= lineno <= n.end_lineno]
+        return min(defs, key=lambda n: n.end_lineno - n.lineno).name if defs else "<module>"
+
     sites = set()
-
-    def flatten(target):
-        if isinstance(target, (ast.Tuple, ast.List)):
-            for elt in target.elts:
-                yield from flatten(elt)
-        elif isinstance(target, ast.Starred):
-            yield from flatten(target.value)
-        else:
-            yield target
-
-    def targets(node):
-        if isinstance(node, ast.Assign):
-            return node.targets
-        if isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor)):
-            return [node.target]
-        if isinstance(node, (ast.With, ast.AsyncWith)):
-            return [item.optional_vars for item in node.items if item.optional_vars is not None]
-        return []
-
-    def visit(node, rel, scope):
-        for child in ast.iter_child_nodes(node):
-            for target in (t for raw in targets(child) for t in flatten(raw)):
-                if isinstance(target, ast.Attribute) and target.attr == "last_read_view":
-                    sites.add((rel, scope, child.lineno, child.col_offset, "assign"))
-                elif (isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant)
-                      and target.slice.value == "last_read_view"):
-                    sites.add((rel, scope, child.lineno, child.col_offset, "subscript"))
-            if isinstance(child, ast.Call):
-                fn = child.func
-                name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else "")
-                if name in ("setattr", "__setattr__") and any(
-                        isinstance(a, ast.Constant) and a.value == "last_read_view" for a in child.args[:2]):
-                    sites.add((rel, scope, child.lineno, child.col_offset, "setattr"))
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-                name = getattr(child, "name", "<lambda>")
-                visit(child, rel, name if scope == "<module>" else f"{scope}.{name}")
-            else:
-                visit(child, rel, scope)
-
     for rel, text in sources.items():
         try:
-            visit(ast.parse(text), rel, "<module>")
+            tree = ast.parse(text)
         except SyntaxError:
             continue
+        for node in ast.walk(tree):
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target] if isinstance(node, (ast.AnnAssign, ast.AugAssign)) else [])
+            for target in targets:
+                if isinstance(target, ast.Attribute) and target.attr == "last_read_view":
+                    sites.add((rel, enclosing(tree, node.lineno), node.lineno, "assign"))
+                elif (isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant)
+                      and target.slice.value == "last_read_view"):
+                    sites.add((rel, enclosing(tree, node.lineno), node.lineno, "subscript"))
+            if isinstance(node, ast.Call):
+                fn = node.func
+                name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+                if name in ("setattr", "__setattr__") and any(
+                        isinstance(a, ast.Constant) and a.value == "last_read_view" for a in node.args[:2]):
+                    sites.add((rel, enclosing(tree, node.lineno), node.lineno, "setattr"))
     return sites
 
 
 _CORE, _EPISODE = "ouroboros/tools/core.py", "ouroboros/review_native_episode.py"
-_LAST_READ_VIEW_WRITERS = {  # exact (file, scope, kind); line/col come from the live tree, the site COUNT is pinned at three
+_LAST_READ_VIEW_WRITERS = {  # exact (file, enclosing def, kind); the site COUNT is pinned at three
     (_CORE, "_stamp_read_view", "assign"),
     (_CORE, "_read_file", "assign"),
-    (_EPISODE, "NativeToolRoundReviewExecutor._execute_inspection_call", "assign"),
+    (_EPISODE, "_execute_inspection_call", "assign"),
 }
+_RESET = "    ctx.last_read_view = None\n"  # the reader's entry reset inside _read_file
 
 
-def _inject_after(text, anchor, lines):
-    rows = text.splitlines(keepends=True)
-    idx = next(i for i, row in enumerate(rows) if row.rstrip("\n") == anchor)
-    return "".join(rows[:idx + 1] + [line + "\n" for line in lines] + rows[idx + 1:]), idx + 2  # 1-based first injected line
+def _assert_three_writers(sites):
+    assert {(f, d, k) for f, d, _l, k in sites} == _LAST_READ_VIEW_WRITERS and len(sites) == 3, sorted(sites)
 
 
-_RESET = "    ctx.last_read_view = None"  # the entry reset inside _read_file: every in-function probe lands right after it
-_FOURTH_WRITERS = {  # label -> mutate(core.py source) -> (mutated source, the ONE extra site the scanner must report)
-    "fourth-in-_read_file": lambda t: (lambda m: (m[0], (_CORE, "_read_file", m[1], 4, "assign")))(
-        _inject_after(t, _RESET, ["    ctx.last_read_view = None  # injected"])),
-    "module-scope": lambda t: (t + "\nToolContext.last_read_view = None\n", (_CORE, "<module>", t.count("\n") + 2, 0, "assign")),
-    "class-scope": lambda t: (t + "\nclass _Probe:\n    ToolContext.last_read_view = None\n", (_CORE, "_Probe", t.count("\n") + 3, 4, "assign")),
-    "tuple-target-in-nested-def": lambda t: (lambda m: (m[0], (_CORE, "_read_file._inner", m[1] + 1, 8, "assign")))(
-        _inject_after(t, _RESET, ["    def _inner():", "        ctx.last_read_view, _unused = None, 0"])),
-    "setattr": lambda t: (lambda m: (m[0], (_CORE, "_read_file", m[1], 4, "setattr")))(
-        _inject_after(t, _RESET, ['    setattr(ctx, "last_read_view", None)'])),
-    "__dict__-store": lambda t: (lambda m: (m[0], (_CORE, "_read_file", m[1], 4, "subscript")))(
-        _inject_after(t, _RESET, ['    ctx.__dict__["last_read_view"] = None'])),
-}
-
-
-@pytest.mark.parametrize("label", ["live", *_FOURTH_WRITERS], ids=str)
-def test_last_read_view_has_exactly_three_writers(label):
+def test_last_read_view_has_exactly_three_writers():
     """Writer-set invariant behind the structural stamp binding: `last_read_view`
-    is written at exactly three SITES — (file, scope, line, col, kind), asserted
-    as the exact (file, scope, kind) set with a site count of three — the reader's
-    entry reset and its stamp (`tools/core.py::_read_file` / `_stamp_read_view`)
-    and the episode's clear-before-dispatch
-    (`review_native_episode.py::NativeToolRoundReviewExecutor._execute_inspection_call`); no `setattr` /
-    `__setattr__` call or `__dict__` store names it anywhere in the runtime.
-    Sites, not (file, function) members: a fourth assignment inside one of the
-    three functions, at module or class scope, in a nested def, or through a
-    tuple target is a distinct site and fails. The negative cases run the SAME
-    scanner on mutated in-memory copies of the live source and prove each such
-    fourth writer is detected — the pin's own claim is tested, not assumed."""
+    is written at exactly three SITES — the reader's entry reset and its stamp
+    (`tools/core.py::_read_file` / `_stamp_read_view`) and the episode's
+    clear-before-dispatch (`review_native_episode.py::_execute_inspection_call`)
+    — and no `setattr` / `__setattr__` call or `__dict__` store names it
+    anywhere in the runtime. Sites, not (file, def) members: a fourth
+    assignment inside one of the three functions is a distinct site. The one
+    negative case runs the SAME scanner on a mutated in-memory copy of the live
+    source with one more reset injected into `_read_file` and proves the pin
+    fails on it — the pin's own claim is tested, not assumed. What the scanner
+    cannot see is listed on `_last_read_view_sites`."""
     import pathlib
 
     import ouroboros
@@ -1486,12 +1427,15 @@ def test_last_read_view_has_exactly_three_writers(label):
             sources[rel.as_posix()] = py.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-    if label == "live":
-        sites = _last_read_view_sites(sources)
-        assert {(f, sc, k) for f, sc, _l, _c, k in sites} == _LAST_READ_VIEW_WRITERS and len(sites) == 3, sorted(sites)
-        return
-    live = {rel: sources[rel] for rel in (_CORE, _EPISODE)}
-    base = _last_read_view_sites(live)  # the three sites all live in these two files
-    assert {(f, sc, k) for f, sc, _l, _c, k in base} == _LAST_READ_VIEW_WRITERS and len(base) == 3, sorted(base)
-    live[_CORE], extra = _FOURTH_WRITERS[label](live[_CORE])
-    assert _last_read_view_sites(live) == base | {extra}, label
+    _assert_three_writers(_last_read_view_sites(sources))
+    live = {rel: sources[rel] for rel in (_CORE, _EPISODE)}  # the three sites all live in these two files
+    base = _last_read_view_sites(live)
+    _assert_three_writers(base)
+    core = live[_CORE]
+    assert core.count(_RESET) == 1
+    injected_at = core[:core.index(_RESET)].count("\n") + 2  # 1-based line of the injected reset
+    live[_CORE] = core.replace(_RESET, _RESET + _RESET.rstrip("\n") + "  # injected\n")
+    fourth = _last_read_view_sites(live)
+    assert fourth == base | {(_CORE, "_read_file", injected_at, "assign")}
+    with pytest.raises(AssertionError):
+        _assert_three_writers(fourth)

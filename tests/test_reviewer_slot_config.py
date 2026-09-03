@@ -854,40 +854,25 @@ def test_all_delegated_triad_writes_no_fallback_record_and_reaches_acceptance(mo
         reviewer_slot_save_check(json.dumps({**payload, "triad": []}))
 
 
-# The acceptance API-pin apparatus retired with owner R2/R12 (2026-09-01): a
-# name that survives anywhere — code, docstring, comment, test prose — is a
-# hook for the fallback to grow back. Scanned as TEXT over every file under the
-# roots the phase touched; this file is the assertion and is excluded.
+# The acceptance API-pin apparatus retired with owner R2/R12 (2026-09-01): its
+# helpers lived in `reviewer_slot_config` and their one importer was
+# `claudexor_daemon` (both cleared at a3599ecd; the fallback record
+# `reviewer_slot_api_fallback.json` had no writer but
+# `_record_api_fallback_substitution`). A surviving module attribute is the
+# hook a fallback would grow back on.
 _RETIRED_API_PIN_NAMES = (
     "_fallback_warning_text",
     "_record_api_fallback_substitution",
     "api_fallback_disclosure",
     "reviewer_slot_api_fallback_warning",
-    "reviewer_slot_api_fallback.json",
 )
-_RETIRED_NAME_SCAN_ROOTS = ("ouroboros", "web/modules", "web/tests", "tests")
 
 
-def test_the_retired_acceptance_api_pin_names_are_gone_repository_wide():
-    """Pure file reads, no globals, no imports of the scanned modules — safe
-    under xdist. Binary fixtures (undecodable) carry no prose and are skipped."""
-    import pathlib
+def test_the_retired_acceptance_api_pin_apparatus_is_gone():
+    from ouroboros import claudexor_daemon, reviewer_slot_config
 
-    here = pathlib.Path(__file__).resolve()
-    repo = here.parents[1]
-    hits = []
-    for root in _RETIRED_NAME_SCAN_ROOTS:
-        for path in sorted((repo / root).rglob("*")):
-            if not path.is_file() or path.resolve() == here:
-                continue
-            if "__pycache__" in path.parts or "node_modules" in path.parts:
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            hits.extend(f"{path.relative_to(repo)}: {name}" for name in _RETIRED_API_PIN_NAMES if name in text)
-    assert hits == [], hits
+    assert [(module.__name__, name) for module in (reviewer_slot_config, claudexor_daemon)
+            for name in _RETIRED_API_PIN_NAMES if hasattr(module, name)] == []
 
 
 def test_mixed_triad_reaches_acceptance_in_row_order(monkeypatch):

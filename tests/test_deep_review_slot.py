@@ -802,7 +802,11 @@ def test_packed_incomplete_follows_the_provider_finish_reason(review_repo, revie
         llm.chat.return_value = ({"content": "Cut repo"}, usage_in)
         with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
             text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-        assert f"incomplete={expected}" in text.split("\n")[0], (finish, text.split("\n")[0])
+        comment = text.split("\n")[0]
+        assert f"incomplete={expected}" in comment, (finish, comment)
+        assert ("INCOMPLETE (output_reserve" in text) == (expected == "output_reserve")
+        assert usage["deep_review_memory"] == stats["memory"] and "memory=1/7" in comment
+        assert "execution_status" not in usage  # a cut report is a product, disclosed — not a failure
     # The direct-Anthropic lane (the shipped `anthropic::` deep default) sets
     # NO usage finish reason; its cut marker is the message's `stop_reason`.
     for message, expected in (
@@ -819,16 +823,6 @@ def test_packed_incomplete_follows_the_provider_finish_reason(review_repo, revie
             text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
         assert f"incomplete={expected}" in text.split("\n")[0], (message, text.split("\n")[0])
         assert ("INCOMPLETE (output_reserve" in text) == (expected == "output_reserve")
-    for finish, expected in (("length", "output_reserve"),):
-        usage_in = {"cost": 0.0, "response_finish_reason": finish}
-        llm.chat.return_value = ({"content": "Cut repo"}, usage_in)
-        with mock.patch.object(deep_self_review, "build_review_pack", return_value=(pack, stats)):
-            text, usage = run_deep_self_review(review_repo, review_drive, llm, lambda _m: None, slot=_row())
-        comment = text.split("\n")[0]
-        assert f"incomplete={expected}" in comment, (finish, comment)
-        assert ("INCOMPLETE (output_reserve" in text) == (expected == "output_reserve")
-        assert usage["deep_review_memory"] == stats["memory"] and "memory=1/7" in comment
-        assert "execution_status" not in usage  # a cut report is a product, disclosed — not a failure
 
 
 def test_memory_dispositions_are_disclosed_per_whitelisted_entry(review_repo, tmp_path, monkeypatch):
@@ -938,7 +932,9 @@ def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review
     its typed delta; after a real PARTIAL read of BIBLE.md the traversal
     shapes never lift it to `read`."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    shapes = ("a/../BIBLE.md", "BIBLE.md/../BIBLE.md", "../../../etc/passwd")
+    # ONE traversal shape at the coverage level; the refusal trio itself is the
+    # executor suite's receipt-level pin (test_read_file_receipts_carry_the_delivered_extent).
+    shapes = ("a/../BIBLE.md",)
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "docs/ARCHITECTURE.md"}, "c1")]
                        + [_tool_call("read_file", {"path": p}, f"c{i}") for i, p in enumerate(shapes, 2)]},
