@@ -73,6 +73,39 @@ def test_absorption_full_then_whole_pointer_and_grandchild_rollup():
     assert "B" * 5000 in msg2                    # generous budget -> both full
 
 
+def test_absorption_digest_carries_a_childs_typed_custody_debt():
+    """A parent could absorb its child's work while the child's own delegated
+    patch sat undisposed, and the digest said nothing. A clean child stays
+    noise-free."""
+    from ouroboros.task_status import format_subagent_absorption_message
+    children = [
+        {"task_id": "d1", "parent_task_id": "P", "status": "completed", "role": "a",
+         "result": "work", "delegated_runs_unreconciled": ["patch:run-x"]},
+        {"task_id": "d2", "parent_task_id": "P", "status": "completed", "role": "b",
+         "result": "clean work"},
+    ]
+    msg = format_subagent_absorption_message(children, parent_task_id="P")
+    d1_header = next(l for l in msg.splitlines() if l.startswith("## child d1"))
+    d2_header = next(l for l in msg.splitlines() if l.startswith("## child d2"))
+    assert "custody_debt=patch:run-x" in d1_header, d1_header
+    assert "custody_debt" not in d2_header, d2_header
+
+
+def test_absorption_digest_bounds_a_long_custody_debt_list():
+    from ouroboros.task_status import format_subagent_absorption_message
+    debt = [f"patch:run-{n}" for n in range(12)]
+    children = [{"task_id": "d1", "parent_task_id": "P", "status": "completed",
+                 "role": "a", "result": "work",
+                 "delegated_runs_unreconciled": debt}]
+    header = next(
+        l for l in format_subagent_absorption_message(
+            children, parent_task_id="P").splitlines()
+        if l.startswith("## child d1"))
+    assert "custody_debt=" + ",".join(debt[:10]) in header, header
+    assert "patch:run-10" not in header and "patch:run-11" not in header, header
+    assert "(+2 more" in header and 'get_task_result("d1")' in header, header
+
+
 def test_child_budget_never_widens_beyond_restrictive_parent():
     """C3.1 narrowing (triad+scope round-2): a child budget must AND every authority
     with the parent's, so a parent that disabled delegation/mutation/fan-out can never
