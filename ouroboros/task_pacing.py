@@ -145,8 +145,8 @@ def observe_budget_profile(ctx: Any) -> Dict[str, Any]:
     """The task's normalized budget_profile resolved SIDE-EFFECT FREE (R49).
 
     The same answer ``resolve_budget_profile`` returns: the deprecation row and
-    its ctx latch belong to the path that OWNS a mutation, so a read-only
-    observer (the capacity projection every poll calls) writes nothing and
+    its ctx latch belong to the path that OWNS a mutation, so this reader — the
+    coordination poll's ``delegate_supervision._time_fact`` — writes nothing and
     mutates no context attribute."""
     return normalize_budget_profile(_supplied_budget_profile(ctx))
 
@@ -238,9 +238,9 @@ def observe_budget_snapshot(ctx: Any, *, profile: Dict[str, Any]) -> BudgetSnaps
 
     A metadata-poor task (no ``created_at``/``started_at`` and no anchor latched
     yet) has no usable window facts a read-only observer could obtain without
-    WRITING one, so it is reported as having no deadline axis: the count axis
-    still answers and no floor admission is projected. ``profile`` is required —
-    an observer must never fall back to the emitting profile resolver."""
+    WRITING one, so it is reported as having no deadline axis — which its one
+    caller, ``delegate_supervision._time_fact``, reports as ``not_set``.
+    ``profile`` is required: an observer never falls back to the emitting resolver."""
     return _budget_snapshot(ctx, profile=profile, latch=False)
 
 

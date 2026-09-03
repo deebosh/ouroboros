@@ -133,9 +133,9 @@ def slot_delivery(slot: Any) -> str:
 
 
 def panel_delivery_class(slots: Any) -> str:
-    """A panel's pacing class is its slowest delivery (owner R16): a session
-    panel is paced by session wall clock, a native one by native wall clock,
-    a pure packet panel as before; an empty panel is a packet panel."""
+    """A panel's delivery CLASS is its slowest delivery: session over native
+    over packet, and an empty panel is a packet panel. TELEMETRY classification
+    only (owner R52) — it labels the timing row and paces nothing."""
     return max((slot_delivery(slot) for slot in slots or ()), key=_DELIVERY_RANK.__getitem__, default="api_chat")
 
 

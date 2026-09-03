@@ -269,8 +269,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # wait ceiling is min(configured ceiling, remaining/4); below this floor plan_task SKIPS
     # with a typed reason + telemetry rather than eat the tail of the budget.
     "OUROBOROS_PLAN_TASK_DEADLINE_MIN_SEC": 300,
-    # Acceptance-review budget layer (task_pacing SSOT). The first final review
-    # reserves at least 200s; later passes use max(this floor, 1.5×timing EWMA).
+    # Acceptance-review budget layer (task_pacing SSOT): the configurable
+    # acceptance admission floor, clamped to >=200 s by task_pacing.
     "OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC": 200,
     # Shared paid-review-cycle cap (SSOT + per-gate meaning: ouroboros/review_cycles.py):
     # STRING "N"|"unlimited": plan review, acceptance (passes = cycles - 1), commit gate and skill review (paid cycles per root task / manual snapshot); identical material is never re-reviewed for pay on any gate.
@@ -992,7 +992,7 @@ def get_llm_transport_read_timeout_sec() -> float:
 
 
 def get_acceptance_review_est_sec() -> float:
-    """Estimated duration of one acceptance review/improvement pass (v6.54.4)."""
+    """The configurable acceptance admission floor, clamped to >=200 s by task_pacing."""
     return _clamped_number_setting("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", low=10.0, high=3600.0)
 
 

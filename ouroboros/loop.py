@@ -1404,12 +1404,9 @@ def _run_task_acceptance_review_once(
         _set_acceptance_decision(llm_trace, {
             "status": ACCEPTANCE_FINALIZED_UNACCEPTED, "reason": launch_reason,
             "source": "task_pacing",
-            "rationale": (
-                f"Remaining {budget_snapshot.remaining_sec:.0f}s is inside the finalization "
-                f"reserve ({budget_snapshot.reserve_sec:.0f}s); finalizing without review."
-            ),
+            "rationale": f"Spendable {budget_snapshot.spendable_sec:.0f}s (remaining {budget_snapshot.remaining_sec:.0f}s, reserve {budget_snapshot.reserve_sec:.0f}s) is at or below the {task_pacing._acceptance_floor_sec():.0f}s floor.",
         })
-        emit_progress("Task acceptance review skipped: inside the finalization reserve.")
+        emit_progress("Task acceptance skipped: spendable at or below floor.")
         return False
     review_ctx = _TaskAcceptanceContext(
         tools=tools,

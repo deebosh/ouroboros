@@ -5,9 +5,11 @@ counts, and nothing predicts how long a review takes.
 The module that used to pin an estimate, its disclosures and a read-only
 preview of both gates now pins the three surviving boundaries themselves — the
 launch gate exactly at the floor, the improvement window exactly at floor ×
-scale, the money fence per send, the count cap — plus the byte-for-byte
-zero-behaviour-change matrix against the pre-deletion tree and the purity of
-every read-only poll. A separate module from the three-delivery contract suite
+scale, the money fence per send, the count cap — plus the local predicate
+equivalence with the pre-deletion tree, the panel seam that re-asks the launch
+gate before the wallet claim, and the purity of every read-only poll (whose one
+inherited write, the usage ledger's torn-tail quarantine, is pinned in its
+bounded shape). A separate module from the three-delivery contract suite
 on purpose: the subject here is what may START and what may be SPENT, not what
 a delivery row receives. Every offline fixture — the fake triads, the scripted
 ledger-crossing reviewer, the seeded wallet, the priced catalog row — is the
@@ -313,39 +315,41 @@ def test_the_improvement_window_turns_over_exactly_at_the_floor_times_its_scale(
 # gates. Every cell's ADMIT/REFUSE is identical here; only the reason token
 # differs, and only where the base said `launched_at_floor` and this tree says
 # "". History (empty vs one 20 000 s recorded panel) changed nothing THERE
-# either — which is why the reader could go.
+# either — which is why the reader could go. `spendable` is the literal window
+# in seconds against the shipped 200 s floor: floor−1, floor, floor+1,
+# 2×floor−1, 2×floor, 2×floor+1.
 _ADMISSION_MATRIX = [
-    # (history, policy, spendable multiple of the floor, launch admits, improvement admits)
-    ("empty", "adaptive", -1, False, False), ("empty", "adaptive", 0, False, False),
-    ("empty", "adaptive", +1, True, False), ("empty", "adaptive", 199, True, False),
-    ("empty", "adaptive", 200, True, False), ("empty", "adaptive", 201, True, True),
-    ("empty", "fixed", -1, False, False), ("empty", "fixed", 0, False, False),
-    ("empty", "fixed", +1, True, True), ("empty", "fixed", 199, True, True),
-    ("empty", "fixed", 200, True, True), ("empty", "fixed", 201, True, True),
-    ("huge", "adaptive", -1, False, False), ("huge", "adaptive", 0, False, False),
-    ("huge", "adaptive", +1, True, False), ("huge", "adaptive", 199, True, False),
-    ("huge", "adaptive", 200, True, False), ("huge", "adaptive", 201, True, True),
-    ("huge", "fixed", -1, False, False), ("huge", "fixed", 0, False, False),
-    ("huge", "fixed", +1, True, True), ("huge", "fixed", 199, True, True),
-    ("huge", "fixed", 200, True, True), ("huge", "fixed", 201, True, True),
+    # (history, policy, spendable seconds, launch admits, improvement admits)
+    ("empty", "adaptive", 199.0, False, False), ("empty", "adaptive", 200.0, False, False),
+    ("empty", "adaptive", 201.0, True, False), ("empty", "adaptive", 399.0, True, False),
+    ("empty", "adaptive", 400.0, True, False), ("empty", "adaptive", 401.0, True, True),
+    ("empty", "fixed", 199.0, False, False), ("empty", "fixed", 200.0, False, False),
+    ("empty", "fixed", 201.0, True, True), ("empty", "fixed", 399.0, True, True),
+    ("empty", "fixed", 400.0, True, True), ("empty", "fixed", 401.0, True, True),
+    ("huge", "adaptive", 199.0, False, False), ("huge", "adaptive", 200.0, False, False),
+    ("huge", "adaptive", 201.0, True, False), ("huge", "adaptive", 399.0, True, False),
+    ("huge", "adaptive", 400.0, True, False), ("huge", "adaptive", 401.0, True, True),
+    ("huge", "fixed", 199.0, False, False), ("huge", "fixed", 200.0, False, False),
+    ("huge", "fixed", 201.0, True, True), ("huge", "fixed", 399.0, True, True),
+    ("huge", "fixed", 400.0, True, True), ("huge", "fixed", 401.0, True, True),
 ]
 
 
-@pytest.mark.parametrize("history,policy,offset,launch_ok,improve_ok", _ADMISSION_MATRIX)
-def test_the_admission_matrix_is_byte_for_byte_the_pre_deletion_tree(
-        monkeypatch, tmp_path, history, policy, offset, launch_ok, improve_ok):
-    """Zero-behaviour-change proof, cell by cell: spendable at floor−1, floor,
-    floor+1, 2×floor−1, 2×floor and 2×floor+1, under the adaptive and the
-    non-adaptive policy, with an empty history and with a recorded panel long
-    enough to have dominated the old estimate. `offset` is a delta from the
-    floor for the first three rows and from 2×floor (199/200/201 → 2×floor−1,
-    2×floor, 2×floor+1) for the last three."""
+@pytest.mark.parametrize("history,policy,spendable,launch_ok,improve_ok", _ADMISSION_MATRIX)
+def test_the_admission_matrix_is_local_predicate_equivalence_with_the_base_tree(
+        monkeypatch, tmp_path, history, policy, spendable, launch_ok, improve_ok):
+    """Local predicate equivalence with the base tree, cell by cell: the two
+    gate predicates answer here exactly as they answered at f62512b6, at
+    spendable = floor−1, floor, floor+1, 2×floor−1, 2×floor and 2×floor+1,
+    under the adaptive and the non-adaptive policy, with an empty history and
+    with a recorded panel long enough to have dominated the old estimate. The
+    scope is these two predicates on these inputs — not the panel around
+    them."""
     from ouroboros import task_pacing
 
     monkeypatch.delenv("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", raising=False)
     floor = task_pacing._acceptance_floor_sec()
     assert floor == 200.0  # the shipped default the table was recorded against
-    spendable = floor + offset if offset in (-1, 0, 1) else float(offset) * 2
     ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={}, task_id="matrix")
     events = task_pacing.acceptance_timing_events_path(ctx)
     events.parent.mkdir(parents=True, exist_ok=True)
@@ -475,15 +479,17 @@ def _legacy_settings(monkeypatch, tmp_path):
 
 def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_task(
         monkeypatch, tmp_path):
-    """The poll every subagent bootstrap and nanny wake runs is non-mutating in
-    ALL of its facts, not only the review-capacity one. On a task carrying the
-    legacy `until_deadline` alias AND no `created_at`/`started_at` (both writes
-    armed), with the grace env ABSENT and a legacy context-mode settings file
-    (the settings write armed): the settings bytes and mtime, the events
-    stream, the task result and the event queue are byte-identical, no ctx
-    attribute appears, and the `time` fact honestly answers `not_set` for a
-    task whose window nobody has latched yet. The three controls below fire all
-    three writes from the paths that OWN them, so nothing passes vacuously."""
+    """The poll every subagent bootstrap and nanny wake runs writes NOTHING on a
+    healthy tree, in ALL of its facts and not only the review-capacity one (its
+    one inherited write — the usage ledger's torn-tail quarantine — is the test
+    below). On a task carrying the legacy `until_deadline` alias AND no
+    `created_at`/`started_at` (both writes armed), with the grace env ABSENT and
+    a legacy context-mode settings file (the settings write armed): the settings
+    bytes and mtime, the events stream, the task result and the event queue are
+    byte-identical, no ctx attribute appears, and the `time` fact honestly
+    answers `not_set` for a task whose window nobody has latched yet. The three
+    controls below fire all three writes from the paths that OWN them, so
+    nothing passes vacuously."""
     from ouroboros import config as cfg, task_pacing
     from ouroboros.delegate_supervision import coordination_live_context
     from ouroboros.task_results import task_result_path
@@ -517,6 +523,65 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
     assert len(_rows(events, "deprecated_task_pacing_alias")) == 1
     assert task_pacing.build_budget_snapshot(ctx).has_deadline is True
     assert getattr(ctx, "_time_budget_started_at", None) is not None
+
+
+def test_a_torn_usage_ledger_gets_exactly_the_quarantine_every_reader_performs(
+        monkeypatch, tmp_path):
+    """The ONE write a poll can trigger, pinned in its exact bounded shape. A
+    crash mid-append leaves a half-written final ledger row; the settled-spend
+    fact reads that ledger, so the poll performs the repair EVERY reader of the
+    ledger performs — truncate to the intact prefix, one quarantine row holding
+    the torn bytes verbatim, one `usage_ledger_tail_quarantined` event — then
+    reports the survivors as degraded integrity rather than final cost. Nothing
+    else moves: the settings bytes and mtime, every earlier event row, the task
+    result, the queue and the ctx attributes are unchanged, and a second poll
+    over the repaired ledger writes nothing at all."""
+    import base64
+
+    from ouroboros import delegate_custody as custody, usage_accounting as ua
+    from ouroboros.delegate_supervision import coordination_live_context
+    from ouroboros.task_results import task_result_path
+    from ouroboros.usage_ledger import LEDGER_REL, QUARANTINE_REL
+
+    ctx, events = _floor_band_ctx(monkeypatch, tmp_path, seconds_left=620)
+    settings_path, settings_before = _legacy_settings(monkeypatch, tmp_path)
+    # Seed the ledger the POLL itself will read (the custody root it resolves),
+    # through the real attempt path — the truncation below is then proof that
+    # this exact file was the one the poll opened.
+    root = custody.custody_root(ctx)
+    with ua.usage_scope(ua.UsageScope(
+            drive_root=root, task_id="root-floor-band", root_task_id="root-floor-band")):
+        ua.execute_physical_attempt(
+            ua.AttemptRequest(model="local-review-test", provider="local", reservation_usd=0.0),
+            lambda: ({"content": "seed"}, {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.0}))
+    ledger, quarantine = root / LEDGER_REL, root / QUARANTINE_REL
+    intact, torn = ledger.read_bytes(), b'{"seq": 99, "attempt_id": "half-writ'
+    ledger.write_bytes(intact + torn)  # the process died mid-append
+    result_file = task_result_path(tmp_path, "root-floor-band", create=False)
+    before = (events.read_bytes(), result_file.read_bytes(), set(vars(ctx)))
+
+    live = coordination_live_context(ctx)
+
+    spend = live["settled_spend"]  # it ANSWERED from the repaired prefix, honestly
+    assert "reason" not in spend  # no read error: the repair is not a failure path
+    assert spend["state"] == "partial" and spend["integrity_degraded"] is True
+    assert spend["cost_final"] is False  # a quarantined tail never claims final cost
+    assert ledger.read_bytes() == intact  # truncated to the intact prefix, nothing more
+    rows = [json.loads(line) for line in quarantine.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1 and base64.b64decode(rows[0]["raw_base64"]) == torn
+    assert rows[0]["source"] == str(ledger)
+    after = events.read_bytes()
+    assert after.startswith(before[0])  # every earlier event row is untouched
+    added = [json.loads(line) for line in after[len(before[0]):].decode("utf-8").splitlines()]
+    assert [row["type"] for row in added] == ["usage_ledger_tail_quarantined"]
+    assert (settings_path.read_bytes(), settings_path.stat().st_mtime_ns) == settings_before
+    assert result_file.read_bytes() == before[1] and set(vars(ctx)) == before[2]
+    assert ctx.event_queue.empty() and ctx.pending_events == []
+
+    # The repaired ledger is the healthy case again: the second poll writes nothing.
+    steady = (ledger.read_bytes(), quarantine.read_bytes(), events.read_bytes())
+    coordination_live_context(ctx)
+    assert (ledger.read_bytes(), quarantine.read_bytes(), events.read_bytes()) == steady
 
 
 def test_a_descendant_poll_gets_the_wallet_axis_and_no_time_axis_at_all(monkeypatch, tmp_path):

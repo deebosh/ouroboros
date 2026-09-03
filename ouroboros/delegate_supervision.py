@@ -105,10 +105,10 @@ def _parent_intent_fact(ctx: Any) -> dict[str, Any]:
 
 
 def _time_fact(ctx: Any) -> dict[str, Any]:
-    """The task's deadline window, OBSERVED: the whole coordination poll is
-    non-mutating, so this reads through the observation variants of both
-    readers — never the emitting ``resolve_budget_profile`` (deprecation row)
-    or the latching ``build_budget_snapshot`` (fallback anchor).
+    """The task's deadline window, OBSERVED: this fact writes nothing, so it
+    reads through the observation variants of both readers — never the emitting
+    ``resolve_budget_profile`` (deprecation row) or the latching
+    ``build_budget_snapshot`` (fallback anchor).
 
     Disclosed consequence: a metadata-poor task (no ``created_at``/
     ``started_at`` and no anchor latched yet) reports ``state: "not_set"``
@@ -140,6 +140,10 @@ def _time_fact(ctx: Any) -> dict[str, Any]:
 
 
 def _settled_spend_fact(ctx: Any, root_task_id: str) -> dict[str, Any]:
+    """The tree's ledger-accounted spend — the one fact whose READ can write:
+    a ledger torn by a crash mid-append has that tail quarantined and the file
+    truncated to the intact prefix, the same bounded repair EVERY reader of
+    that ledger performs; nothing here is a poll-specific mutation."""
     try:
         from ouroboros.usage_accounting import usage_breakdown
 
@@ -252,7 +256,13 @@ def _active_descendants_fact(ctx: Any) -> dict[str, Any]:
 
 
 def coordination_live_context(ctx: Any) -> dict[str, Any]:
-    """One LLM-first planning snapshot for startup and meaningful nanny wakes."""
+    """One LLM-first planning snapshot for startup and meaningful nanny wakes.
+
+    Polling writes nothing — except the usage ledger's own torn-tail quarantine
+    after a crash mid-append, which EVERY reader of that ledger performs
+    identically (``usage_ledger._read_records_locked``): the settled-spend fact
+    reads the ledger, so it inherits that one bounded repair and no other write.
+    """
 
     root_task_id = _coordination_root_id(ctx)
     try:

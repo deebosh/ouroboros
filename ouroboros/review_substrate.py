@@ -160,8 +160,8 @@ class ReviewRequest:
     max_tokens: int | None = None
     temperature: float | None = None
     no_proxy: bool = False
-    # Session route owns a compact task and repository root; API ignores both.
-    # It is the same criteria without the pack because the agent retrieves it.
+    # RETRIEVING deliveries own a compact task and repository root: the session
+    # route AND native API-route rows (`session_root`, `slot_session_tasks`).
     session_root: str = ""
     session_task: str = ""
     slot_session_tasks: Dict[str, str] = field(default_factory=dict)  # per-slot work order over session_task
