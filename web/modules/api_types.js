@@ -723,6 +723,29 @@
  */
 
 /**
+ * One Widgets card from `GET /api/widgets` (`gateway/widgets.py::WidgetTab`).
+ * `revision` is the owning skill's live payload content hash — a change
+ * signature for the page, not an ETag or cache token. Frame geometry stays
+ * inside `render`.
+ * @typedef {Object} WidgetTab
+ * @property {string} key
+ * @property {string} skill
+ * @property {string} tab_id
+ * @property {string} title
+ * @property {string} icon
+ * @property {string} ws_prefix
+ * @property {Object} render
+ * @property {number} span
+ * @property {number} grid_span
+ * @property {string} revision
+ */
+
+/**
+ * @typedef {Object} WidgetsResponse
+ * @property {WidgetTab[]} ui_tabs
+ */
+
+/**
  * One `/api/marketplace/ouroboroshub/catalog` result row (additive hubflow fields).
  * `POST /api/marketplace/ouroboroshub/install` additionally accepts the adopt
  * body fields `{adopt: true, expected_content_hash: string}` (64 lowercase hex;
@@ -1120,6 +1143,7 @@
 /**
  * @typedef {Object} UiPreferencesResponse
  * @property {string[]} widget_order
+ * @property {Object.<string,'auto'|'manual'|'retain'>} widget_start_mode  // owner per-card launch-policy override, keyed "<skill>:<tab_id>"
  * @property {boolean} nested_subagents_expanded
  * @property {number} sidebar_width  // px; 0 = CSS default (v6.33.0)
  * @property {number} project_panel_width  // px; 0 = CSS default
