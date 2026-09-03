@@ -104,16 +104,17 @@ DEFERRED_OUT_OF_V70 = {
     # batch №7 5=A (headless cancel receipts), batch №9 №12=A (two frozen modules),
     # batch №12 A (C6 residuals), batch №8 5=A (task_results eternal).
     # Operator disclosures without an owner decision yet (each an open item of
-    # the STOP batch): the wave-4 observations W4-F3/W4-F4, the mutating
-    # delegation scenarios, the never-executed paid E2E lane, the five typed
-    # process-fact surfaces, spec §6.4 paths/roots, the F23 acceptance capsule.
+    # the STOP batch): the wave-4 observations W4-F3/W4-F4, the never-executed
+    # paid E2E lane, the five typed process-fact surfaces, spec §6.4 paths/roots,
+    # the F23 acceptance capsule. (The mutating delegation scenarios left this set
+    # when the owner answered batch №13 item 15=B and the wave-5 pair S24/S25
+    # landed — DEFER-E2E-DELEG-MUT now reads done at phase F4.)
     "DEFER-HEADLESS-CANCEL": OWNER,
     "DEFER-FROZEN-2": OWNER,
     "DEFER-C6-RESIDUALS": OWNER,
     "DEFER-C19-RETENTION": OWNER,
     "W4-F3": OPERATOR,
     "W4-F4": OPERATOR,
-    "DEFER-E2E-DELEG-MUT": OPERATOR,
     "DEFER-E2E-PAID-LANE": OPERATOR,
     "DEFER-TYPED-PROC-5": OPERATOR,
     "DEFER-SPEC64-PATHS": OPERATOR,

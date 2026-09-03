@@ -104,6 +104,11 @@ SCENARIOS = {
     "S21": ("cancellation with chat lineage: outbox-delivered receipt, chat.jsonl row, cancel_receipt block, intent forensics", LANE_MOCK),
     "S22": ("evolution absorb kill-recovery: SIGKILL after the reviewed commit, markerless boot reconcile absorbs once, never twice", LANE_MOCK),
     "S23": ("delegated interactive answer: waiting_on_user -> delegate_answer -> run continues; wire + custody truth", LANE_MOCK),
+    # Ф4 wave 5: the MUTATING delegated runs the earlier waves carried and never
+    # landed (ADOPTION row DEFER-E2E-DELEG-MUT). The one delegation branch that
+    # changes the owner's tree on behalf of an external harness.
+    "S24": ("delegated MUTATING run, clean pull-in: private snapshot provisioned, harness edits it, containment facts read from the attempt record, integrate_delegated_patch(apply) stages into the live workspace — which is untouched until that call", LANE_MOCK),
+    "S25": ("delegated MUTATING run, conflicting pull-in: the live tree drifts on a patched path, apply is REFUSED typed, and snapshot + patch survive as the nanny's own resolution material", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"
@@ -1170,9 +1175,15 @@ def wait_until(predicate, timeout: float, interval: float = 0.5):
     return last
 
 
-def submit_running(server: IsolatedServer, description: str, *, timeout: float = 120) -> str:
-    """Submit a task and wait until the supervisor actually has it RUNNING."""
-    task_id = server.submit(description)
+def submit_running(server: IsolatedServer, description: str, *,
+                   workspace_root: str = "", timeout: float = 120) -> str:
+    """Submit a task and wait until the supervisor actually has it RUNNING.
+
+    ``workspace_root`` submits the task as an EXTERNAL-WORKSPACE task (the server's
+    own submit sets ``workspace_mode=external`` with it), which is what gives its
+    root agent the mutating delegated shape the delegation-mutation scenarios need.
+    """
+    task_id = server.submit(description, workspace_root=str(workspace_root or ""))
     assert task_id, "submit returned no task id"
     oracle = ArtifactOracle(server.data_root)
     running = wait_until(lambda: task_id in oracle.running_ids(), timeout)
