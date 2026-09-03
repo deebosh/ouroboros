@@ -83,7 +83,7 @@ from ouroboros.loop_tool_execution import (
     reclaim_negative_memo,
     reclaim_trace_refs,
 )
-from ouroboros.loop_llm_call import call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source
+from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS, _TRANSPORT_DEATH_RETRIES, _emit_live_log, call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source
 from ouroboros.delegate_hold import (
     close_hold as _delegate_hold_close,
     hold_step as _delegate_hold_step,
@@ -485,7 +485,6 @@ def _emit_checkpoint_event(
     data: Dict[str, Any],
 ) -> bool:
     """Emit a task_checkpoint via event queue or direct events.jsonl append."""
-    from ouroboros.loop_llm_call import _emit_live_log
     payload = {"type": "task_checkpoint", "task_id": task_id, **data}
     if event_queue is not None:
         _emit_live_log(event_queue, payload)
@@ -1848,10 +1847,9 @@ def _run_cross_model_fallback_chain(
     """Try fallbacks; unknown dispatch stops the chain."""
     from ouroboros import fallback_cooldown as _fcd
     from ouroboros.config import get_fallback_models
-    from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS as _cooldown_kinds
 
     def _cooled(model: str, use_local: bool) -> None:
-        if str(accumulated_usage.get("_last_llm_error_kind") or "") in _cooldown_kinds:
+        if str(accumulated_usage.get("_last_llm_error_kind") or "") in _COOLDOWN_ERROR_KINDS:
             _fcd.mark_cooldown(model, use_local)
 
     _cooled(active_model, active_use_local)
@@ -5514,6 +5512,7 @@ def _dispatch_round_model(
         deadline_ts=_task_deadline_epoch(ctx.tools),
         transport_reserve_sec=task_pacing.get_finalization_grace_sec(),
         attempt_cap=attempt_cap,
+        transport_death_retries=_TRANSPORT_DEATH_RETRIES if attempt_cap is None else 0,
         allow_server_web_search=_server_web_allowed_by_task(ctx.tools._ctx),
         physical_context=(
             _physical_context_for_fit(disposition) if disposition is not None else None
@@ -5788,7 +5787,7 @@ def _handle_budget_exceeded(
     if (
         scope == "root"
         and ctx.event_queue is not None
-        and not bool(getattr(ctx.tools._ctx, "is_direct_chat", False))
+        and not direct_chat
     ):
         try:
             ctx.event_queue.put_nowait({

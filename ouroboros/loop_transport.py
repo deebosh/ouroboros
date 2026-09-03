@@ -571,6 +571,20 @@ def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
     """Explain whether retrying later is likely to help."""
     kind = str(accumulated_usage.get("_last_llm_error_kind") or "").strip()
     if kind == "provider_outcome_unknown":
+        from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
+
+        deaths = accumulated_usage.get(TRANSPORT_DEATHS_KEY)
+        repeats = int(deaths.get("count") or 0) if isinstance(deaths, dict) else 0
+        if repeats:
+            # The bounded paid repeat rail already spent its budget on this
+            # round: name it so the terminal never reads as "sent once".
+            return (
+                f" The dispatched request has no terminal provider outcome; it was "
+                f"already repeated {repeats} time(s) after typed transport deaths (each "
+                "a new physical attempt, the earlier ones staying unresolved at their "
+                "upper bound), so no further retry or paid fallback was sent; either "
+                "could duplicate live work."
+            )
         return (
             " The dispatched request has no terminal provider outcome, so no "
             "retry or paid fallback was sent; either could duplicate live work."

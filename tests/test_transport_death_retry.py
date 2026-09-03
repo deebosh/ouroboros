@@ -1,0 +1,482 @@
+"""Contracts for the bounded paid repeat after a post-dispatch transport death.
+
+A DISPATCHED request whose socket died with a typed transport death (httpx
+ReadError / WriteError / RemoteProtocolError, or the requests ProtocolError /
+RemoteDisconnected shape) is `provider_outcome_unknown`; the PRIMARY main-loop
+round dispatch alone may repeat it at most twice per round, each repeat a NEW
+physical attempt with its own ledger lifecycle (the earlier rows stay unresolved
+at their upper bound). Every other surface keeps the no-resend doctrine, the
+classifier is unchanged, and every durable `llm_api_error` row tells the truth
+about what happens next.
+"""
+
+from __future__ import annotations
+
+import inspect
+import json
+import queue
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+import ouroboros.loop as loop_mod
+import ouroboros.loop_llm_call as call_mod
+import ouroboros.loop_transport as loop_transport
+from ouroboros import usage_accounting as ua
+from ouroboros.loop import run_llm_loop
+from ouroboros.loop_llm_call import (
+    RETRY_WALL_EXHAUSTED_KEY,
+    TRANSPORT_DEATHS_KEY,
+    _TRANSPORT_DEATH_RETRIES,
+    call_llm_with_retry,
+    classify_llm_exception,
+    provider_no_call_source,
+)
+from ouroboros.tools.registry import ToolRegistry
+
+MESSAGES = [{"role": "user", "content": "hi"}]
+OK_RESPONSE = ({"role": "assistant", "content": "done"}, {"prompt_tokens": 1, "completion_tokens": 1})
+
+
+def _capture(state: str = "unresolved", provider: str = "openrouter") -> ua.PhysicalAttemptCapture:
+    return ua.PhysicalAttemptCapture(
+        attempt_id=f"pa-{state}", model="test-model", provider=provider, state=state,
+        candidate_measurement_kind="opaque",
+    )
+
+
+def _death(exc_cls=httpx.ReadError, state: str = "unresolved", provider: str = "openrouter"):
+    """The OpenAI SDK shape: ``raise APIConnectionError(request=request) from err``
+    with the custody capture execute_physical_attempt attaches."""
+    try:
+        raise RuntimeError("Connection error.") from exc_cls("socket died after dispatch")
+    except RuntimeError as exc:
+        exc.physical_attempt_capture = _capture(state=state, provider=provider)
+        return exc
+
+
+def _released_connect():
+    try:
+        raise RuntimeError("Connection error.") from httpx.ConnectError("connection refused")
+    except RuntimeError as exc:
+        exc.physical_attempt_capture = _capture(state="released")
+        return exc
+
+
+class _ScriptedLLM:
+    """chat() follows a script: an exception factory raises, anything else is returned."""
+
+    def __init__(self, *script):
+        self.script = list(script)
+        self.calls = 0
+
+    def default_model(self):
+        return "test-model"
+
+    def chat(self, **_kwargs):
+        self.calls += 1
+        step = self.script.pop(0) if self.script else OK_RESPONSE
+        if callable(step):
+            raise step()
+        return step
+
+
+def _events(drive_logs, kind: str):
+    path = drive_logs / "events.jsonl"
+    if not path.exists():
+        return []
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [row for row in rows if row.get("type") == kind]
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(call_mod, "_sleep_within_deadline", lambda sec, _dl: (sleeps.append(sec), True)[1])
+    return sleeps
+
+
+def _primary_call(llm, drive_logs, usage, *, round_idx=1, max_retries=3, **kwargs):
+    return call_llm_with_retry(
+        llm, MESSAGES, "test-model", None, "low", max_retries, drive_logs, "t-death",
+        round_idx, None, usage, transport_death_retries=_TRANSPORT_DEATH_RETRIES, **kwargs,
+    )
+
+
+# ------------------------------------------------------------------ ledger rail
+
+@pytest.fixture
+def data_root(tmp_path, monkeypatch):
+    root = tmp_path / "data"
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(root))
+    monkeypatch.setenv("OUROBOROS_SETTINGS_PATH", str(root / "settings.json"))
+    monkeypatch.setenv("TOTAL_BUDGET", "100")
+    (root / "state").mkdir(parents=True)
+    return root
+
+
+def _ledger(root):
+    path = root / ua.LEDGER_REL
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [row for row in rows if row.get("kind") == "attempt"]
+
+
+class _LedgerLLM:
+    """Every chat() is a REAL execute_physical_attempt (reserve → dispatched →
+    unresolved/settled) whose send follows the script — the production shape."""
+
+    def __init__(self, root, *script, reservation_usd: float = 1.0):
+        self.root = root
+        self.script = list(script)
+        self.calls = 0
+        self.reservation_usd = reservation_usd
+
+    def default_model(self):
+        return "test-model"
+
+    def chat(self, **_kwargs):
+        self.calls += 1
+        step = self.script.pop(0) if self.script else "ok"
+
+        def send():
+            if callable(step):
+                raise RuntimeError("Connection error.") from step()
+            return {"content": "done"}
+
+        request = ua.AttemptRequest(
+            model="test-model", provider="openrouter", reservation_usd=self.reservation_usd,
+            drive_root=self.root, task_id="t-death", root_task_id="t-death", source="test.death",
+        )
+        ua.execute_physical_attempt(
+            request, send, extractor=lambda _resp: ({"prompt_tokens": 1, "completion_tokens": 1}, 0.01, True),
+        )
+        return OK_RESPONSE
+
+
+def test_two_deaths_then_success_are_three_ledger_lifecycles(data_root, tmp_path, no_sleep):
+    """Each physical send is its own reservation/dispatch/terminal lifecycle; the
+    dead ones stay unresolved at their upper bound; exactly one durable error row
+    per FAILED send, each truthfully announcing the repeat; the success emits none."""
+    llm = _LedgerLLM(data_root, lambda: httpx.ReadError("died"), lambda: httpx.RemoteProtocolError("eof"))
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage)
+
+    assert msg == OK_RESPONSE[0]
+    assert llm.calls == 3
+    rows = _ledger(data_root)
+    by_attempt = {}
+    for row in rows:
+        by_attempt.setdefault(row["attempt_id"], []).append(row["state"])
+    assert len(by_attempt) == 3  # never a reused reservation
+    assert list(by_attempt.values()) == [
+        ["reserved", "dispatched", "unresolved"],
+        ["reserved", "dispatched", "unresolved"],
+        ["reserved", "dispatched", "settled"],
+    ]
+    assert ua.usage_projection(data_root)["unresolved_upper_bound_usd"] == 2.0
+    api_errors = _events(tmp_path, "llm_api_error")
+    assert [row["retry_same_request"] for row in api_errors] == [True, True]
+    assert {row["error_kind"] for row in api_errors} == {"provider_outcome_unknown"}
+    assert [row["transport_cause_type"] for row in api_errors] == ["ReadError", "RemoteProtocolError"]
+    assert {row["attempt_custody_state"] for row in api_errors} == {"unresolved"}
+    unresolved_ids = [aid for aid, states in by_attempt.items() if states[-1] == "unresolved"]
+    assert [row["physical_attempt_id"] for row in api_errors] == unresolved_ids
+    assert _events(tmp_path, "llm_non_retryable_same_request") == []
+    assert "_last_llm_error_kind" not in usage
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 2
+
+
+def test_budget_refusal_on_the_second_send_propagates_untouched(data_root, tmp_path, no_sleep, monkeypatch):
+    """The unresolved upper bound of the dead send counts against admission: a
+    BudgetExceeded from reserve_attempt on the repeat propagates as-is and no
+    further physical attempt is dispatched (sol s9)."""
+    monkeypatch.setenv("TOTAL_BUDGET", "1.5")
+    llm = _LedgerLLM(data_root, lambda: httpx.ReadError("died"), reservation_usd=1.0)
+    usage = {}
+    with pytest.raises(ua.BudgetExceeded) as raised:
+        _primary_call(llm, tmp_path, usage)
+
+    assert raised.value.limit_scope == "global"
+    assert llm.calls == 2
+    rows = _ledger(data_root)
+    assert [row["state"] for row in rows] == ["reserved", "dispatched", "unresolved"]
+    assert len(_events(tmp_path, "llm_api_error")) == 1  # only the death itself was a provider failure
+    assert _events(tmp_path, "llm_non_retryable_same_request") == []
+
+
+# --------------------------------------------------------- bounded, truthful flags
+
+def test_third_death_exhausts_the_round_budget(tmp_path, no_sleep):
+    llm = _ScriptedLLM(_death, _death, _death)
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage)
+
+    assert msg is None
+    assert llm.calls == 3  # 1 + _TRANSPORT_DEATH_RETRIES
+    api_errors = _events(tmp_path, "llm_api_error")
+    assert [row["retry_same_request"] for row in api_errors] == [True, True, False]
+    non_retryable = _events(tmp_path, "llm_non_retryable_same_request")
+    assert len(non_retryable) == 1
+    assert non_retryable[0]["error_kind"] == "provider_outcome_unknown"
+    assert non_retryable[0]["attempt"] == 3
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert usage["_last_llm_retry_same_request"] is False
+    assert RETRY_WALL_EXHAUSTED_KEY not in usage  # the unknown terminal outranks the wall
+    assert provider_no_call_source(usage, False) == ("provider_outcome_unknown_no_resend", False)
+    assert no_sleep == [4.0, 8.0]  # backoff by death ordinal; none after exhaustion
+
+
+def test_backoff_deadline_refusal_stops_without_a_resend(tmp_path, monkeypatch):
+    monkeypatch.setattr(call_mod, "_sleep_within_deadline", lambda _sec, _dl: False)
+    llm = _ScriptedLLM(_death, _death)
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage)
+
+    assert msg is None
+    assert llm.calls == 1
+    deadline_rows = _events(tmp_path, "llm_retry_deadline_exhausted")
+    assert [row["error_kind"] for row in deadline_rows] == ["provider_outcome_unknown"]
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert RETRY_WALL_EXHAUSTED_KEY not in usage
+    assert provider_no_call_source(usage, False) == ("provider_outcome_unknown_no_resend", False)
+
+
+def test_attempt_loop_ceiling_stays_the_outer_bound_and_the_flag_stays_truthful(tmp_path, no_sleep, monkeypatch):
+    """The transient attempt budget is the outer ceiling of the same loop: at its
+    last slot the death's row already says no repeat (no true-then-nothing)."""
+    monkeypatch.setenv("OUROBOROS_TRANSIENT_RETRY_MAX", "2")
+    llm = _ScriptedLLM(_death, _death, _death)
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage, max_retries=1)
+
+    assert msg is None
+    assert llm.calls == 2
+    assert [row["retry_same_request"] for row in _events(tmp_path, "llm_api_error")] == [True, False]
+    assert len(_events(tmp_path, "llm_non_retryable_same_request")) == 1
+
+
+@pytest.mark.parametrize("non_death", [
+    lambda: _death(httpx.ReadTimeout),
+    lambda: _death(httpx.ReadError, provider="local"),
+])
+def test_unknown_outcomes_that_are_not_typed_transport_deaths_are_never_resent(tmp_path, no_sleep, non_death):
+    llm = _ScriptedLLM(non_death, non_death)
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage)
+
+    assert msg is None
+    assert llm.calls == 1
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert usage["_last_llm_retry_same_request"] is False
+    assert len(_events(tmp_path, "llm_non_retryable_same_request")) == 1
+    assert no_sleep == []
+
+
+def test_requests_lane_death_repeats_on_the_same_rail(tmp_path, no_sleep):
+    """The Anthropic-native requests/urllib3 shape rides the same bounded rail."""
+    import http.client
+
+    import requests
+    import urllib3
+
+    def requests_death():
+        exc = requests.exceptions.ConnectionError(urllib3.exceptions.ProtocolError(
+            "Connection aborted.", http.client.RemoteDisconnected("closed without response"),
+        ))
+        exc.physical_attempt_capture = _capture(provider="anthropic")
+        return exc
+
+    llm = _ScriptedLLM(requests_death)
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage)
+    assert msg == OK_RESPONSE[0]
+    assert llm.calls == 2
+    api_errors = _events(tmp_path, "llm_api_error")
+    assert [(row["error_kind"], row["retry_same_request"]) for row in api_errors] == [("provider_outcome_unknown", True)]
+
+
+# ------------------------------------------------------- round-keyed counter
+
+def test_counter_is_keyed_by_round_and_survives_re_entry_of_the_same_round(tmp_path, no_sleep):
+    """A re-entry with the SAME round id (the wait episode's free redial) keeps the
+    spent count; the next round starts from zero."""
+    usage = {}
+    llm = _ScriptedLLM(_death, _death)
+    msg, _cost = _primary_call(llm, tmp_path, usage, round_idx=1)
+    assert msg == OK_RESPONSE[0] and llm.calls == 3
+    assert usage[TRANSPORT_DEATHS_KEY] == {"round_id": f"{usage['execution_id']}:round:1", "count": 2}
+
+    redial = _ScriptedLLM(_death, _death)
+    msg, _cost = _primary_call(redial, tmp_path, usage, round_idx=1)
+    assert msg is None
+    assert redial.calls == 1  # the round's budget was already spent
+    assert usage["_last_llm_retry_same_request"] is False
+
+    next_round = _ScriptedLLM(_death, _death)
+    msg, _cost = _primary_call(next_round, tmp_path, usage, round_idx=2)
+    assert msg == OK_RESPONSE[0] and next_round.calls == 3
+    assert usage[TRANSPORT_DEATHS_KEY]["round_id"].endswith(":round:2")
+
+
+def test_stale_counter_from_an_earlier_round_is_dropped_by_a_later_unknown(tmp_path, no_sleep):
+    """A later round's NON-transport unknown must not inherit an earlier round's
+    repeat count (the terminal hint reads the record)."""
+    usage = {}
+    _primary_call(_ScriptedLLM(_death, _death), tmp_path, usage, round_idx=1)
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 2
+    _primary_call(_ScriptedLLM(lambda: _death(httpx.ReadTimeout)), tmp_path, usage, round_idx=3)
+    assert TRANSPORT_DEATHS_KEY not in usage
+    assert "already repeated" not in loop_transport.provider_recovery_hint(usage)
+
+
+# --------------------------------------------------------------- round gate
+
+def _loop_kwargs(tmp_path, llm, notes):
+    return dict(
+        messages=[{"role": "user", "content": "go"}],
+        tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
+        llm=llm,
+        drive_logs=tmp_path,
+        emit_progress=notes.append,
+        incoming_messages=queue.Queue(),
+        task_id="t-death",
+        drive_root=tmp_path,
+    )
+
+
+def _no_chain(**_kwargs):
+    raise AssertionError("unknown physical work must stop the paid fallback chain")
+
+
+def test_primary_round_dispatch_exhaustion_takes_the_unknown_no_resend_terminal(tmp_path, monkeypatch, no_sleep):
+    """End to end through the real round dispatcher: three deaths, then the
+    forced-final rail ships the salvage WITHOUT a provider call and the terminal
+    text names the repeats."""
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    llm = _ScriptedLLM(_death, _death, _death, _death)
+    notes = []
+    result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, notes))
+
+    assert llm.calls == 3  # zero further dials of any kind: no forced-final resend
+    assert usage.get("execution_status") == "infra_failed"
+    assert usage.get("reason_code") == "provider_unavailable"
+    assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
+    assert "already repeated 2 time(s)" in result
+    assert "no further retry or paid fallback was sent" in result
+
+
+def test_primary_round_dispatch_recovers_after_two_deaths(tmp_path, monkeypatch, no_sleep):
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    llm = _ScriptedLLM(_death, _death)
+    notes = []
+    result, usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, notes))
+
+    assert result == "done"
+    assert llm.calls == 3
+    assert usage.get("reason_code") is None
+
+
+def test_counter_survives_the_wait_episodes_free_redial_of_the_same_round(tmp_path, monkeypatch, no_sleep):
+    """death → released ConnectError → wait episode → free redial → death →
+    death: the round stays bounded by two paid repeats in total (sol s1)."""
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", lambda _sec, _wake: False)
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    llm = _ScriptedLLM(_death, _released_connect, _death, _death, _death)
+    notes = []
+    _result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, notes))
+
+    assert llm.calls == 4  # death, connect (free), death, death — the fifth script step never runs
+    api_errors = _events(tmp_path, "llm_api_error")
+    assert [(row["error_kind"], row["retry_same_request"]) for row in api_errors] == [
+        ("provider_outcome_unknown", True),
+        ("transport_unavailable", True),
+        ("provider_outcome_unknown", True),
+        ("provider_outcome_unknown", False),
+    ]
+    assert len(_events(tmp_path, "llm_non_retryable_same_request")) == 1
+    assert [row["phase"] for row in _events(tmp_path, "network_wait")] == ["entered", "waiting", "ended"]
+    assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 2
+
+
+# ------------------------------------------------ zero repeats everywhere else
+
+def test_forced_final_call_never_repeats_a_transport_death(tmp_path, no_sleep):
+    llm = _ScriptedLLM(_death, _death)
+    ctx = SimpleNamespace(
+        llm=llm, messages=MESSAGES, active_model="test-model", active_effort="low",
+        max_retries=3, drive_logs=tmp_path, task_id="t-forced", round_idx=1,
+        event_queue=None, accumulated_usage={}, task_type="task", active_use_local=False,
+        deadline_ts=None,
+    )
+    text = loop_mod._call_forced_model_once(ctx)
+
+    assert text == ""
+    assert llm.calls == 1
+    assert ctx.accumulated_usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert ctx.accumulated_usage["_last_llm_retry_same_request"] is False
+    assert no_sleep == []
+
+
+@pytest.mark.parametrize("attempt_cap,expected_calls", [(None, 3), (2, 1)])
+def test_round_dispatcher_opts_in_only_the_primary(tmp_path, no_sleep, attempt_cap, expected_calls):
+    """attempt_cap is set only for fallback-chain candidates (the primary passes
+    None): candidates get zero paid repeats, the primary its bounded two."""
+    llm = _ScriptedLLM(_death, _death)
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    ctx = SimpleNamespace(
+        llm=llm, messages=MESSAGES, tools=registry, active_model="test-model", tool_schemas=None,
+        active_effort="low", max_retries=3, drive_logs=tmp_path, task_id="t-cand", round_idx=1,
+        event_queue=None, accumulated_usage={}, task_type="task", active_use_local=False,
+    )
+    msg, _cost = loop_mod._dispatch_round_model(ctx, None, attempt_cap=attempt_cap)
+
+    assert llm.calls == expected_calls
+    assert (msg is not None) is (attempt_cap is None)
+
+
+def test_default_budget_is_zero_for_every_direct_caller(tmp_path, no_sleep):
+    llm = _ScriptedLLM(_death, _death)
+    msg, _cost = call_llm_with_retry(llm, MESSAGES, "test-model", None, "low", 3, tmp_path, "t-default", 1, None, {})
+    assert msg is None
+    assert llm.calls == 1
+
+
+def test_background_consciousness_never_enters_the_paid_repeat_rail():
+    """Owner decision: Background Consciousness gets zero paid transport repeats —
+    it calls LLMClient directly and never enters call_llm_with_retry."""
+    from ouroboros import consciousness
+
+    assert "call_llm_with_retry" not in inspect.getsource(consciousness)
+
+
+def test_classifier_and_review_custody_are_unchanged_by_the_rail():
+    """The global classifier still says no-resend for a dispatched death, and
+    review custody (which consults it) keeps refusing a second paid send."""
+    from ouroboros.review_custody import retryable_review_exception
+    from ouroboros.transport_custody import is_retryable_transport_death
+
+    exc = _death()
+    assert is_retryable_transport_death(exc) is True
+    classification = classify_llm_exception(exc)
+    assert classification.kind == "provider_outcome_unknown"
+    assert classification.retry_same_request is False
+    assert retryable_review_exception(exc, None) is False
+
+
+def test_recovery_hint_names_the_spent_repeats():
+    usage = {"_last_llm_error_kind": "provider_outcome_unknown", TRANSPORT_DEATHS_KEY: {"round_id": "r", "count": 2}}
+    hint = loop_transport.provider_recovery_hint(usage)
+    assert "already repeated 2 time(s)" in hint
+    assert "no further retry or paid fallback was sent" in hint
+    bare = loop_transport.provider_recovery_hint({"_last_llm_error_kind": "provider_outcome_unknown"})
+    assert "no retry or paid fallback was sent" in bare

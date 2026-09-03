@@ -85,6 +85,85 @@ def is_pre_dispatch_transport_failure(exc: BaseException) -> bool:
     return False
 
 
+def _capture_on_chain(error: BaseException) -> Any:
+    """The physical-attempt capture riding ``error`` or its explicit causes.
+
+    Deliberately read off the exception chain, NOT the contextvar helper
+    (physical_attempt_capture_from_exception's fallback): a custody fact must
+    never bind a stale attempt from an unrelated call. Wrappers
+    (LocalContextTooLargeError, recovery RuntimeError) carry the capture only
+    on their explicit cause — walk it the same way.
+    """
+    capture = getattr(error, "physical_attempt_capture", None)
+    seen: set = set()
+    walker = getattr(error, "__cause__", None)
+    while capture is None and isinstance(walker, BaseException) and id(walker) not in seen:
+        seen.add(id(walker))
+        capture = getattr(walker, "physical_attempt_capture", None)
+        walker = walker.__cause__
+    return capture
+
+
+def _carries_requests_protocol_death(exc: BaseException) -> bool:
+    """requests wraps the urllib3 ``ProtocolError`` (whose own args carry the
+    ``RemoteDisconnected``) as the ``ConnectionError``'s first argument."""
+    try:
+        import http.client
+        import requests
+        import urllib3
+    except Exception:  # pragma: no cover - optional transport dependency
+        return False
+    if not isinstance(exc, requests.exceptions.ConnectionError) or isinstance(
+        exc, requests.exceptions.Timeout,
+    ):
+        return False
+    pending = list(getattr(exc, "args", ()))
+    while pending:
+        value = pending.pop(0)
+        if isinstance(value, (urllib3.exceptions.ProtocolError, http.client.RemoteDisconnected)):
+            return True
+        if isinstance(value, BaseException):
+            pending.extend(getattr(value, "args", ()))
+    return False
+
+
+def is_retryable_transport_death(exc: BaseException) -> bool:
+    """True when a DISPATCHED request died with a typed transport death that a
+    bounded paid repeat (a NEW physical attempt) may follow.
+
+    The class is deliberately narrow: httpx ``ReadError`` / ``WriteError`` /
+    ``RemoteProtocolError`` reached through the explicit ``__cause__`` chain the
+    OpenAI SDK sets (``raise APIConnectionError(request=request) from err``), or
+    the requests/urllib3 Anthropic-native shape — a ``ConnectionError`` carrying
+    ``urllib3.exceptions.ProtocolError`` / ``http.client.RemoteDisconnected``.
+    NOT a timeout of any kind (a ``ReadTimeout`` is "we gave up", the provider
+    may still be working), NOT a provider status/body error, NOT a pre-dispatch
+    failure (that custody is ``released`` and owned by the free wait episode),
+    and — the classifier's locality gate — NOT a local provider or a loopback
+    route, whose dead server is not a network fault worth paying for again. A
+    missing capture proves nothing and fails closed.
+    """
+    capture = _capture_on_chain(exc)
+    if capture is None or str(getattr(capture, "provider", "") or "") == "local" or bool(
+        getattr(capture, "route_is_loopback", False)
+    ):
+        return False
+    try:
+        import httpx
+
+        death_types: tuple = (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError)
+    except Exception:  # pragma: no cover - httpx ships with the runtime
+        death_types = ()
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while isinstance(current, BaseException) and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, death_types) or _carries_requests_protocol_death(current):
+            return True
+        current = current.__cause__
+    return False
+
+
 def release_pre_dispatch_attempt(reservation: Any, exc: BaseException) -> bool:
     """Release a marked attempt only after a typed pre-dispatch transport fact."""
     if not is_pre_dispatch_transport_failure(exc):
@@ -113,18 +192,7 @@ def attempt_custody_event_fields(error: BaseException) -> dict:
     RemoteProtocolError) is unrecoverable after the fact. Bounded type names
     only — never raw cause text.
     """
-    # Deliberately read off the exception chain, NOT the contextvar helper
-    # (physical_attempt_capture_from_exception's fallback): a durable join key
-    # must never bind a stale attempt from an unrelated call.
-    capture = getattr(error, "physical_attempt_capture", None)
-    seen: set = set()
-    walker = getattr(error, "__cause__", None)
-    while capture is None and isinstance(walker, BaseException) and id(walker) not in seen:
-        # Wrappers (LocalContextTooLargeError, recovery RuntimeError) carry the
-        # capture only on their explicit cause — walk it the same way.
-        seen.add(id(walker))
-        capture = getattr(walker, "physical_attempt_capture", None)
-        walker = walker.__cause__
+    capture = _capture_on_chain(error)
     fields: dict = {}
     if capture is not None:
         fields["physical_attempt_id"] = str(getattr(capture, "attempt_id", "") or "")

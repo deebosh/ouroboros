@@ -1562,7 +1562,14 @@ by "Provider Independence" above. Call-site imperatives:
   non-retryable as-is (record the exact category and surface a recovery
   hint); a typed 408/429/5xx or a failure proven pre-dispatch may retry; a
   dispatched request with no terminal provider outcome stops same-model and
-  cross-model sends until reconciled.
+  cross-model sends until reconciled — with one typed exception: the primary
+  main-loop round dispatch may repeat a request that died with a typed
+  transport death (`transport_custody.is_retryable_transport_death`) at most
+  twice per round, each repeat a NEW physical attempt on its own ledger row
+  and never a resend of the unresolved one, deciding the `retry_same_request`
+  flag before the durable row is written
+  (`tests/test_transport_death_retry.py`). Every other caller keeps
+  `transport_death_retries=0`.
 
 #### Timeout & Wait Control
 
@@ -1615,13 +1622,17 @@ by "Provider Independence" above. Call-site imperatives:
   `dispatched`/`unresolved` without a typed terminal status stays under the
   custody-lost/no-resend classification. Positive capture evidence outranks a
   contradictory synthetic `not_dispatched` label; across one bounded rail,
-  retain the strongest earlier capture — any unknown prior outcome
+  retain the strongest earlier capture — on side-effect surfaces (review,
+  delegation, forced-final, the fallback chain) any unknown prior outcome
   monotonically forces no-resend. A dispatched request whose socket or
   stream ends without terminal provider evidence is
-  `provider_outcome_unknown`: THAT request is never resent by any route, its
-  `unresolved` ledger row is terminal, and a NEW logical request is legal
-  only with a unique host-attested input absent from the unknown one (e.g.
-  the nanny-leaf hold contract in `ouroboros/delegate_hold.py`).
+  `provider_outcome_unknown`: its `unresolved` ledger row is terminal and
+  THAT physical attempt is never resent by any route; the primary main-loop
+  completion may send the same request again only after a typed transport
+  death, at most twice per round, as a new physical attempt with its own row
+  (a transport retry is literally a new attempt); a NEW logical request is
+  legal only with a unique host-attested input absent from the unknown one
+  (e.g. the nanny-leaf hold contract in `ouroboros/delegate_hold.py`).
 - A custody retry key names semantic material and an admitted cycle, not its
   rendered prompt: prior-round scaffolding may change while the same physical
   operation settles and must still join it; changed snapshots, owner intent,

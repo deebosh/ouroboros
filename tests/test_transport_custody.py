@@ -205,3 +205,128 @@ def test_attempt_custody_cause_walk_matches_bare_builtin_transport_errors():
     except RuntimeError as exc:
         fields = attempt_custody_event_fields(exc)
     assert fields["transport_cause_type"] == "ConnectionResetError"
+
+
+# ------------------------------------------- bounded paid repeat: the death class
+
+def _unresolved_capture(provider: str = "openrouter", **extra) -> ua.PhysicalAttemptCapture:
+    return ua.PhysicalAttemptCapture(
+        attempt_id="pa-death", model="m", provider=provider, state="unresolved",
+        candidate_measurement_kind="opaque", **extra,
+    )
+
+
+def _sdk_wrapped(cause: BaseException, capture=None):
+    """The OpenAI SDK shape: ``raise APIConnectionError(request=request) from err``
+    with the physical-attempt capture attached by execute_physical_attempt."""
+    try:
+        raise RuntimeError("Connection error.") from cause
+    except RuntimeError as exc:
+        if capture is not None:
+            exc.physical_attempt_capture = capture
+        return exc
+
+
+@pytest.mark.parametrize("cause_cls", [httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError])
+def test_typed_transport_death_on_dispatched_remote_route_is_retryable(cause_cls):
+    from ouroboros.transport_custody import is_retryable_transport_death
+
+    exc = _sdk_wrapped(cause_cls("socket died after dispatch"), _unresolved_capture())
+    assert is_retryable_transport_death(exc) is True
+
+
+@pytest.mark.parametrize("cause_cls", [
+    httpx.ReadTimeout, httpx.WriteTimeout, httpx.ConnectError, httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+])
+def test_timeouts_and_pre_dispatch_failures_are_not_transport_deaths(cause_cls):
+    """A timeout is "we gave up" (the provider may still be working); a connect
+    failure is the free released class — neither earns a paid repeat."""
+    from ouroboros.transport_custody import is_retryable_transport_death
+
+    exc = _sdk_wrapped(cause_cls("not a death"), _unresolved_capture())
+    assert is_retryable_transport_death(exc) is False
+
+
+def test_provider_status_error_is_not_a_transport_death():
+    from ouroboros.transport_custody import is_retryable_transport_death
+
+    exc = RuntimeError("HTTP 503 upstream unavailable")
+    exc.status_code = 503
+    exc.physical_attempt_capture = _unresolved_capture(provider_status_code=503)
+    assert is_retryable_transport_death(exc) is False
+
+
+def test_implicit_context_chain_never_proves_a_transport_death():
+    """Only an explicit ``raise ... from`` carries transport provenance."""
+    from ouroboros.transport_custody import is_retryable_transport_death
+
+    try:
+        raise httpx.ReadError("earlier leg died")
+    except httpx.ReadError:
+        try:
+            raise RuntimeError("later wrapper without a cause")
+        except RuntimeError as exc:
+            exc.physical_attempt_capture = _unresolved_capture()
+            assert exc.__context__ is not None
+            assert is_retryable_transport_death(exc) is False
+
+
+@pytest.mark.parametrize("capture", [
+    _unresolved_capture(provider="local"),
+    _unresolved_capture(provider="openai-compatible", route_is_loopback=True),
+    None,
+])
+def test_local_loopback_or_captureless_death_is_not_retryable(capture):
+    """The classifier's locality gate: a dead local/loopback server is not a
+    network fault worth paying for again; a missing capture fails closed."""
+    from ouroboros.transport_custody import is_retryable_transport_death
+
+    exc = _sdk_wrapped(httpx.ReadError("socket died"), capture)
+    assert is_retryable_transport_death(exc) is False
+
+
+def test_requests_protocol_error_with_remote_disconnected_is_a_transport_death():
+    """The Anthropic-native requests/urllib3 shape of a mid-request socket death."""
+    import http.client
+
+    import requests
+    import urllib3
+    from ouroboros.transport_custody import is_retryable_transport_death
+
+    disconnected = http.client.RemoteDisconnected("Remote end closed connection without response")
+    exc = requests.exceptions.ConnectionError(
+        urllib3.exceptions.ProtocolError("Connection aborted.", disconnected)
+    )
+    exc.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+    assert is_retryable_transport_death(exc) is True
+    # The same fact through an explicit wrapper (the recovery ladder re-raises with a cause).
+    assert is_retryable_transport_death(_sdk_wrapped(exc, _unresolved_capture(provider="anthropic"))) is True
+
+
+def test_requests_read_timeout_and_connect_shapes_are_not_transport_deaths():
+    import requests
+    import urllib3
+    from ouroboros.transport_custody import is_retryable_transport_death
+
+    capture = _unresolved_capture(provider="anthropic")
+    timeout = requests.exceptions.ReadTimeout("read timed out")
+    timeout.physical_attempt_capture = capture
+    assert is_retryable_transport_death(timeout) is False
+    connect_timeout = requests.exceptions.ConnectTimeout("connect timed out")
+    connect_timeout.physical_attempt_capture = capture
+    assert is_retryable_transport_death(connect_timeout) is False
+    read_timeout_wrapped = requests.exceptions.ConnectionError(
+        urllib3.exceptions.MaxRetryError(
+            None, "/messages", reason=urllib3.exceptions.ReadTimeoutError(None, "/messages", "read timed out"),
+        )
+    )
+    read_timeout_wrapped.physical_attempt_capture = capture
+    assert is_retryable_transport_death(read_timeout_wrapped) is False
+    refused = requests.exceptions.ConnectionError(
+        urllib3.exceptions.MaxRetryError(
+            None, "/messages", reason=urllib3.exceptions.NewConnectionError(None, "connection refused"),
+        )
+    )
+    refused.physical_attempt_capture = capture
+    assert is_retryable_transport_death(refused) is False
