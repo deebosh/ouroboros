@@ -610,7 +610,7 @@ jobs:
           if git merge-base --is-ancestor HEAD origin/ouroboros; then
             branch=ouroboros
           else
-            # POSIX sh + bash 3.2 (macOS runners): no mapfile/readarray.
+            # Portable across bash 3.2 (macOS runners): no bash-4-only array builtins.
             branches="$(git branch -r --contains HEAD --format='%(refname:short)' \
               | sed -n 's#^origin/##p' | grep -v '^HEAD$' || true)"
             count="$(printf '%s\n' "$branches" | sed '/^$/d' | wc -l | tr -d ' ')"
