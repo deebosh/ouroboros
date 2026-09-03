@@ -241,6 +241,14 @@ def test_plan_review_authority_core_keeps_the_decision_and_drops_the_transport()
     assert plan_review_authority_core(None) is None
 
 
+def test_plan_review_authority_core_preserves_an_unknown_schema_version():
+    from ouroboros.task_results import plan_review_authority_core
+
+    state = {"schema_version": "corrupt", "waves": [{"actors": ["untrusted"]}]}
+
+    assert plan_review_authority_core(state) is state
+
+
 def test_automatic_plan_review_authority_carries_claims_not_reviewer_transport(tmp_path):
     """The continuation envelope's `plan_review_state` must reach the acceptance claims
     and blocking finding ids; reviewer transport used to fill the preview before them."""
@@ -264,7 +272,16 @@ def test_automatic_plan_review_authority_carries_claims_not_reviewer_transport(t
     assert validate_task_authority_sources(env, task) == {}
     carried = task["predecessor_authority"]["plan_review_state"]
     text = json.dumps(carried)
-    assert '"actors"' not in text
+    projection = carried["projection"]
+    assert projection["projected_from"] == "plan_review_authority_core"
+    assert projection["dropped_keys"] == [
+        "actors", "actors_degraded", "evidence_manifest", "health_epoch", "reasons", "retry_key",
+    ]
+    assert projection["full_chars"] == len(json.dumps(state, ensure_ascii=False, sort_keys=True, default=str))
+    assert projection["source_ref"] == {
+        **_authority_source("planned"), "field": "authority.plan_review_state",
+    }
+    assert all("actors" not in wave for wave in carried["waves"])
     for claim in (*claims, "f1", "REVIEW_REQUIRED"):
         assert claim in text, claim
     if isinstance(carried, dict) and carried.get("kind") == "bounded_field_preview":

@@ -366,6 +366,36 @@ def test_state_stays_persistable_at_the_worst_case_request_bounds(tmp_path):
     assert len(json.dumps(state, ensure_ascii=False).encode("utf-8")) <= 1_000_000
 
 
+def test_worst_case_state_successor_receives_the_current_decision_core(tmp_path):
+    from types import SimpleNamespace
+
+    from ouroboros.agent_startup_checks import validate_task_authority_sources
+
+    test_state_stays_persistable_at_the_worst_case_request_bounds(tmp_path)
+    source = {
+        "kind": "task_result", "task_id": "t1", "tool": "get_task_result",
+        "arguments": {"task_id": "t1", "include_authority": True},
+    }
+    task = {
+        "id": "successor", "budget_drive_root": str(tmp_path),
+        "predecessor_authority_source": source,
+    }
+
+    assert validate_task_authority_sources(SimpleNamespace(
+        drive_root=tmp_path, budget_drive_root=tmp_path,
+    ), task) == {}
+    carried = task["predecessor_authority"]["plan_review_state"]
+    assert carried.get("kind") != "bounded_field_preview"
+    assert set(carried["need_evidence_seen"]) == {"items", "items_omitted", "total"}
+    preview = json.dumps(carried, ensure_ascii=False, sort_keys=True, default=str)
+    assert len(preview) <= 15_000
+    for decision_fact in (
+        '"acceptance_claims"', '"findings"', '"dispositions"',
+        f'"request_fingerprint": "{2:064x}"',
+    ):
+        assert decision_fact in preview
+
+
 def test_below_quorum_blocking_rejection_earns_the_promised_delta_cycle(harness, monkeypatch):
     """R9-5: a REVIEW_REQUIRED wave carrying ONE below-quorum blocking finding cannot be closed
     by disposition (C-08); the closure table promises "the next paid delta cycle" for its

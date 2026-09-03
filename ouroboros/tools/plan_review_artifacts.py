@@ -8,6 +8,7 @@ store, transport route, or review policy of its own.
 
 from __future__ import annotations
 
+import copy
 from hashlib import sha256
 import json
 import pathlib
@@ -80,6 +81,61 @@ def authority_wave(drive_root: Any, task_id: str, hot_wave: Optional[dict]) -> O
         return hot_wave
     exact = read_wave(drive_root, task_id, ref)
     return {**exact, **hot_wave, "findings": list(exact.get("findings") or [])}
+
+
+_PLAN_REVIEW_TRANSPORT_KEYS = frozenset({
+    "actors", "actors_degraded", "evidence_manifest", "health_epoch", "reasons", "retry_key",
+})
+
+
+def plan_review_authority_core(
+    state: Dict[str, Any], *, source_ref: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Project decision authority ahead of compacted request memory and transport."""
+    from ouroboros.task_results import _compact_plan_review_wave
+
+    if not isinstance(state, dict) or not state:
+        return state
+    try:
+        schema_version = int(state.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        return state
+    if schema_version == 1:
+        return state
+    core = copy.deepcopy(state)
+    waves = core.get("waves") if isinstance(core.get("waves"), list) else None
+    if not waves:
+        return core
+    last = len(waves) - 1
+    core["waves"] = [
+        wave if not isinstance(wave, dict)
+        else (wave if wave.get("compact") else _compact_plan_review_wave(wave)) if index < last
+        else {k: v for k, v in wave.items() if k not in _PLAN_REVIEW_TRANSPORT_KEYS}
+        for index, wave in enumerate(waves)
+    ]
+    if source_ref is not None:
+        latest = core["waves"][-1] if isinstance(core["waves"][-1], dict) else {}
+        spec = latest.get("spec") if isinstance(latest.get("spec"), dict) else {}
+
+        def recent(value: Any) -> Dict[str, Any]:
+            items = value if isinstance(value, list) else []
+            return {"items": copy.deepcopy(items[-4:]), "items_omitted": max(0, len(items) - 4), "total": len(items)}
+
+        core["decision_core"] = {
+            "identity": {key: copy.deepcopy(latest[key]) for key in ("cycle_index", "request_fingerprint", "previous_fingerprint", "spec_hash", "evidence_manifest_hash", "aggregate", "closed", "paid") if key in latest},
+            "goal": spec.get("goal"), "acceptance_claims": recent(spec.get("acceptance_claims")),
+            "findings": recent(latest.get("findings")), "dispositions": recent(latest.get("dispositions")),
+        }
+        core["waves"] = [_compact_plan_review_wave(wave) if isinstance(wave, dict) and not wave.get("compact") else wave for wave in core["waves"]]
+        core["need_evidence_seen"] = recent(core.get("need_evidence_seen"))
+        dropped_keys = sorted({key for wave in waves if isinstance(wave, dict)
+                               for key in _PLAN_REVIEW_TRANSPORT_KEYS if key in wave})
+        core["projection"] = {
+            "projected_from": "plan_review_authority_core", "dropped_keys": dropped_keys,
+            "full_chars": len(json.dumps(state, ensure_ascii=False, sort_keys=True, default=str)),
+            "source_ref": {**copy.deepcopy(source_ref), "field": "authority.plan_review_state"},
+        }
+    return core
 
 
 def _row_has_physical_dispatch(row: Dict[str, Any]) -> bool:

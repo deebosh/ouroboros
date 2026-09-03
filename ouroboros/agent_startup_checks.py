@@ -151,7 +151,7 @@ def _automatic_predecessor_authority_projection(
     if isinstance(authority.get("plan_review_state"), dict):
         from ouroboros.task_results import plan_review_authority_core
 
-        authority["plan_review_state"] = plan_review_authority_core(authority["plan_review_state"])
+        authority["plan_review_state"] = plan_review_authority_core(authority["plan_review_state"], source_ref=source)
     contract = authority.get("task_contract") if isinstance(authority.get("task_contract"), dict) else {}
     nested = contract.get("predecessor_authority") if isinstance(contract.get("predecessor_authority"), dict) else {}
     nested_source = nested.get("source") if isinstance(nested.get("source"), dict) else {}
