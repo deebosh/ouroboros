@@ -1376,7 +1376,6 @@ class OuroborosAgent:
                 cleanup_browser(self.tools._ctx)
             except Exception:
                 log.debug("Failed to cleanup browser", exc_info=True)
-                pass
             while not self._incoming_messages.empty():
                 try:
                     self._incoming_messages.get_nowait()
@@ -1386,7 +1385,9 @@ class OuroborosAgent:
                 heartbeat_stop.set()
             self._current_task_type = None
 
-    def _emit_progress(self, text: str) -> None:
+    def _emit_progress(self, text: str, *, incident: Optional[Dict[str, str]] = None) -> None:
+        """Owner-visible note; ``incident`` is the typed ``task_incident``/``toast_once``
+        pair the browser toasts once — an ephemeral turn's only visible wait surface."""
         self._last_progress_ts = time.time()
         if self._event_queue is None or self._current_chat_id is None:
             return
@@ -1400,13 +1401,13 @@ class OuroborosAgent:
             progress_meta: Dict[str, Any] = {}
             if bool(getattr(getattr(self.tools, "_ctx", None), "is_ephemeral_turn", False)):
                 progress_meta["ephemeral_decision"] = True
+            progress_meta.update(incident or {})
             progress_meta.update(self._subagent_progress_meta("progress"))
             if progress_meta:
                 event["progress_meta"] = progress_meta
             self._event_queue.put(event)
         except Exception:
             log.warning("Failed to emit progress event", exc_info=True)
-            pass
 
     def _emit_typing_start(self) -> None:
         if self._event_queue is None or self._current_chat_id is None:
@@ -1421,7 +1422,6 @@ class OuroborosAgent:
             })
         except Exception:
             log.warning("Failed to emit typing start event", exc_info=True)
-            pass
 
     def _emit_task_heartbeat(self, task_id: str, phase: str) -> None:
         if self._event_queue is None:
@@ -1434,7 +1434,6 @@ class OuroborosAgent:
             })
         except Exception:
             log.warning("Failed to emit task heartbeat event", exc_info=True)
-            pass
 
     def _record_executor_facts(self, task: Dict[str, Any]) -> None:
         """Stamp the RESOLVED executor/route onto the live task metadata.

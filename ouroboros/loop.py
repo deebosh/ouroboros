@@ -2723,7 +2723,7 @@ def _handle_owner_stop_finalization(
 
 def _handle_provider_unavailable(
     ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
-    wait_cause: str = "", waited: bool = False, wait_eligible: bool = True,
+    wait_cause: str = "", waited_sec: float = 0.0, interactive: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Provider-death rail wrapper: every arm carries a terminal provenance;
     ``setdefault`` keeps explicit stamps authoritative. Not every exit is a
@@ -2731,8 +2731,8 @@ def _handle_provider_unavailable(
     (``deadline_local``) and a scheduled swarm handoff pops its reason code —
     both keep their legacy shape."""
     text, usage, llm_trace = _provider_unavailable_result(
-        ctx, error_kind=error_kind, wait_cause=wait_cause, waited=waited,
-        wait_eligible=wait_eligible,
+        ctx, error_kind=error_kind, wait_cause=wait_cause, waited_sec=waited_sec,
+        interactive=interactive,
     )
     if str(usage.get("reason_code") or "") not in ("", "deadline_local"):
         usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_SALVAGE)
@@ -2741,12 +2741,12 @@ def _handle_provider_unavailable(
 
 def _provider_unavailable_result(
     ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
-    wait_cause: str = "", waited: bool = False, wait_eligible: bool = True,
+    wait_cause: str = "", waited_sec: float = 0.0, interactive: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Salvage provider failure without an unsafe retry. ``wait_cause`` is the
     transport-wait episode's latched cause (survives later overwrites of the
-    mutable ``_last_llm_error_kind``); ``waited``/``wait_eligible`` keep the
-    terminal text honest for zero-wait turns."""
+    mutable ``_last_llm_error_kind``); ``waited_sec``/``interactive`` keep the
+    terminal text honest for zero-wait and chat turns."""
     kind = str(error_kind or "")
     is_context_overflow = kind == "context_overflow"
     is_transport_wait = str(wait_cause or "") == "transport_unavailable"
@@ -2767,8 +2767,8 @@ def _provider_unavailable_result(
     else:
         fallback = _provider_terminal_fallback_text(
             ctx.accumulated_usage, is_context_overflow=is_context_overflow,
-            is_transport_wait=is_transport_wait, waited=waited,
-            wait_eligible=wait_eligible,
+            is_transport_wait=is_transport_wait, waited_sec=waited_sec,
+            interactive=interactive,
             is_deadline_exhausted=is_deadline_exhausted,
         )
     if is_context_overflow:
@@ -6310,9 +6310,8 @@ def run_llm_loop(
                     limit_ctx,
                     error_kind=str(accumulated_usage.get("_last_llm_error_kind") or "provider_unavailable"),
                     wait_cause=transport_wait.wait_cause if transport_wait is not None else "",
-                    waited=transport_wait is not None and (
-                        transport_wait.wait_iterations > 0 or transport_wait.redials > 0),
-                    wait_eligible=transport_wait.wait_eligible if transport_wait is not None else True)
+                    waited_sec=transport_wait.waited_sec if transport_wait is not None else 0.0,
+                    interactive=transport_wait.interactive if transport_wait is not None else False)
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
 
