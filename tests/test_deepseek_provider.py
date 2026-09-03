@@ -194,6 +194,37 @@ class TestWireProjection:
         else:
             assert note is None
 
+    @pytest.mark.parametrize(
+        "choice",
+        ["required", {"type": "function", "function": {"name": "get_date"}}],
+    )
+    def test_forced_tool_choice_is_served_without_thinking(self, monkeypatch, choice):
+        # Live-probed 2026-09-03 on v4-flash and v4-pro: thinking mode 400s on
+        # tool_choice required/named ("Thinking mode does not support this
+        # tool_choice"), while auto/none work; every form works with thinking
+        # disabled. The caller's structural demand (a tool call WILL come
+        # back) wins over reasoning on that one call, and usage says so.
+        client = LLMClient()
+        target = self._target(monkeypatch)
+        tool = {"type": "function", "function": {
+            "name": "get_date", "parameters": {"type": "object", "properties": {}}}}
+        kwargs = client._build_remote_kwargs(
+            target, [{"role": "user", "content": "hi"}], "high", 256, choice, None, [tool],
+        )
+        assert "reasoning_effort" not in kwargs
+        assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert kwargs["tool_choice"] == choice
+        assert client._pop_effort_clamp_disclosure() == {
+            "requested": "high", "applied": "none",
+            "reason": "provider_forced_tool_choice", "model": "deepseek-v4-flash",
+        }
+        # auto keeps thinking and the effort carriage.
+        kwargs = client._build_remote_kwargs(
+            target, [{"role": "user", "content": "hi"}], "high", 256, "auto", None, [tool],
+        )
+        assert kwargs["reasoning_effort"] == "high"
+        assert "extra_body" not in kwargs
+
     def test_request_wire_reads_disabled_thinking_as_none(self, monkeypatch):
         client = LLMClient()
         target = self._target(monkeypatch)

@@ -593,11 +593,14 @@ def _fake_usage(canary: ProviderCanary, ordinal: int):
         if canary.reasoning_effort == "medium":
             applied_effort = canary.reasoning_effort
             if canary.expected_provider == "deepseek":
-                applied_effort = normalize_deepseek_reasoning_effort(applied_effort)
+                forced = ordinal == 1 and canary.named_tool_choice
+                applied_effort = (
+                    "none" if forced else normalize_deepseek_reasoning_effort(applied_effort)
+                )
                 usage["reasoning_effort_clamped"] = {
                     "requested": canary.reasoning_effort,
                     "applied": applied_effort,
-                    "reason": "provider_wire_mapping",
+                    "reason": "provider_forced_tool_choice" if forced else "provider_wire_mapping",
                     "model": canary.model.split("::", 1)[-1],
                 }
             usage["request_wire"] = {

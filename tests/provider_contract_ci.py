@@ -464,7 +464,7 @@ def assert_openai_canary_usage(usage, model):
     return disclosure
 
 
-def assert_canary_usage(usage, canary: ProviderCanary):
+def assert_canary_usage(usage, canary: ProviderCanary, *, forced_tool_choice: bool = False):
     def failure(code):
         return _canary_failure_payload(canary, None, usage, code)
     assert isinstance(usage, dict), failure("usage_not_mapping")
@@ -475,14 +475,20 @@ def assert_canary_usage(usage, canary: ProviderCanary):
     if canary.reasoning_effort == "medium":
         expected_effort = canary.reasoning_effort
         if canary.expected_provider == "deepseek":
-            # DeepSeek's wire enum aliases medium to high; the projection must
-            # be disclosed, and the physical payload carries the projected tier.
-            expected_effort = normalize_deepseek_reasoning_effort(expected_effort)
+            # DeepSeek's wire enum aliases medium to high, and its thinking
+            # mode rejects a forced tool choice, so the named first turn runs
+            # with thinking disabled; both projections must be disclosed and
+            # the physical payload carries the projected tier.
+            if forced_tool_choice:
+                expected_effort, reason = "none", "provider_forced_tool_choice"
+            else:
+                expected_effort = normalize_deepseek_reasoning_effort(expected_effort)
+                reason = "provider_wire_mapping"
             note = usage.get("reasoning_effort_clamped")
             assert isinstance(note, dict), failure("reasoning_effort_clamped")
             assert note.get("requested") == canary.reasoning_effort, failure("reasoning_effort_clamped_requested")
             assert note.get("applied") == expected_effort, failure("reasoning_effort_clamped_applied")
-            assert note.get("reason") == "provider_wire_mapping", failure("reasoning_effort_clamped_reason")
+            assert note.get("reason") == reason, failure("reasoning_effort_clamped_reason")
         else:
             assert usage.get("reasoning_effort_clamped") is None, failure("reasoning_effort_clamped")
         disclosure = usage.get("request_wire")
@@ -724,7 +730,9 @@ def run_provider_contract_canary(
         usage=usage,
     )
     _record_canary_response_warnings(canary, message, usage)
-    first_disclosure = assert_canary_usage(usage, canary)
+    first_disclosure = assert_canary_usage(
+        usage, canary, forced_tool_choice=canary.named_tool_choice,
+    )
     if not canary.continue_to_final:
         return message, usage, None, None
 

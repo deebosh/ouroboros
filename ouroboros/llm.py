@@ -3456,9 +3456,13 @@ class LLMClient:
             elif provider == "deepseek":
                 # Same carriage, projected onto DeepSeek's wire dialect
                 # (low/high/max; thinking is switched off by a toggle, not an
-                # effort value). A projection that changes the tier is
-                # disclosed on usage as ``reasoning_effort_clamped``.
-                applied = normalize_deepseek_reasoning_effort(requested_effort)
+                # effort value). Thinking mode accepts only tool_choice
+                # auto/none (probed 2026-09-03: required and named 400 on both
+                # v4 models), so a forced tool call is served with thinking
+                # disabled. Any tier change is disclosed on usage as
+                # ``reasoning_effort_clamped``.
+                forced_tool = bool(prepared_tools) and tool_choice not in (None, "", "auto", "none")
+                applied = "none" if forced_tool else normalize_deepseek_reasoning_effort(requested_effort)
                 if applied == "none":
                     kwargs.setdefault("extra_body", {})["thinking"] = {"type": "disabled"}
                 else:
@@ -3468,7 +3472,8 @@ class LLMClient:
                         self._effort_clamp_tls = threading.local()
                     self._effort_clamp_tls.pending = {
                         "requested": requested_effort, "applied": applied,
-                        "reason": "provider_wire_mapping", "model": resolved_model,
+                        "reason": "provider_forced_tool_choice" if forced_tool else "provider_wire_mapping",
+                        "model": resolved_model,
                     }
             if temperature is not None:
                 kwargs["temperature"] = temperature

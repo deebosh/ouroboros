@@ -319,7 +319,9 @@ effort-carrying route (`reasoning_effort` beside the compatible-lane
 `max_tokens` carrier): the canonical tiers are projected onto its documented
 `low`/`high`/`max` enum at the send boundary (`minimal`→`low`,
 `medium`/`xhigh`→`high`, `ultra`→`max`), `none` becomes
-`extra_body.thinking.type=disabled`, and a projection that changes the tier is
+`extra_body.thinking.type=disabled`, a forced tool choice (`required`/named) is
+served with thinking disabled because thinking mode accepts only `auto`/`none`
+(live-probed 2026-09-03), and every projection that changes the tier is
 disclosed on usage as `reasoning_effort_clamped`. The carriage is keyed on the
 provider id, never a model-name prefix or a target capability field, so a
 hand-built target cannot silently drop it.
