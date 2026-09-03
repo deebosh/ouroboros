@@ -639,6 +639,11 @@ away. Packet composition, bounds, and wave/replay mechanics: ARCHITECTURE
 "Plan construction and review" and `ouroboros/tools/plan_packet.py` /
 `plan_spec.py`.
 
+Exact-wave custody is fail-closed: the evidence continuation uses a fresh
+full-packet dispatch only when no exact artifact reference exists. An unreadable
+referenced artifact returns `plan_review_exact_artifact_unavailable`; it never
+mints replacement authority.
+
 The context-delivery registry:
 
 | Flow | BIBLE.md | ARCHITECTURE.md | DEVELOPMENT.md |
