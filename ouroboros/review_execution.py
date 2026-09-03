@@ -15,7 +15,6 @@ import hashlib
 import json
 import logging
 import os
-import pathlib
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -1309,11 +1308,11 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         self._raw_transcript = facts["text"]
 
     def _verdict_result(self, force_extraction: bool = False) -> ReviewAttemptResult:
-        text = getattr(self, "_raw_transcript", "") or self._transcript or ""
-        # Cross-check (ibl-e8665b941f7e / ibl-01b310c0ce18): when the request
-        # carries a session_root, pass it so critical findings whose factual
-        # claims cannot be substantiated against actual code are downgraded to
-        # advisory before the obligation gate sees them. Empty/None disables it.
+        text = self._raw_transcript or ""
+        # Cross-check: when the request carries a session_root, pass it so
+        # critical findings whose factual claims cannot be substantiated against
+        # the actual code are downgraded to advisory before the obligation gate
+        # sees them. Empty / None disables it (every non-session caller).
         session_root = (
             str(getattr(self.assignment.request, "session_root", "") or "")
             if self.assignment is not None

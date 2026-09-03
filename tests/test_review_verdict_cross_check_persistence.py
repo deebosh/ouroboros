@@ -1,9 +1,16 @@
-"""ibl-01b310c0ce18 — the cross_check audit that canonicalize_session_verdict
-emits must reach the persisted usage for EVERY applicable verdict method
-(schema / strict / light_model_extraction), not only the light branch where it
-used to live under ``usage['extraction']['cross_check']``.  Schema and strict
-silently dropped the audit entry, breaking the audit trail.
+"""The cross_check audit that ``canonicalize_session_verdict`` emits must reach
+the persisted usage for EVERY applicable verdict method (schema / strict /
+light_model_extraction), not only the light branch where it used to live under
+``usage['extraction']['cross_check']``.  Schema and strict silently dropped the
+audit entry, breaking the audit trail.
 """
+
+import pytest
+
+# _fake_repo spawns real `git` subprocesses (CONTRIBUTING §4).
+pytestmark = pytest.mark.serial
+
+
 def _fake_repo(tmp_path):
     """Tiny git repo on disk so _cross_check_findings has ground truth to
     verify hallucinated import claims against. Inline copy of the fixture
@@ -70,7 +77,7 @@ class TestVerdictResultCrossCheckPersistence:
             '"severity": "critical", "reason": "imports `ouroborosproject_x1`"}]}'
         )
         executor = self._executor(tmp_path, _fake_repo(tmp_path))
-        executor._transcript = text
+        executor._raw_transcript = text
         executor._conformance_passed = True
 
         result = executor._verdict_result()
@@ -89,7 +96,7 @@ class TestVerdictResultCrossCheckPersistence:
             '"severity": "critical", "reason": "imports `ouroborosproject_x2`"}]'
         )
         executor = self._executor(tmp_path, _fake_repo(tmp_path))
-        executor._transcript = text
+        executor._raw_transcript = text
         executor._conformance_passed = False
 
         result = executor._verdict_result()

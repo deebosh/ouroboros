@@ -1,8 +1,10 @@
-"""Reviewer-verdict cross-check: downgrade critical findings whose factual
-claims cannot be substantiated against actual repo content (ibl-01b310c0ce18).
+"""Reviewer-verdict cross-check: downgrade a critical finding whose factual
+claim ("imports X", "calls Y", "the removed line Z is still present") cannot be
+substantiated against actual repo content.
 
-Extracted from ouroboros.review_execution so that module stays under the
-size-ratchet giant threshold after the v6.110.0 merge.
+Pure, read-only, git-backed ground truth. Called from
+``canonicalize_session_verdict`` only when the caller supplies ``repo_root``;
+fails open (no downgrade) on any probe error.
 """
 
 from __future__ import annotations
@@ -10,7 +12,16 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
+
+# The slow-path walk runs on the synchronous verdict-canonicalization path.
+# Bound it hard so a pathological tree (or a review that emits many
+# unverifiable identifiers) can never stall finalization: on hitting either
+# ceiling the walk stops and the identifier is treated as PRESENT (no
+# downgrade fabricated from incomplete evidence).
+_WALK_BUDGET_SEC = 3.0
+_WALK_FILE_CAP = 4000
 
 
 def _identifier_present_in_repo(identifier: str, repo_root: pathlib.Path) -> bool:
@@ -79,7 +90,12 @@ def _identifier_present_in_repo(identifier: str, repo_root: pathlib.Path) -> boo
     SKIP_DIRS = frozenset({
         "__pycache__", "node_modules", "venv", ".venv",
         "dist", "build", "target", "site-packages",
+        # runtime / non-source trees on the host repo
+        "data", "state", "logs", "artifacts", "task_results",
+        "observability", "coverage", "htmlcov",
     })
+    deadline = time.monotonic() + _WALK_BUDGET_SEC
+    scanned = 0
     try:
         for dirpath, dirnames, filenames in os.walk(repo_root):
             dirnames[:] = [
@@ -89,6 +105,9 @@ def _identifier_present_in_repo(identifier: str, repo_root: pathlib.Path) -> boo
             for fn in filenames:
                 if not fn.endswith(SUSPECT_EXTS):
                     continue
+                scanned += 1
+                if scanned > _WALK_FILE_CAP or time.monotonic() > deadline:
+                    return True  # bounded out: cannot substantiate "absent"
                 fp = pathlib.Path(dirpath) / fn
                 try:
                     if fp.stat().st_size > 1_000_000:
@@ -244,7 +263,7 @@ def _cross_check_findings(
             new_finding["severity"] = "advisory"
             note = (
                 f"[cross-check] Downgraded from critical to advisory by "
-                f"review_execution._cross_check_findings: identifier(s) "
+                f"review_cross_check._cross_check_findings: identifier(s) "
                 f"{absent!r} not located in repo; the reviewer's factual "
                 f"claim cannot be substantiated against the codebase. "
                 f"Re-raise as critical only after the identifier is verified "

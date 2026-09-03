@@ -151,7 +151,11 @@ def canonicalize_session_verdict(
                 findings_strict, cc_audit = _cross_check_findings(
                     findings_strict, pathlib.Path(repo_root),
                 )
-                text = json.dumps(findings_strict, ensure_ascii=False)
+                # Only re-serialize when a downgrade actually happened —
+                # otherwise the reviewer's exact bytes (and the provenance
+                # hash computed from them) are preserved unchanged.
+                if cc_audit.get("downgraded"):
+                    text = json.dumps(findings_strict, ensure_ascii=False)
         except (TypeError, ValueError):
             pass
         usage = {"cross_check": cc_audit} if cc_audit.get("checked") else {}
@@ -170,7 +174,8 @@ def canonicalize_session_verdict(
                 and repo_root
             ):
                 payload, cc_audit = _cross_check_findings(payload, pathlib.Path(repo_root))
-                canonical = json.dumps(payload, ensure_ascii=False)
+                if cc_audit.get("downgraded"):
+                    canonical = json.dumps(payload, ensure_ascii=False)
         except (TypeError, ValueError):
             pass
         if cc_audit.get("checked"):
