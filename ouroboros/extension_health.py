@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.skill_loader import skill_state_dir
-from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc_now_iso
+from ouroboros.utils import append_jsonl, read_json_dict, update_json_locked, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ _SCHEMA = 1
 LIVE = "live"        # desired_live and loaded successfully
 BROKEN = "broken"    # desired_live but failed to load
 INACTIVE = "inactive"  # disabled, deps pending, review-gated, or not an extension
+UNKNOWN = "unknown"    # no authoritative server observation has been recorded yet
 COMPANION_RESTART_EXHAUSTED = "companion_restart_exhausted"
 
 
@@ -48,20 +49,19 @@ def record_extension_health(
     sha: str = "",
     reason: str = "",
     load_error: str = "",
+    process: str = "server",
+    server_reconcile: str = "",
 ) -> Dict[str, Any]:
-    """Persist the current health observation and flag a live->broken regression.
+    """Persist one process-qualified observation and the server health projection.
 
     ``regressed`` (persisted) stays true while a once-live extension is broken, so
     the UI and health invariants keep surfacing it until it loads again.
     ``newly_regressed`` (returned, not persisted) marks the live->broken transition
     so callers can log/alert once per transition rather than every restart.
+    Worker observations are qualifiers only: they never replace server authority or
+    advance the server's ``last_known_good``.
     """
-    prior = read_extension_health(drive_root, skill_name) or {}
-    prior_status = str((prior.get("last_observed") or {}).get("status") or "")
-    last_known_good = prior.get("last_known_good")
-    if not isinstance(last_known_good, dict):
-        last_known_good = None
-
+    process = "worker" if process == "worker" else "server"
     now = utc_now_iso()
     observed = {
         "version": version,
@@ -70,35 +70,58 @@ def record_extension_health(
         "reason": reason,
         "load_error": (load_error or "")[:2000],
         "ts": now,
+        "process": process,
     }
-    regressed = False
-    newly_regressed = False
-    if status == LIVE:
-        last_known_good = {"version": version, "sha": sha, "ts": now}
-    elif status == BROKEN and last_known_good is not None:
-        # Only a break at a DIFFERENT code version/commit is a regression. A same-sha
-        # break is environmental (revoked grant, transient catalog/spawn failure), not a
-        # code regression, so it must not raise the "broken after a code update" alarm.
-        if str(last_known_good.get("sha") or "") != str(sha or ""):
-            regressed = True
-            newly_regressed = prior_status == LIVE
+    if process == "worker":
+        observed["server_reconcile"] = str(server_reconcile or "")
+    result: Dict[str, Any] = {}
 
-    record = with_schema_version(
-        {
+    def _update(prior: Dict[str, Any]) -> Dict[str, Any]:
+        observations = prior.get("observations")
+        observations = dict(observations) if isinstance(observations, dict) else {}
+        legacy = prior.get("last_observed")
+        if "server" not in observations and isinstance(legacy, dict) and legacy:
+            observations["server"] = dict(legacy, process="server")
+        prior_server = observations.get("server")
+        prior_status = str(prior_server.get("status") or "") if isinstance(prior_server, dict) else ""
+        observations[process] = observed
+        last_known_good = prior.get("last_known_good")
+        if not isinstance(last_known_good, dict):
+            last_known_good = None
+        regressed = bool(prior.get("regressed"))
+        newly_regressed = False
+        if process == "server":
+            if status == LIVE:
+                last_known_good = {"version": version, "sha": sha, "ts": now}
+                regressed = False
+            elif status == BROKEN and last_known_good is not None:
+                # A same-sha break is environmental, not a code regression.
+                regressed = str(last_known_good.get("sha") or "") != str(sha or "")
+                newly_regressed = regressed and prior_status == LIVE
+            else:
+                regressed = False
+            authoritative = observed
+            authoritative_status = status
+        else:
+            authoritative = prior_server if isinstance(prior_server, dict) else {}
+            authoritative_status = str(authoritative.get("status") or UNKNOWN)
+        record = with_schema_version({
             "skill": skill_name,
-            "status": status,
+            "status": authoritative_status,
             "regressed": regressed,
             "last_known_good": last_known_good,
-            "last_observed": observed,
-        },
-        _SCHEMA,
-    )
+            "last_observed": authoritative,
+            "observations": observations,
+        }, _SCHEMA)
+        result.update(record, newly_regressed=newly_regressed)
+        return record
+
     try:
-        atomic_write_json(health_path(drive_root, skill_name), record)
+        update_json_locked(health_path(drive_root, skill_name), _update)
     except Exception:
         log.debug("Failed to persist extension health for %s", skill_name, exc_info=True)
-    result = dict(record)
-    result["newly_regressed"] = newly_regressed
+        if not result:
+            _update(read_extension_health(drive_root, skill_name) or {})
     return result
 
 
@@ -198,14 +221,6 @@ def regressed_extensions(drive_root: pathlib.Path) -> List[Dict[str, Any]]:
 
             if find_skill(pathlib.Path(drive_root), name) is None or not load_enabled(pathlib.Path(drive_root), name):
                 continue
-            # If it is currently live it has recovered — not a regression, even if
-            # cross-process timing left health.json.regressed=true. Every reconcile
-            # exit records health, but this live check still resolves divergence when
-            # another process has not yet refreshed the durable projection.
-            from ouroboros.extension_loader import runtime_state_for_skill_name
-
-            if runtime_state_for_skill_name(name, pathlib.Path(drive_root)).get("live_loaded"):
-                continue
         except Exception:
             pass
         out.append(record)
@@ -265,6 +280,8 @@ def record_health_for_runtime_state(
         sha=sha,
         reason=str(state.get("reason") or ""),
         load_error=str(state.get("load_error") or ""),
+        process=str(state.get("process") or "server"),
+        server_reconcile=str(state.get("server_reconcile") or ""),
     )
     if health.get("newly_regressed"):
         observed = health.get("last_observed") or {}
@@ -295,6 +312,7 @@ __all__ = [
     "BROKEN",
     "COMPANION_RESTART_EXHAUSTED",
     "INACTIVE",
+    "UNKNOWN",
     "apply_companion_failure_to_runtime_state",
     "clear_companion_restart_exhausted",
     "code_stamp",

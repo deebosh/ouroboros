@@ -2215,6 +2215,7 @@ def reload_all(
             try:
                 record_health_for_runtime_state(drive_root, skill.name, {
                     "desired_live": True, "reason": "load_error", "load_error": error,
+                    "process": "server" if is_server_process() else "worker",
                 }, stamp=health_stamp)
             except Exception:
                 log.debug("extension health record failed for %s", skill.name, exc_info=True)

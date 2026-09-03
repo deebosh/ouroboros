@@ -666,7 +666,7 @@ def test_api_extension_manifest_prefers_runtime_load_error(tmp_path, monkeypatch
 def test_api_extensions_index_lists_widget_only_extension_tabs(
     tmp_path, monkeypatch
 ):
-    from ouroboros import extension_loader
+    from ouroboros import extension_health, extension_loader
     from ouroboros.skill_loader import (
         SkillReviewState,
         compute_content_hash,
@@ -699,6 +699,13 @@ def test_api_extensions_index_lists_widget_only_extension_tabs(
         assert loaded is not None
         err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
         assert err is None, err
+        extension_health.record_extension_health(
+            drive_root, loaded.name, status="live", sha="server-sha",
+        )
+        extension_health.record_extension_health(
+            drive_root, loaded.name, status="broken", sha="worker-sha",
+            process="worker", server_reconcile="request_failed",
+        )
 
         resp = client.get("/api/extensions")
         assert resp.status_code == 200, resp.text
@@ -706,6 +713,10 @@ def test_api_extensions_index_lists_widget_only_extension_tabs(
         entry = next(s for s in data["skills"] if s["name"] == "ext_widget")
         assert entry["live_loaded"] is True
         assert entry["dispatch_live"] is False
+        assert entry["health_regressed"] is False
+        assert entry["last_known_good"]["sha"] == "server-sha"
+        assert entry["health_observations"]["worker"]["status"] == "broken"
+        assert entry["health_observations"]["worker"]["server_reconcile"] == "request_failed"
         assert data["live"]["ui_tabs"][0]["key"] == "ext_widget:weather"
         assert data["live"]["ui_tabs"][0]["render"]["kind"] == "declarative"
     finally:

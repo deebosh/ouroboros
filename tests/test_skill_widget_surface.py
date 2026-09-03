@@ -251,11 +251,18 @@ def test_reconcile_records_health_for_the_resulting_runtime_state(tmp_path, monk
 
 
 def test_reconcile_receipt_reports_a_failed_marker_request(tmp_path, monkeypatch):
-    """A failed marker write is disclosed on the receipt and never raises."""
-    from ouroboros import extension_loader
+    """A failed worker handoff cannot replace the authoritative server health."""
+    from ouroboros import extension_health, extension_loader
     from ouroboros import extension_reconcile_queue
 
     loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
+    extension_health.record_extension_health(
+        drive_root, loaded.name, status="live", version="0.0.1", sha="server-good",
+    )
+    extension_health.record_extension_health(
+        drive_root, loaded.name, status="broken", version="0.0.2", sha="shared-sha",
+        reason="load_error", load_error="server import failed",
+    )
     monkeypatch.setattr(extension_loader, "is_server_process", lambda: False)
 
     def boom(*_a, **_k):
@@ -263,10 +270,29 @@ def test_reconcile_receipt_reports_a_failed_marker_request(tmp_path, monkeypatch
 
     monkeypatch.setattr(extension_reconcile_queue, "request_extension_reconcile", boom)
     state = extension_loader.reconcile_extension(
-        loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
+        loaded.name, drive_root, lambda: {}, repo_path=str(repo_root),
+        health_stamp=("0.0.2", "shared-sha"),
     )
+    health = extension_health.read_extension_health(drive_root, loaded.name) or {}
+    server = health.get("last_observed") or {}
+    worker = (health.get("observations") or {}).get("worker") or {}
+
+    assert state["process"] == "worker"
     assert state["server_reconcile"] == "request_failed"
     assert state["action"] == "extension_loaded"
+    assert health["status"] == "broken"
+    assert health["regressed"] is True
+    assert health["last_known_good"]["sha"] == "server-good"
+    assert server["status"] == "broken"
+    assert server["sha"] == "shared-sha"
+    assert worker["status"] == "live"
+    assert worker["sha"] == "shared-sha"
+    assert worker["server_reconcile"] == "request_failed"
+    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_k: object())
+    monkeypatch.setattr("ouroboros.skill_loader.load_enabled", lambda *_a, **_k: True)
+    assert [row["skill"] for row in extension_health.regressed_extensions(drive_root)] == [
+        loaded.name
+    ]
 
 
 def test_toggle_skill_receipt_carries_process_and_marker_outcome(tmp_path, monkeypatch):

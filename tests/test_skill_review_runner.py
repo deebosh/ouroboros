@@ -1029,7 +1029,14 @@ def test_skill_review_response_typedef_carries_qualified_reconcile_fields():
     api_types = (
         pathlib.Path(__file__).resolve().parents[1] / "web" / "modules" / "api_types.js"
     ).read_text(encoding="utf-8")
-    declaration = api_types.split("@typedef {Object} SkillGrantResponse", 1)[1].split("*/", 1)[0]
+    review_declaration = api_types.split("@typedef {Object} SkillReviewResponse", 1)[1].split(
+        "*/", 1
+    )[0]
+    grant_declaration = api_types.split("@typedef {Object} SkillGrantResponse", 1)[1].split(
+        "*/", 1
+    )[0]
 
-    assert "@property {string=} extension_process" in declaration
-    assert "@property {string=} extension_server_reconcile" in declaration
+    assert "@property {string=} extension_process" in review_declaration
+    assert "@property {string=} extension_server_reconcile" in review_declaration
+    assert "extension_process" not in grant_declaration
+    assert "extension_server_reconcile" not in grant_declaration

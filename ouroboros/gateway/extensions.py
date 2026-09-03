@@ -344,7 +344,6 @@ def _build_extensions_index(drive_root, repo_path):
     from ouroboros.gateway.presence_settings import presence_runtime_card_projection
     from ouroboros.skill_review_runner import skill_review_ui_projection
     from ouroboros.tools.github import github_token_from_env_or_settings
-
     # Request-invariant: resolve the github-token state ONCE for the whole index, not
     # once per skill (FR1 — avoids N settings.json reads per GET /api/extensions).
     _gh_token_configured = (
@@ -422,6 +421,7 @@ def _build_extensions_index(drive_root, repo_path):
             "live_reason": runtime_states.get(s.name, {}).get("reason", "not_extension"),
             "health_regressed": bool((health or {}).get("regressed")),
             "last_known_good": (health or {}).get("last_known_good"),
+            "health_observations": (health or {}).get("observations", {}),
             "dispatch_live": bool(
                 _live_tool_count(s.name)
                 or _live_route_count(s.name)
