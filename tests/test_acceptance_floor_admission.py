@@ -447,13 +447,19 @@ def test_a_panel_whose_evidence_build_ate_the_margin_dispatches_and_the_deadline
     is committed the spendable window is 130 s — at or below the 200 s floor —
     and the panel DISPATCHES anyway: the paid claim asks the wallet and
     cancellation only, so there is one `claims_by_binding` row and one
-    physical send (the cost is one floor-priced wave, never a second). What
-    bounds such a panel is the R23 deadline clamp (the third arm): a build
-    that eats the margin AND the reserve leaves the owner window exhausted
-    before the send, and the row is cut typed and $0 — `not_dispatched`, no
-    claim row, no send, a DEGRADED panel — never a free skip. The control arm
-    (a build that burns nothing) dispatches exactly as before, so neither the
-    dispatch nor the cut can pass vacuously."""
+    physical send. That "exactly one send" is THIS FIXTURE's fact — a packet
+    row whose scripted reviewer answers cleanly, so no repair/retry send is
+    taken — not a bound: admission prices one work-order send per paid row,
+    but a packet row may use its permitted repair/retry send and a native
+    row may run several rounds, every send deadline- and wallet-fenced where
+    pricing exists, so the total of an admitted panel is NOT bounded to one
+    floor wave. What bounds such a panel is the R23 deadline clamp (the third
+    arm): a build that eats the margin AND the reserve leaves the owner
+    window exhausted before the send, and the row is cut typed and $0 —
+    `not_dispatched`, no claim row, no send, a DEGRADED panel — while a panel
+    that finishes (the residual arm) keeps its normal verdict; never a free
+    skip. The control arm (a build that burns nothing) dispatches exactly as
+    before, so neither the dispatch nor the cut can pass vacuously."""
     from ouroboros import loop as loop_mod, task_pacing
     from ouroboros.task_results import load_task_acceptance_review_state
 
@@ -476,7 +482,7 @@ def test_a_panel_whose_evidence_build_ate_the_margin_dispatches_and_the_deadline
         assert shrunk.spendable_sec <= 200.0
         assert task_pacing.review_launch_allowed(shrunk) == (False, "review_skipped_deadline_reserve")
         assert dispatched.aggregate_signal == "PASS"
-        assert len(llm.calls) == 1  # ONE physical send: one floor-priced wave
+        assert len(llm.calls) == 1  # ONE physical send: this packet row took no repair/retry
         assert len(load_task_acceptance_review_state(
             tmp_path / "residual", "root-delivery")["claims_by_binding"]) == 1  # ONE claim row
 
@@ -596,7 +602,9 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
         monkeypatch, tmp_path):
     """The poll every subagent bootstrap and nanny wake runs writes NOTHING on a
     healthy tree, in ALL of its facts and not only the review-capacity one (its
-    one inherited write — the usage ledger's torn-tail quarantine — is the test
+    two inherited filesystem effects — the empty `state/` directory the ledger
+    lock creates on a never-initialized root, and the usage ledger's torn-tail
+    quarantine — are the absent-ledger test above and the torn-ledger test
     below). On a task carrying the legacy `until_deadline` alias AND no
     `created_at`/`started_at` (both writes armed), with the grace env ABSENT and
     a legacy context-mode settings file (the settings write armed): the settings
@@ -642,7 +650,9 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
 
 def test_a_single_crash_torn_ledger_gets_the_quarantine_every_reader_performs(
         monkeypatch, tmp_path):
-    """The ONE write a poll can trigger, pinned in its exact bounded shape —
+    """The one CONTENT write a poll can trigger (the other disclosed filesystem
+    effect — the empty `state/` directory the ledger lock creates on a
+    never-initialized root — is pinned above), in its exact bounded shape —
     proven for a SINGLE crash mid-append (a crash inside the repair itself,
     the torn quarantine sink, is a known residual tracked as issue #27 and
     deliberately not exercised here). The crash leaves a half-written final
