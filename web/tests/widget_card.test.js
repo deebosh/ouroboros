@@ -179,7 +179,7 @@ test('the launch-policy menu speaks to the owner: "Keep running", never the enum
     assert.match(controls, /Keep running</);
 });
 
-test('a widget fault writes only the status slot and self-clears on the next transition', () => {
+test('a widget fault survives unchanged reconciliation and clears on a lifecycle transition', () => {
     const card = fakeCard();
     syncWidgetCardControls(card, 'running', 'retain');
     const power = card.querySelector('[data-widget-power]');
@@ -193,7 +193,13 @@ test('a widget fault writes only the status slot and self-clears on the next tra
     assert.equal(power.textContent, 'Stop');
     assert.equal(power.disabled, false);
 
+    // A reconnect reconciles an unchanged, still-mounted card as running.
+    syncWidgetCardControls(card, 'running', 'retain');
+    assert.equal(status.dataset.tone, 'error');
+    assert.equal(status.textContent, 'Widget script error: boom');
+
     syncWidgetCardControls(card, 'stopping', 'retain');
+    assert.equal(status.dataset.widgetFault, undefined);
     assert.equal(status.dataset.tone, 'neutral');
     assert.equal(status.textContent, 'Stopping…');
 });
