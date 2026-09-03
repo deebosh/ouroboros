@@ -497,10 +497,11 @@ def save_enabled(
     actor: str = "",
     reason: str = "",
 ) -> None:
-    """Persist enablement and append one typed row naming who changed it.
+    """Persist enablement and best-effort append one typed disclosure row.
 
     ``actor`` is a data label, never a gate: no branch reads it, and an
-    unlabelled writer records an empty actor rather than nothing at all.
+    unlabelled writer records an empty actor rather than nothing at all. An
+    append failure is logged and never blocks the enablement change.
     """
     previous = load_enabled(drive_root, name)
     atomic_write_json(

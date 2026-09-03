@@ -797,6 +797,8 @@
  * @property {string[]=} granted_permissions
  * @property {string=} extension_action
  * @property {string=} extension_reason
+ * @property {string=} extension_process
+ * @property {string=} extension_server_reconcile
  * @property {string=} load_error
  * @property {Object=} grants
  */

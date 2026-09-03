@@ -122,6 +122,7 @@
     --button-padding-x: 16px;
     --button-font-size: 13px;
     --button-min-height: 34px;
+    --widget-fault-status-max-width: min(240px, 35vw);
     /* App shell: persistent desktop sidebar + optional project detail pane. */
     --sidebar-width: 280px;
     --project-panel-width: clamp(340px, 36vw, 440px);
@@ -5395,6 +5396,13 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     display: flex;
     align-items: center;
     gap: 8px;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
+}
+
+.widgets-card-controls > :not(.ui-status) {
     flex: 0 0 auto;
 }
 
@@ -5402,7 +5410,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     display: inline-flex;
     align-items: center;
     min-width: 0;
-    max-width: min(240px, 35vw);
+    max-width: var(--widget-fault-status-max-width);
     white-space: normal;
     overflow-wrap: anywhere;
 }

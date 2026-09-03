@@ -1023,3 +1023,13 @@ def test_success_without_typed_verdict_stays_pending_in_history(tmp_path):
     ]
     assert history[0]["status"] == "pending"
     assert history[0]["job_status"] == "succeeded"
+
+
+def test_skill_review_response_typedef_carries_qualified_reconcile_fields():
+    api_types = (
+        pathlib.Path(__file__).resolve().parents[1] / "web" / "modules" / "api_types.js"
+    ).read_text(encoding="utf-8")
+    declaration = api_types.split("@typedef {Object} SkillGrantResponse", 1)[1].split("*/", 1)[0]
+
+    assert "@property {string=} extension_process" in declaration
+    assert "@property {string=} extension_server_reconcile" in declaration

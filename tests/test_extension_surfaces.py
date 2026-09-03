@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
@@ -15,6 +16,7 @@ from ouroboros.skill_loader import (
     save_enabled,
     save_review_state,
 )
+from ouroboros.tools.registry import ToolContext
 from tests._shared import clean_extension_runtime_state
 from tests.test_extension_loader import (
     _prepare_extension,
@@ -341,6 +343,33 @@ def test_register_ui_tab_promotes_legacy_iframe_geometry(tmp_path):
     assert tab["height"] == 640
     assert tab["render"]["height"] == 640
     extension_loader.unload_extension("legacyframeui")
+
+
+def test_legacy_iframe_without_route_registers_but_preflight_reports_defect(tmp_path, monkeypatch):
+    plugin = (
+        "def register(api):\n"
+        "    api.register_ui_tab('view', 'View', render={'kind': 'iframe', 'height': 640})\n"
+    )
+    loaded, repo_root, drive_root = _prepare_extension(
+        tmp_path, "legacyframeless", plugin, permissions=["widget"]
+    )
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(repo_root))
+
+    err = extension_loader.load_extension(loaded, lambda: {}, drive_root=drive_root)
+    assert err is None, err
+    tab = extension_loader.snapshot()["ui_tabs"][0]
+    assert tab["render"]["kind"] == "iframe"
+    assert "route" not in tab["render"]
+
+    from ouroboros.tools.skill_preflight import _handle_skill_preflight
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    result = json.loads(
+        _handle_skill_preflight(ToolContext(repo_dir=repo_dir, drive_root=drive_root), skill=loaded.name)
+    )
+    assert result["ok"] is False
+    assert any("iframe widget render requires route" in row["detail"] for row in result["widgets"])
 
 
 @pytest.mark.parametrize(

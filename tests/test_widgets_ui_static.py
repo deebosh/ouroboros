@@ -509,9 +509,14 @@ def test_widget_json_wraps_inside_its_host_card():
 
 def test_widget_fault_status_wraps_inside_narrow_card():
     style = _read("web/style.css")
+    root = style.split(":root {", 1)[1].split("}", 1)[0]
+    controls = style.split(".widgets-card-controls {", 1)[1].split("}", 1)[0]
     status = style.split(".widgets-card-controls .ui-status:not([hidden]) {", 1)[1].split("}", 1)[0]
+    assert "--widget-fault-status-max-width: min(240px, 35vw);" in root
+    assert "flex-wrap: wrap;" in controls
+    assert "min-width: 0;" in controls
     assert "min-width: 0;" in status
-    assert "max-width: min(240px, 35vw);" in status
+    assert "max-width: var(--widget-fault-status-max-width);" in status
     assert "white-space: normal;" in status
     assert "overflow-wrap: anywhere;" in status
 

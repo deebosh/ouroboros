@@ -198,10 +198,10 @@ def regressed_extensions(drive_root: pathlib.Path) -> List[Dict[str, Any]]:
 
             if find_skill(pathlib.Path(drive_root), name) is None or not load_enabled(pathlib.Path(drive_root), name):
                 continue
-            # If it is currently live it has recovered — not a regression, even if a
-            # prior reload_all left health.json.regressed=true. Health is recorded in
-            # reload_all, so a repair/reconcile outside reload_all (UI/tool/review) would
-            # otherwise keep alarming until the next restart; the live check clears it.
+            # If it is currently live it has recovered — not a regression, even if
+            # cross-process timing left health.json.regressed=true. Every reconcile
+            # exit records health, but this live check still resolves divergence when
+            # another process has not yet refreshed the durable projection.
             from ouroboros.extension_loader import runtime_state_for_skill_name
 
             if runtime_state_for_skill_name(name, pathlib.Path(drive_root)).get("live_loaded"):
@@ -249,10 +249,14 @@ def status_for_runtime_state(state: Dict[str, Any]) -> str:
 
 
 def record_health_for_runtime_state(
-    drive_root: pathlib.Path, skill_name: str, state: Dict[str, Any]
+    drive_root: pathlib.Path,
+    skill_name: str,
+    state: Dict[str, Any],
+    *,
+    stamp: tuple[str, str] | None = None,
 ) -> Dict[str, Any]:
     """Persist the health projection of one completed runtime reconcile."""
-    version, sha = fresh_code_stamp()
+    version, sha = fresh_code_stamp() if stamp is None else stamp
     health = record_extension_health(
         drive_root,
         skill_name,

@@ -318,6 +318,16 @@ def test_save_enabled_row_is_disclosure_never_a_gate(tmp_path):
     assert load_enabled(drive_root, "alpha") is True
 
 
+def test_save_enabled_best_effort_disclosure_contract_is_documented():
+    from ouroboros.skill_loader import save_enabled
+
+    architecture = (pathlib.Path(__file__).resolve().parents[1] / "docs" / "ARCHITECTURE.md").read_text(
+        encoding="utf-8"
+    )
+    assert "best-effort" in str(save_enabled.__doc__)
+    assert "append failure is logged and never blocks the enablement change" in architecture
+
+
 def test_api_skill_toggle_records_the_owner_ui_actor(tmp_path, monkeypatch):
     """The HTTP owner toggle labels itself, so the incident class is reconstructible."""
     from ouroboros.skill_loader import SkillReviewState, compute_content_hash, save_review_state

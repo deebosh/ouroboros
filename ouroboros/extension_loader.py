@@ -151,6 +151,7 @@ def _finalize_extension_reconcile(
     skill_name: str,
     *,
     reason: str,
+    health_stamp: tuple[str, str] | None = None,
 ) -> None:
     """Record health and signal the server after a worker-side state change.
 
@@ -169,7 +170,10 @@ def _finalize_extension_reconcile(
             state["server_reconcile"] = "request_failed"
             log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
     from ouroboros.extension_health import record_health_for_runtime_state
-    record_health_for_runtime_state(drive_root, skill_name, state)
+    if health_stamp is None:
+        record_health_for_runtime_state(drive_root, skill_name, state)
+    else:
+        record_health_for_runtime_state(drive_root, skill_name, state, stamp=health_stamp)
 
 
 def _reject_extension_child_side_effect(capability: str) -> None:
@@ -252,12 +256,25 @@ def _validate_child_ws_descriptor(skill_name: str, item: Dict[str, Any]) -> Dict
     return item
 
 
+def _validate_runtime_ui_render(render: Any) -> Dict[str, Any]:
+    """Validate UI while retaining the public contract's route-less iframe shape."""
+    if not isinstance(render, dict):
+        return _validate_ui_render(render)
+    if str(render.get("kind") or "").strip() != "iframe" or str(render.get("route") or "").strip():
+        return _validate_ui_render(render)
+    compatible = dict(render)
+    compatible["route"] = "legacy-contract-placeholder"
+    clean = _validate_ui_render(compatible)
+    clean.pop("route", None)
+    return clean
+
+
 def _validate_child_ui_descriptor(skill_name: str, item: Dict[str, Any]) -> Dict[str, Any]:
     key = str(item.get("key") or "")
     _validate_child_catalog_namespace(skill_name, "ui tab", key)
     if not isinstance(item.get("render", {}), dict):
         raise ExtensionRegistrationError(f"out-of-process ui tab {key!r} render must be an object")
-    render = _validate_ui_render(dict(item.get("render") or {}))
+    render = _validate_runtime_ui_render(dict(item.get("render") or {}))
     item["render"] = render
     span = _widget_span_from_render(render)
     item["span"] = span
@@ -866,7 +883,7 @@ class PluginAPIImpl:
         self._require("widget")
         clean_tab = _assert_tool_name(tab_id)  # same syntax rules
         key = f"{self._skill}:{clean_tab}"
-        validated_render = _validate_ui_render({} if render is None else render)
+        validated_render = _validate_runtime_ui_render({} if render is None else render)
         span = _widget_span_from_render(validated_render)
         # A module widget's reviewed JavaScript (its entry plus every sibling
         # .js/.mjs) is captured here (disk read, outside the lock) so the module
@@ -1577,7 +1594,7 @@ def runtime_state_for_skill_name(
     if skill is None:
         with _lock:
             live_loaded = skill_name in _extensions
-        return {
+        state = {
             "skill": skill_name,
             "type": "extension",
             "runtime_mode": "",
@@ -1591,17 +1608,19 @@ def runtime_state_for_skill_name(
             "loaded_matches_current": False,
             "reason": "missing",
         }
-    state = _apply_deps_block(
-        _extension_runtime_state(
-            skill,
-            drive_root=pathlib.Path(drive_root),
-            skills=peers,
-            repo_path=resolved_repo_path,
-        ),
-        pathlib.Path(drive_root),
-        skill,
-    )
-    return _apply_durable_extension_health(state, pathlib.Path(drive_root), skill)
+    else:
+        state = _apply_durable_extension_health(
+            _apply_deps_block(
+                _extension_runtime_state(
+                    skill, drive_root=pathlib.Path(drive_root), skills=peers,
+                    repo_path=resolved_repo_path,
+                ),
+                pathlib.Path(drive_root), skill,
+            ),
+            pathlib.Path(drive_root), skill,
+        )
+    state["process"] = "server" if is_server_process() else "worker"
+    return state
 
 
 def runtime_state_for_loaded_skill(
@@ -1656,7 +1675,7 @@ def reconcile_extension(
     skill_name: str, drive_root: pathlib.Path, settings_reader: Callable[[], Dict[str, Any]], *,
     repo_path: str | None = None, skills: Optional[List[LoadedSkill]] = None,
     selected_skill: LoadedSkill | None = None, retry_load_error: bool = False,
-    revert_enabled_on_error: bool = False,
+    revert_enabled_on_error: bool = False, health_stamp: tuple[str, str] | None = None,
 ) -> Dict[str, Any]:
     """Reconcile one extension's desired and actual live state.
 
@@ -1696,7 +1715,7 @@ def reconcile_extension(
         elif state.get("reason") == "load_error" and not loaded_present:
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _finalize_extension_reconcile(state, drive_root, skill_name, reason="reconcile_load_error")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="reconcile_load_error", health_stamp=health_stamp)
             return state
         if state.get("reason") == "missing" or state.get("reason") == "not_extension":
             if loaded_present:
@@ -1704,7 +1723,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _finalize_extension_reconcile(state, drive_root, skill_name, reason=str(state.get("reason") or "inactive"))
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason=str(state.get("reason") or "inactive"), health_stamp=health_stamp)
             return state
 
         if not state.get("desired_live"):
@@ -1713,7 +1732,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _finalize_extension_reconcile(state, drive_root, skill_name, reason="desired_disabled")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="desired_disabled", health_stamp=health_stamp)
             return state
 
         if was_live:
@@ -1726,7 +1745,7 @@ def reconcile_extension(
                     repo_path=repo_path,
                     selected_skill=selected_skill,
                 )
-            _finalize_extension_reconcile(state, drive_root, skill_name, reason="already_live")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="already_live", health_stamp=health_stamp)
             return state
 
         safe_name = _sanitize_skill_name(skill_name)
@@ -1734,7 +1753,7 @@ def reconcile_extension(
         if loaded is None:
             state["reason"] = "missing"
             state["action"] = "extension_inactive"
-            _finalize_extension_reconcile(state, drive_root, skill_name, reason="missing")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="missing", health_stamp=health_stamp)
             return state
         if loaded_present:
             unload_extension(skill_name)
@@ -1760,7 +1779,7 @@ def reconcile_extension(
             state["load_error"] = err
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _finalize_extension_reconcile(state, drive_root, skill_name, reason="load_error")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="load_error", health_stamp=health_stamp)
             return state
         refreshed = runtime_state_for_skill_name(
             skill_name,
@@ -1769,7 +1788,7 @@ def reconcile_extension(
             skills=peers,
         )
         refreshed["action"] = "extension_loaded"
-        _finalize_extension_reconcile(refreshed, drive_root, skill_name, reason="loaded")
+        _finalize_extension_reconcile(refreshed, drive_root, skill_name, reason="loaded", health_stamp=health_stamp)
         return refreshed
 
 
@@ -2146,9 +2165,10 @@ def reload_all(
     repo_path: str | None = None,
 ) -> Dict[str, Any]:
     """Refresh all extension liveness and return ``skill: error_or_None``."""
-    from ouroboros.extension_health import record_health_for_runtime_state
+    from ouroboros.extension_health import fresh_code_stamp, record_health_for_runtime_state
 
     skills = discover_skills(drive_root, repo_path=repo_path)
+    health_stamp = fresh_code_stamp()
     skill_names = {s.name for s in skills if s.manifest.is_extension()}
     with _lock:
         loaded_names = set(_extensions.keys())
@@ -2172,6 +2192,7 @@ def reload_all(
                 repo_path=repo_path,
                 skills=skills,
                 retry_load_error=True,
+                health_stamp=health_stamp,
             )
             load_error = state.get("load_error")
             if load_error:
@@ -2194,7 +2215,7 @@ def reload_all(
             try:
                 record_health_for_runtime_state(drive_root, skill.name, {
                     "desired_live": True, "reason": "load_error", "load_error": error,
-                })
+                }, stamp=health_stamp)
             except Exception:
                 log.debug("extension health record failed for %s", skill.name, exc_info=True)
     return results

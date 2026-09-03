@@ -1634,6 +1634,34 @@ def test_installed_skills_section_includes_warnings_verdict(tmp_path, monkeypatc
     assert "warnings" in section
 
 
+def test_installed_skills_section_qualifies_extension_liveness_process(tmp_path, monkeypatch):
+    from ouroboros.context import _build_installed_skills_section
+
+    class FakeEnv:
+        drive_root = tmp_path
+
+    monkeypatch.setattr(
+        "ouroboros.skill_loader.summarize_skills",
+        lambda _root: {
+            "skills": [{
+                "name": "weather_widget",
+                "type": "extension",
+                "enabled": True,
+                "review_status": "pass",
+                "executable_review": True,
+                "review_stale": False,
+                "live_loaded": False,
+                "live_reason": "load_error",
+                "process": "worker",
+            }],
+        },
+    )
+
+    section = _build_installed_skills_section(FakeEnv())
+
+    assert "Live (worker): no (load_error)" in section
+
+
 def test_health_invariants_come_first_in_dynamic_context(tmp_path):
     from ouroboros.context import build_llm_messages
     from ouroboros.memory import Memory
