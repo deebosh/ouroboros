@@ -10,11 +10,15 @@ equivalence with the pre-deletion tree, the paid claim that asks the wallet and
 cancellation only (owner R55: the floor is evaluated ONCE, at loop admission,
 so a panel whose evidence build ate the margin dispatches — the disclosed
 residual, bounded by the R23 deadline clamps), and the purity of every
-read-only poll (whose two inherited filesystem effects — the usage ledger's
-torn-tail quarantine after a single crash mid-append, pinned in that
-single-crash shape, and the empty `state/` directory the ledger lock creates on
-a never-initialized root — are pinned as exactly those; every ledger state,
-absent included, goes through the canonical reader). A separate
+read-only poll (which writes nothing of its own and inherits the canonical
+usage-ledger reader's own bounded maintenance — today: the torn-tail
+quarantine after a single crash mid-append, pinned in that single-crash shape,
+the empty `state/` directory the reader's lock lives in on a never-initialized
+root, and removal of a stale `usage_attempts.lock` older than the reader's
+90 s stale window (`usage_ledger._locked` →
+`platform_layer.acquire_exclusive_file_lock`, whose stale-age branch unlinks
+the lock file and retries) — each pinned by its own regression below; every
+ledger state, absent included, goes through the canonical reader). A separate
 module from the three-delivery contract suite on purpose: the subject here is
 what may START and what may be SPENT, not what a delivery row receives. Every
 offline fixture — the fake triads, the scripted ledger-crossing reviewer, the
@@ -554,6 +558,60 @@ def test_an_absent_ledger_polls_known_zero_through_the_reader_and_creates_only_s
         key: value for key, value in known_zero.items() if key != "state"}
 
 
+def test_a_stale_ledger_lock_is_the_readers_removal_and_the_poll_stays_known_zero(tmp_path):
+    """The maintenance a poll inherits from the canonical reader is bounded,
+    not a closed list of two: a `state/usage_attempts.lock` left behind by a
+    dead writer and older than the reader's 90 s stale window is REMOVED on the
+    way to the known-zero answer — by the reader's own lock acquisition
+    (`usage_ledger._locked` → `platform_layer.acquire_exclusive_file_lock`,
+    whose stale-age branch unlinks the file and retries), never by the poll,
+    which writes nothing of its own. Pinned as the EXACT observed set on an
+    otherwise fresh root: the stale lock is gone, the tree afterwards is the
+    empty `state/` directory and nothing else, the answer is the reader's own
+    known zero, no events row, no ctx attribute, and a second poll leaves the
+    tree byte-identical to the first."""
+    import os
+    import queue
+
+    from ouroboros import delegate_custody as custody
+    from ouroboros.delegate_supervision import coordination_live_context
+
+    ctx = SimpleNamespace(
+        task_id="root-stale-lock", root_task_id="root-stale-lock", drive_root=tmp_path,
+        budget_drive_root=str(tmp_path), task_metadata={
+            "root_task_id": "root-stale-lock", "budget_drive_root": str(tmp_path)},
+        pending_events=[], event_queue=queue.Queue(),
+    )
+    root = custody.custody_root(ctx)
+    assert sorted(root.rglob("*")) == []  # genuinely fresh
+    stale_lock = root / "state" / "usage_attempts.lock"
+    stale_lock.parent.mkdir()
+    stale_lock.write_text("pid=999999 ts=0\n", encoding="utf-8")
+    os.utime(stale_lock, (0, 0))  # a dead writer's lock, aged to the epoch: far past 90 s
+    attrs_before = set(vars(ctx))
+    known_zero = {
+        "state": "known", "settled_usd": 0.0, "accounted_usd": 0.0,
+        "cost_final": True, "unknown_unmetered": 0, "integrity_degraded": False,
+    }
+
+    def _tree():
+        return [(path.relative_to(root).as_posix(), path.is_dir(), path.is_file())
+                for path in sorted(root.rglob("*"))]
+
+    assert _tree() == [("state", True, False), ("state/usage_attempts.lock", False, True)]
+
+    assert coordination_live_context(ctx)["settled_spend"] == known_zero
+    assert not stale_lock.exists()  # the reader's stale-age branch removed it, then released its own
+    after_first = _tree()
+    assert after_first == [("state", True, False)]  # the empty lock directory, and nothing else
+    assert not custody.event_log_path(root).exists()  # no events row
+
+    assert coordination_live_context(ctx)["settled_spend"] == known_zero
+    assert _tree() == after_first  # the second poll changed nothing
+    assert set(vars(ctx)) == attrs_before
+    assert ctx.event_queue.empty() and ctx.pending_events == []
+
+
 def test_a_directory_at_the_ledger_path_is_the_readers_verdict_not_known_zero(tmp_path):
     """Every ledger state goes through the canonical reader — there is no fast
     path ahead of it — so a DIRECTORY at the ledger path reports exactly the
@@ -601,11 +659,12 @@ def _legacy_settings(monkeypatch, tmp_path):
 def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_task(
         monkeypatch, tmp_path):
     """The poll every subagent bootstrap and nanny wake runs writes NOTHING on a
-    healthy tree, in ALL of its facts and not only the review-capacity one (its
-    two inherited filesystem effects — the empty `state/` directory the ledger
-    lock creates on a never-initialized root, and the usage ledger's torn-tail
-    quarantine — are the absent-ledger test above and the torn-ledger test
-    below). On a task carrying the legacy `until_deadline` alias AND no
+    healthy tree, in ALL of its facts and not only the review-capacity one (the
+    bounded maintenance it inherits from the canonical ledger reader — today
+    the empty `state/` directory on a never-initialized root, the stale-lock
+    removal, and the usage ledger's torn-tail quarantine — is pinned by the
+    absent-ledger and stale-lock tests above and the torn-ledger test below).
+    On a task carrying the legacy `until_deadline` alias AND no
     `created_at`/`started_at` (both writes armed), with the grace env ABSENT and
     a legacy context-mode settings file (the settings write armed): the settings
     bytes and mtime, the events stream, the task result and the event queue are
@@ -650,12 +709,13 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
 
 def test_a_single_crash_torn_ledger_gets_the_quarantine_every_reader_performs(
         monkeypatch, tmp_path):
-    """The one CONTENT write a poll can trigger (the other disclosed filesystem
-    effect — the empty `state/` directory the ledger lock creates on a
-    never-initialized root — is pinned above), in its exact bounded shape —
-    proven for a SINGLE crash mid-append (a crash inside the repair itself,
-    the torn quarantine sink, is a known residual tracked as issue #27 and
-    deliberately not exercised here). The crash leaves a half-written final
+    """The one CONTENT write among the bounded maintenance a poll inherits from
+    the canonical ledger reader (the empty `state/` directory on a
+    never-initialized root and the stale-lock removal are pinned above), in its
+    exact bounded shape — proven for a SINGLE crash mid-append (a crash inside
+    the repair itself, the torn quarantine sink, is a known residual — draft
+    issue #27, publication pending — and deliberately not exercised here). The
+    crash leaves a half-written final
     ledger row; the settled-spend fact reads that ledger, so the poll performs
     the repair EVERY reader of the ledger performs — truncate to the intact
     prefix, one quarantine row holding the torn bytes verbatim, one

@@ -181,9 +181,6 @@ def test_meaningful_wake_carries_live_tree_planning_facts_and_replays_exactly(
         "unknown_unmetered": 1,
         "integrity_degraded": False,
     })
-    # The absent-ledger fast path answers known-zero WITHOUT the reader; this
-    # test pins the reader-projection flow, so the ledger file must exist.
-    (tmp_path / "state" / "usage_attempts.jsonl").write_text("", encoding="utf-8")
     ctx = _ctx(tmp_path)
     ctx.task_contract = contract
     ctx.task_metadata.update({
