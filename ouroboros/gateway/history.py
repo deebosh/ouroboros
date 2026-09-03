@@ -484,11 +484,9 @@ def _copy_task_summary_metadata(rec: Dict[str, Any], entry: Dict[str, Any]) -> N
         rec["reason_code"] = str(entry.get("reason_code") or "")
     if isinstance(entry.get("review_projection"), dict):
         rec["review_projection"] = dict(entry.get("review_projection") or {})
-    # v6.82 P1: the summary row now carries the flat task-scope cost snapshot
-    # written by agent_task_pipeline; replay it so a reload still shows cost.
-    # _annotate_terminal_task_truth later OVERRIDES these with the persisted
-    # task_results values when the result file survives (row = fallback only).
-    for key in _TASK_COST_META_FIELDS:
+    # The summary row is the pruned-result fallback for cost and finality.
+    # Persisted task_results values still override cost fields below.
+    for key in ("outcome_phase", "outcome_final", *_TASK_COST_META_FIELDS):
         if key in entry:
             rec[key] = entry[key]
 

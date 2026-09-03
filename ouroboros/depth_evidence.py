@@ -82,11 +82,20 @@ def build_depth_summary(
     statuses = [row for row in subtree_statuses if isinstance(row, dict)]
     provenances = [task_depth_provenance(row) for row in statuses]
     provenances = [row for row in provenances if row]
-    if requested is None:
-        requested = next(
-            (row.get("requested_depth") for row in provenances if row.get("requested_depth") is not None),
-            None,
-        )
+    requested_values = [
+        value for value in [requested, *(row.get("requested_depth") for row in provenances)]
+        if value is not None
+    ]
+    requested = max(requested_values) if requested_values else None
+    branches = sorted(
+        ({"request": row.get("requested_depth"),
+          "permitted": row.get("permitted_depth"),
+          "achieved": row.get("achieved_depth")} for row in provenances),
+        key=lambda row: tuple(
+            (row[key] is None, row[key] or 0)
+            for key in ("request", "permitted", "achieved")
+        ),
+    )
     permitted_values = [
         value
         for value in [
@@ -105,13 +114,31 @@ def build_depth_summary(
 
     attempted = _maximum("attempted_depth")
     achieved = _maximum("achieved_depth")
-    if requested is None:
+
+    def _reduction_key(row: Dict[str, Any]) -> Any:
+        """Most reduced request; ties prefer the strongest, least-achieved ask."""
+        ask, cap = row.get("requested_depth"), row.get("permitted_depth")
+        reached = row.get("achieved_depth")
+        tried = row.get("attempted_depth")
+        known = ask is not None and cap is not None
+        return (
+            known, ask - cap if known else float("-inf"), ask if ask is not None else -1,
+            -(reached if reached is not None else -1),
+            -(tried if tried is not None else -1),
+        )
+
+    status_source = max(provenances, key=_reduction_key) if provenances else {}
+    source_requested = status_source.get("requested_depth") if status_source else requested
+    source_permitted = status_source.get("permitted_depth") if status_source else permitted
+    source_attempted = status_source.get("attempted_depth") if status_source else attempted
+    source_achieved = status_source.get("achieved_depth") if status_source else achieved
+    if source_requested is None:
         status = "request_unknown"
-    elif permitted is None or attempted is None or achieved is None:
+    elif source_permitted is None or source_attempted is None or source_achieved is None:
         status = "evidence_unknown"
-    elif permitted < requested:
+    elif source_permitted < source_requested:
         status = "capability_reduced"
-    elif achieved >= requested:
+    elif source_achieved >= source_requested:
         status = "achieved"
     else:
         status = "chosen_shallower"
@@ -122,4 +149,5 @@ def build_depth_summary(
         "achieved_depth": achieved,
         "status": status,
         "host_visible_only": True,
+        "branches": branches,
     }

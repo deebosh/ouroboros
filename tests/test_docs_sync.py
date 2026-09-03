@@ -48,6 +48,15 @@ def test_architecture_mentions_shared_log_grouping_and_direct_provider_review_fa
     assert "claudeRuntimeHasError" not in arch
 
 
+def test_architecture_limits_finality_and_verdict_claims_to_actual_rows():
+    arch = _read("docs/ARCHITECTURE.md")
+
+    assert "The start row carries neither outcome finality nor a verdict" in arch
+    assert "The pre-finalization authored row carries the phase with `outcome_final=false`" in arch
+    assert "only terminal `task_summary` rows append the host verdict clause" in arch
+    assert "Both Main rows, the Project thread rows" not in arch
+
+
 def test_architecture_documents_skill_schedule_lifecycle_and_evolution_light_block():
     arch = _read("docs/ARCHITECTURE.md")
 

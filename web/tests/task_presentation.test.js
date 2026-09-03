@@ -251,7 +251,7 @@ test('history replay keeps open summaries live and terminal fallbacks factual', 
         chatSource.indexOf('function appendTaskSummaryToLiveCard'),
         chatSource.indexOf('// child task_id'),
     );
-    assert.match(summary, /const finalizing = msg\?\.task_phase === 'finalizing';/);
+    assert.match(summary, /const finalizing = msg\?\.task_phase === 'finalizing' \|\| msg\?\.outcome_final === false;/);
     assert.match(summary, /terminal: !finalizing/);
     assert.match(summary, /record\.finalizingHold = true/);
     assert.match(summary, /if \(finalizing\) return changed;\s*changed = finishLiveCard/);
