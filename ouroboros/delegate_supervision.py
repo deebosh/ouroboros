@@ -141,15 +141,20 @@ def _time_fact(ctx: Any) -> dict[str, Any]:
 
 def _settled_spend_fact(ctx: Any, root_task_id: str) -> dict[str, Any]:
     """The tree's ledger-accounted spend — the one fact whose READ can write:
-    a ledger torn by a crash mid-append has that tail quarantined and the file
-    truncated to the intact prefix, the same bounded repair EVERY reader of
-    that ledger performs; nothing here is a poll-specific mutation."""
+    a tail torn by a SINGLE crash mid-append is quarantined and the file
+    truncated to the intact prefix, as every reader does (a crash inside that
+    repair — a torn quarantine sink — is a known residual, issue #27); an
+    absent ledger answers known-zero without the reader, whose lock would
+    create ``state/`` on an untouched root."""
     try:
         from ouroboros.usage_accounting import usage_breakdown
+        from ouroboros.usage_ledger import LEDGER_REL
 
-        projection = usage_breakdown(
-            custody.custody_root(ctx), root_task_id=root_task_id,
-        )
+        root = custody.custody_root(ctx)
+        if not (root / LEDGER_REL).is_file():
+            return {"state": "known", "settled_usd": 0.0, "accounted_usd": 0.0,
+                    "cost_final": True, "unknown_unmetered": 0, "integrity_degraded": False}
+        projection = usage_breakdown(root, root_task_id=root_task_id)
         integrity = bool(projection.get("integrity_degraded"))
         unknown = int(projection.get("unknown_unmetered") or 0)
         return {
@@ -259,9 +264,10 @@ def coordination_live_context(ctx: Any) -> dict[str, Any]:
     """One LLM-first planning snapshot for startup and meaningful nanny wakes.
 
     Polling writes nothing — except the usage ledger's own torn-tail quarantine
-    after a crash mid-append, which EVERY reader of that ledger performs
-    identically (``usage_ledger._read_records_locked``): the settled-spend fact
-    reads the ledger, so it inherits that one bounded repair and no other write.
+    after a SINGLE crash mid-append, performed identically by every reader
+    (``usage_ledger._read_records_locked``; a crash inside the repair itself —
+    a torn quarantine sink — is a known residual, issue #27); the settled-spend
+    fact reads the ledger only when the file exists, inheriting no other write.
     """
 
     root_task_id = _coordination_root_id(ctx)

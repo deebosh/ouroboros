@@ -695,6 +695,32 @@ def test_a_mixed_panel_race_first_stamp_refusal_is_one_typed_skip_for_all_rows(
 # ---------------------------------------------------------------------------
 
 
+def test_an_absent_ledger_polls_known_zero_and_creates_nothing(tmp_path):
+    """Owner R54 (3): on a fresh root with NO usage ledger, the coordination
+    poll answers a KNOWN zero settled spend without opening the ledger reader
+    — whose lock file would create `state/` on an untouched root — and the
+    directory tree stays byte-identical (here: empty), on a repeat poll too."""
+    import queue
+
+    from ouroboros.delegate_supervision import coordination_live_context
+
+    ctx = SimpleNamespace(
+        task_id="root-empty", root_task_id="root-empty", drive_root=tmp_path,
+        budget_drive_root=str(tmp_path), task_metadata={
+            "root_task_id": "root-empty", "budget_drive_root": str(tmp_path)},
+        pending_events=[], event_queue=queue.Queue(),
+    )
+    assert sorted(tmp_path.rglob("*")) == []  # genuinely fresh
+
+    for _ in range(2):
+        live = coordination_live_context(ctx)
+        assert live["settled_spend"] == {
+            "state": "known", "settled_usd": 0.0, "accounted_usd": 0.0,
+            "cost_final": True, "unknown_unmetered": 0, "integrity_degraded": False,
+        }
+    assert sorted(tmp_path.rglob("*")) == []  # no state/, no lock, nothing at all
+
+
 def _legacy_settings(monkeypatch, tmp_path):
     """Point config at a settings file whose retired auto-Low pair a
     `load_settings()` WOULD normalize and persist — the write this batch must
