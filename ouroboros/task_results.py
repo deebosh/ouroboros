@@ -153,10 +153,16 @@ def project_task_acceptance_review_capacity(
     Descendants may observe but never initialize root authority. A missing or
     malformed canonical result is UNKNOWN for them; a live root may begin with
     the known empty state. The atomic claim remains dispatch authority.
+
+    WALLET AND CANCELLATION ONLY (owner R52). The TIME axis is not projected:
+    the loop's launch gate (``task_pacing.review_launch_allowed``) is the one
+    time gate an acceptance panel passes, and a descendant reading this reads
+    its own deadline window from the adjacent coordination ``time`` fact. So no
+    budget profile, no snapshot and no duration prediction is read here, and
+    the answer cannot drift from the gate it used to imitate.
     """
 
-    from ouroboros import config, task_pacing
-    from ouroboros.owner_hurry import effective_budget_profile
+    from ouroboros import config
 
     metadata = getattr(ctx, "task_metadata", {})
     metadata = metadata if isinstance(metadata, dict) else {}
@@ -238,46 +244,7 @@ def project_task_acceptance_review_capacity(
                 "state": "unknown",
                 "reason": f"cancellation_state_unknown:{type(exc).__name__}",
             }
-        # The EFFECTIVE profile the real acceptance path resolves (loop.py):
-        # an armed owner-hurry latch overlays zero improvement passes, and a
-        # projection reading the raw profile would promise a pass the real gate
-        # refuses. Observation variants of both readers: same answers, no
-        # deprecation row and no fallback-anchor latch from a poll.
-        profile = effective_budget_profile(ctx, task_pacing.observe_budget_profile(ctx))
-        budget = task_pacing.observe_budget_snapshot(ctx, profile=profile)
-        # `claimed` is PAID CYCLES — correct for the wallet (`cap_cycles`,
-        # `remaining_cycles`) and for the estimate, whose `passes_done` means
-        # "reviews already recorded" (production passes 0 before the first panel
-        # and `ctx.passes_done + 1` after it). The improvement CAP counts
-        # completed improvement passes instead, so the reducer derives
-        # `cycles - 1` from this same durable count.
-        estimated_sec = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=claimed)
-        # Observe only: BOTH admission rules are evaluated PURELY (owner R49) —
-        # the review-launch rule over its 1x window and the improvement-pass
-        # rule over the adaptive 2x window, over the same profile, counter and
-        # enforcement the real gates use — and each floor admission is reported
-        # in its OWN field; the panel's dispatch fact after the paid seam stays
-        # the only place a floor admission is RECORDED, never this projection
-        # that every poll calls. The improvement gate's own refusals (count cap,
-        # window) never change availability here — that state remains the
-        # review-launch gate's answer, exactly as before.
-        admission = task_pacing.acceptance_admission_projection(
-            budget, profile=profile, paid_cycles=claimed, estimated_sec=estimated_sec,
-            required_blocking=task_acceptance_required_blocking(),
-        )
-        launch_ok, launch_reason = admission.launch
-        if launch_ok and launch_reason:
-            projection["launch_disclosure"] = launch_reason  # would launch at the floor (R36)
-        if admission.improvement == (True, task_pacing.REASON_LAUNCHED_AT_FLOOR):
-            # The next improvement pass would be admitted at the floor by the 2x window.
-            projection["improvement_launch_disclosure"] = task_pacing.REASON_LAUNCHED_AT_FLOOR
-        if admission.improvement_unavailable:
-            # Typed omission, not a refusal: the auxiliary gate raised, so its
-            # disclosure is absent while the PAID panel stays admissible.
-            projection["improvement_admission"] = admission.improvement_unavailable
-        if not launch_ok:
-            projection.update({"state": "unavailable", "reason": launch_reason})
-        elif remaining == 0:
+        if remaining == 0:
             projection.update({
                 "state": "unavailable", "reason": "review_cycles_exhausted",
             })

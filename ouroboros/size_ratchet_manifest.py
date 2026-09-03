@@ -160,7 +160,6 @@ BAND_PATHS = {
     "ouroboros/safety.py": "Entered the band from 954 lines with the safety-supervisor rate-limit fix: ONE shared model-call helper now serves both the primary and repair safety calls (it already deletes the duplicated call block), recognising a provider rate limit in BOTH wire shapes, taking one bounded deadline-capped backoff plus one retry, then blocking that one call with the typed non-verdict SAFETY_UNAVAILABLE outcome plus a durable audit row (a short storm latch answers further checks in the window without provider calls); the bounded newest-first conversation budget is the second half.",
     "ouroboros/skill_review_runner.py": None,
     "ouroboros/subagent_runtime.py": "Configured-retry refusals mirrored typed (triad 2026-08-30) push the module just over 1000; no new subsystem, same seam.",
-    "ouroboros/task_pacing.py": "Entered the band from 980 lines by making acceptance pacing delivery-aware (owner R16, 2026-09-01): the bounded reader of the canonical task_acceptance_review_timing stream, the per-delivery-class wall-clock EWMA and the native-rounds estimate live beside the launch/improvement rails they size, so the pacing SSOT keeps ONE reader of its own event stream instead of a second consumer in the acceptance module.",
     "ouroboros/task_status.py": None,
     "ouroboros/tools/browser.py": None,
     "ouroboros/tools/commit_gate.py": "Grew INTO the band by the review-wave fix binding the actor reference (delivery class) into the commit review contract fingerprint \u2014 same-module contract identity, splitting it would separate the fingerprint from its gate.",
@@ -178,7 +177,6 @@ BAND_PATHS = {
     "supervisor/message_bus.py": "push_log gained the A2A frame suppression and explicit-addressing contract comments in the live log routing fix (fix/main-chat-leak sprint); the module sat at exactly 1000 lines before it",
     "supervisor/queue_transitions.py": "Queue-owned admission/quiescence transitions: the budget-pause predicate, the settled-tree fence release, and the restore-time orphan sweep join their resume/fence siblings (one queue authority).",
     "supervisor/terminal_delivery.py": None,
-    "tests/test_acceptance_delivery.py": "Entered the band as the ONE suite of the acceptance three-delivery contract (owner R0-R16, R36): work order, wallet matrix, route-aware gates, delivery-aware pacing with the real JSONL reader, the real wave budget gate on a seeded ledger, and the R12 save disclosure share fixtures (offline triad, scripted ledger-crossing LLM, fake session gateway, priced offline model) that a split would duplicate or hide behind conftest indirection.",
     "tests/test_advisory_observability.py": None,
     "tests/test_build_scripts.py": None,
     "tests/test_commit_gate.py": None,
@@ -239,7 +237,7 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "ouroboros/loop.py": 274157,
+    "ouroboros/loop.py": 273886,
     "tests/test_delegated_subagent_transport.py": 320337,
     "tests/test_devtools_benchmarks.py": 328084,
     "web/modules/chat.js": 208394,

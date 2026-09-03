@@ -20,7 +20,6 @@ Design contract (owner-decided, sprint v6.55):
 from __future__ import annotations
 
 import logging
-import math
 import pathlib
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -30,7 +29,6 @@ from ouroboros.config import (
     get_acceptance_review_est_sec,
     get_finalization_grace_sec,
     get_pacing_interval_sec,
-    get_task_abs_ceiling_sec,
 )
 from ouroboros.contracts.task_contract import answer_protocol_active, normalize_budget_profile
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
@@ -40,66 +38,21 @@ from ouroboros.review_cycles import (
     get_acceptance_max_improvement_passes,
     review_max_cycles,
 )
-from ouroboros.utils import append_jsonl, iter_jsonl_objects, utc_now_iso
+from ouroboros.utils import append_jsonl, utc_now_iso
 
 
+# The host never predicts how long a review takes (owner R52, 2026-09-03). A
+# task has three host-owned rails: a deadline, a paid-cycle cap and a wallet —
+# and the time rail is this ONE number, the minimum spendable window (remaining
+# time above the finalization reserve) an acceptance panel needs in order to
+# START. `OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC` configures it and never lowers it
+# below this floor; an improvement pass needs the same floor scaled by
+# `_window_scale` (×2 under the adaptive policy, ×1 otherwise). Once launched a
+# review is an ordinary operation, clamped to the owner deadline and the task
+# ceiling with the per-send money fence, and a deadline-cut review is a typed
+# degraded outcome. Panel durations are recorded as telemetry
+# (`task_acceptance_review_timing`) and nothing decides on them.
 _ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC = 200.0
-_ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
-# Ceiling on the native-rounds ESTIMATE the acceptance wave gate multiplies into
-# its pricing (P13: the episode itself has no round cap; the floor stays 1).
-# Every timing reader skips counters that are non-numeric, non-finite (the JSON
-# token 1e999, "Infinity", NaN) or non-positive, and bounds a numeric but absurd
-# value BEFORE the EWMA — per-row rounds to this cap, `duration_sec` to the task's
-# absolute wall-clock ceiling (`get_task_abs_ceiling_sec`, default 21600 s: the
-# review operation inherits it, so no honest panel can outlive it, while a
-# legitimate agent-session panel may well run past the configurable 3600 s
-# initial-estimate clamp) — so every estimate is finite and bounded: rounds ≤ 64,
-# reserve ≤ max(configured floor, 1.5 × the task ceiling). A history-derived
-# estimate is a pacing FLOOR-raiser, never an admission ceiling (owner R36,
-# 2026-09-02): the review launches when the spendable window (remaining − reserve)
-# exceeds the bounded estimate; when it does not but exceeds the configured floor
-# (max(200 s, OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC)) it launches at the floor — the
-# predicates are pure and return the `launched_at_floor` reason, and the
-# read-only capacity projection evaluates BOTH of them through ONE reducer
-# (`acceptance_admission_projection`) — the review-launch rule over its 1x
-# window and the improvement-pass rule over the adaptive 2x window, over the
-# EFFECTIVE profile (the owner-hurry overlay the acceptance path resolves), the
-# durable completed-improvement count (paid cycles − 1) and the real
-# Required+Blocking predicate, with `ctx=None` so nothing is ever emitted —
-# reporting each floor admission in its own field. That projection writes
-# nothing and mutates no context: it reads through `observe_budget_profile` and
-# `observe_budget_snapshot`, so neither the deprecation row nor the
-# fallback-anchor latch can fire from a poll, and a metadata-poor task simply
-# has no window facts to make a floor claim from. A raising improvement gate
-# omits its own disclosure (`improvement_admission_unknown`) rather than
-# degrading the launch answer. A spendable window at or below the floor is
-# refused `review_skipped_deadline_reserve`. Likewise the acceptance wave gate
-# DECIDES on one work-order send per paid row; the rounds-priced wave is a
-# read-only check; only a floor that does not fit is refused
-# `review_wave_budget_insufficient`. ONE fact (owner R46) discloses both:
-# `acceptance_estimate_unaffordable_dispatched_at_floor`, attached by the panel
-# to every actor's usage, the timing row and one registered live event only
-# AFTER the paid seam fired, whenever it ran under a floor admission by time
-# (`launched_at_floor`, `launch_gate` = review_launch | null, launch seconds —
-# the review-launch gate hands its decision into THIS panel's context; an
-# improvement pass admitted at the floor under the adaptive 2x window is
-# projected in the capacity projection's own `improvement_launch_disclosure`
-# field, next to the review-launch gate's `launch_disclosure` — the projection
-# evaluates both purely and RECORDS neither; this dispatch fact stays the only
-# place a floor admission is recorded), by money (`wave_at_floor`, wave prices)
-# or both.
-# The per-send wallet binding at dispatch and the review's logical window
-# remain the protection, and the honest event of the dispatched
-# panel decays the estimate (its excess halves per panel).
-# 64 is the plan's measured deep-review ceiling (Б2-2), far above the 3–5 rounds a
-# verdict-shaped episode takes.
-ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP = 64
-# ONE typed disclosure (owner R36/R46): emitted by the acceptance panel at the
-# paid seam, after its dispatch fired — "the panel ran under a floor admission:
-# by time, by money, or both". The launch predicates stay pure and only RETURN
-# the reason token; the panel threads the decision into that fact.
-DISCLOSURE_DISPATCHED_AT_FLOOR = "acceptance_estimate_unaffordable_dispatched_at_floor"
-REASON_LAUNCHED_AT_FLOOR = "launched_at_floor"
 
 # Proportional nanny-economics reminder thresholds (poltergeist phase B; owner
 # decision 2=B: NO absolute round cap — reminders only, sized to the measured
@@ -118,7 +71,6 @@ NANNY_REMINDER_USD = 2.0
 # delegate activity, and for every re-arm after the first firing, the ordinary
 # dual-axis thresholds above apply unchanged. Same SSOT home as its siblings.
 NANNY_FIRST_REMINDER_ROUNDS = 3
-_ACCEPTANCE_TIMING_EVENT = "task_acceptance_review_timing"
 log = logging.getLogger(__name__)
 
 
@@ -228,146 +180,14 @@ def resolve_budget_profile(ctx: Any) -> Dict[str, Any]:
     return normalize_budget_profile(profile)
 
 
-def _acceptance_timing_events(ctx: Any):
-    """The canonical ``task_acceptance_review_timing`` rows (bounded tail read)."""
-    try:
-        events_path = acceptance_timing_events_path(ctx)
-    except (TypeError, OSError, ValueError):
-        return
-    for event in iter_jsonl_objects(events_path, max_entries=4000, tail_bytes=8_000_000):
-        if str(event.get("type") or "") == _ACCEPTANCE_TIMING_EVENT:
-            yield event
-
-
-def _finite_positive(raw: Any) -> Optional[float]:
-    """``raw`` as a float when it is a FINITE, POSITIVE number; None otherwise.
-    A durable row comes back as whatever JSON parsed: the token ``1e999`` is
-    +inf, the strings ``"Infinity"``/``"NaN"`` pass ``float()`` as inf/nan, a
-    bool is an int — none of them is a measurement, and each would otherwise
-    poison an EWMA or overflow ``math.ceil``."""
-    if isinstance(raw, bool):
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return value if math.isfinite(value) and value > 0.0 else None
-
-
-def _ewma(values: Any, *, cap: Optional[float] = None) -> Optional[float]:
-    """EWMA (alpha 0.5) over the finite, positive numbers among ``values``
-    (`_finite_positive`), each bounded to ``cap`` first when one is given;
-    None when there were none."""
-    ewma: Optional[float] = None
-    for raw in values:
-        value = _finite_positive(raw)
-        if value is None:
-            continue
-        if cap is not None:
-            value = min(float(cap), value)
-        ewma = value if ewma is None else (
-            _ACCEPTANCE_REVIEW_EWMA_ALPHA * value + (1.0 - _ACCEPTANCE_REVIEW_EWMA_ALPHA) * ewma)
-    return ewma
-
-
-def acceptance_panel_delivery(ctx: Any) -> str:
-    """The delivery class of the acceptance panel that WILL run: the configured
-    triad rows' slowest delivery. A malformed configuration refuses the panel
-    typed, so it is paced as the legacy packet panel."""
-    del ctx  # the configuration is process-wide; the argument keeps the call site honest
-    try:
-        from ouroboros.review_execution import panel_delivery_class
-        from ouroboros.reviewer_slot_config import triad_delivery_slots
-
-        return panel_delivery_class(triad_delivery_slots())
-    except Exception:
-        return "api_chat"
-
-
-def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0, delivery: str = "") -> float:
-    """Return the review-time reservation reconstructed from existing events.
-
-    The first review reserves 200 seconds.  Later reviews use
-    ``max(200, 1.5 * EWMA)`` with alpha 0.5 over panels of the SAME delivery
-    class (owner R16, 2026-09-01): a session panel is paced by session wall
-    clock, a native-episode panel by native wall clock, a packet panel as
-    before; events without a recorded class are pre-R16 packet panels. The
-    class defaults to the configured panel's (``acceptance_panel_delivery``).
-    Each recorded duration is bounded to the task's absolute wall-clock ceiling
-    (``get_task_abs_ceiling_sec``: the review operation inherits it, so no honest
-    panel — an hours-long agent session included — can outlive it) before the
-    EWMA, so the estimate is always finite and at most 1.5× that ceiling;
-    non-numeric, non-finite and non-positive rows are skipped. The existing
-    ``OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC`` value remains the initial estimate
-    and a floor; no additional timing database is introduced.
-    """
-    configured = max(
-        _ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC,
-        float(get_acceptance_review_est_sec()),
-    )
-    if passes_done <= 0:
-        return configured
-    wanted = str(delivery or "").strip() or acceptance_panel_delivery(ctx)
-    ewma = _ewma(
-        (event.get("duration_sec") for event in _acceptance_timing_events(ctx)
-         if str(event.get("delivery") or "api_chat") == wanted),
-        cap=float(get_task_abs_ceiling_sec()),
-    )
-    return configured if ewma is None else max(configured, 1.5 * ewma)
-
-
 def _acceptance_floor_sec() -> float:
-    """The floor-priced reserve: the configured estimate, never below 200 s."""
+    """The time rail: the configured floor, never below 200 s."""
     return max(_ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC, float(get_acceptance_review_est_sec()))
 
 
 def _window_scale(profile: Any) -> float:
-    """The improvement window is 2× the estimate under the adaptive policy."""
+    """The improvement window is 2× the floor under the adaptive policy."""
     return 2.0 if isinstance(profile, dict) and profile.get("improvement_policy") == "adaptive" else 1.0
-
-
-def launch_at_floor_payload(snapshot: BudgetSnapshot, *, estimated_sec: float) -> Dict[str, Any]:
-    """The review-launch decision behind a floor admission — what the
-    history-derived reserve would have needed, what the floor admitted, what was
-    spendable — computed purely for the panel it admits (loop.py hands it in
-    through the panel context). The panel attaches it to its ONE dispatch fact
-    after the paid seam fired; nothing records it earlier. An improvement pass
-    admitted at the floor has no payload of its own: the read-only capacity
-    projection evaluates that gate too — through `acceptance_admission_projection`,
-    over the adaptive 2x window, with `ctx=None` and without any write or ctx
-    mutation — and reports it in its own `improvement_launch_disclosure` field,
-    never in this payload and never as a `launch_disclosure`."""
-    return {
-        "gate": "review_launch", "estimated_sec": round(float(estimated_sec), 3),
-        "floor_sec": round(_acceptance_floor_sec(), 3),
-        "spendable_sec": round(float(snapshot.spendable_sec), 3),
-    }
-
-
-def _native_rounds_per_row(event: Dict[str, Any]) -> Optional[float]:
-    """Rounds per native row of ONE timing event, clamped to the cap — None
-    (which `_ewma` skips) when the panel ran no native row or either counter is
-    not a finite positive number, so one bad durable row cannot degrade, let
-    alone crash, every later panel."""
-    rows = _finite_positive(event.get("native_rows"))
-    rounds = _finite_positive(event.get("native_rounds"))
-    if rows is None or rounds is None:
-        return None
-    return min(float(ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP), rounds / rows)
-
-
-def acceptance_native_rounds_estimate(ctx: Any) -> int:
-    """Rounds ONE native inspection row is expected to take (owner R16: native
-    cost is rounds × the price of a send): the EWMA of observed per-row rounds
-    over EVERY recorded panel that ran a native row — whatever its slowest-class
-    stamp, a mixed session+native panel teaches as much as a native-only one —
-    guaranteed an int in [1, ``ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP``]: the
-    first native panel is priced as one send, each contribution is finite and
-    clamped before the EWMA, and the ceil'ed result is clamped again."""
-    ewma = _ewma(_native_rounds_per_row(event) for event in _acceptance_timing_events(ctx))
-    if ewma is None:
-        return 1
-    return int(min(ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP, max(1, math.ceil(ewma))))
 
 
 def acceptance_timing_events_path(ctx: Any) -> pathlib.Path:
@@ -462,28 +282,20 @@ def _budget_snapshot(
     )
 
 
-def review_launch_allowed(
-    snapshot: BudgetSnapshot, *, estimated_sec: Optional[float] = None,
-) -> Tuple[bool, str]:
+def review_launch_allowed(snapshot: BudgetSnapshot) -> Tuple[bool, str]:
     """Gate 1: run an acceptance review only when it fits ABOVE the reserve.
 
     Historically a review could start two minutes before the deadline and kill
     the task; skipping inside the reserve is a strict improvement. No deadline →
-    always allowed (the pass counter is the only axis). R36: the history-derived
-    estimate raises the reserve but never refuses what the configured floor
-    admits — when the spendable window does not exceed the estimate but does
-    exceed the floor, the review launches and the typed
-    ``REASON_LAUNCHED_AT_FLOOR`` token is the returned reason. PURE: a
-    read-only projection may ask; the panel discloses the floor launch on its
-    dispatch fact after the paid seam fired — nothing is recorded here."""
+    always allowed (the pass counter is the only axis). The host does not
+    predict the panel's duration (owner R52): the configured floor
+    (``_acceptance_floor_sec``) is the whole time rail, and a spendable window
+    at or below it is refused ``review_skipped_deadline_reserve``. PURE — a
+    read-only observer may ask; nothing is recorded here."""
     if not snapshot.has_deadline:
         return True, ""
-    floor = _acceptance_floor_sec()
-    estimate = float(estimated_sec) if estimated_sec is not None else floor
-    if snapshot.spendable_sec > estimate:
+    if snapshot.spendable_sec > _acceptance_floor_sec():
         return True, ""
-    if snapshot.spendable_sec > floor:
-        return True, REASON_LAUNCHED_AT_FLOOR
     return False, "review_skipped_deadline_reserve"
 
 
@@ -527,14 +339,14 @@ def improvement_pass_allowed(
     profile: Dict[str, Any],
     *,
     required_blocking: bool = False,
-    estimated_sec: Optional[float] = None,
     ctx: Any = None,
 ) -> Tuple[bool, str]:
     """Gate 2: one more improvement/obligation pass?
 
     The count cap (task-local or the shared review-cycle cap) and the
-    deadline/reserve rail are independent; ``adaptive`` stops early once the
-    spendable window can no longer fit a review comfortably (2× the estimate).
+    deadline/reserve rail are independent; ``adaptive`` demands a comfortable
+    window — twice the floor (``_window_scale``) — before spending another
+    pass. The host predicts no duration (owner R52): the floor is the rail.
     Under Required+Blocking the SHARED cap (no task-local cap) exhausting is the
     typed ``review_cycles_exhausted`` reason (owner D10/D27) and — when ``ctx``
     is supplied — the typed escalation event; a task-local cap (owner hurry,
@@ -557,82 +369,9 @@ def improvement_pass_allowed(
         return False, "improvement_passes_exhausted"
     if not snapshot.has_deadline:
         return True, ""
-    floor = _acceptance_floor_sec()
-    est = float(estimated_sec) if estimated_sec is not None else floor
-    scale = _window_scale(profile)
-    if snapshot.spendable_sec > est * scale:
+    if snapshot.spendable_sec > _acceptance_floor_sec() * _window_scale(profile):
         return True, ""
-    if snapshot.spendable_sec > floor * scale:
-        # R36: the history-derived reserve never refuses what the floor admits.
-        # Pure here, and PROJECTED: the read-only capacity projection asks this
-        # gate too, through `acceptance_admission_projection` and at the count
-        # this gate's contract means — COMPLETED improvement passes, derived
-        # from the durable paid-cycle ledger as cycles - 1 — with `ctx=None`, so
-        # the escalation above can never fire from it. It reports this
-        # 2x-window admission in its own `improvement_launch_disclosure` field,
-        # beside the review-launch gate's `launch_disclosure`; nothing is
-        # recorded either way.
-        return True, REASON_LAUNCHED_AT_FLOOR
     return False, "improvement_window_inside_reserve"
-
-
-# The typed omission (owner R49 robustness): the optional improvement gate
-# raised, so its disclosure is absent — NOT a refusal, and never a reason to
-# call the paid panel unavailable.
-IMPROVEMENT_ADMISSION_UNKNOWN = "improvement_admission_unknown"
-
-
-@dataclass(frozen=True)
-class AcceptanceAdmission:
-    """Both acceptance admission answers over ONE set of explicit inputs.
-
-    ``improvement`` is ``None`` exactly when the optional improvement gate
-    raised, and ``improvement_unavailable`` then names that omission; ``launch``
-    is never optional — availability derives from it alone."""
-
-    launch: Tuple[bool, str]
-    improvement: Optional[Tuple[bool, str]] = None
-    improvement_unavailable: str = ""
-
-
-def acceptance_admission_projection(
-    snapshot: BudgetSnapshot,
-    *,
-    profile: Dict[str, Any],
-    paid_cycles: int,
-    estimated_sec: float,
-    required_blocking: bool = False,
-) -> AcceptanceAdmission:
-    """Both acceptance admissions over EXPLICIT inputs — ONE seam, so the
-    read-only capacity projection and the real acceptance gates cannot drift
-    apart again on the counter, the profile or the enforcement.
-
-    ``paid_cycles`` is the durable PAID-panel count (the claims ledger). The
-    improvement gate's ``passes_done`` means COMPLETED IMPROVEMENT PASSES, so
-    this converts: ``max(0, paid_cycles - 1)`` — the same identity
-    ``review_cycles.acceptance_max_improvement_passes_from_cycles`` encodes
-    (cycles - 1), restart-safe, and equal to production's in-memory
-    ``ctx.passes_done`` at the moment that gate runs (after N paid panels, N-1
-    improvements have completed). Handing the paid count straight through would
-    make the shipped default (2 cycles -> 1 pass) report the cap exhausted after
-    the FIRST panel while the real gate still admits.
-
-    PURE: ``ctx=None`` keeps the improvement gate's ``review_cycles_exhausted``
-    escalation unreachable from a poll, and the optional improvement call gets
-    its OWN try — an auxiliary failure omits one disclosure instead of degrading
-    an admissible PAID panel to ``unknown``."""
-    launch = review_launch_allowed(snapshot, estimated_sec=estimated_sec)
-    try:
-        improvement = improvement_pass_allowed(
-            snapshot, max(0, int(paid_cycles) - 1), profile,
-            required_blocking=required_blocking, estimated_sec=estimated_sec, ctx=None,
-        )
-    except Exception:
-        log.debug("acceptance improvement admission unavailable", exc_info=True)
-        return AcceptanceAdmission(
-            launch=launch, improvement_unavailable=IMPROVEMENT_ADMISSION_UNKNOWN,
-        )
-    return AcceptanceAdmission(launch=launch, improvement=improvement)
 
 
 # ---------------------------------------------------------------------------

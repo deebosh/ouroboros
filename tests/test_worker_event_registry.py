@@ -190,14 +190,27 @@ def test_previously_dropped_types_are_registered():
         assert event_type in registered, event_type
 
 
-def test_constant_typed_emitters_are_seen_and_registered():
-    """The R36 pacing facts are emitted with their type given as a module
-    constant; the scan must resolve them (a literal-only scan reported nothing
-    and the supervisor dropped them as unknown_worker_event)."""
-    from ouroboros import task_pacing
-
-    emitted = _emitted_types()
-    registered = _registered_types()
-    name = task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR
-    assert name in emitted, f"constant-typed emitter not seen by the scan: {name}"
-    assert name in registered, f"constant-typed event unregistered: {name}"
+def test_the_scan_resolves_an_event_type_given_as_a_module_constant():
+    """A literal-only scan once blessed constant-typed emitters unregistered and
+    the supervisor dropped them as unknown_worker_event. No production emitter
+    names its type through a constant today (the R36 pacing fact that did is
+    deleted), so the resolver is pinned on its own source instead of on a live
+    subject that can disappear again — losing the capability silently is
+    exactly the failure this file exists to prevent."""
+    source = (
+        'DISCLOSURE_X = "typed_fact_by_name"\n'
+        'def emit(event_q, ctx):\n'
+        '    event_q.put({"type": DISCLOSURE_X})\n'
+        '    ctx.pending_events.append({"type": pacing.DISCLOSURE_X})\n'
+        '    emit_review_event(ctx, {"type": "typed_fact_by_literal"})\n'
+    )
+    tree = ast.parse(source)
+    constants = _string_constants([tree])
+    assert constants["DISCLOSURE_X"] == "typed_fact_by_name"
+    dicts = [node for node in ast.walk(tree) if isinstance(node, ast.Dict)]
+    assert [_dict_type(node, constants) for node in dicts] == [
+        "typed_fact_by_name",  # bare name
+        "typed_fact_by_name",  # attribute access, resolved by its last part
+        "typed_fact_by_literal",
+    ]
+    assert _dict_type(dicts[0], {}) is None  # without the constant table: unresolvable

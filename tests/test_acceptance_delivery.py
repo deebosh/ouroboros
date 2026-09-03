@@ -54,7 +54,7 @@ def structured_env(monkeypatch):
 
 
 def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, content="deliverable",
-                    fresh_result=True, max_improvement_passes=0, launch_decision=None, **tool_ctx_fields):
+                    fresh_result=True, max_improvement_passes=0, **tool_ctx_fields):
     """A root acceptance context whose wallet claim can be exercised for real."""
     from ouroboros import loop as loop_mod
     from ouroboros.contracts.task_contract import build_task_contract
@@ -87,7 +87,6 @@ def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, content="del
         review_binding=build_review_binding(
             candidate=content, evidence=evidence, fence_token_or_state="delivery-test",
         ),
-        launch_decision=launch_decision,
     )
 
 
@@ -656,7 +655,7 @@ def test_replayed_panel_keeps_the_delivery_it_actually_ran_on(monkeypatch, tmp_p
 
 
 # ---------------------------------------------------------------------------
-# Delivery-aware pacing (R16).
+# The timing row: telemetry written after a paid panel, read back by nothing.
 # ---------------------------------------------------------------------------
 
 
@@ -664,47 +663,6 @@ def _timing(events, **row):
     from ouroboros.utils import append_jsonl
 
     append_jsonl(events, {"type": "task_acceptance_review_timing", **row})
-
-
-def test_pacing_estimate_follows_the_configured_panels_delivery_class(structured_env, tmp_path):
-    from ouroboros import task_pacing
-
-    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
-    events = task_pacing.acceptance_timing_events_path(ctx)
-    events.parent.mkdir(parents=True, exist_ok=True)
-    _timing(events, duration_sec=100)                                   # pre-R16 row: a packet panel
-    _timing(events, duration_sec=100, delivery="api_chat")
-    _timing(events, duration_sec=900, delivery="agent_session")
-    _timing(events, duration_sec=300, delivery="native_tool_rounds")
-    # The mixed triad's slowest delivery is the session: paced by session wall clock.
-    assert task_pacing.acceptance_panel_delivery(ctx) == "agent_session"
-    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1) == 1350.0
-    # A packet-only triad ignores the session and native history (EWMA 100 → floor).
-    structured_env.setenv(REVIEWER_SLOTS_ENV, json.dumps({**_TRIAD, "triad": [_TRIAD["triad"][0]]}))
-    assert task_pacing.acceptance_panel_delivery(ctx) == "api_chat"
-    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1) == 200.0
-    # An explicit class, a class without history, the first pass, a malformed panel.
-    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="native_tool_rounds") == 450.0
-    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="unknown") == 200.0
-    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=0) == 200.0
-    structured_env.setenv(REVIEWER_SLOTS_ENV, "{broken")
-    assert task_pacing.acceptance_panel_delivery(ctx) == "api_chat"
-    # Native rounds: none observed → one send; observed → per-row EWMA, rounded up.
-    # A mixed panel whose slowest class is the SESSION still teaches native rounds
-    # (its native row ran); a packet-only panel (native_rows=0) teaches nothing.
-    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 1
-    _timing(events, duration_sec=30, delivery="agent_session",
-            deliveries=["api_chat", "agent_session", "native_tool_rounds"], native_rounds=6, native_rows=1)
-    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=6, native_rows=2)
-    _timing(events, duration_sec=30, delivery="api_chat", deliveries=["api_chat"], native_rounds=0, native_rows=0)
-    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 5  # ewma(6, 3) = 4.5 → 5
-    # One malformed durable row cannot degrade later panels; a poisoned history is capped.
-    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds="six", native_rows=1)
-    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 5
-    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=100000, native_rows=1)
-    # The bogus count enters the EWMA clamped to the cap (64), not as 100000:
-    # ceil(0.5*64 + 0.5*4.5) = 35, and the result can never exceed the cap.
-    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 35 <= task_pacing.ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP
 
 
 def test_timing_event_names_the_deliveries_and_the_native_rounds(monkeypatch, tmp_path):
@@ -726,13 +684,13 @@ def test_timing_event_names_the_deliveries_and_the_native_rounds(monkeypatch, tm
     assert event["native_rounds"] == 1 and event["native_rows"] == 1 and event["duration_sec"] > 0
 
 
-def test_wave_gate_prices_a_native_row_by_the_rounds_a_real_mixed_panel_recorded(monkeypatch, tmp_path):
-    """The REAL writer drives the estimator: a mixed api+session+native panel
-    runs for real (its native row reads one file, then answers — two rounds),
-    writes the timing event, and the NEXT panel's REAL wave gate (a seeded,
-    priced wallet) decides on the floor wave and prices the rounds wave by
-    those two rounds read-only (R36) although the recorded panel's slowest
-    class was the session."""
+def test_the_wave_gate_decides_on_one_work_order_send_per_paid_row(monkeypatch, tmp_path):
+    """The money admission boundary, unchanged and now unconditional: the REAL
+    wave gate (a seeded, priced wallet) prices ONE send per PAID row and
+    nothing else — the session row rides the owner's subscription and is never
+    API money, and a native row that goes on to take two real rounds is still
+    admitted on one send. The panel prices the wave EXACTLY ONCE: there is no
+    second, read-only pricing pass any more, and no rounds multiplier."""
     import ouroboros.review_substrate as rs
     from ouroboros import loop as loop_mod, task_pacing
     from ouroboros import usage_accounting as ua
@@ -757,28 +715,23 @@ def test_wave_gate_prices_a_native_row_by_the_rounds_a_real_mixed_panel_recorded
     with ua.usage_scope(scope):
         assert loop_mod._execute_task_acceptance_panel(ctx).aggregate_signal == "PASS"
     assert len(FakeGateway.instances[0].start_requests) == 1
-    # No history yet: the gate decides on the floor wave (api + native) and the
-    # panel prices that same wave read-only for its dispatch fact — nothing else.
-    assert [len(a["models"]) for a in admissions] == [2, 2]
+    # ONE admission, over the two paid rows (api + native); the session row is absent.
+    assert [len(a["models"]) for a in admissions] == [2]
+    assert admissions[0]["models"] == ["openai/fake-reviewer"] * 2
     (event,) = [e for e in iter_jsonl_objects(task_pacing.acceptance_timing_events_path(ctx.tools._ctx))
                 if e.get("type") == "task_acceptance_review_timing"]
-    assert event["delivery"] == "agent_session"
-    assert event["deliveries"] == ["api_chat", "agent_session", "native_tool_rounds"]
+    # The panel really did take two native rounds — recorded, and priced nowhere.
     assert event["native_rounds"] == 2 and event["native_rows"] == 1
-    assert task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx) == 2
+    assert event["deliveries"] == ["api_chat", "agent_session", "native_tool_rounds"]
 
     del admissions[:]
     monkeypatch.setattr(
         rs, "run_review_request", lambda request, **kw: SimpleNamespace(aggregate_signal="PASS", actors=[]))
     with ua.usage_scope(scope):
         loop_mod._execute_task_acceptance_panel(ctx)
-    # R36: the gate decides on the floor wave (api + native = 2 sends); the panel then
-    # prices that floor wave read-only and the rounds-priced wave — one api send + the
-    # native row at its two observed rounds (3 sends); the session row is never API money.
-    assert [len(a["models"]) for a in admissions] == [2, 2, 3]
+    # The recorded two-round history changes the next panel's price by nothing.
+    assert [len(a["models"]) for a in admissions] == [2]
     assert all(a["fits"] and a["limit_usd"] == 50.0 and a["unpriced_slots"] == 0 for a in admissions)
-    assert admissions[2]["models"] == ["openai/fake-reviewer"] * 3
-    assert not any(e.get("type") == task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR for e in ctx.tools._ctx.pending_events)
 
 
 def test_native_projection_never_turns_a_malformed_manifest_into_its_keys():
@@ -827,174 +780,6 @@ def test_a_renderer_tail_ending_in_a_newline_still_loses_its_slot_label(structur
     for slot_id, order in request.slot_session_tasks.items():
         assert "Slot:" not in order and not order.endswith(("\n", "\r"))
         assert "RETRIEVAL POINTERS" in order and "verification_receipts[0]" in order, slot_id
-
-
-def _raw_timing(events, fields: str):
-    """Append ONE raw `task_acceptance_review_timing` row. `json.dumps` cannot
-    emit the token `1e999`, and a poisoned durable row is exactly what the real
-    JSONL reader will hand back — so the row is written as text."""
-    events.parent.mkdir(parents=True, exist_ok=True)
-    with events.open("a", encoding="utf-8") as fh:
-        fh.write('{"type": "task_acceptance_review_timing", "duration_sec": 30, "delivery": "native_tool_rounds", '
-                 + fields + "}\n")
-
-
-_POISON_TOKENS = ("1e999", '"Infinity"', "NaN", "-3", "0", "true", '"six"', "null", "[]")
-
-
-@pytest.mark.parametrize("poison", _POISON_TOKENS)
-def test_native_counters_that_are_not_finite_positive_numbers_are_skipped_by_the_real_reader(tmp_path, poison):
-    from ouroboros import task_pacing
-
-    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
-    events = task_pacing.acceptance_timing_events_path(ctx)
-    events.parent.mkdir(parents=True, exist_ok=True)
-    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=4, native_rows=2)  # honest: 2/row
-    _raw_timing(events, f'"native_rounds": {poison}, "native_rows": 1')
-    _raw_timing(events, f'"native_rows": {poison}, "native_rounds": 1')
-    estimate = task_pacing.acceptance_native_rounds_estimate(ctx)
-    assert type(estimate) is int and estimate == 2
-
-
-def test_a_finite_bogus_count_is_clamped_before_the_ewma(tmp_path):
-    """Only the clamp is pinned here; floor admission (owner R36) and the decay
-    through a REAL floor dispatch are pinned by the real-gate tests below — a
-    hand-appended stream of honest panels would model panels that never
-    dispatched."""
-    from ouroboros import task_pacing
-
-    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
-    events = task_pacing.acceptance_timing_events_path(ctx)
-    events.parent.mkdir(parents=True, exist_ok=True)
-    _timing(events, duration_sec=30, delivery="native_tool_rounds", native_rounds=2, native_rows=1)
-    _raw_timing(events, '"native_rounds": 1e300, "native_rows": 1')  # finite, absurd: clamped to 64, not inf
-    assert task_pacing.acceptance_native_rounds_estimate(ctx) == 33  # ceil(0.5*64 + 0.5*2), never above the cap
-
-
-@pytest.mark.parametrize("rows", [(_ROW_API,), (_ROW_NATIVE,), (_ROW_API, _ROW_SESSION, _ROW_NATIVE)])
-def test_a_poisoned_timing_row_never_refuses_or_crashes_a_later_acceptance_panel(monkeypatch, tmp_path, rows):
-    """Leg (a): the rounds estimator runs for ANY paid row, before the panel's
-    defensive try — so the poison must be harmless at the reader, not caught
-    downstream. Packet-only, native-only and mixed panels all proceed and the
-    gate receives a bounded integer multiplier."""
-    from ouroboros import loop as loop_mod, task_pacing
-    from ouroboros import usage_accounting as ua
-
-    if _ROW_SESSION in rows:
-        _fake_session(monkeypatch)
-    _offline_env(monkeypatch, *rows)
-    _priced_offline_model(monkeypatch)
-    admissions = _spy_admission(monkeypatch)
-    governance, workspace = _roots(tmp_path)
-    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}] * 2, scoped=True)
-    _real_panel(monkeypatch, llm, stub_gate=False)  # the REAL wave budget gate decides
-    ctx = _acceptance_ctx(tmp_path, evidence=dict(_ACCEPTANCE_PACKET), repo_dir=str(governance),
-                          workspace_root=str(workspace), workspace_mode="project")
-    events = task_pacing.acceptance_timing_events_path(ctx.tools._ctx)
-    for token in _POISON_TOKENS:
-        _raw_timing(events, f'"native_rounds": {token}, "native_rows": {token}')
-    _raw_timing(events, '"native_rounds": 1e999, "native_rows": 1')
-    scope = _root_scope(tmp_path, root_limit_usd=50.0)
-    _seed_root_ledger(scope)  # the wallet exists for the gate: it prices, it does not fail open
-    with ua.usage_scope(scope):
-        result = loop_mod._execute_task_acceptance_panel(ctx)
-    assert result.aggregate_signal == "PASS"
-    estimate = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
-    assert type(estimate) is int and 1 <= estimate <= 64
-    # The deciding admission (the gate) and the read-only pricing of the admitted
-    # floor wave that the panel's dispatch fact would carry — both numerically priced.
-    gate, floor_priced = admissions
-    assert gate["models"] == floor_priced["models"]
-    assert gate["limit_usd"] == 50.0 and gate["estimated_wave_usd"] > 0 and gate["unpriced_slots"] == 0
-    paid_rows = sum(1 for row in rows if row is not _ROW_SESSION)
-    assert paid_rows <= len(gate["models"]) <= paid_rows * 64
-    assert not any(e.get("type") == "review_wave_budget_insufficient" for e in ctx.tools._ctx.pending_events)
-
-
-@pytest.mark.parametrize("poison", ("1e999", '"Infinity"', "NaN", "-5", '"long"'))
-def test_a_poisoned_duration_keeps_the_review_estimate_finite_and_a_finite_deadline_panel_admissible(tmp_path, poison):
-    """Leg (b): the wall-clock EWMA reads the same durable rows. A non-finite or
-    non-positive duration is skipped — the estimate stays finite (honest rows
-    or the floor) and `review_launch_allowed` still admits a later panel with a
-    finite deadline instead of silently suppressing it."""
-    import math
-
-    from ouroboros import task_pacing
-
-    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
-    events = task_pacing.acceptance_timing_events_path(ctx)
-    events.parent.mkdir(parents=True, exist_ok=True)
-    _raw_timing(events, f'"native_rows": 0, "native_rounds": 0, "duration_sec": {poison}, "delivery": "api_chat"')
-    floor_only = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
-    assert floor_only == 200.0
-    _timing(events, duration_sec=100, delivery="api_chat")
-    estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
-    assert math.isfinite(estimate) and estimate == 200.0  # 1.5 × 100 sits under the floor: the poison never entered
-    snapshot = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=3600.0, elapsed_sec=600.0,
-                                          remaining_sec=3000.0, reserve_sec=300.0)
-    assert task_pacing.review_launch_allowed(snapshot, estimated_sec=estimate) == (True, "")
-
-
-@pytest.mark.parametrize("poison", ("1e12", "1e300", "1.3e308", "1.797e308"))
-def test_a_finite_absurd_duration_is_bounded_to_the_task_ceiling_before_the_ewma(monkeypatch, tmp_path, poison):
-    """A finite but absurd `duration_sec` contributes at most the task's absolute
-    wall-clock ceiling (the one limit an honest panel cannot outlive — the
-    configurable 3600 s clamp of the initial estimate is not a bound on
-    observations), so the reserve is finite and at most 1.5 × that ceiling.
-    Hermetic: the shell's `OUROBOROS_TASK_ABS_CEILING_SEC` is dropped and every
-    number derives from the getter."""
-    import math
-
-    from ouroboros import task_pacing
-    from ouroboros.config import get_task_abs_ceiling_sec
-
-    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
-    ceiling = float(get_task_abs_ceiling_sec())
-    assert ceiling >= 300.0  # the setting's floor; the bound follows the getter, never a literal
-    ctx = SimpleNamespace(drive_root=tmp_path, task_metadata={})
-    events = task_pacing.acceptance_timing_events_path(ctx)
-    events.parent.mkdir(parents=True, exist_ok=True)
-    _raw_timing(events, f'"native_rows": 0, "native_rounds": 0, "duration_sec": {poison}, "delivery": "api_chat"')
-    _timing(events, duration_sec=100, delivery="api_chat")
-    estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="api_chat")
-    assert math.isfinite(estimate) and estimate == 1.5 * (0.5 * 100 + 0.5 * ceiling) <= 1.5 * ceiling
-    # An honest agent-session panel beyond an hour is a real observation, not a poison.
-    session = min(4000.0, ceiling)
-    _timing(events, duration_sec=session, delivery="agent_session")
-    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1, delivery="agent_session") == 1.5 * session
-
-
-def test_honest_timing_streams_are_priced_exactly_as_before(tmp_path):
-    """The bounds change nothing for honest history: 300 random streams of
-    durations across the whole honest range — packet seconds up to agent-session
-    hours in (3600, 21600] — and rounds give byte-identical estimates to the
-    plain alpha-0.5 EWMA formulas."""
-    import math
-    import random
-
-    from ouroboros import task_pacing
-
-    rng = random.Random(20260902)
-    deliveries = ("api_chat", "native_tool_rounds", "agent_session")
-    for i in range(300):
-        ctx = SimpleNamespace(drive_root=tmp_path / f"s{i}", task_metadata={})
-        events = task_pacing.acceptance_timing_events_path(ctx)
-        events.parent.mkdir(parents=True, exist_ok=True)
-        delivery = deliveries[i % 3]
-        high = 21600.0 if delivery == "agent_session" else 3600.0
-        low = 3600.0 if delivery == "agent_session" and i % 2 else 1.0
-        durations = [rng.uniform(low, high) for _ in range(rng.randint(1, 6))]
-        rounds = [(rng.randint(1, 64), rng.randint(1, 3)) for _ in durations]
-        for duration, (per_row, rows) in zip(durations, rounds):
-            _timing(events, duration_sec=duration, delivery=delivery,
-                    native_rounds=per_row * rows, native_rows=rows)
-        ewma_d = ewma_r = None
-        for duration, (per_row, _rows) in zip(durations, rounds):
-            ewma_d = duration if ewma_d is None else 0.5 * duration + 0.5 * ewma_d
-            ewma_r = per_row if ewma_r is None else 0.5 * per_row + 0.5 * ewma_r
-        assert task_pacing.acceptance_review_estimate_sec(
-            ctx, passes_done=1, delivery=delivery) == max(200.0, 1.5 * ewma_d)
-        assert task_pacing.acceptance_native_rounds_estimate(ctx) == min(64, max(1, math.ceil(ewma_r)))
 
 
 # ---------------------------------------------------------------------------

@@ -103,17 +103,16 @@ def test_review_capacity_discloses_corrupt_cancellation_projection(tmp_path):
     )
 
 
-def test_acceptance_review_reserve_uses_existing_event_ewma(tmp_path, monkeypatch):
+def test_acceptance_timing_rows_go_to_the_canonical_split_drive_stream(tmp_path, monkeypatch):
+    """The timing row a paid panel writes belongs to the CANONICAL drive of a
+    split task, not the child's own logs. Its content is telemetry: since owner
+    R52 no gate reads it back."""
     monkeypatch.setenv("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", "90")
     canonical = tmp_path / "canonical"
     child = tmp_path / "child"
     events = canonical / "logs" / "events.jsonl"
     append_jsonl(events, {"type": "task_acceptance_review_timing", "duration_sec": 100})
-    append_jsonl(events, {"type": "task_acceptance_review_timing", "duration_sec": 400})
     ctx = SimpleNamespace(drive_root=str(child), budget_drive_root=str(canonical))
-    # EWMA(alpha=.5) = 250; subsequent reserve = 1.5 * 250.
-    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=1) == 375.0
-    assert task_pacing.acceptance_review_estimate_sec(ctx, passes_done=0) == 200.0
     assert task_pacing.acceptance_timing_events_path(ctx) == events
     assert not (child / "logs" / "events.jsonl").exists()
 
@@ -279,34 +278,35 @@ def test_acceptance_cancellation_recheck_precedes_wallet_claim(
     assert state["claims_by_binding"] == {}
 
 
-def test_acceptance_deadline_recheck_precedes_wallet_claim(tmp_path, monkeypatch):
+def test_the_panel_seam_rechecks_the_wallet_but_no_longer_the_deadline(tmp_path, monkeypatch):
+    """Owner R52 (D1): the seam re-checks the WALLET and the CANCELLATION intent
+    (the test above), never the deadline. The loop's launch gate is the ONE time
+    gate a panel passes; R23 then clamps the running review. Disclosed residual:
+    a panel the loop gate admitted whose evidence build ate the margin is
+    DISPATCHED, not refused again by a projection that could contradict it."""
     import ouroboros.loop as loop
     import ouroboros.review_substrate as substrate
-    from ouroboros.task_results import load_task_acceptance_review_state
 
     ctx = _root_acceptance_context(tmp_path, {"evidence": "complete"})
     _allow_acceptance_wave(monkeypatch)
+    called = []
     monkeypatch.setattr(
         task_pacing, "review_launch_allowed",
         lambda *_args, **_kwargs: (False, "inside_finalization_reserve"),
     )
     monkeypatch.setattr(
-        substrate,
-        "run_review_request",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("reviewer must not be called")
-        ),
+        substrate, "run_review_request",
+        lambda *_args, **_kwargs: called.append(1) or SimpleNamespace(
+            aggregate_signal="PASS", actors=[], degraded=False, degraded_reasons=[]),
     )
 
     result = loop._execute_task_acceptance_panel(ctx)
 
-    assert result.degraded is True
-    assert result.degraded_reasons == [
-        "inside_finalization_reserve (no reviewer was called)"
-    ]
-    assert load_task_acceptance_review_state(
-        tmp_path, ctx.task_id,
-    )["claims_by_binding"] == {}
+    assert called == [1]  # the seam does not ask the time gate at all
+    assert result.aggregate_signal == "PASS"
+    # The stamp bound and released around the dispatch (it claims on the first
+    # physical send, which this substrate stub never performs).
+    assert getattr(ctx.tools._ctx, "_review_paid_stamp", None) is None
 
 
 def test_acceptance_corrupt_cancellation_projection_is_unknown_without_claim(

@@ -1163,7 +1163,6 @@ class _TaskAcceptanceContext:
     # in loop.py from each real source, fed into the improvement capsule
     # (v6.74.0 A1, owner Q6); the capsule builder never gains ctx.
     rails_line: str = ""
-    launch_decision: Any = None
 
 
 def _record_host_acceptance_run(ctx: _TaskAcceptanceContext, result: Any) -> Dict[str, Any]:
@@ -1392,8 +1391,7 @@ def _run_task_acceptance_review_once(
     )
     budget_snapshot = task_pacing.build_budget_snapshot(tools._ctx, profile=budget_profile)
     passes_done = int(getattr(tools._ctx, "_task_acceptance_improvement_passes", 0))
-    estimate = task_pacing.acceptance_review_estimate_sec(tools._ctx, passes_done=passes_done)
-    launch_ok, launch_reason = task_pacing.review_launch_allowed(budget_snapshot, estimated_sec=estimate)
+    launch_ok, launch_reason = task_pacing.review_launch_allowed(budget_snapshot)
     if not launch_ok:
         tools._ctx._task_acceptance_reviewed = True
         _end_task_acceptance_fence(tools._ctx, outcome="terminal")
@@ -1428,7 +1426,6 @@ def _run_task_acceptance_review_once(
         passes_done=passes_done,
         evidence={},
         review_binding={},
-        launch_decision=launch_reason and task_pacing.launch_at_floor_payload(budget_snapshot, estimated_sec=estimate),
         rails_line=task_pacing.acceptance_rails_line(
             budget_snapshot,
             budget_profile,

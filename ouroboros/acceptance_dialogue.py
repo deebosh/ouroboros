@@ -494,24 +494,13 @@ def _apply_task_acceptance_result(
     budget_snapshot = task_pacing.build_budget_snapshot(
         ctx.tools._ctx, profile=ctx.budget_profile,
     )
-    next_pass_estimate = task_pacing.acceptance_review_estimate_sec(ctx.tools._ctx, passes_done=ctx.passes_done + 1)
     pass_ok, pass_reason = task_pacing.improvement_pass_allowed(
         budget_snapshot,
         ctx.passes_done,
         ctx.budget_profile,
         required_blocking=blocking_lane,
-        estimated_sec=next_pass_estimate,
         ctx=ctx.tools._ctx,
     )
-    # R36/R47/R49: an improvement pass admitted at the floor (`pass_reason ==
-    # REASON_LAUNCHED_AT_FLOOR`) stores NOTHING here — the read-only capacity
-    # projection evaluates this same gate purely, through
-    # `task_pacing.acceptance_admission_projection` and at the SAME count this
-    # call passes (`ctx.passes_done` = its `paid_cycles - 1`), with `ctx=None`
-    # so nothing is emitted, and reports it in its own
-    # `improvement_launch_disclosure` field, beside the review-launch gate's
-    # `launch_disclosure`; whether this pass leads to a panel is decided below,
-    # and only the review-launch gate admitting THAT panel hands it a decision.
     # A DEGRADED panel (no valid verdict quorum) cannot "judge" the dialogue:
     # a lone terminal vote from the one contributing slot must NOT shadow the
     # review_degraded path below, which is the only surface carrying the
@@ -1086,29 +1075,16 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     # cannot fit the remaining root budget is declined up front as a terminal
     # DEGRADED (no-quorum semantics) instead of dying mid-wave. Route-aware: a
     # session row rides the owner's subscription, not API money, so it is not
-    # priced; a native row IS paid API — rounds × the price of a send of its
-    # work order, the rounds sized from this tree's observed native panels
-    # (R16; one send before any history, capped by
-    # `task_pacing.ACCEPTANCE_NATIVE_ROUNDS_ESTIMATE_CAP`); a packet row renders its REAL
-    # message pair. The rare second physical attempt is not multiplied in —
-    # fail-open coarse filter, no reservation. R36: admission decides on the
-    # FLOOR-priced wave (one work-order send per paid row); the rounds estimate
-    # raises the disclosed price but never refuses what the floor admits — a
-    # poisoned history would otherwise refuse every later wave while the only
-    # corrective event is written after dispatch. The per-send wallet binding
-    # at dispatch still protects money.
+    # priced; a native row IS paid API and a packet row renders its REAL message
+    # pair. The rare second physical attempt is not multiplied in — fail-open
+    # coarse filter, no reservation. Admission decides on the FLOOR-priced wave:
+    # ONE work-order send per paid row, no duration or rounds prediction (owner
+    # R52). The per-send wallet binding at dispatch still protects money.
     from ouroboros.review_execution import ReviewRouteKind, panel_delivery_class, slot_delivery
-    from ouroboros.tools.review_helpers import emit_review_event, review_wave_budget_gate
+    from ouroboros.tools.review_helpers import review_wave_budget_gate
 
-    # The launch decision (R36/R47): ONLY the review-launch gate that admitted
-    # THIS panel (loop.py) hands it in, through the panel context — no other
-    # carrier exists, so nothing can be stale.
-    launch = ctx.launch_decision
-    wave: Optional[Dict[str, Any]] = None
-    rounds = 1
     paid = [slot for slot in slots if getattr(slot, "route", None) is not ReviewRouteKind.AGENT_SESSION]
     if paid:
-        rounds = task_pacing.acceptance_native_rounds_estimate(ctx.tools._ctx)
         try:
             from ouroboros.review_substrate import _messages_char_count, _request_messages
 
@@ -1130,35 +1106,6 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                 f"~${_admission.get('estimated_wave_usd')} > remaining "
                 f"${_admission.get('remaining_usd')} (no reviewer was called)"
             )
-        try:  # read-only pricing of the admitted floor wave and, with a rounds history, of the rounds-priced wave
-            from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
-
-            scope = current_usage_scope()
-            if scope is not None and scope.root_task_id:
-                floor_priced = review_wave_admission(
-                    scope.drive_root, root_task_id=scope.root_task_id,
-                    models=floor_models, prompt_chars=_prompt_chars)
-                # PROSPECTIVE wave fields: they become a fact only after the paid seam fires.
-                wave = {
-                    "estimated_wave_usd": floor_priced.get("estimated_wave_usd"),
-                    "floor_wave_usd": floor_priced.get("estimated_wave_usd"),
-                    "remaining_usd": floor_priced.get("remaining_usd"),
-                    "native_rounds_estimate": rounds,
-                    "floor_slots": len(floor_models),
-                    "wave_at_floor": False,
-                }
-                if rounds > 1 and any(getattr(slot, "retrieves", False) for slot in paid):
-                    estimate_models = [
-                        m for slot in paid
-                        for m in [getattr(slot, "model", "")] * (rounds if getattr(slot, "retrieves", False) else 1)
-                    ]
-                    priced = review_wave_admission(
-                        scope.drive_root, root_task_id=scope.root_task_id,
-                        models=estimate_models, prompt_chars=_prompt_chars)
-                    wave["estimated_wave_usd"] = priced.get("estimated_wave_usd")
-                    wave["wave_at_floor"] = not priced.get("fits", True)
-        except Exception:
-            log.debug("wave pricing check failed open", exc_info=True)
     free_result = _free_dispatch(request, slots, drive_root=drive_root, usage_ctx=ctx.tools._ctx)
     if free_result is not None:
         return free_result
@@ -1168,47 +1115,20 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     # Q6: bind the exact tree wallet to the target's physical-dispatch stamp.
     # Route/candidate refusals remain free; one strict stamp gates every slot.
     started = time.monotonic()
-    stamp = None
     try:
         with bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:
-            stamp = getattr(usage_ctx, "_review_paid_stamp", None)
             result = run_review_request(request, slots=slots, drive_root=drive_root, usage_ctx=usage_ctx)
     except TaskAcceptanceDispatchUnavailable as exc:
         return _refused(f"{exc} (no reviewer was called)")
     duration_sec = round(time.monotonic() - started, 3)
-    floor_dispatch: Optional[Dict[str, Any]] = None
-    if bool(getattr(stamp, "fired", False)) and (bool((wave or {}).get("wave_at_floor")) or bool(launch)):
-        # The paid seam fired and the panel ran under a floor admission — by
-        # money (the rounds-priced wave did not fit, the floor wave did), by time
-        # (the launch was admitted at the floor), or both: ONE typed fact rides
-        # every actor's usage, the timing row below, and one live event whose
-        # registered supervisor handler persists the canonical events.jsonl row.
-        # A panel whose seam never fired (every row refused before its send,
-        # e.g. route unavailable) leaves no fact.
-        floor_dispatch = {
-            **(wave or {"estimated_wave_usd": None, "floor_wave_usd": None, "remaining_usd": None,
-                        "native_rounds_estimate": rounds, "floor_slots": len(paid), "wave_at_floor": False}),
-            "launched_at_floor": bool(launch),
-            "launch_gate": str(launch.get("gate")) if launch else None,
-            "launch_estimated_sec": launch.get("estimated_sec") if launch else None,
-            "launch_floor_sec": launch.get("floor_sec") if launch else None,
-            "launch_spendable_sec": launch.get("spendable_sec") if launch else None,
-        }
-        for actor in getattr(result, "actors", None) or []:
-            if isinstance(actor, dict) and isinstance(actor.get("usage"), dict):
-                actor["usage"][task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR] = dict(floor_dispatch)
-        emit_review_event(ctx.tools._ctx, {
-            "type": task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR, "surface": "task_acceptance",
-            "task_id": str(ctx.task_id), **floor_dispatch,
-        })
     try:
         from ouroboros.review_cycles import review_max_cycles, review_max_cycles_source
         from ouroboros.utils import append_jsonl, utc_now_iso
 
-        # A panel that just cost money says what bounded it and how many the tree
-        # has bought: "21 paid panels" was invisible until someone summed receipts.
-        # It also names the deliveries it ran on and the native rounds it took, so
-        # pacing sizes the NEXT panel of the same class (R16), not a mixed average.
+        # TELEMETRY ONLY (owner R52): a panel that just cost money says what
+        # bounded it, how long it ran, how many panels the tree has bought and
+        # which deliveries it ran on — "21 paid panels" was invisible until
+        # someone summed receipts. Nothing reads this row back to decide.
         _cap = review_max_cycles()
         _deliveries = [slot_delivery(slot) for slot in slots]
         _native_rounds = sum(
@@ -1227,7 +1147,6 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
                 "deliveries": _deliveries,
                 "native_rounds": _native_rounds,
                 "native_rows": _deliveries.count("native_tool_rounds"),
-                **({task_pacing.DISCLOSURE_DISPATCHED_AT_FLOOR: floor_dispatch} if floor_dispatch else {}),
                 "pass_index": ctx.passes_done,
                 "aggregate_signal": str(result.aggregate_signal or ""),
                 "effective_max_cycles": "unlimited" if _cap is None else _cap,
