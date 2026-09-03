@@ -744,10 +744,9 @@ review enforcement mode.
 
 Use Section 10 (Key Invariants), Section 12 (Host Service / Companion /
 Chat IDs), and Section 13 (External Skills Layer)
-as the binding description of what the skill is allowed to touch. Skills
-must not write to the self-modifying repo, and reviewed execution is the
-primary gate: Section 13 owns the payload/data-plane boundary and
-invariant 8 keeps the skill gates independent.
+as the binding description of what the skill is allowed to touch. Section 13
+owns the payload/data-plane boundary and invariant 8 keeps the skill
+gates independent: skills must not write to the self-modifying repo.
 
 {architecture_text}
 
