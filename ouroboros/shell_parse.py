@@ -469,7 +469,8 @@ def shell_segment_rows(raw_cmd: Any) -> List[tuple[List[str], str, tuple[str, ..
             body = "\n".join(lines[index + 1:end])
             for body_index in range(index + 1, end + 1):
                 scrubbed_lines[body_index] = ""
-            owner_count = len(shell_segments("\n".join(scrubbed_lines[:index + 1])))
+            owner_lines = [*scrubbed_lines[:index], lines[index][:match.end()]]
+            owner_count = len(shell_segments("\n".join(owner_lines)))
             if owner_count:
                 pending.append((owner_count - 1, body))
             index = end + 1
@@ -504,19 +505,16 @@ def shell_segment_rows(raw_cmd: Any) -> List[tuple[List[str], str, tuple[str, ..
 # `s/>/x/` and `--pretty=<x>` never match, while both the glued (`2>/dev/null`)
 # and the split (`2` `>` `/dev/null`) spellings the two lexers emit are covered.
 _REDIRECT_OPERATOR_RE = re.compile(
-    r"^(?P<fd>[0-9]+|&)?(?P<op><<<|<<|<&|<|>>|>\||>&|>)(?P<operand>.*)$"
+    r"^(?P<fd>[0-9]+)?(?P<op><<<|<<|<&|<|&>>|&>|>>|>\||>&|>)(?P<operand>.*)$"
 )
-# Operands that name a DESCRIPTOR rather than a file: `2>&1` and `>&-` duplicate
-# or close a descriptor, so no path is written.
-_FD_DUP_OPERANDS = frozenset({"1", "2", "-", "&1", "&2", "&-"})
 
 
 def split_redirections(tokens: List[str]) -> tuple[List[str], List[str]]:
     """Split redirections off a command segment.
 
     Returns ``(argv_without_redirections, output_targets)``. Input redirections
-    (``<``, ``<<``, ``<<<``, ``<&``) and descriptor duplication (``>&``, or an
-    ``&1``/``&2``/``-`` operand) yield no target; ``/dev/null`` is exempted on
+    (``<``, ``<<``, ``<<<``, ``<&``) and descriptor duplication/closure
+    (``2>&1``, ``>&2``, ``>&-``) yield no target; ``/dev/null`` is exempted on
     the clean operand. Without this split the writer-target lane counted the
     redirect OPERAND as the command's own operand — `cp x y >> log.txt` reported
     `log.txt` and LOST the destination `y`, and a glued `2>/dev/null;` was forged
@@ -545,9 +543,11 @@ def split_redirections(tokens: List[str]) -> tuple[List[str], List[str]]:
             index += 1
             operand = items[index]
         index += 1
-        if operator.startswith("<") or operator == ">&":
+        if operator.startswith("<"):
             continue
-        if not operand or operand in _FD_DUP_OPERANDS or operand == "/dev/null":
+        if operator == ">&" and (operand == "-" or operand.isdigit()):
+            continue
+        if not operand or operand == "/dev/null":
             continue
         targets.append(operand)
     return argv, targets

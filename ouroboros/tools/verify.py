@@ -147,9 +147,9 @@ def _check_has_exit_masking(argv: List[str]) -> tuple[bool, list[str]]:
         last_stage = pathlib.PurePath(toks[nxt]).name.lower() if nxt < len(toks) else ""
         if last_stage in _EXIT_MASK_FILTER_CMDS:
             reasons.append(f"pipeline_{last_stage}")
-    if len(toks) >= 2 and toks[-1] in {"true", ":"} and toks[-2] in {";", "&&"}:
+    if len(toks) >= 2 and toks[-1] in {"true", ":"} and toks[-2] == ";":
         reasons.append(f"{toks[-2]} true")
-    if len(toks) >= 3 and toks[-2:] == ["exit", "0"] and toks[-3] in {";", "&&", "||"}:
+    if len(toks) >= 3 and toks[-2:] == ["exit", "0"] and toks[-3] in {";", "||"}:
         reasons.append("exit 0")
     seen: set = set()
     ordered = [r for r in reasons if not (r in seen or seen.add(r))]

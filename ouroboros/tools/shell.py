@@ -955,10 +955,11 @@ def _masked_green_disclosure(result, cmd):
     )
 
 
-def _preserve_result_meta(text: str, source):
+def _preserve_result_meta(text: str, source, **overrides):
     """Keep a typed process result's facts through run_script text framing."""
-    meta = getattr(source, "result_meta", None)
-    return _annotate_result(text, **meta) if isinstance(meta, dict) else text
+    meta = dict(getattr(source, "result_meta", None) or {})
+    meta.update(overrides)
+    return _annotate_result(text, **meta) if meta else text
 
 
 def _run_shell(
@@ -1426,7 +1427,10 @@ def _run_script(
         # script's answer was gone; re-running was the sole recovery). Marker
         # first — ARTIFACT_OUTPUT_UNDECLARED is a typed policy-denial surface the
         # classifier reads off line 1 — payload appended, as in run_command.
-        return _preserve_result_meta(f"{audit_note}\n\n# script_path={script_path}\n{result}", result)
+        return _preserve_result_meta(
+            f"{audit_note}\n\n# script_path={script_path}\n{result}", result,
+            status="artifact_output_undeclared", is_failure=True,
+        )
     return _preserve_result_meta(f"# script_path={script_path}\n{result}", result)
 
 
