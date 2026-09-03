@@ -876,8 +876,9 @@ def tcp_keepalive_socket_options() -> List[tuple]:
     exposes them (Linux spells the idle threshold ``TCP_KEEPIDLE``, Darwin
     spells it ``TCP_KEEPALIVE``; both take ``TCP_KEEPINTVL``/``TCP_KEEPCNT``,
     which CPython exports on Darwin too, against XNU's 75 s × 8 defaults),
-    each behind a ``hasattr`` guard so an older interpreter still gets the
-    safe minimum. Windows keeps ``SO_KEEPALIVE`` alone.
+    each behind its own ``hasattr`` guard so the tuning degrades per option on
+    an older interpreter. Every other platform (Windows included) keeps
+    ``SO_KEEPALIVE`` alone.
     """
     import socket
 

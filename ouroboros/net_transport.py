@@ -8,8 +8,8 @@ minutes instead of hanging until the transport read timeout. Linux and
 Darwin both get the idle/interval/count tuning where CPython exports the
 constants (``platform_layer.tcp_keepalive_socket_options``); proxy-routed
 installs (no explicit transport), the Anthropic-native ``requests`` lane and
-Windows (``SO_KEEPALIVE`` only) keep their current behaviour — a disclosed
-residual.
+every other platform, Windows included (``SO_KEEPALIVE`` only), keep their
+current behaviour — a disclosed residual.
 """
 from __future__ import annotations
 
