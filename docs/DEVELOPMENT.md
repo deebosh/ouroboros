@@ -2070,8 +2070,12 @@ keep new tests from breaking that:
   worker — and with `--max-worker-restart=0` a dead worker fails its WHOLE
   co-located batch, showing up as spurious failures in unrelated files.
 - Keep every other test parallel-safe so it stays in the fast pass: use
-  `tmp_path` (never a fixed path), `monkeypatch.setenv`/`setattr` (never a
-  bare `os.environ[...] = ...`), and no execution-order assumptions. A
+  `tmp_path` (never a fixed path), `monkeypatch.setenv`/`delenv`/`setattr` for
+  environment and attribute changes, and no execution-order assumptions. The
+  autouse `tests/conftest.py::_os_environ_isolation` snapshot restores
+  `os.environ` at every test boundary, so a bare assignment no longer leaks;
+  monkeypatch stays the rule because it reverses exactly the named change
+  inside the test, before the snapshot runs. A
   module-global mutation that is reliably snapshot-and-restored by a
   fixture may stay in the parallel pass — the pattern is
   `tests/conftest.py::_isolate_workspace_executor_globals`.
