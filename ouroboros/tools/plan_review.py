@@ -906,17 +906,20 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
     disposition_recorded_at = utc_now_iso()
     try:
         prior_ref = wave.get("wave_artifact") if isinstance(wave.get("wave_artifact"), dict) else {}
-        exact = _read_plan_review_wave_artifact(root, task_id, prior_ref)
+        closure_notes = [*closure["notes"], *([] if prior_ref else [
+            "exact_artifact_absent: v2 wave had no exact wave_artifact reference",
+        ])]
+        exact = _read_plan_review_wave_artifact(root, task_id, prior_ref) if prior_ref else dict(wave)
         exact.update({
             "dispositions": list(items), "closed": bool(closure["closed"]),
-            "closure_notes": list(closure["notes"]),
+            "closure_notes": closure_notes,
             "disposition_recorded_at": disposition_recorded_at,
             "supersedes_wave_artifact": prior_ref,
         })
         disposition_ref = _persist_plan_review_wave_artifact(root, task_id, exact)
         stored = record_plan_review_dispositions(
             root, task_id, fingerprint=fingerprint, dispositions=items,
-            closed=bool(closure["closed"]), closure_notes=list(closure["notes"]),
+            closed=bool(closure["closed"]), closure_notes=closure_notes,
             wave_artifact=disposition_ref, recorded_at=disposition_recorded_at,
         )
     except (OSError, TimeoutError, ValueError) as exc:

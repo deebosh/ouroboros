@@ -484,6 +484,29 @@ def test_notes_close_by_disposition_at_zero_cost(harness):
     assert bad.startswith("ERROR: PLAN_REVIEW_DISPOSITION_INVALID") or "unknown_finding_id" in bad
 
 
+def test_v2_wave_without_exact_artifact_can_close_by_disposition(harness):
+    sub = harness.install({"s1": json.dumps([_finding("n1", "note")]), "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    _call(ctx)
+    fp = _state(harness)["waves"][-1]["request_fingerprint"]
+    result_path = harness.drive / "task_results" / "task-1.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["plan_review_state"]["waves"][-1].pop("wave_artifact")
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    closed = pr._handle_plan_task(ctx, review_disposition={
+        "review_fingerprint": fp,
+        "items": [{"finding_id": "s1:n1", "decision": "accept", "rationale": "will do"}],
+    })
+
+    assert _control(closed) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    assert "exact_artifact_absent" in closed
+    wave = _state(harness)["waves"][-1]
+    assert any(note.startswith("exact_artifact_absent:") for note in wave["closure_notes"])
+    assert wave["wave_artifact"]["root"] == "artifact_store"
+    assert len(sub.calls) == 1
+
+
 def test_blocking_findings_never_close_by_disposition_and_reject_rides_into_delta_cycle(harness):
     blocking = json.dumps([_finding("b1", "blocking", breaks="invariant_1", summary="Friday is impossible")])
     sub = harness.install({"s1": blocking, "s2": blocking, "s3": CLEAN})
