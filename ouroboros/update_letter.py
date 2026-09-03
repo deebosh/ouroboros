@@ -237,7 +237,8 @@ def _request_text(status: Dict[str, Any], material: Dict[str, Any], target_versi
         + "\n\nMaterial — what changed between the running version and the target:\n"
         + material_text(material)
         + "\n\nWrite my human ONE short paragraph — no headings, no lists, no more than about "
-        "120 words — about what this update brings, as myself. Use only what the material says; "
+        "120 words — about what this update brings, as myself and in the language my human and I "
+        "use together. Use only what the material says; "
         "if the material does not say something, I do not invent it. This paragraph is shown on "
         "the Updates page and becomes part of my own context; the commit history stays readable "
         "for detail. Reply with the paragraph only.\n"
