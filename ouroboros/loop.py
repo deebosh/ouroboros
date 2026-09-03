@@ -6146,17 +6146,17 @@ def run_llm_loop(
             ctx.active_use_local = active_use_local
 
             # One forced-wrap-up context per round: consumed by the round-limit
-            # path and the supervisor finalize_now control path below.
+            # path and supervisor finalize_now control path below.
             limit_ctx = _RoundLimitContext(
                 messages, llm, active_model, active_effort, max_retries, drive_logs,
                 task_id, round_idx, event_queue, accumulated_usage, task_type,
                 active_use_local, MAX_ROUNDS, drive_root=drive_root, llm_trace=llm_trace,
-                incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen,
-                tool_schemas=tool_schemas)
+                incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen, tool_schemas=tool_schemas)
             _finalize_limit_ctx(limit_ctx, tools, llm_trace)
             if round_idx > MAX_ROUNDS:
                 # Live hold: a paid [ROUND_LIMIT] dial would be a resend (no wake receipt) — no-call unknown terminal.
-                if _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="round_limit") == "active":
+                if _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id,
+                    detail="round_limit") == "active":
                     accumulated_usage["_last_llm_error_kind"] = "provider_outcome_unknown"
                     text, accumulated_usage, forced_trace = _handle_provider_unavailable(limit_ctx, error_kind="provider_outcome_unknown")
                 else:
