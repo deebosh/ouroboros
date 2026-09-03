@@ -562,6 +562,12 @@
  * @property {boolean=} project_mirror
  */
 
+/** Additive /api/chat/history terminality projection.
+ * @typedef {Object} TaskOutcomeHistoryFields
+ * @property {"working"|"done"|"warn"|"error"|"cancelled"=} outcome_phase  // canonical display phase; "working" is not terminal
+ * @property {boolean=} outcome_final  // true only after the canonical task outcome settles; false marks a pre-finalization narrative
+ */
+
 /**
  * Additive /api/chat/history row fields on `system_type: "skill_review"` rows:
  * the exact-job reference the producer already writes into chat.jsonl. A row

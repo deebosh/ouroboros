@@ -163,9 +163,29 @@ def test_depth_summary_mixed_requests_uses_strongest_ask_and_branch_status():
         }},
     ]
     expected = {
-        "requested_depth": 4, "permitted_depth": 2,
+        "requested_depth": 4, "permitted_depth": 4,
         "attempted_depth": 3, "achieved_depth": 3,
         "status": "chosen_shallower", "host_visible_only": True
+    }
+    assert build_depth_summary({}, mixed) == expected
+    assert build_depth_summary({}, reversed(mixed)) == expected
+
+
+def test_depth_summary_reduced_chain_decides_over_deeper_achieved_chain():
+    mixed = [
+        {"depth_provenance": {
+            "requested_depth": 5, "permitted_depth": 5,
+            "attempted_depth": 5, "achieved_depth": 5,
+        }},
+        {"depth_provenance": {
+            "requested_depth": 3, "permitted_depth": 2,
+            "attempted_depth": 2, "achieved_depth": 2,
+        }},
+    ]
+    expected = {
+        "requested_depth": 3, "permitted_depth": 2,
+        "attempted_depth": 2, "achieved_depth": 2,
+        "status": "capability_reduced", "host_visible_only": True,
     }
     assert build_depth_summary({}, mixed) == expected
     assert build_depth_summary({}, reversed(mixed)) == expected

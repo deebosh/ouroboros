@@ -544,6 +544,7 @@ def _annotate_terminal_task_truth(
     the pre-computed set — zero extra reads."""
 
     try:
+        from ouroboros.project_dialogue import outcome_phase
         from ouroboros.task_status import FINAL_STATUSES
 
         cache = result_cache if result_cache is not None else {}
@@ -597,6 +598,7 @@ def _annotate_terminal_task_truth(
                 terminal_status_by_task[task_id] = status
                 terminal_truth: Dict[str, Any] = {
                     "outcome_axes": normalize_outcome_axes(result),
+                    "outcome_phase": outcome_phase(result, {}), "outcome_final": True,
                 }
                 if result.get("reason_code"):
                     terminal_truth["reason_code"] = str(result.get("reason_code") or "")

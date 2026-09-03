@@ -2726,11 +2726,9 @@ def _handle_provider_unavailable(
     ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
     wait_cause: str = "", waited: bool = False, wait_eligible: bool = True,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Provider-death rail wrapper: every arm carries a terminal provenance;
-    ``setdefault`` keeps explicit stamps authoritative. Not every exit is a
-    provider death: the deadline grace arm can return a MODEL-AUTHORED final
-    (``deadline_local``) and a scheduled swarm handoff pops its reason code —
-    both keep their legacy shape."""
+    """Provider-death rail wrapper: every arm carries terminal provenance.
+    The forced-finalization sink stamps ``host_notice``; retained/generated
+    model candidates stamp ``model_final``."""
     text, usage, llm_trace = _provider_unavailable_result(
         ctx, error_kind=error_kind, wait_cause=wait_cause, waited=waited,
         wait_eligible=wait_eligible,
