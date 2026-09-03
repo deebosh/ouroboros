@@ -1700,9 +1700,11 @@ by "Provider Independence" above. Call-site imperatives:
   status+reason PAIRS, and breaking a pairing is a silent false green. The
   reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
   `adaptive_quorum` applies, any contributing FAIL fails, DEGRADED abstains,
-  and no quorum is a terminal HOST decision. Chat and Logs use the same
-  severity reducer; degraded review or a best-effort objective must never
-  render as green solved. Do not add task scope review or reuse the commit
+  and no quorum is a terminal HOST decision. Chat, Logs, the
+  durable Project lifecycle rows and the Telegram notifier use the same phase
+  (`taskOutcomeSeverity`/`taskTerminalPhase` mirrored by
+  `project_dialogue.outcome_phase`); degraded review or a best-effort
+  objective must never render as green solved on any of them. Do not add task scope review or reuse the commit
   gate.
 - The acceptance improvement loop is a reviewer-authored DIALOGUE: obligation
   identity comes from the reviewer's typed
@@ -1945,7 +1947,11 @@ rules, not a copied color/radius/dimension inventory.
 - Task outcome truth stays in `log_events.js::taskOutcomeSeverity` and
   `taskTerminalPhase`; `taskPresentation` is the one compact factual
   projection consumed by chips, live completion, history replay, and child
-  terminal presentation. A non-terminal diagnostic may add a timeline fact
+  terminal presentation. Its host mirror is
+  `project_dialogue.outcome_phase`, pinned to the browser by one shared
+  fixture (`web/tests/fixtures/outcome_phase_parity.json`): a new axis, reason
+  or acceptance status is added to both sides in the same commit, with a row
+  in that fixture. A non-terminal diagnostic may add a timeline fact
   but must not promote the whole task; unknown event names never acquire
   Chat severity from `error`/`crash`/`fail` keyword matching. The Chat
   header reports connection and server-authoritative activity only; failed

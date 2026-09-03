@@ -180,7 +180,14 @@ async def _check_tasks_notify(
         if outcome and outcome not in ("completed", "done"):
             parts.append(outcome)
         tail = (" · " + " · ".join(parts)) if parts else ""
-        healthy = outcome in ("", "completed", "done") and not degraded
+        # The host stamps one status phase on its own task rows; consume it
+        # instead of re-deriving a third status ladder from the axes. Legacy
+        # rows and pre-finalization "working" rows keep the axes rule.
+        phase = str(e.get("outcome_phase") or "")
+        if phase and phase != "working":
+            healthy = phase == "done"
+        else:
+            healthy = outcome in ("", "completed", "done") and not degraded
         icon = "✅" if healthy else "⚠️"
         msg = (f"{icon} Задача {tid[:8]} готова{tail}" if lang == "ru" else f"{icon} Task {tid[:8]} done{tail}")
         send_outcome, exc = await _push_notification(api, chat_id, msg, trust_env=trust_env)

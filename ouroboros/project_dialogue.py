@@ -419,42 +419,55 @@ def routing_option_label(option: Any) -> str:
     return "Project" if option.get("project_id") and not option.get("task_id") else "Task"
 
 
-def completion_status_label(result: Dict[str, Any], event: Dict[str, Any]) -> str:
-    from ouroboros.task_results import (
-        STATUS_CANCELLED, STATUS_COMPLETED, STATUS_FAILED, STATUS_REJECTED_DUPLICATE,
-    )
+OUTCOME_PHASE_HEADLINE = {
+    "working": "Working", "done": "Done", "warn": "Done with warnings",
+    "error": "Failed", "cancelled": "Cancelled",
+}
 
-    status = str(result.get("status") or event.get("status") or "").strip().lower()
-    axes = {}
-    for source in (event, result):
-        value = source.get("outcome_axes")
-        if isinstance(value, dict):
-            axes.update({key: axis for key, axis in value.items() if isinstance(axis, dict)})
-    axis_status = {key: str(axis.get("status") or "").lower() for key, axis in axes.items()}
-    failed = (
-        status == STATUS_FAILED
-        or axis_status.get("lifecycle") == STATUS_FAILED
-        or axis_status.get("execution") in {"failed", "infra_failed"}
-        or axis_status.get("objective") == "fail"
-        or axis_status.get("review") == "fail"
-        or axis_status.get("artifacts") in {"failed", "missing"}
-        or str(result.get("artifact_status") or event.get("artifact_status") or "").lower()
-        in {"failed", "missing"}
-    )
-    degraded = any(value in {"degraded", "partial", "best_effort"}
-                   for value in axis_status.values())
-    checkpoint = result.get("root_phase_checkpoint")
-    degraded |= bool(isinstance(checkpoint, dict)
-                     and str(checkpoint.get("post_task_synthesis") or "").lower() == "degraded")
-    if status == STATUS_CANCELLED:
-        return "Cancelled"
-    if failed:
-        return "Failed"
-    if status == STATUS_COMPLETED:
-        return "Completed with limitations" if degraded else "Completed"
-    if status == STATUS_REJECTED_DUPLICATE:
-        return "Not started"
-    return status.replace("_", " ").title() or "Finished"
+
+def outcome_phase(result: Dict[str, Any], event: Dict[str, Any]) -> str:
+    """The host mirror of the browser's terminality gate and severity fold.
+
+    Durable host rows must read exactly what ``log_events.js`` paints, so this
+    mirrors ``taskDoneIsTerminal(rec) ? taskTerminalPhase(rec) : 'working'`` over
+    NORMALIZED axes; web/tests/fixtures/outcome_phase_parity.json pins both sides.
+    """
+    from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION, normalize_outcome_axes
+    from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
+    from ouroboros.task_status import FINAL_STATUSES
+
+    record = {**event, **{key: value for key, value in result.items() if value not in (None, "")}}
+    sources = [s.get("outcome_axes") for s in (event, result) if isinstance(s.get("outcome_axes"), dict)]
+    record["outcome_axes"] = {k: v for source in sources for k, v in source.items() if isinstance(v, dict)}
+    axes = normalize_outcome_axes(record)
+    axis = {k: str(v.get("status") or "").lower() for k, v in axes.items() if isinstance(v, dict)}
+    status = str(record.get("task_terminal_status") or record.get("status") or "").strip().lower()
+    checkpoint = record.get("root_phase_checkpoint")
+    synthesis = checkpoint.get("post_task_synthesis") if isinstance(checkpoint, dict) else ""
+    if not (status in {"done", "cancel_requested"} or (status in FINAL_STATUSES and not (
+            status == "completed" and post_task_synthesis_is_open(synthesis)))):
+        return "working"
+    lifecycle = axis.get("lifecycle") or status
+    if lifecycle in {"cancelled", "cancel_requested"}:
+        return "cancelled"
+    artifacts = {axis.get("artifacts"), str(record.get("artifact_status") or "").lower()}
+    if (lifecycle == "failed" or axis.get("execution") in {"failed", "infra_failed"}
+            or axis.get("objective") == "fail" or axis.get("review") == "fail"
+            or artifacts & {"failed", "missing"}):
+        return "error"
+    if str(record.get("reason_code") or "") == REASON_OWNER_REQUESTED_FINALIZATION:
+        return "done"
+    if (lifecycle == "rejected_duplicate" or bool((axes.get("objective") or {}).get("warning"))
+            or axis.get("execution") in {"degraded", "best_effort"}
+            or axis.get("objective") in {"degraded", "best_effort"}
+            or axis.get("review") == "degraded"):
+        return "warn"
+    return "done"
+
+
+def completion_status_label(result: Dict[str, Any], event: Dict[str, Any]) -> str:
+    """The one owner-visible status word for a host-authored task row."""
+    return OUTCOME_PHASE_HEADLINE[outcome_phase(result, event)]
 
 
 def append_canonical_task_summary(drive_root: Any, row: Dict[str, Any]) -> bool:
@@ -711,7 +724,8 @@ def _append_terminal_task_projection(
         project_id = resolve_project_id({**task, **effective})
         role = str(effective.get("role") or task.get("role") or ("root" if is_root else "child"))
         reason = str(effective.get("reason_code") or event.get("reason_code") or "")
-        outcome = completion_status_label(effective, event)
+        phase = outcome_phase(effective, event)
+        outcome = OUTCOME_PHASE_HEADLINE[phase]
         excerpt = _completion_excerpt(effective)
         details = f'Details: get_task_result(task_id="{tid}")'
         text = (
@@ -732,7 +746,7 @@ def _append_terminal_task_projection(
             "chat_id": int(event.get("chat_id") or task.get("chat_id") or 0),
             "delegation_role": str(effective.get("delegation_role") or task.get("delegation_role") or ""),
             "role": role, "status": str(effective.get("status") or status),
-            "outcome": outcome, "outcome_final": True,
+            "outcome": outcome, "outcome_phase": phase, "outcome_final": True,
             "outcome_authority": "canonical_task_result_after_finalization",
             "outcome_axes": effective.get("outcome_axes") or event.get("outcome_axes") or {},
             "reason_code": reason, "result_ref": result_ref,
@@ -942,6 +956,7 @@ __all__ = [
     "latest_chat_annotations",
     "enqueue_project_completion_summary",
     "completion_status_label",
+    "outcome_phase",
     "owner_message_ref_is_valid",
     "project_origin_rows",
     "project_recent_dialogue",

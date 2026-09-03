@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
-import { taskReasonDetail, taskReasonPhrase } from '../modules/log_events.js';
+import {
+    taskDoneIsTerminal, taskPresentation, taskReasonDetail, taskReasonPhrase, taskTerminalPhase,
+} from '../modules/log_events.js';
 
 // A degraded delivery used to name one generic cause on every card. The record
 // keeps the machine code; the card says what actually happened.
@@ -44,5 +46,19 @@ test('every typed cause the loop can record has a sentence', () => {
             taskReasonPhrase(code), code,
             `no owner-facing sentence for degraded_reason "${code}" — add one to TASK_REASON_PHRASES`,
         );
+    }
+});
+
+test('one status-word family: the card phase matches the host over the shared fixture', () => {
+    // The same fixture is read by tests/test_project_plain_rows.py, so a
+    // divergence between this severity fold and the host's durable label word
+    // fails on both sides of the boundary.
+    const fixture = JSON.parse(
+        readFileSync(new URL('./fixtures/outcome_phase_parity.json', import.meta.url), 'utf8'),
+    );
+    assert.ok(fixture.cases.length >= 10);
+    for (const { name, record, phase, headline } of fixture.cases) {
+        const resolved = taskDoneIsTerminal(record) ? taskTerminalPhase(record) : 'working';
+        assert.deepEqual(taskPresentation(resolved), { phase, headline }, name);
     }
 });

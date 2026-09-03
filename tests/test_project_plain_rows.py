@@ -93,7 +93,7 @@ def test_completion_summary_event_text_is_plain_and_fully_normalized(
         ctx.DRIVE_ROOT, {"status": "completed"}, "root-project", root, result, done,
     ) is True
     assert queued[0]["text"] == (
-        f"Launch 🚀 › Ship release · Completed\n{PLAIN_EXCERPT}"
+        f"Launch 🚀 › Ship release · Done\n{PLAIN_EXCERPT}"
     )
     for marker in ("#", "**", "`"):
         assert marker not in queued[0]["text"]
@@ -285,3 +285,48 @@ def test_cancel_receipt_rides_verbatim_live_durable_and_on_replay(
     )
     assert replayed["text"] == verbatim
     assert replayed["markdown"] is False
+
+
+def _parity_cases():
+    import pathlib
+
+    fixture = pathlib.Path(__file__).resolve().parents[1] / "web" / "tests" / "fixtures" / "outcome_phase_parity.json"
+    return json.loads(fixture.read_text(encoding="utf-8"))["cases"]
+
+
+def test_host_status_phase_mirrors_the_browser_over_the_shared_fixture():
+    """S5-03: one status-word family. The same fixture is read by
+    ``web/tests/reason_detail.test.js``, so a divergence between the browser's
+    severity fold and the host's durable label fails on both sides."""
+    from ouroboros.project_dialogue import completion_status_label, outcome_phase
+
+    cases = _parity_cases()
+    assert len(cases) >= 10
+    for case in cases:
+        record = case["record"]
+        assert outcome_phase(record, {}) == case["phase"], case["name"]
+        assert completion_status_label(record, {}) == case["headline"], case["name"]
+        # The event frame is the other half of the same merge: a record read
+        # from the task_done event alone must resolve identically.
+        assert outcome_phase({}, record) == case["phase"], case["name"]
+
+
+def test_host_status_phase_folds_the_legacy_partial_result_status_to_a_warning():
+    """The browser already shows a warning here (the gateway normalizes axes on
+    read); the host label used to agree only by accident, through a 'partial'
+    member of its own degraded set."""
+    from ouroboros.project_dialogue import completion_status_label, outcome_phase
+
+    legacy = {"status": "completed", "result_status": "partial"}
+    assert outcome_phase(legacy, {}) == "warn"
+    assert completion_status_label(legacy, {}) == "Done with warnings"
+
+
+def test_owner_requested_stop_is_done_on_the_host_row_too():
+    from ouroboros.project_dialogue import completion_status_label
+
+    stopped = {
+        "status": "completed", "reason_code": "owner_requested_finalization",
+        "outcome_axes": {"execution": {"status": "best_effort"}},
+    }
+    assert completion_status_label(stopped, {}) == "Done"
