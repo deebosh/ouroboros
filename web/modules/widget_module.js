@@ -195,6 +195,12 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
                 headers: init.headers || {},
                 body: init.body ?? undefined,
                 credentials: 'same-origin',
+                // The prefix above is checked once, before the request. A followed
+                // redirect would carry the frame's method, body, headers and the
+                // owner's session to whatever the hop names — another skill's
+                // routes, or any authenticated host API — and the check would
+                // never see it. The relay refuses the hop instead of following it.
+                redirect: 'error',
                 signal: controller.signal,
             });
             frame({ phase: 'headers', status: r.status, statusText: r.statusText, headers: Array.from(r.headers) });

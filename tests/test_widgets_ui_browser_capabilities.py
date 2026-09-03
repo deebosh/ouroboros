@@ -66,7 +66,7 @@ def _beep_wav() -> bytes:
 _CAPABILITY_PLUGIN = """\
 import pathlib
 
-from starlette.responses import HTMLResponse, Response
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 HERE = pathlib.Path(__file__).parent
 HITS = {}
@@ -104,6 +104,14 @@ async def hits(_request):
     return dict(HITS)
 
 
+async def elsewhere(_request):
+    # A route of THIS skill pointing out of its own prefix. The bridge checks the
+    # prefix once, before the request; a followed redirect would carry the frame's
+    # method, body, headers and the owner's session wherever the hop points.
+    _count("elsewhere")
+    return RedirectResponse("/api/state", status_code=307)
+
+
 async def page(_request):
     _count("page")
     return HTMLResponse(PAGE_HTML)
@@ -135,6 +143,7 @@ def register(api):
     api.register_route("ping", ping, methods=("GET",))
     api.register_route("plain", plain, methods=("GET",))
     api.register_route("hits", hits, methods=("GET",))
+    api.register_route("elsewhere", elsewhere, methods=("GET",))
     api.register_route("page", page, methods=("GET",))
     api.register_ui_tab("probe", "Capability probe", render={"kind": "module", "entry": "probe.js", "height": 360, "start": "auto"})
     api.register_ui_tab("page", "Route page", render={"kind": "iframe", "route": "page", "height": 320, "start": "auto"})
@@ -299,6 +308,14 @@ _CAPABILITY_PROBE_JS = """\
             return { enabled: document.fullscreenEnabled ?? null, webkitEnabled: document.webkitFullscreenEnabled ?? null };
         },
         clipboard() { return window.__clipboard ?? null; },
+        async redirected() {
+            try {
+                const r = await OuroborosWidget.fetch(base + 'elsewhere');
+                return { followed: true, status: r.status };
+            } catch (err) {
+                return { followed: false, error: String((err && err.message) || err) };
+            }
+        },
         pointerLock() { return window.__pointerLock ?? null; },
         violations() { return violations.slice(); },
     };
@@ -449,6 +466,16 @@ def test_ui_smoke_widget_frame_capabilities(direct_server_with_data, browser_nam
 
                 # (e) a blob: Worker.
                 assert probe(frame, "blobWorker") == 42
+
+                # (e2) Final-gate finding WL-01: the bridge checks the owning prefix
+                # once, before the request. A skill route that redirects out of that
+                # prefix must NOT be followed, or the parent would replay the frame's
+                # method, body, headers and the owner's session against whatever the
+                # hop names — another skill's routes, or any authenticated host API.
+                redirected = probe(frame, "redirected")
+                assert redirected["followed"] is False, redirected
+                counted = hits(page)
+                assert counted.get("elsewhere") == 1, counted
 
                 # (f) image and (g) audio from the own route prefix (passive loads).
                 assert probe(frame, "ownImage") == {"ok": True, "width": 1}

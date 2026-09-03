@@ -2607,7 +2607,9 @@ cell renderer and the shared dotted-path reader live in
 `--masonry-*` custom properties and returns a disposer. The pure list helpers —
 per-card and order-independent list change signatures plus the keyed patch plan
 — live in `web/modules/widget_list.js`; the page compares the signature after
-every `GET /api/widgets` and touches no existing card when it is unchanged.
+every `GET /api/widgets`; an unchanged signature adds, removes, replaces or
+moves no card node, and only card controls and the masonry properties are
+reconciled.
 Never load skill JavaScript into the SPA origin. Long-running actions use a
 durable job id and resumable status polling rather than a foreground request
 lost on remount.

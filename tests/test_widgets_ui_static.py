@@ -101,6 +101,18 @@ def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
     # Stop and rebuilds every card while the page stays open.
     assert "async function render() {" in source
     assert "stoppedByOwner.clear()" not in source
+    # A vanished card's declarative session state and the owner's page-session Stop
+    # are evicted on BOTH removal paths: the keyed patch, and the rebuild branch the
+    # patch never sees (the last card leaving, or the first list arriving). Eviction
+    # runs after disposal, because a declarative disposer writes that snapshot as it
+    # goes. Without it, re-enabling the only skill restores values the owner never
+    # re-entered and keeps its card suppressed.
+    rebuild = source.split("// Rebuilding the shell destroys frames", 1)[1].split("renderShell(list, tabs);", 1)[0]
+    assert "await disposeMountedWidgets();" in rebuild
+    assert rebuild.index("await disposeMountedWidgets();") < rebuild.index("widgetSessionState.delete(key);")
+    assert "stoppedByOwner.delete(key);" in rebuild
+    patch = source.split("function patchWidgetCards(", 1)[1].split("for (const tab of nextTabs)", 1)[0]
+    assert "widgetSessionState.delete(key);" in patch and "stoppedByOwner.delete(key);" in patch
 
 
 def test_widgets_escape_and_sanitize_untrusted_content():
@@ -703,6 +715,10 @@ def test_widgets_module_bridge_is_one_streaming_grammar():
     # event forwarding under the card's ws_prefix through the page's handler Set.
     relay = parent.split("const relayFetch = async (msg) =>", 1)[1].split("const onMessage = (event) =>", 1)[0]
     assert "module widget fetch outside extension route prefix" in relay
+    # The prefix is checked once, before the request. A followed redirect would
+    # carry the frame's method, body, headers and the owner's session wherever the
+    # hop points, past that check, so the relay refuses the hop instead.
+    assert "redirect: 'error'," in relay
     assert relay.index("phase: 'headers'") < relay.index("phase: 'data'") < relay.index("phase: 'end'") < relay.index("phase: 'error'")
     assert "statusText: r.statusText, headers: Array.from(r.headers)" in relay
     assert "const reader = r.body?.getReader();" in relay

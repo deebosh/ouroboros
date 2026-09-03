@@ -1270,13 +1270,28 @@ export function initWidgets(ctx = {}) {
                 );
                 const signature = widgetTabsSignature(tabs);
                 if (hasCards() && tabs.length) {
-                    // Same signature: not one <article> is touched.
+                    // Same signature: no card node is added, removed, replaced or
+                    // moved (the sync still reconciles controls and layout below).
                     if (signature !== lastSignature) patchWidgetCards(list, lastTabs, tabs);
                 } else {
                     // Rebuilding the shell destroys frames, so the ordered stops
                     // still in flight get their acknowledgement window first.
                     await disposeMountedWidgets();
                     if (!isCurrent()) return;
+                    // Same eviction the keyed patch performs for a vanished card,
+                    // for the transition the patch never sees (the last card
+                    // leaving, or the first list arriving): a key that is gone must
+                    // not leave its declarative session state or the owner's
+                    // page-session Stop behind, or re-enabling the skill would
+                    // restore values the owner never re-entered and keep a card
+                    // suppressed. It runs after disposal, because a declarative
+                    // disposer writes that snapshot on its way out.
+                    const live = new Set(tabs.map(widgetKey));
+                    for (const key of (lastTabs || []).map(widgetKey)) {
+                        if (live.has(key)) continue;
+                        widgetSessionState.delete(key);
+                        stoppedByOwner.delete(key);
+                    }
                     renderShell(list, tabs);
                 }
                 lastTabs = tabs;

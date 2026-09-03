@@ -489,3 +489,92 @@ def test_ui_smoke_widget_start_never_joins_a_stale_mount(direct_server_with_data
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
             pytest.skip(str(exc))
         raise
+
+
+@pytest.mark.ui_browser
+@pytest.mark.parametrize("browser_name", ("chromium", "webkit"))
+def test_ui_smoke_widget_last_card_removal_evicts_session_state(direct_server_with_data, browser_name):
+    """Final-gate finding WL-02: a card that disappears must leave nothing of
+    itself behind, on BOTH removal paths. The keyed patch already evicted the
+    declarative session state and the owner's page-session Stop; the rebuild
+    branch — the one the patch never sees, when the LAST card leaves — did not.
+    Stop the ``auto`` card, disable the only skill so the list goes empty, then
+    re-enable it: the card must come back RUNNING, because the Stop that
+    suppressed it belonged to a card that no longer exists. Before the fix it
+    returned as a suppressed facade and only a window reload cleared it."""
+    pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    url = direct_server_with_data["url"]
+    skill = _write_lifecycle_widget_extension(direct_server_with_data["data_dir"])
+    page_errors: list[str] = []
+
+    def card(tab_id: str) -> str:
+        return f'[data-widget-key="{skill}:{tab_id}"]'
+
+    def toggle(page, enabled: bool) -> int:
+        return page.evaluate(
+            """async ([skill, enabled]) => (await fetch(`/api/skills/${encodeURIComponent(skill)}/toggle`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({enabled}),
+            })).status""",
+            [skill, enabled],
+        )
+
+    def wait_power(page, tab_id: str, text: str, timeout: int = 15_000) -> None:
+        page.wait_for_function(
+            """([selector, text]) => {
+                const power = document.querySelector(`${selector} [data-widget-power]`);
+                return power?.textContent === text && !power.disabled;
+            }""",
+            arg=[card(tab_id), text],
+            timeout=timeout,
+        )
+
+    try:
+        with sync_playwright() as pw:
+            browser = getattr(pw, browser_name).launch(headless=True)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                assert toggle(page, True) == 200
+                page.click('[data-nav-page="widgets"]')
+                page.locator(card("auto")).wait_for(state="visible", timeout=30_000)
+                wait_power(page, "auto", "Stop")
+
+                # The owner stops the auto card: the suppression is page-session
+                # memory, keyed by this card.
+                page.locator(f'{card("auto")} [data-widget-power]').click()
+                wait_power(page, "auto", "Start")
+                page.locator(f'{card("auto")} [data-widget-facade]').wait_for(state="visible", timeout=10_000)
+
+                # The only skill goes away: every card leaves, which is the rebuild
+                # branch rather than the keyed patch.
+                assert toggle(page, False) == 200
+                page.wait_for_function(
+                    '(prefix) => document.querySelectorAll(`[data-widget-key^="${prefix}"]`).length === 0',
+                    arg=f"{skill}:",
+                    timeout=20_000,
+                )
+                assert page.locator("#widgets-list iframe").count() == 0
+
+                # The same keys come back. The Stop belonged to a card that no
+                # longer exists, so the auto card starts again on its own.
+                assert toggle(page, True) == 200
+                page.locator(card("auto")).wait_for(state="visible", timeout=20_000)
+                wait_power(page, "auto", "Stop")
+                page.wait_for_function(
+                    '(selector) => document.querySelectorAll(`${selector} iframe`).length === 1',
+                    arg=card("auto"),
+                    timeout=15_000,
+                )
+                assert page.locator(f'{card("auto")} [data-widget-facade]').count() == 0
+                assert page_errors == [], page_errors
+            finally:
+                browser.close()
+    except PlaywrightError as exc:
+        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+            pytest.skip(str(exc))
+        raise
