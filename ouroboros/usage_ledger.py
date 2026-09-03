@@ -736,7 +736,20 @@ def _build_compacted_summary(
             total = sum(_compact_row_known_cost(row) for row in root_rows)
         else:
             total = sum(_compact_row_numeric(row, field) for row in root_rows)
-        if total:
+        if not total:
+            continue
+        # Token columns are integer-typed throughout the rest of the
+        # ledger; storing them as floats here would round-trip through
+        # ``int()`` in the projection's ``summed()`` helper but expose
+        # the inconsistency on disk and to downstream readers. Cast
+        # token-shaped fields back to ``int`` so the summary row shape
+        # matches every other settled row in the ledger.
+        if field in {
+            "prompt_tokens", "completion_tokens", "cached_tokens",
+            "cache_write_tokens", "ambiguous_call_count",
+        }:
+            summary[field] = int(total)
+        else:
             summary[field] = total
     return summary
 
@@ -807,17 +820,26 @@ def compact_ledger(
             }
 
         # Group by root_task_id. A row without root_task_id cannot be
-        # archived because there is no identity to carry the summary
-        # row's root_task_id; it stays in the live file.
+        # ARCHIVED (there is no identity to carry the summary row's
+        # root_task_id), but it MUST stay in the live file — silently
+        # dropping it would break the byte-identical invariant for any
+        # ``_final_rows`` projection consumer, destroy the
+        # ``subscription_sessions`` count (which ``_summary`` reads on a
+        # separate axis), and erase audit history for
+        # ``legacy_*`` / ``external_unmetered`` / bg-consciousness /
+        # chat-direct / planning / review LLM calls.
         by_root: Dict[str, list[Dict[str, Any]]] = {}
+        rootless_rows: list[Dict[str, Any]] = []
         for row in records:
             rid = str(row.get("root_task_id") or "")
             if rid:
                 by_root.setdefault(rid, []).append(row)
+            else:
+                rootless_rows.append(row)
 
         archivable_root_ids: list[str] = []
         archivable_rows: list[Dict[str, Any]] = []
-        live_rows: list[Dict[str, Any]] = []
+        live_rows: list[Dict[str, Any]] = list(rootless_rows)
         summary_rows: list[Dict[str, Any]] = []
 
         for rid, root_rows in by_root.items():

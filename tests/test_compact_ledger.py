@@ -399,3 +399,126 @@ def test_validator_rejects_compacted_with_prior_attempt(data_root):
             "root_task_id": "r1", "state": "settled",
             "cost_usd": 0.50, "cost_final": True,
         }])
+
+
+def test_compact_ledger_preserves_rootless_rows(data_root):
+    """CRITICAL (ibl-2e24f465212d advisory): rootless rows must NOT be
+    silently dropped. ``subscription_session`` rows, ``legacy_*`` rows,
+    ``external_unmetered`` rows, and rootless attempt rows all stay in
+    the live ledger after compact_ledger, so the byte-identical invariant
+    holds for the full file.
+    """
+    from ouroboros import usage_accounting as ua
+    from ouroboros import usage_ledger as ul
+
+    old_ts = "2024-01-01T00:00:00.000000+00:00"
+    rows = []
+    # archivable root
+    rows += _seed_settled("a-0", "r1", 0.05, 100, 50, old_ts)
+    # subscription_session row (consumed on a separate axis in _summary)
+    rows.append({
+        "kind": "subscription_session", "attempt_id": "session-abc",
+        "state": "settled", "cost_usd": None,
+        "subscription_route": "claude",
+        "subscription_reset_at": "2026-12-31T00:00:00.000000+00:00",
+        "prompt_tokens": 500, "completion_tokens": 200,
+    })
+    # legacy_metadata row (separate axis)
+    rows.append({
+        "kind": "legacy_metadata", "attempt_id": "legacy-meta-1",
+        "state": "settled", "ambiguous_call_count": 3,
+    })
+    # external_unmetered row (counted as 1 physical call by _physical_call_count)
+    rows.append({
+        "kind": "external_unmetered", "attempt_id": "ext-xyz",
+        "state": "settled", "cost_usd": None, "cost_final": False,
+        "prompt_tokens": 10, "completion_tokens": 5,
+    })
+    # Properly-sequenced rootless attempt row (background-consciousness /
+    # chat-direct / planning). A new attempt must begin ``reserved``;
+    # rows whose root_task_id is empty follow the same lifecycle and
+    # MUST NOT be silently dropped by compaction.
+    rows.append({
+        "kind": "attempt", "attempt_id": "rootless-a",
+        "state": "reserved", "root_task_id": "",
+        "ts": old_ts, "reservation_upper_bound_usd": 0.01,
+    })
+    rows.append({
+        "kind": "attempt", "attempt_id": "rootless-a",
+        "state": "dispatched", "root_task_id": "",
+        "ts": old_ts,
+    })
+    rows.append({
+        "kind": "attempt", "attempt_id": "rootless-a",
+        "state": "settled", "root_task_id": "",
+        "ts": old_ts, "cost_usd": 0.01, "cost_final": True,
+        "prompt_tokens": 30, "completion_tokens": 15,
+    })
+    _write_full_ledger(data_root, rows)
+
+    ua._LEDGER_READ_CACHE.clear()
+    before = ua.usage_projection(data_root, bound_by_root=False)
+    before_sessions = before.get("subscription_sessions", 0)
+
+    report = ul.compact_ledger(data_root, min_rows=1, min_bytes=0)
+    assert report["status"] == "compacted"
+    assert report["roots_folded"] == 1
+    assert report["folded_root_ids"] == ["r1"]
+
+    # Read back the live ledger and confirm every rootless row survived.
+    raw = (data_root / "state" / "usage_attempts.jsonl").read_text().splitlines()
+    parsed = [json.loads(line) for line in raw if line.strip()]
+    attempt_ids = {row.get("attempt_id") for row in parsed}
+    assert "session-abc" in attempt_ids, "subscription_session row dropped"
+    assert "legacy-meta-1" in attempt_ids, "legacy_metadata row dropped"
+    assert "ext-xyz" in attempt_ids, "external_unmetered row dropped"
+    assert "rootless-a" in attempt_ids, "rootless attempt row dropped"
+
+    # The byte-identical invariant MUST hold globally — sessions, rootless
+    # cost, and total counts are all part of the projection.
+    ua._LEDGER_READ_CACHE.clear()
+    after = ua.usage_projection(data_root, bound_by_root=False)
+    for key in (
+        "settled_usd", "confirmed_usd", "estimated_usd", "reserved_usd",
+        "unresolved_upper_bound_usd", "accounted_usd",
+        "subscription_sessions", "unknown_unmetered",
+    ):
+        assert before[key] == after[key], (key, before[key], after[key])
+    assert before_sessions == 1, before
+
+
+def test_compact_ledger_summary_token_fields_are_integers(data_root):
+    """ADVISORY (ibl-2e24f465212d): the summary row's token columns must
+    be integer-typed to match every other settled row in the ledger.
+    Storing them as floats round-trips through ``int()`` in the projection
+    but exposes the inconsistency on disk and to downstream readers."""
+    from ouroboros import usage_ledger as ul
+
+    old_ts = "2024-01-01T00:00:00.000000+00:00"
+    rows = []
+    for index in range(3):
+        rows += _seed_settled(
+            f"a-{index}", "r1", 0.01 * (index + 1),
+            100 + index, 50 + index, old_ts,
+            cached_tokens=20, cache_write_tokens=4,
+        )
+    _write_full_ledger(data_root, rows)
+
+    report = ul.compact_ledger(data_root, min_rows=1, min_bytes=0)
+    assert report["status"] == "compacted"
+
+    raw = (data_root / "state" / "usage_attempts.jsonl").read_text().splitlines()
+    parsed = [json.loads(line) for line in raw if line.strip()]
+    summary = next(row for row in parsed
+                   if row.get("kind") == "compacted" and row.get("root_task_id") == "r1")
+    for key in ("prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens"):
+        value = summary.get(key)
+        assert value is not None, (key, summary)
+        assert isinstance(value, int), (key, type(value).__name__, value)
+        assert not isinstance(value, bool), (key, value)
+    # 3 attempts summed: prompt_tokens = 100+101+102 = 303, completion_tokens
+    # = 50+51+52 = 153, cached_tokens = 60, cache_write_tokens = 12.
+    assert summary["prompt_tokens"] == 303
+    assert summary["completion_tokens"] == 153
+    assert summary["cached_tokens"] == 60
+    assert summary["cache_write_tokens"] == 12
