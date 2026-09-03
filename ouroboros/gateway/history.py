@@ -1356,11 +1356,13 @@ def _apply_window_quotas(
             # host project lifecycle row does not.
             return task_id if str(m.get("system_type") or "") in ("", "task_summary") else ""
 
-        # Seeded OUTSIDE the lineage being decided: an unanchored child's own
-        # final must not represent it to its children before the window has
-        # decided whether that child belongs here at all.
+        # Seeded outside the lineage still being decided: a PRE-FLOOR child's own
+        # final cannot represent it to its children before the window has decided
+        # whether that child belongs at all. At or after the floor a lineage row
+        # is never stripped, so it is closable and counts like any other.
         seed = (*other_tail, *folded_reviews, *review_references,
-                *(m for m in human_tail if not _is_subagent_lineage(m)))
+                *(m for m in human_tail
+                  if not _is_subagent_lineage(m) or str(m.get("ts") or "") >= floor))
         represented = {owner for owner in map(_represents, seed) if owner}
         try:
             from ouroboros.task_status import FINAL_STATUSES
