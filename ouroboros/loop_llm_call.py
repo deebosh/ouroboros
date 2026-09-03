@@ -322,7 +322,7 @@ def _cooldown_kind_for_empty_response(body_error: Dict[str, Any], event_type: st
     if body_error:
         body_code = str(body_error.get("code") or "").strip()
         body_message = str(body_error.get("message") or "")
-        if body_code == "413" or _is_output_or_body_size_error(body_message):
+        if body_code == "413" or _output_or_body_size_message(body_message):
             return "request_too_large"
     return body_kind if body_kind in _COOLDOWN_ERROR_KINDS else event_type
 
@@ -379,32 +379,6 @@ def _emit_retry_deadline_exhausted(
     })
 
 
-def _mark_deadline_not_dispatched(
-    accumulated_usage: Dict[str, Any],
-    drive_logs: pathlib.Path,
-    *,
-    task_id: str,
-    model: str,
-    round_idx: int,
-) -> None:
-    """Record a deadline refusal without minting an LLM operation or attempt."""
-    accumulated_usage.update(
-        _last_llm_error_kind="deadline_exhausted",
-        _last_llm_error="owner deadline exhausted before dispatch",
-        _last_llm_retry_same_request=False,
-        execution_status="infra_failed",
-        reason_code="deadline_exhausted",
-    )
-    append_jsonl(drive_logs / "events.jsonl", {
-        "ts": utc_now_iso(),
-        "type": "llm_not_dispatched",
-        "task_id": task_id,
-        "round": round_idx,
-        "model": model,
-        "reason_code": "deadline_exhausted",
-    })
-
-
 def _deadline_not_dispatched(
     deadline_ts: Optional[float], accumulated_usage: Dict[str, Any],
     drive_logs: pathlib.Path, *, task_id: str, model: str, round_idx: int,
@@ -426,10 +400,28 @@ def _deadline_not_dispatched(
             event_queue, task_id, llm_call_id, "failed", task_attempt,
             execution_id, round_id,
         )
-    _mark_deadline_not_dispatched(
-        accumulated_usage, drive_logs, task_id=task_id, model=model,
-        round_idx=round_idx,
-    )
+    # Record the refusal without minting an LLM operation or attempt. A refused
+    # REPEAT of a request whose outcome is unknown keeps that fence: the kind
+    # must not become `deadline_exhausted`, which would re-open the forced-final
+    # rail (a paid resend) over a possibly live request.
+    if accumulated_usage.get("_last_llm_error_kind") == "provider_outcome_unknown":
+        accumulated_usage["_last_llm_retry_same_request"] = False
+    else:
+        accumulated_usage.update(
+            _last_llm_error_kind="deadline_exhausted",
+            _last_llm_error="owner deadline exhausted before dispatch",
+            _last_llm_retry_same_request=False,
+            execution_status="infra_failed",
+            reason_code="deadline_exhausted",
+        )
+    append_jsonl(drive_logs / "events.jsonl", {
+        "ts": utc_now_iso(),
+        "type": "llm_not_dispatched",
+        "task_id": task_id,
+        "round": round_idx,
+        "model": model,
+        "reason_code": "deadline_exhausted",
+    })
     return True
 
 
@@ -453,6 +445,7 @@ class _LlmErrorContext:
     max_retries: int = 0
     transient_budget: int = 0
     transport_death_retries: int = 0
+    transport_reserve_sec: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -480,8 +473,6 @@ def _emit_live_log(event_queue: Optional[queue.Queue], payload: Dict[str, Any]) 
 
 def _short_error_text(value: Any, limit: int = 220) -> str:
     text = " ".join(str(value or "").split()).strip()
-    if not text:
-        return ""
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
@@ -595,10 +586,6 @@ def _is_context_overflow_error(exc: Exception, safe_error: str) -> bool:
     if _is_rate_limit_text(classification_text):
         return False
     return _context_overflow_message(classification_text)
-
-
-def _is_output_or_body_size_error(safe_error: str) -> bool:
-    return _output_or_body_size_message(safe_error)
 
 
 def _exception_status_code(exc: Exception) -> Optional[int]:
@@ -786,7 +773,7 @@ def classify_llm_exception(exc: Exception, safe_error: str = "") -> LlmErrorClas
         return LlmErrorClassification("provider_transient", True, status_code, provider_code)
     if _is_rate_limit_text(low):
         return LlmErrorClassification("provider_transient", True, status_code, provider_code)
-    if _is_output_or_body_size_error(low):
+    if _output_or_body_size_message(low):
         return LlmErrorClassification("request_too_large", False, status_code, provider_code)
     if _is_context_overflow_error(exc, classification_text):
         return LlmErrorClassification("context_overflow", False, status_code, provider_code)
@@ -921,8 +908,8 @@ def _normalize_usage_cost(
 
 def _transport_death_repeats(accumulated_usage: Dict[str, Any], round_id: str) -> int:
     """Paid repeats already spent on THIS round's transport deaths; a record from
-    another round is dropped so neither the budget nor the terminal hint ever
-    reads a stale count."""
+    another round is dropped (and a successful send pops it) so neither the
+    budget nor the terminal hint ever reads a stale count."""
     record = accumulated_usage.get(TRANSPORT_DEATHS_KEY)
     if isinstance(record, dict) and record.get("round_id") == round_id:
         return int(record.get("count") or 0)
@@ -948,11 +935,24 @@ def _record_llm_call_error(
         # Decided BEFORE the durable rows are written so `retry_same_request`
         # is the truth of what happens next: a bounded paid repeat (a NEW
         # attempt with its own ledger row) of a typed transport death while
-        # this round's budget and the attempt loop both have room; otherwise
-        # the no-resend terminal. The unresolved request itself is never resent.
+        # this round's budget, the attempt loop AND the owner deadline (the
+        # backoff plus the admission reserve the next iteration re-checks) all
+        # have room; otherwise the no-resend terminal. Counted here, at the
+        # grant, so the counter never names a repeat that was not sent.
         repeats = _transport_death_repeats(ctx.accumulated_usage, ctx.round_id)
-        if is_retryable_transport_death(error):
-            will_retry = repeats < ctx.transport_death_retries and ctx.attempt < ctx.transient_budget - 1
+        if (
+            is_retryable_transport_death(error)
+            and repeats < ctx.transport_death_retries and ctx.attempt < ctx.transient_budget - 1
+        ):
+            backoff = _TRANSPORT_DEATH_BACKOFF_SEC[min(repeats + 1, len(_TRANSPORT_DEATH_BACKOFF_SEC)) - 1]
+            will_retry = not owner_deadline_exhausted(
+                deadline_ts=ctx.deadline_ts,
+                reserve_sec=backoff + max(ctx.transport_reserve_sec or 0.0, _DEADLINE_RETRY_FLOOR_SEC),
+            )
+        if will_retry:
+            ctx.accumulated_usage[TRANSPORT_DEATHS_KEY] = {
+                "round_id": ctx.round_id, "count": repeats + 1, "backoff_sec": backoff,
+            }
     identity = {
         "task_id": ctx.task_id, "execution_id": ctx.execution_id, "round_id": ctx.round_id,
         "llm_call_id": ctx.llm_call_id, "round": ctx.round_idx, "attempt": ctx.attempt + 1,
@@ -1016,14 +1016,11 @@ def _stop_after_llm_error(ctx: _LlmErrorContext) -> bool:
         # redial pacing. NOT a spent wall — the transport-wait terminal owns this.
         return True
     if error_kind == "provider_outcome_unknown":
-        # Reached only when _record_llm_call_error granted the bounded paid repeat
-        # of a typed transport death: count it against THIS round (the free redial
-        # re-enters with the same round id), back off by death ordinal, then the
-        # loop sends a NEW physical attempt. Not a spent wall either — the unknown
+        # Granted, counted and deadline-checked in _record_llm_call_error; only
+        # the recorded backoff (by death ordinal) is left before the loop sends
+        # a NEW physical attempt. Not a spent wall either — the unknown
         # no-resend terminal outranks the wall.
-        deaths = _transport_death_repeats(accumulated_usage, ctx.round_id) + 1
-        accumulated_usage[TRANSPORT_DEATHS_KEY] = {"round_id": ctx.round_id, "count": deaths}
-        backoff = _TRANSPORT_DEATH_BACKOFF_SEC[min(deaths, len(_TRANSPORT_DEATH_BACKOFF_SEC)) - 1]
+        backoff = float(accumulated_usage[TRANSPORT_DEATHS_KEY]["backoff_sec"])
     else:
         is_transient = error_kind in _TRANSIENT_RETRY_KINDS
         # Non-transient retryables: max_retries capped by the loop ceiling (primary: no-op).
@@ -1429,7 +1426,7 @@ def call_llm_with_retry(
             msg = resp_msg
             _take_custom_receipts(usage, msg, accumulated_usage)
             for stale in ("_last_llm_error", "_last_llm_error_kind", "_last_llm_retry_same_request",
-                          "_last_llm_status_code", "_last_llm_provider_code"):
+                          "_last_llm_status_code", "_last_llm_provider_code", TRANSPORT_DEATHS_KEY):
                 accumulated_usage.pop(stale, None)
             cost, display_model, provider, cost_estimated = _normalize_usage_cost(
                 usage,
@@ -1591,7 +1588,7 @@ def call_llm_with_retry(
                     context_fit_event_fields=context_fit_event_fields,
                     task_attempt=task_attempt, deadline_ts=deadline_ts,
                     max_retries=max_retries, transient_budget=transient_budget,
-                    transport_death_retries=transport_death_retries,
+                    transport_death_retries=transport_death_retries, transport_reserve_sec=transport_reserve_sec,
                 ),
                 call_identity,
             ):

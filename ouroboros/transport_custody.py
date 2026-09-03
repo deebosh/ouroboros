@@ -123,7 +123,8 @@ def _carries_requests_protocol_death(exc: BaseException) -> bool:
         if isinstance(value, (urllib3.exceptions.ProtocolError, http.client.RemoteDisconnected)):
             return True
         if isinstance(value, BaseException):
-            pending.extend(getattr(value, "args", ()))
+            # urllib3 keeps the wrapped failure as ``reason`` on MaxRetryError.
+            pending.extend((*getattr(value, "args", ()), getattr(value, "reason", None)))
     return False
 
 
@@ -144,8 +145,11 @@ def is_retryable_transport_death(exc: BaseException) -> bool:
     missing capture proves nothing and fails closed.
     """
     capture = _capture_on_chain(exc)
-    if capture is None or str(getattr(capture, "provider", "") or "") == "local" or bool(
-        getattr(capture, "route_is_loopback", False)
+    if (
+        capture is None
+        or str(getattr(capture, "state", "") or "") not in ("dispatched", "unresolved")
+        or str(getattr(capture, "provider", "") or "") == "local"
+        or bool(getattr(capture, "route_is_loopback", False))
     ):
         return False
     try:

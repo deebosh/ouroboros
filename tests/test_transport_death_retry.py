@@ -184,7 +184,7 @@ def test_two_deaths_then_success_are_three_ledger_lifecycles(data_root, tmp_path
     assert [row["physical_attempt_id"] for row in api_errors] == unresolved_ids
     assert _events(tmp_path, "llm_non_retryable_same_request") == []
     assert "_last_llm_error_kind" not in usage
-    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 2
+    assert TRANSPORT_DEATHS_KEY not in usage  # the round is over: a success clears its repeat record
 
 
 def test_budget_refusal_on_the_second_send_propagates_untouched(data_root, tmp_path, no_sleep, monkeypatch):
@@ -227,7 +227,32 @@ def test_third_death_exhausts_the_round_budget(tmp_path, no_sleep):
     assert no_sleep == [4.0, 8.0]  # backoff by death ordinal; none after exhaustion
 
 
-def test_backoff_deadline_refusal_stops_without_a_resend(tmp_path, monkeypatch):
+def test_deadline_window_refuses_the_repeat_before_it_is_promised(tmp_path, no_sleep):
+    """The grant re-checks the admission the NEXT iteration would apply (backoff
+    plus the finalization reserve): inside that window the death's own row
+    already says no repeat, the non-retryable row is written, nothing is
+    counted, nothing sleeps, and the unknown no-resend terminal follows."""
+    import time
+
+    llm = _ScriptedLLM(_death, _death)
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage, deadline_ts=time.time() + 32, transport_reserve_sec=30.0)
+
+    assert msg is None
+    assert llm.calls == 1
+    assert [row["retry_same_request"] for row in _events(tmp_path, "llm_api_error")] == [False]
+    assert len(_events(tmp_path, "llm_non_retryable_same_request")) == 1
+    assert TRANSPORT_DEATHS_KEY not in usage
+    assert no_sleep == []
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert usage["_last_llm_retry_same_request"] is False
+    assert provider_no_call_source(usage, False) == ("provider_outcome_unknown_no_resend", False)
+
+
+def test_backoff_sleep_refusal_race_stops_without_a_resend(tmp_path, monkeypatch):
+    """Residual race (the sleep gate refusing after the grant, e.g. a laptop
+    that slept between the two checks): the loop stops on the durable
+    deadline-exhausted event, keeps the unknown kind and never resends."""
     monkeypatch.setattr(call_mod, "_sleep_within_deadline", lambda _sec, _dl: False)
     llm = _ScriptedLLM(_death, _death)
     usage = {}
@@ -240,6 +265,32 @@ def test_backoff_deadline_refusal_stops_without_a_resend(tmp_path, monkeypatch):
     assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
     assert RETRY_WALL_EXHAUSTED_KEY not in usage
     assert provider_no_call_source(usage, False) == ("provider_outcome_unknown_no_resend", False)
+
+
+def test_admission_refusal_after_a_granted_repeat_keeps_the_unknown_fence(tmp_path, monkeypatch, no_sleep):
+    """If the loop-top admission gate refuses the granted repeat anyway (clock
+    moved between the grant and the re-check), the refusal must not relabel the
+    unresolved request as `deadline_exhausted`: the forced-final rail would then
+    dial a NEW paid request over a possibly live one."""
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    checks = {"n": 0}
+
+    def exhausted_after_the_grant(**_kwargs):
+        checks["n"] += 1
+        return checks["n"] > 3  # loop-top, pre-send, the grant's re-check pass; the next admission refuses
+
+    monkeypatch.setattr(call_mod, "owner_deadline_exhausted", exhausted_after_the_grant)
+    llm = _ScriptedLLM(_death, _death, _death)
+    notes = []
+    _result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, notes))
+
+    assert llm.calls == 1  # the refused repeat and the forced-final rail both dispatched nothing
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert usage["_last_llm_retry_same_request"] is False
+    assert len(_events(tmp_path, "llm_not_dispatched")) == 1
+    assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
 
 
 def test_attempt_loop_ceiling_stays_the_outer_bound_and_the_flag_stays_truthful(tmp_path, no_sleep, monkeypatch):
@@ -299,13 +350,13 @@ def test_requests_lane_death_repeats_on_the_same_rail(tmp_path, no_sleep):
 # ------------------------------------------------------- round-keyed counter
 
 def test_counter_is_keyed_by_round_and_survives_re_entry_of_the_same_round(tmp_path, no_sleep):
-    """A re-entry with the SAME round id (the wait episode's free redial) keeps the
-    spent count; the next round starts from zero."""
+    """A re-entry with the SAME round id after a FAILED invocation (the wait
+    episode's free redial) keeps the spent count; the next round starts from zero."""
     usage = {}
-    llm = _ScriptedLLM(_death, _death)
+    llm = _ScriptedLLM(_death, _death, _death)
     msg, _cost = _primary_call(llm, tmp_path, usage, round_idx=1)
-    assert msg == OK_RESPONSE[0] and llm.calls == 3
-    assert usage[TRANSPORT_DEATHS_KEY] == {"round_id": f"{usage['execution_id']}:round:1", "count": 2}
+    assert msg is None and llm.calls == 3
+    assert usage[TRANSPORT_DEATHS_KEY] == {"round_id": f"{usage['execution_id']}:round:1", "count": 2, "backoff_sec": 8.0}
 
     redial = _ScriptedLLM(_death, _death)
     msg, _cost = _primary_call(redial, tmp_path, usage, round_idx=1)
@@ -315,19 +366,32 @@ def test_counter_is_keyed_by_round_and_survives_re_entry_of_the_same_round(tmp_p
 
     next_round = _ScriptedLLM(_death, _death)
     msg, _cost = _primary_call(next_round, tmp_path, usage, round_idx=2)
-    assert msg == OK_RESPONSE[0] and next_round.calls == 3
-    assert usage[TRANSPORT_DEATHS_KEY]["round_id"].endswith(":round:2")
+    assert msg == OK_RESPONSE[0] and next_round.calls == 3  # re-armed: two repeats granted again
+    assert TRANSPORT_DEATHS_KEY not in usage  # and the successful round cleared its record
 
 
 def test_stale_counter_from_an_earlier_round_is_dropped_by_a_later_unknown(tmp_path, no_sleep):
     """A later round's NON-transport unknown must not inherit an earlier round's
     repeat count (the terminal hint reads the record)."""
     usage = {}
-    _primary_call(_ScriptedLLM(_death, _death), tmp_path, usage, round_idx=1)
+    _primary_call(_ScriptedLLM(_death, _death, _death), tmp_path, usage, round_idx=1)
     assert usage[TRANSPORT_DEATHS_KEY]["count"] == 2
     _primary_call(_ScriptedLLM(lambda: _death(httpx.ReadTimeout)), tmp_path, usage, round_idx=3)
     assert TRANSPORT_DEATHS_KEY not in usage
-    assert "already repeated" not in loop_transport.provider_recovery_hint(usage)
+    assert "earlier physical attempt" not in loop_transport.provider_recovery_hint(usage)
+
+
+def test_round_success_clears_the_repeat_record_for_later_no_call_terminals(tmp_path, no_sleep):
+    """A round that spent repeats and then SUCCEEDED leaves no record: a later
+    unknown terminal stamped without a dispatch (the delegate-hold paths) must
+    not read "repeated" for a request that was never sent."""
+    usage = {}
+    _primary_call(_ScriptedLLM(_death, _death), tmp_path, usage, round_idx=1)
+    assert TRANSPORT_DEATHS_KEY not in usage
+    usage["_last_llm_error_kind"] = "provider_outcome_unknown"
+    hint = loop_transport.provider_recovery_hint(usage)
+    assert "earlier physical attempt" not in hint
+    assert "no retry or paid fallback was sent" in hint
 
 
 # --------------------------------------------------------------- round gate
@@ -365,7 +429,7 @@ def test_primary_round_dispatch_exhaustion_takes_the_unknown_no_resend_terminal(
     assert usage.get("execution_status") == "infra_failed"
     assert usage.get("reason_code") == "provider_unavailable"
     assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
-    assert "already repeated 2 time(s)" in result
+    assert "2 earlier physical attempt(s) of this round" in result
     assert "no further retry or paid fallback was sent" in result
 
 
@@ -476,7 +540,7 @@ def test_classifier_and_review_custody_are_unchanged_by_the_rail():
 def test_recovery_hint_names_the_spent_repeats():
     usage = {"_last_llm_error_kind": "provider_outcome_unknown", TRANSPORT_DEATHS_KEY: {"round_id": "r", "count": 2}}
     hint = loop_transport.provider_recovery_hint(usage)
-    assert "already repeated 2 time(s)" in hint
+    assert "2 earlier physical attempt(s) of this round" in hint
     assert "no further retry or paid fallback was sent" in hint
     bare = loop_transport.provider_recovery_hint({"_last_llm_error_kind": "provider_outcome_unknown"})
     assert "no retry or paid fallback was sent" in bare

@@ -576,14 +576,15 @@ def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
         deaths = accumulated_usage.get(TRANSPORT_DEATHS_KEY)
         repeats = int(deaths.get("count") or 0) if isinstance(deaths, dict) else 0
         if repeats:
-            # The bounded paid repeat rail already spent its budget on this
-            # round: name it so the terminal never reads as "sent once".
+            # Paid repeats already spent on THIS round's typed transport deaths
+            # (the record is round-keyed and cleared by a successful send): name
+            # them so the terminal never reads as "sent once".
             return (
-                f" The dispatched request has no terminal provider outcome; it was "
-                f"already repeated {repeats} time(s) after typed transport deaths (each "
-                "a new physical attempt, the earlier ones staying unresolved at their "
-                "upper bound), so no further retry or paid fallback was sent; either "
-                "could duplicate live work."
+                f" The dispatched request has no terminal provider outcome. {repeats} "
+                "earlier physical attempt(s) of this round died with a typed transport "
+                "death and were repeated as new attempts (the dead ones stay unresolved "
+                "at their upper bound); no further retry or paid fallback was sent, "
+                "since either could duplicate live work."
             )
         return (
             " The dispatched request has no terminal provider outcome, so no "

@@ -275,11 +275,16 @@ def test_implicit_context_chain_never_proves_a_transport_death():
 @pytest.mark.parametrize("capture", [
     _unresolved_capture(provider="local"),
     _unresolved_capture(provider="openai-compatible", route_is_loopback=True),
+    ua.PhysicalAttemptCapture(
+        attempt_id="pa-rel", model="m", provider="openrouter", state="released",
+        candidate_measurement_kind="opaque",
+    ),
     None,
 ])
-def test_local_loopback_or_captureless_death_is_not_retryable(capture):
+def test_local_loopback_released_or_captureless_death_is_not_retryable(capture):
     """The classifier's locality gate: a dead local/loopback server is not a
-    network fault worth paying for again; a missing capture fails closed."""
+    network fault worth paying for again; released custody is the free
+    pre-dispatch class, never a paid repeat; a missing capture fails closed."""
     from ouroboros.transport_custody import is_retryable_transport_death
 
     exc = _sdk_wrapped(httpx.ReadError("socket died"), capture)
@@ -302,6 +307,12 @@ def test_requests_protocol_error_with_remote_disconnected_is_a_transport_death()
     assert is_retryable_transport_death(exc) is True
     # The same fact through an explicit wrapper (the recovery ladder re-raises with a cause).
     assert is_retryable_transport_death(_sdk_wrapped(exc, _unresolved_capture(provider="anthropic"))) is True
+    # urllib3 may hand the same fact over as MaxRetryError(reason=ProtocolError).
+    retried = requests.exceptions.ConnectionError(urllib3.exceptions.MaxRetryError(
+        None, "/messages", reason=urllib3.exceptions.ProtocolError("Connection aborted.", disconnected),
+    ))
+    retried.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+    assert is_retryable_transport_death(retried) is True
 
 
 def test_requests_read_timeout_and_connect_shapes_are_not_transport_deaths():
