@@ -3,8 +3,9 @@
 Covers: typed classification of released pre-dispatch transport failures
 (remote vs local provider), the one-physical-attempt-per-call contract, the
 round-level wait episode (free redials, recovery, deterministic no-resend
-terminal, direct/ephemeral fast failure, local-only fallback pass), the
-owner-signal-interruptible sleep, and durable ``network_wait`` evidence.
+terminal, the interactive turns' idle-timeout bound, local-only fallback pass),
+the owner-signal-interruptible sleep, and durable ``network_wait`` evidence.
+Interactive-episode contracts continue in ``test_loop_transport_wait_interactive.py``.
 """
 
 from __future__ import annotations
@@ -163,11 +164,28 @@ def _loop_kwargs(tmp_path, registry, notes, llm=None):
         tools=registry,
         llm=llm or _FakeLoopLLM(),
         drive_logs=tmp_path,
-        emit_progress=notes.append,
+        # emit_progress honors the ``incident=`` keyword (OuroborosAgent._emit_progress).
+        emit_progress=lambda text, *, incident=None: notes.append(text),
         incoming_messages=queue.Queue(),
         task_id="t-wait",
         drive_root=tmp_path,
     )
+
+
+class _FakeClock:
+    """loop_transport-local monotonic clock that only faked sleeps advance, so
+    a bound measured from episode entry is exercised deterministically."""
+
+    def __init__(self, monkeypatch, start: float = 1000.0):
+        self.now = start
+        self.sleeps: list = []
+        monkeypatch.setattr(loop_transport, "time", SimpleNamespace(monotonic=lambda: self.now))
+        monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", self.sleep)
+
+    def sleep(self, sec, _wake):
+        self.sleeps.append(sec)
+        self.now += sec
+        return False
 
 
 def _transport_failing_call(fail_times: int, final_content: str = "done"):
@@ -217,11 +235,15 @@ def test_transport_outage_waits_redials_free_rounds_and_recovers(tmp_path, monke
 
 
 @pytest.mark.parametrize("flag", ["is_direct_chat", "is_ephemeral_turn"])
-def test_responsive_turns_fail_fast_without_waiting(tmp_path, monkeypatch, flag):
+def test_interactive_turns_wait_redial_free_and_terminalize_at_the_idle_bound(tmp_path, monkeypatch, flag):
+    """Direct-chat and ephemeral decision turns are wait-eligible: they redial
+    for free until the RAW configured task idle timeout — their only rail, as
+    they carry no deadline and no queue rails — is spent, then take the
+    deterministic no-resend terminal whose detail names that bound and whose
+    wording calls the turn a chat turn, never a task."""
     fake_call, calls = _transport_failing_call(fail_times=99)
-    sleeps = []
-    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep",
-                        lambda sec, _wake: (sleeps.append(sec), False)[1])
+    clock = _FakeClock(monkeypatch)
+    monkeypatch.setattr(loop_transport, "get_task_idle_timeout_sec", lambda: 120)
     monkeypatch.setattr(loop_mod, "call_llm_with_retry", fake_call)
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
     monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
@@ -230,16 +252,20 @@ def test_responsive_turns_fail_fast_without_waiting(tmp_path, monkeypatch, flag)
     notes = []
     result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
 
-    assert calls["n"] == 1  # one honest attempt, zero redials, zero waiting
-    assert sleeps == []
+    assert calls["n"] >= 3  # free redials, not one honest attempt
+    assert calls["n"] == len(clock.sleeps) + 1  # every dispatch after the first followed a wait
+    assert 0.0 < sum(clock.sleeps) <= 120.0  # the raw idle bound, not the queue's effective rail
     assert usage.get("execution_status") == "infra_failed"
     assert usage.get("reason_code") == "provider_unavailable"
     assert trace.get("forced_finalization", {}).get("source") == "transport_unavailable_no_resend"
-    # Honest zero-wait terminal text: this turn never waited, and must not claim it did.
-    assert "fails fast" in result
-    assert "waited and redialed" not in result
-    phases = [row["phase"] for row in _read_network_wait_events(tmp_path)]
-    assert phases == ["entered", "ended"]
+    assert "this chat turn waited and redialed for" in result
+    assert "the task" not in result
+    assert "fails fast" not in result
+    events = _read_network_wait_events(tmp_path)
+    assert events[0]["phase"] == "entered"
+    assert events[-1]["phase"] == "ended"
+    assert events[-1]["detail"] == "interactive_wait_window_exhausted"
+    assert notes and all("Stop cancels" not in note for note in notes)
 
 
 def test_deadline_bounds_wait_with_one_last_free_redial_then_no_resend(tmp_path, monkeypatch):
@@ -306,11 +332,13 @@ def test_deadline_refusal_during_episode_takes_transport_no_resend_terminal(tmp_
 
 
 def test_scheduled_swarm_handoff_stays_truthful_on_transport_terminal(tmp_path, monkeypatch):
-    """An ephemeral router turn fails fast on an outage, but the requested
-    managed work was already durably admitted: the no-resend terminal stamp
-    must not clobber the router's deliberate execution_status/reason_code
+    """An ephemeral router turn waits out its idle bound on an outage, but the
+    requested managed work was already durably admitted: the no-resend terminal
+    stamp must not clobber the router's deliberate execution_status/reason_code
     clear — the successful handoff stays truthful."""
     calls = {"n": 0}
+    _FakeClock(monkeypatch)
+    monkeypatch.setattr(loop_transport, "get_task_idle_timeout_sec", lambda: 60)
 
     def fake_call(_llm, _messages, _model, _tools, _effort, _max_retries, _drive_logs,
                   _task_id, _round_idx, _event_queue, accumulated_usage, *_a, **_k):
@@ -339,16 +367,19 @@ def test_scheduled_swarm_handoff_stays_truthful_on_transport_terminal(tmp_path, 
     result, usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
 
     assert "Swarm admitted managed task swarm-task-1" in result
-    assert calls["n"] == 1  # ephemeral turn: fast fail, no redials
+    assert calls["n"] >= 2  # the ephemeral turn waited and redialed before the terminal
     assert usage.get("execution_status") is None
     assert usage.get("reason_code") is None
 
 
-def test_outage_first_observed_mid_chain_latches_episode_and_recovers(tmp_path, monkeypatch):
+@pytest.mark.parametrize("turn_flag", [None, "is_direct_chat", "is_ephemeral_turn"])
+def test_outage_first_observed_mid_chain_latches_episode_and_recovers(tmp_path, monkeypatch, turn_flag):
     """Primary fails generically (429-class), the chain walks, and a REMOTE
     candidate dies pre-dispatch: the post-chain reconcile must latch an episode
     from the FRESH kind — wait, redial, recover — instead of the generic
-    terminal dialing a forced-final call over the proven-dead egress."""
+    terminal dialing a forced-final call over the proven-dead egress. The latch
+    is turn-kind independent: a direct-chat or ephemeral turn waits and
+    recovers the same way, and never remote-fallbacks over the dead egress."""
     calls = {"n": 0}
 
     def fake_call(_llm, _messages, _model, _tools, _effort, _max_retries, _drive_logs,
@@ -377,8 +408,11 @@ def test_outage_first_observed_mid_chain_latches_episode_and_recovers(tmp_path, 
     monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", chain_breaks_on_transport)
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
     monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    if turn_flag:
+        setattr(registry._ctx, turn_flag, True)
     notes = []
-    result, usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path), notes))
+    result, usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
 
     assert result == "done"
     assert chain_calls["n"] == 1
@@ -388,50 +422,6 @@ def test_outage_first_observed_mid_chain_latches_episode_and_recovers(tmp_path, 
     phases = [row["phase"] for row in _read_network_wait_events(tmp_path)]
     assert phases[0] == "entered"
     assert phases[-1] == "recovered"
-
-
-def test_mid_chain_outage_on_direct_chat_fails_fast_no_resend(tmp_path, monkeypatch):
-    """Same mid-chain-first outage on a direct-chat turn: the fresh episode is
-    wait-ineligible — fast honest no-resend terminal, no forced-final call."""
-    calls = {"n": 0}
-
-    def fake_call(_llm, _messages, _model, _tools, _effort, _max_retries, _drive_logs,
-                  _task_id, _round_idx, _event_queue, accumulated_usage, *_a, **_k):
-        calls["n"] += 1
-        accumulated_usage["_last_llm_error_kind"] = "provider_transient"
-        return None, 0.0
-
-    chain_calls = {"n": 0}
-
-    def chain_breaks_on_transport(**kwargs):
-        chain_calls["n"] += 1
-        kwargs["accumulated_usage"]["_last_llm_error_kind"] = "transport_unavailable"
-        return (
-            None, kwargs["active_model"], kwargs["active_use_local"],
-            kwargs["context_fit_plan"], kwargs["active_context_mode"],
-        )
-
-    sleeps = []
-    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep",
-                        lambda sec, _wake: (sleeps.append(sec), False)[1])
-    monkeypatch.setattr(loop_mod, "call_llm_with_retry", fake_call)
-    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", chain_breaks_on_transport)
-    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
-    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
-    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
-    registry._ctx.is_direct_chat = True
-    notes = []
-    result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
-
-    assert calls["n"] == 1  # one primary attempt, no forced-final provider call
-    assert chain_calls["n"] == 1
-    assert sleeps == []
-    assert usage.get("execution_status") == "infra_failed"
-    assert usage.get("reason_code") == "provider_unavailable"
-    assert trace.get("forced_finalization", {}).get("source") == "transport_unavailable_no_resend"
-    assert "fails fast" in result
-    phases = [row["phase"] for row in _read_network_wait_events(tmp_path)]
-    assert phases == ["entered", "ended"]
 
 
 def test_exact_model_route_waits_and_redials_its_own_pin(tmp_path, monkeypatch):
@@ -902,22 +892,31 @@ def test_review_actor_physical_send_rail_stays_bounded_at_two():
 
 # ------------------------------------------------ terminal wordings + Q14 margin
 
-def test_terminal_wordings_cover_three_wait_outcomes():
-    """Three honest terminal texts: fail-fast is keyed on NOT wait_eligible; a
-    managed zero-wait task names the spent window; the waited-out wording says
-    outage without the supervisor's lifecycle term INTERRUPTED."""
+def test_terminal_wordings_cover_four_wait_outcomes():
+    """Four honest terminal texts keyed on the two typed facts: a managed task
+    that waited says outage without the supervisor's lifecycle term
+    INTERRUPTED; a managed zero-wait task names the spent window; an
+    interactive turn is a chat turn (never "the task") that either names how
+    long it waited or says no window was left; no wording claims a fast fail."""
     kwargs = dict(is_context_overflow=False, is_transport_wait=True, is_deadline_exhausted=False)
-    fast = loop_transport.provider_terminal_fallback_text(
-        {}, waited=False, wait_eligible=False, **kwargs)
-    assert "fails fast" in fast
-    waited = loop_transport.provider_terminal_fallback_text(
-        {}, waited=True, wait_eligible=True, **kwargs)
+    waited = loop_transport.provider_terminal_fallback_text({}, waited_sec=610.0, **kwargs)
+    assert "the task waited and redialed" in waited
     assert "ended as a provider outage, not completed" in waited
     assert "INTERRUPTED" not in waited
-    zero_wait = loop_transport.provider_terminal_fallback_text(
-        {}, waited=False, wait_eligible=True, **kwargs)
+    zero_wait = loop_transport.provider_terminal_fallback_text({}, waited_sec=0.0, **kwargs)
     assert "left no time to wait" in zero_wait
-    assert "fails fast" not in zero_wait
+    chat_waited = loop_transport.provider_terminal_fallback_text(
+        {}, waited_sec=610.0, interactive=True, **kwargs)
+    assert "this chat turn waited and redialed for 10.2 min" in chat_waited
+    assert "ended as a provider outage, not completed" in chat_waited
+    chat_zero = loop_transport.provider_terminal_fallback_text(
+        {}, waited_sec=0.0, interactive=True, **kwargs)
+    assert "no wait window was left" in chat_zero
+    assert "this chat turn ended as a provider outage" in chat_zero
+    for text in (chat_waited, chat_zero):
+        assert "task" not in text.lower()
+        assert "INTERRUPTED" not in text
+    assert all("fails fast" not in text for text in (waited, zero_wait, chat_waited, chat_zero))
 
 
 def test_final_redial_reserves_named_margin_before_admission_close(tmp_path, monkeypatch):
