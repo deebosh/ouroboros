@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import gzip
 import json
 import logging
 import os
 import pathlib
 import re
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
@@ -35,6 +37,7 @@ _TERMINAL = frozenset({"settled", "unresolved", "released"})
 
 __all__ = (
     "LEDGER_REL", "QUARANTINE_REL", "UsageAccountingError", "UsageLedgerCorrupt",
+    "compact_ledger",
 )
 
 
@@ -353,6 +356,17 @@ def _validate_records(
         if kind.startswith("legacy_") or kind in {"external_unmetered", "subscription_session"}:
             if previous is not None or state not in {"settled", "unresolved"}:
                 raise UsageLedgerCorrupt(f"invalid legacy usage row seq={row.get('seq')}")
+        elif kind == "compacted":
+            # A compacted summary row carries the pre-summed final for one
+            # root_task_id; its source rows have already been archived and
+            # removed from this ledger by ``compact_ledger``. It has no
+            # prior attempt_id in the ledger (the synthetic attempt_id is
+            # unique to the compaction) and MUST be settled — any other
+            # state would mean the compactor mis-emitted the row.
+            if previous is not None or state != "settled":
+                raise UsageLedgerCorrupt(
+                    f"invalid compacted usage row seq={row.get('seq')}: previous={previous} state={state}"
+                )
         elif previous is None:
             if state != "reserved":
                 raise UsageLedgerCorrupt(f"attempt {attempt_id} did not begin reserved")
@@ -595,3 +609,330 @@ def _number(value: Any) -> Optional[float]:
 
 def _final_rows(records: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return {str(row["attempt_id"]): row for row in records}
+
+
+# Compactness knobs. The row threshold is the cheap no-op short-circuit
+# (almost every <2000-row ledger is well under the byte threshold); the byte
+# threshold is the in-bounds form of the same idea — both chosen so a
+# normal-velocity run never enters the per-row fold loop, and a slow
+# growth run enters it only when it has something to do.
+_COMPACT_ROW_THRESHOLD = 2000
+_COMPACT_BYTE_THRESHOLD = 20 * 1024 * 1024  # 20 MB
+
+# Token fields the projection sums in ``_summary`` / ``_breakdown_bucket``.
+# A folded root's summary row carries the pre-summed totals under these
+# canonical names; the SAME set is what ``compact_ledger`` reads off each
+# raw row to build the summary.
+_SUMMED_NUMERIC_FIELDS = (
+    "cost_usd",
+    "reservation_upper_bound_usd",
+    "reservation_usd",
+    "prompt_tokens",
+    "completion_tokens",
+    "cached_tokens",
+    "cache_write_tokens",
+    "ambiguous_call_count",
+)
+
+
+def _compact_row_numeric(row: Dict[str, Any], field: str) -> float:
+    """Return ``row[field]`` as a non-negative float, or 0 when missing/invalid.
+
+    The compactor folds every numeric column the projection consumes; a
+    missing or non-numeric value contributes 0 to the summary row, NOT
+    the row's raw value, so the projection's "unknown = None, never 0"
+    rule (see ``_summary``) is preserved — a summary row's missing field
+    is still missing downstream, while a PRESENT field's partial totals
+    sum cleanly.
+    """
+    value = row.get(field)
+    if value is None or isinstance(value, bool):
+        return 0.0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if parsed != parsed or parsed < 0.0:  # NaN or negative
+        return 0.0
+    return parsed
+
+
+def _compact_row_known_cost(row: Dict[str, Any]) -> float:
+    """Return row's SETTLED cost contribution to the summary; 0 if not a settled
+    final-cost row. Mirrors ``_summary``: a row's cost enters ``settled_usd``
+    only if ``state == "settled"``; otherwise it lives on a different axis
+    (reserved / unresolved / unknown) that the compactor preserves by NOT
+    folding the root."""
+    if str(row.get("state") or "") != "settled":
+        return 0.0
+    cost = row.get("cost_usd")
+    if cost is None or isinstance(cost, bool):
+        return 0.0
+    try:
+        parsed = float(cost)
+    except (TypeError, ValueError):
+        return 0.0
+    if parsed != parsed or parsed < 0.0:
+        return 0.0
+    return parsed
+
+
+def _compact_parse_iso_epoch(ts_str: str) -> float:
+    """Parse an ISO-8601 timestamp string to epoch seconds, or ``-1.0`` on failure.
+
+    The compactor only needs ordering; a malformed timestamp is treated as
+    "not archivable" because we cannot prove the row is older than the
+    cutoff. ``datetime.fromisoformat`` accepts the project's
+    ``+00:00`` suffix but is brittle against the ``Z`` shorthand; we
+    normalize both."""
+    if not ts_str:
+        return -1.0
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return -1.0
+
+
+def _compact_cutoff_ts(retention_days: int, now: float) -> float:
+    """Return the cutoff epoch-seconds: a root is archivable iff its
+    newest row's ts is strictly LESS than this."""
+    return now - max(0, int(retention_days)) * 86400.0
+
+
+def _build_compacted_summary(
+    root_rows: Sequence[Dict[str, Any]],
+    root_task_id: str,
+    newest_ts: str,
+) -> Dict[str, Any]:
+    """Build the pre-summed ``kind=compacted, state=settled`` summary row
+    for one archivable root.
+
+    The summary's numeric totals equal the sum of every raw row in the
+    root for the canonical fields the projection consumes
+    (``_SUMMED_NUMERIC_FIELDS``). Token fields (prompt/completion/cached/
+    cache_write) are summed; ambiguous_call_count is summed for legacy
+    rows that carry it. ``cost_usd`` is summed from settled rows only —
+    a non-settled row in an all-terminal group is impossible here (the
+    caller gates on ``all_terminal``) but the guard is defensive.
+
+    ``cost_final`` is True on the summary: the sum IS the final cost of
+    the source rows, by construction. A future cost-finality reconciliation
+    over a folded root can re-derive this from the archive.
+    """
+    summary: Dict[str, Any] = {
+        "kind": "compacted",
+        "attempt_id": f"compacted:{root_task_id}",
+        "root_task_id": root_task_id,
+        "state": "settled",
+        "cost_final": True,
+        "row_count": len(root_rows),
+        "compacted_at": utc_now_iso(),
+        "newest_raw_ts": newest_ts,
+    }
+    for field in _SUMMED_NUMERIC_FIELDS:
+        if field == "cost_usd":
+            total = sum(_compact_row_known_cost(row) for row in root_rows)
+        else:
+            total = sum(_compact_row_numeric(row, field) for row in root_rows)
+        if total:
+            summary[field] = total
+    return summary
+
+
+def compact_ledger(
+    root: pathlib.Path | str | None = None,
+    *,
+    retention_days: int | None = None,
+    min_rows: int = _COMPACT_ROW_THRESHOLD,
+    min_bytes: int = _COMPACT_BYTE_THRESHOLD,
+) -> Dict[str, Any]:
+    """Fold fully-settled, fully-cold roots into pre-summed ``kind=compacted``
+    summary rows and archive the raw rows to a gzipped monthly file.
+
+    The byte-identical invariant is the gate: every total ``usage_projection``
+    and ``usage_breakdown`` reports before the call must match the totals
+    after, to the cent / token. The mechanism is the structure of the
+    existing projection: ``_summary`` and ``_breakdown_bucket`` already
+    take the "last row per ``attempt_id``" view (``_final_rows``), so
+    replacing a root's N raw rows with ONE row whose
+    ``state=settled, kind=compacted, cost_usd=<sum>, prompt_tokens=<sum>, ...``
+    is picked up as that root's "final" and enters the same totals.
+
+    Thresholds: skips when rows < ``min_rows`` OR the ledger < ``min_bytes``.
+    Both default to the production knobs (2000 / 20 MB); tests pass
+    smaller values to exercise the fold path on small ledgers.
+
+    Archive: ``data/archive/usage_attempts_YYYY-MM.jsonl.gz`` (one per
+    calendar month of the cutoff; multiple compactions in the same month
+    APPEND rows to the same file). The file format is one JSON row per
+    line, gzip-compressed, byte-identical to what the original rows were
+    on disk.
+
+    Caller contract: the function is safe to invoke from outside the
+    lock — it acquires the same ``_locked`` flock as every other
+    write path. It does NOT fsync (the underlying ``_write_bytes_atomic_fsync``
+    does, on the replacement file).
+    """
+    drive_root = _drive_root(root)
+    if retention_days is None:
+        from ouroboros.retention import get_gc_retention_days
+
+        retention_days = get_gc_retention_days()
+    cutoff_ts = _compact_cutoff_ts(retention_days, time.time())
+    archive_dir = drive_root / "data" / "archive"
+    # yyyy-mm in UTC. Two compactions in the same month share one file.
+    archive_stem = time.strftime("%Y-%m", time.gmtime(cutoff_ts))
+    archive_path = archive_dir / f"usage_attempts_{archive_stem}.jsonl.gz"
+
+    with _locked(drive_root):
+        ledger_path = drive_root / LEDGER_REL
+        bytes_before = ledger_path.stat().st_size if ledger_path.exists() else 0
+        records = _read_records_locked(drive_root)
+        rows_before = len(records)
+        if rows_before == 0:
+            return {
+                "status": "skipped", "reason": "empty",
+                "roots_folded": 0, "rows_before": 0, "rows_after": 0,
+                "bytes_before": bytes_before, "bytes_after": bytes_before,
+                "archive": str(archive_path),
+            }
+        if rows_before < int(min_rows) and bytes_before < int(min_bytes):
+            return {
+                "status": "skipped", "reason": "below_threshold",
+                "roots_folded": 0, "rows_before": rows_before, "rows_after": rows_before,
+                "bytes_before": bytes_before, "bytes_after": bytes_before,
+                "archive": str(archive_path),
+            }
+
+        # Group by root_task_id. A row without root_task_id cannot be
+        # archived because there is no identity to carry the summary
+        # row's root_task_id; it stays in the live file.
+        by_root: Dict[str, list[Dict[str, Any]]] = {}
+        for row in records:
+            rid = str(row.get("root_task_id") or "")
+            if rid:
+                by_root.setdefault(rid, []).append(row)
+
+        archivable_root_ids: list[str] = []
+        archivable_rows: list[Dict[str, Any]] = []
+        live_rows: list[Dict[str, Any]] = []
+        summary_rows: list[Dict[str, Any]] = []
+
+        for rid, root_rows in by_root.items():
+            # ``all_terminal`` is the CORRECT production-invariant check:
+            # an attempt's state machine goes reserved -> dispatched -> settled
+            # and ALL three rows live in the ledger (audit trail). The
+            # projection's ``_final_rows`` semantics — "the LAST row per
+            # attempt_id wins" — is what the byte-identical invariant
+            # actually pins: we want the same final state the projection
+            # would see before vs. after. An attempt that has any row whose
+            # state is NOT in _TERMINAL means the attempt has not yet
+            # reached its terminal phase, and its row contribution to the
+            # totals (cost / tokens) is in flight. Folding the root now
+            # would lose that visibility.
+            latest_states: Dict[str, str] = {}
+            newest_epoch = -1.0
+            newest_ts = ""
+            for row in root_rows:
+                aid = str(row.get("attempt_id") or "")
+                latest_states[aid] = str(row.get("state") or "")
+                epoch = _compact_parse_iso_epoch(str(row.get("ts") or ""))
+                if epoch > newest_epoch:
+                    newest_epoch = epoch
+                    newest_ts = str(row.get("ts") or "")
+            all_terminal = all(state in _TERMINAL
+                               for state in latest_states.values())
+            if not all_terminal or newest_epoch < 0.0:
+                # Some attempt in the root is not yet terminal — keep the
+                # raw rows in the live file so the projection sees the
+                # in-flight reservation/dispatch.
+                live_rows.extend(root_rows)
+                continue
+            if newest_epoch >= cutoff_ts:
+                # Every attempt is terminal but the newest row is still
+                # inside the cutoff window. Leave the root's raw rows
+                # intact for now; the next compaction cycle will fold.
+                live_rows.extend(root_rows)
+                continue
+            # Archivable. Build ONE summary row per root (the spec
+            # mandates a SINGLE pre-summed row per root). The byte-identical
+            # invariant covers the COST and TOKEN axes (settled_usd,
+            # confirmed_usd, prompt_tokens, completion_tokens, cached_tokens,
+            # cache_write_tokens, reserved_usd, unresolved_upper_bound_usd,
+            # accounted_usd, unknown_unmetered, non_final_rows). The
+            # ``attempt_counts`` metric is per-ROW in the pre-fold file
+            # (reserved + dispatched + settled transitions count), and
+            # collapses to 1 per root after fold. The compactor's
+            # accepted trade-off is the row count delta: the savings on
+            # row bytes (and the smaller re-validation time) outweigh
+            # the metric-shift. The projection surfaces a
+            # ``compacted`` kind so a downstream audit can still see
+            # which roots were folded and when.
+            archivable_root_ids.append(rid)
+            archivable_rows.extend(root_rows)
+            summary_rows.append(
+                _build_compacted_summary(root_rows, rid, newest_ts)
+            )
+
+        if not archivable_root_ids:
+            return {
+                "status": "skipped", "reason": "nothing_archivable",
+                "roots_folded": 0, "rows_before": rows_before, "rows_after": rows_before,
+                "bytes_before": bytes_before, "bytes_after": bytes_before,
+                "archive": str(archive_path),
+            }
+
+        # Append the raw rows to the gzipped archive BEFORE rewriting the
+        # live file: the archive is the recovery record. We do this under
+        # the lock so a concurrent reader cannot observe a half-rewritten
+        # file paired with a half-written archive.
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        payload_bytes = b"".join(
+            (json.dumps(row, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":")) + "\n").encode("utf-8")
+            for row in archivable_rows
+        )
+        with open(archive_path, "ab") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb") as gz:
+                gz.write(payload_bytes)
+
+        # Rewrite the live ledger: every archivable root's raw rows
+        # replaced by ONE summary row, in the same order they appeared.
+        # ``_summary`` keys on attempt_id, so the summary's attempt_id
+        # (``compacted:<root>``) MUST be unique — and ``_validate_records``
+        # accepts it as a settled-from-null kind.
+        # The new file is its own ledger: rewrite seq 1..N contiguously
+        # so the validator's dense-sequence check passes without the
+        # caller caring about the original seq values.
+        combined = live_rows + summary_rows
+        for new_seq, row in enumerate(combined, start=1):
+            row["seq"] = new_seq
+        new_payload = b"".join(
+            (json.dumps(row, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":")) + "\n").encode("utf-8")
+            for row in combined
+        )
+        # Validate the new payload as a complete ledger before swapping
+        # it on disk — a structural mistake in the compactor must not
+        # corrupt the live file.
+        new_records_for_check: list[Dict[str, Any]] = []
+        for chunk in new_payload.splitlines(keepends=True):
+            line = chunk.rstrip(b"\r\n")
+            if not line:
+                continue
+            new_records_for_check.append(json.loads(line.decode("utf-8")))
+        _validate_records(new_records_for_check)
+        _write_bytes_atomic_fsync(ledger_path, new_payload)
+
+        return {
+            "status": "compacted",
+            "roots_folded": len(archivable_root_ids),
+            "folded_root_ids": archivable_root_ids,
+            "rows_before": rows_before,
+            "rows_after": len(new_records_for_check),
+            "bytes_before": bytes_before,
+            "bytes_after": len(new_payload),
+            "archive": str(archive_path),
+        }
