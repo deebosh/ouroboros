@@ -108,7 +108,7 @@ def test_warm_segment_cache_revalidates_the_file_it_cached(data_root, compacted)
         uc.archived_attempt_ids(data_root)
     segment.unlink()
     segment.mkdir()  # a directory where the header names a segment: typed, never a bare IsADirectoryError
-    with pytest.raises(UsageLedgerCorrupt, match="not a regular file|could not complete|cannot be inspected"):  # the path shape (Windows) types the refused open, not the fstat
+    with pytest.raises(UsageLedgerCorrupt, match="not a regular file|could not complete|cannot be inspected|segment unreadable"):  # POSIX types the fstat; Windows the refused open (rc.2 matrix 33680647341: `segment unreadable`)
         uc.archived_attempt_ids(data_root)
 
 
