@@ -243,6 +243,14 @@ def _swarm_handoff_attempt(ctx: Any) -> Dict[str, Any]:
     return dict(attempt) if isinstance(attempt, dict) else {}
 
 
+# One wording for every graceful cost stop below, so the rails cannot drift.
+_FORCED_BEST_EFFORT_TAIL = (
+    "Produce your best final answer now from the verified work so far; clearly "
+    "mark anything unverified or incomplete. An honest best-effort result is the "
+    "expected outcome here, not a failure."
+)
+
+
 def _check_budget_limits(
     ctx: "_RoundLimitContext",
     budget_remaining_usd: Optional[float],
@@ -345,14 +353,23 @@ def _check_budget_limits(
         accumulated_usage["cost_stop_spend_basis"] = spend_basis
         return _forced_final_answer(
             ctx,
-            prompt=(
-                f"[BUDGET LIMIT] {finish_reason} Produce your best final answer now from "
-                "the verified work so far; clearly mark anything unverified or incomplete. "
-                "An honest best-effort result is the expected outcome here, not a failure."
-            ),
+            prompt=f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}",
             fallback_text=finish_reason,
             reason_code="budget_exhausted",
         )
+    prompt_estimate = int(accumulated_usage.get("_context_prompt_estimate") or 0)
+    if cost_ceiling.root_cap_usd is not None and deciding is not None and prompt_estimate > 0:
+        if task_pacing.wrapup_reservation_fits(
+            model=ctx.active_model, prompt_tokens=prompt_estimate,
+            root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding,
+        ) is False:
+            finish_reason = task_pacing.wrapup_unaffordable_text(deciding, cost_ceiling)
+            accumulated_usage["cost_stop_spend_basis"] = spend_basis
+            accumulated_usage["cost_stop_rail"] = "wrapup_reservation_unaffordable"
+            return _forced_final_answer(
+                ctx, prompt=f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}",
+                fallback_text=finish_reason, reason_code="budget_exhausted",
+            )
     # The old round-gated "[INFO] ... Wrap up if possible" nudge is replaced by
     # the latched cost milestones in task_pacing (transport: _inject_round_checkpoints).
 

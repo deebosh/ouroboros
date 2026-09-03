@@ -370,7 +370,12 @@ def _merge_scope(request: AttemptRequest) -> Tuple[AttemptRequest, UsageScope]:
         scope = replace(scope, root_task_id=scope.task_id)
     if request.global_limit_usd is None and scope.global_limit_usd is not None:
         request = replace(request, global_limit_usd=scope.global_limit_usd)
+    if not request.task_id and scope.task_id:
+        # The reservation below keys the task's observed cache split off this id.
+        request = replace(request, task_id=scope.task_id, root_task_id=scope.root_task_id)
     return request, scope
+from ouroboros._usage_cache_splits import (  # noqa: F401,E402  (re-exported seam)
+    last_task_cache_split, reset_task_cache_splits as _reset_task_cache_splits, stash_task_cache_split)
 from ouroboros._usage_rows_memo import (  # noqa: F401,E402  (re-exported seam)
     _LedgerRowsMemo, _ROWS_MEMO, _ROWS_MEMO_LOCK,
     _memoized_final_rows, _read_records_locked_cached, _render_cached,
@@ -541,6 +546,12 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
     cache_write_tokens = (
         prompt_tokens if str(request.model or "").lstrip("~").startswith(("anthropic/", "anthropic::")) else 0
     )
+    cached_tokens = 0
+    if cache_write_tokens:
+        # Price the task's OWN last observed split, not a full write every round;
+        # a missing, stale or other-model split keeps today's full-write reservation.
+        cached_tokens = min(prompt_tokens, last_task_cache_split(request.task_id, request.model) or 0)
+        cache_write_tokens = prompt_tokens - cached_tokens
     prompt_cache_ttl: Optional[str] = None
     if cache_write_tokens:
         # Price the applied candidate TTL; unknown construction sites use the owner SSOT.
@@ -561,6 +572,7 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
         prompt_tokens,
         max(0, int(request.max_completion_tokens or 0)),
         cache_usage={"cache_write_tokens": cache_write_tokens,
+                     "cached_tokens": cached_tokens,
                      "prompt_cache_ttl": prompt_cache_ttl},
         allow_live_fetch=True,
         provider=request.provider,
@@ -1056,6 +1068,10 @@ def settle_attempt(
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
         prompt_cache_ttl=str(normalized.get("prompt_cache_ttl") or ""),
+    )
+    stash_task_cache_split(
+        (_CURRENT_SCOPE.get() or UsageScope()).task_id, reservation.model, int(cached_tokens or 0),
+        ttl_seconds=3600.0 if str(normalized.get("prompt_cache_ttl") or "") == "1h" else 300.0,
     )
 
 

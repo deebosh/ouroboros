@@ -1500,7 +1500,11 @@ by "Provider Independence" above. Call-site imperatives:
   holds; own cost is a disclosed lower-bound fallback, and unavailable is
   unknown, never `$0`. Refresh `usage_accounting.last_root_accounting` only
   at rare cache-breaking decision surfaces, never per round or inside a
-  stable cached prefix (`tests/test_budget_limits.py`). Post-task
+  stable cached prefix (`tests/test_budget_limits.py`). Graceful
+  finalization precedes the ledger fence because the affordability rail
+  borrows the fence's own per-attempt reservation (cache-aware from the
+  task's last settled split), never a constant margin alone and never a
+  per-round ledger scan (`tests/test_tree_cost_ceiling.py`). Post-task
   consolidation/synthesis reads `usage_breakdown` once per root subtree and
   passes the same snapshot to summary and reflection; it is explicitly
   non-final because those flows have not spent yet — treating a read

@@ -523,6 +523,58 @@ def resolve_cost_ceiling(
         return CostCeiling(state=COST_CEILING_UNKNOWN, basis="resolve_error")
 
 
+def wrapup_unaffordable_text(deciding_usd: float, ceiling: CostCeiling) -> str:
+    """The owner-facing reason a task soft-lands on wrap-up affordability."""
+    cap = ceiling.root_cap_usd
+    cap_text = f" of the ${cap:.2f} hard tree cap" if cap is not None else ""
+    return (
+        f"Task tree spent ${deciding_usd:.3f}{cap_text}, and one more wrap-up call "
+        "would no longer be admitted by the ledger. Budget exhausted."
+    )
+
+
+def wrapup_reservation_fits(
+    *,
+    model: str,
+    prompt_tokens: int,
+    root_cap_usd: Optional[float],
+    deciding_usd: float,
+) -> Optional[bool]:
+    """Whether one more wrap-up call would still be admitted under the root cap.
+
+    Borrows the ledger fence's OWN per-attempt reservation so the graceful stop
+    and the fence can never disagree about what a wrap-up call costs: the same
+    function, the same cache split, the same arithmetic. Returns None -- fail
+    open, the axis stays silent -- when there is no bound task scope, no root
+    cap, or no known price for the route; a False is the only stop signal.
+
+    Deliberately does NOT read ``usage_projection``: the deciding spend is
+    passed in by the caller that already measured it, never re-scanned per
+    round."""
+    try:
+        from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
+        from ouroboros.pricing import infer_provider_from_model
+        from ouroboros.usage_accounting import AttemptRequest, _reservation_cost, current_usage_scope
+
+        scope = current_usage_scope()
+        task_id = str(getattr(scope, "task_id", "") or "") if scope is not None else ""
+        if not task_id or root_cap_usd is None or float(root_cap_usd) <= 0 or prompt_tokens <= 0:
+            return None
+        bound = _reservation_cost(AttemptRequest(
+            model=str(model or ""),
+            provider=infer_provider_from_model(str(model or "")),
+            prompt_tokens_estimate=int(prompt_tokens),
+            max_completion_tokens=MAIN_LOOP_MAX_TOKENS,
+            task_id=task_id,
+        ))
+        if bound is None:
+            return None
+        return bool(float(deciding_usd) + float(bound) <= float(root_cap_usd) + 1e-9)
+    except Exception:
+        log.warning("Wrap-up affordability check failed; axis stays silent", exc_info=True)
+        return None
+
+
 def _cost_checkpoint(
     kind: str,
     *,
