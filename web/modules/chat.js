@@ -468,10 +468,11 @@ export function createChatInstance({
     // a new revision) short-circuit instead of refetching. Any FAILED sync
     // resets it; scheduleHistorySync and the reconnect path never consult it.
     let initialHydrationPromise = null;
-    // the offline bootstrap painted the sessionStorage
-    // fallback and set historyLoaded=true — the first successful sync after
-    // the server comes back must still rebuild the feed from durable history.
-    let offlineBootstrapPainted = false;
+    // The next successful sync fully rebuilds the feed: the offline bootstrap
+    // painted the sessionStorage fallback, or live cards passed LIVE_CARD_CAP
+    // beyond the population the last rebuild left behind.
+    let fullRebuildPending = false;
+    let liveCardFloor = 0;
     // highest project revision whose history has been fetched;
     // refreshHistory only bypasses the sticky promise for a NEWER revision.
     let lastLoadedHistoryRevision = 0;
@@ -493,6 +494,7 @@ export function createChatInstance({
     let _viewportMutationDepth = 0;
     const isInstanceVisible = () =>
         Boolean(messagesDiv) && messagesDiv.offsetParent !== null && !document.hidden;
+    const LIVE_CARD_CAP = 200;
     const liveCardRecords = new Map();
     const markReviewAnchor = (r, on = false) => setReviewAnchor(r, on, setLiveCardPhase);
     const explicitCardExpansion = new Map();
@@ -1540,6 +1542,8 @@ export function createChatInstance({
             }
         });
         liveCardRecords.set(normalizedGroupId, record);
+        // Issue #135: >200 live cards past the last rebuild arm a full rebuild (like a reconnect); only a rebuild clears the arm.
+        if (liveCardRecords.size > liveCardFloor + LIVE_CARD_CAP) fullRebuildPending = true;
         // apply a name that arrived (task_named) before this card existed.
         const _pendingName = pendingSuggestedNames.get(normalizedGroupId);
         if (_pendingName && !record.isSubagent) {
@@ -2456,26 +2460,29 @@ export function createChatInstance({
             root.setAttribute('data-owner-hurry', '1');
             return true;
         }
+        // Tool counts and the error shapes that force a visible card are
+        // classified the same way for a subagent child and for its owner.
+        const applyEventTelemetry = () => {
+            if (eventType === 'tool_call_started') return markTaskToolCall(taskId, 1, false, rawTs);
+            if ((eventType === 'task_metrics_event' || eventType === 'task_eval') && Number.isFinite(Number(evt.tool_calls))) {
+                return markTaskToolCall(taskId, Number(evt.tool_calls), true, rawTs);
+            }
+            if (
+                eventType === 'tool_call_timeout'
+                || eventType === 'tool_timeout'
+                || eventType === 'llm_round_error'
+                || eventType === 'llm_api_error'
+                || (eventType === 'tool_call_finished' && evt.is_error)
+            ) return forceTaskCardVisibleChange(taskId, rawTs);
+            return false;
+        };
         // A known subagent child's log events update its linked child card.
         if (subagentChildParents.has(taskId)) {
             if (eventType === 'task_done') {
                 return routeSubagentTerminalToCard(taskId, evt);
             }
             if (subagentTerminalChildren.has(taskId)) return false;
-            let changed = false;
-            if (eventType === 'tool_call_started') {
-                changed = markTaskToolCall(taskId, 1, false, rawTs) || changed;
-            } else if ((eventType === 'task_metrics_event' || eventType === 'task_eval') && Number.isFinite(Number(evt.tool_calls))) {
-                changed = markTaskToolCall(taskId, Number(evt.tool_calls), true, rawTs) || changed;
-            } else if (
-                eventType === 'tool_call_timeout'
-                || eventType === 'tool_timeout'
-                || eventType === 'llm_round_error'
-                || eventType === 'llm_api_error'
-                || (eventType === 'tool_call_finished' && evt.is_error)
-            ) {
-                changed = forceTaskCardVisibleChange(taskId, rawTs) || changed;
-            }
+            let changed = applyEventTelemetry();
             const summary = summarizeChatLiveEvent(evt);
             if (!summary) return changed;
             const info = subagentChildParents.get(taskId);
@@ -2490,20 +2497,7 @@ export function createChatInstance({
             );
             return Boolean(changed || queued);
         }
-        let changed = false;
-        if (eventType === 'tool_call_started') {
-            changed = markTaskToolCall(taskId, 1, false, rawTs) || changed;
-        } else if ((eventType === 'task_metrics_event' || eventType === 'task_eval') && Number.isFinite(Number(evt.tool_calls))) {
-            changed = markTaskToolCall(taskId, Number(evt.tool_calls), true, rawTs) || changed;
-        } else if (
-            eventType === 'tool_call_timeout'
-            || eventType === 'tool_timeout'
-            || eventType === 'llm_round_error'
-            || eventType === 'llm_api_error'
-            || (eventType === 'tool_call_finished' && evt.is_error)
-        ) {
-            changed = forceTaskCardVisibleChange(taskId, rawTs) || changed;
-        }
+        let changed = applyEventTelemetry();
         changed = attachTaskDetailReviews(taskId, evt) || changed;
         const summary = summarizeChatLiveEvent(evt);
         if (!summary) return changed;
@@ -2774,20 +2768,16 @@ export function createChatInstance({
 
                 // First load/reconnect trusts server history and fully rebuilds the
                 // feed; routine post-completion syncs only fold in new task cards.
-                // a Load-older refetch (forceRebuild) and the first
-                // successful sync after an offline sessionStorage bootstrap
-                // rebuild fully too.
+                // Load-older (forceRebuild) and a pending arm (offline bootstrap / card cap) rebuild fully too.
                 const rebuildAll = !historyLoaded || fromReconnect || forceRebuild
-                    || offlineBootstrapPainted;
+                    || fullRebuildPending;
                 // On a soft reconnect the module (and its dedupe set)
                 // survives: a plain re-sync would dedupe-drop every bubble.
                 // Restore user text and rebuild from durable history on every
                 // rebuild — incl. includeUser=false triggers (clean open /
-                // 700ms resync), since offline-bootstrap cleared those too.
-                const renderUser = includeUser || fromReconnect || offlineBootstrapPainted;
-                if (!historyLoaded || fromReconnect) retiredTaskIds.clear();
-                // The extra rebuild causes (Load-older / offline bootstrap)
-                // replay everything too, so retirement resets with them.
+                // 700ms resync), since the rebuild clears those too.
+                const renderUser = includeUser || fromReconnect || fullRebuildPending;
+                // Every rebuild replays everything, so retirement resets with it.
                 if (rebuildAll) retiredTaskIds.clear();
 
                 // the ENTIRE mutation below (clear -> pass 1 ->
@@ -3112,8 +3102,7 @@ export function createChatInstance({
                 const wasFirstLoad = !historyLoaded;
                 historyLoaded = true;
                 lastHistorySyncSucceeded = true;
-                // The durable rebuild superseded the offline fallback paint.
-                offlineBootstrapPainted = false;
+                if (rebuildAll) { fullRebuildPending = false; liveCardFloor = liveCardRecords.size; }
                 // ANY successful sync leaves the instance hydrated
                 // — later hydration triggers ride this sticky promise.
                 initialHydrationPromise = historySyncPromise;
@@ -3229,7 +3218,7 @@ export function createChatInstance({
         // make the first successful post-outage sync a NON-rebuilding routine
         // fold over stale sessionStorage bubbles. Flag it so that sync
         // rebuilds from durable history instead.
-        if (!lastHistorySyncSucceeded) offlineBootstrapPainted = true;
+        if (!lastHistorySyncSucceeded) fullRebuildPending = true;
         ensureWelcomeMessage();
     })();
 
