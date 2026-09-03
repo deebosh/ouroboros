@@ -8907,7 +8907,7 @@ so the next monetary-accounting pin had nowhere to land. Owner batch №13 item
 2. **Shared fixtures, conftest-free.** `tests/fixtures_usage_compaction.py`
    follows the existing `tests/fixtures_*.py` convention
    (`tests/fixtures_e2e_cancellation.py`): it holds `data_root_any_tier`,
-   `data_root` (which still skips on Windows, byte-identical), `compacted`,
+   `data_root` (which skipped on Windows at the time of the split; the Windows kernel-tier lane removed that skip in the shared module), `compacted`,
    and the helpers both modules need (`_request`, `_ledger_lines`,
    `_ledger_rows`, `_settle`, `_seed_mixed_ledger`, `_compact`,
    `_append_raw_row`, `_raced_row`). Module-local helpers stayed local:
@@ -9080,7 +9080,9 @@ into 7.0. Base `72bb4949`.
    fail). The Windows no-ops of the pass itself are unchanged: no directory fsync, and no
    old-inode witness across `os.replace`, so a charge landed in the swap's last syscall is
    still lost silently there rather than quarantined.
-5. **rc.1 never built; rc.2 replaces it.** The tag run 33678261200 (`v7.0.0-rc.1` @ 72bb4949) failed at
+### Pre-release delivery, continued (batch №13 item 14; sits after the Windows kernel-tier lane's items by union-merge order)
+
+- **rc.1 never built; rc.2 replaces it.** The tag run 33678261200 (`v7.0.0-rc.1` @ 72bb4949) failed at
    the embedded-bundle step on macOS and Linux: `scripts/build_repo_bundle.py` refuses a HEAD the
    configured managed source branch does not contain, and `ci.yml` hardcoded that branch to
    `ouroboros` — a pre-release cut from `ouroboros_v7next` could never build. The build job now
@@ -9143,7 +9145,7 @@ Red-first pins (base `72bb4949`, `tests/test_evolution_restart_claims.py`):
 | `test_boot_attributes_the_commit_a_crash_left_without_a_receipt` | the intent is durable at the moment `git commit` runs, and the next boot absorbs the commit with a recovered receipt | `KeyError: 'tree_sha'` on `assert committed["intent_at_commit_time"]["tree_sha"] == binding["tree_sha"]` — nothing is written before the commit, and the boot leaves the transaction unattributed |
 | `test_boot_backfills_the_cycle_outcome_row_a_crash_lost` | after a crash between the absorb write and the append, the next boot re-derives the row and the digest reports `absorbed=1`; a third boot writes nothing | `FileNotFoundError … state/evolution_checkpoints.jsonl` — no row is ever re-derived |
 | `test_boot_refuses_to_attribute_a_head_that_is_not_the_reviewed_material` | a HEAD whose tree differs from the intent is never adopted (fail-closed guard, green on both trees) | — |
-| `test_containment_disowns_the_commit_intent_so_boot_cannot_adopt_it` | containment clears the intent, and the following boot leaves the commit unattributed (fail-closed guard on the new mechanism) | — |
+| `test_containment_disowns_the_commit_intent_so_boot_cannot_adopt_it` | containment clears the intent, and the following boot leaves the commit unattributed (fail-closed guard on the new mechanism; red on 72bb4949 too — `KeyError: 'commit_intent'`, the stage-3 delta lens re-derived it) | — |
 
 Gates on the fix commit: the affected suites (evolution restart/receipt/publication/redesign/
 state-integrity/scheduler, startup hygiene, module-handle extraction, commit gate, persistence
@@ -9332,7 +9334,7 @@ window pinnable at all.
 16:47**, rc 0 (57 scenario tests + the default-lane contract pins, now including S24/S25 and
 the fake's mutating-half pin). Also green on the candidate tree: `ruff check . --select F`,
 `scripts/regenerate_size_ratchet.py --check`, `scripts/v7next_adoption.py --release`
-(53 rows, 39 done / 14 deferred), `tests/test_docs_sync.py`,
+(53 rows, 39 done / 14 deferred at the time of the lane; 43 / 10 after the six lanes merged), `tests/test_docs_sync.py`,
 `tests/test_system_e2e_ci_lane.py`, `tests/test_generated_inventories.py`,
 `tests/test_phase3c_observability_gc.py` (16) and the 12 neighbouring suites that read
 `child_ref_promotion` / `copy_child_task_result` (229 passed).
@@ -9343,3 +9345,11 @@ servers spawn a `multiprocessing.Manager`, whose AF_UNIX listener path is built 
 `EOFError` from `Manager().start()` — the server then reports `supervisor_ready=True
 workers=0` and every scenario dies in `_wait_ready` after its full timeout, with the real
 cause only in `data/logs/server.log`.
+- **rc.2 → rc.3 → rc.4 → rc.5.** rc.2 (6bd799fb, run 33680647341): the kernel tier's first Windows
+  execution — one text pin red (`segment unreadable`), build skipped. rc.3 (5fbdabd3, run
+  33729370259): the late-settlement timing pin red a second time (2 of 5 legs) → its poll window
+  widened, build skipped. rc.4 (79597f9d, run 33730918681): the matrix green, the macOS BUILD red on
+  the branch-resolution step itself — `mapfile` is a bash-4 builtin and macOS runners execute `shell:
+  bash` under bash 3.2; ubuntu/windows passed the same step; rc.4 also predates the sixth lane
+  (626b48b7). rc.5 is cut from the integrated tip with the portable form and a pin against bash-4
+  builtins in the workflow (stage-3 delta lens H1/H2, `mega_review/stage3/DELTA_72bb4949_099dab0d.md`).

@@ -1129,6 +1129,9 @@ def test_ci_build_job_exports_release_tag_and_fetches_full_history():
     assert "Resolve the managed source branch of this tag" in workflow
     assert "git merge-base --is-ancestor HEAD origin/ouroboros" in workflow
     assert 'echo "OUROBOROS_MANAGED_SOURCE_BRANCH=$branch" >> "$GITHUB_ENV"' in workflow
+    # macOS runners execute `shell: bash` steps under bash 3.2: bash-4 builtins are
+    # a red build there and nowhere else (v7.0.0-rc.4, run 33730918681).
+    assert "mapfile" not in workflow and "readarray" not in workflow
     assert "fetch-depth: 0" in workflow
 
 

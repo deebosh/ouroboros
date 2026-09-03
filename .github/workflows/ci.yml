@@ -610,13 +610,15 @@ jobs:
           if git merge-base --is-ancestor HEAD origin/ouroboros; then
             branch=ouroboros
           else
-            mapfile -t branches < <(git branch -r --contains HEAD --format='%(refname:short)' \
-              | sed -n 's#^origin/##p' | grep -v '^HEAD$' || true)
-            if [ "${#branches[@]}" -ne 1 ]; then
-              echo "managed source branch for ${GITHUB_REF_NAME}: expected exactly one remote branch containing HEAD, got: ${branches[*]:-none}" >&2
+            # POSIX sh + bash 3.2 (macOS runners): no mapfile/readarray.
+            branches="$(git branch -r --contains HEAD --format='%(refname:short)' \
+              | sed -n 's#^origin/##p' | grep -v '^HEAD$' || true)"
+            count="$(printf '%s\n' "$branches" | sed '/^$/d' | wc -l | tr -d ' ')"
+            if [ "$count" != "1" ]; then
+              echo "managed source branch for ${GITHUB_REF_NAME}: expected exactly one remote branch containing HEAD, got: ${branches:-none}" >&2
               exit 1
             fi
-            branch="${branches[0]}"
+            branch="$(printf '%s\n' "$branches" | sed '/^$/d')"
           fi
           echo "managed source branch: $branch"
           echo "OUROBOROS_MANAGED_SOURCE_BRANCH=$branch" >> "$GITHUB_ENV"
