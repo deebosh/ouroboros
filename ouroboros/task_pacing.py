@@ -156,40 +156,66 @@ class BudgetSnapshot:
         return self.remaining_sec - self.reserve_sec
 
 
-def resolve_budget_profile(ctx: Any) -> Dict[str, Any]:
-    """The task's normalized budget_profile (from task_contract; absent -> defaults)."""
+def _supplied_budget_profile(ctx: Any) -> Any:
+    """The task's budget_profile exactly as SUPPLIED (task_contract, else the
+    metadata copy); ``None`` when the task carries none."""
     contract = getattr(ctx, "task_contract", None)
     if not isinstance(contract, dict):
         meta = getattr(ctx, "task_metadata", {})
         contract = meta.get("task_contract") if isinstance(meta, dict) else None
-    profile = contract.get("budget_profile") if isinstance(contract, dict) else None
-    if isinstance(profile, dict):
-        legacy_keys = []
-        if str(profile.get("improvement_policy") or "").strip().lower() == "until_deadline":
-            legacy_keys.append("until_deadline")
-        # Normalization materializes this field as ``None`` for every task.
-        # Only a supplied value is a deprecated alias; defaults stay quiet.
-        if profile.get("stall_rounds_threshold") is not None:
-            legacy_keys.append("stall_rounds_threshold")
-        if legacy_keys and not getattr(ctx, "_acceptance_pacing_deprecation_emitted", False):
-            try:
-                append_jsonl(
-                    pathlib.Path(getattr(ctx, "drive_root")) / "logs" / "events.jsonl",
-                    {
-                        "ts": utc_now_iso(),
-                        "type": "deprecated_task_pacing_alias",
-                        "task_id": str(getattr(ctx, "task_id", "") or ""),
-                        "aliases": legacy_keys,
-                        "removal": "next_major",
-                    },
-                )
-                ctx._acceptance_pacing_deprecation_emitted = True
-            except Exception:
-                log.warning(
-                    "Failed to persist deprecated task-pacing aliases %s",
-                    legacy_keys,
-                    exc_info=True,
-                )
+    return contract.get("budget_profile") if isinstance(contract, dict) else None
+
+
+def _deprecated_pacing_aliases(profile: Any) -> list:
+    """The one-minor compatibility aliases a SUPPLIED profile carries."""
+    if not isinstance(profile, dict):
+        return []
+    legacy_keys = []
+    if str(profile.get("improvement_policy") or "").strip().lower() == "until_deadline":
+        legacy_keys.append("until_deadline")
+    # Normalization materializes this field as ``None`` for every task.
+    # Only a supplied value is a deprecated alias; defaults stay quiet.
+    if profile.get("stall_rounds_threshold") is not None:
+        legacy_keys.append("stall_rounds_threshold")
+    return legacy_keys
+
+
+def observe_budget_profile(ctx: Any) -> Dict[str, Any]:
+    """The task's normalized budget_profile resolved SIDE-EFFECT FREE (R49).
+
+    The same answer ``resolve_budget_profile`` returns: the deprecation row and
+    its ctx latch belong to the path that OWNS a mutation, so a read-only
+    observer (the capacity projection every poll calls) writes nothing and
+    mutates no context attribute."""
+    return normalize_budget_profile(_supplied_budget_profile(ctx))
+
+
+def resolve_budget_profile(ctx: Any) -> Dict[str, Any]:
+    """The task's normalized budget_profile (from task_contract; absent ->
+    defaults), plus the one-shot ``deprecated_task_pacing_alias`` row a supplied
+    legacy alias owes. For the acceptance/pacing paths that own a mutation;
+    observers call ``observe_budget_profile`` for the same answer."""
+    profile = _supplied_budget_profile(ctx)
+    legacy_keys = _deprecated_pacing_aliases(profile)
+    if legacy_keys and not getattr(ctx, "_acceptance_pacing_deprecation_emitted", False):
+        try:
+            append_jsonl(
+                pathlib.Path(getattr(ctx, "drive_root")) / "logs" / "events.jsonl",
+                {
+                    "ts": utc_now_iso(),
+                    "type": "deprecated_task_pacing_alias",
+                    "task_id": str(getattr(ctx, "task_id", "") or ""),
+                    "aliases": legacy_keys,
+                    "removal": "next_major",
+                },
+            )
+            ctx._acceptance_pacing_deprecation_emitted = True
+        except Exception:
+            log.warning(
+                "Failed to persist deprecated task-pacing aliases %s",
+                legacy_keys,
+                exc_info=True,
+            )
     return normalize_budget_profile(profile)
 
 
@@ -374,6 +400,23 @@ def effective_finalization_reserve_sec(ctx: Any) -> float:
 
 def build_budget_snapshot(ctx: Any, *, profile: Optional[Dict[str, Any]] = None) -> BudgetSnapshot:
     """Snapshot the task's time budget from task_metadata deadline facts."""
+    return _budget_snapshot(ctx, profile=profile, latch=True)
+
+
+def observe_budget_snapshot(ctx: Any, *, profile: Dict[str, Any]) -> BudgetSnapshot:
+    """The same snapshot WITHOUT the fallback-anchor latch (owner R49).
+
+    A metadata-poor task (no ``created_at``/``started_at`` and no anchor latched
+    yet) has no usable window facts a read-only observer could obtain without
+    WRITING one, so it is reported as having no deadline axis: the count axis
+    still answers and no floor admission is projected. ``profile`` is required —
+    an observer must never fall back to the emitting profile resolver."""
+    return _budget_snapshot(ctx, profile=profile, latch=False)
+
+
+def _budget_snapshot(
+    ctx: Any, *, profile: Optional[Dict[str, Any]], latch: bool,
+) -> BudgetSnapshot:
     meta = getattr(ctx, "task_metadata", {})
     if not isinstance(meta, dict):
         return BudgetSnapshot(has_deadline=False)
@@ -384,6 +427,8 @@ def build_budget_snapshot(ctx: Any, *, profile: Optional[Dict[str, Any]] = None)
     if created is None:
         created = getattr(ctx, "_time_budget_started_at", None)
         if created is None:
+            if not latch:
+                return BudgetSnapshot(has_deadline=False)
             # Latch the fallback anchor exactly like the note path does (fable-5
             # cumulative review F4): without the latch every metadata-poor
             # snapshot re-anchors total to "now" and the pct reserve silently
