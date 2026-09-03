@@ -279,3 +279,170 @@ def test_unprovable_owner_terminality_keeps_the_payload_locked(tmp_path, monkeyp
     assert refused["reason"] == "payload_delegation_busy", refused
     assert "terminality cannot be proven" in refused["detail"]
     custody._CUSTODY.clear()
+
+
+# -- PC-F11B: a terminal owner's orphan is disposable by a live top-level task --
+
+
+def _payload_orphan(tmp_path, monkeypatch):
+    """A captured, settled, UNDISPOSED payload patch owned by a task that is
+    already terminal, plus a SECOND live top-level task on the same drive."""
+    from ouroboros.task_results import STATUS_FAILED, write_task_result
+
+    ctx, skill, handle, entry, capture = _captured(tmp_path, monkeypatch)
+    assert capture["status"] == "ready_with_changes", capture
+    write_task_result(tmp_path / "data", "t-payload", STATUS_FAILED)
+    return _other_task_ctx(tmp_path, monkeypatch), skill, entry, capture
+
+
+def _disposed_rows(tmp_path):
+    rows = list(custody._iter_rows(custody.event_log_path(tmp_path / "data")))
+    return [r for r in rows if str(r.get("type") or "") == custody.PATCH_DISPOSED]
+
+
+def test_top_level_task_may_reject_a_terminal_owners_payload_orphan(
+        tmp_path, monkeypatch):
+    from ouroboros.subagent_worktrees import find_execution_snapshot
+    from ouroboros.tools.subagent_integration import _integrate_delegated_patch
+
+    second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
+    out = _integrate_delegated_patch(second, "run-p1", "reject", "not wanted")
+    assert "🚫 Rejected" in out, out
+    assert "orphan of terminal task t-payload" in out, out
+    assert entry.patch_disposed == "rejected"
+    assert (skill / "notes.txt").read_text(encoding="utf-8") == "PENDING\n"
+    assert find_execution_snapshot("snapP") is None
+    rows = _disposed_rows(tmp_path)
+    assert [r["disposed_by_task_id"] for r in rows] == ["t-second"], rows
+    assert [r["task_id"] for r in rows] == ["t-payload"], rows
+    custody._CUSTODY.clear()
+
+
+def test_top_level_task_may_apply_a_terminal_owners_payload_orphan(
+        tmp_path, monkeypatch):
+    from ouroboros.tools.subagent_integration import _integrate_delegated_patch
+
+    second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
+    out = _integrate_delegated_patch(second, "run-p1", "apply", "looks good")
+    assert "✅ Integrated" in out, out
+    assert "orphan of terminal task t-payload" in out, out
+    assert (skill / "notes.txt").read_text(encoding="utf-8") == "DONE\n"
+    assert entry.patch_disposed == "applied"
+    rows = _disposed_rows(tmp_path)
+    assert [r["disposed_by_task_id"] for r in rows] == ["t-second"], rows
+    custody._CUSTODY.clear()
+
+
+def test_a_live_owners_run_is_still_not_owned_by_another_task(tmp_path, monkeypatch):
+    from ouroboros.task_results import write_task_result
+    from ouroboros.tools.subagent_integration import _integrate_delegated_patch
+
+    ctx, skill, handle, entry, capture = _captured(tmp_path, monkeypatch)
+    write_task_result(tmp_path / "data", "t-payload", "running")
+    second = _other_task_ctx(tmp_path, monkeypatch)
+    out = _integrate_delegated_patch(second, "run-p1", "reject", "")
+    assert "INTEGRATE_DELEGATED_NOT_OWNED" in out, out
+    assert "once the owner is terminal" in out, out
+    assert entry.patch_disposed == ""
+    assert (skill / "notes.txt").read_text(encoding="utf-8") == "PENDING\n"
+    custody._CUSTODY.clear()
+
+
+def test_non_top_level_profiles_may_not_dispose_an_orphan(tmp_path, monkeypatch):
+    from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.tools.subagent_integration import _integrate_delegated_patch
+
+    second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
+    for constraint, direct_chat in (
+            (TaskConstraint(mode="skill_repair"), False),
+            (TaskConstraint(mode="acting_subagent", surface="worktree"), False),
+            (None, True),                       # direct chat = operator_control
+    ):
+        second.task_constraint = constraint
+        second.is_direct_chat = direct_chat
+        out = _integrate_delegated_patch(second, "run-p1", "reject", "")
+        assert "INTEGRATE_DELEGATED_NOT_OWNED" in out, (constraint, out)
+        assert entry.patch_disposed == ""
+    custody._CUSTODY.clear()
+
+
+def test_wait_and_cancel_authority_did_not_widen_for_an_orphan(tmp_path, monkeypatch):
+    """`_owned_run` governs wait/cancel/answer and is deliberately NOT widened:
+    cancelling or answering a foreign run destroys work instead of closing an
+    obligation."""
+    import ouroboros.tools.delegate as delegate
+
+    second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
+    waited = json.loads(delegate._delegate_wait(second, "run-p1", wait_sec=1))
+    assert waited["reason"] == "run_not_owned", waited
+    cancelled = json.loads(delegate._delegate_cancel(second, "run-p1", "stop"))
+    assert cancelled["reason"] == "run_not_owned", cancelled
+    assert entry.patch_disposed == ""
+    custody._CUSTODY.clear()
+
+
+def test_git_lane_orphan_is_disposable_by_a_top_level_task_on_the_same_root(
+        tmp_path, monkeypatch):
+    """Owner decision 1=A carries no lane qualifier: the Git lane behaves the
+    same way, and its own guards (recorded target == active root, protected
+    paths, proven drift) are unchanged."""
+    from ouroboros.task_results import STATUS_FAILED, write_task_result
+    from ouroboros.subagent_worktrees import provision_execution_snapshot
+    from ouroboros.tools.delegate import _capture_terminal_patch
+    from ouroboros.tools.subagent_integration import _integrate_delegated_patch
+    from tests.test_delegated_run_isolation import _git, _isolated_entry, _nanny_ctx, _seed_target
+
+    target = _seed_target(tmp_path)
+    ctx = _nanny_ctx(tmp_path, target, monkeypatch)
+    handle = provision_execution_snapshot(
+        target_root=target, task_id="t-nanny", snapshot_id="snapG")
+    custody._CUSTODY.clear()
+    (pathlib.Path(handle.path) / "newfile.py").write_text("print('hi')\n", encoding="utf-8")
+    entry = _isolated_entry(ctx, target, handle)
+    assert _capture_terminal_patch(ctx, entry)["status"] == "ready_with_changes"
+
+    drive = custody.custody_root(ctx)
+    write_task_result(drive, "t-nanny", STATUS_FAILED)
+    second = _nanny_ctx(tmp_path, target, monkeypatch)
+    second.task_id = "t-second"
+
+    out = _integrate_delegated_patch(second, "run-1", "apply", "adopted")
+    assert "✅ Integrated" in out, out
+    assert "orphan of terminal task t-nanny" in out, out
+    assert (target / "newfile.py").read_text(encoding="utf-8") == "print('hi')\n"
+    assert "newfile.py" in _git(target, "diff", "--cached", "--name-only").stdout
+    assert entry.patch_disposed == "applied"
+    rows = [r for r in custody._iter_rows(custody.event_log_path(drive))
+            if str(r.get("type") or "") == custody.PATCH_DISPOSED]
+    assert [r["disposed_by_task_id"] for r in rows] == ["t-second"], rows
+    custody._CUSTODY.clear()
+
+
+def test_git_lane_orphan_from_a_different_active_root_is_a_target_mismatch(
+        tmp_path, monkeypatch):
+    from ouroboros.task_results import STATUS_FAILED, write_task_result
+    from ouroboros.subagent_worktrees import provision_execution_snapshot
+    from ouroboros.tools.delegate import _capture_terminal_patch
+    from ouroboros.tools.subagent_integration import _integrate_delegated_patch
+    from tests.test_delegated_run_isolation import _isolated_entry, _nanny_ctx, _seed_target
+
+    target = _seed_target(tmp_path)
+    ctx = _nanny_ctx(tmp_path, target, monkeypatch)
+    handle = provision_execution_snapshot(
+        target_root=target, task_id="t-nanny", snapshot_id="snapG")
+    custody._CUSTODY.clear()
+    (pathlib.Path(handle.path) / "newfile.py").write_text("print('hi')\n", encoding="utf-8")
+    entry = _isolated_entry(ctx, target, handle)
+    assert _capture_terminal_patch(ctx, entry)["status"] == "ready_with_changes"
+    write_task_result(custody.custody_root(ctx), "t-nanny", STATUS_FAILED)
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    second = _nanny_ctx(tmp_path, target, monkeypatch)
+    second.task_id = "t-second"
+    second.workspace_root = str(elsewhere)
+    out = _integrate_delegated_patch(second, "run-1", "apply", "")
+    assert "INTEGRATE_DELEGATED_TARGET_MISMATCH" in out, out
+    assert not (target / "newfile.py").exists()
+    assert entry.patch_disposed == ""
+    custody._CUSTODY.clear()

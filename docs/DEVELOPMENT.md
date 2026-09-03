@@ -1725,6 +1725,14 @@ by "Provider Independence" above. Call-site imperatives:
   `improvement passes = cycles − 1` (the retired acceptance key is migrated
   into the shared key at settings load and never binds at runtime).
 
+- A `PATCH_DISPOSED` row names its disposer (`disposed_by_task_id`),
+  because a non-owner may write it once the owner task is terminal;
+  wait/cancel/answer authority stays owner-only. A terminal custody
+  obligation is disclosed additively (an objective warning plus the
+  reason code, preserving a truncation rail code); converting a custody
+  fact into a review, objective or execution verdict is the defect this
+  rule prevents.
+
 Enforcement: the adversarial tests the first bullet mandates, plus
 `tests/test_child_result_disposition.py`, `tests/test_acceptance_fence.py`,
 `tests/test_v674_acceptance_dialogue.py`, and `tests/test_review_cycles.py`

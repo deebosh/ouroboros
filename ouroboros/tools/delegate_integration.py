@@ -576,8 +576,8 @@ def capture_stranded_patch(drive_root: Any, run: _RunCustody) -> Dict[str, Any]:
 # The profiles allowed to hold this authority. Mirrors the top-level principal
 # set of the tool-access policy: child/acting/repair/ephemeral contexts keep
 # their current gates and never acquire delegated payload mutation.
-_PAYLOAD_PRINCIPAL_PROFILES = frozenset({
-    "workspace_task", "external_workspace_task", "self_modification"})
+from ouroboros.tool_access import (
+    _TOP_LEVEL_PRINCIPAL_PROFILES as _PAYLOAD_PRINCIPAL_PROFILES)
 
 
 def payload_content_hash(payload_root: Any) -> str:
@@ -1339,7 +1339,9 @@ def integrate_payload_patch(
             )
 
     def _dispose(disposition: str, cleanup: bool) -> Tuple[bool, str]:
-        return _dispose_delegated(drive, entry, snapshot_key, reason, disposition, cleanup)
+        return _dispose_delegated(
+            drive, entry, snapshot_key, reason, disposition, cleanup,
+            disposed_by=str(getattr(ctx, "task_id", "") or ""))
 
     if decision == "reject":
         # A reject RELEASES the snapshot (the child's only copy): ready-only. It

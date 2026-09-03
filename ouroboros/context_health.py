@@ -400,14 +400,18 @@ def build_health_invariants(env: Any, task_id: str = "") -> str:
                     f"integrate_delegated_patch captures it at disposition)"
                 )
                 persist_clause = "The snapshot persists until that disposition."
-            # Ownership-aware instruction: integrate_delegated_patch refuses a
-            # non-owner with run_not_owned and only the owner can write the
-            # clearing PATCH_DISPOSED row, so a foreign reader is told WHO must
-            # act instead of being handed a call that structurally refuses.
+            # Ownership-aware instruction: a foreign reader is told WHO must act
+            # instead of being handed a call that structurally refuses. The
+            # wording is STATIC — stating the rule costs no per-orphan
+            # task_result read, and the tool itself is the authority on whether
+            # this particular caller may dispose this particular run.
             if task_id and run.task_id and task_id != run.task_id:
                 decide_clause = (
-                    f"Only its owner task {run.task_id} can decide it (a foreign "
-                    f"integrate_delegated_patch call is refused as run_not_owned)."
+                    f"Only its owner task {run.task_id} can decide it while that task "
+                    f"is live; once that task is terminal, a live top-level task holding "
+                    f"the same target may integrate_delegated_patch(run_id=..., "
+                    f"decision='apply'|'reject') it (a live-owner foreign call is "
+                    f"still refused as run_not_owned)."
                 )
             else:
                 decide_clause = (
