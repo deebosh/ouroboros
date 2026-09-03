@@ -1288,6 +1288,38 @@ def _compact_plan_review_wave(wave: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Reviewer TRANSPORT rows: how one wave was carried, not what it decided. A continuation
+# inherits the decision, so these are dropped from the newest wave of its authority core.
+_PLAN_REVIEW_TRANSPORT_KEYS = frozenset({
+    "actors", "actors_degraded", "evidence_manifest", "health_epoch", "reasons", "retry_key",
+})
+
+
+def plan_review_authority_core(state: Dict[str, Any]) -> Dict[str, Any]:
+    """The decision core of a plan-review state, without reviewer transport.
+
+    A predecessor's inherited ``plan_review_state`` is bounded per FIELD on the
+    raw state, so ~12K characters of ``actors`` per wave exhaust the preview
+    before the acceptance claims, findings and dispositions a continuation
+    needs. Keeps every wave and every identity fact, compacts all but the
+    newest the way the durable writer already does, and drops the transport
+    keys from the newest. Pure: nothing is mutated and nothing is written."""
+    if not isinstance(state, dict) or not state or int(state.get("schema_version") or 0) == 1:
+        return state
+    core = copy.deepcopy(state)
+    waves = core.get("waves") if isinstance(core.get("waves"), list) else None
+    if not waves:
+        return core
+    last = len(waves) - 1
+    core["waves"] = [
+        wave if not isinstance(wave, dict)
+        else (wave if wave.get("compact") else _compact_plan_review_wave(wave)) if index < last
+        else {k: v for k, v in wave.items() if k not in _PLAN_REVIEW_TRANSPORT_KEYS}
+        for index, wave in enumerate(waves)
+    ]
+    return core
+
+
 _PLAN_REVIEW_TRUNCATION_MARKER = "…[truncated to fit the durable state]"
 _PLAN_REVIEW_TRUNCATION_TIERS = (600, 200, 80, 40)
 # Identity-bearing keys the last-resort cut never touches (authority, not prose).
