@@ -157,10 +157,16 @@ def acceptance_evidence_ref_vocabulary(evidence: Any) -> Dict[str, str]:
         if name.startswith("__"):
             continue
         tag = str(provenance.get(name) or "")
-        if name == "tool_trajectory" and any(
-            isinstance(row, dict) and row.get("result_complete") is False
-            for row in (ev.get(name) if isinstance(ev.get(name), list) else [])
+        if name == "tool_trajectory" and (
+            ev.get("tool_trajectory_complete") is False
+            or bool(ev.get("tool_trajectory_omitted_leading"))
+            or any(
+                isinstance(row, dict) and row.get("result_complete") is False
+                for row in (ev.get(name) if isinstance(ev.get(name), list) else [])
+            )
         ):
+            basis = PARTIAL_SECTION
+        elif name == "repo_diff" and ev.get("repo_diff_complete") is False:
             basis = PARTIAL_SECTION
         elif name in DECLARED_INTENT_SECTIONS:
             basis = DECLARED_INTENT_SECTION

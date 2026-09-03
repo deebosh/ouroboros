@@ -473,7 +473,7 @@ def test_tool_timeout_settings_wins_when_higher():
 def test_review_evidence_no_truncation_by_default():
     """format_review_evidence_for_prompt must NOT truncate by default (max_chars=0)."""
     from ouroboros.review_evidence import format_review_evidence_for_prompt
-    big = {"has_evidence": True, "data": "x" * 10000}
+    big = {"has_evidence": True, "task_id": "task-review", "data": "x" * 10000}
     result = format_review_evidence_for_prompt(big)
     assert "truncated" not in result.lower()
     assert len(result) > 10000
@@ -482,7 +482,7 @@ def test_review_evidence_no_truncation_by_default():
 def test_review_evidence_bounded_with_omission_note():
     """format_review_evidence_for_prompt truncates with explicit omission note when max_chars>0."""
     from ouroboros.review_evidence import format_review_evidence_for_prompt
-    big = {"has_evidence": True, "data": "x" * 10000}
+    big = {"has_evidence": True, "task_id": "task-review", "data": "x" * 10000}
     result = format_review_evidence_for_prompt(big, max_chars=500)
     assert "OMISSION NOTE" in result
     assert "truncated at 500 chars" in result
@@ -863,7 +863,7 @@ def test_acceptance_panels_reach_the_synthesis_prompts():
 
     # Both together, and the existing bound still applies.
     both = format_review_evidence_for_prompt(
-        {"has_evidence": True, "data": "x" * 10_000}, max_chars=500,
+        {"has_evidence": True, "task_id": "task-review", "data": "x" * 10_000}, max_chars=500,
         acceptance_panels=panels,
     )
     assert "OMISSION NOTE" in both

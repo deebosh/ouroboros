@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import pathlib
+import pathlib, threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -35,6 +35,7 @@ from ouroboros.delegate_custody_usage import (
 )
 from ouroboros.utils import append_jsonl, utc_now_iso
 log = logging.getLogger(__name__)
+_PROJECT_RETIRE_LOCKS = tuple(threading.Lock() for _ in range(64))
 # The harness's own terminal vocabulary — one definition for the tool, the settler and
 # the reconciler (a second copy is how a "cancelled" run stayed live on one branch).
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
@@ -780,11 +781,14 @@ def is_terminal(detail: Dict[str, Any]) -> bool:
 
 
 def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
-    """Discharge registration (a project 404 is the asked-for outcome). The last sibling to settle attempts;
-    one project-level row discharges every sharer."""
+    """Serialize the replay-to-retirement decision for one shared project."""
+    lock = _PROJECT_RETIRE_LOCKS[hash(custody.project_id) % len(_PROJECT_RETIRE_LOCKS)]
+    with lock:
+        _retire_project_locked(drive_root, gateway, custody)
+
+
+def _retire_project_locked(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
     if custody.project_persistent:
-        # #362: stable identity outlives the run — discharge the duty DURABLY
-        # (replay must not resurrect owned=True), keep the project itself.
         custody.project_owned = False
         emit(drive_root, PROJECT_RETIRED, {"run_id": custody.run_id, "task_id": custody.task_id,
                                            "project_id": custody.project_id, "project_kept": True})
@@ -792,10 +796,6 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
     if not custody.project_id:
         return
     try:
-        # Sharers = EVERY run in the project (only the creator carries
-        # project_owned, but the daemon refuses removal while ANY sibling
-        # lives); the caller is mid-settlement, so only OTHERS defer.
-        # Removal is an AUTHORITY decision: complete view, caller row in it.
         from ouroboros.delegate_custody_usage import complete_custody_rows
 
         rows_raw = complete_custody_rows(

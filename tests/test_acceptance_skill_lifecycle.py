@@ -111,11 +111,51 @@ def test_a_skill_lifecycle_tool_call_names_the_skill_without_a_payload_edit(tmp_
             "old_text": "old", "new_text": "new",
         }},
         {"tool": "run_command", "args": {"cmd": "ls"}},
+        {"tool": "run_command", "args": {
+            "cmd": ["python3", "repair.py"], "cwd": "skill_payload/scripts",
+            "bucket": "external", "skill_name": "command-edited",
+        }},
+        {"tool": "run_script", "args": {
+            "script": "repair()", "cwd": "skill_payload",
+            "bucket": "clawhub", "skill_name": "script-edited",
+        }},
+        {"tool": "delegate_start", "args": {
+            "prompt": "repair", "root": "skill_payload",
+            "bucket": "user_repo", "skill_name": "delegate-edited",
+        }},
+        {"tool": "delegate_start", "args": {
+            "prompt": "ordinary workspace", "skill_name": "not-selected",
+        }},
     ]}
     assert skill_names_touched_by_trace(trace) == [
         "delegated", "probed", "executed", "toggled", "published",
-        "user-repo-skill",
+        "user-repo-skill", "command-edited", "script-edited", "delegate-edited",
     ]
+
+
+def test_real_skill_payload_selectors_feed_lifecycle_rows(tmp_path):
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir()
+    for name in ("command-edited", "script-edited", "delegate-edited"):
+        _write_skill(drive_root, name)
+    trace = {"tool_calls": [
+        {"tool": "run_command", "args": {
+            "cmd": ["python3", "repair.py"], "cwd": "skill_payload/scripts",
+            "bucket": "external", "skill_name": "command-edited",
+        }},
+        {"tool": "run_script", "args": {
+            "script": "repair()", "cwd": "skill_payload",
+            "bucket": "external", "skill_name": "script-edited",
+        }},
+        {"tool": "delegate_start", "args": {
+            "prompt": "repair", "root": "skill_payload",
+            "bucket": "external", "skill_name": "delegate-edited",
+        }},
+    ]}
+
+    assert [row["name"] for row in acceptance_skill_lifecycle(
+        drive_root, trace, "root-1",
+    )] == ["command-edited", "script-edited", "delegate-edited"]
 
 
 def test_split_root_packet_reads_skill_lifecycle_from_the_canonical_root(tmp_path):

@@ -186,6 +186,11 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
     assert "state/consciousness_observations.jsonl" in architecture
     assert "Source-complete decision pipeline" in development
     assert "Context and growth matrix" in development
+    assert "state/skill_review_root_tasks.jsonl" in development
+    assert "state/skill_review_root_tasks.jsonl" in architecture
+    assert "SKILL_REVIEW_ROOT_TASKS_WARN_BYTES" in architecture
+    assert "seven hot stores" in architecture
+    assert "seven os.stat calls" in _read("ouroboros/agent_startup_checks.py")
     for item in (
         "source_completeness",
         "actor_readable_projection",

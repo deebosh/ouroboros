@@ -24,7 +24,14 @@ class SkillReadiness:
     manual_dependencies: List[str] = field(default_factory=list)
 
 
-_SKILL_PAYLOAD_EDIT_TOOLS = frozenset({"write_file", "edit_text"})
+_SKILL_PAYLOAD_EDIT_TOOLS = frozenset({
+    "write_file", "edit_text", "run_command", "run_script", "delegate_start",
+})
+_SKILL_PAYLOAD_SELECTOR_KEYS = {
+    "run_command": "cwd", "run_script": "cwd", "delegate_start": "root",
+}
+_ROOT_TASK_PROJECTION_MAX_BYTES = 1024 * 1024
+_ROOT_TASK_PROJECTION_MAX_RECORDS = 512
 
 
 def _skill_tool_identity_mapping() -> Dict[str, str]:
@@ -61,6 +68,14 @@ def skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
             if named and named not in names:
                 names.append(named)
             continue
+        selector_key = _SKILL_PAYLOAD_SELECTOR_KEYS.get(tool)
+        if selector_key:
+            selector = str(args.get(selector_key) or "").replace("\\", "/").rstrip("/")
+            if not (
+                selector == "skill_payload"
+                or (selector_key == "cwd" and selector.startswith("skill_payload/"))
+            ):
+                continue
         bucket = str(args.get("bucket") or "").strip().lower()
         skill_name = str(args.get("skill_name") or "").strip()
         if bucket in {"external", "clawhub", "ouroboroshub", "user_repo"} and skill_name:
@@ -82,6 +97,7 @@ def skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
 
 def acceptance_skill_lifecycle(
     drive_root: Any, llm_trace: Dict[str, Any], root_task_id: str = "",
+    task_started_at: str = "",
 ) -> List[Dict[str, Any]]:
     """Per-skill lifecycle facts for the acceptance packet — VISIBILITY ONLY.
 
@@ -95,7 +111,9 @@ def acceptance_skill_lifecycle(
     if root is None:
         return []
     names = list(skill_names_touched_by_trace(llm_trace or {}))
-    for name in _skill_names_from_review_history(root, str(root_task_id or "")):
+    for name in _skill_names_from_review_history(
+        root, str(root_task_id or ""), task_started_at=task_started_at,
+    ):
         if name not in names:
             names.append(name)
     if not names:
@@ -123,7 +141,9 @@ def acceptance_skill_lifecycle(
     return rows
 
 
-def _skill_names_from_review_history(drive_root: pathlib.Path, root_task_id: str) -> List[str]:
+def _skill_names_from_review_history(
+    drive_root: pathlib.Path, root_task_id: str, *, task_started_at: str = "",
+) -> List[str]:
     """Skills named by the compact root-task projection, never full histories."""
     if not root_task_id:
         return []
@@ -133,10 +153,18 @@ def _skill_names_from_review_history(drive_root: pathlib.Path, root_task_id: str
     path = root_task_projection_path(drive_root)
     names: List[str] = []
     try:
-        rows = iter_jsonl_objects(path)
+        rows = list(iter_jsonl_objects(
+            path,
+            max_entries=_ROOT_TASK_PROJECTION_MAX_RECORDS,
+            tail_bytes=_ROOT_TASK_PROJECTION_MAX_BYTES,
+        ))
     except OSError:
         return []
-    for row in rows:
+    cutoff = str(task_started_at or "").replace("Z", "+00:00")
+    for row in reversed(rows):
+        row_ts = str(row.get("ts") or "").replace("Z", "+00:00")
+        if cutoff and row_ts and row_ts < cutoff:
+            break
         if not isinstance(row, dict) or str(row.get("root_task_id") or "") != root_task_id:
             continue
         name = str(row.get("skill") or "").strip()

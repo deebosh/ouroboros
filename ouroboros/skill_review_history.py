@@ -565,6 +565,8 @@ def append_history_once(
                 # clearing only a marker whose facts are already in the row.
                 if _marker_facts_landed(existing, marker):
                     clear_dispatch_marker(drive_root, skill_name, wave_id=job_id)
+                if not _append_root_task_projection_once(drive_root, skill_name, existing):
+                    log.warning("skill review root-task projection did not land for %s", skill_name)
                 return True
             payload = _merge_marker_facts(payload, marker)
             safe_payload = _redact_history_payload(payload)
@@ -582,9 +584,55 @@ def append_history_once(
                     drive_root, skill_name,
                     wave_id=str(payload.get("wave_id") or job_id),
                 )
+            if not _append_root_task_projection_once(drive_root, skill_name, safe_payload):
+                log.warning("skill review root-task projection did not land for %s", skill_name)
             return True
         except OSError:
             log.warning("skill review terminal history append failed for %s", skill_name, exc_info=True)
             return False
+    finally:
+        release_exclusive_file_lock(lock_path, lock_fd)
+
+
+def _append_root_task_projection_once(
+    drive_root: pathlib.Path, skill_name: str, payload: Dict[str, Any],
+) -> bool:
+    """Append the derived root-task row once, checking its bounded tail."""
+    root_task_id = str(payload.get("root_task_id") or "")
+    outcome_id = str(payload.get("job_id") or payload.get("wave_id") or "")
+    if not root_task_id or not outcome_id:
+        return True
+    path = root_task_projection_path(drive_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = jsonl_append_lock_path(path)
+    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0)
+    if lock_fd is None:
+        return False
+    try:
+        rows = iter_jsonl_objects(path, max_entries=128, tail_bytes=1024 * 1024)
+        if any(
+            str(row.get("root_task_id") or "") == root_task_id
+            and str(row.get("skill") or "") == skill_name
+            and str(row.get("job_id") or row.get("wave_id") or "") == outcome_id
+            for row in rows
+        ):
+            return True
+        row = {
+            "ts": str(payload.get("ts") or ""), "root_task_id": root_task_id,
+            "skill": skill_name, "job_id": outcome_id,
+        }
+        data = (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return True
+    except OSError:
+        log.warning("skill review root-task projection append failed for %s", skill_name)
+        return False
     finally:
         release_exclusive_file_lock(lock_path, lock_fd)

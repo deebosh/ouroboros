@@ -222,3 +222,49 @@ def test_pre_marker_record_falls_back_to_the_stored_request(tmp_path):
     assert record_persistent({"request": {"access": "workspace_write",
                                           "execution": {"isolation": "live"}}}) is False
     assert record_persistent({}) is False
+
+
+def test_concurrent_final_siblings_retire_shared_project_once(tmp_path):
+    import json
+    import threading
+
+    dc = custody
+
+    class _RacingGateway:
+        def __init__(self):
+            self.calls = []
+            self.second_arrived = threading.Event()
+
+        def remove_project(self, project_id):
+            self.calls.append(project_id)
+            if len(self.calls) == 1:
+                self.second_arrived.wait(timeout=0.25)
+            else:
+                self.second_arrived.set()
+
+    for run_id, task_id in (("run-a", "task-a"), ("run-b", "task-b")):
+        dc.record_started(tmp_path, dc.RunCustody(
+            run_id=run_id, task_id=task_id, route_id="r", model="m",
+            project_id="project-race", project_owned=True, ledger_root=str(tmp_path),
+        ))
+        dc.emit(tmp_path, dc.SETTLED, {"run_id": run_id, "task_id": task_id, "route": "r"})
+    rows = dc.replay(tmp_path)
+    gateway = _RacingGateway()
+    threads = [
+        threading.Thread(target=dc.retire_project, args=(tmp_path, gateway, rows[run_id]))
+        for run_id in ("run-a", "run-b")
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert gateway.calls == ["project-race"]
+    retired = [
+        row for row in (
+            json.loads(line) for line in
+            (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ) if row.get("type") == dc.PROJECT_RETIRED
+    ]
+    assert len(retired) == 1

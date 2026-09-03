@@ -103,7 +103,8 @@ def test_vocabulary_enumerates_packet_exhibits_exactly():
     assert vocab["verification_receipts"] == "packet_section"  # the exhibit list itself
     assert vocab["repo_diff"] == "packet_section"
     assert vocab["verification_summary"] == "packet_section"
-    assert vocab["tool_trajectory"] == "packet_section"   # host-recorded tool results
+    # The packet discloses four omitted leading rows, so the carried tail is partial.
+    assert vocab["tool_trajectory"] == "partial"
     assert "__provenance__" not in vocab
     # Robust to junk input.
     assert acceptance_evidence_ref_vocabulary(None) == {}

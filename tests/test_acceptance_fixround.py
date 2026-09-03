@@ -9,8 +9,8 @@ def test_prompt_projection_keeps_panels_ahead_of_an_oversized_lens():
     from ouroboros.review_evidence import format_review_evidence_for_prompt
 
     rendered = format_review_evidence_for_prompt(
-        {"has_evidence": True, "oversized_lens": "L" * 30_000},
-        max_chars=4_000,
+        {"has_evidence": True, "task_id": "task-panel", "oversized_lens": "L" * 30_000},
+        max_chars=1_100,
         acceptance_panels=[{
             "panel_id": "panel-must-survive",
             "surface": "task_acceptance",
@@ -22,6 +22,11 @@ def test_prompt_projection_keeps_panels_ahead_of_an_oversized_lens():
                 "slot_id": "slot_1",
                 "response_ref": {"call_id": "response-must-survive"},
             }],
+        }, {
+            "panel_id": "panel-dropped-whole",
+            "surface": "task_acceptance",
+            "aggregate_signal": "PASS",
+            "reason": "trailing record " + "T" * 1_000,
         }],
     )
 
@@ -31,7 +36,14 @@ def test_prompt_projection_keeps_panels_ahead_of_an_oversized_lens():
     assert "deciding finding" in rendered
     assert '"reason_omitted_chars"' in rendered
     assert "response-must-survive" in rendered
+    panel_json = rendered.split("\n\n", 1)[0].split("\n", 1)[1]
+    panel_projection = json.loads(panel_json)
+    assert panel_projection["records"][0]["panel_id"] == "panel-must-survive"
+    assert panel_projection["records_omitted"] == 1
+    assert "panel-dropped-whole" not in rendered
     assert "OMISSION NOTE" in rendered
+    assert "canonical source_ref" in rendered
+    assert '"reader": "get_task_result"' in rendered
 
 
 def test_partial_trajectory_is_non_resolving_but_complete_trajectory_resolves():
@@ -78,8 +90,97 @@ def test_partial_trajectory_is_non_resolving_but_complete_trajectory_resolves():
     assert task_acceptance_is_clean(_result(complete_actor)) is True
 
 
+def test_budget_truncated_repo_diff_cannot_resolve_clean_acceptance():
+    from ouroboros.review_evidence import (
+        _accept_enforce_budget,
+        annotate_criteria_evidence_resolution,
+    )
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
+    from ouroboros.review_substrate import task_acceptance_is_clean
+
+    packet = _accept_enforce_budget({
+        "repo_diff": "diff --git a/a b/a\n" + "x" * 50_000,
+        "repo_diff_source_ref": {"task_id": "task-diff", "artifact": "repo_diff.patch"},
+        "__provenance__": {"repo_diff": "host_attested"},
+    }, budget=25_000)
+    actor = {
+        "signal": "PASS",
+        "parsed": {"outcome_tier": "solved", "criteria_used": [{
+            "criterion": "the patch is correct", "status": "supported",
+            "evidence_refs": ["repo_diff"],
+        }]},
+    }
+    annotate_criteria_evidence_resolution([actor], packet)
+
+    assert packet["repo_diff_complete"] is False
+    assert acceptance_evidence_ref_vocabulary(packet)["repo_diff"] == "partial"
+    result = SimpleNamespace(aggregate_signal="PASS", degraded=False, actors=[actor])
+    assert task_acceptance_is_clean(result) is False
+
+
+def test_leading_trajectory_omission_from_packet_producer_cannot_resolve_clean(tmp_path):
+    from ouroboros.review_evidence import (
+        _ACCEPT_TRAJECTORY_MAX_CALLS,
+        annotate_criteria_evidence_resolution,
+        build_task_acceptance_evidence,
+    )
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
+    from ouroboros.review_substrate import task_acceptance_is_clean
+    from ouroboros.tools.registry import ToolContext
+
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="task-traj")
+    packet = build_task_acceptance_evidence(
+        ctx, drive_root=tmp_path, task_id="task-traj",
+        llm_trace={"tool_calls": [
+            {"tool": "read_file", "status": "ok", "result": str(index)}
+            for index in range(_ACCEPT_TRAJECTORY_MAX_CALLS + 1)
+        ]},
+    )
+    actor = {
+        "signal": "PASS",
+        "parsed": {"outcome_tier": "solved", "criteria_used": [{
+            "criterion": "the execution was sound", "status": "supported",
+            "evidence_refs": ["tool_trajectory"],
+        }]},
+    }
+    annotate_criteria_evidence_resolution([actor], packet)
+
+    assert packet["tool_trajectory_omitted_leading"] == 1
+    assert acceptance_evidence_ref_vocabulary(packet)["tool_trajectory"] == "partial"
+    result = SimpleNamespace(aggregate_signal="PASS", degraded=False, actors=[actor])
+    assert task_acceptance_is_clean(result) is False
+
+
+def test_budget_recapped_trajectory_from_producer_cannot_resolve_clean():
+    from ouroboros.review_evidence import (
+        _accept_enforce_budget,
+        annotate_criteria_evidence_resolution,
+    )
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
+    from ouroboros.review_substrate import task_acceptance_is_clean
+
+    packet = _accept_enforce_budget({
+        "tool_trajectory": [{"tool": "run_command", "status": "ok", "result": "x" * 30_000}],
+        "__provenance__": {"tool_trajectory": "tool_result"},
+    }, budget=5_000)
+    actor = {
+        "signal": "PASS",
+        "parsed": {"outcome_tier": "solved", "criteria_used": [{
+            "criterion": "the command passed", "status": "supported",
+            "evidence_refs": ["tool_trajectory"],
+        }]},
+    }
+    annotate_criteria_evidence_resolution([actor], packet)
+
+    assert packet["tool_trajectory"][0]["result_complete"] is False
+    assert acceptance_evidence_ref_vocabulary(packet)["tool_trajectory"] == "partial"
+    result = SimpleNamespace(aggregate_signal="PASS", degraded=False, actors=[actor])
+    assert task_acceptance_is_clean(result) is False
+
+
 def test_skill_history_root_task_projection_avoids_whole_history_reads(monkeypatch, tmp_path):
     from ouroboros.skill_readiness import _skill_names_from_review_history
+    from ouroboros import utils
 
     skill_dir = tmp_path / "state" / "skills" / "large-skill"
     skill_dir.mkdir(parents=True)
@@ -94,6 +195,8 @@ def test_skill_history_root_task_projection_avoids_whole_history_reads(monkeypat
         encoding="utf-8",
     )
     original = Path.read_text
+    original_iter = utils.iter_jsonl_objects
+    bounded_projection_reads = []
 
     def _guarded_read(path, *args, **kwargs):
         if path.name == "review_history.jsonl":
@@ -101,12 +204,29 @@ def test_skill_history_root_task_projection_avoids_whole_history_reads(monkeypat
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", _guarded_read)
+    def _bounded_iter(path, *args, **kwargs):
+        if path.name == "skill_review_root_tasks.jsonl":
+            bounded_projection_reads.append(kwargs)
+            assert kwargs.get("tail_bytes")
+            assert kwargs.get("max_entries")
+        return original_iter(path, *args, **kwargs)
+
+    monkeypatch.setattr(utils, "iter_jsonl_objects", _bounded_iter)
     assert _skill_names_from_review_history(tmp_path, "root-wanted") == ["large-skill"]
+    assert len(bounded_projection_reads) == 1
 
 
 def test_terminal_skill_review_updates_the_root_task_projection(tmp_path):
     from ouroboros.skill_review_runner import _append_terminal_history
 
+    assert _append_terminal_history(
+        tmp_path,
+        "projected-skill",
+        {"job_id": "job-1", "root_task_id": "root-1"},
+        status="pass",
+        terminal_reason="review_complete",
+        ts="2026-09-03T00:00:00+00:00",
+    )
     assert _append_terminal_history(
         tmp_path,
         "projected-skill",

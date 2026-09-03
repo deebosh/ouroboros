@@ -322,17 +322,6 @@ def _append_terminal_history(
             ts=ts,
         ),
     )
-    root_task_id = str(job_data.get("root_task_id") or "")
-    if appended and root_task_id:
-        projected = append_jsonl(
-            skill_review_history.root_task_projection_path(drive_root),
-            {
-                "ts": ts, "root_task_id": root_task_id, "skill": skill_name,
-                "job_id": str(job_data.get("job_id") or ""),
-            },
-        )
-        if not projected:
-            log.warning("skill review root-task projection did not land for %s", skill_name)
     if not appended:
         # LOUD failure (F3): a silently lost terminal row un-counts spent
         # review money and hides the verdict from the derived ledger. The

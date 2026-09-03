@@ -823,6 +823,7 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
         dropped = len(traj) - 20
         ev["tool_trajectory"] = traj[-20:]
         ev["tool_trajectory_omitted_leading"] = int(ev.get("tool_trajectory_omitted_leading", 0) or 0) + dropped
+        ev["tool_trajectory_complete"] = False
         notes.append(f"kept the most-recent 20 tool calls (dropped {dropped} earlier)")
         omissions.append({"section": "tool_trajectory", "omitted": dropped, "reason": "evidence_budget"})
     # Re-cap trajectory results before lower-priority evidence sections.
@@ -835,10 +836,10 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
         for c in traj:
             if isinstance(c, dict) and len(str(c.get("result") or "")) > share:
                 _cap_result(c, share)
-                if "result_complete" in c:
-                    c["result_complete"] = False
+                c["result_complete"] = False
                 recapped += 1
         if recapped:
+            ev["tool_trajectory_complete"] = False
             notes.append(f"re-capped {recapped} trajectory results to ~{share} chars each for budget")
             omissions.append({"section": "tool_trajectory_results", "omitted": recapped, "reason": "evidence_budget"})
         # Escape-proof backstop: shed to the 700-char floor if needed.
@@ -847,8 +848,7 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
             for c in traj:
                 if isinstance(c, dict) and len(str(c.get("result") or "")) > 700:
                     _cap_result(c, 700)
-                    if "result_complete" in c:
-                        c["result_complete"] = False
+                    c["result_complete"] = False
                     floored += 1
             if floored:
                 notes.append(f"floored {floored} trajectory results to 700 chars for budget")
@@ -877,6 +877,7 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
         preview = truncate_review_artifact(full_diff, limit=20000)
         if len(preview) < len(full_diff):
             ev["repo_diff"] = preview
+            ev["repo_diff_complete"] = False
             notes.append(f"previewed the repo diff at 20000 of {len(full_diff)} chars")
             omissions.append({
                 "section": "repo_diff",
@@ -1131,7 +1132,10 @@ def build_task_acceptance_evidence(
         from ouroboros.skill_readiness import acceptance_skill_lifecycle
 
         lifecycle_root = getattr(ctx, "budget_drive_root", None) or drive_root
-        if lifecycle := acceptance_skill_lifecycle(lifecycle_root, llm_trace or {}, root_task_id):
+        if lifecycle := acceptance_skill_lifecycle(
+            lifecycle_root, llm_trace or {}, root_task_id,
+            task_started_at=str(meta.get("started_at") or meta.get("created_at") or ""),
+        ):
             ev["skill_lifecycle"] = redact_projection(lifecycle).value
             prov["skill_lifecycle"] = "host_attested"
     repo_diff = collect_turn_diff(ctx, include_recent_commit=include_recent_commit)
@@ -1165,6 +1169,7 @@ def build_task_acceptance_evidence(
             prov["tool_trajectory"] = "tool_result"
             if omitted:
                 ev["tool_trajectory_omitted_leading"] = omitted
+                ev["tool_trajectory_complete"] = False
         if unresolved:
             partial_sources.extend(unresolved)
         notes = llm_trace.get("reasoning_notes") or []
@@ -1405,19 +1410,57 @@ def format_review_evidence_for_prompt(
         for panel in (acceptance_panels if isinstance(acceptance_panels, list) else [])
         if isinstance(panel, dict)
     ]
+    task_id = str(evidence.get("task_id") or _kwargs.get("task_id") or "")
+    source_ref: Dict[str, Any] = (
+        {"kind": "task_result", "reader": "get_task_result", "task_id": task_id}
+        if task_id else {}
+    )
+    if not source_ref:
+        source_ref = next((
+            ref for row in rows for ref in (row.get("response_refs") or [])
+            if isinstance(ref, dict) and ref
+        ), {})
     sections: List[str] = []
     if rows:
+        from ouroboros._outcome_receipts import disclosed_list_projection
+
+        keep = len(rows)
+        projection = disclosed_list_projection(
+            rows, key="records", limit=keep, item=lambda row: row,
+        )
+        while source_ref and max_chars > 0 and keep > 1:
+            candidate = "TASK ACCEPTANCE PANELS:\n" + json.dumps(
+                projection, ensure_ascii=False, indent=2,
+            )
+            if len(candidate) <= max_chars:
+                break
+            keep -= 1
+            projection = disclosed_list_projection(
+                rows, key="records", limit=keep, item=lambda row: row,
+            )
+        if projection["records_omitted"]:
+            projection["omission_note"] = "whole trailing panel records omitted"
+            projection["omission_source_ref"] = source_ref
         sections.append(
-            "TASK ACCEPTANCE PANELS:\n" + json.dumps(rows, ensure_ascii=False, indent=2)
+            "TASK ACCEPTANCE PANELS:\n"
+            + json.dumps(projection, ensure_ascii=False, indent=2)
         )
     if evidence and evidence.get("has_evidence"):
-        sections.append(json.dumps(evidence, ensure_ascii=False, indent=2))
+        rendered_evidence = json.dumps(evidence, ensure_ascii=False, indent=2)
+        prefix_chars = len(sections[0]) + 2 if sections else 0
+        limit = max_chars - prefix_chars if max_chars > 0 else 0
+        if source_ref and max_chars > 0 and len(rendered_evidence) > max(1, limit):
+            rendered_evidence = truncate_review_artifact(
+                rendered_evidence, limit=max(1, limit),
+            )
+            rendered_evidence += (
+                f"\n⚠️ OMISSION SOURCE: review evidence truncated at {max_chars} chars; "
+                f"canonical source_ref={json.dumps(source_ref, ensure_ascii=False)}"
+            )
+        sections.append(rendered_evidence)
     if not sections:
         return "(no commit/advisory review evidence recorded for this task)"
-    full = "\n\n".join(sections)
-    if max_chars > 0 and len(full) > max_chars:
-        return full[:max_chars] + f"\n⚠️ OMISSION NOTE: review evidence truncated at {max_chars} chars; original length {len(full)}"
-    return full
+    return "\n\n".join(sections)
 
 
 def _attempt_to_dict(item: Any) -> Dict[str, Any]:
