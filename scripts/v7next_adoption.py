@@ -94,11 +94,9 @@ DEFERRED_OUT_OF_V70 = {
     # green browser lane — as the condition on the tag (DEFER-BROWSER).
     "ABI-8": OWNER,
     "DEFER-BROWSER": OWNER,
-    # Operator disclosures: crash windows the F4 wave-4 system-E2E lane found
-    # and, by that lane's rule, did not fix. Named here so they cannot pass as
-    # shipped, and so the owner can pull either into 7.0.
-    "W4-F1": OPERATOR,
-    "W4-F2": OPERATOR,
+    # (W4-F1 and W4-F2 — the two evolution crash windows the F4 wave-4 lane
+    # disclosed instead of fixing — were pulled INTO 7.0 by owner batch №13
+    # item 9 = B, so they are no longer deferrals: their rows read done.)
     # Owner-sanctioned deferrals that lived as prose inside done rows or in the
     # ledger until the stage-2 bookkeeping made them rows (quotes in each row):
     # batch №7 5=A (headless cancel receipts), batch №9 №12=A (two frozen modules),

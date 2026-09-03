@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests._evolution_state_shared import _active_transaction
+from tests._evolution_state_shared import _active_transaction, _patch_commit_seam
 
 
 def test_restart_requires_the_exact_active_commit_receipt(tmp_path, monkeypatch):
@@ -612,3 +612,204 @@ def test_supervisor_blocks_restart_when_head_moved_after_receipt(tmp_path):
 
     assert restarted == []
     assert "no longer matches" in messages[0][1]
+
+
+def _boot_env(tmp_path):
+    return SimpleNamespace(
+        drive_path=lambda name: tmp_path / name,
+        drive_root=tmp_path,
+        repo_dir=tmp_path,
+    )
+
+
+def _crash_after_reviewed_commit(tmp_path, monkeypatch, *, head_sha):
+    """Drive the reviewed evolution commit and die before its SHA receipt.
+
+    The reviewed commit lands on HEAD and the process never reaches
+    ``record_evolution_commit`` — the exact W4-F1 crash window.
+    """
+    import pathlib
+
+    from ouroboros.tools import git as git_tools
+    from supervisor import evolution_lifecycle
+
+    campaign, tx = _active_transaction(tmp_path)
+    binding = {"tree_sha": "7" * 40, "parents": ["9" * 40]}
+    monkeypatch.setattr(git_tools, "_task_attributed_commit_paths", lambda *a, **k: (None, None, "", None))
+    monkeypatch.setattr(git_tools, "_check_overlapping_review_attempt", lambda *a, **k: "")
+    _patch_commit_seam(monkeypatch, "_record_commit_attempt", lambda *a, **k: None)
+    monkeypatch.setattr(git_tools, "_acquire_git_lock", lambda *a, **k: pathlib.Path("lock"))
+    monkeypatch.setattr(git_tools, "_release_git_lock", lambda *a, **k: None)
+    monkeypatch.setattr(git_tools, "_prepare_review_commit_worktree", lambda *a, **k: (False, ""))
+    _patch_commit_seam(monkeypatch, "_verify_reviewed_commit_binding", lambda *a, **k: (True, ""))
+    _patch_commit_seam(monkeypatch, "_run_reviewed_stage_cycle",
+        lambda *a, **k: {
+            "status": "passed",
+            "pre_fingerprint": {"fingerprint": "pre"},
+            "post_fingerprint": {"fingerprint": "post", "binding": dict(binding)},
+        },
+    )
+    committed = {}
+
+    def _run_cmd(cmd, cwd=None):
+        if cmd[:2] == ["git", "commit"]:
+            stored = evolution_lifecycle._read_evolution_campaign()["active_transaction"]
+            committed["intent_at_commit_time"] = dict(stored.get("commit_intent") or {})
+            return ""
+        return head_sha if cmd[:3] == ["git", "rev-parse", "HEAD"] else ""
+
+    _patch_commit_seam(monkeypatch, "run_cmd", _run_cmd)
+
+    def _crash(**kwargs):
+        raise RuntimeError("process died before the SHA receipt")
+
+    monkeypatch.setattr(evolution_lifecycle, "record_evolution_commit", _crash)
+    ctx = SimpleNamespace(
+        repo_dir=tmp_path,
+        drive_root=tmp_path,
+        branch_dev="ouroboros",
+        current_task_type="evolution",
+        task_id=tx["task_id"],
+        task_metadata={"evolution_transaction": tx},
+    )
+
+    with pytest.raises(RuntimeError):
+        git_tools._repo_commit_push(ctx, "reviewed commit")
+
+    return campaign, tx, binding, committed
+
+
+def test_boot_attributes_the_commit_a_crash_left_without_a_receipt(tmp_path, monkeypatch):
+    """W4-F1: the commit-vs-receipt crash window is recovered from the intent."""
+    from ouroboros import agent_startup_checks, process_custody
+    from supervisor import evolution_lifecycle, git_ops
+
+    head = "d" * 40
+    campaign, tx, binding, committed = _crash_after_reviewed_commit(
+        tmp_path, monkeypatch, head_sha=head,
+    )
+    # Phase one is durable BEFORE `git commit` runs, not after it.
+    assert committed["intent_at_commit_time"]["tree_sha"] == binding["tree_sha"]
+    assert committed["intent_at_commit_time"]["parents"] == binding["parents"]
+    crashed = evolution_lifecycle._read_evolution_campaign()["active_transaction"]
+    assert str(crashed.get("commit_sha") or "") == ""
+
+    monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "boot-gen")
+    monkeypatch.setattr(git_ops, "git_capture", lambda cmd, **k: (
+        (0, binding["tree_sha"], "") if cmd[1] == "rev-parse"
+        else (0, f"{head} {binding['parents'][0]}", "")
+    ))
+
+    agent_startup_checks.verify_restart(_boot_env(tmp_path), head)
+
+    current = evolution_lifecycle._read_evolution_campaign()
+    assert "active_transaction" not in current
+    resolved = current["transaction_history"][-1]
+    assert resolved["commit_sha"] == head
+    assert resolved["cycle_outcome"] == "absorbed"
+    assert resolved["commit_receipt"]["reason"] == "recovered_from_commit_intent"
+    assert int(current.get("absorbed_cycles_done") or 0) == 1
+
+
+def test_boot_refuses_to_attribute_a_head_that_is_not_the_reviewed_material(
+    tmp_path, monkeypatch,
+):
+    """Recovery is structural: a HEAD whose tree/parents differ is never adopted."""
+    from ouroboros import agent_startup_checks, process_custody
+    from supervisor import evolution_lifecycle, git_ops
+
+    head = "d" * 40
+    campaign, tx, binding, _committed = _crash_after_reviewed_commit(
+        tmp_path, monkeypatch, head_sha=head,
+    )
+    monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "boot-gen")
+    monkeypatch.setattr(git_ops, "git_capture", lambda cmd, **k: (
+        (0, "e" * 40, "") if cmd[1] == "rev-parse"
+        else (0, f"{head} {binding['parents'][0]}", "")
+    ))
+
+    agent_startup_checks.verify_restart(_boot_env(tmp_path), head)
+
+    current = evolution_lifecycle._read_evolution_campaign()
+    assert str(current["active_transaction"].get("commit_sha") or "") == ""
+    assert int(current.get("absorbed_cycles_done") or 0) == 0
+
+
+def test_boot_backfills_the_cycle_outcome_row_a_crash_lost(tmp_path, monkeypatch):
+    """W4-F2: the absorb write and the ledger append are not one transaction."""
+    from ouroboros import agent_startup_checks, evolution_checkpoints, process_custody
+    from ouroboros.evolution_checkpoints import build_solve_capability_digest
+    from supervisor import evolution_lifecycle
+
+    campaign, tx = _active_transaction(tmp_path)
+    sha = "c" * 40
+    assert evolution_lifecycle.record_evolution_commit(
+        campaign["id"], tx["transaction_id"], tx["task_id"], sha,
+    )["ok"] is True
+    generation = {"value": "gen-1"}
+    monkeypatch.setattr(
+        process_custody, "current_custody_session_id", lambda: generation["value"],
+    )
+
+    def _crash(*a, **k):
+        raise RuntimeError("process died between the campaign write and the ledger")
+
+    monkeypatch.setattr(
+        evolution_checkpoints, "append_cycle_outcome_checkpoint", _crash,
+    )
+    agent_startup_checks.verify_restart(_boot_env(tmp_path), sha)
+
+    ledger = tmp_path / "state" / "evolution_checkpoints.jsonl"
+    absorbed = evolution_lifecycle._read_evolution_campaign()["transaction_history"][-1]
+    assert absorbed["cycle_outcome"] == "absorbed"
+    assert not ledger.exists()  # the campaign says absorbed; the ledger says nothing
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        process_custody, "current_custody_session_id", lambda: "gen-2",
+    )
+    agent_startup_checks.verify_restart(_boot_env(tmp_path), sha)
+
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    tagged = [row for row in rows if row.get("kind") == "cycle_outcome"]
+    assert [(row["task_id"], row["cycle_outcome"], row["source"]) for row in tagged] == [
+        (tx["task_id"], "absorbed", "boot_backfill"),
+    ]
+    assert "absorbed=1" in build_solve_capability_digest(tmp_path)
+
+    agent_startup_checks.verify_restart(_boot_env(tmp_path), sha)
+    assert len(ledger.read_text().splitlines()) == len(rows)  # idempotent
+
+
+def test_containment_disowns_the_commit_intent_so_boot_cannot_adopt_it(
+    tmp_path, monkeypatch,
+):
+    """A commit the authority path refused must stay unattributable at boot."""
+    from ouroboros import agent_startup_checks, process_custody
+    from ouroboros.tools import git_evolution
+    from supervisor import evolution_lifecycle, git_ops
+
+    head = "d" * 40
+    campaign, tx, binding, _committed = _crash_after_reviewed_commit(
+        tmp_path, monkeypatch, head_sha=head,
+    )
+    stored = evolution_lifecycle._read_evolution_campaign()["active_transaction"]
+    assert stored["commit_intent"]["tree_sha"] == binding["tree_sha"]
+
+    ctx = SimpleNamespace(repo_dir=tmp_path, task_id=tx["task_id"])
+    assert "CONTAINMENT_FAILED" in git_evolution._preserve_evolution_orphan(ctx, head)
+    assert evolution_lifecycle._read_evolution_campaign()[
+        "active_transaction"
+    ]["commit_intent"] == {}
+
+    monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "boot-gen")
+    monkeypatch.setattr(git_ops, "git_capture", lambda cmd, **k: (
+        (0, binding["tree_sha"], "") if cmd[1] == "rev-parse"
+        else (0, f"{head} {binding['parents'][0]}", "")
+    ))
+
+    agent_startup_checks.verify_restart(_boot_env(tmp_path), head)
+
+    current = evolution_lifecycle._read_evolution_campaign()
+    assert str(current["active_transaction"].get("commit_sha") or "") == ""
+    assert int(current.get("absorbed_cycles_done") or 0) == 0

@@ -8878,3 +8878,63 @@ concurrency tests stayed red on every name-tier leg — see «From the Windows C
    15 = B — mutating delegation E2E scenarios and the copy-back race (O3) are fixed now (upstream
    `a76961de..cc2eac50` carries no fix for either); 17 = B — TEST_DISPOSITION/nav20 is withdrawn from the
    spec by this record. Item 13 was not read by the owner (too long) and is re-asked in a shorter form.
+
+## From the W4 crash-window lane (owner 9 = B)
+
+Owner batch №13 item 9 = B pulled the two evolution crash windows the F4 wave-4 lane
+disclosed (W4-F1, W4-F2) INTO 7.0. Both were fixed at the depth of the fact, not at the
+symptom: the durable record each recovery needs is now written, or derivable, so the next
+boot heals the window instead of a new gate guarding it.
+
+**W4-F1 — the reviewed commit is two-phase.** `git commit` and `record_evolution_commit`
+are two durable writes; a crash between them left a reviewed commit on HEAD that no boot
+path attributed (the markerless reconcile short-circuits on an empty `commit_sha`, and
+`_preserve_evolution_orphan` runs only on the authority-refusal path). The
+`pre_commit_authority` boundary — the last gate before the commit, which already re-checks
+the exact claim — now also records a `commit_intent` on the active transaction: the
+`tree_sha` and `parents` of the post-review binding, i.e. exactly the material
+`_verify_reviewed_commit_binding` verifies after the commit. Recovery
+(`adopt_evolution_commit_intent`) adopts the commit at HEAD only when its tree AND its full
+parent list are identical to that intent, and writes the `commit_receipt` the crash never
+wrote (`reason: recovered_from_commit_intent`), so the existing restart-authority check
+passes on a receipt that is as exact as the one the tool path writes. Attribution is
+structural, never a guess: a failed commit, a contained orphan (the branch is rewound to
+the parent) or any later HEAD movement fails the match and the transaction stays open, as
+today. Two readers consume the intent — the boot reconcile, and the task-done classifier in
+`update_evolution_campaign_after_task`, which would otherwise close a crashed
+commit-bearing cycle as `no_op` before boot ever ran. The one writer that DISOWNS a commit —
+`_preserve_evolution_orphan`, on every authority-refusal and binding-failure path — clears
+the intent in the same act, so recovery can never adopt a commit an authority check refused
+(cleared even when the ref surgery itself fails: the refusal is the durable fact). No new ledger: the intent lives on the
+transaction that already carries the receipt, written through the existing
+`update_evolution_transaction` seam.
+
+**W4-F2 — the outcome row is re-derived, not made atomic.** The campaign write that resolves
+a cycle and the `cycle_outcome` append cannot be one transaction (the append is deliberately
+outside the lock so a ledger failure cannot break the restart path). They do not need to be:
+the resolved transaction carries every field the row holds, so the row is DERIVABLE.
+`backfill_missing_cycle_outcomes` replays, at boot, every commit-bearing resolved
+transaction in `transaction_history` that has no `cycle_outcome` row
+(`source: boot_backfill`), and is idempotent — a task that already has a row is skipped, so
+repeated boots write nothing. Disclosed fidelity loss: `backlog_id` is not recoverable after
+the fact and is left empty, exactly as the abandoned path already writes it. The
+swallow-exceptions wrapper both append sites shared moved from `agent_startup_checks.py` to
+`evolution_checkpoints.py` (`append_cycle_outcome_tag`), where the ledger it writes lives;
+that removal is also what paid for the new boot call within the module's size band.
+
+Red-first pins (base `72bb4949`, `tests/test_evolution_restart_claims.py`):
+
+| pin | asserts | failure on `72bb4949` |
+|---|---|---|
+| `test_boot_attributes_the_commit_a_crash_left_without_a_receipt` | the intent is durable at the moment `git commit` runs, and the next boot absorbs the commit with a recovered receipt | `KeyError: 'tree_sha'` on `assert committed["intent_at_commit_time"]["tree_sha"] == binding["tree_sha"]` — nothing is written before the commit, and the boot leaves the transaction unattributed |
+| `test_boot_backfills_the_cycle_outcome_row_a_crash_lost` | after a crash between the absorb write and the append, the next boot re-derives the row and the digest reports `absorbed=1`; a third boot writes nothing | `FileNotFoundError … state/evolution_checkpoints.jsonl` — no row is ever re-derived |
+| `test_boot_refuses_to_attribute_a_head_that_is_not_the_reviewed_material` | a HEAD whose tree differs from the intent is never adopted (fail-closed guard, green on both trees) | — |
+| `test_containment_disowns_the_commit_intent_so_boot_cannot_adopt_it` | containment clears the intent, and the following boot leaves the commit unattributed (fail-closed guard on the new mechanism) | — |
+
+Gates on the fix commit: the affected suites (evolution restart/receipt/publication/redesign/
+state-integrity/scheduler, startup hygiene, module-handle extraction, commit gate, persistence
+inventory, docs sync, `tests/system_e2e/`) green; `ruff check . --select F` clean;
+`scripts/regenerate_size_ratchet.py --check` green (`_repo_commit_push` stays at exactly its
+300-line function cap — the intent write is a keyword argument on the authority call that was
+already there, not a new statement); `scripts/v7next_adoption.py --release` green with both
+rows `done` and their entries removed from `DEFERRED_OUT_OF_V70`.
