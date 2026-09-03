@@ -784,17 +784,19 @@ def _validate_manifest_candidate(
     if previous_text is not None:
         try:
             previous = parse_size_ratchet_manifest(previous_text)
-        except SizeRatchetRefUnavailable:
-            # A parent ref's objects are not locally available (e.g. a
-            # managed-update fetch left the object store incomplete). Fall
-            # through to bootstrap; the live-tree exactness above is still
-            # authoritative.
-            pass
         except ValueError:
-            # A committed parent carries a pre-schema assignment set (e.g. a
-            # pre-v6.114 manifest format). The current manifest already parsed
-            # cleanly; treat the unparseable parent as "no committed authority"
-            # and validate against the live tree only.
+            # A committed parent is unparseable: pre-v6.114 manifest format,
+            # truncated history after a managed update, or objects not in the
+            # local object store. The current manifest already parsed cleanly;
+            # treat the unparseable parent as "no committed authority" and
+            # validate against the live tree only.
+            #
+            # NOTE: parse_size_ratchet_manifest raises bare ``ValueError`` for
+            # every malformed-input class (including the rare SizeRatchetRefUnavailable
+            # surfaced via _git_show_manifest's subprocess.CalledProcessError -> ValueError
+            # rewrap). SizeRatchetRefUnavailable itself is only raised by
+            # _git_source_snapshot's cat-file --batch path, NOT by parse_size_ratchet_manifest,
+            # so a separate arm here would be dead code.
             pass
     if previous is None:
         errors.extend(f"bootstrap: {error}" for error in _bootstrap_baseline_errors(current, inventory))
