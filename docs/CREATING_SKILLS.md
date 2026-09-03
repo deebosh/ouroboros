@@ -801,7 +801,11 @@ are the one exception — "What the frame may do" below). Two calls cover it:
   `fetch`). `url` must resolve under `/api/extensions/<skill>/...`; anything
   else — another skill's prefix, a host API, an absolute URL — rejects with
   `module widget fetch outside extension route prefix`. The parent issues the
-  request with the owner's session and streams the answer back, so you get a
+  request with the owner's session and refuses to follow a redirect — the
+  prefix is checked once, before the request, and a followed hop would carry
+  your request and the owner's session wherever it pointed — so a route that
+  answers with a redirect rejects instead of being followed; it streams the
+  answer back, so you get a
   real `Response`: `status`, `statusText`, **every** response header, and a
   body that is binary by default — `.text()`, `.json()`, `.arrayBuffer()`,
   `.blob()` and incremental `body.getReader()` reads all work. Server-sent
