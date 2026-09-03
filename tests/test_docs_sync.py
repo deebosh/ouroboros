@@ -87,6 +87,12 @@ def test_chat_id_addressing_docs_match_the_code_that_routes_it():
     assert "The run is also NAMED at admission, without a model call" in arch
     assert "`metadata.title` is refused with a" in arch
     assert "never outranks a real name coined later" in arch
+    # A degraded delivery names its own cause, and the generic code is residual.
+    assert "`delivery_control_degraded` is the residual code" in arch
+    assert "invalid_delivery_control_after_repair" in arch
+    design = _read("docs/DESIGN.md")
+    assert "Where a card does show a cause, it says it in the owner's" in design
+    assert "the record keeps the machine code" in design
     # The rule itself lives with the other anti-patterns, not only in a changelog.
     assert "Anti-pattern: a chat id tested for truth" in development
     assert "notification_chat_route" in development and "coerce_chat_identity" in development

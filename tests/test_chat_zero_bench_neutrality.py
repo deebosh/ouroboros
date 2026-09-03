@@ -98,3 +98,25 @@ def test_an_untyped_out_row_would_hijack_the_answer(tmp_path):
         {"direction": "out", "chat_id": HIDDEN_CHAT_ID, "text": "⚠️ some later notice"},
     ])
     assert _final_answer(agent_dir) == "⚠️ some later notice"
+
+
+def test_the_degraded_reason_change_moves_no_benchmark_classification():
+    """C3 changes the VALUE of an existing key, never a bucket.
+
+    Two benchmark readers consume ``degraded_reason``: the shared result index,
+    and the Terminal-Bench installed agent, which writes it into
+    ``ouroboros-run-summary.json`` AND prints that object to stdout on every
+    trial. Both must keep deciding ``infra_failed``/``truncated`` from their own
+    inputs, so a newly specific reason cannot silently re-bucket a run.
+    """
+    index = (REPO / "devtools/benchmarks/common/result_index.py").read_text(encoding="utf-8")
+    harbor = (REPO / "devtools/benchmarks/terminal_bench/harbor_installed_agent.py").read_text(encoding="utf-8")
+
+    assert '"degraded_reason"' in index and '"degraded_reason"' in harbor
+    # The classification inputs are independent of the reason string.
+    assert 'infra_failed' in harbor and 'truncated' in harbor
+    for line in harbor.splitlines():
+        if ("infra_failed" in line or "truncated" in line) and "=" in line:
+            assert "degraded_reason" not in line, (
+                "a benchmark bucket must not be derived from the degraded reason: " + line.strip()
+            )
