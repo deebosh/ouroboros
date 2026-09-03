@@ -1079,7 +1079,24 @@ const { helper } = await import('/api/extensions/<skill>/module/lib/x.mjs');
 
 The endpoint sends `Access-Control-Allow-Origin: *`, which the opaque-origin
 frame needs for `import()`; relative specifiers inside a module loaded this way
-resolve against its URL, so `import './y.mjs'` reaches `module/lib/y.mjs`. The
+resolve against its URL, so `import './y.mjs'` reaches `module/lib/y.mjs`.
+
+A sibling loaded this way carries no session, for the same reason passive image
+and font loads do not (above): on a password-protected install reached over the
+network, the frame's request for `module/lib/x.js` is cross-site, arrives without
+the `SameSite=Lax` session cookie and gets 401. The declared entry is unaffected
+— the host fetches it with the owner's session and inlines it — and loopback and
+the desktop shell are exempt. For a skill that must load siblings on a network
+install, fetch the source through the bridge and run it from a `blob:` URL, which
+`script-src` admits:
+
+```js
+const src = await (await OuroborosWidget.fetch('/api/extensions/<skill>/module/lib/x.js')).text();
+const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+await import(url);   // relative specifiers inside x.js no longer resolve: import by URL
+```
+
+Alternatively keep everything the widget needs in the entry file. The
 declared `entry` itself still executes as a classic script even when it is named
 `.mjs`, so keep `import`/`export` statements in the files you load with
 `import()`, not in the entry. The frame's `script-src` admits exactly your

@@ -161,7 +161,9 @@ class PluginAPI(Protocol):
         starts on the first Widgets visit and keeps running while the owner is on
         other pages until Stop, skill disable/unload/delete, app reload, or closing
         Ouroboros — it never outlives the window; a same-SHA server reconnect keeps
-        a retained frame whose skill is live again with the same revision. Defaults:
+        a retained frame whose skill is live again with the same revision, while a
+        changed revision is re-mounted at once when Widgets is visible and at the
+        next Widgets entry while it is hidden. Defaults:
         ``module``/``iframe`` → ``"manual"``; ``declarative`` → ``"auto"`` and
         accepts nothing else. The validator
         (``ouroboros/extension_ui_validation.py::WIDGET_START_MODES``) is the SSOT
