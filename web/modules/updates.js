@@ -3,21 +3,30 @@ import { openConfirmDialog } from './confirm_dialog.js';
 import { showToast } from './toast.js';
 import { apiClient, apiFetch } from './api_client.js';
 import { verifiedUpdatePlan } from './update_status.js';
+import { destroyChatMarkdown, enhanceChatMarkdown, renderChatMarkdown } from './chat_markdown.js';
 
 // Known non-state warnings are folded into their verdict states; everything
 // else is surfaced verbatim so a backend warning class can never vanish.
 const STATE_WARNINGS = new Set(['official_status_requires_check', 'managed_updates_unavailable']);
 
-function humanizeCheckedAt(iso) {
+// ONE relative-time vocabulary for this panel: the same four buckets carry the
+// "checked …" age on the action row and the "written …" age on the letter, so
+// two ages on one card can never disagree about what "3 h ago" means.
+function relativeAge(iso) {
     if (!iso) return '';
     const then = Date.parse(iso);
     if (Number.isNaN(then)) return '';
     const minutes = Math.max(0, Math.round((Date.now() - then) / 60000));
-    if (minutes < 2) return 'checked just now';
-    if (minutes < 90) return `checked ${minutes} min ago`;
+    if (minutes < 2) return 'just now';
+    if (minutes < 90) return `${minutes} min ago`;
     const hours = Math.round(minutes / 60);
-    if (hours < 36) return `checked ${hours} h ago`;
-    return `checked ${new Date(then).toISOString().slice(0, 10)}`;
+    if (hours < 36) return `${hours} h ago`;
+    return new Date(then).toISOString().slice(0, 10);
+}
+
+function humanizeCheckedAt(iso) {
+    const age = relativeAge(iso);
+    return age ? `checked ${age}` : '';
 }
 
 function repoSlug(url) {
@@ -187,6 +196,111 @@ export function updateVerdict(data = {}, phase = '') {
     };
 }
 
+// --- The update letter -----------------------------------------------------
+//
+// Ouroboros writes ONE short markdown paragraph about the update the panel is
+// offering, and the backend hands it to the client inside the ordinary status
+// payload as the additive `letter` key. It is never deleted once the update
+// lands: the same text, relabelled, becomes "What changed in this version".
+// The letter is a fact, never an action — it adds no button and never touches
+// the verdict.
+
+// Hidden where the letter could only mislead: a checkout that managed updates
+// do not own, a status the panel could not read, and the transient phases
+// whose own headline already owns the card.
+const LETTER_HIDDEN_VERDICTS = new Set(['unmanaged', 'check_failed', 'unknown', 'unchecked']);
+const LETTER_HIDDEN_PHASES = new Set(['loading', 'checking', 'restarting']);
+const LETTER_RELATIONS = new Set(['pending', 'applied', 'superseded', 'other']);
+// `applied` is the one relation whose label changes: the running version IS
+// the letter's target, so the paragraph is history, not a preview.
+const LETTER_LABELS = {
+    pending: "What's new",
+    applied: 'What changed in this version',
+    superseded: "What's new",
+    other: "What's new",
+};
+
+function noLetterView() {
+    return {
+        state: 'none',
+        relation: '',
+        markdown: '',
+        meta: { authorVersion: '', targetVersion: '', writtenAt: '', ageText: '' },
+        failure: null,
+        label: '',
+        note: '',
+    };
+}
+
+/**
+ * Letter projector: durable server state × transient client phase → one
+ * presentation descriptor, pure but for the clock `relativeAge` reads.
+ *
+ * `state: 'none'` means the section is hidden. A failed letter still renders
+ * when the backend kept the previous good text for the same range (the
+ * failure travels as a note line), and renders as the bare reason when it did
+ * not — a letter that silently disappeared would look like an update with
+ * nothing to say.
+ */
+export function updateLetterView(data = {}, phase = '') {
+    const letter = data?.letter && typeof data.letter === 'object' ? data.letter : null;
+    if (!letter) return noLetterView();
+    if (LETTER_HIDDEN_PHASES.has(phase)) return noLetterView();
+    if (LETTER_HIDDEN_VERDICTS.has(updateVerdict(data, phase).state)) return noLetterView();
+
+    const state = letter.state === 'failed' ? 'failed' : (letter.state === 'ready' ? 'ready' : '');
+    const markdown = String(letter.text || '').trim();
+    // An unnamed state, or a "ready" letter with nothing in it, has no honest
+    // rendering; the panel stays exactly as it was without one.
+    if (!state || (state === 'ready' && !markdown)) return noLetterView();
+
+    const relation = LETTER_RELATIONS.has(letter.relation) ? letter.relation : 'other';
+    const meta = {
+        authorVersion: String(letter.author_version || ''),
+        targetVersion: String(letter.target_version || ''),
+        writtenAt: String(letter.written_at || ''),
+        ageText: relativeAge(letter.written_at),
+    };
+    const failure = state === 'failed'
+        ? { kind: String(letter.error_kind || ''), text: String(letter.error_text || '') }
+        : null;
+
+    const notes = [];
+    if (relation === 'superseded' || relation === 'other') {
+        notes.push(meta.authorVersion && meta.targetVersion
+            ? `written for ${meta.authorVersion} → ${meta.targetVersion}`
+            : 'written for an earlier update');
+    }
+    if (failure) {
+        const reason = failure.text || failure.kind || 'unknown reason';
+        notes.push(markdown
+            ? `rewriting this letter failed (${reason}); showing the last one that succeeded`
+            : `Ouroboros could not write an update letter (${reason})`);
+    }
+
+    return {
+        state,
+        relation,
+        markdown,
+        meta,
+        failure,
+        label: LETTER_LABELS[relation],
+        note: notes.join(' · '),
+    };
+}
+
+/** Provenance sentence for the letter head: who wrote it, about what, when. */
+function letterProvenance({ authorVersion, targetVersion, ageText }) {
+    const who = authorVersion ? `written by Ouroboros ${authorVersion}` : 'written by Ouroboros';
+    return [targetVersion ? `${who} about ${targetVersion}` : who, ageText]
+        .filter(Boolean).join(' · ');
+}
+
+/** Content identity of a rendered letter: re-render only when this changes. */
+function letterContentKey(view) {
+    return [view.state, view.relation, view.meta.writtenAt, view.markdown.length].join(' ');
+}
+
 // Mirrors the two boot-recovery phases admitted by server.py's serialized
 // restart path. A later backend phase remains safe: the UI falls through to
 // its durable verdict instead of inventing another transient hold.
@@ -256,6 +370,14 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
                     <span class="updates-action-note" id="updates-action-note"></span>
                     <button class="btn btn-primary" id="btn-update-primary" hidden></button>
                 </div>
+                <section class="updates-letter" id="updates-letter" hidden>
+                    <div class="updates-letter-head">
+                        <span class="updates-letter-label" id="updates-letter-label"></span>
+                        <span class="updates-letter-meta" id="updates-letter-meta"></span>
+                    </div>
+                    <div class="updates-letter-note" id="updates-letter-note" hidden></div>
+                    <div class="updates-letter-body ui-rich-content" id="updates-letter-body" data-chat-markdown-enhanced="1"></div>
+                </section>
                 <details class="updates-recovery">
                     <summary>Recovery</summary>
                     <p class="updates-recovery-copy">Replace the active checkout with the exact official version from the selected channel. A rescue copy is saved first, but this is intentionally more destructive than an ordinary update.</p>
@@ -286,6 +408,13 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
     const current = page.querySelector('#updates-current');
     const commitsDiv = page.querySelector('#updates-commits');
     const officialTagsDiv = page.querySelector('#updates-official-tags');
+    const letterSection = page.querySelector('#updates-letter');
+    const letterLabel = page.querySelector('#updates-letter-label');
+    const letterMeta = page.querySelector('#updates-letter-meta');
+    const letterNote = page.querySelector('#updates-letter-note');
+    const letterBody = page.querySelector('#updates-letter-body');
+    let letterDisposer = null;
+    let letterKey = null;
     let latestStatus = null;
     let phase = 'loading';
     let restartReconcileInFlight = false;
@@ -298,6 +427,54 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
             return `<button type="button" class="updates-chip updates-chip-link" data-open-settings-advanced title="Change in Settings -> Advanced">${body}</button>`;
         }
         return `<span class="updates-chip">${body}</span>`;
+    }
+
+    // The letter body hosts rendered markdown, so its enhancement owns real
+    // resources (Chart instances, mermaid timers, a click handler). Release
+    // them BEFORE the innerHTML that would orphan them.
+    function releaseLetterBody() {
+        if (letterDisposer) {
+            letterDisposer();
+            letterDisposer = null;
+        } else {
+            destroyChatMarkdown(letterBody);
+        }
+    }
+
+    // Called from render() on every phase change and status load. The head is
+    // cheap text, but the body is re-rendered ONLY when its content key moves:
+    // an unchanged letter keeps its DOM, and with it the owner's selection and
+    // any mounted chart.
+    function renderLetter() {
+        const view = updateLetterView(latestStatus || {}, phase);
+        if (view.state === 'none') {
+            if (letterKey !== null) {
+                releaseLetterBody();
+                letterBody.innerHTML = '';
+                letterKey = null;
+            }
+            letterSection.hidden = true;
+            return;
+        }
+        letterSection.hidden = false;
+        letterLabel.textContent = view.label;
+        letterMeta.textContent = letterProvenance(view.meta);
+        letterNote.textContent = view.note;
+        letterNote.hidden = !view.note;
+        letterNote.className = view.state === 'failed'
+            ? 'updates-letter-note updates-letter-note-failed'
+            : 'updates-letter-note';
+        const nextKey = letterContentKey(view);
+        if (nextKey === letterKey) return;
+        releaseLetterBody();
+        letterKey = nextKey;
+        letterBody.hidden = !view.markdown;
+        letterBody.innerHTML = view.markdown ? renderChatMarkdown(view.markdown) : '';
+        if (!view.markdown) return;
+        letterBody.dataset.chatMarkdownEnhanced = '1';
+        // No anchored scroll to protect on this page, so markdown's deferred
+        // writes (highlight, latex, mermaid, charts) run directly.
+        letterDisposer = enhanceChatMarkdown(letterBody, { onDomWrite: (mutate) => mutate() });
     }
 
     function render() {
@@ -328,6 +505,7 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
             'loading', 'checking', 'updating', 'preflighting', 'restarting',
             'restart_required', 'restart_needed', 'resolving', 'unmanaged',
         ].includes(verdict.state);
+        renderLetter();
     }
 
     function setPhase(next) {
