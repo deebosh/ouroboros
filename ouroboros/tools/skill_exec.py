@@ -16,6 +16,7 @@ from ouroboros.config import get_skills_repo_path, load_settings
 from ouroboros.contracts.plugin_api import FORBIDDEN_SKILL_SETTINGS
 from ouroboros.platform_layer import merge_hidden_kwargs, subprocess_new_group_kwargs
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
+from ouroboros.tools.process_facts import publish_process_facts as _publish_process_facts
 from ouroboros.skill_loader import (
     SkillPayloadUnreadable,
     compute_content_hash,
@@ -188,7 +189,17 @@ def _run_skill_subprocess(
     }
     popen_kwargs.update(subprocess_new_group_kwargs())
     popen_kwargs = merge_hidden_kwargs(popen_kwargs)
-    proc = Popen(cmd, **popen_kwargs)  # noqa: S603 — cmd is a vetted list, not shell
+    _child_started_ts = time.monotonic()
+    try:
+        proc = Popen(cmd, **popen_kwargs)  # noqa: S603 — cmd is a vetted list, not shell
+    except OSError as exc:
+        # Pre-exec: no child ever existed (a runtime binary that vanished
+        # between resolution and spawn). The platform's exception class is the
+        # typed cause; there is no exit code to invent for it.
+        _publish_process_facts(
+            started_ts=_child_started_ts, pre_exec_failure=type(exc).__name__,
+        )
+        raise
     with _subprocess_lock:
         _active_subprocesses.add(proc)
     try:
@@ -263,6 +274,17 @@ def _run_skill_subprocess(
         except OSError:
             pass
 
+    # Typed process facts for the skill child, published where the truth is
+    # known (D02): the deadline kill and the output-cap kill have no exit code
+    # of their own to report and say so as host kills, while a child that
+    # returned reports its exact code — including a NEGATIVE one, which the
+    # ``or 0`` return below flattens for the legacy text renderer.
+    _publish_process_facts(
+        returncode=proc.returncode if not (timed_out or overflowed) else None,
+        started_ts=_child_started_ts,
+        timed_out=timed_out,
+        killed_by_host=timed_out or overflowed,
+    )
     if timed_out:
         raise subprocess.TimeoutExpired(
             cmd=cmd,

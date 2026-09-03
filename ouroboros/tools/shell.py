@@ -518,7 +518,7 @@ def _run_shell(
         text = autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}"
         return _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected)
     except subprocess.TimeoutExpired:
-        _publish_unfinished_process_facts(ctx, _command_start_ts)
+        _publish_unfinished_process_facts(ctx, _command_start_ts, timed_out=True)
         # Timeout-created scratch still needs its exclusion fingerprint.
         _record_scratch_fingerprints(ctx, scratch_abs)
         return (
@@ -530,7 +530,7 @@ def _run_shell(
             f"(up to the per-call ceiling) — and preserve a best-effort deliverable before the task deadline."
         )
     except Exception as e:
-        _publish_unfinished_process_facts(ctx, _command_start_ts)
+        _publish_unfinished_process_facts(ctx, _command_start_ts, spawn_error=e)
         _record_scratch_fingerprints(ctx, scratch_abs)
         return f"⚠️ SHELL_ERROR: {e}. root={binding.root}, cwd={work_dir}"
 

@@ -578,8 +578,16 @@ def test_live_tool_log_payload_includes_structured_result_metadata(tmp_path, mon
     source = (pathlib.Path(__file__).resolve().parents[1] / "ouroboros" / "loop_tool_execution.py").read_text(encoding="utf-8")
 
     assert '"status": result_meta.get("status")' in source
-    assert '"exit_code": result_meta.get("exit_code")' in source
-    assert '"signal": result_meta.get("signal")' in source
+    # The typed process facts reach the live log through ONE projection shared
+    # with the tools.jsonl row (typed-process-facts lane), so the payload names
+    # every member the merge produced — exit_code and signal included — and a
+    # member the call never published stays absent instead of reading as null.
+    assert source.count("**_process_fact_fields(result_meta)") >= 3
+    projected = loop_tool_execution._process_fact_fields(
+        {"status": "x", "exit_code": -9, "signal": "SIGKILL", "killed_by_host": True}
+    )
+    assert projected == {"exit_code": -9, "signal": "SIGKILL", "killed_by_host": True}
+    assert loop_tool_execution._process_fact_fields({"status": "ok"}) == {}
     drive_logs = tmp_path / "logs"
     drive_logs.mkdir()
     live_events = []

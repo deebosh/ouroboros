@@ -209,13 +209,34 @@ def _publish_finished_process_facts(ctx, res, started_ts) -> int:
     return lived_ms
 
 
-def _publish_unfinished_process_facts(ctx, started_ts) -> None:
-    """Typed facts for a child with no returncode (timeout / pre-exec failure):
-    duration only, plus the attested substituted runtime when one applied."""
+def _publish_unfinished_process_facts(
+    ctx, started_ts, *, timed_out: bool = False, spawn_error: BaseException | None = None,
+) -> None:
+    """Typed facts for a child with no returncode (timeout / pre-exec failure).
+
+    There is no exit code to publish here — that is exactly the case the typed
+    family names instead of leaving silent: ``timed_out`` (with the host kill
+    that enforces the deadline) for a child the deadline stopped, and
+    ``pre_exec_failure`` carrying the platform's exception class for a child
+    that never reached exec. Duration and the attested substituted runtime ride
+    along as before.
+
+    An ``OSError`` from the spawn is what a PRE-EXEC failure looks like
+    (FileNotFoundError, PermissionError, ...): the command never ran and the
+    exception class is the honest typed cause. Any other exception is a
+    host-side failure AROUND the run and claims no pre-exec cause."""
     from ouroboros.tools.process_facts import (
         active_resolved_runtime,
         publish_process_facts,
     )
 
     publish_process_facts(started_ts=started_ts,
-                          resolved_runtime=active_resolved_runtime(ctx))
+                          resolved_runtime=active_resolved_runtime(ctx),
+                          timed_out=timed_out,
+                          # The deadline is enforced BY the host killing the
+                          # subprocess tree, so a timeout is always also a host
+                          # kill — the one fact a Windows kill can still carry.
+                          killed_by_host=timed_out,
+                          pre_exec_failure=(
+                              type(spawn_error).__name__
+                              if isinstance(spawn_error, OSError) else ""))

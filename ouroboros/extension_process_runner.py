@@ -33,6 +33,7 @@ from ouroboros.platform_layer import (
     merge_hidden_kwargs, posix_signal_name, subprocess_new_group_kwargs,
 )
 from ouroboros.skill_loader import find_skill, grant_status_for_skill, skill_state_dir
+from ouroboros.tools.process_facts import publish_process_facts
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.shell import _active_subprocesses, _kill_process_group, _subprocess_lock
 from ouroboros.tools.skill_exec import _scrub_env
@@ -389,6 +390,32 @@ def _mark_child_spawned(exc: BaseException) -> BaseException:
     return exc
 
 
+def _publish_child_facts(
+    proc: Any, started_ts: float, *, timed_out: bool = False,
+    killed_by_host: bool = False,
+) -> None:
+    """Publish the extension child's typed process facts to the call's channel.
+
+    The out-of-process extension child is a child of the tool call exactly like
+    a ``run_command`` subprocess, and the loop merges this thread's publication
+    into that call's ``result_meta``. Before this, an extension child's death
+    was legible only as prose in the error text — the dispatcher stamped typed
+    CODES (EXTENSION_TIMEOUT / EXTENSION_ERROR) but never an exit code or a
+    signal. A host kill is published with the code the child had at the moment
+    of the kill (often absent, since the reap happens in the caller's finally),
+    plus the kill facts, which is the whole truth on Windows too.
+    """
+    try:
+        publish_process_facts(
+            returncode=proc.poll(),
+            started_ts=started_ts,
+            timed_out=timed_out,
+            killed_by_host=killed_by_host,
+        )
+    except Exception:  # never replace an in-flight child failure
+        log.debug("extension child process facts could not be published", exc_info=True)
+
+
 def _run_child(
     payload: Dict[str, Any],
     *,
@@ -424,6 +451,7 @@ def _run_child(
     }
     kwargs.update(subprocess_new_group_kwargs())
     proc = subprocess.Popen(cmd, **merge_hidden_kwargs(kwargs))  # noqa: S603 - argv is host-constructed
+    child_started_ts = time.monotonic()
     # ABI-9 spawn boundary: from here on the child EXISTS. Every exception
     # leaving this function — process registration, the on_spawn durable
     # disclosure, the drain/poll/result protocol, even a cleanup failure in
@@ -448,9 +476,13 @@ def _run_child(
         while proc.poll() is None:
             if overflow["stdout"] or overflow["stderr"]:
                 _kill_process_group(proc)
+                _publish_child_facts(proc, child_started_ts, killed_by_host=True)
                 raise ExtensionProcessError("extension child output exceeded safety cap")
             if time.monotonic() >= deadline:
                 _kill_process_group(proc)
+                _publish_child_facts(
+                    proc, child_started_ts, timed_out=True, killed_by_host=True,
+                )
                 raise ExtensionProcessError(
                     f"extension child timed out after {timeout_sec}s",
                     failure_kind="timeout",
@@ -458,6 +490,7 @@ def _run_child(
             time.sleep(0.05)
         out_thread.join(timeout=2)
         err_thread.join(timeout=2)
+        _publish_child_facts(proc, child_started_ts)
         if proc.returncode != 0:
             stderr_text = stderr.decode("utf-8", errors="replace").strip()
             safe_stderr = sanitize_tool_result_for_log(stderr_text)[-2000:] if stderr_text else ""
