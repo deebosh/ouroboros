@@ -1717,7 +1717,7 @@ by "Provider Independence" above. Call-site imperatives:
   unknown status fails closed. When you add a writer, add its reason to the
   closed set AND check every value-keyed reader —
   `outcomes.derive_loop_outcome` keys degradations and blocked terminals on
-  status+reason PAIRS, and breaking a pairing is a silent false green. The
+  status+reason PAIRS, and breaking a pairing is a silent false green.
   Every forced rail closes a dangling `revision_requested` through
   `acceptance_dialogue.terminalize_dangling_revision`: it promises a pass the
   rail cannot take. `accepted` and `finalized_unaccepted` are never
