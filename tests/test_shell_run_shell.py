@@ -407,3 +407,56 @@ class TestGrepRegexHint:
         fake_subprocess()
         result = _run_shell(_ctx(tmp_path), argv)
         assert "SHELL_REGEX_HINT" not in result, reason
+
+
+# ---------------------------------------------------------------------------
+# SG-B (F17): a masked GREEN discloses the laundered exit code in the envelope
+# ---------------------------------------------------------------------------
+
+
+class TestMaskedGreenDisclosure:
+    """`run_command` reads the same exit-masking sensor as `verify_and_record`
+    and appends ONE advisory note to a green result. Result and trace only: no
+    status, is_failure, returncode, gate, retry or receipt change."""
+
+    @pytest.mark.parametrize("text, reason", [
+        ("node t.js 2>&1 | tail -5", "pipeline_tail"),
+        ("make test || true", "|| true"),
+        ("run.sh 2>/dev/null", "dev_null_redirect"),
+    ])
+    def test_masked_green_run_command_carries_advisory_note(
+        self, text, reason, tmp_path, fake_subprocess,
+    ):
+        fake_subprocess(stdout="ok", returncode=0)
+        result = _run_shell(_ctx(tmp_path), ["sh", "-c", text])
+        assert "EXIT_MASKING_NOTE" in result
+        assert reason in result
+        meta = result.result_meta
+        assert meta["status"] in ("ok", "ok_autocorrected")
+        assert meta["is_failure"] is False
+        assert reason in meta["exit_masking_reasons"]
+        assert meta["notes"]
+
+    @pytest.mark.parametrize("cmd", [
+        ["sh", "-c", "pytest -q"],
+        ["go", "test", "./..."],
+    ])
+    def test_unmasked_green_carries_no_note(self, cmd, tmp_path, fake_subprocess):
+        fake_subprocess(stdout="ok", returncode=0)
+        result = _run_shell(_ctx(tmp_path), cmd)
+        assert "EXIT_MASKING_NOTE" not in result
+        assert "exit_masking_reasons" not in result.result_meta
+
+    def test_masked_nonzero_exit_keeps_the_exit_error_envelope(self, tmp_path, fake_subprocess):
+        fake_subprocess(stdout="", stderr="boom", returncode=1)
+        result = _run_shell(_ctx(tmp_path), ["sh", "-c", "make test || true"])
+        assert "SHELL_EXIT_ERROR" in result
+        assert "EXIT_MASKING_NOTE" not in result
+        assert result.result_meta["status"] == "non_zero_exit"
+        assert result.result_meta["is_failure"] is True
+
+    def test_shell_and_verify_share_one_exit_masking_sensor(self):
+        import ouroboros.tools.shell as shell_module
+        import ouroboros.tools.verify as verify_module
+
+        assert shell_module.check_exit_masking is verify_module._check_has_exit_masking

@@ -196,7 +196,10 @@ costs a human a second look, a false green costs the thing this surface
 exists for. The full mechanism (masked-path rules, `IDENTITY_KINDS`,
 projections, bounds, rendering stamps) lives in
 `ouroboros/_outcome_receipts.py`, enforced by
-`tests/test_v678_receipt_reconciliation.py`. Four rules generalize:
+`tests/test_v678_receipt_reconciliation.py`. The process-tool lane discloses a
+masked exit code in its result envelope only and writes no receipt, so nothing
+there participates in masked-pass reconciliation or the masked-verification
+nudge. Four rules generalize:
 
 - **Whatever decides must be what is reported**: the reporting path reads the
   deciding path through one shared projection, never a re-derivation beside

@@ -154,6 +154,11 @@ def _check_has_exit_masking(argv: List[str]) -> tuple[bool, list[str]]:
     return bool(ordered), ordered
 
 
+# Public name for the SECOND consumer: run_command/run_script read the same
+# sensor to disclose a masked green in their result envelope.
+check_exit_masking = _check_has_exit_masking
+
+
 _OBSERVABLE_EXTRA_ROOTS = ("subagent_projects", "deliverables", "artifact_store", "task_drive")
 
 
