@@ -155,12 +155,12 @@ def project_task_acceptance_review_capacity(
     the known empty state. The atomic claim remains dispatch authority.
 
     WALLET AND CANCELLATION ONLY (owner R52). The TIME axis is not projected:
-    the launch rule (``task_pacing.review_launch_allowed``) is evaluated at
-    loop admission and once more at the paid claim inside the dispatch stamp,
-    and a descendant reading this reads its own deadline window from the
-    adjacent coordination ``time`` fact. So no budget profile, no snapshot and
-    no duration prediction is read here, and the answer cannot drift from the
-    rule it used to imitate.
+    the launch rule (``task_pacing.review_launch_allowed``) is evaluated once,
+    at loop admission (owner R55; the paid claim inside the dispatch stamp
+    checks cancellation and the wallet only), and a descendant reading this
+    reads its own deadline window from the adjacent coordination ``time``
+    fact. So no budget profile, no snapshot and no duration prediction is read
+    here, and the answer cannot drift from the rule it used to imitate.
     """
 
     from ouroboros import config
