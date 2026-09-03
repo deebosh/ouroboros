@@ -1015,7 +1015,7 @@ _PUBLISH_SCHEMA = {
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
-            name=_PUBLISH_SCHEMA["name"],
+            name="submit_skill_to_hub",  # literal: the tool-policy AST scan keys on it
             schema=_PUBLISH_SCHEMA,
             handler=_submit_skill_to_hub,
             is_code_tool=False,
