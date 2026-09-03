@@ -6084,7 +6084,7 @@ def run_llm_loop(
     tools: ToolRegistry,
     llm: LLMClient,
     drive_logs: pathlib.Path,
-    emit_progress: Callable[[str], None],
+    emit_progress: Callable[..., None],
     incoming_messages: queue.Queue,
     task_type: str = "",
     task_id: str = "",

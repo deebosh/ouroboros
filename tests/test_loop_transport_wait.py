@@ -258,7 +258,7 @@ def test_interactive_turns_wait_redial_free_and_terminalize_at_the_idle_bound(tm
     assert usage.get("execution_status") == "infra_failed"
     assert usage.get("reason_code") == "provider_unavailable"
     assert trace.get("forced_finalization", {}).get("source") == "transport_unavailable_no_resend"
-    assert "this chat turn waited and redialed for" in result
+    assert "this turn waited and redialed for" in result
     assert "the task" not in result
     assert "fails fast" not in result
     events = _read_network_wait_events(tmp_path)
@@ -422,6 +422,62 @@ def test_outage_first_observed_mid_chain_latches_episode_and_recovers(tmp_path, 
     phases = [row["phase"] for row in _read_network_wait_events(tmp_path)]
     assert phases[0] == "entered"
     assert phases[-1] == "recovered"
+
+
+@pytest.mark.parametrize("turn_flag", [None, "is_direct_chat", "is_ephemeral_turn"])
+def test_mid_chain_latch_that_never_recovers_takes_the_no_resend_terminal(tmp_path, monkeypatch, turn_flag):
+    """The mid-chain latch drives the same terminal as a primary-first outage:
+    free redials until the binding window (a managed task's deadline, an
+    interactive turn's idle bound) closes, then the deterministic no-resend
+    terminal — never a forced-final provider call over the dead egress."""
+    calls = {"n": 0}
+
+    def fake_call(_llm, _messages, _model, _tools, _effort, _max_retries, _drive_logs,
+                  _task_id, _round_idx, _event_queue, accumulated_usage, *_a, **_k):
+        calls["n"] += 1
+        accumulated_usage["_last_llm_error_kind"] = (
+            "provider_transient" if calls["n"] == 1 else "transport_unavailable"
+        )
+        return None, 0.0
+
+    chain_calls = {"n": 0}
+
+    def chain_breaks_on_transport(**kwargs):
+        chain_calls["n"] += 1
+        kwargs["accumulated_usage"]["_last_llm_error_kind"] = "transport_unavailable"
+        return (
+            None, kwargs["active_model"], kwargs["active_use_local"],
+            kwargs["context_fit_plan"], kwargs["active_context_mode"],
+        )
+
+    clock = _FakeClock(monkeypatch)
+    monkeypatch.setattr(loop_transport, "get_task_idle_timeout_sec", lambda: 60)
+    monkeypatch.setattr(loop_mod, "call_llm_with_retry", fake_call)
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", chain_breaks_on_transport)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    if turn_flag:
+        setattr(registry._ctx, turn_flag, True)
+    else:
+        from ouroboros.config import get_finalization_grace_sec
+
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=get_finalization_grace_sec() + 8)
+        registry._ctx.task_metadata = {"deadline_at": deadline.isoformat()}
+    notes = []
+    _result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
+
+    assert chain_calls["n"] == 1  # the chain never re-dials over the dead egress
+    assert calls["n"] >= 2
+    assert calls["n"] == len(clock.sleeps) + 1  # every dispatch after the first followed a wait
+    assert usage.get("execution_status") == "infra_failed"
+    assert usage.get("reason_code") == "provider_unavailable"
+    assert trace.get("forced_finalization", {}).get("source") == "transport_unavailable_no_resend"
+    events = _read_network_wait_events(tmp_path)
+    assert events[0]["phase"] == "entered"
+    assert events[-1]["phase"] == "ended"
+    expected = "interactive_wait_window_exhausted" if turn_flag else "deadline_after_final_redial"
+    assert events[-1]["detail"] == expected
 
 
 def test_exact_model_route_waits_and_redials_its_own_pin(tmp_path, monkeypatch):
@@ -896,7 +952,7 @@ def test_terminal_wordings_cover_four_wait_outcomes():
     """Four honest terminal texts keyed on the two typed facts: a managed task
     that waited says outage without the supervisor's lifecycle term
     INTERRUPTED; a managed zero-wait task names the spent window; an
-    interactive turn is a chat turn (never "the task") that either names how
+    interactive turn is "this turn" (never "the task") that either names how
     long it waited or says no window was left; no wording claims a fast fail."""
     kwargs = dict(is_context_overflow=False, is_transport_wait=True, is_deadline_exhausted=False)
     waited = loop_transport.provider_terminal_fallback_text({}, waited_sec=610.0, **kwargs)
@@ -907,12 +963,12 @@ def test_terminal_wordings_cover_four_wait_outcomes():
     assert "left no time to wait" in zero_wait
     chat_waited = loop_transport.provider_terminal_fallback_text(
         {}, waited_sec=610.0, interactive=True, **kwargs)
-    assert "this chat turn waited and redialed for 10.2 min" in chat_waited
+    assert "this turn waited and redialed for 10.2 min" in chat_waited
     assert "ended as a provider outage, not completed" in chat_waited
     chat_zero = loop_transport.provider_terminal_fallback_text(
         {}, waited_sec=0.0, interactive=True, **kwargs)
     assert "no wait window was left" in chat_zero
-    assert "this chat turn ended as a provider outage" in chat_zero
+    assert "this turn ended as a provider outage" in chat_zero
     for text in (chat_waited, chat_zero):
         assert "task" not in text.lower()
         assert "INTERRUPTED" not in text

@@ -8,17 +8,24 @@ gate in ``loop.py`` latches a :class:`TransportWaitEpisode` and waits: durable
 then a free redial of the SAME round (the round budget is not consumed). A managed
 task waits as long as its existing rails allow — owner deadline minus the
 dispatch-admission reserve, budget, Stop, and the supervisor's absolute ceiling.
-Direct-chat and ephemeral decision turns (``interactive``) wait the same way but
-carry no deadline and no queue rails, so their episode is bounded by the raw
-configured task idle timeout (``get_task_idle_timeout_sec``) measured from episode
-entry; when an explicit deadline window also exists, the shorter window binds.
-When the binding window runs out, ``_handle_provider_unavailable`` takes a
-deterministic no-resend terminal keyed on the episode's ``wait_cause`` (no
-forced-final provider call), and the durable ``ended`` detail names the rail that
-expired. Interactive notes promise no cancellation (an in-process turn has no Stop
-contract; a direct turn's mailbox message still wakes the sleep) and carry the
-typed ``task_incident`` toast pair, because the browser renders an ephemeral
-turn's wait only as one-shot toasts.
+Every turn stamped direct-chat (owner chat and Presence turns) or ephemeral — the
+``interactive`` class — waits the same way but carries no deadline and no queue
+rails, so its episode is bounded by the raw configured task idle timeout
+(``get_task_idle_timeout_sec``): the bound limits idle WAITING, measured from each
+outage episode's entry (a flapping egress starts a new episode); a granted redial
+runs to its own connect timeout and a dispatched response is always accepted —
+the bound never cancels in-flight work. When an explicit deadline window also
+exists, the shorter window binds. When the binding window runs out,
+``_handle_provider_unavailable`` takes a deterministic no-resend terminal keyed on
+the episode's ``wait_cause`` (no forced-final provider call); the durable
+``ended`` detail names the rail that expired — the bound's own
+``interactive_wait_window_exhausted``, or the deadline's detail when the owner
+window closed first. Interactive notes promise no cancellation (an in-process
+turn has no Stop contract; a direct turn's mailbox message still wakes the
+sleep). Every episode closure — recovery, local adoption, error-kind change,
+exhaustion — is an owner note; only an ephemeral turn's notes carry the typed
+``task_incident`` toast pair, because the browser renders no progress rows for
+that turn (direct turns get live-card rows).
 
 Also hosts the owner-facing provider-failure text helpers and terminal salvage
 readers used by that terminal path (extracted from ``loop.py``, which is at its
@@ -62,14 +69,16 @@ class TransportWaitEpisode:
     terminal cause: later failures (a failed local fallback pass, the deadline
     admission gate) overwrite the usage projection, and the terminal decision
     must stay deterministic (no forced-final resend after a waited-out outage).
-    ``interactive`` is the turn-class fact (direct chat or ephemeral decision
-    turn); ``wait_bound_sec`` is the local ceiling such a turn gets in place of
-    the queue rails it does not have.
+    ``interactive`` is the wait-class fact (every turn stamped direct-chat or
+    ephemeral); ``ephemeral`` is the presentation fact (the browser renders no
+    progress rows for such a turn); ``wait_bound_sec`` is the local ceiling an
+    interactive turn gets in place of the queue rails it does not have.
     """
 
     wait_cause: str = "transport_unavailable"
     started_monotonic: float = 0.0
     interactive: bool = False
+    ephemeral: bool = False
     wait_bound_sec: Optional[float] = None
     redials: int = 0
     wait_iterations: int = 0
@@ -84,19 +93,21 @@ class TransportWaitEpisode:
         return time.monotonic() - self.started_monotonic if self.wait_iterations else 0.0
 
     def incident(self, task_id: str, phase: str) -> Optional[Dict[str, str]]:
-        """Typed toast pair for an interactive episode's owner note.
+        """Typed toast pair for an ephemeral episode's owner note.
 
         The browser renders progress rows for managed tasks and direct turns
         but not for ephemeral decision turns, whose only owner-visible wait
         surface is the one-shot ``task_incident`` toast (``toast_once`` dedupes
-        replay; the entry stamp keeps two episodes of one turn distinct).
-        Managed episodes carry none.
+        replay; the millisecond entry stamp keeps two episodes of one turn
+        distinct). Managed and direct episodes carry none.
         """
-        if not self.interactive:
+        if not self.ephemeral:
             return None
         return {
             "task_incident": "network_wait",
-            "toast_once": f"{task_id}:network_wait:{phase}:{int(self.started_monotonic)}",
+            "toast_once": (
+                f"{task_id}:network_wait:{phase}:{int(self.started_monotonic * 1000)}"
+            ),
         }
 
 
@@ -181,7 +192,8 @@ def reconcile_transport_wait(
     turn's episode gets the idle-timeout bound at entry, because the bound is
     measured from entry and the turn has no other rail. ``emit_progress``
     honors the ``incident=`` keyword (``OuroborosAgent._emit_progress``): the
-    typed toast pair rides the note for interactive episodes.
+    typed toast pair rides the note for ephemeral episodes, and every episode
+    closure is an owner note.
     The round gate reconciles twice per failed dispatch: once with the
     pre-chain kind, and once after the fallback chain with the FRESH kind — so
     an outage first observed MID-chain (a remote candidate dying pre-dispatch
@@ -197,12 +209,12 @@ def reconcile_transport_wait(
     if episode is None:
         if msg_present or error_kind != "transport_unavailable":
             return None
-        interactive = bool(getattr(ctx, "is_direct_chat", False)) or bool(
-            getattr(ctx, "is_ephemeral_turn", False)
-        )
+        ephemeral = bool(getattr(ctx, "is_ephemeral_turn", False))
+        interactive = ephemeral or bool(getattr(ctx, "is_direct_chat", False))
         episode = TransportWaitEpisode(
             started_monotonic=time.monotonic(),
             interactive=interactive,
+            ephemeral=ephemeral,
             wait_bound_sec=float(get_task_idle_timeout_sec()) if interactive else None,
         )
         emit_network_wait_event(
@@ -226,6 +238,11 @@ def reconcile_transport_wait(
                 drive_logs, task_id=task_id, phase="ended", elapsed_sec=elapsed,
                 redials=episode.redials, model=model, detail="local_fallback_adopted",
             )
+            emit_progress(
+                f"🌐 Provider connection still unavailable after {elapsed / 60.0:.1f} min "
+                "— continuing on the local fallback model.",
+                incident=episode.incident(task_id, "ended"),
+            )
         else:
             emit_network_wait_event(
                 drive_logs, task_id=task_id, phase="recovered", elapsed_sec=elapsed,
@@ -246,6 +263,11 @@ def reconcile_transport_wait(
             drive_logs, task_id=task_id, phase="ended", elapsed_sec=elapsed,
             redials=episode.redials, model=model,
             detail=f"error_kind_changed:{error_kind}",
+        )
+        emit_progress(
+            f"🌐 Provider connection restored after {elapsed / 60.0:.1f} min — the redial "
+            f"reached the provider and failed as {error_kind}; normal failure handling resumes.",
+            incident=episode.incident(task_id, "recovered"),
         )
         return None
     return episode
@@ -344,7 +366,7 @@ def transport_wait_step(
         if episode.interactive:
             emit_progress(
                 "🌐 Stopped waiting for a provider connection after "
-                f"{elapsed / 60.0:.1f} min — this chat turn ends as a provider outage.",
+                f"{elapsed / 60.0:.1f} min — this turn ends as a provider outage.",
                 incident=episode.incident(task_id, "ended"),
             )
         return False
@@ -479,8 +501,8 @@ def provider_terminal_fallback_text(
 ) -> str:
     """Owner-facing terminal text when provider death left nothing to salvage.
 
-    ``interactive`` is the episode's turn-class fact — a direct-chat or ephemeral
-    decision turn is a chat turn, never "the task" — and ``waited_sec`` its wait
+    ``interactive`` is the episode's wait-class fact — a direct-chat, Presence, or
+    ephemeral decision turn is "this turn", never "the task" — and ``waited_sec`` its wait
     fact (0.0 when the binding window was already spent before the first wait
     iteration, so that terminal never claims a wait). The waited-out wording
     deliberately avoids the supervisor's lifecycle term INTERRUPTED
@@ -495,13 +517,13 @@ def provider_terminal_fallback_text(
         if interactive:
             if waited_sec > 0:
                 return (
-                    "⚠️ Could not establish a provider connection; this chat turn waited and "
+                    "⚠️ Could not establish a provider connection; this turn waited and "
                     f"redialed for {waited_sec / 60.0:.1f} min and ended as a provider outage, "
                     "not completed. Retry when connectivity returns."
                 )
             return (
                 "⚠️ Could not establish a provider connection, and no wait window was left; "
-                "this chat turn ended as a provider outage, not completed. Retry when "
+                "this turn ended as a provider outage, not completed. Retry when "
                 "connectivity returns."
             )
         if waited_sec > 0:
