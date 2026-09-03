@@ -1675,7 +1675,9 @@ by "Provider Independence" above. Call-site imperatives:
   Binding the complete-result SHA-256 means a parent cannot claim it
   integrated a result that later changed. `deferred` suppresses only the
   reminder and forces an honest degraded/best-effort terminal answer until
-  resolved. A child wedged in the legacy `cancel_requested` latch is intent,
+  resolved. That per-value consequence is carried by the
+  `tree_note` payload schema itself, which is the SSOT for when to choose each
+  value, and its enum reads the validator's own set. A child wedged in the legacy `cancel_requested` latch is intent,
   not outcome — it stays visible as cancel-pending until custody settles it.
 - Host task acceptance is root-only; eligibility uses structured facts
   (`outcomes.turn_has_reviewable_effects` plus a typed
