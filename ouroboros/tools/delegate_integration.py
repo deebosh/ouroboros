@@ -1369,7 +1369,18 @@ def integrate_payload_patch(
         tool="integrate_delegated_patch", context=f"run_id={rid}")
     if rebind_refusal:
         return rebind_refusal
-    patch_touched, parse_error = _patch_touched_paths(patch_path, target)
+    from ouroboros.subagent_worktrees import isolated_git_env
+
+    # NO-REPOSITORY mode for BOTH git invocations below (the touched-path reader
+    # and the apply): the live payload is NOT a Git repository, and an ancestor
+    # `.git` above the runtime data root makes git treat the payload as a mere
+    # subdirectory prefix — every hunk is silently skipped at rc=0 while
+    # `git apply --numstat` prints nothing at all. git still SEARCHES the ceiling
+    # entry itself, so the ceiling must be the PARENT of the payload: pinning it
+    # at the payload leaves the silent no-op in place.
+    git_env = {**isolated_git_env(),
+               "GIT_CEILING_DIRECTORIES": str(target.resolve().parent)}
+    patch_touched, parse_error = _patch_touched_paths(patch_path, target, env=git_env)
     if parse_error:
         return (f"⚠️ INTEGRATE_PATCH_UNREADABLE: cannot parse run {rid}'s captured "
                 f"patch (git apply --numstat failed): {parse_error[:300]}")
@@ -1441,11 +1452,9 @@ def integrate_payload_patch(
                 "log and retry. Nothing was changed.")
     # Index-free apply with cwd = the LIVE payload (R1 item 3, probed): no .git,
     # no index, no staging is created in the live payload. Atomic on failure.
-    # Config-isolated like every parent-side git invocation of this surface.
-    from ouroboros.subagent_worktrees import isolated_git_env
-
+    # Config-isolated and repository-free (see the git_env comment above).
     proc = subprocess.run(["git", "apply", str(patch_path)], cwd=str(target),
-                          capture_output=True, text=True, env=isolated_git_env())
+                          capture_output=True, text=True, env=git_env)
     if proc.returncode != 0:
         custody.record_patch_apply_resolved(drive, entry, reason="apply_failed")
         stderr = (proc.stderr or proc.stdout or "").strip()
@@ -1468,6 +1477,30 @@ def integrate_payload_patch(
         hash_error = ""
     except Exception as exc:
         live_after, hash_error = "", f"{type(exc).__name__}: {exc}"
+    # A PROVABLE non-mutation is refused typed BEFORE the result-hash conditional
+    # (git exited 0, the patch names at least one path, and the live payload still
+    # hashes to its recorded BASELINE), so a run whose manifest recorded no result
+    # hash can never route a silent no-op into the success finalizer.
+    if bool(ordered) and not hash_error and live_after == baseline_hash:
+        custody.record_patch_apply_resolved(drive, entry, reason="apply_no_op")
+        verdict_path = _write_verdict(
+            ctx, f"run_{rid}", outcome="apply_no_op", reason=reason, files=touched,
+            manifest=manifest, applied=False, conflicts=["live==baseline"],
+            protected=[], target=str(target))
+        return (
+            f"⚠️ INTEGRATE_APPLY_NO_OP: run {rid}'s patch applied NOTHING into "
+            f"{target}: git exited 0, but the live payload still equals its recorded "
+            "BASELINE content hash — a provable non-mutation. No success is claimed, "
+            "nothing was disposed, no stale-extension reconcile marker was queued, "
+            "and the durable apply intent is RESOLVED so the retry lane stays open. "
+            "Read the captured patch artifact and re-check the payload, or "
+            "integrate_delegated_patch(decision='reject') to release the snapshot "
+            "while keeping the patch artifact. Finalizing your task while this run is "
+            "neither applied nor rejected leaves your custody audit unreconciled (the "
+            "task completes as Done with warnings, reason "
+            "delegated_custody_unreconciled). Disclosed residual: a patch that changes "
+            "ONLY a file mode can land here, because the payload content hash does not "
+            f"cover the mode bit. Verdict: {verdict_path or '(unwritten)'}.")
     if result_hash and live_after != result_hash:
         try:
             from ouroboros.review_state import invalidate_advisory_after_mutation
@@ -1512,10 +1545,13 @@ def integrate_payload_patch(
             f"representation ({hash_error or 'hash divergence'}). No success is "
             f"claimed: nothing was disposed; {reconciled}; the durable "
             "apply intent stays PENDING, so the next integrate_delegated_patch "
-            "answers APPLY_AMBIGUOUS for explicit owner recovery "
-            "(decision='acknowledge_ambiguous' after inspection). The snapshot and "
-            f"the patch are preserved as forensic material. Verdict: "
-            f"{verdict_path or '(unwritten)'}.")
+            "answers APPLY_AMBIGUOUS for explicit owner recovery (call it again with "
+            "acknowledge_ambiguous=true after inspection, or with decision='reject' "
+            "to release the snapshot while keeping the patch artifact). The snapshot "
+            "and the patch are preserved as forensic material. Finalizing your task "
+            "while this run is neither applied nor rejected leaves your custody audit "
+            "unreconciled (the task completes as Done with warnings, reason "
+            f"delegated_custody_unreconciled). Verdict: {verdict_path or '(unwritten)'}.")
     return _finalize_payload_apply(
         ctx, rid=rid, reason=reason, target=target, touched=touched,
         ordered=ordered, manifest=manifest, state_root=state_root,

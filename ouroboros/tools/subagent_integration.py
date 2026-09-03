@@ -199,7 +199,7 @@ def _verify_shared_external_workspace(
     return True, [], ""
 
 
-def _patch_touched_paths(patch_path: pathlib.Path, target: pathlib.Path) -> tuple[set[str], str]:
+def _patch_touched_paths(patch_path: pathlib.Path, target: pathlib.Path, env: Any = None) -> tuple[set[str], str]:
     """Every path the patch touches, parsed NUL-SAFELY from git's own reader.
 
     ``git apply --numstat -z`` is the machine-readable form: fields are
@@ -219,7 +219,7 @@ def _patch_touched_paths(patch_path: pathlib.Path, target: pathlib.Path) -> tupl
     for direction in ([], ["-R"]):
         numstat = subprocess.run(
             ["git", "apply", *direction, "--numstat", "-z", str(patch_path)],
-            cwd=str(target), capture_output=True,
+            cwd=str(target), capture_output=True, env=env,
         )
         if numstat.returncode != 0:
             detail = (numstat.stderr or numstat.stdout or b"").decode("utf-8", errors="replace")
@@ -1570,7 +1570,11 @@ def get_tools() -> List[ToolEntry]:
                     "skill's existing review goes STALE: it must be re-run before the skill "
                     "is relied on. Read the captured diff (see delegate_wait's "
                     "workspace_capture block) before applying — the run's output is a claim, "
-                    "not a verified result."
+                    "not a verified result. Finalizing your task while one of your runs is "
+                    "neither applied nor rejected leaves your custody audit unreconciled: the "
+                    "task completes as Done with warnings with the debt disclosed on its card "
+                    "(reason delegated_custody_unreconciled); reject is the closing move that "
+                    "keeps the patch artifact and releases the snapshot."
                 ),
                 "parameters": {
                     "type": "object",
