@@ -911,8 +911,8 @@ the deadline actually cuts is DEGRADED, a panel that finishes keeps its normal
 verdict; never a free skip. An unavailable claim releases the usage
 reservation and blocks every parallel panel slot before reviewer transport
 rather than degrading hard authority into fail-open cost telemetry. Disclosed
-residual (pre-existing release behaviour, b9bcc2da; draft issue #29,
-publication pending; out of this change's scope): a compatibility transport
+residual (pre-existing release behaviour, b9bcc2da; issue #588; out of
+this change's scope): a compatibility transport
 that raises with positive physical capture invokes the paid stamp after the
 send; if the tree's last paid cycle is consumed concurrently at that late
 stamp, the wallet refusal replaces the captured exception and the substrate
@@ -1319,7 +1319,7 @@ both critical. The imperatives:
   canonical usage-ledger reader's own bounded maintenance — today: the
   torn-tail quarantine after a SINGLE crash mid-append, which every reader
   performs identically (a crash inside that repair itself — a torn quarantine
-  sink — is a known residual, draft issue #27, publication pending), the empty
+  sink — is a known residual, issue #586), the empty
   `state/` directory the reader's lock lives in on a never-initialized root,
   and removal of a stale `usage_attempts.lock` older than the reader's 90 s
   stale window (`usage_ledger._locked` →
