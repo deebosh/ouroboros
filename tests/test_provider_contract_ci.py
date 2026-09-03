@@ -199,14 +199,14 @@ def test_exact_provider_canary_matrix_logical_turns_and_attempt_bound():
         "deepseek_direct",
     }
     assert [row.canary_id for row in matrix if row.continue_to_final] == [
-        "openai_direct_main"
+        "openai_direct_main", "deepseek_direct"
     ]
     assert [row.canary_id for row in matrix if not row.named_tool_choice] == [
         "gigachat_direct"
     ]
     logical_turns = sum(1 + int(row.continue_to_final) for row in matrix)
-    assert logical_turns == 14
-    assert logical_turns * CANARY_EMPTY_RESPONSE_MAX_ATTEMPTS == 28
+    assert logical_turns == 15
+    assert logical_turns * CANARY_EMPTY_RESPONSE_MAX_ATTEMPTS == 30
     assert sum(
         1 + int(row.continue_to_final)
         for row in matrix
@@ -603,6 +603,8 @@ def _fake_usage(canary: ProviderCanary, ordinal: int):
             usage["request_wire"] = {
                 "requested_effort": applied_effort,
                 "applied_effort": applied_effort,
+                # A continuation must bind a fresh physical candidate.
+                "candidate_sha256": ("c" if ordinal == 1 else "d") * 64,
             }
         return usage
     usage["request_wire"] = {

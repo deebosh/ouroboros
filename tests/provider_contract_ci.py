@@ -77,9 +77,11 @@ _OPTIONAL_DIRECT_CANARIES = (
     ),
     ProviderCanary(
         # "medium" ON PURPOSE (unlike its optional siblings): the deepseek lane
-        # CARRIES reasoning_effort, and the canary pins that carriage.
+        # CARRIES reasoning_effort, and the canary pins that carriage. The
+        # continuation is mandatory too: DeepSeek's tool contract is defined by
+        # replaying reasoning_content on the second request.
         "deepseek_direct", "deepseek::deepseek-v4-flash", "deepseek",
-        "DEEPSEEK_API_KEY", False, "medium",
+        "DEEPSEEK_API_KEY", False, "medium", continue_to_final=True,
     ),
     ProviderCanary(
         "cloudru_direct", "cloudru::zai-org/GLM-4.7", "cloudru",
