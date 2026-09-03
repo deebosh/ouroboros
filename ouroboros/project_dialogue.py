@@ -3,8 +3,9 @@
 Project conversion stores a reference to the original owner row on the immutable
 task binding. A Project room projects that row instead of copying it into
 ``chat.jsonl``. Terminal task projections append to that same canonical biography;
-``chat_annotations.jsonl`` remains presentation-only and never owns routing or
-Project state.
+``chat_annotations.jsonl`` is presentation-first and owns no Project state; its
+token-bound ``needs_manual_target`` decision card is the one routing-authority
+exception.
 """
 
 from __future__ import annotations
