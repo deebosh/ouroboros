@@ -476,17 +476,25 @@ def test_architecture_endpoint_table_mirrors_route_registries(tmp_path):
     expected_public = {e for e in expected_public if not e.endswith("/api/extensions/{skill}/{rest:path}")}
     expected_public.add("ANY /api/extensions/{skill}/{rest:path}")
 
+    from starlette.routing import Route, WebSocketRoute
+
     from ouroboros.gateway.host_service import create_host_service_app
 
     expected_host = set()
     for route in create_host_service_app(tmp_path).routes:
-        methods = getattr(route, "methods", None)
-        if methods is None:
+        if isinstance(route, WebSocketRoute):
             expected_host.add(f"WS {route.path}")
-            continue
-        expected_host.update(
-            f"{method} {route.path}" for method in methods if method not in {"HEAD", "OPTIONS"}
-        )
+        elif isinstance(route, Route):
+            if route.methods is None:
+                expected_host.add(f"ANY {route.path}")
+            else:
+                expected_host.update(
+                    f"{method} {route.path}"
+                    for method in route.methods
+                    if method not in {"HEAD", "OPTIONS"}
+                )
+        else:
+            raise AssertionError(f"Unhandled Host Service route type: {type(route).__name__}")
 
     assert documented_public == expected_public, (
         f"missing rows: {sorted(expected_public - documented_public)}; "

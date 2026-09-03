@@ -137,8 +137,12 @@ text and defaults belong to their owners (ARCHITECTURE, CHECKLISTS, BIBLE,
 endpoint tables are test-checked registries of those owners, not second
 authorities. A change REPLACES the description of the node it touched; release
 history lives in git and the README history table, leftovers go to issues.
-Residue in the exact spellings of `DOC_RESIDUE_PATTERNS` — parenthesized version stamps, decision codenames, "used to / previously" narrative —
-is caught by the shrink-only residue check in `tests/test_docs_sync.py`.
+Residue — parenthesized version stamps, decision codenames, "used to /
+previously" narrative — is caught by the shrink-only residue check in
+`tests/test_docs_sync.py`, which enforces only the explicit, case-sensitive
+matches in `DOC_RESIDUE_PATTERNS`, outside its declared skipped subsections and
+language-tagged fences; semantically equivalent historical prose stays
+review-only under CHECKLISTS item 7.
 
 ### Generality and emergence (P13)
 
