@@ -29,6 +29,7 @@ import os
 import pathlib
 import re
 import threading
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros.utils import atomic_write_json, read_json_dict, truncate_within_limit, utc_now_iso
@@ -43,6 +44,7 @@ UPDATE_LETTER_MAX_TOKENS = 1024
 # Per-commit body bound inside the material (a disclosed cut, never a silent slice).
 COMMIT_BODY_MAX_CHARS = 1200
 DEFAULT_MAX_COMMITS = 200
+DEFAULT_MAX_ROWS = 60
 
 _ROW_RE = re.compile(r"^\+\|\s*(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)\s*\|")
 _UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
@@ -56,9 +58,13 @@ GitCapture = Callable[[List[str]], Tuple[int, str, str]]
 # ---------------------------------------------------------------------------
 
 def _default_git() -> GitCapture:
+    """Local git under the managed-update ceiling (config SSOT); never an unbounded wait
+    while the single-flight lock is held."""
+    from ouroboros.update_channels import get_managed_update_fetch_timeout_sec
     from supervisor.git_ops import git_capture
 
-    return git_capture
+    limit = float(get_managed_update_fetch_timeout_sec())
+    return lambda cmd: git_capture(cmd, timeout=limit)
 
 
 def _split_row(line: str) -> Optional[Tuple[str, str, str]]:
@@ -84,13 +90,15 @@ def collect_range_material(
     *,
     git: Optional[GitCapture] = None,
     max_commits: int = DEFAULT_MAX_COMMITS,
+    max_rows: int = DEFAULT_MAX_ROWS,
 ) -> Dict[str, Any]:
     """Collect the first-parent commits and the README history rows they added.
 
     ``commits`` are newest-first and capped at ``max_commits`` (``omitted_commits``
     discloses the rest); ``releases`` are every row added anywhere in the range,
     newest-first with first-wins per version; malformed rows are counted in
-    ``omitted_rows``; ``versions`` are the VERSION files at both ends. Divergence
+    ``omitted_rows``, rows past ``max_rows`` in ``omitted_older_rows``; ``versions`` are
+    the VERSION files at both ends. Divergence
     counts stay on the status dict that triggered the letter — nothing is
     collected that neither the model nor the record reads. An empty range yields
     empty lists.
@@ -100,7 +108,7 @@ def collect_range_material(
     material: Dict[str, Any] = {
         "base_sha": base_sha, "target_sha": target_sha,
         "commits": [], "omitted_commits": 0, "releases": [], "omitted_rows": 0,
-        "versions": {},
+        "omitted_older_rows": 0, "versions": {},
     }
     rc, out, _err = capture([
         "git", "log", "--first-parent", "--format=%H%x1f%aI%x1f%s%x1f%b%x1e", spec,
@@ -148,7 +156,8 @@ def collect_range_material(
                 continue
             seen_versions.add(version)
             releases.append({"version": version, "date": date, "text": text, "commit": current_sha})
-    material["releases"] = releases
+    material["omitted_older_rows"] = max(0, len(releases) - max_rows)
+    material["releases"] = releases[:max_rows]
     for label, sha in (("base", base_sha), ("target", target_sha)):
         rc, out, _err = capture(["git", "show", f"{sha}:VERSION"])
         material["versions"][label] = out.strip() if rc == 0 else ""
@@ -165,6 +174,8 @@ def material_text(material: Dict[str, Any]) -> str:
             lines.append(f"- {row.get('version')} ({row.get('date')}): {row.get('text')}")
         if material.get("omitted_rows"):
             lines.append(f"- [{material['omitted_rows']} malformed history row(s) omitted]")
+        if material.get("omitted_older_rows"):
+            lines.append(f"- [{material['omitted_older_rows']} older release row(s) omitted]")
     commits = material.get("commits") or []
     if commits:
         lines.append("")
@@ -205,6 +216,8 @@ def _request_text(status: Dict[str, Any], material: Dict[str, Any], target_versi
         + json.dumps(facts, ensure_ascii=False, indent=2)
         + "\n\nMaterial — what changed between the running version and the target:\n"
         + material_text(material)
+        + "\n\n(The official_update block in my Runtime context describes the state before "
+        "this check; the facts above supersede it.)"
         + "\n\nWrite my human ONE short paragraph — no headings, no lists, no more than about "
         "120 words — about what this update brings, as myself and in the language my human and I "
         "use together. Use only what the material says; "
@@ -216,11 +229,16 @@ def _request_text(status: Dict[str, Any], material: Dict[str, Any], target_versi
 
 
 def _context_messages(env: Any, memory: Any, task: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The ordinary task context, projected for the synthetic light-slot task."""
-    from ouroboros.context import build_llm_messages
+    """The ordinary task context in the owner's mode, dropping to the Low projection only
+    when the light route's KNOWN window cannot take Max (a light slot smaller than the main
+    model must still be able to write the letter; unknown windows keep the owner's mode)."""
+    from ouroboros.context import build_context_fit_plan
 
-    messages, _cap = build_llm_messages(env, memory, task)
-    return messages
+    plan = build_context_fit_plan(env, memory, task)
+    mode = plan.initial_mode
+    if plan.projection(mode).fits_known_window is False and plan.low_projection.fits_known_window:
+        mode = "low"
+    return plan.messages_for(mode)
 
 
 def _letter_timeout_sec() -> float:
@@ -286,6 +304,7 @@ def write_letter(
         "model": "",
         "written_at": utc_now_iso(),
         "attempt_id": "",
+        "attempt_ids": [],
         "error_kind": "",
         "error_text": "",
         "last_good": None,
@@ -325,15 +344,17 @@ def write_letter(
             global_limit_usd=global_limit if global_limit > 0 else None,
         )
         client = llm_client or LLMClient()
-        with model_concurrency.model_call_slot(model, use_local):
+        timeout = _letter_timeout_sec()
+        with model_concurrency.model_call_slot(model, use_local, deadline_ts=time.time() + timeout):
             with usage_scope(scope):
                 msg, usage = _chat(
                     client, drive_root=data_root, messages=messages, model=model, tools=None,
                     reasoning_effort="low", max_tokens=UPDATE_LETTER_MAX_TOKENS,
-                    use_local=use_local, timeout=_letter_timeout_sec(),
+                    use_local=use_local, timeout=timeout,
                 )
-        attempt_ids = list((usage or {}).get("ledger_attempt_ids") or [])
-        record["attempt_id"] = str(attempt_ids[-1]) if attempt_ids else ""
+        attempt_ids = [str(a) for a in ((usage or {}).get("ledger_attempt_ids") or [])]
+        record["attempt_ids"] = attempt_ids
+        record["attempt_id"] = attempt_ids[-1] if attempt_ids else ""
         text = str((msg or {}).get("content") or "").strip()
         if not text:
             record.update(error_kind="empty_response", error_text="the model returned no text")
@@ -379,23 +400,28 @@ def refresh_after_check(
 ) -> Optional[Dict[str, Any]]:
     """Write the letter after a successful FETCHING check; never raise, never delete.
 
-    ``check_ok`` other than True or no available update leaves the stored record as it
-    is (an applied update keeps its letter — that is the "what changed in this version"
-    text). A second concurrent refresh is a no-op that returns the current record.
+    Every successful check records the HEAD it checked (``checked_head_sha``), letter or
+    not, so the Runtime fact can tell "checked and current" from "moved since". No
+    available update leaves any stored letter as it is (an applied update keeps its
+    letter — that is the "what changed in this version" text). ``check_ok`` other than
+    True writes nothing. A second concurrent refresh is a no-op returning the current
+    record.
     """
     try:
         current = read_record(drive_root)
-        if status.get("check_ok") is not True or not status.get("available"):
+        if status.get("check_ok") is not True:
             return current
         key = _key_from_status(status)
-        if not key["base_sha"] or not key["target_sha"]:
+        if not key["base_sha"]:
             return current
+        if not status.get("available") or not key["target_sha"]:
+            return _mark_checked(current, key, drive_root)
         if not _REFRESH_LOCK.acquire(blocking=False):
             return current
         try:
             material = collect_range_material(key["base_sha"], key["target_sha"])
             if not material.get("commits") and not material.get("releases"):
-                return current
+                return _mark_checked(current, key, drive_root)
             record = write_letter(status, material, drive_root=drive_root, llm_client=llm_client)
             if record.get("state") != "ready" and current:
                 # D-KEEP for the supersede case too: a good letter is never lost to a
@@ -411,6 +437,15 @@ def refresh_after_check(
         return read_record(drive_root)
 
 
+def _mark_checked(current: Optional[Dict[str, Any]], key: Dict[str, str],
+                  drive_root: Optional[pathlib.Path]) -> Dict[str, Any]:
+    """Record the checked HEAD without touching any letter (a letterless record has ``state: none``)."""
+    record = dict(current) if current else {"schema": 1, "key": key, "state": "none", "text": "", "last_good": None}
+    record["checked_head_sha"] = key["base_sha"]
+    atomic_write_json(record_path(drive_root), record)
+    return record
+
+
 # ---------------------------------------------------------------------------
 # The one projection shared by the panel payload and the Runtime context
 # ---------------------------------------------------------------------------
@@ -422,7 +457,7 @@ def project_letter(
     latest_sha: str,
 ) -> Optional[Dict[str, Any]]:
     """Relate the stored letter to the live HEAD and official target by SHA equality."""
-    if not record:
+    if not record or record.get("state") == "none":
         return None
     key = record.get("key") if isinstance(record.get("key"), dict) else {}
     base, target = str(key.get("base_sha") or ""), str(key.get("target_sha") or "")
@@ -485,18 +520,20 @@ def official_update_projection(
         latest = str(cache.get("latest_sha") or "")
         letter = project_letter(record, head_sha=head, latest_sha=latest)
         checked_head = str((record or {}).get("checked_head_sha") or "")
+        record_key = (record or {}).get("key") if isinstance((record or {}).get("key"), dict) else {}
         if not cache:
             status = "unchecked"
+        elif head and head == checked_head:
+            status = "update_available" if cache.get("available") else "up_to_date"
         elif head and head == latest:
             status = "up_to_date"
-        elif cache.get("available") and checked_head and checked_head == head:
-            status = "update_available"
         else:
             status = "moved_since_check"
         target = None
         if latest:
+            same_target = str(record_key.get("target_sha") or "") == latest
             target = {
-                "version": str((record or {}).get("target_version") or ""),
+                "version": str((record or {}).get("target_version") or "") if same_target else "",
                 "sha": latest,
             }
         return {

@@ -98,7 +98,8 @@ def test_material_recovers_rows_from_commit_diffs_and_lists_first_parent_commits
     assert material["commits"][0]["body"] == "Details of the untagged tail."
     assert material["omitted_commits"] == 0
     assert material["versions"] == {"base": "1.0.0", "target": "1.4.0"}
-    assert set(material) == {"base_sha", "target_sha", "commits", "omitted_commits", "releases", "omitted_rows", "versions"}
+    assert set(material) == {"base_sha", "target_sha", "commits", "omitted_commits", "releases",
+                             "omitted_rows", "omitted_older_rows", "versions"}
 
 
 def test_material_caps_commits_but_keeps_every_release_row(history_repo):
@@ -107,6 +108,11 @@ def test_material_caps_commits_but_keeps_every_release_row(history_repo):
     )
     assert len(material["commits"]) == 2 and material["omitted_commits"] == 2
     assert len(material["releases"]) == 4
+    capped = ul.collect_range_material(
+        history_repo["base"], history_repo["c4"], git=_capture_for(history_repo["repo"]), max_rows=3,
+    )
+    assert [row["version"] for row in capped["releases"]] == ["1.4.0", "1.2.0", "1.1.1"]
+    assert capped["omitted_older_rows"] == 1 and "1 older release row(s) omitted" in ul.material_text(capped)
     rendered = ul.material_text(material)
     assert "2 older commit(s) omitted" in rendered and "1 malformed history row(s) omitted" in rendered
 
@@ -187,7 +193,8 @@ def test_write_letter_ready_record_carries_attempt_and_versions(letter_env, monk
     record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
 
     assert record["state"] == "ready" and record["text"] == "One short paragraph."
-    assert record["attempt_id"] == "att-2" and record["model"] == "test/light"
+    assert record["attempt_id"] == "att-2" and record["attempt_ids"] == ["att-1", "att-2"]
+    assert record["model"] == "test/light"
     assert record["key"]["base_sha"] == "a" * 40 and record["checked_head_sha"] == "a" * 40
     assert record["target_version"] == "6.114.0" and record["error_kind"] == ""
     assert seen["model"] == "test/light" and seen["max_tokens"] == ul.UPDATE_LETTER_MAX_TOKENS
@@ -241,13 +248,23 @@ def test_write_letter_empty_response_is_typed(letter_env, monkeypatch):
 # refresh seam
 # ---------------------------------------------------------------------------
 
-def test_refresh_skips_without_a_successful_available_check(tmp_path, monkeypatch):
+def test_refresh_writes_nothing_without_a_successful_check(tmp_path, monkeypatch):
     drive = tmp_path / "data"
     monkeypatch.setattr(ul, "collect_range_material", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no material")))
     assert ul.refresh_after_check(_status(check_ok=False), drive_root=drive) is None
     assert ul.refresh_after_check(_status(check_ok=None), drive_root=drive) is None
-    assert ul.refresh_after_check(_status(available=False), drive_root=drive) is None
     assert not ul.record_path(drive).exists()
+
+
+def test_refresh_records_the_checked_head_even_without_an_update(tmp_path, monkeypatch):
+    drive = tmp_path / "data"
+    monkeypatch.setattr(ul, "collect_range_material", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no material")))
+    record = ul.refresh_after_check(_status(available=False, latest_sha=""), drive_root=drive)
+    assert record["state"] == "none" and record["checked_head_sha"] == "a" * 40
+    assert ul.project_letter(record, head_sha="a" * 40, latest_sha="") is None
+    fact = ul.official_update_projection("a" * 40, drive_root=drive, state={"managed_update_cache": {
+        "latest_sha": "", "available": False, "behind": 0, "ahead": 2, "checked_at": "t0"}})
+    assert fact["status"] == "up_to_date" and fact["letter"] is None
 
 
 def test_refresh_writes_record_and_keeps_last_good_on_failure(tmp_path, monkeypatch):
@@ -341,7 +358,7 @@ def test_official_update_projection_states(tmp_path):
     assert ul.official_update_projection(head, drive_root=drive, state={})["status"] == "unchecked"
     cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": True, "behind": 3, "ahead": 0,
                                       "checked_at": "t0", "update_channel": "stable"}}
-    # A check happened but no letter was written for THIS head: moved/unknown, never invented.
+    # A cache from a check this code never recorded (no record at all): never invented.
     assert ul.official_update_projection(head, drive_root=drive, state=cache)["status"] == "moved_since_check"
     ul.record_path(drive).write_text(json.dumps(_record()))
     fact = ul.official_update_projection(head, drive_root=drive, state=cache)
@@ -352,6 +369,11 @@ def test_official_update_projection_states(tmp_path):
     assert applied["status"] == "up_to_date" and applied["letter"]["relation"] == "applied"
     moved = ul.official_update_projection("e" * 40, drive_root=drive, state=cache)
     assert moved["status"] == "moved_since_check" and moved["letter"]["relation"] == "other"
+    # A newer official target than the letter's: the target version is not the letter's.
+    newer = dict(cache); newer["managed_update_cache"] = dict(cache["managed_update_cache"], latest_sha="c" * 40)
+    superseded = ul.official_update_projection(head, drive_root=drive, state=newer)
+    assert superseded["target"] == {"version": "", "sha": "c" * 40}
+    assert superseded["letter"]["relation"] == "superseded"
 
 
 def test_official_update_projection_never_raises(tmp_path):
@@ -359,20 +381,49 @@ def test_official_update_projection_never_raises(tmp_path):
     assert fact["status"] == "unchecked"
 
 
-def test_context_messages_use_the_ordinary_builder_routed_at_the_light_model(tmp_path, monkeypatch):
+class _Projection:
+    def __init__(self, fits, label):
+        self.fits_known_window = fits
+        self.label = label
+
+    def system_message(self):
+        return {"role": "system", "content": self.label}
+
+
+class _Plan:
+    def __init__(self, preferred, max_fits, low_fits):
+        self.initial_mode = preferred
+        self.max_projection = _Projection(max_fits, "max")
+        self.low_projection = _Projection(low_fits, "low")
+
+    def projection(self, mode):
+        return self.low_projection if mode == "low" else self.max_projection
+
+    def messages_for(self, mode):
+        return [self.projection(mode).system_message(), {"role": "user", "content": "req"}]
+
+
+@pytest.mark.parametrize("preferred, max_fits, low_fits, expected", [
+    ("max", True, True, "max"),      # the owner's mode when it fits
+    ("max", None, None, "max"),      # unknown window: keep the owner's mode
+    ("max", False, True, "low"),     # a small light slot: the projection that fits
+    ("max", False, False, "max"),    # nothing fits: send the owner's mode and let it fail typed
+    ("low", True, True, "low"),
+])
+def test_context_messages_use_the_ordinary_plan_and_the_fitting_projection(monkeypatch, preferred, max_fits, low_fits, expected):
     import ouroboros.context as context
 
     captured = {}
 
-    def fake_build(env, memory, task, *a, **k):
+    def fake_plan(env, memory, task, *a, **k):
         captured["task"] = task
-        return [{"role": "system", "content": "s"}, {"role": "user", "content": task["text"]}], {}
+        return _Plan(preferred, max_fits, low_fits)
 
-    monkeypatch.setattr(context, "build_llm_messages", fake_build)
+    monkeypatch.setattr(context, "build_context_fit_plan", fake_plan)
     task = {"id": ul.SYSTEM_TASK_ID, "type": "update_letter", "model": "test/light",
             "use_local_model": False, "text": "req", "metadata": {}}
     messages = ul._context_messages(object(), object(), task)
-    assert captured["task"] is task and messages[-1]["content"] == "req"
+    assert captured["task"] is task and messages[0]["content"] == expected and messages[-1]["content"] == "req"
 
 
 def test_write_letter_local_light_route_skips_the_credential_gate(letter_env, monkeypatch):
