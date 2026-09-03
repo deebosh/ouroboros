@@ -2004,6 +2004,10 @@ body.resizing-panels { user-select: none; }
     min-width: 0;
     line-height: 1.45;
     white-space: pre-wrap;
+    /* A derived name is the request's own first line, so it can be one long
+       unbroken token (a URL or a path). Without a wrap escape it overflows the
+       card on every narrow surface, not just the phone container query. */
+    overflow-wrap: anywhere;
 }
 
 /* Collapsed summaries have a stable compact geometry. Expanded cards keep the
