@@ -1186,6 +1186,10 @@ class _TaskAcceptanceContext:
     # in loop.py from each real source, fed into the improvement capsule
     # (v6.74.0 A1, owner Q6); the capsule builder never gains ctx.
     rails_line: str = ""
+    # The packet ceiling, resolved ONCE per task from the review quorum's real
+    # windows: the packet is built twice per pass, and a ceiling that moved in
+    # between would flip the evidence revision and supersede the paid identity.
+    packet_budget_chars: int = 0
 
 
 def _latest_agent_acceptance_evidence(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
@@ -1233,6 +1237,7 @@ def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, An
         include_recent_commit=committed_this_turn,
         canonical_subject=str(ctx.content or ""),
         subtree_statuses=ctx.subtree_statuses,
+        budget_chars=ctx.packet_budget_chars,
     )
     # Owner Q2A: the forced children_unabsorbed rail stashes the process debt
     # (undispositioned children) so the panel sees it; part of the binding hash.
@@ -1518,6 +1523,8 @@ def _run_task_acceptance_review_once(
     _latch_final_answer_marker(llm_trace, content)
     if getattr(tools._ctx, "_task_acceptance_reviewed", False):
         return False
+    from ouroboros.review_evidence import acceptance_packet_budget_chars
+    from ouroboros.reviewer_slot_config import reviewer_slots
     from ouroboros.task_results import resolve_task_lineage
 
     meta = getattr(tools._ctx, "task_metadata", {})
@@ -1665,6 +1672,9 @@ def _run_task_acceptance_review_once(
             required_blocking=(
                 mode == "required" and get_review_enforcement() == "blocking"
             ), workspace=task_pacing._workspace_delivery(tools._ctx),
+        ),
+        packet_budget_chars=acceptance_packet_budget_chars(
+            reviewer_slots(effort=resolve_effort("review"), role_hint="task acceptance"),
         ),
     )
     try:

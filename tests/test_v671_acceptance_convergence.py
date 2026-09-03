@@ -326,3 +326,173 @@ def test_acceptance_revision_round_does_not_arm_delivery_control(tmp_path, monke
     # conflicted with OPEN OBLIGATIONS prose + the periodic self-check and froze
     # the model into identical no-tool resubmits).
     assert not bool(getattr(registry._ctx, "_delivery_control_required", False))
+
+
+# ── AP1: the packet ceiling follows the review quorum's real windows ───────────
+
+def test_acceptance_packet_budget_falls_back_to_the_floor_without_calibration():
+    from ouroboros.review_evidence import _ACCEPT_TOTAL_BUDGET, acceptance_packet_budget_chars
+
+    # No slots at all, and a slot list whose models calibrate to nothing, both
+    # read the historical floor: an unknown route never gets a THINNER packet.
+    assert acceptance_packet_budget_chars([]) == _ACCEPT_TOTAL_BUDGET
+    assert acceptance_packet_budget_chars(None) == _ACCEPT_TOTAL_BUDGET
+    blank = [ReviewSlot(slot_id="slot_1", model="", effort="high")]
+    assert acceptance_packet_budget_chars(blank) == _ACCEPT_TOTAL_BUDGET
+
+
+def test_acceptance_packet_budget_uses_the_quorum_window_and_dense_chars(monkeypatch):
+    from ouroboros.review_evidence import (
+        ACCEPTANCE_PROMPT_OVERHEAD_CHARS,
+        _ACCEPT_DENSE_CHARS_PER_TOKEN,
+        _ACCEPT_TOTAL_BUDGET,
+        acceptance_packet_budget_chars,
+    )
+    from ouroboros.tools import review_synthesis
+
+    caps = {"wide-1": 900_000, "wide-2": 800_000, "narrow": 120_000}
+    monkeypatch.setattr(
+        review_synthesis, "per_slot_input_token_limits",
+        lambda models, **kwargs: {str(m): caps.get(str(m), 0) for m in models},
+    )
+    slots = [
+        ReviewSlot(slot_id="slot_1", model="wide-1", effort="high"),
+        ReviewSlot(slot_id="slot_2", model="wide-2", effort="high"),
+        ReviewSlot(slot_id="slot_3", model="narrow", effort="high"),
+    ]
+    budget = acceptance_packet_budget_chars(slots)
+    # quorum of 3 is 2, so the second-largest cap sizes the shared prompt; the
+    # narrow slot drops out of the quorum instead of shrinking everyone's packet.
+    expected = int(800_000 * _ACCEPT_DENSE_CHARS_PER_TOKEN) - ACCEPTANCE_PROMPT_OVERHEAD_CHARS
+    assert budget == expected > _ACCEPT_TOTAL_BUDGET
+    # A retrieving slot brings its own tools and is not sized against this pack.
+    retrieving = _t.SimpleNamespace(model="wide-1", max_tokens=16_384, retrieves=True)
+    assert acceptance_packet_budget_chars([retrieving]) == _ACCEPT_TOTAL_BUDGET
+
+
+def test_predecessor_envelope_sheds_first_and_is_disclosed():
+    dr = Path(tempfile.mkdtemp())
+    ctx = _t.SimpleNamespace(
+        task_contract={
+            "requirements": "do X", "expected_output": "42",
+            "predecessor_authority": {
+                "source": {"kind": "task_result", "task_id": "prev-task"},
+                "final_answer": "P" * 60_000,
+            },
+        },
+        task_metadata={}, drive_root=str(dr), task_id="acc", repo_dir=str(dr),
+    )
+    trace = {"tool_calls": [
+        {"tool": "run_command", "status": "ok", "result": f"call-{i}-" + ("X" * 25000)}
+        for i in range(25)
+    ]}
+    ev = build_task_acceptance_evidence(ctx, llm_trace=trace, drive_root=dr, task_id="acc")
+    stub = ev["task_contract"]["predecessor_authority"]
+    assert stub["kind"] == "predecessor_authority_omitted_for_budget"
+    assert stub["previous_task_id"] == "prev-task"
+    assert stub["omitted_chars"] > 60_000
+    rows = [o for o in ev["omissions_manifest"]
+            if o.get("section") == "task_contract.predecessor_authority"]
+    assert rows and rows[0]["reason"] == "evidence_budget"
+    # ...and it sheds BEFORE the trajectory tail is re-capped for the same bytes.
+    assert ev["omissions_manifest"].index(rows[0]) == 0
+
+
+def test_repo_diff_previews_last_and_keeps_its_source_ref(monkeypatch):
+    from ouroboros import review_evidence
+
+    dr = Path(tempfile.mkdtemp())
+    ref = {"kind": "artifact", "path": "task_results/artifacts/acc/repo_diff.txt"}
+    monkeypatch.setattr(
+        review_evidence, "collect_turn_diff",
+        lambda *a, **k: "D" * 300_000,
+    )
+    monkeypatch.setattr(
+        review_evidence, "_accept_owner_directives", lambda *a, **k: "",
+    )
+    ev = build_task_acceptance_evidence(
+        _acc_ctx(dr), llm_trace={"tool_calls": []}, drive_root=dr, task_id="acc",
+    )
+    # Without a durable source ref the diff is NOT previewed — it stays exact and
+    # the packet honestly overflows instead of losing bytes nobody can recover.
+    assert len(ev["repo_diff"]) == 300_000
+    assert "repo_diff" not in {o.get("section") for o in ev["omissions_manifest"]}
+
+    ev2 = build_task_acceptance_evidence(
+        _acc_ctx(dr), llm_trace={"tool_calls": []}, drive_root=dr, task_id="acc",
+    )
+    ev2["repo_diff_source_ref"] = ref
+    from ouroboros.review_evidence import _accept_enforce_budget
+
+    ev2["repo_diff"] = "D" * 300_000
+    ev2["omissions_manifest"] = []
+    ev2.pop("__immutable_core_overflow__", None)
+    ev2.pop("__budget_note__", None)
+    shed = _accept_enforce_budget(ev2)
+    assert len(shed["repo_diff"]) <= 20_100
+    assert shed["repo_diff_source_ref"] == ref
+    row = [o for o in shed["omissions_manifest"] if o.get("section") == "repo_diff"]
+    assert row and row[0]["source_ref"] == ref
+    assert "__immutable_core_overflow__" not in shed
+    assert "__unresolved_partial_artifacts__" not in shed
+
+
+def test_core_overflow_reason_names_the_largest_sections():
+    from ouroboros.review_evidence import _accept_enforce_budget
+    from ouroboros.review_dispatch import task_acceptance_zero_physical_refusal
+
+    ev = {
+        "owner_requirements_and_decisions": "O" * 300_000,
+        "task_contract": {"requirements": "R" * 50_000},
+        "verification_summary": {"note": "V" * 10_000},
+    }
+    out = _accept_enforce_budget(ev)
+    reason = out["__immutable_core_overflow__"]["reason"]
+    assert reason.startswith("packet exceeds budget after every disclosed shed")
+    assert "owner_requirements_and_decisions=" in reason
+    assert "task_contract=" in reason
+    refusal = task_acceptance_zero_physical_refusal(out)
+    assert refusal["status"] == "degraded_core_overflow"
+    assert "owner_requirements_and_decisions=" in refusal["summary"]
+
+
+def test_budget_shed_partials_no_longer_veto_the_panel(tmp_path):
+    from ouroboros.review_dispatch import task_acceptance_zero_physical_refusal
+
+    shed_only = {"__unresolved_partial_artifacts__": [
+        {"tool": "read_file", "status": "not_materialized_for_reviewer",
+         "source_ref": {"kind": "artifact", "path": "p"}},
+    ]}
+    assert task_acceptance_zero_physical_refusal(shed_only) == {}
+    genuine = {"__unresolved_partial_artifacts__": [
+        {"tool": "read_file", "status": "not_materialized_for_reviewer", "source_ref": {}},
+        {"tool": "artifact_manifest", "status": "source_unavailable", "source_ref": {}},
+    ]}
+    assert task_acceptance_zero_physical_refusal(genuine)["status"] == "degraded_partial_source"
+
+
+def test_packet_budget_is_memoised_once_per_task(tmp_path, monkeypatch):
+    """A ceiling that moved between the binding build and the staleness rebuild
+    would flip the evidence revision, supersede the paid identity and terminalize
+    the task on an identical-acceptance refusal. The context resolves it ONCE."""
+    from dataclasses import replace
+
+    from ouroboros import loop
+    from ouroboros.review_evidence import task_acceptance_evidence_revision
+
+    ctx = _t.SimpleNamespace(
+        task_contract={"requirements": "do X"}, task_metadata={},
+        drive_root=str(tmp_path), task_id="acc", repo_dir=str(tmp_path),
+    )
+    review_ctx = loop._TaskAcceptanceContext(
+        tools=_t.SimpleNamespace(_ctx=ctx), content="done", task_id="acc",
+        task_type="", llm_trace={"tool_calls": []}, drive_root=tmp_path,
+        messages=[{}, {"content": "goal"}], emit_progress=lambda *_: None,
+        mode="auto", subtree_statuses=[], budget_profile=None, passes_done=0,
+        packet_budget_chars=1_000_000,
+    )
+    first = task_acceptance_evidence_revision(loop._build_host_acceptance_evidence(review_ctx))
+    again = task_acceptance_evidence_revision(
+        loop._build_host_acceptance_evidence(replace(review_ctx, evidence={})),
+    )
+    assert first == again

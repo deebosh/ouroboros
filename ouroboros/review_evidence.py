@@ -68,7 +68,11 @@ def collect_turn_diff(ctx: Any, *, limit: int = 20000, include_recent_commit: bo
 # (wrong tool / wrong direction / finalized over a red check). Typed sections with
 # explicit PROVENANCE tags; full artifacts/trace stay durable off-axis — the prompt
 # gets bounded, redacted, DISCLOSED-truncated projections (Bible P1/P3/P12/P7).
-# Generous caps: a one-shot reviewer call on a 1M-context model, owner-accepted cost (P8).
+# The whole-packet ceiling below is a FLOOR, not the ceiling: the real ceiling is
+# resolved per task from the review quorum's calibrated input windows
+# (``acceptance_packet_budget_chars``), so a wide panel reads the packet its
+# models can actually hold and a narrow one is never handed a prompt that a 400
+# would reject after the money is spent (P1/P8).
 # Evidence-parity (v6.71.1): the acceptance reviewer's per-result cap tracks the
 # ACTOR's own default tool-result window (SSOT: tool_capabilities.DEFAULT_TOOL_RESULT_LIMIT),
 # so a decider never adjudicates less of a tool result than the agent saw. The old
@@ -81,8 +85,55 @@ _ACCEPT_TRAJECTORY_MAX_CALLS = 120     # keep the most-recent N calls (tail) if 
 _ACCEPT_ARTIFACT_PREVIEW_CAP = 2000    # small text-artifact preview chars
 _ACCEPT_ARTIFACT_PREVIEW_MAX_BYTES = 4096  # only preview artifacts smaller than this
 _ACCEPT_TOTAL_BUDGET = 240_000         # whole-packet char ceiling; degrade trajectory tail first
+ACCEPTANCE_PROMPT_OVERHEAD_CHARS = 20_000  # instructions/criteria/scaffolding around the packet
+# Acceptance packets are JSON- and code-dense, so the usual 4-chars-per-token
+# rule of thumb overstates what fits. A calibrated token cap is converted at the
+# dense ratio; overstating it would turn a disclosed shed into a PAID 400.
+_ACCEPT_DENSE_CHARS_PER_TOKEN = 3.3
 _ACCEPT_OBLIGATIONS_MAX = 40           # obligation-catalog row cap (open-first, then most-recent)
 _ACCEPT_RETRIEVAL_URLS_MAX = 20        # native-retrieval URLs carried inline (+ disclosed omitted count)
+
+
+def acceptance_packet_budget_chars(slots: Any) -> int:
+    """Whole-packet char ceiling for THIS task's acceptance panel.
+
+    The packet is one shared prompt fanned across the configured reviewer slots,
+    so its ceiling is the same quorum-aware assembly budget the triad and plan
+    review already use: the quorum-th largest calibrated input cap over the API
+    slots (a retrieving slot brings its own tools and is not sized against this
+    pack). The calibrated cap already subtracts the output reserve and the
+    tokenizer margin, and the conversion to characters uses the dense ratio a
+    JSON/code packet really tokenizes at, minus the prompt scaffolding around
+    the packet.
+
+    Never smaller than ``_ACCEPT_TOTAL_BUDGET``: an uncalibrated or unknown
+    route must not silently receive a thinner packet than the historical floor.
+    """
+    from ouroboros.tools.review_synthesis import (
+        per_slot_input_token_limits,
+        quorum_input_token_limit,
+    )
+
+    rows = [s for s in (slots or []) if not getattr(s, "retrieves", False)]
+    models = [str(getattr(s, "model", "") or "") for s in rows]
+    models = [m for m in models if m]
+    if not models:
+        return _ACCEPT_TOTAL_BUDGET
+    output_reserve = max(
+        [int(getattr(s, "max_tokens", 0) or 0) for s in rows] or [0]
+    ) or 16_384
+    try:
+        limits = per_slot_input_token_limits(
+            models, output_reserve=output_reserve, tokenizer_margin=50_000,
+        )
+        tokens = int(quorum_input_token_limit(models, limits))
+    except Exception:
+        log.debug("acceptance packet budget calibration failed; using the floor", exc_info=True)
+        return _ACCEPT_TOTAL_BUDGET
+    if tokens <= 0:
+        return _ACCEPT_TOTAL_BUDGET
+    chars = int(tokens * _ACCEPT_DENSE_CHARS_PER_TOKEN) - ACCEPTANCE_PROMPT_OVERHEAD_CHARS
+    return max(_ACCEPT_TOTAL_BUDGET, chars)
 
 
 def obligation_is_pending(row: Any) -> bool:
@@ -674,7 +725,8 @@ def _accept_artifact_manifest(drive_root: Any, task_id: str, protected: set) -> 
     return out
 
 
-def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
+def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, Any]:
+    budget = int(budget or 0) or _ACCEPT_TOTAL_BUDGET
     def _finish() -> Dict[str, Any]:
         for row in ev.get("tool_trajectory") or []:
             if isinstance(row, dict):
@@ -694,10 +746,40 @@ def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
 
     omissions: List[Dict[str, Any]] = list(ev.get("omissions_manifest") or [])
     ev["omissions_manifest"] = omissions
-    if _size() <= _ACCEPT_TOTAL_BUDGET:
+    if _size() <= budget:
         return _finish()
-    # Disclosed ladder: trajectory tail, then artifact previews, always with a note.
+    # Disclosed ladder: predecessor envelope, trajectory tail, then artifact
+    # previews, agent-supplied evidence, and last of all a diff preview — always
+    # with a note. The predecessor envelope sheds FIRST because it is the largest
+    # section the reviewer does not need verbatim: the previous task's own
+    # authority is a durable record, and the reviewer judges THIS task.
     notes: List[str] = []
+    contract = ev.get("task_contract")
+    if isinstance(contract, dict) and contract.get("predecessor_authority"):
+        envelope = contract.get("predecessor_authority")
+        try:
+            omitted_chars = len(json.dumps(envelope, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            omitted_chars = 0
+        previous_task_id = ""
+        if isinstance(envelope, dict):
+            source = envelope.get("source") if isinstance(envelope.get("source"), dict) else {}
+            previous_task_id = str(
+                envelope.get("previous_task_id") or envelope.get("task_id")
+                or source.get("task_id") or "",
+            )
+        contract = {**contract, "predecessor_authority": {
+            "kind": "predecessor_authority_omitted_for_budget",
+            "previous_task_id": previous_task_id,
+            "omitted_chars": omitted_chars,
+        }}
+        ev["task_contract"] = contract
+        notes.append(f"omitted the predecessor authority envelope ({omitted_chars} chars)")
+        omissions.append({
+            "section": "task_contract.predecessor_authority",
+            "omitted": omitted_chars,
+            "reason": "evidence_budget",
+        })
     traj = ev.get("tool_trajectory")
     if isinstance(traj, list) and len(traj) > 20:
         dropped = len(traj) - 20
@@ -707,10 +789,10 @@ def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
         omissions.append({"section": "tool_trajectory", "omitted": dropped, "reason": "evidence_budget"})
     # Re-cap trajectory results before lower-priority evidence sections.
     traj = ev.get("tool_trajectory")
-    if _size() > _ACCEPT_TOTAL_BUDGET and isinstance(traj, list) and traj:
+    if _size() > budget and isinstance(traj, list) and traj:
         non_traj = _size() - sum(len(str(c.get("result") or "")) for c in traj if isinstance(c, dict))
         # Keep conservative headroom for markers and JSON escaping.
-        share = max(700, (_ACCEPT_TOTAL_BUDGET - non_traj) // max(1, len(traj)) - 400)
+        share = max(700, (budget - non_traj) // max(1, len(traj)) - 400)
         recapped = 0
         for c in traj:
             if isinstance(c, dict) and len(str(c.get("result") or "")) > share:
@@ -722,7 +804,7 @@ def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
             notes.append(f"re-capped {recapped} trajectory results to ~{share} chars each for budget")
             omissions.append({"section": "tool_trajectory_results", "omitted": recapped, "reason": "evidence_budget"})
         # Escape-proof backstop: shed to the 700-char floor if needed.
-        if _size() > _ACCEPT_TOTAL_BUDGET and share > 700:
+        if _size() > budget and share > 700:
             floored = 0
             for c in traj:
                 if isinstance(c, dict) and len(str(c.get("result") or "")) > 700:
@@ -733,7 +815,7 @@ def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
             if floored:
                 notes.append(f"floored {floored} trajectory results to 700 chars for budget")
                 omissions.append({"section": "tool_trajectory_results", "omitted": floored, "reason": "evidence_budget_floor"})
-    if _size() > _ACCEPT_TOTAL_BUDGET and isinstance(ev.get("artifacts"), list):
+    if _size() > budget and isinstance(ev.get("artifacts"), list):
         stripped = 0
         for a in ev["artifacts"]:
             if isinstance(a, dict) and a.get("preview") not in (None, "", "(protected artifact — manifest only)"):
@@ -743,17 +825,46 @@ def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
             notes.append(f"stripped {stripped} artifact previews to manifest-only")
             omissions.append({"section": "artifact_previews", "omitted": stripped, "reason": "evidence_budget"})
     # Collapse oversized agent-supplied evidence only after trajectory/artifact reductions.
-    if _size() > _ACCEPT_TOTAL_BUDGET and isinstance(ev.get("agent_supplied"), dict) and ev["agent_supplied"]:
+    if _size() > budget and isinstance(ev.get("agent_supplied"), dict) and ev["agent_supplied"]:
         ev["agent_supplied"] = {"__truncated__": truncate_review_artifact(
             json.dumps(ev["agent_supplied"], ensure_ascii=False, default=str), limit=20000)}
         notes.append("collapsed oversized agent-supplied evidence to a truncated projection")
         omissions.append({"section": "agent_supplied", "reason": "evidence_budget"})
+    # Last rung before abstention: the diff, and only when its exact bytes stay
+    # resolvable through the durable source ref the packet already carries. A
+    # bounded diff with a live source ref is an OMISSION, not an unresolved
+    # partial — the reviewer is told what was cut and where the rest lives.
+    if _size() > budget and ev.get("repo_diff_source_ref") and ev.get("repo_diff"):
+        full_diff = str(ev.get("repo_diff") or "")
+        preview = truncate_review_artifact(full_diff, limit=20000)
+        if len(preview) < len(full_diff):
+            ev["repo_diff"] = preview
+            notes.append(f"previewed the repo diff at 20000 of {len(full_diff)} chars")
+            omissions.append({
+                "section": "repo_diff",
+                "omitted": len(full_diff) - len(preview),
+                "reason": "evidence_budget",
+                "source_ref": ev.get("repo_diff_source_ref") or {},
+            })
     # Immutable owner requirements overflow only into a typed DEGRADED abstention.
-    if _size() > _ACCEPT_TOTAL_BUDGET:
+    if _size() > budget:
+        largest = []
+        for key, value in ev.items():
+            if str(key).startswith("__"):
+                continue
+            try:
+                largest.append((len(json.dumps(value, ensure_ascii=False, default=str)), str(key)))
+            except (TypeError, ValueError):
+                continue
+        largest.sort(reverse=True)
+        top = ", ".join(f"{name}={size}" for size, name in largest[:3])
         ev["__immutable_core_overflow__"] = {
             "packet_chars": _size(),
-            "budget_chars": _ACCEPT_TOTAL_BUDGET,
-            "reason": "immutable owner requirements cannot be truncated",
+            "budget_chars": budget,
+            "reason": (
+                "packet exceeds budget after every disclosed shed; largest sections: " + top
+                if top else "immutable owner requirements cannot be truncated"
+            ),
         }
         notes.append(f"immutable core remains ~{_size() // 1000}k; reviewer must abstain as DEGRADED")
     unresolved_partials = [{
@@ -770,7 +881,7 @@ def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
         ]
     if notes:
         ev["__budget_note__"] = (
-            f"⚠️ OMISSION NOTE: evidence exceeded {_ACCEPT_TOTAL_BUDGET} chars; "
+            f"⚠️ OMISSION NOTE: evidence exceeded {budget} chars; "
             + "; ".join(notes) + ". Full content is durable off-axis."
         )
     return _finish()
@@ -868,6 +979,7 @@ def build_task_acceptance_evidence(
     include_recent_commit: bool = False,
     canonical_subject: str = "",
     subtree_statuses: List[Dict[str, Any]] | None = None,
+    budget_chars: int = 0,
 ) -> Dict[str, Any]:
     """Process-aware task-acceptance evidence packet (v6.51.0 idea-2). Typed sections with
     explicit PROVENANCE tags (`host_attested`/`agent_supplied`/`tool_result`/`artifact`/
@@ -1086,7 +1198,7 @@ def build_task_acceptance_evidence(
         ev["task_type"] = str(task_type)
         prov["task_type"] = "host_attested"
     ev["__provenance__"] = prov
-    return _accept_enforce_budget(ev)
+    return _accept_enforce_budget(ev, budget=budget_chars)
 
 
 def collect_review_evidence(

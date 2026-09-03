@@ -456,6 +456,14 @@ Every new or changed continuity surface is reviewed as one narrow chain:
   that the *same actor* can resolve through an existing reader.
   `source_complete` is a coverage fact, not a permission to infer missing
   material.
+- Every over-limit tool result persists its exact source; there is no per-tool
+  exemption, because the DECIDER must be able to resolve what the actor could
+  page. A bounded row whose exact source is durable and referenced is an
+  omission for the acceptance panel, and only `source_unavailable` — no
+  actor-resolvable source at all — is an unresolved partial that withholds
+  dispatch. An `api_chat` acceptance reviewer has no tools and cannot resolve
+  `repo_diff_source_ref`, so a criterion that depends on the unseen part of the
+  diff is at most `partial`.
 - A consumer that can authorize PASS, a destructive rewrite, or replacement of
   a full contract must materialize the named source first. A known `partial`
   marker and an unverified claim that some host might retrieve more are not

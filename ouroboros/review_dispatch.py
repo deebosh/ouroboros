@@ -44,23 +44,66 @@ PLAN_SLOT_ID_PREFIX = "plan_slot"
 def task_acceptance_zero_physical_refusal(evidence: Any) -> dict[str, str]:
     """Describe an acceptance refusal that needs no reviewer transport."""
     packet = evidence if isinstance(evidence, dict) else {}
-    if packet.get("__unresolved_partial_artifacts__"):
+    # Only a genuinely UNAVAILABLE source withholds the panel. A row the budget
+    # ladder shed still has a durable, actor-resolvable source ref, so it is a
+    # disclosed omission — refusing on it burned real acceptance panels for $0
+    # while the reviewer could have read the exact bytes.
+    partials = packet.get("__unresolved_partial_artifacts__")
+    unavailable = [
+        row for row in (partials if isinstance(partials, list) else [])
+        if isinstance(row, dict) and str(row.get("status") or "") == "source_unavailable"
+    ]
+    if unavailable:
         return {
             "status": "degraded_partial_source",
             "summary": (
-                "A decision-bearing tool result remains partial or its exact source "
+                "A decision-bearing tool result remains partial and its exact source "
                 "is unavailable; acceptance cannot treat that projection as complete."
             ),
         }
-    if packet.get("__immutable_core_overflow__"):
+    overflow = packet.get("__immutable_core_overflow__")
+    if overflow:
+        reason = str((overflow if isinstance(overflow, dict) else {}).get("reason") or "").strip()
         return {
             "status": "degraded_core_overflow",
             "summary": (
                 "Immutable owner requirements do not fit the acceptance evidence "
                 "budget; no requirement was silently truncated."
+                + (f" {reason}" if reason else "")
             ),
         }
     return {}
+
+
+# Below this rendered prompt size no plausible reviewer window can be exceeded,
+# so the calibration (a real Capability Evidence resolution, ~0.3s per model) is
+# not worth paying inside the dispatch path — it would spend a slot's timeout
+# budget before the send. The fit check is a backstop for oversize packets.
+ACCEPTANCE_FIT_CHECK_MIN_CHARS = 100_000
+
+
+def acceptance_slot_fit(slot: Any, executor: Any) -> tuple[int, int]:
+    """This slot's calibrated input cap and the rendered prompt's token estimate.
+
+    The packet ceiling is resolved once against the review QUORUM's windows, so
+    a narrower slot in the same panel needs its own fit check before any send.
+    An unmeasurable prompt or a failed calibration reads ``(0, 0)`` and
+    dispatches — the fit check is a backstop, never a new way to withhold a
+    panel.
+    """
+    from ouroboros.tools.review_synthesis import per_slot_input_token_limits
+
+    try:
+        chars = int(executor.prompt_chars())
+        if chars < ACCEPTANCE_FIT_CHECK_MIN_CHARS:
+            return 0, 0
+        limits = per_slot_input_token_limits(
+            [slot.model], output_reserve=slot.max_tokens, tokenizer_margin=50_000,
+        )
+        return int(limits.get(slot.model, 0) or 0), (chars + 3) // 4
+    except Exception:
+        log.debug("acceptance per-slot fit check failed; dispatching", exc_info=True)
+        return 0, 0
 
 
 def run_zero_physical_task_acceptance(

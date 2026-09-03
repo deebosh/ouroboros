@@ -960,6 +960,7 @@ def build_improvement_capsule(
 
 # Historical dispatch names remain re-exported for existing consumers.
 from ouroboros.review_dispatch import (  # noqa: E402,F401 — re-exports
+    acceptance_slot_fit,
     PLAN_SLOT_ID_PREFIX,
     ReviewPaidStamp,
     SCOPE_SLOT_ID_PREFIX,
@@ -1331,16 +1332,24 @@ class ReviewCoordinator:
         )
         if free_refusal:
             # Nothing was sent, so the row must not wear a verdict: it is a
-            # typed $0 ``not_dispatched`` actor carrying its own cause. The
-            # typed refusal token rides into ``error`` so the aggregate names
-            # the real blocker instead of a synthetic DEGRADED body.
+            # typed $0 ``not_dispatched`` actor whose refusal token rides into
+            # ``error`` so the aggregate names the real blocker.
             return self._error_actor(
-                request,
-                slot,
-                f"{free_refusal['status']}: {free_refusal['summary']}",
-                operation_id=call_id,
-                operation_state="not_dispatched",
+                request, slot, f"{free_refusal['status']}: {free_refusal['summary']}",
+                operation_id=call_id, operation_state="not_dispatched",
             )
+        # Backstop for the quorum-sized packet ceiling: a narrower slot in the
+        # same panel can still be handed more than it holds, and refusing it
+        # costs nothing while the rest of the panel reviews.
+        if request.surface == "task_acceptance" and not slot.retrieves:
+            cap, estimated = acceptance_slot_fit(slot, executor)
+            if cap and estimated > cap:
+                return self._error_actor(
+                    request, slot,
+                    f"preflight_oversize: assembled acceptance prompt ~{estimated:,} tokens "
+                    f"exceeds this slot's calibrated input cap {cap:,}",
+                    operation_id=call_id, operation_state="not_dispatched",
+                )
         owner_deadline = str(getattr(request, "deadline_at", "") or "")
         from ouroboros.config import get_finalization_grace_sec
         from ouroboros.deadline_utils import owner_deadline_exhausted
