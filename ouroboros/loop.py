@@ -60,6 +60,7 @@ from ouroboros.usage_accounting import (
     BudgetExceeded,
     PhysicalAttemptContext,
     PhysicalAttemptPreconditionFailed,
+    invalidate_task_cache_splits,
     last_physical_attempt_capture,
 )
 from ouroboros.task_finalization import (
@@ -246,18 +247,13 @@ def _check_budget_limits(
     budget_remaining_usd: Optional[float],
     cost_ceiling: Optional["task_pacing.CostCeiling"] = None,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """Return a final-response tuple when budget limits require stopping.
+    """Return a final response when a budget axis requires stopping.
 
-    ``cost_ceiling`` is the typed in-task stop resolved ONCE at loop start
-    (``task_pacing.resolve_cost_ceiling``). Only an ``active`` ceiling stops
-    here; ``exhausted_soft_land`` fires at the round top. The deciding spend
-    is the root subtree's ledger-accounted number when a root cap exists (the
-    fence counts the TREE, not own calls); own cost is the DISCLOSED fallback
-    and diagnostic. Unknown spend never becomes $0. The axes are INDEPENDENT
-    (v6.91): ``budget_remaining_usd`` None only means no finite GLOBAL budget
-    (TOTAL_BUDGET unset — the GAIA-shaped run) and must not silence a live
-    per-task ROOT CAP; with neither, the ceiling resolves ``disabled`` and
-    the whole cost axis stays silent, as before."""
+    ``cost_ceiling`` is resolved once at loop start. Root-capped tasks decide
+    on ledger-accounted tree spend; own cost is the disclosed fallback and
+    unknown spend is never $0. The axes are independent: a
+    ``budget_remaining_usd`` of None means the owner explicitly chose no
+    finite global budget, and must not silence a live per-task root cap."""
     accumulated_usage = ctx.accumulated_usage
     raw_task_cost = accumulated_usage.get("cost")
     task_cost = float(raw_task_cost) if raw_task_cost is not None else None
@@ -316,14 +312,16 @@ def _check_budget_limits(
             prospective_messages,
             f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}",
         )
-        wrapup_args = dict(
+        wrapup_request = task_pacing.prospective_wrapup_attempt_request(
             llm=ctx.llm, messages=prospective_messages, model=ctx.active_model,
-            prompt_tokens=prompt_estimate, reasoning_effort=ctx.active_effort,
-            tools=ctx.tool_schemas,
-            use_local=ctx.active_use_local,
+            reasoning_effort=ctx.active_effort, tools=ctx.tool_schemas,
             allow_server_web_search=_server_web_allowed_by_task(
                 getattr(getattr(ctx, "tools", None), "_ctx", None)
-            ), root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding,
+            ), prompt_tokens=prompt_estimate,
+        ) if not ctx.active_use_local else None
+        wrapup_args = dict(
+            request=wrapup_request, root_cap_usd=cost_ceiling.root_cap_usd,
+            deciding_usd=deciding,
         )
         wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
         if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
@@ -2550,6 +2548,7 @@ def _run_round_compaction(
             f"⚠️ Context compaction kept the transcript unchanged ({receipt.status})."
         )
     if receipt.status == "applied":
+        invalidate_task_cache_splits(ctx.task_id)
         prune_reclaim_trace_refs(ctx.tools._ctx, rebuilt)
     return rebuilt, usage
 
@@ -5530,6 +5529,7 @@ def _run_main_reclaim(
     if usage:
         _account_compaction_usage(ctx.accumulated_usage, usage, ctx.event_queue, ctx.task_id)
     if receipt.status == "applied":
+        invalidate_task_cache_splits(ctx.task_id)
         ctx.messages[:] = rebuilt
         ctx.tools._ctx.messages = ctx.messages
         seal_task_transcript(ctx.messages)
@@ -5566,6 +5566,7 @@ def _reproject_actual_overflow_low(ctx: _RoundModelCallContext) -> None:
     if ctx.active_context_mode == "low" or ctx.context_fit_plan is None:
         return
     ctx.messages[:] = ctx.context_fit_plan.reproject_transcript(ctx.messages, "low")
+    invalidate_task_cache_splits(ctx.task_id)
     ctx.active_context_mode = "low"
     ctx.tools._ctx.messages = ctx.messages
     ctx.tools._ctx.active_context_mode = "low"

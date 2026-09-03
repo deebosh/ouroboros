@@ -638,17 +638,25 @@ def wrapup_last_fit_text(deciding_usd: float, ceiling: CostCeiling) -> str:
 def prospective_wrapup_attempt_request(
     *, llm: Any, messages: list[Dict[str, Any]], model: str,
     reasoning_effort: str, tools: Optional[list[Dict[str, Any]]] = None,
-    allow_server_web_search: bool = False,
+    allow_server_web_search: bool = False, prompt_tokens: int = 0,
 ) -> Any:
     """Build the conservative request facts from the prospective wire payload."""
     from ouroboros.llm import _attempt_request, _physical_candidate
     from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
     from ouroboros.request_wire_recovery import request_wire_call_scope
-    from ouroboros.usage_accounting import _merge_scope
+    from ouroboros.pricing import infer_provider_from_model
+    from ouroboros.usage_accounting import AttemptRequest, _merge_scope
+
+    if not callable(getattr(llm, "_resolve_remote_target", None)):
+        return _merge_scope(AttemptRequest(
+            model=model, provider=infer_provider_from_model(model),
+            prompt_tokens_estimate=prompt_tokens,
+            max_completion_tokens=MAIN_LOOP_MAX_TOKENS,
+        ))[0]
 
     target = llm._resolve_remote_target(model)
     with request_wire_call_scope():
-        candidate = llm._build_remote_kwargs(
+        candidate = llm._build_remote_candidate(
             target, messages, reasoning_effort, MAIN_LOOP_MAX_TOKENS, "auto", None, tools,
             skip_capability_fetch=True, allow_server_web_search=allow_server_web_search,
         )

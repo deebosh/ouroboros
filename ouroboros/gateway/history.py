@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import pathlib
 from typing import Any, Callable, Dict, Optional
 
@@ -278,14 +277,12 @@ def make_cost_breakdown_endpoint(data_dir: pathlib.Path):
             try:
                 from supervisor.state import TOTAL_BUDGET_LIMIT
 
-                limit = float(TOTAL_BUDGET_LIMIT or 0.0)
+                live_limit = float(TOTAL_BUDGET_LIMIT or 0.0)
             except (ImportError, TypeError, ValueError):
-                limit = 0.0
-            if limit <= 0 and "TOTAL_BUDGET" in os.environ:
-                try:
-                    limit = max(0.0, float(os.environ.get("TOTAL_BUDGET") or 0.0))
-                except (TypeError, ValueError):
-                    limit = 0.0
+                live_limit = 0.0
+            from ouroboros.settings_setup_contract import resolve_total_budget_usd
+            resolved_limit = resolve_total_budget_usd()
+            limit = live_limit if 0 < live_limit < float("inf") else float(resolved_limit or 0.0)
             accounting = {field: breakdown.get(field) for field in _ACCOUNTING_SUMMARY_FIELDS}
             accounting.update({
                 "available": True,

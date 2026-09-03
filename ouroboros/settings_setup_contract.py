@@ -45,6 +45,8 @@ def resolve_total_budget_usd() -> Optional[float]:
         value = float(raw)
     except (TypeError, ValueError):
         return default
+    if not math.isfinite(value):
+        return default
     return value if value > 0 else None
 
 

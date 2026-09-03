@@ -94,6 +94,39 @@ class TestCacheAwareReservation:
         warm = usage_accounting._reservation_cost(_request(task_id="t1"))
         assert warm is not None and warm < cold
 
+    def test_applied_compaction_makes_the_next_reservation_cold(self, monkeypatch, tmp_path):
+        from ouroboros import loop
+        from ouroboros.context_budget import ContextReclaimReceipt
+
+        request = _request(task_id="compacted")
+        cold = usage_accounting._reservation_cost(request)
+        usage_accounting.stash_task_cache_split(
+            "compacted", request.model, 90_000,
+            provider=request.provider, ttl_seconds=300.0,
+        )
+        assert usage_accounting._reservation_cost(request) < cold
+        receipt = ContextReclaimReceipt(
+            status="applied", before_transcript_sha256="a" * 64,
+            after_transcript_sha256="b" * 64, selection_fingerprint="c" * 64,
+            selected_unit_ids=("unit",), reclaimed_tokens=10, goal_reached=True,
+            checkpoint_ref={"path": "checkpoint"}, capsule_refs=(),
+        )
+        monkeypatch.setattr(
+            loop, "compact_tool_history_llm",
+            lambda *_a, **_k: ([{"role": "assistant", "content": "summary"}], receipt, {}),
+        )
+        inner = SimpleNamespace(_pending_compaction=4)
+        loop._run_round_compaction(
+            [{"role": "user", "content": "before"}],
+            loop._CompactionRoundContext(
+                tools=SimpleNamespace(_ctx=inner), drive_root=tmp_path,
+                drive_logs=tmp_path, task_id="compacted", round_idx=2,
+                event_queue=None, emit_progress=lambda _text: None,
+            ),
+        )
+
+        assert usage_accounting._reservation_cost(request) == cold
+
     def test_direct_route_and_ledger_identity_share_a_split(self):
         usage_accounting.stash_task_cache_split(
             "t1", "anthropic/claude-test", 95_000, provider="anthropic", ttl_seconds=300.0,
@@ -272,6 +305,51 @@ class TestWrapupAffordability:
                 replace(request, root_limit_usd=cap)
             )
 
+    def test_direct_anthropic_route_matches_physical_candidate(self, monkeypatch, tmp_path):
+        from ouroboros import llm as llm_module
+        from ouroboros.llm import LLMClient
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "unused")
+        client = LLMClient(api_key="unused")
+        model = "anthropic::claude-test"
+        target = client._resolve_remote_target(model)
+        messages = [
+            {"role": "system", "content": "policy"},
+            {"role": "user", "content": "x" * 1_600},
+        ]
+        tools = [{
+            "type": "function", "function": {
+                "name": "inspect", "description": "inspect",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        scope = usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="direct", root_task_id="direct",
+            global_limit_usd=100.0,
+        )
+        captured = {}
+
+        def execute(request, _send, _before_dispatch):
+            captured["request"] = request
+            return SimpleNamespace(json=lambda: {
+                "content": [{"type": "text", "text": "ok"}], "usage": {},
+            })
+
+        monkeypatch.setattr(llm_module, "_execute_candidate", execute)
+        with usage_accounting.usage_scope(scope):
+            prospective = task_pacing.prospective_wrapup_attempt_request(
+                llm=client, messages=messages, model=model,
+                reasoning_effort="high", tools=tools,
+            )
+            client._chat_anthropic(
+                target, messages, tools, "high", prospective.max_completion_tokens, "auto",
+            )
+
+        actual = captured["request"]
+        assert prospective.prompt_tokens_estimate == actual.prompt_tokens_estimate
+        assert prospective.candidate_raw_size_bytes == actual.candidate_raw_size_bytes
+        assert prospective.candidate_raw_sha256 == actual.candidate_raw_sha256
+
 
 class TestWrapupAffordabilityRail:
     """The loop soft-lands on the rail, and stays silent when it cannot know."""
@@ -286,7 +364,12 @@ class TestWrapupAffordabilityRail:
         monkeypatch.setattr(
             "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
         )
-        answers, calls = iter((True, False)), []
+        answers, calls, builds = iter((True, False)), [], []
+        request = object()
+        monkeypatch.setattr(
+            task_pacing, "prospective_wrapup_attempt_request",
+            lambda **kwargs: (builds.append(kwargs), request)[1],
+        )
         monkeypatch.setattr(
             task_pacing, "wrapup_reservation_fits",
             lambda **kwargs: (calls.append(kwargs), next(answers))[1],
@@ -301,7 +384,9 @@ class TestWrapupAffordabilityRail:
         assert result is not None
         assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_last_fit"
         assert result[2]["kwargs"]["reason_code"] == "budget_exhausted"
-        assert "[BUDGET LIMIT]" in calls[0]["messages"][-1]["content"]
+        assert "[BUDGET LIMIT]" in builds[0]["messages"][-1]["content"]
+        assert len(builds) == 1
+        assert [call["request"] for call in calls] == [request, request]
 
     def test_a_missing_prompt_estimate_keeps_the_rail_silent(self, monkeypatch):
         ctx = _ctx(accumulated_usage={"cost": 1.0})
@@ -487,6 +572,15 @@ class TestGlobalBudgetDefault:
         from ouroboros.settings_setup_contract import resolve_total_budget_usd
 
         monkeypatch.setenv("TOTAL_BUDGET", "not-a-number")
+
+        assert resolve_total_budget_usd() == float(SETTINGS_DEFAULTS["TOTAL_BUDGET"])
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
+    def test_non_finite_values_fall_back_to_the_product_default(self, monkeypatch, raw):
+        from ouroboros.config import SETTINGS_DEFAULTS
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+
+        monkeypatch.setenv("TOTAL_BUDGET", raw)
 
         assert resolve_total_budget_usd() == float(SETTINGS_DEFAULTS["TOTAL_BUDGET"])
 

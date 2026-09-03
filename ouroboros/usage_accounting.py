@@ -377,7 +377,8 @@ def _merge_scope(request: AttemptRequest) -> Tuple[AttemptRequest, UsageScope]:
         request = replace(request, task_id=scope.task_id, root_task_id=scope.root_task_id)
     return request, scope
 from ouroboros._usage_cache_splits import (  # noqa: F401,E402  (re-exported seam)
-    last_task_cache_split, reset_task_cache_splits as _reset_task_cache_splits, stash_task_cache_split)
+    invalidate_task_cache_splits, last_task_cache_split,
+    reset_task_cache_splits as _reset_task_cache_splits, stash_task_cache_split)
 from ouroboros._usage_rows_memo import (  # noqa: F401,E402  (re-exported seam)
     _LedgerRowsMemo, _ROWS_MEMO, _ROWS_MEMO_LOCK,
     _memoized_final_rows, _read_records_locked_cached, _render_cached,

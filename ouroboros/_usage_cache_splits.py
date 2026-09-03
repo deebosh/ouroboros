@@ -59,6 +59,13 @@ def last_task_cache_split(task_id: str, model: str, *, provider: str = "") -> Op
     return split[0]
 
 
+def invalidate_task_cache_splits(task_id: str) -> None:
+    """Forget observations whose cacheable transcript prefix was rebuilt."""
+    task = str(task_id or "").strip()
+    for key in [key for key in _SPLITS if key[0] == task]:
+        _SPLITS.pop(key, None)
+
+
 def reset_task_cache_splits() -> None:
     """Test seam: forget every observed split (process-local, no durable state)."""
     _SPLITS.clear()
