@@ -100,38 +100,25 @@ def test_validate_size_ratchet_parent_ref_unavailable_returns_findings(monkeypat
     """
     _write_drift_manifest(real_checkout)
 
-    def fake_git_show_manifest(repo_dir, ref, manifest_path):
-        # Pretend every parent ref has no manifest text — exercises the
-        # existing fall-through path; the deeper fault is the staged cat-file
-        # call below.
-        return None
-
     def fake_collect_inventory(root):
         return _empty_inventory()
 
-    def fake_collect_inventory_at_ref(repo_dir, ref):
-        # Simulate ``git cat-file --batch`` returning a "missing" header for
-        # one gated-source path on a parent ref. This is the spec's concrete
-        # ``SizeRatchetRefUnavailable`` failure mode.
-        raise SizeRatchetRefUnavailable(
-            f"simulated: gated-source blob for {ref} is not in the local object store"
-        )
-
-    def fake_resolve_committed_manifest_text(repo_dir, *, manifest_path=...):  # noqa: E501
-        # Returning a string (not None) forces the previous-resolution parse
-        # path to run, exercising its try/except wrapper.
-        return "MANIFEST_TEXT="
+    def fake_resolve_committed_manifest_text(repo_dir, *, manifest_path=SIZE_RATCHET_MANIFEST_PATH):
+        # A parent whose manifest text parses as Python but is NOT a valid
+        # size-ratchet manifest (pre-v6.114 assignment set / truncated history
+        # after a managed-update fetch). parse_size_ratchet_manifest raises a
+        # bare ValueError for this; the fix's ``except ValueError`` must swallow
+        # it, leave ``previous`` as None, and validate the live tree only.
+        return "SOME_UNEXPECTED_ASSIGNMENT = 1\n"
 
     monkeypatch.setattr(review_mod, "collect_size_ratchet_inventory", fake_collect_inventory)
-    monkeypatch.setattr(
-        review_mod, "collect_size_ratchet_inventory_at_ref", fake_collect_inventory_at_ref
-    )
     monkeypatch.setattr(review_mod, "resolve_committed_manifest_text", fake_resolve_committed_manifest_text)
-    monkeypatch.setattr(review_mod, "validate_manifest_transition", lambda a, b: [])
 
     findings = validate_size_ratchet(real_checkout)
     assert isinstance(findings, list)
     assert all(isinstance(line, str) for line in findings)
+    # bootstrap fall-through still surfaces the on-disk drift
+    assert f"GIANT_PATHS contains stale entry: '{_DRIFT_PATH}'" in findings
 
 
 # --- test 2 ------------------------------------------------------------------
@@ -176,7 +163,11 @@ def test_validate_size_ratchet_happy_path_returns_drift_findings(monkeypatch, re
 
     findings = validate_size_ratchet(real_checkout)
     assert isinstance(findings, list)
-    drift_line = f"GIANT_PATHS missing live entry: '{_DRIFT_PATH}'"
+    # _write_drift_manifest lists a phantom path in GIANT_PATHS that has no
+    # live file over the module ceiling -> the live-tree comparison flags it
+    # as a STALE manifest entry (not a "missing live entry", which is the
+    # opposite direction: an oversize live file absent from the manifest).
+    drift_line = f"GIANT_PATHS contains stale entry: '{_DRIFT_PATH}'"
     assert drift_line in findings
 
 
