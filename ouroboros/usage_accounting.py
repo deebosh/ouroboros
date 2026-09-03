@@ -196,6 +196,7 @@ class UsageScope:
     review_slot_id: str = ""
     global_limit_usd: Optional[float] = None
     root_limit_usd: Optional[float] = None
+    root_cost_ceiling_usd: Optional[float] = None
 @dataclass(frozen=True)
 class PhysicalAttemptContext:
     profile: Literal["owner_max", "owner_low", "task_local_low"]
@@ -312,8 +313,6 @@ def current_physical_attempt_context() -> Optional[PhysicalAttemptContext]:
 
 def current_physical_attempt_predicate() -> Optional[Callable[[AttemptRequest], Any]]:
     return _PHYSICAL_PREDICATE.get()
-
-
 def last_physical_attempt_capture() -> Optional[PhysicalAttemptCapture]:
     return _LAST_PHYSICAL_ATTEMPT.get()
 
@@ -321,8 +320,6 @@ def last_physical_attempt_capture() -> Optional[PhysicalAttemptCapture]:
 def physical_attempt_capture_from_exception(exc: BaseException) -> Optional[PhysicalAttemptCapture]:
     capture = getattr(exc, "physical_attempt_capture", None)
     return capture if isinstance(capture, PhysicalAttemptCapture) else last_physical_attempt_capture()
-
-
 @contextlib.contextmanager
 def capture_attempt_ids() -> Iterator[list[str]]:
     """Collect physical attempt ids for one compatibility ``llm_usage`` row."""
@@ -330,10 +327,14 @@ def capture_attempt_ids() -> Iterator[list[str]]:
     token = _ATTEMPT_COLLECTOR.set(bucket)
     try:
         yield bucket
+    except BaseException as exc:
+        prior = [str(v) for v in (getattr(exc, "ledger_attempt_ids", None) or []) if v]
+        try:
+            setattr(exc, "ledger_attempt_ids", list(dict.fromkeys([*prior, *bucket])))
+        except Exception: pass
+        raise
     finally:
         _ATTEMPT_COLLECTOR.reset(token)
-
-
 @contextlib.contextmanager
 def physical_attempt_limit(maximum: int) -> Iterator[None]:
     """Bound physical provider sends in this actor context (acceptance uses 2)."""
@@ -365,6 +366,7 @@ def _merge_scope(request: AttemptRequest) -> Tuple[AttemptRequest, UsageScope]:
             request.global_limit_usd if request.global_limit_usd is not None else bound.global_limit_usd
         ),
         root_limit_usd=(request.root_limit_usd if request.root_limit_usd is not None else bound.root_limit_usd),
+        root_cost_ceiling_usd=bound.root_cost_ceiling_usd,
     )
     if not scope.root_task_id and scope.task_id:
         scope = replace(scope, root_task_id=scope.task_id)

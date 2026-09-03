@@ -3400,6 +3400,7 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
     drive_root = str(evt.get("drive_root") or "").strip()
     child_drive_root = str(evt.get("child_drive_root") or drive_root).strip()
     budget_drive_root = str(evt.get("budget_drive_root") or "").strip()
+    root_cost_ceiling_usd = evt.get("root_cost_ceiling_usd")
     # Forward parent-requested intent; dispatch resolves it once.
     requested_model_lane = str(evt.get("requested_model_lane") or evt.get("model_lane") or "auto").strip() or "auto"
     parent_model_lane = str(evt.get("parent_model_lane") or "").strip()
@@ -3468,6 +3469,7 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
         "drive_root": drive_root,
         "child_drive_root": child_drive_root,
         "budget_drive_root": budget_drive_root,
+        "root_cost_ceiling_usd": root_cost_ceiling_usd,
         "task_constraint": task_constraint,
         "required_capabilities": required_capabilities,
         "model_lane": requested_model_lane,
@@ -3737,6 +3739,7 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
             "drive_root": drive_root,
             "child_drive_root": child_drive_root,
             "budget_drive_root": budget_drive_root,
+            "root_cost_ceiling_usd": root_cost_ceiling_usd,
             "task_constraint": task_constraint,
             "workspace_root": workspace_root,
             "workspace_mode": workspace_mode,

@@ -6,7 +6,9 @@ ceiling no tree member may exceed, and the global-budget default.
 """
 from __future__ import annotations
 
+import base64
 import queue
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -215,6 +217,61 @@ class TestWrapupAffordability:
                 root_cap_usd=50.0, deciding_usd=49.99,
             ) is False
 
+    def test_multimodal_wrapup_matches_raw_candidate_admission(self, tmp_path):
+        from ouroboros.context_fit import estimate_context_prompt_tokens
+        from ouroboros.llm import LLMClient
+
+        messages = [{"role": "user", "content": [{
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64," + base64.b64encode(b"x" * 300_000).decode()},
+        }]}]
+        scope = usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="multimodal", root_task_id="multimodal",
+            global_limit_usd=100.0,
+        )
+        with usage_accounting.usage_scope(scope):
+            request = task_pacing.prospective_wrapup_attempt_request(
+                llm=LLMClient(api_key="unused"), messages=messages,
+                model="anthropic/claude-test", reasoning_effort="high",
+            )
+            assert request.prompt_tokens_estimate > estimate_context_prompt_tokens(messages) * 10
+            bound = usage_accounting._reservation_cost(request)
+            cap = float(bound) - 1e-6
+            assert task_pacing.wrapup_reservation_fits(
+                request=request, root_cap_usd=cap, deciding_usd=0.0,
+            ) is False
+            with pytest.raises(usage_accounting.BudgetExceeded):
+                usage_accounting.reserve_attempt(
+                    replace(request, root_limit_usd=cap)
+                )
+
+    def test_explicit_openrouter_route_matches_cache_aware_admission(self, tmp_path):
+        from ouroboros.llm import LLMClient
+
+        scope = usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="routed", root_task_id="routed",
+            global_limit_usd=100.0,
+        )
+        with usage_accounting.usage_scope(scope):
+            usage_accounting.stash_task_cache_split(
+                "routed", "anthropic/claude-test", 90_000,
+                provider="openrouter", ttl_seconds=300.0,
+            )
+            request = task_pacing.prospective_wrapup_attempt_request(
+                llm=LLMClient(api_key="unused"),
+                messages=[{"role": "user", "content": "x" * 400_000}],
+                model="openrouter::anthropic/claude-test", reasoning_effort="high",
+            )
+            assert (request.provider, request.model) == ("openrouter", "anthropic/claude-test")
+            bound = usage_accounting._reservation_cost(request)
+            cap = float(bound) + 1e-6
+            assert task_pacing.wrapup_reservation_fits(
+                request=request, root_cap_usd=cap, deciding_usd=0.0,
+            ) is True
+            usage_accounting.reserve_attempt(
+                replace(request, root_limit_usd=cap)
+            )
+
 
 class TestWrapupAffordabilityRail:
     """The loop soft-lands on the rail, and stays silent when it cannot know."""
@@ -229,8 +286,11 @@ class TestWrapupAffordabilityRail:
         monkeypatch.setattr(
             "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
         )
-        answers = iter((True, False))
-        monkeypatch.setattr(task_pacing, "wrapup_reservation_fits", lambda **_k: next(answers))
+        answers, calls = iter((True, False)), []
+        monkeypatch.setattr(
+            task_pacing, "wrapup_reservation_fits",
+            lambda **kwargs: (calls.append(kwargs), next(answers))[1],
+        )
         monkeypatch.setattr(
             "ouroboros.loop._forced_final_answer",
             lambda ctx_, **kwargs: ("wrapped up", ctx_.accumulated_usage, {"kwargs": kwargs}),
@@ -241,6 +301,7 @@ class TestWrapupAffordabilityRail:
         assert result is not None
         assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_last_fit"
         assert result[2]["kwargs"]["reason_code"] == "budget_exhausted"
+        assert "[BUDGET LIMIT]" in calls[0]["messages"][-1]["content"]
 
     def test_a_missing_prompt_estimate_keeps_the_rail_silent(self, monkeypatch):
         ctx = _ctx(accumulated_usage={"cost": 1.0})
@@ -280,15 +341,39 @@ class TestOneCeilingPerTree:
         return normalize_budget_profile(None)
 
     def test_a_non_root_member_never_exceeds_the_root_deciding_number(self):
-        root = task_pacing.resolve_cost_ceiling(40.0, self._profile(), root_cap_usd=50.0)
+        root = task_pacing.resolve_cost_ceiling(10.0, self._profile(), root_cap_usd=50.0)
         member = task_pacing.resolve_cost_ceiling(
-            40.0, self._profile(), root_cap_usd=50.0, non_root_member=True,
+            100.0, self._profile(), root_cap_usd=50.0, non_root_member=True,
+            root_ceiling_usd=root.ceiling_usd,
         )
 
         assert "global_pct" in root.basis
         assert "global_pct" in member.basis
         assert "non_root_member" in member.basis
-        assert member.ceiling_usd <= root.ceiling_usd == 20.0
+        assert member.ceiling_usd <= root.ceiling_usd == 5.0
+
+    def test_a_child_scope_carries_the_root_resolved_ceiling(self):
+        from ouroboros.usage_accounting import UsageScope, usage_scope
+
+        scope = UsageScope(
+            task_id="child", root_task_id="root", root_limit_usd=50.0,
+            root_cost_ceiling_usd=5.0,
+        )
+        with usage_scope(scope):
+            member = task_pacing.resolve_task_cost_ceiling(SimpleNamespace(), 100.0)
+
+        assert member.ceiling_usd == 5.0
+
+    def test_the_scheduled_child_payload_carries_the_root_ceiling(self):
+        from supervisor.task_dispatch import build_scheduled_task_payload
+
+        task = build_scheduled_task_payload({
+            "tid": "child", "root_task_id": "root", "parent_id": "root",
+            "delegation_role": "subagent", "root_cost_ceiling_usd": 5.0,
+        })
+
+        assert task["root_cost_ceiling_usd"] == 5.0
+        assert task["metadata"]["root_cost_ceiling_usd"] == 5.0
 
     def test_a_descendant_tightens_when_global_remaining_falls(self):
         early = task_pacing.resolve_cost_ceiling(

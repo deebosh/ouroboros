@@ -448,6 +448,7 @@ def resolve_cost_ceiling(
     *,
     root_cap_usd: Optional[float] = None,
     non_root_member: bool = False,
+    root_ceiling_usd: Optional[float] = None,
 ) -> CostCeiling:
     """The in-task cost stop, computed ONCE at loop start (typed; v6.91).
 
@@ -461,9 +462,8 @@ def resolve_cost_ceiling(
     min(available components); NEVER a computed $0 — a root cap at or below the
     margin resolves to ``exhausted_soft_land`` instead.
 
-    A non-root member keeps both components: its own global resolution is
-    intersected with the root-cap resolution, so it can never exceed the root's
-    deciding number as the shared wallet drains.
+    A non-root member intersects its own global and root-cap resolutions with
+    the propagated root deciding ceiling, so it can never exceed the root.
 
     Stated plainly rather than implied: the ``room <= 0`` bail is the owner's
     "$0 ceiling" rule EXACTLY, no wider. A cap just ABOVE the margin therefore
@@ -512,6 +512,9 @@ def resolve_cost_ceiling(
             basis_parts.append("root_cap_minus_margin")
             if non_root_member:
                 basis_parts.append("non_root_member")
+        if non_root_member and root_ceiling_usd is not None and float(root_ceiling_usd) > 0:
+            components.append(float(root_ceiling_usd))
+            basis_parts.append("root_resolved_ceiling")
         if not components:
             return CostCeiling(state=COST_CEILING_DISABLED, basis="no_finite_budget")
         return CostCeiling(
@@ -539,6 +542,7 @@ def resolve_task_cost_ceiling(ctx: Any, budget_remaining_usd: Optional[float]) -
     stop and the fence can never disagree about the cap. The same scope says
     whether this task is the root of its tree or one of its members."""
     root_cap = None
+    root_ceiling = None
     non_root_member = False
     try:
         from ouroboros.usage_accounting import current_usage_scope
@@ -546,6 +550,7 @@ def resolve_task_cost_ceiling(ctx: Any, budget_remaining_usd: Optional[float]) -
         scope = current_usage_scope()
         if scope is not None:
             root_cap = getattr(scope, "root_limit_usd", None)
+            root_ceiling = getattr(scope, "root_cost_ceiling_usd", None)
             non_root_member = bool(
                 scope.root_task_id and scope.task_id and scope.root_task_id != scope.task_id
             )
@@ -556,6 +561,7 @@ def resolve_task_cost_ceiling(ctx: Any, budget_remaining_usd: Optional[float]) -
         resolve_budget_profile(ctx),
         root_cap_usd=root_cap,
         non_root_member=non_root_member,
+        root_ceiling_usd=root_ceiling,
     )
 
 
@@ -570,8 +576,8 @@ def cost_ceiling_disclosure(ceiling: CostCeiling) -> Dict[str, Any]:
         "rule": (
             "The graceful in-task cost stop of THIS task's whole tree, resolved once at task "
             "start: the root resolves min(configured share of global remaining, hard tree cap "
-            "minus a planning margin); every other member keeps that root-cap component and "
-            "intersects it with its own global resolution, so it never exceeds the root. Crossing it asks for a "
+            "minus a planning margin); every other member intersects that resolved root number "
+            "with its own global and root-cap resolutions. Crossing it asks for a "
             "best-effort final answer; the ledger fence at the full cap still binds "
             "independently. Budget checkpoints during the task report the live tree spend."
         ),
@@ -629,13 +635,42 @@ def wrapup_last_fit_text(deciding_usd: float, ceiling: CostCeiling) -> str:
     )
 
 
+def prospective_wrapup_attempt_request(
+    *, llm: Any, messages: list[Dict[str, Any]], model: str,
+    reasoning_effort: str, tools: Optional[list[Dict[str, Any]]] = None,
+    allow_server_web_search: bool = False,
+) -> Any:
+    """Build the conservative request facts from the prospective wire payload."""
+    from ouroboros.llm import _attempt_request, _physical_candidate
+    from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
+    from ouroboros.request_wire_recovery import request_wire_call_scope
+    from ouroboros.usage_accounting import _merge_scope
+
+    target = llm._resolve_remote_target(model)
+    with request_wire_call_scope():
+        candidate = llm._build_remote_kwargs(
+            target, messages, reasoning_effort, MAIN_LOOP_MAX_TOKENS, "auto", None, tools,
+            skip_capability_fetch=True, allow_server_web_search=allow_server_web_search,
+        )
+        llm._normalize_payload_cache_ttl(target, candidate)
+        llm._pop_thread_disclosure("_cache_breakpoint_tls")
+    return _merge_scope(_attempt_request(target, _physical_candidate(candidate)))[0]
+
+
 def wrapup_reservation_fits(
     *,
-    model: str,
-    prompt_tokens: int,
+    model: str = "",
+    prompt_tokens: int = 0,
     root_cap_usd: Optional[float],
     deciding_usd: float,
     reservation_count: int = 1,
+    request: Any = None,
+    llm: Any = None,
+    messages: Optional[list[Dict[str, Any]]] = None,
+    reasoning_effort: str = "medium",
+    tools: Optional[list[Dict[str, Any]]] = None,
+    use_local: bool = False,
+    allow_server_web_search: bool = False,
 ) -> Optional[bool]:
     """Whether one more wrap-up call would still be admitted under the root cap.
 
@@ -652,19 +687,27 @@ def wrapup_reservation_fits(
     try:
         from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
         from ouroboros.pricing import infer_provider_from_model
-        from ouroboros.usage_accounting import AttemptRequest, _reservation_cost, current_usage_scope
+        from ouroboros.usage_accounting import AttemptRequest, _merge_scope, _reservation_cost, current_usage_scope
 
         scope = current_usage_scope()
         task_id = str(getattr(scope, "task_id", "") or "") if scope is not None else ""
-        if not task_id or root_cap_usd is None or float(root_cap_usd) <= 0 or prompt_tokens <= 0:
+        if not task_id or root_cap_usd is None or float(root_cap_usd) <= 0 or use_local:
             return None
-        bound = _reservation_cost(AttemptRequest(
-            model=str(model or ""),
-            provider=infer_provider_from_model(str(model or "")),
-            prompt_tokens_estimate=int(prompt_tokens),
-            max_completion_tokens=MAIN_LOOP_MAX_TOKENS,
-            task_id=task_id,
-        ))
+        if request is None and messages is not None and callable(getattr(llm, "_resolve_remote_target", None)):
+            request = prospective_wrapup_attempt_request(
+                llm=llm, messages=messages, model=model, reasoning_effort=reasoning_effort,
+                tools=tools, allow_server_web_search=allow_server_web_search,
+            )
+        if request is None:
+            if prompt_tokens <= 0:
+                return None
+            request = AttemptRequest(
+                model=str(model or ""), provider=infer_provider_from_model(str(model or "")),
+                prompt_tokens_estimate=int(prompt_tokens), max_completion_tokens=MAIN_LOOP_MAX_TOKENS,
+                task_id=task_id,
+            )
+        request, _scope = _merge_scope(request)
+        bound = _reservation_cost(request)
         if bound is None:
             return None
         return bool(float(deciding_usd) + float(bound) * max(1, int(reservation_count))

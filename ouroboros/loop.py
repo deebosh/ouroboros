@@ -16,10 +16,6 @@ import logging
 
 from ouroboros.llm import LLMClient, normalize_reasoning_effort, add_usage
 from ouroboros import task_pacing
-# The acceptance obligations/dialogue/decision machinery moved WHOLE into
-# `acceptance_dialogue.py`; loop.py keeps the fence, checkpoint, panel-execution
-# and message rails. Names unused here are re-exported on purpose: external
-# callers and the acceptance-writer inventory still import them from `loop`.
 from ouroboros.acceptance_dialogue import (  # noqa: F401 — re-export
     ACCEPTANCE_DECISION_REASONS,
     ACCEPTANCE_REASON_UNSPECIFIED,
@@ -198,12 +194,7 @@ def _force_plan_decision(
     *,
     hard_rail: str = "",
 ) -> Dict[str, Any]:
-    """Project force-plan finalization from existing review + policy SSOTs.
-
-    Body extracted to ``owner_hurry.force_plan_decision`` (the hurry latch makes
-    the projection task-locally advisory for reviewed/open/unavailable states —
-    §19.7.2 item 9); unlatched behavior is byte-identical.
-    """
+    """Project force-plan finalization from existing review + policy SSOTs."""
     from ouroboros.owner_hurry import force_plan_decision
 
     return force_plan_decision(
@@ -243,7 +234,6 @@ def _swarm_handoff_attempt(ctx: Any) -> Dict[str, Any]:
     return dict(attempt) if isinstance(attempt, dict) else {}
 
 
-# One wording for every graceful cost stop below, so the rails cannot drift.
 _FORCED_BEST_EFFORT_TAIL = (
     "Produce your best final answer now from the verified work so far; clearly "
     "mark anything unverified or incomplete. An honest best-effort result is the "
@@ -320,13 +310,25 @@ def _check_budget_limits(
     prompt_estimate = int(accumulated_usage.get("_context_prompt_estimate") or 0)
     wrapup_fits = None
     if cost_ceiling.root_cap_usd is not None and deciding is not None and prompt_estimate > 0:
-        wrapup_args = dict(model=ctx.active_model, prompt_tokens=prompt_estimate,
-                           root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding)
+        finish_reason = task_pacing.wrapup_last_fit_text(deciding, cost_ceiling)
+        prospective_messages = [dict(message) for message in ctx.messages]
+        _append_or_merge_user_message(
+            prospective_messages,
+            f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}",
+        )
+        wrapup_args = dict(
+            llm=ctx.llm, messages=prospective_messages, model=ctx.active_model,
+            prompt_tokens=prompt_estimate, reasoning_effort=ctx.active_effort,
+            tools=ctx.tool_schemas,
+            use_local=ctx.active_use_local,
+            allow_server_web_search=_server_web_allowed_by_task(
+                getattr(getattr(ctx, "tools", None), "_ctx", None)
+            ), root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding,
+        )
         wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
         if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
             **wrapup_args, reservation_count=2,
         ) is False:
-            finish_reason = task_pacing.wrapup_last_fit_text(deciding, cost_ceiling)
             accumulated_usage["cost_stop_spend_basis"] = spend_basis
             accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
             return _forced_final_answer(
@@ -379,15 +381,13 @@ def _check_budget_limits(
 def _resolve_task_cost_ceiling(
     ctx: Any, budget_remaining_usd: Optional[float],
 ) -> "task_pacing.CostCeiling":
-    """The typed in-task cost stop, resolved ONCE at loop start.
-
-    The number lives in the pacing SSOT; this prefers the object already
-    resolved and disclosed to the model at task start, so the ceiling the mind
-    was shown and the ceiling that stops the task are the same object."""
+    """Return and retain the task's once-resolved cost stop."""
     disclosed = getattr(ctx, "_cost_ceiling", None)
     if isinstance(disclosed, task_pacing.CostCeiling):
         return disclosed
-    return task_pacing.resolve_task_cost_ceiling(ctx, budget_remaining_usd)
+    resolved = task_pacing.resolve_task_cost_ceiling(ctx, budget_remaining_usd)
+    setattr(ctx, "_cost_ceiling", resolved)
+    return resolved
 
 
 # Bounded staleness for the two DECIDING cost surfaces (ceiling check,

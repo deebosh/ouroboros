@@ -325,10 +325,11 @@ class ReviewSlotExecutor:
     def _observe_failed_send(self, exc: BaseException) -> None:
         capture = getattr(exc, "physical_attempt_capture", None)
         if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
+            attempt_ids = [str(value) for value in (getattr(exc, "ledger_attempt_ids", None) or []) if value]
             self._observe_usage({
                 "resolved_model": str(getattr(capture, "model", "") or ""),
                 "provider": str(getattr(capture, "provider", "") or ""),
-                "ledger_attempt_ids": [str(getattr(capture, "attempt_id", "") or "")],
+                "ledger_attempt_ids": attempt_ids or [str(getattr(capture, "attempt_id", "") or "")],
             })
 
     def prompt_payload(self) -> Dict[str, Any]:
@@ -1078,6 +1079,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         self._conformance_passed = False
         self._run_id = ""
         self._session_usage: Dict[str, Any] = {}
+        self._session_usage_observed = False
         self._deltas: List[Dict[str, Any]] = []
         # Unknown starts retain the exact invocation token for the permitted retry.
         self._retry_state: Dict[str, Any] = {}
@@ -1139,10 +1141,19 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             self._run_session()
         except BaseException as exc:
             self._run_id = self._run_id or str(getattr(exc, "delegated_run_id", "") or "")
+            started = bool(self._run_id or getattr(exc, "delegated_run_started", False))
+            if started and not self._session_usage_observed:
+                self._observe_usage({
+                    "provider": "claudexor", "resolved_model": str(self.assignment.slot.model or ""),
+                    "delegated_run_started": True, "delegated_run_id": self._run_id, "cost": None,
+                })
+                self._session_usage_observed = True
             if not self._retry_state.get("pending_invocation_id"):
                 self._settled_failure = exc
             raise
-        self._observe_usage(self._session_usage)
+        if not self._session_usage_observed:
+            self._observe_usage(self._session_usage)
+            self._session_usage_observed = True
         return self._verdict_result()
 
     def failure_custody(self) -> Dict[str, Any]:

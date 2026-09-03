@@ -826,6 +826,7 @@ class OuroborosAgent:
             "drive_root",
             "child_drive_root",
             "budget_drive_root",
+            "root_cost_ceiling_usd",
             "model_lane",
             "requested_model_lane",
             "effective_model_lane",
@@ -1084,6 +1085,7 @@ class OuroborosAgent:
             source="agent.task",
             global_limit_usd=global_limit,
             root_limit_usd=root_limit if root_limit > 0 else None,
+            root_cost_ceiling_usd=task.get("root_cost_ceiling_usd") or metadata.get("root_cost_ceiling_usd"),
         )
         with usage_scope(scope):
             return self._handle_task_scoped(task)

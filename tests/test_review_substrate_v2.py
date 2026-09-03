@@ -3061,6 +3061,37 @@ def test_failed_physical_reviewer_send_still_emits_its_usage_row(tmp_path):
     assert rows[0]["ledger_attempt_ids"] == ["failed-a1"]
 
 
+def test_terminal_failed_reviewer_retry_emits_one_row_per_dispatched_attempt(tmp_path):
+    from ouroboros.usage_accounting import (
+        AttemptRequest, capture_attempt_ids, execute_physical_attempt,
+    )
+
+    class FailedRetryLLM:
+        def chat(self, **_kwargs):
+            with capture_attempt_ids():
+                for attempt in range(2):
+                    try:
+                        execute_physical_attempt(AttemptRequest(
+                            model="same/model", provider="openrouter",
+                            reservation_usd=0.0,
+                        ), lambda: (_ for _ in ()).throw(RuntimeError(f"failed-{attempt}")))
+                    except RuntimeError:
+                        if attempt:
+                            raise
+
+    ctx = SimpleNamespace(task_id="failed-retry-usage", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="plan_review", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=FailedRetryLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(rows) == 2
+    assert all(len(row["ledger_attempt_ids"]) == 1 for row in rows)
+    assert rows[0]["ledger_attempt_ids"] != rows[1]["ledger_attempt_ids"]
+
+
 def test_internal_reviewer_transport_attempts_each_get_one_usage_row(tmp_path):
     class RetriedLLM:
         def chat(self, **_kwargs):
