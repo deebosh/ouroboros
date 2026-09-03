@@ -1951,7 +1951,10 @@ rules, not a copied color/radius/dimension inventory.
   `project_dialogue.outcome_phase`, pinned to the browser by one shared
   fixture (`web/tests/fixtures/outcome_phase_parity.json`): a new axis, reason
   or acceptance status is added to both sides in the same commit, with a row
-  in that fixture. A non-terminal diagnostic may add a timeline fact
+  in that fixture. The detail line under the headline comes from
+  `taskReasonDetail` in the order soft stop, hard failure or cancellation
+  reason, host acceptance decision (status plus stored rationale), typed
+  reason phrase or raw code — never from a second producer. A non-terminal diagnostic may add a timeline fact
   but must not promote the whole task; unknown event names never acquire
   Chat severity from `error`/`crash`/`fail` keyword matching. The Chat
   header reports connection and server-authoritative activity only; failed

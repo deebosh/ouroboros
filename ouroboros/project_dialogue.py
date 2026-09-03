@@ -419,18 +419,15 @@ def routing_option_label(option: Any) -> str:
     return "Project" if option.get("project_id") and not option.get("task_id") else "Task"
 
 
-OUTCOME_PHASE_HEADLINE = {
-    "working": "Working", "done": "Done", "warn": "Done with warnings",
-    "error": "Failed", "cancelled": "Cancelled",
-}
+OUTCOME_PHASE_HEADLINE = {"working": "Working", "done": "Done", "warn": "Done with warnings",
+                          "error": "Failed", "cancelled": "Cancelled"}
 
 
 def outcome_phase(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     """The host mirror of the browser's terminality gate and severity fold.
 
-    Durable host rows must read exactly what ``log_events.js`` paints, so this
-    mirrors ``taskDoneIsTerminal(rec) ? taskTerminalPhase(rec) : 'working'`` over
-    NORMALIZED axes; web/tests/fixtures/outcome_phase_parity.json pins both sides.
+    Durable host rows read exactly what ``log_events.js`` paints, over
+    NORMALIZED axes; web/tests/fixtures/outcome_phase_parity.json pins both.
     """
     from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION, normalize_outcome_axes
     from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
@@ -450,10 +447,9 @@ def outcome_phase(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     lifecycle = axis.get("lifecycle") or status
     if lifecycle in {"cancelled", "cancel_requested"}:
         return "cancelled"
-    artifacts = {axis.get("artifacts"), str(record.get("artifact_status") or "").lower()}
     if (lifecycle == "failed" or axis.get("execution") in {"failed", "infra_failed"}
             or axis.get("objective") == "fail" or axis.get("review") == "fail"
-            or artifacts & {"failed", "missing"}):
+            or {axis.get("artifacts"), str(record.get("artifact_status") or "").lower()} & {"failed", "missing"}):
         return "error"
     if str(record.get("reason_code") or "") == REASON_OWNER_REQUESTED_FINALIZATION:
         return "done"
@@ -734,8 +730,9 @@ def _append_terminal_task_projection(
         )
         if excerpt:
             text += f" {excerpt}"
-        if reason:
-            text += f" Reason: {reason}."
+        verdict = _completion_verdict(effective, event)
+        if verdict:
+            text += f" {verdict}"
         result_ref = {"kind": "task_result", "task_id": tid, "reader": "get_task_result"}
         row = {
             "ts": str(event.get("ts") or effective.get("ts") or utc_now_iso()),
@@ -799,6 +796,37 @@ def _completion_excerpt(result: Dict[str, Any]) -> str:
         if text:
             return text if len(text) <= 240 else text[:239].rstrip() + "…"
     return ""
+
+
+def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
+    """One TERMINATED host clause for BOTH lifecycle rows.
+
+    A host row must not present an unaccepted claim as the whole story: an
+    acceptance decision that is anything but accepted leads with its stored
+    rationale (stripped, flattened and capped like every durable row text),
+    otherwise the execution reason stands. The Python twin of
+    ``taskReasonDetail``'s acceptance branch; callers add no punctuation.
+    """
+    from ouroboros.outcomes import ACCEPTANCE_ACCEPTED
+
+    decision: Dict[str, Any] = {}
+    for source in (event, result):
+        axes = source.get("outcome_axes") if isinstance(source.get("outcome_axes"), dict) else {}
+        for holder in (source.get("review_status"), axes.get("review")):
+            if isinstance(holder, dict) and isinstance(holder.get("acceptance_decision"), dict):
+                decision = holder["acceptance_decision"]
+    status = str(decision.get("status") or "").strip()
+    reason = str(result.get("reason_code") or event.get("reason_code") or "")
+    if status and status != ACCEPTANCE_ACCEPTED and outcome_phase(result, event) in {"done", "warn"}:
+        clause = f"Acceptance: {status}"
+        rationale = " ".join(strip_markdown(str(decision.get("rationale") or "")).split())
+        if rationale:
+            clause += " — " + (rationale if len(rationale) <= 240 else rationale[:239].rstrip() + "…")
+    elif reason:
+        clause = f"Reason: {reason}"
+    else:
+        return ""
+    return clause if clause.endswith((".", "!", "…")) else clause + "."
 
 
 def _run_lives_in_its_project(
@@ -881,11 +909,13 @@ def enqueue_project_completion_summary(
             # a Main row leading into an empty room.
             return False
         excerpt = _completion_excerpt(result)
+        verdict = _completion_verdict(result, task_done_event)
+        lead = f"{verdict} " if verdict.startswith("Acceptance:") else ""
         event = {
             "type": "send_message", "chat_id": 1, "task_id": tid,
             "text": (f"{snapshot['target_label']} · "
                      f"{completion_status_label(result, task_done_event)}\n"
-                     f"{excerpt or 'Open the Project for details.'}"),
+                     f"{lead}{excerpt or 'Open the Project for details.'}"),
             "role": "system", "system_type": "project_completion_summary",
             "delivery_id": f"project-completion:{tid}",
             "progress_meta": {

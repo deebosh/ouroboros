@@ -57,8 +57,81 @@ test('one status-word family: the card phase matches the host over the shared fi
         readFileSync(new URL('./fixtures/outcome_phase_parity.json', import.meta.url), 'utf8'),
     );
     assert.ok(fixture.cases.length >= 10);
-    for (const { name, record, phase, headline } of fixture.cases) {
+    for (const { name, record, phase, headline, acceptance_clause: clause } of fixture.cases) {
         const resolved = taskDoneIsTerminal(record) ? taskTerminalPhase(record) : 'working';
         assert.deepEqual(taskPresentation(resolved), { phase, headline }, name);
+        if (clause) {
+            // The host composes the same sentence for its durable prose rows and
+            // terminates it there; the card line adds no punctuation of its own.
+            const detail = taskReasonDetail(record);
+            assert.ok(clause === detail || clause === `${detail}.`, `${name}: ${detail} vs ${clause}`);
+        }
     }
+});
+
+// A review-caused warning used to be explained by whatever execution reason sat
+// beside it ('Reason: final_message'), which named the delivery step rather than
+// the actual cause. The host's acceptance decision now speaks for itself.
+
+const A4 = {
+    status: 'completed',
+    reason_code: 'final_message',
+    outcome_axes: {
+        execution: { status: 'ok' },
+        review: {
+            status: 'degraded',
+            acceptance_decision: {
+                status: 'finalized_unaccepted',
+                rationale: 'Acceptance reviewers did not reach a valid quorum.',
+            },
+        },
+    },
+};
+
+test('an unaccepted decision explains the warning in its own words', () => {
+    assert.equal(
+        taskReasonDetail(A4),
+        'Acceptance: finalized_unaccepted — Acceptance reviewers did not reach a valid quorum.',
+    );
+    assert.doesNotMatch(taskReasonDetail(A4), /final_message/);
+});
+
+test('an accepted decision leaves the execution reason line byte-identical', () => {
+    const accepted = {
+        ...A4,
+        outcome_axes: {
+            execution: { status: 'ok' },
+            review: { status: 'pass', acceptance_decision: { status: 'accepted', rationale: 'Quorum reached.' } },
+        },
+    };
+    assert.equal(taskReasonDetail(accepted), 'Reason: final_message');
+});
+
+test('a decision without a rationale states its status alone', () => {
+    const record = {
+        outcome_axes: { review: { acceptance_decision: { status: 'revision_requested' } } },
+        status: 'completed',
+    };
+    assert.equal(taskReasonDetail(record), 'Acceptance: revision_requested');
+});
+
+test('a decision with no reason code still reaches the acceptance branch', () => {
+    // The old single early return swallowed this frame before the branch.
+    const record = { status: 'completed', review_status: { acceptance_decision: { status: 'revision_requested' } } };
+    assert.equal(taskReasonDetail(record), 'Acceptance: revision_requested');
+});
+
+test('a hard failure keeps explaining itself by its execution reason', () => {
+    const failed = { ...A4, status: 'failed', reason_code: 'delegated_custody_unreconciled' };
+    assert.equal(taskReasonDetail(failed), 'Reason: delegated_custody_unreconciled');
+});
+
+test('a multi-line rationale is flattened into one sentence', () => {
+    const noisy = {
+        status: 'completed',
+        outcome_axes: {
+            review: { acceptance_decision: { status: 'revision_requested', rationale: 'Two\n\nlines   here.' } },
+        },
+    };
+    assert.equal(taskReasonDetail(noisy), 'Acceptance: revision_requested — Two lines here.');
 });

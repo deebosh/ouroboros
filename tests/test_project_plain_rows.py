@@ -330,3 +330,138 @@ def test_owner_requested_stop_is_done_on_the_host_row_too():
         "outcome_axes": {"execution": {"status": "best_effort"}},
     }
     assert completion_status_label(stopped, {}) == "Done"
+
+
+A4_DECISION = {
+    "status": "finalized_unaccepted",
+    "rationale": "Acceptance reviewers did not reach a valid quorum.",
+}
+A4_CLAUSE = "Acceptance: finalized_unaccepted — Acceptance reviewers did not reach a valid quorum."
+
+
+def _a4_result(**overrides):
+    result = {
+        "task_id": "root-project", "status": "completed", "reason_code": "final_message",
+        "project_id": "launch", "title": "Ship release", "result": "Release shipped.",
+        "outcome_axes": {
+            "execution": {"status": "ok"},
+            "review": {"status": "degraded", "acceptance_decision": dict(A4_DECISION)},
+        },
+    }
+    result.update(overrides)
+    return result
+
+
+def test_host_verdict_states_an_unaccepted_acceptance_decision_in_its_own_words():
+    """S5-04: a warning caused by REVIEW used to be explained by the execution
+    reason that happened to sit beside it (``Reason: final_message``), which
+    named the delivery step rather than the cause."""
+    from ouroboros.project_dialogue import _completion_verdict
+
+    assert _completion_verdict(_a4_result(), {}) == A4_CLAUSE
+    # The stored rationale already ends in a period; the clause must not double it.
+    assert not _completion_verdict(_a4_result(), {}).endswith("..")
+
+
+def test_host_verdict_keeps_the_execution_reason_when_acceptance_was_reached():
+    from ouroboros.project_dialogue import _completion_verdict
+
+    accepted = _a4_result(outcome_axes={
+        "execution": {"status": "ok"},
+        "review": {"status": "pass", "acceptance_decision": {"status": "accepted"}},
+    })
+    assert _completion_verdict(accepted, {}) == "Reason: final_message."
+    assert _completion_verdict({"status": "completed"}, {}) == ""
+    # A hard failure explains itself by its execution reason, not by a decision.
+    assert _completion_verdict(
+        _a4_result(status="failed", reason_code="delegated_custody_unreconciled",
+                   outcome_axes={"execution": {"status": "failed"},
+                                 "review": {"acceptance_decision": dict(A4_DECISION)}}),
+        {},
+    ) == "Reason: delegated_custody_unreconciled."
+
+
+def test_host_verdict_flattens_and_strips_a_markdown_rationale():
+    """These are durable plain-text rows: the rationale is free owner-visible
+    text up to 500 characters and may carry newlines and markdown markers."""
+    from ouroboros.project_dialogue import _completion_verdict
+
+    noisy = _a4_result(outcome_axes={
+        "execution": {"status": "ok"},
+        "review": {"status": "degraded", "acceptance_decision": {
+            "status": "revision_requested",
+            "rationale": "## Verdict\n\nThe **tests** never ran with `pytest`",
+        }},
+    })
+    verdict = _completion_verdict(noisy, {})
+    assert verdict == "Acceptance: revision_requested — Verdict The tests never ran with pytest."
+    for marker in ("#", "**", "`", "\n"):
+        assert marker not in verdict
+
+
+def test_host_verdict_states_a_decision_without_a_rationale_alone():
+    from ouroboros.project_dialogue import _completion_verdict
+
+    bare = _a4_result(outcome_axes={
+        "execution": {"status": "degraded"},
+        "review": {"status": "degraded", "acceptance_decision": {"status": "revision_requested"}},
+    })
+    assert _completion_verdict(bare, {}) == "Acceptance: revision_requested."
+
+
+def test_host_verdict_leads_both_lifecycle_rows(tmp_path, monkeypatch):
+    """The verdict must reach the owner where the owner looks: the Main row's
+    second line and the Project thread's terminal row."""
+    from ouroboros.project_dialogue import (
+        append_terminal_task_projection, enqueue_project_completion_summary,
+    )
+    from ouroboros.projects_registry import bind_task_to_project, create_project
+
+    project = create_project(tmp_path, "launch", name="Launch 🚀")
+    bind_task_to_project(
+        tmp_path, "root-project", project["id"], project["chat_id"],
+        origin={"absent": "system"},
+    )
+    queued = []
+    monkeypatch.setattr(
+        "supervisor.terminal_delivery.enqueue_terminal_delivery",
+        lambda _root, event, **_kwargs: queued.append(dict(event)) or True,
+    )
+    root = {
+        "id": "root-project", "project_id": "launch",
+        "title": "Ship release", "chat_id": project["chat_id"],
+    }
+    result = _a4_result()
+    done = {"status": "completed", "outcome_axes": result["outcome_axes"]}
+
+    assert enqueue_project_completion_summary(
+        tmp_path, {"status": "completed"}, "root-project", root, result, done,
+    ) is True
+    assert queued[0]["text"] == (
+        f"Launch 🚀 › Ship release · Done with warnings\n{A4_CLAUSE} Release shipped."
+    )
+    assert "final_message" not in queued[0]["text"]
+
+    assert append_terminal_task_projection(tmp_path, "root-project", root, result, done)
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    projection = next(row for row in rows if row.get("summary_kind") == "terminal_root_projection")
+    assert A4_CLAUSE in projection["text"]
+    assert "Reason: final_message" not in projection["text"]
+    assert projection["reason_code"] == "final_message"
+    assert projection["outcome"] == "Done with warnings"
+    assert projection["text"].endswith('Details: get_task_result(task_id="root-project")')
+
+
+def test_host_verdict_and_the_card_line_compose_the_same_sentence():
+    """The shared fixture is the only place the two languages agree; a clause
+    present there must be produced by the host verdict as well."""
+    from ouroboros.project_dialogue import _completion_verdict
+
+    for case in _parity_cases():
+        clause = case.get("acceptance_clause") or ""
+        if clause:
+            assert _completion_verdict(case["record"], {}) == clause, case["name"]

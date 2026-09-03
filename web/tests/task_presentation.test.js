@@ -371,3 +371,28 @@ test('header status has no terminal-attention state or writer', () => {
     assert.doesNotMatch(chatSource, /lastTerminalAttention/);
     assert.doesNotMatch(activitySource, /lastTerminalAttention|text: 'Attention'/);
 });
+
+test('a review-caused warning names the acceptance decision on the card and in Logs', () => {
+    // The execution reason beside it ('final_message') names the delivery step,
+    // not the cause; the card body and the Logs meta now say what happened.
+    const evt = {
+        type: 'task_done', status: 'completed', reason_code: 'final_message',
+        outcome_axes: {
+            execution: { status: 'ok' },
+            review: {
+                status: 'degraded',
+                acceptance_decision: {
+                    status: 'finalized_unaccepted',
+                    rationale: 'Acceptance reviewers did not reach a valid quorum.',
+                },
+            },
+        },
+    };
+    const live = summarizeChatLiveEvent(evt);
+    const replay = summarizeLogEvent(evt);
+    assert.deepEqual({ phase: live.phase, headline: live.headline }, { phase: 'warn', headline: 'Done with warnings' });
+    assert.match(live.body, /Acceptance: finalized_unaccepted — Acceptance reviewers did not reach a valid quorum\./);
+    assert.doesNotMatch(live.body, /final_message/);
+    assert.ok(replay.meta.includes('review degraded'));
+    assert.ok(replay.meta.includes('acceptance finalized_unaccepted'));
+});
