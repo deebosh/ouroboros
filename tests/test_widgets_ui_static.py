@@ -507,6 +507,15 @@ def test_widget_json_wraps_inside_its_host_card():
     assert "overflow-wrap: anywhere;" in json_block
 
 
+def test_widget_fault_status_wraps_inside_narrow_card():
+    style = _read("web/style.css")
+    status = style.split(".widgets-card-controls .ui-status:not([hidden]) {", 1)[1].split("}", 1)[0]
+    assert "min-width: 0;" in status
+    assert "max-width: min(240px, 35vw);" in status
+    assert "white-space: normal;" in status
+    assert "overflow-wrap: anywhere;" in status
+
+
 def test_widgets_card_order_is_owner_ui_preference():
     """The reorder handles live in ``widget_reorder.js``; the card markup and
     the preference write stay in the page host. Phase 3: a reorder (drag or

@@ -5401,7 +5401,10 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 .widgets-card-controls .ui-status:not([hidden]) {
     display: inline-flex;
     align-items: center;
-    white-space: nowrap;
+    min-width: 0;
+    max-width: min(240px, 35vw);
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .widgets-card-controls .ui-status[data-tone]::before {
