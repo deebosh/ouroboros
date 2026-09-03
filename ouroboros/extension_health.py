@@ -10,6 +10,7 @@ owner-state files at ``data/state/skills/<name>/health.json``.
 
 from __future__ import annotations
 
+import functools
 import logging
 import pathlib
 from typing import Any, Dict, List, Optional
@@ -211,6 +212,18 @@ def regressed_extensions(drive_root: pathlib.Path) -> List[Dict[str, Any]]:
     return out
 
 
+@functools.lru_cache(maxsize=1)
+def code_stamp() -> tuple[str, str]:
+    """Return ``(version, git_sha)`` for live->broken attribution; ``("", "")`` on failure."""
+    try:
+        from ouroboros.config import read_version
+        from ouroboros.utils import get_git_info
+
+        return str(read_version()), get_git_info(pathlib.Path(__file__).resolve().parents[1])[1]
+    except Exception:
+        return "", ""
+
+
 def status_for_runtime_state(state: Dict[str, Any]) -> str:
     """Map an extension runtime-state dict to a health status."""
     if state.get("desired_live") and state.get("companion_failed"):
@@ -232,6 +245,7 @@ __all__ = [
     "INACTIVE",
     "apply_companion_failure_to_runtime_state",
     "clear_companion_restart_exhausted",
+    "code_stamp",
     "health_path",
     "read_extension_health",
     "record_companion_restart_exhausted",

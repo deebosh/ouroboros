@@ -817,7 +817,7 @@ async def api_skill_toggle(request: Request) -> JSONResponse:
                 "extension_action": action,
                 "extension_reason": "name_collision",
             }
-        save_enabled(drive_root, loaded.name, enabled)
+        save_enabled(drive_root, loaded.name, enabled, actor="owner_ui", reason=f"client_host={getattr(getattr(request, 'client', None), 'host', '') or ''}")
         try:
             from supervisor.queue import sync_skill_schedules
 

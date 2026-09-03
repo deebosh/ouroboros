@@ -154,3 +154,225 @@ def test_skill_preflight_parses_module_entry_as_classic_script(
         assert result["ok"] is False
     else:
         assert row["ok"] is True
+
+
+# ------------------------------------------------------------- S1-07 / S1-02 / F14
+
+
+def _prepare_live_extension(tmp_path: pathlib.Path, name: str = "extlive"):
+    """Write, enable and PASS-review one extension so the loader will accept it."""
+    from ouroboros.skill_loader import SkillReviewState, find_skill, save_enabled, save_review_state
+
+    repo_root = tmp_path / "skills"
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir(exist_ok=True)
+    skill_dir = repo_root / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        "description: Live extension.\n"
+        "version: 0.1.0\n"
+        "type: extension\n"
+        "entry: plugin.py\n"
+        'permissions: ["tool"]\n'
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "plugin.py").write_text(
+        "def register(api):\n"
+        "    api.register_tool('ping', lambda ctx: 'pong', description='Ping.', schema={})\n",
+        encoding="utf-8",
+    )
+    loaded = find_skill(drive_root, name, repo_path=str(repo_root))
+    assert loaded is not None
+    save_enabled(drive_root, name, True, actor="test_fixture")
+    save_review_state(drive_root, name, SkillReviewState(status="pass", content_hash=loaded.content_hash))
+    loaded = find_skill(drive_root, name, repo_path=str(repo_root))
+    assert loaded is not None
+    return loaded, repo_root, drive_root
+
+
+@pytest.fixture(autouse=True)
+def _clean_loader_state(monkeypatch):
+    from tests._shared import clean_extension_runtime_state
+
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    clean_extension_runtime_state()
+    yield
+    clean_extension_runtime_state()
+
+
+def test_reconcile_receipt_names_the_answering_process(tmp_path, monkeypatch):
+    """A reconcile receipt says which process answered and whether the marker landed."""
+    from ouroboros import extension_loader
+
+    loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
+
+    monkeypatch.setattr(extension_loader, "is_server_process", lambda: True)
+    state = extension_loader.reconcile_extension(
+        loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
+    )
+    assert state["process"] == "server"
+    assert state["server_reconcile"] == ""
+
+    extension_loader.unload_extension(loaded.name)
+    monkeypatch.setattr(extension_loader, "is_server_process", lambda: False)
+    state = extension_loader.reconcile_extension(
+        loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
+    )
+    assert state["process"] == "worker"
+    assert state["server_reconcile"] == "requested"
+    assert list((drive_root / "state" / "extension_reconcile").glob("*")), "no marker written"
+
+
+def test_reconcile_receipt_reports_a_failed_marker_request(tmp_path, monkeypatch):
+    """A failed marker write is disclosed on the receipt and never raises."""
+    from ouroboros import extension_loader
+    from ouroboros import extension_reconcile_queue
+
+    loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
+    monkeypatch.setattr(extension_loader, "is_server_process", lambda: False)
+
+    def boom(*_a, **_k):
+        raise OSError("marker directory is read-only")
+
+    monkeypatch.setattr(extension_reconcile_queue, "request_extension_reconcile", boom)
+    state = extension_loader.reconcile_extension(
+        loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
+    )
+    assert state["server_reconcile"] == "request_failed"
+    assert state["action"] == "extension_loaded"
+
+
+def test_toggle_skill_receipt_carries_process_and_marker_outcome(tmp_path, monkeypatch):
+    """The agent-facing toggle receipt is where the 'already_live/ready' misreading happened."""
+    from ouroboros.tools import skill_exec as skill_exec_mod
+
+    loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(repo_root))
+    ctx = ToolContext(repo_dir=tmp_path / "repo2", drive_root=drive_root)
+    (tmp_path / "repo2").mkdir()
+
+    payload = json.loads(skill_exec_mod._handle_toggle_skill(ctx, skill=loaded.name, enabled=True))
+    assert payload["process"] in {"server", "worker"}
+    assert "server_reconcile" in payload
+
+
+def test_save_enabled_appends_one_typed_actor_row(tmp_path):
+    """Enablement changes leave a durable, non-rotating, actor-attributed record."""
+    from ouroboros.skill_loader import save_enabled
+
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir()
+    save_enabled(drive_root, "alpha", True, actor="owner_ui", reason="client_host=127.0.0.1")
+    save_enabled(drive_root, "alpha", False, actor="agent_tool", reason="task-7")
+    save_enabled(drive_root, "alpha", True)
+
+    rows = [
+        json.loads(line)
+        for line in (drive_root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    rows = [row for row in rows if row.get("type") == "skill_enabled_changed"]
+    assert [(r["enabled"], r["previous"], r["actor"]) for r in rows] == [
+        (True, False, "owner_ui"),
+        (False, True, "agent_tool"),
+        (True, False, ""),
+    ]
+    assert rows[0]["reason"] == "client_host=127.0.0.1"
+
+
+def test_save_enabled_row_is_disclosure_never_a_gate(tmp_path):
+    """An unwritable logs path must not fail the enablement write."""
+    from ouroboros.skill_loader import load_enabled, save_enabled
+
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir()
+    (drive_root / "logs").write_text("not a directory", encoding="utf-8")
+    save_enabled(drive_root, "alpha", True, actor="owner_ui")
+    assert load_enabled(drive_root, "alpha") is True
+
+
+def test_api_skill_toggle_records_the_owner_ui_actor(tmp_path, monkeypatch):
+    """The HTTP owner toggle labels itself, so the incident class is reconstructible."""
+    from ouroboros.skill_loader import SkillReviewState, compute_content_hash, save_review_state
+    from tests.test_extensions_api import _make_client, _write_ext
+
+    skills_root = tmp_path / "skills"
+    skill_dir = _write_ext(
+        skills_root,
+        "ext_actor",
+        permissions=["tool"],
+        plugin="def register(api):\n    api.register_tool('t', lambda ctx: 'ok', description='', schema={})\n",
+    )
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    client, drive_root, _patches = _make_client(tmp_path, monkeypatch)
+    try:
+        save_review_state(
+            drive_root,
+            "ext_actor",
+            SkillReviewState(
+                status="pass",
+                content_hash=compute_content_hash(skill_dir, manifest_entry="plugin.py"),
+            ),
+        )
+        resp = client.post("/api/skills/ext_actor/toggle", json={"enabled": True})
+        assert resp.status_code == 200, resp.text
+    finally:
+        client.close()
+
+    rows = [
+        json.loads(line)
+        for line in (drive_root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    rows = [r for r in rows if r.get("type") == "skill_enabled_changed" and r.get("skill") == "ext_actor"]
+    assert rows, "the owner toggle left no enablement row"
+    assert rows[-1]["actor"] == "owner_ui"
+    assert rows[-1]["enabled"] is True
+    assert rows[-1]["reason"].startswith("client_host=")
+
+
+def test_summarize_skills_projects_live_extension_facts(tmp_path, monkeypatch):
+    """The catalogue reports the same live facts as /api/extensions, not worker guesses."""
+    from ouroboros import skill_loader
+    from ouroboros.skill_loader import summarize_skills
+
+    loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(repo_root))
+
+    calls = {"n": 0}
+    real_discover = skill_loader.discover_skills
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real_discover(*a, **k)
+
+    monkeypatch.setattr(skill_loader, "discover_skills", counting)
+    summary = summarize_skills(drive_root)
+    # One walk for the catalogue itself; `skills=` must stop the per-row re-walk.
+    assert calls["n"] == 1, f"discover_skills ran {calls['n']} times"
+
+    row = next(r for r in summary["skills"] if r["name"] == loaded.name)
+    assert row["desired_live"] is True
+    assert row["live_loaded"] is False
+    assert row["live_reason"]
+    assert row["process"] in {"server", "worker"}
+    assert row["available_for_execution"] is False
+
+
+def test_skill_exec_extension_message_reports_typed_liveness(tmp_path, monkeypatch):
+    """skill_exec no longer asserts register(api) ran for an extension that never loaded."""
+    from ouroboros.tools import skill_exec as skill_exec_mod
+
+    loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(repo_root))
+    ctx = ToolContext(repo_dir=tmp_path / "repo3", drive_root=drive_root)
+    (tmp_path / "repo3").mkdir()
+
+    out = skill_exec_mod._handle_skill_exec(ctx, skill=loaded.name, script="x.py")
+    assert "SKILL_EXEC_EXTENSION" in out
+    assert "live_loaded=False" in out
+    assert "has already been called" not in out

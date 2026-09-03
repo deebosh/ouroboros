@@ -146,19 +146,27 @@ def _record_companion_name(bundle: _ExtensionRegistrations, name: str) -> None:
 
 
 def _request_server_reconcile_if_worker(
+    state: Dict[str, Any],
     drive_root: pathlib.Path | None,
     skill_name: str,
     *,
     reason: str,
 ) -> None:
-    """Signal the server process after a worker-side extension state change."""
+    """Signal the server process after a worker-side extension state change.
+
+    Stamps ``state['server_reconcile']``: the receipt says whether the marker was
+    written, while the handoff itself stays asynchronous and fail-soft.
+    """
+    state["server_reconcile"] = ""
     if drive_root is None or is_server_process():
         return
     try:
         from ouroboros.extension_reconcile_queue import request_extension_reconcile
 
         request_extension_reconcile(drive_root, skill_name, reason=reason, source="worker")
+        state["server_reconcile"] = "requested"
     except Exception:
+        state["server_reconcile"] = "request_failed"
         log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
 
 
@@ -1505,6 +1513,7 @@ def _extension_runtime_state(
         "loaded_present": loaded_present,
         "loaded_matches_current": live_loaded,
         "reason": reason,
+        "process": "server" if is_server_process() else "worker",
     }
 
 
@@ -1635,21 +1644,16 @@ def _revert_enabled_after_load_error(
     try:
         from ouroboros.skill_loader import save_enabled
 
-        save_enabled(pathlib.Path(drive_root), skill_name, False)
+        save_enabled(pathlib.Path(drive_root), skill_name, False, actor="load_error_revert")
         state["reverted_enabled"] = True
     except Exception:
         log.debug("Failed to revert enabled for %s after load error", skill_name, exc_info=True)
 
 
 def reconcile_extension(
-    skill_name: str,
-    drive_root: pathlib.Path,
-    settings_reader: Callable[[], Dict[str, Any]],
-    *,
-    repo_path: str | None = None,
-    skills: Optional[List[LoadedSkill]] = None,
-    selected_skill: LoadedSkill | None = None,
-    retry_load_error: bool = False,
+    skill_name: str, drive_root: pathlib.Path, settings_reader: Callable[[], Dict[str, Any]], *,
+    repo_path: str | None = None, skills: Optional[List[LoadedSkill]] = None,
+    selected_skill: LoadedSkill | None = None, retry_load_error: bool = False,
     revert_enabled_on_error: bool = False,
 ) -> Dict[str, Any]:
     """Reconcile one extension's desired and actual live state.
@@ -1690,7 +1694,7 @@ def reconcile_extension(
         elif state.get("reason") == "load_error" and not loaded_present:
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="reconcile_load_error")
+            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="reconcile_load_error")
             return state
         if state.get("reason") == "missing" or state.get("reason") == "not_extension":
             if loaded_present:
@@ -1698,7 +1702,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason=str(state.get("reason") or "inactive"))
+            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason=str(state.get("reason") or "inactive"))
             return state
 
         if not state.get("desired_live"):
@@ -1707,7 +1711,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="desired_disabled")
+            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="desired_disabled")
             return state
 
         if was_live:
@@ -1720,7 +1724,7 @@ def reconcile_extension(
                     repo_path=repo_path,
                     selected_skill=selected_skill,
                 )
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="already_live")
+            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="already_live")
             return state
 
         safe_name = _sanitize_skill_name(skill_name)
@@ -1728,7 +1732,7 @@ def reconcile_extension(
         if loaded is None:
             state["reason"] = "missing"
             state["action"] = "extension_inactive"
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="missing")
+            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="missing")
             return state
         if loaded_present:
             unload_extension(skill_name)
@@ -1754,7 +1758,7 @@ def reconcile_extension(
             state["load_error"] = err
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="load_error")
+            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="load_error")
             return state
         refreshed = runtime_state_for_skill_name(
             skill_name,
@@ -1763,7 +1767,7 @@ def reconcile_extension(
             skills=peers,
         )
         refreshed["action"] = "extension_loaded"
-        _request_server_reconcile_if_worker(drive_root, skill_name, reason="loaded")
+        _request_server_reconcile_if_worker(refreshed, drive_root, skill_name, reason="loaded")
         return refreshed
 
 
@@ -2140,22 +2144,14 @@ def reload_all(
     repo_path: str | None = None,
 ) -> Dict[str, Any]:
     """Refresh all extension liveness and return ``skill: error_or_None``."""
-    from ouroboros.extension_health import record_extension_health, status_for_runtime_state
+    from ouroboros.extension_health import code_stamp, record_extension_health, status_for_runtime_state
 
     skills = discover_skills(drive_root, repo_path=repo_path)
     skill_names = {s.name for s in skills if s.manifest.is_extension()}
     with _lock:
         loaded_names = set(_extensions.keys())
     results: Dict[str, Any] = {}
-    # Version/commit stamp for the durable health vector (live->broken attribution).
-    try:
-        from ouroboros.config import read_version as _read_version
-        from ouroboros.utils import get_git_info as _get_git_info
-
-        hv_version = str(_read_version())
-        hv_sha = _get_git_info(pathlib.Path(__file__).resolve().parents[1])[1]
-    except Exception:
-        hv_version, hv_sha = "", ""
+    hv_version, hv_sha = code_stamp()
     regressions: List[Dict[str, Any]] = []
     for gone in loaded_names - skill_names:
         try:
@@ -2183,12 +2179,8 @@ def reload_all(
             results[skill.name] = load_error or (None if state.get("desired_live") else state.get("reason"))
             try:
                 health = record_extension_health(
-                    drive_root,
-                    skill.name,
-                    status=status_for_runtime_state(state),
-                    version=hv_version,
-                    sha=hv_sha,
-                    reason=str(state.get("reason") or ""),
+                    drive_root, skill.name, status=status_for_runtime_state(state),
+                    version=hv_version, sha=hv_sha, reason=str(state.get("reason") or ""),
                     load_error=str(state.get("load_error") or ""),
                 )
                 if health.get("newly_regressed"):

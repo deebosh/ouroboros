@@ -1277,6 +1277,8 @@ def _build_installed_skills_section(env: Any, *, max_lines: int = 100) -> str:
             lines.append(f"  Tools: {', '.join(surfaces[:8])}")
         elif skill.get("runnable_via_skill_exec"):
             lines.append("  Tools: skill_exec")
+        if skill.get("type") == "extension" and not skill.get("live_loaded"):
+            lines.append(f"  Live: no ({_field(skill.get('live_reason') or 'unknown', 60)})")
         count += 1
         if len(lines) >= max_lines:
             lines.append("- ... (truncated; call list_skills for the full catalogue)")
