@@ -98,6 +98,41 @@ def test_every_slot_oversize_refuses_the_panel_for_zero_and_names_each_cap(tmp_p
     assert panel["coverage"]["transport_success"] == 0
 
 
+def test_positive_narrow_calibration_sheds_packet_until_acceptance_dispatches(
+    tmp_path, monkeypatch,
+):
+    from ouroboros.review_evidence import (
+        _ACCEPT_TOTAL_BUDGET, _accept_enforce_budget, acceptance_packet_budget_chars,
+    )
+    from ouroboros.tools import review_synthesis
+
+    slot = ReviewSlot(slot_id="slot_1", model="gigachat::GigaChat-3-Ultra", effort="high")
+    monkeypatch.setattr(
+        review_synthesis, "per_slot_input_token_limits",
+        lambda models, **_kwargs: {str(model): 60_000 for model in models},
+    )
+    budget = acceptance_packet_budget_chars([slot])
+    evidence = _accept_enforce_budget({
+        "agent_supplied": {"large_but_shedable": "x" * 190_000},
+        "__provenance__": {"agent_supplied": "agent_supplied"},
+    }, budget=budget)
+    llm = FakeLLM()
+    result = run_review_request(
+        _acceptance_request(evidence, budget.slot_input_caps),
+        slots=[slot], drive_root=tmp_path, llm=llm,
+    )
+
+    assert budget == 178_000
+    assert "__truncated__" in evidence["agent_supplied"]
+    assert len(llm.calls) == 1
+    assert result.aggregate_signal == "PASS"
+    monkeypatch.setattr(
+        review_synthesis, "per_slot_input_token_limits",
+        lambda models, **_kwargs: {str(model): 1 for model in models},
+    )
+    assert acceptance_packet_budget_chars([slot]) == _ACCEPT_TOTAL_BUDGET
+
+
 # ── the typed zero-physical row ──────────────────────────────────────────────
 
 def test_a_refused_panel_projects_not_dispatched_on_rows_and_panel(tmp_path):

@@ -597,7 +597,7 @@ def append_history_once(
 def _append_root_task_projection_once(
     drive_root: pathlib.Path, skill_name: str, payload: Dict[str, Any],
 ) -> bool:
-    """Append the derived root-task row once, checking its bounded tail."""
+    """Append the derived root-task row once, checking its whole projection."""
     root_task_id = str(payload.get("root_task_id") or "")
     outcome_id = str(payload.get("job_id") or payload.get("wave_id") or "")
     if not root_task_id or not outcome_id:
@@ -609,7 +609,7 @@ def _append_root_task_projection_once(
     if lock_fd is None:
         return False
     try:
-        rows = iter_jsonl_objects(path, max_entries=128, tail_bytes=1024 * 1024)
+        rows = iter_jsonl_objects(path)
         if any(
             str(row.get("root_task_id") or "") == root_task_id
             and str(row.get("skill") or "") == skill_name

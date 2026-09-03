@@ -923,39 +923,39 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
             custody.ledger_recorded = True
             emit(drive_root, LEDGER_RECORDED, {"run_id": custody.run_id, "task_id": custody.task_id,
                                                "route": custody.route_id})
-    retire_project(drive_root, gateway, custody)
-    if custody.ledger_recorded:
-        # The claim follows the row, not the call. DECOUPLED from retirement:
-        # a sibling holding the shared project must not convert a SUCCEEDED
-        # run into an unreconciled failure - the registration debt stays on
-        # ``project_owned`` for the sweep and later sharers.
-        custody.settled = emit(drive_root, SETTLED, {
-            "run_id": custody.run_id,
-            "task_id": custody.task_id,
-            "route": custody.route_id,
-            # The ENGINE-reported model (the STARTED row carries only the requested
-            # pin, which is usually empty) — so execution evidence can name what
-            # the harness really ran without joining to the ledger.
-            "model": str(summary.get("model") or ""),
-            "state": str(summary.get("state") or ""),
-            # The SAME facts the ledger row just recorded. An undisclosed spend was emitted
-            # here as `0.0` beside a flag — the render-unknown-as-zero shape the ledger row
-            # itself stopped doing — and finality ignored the estimated half exactly as the
-            # ledger write did. One envelope, one story.
-            "cost_usd": spend,
-            "cost_final": spend is not None and not estimated,
-            "spend_disclosed": spend is not None,
-            "spend_estimated": estimated,
-            # D29: the applied account rides the settlement event too, so the
-            # durable event stream answers "which account paid" without joining
-            # to the ledger row.
-            "credential_profile_id": applied_profile,
-            "access_profile": applied_access,
-        })
+    if not custody.ledger_recorded:
+        retire_project(drive_root, gateway, custody)
+    else:
+        lock = _PROJECT_RETIRE_LOCKS[hash(custody.project_id) % len(_PROJECT_RETIRE_LOCKS)]
+        with lock:
+            custody.settled = emit(drive_root, SETTLED, {
+                "run_id": custody.run_id,
+                "task_id": custody.task_id,
+                "route": custody.route_id,
+                # The ENGINE-reported model (the STARTED row carries only the requested
+                # pin, which is usually empty) — so execution evidence can name what
+                # the harness really ran without joining to the ledger.
+                "model": str(summary.get("model") or ""),
+                "state": str(summary.get("state") or ""),
+                # The SAME facts the ledger row just recorded. An undisclosed spend was emitted
+                # here as `0.0` beside a flag — the render-unknown-as-zero shape the ledger row
+                # itself stopped doing — and finality ignored the estimated half exactly as the
+                # ledger write did. One envelope, one story.
+                "cost_usd": spend,
+                "cost_final": spend is not None and not estimated,
+                "spend_disclosed": spend is not None,
+                "spend_estimated": estimated,
+                # D29: the applied account rides the settlement event too, so the
+                # durable event stream answers "which account paid" without joining
+                # to the ledger row.
+                "credential_profile_id": applied_profile,
+                "access_profile": applied_access,
+            })
+            if custody.settled:
+                _retire_project_locked(drive_root, gateway, custody)
     if custody.settled:
         resolve_containment_fault(drive_root, custody, "settled_terminal")
-    # CONSUMPTION BEFORE SETTLEMENT is the owner's directive - a LOUD FACT,
-    # not a gate, and NOT recorded here: this runs BEFORE staging, so asking
+    # CONSUMPTION BEFORE SETTLEMENT is a fact, not a gate; asking before staging
     # now would answer "no omission" for every first settlement (the render-
     # unknown-as-a-fact shape this module refuses). ``record_settled_unread``
     # records it where staging IS known: the wait path and reconciliation.

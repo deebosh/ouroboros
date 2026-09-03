@@ -178,6 +178,58 @@ def test_budget_recapped_trajectory_from_producer_cannot_resolve_clean():
     assert task_acceptance_is_clean(result) is False
 
 
+def test_mixed_source_budget_recap_refuses_a_false_clean_pass(tmp_path):
+    from ouroboros.review_dispatch import task_acceptance_zero_physical_refusal
+    from ouroboros.review_evidence import _accept_enforce_budget
+    from ouroboros.review_substrate import (
+        ReviewRequest, ReviewSlot, run_review_request, task_acceptance_is_clean,
+    )
+
+    packet = _accept_enforce_budget({
+        "tool_trajectory": [
+            {"tool": "read_file", "result": "r" * 20_000,
+             "result_source_ref": {"kind": "artifact", "path": "results/read.txt"}},
+            {"tool": "run_command", "result": "c" * 20_000},
+        ],
+        "__provenance__": {"tool_trajectory": "tool_result"},
+    }, budget=5_000)
+    partials = packet["__unresolved_partial_artifacts__"]
+
+    assert [row["status"] for row in partials] == [
+        "not_materialized_for_reviewer", "source_unavailable",
+    ]
+    assert task_acceptance_zero_physical_refusal(packet)["status"] == "degraded_partial_source"
+    leading = _accept_enforce_budget({
+        "tool_trajectory": [
+            {"tool": "run_command", "result": "lost"},
+            *[{"tool": "read_file", "result": "kept"} for _ in range(20)],
+        ],
+        "owner_requirements_and_decisions": "x" * 10_000,
+    }, budget=1_000)
+    assert any(
+        row["tool"] == "tool_trajectory" and row["status"] == "source_unavailable"
+        for row in leading["__unresolved_partial_artifacts__"]
+    )
+
+    class _PassReviewer:
+        calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            return {"content": json.dumps({"verdict": "PASS", "findings": []})}, {}
+
+    reviewer = _PassReviewer()
+    result = run_review_request(
+        ReviewRequest(surface="task_acceptance", goal="review", evidence=packet),
+        slots=[ReviewSlot(slot_id="slot_1", model="reviewer")],
+        drive_root=tmp_path,
+        llm=reviewer,
+    )
+    assert reviewer.calls == 0
+    assert result.aggregate_signal == "DEGRADED"
+    assert task_acceptance_is_clean(result) is False
+
+
 def test_skill_history_root_task_projection_avoids_whole_history_reads(monkeypatch, tmp_path):
     from ouroboros.skill_readiness import _skill_names_from_review_history
     from ouroboros import utils
@@ -246,6 +298,31 @@ def test_terminal_skill_review_updates_the_root_task_projection(tmp_path):
         "skill": "projected-skill",
         "job_id": "job-1",
     }]
+
+
+def test_skill_review_projection_retry_finds_identity_before_bounded_tail(tmp_path):
+    from ouroboros.skill_review_history import _append_root_task_projection_once
+
+    original = {"job_id": "job-original", "root_task_id": "root-original"}
+    assert _append_root_task_projection_once(tmp_path, "projected-skill", original)
+    for index in range(129):
+        assert _append_root_task_projection_once(
+            tmp_path, "projected-skill",
+            {"job_id": f"job-{index}", "root_task_id": f"root-{index}"},
+        )
+    assert _append_root_task_projection_once(tmp_path, "projected-skill", original)
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "skill_review_root_tasks.jsonl")
+        .read_text(encoding="utf-8").splitlines()
+    ]
+    assert sum(
+        row.get("root_task_id") == "root-original"
+        and row.get("skill") == "projected-skill"
+        and row.get("job_id") == "job-original"
+        for row in rows
+    ) == 1
 
 
 def test_skill_review_projection_is_enrolled_as_a_hot_store():

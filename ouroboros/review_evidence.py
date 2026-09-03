@@ -115,8 +115,8 @@ def acceptance_packet_budget_chars(slots: Any) -> AcceptancePacketBudget:
     JSON/code packet really tokenizes at, minus the prompt scaffolding around
     the packet.
 
-    Never smaller than ``_ACCEPT_TOTAL_BUDGET``: an uncalibrated or unknown
-    route must not silently receive a thinner packet than the historical floor.
+    The historical floor applies only when calibration is absent or unusable;
+    a positive narrow-route calibration must be honoured so shedding can fit it.
     """
     from ouroboros.tools.review_synthesis import (
         per_slot_input_token_limits,
@@ -142,7 +142,9 @@ def acceptance_packet_budget_chars(slots: Any) -> AcceptancePacketBudget:
     if tokens <= 0:
         return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET, limits)
     chars = int(tokens * _ACCEPT_DENSE_CHARS_PER_TOKEN) - ACCEPTANCE_PROMPT_OVERHEAD_CHARS
-    return AcceptancePacketBudget(max(_ACCEPT_TOTAL_BUDGET, chars), limits)
+    if chars <= 0:
+        return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET, limits)
+    return AcceptancePacketBudget(chars, limits)
 
 
 def obligation_is_pending(row: Any) -> bool:
@@ -908,10 +910,15 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
         notes.append(f"immutable core remains ~{_size() // 1000}k; reviewer must abstain as DEGRADED")
     unresolved_partials = [{
         "tool": str(row.get("tool") or ""),
-        "status": "not_materialized_for_reviewer",
+        "status": ("not_materialized_for_reviewer"
+                   if row.get("result_source_ref") else "source_unavailable"),
         "source_ref": row.get("result_source_ref") or {},
     } for row in (ev.get("tool_trajectory") or [])
         if isinstance(row, dict) and row.get("result_complete") is False]
+    if int(ev.get("tool_trajectory_omitted_leading", 0) or 0) > 0:
+        unresolved_partials.append({
+            "tool": "tool_trajectory", "status": "source_unavailable", "source_ref": {},
+        })
     if unresolved_partials:
         existing = ev.get("__unresolved_partial_artifacts__")
         ev["__unresolved_partial_artifacts__"] = [

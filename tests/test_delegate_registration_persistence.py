@@ -268,3 +268,48 @@ def test_concurrent_final_siblings_retire_shared_project_once(tmp_path):
         ) if row.get("type") == dc.PROJECT_RETIRED
     ]
     assert len(retired) == 1
+
+
+def test_concurrent_live_settlements_publish_before_last_sibling_retirement(
+    tmp_path, monkeypatch,
+):
+    import threading
+
+    dc = custody
+    dc._CUSTODY.clear()
+    gateway = _Gateway()
+    rows = []
+    for run_id, task_id in (("run-live-a", "task-live-a"), ("run-live-b", "task-live-b")):
+        row = dc.RunCustody(
+            run_id=run_id, task_id=task_id, route_id="r", model="m",
+            project_id="project-live-race", project_owned=True,
+            ledger_root=str(tmp_path), ledger_recorded=True,
+        )
+        dc.record_started(tmp_path, row)
+        rows.append(row)
+
+    original_retire = dc.retire_project
+    both_pre_settlement_decisions = threading.Barrier(2)
+
+    def _retire_then_release_peer(*args):
+        original_retire(*args)
+        both_pre_settlement_decisions.wait(timeout=2)
+
+    monkeypatch.setattr(dc, "retire_project", _retire_then_release_peer)
+    results = []
+    threads = [
+        threading.Thread(
+            target=lambda row=row: results.append(dc.settle_run(
+                tmp_path, gateway, row, {"summary": {"state": "succeeded"}},
+            )),
+        )
+        for row in rows
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 2 and all(result["settled"] for result in results)
+    assert gateway.removals == ["project-live-race"]
