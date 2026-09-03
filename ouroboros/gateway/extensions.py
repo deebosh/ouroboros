@@ -24,6 +24,7 @@ from ouroboros.gateway._helpers import (
     request_json_or,
     request_repo_dir as _request_repo_dir,
 )
+from ouroboros.gateway.extension_receipts import extension_process_receipt, extension_reconcile_receipt
 from ouroboros.skill_lifecycle_queue import (
     LifecycleJobOptions,
     queue_snapshot,
@@ -419,6 +420,7 @@ def _build_extensions_index(drive_root, repo_path):
             "desired_live": runtime_states.get(s.name, {}).get("desired_live", False),
             "live_loaded": runtime_states.get(s.name, {}).get("live_loaded", False),
             "live_reason": runtime_states.get(s.name, {}).get("reason", "not_extension"),
+            **extension_process_receipt(runtime_states.get(s.name)),
             "health_regressed": bool((health or {}).get("regressed")),
             "last_known_good": (health or {}).get("last_known_good"),
             "health_observations": (health or {}).get("observations", {}),
@@ -826,6 +828,7 @@ async def api_skill_toggle(request: Request) -> JSONResponse:
             log.debug("api_skill_toggle schedule sync failed", exc_info=True)
         action = None
         live_reason = "not_extension"
+        process_receipt = extension_process_receipt(None)
         if loaded.manifest.is_extension() or loaded.name in extension_loader.snapshot()["extensions"]:
             state = extension_loader.reconcile_extension(
                 loaded.name,
@@ -837,6 +840,7 @@ async def api_skill_toggle(request: Request) -> JSONResponse:
             )
             action = state.get("action")
             live_reason = str(state.get("reason") or "")
+            process_receipt = extension_process_receipt(state)
             if enabled and action == "extension_load_error":
                 # Atomic enable: reconcile already reverted enabled.json after the real
                 # out-of-process catalog/register dry-run failed, so the skill is never
@@ -856,6 +860,7 @@ async def api_skill_toggle(request: Request) -> JSONResponse:
                     "grants": grant_status_for_skill(drive_root, loaded),
                     "extension_action": action,
                     "extension_reason": live_reason,
+                    **process_receipt,
                 }
         return {
             "skill": loaded.name,
@@ -864,6 +869,7 @@ async def api_skill_toggle(request: Request) -> JSONResponse:
             "grants": grant_status_for_skill(drive_root, loaded),
             "action": action,
             "live_reason": live_reason,
+            **process_receipt,
         }
 
     async def _run_toggle() -> dict[str, Any]:
@@ -906,6 +912,7 @@ async def api_skill_toggle(request: Request) -> JSONResponse:
             "grants": queued.get("grants", {}),
             "extension_action": queued.get("action"),
             "extension_reason": queued.get("live_reason"),
+            **extension_process_receipt(queued),
         }
     )
 
@@ -1371,15 +1378,7 @@ async def api_skill_reconcile(request: Request) -> JSONResponse:
         resync_skill_schedules(drive_root)
     except Exception:
         log.debug("api_skill_reconcile schedule sync failed", exc_info=True)
-    return JSONResponse(
-        {
-            "skill": skill_name,
-            "extension_action": state.get("action"),
-            "extension_reason": state.get("reason"),
-            "live_loaded": bool(state.get("live_loaded")),
-            "load_error": state.get("load_error"),
-        }
-    )
+    return JSONResponse(extension_reconcile_receipt(skill_name, state))
 
 
 async def api_skill_delete(request: Request) -> JSONResponse:

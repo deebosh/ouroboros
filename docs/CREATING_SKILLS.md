@@ -378,6 +378,10 @@ interpret eval, comprehensions, or merges. A schema it can resolve but that is
 invalid fails preflight; an unresolved dynamic registration is recorded as
 `verified=false`, `skipped=true`, `skip_reason=dynamic_ui_schema` with its source
 reference, while runtime registration remains the final fail-closed validator.
+One frozen compatibility exception is intentionally asymmetric: deterministic
+preflight reports an iframe declaration with an omitted `route` as invalid,
+while runtime registration preserves that route-less shape so an existing
+extension still loads (the card remains not-supported rather than executable).
 It does not call any LLM and does not mutate review state, so the agent can
 iterate without burning review tokens.
 

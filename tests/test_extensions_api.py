@@ -225,6 +225,8 @@ def test_api_extensions_index_lists_extension_skills(tmp_path, monkeypatch):
         assert "live" in data
         ext_meta = next(s for s in data["skills"] if s["name"] == "ext_a")
         assert ext_meta["live_reason"] == "disabled"
+        assert ext_meta["process"] in {"server", "worker"}
+        assert ext_meta["server_reconcile"] in {"", "requested", "request_failed"}
         assert ext_meta["executable_review"] is False
         assert ext_meta["review_gate"]["blocking_reason"] == "review_pending"
         assert ext_meta["submit_hub"]["publication_ready"] is False
@@ -754,6 +756,8 @@ def test_api_skill_toggle_enables_and_loads_extension(tmp_path, monkeypatch):
         data = resp.json()
         assert data["enabled"] is True
         assert data["extension_action"] == "extension_loaded"
+        assert data["process"] in {"server", "worker"}
+        assert data["server_reconcile"] in {"", "requested", "request_failed"}
         assert broadcasts[-1]["type"] == "extension_lifecycle"
         assert broadcasts[-1]["skill"] == "ext_toggle"
         assert broadcasts[-1]["action"] == "extension_loaded"
@@ -768,8 +772,51 @@ def test_api_skill_toggle_enables_and_loads_extension(tmp_path, monkeypatch):
         data = resp.json()
         assert data["enabled"] is False
         assert data["extension_action"] == "extension_unloaded"
+        assert data["process"] in {"server", "worker"}
+        assert data["server_reconcile"] in {"", "requested", "request_failed"}
         assert broadcasts[-1]["action"] == "extension_unloaded"
         assert "ext_toggle" not in extension_loader.snapshot()["extensions"]
+    finally:
+        _stop_patches(patches)
+
+
+def test_api_skill_toggle_load_error_carries_process_qualified_receipt(
+    tmp_path, monkeypatch
+):
+    from ouroboros.skill_loader import SkillReviewState, compute_content_hash, save_review_state
+
+    skills_root = tmp_path / "skills"
+    skill_dir = _write_ext(
+        skills_root,
+        "ext_toggle_error",
+        permissions=["route"],
+        plugin=(
+            "def register(api):\n"
+            "    api.register_route('/absolute', lambda request: {}, methods=('GET',))\n"
+        ),
+    )
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    client, drive_root, patches = _make_client(tmp_path, monkeypatch)
+    try:
+        save_review_state(
+            drive_root,
+            "ext_toggle_error",
+            SkillReviewState(
+                status="pass",
+                content_hash=compute_content_hash(skill_dir, manifest_entry="plugin.py"),
+            ),
+        )
+
+        resp = client.post(
+            "/api/skills/ext_toggle_error/toggle",
+            json={"enabled": True},
+        )
+
+        assert resp.status_code == 409, resp.text
+        data = resp.json()
+        assert data["extension_action"] == "extension_load_error"
+        assert data["process"] in {"server", "worker"}
+        assert data["server_reconcile"] in {"", "requested", "request_failed"}
     finally:
         _stop_patches(patches)
 
@@ -1637,12 +1684,58 @@ def test_api_skill_reconcile_clears_cached_load_error(tmp_path, monkeypatch):
         assert payload["skill"] == "reconcile_demo"
         assert payload["live_loaded"] is True
         assert payload["extension_action"] == "extension_loaded"
+        assert payload["process"] in {"server", "worker"}
+        assert payload["server_reconcile"] in {"", "requested", "request_failed"}
         assert broadcasts[-1]["type"] == "extension_lifecycle"
         assert broadcasts[-1]["skill"] == "reconcile_demo"
         assert broadcasts[-1]["action"] == "extension_loaded"
         with extension_loader._lock:
             assert "reconcile_demo" in extension_loader._extensions
             assert "reconcile_demo" not in extension_loader._load_failures
+    finally:
+        _stop_patches(patches)
+
+
+def test_api_skill_reconcile_load_error_carries_process_qualified_receipt(
+    tmp_path, monkeypatch
+):
+    from ouroboros.skill_loader import (
+        SkillReviewState,
+        compute_content_hash,
+        save_enabled,
+        save_review_state,
+    )
+
+    skills_root = tmp_path / "skills"
+    skill_dir = _write_ext(
+        skills_root,
+        "reconcile_error",
+        permissions=["route"],
+        plugin=(
+            "def register(api):\n"
+            "    api.register_route('/absolute', lambda request: {}, methods=('GET',))\n"
+        ),
+    )
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
+    client, drive_root, patches = _make_client(tmp_path, monkeypatch)
+    try:
+        save_enabled(drive_root, "reconcile_error", True)
+        save_review_state(
+            drive_root,
+            "reconcile_error",
+            SkillReviewState(
+                status="pass",
+                content_hash=compute_content_hash(skill_dir, manifest_entry="plugin.py"),
+            ),
+        )
+
+        resp = client.post("/api/skills/reconcile_error/reconcile")
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["extension_action"] == "extension_load_error"
+        assert data["process"] in {"server", "worker"}
+        assert data["server_reconcile"] in {"", "requested", "request_failed"}
     finally:
         _stop_patches(patches)
 

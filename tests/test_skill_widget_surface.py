@@ -117,6 +117,31 @@ def test_skill_preflight_checks_plugin_registered_module_entry(tmp_path, monkeyp
     assert entry_rows[0]["source"].startswith("plugin.py:")
 
 
+def test_noncanonical_module_entry_fails_preflight_and_runtime_validation(
+    tmp_path, monkeypatch
+):
+    from ouroboros.contracts.plugin_api import ExtensionRegistrationError
+    from ouroboros.extension_ui_validation import validate_ui_render
+    from ouroboros.tools import skill_preflight as sp
+
+    ctx = _make_ctx(tmp_path)
+    _make_skill(
+        tmp_path,
+        monkeypatch,
+        _extension_manifest(ui_tab=_module_ui_tab("widget space.js")),
+        _TRIVIAL_PLUGIN,
+    )
+
+    result = json.loads(sp._handle_skill_preflight(ctx, skill="alpha"))
+    rows = [row for row in result["widgets"] if row["item"] == "widget_schema"]
+    assert result["ok"] is False
+    assert rows[0]["ok"] is False
+    assert rows[0]["verified"] is True
+    assert "browser-safe" in rows[0]["detail"]
+    with pytest.raises(ExtensionRegistrationError, match="browser-safe"):
+        validate_ui_render({"kind": "module", "entry": "widget space.js"})
+
+
 # --------------------------------------------------------------------------- F13
 
 
