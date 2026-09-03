@@ -99,8 +99,14 @@ ephemeral, credential and contract filters narrow it), so the schema is the SSOT
 of the per-tool contract and a prompt sentence about it is a second copy that
 drifts, while SYSTEM.md stays the cross-tool selection policy; mechanism
 documentation lives in ARCHITECTURE or here;
-runtime facts (capabilities, queue, catalog, receipts, health) are injected per
-turn. A new tool therefore requires NO SYSTEM.md mention. Before adding a
+runtime facts (capabilities, queue, catalog, receipts, health invariants,
+memory sections, registry digest, installed skills, review section) are
+assembled ONCE per task attempt in `build_llm_messages`, so the Health
+Invariants block lists custody obligations as of task start and does not
+refresh mid-task (a deliberate frozen-ContextCore / prompt-cache choice; the
+integrate schema, the apply receipts and the absorption digest carry the
+mid-task fact instead). Tool schemas are re-sent every round.
+A new tool therefore requires NO SYSTEM.md mention. Before adding a
 sentence to a prompt, check that the schema or runtime block does not already
 carry it; before removing one, check that they do (or add the missing fact to
 the schema without growing it into a paragraph). Local-model compaction keeps
