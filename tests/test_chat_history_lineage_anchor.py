@@ -261,3 +261,100 @@ def test_project_thread_keeps_children_of_a_working_root(tmp_path):
     main_rows = _run(tmp_path, {"chat_id": "1"})
     assert _child_rows(main_rows, progress=True) == []
     assert _child_rows(main_rows, progress=False) == []
+
+
+def test_a_media_delivery_row_does_not_represent_its_parent(tmp_path):
+    """Carrying a task id is not the same as being that task's card.
+
+    A photo, document or quiz is delivered mid-run and carries a real task id.
+    Counting it as "the parent is represented" would let a parent with no
+    closable fact in the window re-anchor a finished swarm — the zombie the
+    recency floor existed to prevent, reintroduced through the new predicate.
+    """
+    chat = [
+        json.dumps({
+            "ts": "2026-06-05T02:30:00Z", "direction": "out", "chat_id": 1,
+            "type": "photo", "text": "shot", "task_id": "root",
+        }),
+        _child_final("2026-06-05T00:00:10Z", "child1"),
+    ]
+    progress = [_lineage_row(f"2026-06-05T00:00:0{i}Z", "child1", ev)
+                for i, ev in zip((1, 2, 3), ("scheduled", "running", "completed"))]
+    progress += _root_flood(task_id="other")
+    _write(tmp_path, chat_lines=chat, progress_lines=progress)
+
+    msgs = _run(tmp_path)
+    assert not [m for m in msgs if m.get("task_id") == "child1" and m.get("is_progress")]
+    final = next(m for m in msgs if m.get("text") == "child1 answer")
+    assert final.get("delegation_role") != "subagent", "an unclosable parent must not keep lineage"
+
+
+def test_a_grandchild_is_kept_with_the_swarm_it_belongs_to(tmp_path):
+    """The predicate holds for the whole topology, not one level of it.
+
+    A coordinator child finishes and is itself anchored to a represented root.
+    Its own children must then be kept: dropping them reproduces #496 exactly
+    one level further down, where nested delegation actually lives.
+    """
+    chat = [_child_final("2026-06-05T00:00:20Z", "leaf", parent="mid")]
+    progress = []
+    for i, ev in zip((1, 2, 3), ("scheduled", "running", "completed")):
+        progress.append(_lineage_row(f"2026-06-05T00:00:0{i}Z", "mid", ev, parent="root"))
+    for i, ev in zip((4, 5, 6), ("scheduled", "running", "completed")):
+        progress.append(_lineage_row(f"2026-06-05T00:00:0{i}Z", "leaf", ev, parent="mid"))
+    progress += _root_flood()
+    _write(tmp_path, chat_lines=chat, progress_lines=progress)
+
+    msgs = _run(tmp_path)
+    kept = {m.get("task_id") for m in msgs if m.get("is_progress")}
+    assert "mid" in kept and "leaf" in kept
+    final = next(m for m in msgs if m.get("text") == "leaf answer")
+    assert final.get("delegation_role") == "subagent"
+
+
+def test_a_folded_review_represents_the_task_it_is_shown_under(tmp_path):
+    """A folded review group is stored under the review child, shown under the owner."""
+    chat = [
+        json.dumps({
+            "ts": "2026-06-05T02:30:00Z", "direction": "system", "type": "skill_review",
+            "chat_id": 1, "text": "review", "task_id": "review-child",
+            "root_task_id": "root", "origin_task_id": "review-child",
+            "origin_root_task_id": "root", "presentation_owner_task_id": "root",
+            "group_id": "task:root:alpha", "skill": "alpha", "status": "clean",
+            "job_status": "succeeded", "terminal_reason": "succeeded", "job_id": "job-1",
+            "content_hash": "hash-1", "review_round": 1, "snapshot_attempt": 1,
+            "snapshot_revised": False, "source": "tool",
+        }),
+        _child_final("2026-06-05T00:00:10Z", "child1"),
+    ]
+    progress = [_lineage_row(f"2026-06-05T00:00:0{i}Z", "child1", ev)
+                for i, ev in zip((1, 2, 3), ("scheduled", "running", "completed"))]
+    progress += _root_flood(task_id="other")
+    _write(tmp_path, chat_lines=chat, progress_lines=progress)
+
+    msgs = _run(tmp_path)
+    assert {m.get("task_id") for m in msgs if m.get("is_progress")} >= {"child1"}
+
+
+def test_a_finalizing_parent_counts_as_alive(tmp_path):
+    """`completed` with post-task synthesis still open is FINALIZING, not terminal.
+
+    The file already treats that state as non-terminal for its own annotation;
+    the anchor must agree, or a swarm vanishes in the seconds between the answer
+    landing and synthesis settling.
+    """
+    chat = [_child_final("2026-06-05T00:00:10Z", "child1")]
+    progress = [_lineage_row(f"2026-06-05T00:00:0{i}Z", "child1", ev)
+                for i, ev in zip((1, 2, 3), ("scheduled", "running", "completed"))]
+    progress += _root_flood(task_id="other")
+    _write(
+        tmp_path, chat_lines=chat, progress_lines=progress,
+        results={
+            "root": {
+                "status": "completed",
+                "root_phase_checkpoint": {"post_task_synthesis": "running"},
+            },
+            "child1": {"status": "completed"},
+        },
+    )
+    assert {m.get("task_id") for m in _run(tmp_path) if m.get("is_progress")} >= {"child1"}
