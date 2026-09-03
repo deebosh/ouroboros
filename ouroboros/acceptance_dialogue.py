@@ -503,10 +503,11 @@ def _apply_task_acceptance_result(
         estimated_sec=next_pass_estimate,
         ctx=ctx.tools._ctx,
     )
-    # R36/R47: an improvement pass admitted at the floor (`pass_reason ==
-    # REASON_LAUNCHED_AT_FLOOR`) stores NOTHING and is not projected either —
-    # the capacity projection evaluates `review_launch_allowed` alone (1x
-    # window), so this 2x-window admission never becomes a
+    # R36/R47/R49: an improvement pass admitted at the floor (`pass_reason ==
+    # REASON_LAUNCHED_AT_FLOOR`) stores NOTHING here — the read-only capacity
+    # projection evaluates this same gate purely (with `ctx=None`, so nothing
+    # is emitted) and reports the admission in its own
+    # `improvement_launch_disclosure` field, beside the review-launch gate's
     # `launch_disclosure`; whether this pass leads to a panel is decided
     # below, and only the review-launch gate that admits THAT panel hands a
     # launch decision into it.

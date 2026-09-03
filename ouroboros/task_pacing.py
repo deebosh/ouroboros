@@ -59,8 +59,11 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # 2026-09-02): the review launches when the spendable window (remaining − reserve)
 # exceeds the bounded estimate; when it does not but exceeds the configured floor
 # (max(200 s, OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC)) it launches at the floor — the
-# predicates are pure and return the `launched_at_floor` reason, a read-only
-# projection only observes it; a spendable window at or below the floor is
+# predicates are pure and return the `launched_at_floor` reason, and the
+# read-only capacity projection evaluates BOTH of them — the review-launch
+# rule over its 1x window and the improvement-pass rule over the adaptive 2x
+# window, with `ctx=None` so nothing is ever emitted — reporting each floor
+# admission in its own field; a spendable window at or below the floor is
 # refused `review_skipped_deadline_reserve`. Likewise the acceptance wave gate
 # DECIDES on one work-order send per paid row; the rounds-priced wave is a
 # read-only check; only a floor that does not fit is refused
@@ -70,11 +73,12 @@ _ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 # AFTER the paid seam fired, whenever it ran under a floor admission by time
 # (`launched_at_floor`, `launch_gate` = review_launch | null, launch seconds —
 # the review-launch gate hands its decision into THIS panel's context; an
-# improvement pass admitted at the floor under the adaptive 2x window is NOT
-# separately projected — the capacity projection evaluates
-# `review_launch_allowed` alone (1x window) and carries no `launch_disclosure`
-# for it; that admission only enables the next pass, whose own panel discloses
-# its floor admission here), by money (`wave_at_floor`, wave prices) or both.
+# improvement pass admitted at the floor under the adaptive 2x window is
+# projected in the capacity projection's own `improvement_launch_disclosure`
+# field, next to the review-launch gate's `launch_disclosure` — the projection
+# evaluates both purely and RECORDS neither; this dispatch fact stays the only
+# place a floor admission is recorded), by money (`wave_at_floor`, wave prices)
+# or both.
 # The per-send wallet binding at dispatch and the review's logical window
 # remain the protection, and the honest event of the dispatched
 # panel decays the estimate (its excess halves per panel).
@@ -293,9 +297,10 @@ def launch_at_floor_payload(snapshot: BudgetSnapshot, *, estimated_sec: float) -
     spendable — computed purely for the panel it admits (loop.py hands it in
     through the panel context). The panel attaches it to its ONE dispatch fact
     after the paid seam fired; nothing records it earlier. An improvement pass
-    admitted at the floor has no payload and is not projected either: the
-    capacity projection evaluates `review_launch_allowed` alone (1x window),
-    so its adaptive 2x admission never becomes a `launch_disclosure`."""
+    admitted at the floor has no payload of its own: the read-only capacity
+    projection evaluates that gate too — purely, over the adaptive 2x window,
+    with `ctx=None` — and reports it in its own `improvement_launch_disclosure`
+    field, never in this payload and never as a `launch_disclosure`."""
     return {
         "gate": "review_launch", "estimated_sec": round(float(estimated_sec), 3),
         "floor_sec": round(_acceptance_floor_sec(), 3),
@@ -504,10 +509,11 @@ def improvement_pass_allowed(
         return True, ""
     if snapshot.spendable_sec > floor * scale:
         # R36: the history-derived reserve never refuses what the floor admits.
-        # Pure here, and NOT projected: the capacity projection asks
-        # `review_launch_allowed` alone (1x window), so this 2x-window
-        # admission never becomes a `launch_disclosure` — it only enables the
-        # next pass, whose own panel discloses its floor admission.
+        # Pure here, and PROJECTED: the read-only capacity projection asks this
+        # gate too (with `ctx=None`, so the escalation above can never fire
+        # from it) and reports this 2x-window admission in its own
+        # `improvement_launch_disclosure` field, beside the review-launch
+        # gate's `launch_disclosure`; nothing is recorded either way.
         return True, REASON_LAUNCHED_AT_FLOOR
     return False, "improvement_window_inside_reserve"
 
