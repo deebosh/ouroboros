@@ -80,7 +80,6 @@ from ouroboros.tools.review_helpers import (
     build_self_verification_template,
     build_review_history_section as _build_review_history_section,
     calibrated_input_token_limit,  # noqa: F401 — patchable seam (see note above)
-    emit_review_usage,
     format_name_status_for_preflight,
     format_review_history_entry as _format_review_entry,
     REVIEW_PROMPT_TOKEN_BUDGET,  # noqa: F401 — patchable seam (see note above)
@@ -577,20 +576,6 @@ async def _multi_model_review_async(content: str, prompt: str,
     review_results = []
     for model, result, headers_dict in results:
         review_result = _parse_model_response(model, result, headers_dict)
-        emit_review_usage(
-            ctx,
-            model=review_result.get("model", ""),
-            provider=review_result.get("provider", "openrouter"),
-            usage={
-                "prompt_tokens": review_result.get("tokens_in", 0),
-                "completion_tokens": review_result.get("tokens_out", 0),
-                "cached_tokens": review_result.get("cached_tokens", 0),
-                "cache_write_tokens": review_result.get("cache_write_tokens", 0),
-                "prompt_cache_ttl": review_result.get("prompt_cache_ttl", ""),
-                "cost": review_result.get("cost_estimate"),
-            },
-            source="review",
-        )
         review_results.append(review_result)
 
     return {

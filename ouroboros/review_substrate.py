@@ -1566,8 +1566,8 @@ class ReviewCoordinator:
 
             emit_review_usage(
                 self.usage_ctx,
-                model=slot.model,
-                usage=usage,
+                model=str(usage.get("resolved_model") or slot.model),
+                provider=str(usage.get("provider") or ""), usage=usage,
                 source=f"review_substrate:{request.surface}",
                 prompt_chars=prompt_chars,
                 extra={"surface": request.surface, "slot_id": slot.slot_id},

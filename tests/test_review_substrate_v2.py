@@ -2985,3 +2985,82 @@ def test_default_drive_root_is_the_absolute_config_root_never_cwd_relative(tmp_p
     # ... and never cwd-relative: no ../data sibling, nothing under the cwd.
     assert not (apphome / "data").exists()
     assert list(repo.iterdir()) == []
+
+
+def test_one_llm_usage_row_per_physical_reviewer_call(tmp_path):
+    """A wave of N reviewer slots emits exactly N rows, each naming its slot."""
+
+    class Ctx:
+        task_id = "task-wave"
+        pending_events = []
+
+    ctx = Ctx()
+    run_review_request(
+        ReviewRequest(surface="multi_model_review", goal="review claim", task_id="task-wave"),
+        slots=[
+            ReviewSlot(slot_id="slot_a", model="same/model"),
+            ReviewSlot(slot_id="slot_b", model="same/model"),
+            ReviewSlot(slot_id="slot_c", model="same/model"),
+        ],
+        drive_root=tmp_path,
+        llm=FakeLLM(),
+        usage_ctx=ctx,
+    )
+
+    usage_events = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(usage_events) == 3
+    assert {event["slot_id"] for event in usage_events} == {"slot_a", "slot_b", "slot_c"}
+    assert {event["source"] for event in usage_events} == {"review_substrate:multi_model_review"}
+
+
+def test_the_single_usage_row_carries_the_reviewer_attribution(tmp_path):
+    """The surviving row is traceable to its wave and slot, not just its task.
+
+    The substrate is the only emitter of a reviewer row, so this row is the
+    whole projection of that reviewer call: it has to carry the same
+    attribution the ledger row does.
+    """
+
+    class Ctx:
+        task_id = "task-attr"
+        pending_events = []
+
+    ctx = Ctx()
+    run_review_request(
+        ReviewRequest(
+            surface="multi_model_review", goal="review claim", task_id="task-attr",
+            usage_attribution={"review_wave_id": "wave-77", "review_skill": "commit_triad"},
+        ),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path,
+        llm=FakeLLM(),
+        usage_ctx=ctx,
+    )
+
+    usage_events = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(usage_events) == 1
+    row = usage_events[0]
+    assert row["review_wave_id"] == "wave-77"
+    assert row["review_slot_id"] == "slot_a"
+    assert row["review_skill"] == "commit_triad"
+
+
+def test_session_row_reports_its_own_route_provider_and_model(tmp_path):
+    """A delegated session's own facts outrank an inferred provider."""
+    from ouroboros.tools.review_helpers import emit_review_usage
+
+    ctx = SimpleNamespace(task_id="session-review", pending_events=[])
+    emit_review_usage(
+        ctx,
+        model="slot/requested-model",
+        provider="claudexor",
+        usage={"prompt_tokens": 10, "completion_tokens": 2, "resolved_model": "gpt-5.6-sol"},
+        source="review_substrate:multi_model_review",
+    )
+    api_ctx = SimpleNamespace(task_id="api-review", pending_events=[])
+    emit_review_usage(
+        api_ctx, model="anthropic/claude-test", usage={"prompt_tokens": 10}, source="test",
+    )
+
+    assert ctx.pending_events[0]["provider"] == "claudexor"
+    assert api_ctx.pending_events[0]["provider"] == "openrouter"  # inferred, as before
