@@ -278,35 +278,34 @@ def test_acceptance_cancellation_recheck_precedes_wallet_claim(
     assert state["claims_by_binding"] == {}
 
 
-def test_the_panel_seam_rechecks_the_wallet_but_no_longer_the_deadline(tmp_path, monkeypatch):
-    """Owner R52 (D1): the seam re-checks the WALLET and the CANCELLATION intent
-    (the test above), never the deadline. The loop's launch gate is the ONE time
-    gate a panel passes; R23 then clamps the running review. Disclosed residual:
-    a panel the loop gate admitted whose evidence build ate the margin is
-    DISPATCHED, not refused again by a projection that could contradict it."""
+def test_the_panel_seam_rechecks_the_wallet_and_the_floor(tmp_path, monkeypatch):
+    """Owner R53: the seam re-checks the WALLET, the CANCELLATION intent (the
+    test above) and the launch FLOOR — the same `review_launch_allowed` the
+    loop gate used, evaluated at the moment money is about to be committed. A
+    refusal is FREE: no claim row, no reviewer call, and the launch gate's own
+    typed reason carried through the existing refusal path."""
     import ouroboros.loop as loop
     import ouroboros.review_substrate as substrate
+    from ouroboros.task_results import load_task_acceptance_review_state
 
     ctx = _root_acceptance_context(tmp_path, {"evidence": "complete"})
     _allow_acceptance_wave(monkeypatch)
-    called = []
     monkeypatch.setattr(
         task_pacing, "review_launch_allowed",
-        lambda *_args, **_kwargs: (False, "inside_finalization_reserve"),
-    )
+        lambda *_args, **_kwargs: (False, "review_skipped_deadline_reserve"))
     monkeypatch.setattr(
         substrate, "run_review_request",
-        lambda *_args, **_kwargs: called.append(1) or SimpleNamespace(
-            aggregate_signal="PASS", actors=[], degraded=False, degraded_reasons=[]),
-    )
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("reviewer must not be called")))
 
     result = loop._execute_task_acceptance_panel(ctx)
 
-    assert called == [1]  # the seam does not ask the time gate at all
-    assert result.aggregate_signal == "PASS"
-    # The stamp bound and released around the dispatch (it claims on the first
-    # physical send, which this substrate stub never performs).
-    assert getattr(ctx.tools._ctx, "_review_paid_stamp", None) is None
+    assert result.degraded is True
+    assert result.aggregate_signal == "DEGRADED"
+    assert result.degraded_reasons == [
+        "review_skipped_deadline_reserve (no reviewer was called)"]
+    assert load_task_acceptance_review_state(
+        tmp_path, ctx.task_id)["claims_by_binding"] == {}
 
 
 def test_acceptance_corrupt_cancellation_projection_is_unknown_without_claim(

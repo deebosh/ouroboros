@@ -1112,6 +1112,18 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     refusal = task_acceptance_preclaim_refusal(ctx)
     if refusal is not None:
         return refusal
+    # Owner R53: ONE pure time check at the moment money is about to be
+    # committed. The SAME predicate over the SAME root context and effective
+    # profile the loop's launch gate used, re-read AFTER the evidence build —
+    # so a panel whose assembly ate the margin refuses here for $0 (no claim
+    # row, no send) with the launch gate's own typed reason, instead of
+    # dispatching into a window the deadline will cut. The wallet projection
+    # above stays wallet-and-cancellation only; nothing is recorded here.
+    launch_ok, launch_reason = task_pacing.review_launch_allowed(
+        task_pacing.build_budget_snapshot(ctx.tools._ctx, profile=ctx.budget_profile),
+    )
+    if not launch_ok:
+        return _refused(f"{launch_reason} (no reviewer was called)")
     # Q6: bind the exact tree wallet to the target's physical-dispatch stamp.
     # Route/candidate refusals remain free; one strict stamp gates every slot.
     started = time.monotonic()

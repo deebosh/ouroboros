@@ -361,6 +361,100 @@ def test_the_admission_matrix_is_byte_for_byte_the_pre_deletion_tree(
 
 
 # ---------------------------------------------------------------------------
+# The panel seam (owner R53): the SAME gate again, at the moment money is
+# about to be committed — driven end to end on the real panel path.
+# ---------------------------------------------------------------------------
+
+
+def _deadline_panel_ctx(monkeypatch, tmp_path, *, over_floor):
+    """A REAL packet panel on a REAL deadline: the 200 s configured floor, the
+    120 s grace as the WHOLE reserve (pct 0), and a spendable window `over_floor`
+    seconds ABOVE the floor when the loop gate asks. Returns `(ctx, clock)`;
+    raising `clock["offset"]` moves the pacing clock forward without touching
+    the recorded deadline — an injected clock, not a rewritten task."""
+    from datetime import timedelta
+
+    from ouroboros import task_pacing
+    from ouroboros.deadline_utils import utc_now
+
+    monkeypatch.setenv("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", "200")  # the floor
+    monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "120")  # the whole reserve (pct 0)
+    monkeypatch.setenv("OUROBOROS_ACCEPTANCE_RESERVE_PCT", "0")
+    monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
+    _offline_env(monkeypatch, _ROW_API)
+    now = utc_now()
+    clock = {"offset": 0.0}
+    monkeypatch.setattr(
+        task_pacing, "utc_now", lambda: utc_now() + timedelta(seconds=clock["offset"]))
+    ctx = _acceptance_ctx(tmp_path, evidence={}, task_metadata={
+        "created_at": (now - timedelta(seconds=60)).isoformat(),
+        "deadline_at": (now + timedelta(seconds=120 + 200 + over_floor)).isoformat(),
+    })
+    return ctx, clock
+
+
+def _evidence_build(clock, *, burns_sec):
+    """The host packet builder, replaced by one that really CONSUMES `burns_sec`
+    of the window it was admitted into (the step between the loop gate and the
+    seam). `burns_sec=0` is the same builder consuming nothing."""
+
+    def _build(_ctx):
+        clock["offset"] += float(burns_sec)
+        return dict(_ACCEPTANCE_PACKET)
+
+    return _build
+
+
+def test_a_panel_whose_evidence_build_ate_the_margin_refuses_free_at_the_seam(
+        monkeypatch, tmp_path):
+    """End to end on the real panel with an injected clock. The loop gate's own
+    predicate admits at floor + 60 s; the evidence build then burns 130 s of
+    that window, so by the time money is about to be committed the spendable
+    window is 130 s — at or below the 200 s floor — and the seam refuses for
+    $0: no `claims_by_binding` row, no reviewer send, the typed
+    `review_skipped_deadline_reserve` reason. The control arm runs the SAME
+    scenario with a build that burns nothing and dispatches for real, so the
+    refusal cannot pass vacuously."""
+    from ouroboros import acceptance_dialogue, loop as loop_mod, task_pacing
+    from ouroboros.task_results import load_task_acceptance_review_state
+
+    ctx, clock = _deadline_panel_ctx(monkeypatch, tmp_path, over_floor=60)
+    llm = _EpisodeLLM(tmp_path, [{"content": json.dumps(_CLEAN_VERDICT)}])
+    _real_panel(monkeypatch, llm)
+    monkeypatch.setattr(
+        acceptance_dialogue, "_build_host_acceptance_evidence", _evidence_build(clock, burns_sec=130))
+    # The loop gate, on exactly what loop.py feeds it: ADMIT at floor + 60 s.
+    admitted = task_pacing.build_budget_snapshot(ctx.tools._ctx, profile=ctx.budget_profile)
+    assert admitted.spendable_sec > 200.0
+    assert task_pacing.review_launch_allowed(admitted) == (True, "")
+
+    refused = loop_mod._execute_task_acceptance_panel(ctx)
+
+    assert refused.degraded is True and refused.aggregate_signal == "DEGRADED"
+    assert refused.degraded_reasons == [
+        "review_skipped_deadline_reserve (no reviewer was called)"]
+    assert llm.calls == []  # no reviewer was called
+    assert load_task_acceptance_review_state(
+        tmp_path, "root-delivery")["claims_by_binding"] == {}
+    # The seam really did re-read the clock the build moved.
+    assert task_pacing.build_budget_snapshot(
+        ctx.tools._ctx, profile=ctx.budget_profile).spendable_sec <= 200.0
+
+    # CONTROL: the same fixture, the same window, a build that burns nothing.
+    control, control_clock = _deadline_panel_ctx(monkeypatch, tmp_path, over_floor=60)
+    monkeypatch.setattr(
+        acceptance_dialogue, "_build_host_acceptance_evidence",
+        _evidence_build(control_clock, burns_sec=0))
+
+    dispatched = loop_mod._execute_task_acceptance_panel(control)
+
+    assert dispatched.aggregate_signal == "PASS"
+    assert len(llm.calls) == 1  # the reviewer really was sent the work order
+    assert len(load_task_acceptance_review_state(
+        tmp_path, "root-delivery")["claims_by_binding"]) == 1
+
+
+# ---------------------------------------------------------------------------
 # Purity: a poll answers, and changes nothing it could have been asked again.
 # ---------------------------------------------------------------------------
 
