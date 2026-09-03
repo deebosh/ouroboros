@@ -29,6 +29,7 @@ def test_load_self_seeds_default_when_absent(tmp_path):
     assert memory.self_path().exists()
     assert "changelog" in text  # the default states what it is NOT
     assert "status" not in text.lower()  # a seed, not a template to fill in
+    assert "LINN.md" in text and "LIBRARY.md" in text  # names the departure point
 
 
 def test_load_self_returns_file_content_when_present(tmp_path):
@@ -75,6 +76,9 @@ def test_self_section_present_in_stable_memory(tmp_path):
     assert "thinks in dataflow" in combined
     assert "do not re-read" in combined
     assert "never update_identity" in combined
+    # the section names the given character as the departure point
+    assert "LINN.md" in combined and "LIBRARY.md" in combined
+    assert "root='system_repo'" in combined
 
 
 def test_self_section_absent_from_volatile_partition(tmp_path):
@@ -134,3 +138,7 @@ def test_selfhood_body_states_the_stance_not_a_schedule():
     assert "never `update_identity`" in body
     assert "not because time passed" in body
     assert "not a procedure to run" in body
+    # the stance names the given character as the starting point, not a blank slate
+    assert "where i start from" in body
+    assert "linn.md" in body and "library.md" in body
+    assert "departure point, not a cage" in body
