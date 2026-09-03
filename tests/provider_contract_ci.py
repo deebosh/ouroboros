@@ -12,7 +12,11 @@ from enum import Enum
 
 import pytest
 
-from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS, normalize_model_identity
+from ouroboros.provider_models import (
+    OPENAI_DIRECT_DEFAULTS,
+    normalize_deepseek_reasoning_effort,
+    normalize_model_identity,
+)
 from ouroboros.utils import sanitize_tool_result_for_log
 
 CANARY_TIMEOUT_SEC = 120.0
@@ -467,11 +471,22 @@ def assert_canary_usage(usage, canary: ProviderCanary):
     assert _safe_nonnegative_int(usage.get("prompt_tokens")) > 0, failure("missing_prompt_tokens")
     assert _safe_nonnegative_int(usage.get("completion_tokens")) > 0, failure("missing_completion_tokens")
     if canary.reasoning_effort == "medium":
-        assert usage.get("reasoning_effort_clamped") is None, failure("reasoning_effort_clamped")
+        expected_effort = canary.reasoning_effort
+        if canary.expected_provider == "deepseek":
+            # DeepSeek's wire enum aliases medium to high; the projection must
+            # be disclosed, and the physical payload carries the projected tier.
+            expected_effort = normalize_deepseek_reasoning_effort(expected_effort)
+            note = usage.get("reasoning_effort_clamped")
+            assert isinstance(note, dict), failure("reasoning_effort_clamped")
+            assert note.get("requested") == canary.reasoning_effort, failure("reasoning_effort_clamped_requested")
+            assert note.get("applied") == expected_effort, failure("reasoning_effort_clamped_applied")
+            assert note.get("reason") == "provider_wire_mapping", failure("reasoning_effort_clamped_reason")
+        else:
+            assert usage.get("reasoning_effort_clamped") is None, failure("reasoning_effort_clamped")
         disclosure = usage.get("request_wire")
         assert isinstance(disclosure, dict), failure("missing_request_wire_disclosure")
-        assert disclosure.get("requested_effort") == "medium", failure("request_wire_requested_effort")
-        assert disclosure.get("applied_effort") == "medium", failure("request_wire_applied_effort")
+        assert disclosure.get("requested_effort") == expected_effort, failure("request_wire_requested_effort")
+        assert disclosure.get("applied_effort") == expected_effort, failure("request_wire_applied_effort")
     if canary.expected_provider == "openai":
         return assert_openai_canary_usage(usage, canary.model)
     return usage.get("request_wire")

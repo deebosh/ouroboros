@@ -316,10 +316,13 @@ function with the same effort, and explicit `none` is a task-local last resort
 — and send `reasoning_effort` and `max_completion_tokens` provider-wide;
 model-name prefixes are not admission authority. DeepSeek is the second
 effort-carrying route (`reasoning_effort` beside the compatible-lane
-`max_tokens` carrier, `ultra` clamped to the resolver-declared
-`reasoning_effort_ceiling`); the carriage is keyed on the provider id, never a
-model-name prefix or a target capability field, so a hand-built target cannot
-silently drop it.
+`max_tokens` carrier): the canonical tiers are projected onto its documented
+`low`/`high`/`max` enum at the send boundary (`minimal`→`low`,
+`medium`/`xhigh`→`high`, `ultra`→`max`), `none` becomes
+`extra_body.thinking.type=disabled`, and a projection that changes the tier is
+disclosed on usage as `reasoning_effort_clamped`. The carriage is keyed on the
+provider id, never a model-name prefix or a target capability field, so a
+hand-built target cannot silently drop it.
 
 All learned request-shape adaptation goes through the one provider-neutral
 request-wire driver (`ouroboros/request_wire_contract.py`: exact-route

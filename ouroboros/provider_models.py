@@ -31,6 +31,25 @@ def resolve_minimax_base_url(region: str = "") -> str:
 # the fingerprint is already unique per provider+model).
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 
+# DeepSeek's Chat Completions ``reasoning_effort`` enum is low/high/max
+# (medium/xhigh are documented aliases of high) and thinking is switched off by
+# ``thinking.type=disabled``, not by an effort value. This is the wire dialect
+# of one provider, projected at the physical-send boundary; the canonical
+# Ouroboros effort scale stays the SSOT everywhere else. Not a model or pricing
+# table and never an admission gate.
+DEEPSEEK_REASONING_EFFORT_ALIASES = {
+    "minimal": "low",
+    "medium": "high",
+    "xhigh": "high",
+    "ultra": "max",
+}
+
+
+def normalize_deepseek_reasoning_effort(value: str) -> str:
+    """Project one canonical effort tier onto DeepSeek's Chat wire enum."""
+    normalized = str(value or "").strip().lower()
+    return DEEPSEEK_REASONING_EFFORT_ALIASES.get(normalized, normalized)
+
 
 # Direct-provider prefix → canonical provider name. Un-prefixed models route
 # through OpenRouter. Order matters only for readability; prefixes are disjoint.

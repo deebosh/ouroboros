@@ -9,7 +9,11 @@ import json
 
 import pytest
 
-from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS, normalize_model_identity
+from ouroboros.provider_models import (
+    OPENAI_DIRECT_DEFAULTS,
+    normalize_deepseek_reasoning_effort,
+    normalize_model_identity,
+)
 from ouroboros.request_wire_contract import canonical_sha256
 from ouroboros.request_wire_receipts import (
     WireCandidateSpec,
@@ -587,9 +591,18 @@ def _fake_usage(canary: ProviderCanary, ordinal: int):
     }
     if canary.expected_provider != "openai":
         if canary.reasoning_effort == "medium":
+            applied_effort = canary.reasoning_effort
+            if canary.expected_provider == "deepseek":
+                applied_effort = normalize_deepseek_reasoning_effort(applied_effort)
+                usage["reasoning_effort_clamped"] = {
+                    "requested": canary.reasoning_effort,
+                    "applied": applied_effort,
+                    "reason": "provider_wire_mapping",
+                    "model": canary.model.split("::", 1)[-1],
+                }
             usage["request_wire"] = {
-                "requested_effort": "medium",
-                "applied_effort": "medium",
+                "requested_effort": applied_effort,
+                "applied_effort": applied_effort,
             }
         return usage
     usage["request_wire"] = {

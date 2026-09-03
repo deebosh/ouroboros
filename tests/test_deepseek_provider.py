@@ -4,14 +4,16 @@ Covers the single-provider independence contract (DEVELOPMENT.md "Provider
 Independence") and the two DeepSeek-specific wire classes established by live
 probes (2026-09-01):
 
-- the effort-carrying route: DeepSeek accepts the full reasoning-effort enum
-  except the codex-only ``ultra`` tier (400 naming ``none…max``), so the lane
-  carries the configured effort instead of dropping it like other generic
-  compatible lanes;
+- the effort-carrying route: DeepSeek's Chat API takes ``low``/``high``/``max``
+  (``medium``/``xhigh`` are aliases of ``high``) and switches thinking off via
+  ``thinking.type=disabled``, so the lane projects the canonical scale onto that
+  dialect instead of dropping effort like other generic compatible lanes;
 - the reasoning-echo REQUIREMENT: tool-bearing requests must pass every
   assistant turn's ``reasoning_content`` back (v4-pro enforces with a 400;
   an explicit empty string satisfies the gate for turns produced elsewhere).
 """
+
+import pytest
 
 from ouroboros import provider_models
 from ouroboros.llm import LLMClient
@@ -26,6 +28,11 @@ from ouroboros.provider_models import (
     provider_for_model,
     provider_has_credentials,
     supports_vision,
+)
+from ouroboros.request_wire_contract import payload_effort, reasoning_carrier
+from ouroboros.request_wire_recovery import (
+    prepare_wire_payload_for_send,
+    request_wire_call_scope,
 )
 
 
@@ -133,7 +140,6 @@ class TestWireProjection:
         assert target["base_url"] == DEEPSEEK_BASE_URL
         assert target["api_key"] == "sk-x"
         assert target["usage_model"] == "deepseek/deepseek-v4-flash"
-        assert target["reasoning_effort_ceiling"] == "max"
         assert target["requires_reasoning_echo"] is True
         assert target["supports_openrouter_extensions"] is False
 
@@ -141,19 +147,99 @@ class TestWireProjection:
         client = LLMClient()
         target = self._target(monkeypatch)
         kwargs = client._build_remote_kwargs(
-            target, [{"role": "user", "content": "hi"}], "xhigh", 256, "auto", None, None,
+            target, [{"role": "user", "content": "hi"}], "high", 256, "auto", None, None,
         )
-        assert kwargs["reasoning_effort"] == "xhigh"
+        assert kwargs["reasoning_effort"] == "high"
         assert kwargs["max_tokens"] == 256
         assert "max_completion_tokens" not in kwargs
+        assert "extra_body" not in kwargs
 
-    def test_ultra_clamps_to_max(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("requested", "wire"),
+        [
+            ("none", None),
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("xhigh", "high"),
+            ("max", "max"),
+            ("ultra", "max"),
+        ],
+    )
+    def test_effort_projection_matches_deepseek_chat_contract(
+        self, monkeypatch, requested, wire,
+    ):
+        # Official contract (api-docs.deepseek.com, Thinking Mode): the enum is
+        # low/high/max, medium/xhigh alias high, and ``none`` is the separate
+        # ``thinking.type=disabled`` toggle, never a reasoning_effort value.
         client = LLMClient()
         target = self._target(monkeypatch)
         kwargs = client._build_remote_kwargs(
-            target, [{"role": "user", "content": "hi"}], "ultra", 256, "auto", None, None,
+            target, [{"role": "user", "content": "hi"}], requested, 256, "auto", None, None,
         )
-        assert kwargs["reasoning_effort"] == "max"
+        assert kwargs.get("reasoning_effort") == wire
+        if wire is None:
+            assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        else:
+            assert "extra_body" not in kwargs
+        note = client._pop_effort_clamp_disclosure()
+        if wire is not None and wire != requested:
+            assert note == {
+                "requested": requested,
+                "applied": wire,
+                "reason": "provider_wire_mapping",
+                "model": "deepseek-v4-flash",
+            }
+        else:
+            assert note is None
+
+    def test_request_wire_reads_disabled_thinking_as_none(self, monkeypatch):
+        client = LLMClient()
+        target = self._target(monkeypatch)
+        kwargs = client._build_remote_kwargs(
+            target, [{"role": "user", "content": "hi"}], "none", 256, "auto", None, None,
+        )
+        with request_wire_call_scope():
+            physical = prepare_wire_payload_for_send(
+                target, kwargs, api_surface="chat.completions",
+            )
+        assert "reasoning_effort" not in physical
+        assert payload_effort(physical) == "none"
+        assert reasoning_carrier(physical) == "extra_body.thinking"
+
+    def test_string_only_roles_flattened_in_send_copy_only(self, monkeypatch):
+        # DeepSeek accepts content arrays only on user turns; the canonical
+        # history (including the context-compaction assistant capsule) keeps
+        # its block form.
+        client = LLMClient()
+        target = self._target(monkeypatch)
+        messages = [
+            {"role": "system", "content": [
+                {"type": "text", "text": "policy", "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": " rules"},
+            ]},
+            {"role": "user", "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ]},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "summary", "_context_capsule": {"id": "c1"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": [
+                {"type": "text", "text": "result"},
+            ]},
+        ]
+        kwargs = client._build_remote_kwargs(
+            target, messages, "high", 256, "auto", None, None,
+        )
+        sent = kwargs["messages"]
+        assert sent[0]["content"] == "policy rules"
+        assert isinstance(sent[1]["content"], list)
+        assert sent[2]["content"] == "summary"
+        assert sent[3]["content"] == "result"
+        assert "_context_capsule" in messages[2]["content"][0]
+        assert "cache_control" in messages[0]["content"][0]
 
     def test_openai_effort_carriage_survives_minimal_stub_targets(self, monkeypatch):
         # The carriage is keyed on the provider id, NOT a target capability
