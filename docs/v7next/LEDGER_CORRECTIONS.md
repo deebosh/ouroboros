@@ -9203,3 +9203,30 @@ publication (and moved the key-by-key rationale to `_RECEIPT_PROCESS_KEYS`,
 where the contract now lives), and `_handle_skill_exec` gave its two pre-exec
 publications back to `_run_skill_subprocess`, which is where the spawn — and
 therefore the truth about it — actually is.
+
+## From the paid E-lane (owner batch №13 item 2 = A; first executions 2026-09-02/03)
+
+Receipts (operator host, isolated roots under /tmp/claude-1006, keys passed BY NAME, values never printed):
+
+| run | tree | model / key name | result |
+|---|---|---|---|
+| 20:28–20:50Z 02.09 | ad39ec54 | `anthropic::claude-haiku-4-5` / `anthropic` | 4/4 red — E1–E3: `delegate_start` refused («api_actor_requires_schedule_subagent», then «subagent_selection_required»): the lane's roster had only an `api_model` row; E13: `spent_usd 0.0` after four completed tasks — the direct `anthropic::` route has no tariff, the drain never fires |
+| 07:40–07:47Z 03.09 | 6bd799fb | `openrouter::anthropic/claude-haiku-4.5` / `anton_new_nsfw_key_openrouter` | E13 GREEN (budget_scope_paused recorded, no intents left); E1–E3: owned claudexord failed to start — `listen EINVAL` on its unix socket: the isolated root under the operator's private TMPDIR made `data/claudexor/daemon/claudexord.sock` 115 bytes, beyond AF_UNIX's 108 |
+| 07:48–07:55Z 03.09 | ca1b38df | same, `--basetemp=/tmp/claude-1006/pb` | E1: the four verb families landed, the assertion read the faults LOG as a fault (it held only `delegate_run_containment_resolved` rows); E2/E3: the run reaches the real lane and fails at routing — `claude is unavailable: Claude subscription route is not ready` |
+| 07:56–07:58Z 03.09 | 9c04ff47 | same | E1 GREEN with the assertion on `open_containment_faults(data_root) == []` |
+
+Adjustments to the lane (test-shape, committed with this section): the paid roster gets a real
+delegated leaf (`agent_session`, `claude=claude-haiku-4-5`) and E1–E3 name it in `subagent_id`;
+E1 asserts OPEN faults. Not adjusted: E2/E3 — `ouroboros/tools/delegate.py` asks the engine for
+`authPreference: subscription` on purpose (an invisible API-key fallback would settle a run at a
+confident $0.00), and the owned daemon of an isolated install has no subscription login; logging an
+account into it is an interactive owner act the operator may not perform. E2/E3 therefore remain
+unexecuted (row DEFER-E2E-PAID-LANE, OWNER authority) until the owner's own logged-in install runs
+`OUROBOROS_E2E_CANCEL=paid`.
+
+Product finding from the lane (disclosed, post-release issue draft): the owned claudexord listens on
+`<data>/claudexor/daemon/claudexord.sock`; a data root deeper than ~70 characters puts that path over
+the AF_UNIX limit (108 on Linux, 104 on macOS) and every delegated start is refused with
+`daemon_spawn_failed` whose log tail reads `listen EINVAL` — the refusal is typed but the cause is not
+named. Ordinary installs (`~/Ouroboros/data`) are far below the limit; deep roots (nested temp dirs,
+long usernames under /Users) are not.

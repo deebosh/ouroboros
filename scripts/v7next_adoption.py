@@ -114,7 +114,7 @@ DEFERRED_OUT_OF_V70 = {
     "W4-F3": OPERATOR,
     "W4-F4": OPERATOR,
     "DEFER-E2E-DELEG-MUT": OPERATOR,
-    "DEFER-E2E-PAID-LANE": OPERATOR,
+    "DEFER-E2E-PAID-LANE": OWNER,  # batch №13 item 2 = A; E1/E13 executed, E2/E3 await a logged-in install
     "DEFER-SPEC64-PATHS": OWNER,  # batch №13 item 8 = A
 }
 # Post-cutoff upstream adoption trains: id -> (upstream tip, campaign merge).

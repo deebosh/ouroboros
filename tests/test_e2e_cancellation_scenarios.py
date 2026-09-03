@@ -668,7 +668,7 @@ def test_e1_delegated_run_lifecycle_emits_the_four_verb_families(e2e_clone, tmp_
     try:
         data_root = server.data_root
         task_id = server.submit(
-            "Use delegate_start to open one delegated run that asks a trivial question, "
+            "Use delegate_start(subagent_id=\"delegated-leaf\") to open one delegated run that asks a trivial question, "
             "delegate_wait for it, delegate_answer any interaction it raises, then "
             "delegate_cancel the run and finish."
         )
@@ -676,9 +676,12 @@ def test_e1_delegated_run_lifecycle_emits_the_four_verb_families(e2e_clone, tmp_
         assert events(data_root, "delegate_run_start_requested"), "no delegated run was requested"
         assert events(data_root, "delegate_run_started"), "the delegated run never started"
         assert events(data_root, "delegate_run_cancel_outcome"), "no cancel outcome was recorded"
-        faults = pathlib.Path(data_root) / "logs" / "containment_faults.jsonl"
-        assert not (faults.exists() and faults.read_text(encoding="utf-8").strip()), \
-            "the delegated lane recorded a containment fault"
+        from ouroboros.delegate_custody import open_containment_faults
+        # The faults log is a LEDGER: a resolution row follows its fault, and a clean run
+        # writes only resolutions (first paid execution, 2026-09-03: `settled_terminal`,
+        # `verified_terminal`). Open faults are the fault, not the file's existence.
+        assert open_containment_faults(data_root) == [], \
+            "the delegated lane left an OPEN containment fault"
     finally:
         server.stop()
 
@@ -692,7 +695,7 @@ def test_e2_delegated_patch_integration_disposes_the_snapshot(e2e_clone, tmp_pat
     try:
         data_root = server.data_root
         task_id = server.submit(
-            "Open a MUTATING delegated run that adds one new file with a single line of "
+            "Open a MUTATING delegated run with delegate_start(subagent_id=\"delegated-leaf\") that adds one new file with a single line of "
             "text, then integrate its patch with integrate_delegated_patch and finish."
         )
         server.wait_task(task_id, timeout=1800)
@@ -715,7 +718,7 @@ def test_e3_conflicting_delegated_patch_preserves_the_snapshot(e2e_clone, tmp_pa
     try:
         data_root = server.data_root
         task_id = server.submit(
-            "Open a MUTATING delegated run that edits README.md, then — before "
+            "Open a MUTATING delegated run with delegate_start(subagent_id=\"delegated-leaf\") that edits README.md, then — before "
             "integrating — change the same lines of README.md yourself, then attempt "
             "integrate_delegated_patch and report what happened."
         )

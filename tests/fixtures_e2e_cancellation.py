@@ -333,7 +333,17 @@ def isolated_settings(*, stub: StubModelServer | None, paid: bool = False, **ove
             "recommended_use": "Read-only survey for the E2E cancellation lane.",
             "route": {"kind": "api_model", "target_id": slug},
             "effort": "low",
-        }],
+        }] + ([{
+            # The paid lane's REAL delegated leaf (E1-E3): `delegate_start` refuses an
+            # api_model row («api_actor_requires_schedule_subagent») and requires an
+            # explicit subagent_id — first paid execution, 2026-09-02, found both.
+            # The harness is Claudexor's `claude` route on the host's own login.
+            "subagent_id": "delegated-leaf",
+            "name": "Delegated leaf",
+            "recommended_use": "Real delegated run through the Claudexor lane (paid E1-E3).",
+            "route": {"kind": "agent_session", "target_id": "claude=claude-haiku-4-5"},
+            "effort": "low",
+        }] if paid else []),
     })
     cfg.update(overrides)
     return cfg
