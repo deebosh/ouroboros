@@ -137,6 +137,40 @@ def env_chdir_operand(argv: List[str]) -> str:
     return ""
 
 
+def interpreter_reads_program_from_stdin(argv: List[str]) -> bool:
+    """Whether an interpreter argv has no inline body or script-file operand."""
+    return bool(argv) and not any(
+        str(token) != "-" and not str(token).startswith("-") for token in argv[1:]
+    )
+
+
+def sequential_effective_cwds(target_rows: list, initial_cwd: pathlib.Path) -> list[pathlib.Path]:
+    """Symlink-resolved cwd in force at the start of each parsed command row."""
+    current = pathlib.Path(initial_cwd).resolve(strict=False)
+    result: list[pathlib.Path] = []
+    for argv, _targets, _inline, _unknown in target_rows:
+        result.append(current)
+        head = pathlib.PurePath(str(argv[0])).name.lower() if argv else ""
+        if head not in {"cd", "pushd"}:
+            continue
+        operand = next((str(item) for item in argv[1:] if str(item) and not str(item).startswith("-")), "")
+        if operand:
+            path = pathlib.Path(operand).expanduser()
+            current = (path if path.is_absolute() else current / path).resolve(strict=False)
+    return result
+
+
+def directory_destination_child_name(command: str, argv: List[str], source: str) -> str:
+    """Return the child path a directory destination receives from ``source``."""
+    source_text = str(source or "").replace("\\", "/").rstrip("/")
+    if command == "cp" and "--parents" in {str(item) for item in argv[1:]}:
+        parts = [part for part in pathlib.PurePosixPath(source_text).parts if part not in {"", ".", "/"}]
+        if not parts or ".." in parts:
+            return ""
+        return "/".join(parts)
+    return pathlib.PurePath(source_text).name
+
+
 def replacement_placeholders(argv: List[str]) -> frozenset[str]:
     """Replacement words are templates, never concrete filesystem targets."""
     executable = pathlib.PurePath(str(argv[0])).name.lower() if argv else ""

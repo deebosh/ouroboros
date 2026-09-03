@@ -1135,12 +1135,14 @@ devtool files).
   immediate child target. The pre-execution workspace lane uses
   `shell_parse.split_redirections` as its one redirect grammar and emits one
   `(segment_argv, targets, inline_code, unprovable)` row per shell segment. It
-  recurses through shell `-c` bodies at most three levels and associates visible
-  heredoc programs with their interpreter. Python UNKNOWN is independent of
-  recovered targets; Node opaque execution and write-shaped Perl bodies follow
-  the same rule. `cd`/`pushd` and `env -C`/`--chdir` become directory-change
-  candidates when a later/wrapped command writes, while find/xargs replacement
-  placeholders are never concrete targets. An `unprovable` row widens only that
+  recurses through shell `-c` bodies at most three levels. A visible heredoc is
+  attached as program text only when its interpreter has no inline program or
+  script-file operand; shell stdin programs recurse like `-c` bodies. Python
+  UNKNOWN is independent of recovered targets; Node opaque execution and
+  write-shaped Perl bodies follow the same rule. `cd`/`pushd` and `env
+  -C`/`--chdir` update a sequential, symlink-resolved effective cwd used for
+  later/wrapped relative writes, while find/xargs replacement placeholders are
+  never concrete targets. An `unprovable` row widens only that
   row's tokens and inline/heredoc body mentions, never an independent read-only
   segment. The raw mention lane remains separate so POSIX shlex cannot erase
   Windows drive/UNC spellings; the light fence likewise retains its unfiltered

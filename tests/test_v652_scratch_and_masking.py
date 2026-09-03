@@ -346,7 +346,10 @@ def test_check_has_exit_masking_detection():
 
     assert _check_has_exit_masking(["sh", "-c", "node t.js -f 2>&1 | tail -5"])[0] is True
     assert _check_has_exit_masking(["bash", "-c", "make test || true"])[0] is True
-    assert _check_has_exit_masking(["sh", "-c", "run.sh 2>/dev/null"])[0] is True
+    assert _check_has_exit_masking(["sh", "-c", "run.sh 2>/dev/null"])[0] is False
+    assert _check_has_exit_masking(["sh", "-c", "make test ; true"])[0] is True
+    assert _check_has_exit_masking(["sh", "-c", "make test && true"])[0] is True
+    assert _check_has_exit_masking(["sh", "-c", "make test ; exit 0"])[0] is True
     assert _check_has_exit_masking(["sh", "-c", "pytest -q"])[0] is False
     assert _check_has_exit_masking(["go", "test", "./..."])[0] is False  # list argv, no shell
     # a QUOTED `| tail` literal (e.g. a grep pattern) must NOT be flagged (shlex token scan)

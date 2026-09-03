@@ -955,6 +955,12 @@ def _masked_green_disclosure(result, cmd):
     )
 
 
+def _preserve_result_meta(text: str, source):
+    """Keep a typed process result's facts through run_script text framing."""
+    meta = getattr(source, "result_meta", None)
+    return _annotate_result(text, **meta) if isinstance(meta, dict) else text
+
+
 def _run_shell(
     ctx: ToolContext,
     cmd,
@@ -1387,6 +1393,8 @@ def _run_script(
                 script_path.parent.parent.rmdir()
         except OSError:
             pass
+    if pathlib.PurePath(interp).name in {"sh", "bash"} and not str(result).lstrip().startswith("⚠️"):
+        result = _masked_green_disclosure(result, [interp, "-c", body])
     # POST-exec body audit: stat-confirmed user_files writes performed by the script
     # body itself. Runs on EVERY exit path (parity with _record_scratch_fingerprints):
     # a script that writes an undeclared deliverable and then FAILS (raise/SystemExit/
@@ -1412,14 +1420,14 @@ def _run_script(
         # The result already owns line 1 with its own typed marker, which is what
         # the failure classifier reads — the nudge appends after it.
         tail = f"\n{audit_note}" if audit_note else ""
-        return f"{result}{tail}\n# script_path={script_path}"
+        return _preserve_result_meta(f"{result}{tail}\n# script_path={script_path}", result)
     if audit_note:
         # The nudge used to REPLACE the whole _run_shell payload (a successful
         # script's answer was gone; re-running was the sole recovery). Marker
         # first — ARTIFACT_OUTPUT_UNDECLARED is a typed policy-denial surface the
         # classifier reads off line 1 — payload appended, as in run_command.
-        return f"{audit_note}\n\n# script_path={script_path}\n{result}"
-    return f"# script_path={script_path}\n{result}"
+        return _preserve_result_meta(f"{audit_note}\n\n# script_path={script_path}\n{result}", result)
+    return _preserve_result_meta(f"# script_path={script_path}\n{result}", result)
 
 
 def get_tools() -> List[ToolEntry]:

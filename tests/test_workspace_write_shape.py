@@ -448,8 +448,9 @@ def test_unprovable_row_never_promotes_absolute_executable_to_write(tmp_path, cm
     from ouroboros.tools.registry import _workspace_write_candidates
 
     forced_uncertain_row = [(cmd, [], (cmd[-1],), True)]
-    assert (cmd[0], True) not in _workspace_write_candidates(
-        forced_uncertain_row, [], cmd
+    assert not any(
+        token == cmd[0] and is_write
+        for token, is_write, _row in _workspace_write_candidates(forced_uncertain_row, [], cmd)
     )
     reg = _registry(tmp_path, mode="external")
     assert reg._run_shell_safety_check(
@@ -601,6 +602,20 @@ def test_glued_operator_is_not_a_path_candidate(tmp_path):
     redirect_block = check(["sh", "-c", f"node t.js > {outside / 'out.log'} 2>&1"]) or ""
     assert "outside the selected process root" in redirect_block
     assert str(outside / "out.log") in redirect_block
+
+
+@pytest.mark.parametrize(
+    "body",
+    ("(cd sub && make) 2>&1", "echo $(date) 2>/dev/null"),
+    ids=("subshell-stderr-dup", "command-substitution-dev-null"),
+)
+def test_round5_redirect_only_segments_are_allowed_without_crash(tmp_path, body):
+    reg = _registry(tmp_path, mode="external")
+    workspace = tmp_path / "workspace"
+    (workspace / "sub").mkdir()
+    assert reg._run_shell_safety_check(
+        {"cmd": ["sh", "-c", body], "cwd": str(workspace)}, "advanced"
+    ) is None
 
 
 def test_inline_code_segment_keeps_the_mention_scan(tmp_path):
@@ -766,6 +781,80 @@ def test_f7_python_literal_heredoc_read_stays_allowed(tmp_path):
     assert reg._run_shell_safety_check(
         {"cmd": command, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) is None
+
+
+def test_round5_sequential_effective_cwd_blocks_nested_escape(tmp_path):
+    reg = _registry(tmp_path, mode="external")
+    workspace = tmp_path / "workspace"
+    fixtures = workspace / "fixtures"
+    fixtures.mkdir()
+    for body in (
+        "cd .. && echo x > ../outside",
+        "cd .. && touch ../docs/X",
+        "pushd .. && echo x > ../outside",
+        "env -C .. sh -c 'echo x > ../outside'",
+    ):
+        out = reg._run_shell_safety_check(
+            {"cmd": ["sh", "-c", body], "cwd": str(fixtures)}, "advanced"
+        ) or ""
+        assert "WORKSPACE_SHELL_BLOCKED" in out, (body, out)
+
+
+def test_round5_sequential_effective_cwd_keeps_in_workspace_write_allowed(tmp_path):
+    reg = _registry(tmp_path, mode="external")
+    workspace = tmp_path / "workspace"
+    (workspace / "sub").mkdir()
+    assert reg._run_shell_safety_check(
+        {"cmd": ["sh", "-c", "cd sub && echo x > f"], "cwd": str(workspace)},
+        "advanced",
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "python3 <<'EOF'\nopen({outside!r}, 'w')\nEOF",
+        "sh <<'EOF'\necho x > {outside}\nEOF",
+        "node <<'EOF'\nrequire('fs').writeFileSync({outside!r}, 'x')\nEOF",
+    ),
+    ids=("python-no-dash", "sh-stdin", "node-stdin"),
+)
+def test_round5_stdin_heredoc_writes_outside_are_blocked(tmp_path, command):
+    reg = _registry(tmp_path, mode="external")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "heredoc-write"
+    rendered = command.format(outside=str(target))
+    out = reg._run_shell_safety_check(
+        {"cmd": rendered, "cwd": str(tmp_path / "workspace")}, "advanced"
+    ) or ""
+    assert "WORKSPACE_SHELL_BLOCKED" in out, (rendered, out)
+
+
+def test_round5_python_stdin_heredoc_read_without_dash_is_allowed(tmp_path):
+    reg = _registry(tmp_path, mode="external")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    command = f"python3 <<'EOF'\nprint(open({str(outside / 'read')!r}).read())\nEOF"
+    assert reg._run_shell_safety_check(
+        {"cmd": command, "cwd": str(tmp_path / "workspace")}, "advanced"
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["node", "-e", "require('fs').writeFileSync('inside','x'); require('fs').writeFile('/outside','x',()=>{})"],
+        ["ruby", "-e", "File.write('inside','x'); File.delete('/outside')"],
+    ),
+    ids=("node-async-write", "ruby-file-delete"),
+)
+def test_round5_mixed_literal_writer_targets_are_all_modelled(tmp_path, argv):
+    reg = _registry(tmp_path, mode="external")
+    out = reg._run_shell_safety_check(
+        {"cmd": argv, "cwd": str(tmp_path / "workspace")}, "advanced"
+    ) or ""
+    assert "WORKSPACE_SHELL_BLOCKED" in out, (argv, out)
 
 
 def test_f8_uncertain_perl_row_does_not_widen_independent_cat(tmp_path):
