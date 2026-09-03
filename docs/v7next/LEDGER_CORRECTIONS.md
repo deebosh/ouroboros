@@ -8878,3 +8878,54 @@ concurrency tests stayed red on every name-tier leg — see «From the Windows C
    15 = B — mutating delegation E2E scenarios and the copy-back race (O3) are fixed now (upstream
    `a76961de..cc2eac50` carries no fix for either); 17 = B — TEST_DISPOSITION/nav20 is withdrawn from the
    spec by this record. Item 13 was not read by the owner (too long) and is re-asked in a shorter form.
+
+## From the typed process-facts lane (owner 10 = B)
+
+Owner batch №13 item 10 = B: «the five typed process-fact surfaces land in 7.0».
+The regex harvest stays retired (batch №7 item 1 = A); nothing here reads prose.
+Every fact is stamped where the truth is known, and where the platform gives no
+fact none is synthesized — the two `skill_preflight` fakes (`-9`, `-1`) are
+retired for that reason, not merely supplemented.
+
+Structural change under all five: the thread-local channel is now
+**publisher-scoped instead of tool-name-scoped**. `_PROCESS_META_TOOLS` (a
+frozenset of two names) could never list a dynamic `ext_*` surface, and the loop
+now clears the slot before EVERY dispatch and merges whatever the call itself
+published. That is a STRONGER no-contamination contract than the name gate:
+under the gate a stale publication survived on the thread and was merely ignored
+by non-process tools; now it is dropped. `tests/..::test_non_process_tools_do_not_consume_or_merge_facts`
+pinned the old mechanism (the slot staying full) and is re-stated as
+`test_tools_that_run_no_process_merge_no_facts`, which pins the contract.
+
+The family grew three members that exist exactly where an exit code does not:
+`timed_out`, `killed_by_host`, `pre_exec_failure` (the platform's exception
+class). One projection (`loop_tool_execution._process_fact_fields`) carries the
+family into the UI live-log card, the tools.jsonl row and the durable trace.
+
+| surface | producer (fact stamped) | consumer | pin | red assertion on 72bb4949 |
+|---|---|---|---|---|
+| extension child-process death | `extension_process_runner._run_child` → `_publish_child_facts`: `exit_code` + POSIX `signal` on a clean/abnormal exit, `timed_out`+`killed_by_host` on the deadline kill, `killed_by_host` alone on the output-cap kill | result_meta → live card / tools.jsonl / trace | `tests/test_process_signal_observability.py::test_extension_child_death_publishes_typed_exit_and_signal`, `::test_extension_child_clean_exit_publishes_zero`, `::test_extension_child_timeout_publishes_host_kill` | `facts["exit_code"] == -9` — the channel was never published to at all (the dispatcher stamped EXTENSION_ERROR; the code lived only in the error prose) |
+| `skill_exec` | `_run_skill_subprocess`: `exit_code`/`signal` for a returned child (including the NEGATIVE code its `returncode or 0` return flattens), `timed_out`+`killed_by_host` on the deadline kill, `killed_by_host` on the output-cap kill, `pre_exec_failure` on the spawn `OSError` | same | `::test_skill_exec_signal_death_survives_the_or_zero_flattening`, `::test_skill_exec_timeout_publishes_host_kill_without_exit_code`, `::test_skill_exec_output_cap_kill_is_a_host_kill_not_a_timeout`, `::test_skill_exec_spawn_failure_publishes_typed_pre_exec_cause` | `consume_last_process_facts()` returns `None` → `TypeError` on subscript: no publication existed |
+| `skill_preflight` | `_run_check`: synthesized `-9` (timeout) and `-1` (missing runtime) RETIRED for `returncode=None` + `timeout`/`pre_exec_failure`; publishes `timed_out`+`killed_by_host`, `pre_exec_failure`, and a real signal death (`rc < 0`, the macOS code-signing SIGKILL this skip path exists for). The finding's skip reason gains `validator_not_started`, and its prose names the signal through the one host table instead of `-rc` | finding + result_meta → same | `::test_skill_preflight_timeout_reports_no_returncode_instead_of_fake_minus_nine`, `::test_skill_preflight_missing_runtime_reports_typed_pre_exec_cause` | `result["returncode"] is None` fails: the base answers `-9` / `-1`, which every reader downstream reads as a real POSIX signal death |
+| `verify_and_record` | the check publishes `exit_code`/`signal` (completed) or `timed_out`+`killed_by_host` (timeout). The receipt now COPIES that publication (`_RECEIPT_PROCESS_KEYS`) instead of deriving duration/signal a second time — one derivation, two disclosures; the receipt's stored shape is unchanged | result_meta → same, plus the unchanged receipt | `::test_verify_check_publishes_typed_exit_and_signal`, `::test_verify_killed_check_publishes_signal_fact`, `::test_verify_timeout_publishes_typed_kill_facts` | `facts["exit_code"] == 3` → `TypeError`: the base rendered `exit=3` for the agent and stamped nothing |
+| `run_command` timeouts / pre-exec | `_publish_unfinished_process_facts` gains `timed_out` (with `killed_by_host`, because the deadline IS enforced by killing the tree) and takes the spawn exception, deriving `pre_exec_failure` from an `OSError`'s class (the derivation lives in the publisher helper, which already owns the fact shaping — `shell.py` is at its 800-line extraction bound and buys no lines with a wrapper) | same | `::test_run_shell_timeout_publishes_typed_timeout_facts`, `::test_run_shell_missing_binary_publishes_duration_only` | `facts["timed_out"] is True` / `facts["pre_exec_failure"] == "FileNotFoundError"` — the base published duration only, so a timeout and a dead binary were indistinguishable in the record |
+| Windows kills | no POSIX partition is faked: `signal_name_for_returncode` returns `""` for the large POSITIVE status `TerminateProcess` leaves, and `killed_by_host` beside that `exit_code` is the whole fact the platform gives | same | `::test_windows_host_kill_carries_no_forged_signal` | `facts["killed_by_host"]` → `KeyError`: the fact did not exist |
+
+**Windows-executed proof pending the matrix.** The Windows pin runs the
+platform-independent derivation (a positive exit status names no signal; the
+kill fact rides beside it) on the host that is available; no Windows-executed
+claim is made here.
+
+`ouroboros/contracts/` is untouched — the typed meta shape grew only in
+`ouroboros/tools/process_facts.py`, additively (three new optional members;
+nothing removed or renamed). `publish_process_facts` now RETURNS what it
+published, which is what lets the verify receipt disclose the published facts
+rather than re-derive them.
+
+Two function bodies were at the 300-line ratchet cap and the additions were paid
+inside them rather than with a helper: `_verify_and_record` folded its
+five-line duration/signal/runtime derivation into the copy of the one
+publication (and moved the key-by-key rationale to `_RECEIPT_PROCESS_KEYS`,
+where the contract now lives), and `_handle_skill_exec` gave its two pre-exec
+publications back to `_run_skill_subprocess`, which is where the spawn — and
+therefore the truth about it — actually is.

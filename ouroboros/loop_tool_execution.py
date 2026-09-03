@@ -188,13 +188,17 @@ def _with_correlation(payload: Dict[str, Any], correlation: Dict[str, Any], *, t
 
 
 _PER_CALL_TIMEOUT_TOOLS = ("run_command", "run_script")
-# Process tools whose handler publishes TYPED process facts (exit_code, POSIX
-# signal name, duration_ms — plus resolved_runtime when the interpreter
-# resolver substituted the executable) through the thread-local channel in
-# ouroboros.tools.process_facts. Typed facts take PRECEDENCE over the producer-
-# meta copy from the ToolResult; a record with no typed publication carries no
-# process facts at all (D02: prose is never harvested into typed fields).
-_PROCESS_META_TOOLS = frozenset({"run_command", "run_script"})
+# TYPED process facts (exit_code, POSIX signal name, duration_ms, timed_out,
+# killed_by_host, pre_exec_failure — plus resolved_runtime when the interpreter
+# resolver substituted the executable) reach this loop through the thread-local
+# channel in ouroboros.tools.process_facts. The channel is PUBLISHER-scoped, not
+# name-scoped: any handler that measures a child of its own call publishes there
+# (run_command/run_script, skill_exec, skill_preflight validators,
+# verify_and_record checks, out-of-process extension children), so the loop
+# clears the slot before every dispatch and merges whatever the call itself
+# published. Typed facts take PRECEDENCE over the producer-meta copy from the
+# ToolResult; a record with no typed publication carries no process facts at all
+# (D02: prose is never harvested into typed fields).
 # Structural ordering margin: the outer cap sits this far above the requested
 # per-call timeout so the handler's own (cleanly-messaged) subprocess timeout
 # fires first, before the outer thread-kill. Not a wait duration — a race margin.
@@ -511,6 +515,19 @@ def _typed_result_metadata(
     return meta
 
 
+def _process_fact_fields(result_meta: Dict[str, Any]) -> Dict[str, Any]:
+    """The typed process facts this call published, for the record consumers.
+
+    One projection for the UI live-log card, the tools.jsonl row and the trace
+    manifest, so every surface names the same members from the same merge —
+    a member absent from ``result_meta`` stays absent here rather than being
+    rendered as a null fact.
+    """
+    from ouroboros.tools.process_facts import PROCESS_FACT_KEYS
+
+    return {key: result_meta[key] for key in PROCESS_FACT_KEYS if key in result_meta}
+
+
 def _tool_result_fields(result: ToolResult) -> Dict[str, Any]:
     """Return the JSON-safe typed projection without shadowing legacy fields."""
     return {
@@ -623,14 +640,12 @@ def _execute_single_tool(
 
     args_for_log = sanitize_tool_args_for_log(fn_name, args if isinstance(args, dict) else {})
 
-    typed_process_meta = fn_name in _PROCESS_META_TOOLS
-    if typed_process_meta:
-        # Defensive: drop any stale thread-local facts before dispatch so a
-        # process-tool path that runs NO process (arg errors, blocks) can never
-        # inherit a previous call's measurements.
-        from ouroboros.tools.process_facts import consume_last_process_facts
+    # Drop any stale thread-local facts before dispatch so a path that runs NO
+    # process of its own (arg errors, blocks, a plain read) can never inherit a
+    # previous call's measurements.
+    from ouroboros.tools.process_facts import consume_last_process_facts
 
-        consume_last_process_facts()
+    consume_last_process_facts()
 
     tool_ok = True
     try:
@@ -657,22 +672,21 @@ def _execute_single_tool(
         **_typed_result_metadata(fn_name, result, is_error, tool_result),
         **_tool_result_fields(tool_result),
     }
-    if typed_process_meta:
-        # R5 (node-runtime sprint): merge the handler's TYPED process facts into
-        # the call's result_meta. When a typed publication exists it owns the
-        # WHOLE fact family — including the ABSENCE of a member (a typed
-        # publication without ``signal`` means the child was not signal-killed).
-        # It carries the members the ToolResult meta does not (duration_ms,
-        # resolved_runtime) and takes precedence over the producer-meta copy of
-        # the shared ones; records with no typed publication keep the
-        # ToolResult-meta facts from _typed_result_metadata unchanged.
-        from ouroboros.tools.process_facts import PROCESS_FACT_KEYS
+    # R5 (node-runtime sprint): merge the handler's TYPED process facts into
+    # the call's result_meta. When a typed publication exists it owns the WHOLE
+    # fact family — including the ABSENCE of a member (a typed publication
+    # without ``signal`` means the child was not signal-killed). It carries the
+    # members the ToolResult meta does not (duration_ms, resolved_runtime,
+    # timed_out, killed_by_host, pre_exec_failure) and takes precedence over the
+    # producer-meta copy of the shared ones; records with no typed publication
+    # keep the ToolResult-meta facts from _typed_result_metadata unchanged.
+    from ouroboros.tools.process_facts import PROCESS_FACT_KEYS
 
-        process_facts = consume_last_process_facts()
-        if process_facts:
-            for stale_key in PROCESS_FACT_KEYS:
-                result_meta.pop(stale_key, None)
-            result_meta.update(process_facts)
+    process_facts = consume_last_process_facts()
+    if process_facts:
+        for stale_key in PROCESS_FACT_KEYS:
+            result_meta.pop(stale_key, None)
+        result_meta.update(process_facts)
 
     trace_ref = {}
     try:
@@ -712,6 +726,10 @@ def _execute_single_tool(
         "result_preview": sanitize_tool_result_for_log(truncate_for_log(result, 2000)),
         "is_error": is_error,
         "status": result_meta.get("status"),
+        # The typed process facts of THIS call ride the direct tools.jsonl row
+        # too: the row is the surface an operator greps, and a killed or
+        # never-started child must be readable there without the trace.
+        **_process_fact_fields(result_meta),
         # Typed producer meta rides the DIRECT record too (bounded by the
         # ToolResult contract: <=32 keys, <=8KB, JSON-safe) so durable
         # provenance facts — the ABI-9 extension_generation digest included —
@@ -922,8 +940,7 @@ def _execute_with_timeout(
                 "duration_sec": round(time.perf_counter() - started_at, 3),
                 "is_error": bool(result.get("is_error")),
                 "status": result_meta.get("status"),
-                "exit_code": result_meta.get("exit_code"),
-                "signal": result_meta.get("signal"),
+                **_process_fact_fields(result_meta),
                 "result_preview": sanitize_tool_result_for_log(
                     truncate_for_log(result.get("result", ""), 500)
                 ),
@@ -1002,8 +1019,7 @@ def _execute_with_timeout(
                     "duration_sec": round(time.perf_counter() - started_at, 3),
                     "is_error": bool(result.get("is_error")),
                     "status": result_meta.get("status"),
-                    "exit_code": result_meta.get("exit_code"),
-                    "signal": result_meta.get("signal"),
+                    **_process_fact_fields(result_meta),
                     "result_preview": sanitize_tool_result_for_log(
                         truncate_for_log(result.get("result", ""), 500)
                     ),
@@ -1038,6 +1054,7 @@ def _execute_with_timeout(
                         "duration_sec": round(time.perf_counter() - started_at, 3),
                         "is_error": bool(result.get("is_error")),
                         "status": result_meta.get("status"),
+                        **_process_fact_fields(result_meta),
                         "late": True,
                         "terminal_wait": True,
                     }, correlation, tool_call_id=tool_call_id))

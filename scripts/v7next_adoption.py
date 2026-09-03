@@ -105,8 +105,10 @@ DEFERRED_OUT_OF_V70 = {
     # batch №12 A (C6 residuals), batch №8 5=A (task_results eternal).
     # Operator disclosures without an owner decision yet (each an open item of
     # the STOP batch): the wave-4 observations W4-F3/W4-F4, the mutating
-    # delegation scenarios, the never-executed paid E2E lane, the five typed
-    # process-fact surfaces, spec §6.4 paths/roots, the F23 acceptance capsule.
+    # delegation scenarios, the never-executed paid E2E lane, spec §6.4
+    # paths/roots, the F23 acceptance capsule. (The five typed process-fact
+    # surfaces LEFT this record: owner batch №13 item 10 = B pulled
+    # DEFER-TYPED-PROC-5 into 7.0, and its row is done.)
     "DEFER-HEADLESS-CANCEL": OWNER,
     "DEFER-FROZEN-2": OWNER,
     "DEFER-C6-RESIDUALS": OWNER,
@@ -115,7 +117,6 @@ DEFERRED_OUT_OF_V70 = {
     "W4-F4": OPERATOR,
     "DEFER-E2E-DELEG-MUT": OPERATOR,
     "DEFER-E2E-PAID-LANE": OPERATOR,
-    "DEFER-TYPED-PROC-5": OPERATOR,
     "DEFER-SPEC64-PATHS": OPERATOR,
     "DEFER-F23-ACCEPTANCE": OPERATOR,
 }
