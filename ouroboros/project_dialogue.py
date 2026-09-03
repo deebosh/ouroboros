@@ -804,13 +804,12 @@ def _completion_excerpt(result: Dict[str, Any]) -> str:
 def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     """One TERMINATED host clause for BOTH lifecycle rows.
 
-    A host row must not present an unaccepted claim as the whole story: an
-    acceptance decision that is anything but accepted leads with its stored
-    rationale (stripped, flattened and capped like every durable row text),
+    A host row must not present an unaccepted claim as the whole story: a
+    non-accepted decision leads with its full upstream-bounded rationale;
     otherwise the execution reason stands. The Python twin of
     ``taskReasonDetail``'s acceptance branch; callers add no punctuation.
     """
-    from ouroboros.outcomes import ACCEPTANCE_ACCEPTED
+    from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, REASON_OWNER_REQUESTED_FINALIZATION
 
     decision: Dict[str, Any] = {}
     for source in (event, result):
@@ -820,12 +819,13 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
                 decision = holder["acceptance_decision"]
     status = str(decision.get("status") or "").strip()
     reason = str(result.get("reason_code") or event.get("reason_code") or "")
-    if status and status != ACCEPTANCE_ACCEPTED and outcome_phase(result, event) in {"done", "warn"}:
+    if (reason != REASON_OWNER_REQUESTED_FINALIZATION and status != ACCEPTANCE_ACCEPTED
+            and status and outcome_phase(result, event) in {"done", "warn"}):
         clause = f"Acceptance: {status}"
         rationale = " ".join(strip_markdown(str(decision.get("rationale") or "")).split())
         if rationale:
-            clause += " — " + (rationale if len(rationale) <= 240 else rationale[:239].rstrip() + "…")
-    elif reason:
+            clause += " — " + rationale
+    elif reason and reason != REASON_OWNER_REQUESTED_FINALIZATION:
         clause = f"Reason: {reason}"
     else:
         return ""
@@ -913,7 +913,7 @@ def enqueue_project_completion_summary(
             return False
         excerpt = _completion_excerpt(result)
         verdict = _completion_verdict(result, task_done_event)
-        lead = f"{verdict} " if verdict.startswith("Acceptance:") else ""
+        lead = f"{verdict} " if verdict else ""
         event = {
             "type": "send_message", "chat_id": 1, "task_id": tid,
             "text": (f"{snapshot['target_label']} · "

@@ -193,6 +193,7 @@ def test_requested_depth_is_recorded_as_telemetry_and_never_narrows_the_cap():
     apart from a reduced capability. The request is now recorded — and recording
     it must not become a second cap: asking for less than the configured depth
     used to narrow what the descendants were permitted."""
+    from ouroboros.depth_evidence import build_depth_summary
     from ouroboros.tools.control_delegation import child_budget_for_schedule
 
     root = {"delegation_budget": {"may_delegate": True}}
@@ -212,8 +213,13 @@ def test_requested_depth_is_recorded_as_telemetry_and_never_narrows_the_cap():
     # Absent or zero means no request of record — never a recorded zero.
     assert _schedule()["requested_depth"] is None
     assert _schedule(requested_depth=0)["requested_depth"] is None
-    # The immutable host ceiling still bounds what can be recorded.
-    assert _schedule(requested_depth=99)["requested_depth"] == 10
+    # The immutable host ceiling bounds authority, not the attested request.
+    over_cap = _schedule(requested_depth=99)
+    assert over_cap["requested_depth"] == 99
+    assert over_cap["permitted_depth"] == 4
+    assert build_depth_summary(
+        {"delegation_budget": {"depth_provenance": over_cap}}, [],
+    )["status"] == "capability_reduced"
     # A non-integer fails SOFT: the handler validates argument names, not value
     # types, and refusing a whole schedule over a telemetry field would trade a
     # real capability for bookkeeping.

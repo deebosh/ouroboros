@@ -126,6 +126,41 @@ def test_task_summary_scan_uses_bounded_live_tail(tmp_path, monkeypatch):
     assert seen == {"path": path, "max_entries": 123, "tail_bytes": 256 * 1024}
 
 
+def test_tasks_notify_waits_for_latest_final_summary_for_each_task(tmp_path, monkeypatch):
+    nt = _load(); api, data = _api(tmp_path); _Rec.sent = []
+    monkeypatch.setattr(nt, "TelegramClient", _Rec)
+    chat = data / "logs" / "chat.jsonl"
+    working = {
+        "type": "task_summary", "task_id": "same1", "outcome_final": False,
+        "outcome_phase": "working",
+        "outcome_axes": {"lifecycle": {"status": "completed"},
+                         "execution": {"status": "ok"}},
+    }
+    chat.write_text(json.dumps(working) + "\n", encoding="utf-8")
+    state = {"notified_task_ids": []}
+
+    asyncio.run(nt._check_tasks_notify(
+        api, {"TELEGRAM_NOTIFY_TASKS": "on"}, 42, state, "en",
+    ))
+    assert _Rec.sent == []
+    assert state["notified_task_ids"] == []
+
+    terminal = {
+        **working, "outcome_final": True, "outcome_phase": "warn",
+        "outcome_axes": {"lifecycle": {"status": "completed"},
+                         "execution": {"status": "ok"},
+                         "review": {"status": "degraded"}},
+    }
+    with open(chat, "a", encoding="utf-8") as f:
+        f.write(json.dumps(terminal) + "\n")
+
+    asyncio.run(nt._check_tasks_notify(
+        api, {"TELEGRAM_NOTIFY_TASKS": "on"}, 42, state, "en",
+    ))
+    assert _Rec.sent == [(42, "⚠️ Task same1 done")]
+    assert state["notified_task_ids"] == ["same1"]
+
+
 def test_notify_disabled_is_silent(tmp_path, monkeypatch):
     nt = _load(); api, data = _api(tmp_path); _Rec.sent = []
     monkeypatch.setattr(nt, "TelegramClient", _Rec)
@@ -551,8 +586,8 @@ def test_tasks_notify_consumes_the_host_status_phase_when_the_row_carries_one(
     Two owner-visible flips follow from the card's rule: a task whose execution
     was clean but whose acceptance review degraded now warns (it used to read
     ✅), and an owner-requested stop is a success (it used to warn because the
-    stop leaves a best_effort execution axis). Rows without the field — legacy
-    history and the pre-finalization ``working`` row — keep the axes rule.
+    stop leaves a best_effort execution axis). Legacy rows without the field
+    keep the axes rule; a pre-finalization ``working`` row is not a candidate.
     """
     nt = _load(); api, data = _api(tmp_path); _Rec.sent = []
     monkeypatch.setattr(nt, "TelegramClient", _Rec)
@@ -577,5 +612,5 @@ def test_tasks_notify_consumes_the_host_status_phase_when_the_row_carries_one(
     assert [text for _chat, text in _Rec.sent] == [
         "⚠️ Task review1 done",
         "✅ Task stop1 done",
-        "⚠️ Task open1 done",
     ]
+    assert state["notified_task_ids"] == ["review1", "stop1"]

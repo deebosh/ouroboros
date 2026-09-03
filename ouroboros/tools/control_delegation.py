@@ -233,8 +233,8 @@ def depth_provenance_for_schedule(
         except (TypeError, ValueError):
             requested = None
     if requested is None:
-        # An explicit request of record on THIS call, bounded by the immutable
-        # host ceiling. A non-integer fails soft to "no request recorded": the
+        # An explicit request of record on THIS call stays unchanged. A
+        # non-integer fails soft to "no request recorded": the
         # field is telemetry, and refusing the whole schedule over it would
         # trade a real capability for a bookkeeping nicety.
         try:
@@ -242,7 +242,7 @@ def depth_provenance_for_schedule(
         except (TypeError, ValueError):
             explicit = 0
         if explicit > 0:
-            requested = min(MAX_SUBAGENT_DEPTH_HARD_CAP, explicit)
+            requested = explicit
     try:
         cap = min(MAX_SUBAGENT_DEPTH_HARD_CAP, max(0, int(max_depth)))
     except (TypeError, ValueError):

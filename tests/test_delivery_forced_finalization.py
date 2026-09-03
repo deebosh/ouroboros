@@ -610,7 +610,7 @@ def test_provider_unavailable_keeps_current_model_candidate_byte_exact(
     text, usage, returned_trace = loop._handle_provider_unavailable(limit_ctx)
 
     assert text == answer
-    assert usage["terminal_origin"] == "model_final"
+    assert usage["terminal_origin"] == "host_salvage"
     assert usage["terminal_plan_review_open"] is True
     assert "HOST FACT" not in text
     assert returned_trace["forced_finalization"]["source"] == "retained_candidate"
@@ -629,7 +629,7 @@ def test_provider_unavailable_strips_host_suffix_already_on_retained_candidate(
     text, usage, returned_trace = loop._handle_provider_unavailable(limit_ctx)
 
     assert text == "Model answer."
-    assert usage["terminal_origin"] == "model_final"
+    assert usage["terminal_origin"] == "host_salvage"
     assert registry._ctx._delivery_candidate.full_text == text
     assert returned_trace["forced_finalization"]["candidate_sha256"] == hashlib.sha256(
         text.encode("utf-8")
@@ -724,7 +724,7 @@ def test_provider_unavailable_prefers_current_candidate_over_incomplete_forced_r
     text, usage, returned_trace = loop._handle_provider_unavailable(limit_ctx)
 
     assert text == answer
-    assert usage["terminal_origin"] == "model_final"
+    assert usage["terminal_origin"] == "host_salvage"
     assert returned_trace["forced_finalization"]["source"] == "retained_candidate"
 
 
@@ -2589,4 +2589,3 @@ def test_forced_bypass_probe_failure_records_unknown_eligibility(tmp_path, monke
         "trigger": "bypassed_round_limit",
     }
     assert "acceptance_decision" not in trace
-

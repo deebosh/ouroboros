@@ -2785,9 +2785,7 @@ def _provider_unavailable_result(
         )
         return text, usage, llm_trace
     if is_transport_wait:
-        # No-resend terminal: salvage, no forced-final call over a dead
-        # egress. Stamp BEFORE the composer (owner-stop pattern): a SCHEDULED
-        # swarm handoff clears it; guard mirrors the sibling below.
+        # No-resend terminal over dead egress.
         live_trace = getattr(ctx, "llm_trace", None)
         llm_trace = live_trace if isinstance(live_trace, dict) else {}
         ctx.accumulated_usage["execution_status"] = RESULT_INFRA_FAILED
@@ -2799,7 +2797,6 @@ def _provider_unavailable_result(
         if str(usage.get("reason_code") or "") == "provider_unavailable":
             usage["execution_status"] = RESULT_INFRA_FAILED
         return text, usage, llm_trace
-    # No-call shapes; see provider_no_call_source
     no_call, wall = provider_no_call_source(ctx.accumulated_usage, is_deadline_exhausted)
     if no_call:
         if wall:
@@ -4464,8 +4461,8 @@ def _forced_fallback_result(
     candidate_reason: str = "",
     provider_terminal: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Return a current or fallback candidate."""
-
+    """Compose fallback."""
+    provider_terminal = provider_terminal or reason_code in ("context_overflow", "provider_unavailable")
     router_result = _forced_swarm_router_result(ctx, llm_trace, reason_code)
     if router_result is not None:
         return router_result
@@ -4487,7 +4484,8 @@ def _forced_fallback_result(
             sanitize_tool_result_for_log(_compose_delivery_suffix(candidate.full_text, suffix))
         )
         ctx.accumulated_usage.update(
-            terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL,
+            terminal_origin=(TERMINAL_ORIGIN_HOST_SALVAGE if provider_terminal
+                             else TERMINAL_ORIGIN_MODEL_FINAL),
             terminal_plan_review_open=bool(plan_suffix),
         )
         if composed != candidate.full_text:

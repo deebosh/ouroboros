@@ -137,11 +137,13 @@ def _summary_ids_in_tail(api, limit: int = 200) -> list:
         max_entries=limit,
         tail_bytes=256 * 1024,
     )
-    ids = []
+    summaries = {}
     for e in rows:
-        if str(e.get("type") or "") == "task_summary" and e.get("task_id"):
-            ids.append((str(e.get("task_id")), e))
-    return ids
+        if (str(e.get("type") or "") == "task_summary" and e.get("task_id")
+                and e.get("outcome_final") is not False
+                and str(e.get("outcome_phase") or "") != "working"):
+            summaries[str(e.get("task_id"))] = e
+    return list(summaries.items())
 
 
 async def _check_tasks_notify(

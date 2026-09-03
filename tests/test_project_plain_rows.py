@@ -334,13 +334,14 @@ def test_host_status_phase_folds_the_legacy_partial_result_status_to_a_warning()
 
 
 def test_owner_requested_stop_is_done_on_the_host_row_too():
-    from ouroboros.project_dialogue import completion_status_label
+    from ouroboros.project_dialogue import _completion_verdict, completion_status_label
 
     stopped = {
         "status": "completed", "reason_code": "owner_requested_finalization",
         "outcome_axes": {"execution": {"status": "best_effort"}},
     }
     assert completion_status_label(stopped, {}) == "Done"
+    assert _completion_verdict(stopped, {}) == ""
 
 
 A4_DECISION = {
@@ -421,6 +422,21 @@ def test_host_verdict_flattens_and_strips_a_markdown_rationale():
     assert _completion_verdict(asking, {}) == "Acceptance: revision_requested — Did the tests ever run?"
 
 
+def test_host_verdict_keeps_the_full_bounded_acceptance_rationale():
+    from ouroboros.project_dialogue import _completion_verdict
+
+    rationale = ("Review evidence " + ("remains material and owner-visible. " * 9)).strip()
+    result = _a4_result(outcome_axes={
+        "execution": {"status": "ok"},
+        "review": {"status": "degraded", "acceptance_decision": {
+            "status": "revision_requested", "rationale": rationale,
+        }},
+    })
+
+    assert len(rationale) > 240
+    assert _completion_verdict(result, {}) == f"Acceptance: revision_requested — {rationale}"
+
+
 def test_host_verdict_states_a_decision_without_a_rationale_alone():
     from ouroboros.project_dialogue import _completion_verdict
 
@@ -463,6 +479,19 @@ def test_host_verdict_leads_both_lifecycle_rows(tmp_path, monkeypatch):
         f"Launch 🚀 › Ship release · Done with warnings\n{A4_CLAUSE} Release shipped."
     )
     assert "final_message" not in queued[0]["text"]
+
+    ordinary = _a4_result(
+        reason_code="budget_exhausted",
+        outcome_axes={"execution": {"status": "degraded"}},
+    )
+    assert enqueue_project_completion_summary(
+        tmp_path, {"status": "completed"}, "root-project", root, ordinary,
+        {"status": "completed", "outcome_axes": ordinary["outcome_axes"]},
+    ) is True
+    assert queued[1]["text"] == (
+        "Launch 🚀 › Ship release · Done with warnings\n"
+        "Reason: budget_exhausted. Release shipped."
+    )
 
     assert append_terminal_task_projection(tmp_path, "root-project", root, result, done)
     rows = [
