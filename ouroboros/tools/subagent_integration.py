@@ -494,20 +494,18 @@ def _handle_external_workspace_integration(
             f"the shared workspace write_root/workspace_root. Verdict: {verdict_path or '(unwritten)'}."
         )
 
+    def _target_mismatch_verdict(why: str, conflicts: List[str], root: Any) -> str:
+        return _write_verdict(
+            ctx, child_task_id, outcome="shared_workspace_target_mismatch",
+            reason=reason or why, files=touched, manifest=manifest, applied=False,
+            conflicts=conflicts, protected=[], target=str(root))
+
     child_target = pathlib.Path(child_root).resolve(strict=False)
     if child_target != parent_external_root:
-        verdict_path = _write_verdict(
-            ctx,
-            child_task_id,
-            outcome="shared_workspace_target_mismatch",
-            reason=reason or "child write_root/workspace_root does not match parent active external workspace",
-            files=touched,
-            manifest=manifest,
-            applied=False,
-            conflicts=[f"child={child_target}", f"parent={parent_external_root}"],
-            protected=[],
-            target=str(parent_external_root),
-        )
+        verdict_path = _target_mismatch_verdict(
+            "child write_root/workspace_root does not match parent active external workspace",
+            [f"child={child_target}", f"parent={parent_external_root}"],
+            parent_external_root)
         return (
             "⚠️ INTEGRATE_EXTERNAL_WORKSPACE_TARGET_MISMATCH: child wrote to "
             f"{child_target}, but this parent is active in {parent_external_root}. Do not verify or "
@@ -517,18 +515,11 @@ def _handle_external_workspace_integration(
 
     target = parent_external_root
     if requested_target and pathlib.Path(requested_target).resolve(strict=False) != target:
-        verdict_path = _write_verdict(
-            ctx,
-            child_task_id,
-            outcome="shared_workspace_target_mismatch",
-            reason=reason or "target_root does not match parent active external workspace",
-            files=touched,
-            manifest=manifest,
-            applied=False,
-            conflicts=[f"target_root={pathlib.Path(requested_target).resolve(strict=False)}", f"parent={target}"],
-            protected=[],
-            target=str(target),
-        )
+        verdict_path = _target_mismatch_verdict(
+            "target_root does not match parent active external workspace",
+            [f"target_root={pathlib.Path(requested_target).resolve(strict=False)}",
+             f"parent={target}"],
+            target)
         return (
             "⚠️ INTEGRATE_EXTERNAL_WORKSPACE_TARGET_MISMATCH: child wrote to "
             f"{child_root}, but target_root was {requested_target}. Do not verify or apply the "
