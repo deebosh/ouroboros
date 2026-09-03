@@ -611,6 +611,80 @@ def check_evolution_authority(
         state.release_file_lock(state.STATE_LOCK_PATH, lock_fd)
 
 
+def _build_commit_receipt(
+    campaign_id: str, transaction_id: str, task_id: str, commit_sha: str,
+    *, reason: str, recorded_at: str,
+) -> Dict[str, Any]:
+    """The exact receipt shape ``evolution_commit_receipt_error`` validates.
+
+    One constructor so the receipt written by the tool path and the one
+    re-derived by boot recovery are the same durable fact, differing only in
+    ``reason`` (which records HOW the SHA was attributed).
+    """
+    return {
+        "ok": True,
+        "reason": reason,
+        "campaign_id": str(campaign_id),
+        "transaction_id": str(transaction_id),
+        "task_id": str(task_id),
+        "commit_sha": str(commit_sha),
+        "recorded_at": recorded_at,
+    }
+
+
+def adopt_evolution_commit_intent(
+    campaign: Dict[str, Any], tx: Dict[str, Any], head_sha: str = "",
+) -> str:
+    """Finish an interrupted commit receipt from the pre-commit intent.
+
+    ``git commit`` and its SHA receipt are two writes; a crash between them used
+    to leave a reviewed commit on HEAD that no boot path could attribute (the
+    markerless reconcile short-circuits on an empty ``commit_sha``). The intent
+    written before the commit carries the exact reviewed tree and parents, so
+    attribution here is structural rather than a guess: the commit at HEAD is
+    adopted only when its tree AND its full parent list are identical to that
+    reviewed material. A failed commit, a contained orphan (the branch is rewound
+    to the parent) or any later HEAD movement fails the match and recovery stays
+    fail-closed. The caller owns persistence, so the recovered SHA and its receipt
+    land in the SAME write as the decision that consumed them.
+    """
+    intent = tx.get("commit_intent") if isinstance(tx, dict) else None
+    if not isinstance(intent, dict):
+        return ""
+    tree_sha = str(intent.get("tree_sha") or "")
+    parents = [str(value) for value in (intent.get("parents") or [])]
+    if not tree_sha or not parents:
+        return ""
+    head = str(head_sha or "").strip() or "HEAD"
+    try:
+        from supervisor import git_ops
+
+        rc_tree, actual_tree, _ = git_ops.git_capture(["git", "rev-parse", f"{head}^{{tree}}"])
+        rc_parents, parent_line, _ = git_ops.git_capture(
+            ["git", "rev-list", "--parents", "-n", "1", head]
+        )
+    except Exception:
+        return ""
+    fields = parent_line.strip().split() if rc_parents == 0 else []
+    if rc_tree != 0 or not fields or actual_tree.strip() != tree_sha or fields[1:] != parents:
+        return ""
+    commit_sha, now = fields[0], utc_now_iso()
+    tx.update({
+        "commit_sha": commit_sha,
+        "commit_receipt": _build_commit_receipt(
+            str(campaign.get("id") or ""), str(tx.get("transaction_id") or ""),
+            str(tx.get("task_id") or ""), commit_sha,
+            reason="recovered_from_commit_intent", recorded_at=now,
+        ),
+        "commit_receipt_recovered": True,
+        "restart_required": True,
+        "restart_verified": False,
+        "updated_at": now,
+    })
+    campaign["active_transaction"] = tx
+    return commit_sha
+
+
 def record_evolution_commit(
     campaign_id: str, transaction_id: str, task_id: str, commit_sha: str,
 ) -> Dict[str, Any]:
@@ -646,15 +720,10 @@ def record_evolution_commit(
                 refused["reason"] = reason
                 return None
             now = utc_now_iso()
-            receipt.update({
-                "ok": True,
-                "reason": "recorded",
-                "campaign_id": str(campaign_id),
-                "transaction_id": str(transaction_id),
-                "task_id": str(task_id),
-                "commit_sha": commit_sha,
-                "recorded_at": now,
-            })
+            receipt.update(_build_commit_receipt(
+                campaign_id, transaction_id, task_id, commit_sha,
+                reason="recorded", recorded_at=now,
+            ))
             tx.update({
                 "preflight_status": "passed",
                 "advisory_status": "fresh_or_bypassed",
@@ -1109,6 +1178,11 @@ def update_evolution_campaign_after_task(
             history.append(row)
             campaign["history"] = history[-50:]
             has_commit = bool(str(tx.get("commit_sha") or "").strip())
+            if not has_commit:
+                # A crash between the reviewed commit and its SHA receipt can reach
+                # task-done before boot recovery: adopt the commit the intent proves,
+                # so the cycle is classified as commit-bearing instead of ``no_op``.
+                has_commit = bool(adopt_evolution_commit_intent(campaign, tx))
             restart_verified = bool(tx.get("restart_verified"))
             has_rescue = bool(str(tx.get("rescue_ref") or "").strip())
             if has_commit and restart_verified:

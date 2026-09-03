@@ -11,12 +11,15 @@ it binds the plumbing owner at import time.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
 from typing import Any, Dict, Optional
 
 from ouroboros.tools.registry import ToolContext
 from ouroboros.tools.git_plumbing import _sanitize_git_error
+
+log = logging.getLogger("ouroboros.tools.git")
 
 
 def _git():
@@ -71,8 +74,14 @@ def _check_evolution_commit_stage(
     *,
     phase: str,
     commit_sha: str = "",
+    fingerprint: Optional[Dict[str, Any]] = None,
 ) -> tuple[Dict[str, str], str]:
-    """Recheck the exact evolution claim at a commit/publication boundary."""
+    """Recheck the exact evolution claim at a commit/publication boundary.
+
+    The ``pre_commit_authority`` boundary is the last gate before ``git commit``:
+    the same check that authorizes the commit also records WHAT it will create,
+    so the reviewed material is durable before the commit exists.
+    """
     claim, authority = _git()._evolution_commit_authority(
         ctx,
         commit_sha=commit_sha,
@@ -80,6 +89,8 @@ def _check_evolution_commit_stage(
         require_uncommitted=phase in {"pre_review_authority", "pre_commit_authority"},
     )
     if authority.get("ok"):
+        if phase == "pre_commit_authority":
+            _git()._record_evolution_commit_intent(claim, fingerprint or {})
         return claim, ""
     reason = authority.get("reason") or "unknown"
     if phase == "pre_review_authority":
@@ -115,6 +126,34 @@ def _check_evolution_commit_stage(
     return claim, message
 
 
+def _record_evolution_commit_intent(claim: Dict[str, str], fingerprint: Dict[str, Any]) -> None:
+    """Write the pre-commit intent: the exact material the commit is about to create.
+
+    Phase one of the two-phase reviewed commit. ``git commit`` and the SHA
+    receipt below are separate durable writes, and a crash between them left a
+    reviewed commit on HEAD that no boot path attributed. Recording the reviewed
+    tree and parents FIRST lets boot recovery prove that commit belongs to this
+    transaction. Best-effort by construction: a refused intent write means the
+    claim already lost authority, which the receipt step reports as an orphan —
+    blocking the commit here would trade a recoverable window for a lost cycle.
+    """
+    binding = fingerprint.get("binding") if isinstance(fingerprint, dict) else None
+    if not isinstance(binding, dict):
+        return
+    from supervisor.evolution_lifecycle import update_evolution_transaction
+
+    ok = update_evolution_transaction(claim.get("task_id", ""), commit_intent={
+        "tree_sha": str(binding.get("tree_sha") or ""),
+        "parents": [str(value) for value in (binding.get("parents") or [])],
+        "transaction_id": str(claim.get("transaction_id") or ""),
+    })
+    if not ok:
+        log.warning(
+            "evolution commit intent was not persisted; a crash before the SHA "
+            "receipt would leave the reviewed commit unattributed",
+        )
+
+
 def _preserve_evolution_orphan(
     ctx: ToolContext, commit_sha: str, *, created_tag: str = "",
 ) -> str:
@@ -125,6 +164,12 @@ def _preserve_evolution_orphan(
     dirty is safer than aligning them to the rewound branch and losing concurrent work.
     """
     sha = str(commit_sha or "").strip()
+    # Containment DISOWNS this commit, so its pre-commit intent must not survive:
+    # boot recovery may only adopt a commit no authority check refused. Cleared
+    # even when the ref surgery below fails — the refusal is the durable fact.
+    from supervisor.evolution_lifecycle import update_evolution_transaction
+
+    update_evolution_transaction(str(getattr(ctx, "task_id", "") or ""), commit_intent={})
     ref_name = f"refs/ouroboros/evolution-orphans/{sha}"
     try:
         resolved = _git().run_cmd(

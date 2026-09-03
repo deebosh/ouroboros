@@ -135,7 +135,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     # leaf docstring.
     "ouroboros/tools/git_evolution.py": ("ouroboros/tools/git.py", "_git", frozenset({
         "_evolution_commit_authority", "_preserve_evolution_orphan",
-        "_record_commit_attempt", "run_cmd",
+        "_record_commit_attempt", "_record_evolution_commit_intent", "run_cmd",
     })),
     "ouroboros/tools/git_plumbing.py": ("ouroboros/tools/git.py", "_git", frozenset({
         "_BINARY_EXTENSIONS", "acquire_exclusive_file_lock", "format_protected_paths",

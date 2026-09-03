@@ -1319,7 +1319,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str,
         post_fingerprint = outcome.get("post_fingerprint", {}) or {}
 
         if evolution_claim:
-            _, authority_error = _check_evolution_commit_stage(ctx, commit_message, _commit_start, phase="pre_commit_authority")
+            _, authority_error = _check_evolution_commit_stage(ctx, commit_message, _commit_start, phase="pre_commit_authority", fingerprint=post_fingerprint)
             if authority_error:
                 return authority_error
 
@@ -1650,6 +1650,7 @@ from ouroboros.tools.git_evolution import (  # noqa: E402,F401
     _evolution_commit_authority,
     _evolution_publication_stopped_result,
     _preserve_evolution_orphan,
+    _record_evolution_commit_intent,
     _record_evolution_commit_receipt,
 )
 
