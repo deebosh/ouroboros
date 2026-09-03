@@ -1768,7 +1768,7 @@ def test_terminal_bench_metadata_declares_all_assisting_models(monkeypatch):
     # Every shipped default is read from the config SSOT and must be visible.
     for helper in SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"].split(","):
         assert helper in meta
-    assert SETTINGS_DEFAULTS["OUROBOROS_SCOPE_REVIEW_MODELS"] in meta
+    assert "scope_review" not in meta
     assert "commit_review_triad" in meta
     assert meta.count("model_name:") >= 3
 

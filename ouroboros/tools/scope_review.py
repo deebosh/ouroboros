@@ -996,13 +996,14 @@ def _call_scope_llm(
     (5.2); parsing, classification and blocking above this call are identical
     for both deliveries (5.3)."""
     from ouroboros.config import resolve_effort as _resolve_effort
-    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
+    from ouroboros.tools.review import _owner_deadline_at
 
     scope_model = scope_model or _get_scope_model()
     # 6.1/6.3: the row's own effort wins; the global key stays the default.
     scope_effort = slot_effort or _resolve_effort("scope_review")
     delegated = str(getattr(route, "value", route) or "") == "agent_session"
-    retrieves = delegated or bool(subagent_id)  # RETRIEVES class: no pack
+    retrieves = delivery_retrieves(route, subagent_id)  # RETRIEVES class: no pack
     # Output budget scales with the reviewer window: requesting the absolute
     # 100K reserve on a small-window model would 400 on input+max_tokens.
     _scope_output_tokens, _ = _window_scaled_reserves(
@@ -1046,6 +1047,7 @@ def _call_scope_llm(
             session_task=session_task if retrieves else "",
             session_root=session_root if retrieves else "",
             reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
+            deadline_at=_owner_deadline_at(ctx),
             # The extraction fallback canonicalizes to the SCOPE contract: required-
             # matrix shape, eight verbatim item ids (D19 — never a looser contract).
             policy=(

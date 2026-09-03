@@ -1527,7 +1527,7 @@ def test_acceptance_panel_declines_wave_on_insufficient_budget(monkeypatch, tmp_
     from ouroboros.tools import review_helpers
 
     calls = {"panel": 0}
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [SimpleNamespace(model="m1"), SimpleNamespace(model="m2")])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [SimpleNamespace(model="m1"), SimpleNamespace(model="m2")])
     def _boom(*a, **k):
         calls["panel"] += 1
         raise AssertionError("reviewer must not be called")

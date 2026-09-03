@@ -386,16 +386,14 @@ export function renderSettingsPage() {
                     <!-- Review lanes and Delegation moved to the Agents tab
                          (D-10): they answer "who does the work", not "which API
                          model id". One capability, one section — no control here
-                         duplicates one there. -->
+                         duplicates one there. The deep self-review reviewer is a
+                         Review lanes row too (R7); its former model field's key,
+                         OUROBOROS_MODEL_DEEP_SELF_REVIEW, survives only as the
+                         backend's invisible migration source for that row. -->
 
                     <div class="form-section">
                         <h3>Other Model Slots</h3>
                         <div class="form-grid two">
-                            <div class="form-field">
-                                <label>Deep Self-Review Model</label>
-                                <input id="s-deep-self-review-model" placeholder="openai/gpt-5.6-sol-pro">
-                                <div class="settings-inline-note">Dedicated model slot for deep self-review. Empty uses the shipped default.</div>
-                            </div>
                             <div class="form-field">
                                 <label>Web Search Model</label>
                                 <input id="s-websearch-model" placeholder="gpt-5.2">

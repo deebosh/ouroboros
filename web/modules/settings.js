@@ -35,7 +35,10 @@ const INPUT_FIELDS = [
     // 6.1: OUROBOROS_REVIEW_MODELS / OUROBOROS_SCOPE_REVIEW_MODELS are no
     // longer authored here — the Review lanes section composes the ONE
     // structured setting; the comma keys stay a backend-derived projection.
-    ['s-deep-self-review-model', 'OUROBOROS_MODEL_DEEP_SELF_REVIEW'], ['s-skills-repo-path', 'OUROBOROS_SKILLS_REPO_PATH'],
+    // R7: OUROBOROS_MODEL_DEEP_SELF_REVIEW is not authored here either — the
+    // deep self-review row lives in Review lanes; the key is the backend's
+    // invisible migration source for that row.
+    ['s-skills-repo-path', 'OUROBOROS_SKILLS_REPO_PATH'],
     ['s-clawhub-registry-url', 'OUROBOROS_CLAWHUB_REGISTRY_URL'], ['s-websearch-model', 'OUROBOROS_WEBSEARCH_MODEL'], ['s-gh-repo', 'GITHUB_REPO'],
     ['s-local-source', 'LOCAL_MODEL_SOURCE'], ['s-local-filename', 'LOCAL_MODEL_FILENAME'], ['s-local-chat-format', 'LOCAL_MODEL_CHAT_FORMAT'],
     ['s-subagent-worktree-root', 'OUROBOROS_SUBAGENT_WORKTREE_ROOT'], ['s-subagent-projects-root', 'OUROBOROS_SUBAGENT_PROJECTS_ROOT'],
