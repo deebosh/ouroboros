@@ -1569,7 +1569,10 @@ by "Provider Independence" above. Call-site imperatives:
   and never a resend of the unresolved one, deciding the `retry_same_request`
   flag before the durable row is written
   (`tests/test_transport_death_retry.py`). Every other caller keeps
-  `transport_death_retries=0`.
+  `transport_death_retries=0`. A round that holds an unresolved attempt
+  sends nothing further except the typed-death repeats — a repeat that fails
+  with any other class ends the round on the unknown no-resend terminal (a
+  released $0 repeat stays the free wait episode's to redial).
 
 #### Timeout & Wait Control
 

@@ -3666,9 +3666,8 @@ def _forced_orphan_note(ctx: _RoundLimitContext, *, include_terminal: bool = Tru
                 "integrated", "irrelevant", "deferred", "discarded", "cancelled",
             }:
                 return False  # explicitly handled
-            if not include_terminal and str(c.get("status") or "").strip().lower() in FINAL_STATUSES:
-                return False  # completed children were already surfaced via the reminder
-            return True
+            # completed children were already surfaced via the reminder
+            return include_terminal or str(c.get("status") or "").strip().lower() not in FINAL_STATUSES
 
         undecided = [c for c in children if _undecided(c)]
         deferred = [c for c in children if _child_disposition_state(c) == "deferred"]
@@ -6270,7 +6269,7 @@ def run_llm_loop(
             transport_wait = _reconcile_transport_wait(
                 transport_wait, ctx, msg_present=msg is not None, error_kind=last_error_kind,
                 drive_logs=drive_logs, task_id=task_id, model=active_model, emit_progress=emit_progress)
-            if msg is None and _fallback_chain_allowed(ctx, last_error_kind, transport_wait):
+            if msg is None and _fallback_chain_allowed(ctx, last_error_kind, transport_wait, accumulated_usage):
                 _episode_before_chain = transport_wait is not None
                 (
                     msg,

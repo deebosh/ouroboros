@@ -153,9 +153,19 @@ def _use_local_fallback_configured() -> bool:
     return os.environ.get("USE_LOCAL_FALLBACK", "").lower() in ("true", "1")
 
 
-def fallback_chain_allowed(ctx: Any, last_error_kind: str, episode: Optional[TransportWaitEpisode]) -> bool:
+def fallback_chain_allowed(
+    ctx: Any, last_error_kind: str, episode: Optional[TransportWaitEpisode],
+    accumulated_usage: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Whether this round may walk the cross-model fallback chain."""
+    from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
+
     if bool(getattr(ctx, "exact_model_route", False)):
+        return False
+    if isinstance((accumulated_usage or {}).get(TRANSPORT_DEATHS_KEY), dict):
+        # The round still holds an unresolved attempt (a granted transport-death
+        # repeat with no usable response since): no paid candidate may dial over
+        # it, whatever the last kind says.
         return False
     if episode is not None:
         # Q4: during a remote transport outage the chain runs at most ONCE per
@@ -569,23 +579,28 @@ def provider_failure_hint(accumulated_usage: Dict[str, Any]) -> str:
 
 def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
     """Explain whether retrying later is likely to help."""
-    kind = str(accumulated_usage.get("_last_llm_error_kind") or "").strip()
-    if kind == "provider_outcome_unknown":
-        from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
+    from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
 
-        deaths = accumulated_usage.get(TRANSPORT_DEATHS_KEY)
-        repeats = int(deaths.get("count") or 0) if isinstance(deaths, dict) else 0
-        if repeats:
-            # Paid repeats already spent on THIS round's typed transport deaths
-            # (the record is round-keyed and cleared by a successful send): name
-            # them so the terminal never reads as "sent once".
-            return (
-                f" The dispatched request has no terminal provider outcome. {repeats} "
-                "earlier physical attempt(s) of this round died with a typed transport "
-                "death and were repeated as new attempts (the dead ones stay unresolved "
-                "at their upper bound); no further retry or paid fallback was sent, "
-                "since either could duplicate live work."
-            )
+    kind = str(accumulated_usage.get("_last_llm_error_kind") or "").strip()
+    deaths = accumulated_usage.get(TRANSPORT_DEATHS_KEY)
+    repeats = int(deaths.get("count") or 0) if isinstance(deaths, dict) else 0
+    if repeats:
+        # Paid repeats already spent on the last dispatched round's typed transport
+        # deaths (the record is round-keyed and cleared only by a usable response):
+        # name them, and the class the repeat failed with, so the terminal never
+        # reads as "sent once" and never promises a retry the fence forbids.
+        last = (
+            " the dispatched request has no terminal provider outcome;"
+            if kind == "provider_outcome_unknown" else f" the repeat failed as {kind};"
+        )
+        return (
+            f" {repeats} earlier physical attempt(s) of the last dispatched round died "
+            "with a typed transport death and were repeated as new attempts (the dead "
+            f"ones stay unresolved at their upper bound);{last} no further retry or paid "
+            "fallback was sent while the earlier request has no terminal outcome, since "
+            "either could duplicate live work."
+        )
+    if kind == "provider_outcome_unknown":
         return (
             " The dispatched request has no terminal provider outcome, so no "
             "retry or paid fallback was sent; either could duplicate live work."

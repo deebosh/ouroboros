@@ -56,6 +56,20 @@ def _death(exc_cls=httpx.ReadError, state: str = "unresolved", provider: str = "
         return exc
 
 
+def _status_failure(status: int):
+    """A provider status on the repeat (the capture already holds the death's row)."""
+    exc = RuntimeError(f"HTTP {status} from the provider")
+    exc.status_code = status
+    exc.physical_attempt_capture = ua.PhysicalAttemptCapture(
+        attempt_id="pa-status", model="test-model", provider="openrouter", state="unresolved",
+        candidate_measurement_kind="opaque", provider_status_code=status,
+    )
+    return exc
+
+
+EMPTY_RESPONSE = ({"role": "assistant", "content": "", "tool_calls": []}, {"response_finish_reason": None})
+
+
 def _released_connect():
     try:
         raise RuntimeError("Connection error.") from httpx.ConnectError("connection refused")
@@ -291,6 +305,8 @@ def test_admission_refusal_after_a_granted_repeat_keeps_the_unknown_fence(tmp_pa
     assert usage["_last_llm_retry_same_request"] is False
     assert len(_events(tmp_path, "llm_not_dispatched")) == 1
     assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
+    assert TRANSPORT_DEATHS_KEY not in usage  # the granted-but-unsent repeat is un-counted
+    assert "were repeated" not in _result  # the hint names only real repeats
 
 
 def test_attempt_loop_ceiling_stays_the_outer_bound_and_the_flag_stays_truthful(tmp_path, no_sleep, monkeypatch):
@@ -429,7 +445,7 @@ def test_primary_round_dispatch_exhaustion_takes_the_unknown_no_resend_terminal(
     assert usage.get("execution_status") == "infra_failed"
     assert usage.get("reason_code") == "provider_unavailable"
     assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
-    assert "2 earlier physical attempt(s) of this round" in result
+    assert "2 earlier physical attempt(s) of the last dispatched round" in result
     assert "no further retry or paid fallback was sent" in result
 
 
@@ -444,6 +460,7 @@ def test_primary_round_dispatch_recovers_after_two_deaths(tmp_path, monkeypatch,
     assert result == "done"
     assert llm.calls == 3
     assert usage.get("reason_code") is None
+    assert TRANSPORT_DEATHS_KEY not in usage
 
 
 def test_counter_survives_the_wait_episodes_free_redial_of_the_same_round(tmp_path, monkeypatch, no_sleep):
@@ -540,7 +557,130 @@ def test_classifier_and_review_custody_are_unchanged_by_the_rail():
 def test_recovery_hint_names_the_spent_repeats():
     usage = {"_last_llm_error_kind": "provider_outcome_unknown", TRANSPORT_DEATHS_KEY: {"round_id": "r", "count": 2}}
     hint = loop_transport.provider_recovery_hint(usage)
-    assert "2 earlier physical attempt(s) of this round" in hint
+    assert "2 earlier physical attempt(s) of the last dispatched round" in hint
+    assert "no terminal provider outcome" in hint
     assert "no further retry or paid fallback was sent" in hint
+    mixed = loop_transport.provider_recovery_hint({"_last_llm_error_kind": "bad_request", TRANSPORT_DEATHS_KEY: {"round_id": "r", "count": 1}})
+    assert "1 earlier physical attempt(s) of the last dispatched round" in mixed
+    assert "the repeat failed as bad_request" in mixed
+    assert "no further retry or paid fallback was sent" in mixed
     bare = loop_transport.provider_recovery_hint({"_last_llm_error_kind": "provider_outcome_unknown"})
     assert "no retry or paid fallback was sent" in bare
+
+
+# ------------------------------------ the fence: nothing else after a granted repeat
+
+@pytest.mark.parametrize("status,kind", [(400, "bad_request"), (503, "provider_transient")])
+def test_repeat_failing_with_another_class_ends_the_round_on_the_unknown_terminal(
+    tmp_path, monkeypatch, no_sleep, status, kind,
+):
+    """A granted repeat that fails with ANY other class does not re-open the
+    same-model burst, the forced-final dial or the paid chain while attempt #1
+    of the round is still unresolved: exactly two sends, the unknown no-resend
+    terminal, a truthful row for the repeat, and a hint that names both facts."""
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    llm = _ScriptedLLM(_death, lambda: _status_failure(status), _death, _death)
+    notes = []
+    result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, notes))
+
+    assert llm.calls == 2  # no burst, no forced-final dial, no chain candidate
+    assert [(row["error_kind"], row["retry_same_request"]) for row in _events(tmp_path, "llm_api_error")] == [
+        ("provider_outcome_unknown", True), (kind, False),
+    ]
+    non_retryable = _events(tmp_path, "llm_non_retryable_same_request")
+    assert [row["error_kind"] for row in non_retryable] == [kind]
+    assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
+    assert usage.get("execution_status") == "infra_failed"
+    assert usage.get("reason_code") == "provider_unavailable"
+    assert usage["_last_llm_error_kind"] == kind  # the sticky kind stays real
+    assert RETRY_WALL_EXHAUSTED_KEY not in usage
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
+    assert "1 earlier physical attempt(s) of the last dispatched round" in result
+    assert f"the repeat failed as {kind}" in result
+    assert "no further retry or paid fallback was sent" in result
+
+
+def test_repeat_returning_an_empty_response_ends_the_round_and_keeps_the_record(tmp_path, monkeypatch, no_sleep):
+    """The empty/incomplete-response retry is fenced the same way, and the
+    record survives the response object (it clears only on a USABLE reply)."""
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    llm = _ScriptedLLM(_death, EMPTY_RESPONSE, _death, _death, _death)
+    notes = []
+    _result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, notes))
+
+    assert llm.calls == 2  # the empty repeat is not retried; the third death never happens
+    assert len(_events(tmp_path, "provider_incomplete_response")) == 1
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
+    assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
+    assert usage.get("reason_code") == "provider_unavailable"
+
+
+def test_no_call_rail_fences_on_the_round_record_whatever_the_sticky_kind():
+    record = {"round_id": "r", "count": 1, "backoff_sec": 4.0}
+    fenced = {"_last_llm_error_kind": "bad_request", TRANSPORT_DEATHS_KEY: record}
+    assert provider_no_call_source(fenced, False) == ("provider_outcome_unknown_no_resend", False)
+    routable = SimpleNamespace(exact_model_route=False)
+    assert loop_transport.fallback_chain_allowed(routable, "bad_request", None, fenced) is False
+    assert loop_transport.fallback_chain_allowed(routable, "bad_request", None, {"_last_llm_error_kind": "bad_request"}) is True
+    assert loop_transport.fallback_chain_allowed(routable, "bad_request", None) is True
+    assert provider_no_call_source({"_last_llm_error_kind": "bad_request"}, False) == ("", False)
+    assert provider_no_call_source({"_last_llm_error_kind": "provider_outcome_unknown"}, False) == (
+        "provider_outcome_unknown_no_resend", False,
+    )
+
+
+def test_stale_round_record_never_fences_a_later_round(tmp_path, no_sleep):
+    """A record from an exhausted earlier round is dropped by the next round's
+    invocation, so a later transient burst runs as the base contract says."""
+    usage = {}
+    _primary_call(_ScriptedLLM(_death, _death, _death), tmp_path, usage, round_idx=1)
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 2
+    later = _ScriptedLLM(lambda: _status_failure(503), lambda: _status_failure(503))
+    msg, _cost = _primary_call(later, tmp_path, usage, round_idx=3)
+    assert msg == OK_RESPONSE[0]
+    assert later.calls == 3  # the burst was NOT fenced
+    assert TRANSPORT_DEATHS_KEY not in usage
+    assert provider_no_call_source(usage, False) == ("", False)
+
+
+def test_control_without_a_record_keeps_the_base_contracts(tmp_path, no_sleep):
+    """No grant → no fence: a 400 stops as before and a transient burst keeps its
+    budget, with `transport_death_retries=0` and with the default."""
+    usage = {}
+    bad = _ScriptedLLM(lambda: _status_failure(400))
+    msg, _cost = call_llm_with_retry(bad, MESSAGES, "test-model", None, "low", 3, tmp_path, "t-ctl", 1, None, usage)
+    assert msg is None and bad.calls == 1
+    assert usage["_last_llm_error_kind"] == "bad_request"
+    assert provider_no_call_source(usage, False) == ("", False)
+    burst = _ScriptedLLM(lambda: _status_failure(503), lambda: _status_failure(503))
+    msg, _cost = call_llm_with_retry(burst, MESSAGES, "test-model", None, "low", 3, tmp_path, "t-ctl", 2, None, usage)
+    assert msg == OK_RESPONSE[0] and burst.calls == 3
+
+
+def test_deadline_refusal_without_a_round_record_keeps_the_base_stamps(tmp_path, no_sleep):
+    """The unknown-preserving refusal is scoped to a round that holds a record;
+    a sticky unknown without one gets the base deadline stamps."""
+    import time
+
+    usage = {"_last_llm_error_kind": "provider_outcome_unknown"}
+    llm = _ScriptedLLM(_death)
+    msg, _cost = _primary_call(llm, tmp_path, usage, deadline_ts=time.time() - 1)
+    assert msg is None and llm.calls == 0
+    assert usage["_last_llm_error_kind"] == "deadline_exhausted"
+    assert usage["reason_code"] == "deadline_exhausted"
+
+
+def test_stop_path_without_a_record_stops_instead_of_crashing(tmp_path):
+    ctx = call_mod._LlmErrorContext(
+        task_id="t", task_type="task", execution_id="e", round_id="e:round:1", llm_call_id="c",
+        round_idx=1, attempt=0, model="m", request_ref=None, drive_logs=tmp_path, event_queue=None,
+        accumulated_usage={"_last_llm_error_kind": "provider_outcome_unknown"},
+    )
+    assert call_mod._stop_after_llm_error(ctx) is True
+    assert RETRY_WALL_EXHAUSTED_KEY not in ctx.accumulated_usage
