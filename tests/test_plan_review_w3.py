@@ -527,3 +527,25 @@ def test_missing_requested_evidence_reask_is_demoted_and_keeps_the_wave_open(har
     repeat = [f for f in wave["findings"] if f["locator"] == "gone.md"]
     assert repeat and [f["class"] for f in repeat] == ["note"]  # demoted, never re-attached
     assert _control(out)["closed"] is False
+
+
+def test_both_reviewer_routes_learn_the_range_selectors(harness):
+    """The locator forms live in ONE element schema, so the api system prompt and a session
+    slot's compact task both advertise them — neither route is taught a narrower spelling."""
+    harness.state["slots"] = _slots(("api1", "m/a"), ("sess1", "cursor=grok", "session"),
+                                    ("api2", "m/b"))
+    sub = harness.install({"api1": CLEAN, "sess1": CLEAN, "api2": CLEAN})
+    _call(harness.make_ctx())
+    request = sub.calls[0]["request"]
+    system = _user_text(request.messages[0]["content"])
+    assert "::lines=A-B" in system and "never fetches" in system
+    assert "::lines=A-B" in request.session_task
+
+
+def test_the_plan_spec_schema_discloses_both_halves_of_the_constitutional_trigger():
+    """The trigger reads `affected_resources` AND an existing `evidence` path; the schema the
+    agent sees says so, including that a non-existent path does not count."""
+    props = pr._SPEC_SCHEMA["properties"]
+    assert "system repository" in props["affected_resources"]["description"]
+    evidence = props["evidence"]["description"]
+    assert "system repository" in evidence and "EXISTING" in evidence

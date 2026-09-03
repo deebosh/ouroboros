@@ -578,7 +578,7 @@ _PLAN_FINDING_ELEMENT_SCHEMA = """\
   "id": "<short local id, e.g. f1>",
   "class": "blocking" | "note" | "need_evidence",
   "breaks": "<spec id — REQUIRED for blocking: goal | claim_N | invariant_N | decision_N | deferred_N>",
-  "locator": "<REQUIRED for need_evidence: the exact path / URL / task:<id> you need>",
+  "locator": "<REQUIRED for need_evidence: an absolute path, or one relative to the subject workspace root; add ::lines=A-B, ::bytes=A-B, ::tail=N or ::symbol=Name (.py only) for one range; task:<id> = a prior task's result; a URL may be named; the host never fetches it>",
   "summary": "<what is wrong or missing, concretely>",
   "recommendation": "<the smallest change to the SPEC that resolves it>"
 }"""

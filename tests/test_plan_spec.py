@@ -707,7 +707,8 @@ def test_system_prompt_stance_and_bible_gating():
     assert "`/srv/ouro/repo/docs/ARCHITECTURE.md`" in pointed and "ARCH-NAV-ROWS" in pointed
     assert "ARCHITECTURE navigation map (pointer, not a copy)" in pointed and "ARCH BODY" not in pointed
     assert "OMISSION NOTE" not in pointed
-    assert "the host attaches it on the next cycle" in pointed
+    assert "attaches what its evidence policy allows on the next cycle" in pointed
+    assert "::lines=A-B" in pointed and "truncated_to_" in pointed
     with_bible = plan_packet.build_plan_review_system_prompt(
         checklist_section="c", constitutional=True, bible_text="BIBLE BODY", cycle_index=1, enforcement="blocking",
         bible_nav_map="NAV-MAP-ROWS", architecture_text="ARCH BODY", architecture_nav_map="ARCH-NAV-ROWS",
@@ -874,3 +875,18 @@ def test_blank_spec_items_are_disclosed_not_silently_dropped():
     assert errors == []
     assert spec["in_scope"] == ["auth"]
     assert any("blank item(s) dropped" in note for note in spec["normalization_omissions"])  # one bounded note per list
+
+
+def test_the_findings_contract_advertises_locator_forms_and_range_selectors() -> None:
+    """A reviewer can only ask for what the contract taught it to spell: the exact-range
+    selectors and the never-fetched URL are stated where the locator is requested."""
+    from ouroboros.tools.plan_spec import (
+        PLAN_FINDINGS_ARRAY_CONTRACT,
+        _PLAN_FINDING_ELEMENT_SCHEMA,
+    )
+
+    for token in ("::lines=A-B", "::bytes=A-B", "::tail=N", "::symbol=Name",
+                  "relative to the subject workspace root", "never fetches"):
+        assert token in PLAN_FINDINGS_ARRAY_CONTRACT, token
+    assert _PLAN_FINDING_ELEMENT_SCHEMA.startswith("{")
+    assert _PLAN_FINDING_ELEMENT_SCHEMA.endswith("}")

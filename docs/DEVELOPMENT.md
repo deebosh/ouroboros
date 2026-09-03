@@ -618,8 +618,9 @@ MUST include these artifacts as **first-class context sections** — not as
 optional or opportunistic inclusions via touched-file packs.
 
 Plan review is the one flow whose governance pack is tiered, and by ONE
-structural fact — whether the plan's declared targets resolve under the
-Ouroboros system repository — never by prose and never by a plan-kind
+structural fact — whether a declared `affected_resources` target, or an
+EXISTING `evidence` path, resolves under the Ouroboros system repository —
+never by prose and never by a plan-kind
 taxonomy, which is what keeps classification un-gameable. This is a tiering,
 not an omission: before any work exists the reviewer's subject is the
 INTENTION, and every absence is a named pointer or a typed `need_evidence`
@@ -649,7 +650,7 @@ The context-delivery registry:
 | Advisory pre-review (`tools/claude_advisory_review.py`) | Two delivery classes: an `api_chat` row runs the bounded NATIVE inspection episode (governance docs reached through its read-only tools); an `agent_session` row receives a resolvable pointer marked MANDATORY FULL READ and the session reads the full doc itself — retrieval is disclosed (native reads are host-observed; vendor-session reads are not) | same two delivery classes | same two delivery classes |
 | Scope review (`tools/scope_review.py`) | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting |
 | Skill review (`skill_review.py`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) |
-| Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (structural path fact: a declared target resolves under the system repo); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the lossless navigation map + a resolvable pointer (W3) | named on-demand pointer; a reviewer that needs it returns `need_evidence` and the host attaches it on the next cycle |
+| Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (structural path fact: a declared `affected_resources` target, or an existing `evidence` path, resolves under the system repo); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the lossless navigation map + a resolvable pointer (W3) | named on-demand pointer; a reviewer that needs it returns `need_evidence` (an exact `::lines=A-B` range for one section) and the host attaches what the evidence policy allows on the next cycle, naming every absence |
 | Deep self-review (`deep_self_review.py`) | full canonical doc + Atlas accounting | full (max) / navigation map (low) + Atlas accounting | full canonical doc + Atlas accounting |
 
 Skill Review keeps the full stable governance/host prefix for cache-friendly

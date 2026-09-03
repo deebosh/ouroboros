@@ -184,7 +184,10 @@ _SPEC_SCHEMA = {
             "type": "array", "items": {"type": "string"},
             "description": (
                 "What reviewers should LOOK AT: file paths, task:<id> of a prior task, URLs. "
-                "The host attaches files bounded (never fetching URLs) and names every omission."
+                "The host attaches files bounded (never fetching URLs) and names every omission. "
+                "An EXISTING path here that resolves under the Ouroboros system repository also "
+                "makes the plan constitutional (BIBLE + ARCHITECTURE go to reviewers); a path that "
+                "does not exist does not, and the skip is disclosed."
             ),
         },
     },
