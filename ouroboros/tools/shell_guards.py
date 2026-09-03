@@ -246,6 +246,12 @@ def _python_path_open_target(node: ast.AST, names: dict[str, str]) -> tuple[str 
     func = node.func
     if not (isinstance(func, ast.Attribute) and func.attr == "open"):
         return None, False
+    if isinstance(func.value, ast.Name) and func.value.id == "os":
+        flags = node.args[1] if len(node.args) > 1 else next((word.value for word in node.keywords if word.arg == "flags"), None)
+        flag_names = {part.attr for part in ast.walk(flags) if isinstance(part, ast.Attribute)} if flags else set()
+        if not flag_names & {"O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND"} and ("O_RDONLY" in flag_names or isinstance(flags, ast.Constant) and flags.value == 0):
+            return None, False
+        return _python_literal_path(node.args[0], names) if node.args else None, True
     mode = ""
     if node.args and isinstance(node.args[0], ast.Constant):
         mode = str(node.args[0].value or "")
@@ -488,6 +494,9 @@ def _python_write_targets_and_unknown(inline_code: str) -> tuple[list[str], bool
                 unknown = True
             else:
                 targets.append(target)
+        elif isinstance(func, ast.Attribute) and func.attr == "write" and isinstance(func.value, ast.Name) and func.value.id == "os":
+            descriptor = node.args[0] if node.args else None
+            if descriptor is not None and (_python_literal_path(descriptor, names) is not None or _python_path_open_target(descriptor, names)[1]): unknown = True
         elif isinstance(func, ast.Attribute) and func.attr in {"write", "writelines"}:
             if isinstance(func.value, ast.Name) and func.value.id in write_handles:
                 targets.append(write_handles[func.value.id])
@@ -564,7 +573,6 @@ def _python_write_targets_and_unknown(inline_code: str) -> tuple[list[str], bool
     if len(concrete) != len(resolved):
         unknown = True
     return concrete, unknown
-
 
 # Same resolve(strict=False) containment semantics on all platforms (SSOT).
 from ouroboros.tool_access import path_is_relative_to as _path_inside

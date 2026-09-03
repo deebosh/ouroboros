@@ -337,7 +337,7 @@ def _workspace_write_candidates(
             # Uncertainty widens only this row and its attached program bodies.
             write_tokens.extend(str(token) for token in segment_argv[1:])
             write_tokens.extend(
-                str(token) for token in shell_argv_with_path_tokens(list(segment_argv))
+                str(token) for token in shell_argv_with_path_tokens(list(segment_argv[1:]))
             )
             for body in inline_code:
                 write_tokens.extend(

@@ -436,6 +436,58 @@ def test_outside_root_write_block_message_names_path_and_root(tmp_path):
     assert "Selected process root:" in out
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    (
+        ["/usr/bin/python3", "-c", 'import os; os.write(1, b"x")'],
+        ["/opt/homebrew/bin/node", "-e", "console.log(1)"],
+    ),
+    ids=("python-os-write-fd", "node-console-log"),
+)
+def test_unprovable_row_never_promotes_absolute_executable_to_write(tmp_path, cmd):
+    from ouroboros.tools.registry import _workspace_write_candidates
+
+    forced_uncertain_row = [(cmd, [], (cmd[-1],), True)]
+    assert (cmd[0], True) not in _workspace_write_candidates(
+        forced_uncertain_row, [], cmd
+    )
+    reg = _registry(tmp_path, mode="external")
+    assert reg._run_shell_safety_check(
+        {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced"
+    ) is None
+
+
+def test_uncertain_python_body_naming_outside_path_stays_blocked(tmp_path):
+    reg = _registry(tmp_path, mode="external")
+    cmd = [
+        "/usr/bin/python3", "-c",
+        'import subprocess; subprocess.run(["rm", "/Users/Shared/x"])',
+    ]
+    out = reg._run_shell_safety_check(
+        {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced"
+    ) or ""
+    assert "outside the selected process root" in out
+    assert "/Users/Shared/x" in out
+
+
+def test_os_write_through_literal_os_open_outside_stays_blocked(tmp_path):
+    from ouroboros.tools.shell_guards import _python_write_targets_and_unknown
+
+    reg = _registry(tmp_path, mode="external")
+    code = (
+        'import os; fd=os.open("/Users/Shared/out", os.O_WRONLY|os.O_CREAT); '
+        'os.write(fd, b"x")'
+    )
+    targets, unknown = _python_write_targets_and_unknown(code)
+    assert targets == ["/Users/Shared/out"] and unknown is False
+    out = reg._run_shell_safety_check(
+        {"cmd": ["/usr/bin/python3", "-c", code], "cwd": str(tmp_path / "workspace")},
+        "advanced",
+    ) or ""
+    assert "outside the selected process root" in out
+    assert "/Users/Shared/out" in out
+
+
 def test_split_redirections_grammar():
     """One redirect grammar: both the glued and the split spellings, reads and
     descriptor duplication yield no target, and an operator away from a token's
