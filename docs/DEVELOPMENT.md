@@ -39,6 +39,12 @@ prevents.
   and replay; never infer it from text or promote host-selected intermediate
   output to a model final (`tests/test_terminal_provenance.py`).
 
+Enforcement: naming and entity-type rules are scored in commit review by
+CHECKLISTS item 2 `development_compliance` (a)/(b); the transport/core
+dependency direction has one CI guard (the "Guard extracted transport imports
+stay out of core" step in `.github/workflows/ci.yml`); the remaining boundary
+rules have no automated surface — review-only.
+
 ### CLI and headless work
 
 - CLI commands parse, call the existing gateway/scheduler, and render text or
@@ -56,12 +62,21 @@ prevents.
 - Do not add a second scheduler for operator tooling or a generic CLI file
   manager. Use the task queue, attachments, logs, and artifact endpoints.
 
+Enforcement: `tests/test_headless_cli.py` (task-API admission, typed refusal
+terminality, attachment admission), `tests/test_cli_entrypoint.py` (the CLI
+surface), and `tests/test_external_workspace_access.py` plus
+`tests/test_workspace_authority_binding.py` (workspace policy and system-repo
+collision blocking). The no-second-scheduler and no-generic-file-manager
+rules have no automated surface — review-only.
+
 ### Cognitive quality
 
 Do not lower model quality, reasoning effort, output budget, or context breadth
 as an incidental latency/cost optimization (BIBLE P1 owns the principle). An
 intentional narrowing is an owner-approved change reflected in the plan, docs,
-tests, and evidence.
+tests, and evidence. No automated surface — review-only: commit review carries
+it through CHECKLISTS items 1 (`bible_compliance`) and 21
+(`capability_regression`: an accidental narrowing is the named failure class).
 
 ### LLM-first affordances
 
@@ -102,6 +117,10 @@ integrity and authority boundaries plus truthful receipts; do not add
 task-specific auto-retry, fallback, cleanup, resume, or terminal-flow state
 machines.
 
+Enforcement: the prompt-edit discipline is scored by CHECKLISTS item 13(b)
+(a prompt edit never restates a tool schema and is never an incident patch);
+the recoverable-failure boundary has no automated surface — review-only.
+
 ### Documentation contract
 
 `docs/ARCHITECTURE.md` is the map of the body (BIBLE P6), written in the present
@@ -132,79 +151,69 @@ an invariant (several real variants, or one already-stable boundary); adding an
 abstraction requires a demonstrated class — an imagined consumer is not one. In
 doubt, generalize the meaning and the authority, keep the mechanism minimal and
 local, and let the next real case pay for the next step. Reviewer findings are
-evidence for this judgment, never policy that overrides it.
+evidence for this judgment, never policy that overrides it. No automated
+surface — review-only.
 
 ### Pricing and admission
 
 Never add hand-maintained model-price tables, inherited prefix tariffs, or
 numeric fallback prices; preserve `cost=None` and `cost_final=false` when no
 live source answers the exact route. Unknown price is neither free nor a
-model-admission veto; known exhausted budget remains enforceable. Mechanism:
-`ouroboros/pricing.py` and ARCHITECTURE "Budget tracking".
+model-admission veto; known exhausted budget remains enforceable. Enforced by
+`tests/test_pricing.py` (exact-route lookup, no prefix inheritance, unknown
+cost stays `None`) and `tests/test_budget_limits.py` (a known exhausted budget
+still fences); mechanism: ARCHITECTURE "Budget tracking".
 
 ### Anti-pattern: content-derived identity for host-minted records
 
 If the host itself created a record — a chat message, a task, a binding — its
 identity is captured at ingress and passed downstream BY VALUE as a typed
-reference (e.g. `origin_message_ref = {chat_id, client_message_id, ts,
-text_sha256}` built where `log_chat("in", …)` writes the canonical row). Do not
-re-derive that identity later by searching logs/state for a row whose text
-hash/equality/prefix matches whatever text the caller happens to hold: in an
-LLM-first system the text is routinely rewritten between ingress and use, so
-content-derived lookup fails exactly on the normal path. Content hashes remain
-legitimate in two roles only: (a) an INTEGRITY CHECK on an already-known
-identity (`text_sha256` inside a ref verifies the row was not swapped — never
-the lookup key), and (b) content-ADDRESSING where the content IS the identity
-(artifact stores, observability blobs, join-ledger result hashes, staged-diff
-review bindings). The enforcement shape is a REQUIRED typed argument at the
-consuming seam (`bind_task_to_project(..., *, origin)`: a valid ref or a
-closed-enum absence reason; omission raises), so a future call site cannot
-silently skip the invariant. For semantic matching of fuzzy entities, use the
-LLM-first pattern (`semantic_dedup`: exact fingerprint as a cheap first pass,
-an LLM as the authority, fail-open) — never string equality.
+reference (e.g. `origin_message_ref` built where `log_chat("in", …)` writes
+the canonical row). Never re-derive it later by searching logs/state for a
+row whose text hash/equality/prefix matches: in an LLM-first system the text
+is routinely rewritten between ingress and use, so content-derived lookup
+fails exactly on the normal path. Content hashes are legitimate only as (a)
+an INTEGRITY CHECK on an already-known identity, and (b) content-ADDRESSING
+where the content IS the identity (artifact stores, observability blobs,
+staged-diff review bindings). The enforcement shape is a REQUIRED typed
+argument at the consuming seam (`bind_task_to_project(..., *, origin)`: a
+valid ref or a closed-enum absence reason; omission raises), so a future call
+site cannot silently skip the invariant — `tests/test_projects_v6640.py`
+exercises that seam. For fuzzy entities use the LLM-first pattern
+(`semantic_dedup`), never string equality.
 
 One named exception inside role (b): a verification RECEIPT with no earlier
-ingress point is reconciled by ONE TYPED IDENTITY KEY — its `criterion_id` when
-it has one, else its canonical `check` text, else the observed `paths` set —
-matching on the key's kind AND value, never across kinds. The key replaced a
-per-component fallback chain because a chain is not an equivalence relation: it
-was not transitive, so one check-only green reconciled two distinct reds and
-the outstanding set came out order-dependent; keying makes sameness the kernel
-of a function and fails in the SAFE direction — strictly fewer reconciliations,
-because a false red costs a human a second look while a false green costs the
-thing this whole surface exists for. The full mechanism (masked-path rules,
-`IDENTITY_KINDS`, projections and bounds) lives in
-`ouroboros/_outcome_receipts.py`. Four rules from that work generalize beyond
-receipts:
+ingress point is reconciled by ONE TYPED IDENTITY KEY, matching on the key's
+kind AND value, never across kinds — a per-component fallback chain is not an
+equivalence relation (the outstanding set came out order-dependent), while
+keying makes sameness the kernel of a function and fails safe: a false red
+costs a human a second look, a false green costs the thing this surface
+exists for. The full mechanism (masked-path rules, `IDENTITY_KINDS`,
+projections, bounds, rendering stamps) lives in
+`ouroboros/_outcome_receipts.py`, enforced by
+`tests/test_v678_receipt_reconciliation.py`. Four rules generalize:
 
-- **Whatever decides must be what is reported.** The reporting path reads the
-  deciding path through one shared projection, never a re-derivation beside it:
-  a host-attested artifact that misstates its own basis is worse than one that
-  says nothing, because a reviewer cannot discount evidence whose provenance it
-  has been told wrongly.
-- **When a disclosure describes a property of a closed set of kinds, put the
-  property IN the set** (a table row per kind plus a total lookup that raises
-  `KeyError` on a kind that skipped the table), so a new kind cannot be added
-  without answering and a per-kind fix cannot be mistaken for a fix of the
-  class.
-- **One canonical identity derivation.** Comparison, hashing, counting, and
-  projection all read the same derived object, in the order canonicalize the
-  RAW values → render → bound: rendering is lossy, so de-duplicating after it
-  drops distinct values while the omitted count still reports zero. A
-  normalization that discards information the identity depends on is not a
-  normalization.
-- **Changing a stored rendering means versioning it** (`check_rendering` is
-  stamped beside the text by every writer; an absent stamp reads `unversioned`,
-  and unknown must not clear a red). Reason about a format migration in BOTH
-  directions — the false-green direction is the one that gets missed when only
-  one is asked.
+- **Whatever decides must be what is reported**: the reporting path reads the
+  deciding path through one shared projection, never a re-derivation beside
+  it — a host-attested artifact that misstates its own basis is worse than
+  one that says nothing, because a reviewer cannot discount evidence whose
+  provenance it was told wrongly.
+- **A property of a closed set of kinds lives IN the set** (a table row per
+  kind plus a total lookup that raises on a kind that skipped the table), so
+  a new kind cannot be added without answering.
+- **One canonical identity derivation** — comparison, hashing, counting, and
+  projection read the same derived object, in the order canonicalize the RAW
+  values → render → bound; a normalization that discards information the
+  identity depends on is not a normalization.
+- **Changing a stored rendering means versioning it**; reason about a format
+  migration in BOTH directions — the false-green direction is the one that
+  gets missed, and unknown must not clear a red.
 
-One disclosed, deliberately deferred limit: `tools/verify.py` bounds an
-`artifact_observation` receipt's durable observed path set at twenty
-(`paths[:20]`) with no omission count. Unlike every projection bound, this one
-is on what gets written DURABLY — no complete set exists behind it to recover.
-It is advisory only (a nudge and a disclosed reviewer flag, never a gate);
-fixing it means changing the durable store and deserves its own scope.
+Disclosed deferred limit: `tools/verify.py` bounds the DURABLE
+`artifact_observation` path set at twenty with no omission count — advisory
+only (a nudge and a disclosed reviewer flag, never a gate); fixing it means
+changing the durable store and deserves its own scope. Beyond the typed seams
+and tests above, this section is review-only.
 
 ### Mutable external-fact inventory
 
@@ -212,7 +221,8 @@ This table is a maintenance inventory, not a second runtime authority. External
 facts change independently of Ouroboros releases; prefer live metadata or a
 bounded probe where that can answer the exact question, and otherwise keep the
 current conservative behavior visible. v6.67.0 documents these facts but does
-not migrate their runtime representations.
+not migrate their runtime representations. No automated surface checks these
+rows — review-only maintenance.
 
 | Location | Fact | Mutability | Current authority | Live/probe option | Risk | Recommendation |
 |----------|------|------------|-------------------|-------------------|------|----------------|
@@ -366,6 +376,8 @@ DI container, numeric score, AST analyzer, or a new review pass. A SOLID or
 minimalism finding must name the exact symbol or authority, the concrete
 duplication or coupling, and a smaller alternative that still satisfies the
 contract. Diff size, line count, and file count alone are not findings.
+Enforcement: review-only — CHECKLISTS item 2(d) scores these rules in commit
+review.
 
 ### Invariant: Projection over replay (hot readers of growing stores)
 
@@ -437,6 +449,10 @@ distrust — profile, route, parser, window — may lower authority to
 DEGRADED/SKIPPED/NOT_RUN, but it must not blank, rewrite, or relabel the
 artifact or its original cause.
 
+Enforcement: CHECKLISTS item 25 `source_completeness` (critical when
+applicable) scores the chain in commit review; the presentation-adapter
+contracts below are pinned by the named web tests.
+
 #### Review presentation adapters
 
 `web/modules/review_presentation.js` (grouping, identity, ordering, typed
@@ -503,7 +519,8 @@ and one strictly-smaller same-route retry, a final `context_overflow` skips the
 provider-unavailable/forced-provider path, keeps
 `execution_status=infra_failed` and `reason_code=llm_api_error`, and records
 the typed acceptance bypass and `failure.error_kind`. Ordinary provider
-outages keep their existing recovery behavior.
+outages keep their existing recovery behavior. Enforcement:
+`tests/test_continuation_context_authority.py`.
 
 ### Invariant: UI resources carry a disposer
 
@@ -547,7 +564,9 @@ bounded retry/timeout behavior visible in the refresh contract. Missing or
 malformed job status is an immediate protocol error, while unknown non-empty
 in-progress labels remain bounded pending states for producer compatibility.
 Repo Commit Checklist item 24 points lifecycle changes here instead of
-re-deriving a second domain-specific rule.
+re-deriving a second domain-specific rule; the widget geometry/refresh
+contracts are pinned in `tests/test_widgets_ui_static.py` and
+`tests/test_extension_surfaces.py`.
 
 ---
 
@@ -671,7 +690,8 @@ representation on the caller's ContextFit measurement basis are all proved
 (the bounded image proxy and density must match; raw base64 byte count is not
 token reclaim). Capsules carry host-only generation, source-hash, part,
 checkpoint, and CAS-ref metadata so a later pass can recompact them without
-losing the original provenance union.
+losing the original provenance union. Enforcement: `tests/test_compaction.py`,
+`tests/test_loop_compaction.py`, `tests/test_loop_compaction_policy.py`.
 
 ### Invariant: No silent truncation
 
@@ -708,6 +728,10 @@ If a core governance artifact cannot fit in the available context budget:
   for the full set (see `_outcome_receipts.receipt_identity_projection`).
   Bounding a set is allowed; hiding that you bounded it is the P1 violation.
 
+Enforcement: `tests/test_tool_capabilities.py` (the `UNTRUNCATED_TOOL_RESULTS`
+roster) and the truncation-floor coverage in
+`tests/test_owner_facing_honesty.py`.
+
 ### Invariant: Owner-facing surfaces show the full text
 
 Disclosed truncation (the `⚠️ OMISSION NOTE` marker) exists to protect **LLM
@@ -728,11 +752,15 @@ what the owner reads:
   reflection backlog `kind`) keep a plain hard slice — a multi-line omission
   marker inside a one-line value is worse damage than the cut it discloses.
 
+Enforcement: `tests/test_owner_facing_honesty.py`.
+
 ### Invariant: No "only if touched" gate for core artifacts
 
 Core governance artifacts reach review/reasoning flows unconditionally — NOT
 only when they appear in `touched_paths`. `build_touched_file_pack` is for
 _changed_ files; core artifacts are a separate concern loaded independently.
+No surface of its own — the per-flow presence tests required below are the
+mechanical cover; otherwise review-only.
 
 ### When adding a new reasoning flow
 
@@ -743,6 +771,9 @@ or engineering standards, you MUST:
    applies).
 2. Log a warning if the file is missing or unavailable — do not silently skip.
 3. Add a test asserting the file is present in the assembled context/prompt.
+
+That required presence test is the enforcing surface; CHECKLISTS item 11
+(`context_building`, advisory) backstops the review.
 
 ---
 
@@ -910,6 +941,12 @@ surface or states that none exists.
 - New memory/data files: decide whether they appear in LLM context
   (`context.py`) in the same change.
 
+Enforcement: CHECKLISTS items 2(g) and 10 (`tool_registration`) in commit
+review; the public schema/registry contract is pinned by
+`tests/test_tool_api_v2_public_surface.py` and the safety-policy fallthrough
+by `tests/test_local_routing_and_safety.py`; CHECKLISTS item 11 backstops the
+memory/context decision.
+
 ### Skill repair and payload lanes
 
 - Skill repair uses structured `task_constraint.mode="skill_repair"`, not
@@ -935,6 +972,9 @@ surface or states that none exists.
   `ouroboros.contracts.skill_payload_policy`, never reimplemented bucket/path
   traversal logic.
 
+Enforcement: `tests/test_skill_repair_hash_bind.py`; admission itself is the
+skill review gate (`skill_preflight` → `skill_review`).
+
 ### Extension dispatch and isolated dependencies
 
 - `type: extension` skills with reviewed isolated dependency envs must not
@@ -950,6 +990,10 @@ surface or states that none exists.
   grants and isolated deps, process-group tracking, output caps, and timeout
   cleanup; do not add fallback code that imports native-risk plugin modules in
   the host process.
+
+Enforcement: `tests/test_extension_dispatch_threaded.py`,
+`tests/test_extension_isolated_deps.py`,
+`tests/test_extension_process_runner.py`.
 
 ### Task contract resource policy
 
@@ -969,6 +1013,9 @@ surface or states that none exists.
   resolution changes the clean bit and its disclosure, never actor parsing,
   quorum, or verdict. Do not turn claims into a hard acceptance gate or a
   surface-specific taxonomy.
+
+Enforcement: `tests/test_protected_artifacts_policy.py` and
+`tests/test_acceptance_claims_wiring.py`.
 
 ### Skill-defined Presence
 
@@ -1012,7 +1059,8 @@ surface or states that none exists.
   direct-execution filtering, argument binding, binding/token/origin checks,
   event idempotency and conversation ordering, typed outcomes, late-work
   correlation, promotion/follow-up inheritance); provider adapter E2E is
-  separate evidence.
+  separate evidence. Enforcement: `tests/test_presence_admission.py` plus the
+  both-layer boundary tests this list requires.
 
 ### Devtools isolation
 
@@ -1023,7 +1071,8 @@ review; unrelated files may remain manifest-only in broad Atlas packs so
 operator code does not drown core review. Generated outputs live in an
 explicit external root, never in `repo/` or live `data/`; domain-specific
 architecture and methodology live beside the devtool, not in core governance
-docs.
+docs. No automated import guard — review-only (triad/scope review of touched
+devtool files).
 
 ### Light mode and external deliverables
 
@@ -1117,126 +1166,107 @@ docs.
   seven-day threshold, and no recorded obligation remains open; any
   uncertainty or move error leaves the live record intact.
 
+Enforcement: `tests/test_observability_retention.py`.
+
 ### Live subagents
 
 Mechanism — bootstrap branches, zero-run receipts, custody, work orders,
 supervision, recovery — lives in ARCHITECTURE "Delegated subagents (Claudexor
-transport + the nanny)" and the module docstrings it names. The imperatives:
+transport + the nanny)" and the module docstrings it names. Review gate:
+CHECKLISTS items 18 (`subagent_isolation`) and 23 (`delegated_transport`),
+both critical. The imperatives:
 
-- Schedule only through `schedule_subagent`. Its public schema and the
+- Schedule only through `schedule_subagent`; its public schema and the
   handler's closed keyword set are BOTH derived from
-  `control.schedule_subagent_properties()` — never reintroduce a
-  hand-maintained mirror, which is correct only until one side gains a
-  parameter. Internal-only options travel in the positional-only `internal`
-  mapping keyed by `_INTERNAL_SCHEDULE_OPTIONS` (empty today; kept because it
-  is closed and an unknown key fails loudly); the membership test is WHO
-  DECIDES, not who currently calls. Do not add fields to
-  `contracts/task_contract.py` for child needs — the LLM declares them via
-  the closed capability enum, never via objective prose.
+  `control.schedule_subagent_properties()` — a hand-maintained mirror is
+  correct only until one side gains a parameter
+  (`tests/test_tool_api_v2_public_surface.py`). No new
+  `contracts/task_contract.py` fields for child needs: the closed capability
+  enum declares them, never objective prose; for internal-only options the
+  membership test is WHO DECIDES, not who currently calls. Delivery is
+  at-least-once — an exact task id with live or durable custody is an
+  idempotent no-op; never use semantic duplicate judgement as the physical
+  identity fence.
 - `subagent_id` selects one complete row from the canonical enabled
-  `OUROBOROS_SUBAGENTS` list; freeze the normalized row and list fingerprint
-  at schedule time and dispatch/restart from that snapshot, never from
-  mutable Settings. Do not add a second model/lane/executor selector, parse
-  `recommended_use`, rank rows in host code, or substitute another actor
-  after a typed refusal. Legacy `model_lane`/`executor` stay handler-side
-  compatibility only, hidden from schemas.
+  `OUROBOROS_SUBAGENTS` list; freeze the normalized row at schedule time and
+  dispatch/restart from that snapshot, never from mutable Settings. No
+  second model/lane/executor selector, no host-side ranking, no substitute
+  actor after a typed refusal; legacy selectors stay hidden handler-side
+  compatibility.
 - The typed parent-LLM substrate choice is the floor (truth, money, and
   authorship stay where the parent put them); topology, decomposition, and
-  supervision judgment remain the model's ceiling (BIBLE P5/P13). The host
-  starts the snapshotted leaf before the first round through the same wrapper
-  as the model's `delegate_start(prompt="")` call. Never reintroduce a
-  host-side wait, poll, or supervised-wait call in bootstrap: waiting is the
-  model's own `delegate_wait` decision, which keeps owner messages, hurry
-  controls, checkpoints, and parallel auxiliary children live for the whole
-  run.
+  supervision judgment remain the model's ceiling (BIBLE P5/P13). Never
+  reintroduce a host-side wait, poll, or supervised-wait in bootstrap:
+  waiting is the model's own `delegate_wait` decision, which keeps owner
+  messages, hurry controls, checkpoints, and parallel auxiliary children
+  live for the whole run.
 - Grow `subagent_bootstrap._DEFINITE_UNRUN_REASONS` only with reasons that
-  PROVE no run can exist; everything ambiguous wakes the model instead — a
-  false "spent nothing" terminal over a possibly-live run is the one
-  direction this classification must never fail toward. There is never a
-  silent vendor/API fallback; a substrate swap onto host API children is a
-  disclosed incomplete execution, never a clean one.
-- Zero-run receipts write only `incomplete | unknown`
-  (`ZERO_RUN_WRITE_DECISIONS`): a zero-run "complete" is unverifiable
-  self-report. Prose alone is never a zero-run receipt, a durable receipt is
-  terminal for that actor, and copy-back preserves rather than rewrites
-  corrupt evidence.
-- Treat `schedule_subagent` delivery as at-least-once: an exact task id with
-  live or durable custody is an idempotent no-op, re-checked under the queue
-  lock immediately before enqueue. Never use semantic duplicate judgement as
-  the physical identity fence.
-- The work-order budget is one total 250,000-character wire limit; a brief is
-  sent byte-complete or — only on a route whose live manifest declares an
-  interactive question channel — as a compact source-request lens. The
-  reader and validator share one renderer so the bytes the actor sees are
-  exactly the bytes the host verifies; the manifest observation is a
-  preflight, not a lease — never call the probe delivery evidence or add a
-  second probe/lease to pretend the race vanished.
-- `subagents.route_health` is the ONE route reader for every consumer —
-  dispatcher, the nanny's own `delegate_start`, and review slots alike; never
-  add a second reader. Quota readers call `ClaudexorGateway.quota_state()`
-  once and project snapshots plus typed absences from that one envelope.
-  Substrate facts in the acceptance packet are VISIBILITY ONLY — acceptance
-  judges quality, never the execution route — and an unreadable custody log
-  reads `evidence_read_failed`, never a proven-empty substrate.
+  PROVE no run can exist; everything ambiguous wakes the model — a false
+  "spent nothing" terminal over a possibly-live run is the one direction
+  this classification must never fail toward. Zero-run receipts write only
+  `incomplete | unknown` (a zero-run "complete" is unverifiable
+  self-report); a substrate swap is a disclosed incomplete execution, never
+  a silent vendor/API fallback
+  (`tests/test_configured_session_prestart.py`).
+- Work orders: one total 250,000-character wire limit, byte-complete or —
+  only on a route whose live manifest declares a question channel — a
+  compact source-request lens. Reader and validator share one renderer so
+  the bytes the actor sees are exactly the bytes the host verifies; the
+  manifest observation is a preflight, not a lease. `subagents.route_health`
+  is the ONE route reader for every consumer; quota readers project one
+  `ClaudexorGateway.quota_state()` envelope
+  (`tests/test_available_subagents_runtime.py`). Substrate facts in the
+  acceptance packet are VISIBILITY ONLY — acceptance judges quality, never
+  the execution route — and an unreadable custody log reads
+  `evidence_read_failed`, never a proven-empty substrate.
 - `task_constraint` boolean parsing is strict (`"false"` is false); deadlines
-  only narrow; `_narrow_child_delegation_budget` only reduces; absent depth
-  requests stay unknown rather than inferred from prose. Preserve
-  requested/permitted/attempted/achieved depth on every admitted child; root
-  acceptance summarizes those persisted facts and never recomputes historical
-  permission from current Settings.
-- `active_tool_profile` fails closed: an invalid/missing surface or a broken
-  constraint resolves to read-only, never to
-  `self_modification`/`operator_control`. `external_tool_grants` is
+  only narrow, delegation budgets only reduce, absent depth requests stay
+  unknown rather than inferred from prose; preserve the persisted
+  requested/permitted/attempted/achieved depth facts and never recompute
+  historical permission from current Settings.
+- `active_tool_profile` fails closed to read-only, never to
+  `self_modification`/`operator_control`; `external_tool_grants` is
   deny-by-default; acting children keep commit, review, runtime control,
-  tool-enable, skills lifecycle, and cognitive-memory writes blocked;
-  `local_readonly_subagent` is enforced twice (schema discovery AND registry
-  execution). External `/api/tasks` and CLI requests must reject forged
-  `delegation_role=subagent`; only `schedule_subagent` may create subagents.
-  Live `memory_mode=shared` stays disabled (`forked` and `empty` only).
-- The parent is the SOLE committer of the live body: acting children return a
-  `workspace.patch`, the parent applies a chosen patch with
-  `integrate_subagent_patch` and then runs its own `commit_reviewed`; routing
-  is top-only. In the shared `external_workspace` surface the tool verifies
-  and records but must not re-apply the patch (the edits are already there);
-  a genesis project is durable because the project directory IS the
-  deliverable, and its patch is only a record.
-- The canonical/replica terminal field-custody projection lives in one pure
-  reducer reused by both physical copy-back and effective reads; every change
-  to it adds a stale-replica regression at BOTH seams. Do not broaden generic
-  data-tool behavior for normal tasks while fixing subagent isolation
-  (`forward_to_worker` writes only to validated running tasks whose lineage
-  belongs to the current task/root).
-- Outcome honesty: a delegating parent must not produce a clean no-tool final
-  answer while direct children are still running and undecided — one bounded
-  absorption reminder, then best-effort (`children_unabsorbed`). While that
-  gate is open the delivery candidate is HELD, and the JSON delivery-control
-  instruction must not ride the same round as the absorption reminder,
-  because it would contradict the required disposition tool call.
-- `wait_tasks` stays batch-compact (`task_id, status, cost_usd` with its
-  honest alias `accounted_upper_bound_usd` and `cost_final`,
-  `child_result_sha256`, `outcome_axes`, `result`,
+  tool-enable, skills lifecycle, and cognitive-memory writes blocked; only
+  `schedule_subagent` may create subagents (forged `delegation_role`
+  rejected at API/CLI ingress); live `memory_mode=shared` stays disabled
+  (`tests/test_acting_subagents.py`). The subagent browser boundary is DNS
+  fail-closed with the loopback control-plane carve-out
+  (`tests/test_browser_isolation.py`; full rules: CHECKLISTS item 18).
+- The parent is the SOLE committer of the live body: acting children return
+  a `workspace.patch`, the parent applies a chosen patch with
+  `integrate_subagent_patch` and runs its own `commit_reviewed`. The shared
+  `external_workspace` surface verifies and records without re-applying; a
+  genesis project is durable because the project directory IS the
+  deliverable. The canonical/replica terminal field-custody projection is
+  ONE pure reducer reused by copy-back and effective reads — every change
+  adds a stale-replica regression at BOTH seams
+  (`tests/test_available_subagents_runtime_review_fixes.py`). Do not broaden
+  generic data-tool behavior while fixing subagent isolation
+  (`forward_to_worker` writes only to validated running tasks in the
+  current task/root lineage).
+- Outcome honesty: a delegating parent must not produce a clean no-tool
+  final answer while direct children run undecided — one bounded absorption
+  reminder, then best-effort (`children_unabsorbed`); while that gate is
+  open the delivery candidate is HELD, and the delivery-control instruction
+  never rides the reminder round, which would contradict the required
+  disposition tool call (`tests/test_v6570_swarm_honesty.py`). `wait_tasks`
+  stays batch-compact (`task_id, status, cost_usd` with its honest alias
+  `accounted_upper_bound_usd` and `cost_final`, `child_result_sha256`,
+  `outcome_axes`, `result`,
   `trace_summary, capability_delta when disclosable, duplicate_of`); full
-  untruncated handoff belongs to `get_task_result` and `wait_task`. Do not
-  add shared ledgers, automatic memory merges, or new settings/endpoints
-  unless the accepted plan explicitly calls for them.
-- Browser isolation for subagent profiles is DNS fail-closed with the
-  loopback control-plane carve-out; `evaluate` stays unavailable to
-  `local_readonly_subagent` while a valid acting child may evaluate on its
-  current page (boundary rules: CHECKLISTS item 18 and
-  `ouroboros/tools/browser.py`). `read_file`/`list_files` secret denials on
-  `runtime_data` are subagent-scoped.
-- Push/live events are wakeups and a fast path, not terminal authority:
-  durable detail/history and authoritative snapshots converge terminal UI
-  state through the existing refresh/reconnect seams, snapshot consumers
-  mutate projections only for a newer request generation, and lifecycle
-  changes must exercise lost/reordered terminal frames and reversed snapshot
-  completion.
+  untruncated handoff belongs to `get_task_result` and `wait_task`; no
+  shared ledgers, automatic memory merges, or new settings/endpoints unless
+  the accepted plan calls for them. Push/live events are wakeups, not
+  terminal authority — lifecycle changes must exercise lost/reordered
+  terminal frames and reversed snapshot completion.
 
 ### Cancellation and effective status
 
 Mechanism — durable intents, the claim/generation fence, the one settle
 owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
-"5. Supervisor Loop". The imperatives:
+"5. Supervisor Loop". Enforcement: `tests/test_cancel_intents_phase_a.py` and
+`tests/test_cancel_cascade_v664.py`. The imperatives:
 
 - Effective task status belongs in `ouroboros/task_status.py`; never duplicate
   child-drive merge or terminality logic in gateways/tools. Task waits use
@@ -1383,128 +1413,102 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
 
 ### LLM call rules
 
+Accounting and transport mechanism — attempt lifecycle, pricing lookup, lock
+discipline, snapshots, projections — lives in ARCHITECTURE "Budget tracking"
+and "Usage ledger substrate vs. accounting policy"; route contracts (Chat
+Completions dialect, request-wire driver, Anthropic native custody) are owned
+by "Provider Independence" above. Call-site imperatives:
+
 - New LLM calls go through the shared `LLMClient`/`llm.py` layer — no ad-hoc
-  HTTP clients or direct provider SDKs outside it (CHECKLISTS item 2(e)).
-  Exception: skill/extension `plugin.py` modules may call providers directly
-  until a host-mediated `api.invoke_llm(...)` bridge lands; runtime callers
+  HTTP clients or direct provider SDKs outside it (review gate: CHECKLISTS
+  item 2(e)). Exception: skill/extension `plugin.py` modules may call
+  providers directly until a host-mediated bridge lands; runtime callers
   inside `ouroboros/` must use `LLMClient`.
 - Keep canonical messages/tools provider-neutral and function-shaped; a
   provider dialect is an outbound projection plus inbound normalization only
   and must not mutate stored history or create a second compaction/replay
-  contract. Direct OpenAI Chat custom-origin arguments carry private
-  parser-issued receipts bound to the exact physical catalog; consumers use
-  them before execution and never persist them publicly
-  (`ouroboros/request_wire_custom_validation.py`).
-- Use the one same-route request-wire driver for optional-parameter,
-  reasoning-carrier, and registered tool-dialect recovery; never turn
-  provider prose into a model/provider/API switch, never raise a caller's
-  attempt rail, never persist a task-local explicit-`none` fallback.
-  `usage.request_wire` describes the terminal candidate of one call; nested
-  aggregation preserves ordered `request_wire_history` with explicit omission
-  accounting and never replaces `state/usage_attempts.jsonl`.
-- Direct OpenAI Chat sends `max_completion_tokens` and `reasoning_effort` for
-  the route as a whole, not a model-name allowlist; ladder ordinals stay
-  fixed at 1/2/3, custom→function is never persisted as learned dialect, the
-  task-local `none` rung exists only within remaining attempt authority, and
-  there is no Responses migration in this contract. Exact direct-Anthropic
-  native assistant content is private unfinished-turn custody only: complete
-  same-route replay, cross-route/summarizer/public scrub, owner `none` is
-  `thinking.type=disabled`, and no guessed manual-thinking budgets.
+  contract. Custom-origin receipts stay private and catalog-bound
+  (`ouroboros/request_wire_custom_validation.py`); wire-dialect recovery
+  uses the one request-wire driver, ladder ordinals stay fixed at 1/2/3,
+  custom→function is never persisted as learned dialect, there is no
+  Responses migration, and owner `none` on direct Anthropic is
+  `thinking.type=disabled` (`tests/test_request_wire_contract.py`,
+  `tests/test_openai_chat_custom_contract.py`,
+  `tests/test_anthropic_native_custody.py`). `usage.request_wire` describes
+  one call's terminal candidate; nested aggregation preserves ordered
+  `request_wire_history` with explicit omission accounting.
 - Every core-mediated physical provider send goes through
-  `usage_accounting.execute_physical_attempt[_async]`: reserve → dispatched →
-  settle/unresolve. A marked dispatch may be released only by a typed
-  pre-dispatch failure proving no request bytes were sent; an ordinary
-  timeout or unknown error stays unresolved; a transport retry is a new
-  attempt; `llm_usage`, state, and UI counters are projections carrying
-  attempt ids, never a second monetary authority; unknown price reserves
-  `None` and never blocks a model. An external skill with granted provider
-  credentials that bypasses core transport is unknown/unmetered, never `$0`.
-- Custody classifiers must not treat Python's implicit exception
-  `__context__` as transport provenance — use the explicit `__cause__` chain
-  or typed transport metadata; an ambiguous timeout remains unresolved
-  (`ouroboros/transport_custody.py`).
-- `call_llm_with_retry` treats an omitted transport reserve as the raw
-  owner-deadline window; callers that own a finalization reserve pass it
-  explicitly so admission and the transport bound cannot disagree. Hold the
-  usage-ledger cross-process lock only for budget check, validated append,
-  and fsync — never over network I/O; preserve a paid response when
+  `usage_accounting.execute_physical_attempt[_async]` (reserve → dispatched
+  → settle/unresolve; `tests/test_usage_accounting.py`). A marked dispatch
+  is released only by a typed pre-dispatch failure proving no request bytes
+  were sent; a transport retry is a new attempt; projections carry attempt
+  ids and are never a second monetary authority; unknown price reserves
+  `None` and never blocks a model. An external skill bypassing core
+  transport is unknown/unmetered, never `$0`. Custody classifiers use the
+  explicit `__cause__` chain, never Python's implicit `__context__`; an
+  ambiguous timeout remains unresolved (`tests/test_transport_custody.py`).
+- Hold the usage-ledger cross-process lock only for budget check, validated
+  append, and fsync — never over network I/O; preserve a paid response when
   settlement persistence fails and leave an honest dispatched/unresolved
-  bound.
-- Tree-spend visibility: under a root cap, pacing and stop text use
-  root-subtree ledger spend including in-flight holds; own cost is
-  diagnostic, and unavailable is unknown, never `$0`. Reuse
-  `usage_accounting.last_root_accounting` and refresh only at rare
-  cache-breaking decision surfaces, never per round or inside a stable cached
-  prefix. `task_pacing.resolve_cost_ceiling` returns
-  `disabled|active|exhausted_soft_land|unknown` from the independent
-  global-percentage and root-cap-minus-margin axes; graceful finalization
-  precedes but cannot bypass the ledger fence; `resolve_deciding_spend` is
-  the sole fallback seam and labels own-cost-under-root-cap as a lower bound.
-- Before dispatching post-task consolidation or synthesis, read
-  `usage_breakdown` once for the whole root subtree and pass the same
-  loop-local snapshot to summary and reflection. It is explicitly non-final
-  because those flows have not spent yet — treating a read failure as `$0`
-  would create false accounting certainty; it is unavailable/null instead.
-  Their model spend belongs to the existing terminal checkpoint; do not add
-  another ledger or reconciliation LLM call.
+  bound. Callers that own a finalization reserve pass it explicitly so
+  admission and the transport bound cannot disagree.
+- Tree-spend pacing decides on root-subtree ledger spend including in-flight
+  holds; own cost is a disclosed lower-bound fallback, and unavailable is
+  unknown, never `$0`. Refresh `usage_accounting.last_root_accounting` only
+  at rare cache-breaking decision surfaces, never per round or inside a
+  stable cached prefix (`tests/test_budget_limits.py`). Post-task
+  consolidation/synthesis reads `usage_breakdown` once per root subtree and
+  passes the same snapshot to summary and reflection; it is explicitly
+  non-final because those flows have not spent yet — treating a read
+  failure as `$0` would create false accounting certainty. No second
+  ledger, no reconciliation LLM call.
 - Runtime notices after the first user/assistant/tool turn are user notices
   (`[SYSTEM NOTICE]`), not new `role=system` messages; `LLMClient`
   defensively demotes non-leading system messages at the provider boundary.
 - **Cache-friendliness invariant.** Byte-stable governance and task contracts
-  precede mutable evidence; never place timestamps, hashes, counters, or task
-  identity in a stable cached prefix — they fragment provider caches while
-  conveying no stable policy. Builders declare bare breakpoints and
-  `review_substrate.assert_cache_breakpoint_cap` keeps the declared count at
-  four or fewer; only `LLMClient._normalize_payload_cache_ttl` finalizes the
-  assembled wire payload, and `OUROBOROS_PROMPT_CACHE_TTL=default|5m|1h`
-  stamps existing Anthropic-family markers only. Prompt-cache support stays
-  deliberately narrow — direct OpenAI `prompt_cache_key`, OpenRouter
-  `session_id` or a caller-declared `cache_affinity`, and one exact retry
-  without an explicitly rejected parameter — no provider hops, body
-  rerouting, or a generic cache/retry framework.
+  precede mutable evidence; never place timestamps, hashes, counters, or
+  task identity in a stable cached prefix — they fragment provider caches
+  while conveying no stable policy. Builders declare bare breakpoints
+  (`review_substrate.assert_cache_breakpoint_cap` keeps the count at four or
+  fewer; `tests/test_review_prompt_caching.py`); only
+  `LLMClient._normalize_payload_cache_ttl` finalizes the assembled wire
+  payload. Prompt-cache support stays deliberately narrow — no provider
+  hops, body rerouting, or a generic cache/retry framework. Review gate:
+  CHECKLISTS item 22 (`cache_friendliness`).
 - Provider fallback is disabled only when the transcript carries a SEALED
   reasoning artifact
   (`ouroboros/reasoning_artifacts.py::transcript_has_sealed_reasoning`),
   because only a sealed artifact is bound to the endpoint that minted it;
   readable reasoning stays failover-eligible for every family so one
-  endpoint's outage does not strand valid work. Direct/local payloads strip
-  OpenRouter round-trip metadata, and the same predicate governs
-  preserve-vs-strip on a same-model reroute.
+  endpoint's outage does not strand valid work
+  (`tests/test_llm_provider_routing.py`).
 - Delegated agent sessions and the native review inspection episode preserve
   the full governance prompt; do not truncate
   BIBLE/ARCHITECTURE/DEVELOPMENT/CHECKLISTS to fit argv or transport limits.
 - Delegated (subscription-harness) work is accounted on its OWN ledger row —
-  `usage_accounting.record_subscription_session`, feeding the separate
-  sessions/quota axis. Its cash has three states and only the first is final:
-  a disclosed zero settles `cost_usd=0.0, cost_final=True`; an estimated
-  amount rides as money but never as finality; an undisclosed spend is
-  `cost_usd: None`, counted unknown/unmetered, never a confident `0.0`.
-  Token `None` means no harness reported it — not a run that used zero. Do
-  not reuse `record_unmetered_external_dispatch` for these rows (it drops
-  the sessions/quota axis). The applied
-  `credential_profile_id`/`access_profile` the engine disclosed ride the
-  durable row and settled event by default — empty when telemetry predates
-  the receipt, never invented.
-- Skill Review waves attribute every canonical usage row with the exact
-  `review_skill`, `review_wave_id`, and stable `review_slot_id` (API attempts
-  via `UsageScope`; agent sessions via the persisted `RunCustody`
-  start/replay facts). Pre-marker waves stay "exact attribution unavailable"
-  and are never reconstructed by time/model; a terminal row landing before a
-  late worker overlays only the exact same-wave write-ahead marker.
+  `usage_accounting.record_subscription_session`, never
+  `record_unmetered_external_dispatch` (it drops the sessions/quota axis).
+  Its cash has three states and only the first is final: a disclosed zero
+  settles `cost_usd=0.0, cost_final=True`; an estimate rides as money but
+  never as finality; an undisclosed spend is `cost_usd: None`, counted
+  unknown/unmetered, never a confident `0.0` — and token `None` means no
+  harness reported it, not a run that used zero
+  (`tests/test_gateway_usage_accounting.py`). Skill Review waves attribute
+  every canonical usage row with the exact wave/slot identity; pre-marker
+  waves stay "exact attribution unavailable" and are never reconstructed by
+  time/model (`tests/test_skill_review_usage_accounting.py`).
 - `cost_final` on a projection is a COUNT of open rows (`non_final_rows`),
-  never a truthiness test on a dollar sum: a projection can be non-final with
-  every dollar bucket at zero, and a flag without its cause is not
-  reconstructible.
-- A spent subscription window is `subscription_window_exhausted`: a TRANSIENT
-  class carrying `reset_at`, scheduled against that instant. Do not fold it
-  into `quota_exhausted`, which is correctly permanent for a billing refusal
-  and wrong for a window whose only cure is waiting.
+  never a truthiness test on a dollar sum. A spent subscription window is
+  `subscription_window_exhausted` — a TRANSIENT class carrying `reset_at` —
+  never folded into `quota_exhausted`, which is correctly permanent for a
+  billing refusal and wrong for a window whose only cure is waiting
+  (`tests/test_reviewer_slot_config.py`).
 - Classify provider failures before retrying the same request:
-  quota/auth/billing, hard bad-request, and request-too-large/context
-  failures are non-retryable as-is (record the exact category and surface a
-  recovery hint); a typed 408/429/5xx or a failure proven pre-dispatch may
-  retry; a dispatched request with no terminal provider outcome stops
-  same-model and cross-model sends until reconciled.
+  quota/auth/billing, hard bad-request, and request-too-large failures are
+  non-retryable as-is (record the exact category and surface a recovery
+  hint); a typed 408/429/5xx or a failure proven pre-dispatch may retry; a
+  dispatched request with no terminal provider outcome stops same-model and
+  cross-model sends until reconciled.
 
 #### Timeout & Wait Control
 
@@ -1677,6 +1681,11 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   `improvement passes = cycles − 1` (the retired acceptance key is migrated
   into the shared key at settings load and never binds at runtime).
 
+Enforcement: the adversarial tests the first bullet mandates, plus
+`tests/test_child_result_disposition.py`, `tests/test_acceptance_fence.py`,
+`tests/test_v674_acceptance_dialogue.py`, and `tests/test_review_cycles.py`
+(cap migration).
+
 #### Cognitive Artifact Integrity
 
 - Cognitive artifacts (identity.md, scratchpad, task reflections, review
@@ -1688,6 +1697,9 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
 - All primary reasoning flows include the core governance artifacts as
   first-class sections — see "Core Governance Artifacts". A new reasoning
   flow MUST follow that contract, not rely on touched-file inclusions.
+
+Enforcement: review-only — CHECKLISTS item 2(f) scores the no-`[:N]` rule in
+commit review.
 
 ---
 
@@ -1764,6 +1776,8 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   `job_id`, and compute legacy ordinals at read time without rewriting
   history.
 
+Enforcement: `tests/test_mutation_attribution.py`.
+
 ## Process Custody Rule
 
 Long-lived OS processes (anything `subprocess.Popen`-ed or `mp.Process`-ed
@@ -1822,6 +1836,8 @@ overwrites; lockfiles go through
 keeps `atomic_write_text` for its mirrored state writes, and
 `ouroboros/config.py` keeps its settings-file lock because the settings path
 is bootstrapped before broader runtime helpers may depend on settings state.
+Enforcement: `tests/test_atomic_write_v639.py`; the prefer-the-helper rule is
+review-only.
 
 ## Design System
 
@@ -1900,7 +1916,8 @@ stealing usable text space; use the shared responsive component before
 adding a page-specific layout. A visible change is inspected with vision in
 at least one relevant real consumer flow. A stored screenshot alone is not
 verification; mobile or WebKit is not a universal requirement and is
-selected from risk.
+selected from risk. Review-only: scored by CHECKLISTS items 2(i) and 30
+(`web_design_system`).
 
 ### Browser dialogs
 
@@ -1929,7 +1946,9 @@ iframe with no `allow-same-origin`; its parent bridge proxies only the
 owning extension route — never load skill JavaScript into the SPA origin.
 Long-running actions use a durable job id and resumable status polling.
 Every timer, listener, observer, stream, abort controller, chart, and
-mounted widget has a paired disposer.
+mounted widget has a paired disposer. Enforcement:
+`tests/test_widgets_ui_static.py` at commit tier;
+`tests/test_widgets_ui_browser.py` in the release-tier `ui_browser` lane.
 
 ## MCP Client Integration
 
@@ -1945,6 +1964,7 @@ and an exact string argument list — no shell, custom environment, or custom
 working directory. Tokens never appear in status responses
 (`ouroboros/secret_masking.py` owns the shared placeholders). Resources,
 prompts, and MCP server behavior remain separate architecture changes.
+Enforcement: `tests/test_mcp_client.py`.
 
 ## Gateway Boundary Pattern
 
@@ -1956,7 +1976,8 @@ Outbound provider/harness adapters belong in `ouroboros/gateways/` and carry
 no domain policy — do not copy policy into an adapter, promote the
 `gateway/host_service.py` callback surface into a general owner/task API,
 or require a class where established function owners already preserve the
-boundary.
+boundary. Enforcement: CHECKLISTS item 17 (`gateway_parity`) and
+`tests/test_gateway_parity.py`.
 
 ## Build & CI
 
