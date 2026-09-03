@@ -1267,9 +1267,9 @@ both critical. The imperatives:
   manifest observation is a preflight, not a lease. `subagents.route_health`
   is the ONE route reader for every consumer; quota readers project one
   `ClaudexorGateway.quota_state()` envelope
-  (`tests/test_available_subagents_runtime.py`). Substrate facts in the
-  acceptance packet are VISIBILITY ONLY — acceptance judges quality, never
-  the execution route — and an unreadable custody log reads
+  (`tests/test_available_subagents_runtime.py`). Substrate facts and the
+  packet's per-skill lifecycle facts are VISIBILITY ONLY — acceptance judges
+  quality, never the execution route — and an unreadable custody log reads
   `evidence_read_failed`, never a proven-empty substrate.
 - `task_constraint` boolean parsing is strict (`"false"` is false); deadlines
   only narrow, delegation budgets only reduce, absent depth requests stay
@@ -1819,6 +1819,9 @@ quarantine).
   reviewing actor must see without the host inventing a semantic outcome. Do
   not turn blockers into structural outcome vetoes, and do not add a
   lease/holder service, a second ledger, or runtime writer keyword scanners.
+- The acceptance packet reads mutation evidence from the canonical results
+  root (`budget_drive_root` first), the same root the writer and the outcome
+  consumer use.
 - Git staging is attribution-based: `paths=None` means the clean-at-baseline
   candidate set, an explicit list must be its subset, and empty never means
   `git add -A`. Preserve pre-existing user dirt as excluded evidence.

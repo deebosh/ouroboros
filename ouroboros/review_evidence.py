@@ -1056,7 +1056,12 @@ def build_task_acceptance_evidence(
     if drive_root is not None and task_id:
         from ouroboros.mutation_attribution import load_mutation_evidence_projection
 
-        mutation_projection = load_mutation_evidence_projection(drive_root, task_id)
+        # The writer and the outcome consumer resolve the canonical results root
+        # first; on a split-root install reading the execution drive made the
+        # whole section silently vanish from the packet.
+        mutation_projection = load_mutation_evidence_projection(
+            getattr(ctx, "budget_drive_root", None) or drive_root, task_id,
+        )
         if mutation_projection:
             ev["mutation_attribution"] = mutation_projection
             prov["mutation_attribution"] = "host_attested"
@@ -1078,6 +1083,13 @@ def build_task_acceptance_evidence(
         if patch_dispositions := acceptance_patch_dispositions(drive_root, task_id):
             ev["delegated_patch_dispositions"] = redact_projection(patch_dispositions).value
             prov["delegated_patch_dispositions"] = "host_attested"
+        # The lifecycle (review status, readiness, enablement) of every skill the
+        # task touched — the same VISIBILITY-ONLY charter as substrate_execution.
+        from ouroboros.skill_readiness import acceptance_skill_lifecycle
+
+        if lifecycle := acceptance_skill_lifecycle(drive_root, llm_trace or {}, root_task_id):
+            ev["skill_lifecycle"] = redact_projection(lifecycle).value
+            prov["skill_lifecycle"] = "host_attested"
     repo_diff = collect_turn_diff(ctx, include_recent_commit=include_recent_commit)
     diff_meta: Dict[str, Any] = {}
     if "OMISSION NOTE: truncated at " in str(repo_diff or "") or "... (truncated from " in str(repo_diff or ""):

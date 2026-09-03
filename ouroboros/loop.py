@@ -131,32 +131,11 @@ def _handle_text_response(
     return safe_content, accumulated_usage, llm_trace
 
 
-def _skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
-    names: List[str] = []
-    for call in llm_trace.get("tool_calls") or []:
-        if not isinstance(call, dict):
-            continue
-        tool = str(call.get("tool") or "")
-        if tool not in {"write_file", "edit_text"}:
-            continue
-        args = call.get("args") if isinstance(call.get("args"), dict) else {}
-        bucket = str(args.get("bucket") or "").strip().lower()
-        skill_name = str(args.get("skill_name") or "").strip()
-        if bucket in {"external", "clawhub", "ouroboroshub"} and skill_name:
-            if skill_name not in names:
-                names.append(skill_name)
-            continue
-        candidates = [str(args.get("path") or "")]
-        for raw in candidates:
-            norm = raw.replace("\\", "/").strip().lstrip("/")
-            if norm.startswith("data/"):
-                norm = norm[len("data/"):]
-            parts = pathlib.PurePosixPath(norm).parts
-            if len(parts) >= 3 and parts[0] == "skills" and parts[1] in {"external", "clawhub", "ouroboroshub", "native"}:
-                name = parts[2]
-                if name and name not in names:
-                    names.append(name)
-    return names
+# The trace-touched skill name scan lives with the readiness predicate that
+# consumes it; the historical private name stays bound here.
+from ouroboros.skill_readiness import (  # noqa: E402
+    skill_names_touched_by_trace as _skill_names_touched_by_trace,
+)
 
 
 def _skill_finalization_message(drive_root: pathlib.Path, llm_trace: Dict[str, Any]) -> str:

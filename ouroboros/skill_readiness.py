@@ -24,6 +24,125 @@ class SkillReadiness:
     manual_dependencies: List[str] = field(default_factory=list)
 
 
+_SKILL_PAYLOAD_EDIT_TOOLS = frozenset({"write_file", "edit_text"})
+_SKILL_LIFECYCLE_TOOLS = frozenset({"skill_review", "skill_preflight", "skill_exec"})
+_SKILL_NAMING_TOOLS = _SKILL_PAYLOAD_EDIT_TOOLS | _SKILL_LIFECYCLE_TOOLS
+
+
+def skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
+    """Names of the skills a task's tool trace touched.
+
+    Payload edits name the skill through ``bucket``/``skill_name`` or the path;
+    the skill lifecycle tools name it directly, which is the only carrier for a
+    delegated payload the root never wrote with ``write_file``/``edit_text``.
+    """
+    names: List[str] = []
+    for call in llm_trace.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        tool = str(call.get("tool") or "")
+        if tool not in _SKILL_NAMING_TOOLS:
+            continue
+        args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        if tool in _SKILL_LIFECYCLE_TOOLS:
+            named = str(args.get("skill_name") or args.get("name") or "").strip()
+            if named and named not in names:
+                names.append(named)
+            continue
+        bucket = str(args.get("bucket") or "").strip().lower()
+        skill_name = str(args.get("skill_name") or "").strip()
+        if bucket in {"external", "clawhub", "ouroboroshub"} and skill_name:
+            if skill_name not in names:
+                names.append(skill_name)
+            continue
+        candidates = [str(args.get("path") or "")]
+        for raw in candidates:
+            norm = raw.replace("\\", "/").strip().lstrip("/")
+            if norm.startswith("data/"):
+                norm = norm[len("data/"):]
+            parts = pathlib.PurePosixPath(norm).parts
+            if len(parts) >= 3 and parts[0] == "skills" and parts[1] in {"external", "clawhub", "ouroboroshub", "native"}:
+                name = parts[2]
+                if name and name not in names:
+                    names.append(name)
+    return names
+
+
+def acceptance_skill_lifecycle(
+    drive_root: Any, llm_trace: Dict[str, Any], root_task_id: str = "",
+) -> List[Dict[str, Any]]:
+    """Per-skill lifecycle facts for the acceptance packet — VISIBILITY ONLY.
+
+    Names come from the task's own trace plus any skill whose review history
+    records this ``root_task_id`` (which is how a child-authored payload shows
+    up at all). A UI or manual review carries no root task id and is simply not
+    joined. Acceptance judges quality, never the execution route, so nothing
+    here is a gate.
+    """
+    root = pathlib.Path(drive_root) if drive_root else None
+    if root is None:
+        return []
+    names = list(skill_names_touched_by_trace(llm_trace or {}))
+    for name in _skill_names_from_review_history(root, str(root_task_id or "")):
+        if name not in names:
+            names.append(name)
+    if not names:
+        return []
+    from ouroboros.skill_loader import discover_skills, find_skill
+
+    peers = discover_skills(root)
+    rows: List[Dict[str, Any]] = []
+    for name in names:
+        skill = find_skill(root, name)
+        if skill is None:
+            rows.append({"name": name, "present": False})
+            continue
+        readiness = skill_readiness_for_execution(root, skill, skills=peers)
+        rows.append({
+            "name": skill.name,
+            "source": str(getattr(skill, "source", "") or ""),
+            "review_status": str(getattr(skill.review, "status", "") or ""),
+            "review_stale": bool(skill.review.is_stale_for(skill.content_hash)),
+            "enabled": bool(getattr(skill, "enabled", False)),
+            "ready": bool(readiness.ready),
+            "blockers": list(readiness.blockers),
+            "manual_dependencies": list(readiness.manual_dependencies),
+        })
+    return rows
+
+
+def _skill_names_from_review_history(drive_root: pathlib.Path, root_task_id: str) -> List[str]:
+    """Skills whose review history records this root task."""
+    if not root_task_id:
+        return []
+    import json
+
+    names: List[str] = []
+    base = drive_root / "state" / "skills"
+    try:
+        candidates = sorted(entry for entry in base.iterdir() if entry.is_dir())
+    except OSError:
+        return []
+    for entry in candidates:
+        path = entry / "review_history.jsonl"
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line.startswith("{") or root_task_id not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and str(row.get("root_task_id") or "") == root_task_id:
+                names.append(entry.name)
+                break
+    return names
+
+
 def skill_readiness_for_execution(
     drive_root: pathlib.Path,
     skill: Any,
