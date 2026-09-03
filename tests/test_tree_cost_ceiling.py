@@ -92,6 +92,14 @@ class TestCacheAwareReservation:
         warm = usage_accounting._reservation_cost(_request(task_id="t1"))
         assert warm is not None and warm < cold
 
+    def test_direct_route_and_ledger_identity_share_a_split(self):
+        usage_accounting.stash_task_cache_split(
+            "t1", "anthropic/claude-test", 95_000, ttl_seconds=300.0,
+        )
+        assert usage_accounting.last_task_cache_split(
+            "t1", "anthropic::claude-test",
+        ) == 95_000
+
     def test_a_split_of_another_model_is_never_inherited(self):
         cold = usage_accounting._reservation_cost(_request(task_id="t1"))
         usage_accounting.stash_task_cache_split(
