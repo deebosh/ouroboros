@@ -145,10 +145,11 @@ def test_skill_preflight_parses_module_entry_as_classic_script(
     row = rows[0]
     assert row["grammar"] == "classic_script"
     if row.get("skipped"):
-        # No usable node runtime: the honest skip branch, never a verdict.
+        # No usable node runtime: the honest skip branch, never a verdict. The
+        # grammar assertion above still held, so the selection is covered.
         assert row["skip_reason"] in {"runtime_unavailable", "validator_killed", "validator_timeout"}
         assert result["degraded"] is True
-        return
+        pytest.skip(f"no usable node runtime for the classic-script check ({row['skip_reason']})")
     if expect_block:
         assert row["ok"] is False
         assert result["ok"] is False
@@ -257,7 +258,7 @@ def test_toggle_skill_receipt_carries_process_and_marker_outcome(tmp_path, monke
 
     payload = json.loads(skill_exec_mod._handle_toggle_skill(ctx, skill=loaded.name, enabled=True))
     assert payload["process"] in {"server", "worker"}
-    assert "server_reconcile" in payload
+    assert payload["server_reconcile"] in {"", "requested", "request_failed"}
 
 
 def test_save_enabled_appends_one_typed_actor_row(tmp_path):

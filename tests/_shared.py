@@ -79,3 +79,13 @@ def configure_test_subagent(
         }],
     }))
     return subagent_id
+
+
+def reconcile_receipt(action=None, reason=None):
+    """Shape of ``_reconcile_extension_payload``'s return value for a test fake.
+
+    The real helper returns a receipt dict that also names the answering process
+    and the worker-to-server marker outcome, so a fake returning the older
+    2-tuple silently breaks the caller. Keep fakes going through here.
+    """
+    return {"action": action, "reason": reason, "process": "", "server_reconcile": ""}

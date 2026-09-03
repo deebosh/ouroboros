@@ -2144,14 +2144,14 @@ def reload_all(
     repo_path: str | None = None,
 ) -> Dict[str, Any]:
     """Refresh all extension liveness and return ``skill: error_or_None``."""
-    from ouroboros.extension_health import code_stamp, record_extension_health, status_for_runtime_state
+    from ouroboros.extension_health import fresh_code_stamp, record_extension_health, status_for_runtime_state
 
     skills = discover_skills(drive_root, repo_path=repo_path)
     skill_names = {s.name for s in skills if s.manifest.is_extension()}
     with _lock:
         loaded_names = set(_extensions.keys())
     results: Dict[str, Any] = {}
-    hv_version, hv_sha = code_stamp()
+    hv_version, hv_sha = fresh_code_stamp()
     regressions: List[Dict[str, Any]] = []
     for gone in loaded_names - skill_names:
         try:

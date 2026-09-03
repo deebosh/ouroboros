@@ -224,6 +224,17 @@ def code_stamp() -> tuple[str, str]:
         return "", ""
 
 
+def fresh_code_stamp() -> tuple[str, str]:
+    """Re-read the code stamp, dropping a value cached before a self-modification.
+
+    ``code_stamp`` is cached so one reload does not re-run git per skill, but a
+    live commit between reloads would otherwise attribute the new state to the
+    pre-commit sha.
+    """
+    code_stamp.cache_clear()
+    return code_stamp()
+
+
 def status_for_runtime_state(state: Dict[str, Any]) -> str:
     """Map an extension runtime-state dict to a health status."""
     if state.get("desired_live") and state.get("companion_failed"):
@@ -246,6 +257,7 @@ __all__ = [
     "apply_companion_failure_to_runtime_state",
     "clear_companion_restart_exhausted",
     "code_stamp",
+    "fresh_code_stamp",
     "health_path",
     "read_extension_health",
     "record_companion_restart_exhausted",
