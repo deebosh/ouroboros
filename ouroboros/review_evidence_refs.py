@@ -54,7 +54,9 @@ NON_RESOLVING_BASIS_KINDS = frozenset({
 # its recording of tool results (`tool_result`), its artifact manifest
 # (`artifact`). Everything else is classified above.
 HOST_ATTESTED_SECTION_PROVENANCE = frozenset({"host_attested", "tool_result", "artifact"})
-DECLARED_INTENT_SECTIONS = frozenset({"task_contract", "acceptance_claims_source"})
+DECLARED_INTENT_SECTIONS = frozenset({
+    "task_contract", "acceptance_claims_source", "plan_claims_exhibit",
+})
 
 # D-Q5 fail-closed row: the host could not resolve this panel's refs at all. It
 # carries the SAME `supported_evidence_resolves=False` the clean gate already

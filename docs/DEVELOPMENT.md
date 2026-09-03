@@ -1048,7 +1048,9 @@ Enforcement: `tests/test_extension_dispatch_threaded.py`,
   (`id`, `claim`, `surface`, `support`, `priority`); `success_criteria` is an
   input alias, not a second persisted carrier, and
   `effective_acceptance_claims` is the only binder; its read-time semantics
-  live in ARCHITECTURE §11.1. A child receives only claims
+  live in ARCHITECTURE §11.1. An OPEN wave binds nothing and is disclosed as
+  `none_open_plan_wave` with the non-binding `plan_claims_exhibit` (declared
+  intent, never in the resolvable vocabulary). A child receives only claims
   explicitly passed to its own `schedule_subagent` call. Reviewer
   `evidence_refs` resolve by exact membership in the already-built host
   packet — no fuzzy matching, filesystem reads, or re-execution — and

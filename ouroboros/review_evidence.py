@@ -436,29 +436,58 @@ def _accept_receipt_exhibits(receipts: list) -> list:
 
 def _accept_effective_claims(
     ctx: Any, contract: Dict[str, Any], drive_root: Any, task_id: str,
-) -> tuple[list, str]:
-    """Effective claims + provenance for the packet, via the ONE pure seam
-    (contracts.task_contract.effective_acceptance_claims): ingress-contract claims
-    first, the CLOSED plan wave's frozen claims only when ingress is empty. The
-    plan-state lookup mirrors plan_task's own state location (budget_drive_root
-    first) and is FAIL-SOFT — a claims lookup must never break packet building."""
+) -> tuple[list, str, Dict[str, Any]]:
+    """Effective claims + provenance + an open-wave exhibit for the packet.
+
+    Claims come from the ONE pure seam
+    (contracts.task_contract.effective_acceptance_claims): ingress-contract
+    claims first, the CLOSED plan wave's frozen claims only when ingress is
+    empty. The plan-state lookup mirrors plan_task's own state location
+    (budget_drive_root first) and is FAIL-SOFT — a claims lookup must never
+    break packet building.
+
+    A reviewed-and-frozen but never-closed wave binds NOTHING, and until now it
+    was indistinguishable in the packet from a task that never had claims. It is
+    disclosed instead: the claims ride as a non-binding exhibit and the source
+    reads ``none_open_plan_wave``. The exhibit sits in
+    ``DECLARED_INTENT_SECTIONS``, so citing it can never resolve a criterion."""
     from ouroboros.contracts.task_contract import effective_acceptance_claims
 
     claims, source = effective_acceptance_claims(contract)
     if claims:
-        return claims, source
+        return claims, source, {}
     root = getattr(ctx, "budget_drive_root", None) or drive_root
     if not root or not str(task_id or ""):
-        return [], ""
+        return [], "", {}
     try:
-        from ouroboros.task_results import closed_plan_review_wave, load_plan_review_state
-
-        wave = closed_plan_review_wave(
-            load_plan_review_state(pathlib.Path(str(root)), str(task_id))
+        from ouroboros.task_results import (
+            closed_plan_review_wave,
+            current_plan_review_wave,
+            load_plan_review_state,
         )
+
+        state = load_plan_review_state(pathlib.Path(str(root)), str(task_id))
+        wave = closed_plan_review_wave(state)
     except Exception:
-        return [], ""
-    return effective_acceptance_claims(contract, wave)
+        return [], "", {}
+    frozen, frozen_source = effective_acceptance_claims(contract, wave)
+    if frozen:
+        return frozen, frozen_source, {}
+    open_wave = current_plan_review_wave(state)
+    if not isinstance(open_wave, dict) or open_wave.get("closed"):
+        return [], frozen_source, {}
+    open_claims, _ = effective_acceptance_claims(contract, open_wave)
+    if not open_claims:
+        return [], frozen_source, {}
+    return [], "none_open_plan_wave", {
+        "binding": "not bound: wave open",
+        "cycle_index": open_wave.get("cycle_index"),
+        "aggregate": str(open_wave.get("aggregate") or ""),
+        "acceptance_claims": [
+            {key: _accept_redact_cap(value, 600) for key, value in row.items()}
+            for row in open_claims if isinstance(row, dict)
+        ],
+    }
 
 
 def _accept_claim_support_refs(contract: Dict[str, Any], receipts: list) -> list[Dict[str, Any]]:
@@ -1024,7 +1053,9 @@ def build_task_acceptance_evidence(
     # W2: resolve the claims that bind this task through the ONE seam — ingress
     # first, plan-frozen only when ingress is empty. The packet VIEW carries them;
     # the durable/live contract is never mutated.
-    claims, claims_source = _accept_effective_claims(ctx, contract, drive_root, task_id)
+    claims, claims_source, plan_exhibit = _accept_effective_claims(
+        ctx, contract, drive_root, task_id,
+    )
     if claims_source == "plan_review":
         contract = {**contract, "acceptance_claims": claims}
     receipts = read_context_verification_receipts(ctx, task_id, fallback_root=drive_root) if task_id else []
@@ -1041,6 +1072,9 @@ def build_task_acceptance_evidence(
         if claims_source:
             ev["acceptance_claims_source"] = claims_source
             prov["acceptance_claims_source"] = "host_attested"
+        if plan_exhibit:
+            ev["plan_claims_exhibit"] = redact_projection(plan_exhibit).value
+            prov["plan_claims_exhibit"] = "host_attested"
         support_refs = _accept_claim_support_refs(contract, receipts)
         if support_refs:
             ev["acceptance_support_refs"] = redact_projection(support_refs).value

@@ -496,3 +496,80 @@ def test_packet_budget_is_memoised_once_per_task(tmp_path, monkeypatch):
         loop._build_host_acceptance_evidence(replace(review_ctx, evidence={})),
     )
     assert first == again
+
+
+# ── AP5: an OPEN plan wave binds nothing, and says so ─────────────────────────
+
+def _record_wave(root: Path, task_id: str, *, closed: bool, cycle: int = 1) -> None:
+    from ouroboros.task_results import record_plan_review_wave
+
+    record_plan_review_wave(root, task_id, {
+        "schema_version": 2,
+        "cycle_index": cycle,
+        "request_fingerprint": f"{cycle:064x}",
+        "spec": {"goal": "g", "acceptance_claims": [
+            {"id": "claim_1", "claim": "the widget renders", "priority": "must"},
+            {"id": "claim_2", "claim": "the counter increments", "priority": "should"},
+        ]},
+        "findings": [],
+        "aggregate": "GREEN" if closed else "REVISE_PLAN",
+        "closed": closed,
+        "paid": True,
+        "dispositions": [],
+    })
+
+
+def test_an_open_plan_wave_is_disclosed_as_binding_nothing():
+    dr = Path(tempfile.mkdtemp())
+    _record_wave(dr, "acc", closed=False)
+    ev = build_task_acceptance_evidence(
+        _acc_ctx(dr), llm_trace={"tool_calls": []}, drive_root=dr, task_id="acc",
+    )
+    assert ev["acceptance_claims_source"] == "none_open_plan_wave"
+    exhibit = ev["plan_claims_exhibit"]
+    assert exhibit["binding"] == "not bound: wave open"
+    assert exhibit["cycle_index"] == 1
+    assert len(exhibit["acceptance_claims"]) == 2
+    assert "the widget renders" in json.dumps(exhibit)
+    # Nothing was bound: the contract keeps no claims and no support refs.
+    assert "acceptance_claims" not in ev["task_contract"]
+    assert "acceptance_support_refs" not in ev
+    assert ev["__provenance__"]["plan_claims_exhibit"] == "host_attested"
+
+
+def test_a_closed_wave_still_binds_and_leaves_no_exhibit():
+    dr = Path(tempfile.mkdtemp())
+    _record_wave(dr, "acc", closed=True)
+    ev = build_task_acceptance_evidence(
+        _acc_ctx(dr), llm_trace={"tool_calls": []}, drive_root=dr, task_id="acc",
+    )
+    assert ev["acceptance_claims_source"] == "plan_review"
+    assert "plan_claims_exhibit" not in ev
+    claims = ev["task_contract"]["acceptance_claims"]
+    assert [row["id"] for row in claims] == ["claim_1", "claim_2"]
+
+
+def test_ingress_claims_win_over_an_open_wave_with_no_exhibit():
+    dr = Path(tempfile.mkdtemp())
+    _record_wave(dr, "acc", closed=False)
+    ctx = _t.SimpleNamespace(
+        task_contract={
+            "requirements": "do X", "expected_output": "42",
+            "acceptance_claims": [{"id": "ingress_1", "claim": "the ingress claim"}],
+        },
+        task_metadata={}, drive_root=str(dr), task_id="acc", repo_dir=str(dr),
+    )
+    ev = build_task_acceptance_evidence(
+        ctx, llm_trace={"tool_calls": []}, drive_root=dr, task_id="acc",
+    )
+    assert ev["acceptance_claims_source"] == "ingress_contract"
+    assert "plan_claims_exhibit" not in ev
+
+
+def test_a_task_with_no_wave_at_all_stays_silent():
+    dr = Path(tempfile.mkdtemp())
+    ev = build_task_acceptance_evidence(
+        _acc_ctx(dr), llm_trace={"tool_calls": []}, drive_root=dr, task_id="acc",
+    )
+    assert "acceptance_claims_source" not in ev
+    assert "plan_claims_exhibit" not in ev
