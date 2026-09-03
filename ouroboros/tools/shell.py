@@ -37,7 +37,8 @@ from ouroboros.tools.output_export_policy import (  # noqa: F401 — re-exported
     _scan_directory_output_members,
     _sensitive_output_component_reason,
 )
-from ouroboros.tools.result_envelope import annotate as _annotate_result
+from ouroboros.tools.result_envelope import annotate as _annotate_result, append_note as _append_result_note
+from ouroboros.tools.verify import check_exit_masking
 from ouroboros.shell_parse import is_absolute_path_text, recover_stringified_argv
 from ouroboros.tools.registry import (
     ToolContext,
@@ -934,6 +935,26 @@ def _record_scratch_fingerprints(ctx: ToolContext, scratch_abs: list[pathlib.Pat
         record_task_scratch(ctx, fingerprints)
 
 
+def _masked_green_disclosure(result, cmd):
+    """Disclose an exit code the command's own shape laundered.
+
+    RESULT AND TRACE ONLY: status, is_failure and the reported returncode stay
+    exactly as the producer set them, no receipt is written, and nothing here
+    enters the verification ledger or receipt reconciliation."""
+    masked, reasons = check_exit_masking([str(part) for part in (cmd or [])])
+    if not masked:
+        return result
+    return _annotate_result(
+        _append_result_note(
+            result,
+            f"EXIT_MASKING_NOTE: exit_code=0 belongs to the last stage ({', '.join(reasons)}); "
+            "an upstream failure cannot change it — drop the filter, use `set -o pipefail`, "
+            "or check each stage.",
+        ),
+        exit_masking_reasons=list(reasons),
+    )
+
+
 def _run_shell(
     ctx: ToolContext,
     cmd,
@@ -1125,14 +1146,15 @@ def _run_shell(
         )
         if undeclared_user_outputs:
             # Declaration NUDGE, not a failure — see _UNDECLARED_OUTPUTS_MARKER.
-            return (
+            return _masked_green_disclosure(
                 autocorrect_note
                 + f"{_UNDECLARED_OUTPUTS_MARKER}: command appears to write user_files outputs "
                 "without declaring outputs=[...]. Declare generated user-visible files so "
                 "they are copied into the task artifact store before claiming completion. "
                 f"Paths: {', '.join(undeclared_user_outputs[:5])}.\n\n"
                 + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n"
-                + _format_process_output(res.stdout or "", res.stderr or "")
+                + _format_process_output(res.stdout or "", res.stderr or ""),
+                cmd,
             )
         artifact_note, artifact_failed = _register_process_outputs(
             ctx,
@@ -1172,17 +1194,18 @@ def _run_shell(
                 + ". It is excluded from the workspace patch, but delete it before finishing so it does not linger."
             )
         if artifact_failed:
-            return (
+            return _masked_green_disclosure(
                 autocorrect_note
                 + "⚠️ ARTIFACT_OUTPUT_ERROR: command succeeded but declared output registration failed. "
                 + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n"
                 + f"{_format_process_output(res.stdout or '', res.stderr or '')}"
-                + artifact_note
+                + artifact_note,
+                cmd,
             )
         executor_note = ""
         if getattr(res, "backend_trace", None):
             executor_note = "\n\nEXECUTOR_TRACE:\n" + json.dumps(res.backend_trace, ensure_ascii=False, indent=2)
-        return _annotate_result(autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}", status="ok_autocorrected" if autocorrect_note else "ok", is_failure=False)
+        return _masked_green_disclosure(_annotate_result(autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}", status="ok_autocorrected" if autocorrect_note else "ok", is_failure=False), cmd)
     except subprocess.TimeoutExpired:
         # A timed-out child has no returncode (unlike signal death): duration only.
         _publish_process_facts(started_ts=_command_start_ts,
@@ -1453,10 +1476,6 @@ def get_tools() -> List[ToolEntry]:
 	                        "Clamped to the remaining task-deadline budget. Omit for the default (deadline-capped)."
 	                    ),
 	                },
-	                "timeout": {
-	                    "type": "integer",
-	                    "description": "Alias for timeout_sec (per-call timeout in seconds).",
-	                },
 	            }, "required": ["cmd"]},
         }, _run_shell, is_code_tool=True, timeout_sec=_RUN_SHELL_DEFAULT_TIMEOUT_SEC, mutates_worktree=True),
         ToolEntry("run_script", {
@@ -1499,10 +1518,6 @@ def get_tools() -> List[ToolEntry]:
 	                        "Optional per-call timeout in seconds for long scripts (alias: timeout). "
 	                        "Clamped to the remaining task-deadline budget. Omit for the default (deadline-capped)."
 	                    ),
-	                },
-	                "timeout": {
-	                    "type": "integer",
-	                    "description": "Alias for timeout_sec (per-call timeout in seconds).",
 	                },
 	            }, "required": ["script"]},
         }, _run_script, is_code_tool=True, timeout_sec=_RUN_SHELL_DEFAULT_TIMEOUT_SEC, mutates_worktree=True),

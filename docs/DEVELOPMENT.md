@@ -202,7 +202,10 @@ costs a human a second look, a false green costs the thing this surface
 exists for. The full mechanism (masked-path rules, `IDENTITY_KINDS`,
 projections, bounds, rendering stamps) lives in
 `ouroboros/_outcome_receipts.py`, enforced by
-`tests/test_v678_receipt_reconciliation.py`. Four rules generalize:
+`tests/test_v678_receipt_reconciliation.py`. The process-tool lane discloses a
+masked exit code in its result envelope only and writes no receipt, so nothing
+there participates in masked-pass reconciliation or the masked-verification
+nudge. Four rules generalize:
 
 - **Whatever decides must be what is reported**: the reporting path reads the
   deciding path through one shared projection, never a re-derivation beside
@@ -1129,11 +1132,23 @@ devtool files).
 - For argv-visible targets, the shell guard checks lexical Deliverables origin
   before generic workspace or executor roots, then the symlink-resolved
   destination; direct `cp`/`mv`/`ln` directory destinations derive their
-  immediate child target. The undeclared-output audit is best-effort, not a
-  full shell parser: in-command `cd`, variable/indirect destinations, and
-  inline-code path construction are disclosed parser residuals, and hardlinks
-  remain a disclosed filesystem residual (`ouroboros/tools/shell_guards.py`,
-  `ouroboros/tools/deliverables_shell.py`).
+  immediate child target. The pre-execution workspace lane uses
+  `shell_parse.split_redirections` as its one redirect grammar and emits one
+  `(segment_argv, targets, inline_code, unprovable)` row per shell segment. It
+  recurses through shell `-c` bodies at most three levels, takes Python body
+  targets and uncertainty from `_python_write_targets_and_unknown`, and treats
+  a `cd`/`pushd` operand as a candidate only when a later segment writes. A
+  write-shaped row with no parsed target is `unprovable`: its candidate scan
+  widens to the legacy raw mentions rather than interpreting an empty target
+  list as permission. The raw mention lane remains separate so POSIX shlex
+  cannot erase Windows drive/UNC spellings; the light fence likewise retains
+  its unfiltered inline-body signal.
+- This is conservative target extraction, not a full shell interpreter.
+  Variable/indirect destinations, path construction performed at runtime,
+  wrapper grammars beyond the bounded shell-body recursion, and inode aliases
+  remain parser residuals. The post-execution undeclared-output audit also
+  cannot reconstruct post-`cd` relative writes or unwalked recursive copies
+  (`ouroboros/tools/shell_guards.py`, `ouroboros/tools/deliverables_shell.py`).
 - `scratch=[...]` is a DISTINCT channel from `outputs=[...]`: ephemeral
   in-cwd verification files, exempt from the undeclared-output guard, never
   registered as artifacts, adopted only with a declaration-time sha through

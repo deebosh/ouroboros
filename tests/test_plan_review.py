@@ -554,7 +554,7 @@ class TestPlanReviewToolRegistration(unittest.TestCase):
 
         self.assertIn("TOOL_ARG_ERROR (plan_task)", result)
         self.assertIn("review_disposition", result)
-        self.assertNotIn("review_dispositon", result)
+        self.assertIn("unsupported argument(s): review_dispositon", result)
         self.assertNotIn("handler-ran", result)
 
     def test_plan_task_description_is_domain_neutral_and_trigger_free(self):

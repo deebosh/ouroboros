@@ -329,6 +329,60 @@ def shell_segments(raw_cmd: Any) -> List[List[str]]:
     return segments
 
 
+# The ONE redirection grammar of this module. A redirection operator is only an
+# operator at the START of a token (after an optional file-descriptor prefix), so
+# `s/>/x/` and `--pretty=<x>` never match, while both the glued (`2>/dev/null`)
+# and the split (`2` `>` `/dev/null`) spellings the two lexers emit are covered.
+_REDIRECT_OPERATOR_RE = re.compile(
+    r"^(?P<fd>[0-9]+|&)?(?P<op><<<|<<|<&|<|>>|>\||>&|>)(?P<operand>.*)$"
+)
+# Operands that name a DESCRIPTOR rather than a file: `2>&1` and `>&-` duplicate
+# or close a descriptor, so no path is written.
+_FD_DUP_OPERANDS = frozenset({"1", "2", "-", "&1", "&2", "&-"})
+
+
+def split_redirections(tokens: List[str]) -> tuple[List[str], List[str]]:
+    """Split redirections off a command segment.
+
+    Returns ``(argv_without_redirections, output_targets)``. Input redirections
+    (``<``, ``<<``, ``<<<``, ``<&``) and descriptor duplication (``>&``, or an
+    ``&1``/``&2``/``-`` operand) yield no target; ``/dev/null`` is exempted on
+    the clean operand. Without this split the writer-target lane counted the
+    redirect OPERAND as the command's own operand — `cp x y >> log.txt` reported
+    `log.txt` and LOST the destination `y`, and a glued `2>/dev/null;` was forged
+    into the path `/dev/null;`.
+    """
+    items = [str(token) for token in (tokens or [])]
+    argv: List[str] = []
+    targets: List[str] = []
+    index = 0
+    while index < len(items):
+        token = items[index]
+        match = _REDIRECT_OPERATOR_RE.match(token)
+        if match is None and token.isdigit() and index + 1 < len(items):
+            # A bare descriptor token belongs to the operator that follows it.
+            following = _REDIRECT_OPERATOR_RE.match(items[index + 1])
+            if following is not None and not following.group("fd"):
+                match = following
+                index += 1
+        if match is None:
+            argv.append(token)
+            index += 1
+            continue
+        operator = match.group("op")
+        operand = match.group("operand")
+        if not operand and index + 1 < len(items):
+            index += 1
+            operand = items[index]
+        index += 1
+        if operator.startswith("<") or operator == ">&":
+            continue
+        if not operand or operand in _FD_DUP_OPERANDS or operand == "/dev/null":
+            continue
+        targets.append(operand)
+    return argv, targets
+
+
 def collect_leading_env(argv: List[str]) -> tuple[dict, List[str]]:
     """Peel leading environment assignments off a command segment.
 
