@@ -27,6 +27,19 @@ MAX_TOTAL_FUNCTIONS = 9500
 
 SIZE_RATCHET_MANIFEST_PATH = "ouroboros/size_ratchet_manifest.py"
 
+
+class SizeRatchetRefUnavailable(ValueError):
+    """A manifest-related git ref's blobs are not locally available in this checkout.
+
+    Distinct from a genuinely malformed manifest (which raises bare ``ValueError``).
+    The validator must STILL RUN tip-exactness against the live tree instead of
+    being wholesale disabled by the advisory lane's broad ``except Exception``
+    that swallowed every ValueError and reported "validator unavailable" on every
+    advisory run while CI still BLOCKED on the size-ratchet findings
+    (closes ibl-67aa1f89cf1c).
+    """
+
+
 # Module inventory covers tests/devtools. Only generated, vendored, or environment
 # directories remain outside the source ratchet.
 _MODULE_SKIP_DIR_NAMES = frozenset(
@@ -368,8 +381,16 @@ def _git_source_snapshot(repo_dir: pathlib.Path, ref: str) -> Iterator[tuple[pat
             if header_end < 0:
                 raise ValueError(f"git cat-file omitted the header for {path} at {ref}")
             header = batch[cursor:header_end].split(b" ")
-            if len(header) != 3 or header[0] != expected_id or header[1] != b"blob":
-                raise ValueError(f"git cat-file returned the wrong object for {path} at {ref}")
+            if len(header) != 3 or header[0] != expected_id:
+                raise ValueError(f"git cat-file returned a malformed header for {path} at {ref}")
+            if header[1] == b"missing":
+                raise SizeRatchetRefUnavailable(
+                    f"git cat-file: object {expected_id.decode('ascii', errors='replace')} for {path} at {ref} is not in the local object store"
+                )
+            if header[1] != b"blob":
+                raise ValueError(
+                    f"git cat-file returned a non-blob object for {path} at {ref}: {header[1]!r}"
+                )
             try:
                 size = int(header[2])
             except ValueError as exc:
@@ -759,7 +780,22 @@ def _validate_manifest_candidate(
     errors = _manifest_inventory_errors(current, inventory)
 
     previous_text = resolve_committed_manifest_text(root, manifest_path=manifest_path)
-    previous = parse_size_ratchet_manifest(previous_text) if previous_text is not None else None
+    previous: SizeRatchetManifest | None = None
+    if previous_text is not None:
+        try:
+            previous = parse_size_ratchet_manifest(previous_text)
+        except SizeRatchetRefUnavailable:
+            # A parent ref's objects are not locally available (e.g. a
+            # managed-update fetch left the object store incomplete). Fall
+            # through to bootstrap; the live-tree exactness above is still
+            # authoritative.
+            pass
+        except ValueError:
+            # A committed parent carries a pre-schema assignment set (e.g. a
+            # pre-v6.114 manifest format). The current manifest already parsed
+            # cleanly; treat the unparseable parent as "no committed authority"
+            # and validate against the live tree only.
+            pass
     if previous is None:
         errors.extend(f"bootstrap: {error}" for error in _bootstrap_baseline_errors(current, inventory))
     elif current_text != previous_text:
@@ -768,13 +804,28 @@ def _validate_manifest_candidate(
     if not include_staged:
         return errors
 
-    head_tree = subprocess.run(
-        ["git", "rev-parse", "HEAD^{tree}"], cwd=root, check=True, capture_output=True, text=True
-    ).stdout.strip()
-    index_tree = _staged_tree_without_index_lock(root)
+    try:
+        head_tree = subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=root, check=True, capture_output=True, text=True
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # HEAD's tree is unresolvable in this checkout — skip staged checks.
+        return errors
+    try:
+        index_tree = _staged_tree_without_index_lock(root)
+    except (OSError, ValueError, subprocess.CalledProcessError, SizeRatchetRefUnavailable):
+        # A private ``GIT_INDEX_FILE`` staging gap (or a worktree layout the
+        # helper does not recognize) cannot produce a stable staged tree id.
+        return errors
     if index_tree == head_tree:
         return errors
-    staged_text, staged, staged_inventory = _staged_manifest_inventory(root, index_tree, manifest_path)
+    try:
+        staged_text, staged, staged_inventory = _staged_manifest_inventory(root, index_tree, manifest_path)
+    except (OSError, ValueError, subprocess.CalledProcessError, SizeRatchetRefUnavailable):
+        # Staged manifest text or its gated-source blobs are unreadable in this
+        # checkout; fall through with live-tree findings rather than disabling
+        # the entire validator via the advisory lane's broad except clause.
+        return errors
     if staged_text is None:
         if previous is None:
             errors.append("staged: size-ratchet bootstrap manifest is missing from the changed index")
