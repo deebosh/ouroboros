@@ -2882,7 +2882,8 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
     full page reload — and pins the three neighbouring states so the fix cannot silently break
     them: 0 (no delegation), a normal positive value, and empty (falls back, does not persist
     an invalid value). Screenshots are written for vision inspection; a saved screenshot is
-    not verification on its own (docs/DEVELOPMENT.md "Browser/mobile verification").
+    not verification on its own (docs/DEVELOPMENT.md "Responsive and accessible
+    behavior").
     """
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
