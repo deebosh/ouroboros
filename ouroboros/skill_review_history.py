@@ -20,6 +20,7 @@ _MARKER_FACT_KEYS = (
     "review_contract_fingerprint", "rebuttal_sha256", "usage_attribution_schema",
     "group_id", "content_hash", "root_task_id",
 )
+ROOT_TASK_PROJECTION_RELATIVE_PATH = "state/skill_review_root_tasks.jsonl"
 
 
 def _redact_history_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -31,6 +32,10 @@ def _redact_history_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def review_history_path(drive_root: pathlib.Path, skill_name: str) -> pathlib.Path:
     return drive_root / "state" / "skills" / skill_name / "review_history.jsonl"
+
+
+def root_task_projection_path(drive_root: pathlib.Path) -> pathlib.Path:
+    return drive_root / ROOT_TASK_PROJECTION_RELATIVE_PATH
 
 
 def legacy_dispatch_marker_path(drive_root: pathlib.Path, skill_name: str) -> pathlib.Path:

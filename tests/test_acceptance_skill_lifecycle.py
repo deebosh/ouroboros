@@ -41,6 +41,9 @@ def _write_history(drive_root: pathlib.Path, name: str, root_task_id: str) -> No
                     "root_task_id": root_task_id}) + "\n",
         encoding="utf-8",
     )
+    projection = drive_root / "state" / "skill_review_root_tasks.jsonl"
+    with projection.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"root_task_id": root_task_id, "skill": name}) + "\n")
 
 
 def _ctx(drive_root: pathlib.Path, tmp_path: pathlib.Path, task_id: str) -> ToolContext:
@@ -95,11 +98,48 @@ def test_a_skill_lifecycle_tool_call_names_the_skill_without_a_payload_edit(tmp_
     """A free delegation lane integrates a patch and never calls write_file, so
     the lifecycle tools are the only carrier of the name in that shape."""
     trace = {"tool_calls": [
-        {"tool": "skill_review", "args": {"skill_name": "delegated"}},
-        {"tool": "skill_preflight", "args": {"name": "probed"}},
+        {"tool": "skill_review", "args": {"skill": "delegated"}},
+        {"tool": "skill_preflight", "args": {"skill": "probed"}},
+        {"tool": "skill_exec", "args": {"skill": "executed", "script": "scripts/run.py"}},
+        {"tool": "toggle_skill", "args": {"skill": "toggled", "enabled": True}},
+        {"tool": "submit_skill_to_hub", "args": {
+            "skill": "published", "confirm_public_submission": True,
+        }},
+        {"tool": "edit_text", "args": {
+            "root": "skill_payload", "bucket": "user_repo",
+            "skill_name": "user-repo-skill", "path": "SKILL.md",
+            "old_text": "old", "new_text": "new",
+        }},
         {"tool": "run_command", "args": {"cmd": "ls"}},
     ]}
-    assert skill_names_touched_by_trace(trace) == ["delegated", "probed"]
+    assert skill_names_touched_by_trace(trace) == [
+        "delegated", "probed", "executed", "toggled", "published",
+        "user-repo-skill",
+    ]
+
+
+def test_split_root_packet_reads_skill_lifecycle_from_the_canonical_root(tmp_path):
+    canonical = tmp_path / "canonical"
+    execution = tmp_path / "execution"
+    canonical.mkdir()
+    execution.mkdir()
+    _write_skill(canonical, "canonical-skill")
+    ctx = ToolContext(
+        repo_dir=tmp_path, drive_root=execution, budget_drive_root=canonical,
+        task_id="task-split-skill",
+    )
+
+    packet = build_task_acceptance_evidence(
+        ctx,
+        llm_trace={"tool_calls": [{
+            "tool": "skill_review", "args": {"skill": "canonical-skill"},
+        }]},
+        drive_root=execution,
+        task_id="task-split-skill",
+    )
+
+    assert packet["skill_lifecycle"][0]["name"] == "canonical-skill"
+    assert packet["skill_lifecycle"][0].get("present", True) is True
 
 
 def test_the_packet_carries_the_section_and_the_vocabulary_resolves_it(tmp_path):

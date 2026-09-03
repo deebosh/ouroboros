@@ -1130,7 +1130,8 @@ def build_task_acceptance_evidence(
         # task touched — the same VISIBILITY-ONLY charter as substrate_execution.
         from ouroboros.skill_readiness import acceptance_skill_lifecycle
 
-        if lifecycle := acceptance_skill_lifecycle(drive_root, llm_trace or {}, root_task_id):
+        lifecycle_root = getattr(ctx, "budget_drive_root", None) or drive_root
+        if lifecycle := acceptance_skill_lifecycle(lifecycle_root, llm_trace or {}, root_task_id):
             ev["skill_lifecycle"] = redact_projection(lifecycle).value
             prov["skill_lifecycle"] = "host_attested"
     repo_diff = collect_turn_diff(ctx, include_recent_commit=include_recent_commit)
@@ -1365,6 +1366,22 @@ _ACCEPTANCE_PANEL_ROW_KEYS = (
 )
 
 
+def _acceptance_panel_prompt_row(panel: Dict[str, Any]) -> Dict[str, Any]:
+    row = {key: panel.get(key) for key in _ACCEPTANCE_PANEL_ROW_KEYS if key in panel}
+    reason = str(panel.get("reason") or "")
+    if reason:
+        limit = 300
+        row["reason"] = truncate_review_artifact(reason, limit=limit)
+        row["reason_omitted_chars"] = max(0, len(reason) - limit)
+        refs = [
+            actor.get("response_ref") for actor in (panel.get("actors") or [])
+            if isinstance(actor, dict) and actor.get("response_ref")
+        ]
+        if refs:
+            row["response_refs"] = refs
+    return row
+
+
 def format_review_evidence_for_prompt(
     evidence: Dict[str, Any],
     *,
@@ -1379,23 +1396,22 @@ def format_review_evidence_for_prompt(
     can pass a positive *max_chars* to get an explicit omission note instead
     of silent clipping.
 
-    ``acceptance_panels`` appends the task's OWN acceptance-panel projection.
+    ``acceptance_panels`` leads with the task's OWN acceptance-panel projection.
     The commit/advisory lens knows nothing about it, so its absence statement
     names the lens it describes rather than claiming the task bought no review.
     """
-    sections: List[str] = []
-    if evidence and evidence.get("has_evidence"):
-        sections.append(json.dumps(evidence, ensure_ascii=False, indent=2))
     rows = [
-        {key: panel.get(key) for key in _ACCEPTANCE_PANEL_ROW_KEYS if key in panel}
-        | ({"reason": str(panel.get("reason") or "")[:300]} if panel.get("reason") else {})
+        _acceptance_panel_prompt_row(panel)
         for panel in (acceptance_panels if isinstance(acceptance_panels, list) else [])
         if isinstance(panel, dict)
     ]
+    sections: List[str] = []
     if rows:
         sections.append(
             "TASK ACCEPTANCE PANELS:\n" + json.dumps(rows, ensure_ascii=False, indent=2)
         )
+    if evidence and evidence.get("has_evidence"):
+        sections.append(json.dumps(evidence, ensure_ascii=False, indent=2))
     if not sections:
         return "(no commit/advisory review evidence recorded for this task)"
     full = "\n\n".join(sections)

@@ -397,10 +397,12 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
     elif kind == SETTLED_UNREAD:
         custody.unread_disclosed = True
     elif kind == PROJECT_RETIRED:
-        # Recorded on SUCCESS too, not only on failure: without it, a retirement that
-        # landed before a failed ledger write would be replayed as still-owned after a
+        # Recorded on SUCCESS too: without it, a retirement before a failed ledger write replays as owned after a
         # restart, and the retry would keep failing on an already-removed project.
-        custody.project_owned = False
+        project_id = str(row.get("project_id") or custody.project_id or "")
+        for sibling in state.values():
+            if sibling is custody or (project_id and sibling.project_id == project_id):
+                sibling.project_owned = False
     elif kind == OUTPUT_SPILLED:
         if row.get("staged") and str(row.get("artifact") or ""):
             custody.output_artifact = str(row.get("artifact") or "")
@@ -778,12 +780,8 @@ def is_terminal(detail: Dict[str, Any]) -> bool:
 
 
 def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
-    """Discharge the registration obligation. Absence IS discharge (a 404 on
-    the project is the asked-for outcome, never a failure). REFCOUNT
-    DEFERRAL: the daemon refuses removal while runs live, so only the
-    LOWEST-run_id sharer keeps attempting; the rest defer quietly and
-    discharge on the daemon's 404 (deterministic tie-break: someone always
-    attempts)."""
+    """Discharge registration (a project 404 is the asked-for outcome). The last sibling to settle attempts;
+    one project-level row discharges every sharer."""
     if custody.project_persistent:
         # #362: stable identity outlives the run — discharge the duty DURABLY
         # (replay must not resurrect owned=True), keep the project itself.
@@ -791,7 +789,7 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
         emit(drive_root, PROJECT_RETIRED, {"run_id": custody.run_id, "task_id": custody.task_id,
                                            "project_id": custody.project_id, "project_kept": True})
         return
-    if not (custody.project_owned and custody.project_id):
+    if not custody.project_id:
         return
     try:
         # Sharers = EVERY run in the project (only the creator carries
@@ -811,6 +809,8 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
             return
         rows = [run for run in state.values()
                 if run.project_id == custody.project_id and run.run_id]
+        if not any(run.project_owned for run in rows):
+            return
         if any(run.project_persistent for run in rows):
             # #362: ANY persistent sharer makes the project a durable user
             # identity — a non-persistent creator must not delete it either.
@@ -820,13 +820,10 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
             return
         if any(not run.settled and run.run_id != custody.run_id for run in rows):
             return
-        sharers = sorted(run.run_id for run in rows if run.project_owned)
     except Exception:
         log.warning("Retirement deferred: replay failed for %s",
                     custody.run_id, exc_info=True)
         return
-    if sharers and custody.run_id and custody.run_id != sharers[0]:
-        return  # deferred quietly: the canonical sharer carries the lane
     try:
         gateway.remove_project(custody.project_id)
     except Exception as exc:
@@ -839,6 +836,9 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
                                                      "reason": str(exc)[:500]})
             return
     custody.project_owned = False
+    for sibling in _CUSTODY.values():
+        if sibling.project_id == custody.project_id:
+            sibling.project_owned = False
     emit(drive_root, PROJECT_RETIRED, {"run_id": custody.run_id, "task_id": custody.task_id,
                                        "project_id": custody.project_id})
 

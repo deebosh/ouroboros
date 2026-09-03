@@ -713,6 +713,7 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
         BG_OBSERVATIONS_WARN_BYTES,
         PROGRESS_LOG_WARN_BYTES,
         SCHEDULED_TASKS_WARN_BYTES,
+        SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
         TOOLS_LOG_WARN_BYTES,
         USAGE_LEDGER_WARN_BYTES,
     )
@@ -751,6 +752,12 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
             "The scheduler parses and rewrites this whole document on every tick "
             "under the queue lock, and consumed one-shot follow-ups are retained "
             "as durable receipts; pruning old consumed receipts is the remediation.",
+        ),
+        (
+            "state/skill_review_root_tasks.jsonl",
+            SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
+            "Acceptance packet assembly reads this compact skill-review index; "
+            "archive old root-task rows with their review histories.",
         ),
     )
 

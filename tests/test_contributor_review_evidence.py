@@ -83,7 +83,7 @@ def test_shared_project_receipts_bind_final_retirement_after_all_slots_settle(tm
         }))
         custody.record_started(tmp_path, custody.RunCustody(
             run_id=run_id, task_id="review", project_id="shared-project",
-            project_owned=index == 1, ledger_root=str(tmp_path),
+            project_owned=True, ledger_root=str(tmp_path),
         ))
 
     for index in (1, 2):

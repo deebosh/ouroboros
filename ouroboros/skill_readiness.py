@@ -25,8 +25,19 @@ class SkillReadiness:
 
 
 _SKILL_PAYLOAD_EDIT_TOOLS = frozenset({"write_file", "edit_text"})
-_SKILL_LIFECYCLE_TOOLS = frozenset({"skill_review", "skill_preflight", "skill_exec"})
-_SKILL_NAMING_TOOLS = _SKILL_PAYLOAD_EDIT_TOOLS | _SKILL_LIFECYCLE_TOOLS
+
+
+def _skill_tool_identity_mapping() -> Dict[str, str]:
+    """Live skill-tool name -> identity argument, derived from their schemas."""
+    from ouroboros.tools.skill_exec import _EXEC_SCHEMA, _REVIEW_SCHEMA, _TOGGLE_SCHEMA
+    from ouroboros.tools.skill_preflight import _PREFLIGHT_SCHEMA
+    from ouroboros.tools.skill_publish import _PUBLISH_SCHEMA
+
+    schemas = (_REVIEW_SCHEMA, _PREFLIGHT_SCHEMA, _EXEC_SCHEMA, _TOGGLE_SCHEMA, _PUBLISH_SCHEMA)
+    return {
+        str(schema["name"]): str(schema["parameters"]["required"][0])
+        for schema in schemas
+    }
 
 
 def skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
@@ -37,21 +48,22 @@ def skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
     delegated payload the root never wrote with ``write_file``/``edit_text``.
     """
     names: List[str] = []
+    identity_keys = _skill_tool_identity_mapping()
     for call in llm_trace.get("tool_calls") or []:
         if not isinstance(call, dict):
             continue
         tool = str(call.get("tool") or "")
-        if tool not in _SKILL_NAMING_TOOLS:
+        if tool not in _SKILL_PAYLOAD_EDIT_TOOLS and tool not in identity_keys:
             continue
         args = call.get("args") if isinstance(call.get("args"), dict) else {}
-        if tool in _SKILL_LIFECYCLE_TOOLS:
-            named = str(args.get("skill_name") or args.get("name") or "").strip()
+        if tool in identity_keys:
+            named = str(args.get(identity_keys[tool]) or "").strip()
             if named and named not in names:
                 names.append(named)
             continue
         bucket = str(args.get("bucket") or "").strip().lower()
         skill_name = str(args.get("skill_name") or "").strip()
-        if bucket in {"external", "clawhub", "ouroboroshub"} and skill_name:
+        if bucket in {"external", "clawhub", "ouroboroshub", "user_repo"} and skill_name:
             if skill_name not in names:
                 names.append(skill_name)
             continue
@@ -112,34 +124,24 @@ def acceptance_skill_lifecycle(
 
 
 def _skill_names_from_review_history(drive_root: pathlib.Path, root_task_id: str) -> List[str]:
-    """Skills whose review history records this root task."""
+    """Skills named by the compact root-task projection, never full histories."""
     if not root_task_id:
         return []
-    import json
+    from ouroboros.skill_review_history import root_task_projection_path
+    from ouroboros.utils import iter_jsonl_objects
 
+    path = root_task_projection_path(drive_root)
     names: List[str] = []
-    base = drive_root / "state" / "skills"
     try:
-        candidates = sorted(entry for entry in base.iterdir() if entry.is_dir())
+        rows = iter_jsonl_objects(path)
     except OSError:
         return []
-    for entry in candidates:
-        path = entry / "review_history.jsonl"
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
+    for row in rows:
+        if not isinstance(row, dict) or str(row.get("root_task_id") or "") != root_task_id:
             continue
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line.startswith("{") or root_task_id not in line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict) and str(row.get("root_task_id") or "") == root_task_id:
-                names.append(entry.name)
-                break
+        name = str(row.get("skill") or "").strip()
+        if name and name not in names:
+            names.append(name)
     return names
 
 

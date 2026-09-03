@@ -5,6 +5,137 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+def test_prompt_projection_keeps_panels_ahead_of_an_oversized_lens():
+    from ouroboros.review_evidence import format_review_evidence_for_prompt
+
+    rendered = format_review_evidence_for_prompt(
+        {"has_evidence": True, "oversized_lens": "L" * 30_000},
+        max_chars=4_000,
+        acceptance_panels=[{
+            "panel_id": "panel-must-survive",
+            "surface": "task_acceptance",
+            "aggregate_signal": "PASS",
+            "transport_status": "success",
+            "parse_status": "valid",
+            "reason": "deciding finding " + "R" * 1_000,
+            "actors": [{
+                "slot_id": "slot_1",
+                "response_ref": {"call_id": "response-must-survive"},
+            }],
+        }],
+    )
+
+    assert rendered.startswith("TASK ACCEPTANCE PANELS:")
+    assert "panel-must-survive" in rendered
+    assert '"aggregate_signal": "PASS"' in rendered
+    assert "deciding finding" in rendered
+    assert '"reason_omitted_chars"' in rendered
+    assert "response-must-survive" in rendered
+    assert "OMISSION NOTE" in rendered
+
+
+def test_partial_trajectory_is_non_resolving_but_complete_trajectory_resolves():
+    from ouroboros.review_dispatch import task_acceptance_zero_physical_refusal
+    from ouroboros.review_evidence import annotate_criteria_evidence_resolution
+    from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
+    from ouroboros.review_substrate import task_acceptance_is_clean
+
+    def _actor():
+        return {
+            "signal": "PASS",
+            "parsed": {
+                "outcome_tier": "solved",
+                "criteria_used": [{
+                    "criterion": "tool outcome",
+                    "status": "supported",
+                    "evidence_refs": ["tool_trajectory"],
+                }],
+            },
+        }
+
+    def _result(actor):
+        return SimpleNamespace(
+            aggregate_signal="PASS", degraded=False, actors=[actor],
+        )
+
+    partial = {
+        "tool_trajectory": [{"tool": "read_file", "result_complete": False}],
+        "__provenance__": {"tool_trajectory": "tool_result"},
+    }
+    partial_actor = _actor()
+    annotate_criteria_evidence_resolution([partial_actor], partial)
+    assert task_acceptance_zero_physical_refusal(partial) == {}
+    assert acceptance_evidence_ref_vocabulary(partial)["tool_trajectory"] == "partial"
+    assert task_acceptance_is_clean(_result(partial_actor)) is False
+
+    complete = {
+        "tool_trajectory": [{"tool": "read_file", "result_complete": True}],
+        "__provenance__": {"tool_trajectory": "tool_result"},
+    }
+    complete_actor = _actor()
+    annotate_criteria_evidence_resolution([complete_actor], complete)
+    assert acceptance_evidence_ref_vocabulary(complete)["tool_trajectory"] == "packet_section"
+    assert task_acceptance_is_clean(_result(complete_actor)) is True
+
+
+def test_skill_history_root_task_projection_avoids_whole_history_reads(monkeypatch, tmp_path):
+    from ouroboros.skill_readiness import _skill_names_from_review_history
+
+    skill_dir = tmp_path / "state" / "skills" / "large-skill"
+    skill_dir.mkdir(parents=True)
+    history = skill_dir / "review_history.jsonl"
+    history.write_text(
+        (json.dumps({"root_task_id": "some-other-root", "padding": "x" * 200}) + "\n")
+        * 20_000,
+        encoding="utf-8",
+    )
+    (tmp_path / "state" / "skill_review_root_tasks.jsonl").write_text(
+        json.dumps({"root_task_id": "root-wanted", "skill": "large-skill"}) + "\n",
+        encoding="utf-8",
+    )
+    original = Path.read_text
+
+    def _guarded_read(path, *args, **kwargs):
+        if path.name == "review_history.jsonl":
+            raise AssertionError("acceptance rebuilt the full skill review history")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _guarded_read)
+    assert _skill_names_from_review_history(tmp_path, "root-wanted") == ["large-skill"]
+
+
+def test_terminal_skill_review_updates_the_root_task_projection(tmp_path):
+    from ouroboros.skill_review_runner import _append_terminal_history
+
+    assert _append_terminal_history(
+        tmp_path,
+        "projected-skill",
+        {"job_id": "job-1", "root_task_id": "root-1"},
+        status="pass",
+        terminal_reason="review_complete",
+        ts="2026-09-03T00:00:00+00:00",
+    )
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "skill_review_root_tasks.jsonl")
+        .read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows == [{
+        "ts": "2026-09-03T00:00:00+00:00",
+        "root_task_id": "root-1",
+        "skill": "projected-skill",
+        "job_id": "job-1",
+    }]
+
+
+def test_skill_review_projection_is_enrolled_as_a_hot_store():
+    from ouroboros.agent_startup_checks import _hot_store_thresholds
+
+    assert "state/skill_review_root_tasks.jsonl" in {
+        relative for relative, _threshold, _remediation in _hot_store_thresholds()
+    }
+
+
 def test_acceptance_slot_fit_uses_packet_density():
     from ouroboros.review_dispatch import acceptance_slot_fit
 
