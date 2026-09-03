@@ -1282,7 +1282,11 @@ both critical. The imperatives:
   `integrate_subagent_patch` and runs its own `commit_reviewed`. The shared
   `external_workspace` surface verifies and records without re-applying; a
   genesis project is durable because the project directory IS the
-  deliverable. The canonical/replica terminal field-custody projection is
+  deliverable. A genesis project starts without a `.gitignore`, so its small
+  text build output (`dist/`, `build/`) rides the `workspace.patch` record
+  until the project declares one — a disclosed residual, bounded only by the
+  per-file size cap and git's binary verdict, since there is no total-patch
+  cap. The canonical/replica terminal field-custody projection is
   ONE pure reducer reused by copy-back and effective reads — every change
   adds a stale-replica regression at BOTH seams
   (`tests/test_available_subagents_runtime_review_fixes.py`). Do not broaden
