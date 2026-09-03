@@ -891,7 +891,15 @@ refusal-streak eligibility is about VERDICTS (a rebuttal is spent only by the
 substantive verdict it bought), while money is about DISPATCH (every
 physically dispatched wave counts whatever its terminal; infra facts refused
 at assembly never dispatched and stay outside the count; the paid fact is
-recorded write-ahead). Exhaustion is always the typed
+recorded write-ahead). A free refusal never wears the form of a verdict: a
+refusal that spent nothing is recorded as a typed `not_dispatched` fact plus
+its reason, never as a DEGRADED panel, a synthetic actor, or a verdict. That
+holds for a plan-review locator the evidence policy cannot attach (a named
+omission row the panel is dispatched with), an acceptance packet that
+overflows (the ladder, not a verdict), a truncated or self-pageable row (the
+cut is named), and a request that was never sent (one
+`operation_state='not_dispatched'` seat that stays in the denominator).
+Exhaustion is always the typed
 `review_cycles_exhausted` event with honest exits — under advisory
 enforcement a commit after exhaustion proceeds as a free replay with a loud
 typed disclosure; blocking refuses it.
