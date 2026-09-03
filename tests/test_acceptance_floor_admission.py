@@ -522,6 +522,37 @@ def test_an_absent_ledger_polls_known_zero_and_creates_nothing(tmp_path):
     assert sorted(tmp_path.rglob("*")) == []  # no state/, no lock, nothing at all
 
 
+def test_a_directory_at_the_ledger_path_is_the_readers_verdict_not_known_zero(tmp_path):
+    """ONLY an ABSENT ledger file answers known-zero without the reader. A
+    DIRECTORY at the ledger path is not absent: the fact goes through the
+    canonical reader and reports exactly the reader's own typed refusal
+    (`UsageAccountingError` → `state: unknown`, no confident $0), on a repeat
+    poll too — pinned against the reader called directly, so the fact cannot
+    drift from the verdict it relays."""
+    import queue
+
+    from ouroboros import delegate_custody as custody
+    from ouroboros.delegate_supervision import coordination_live_context
+    from ouroboros.usage_accounting import usage_breakdown
+    from ouroboros.usage_ledger import LEDGER_REL, UsageAccountingError
+
+    ctx = SimpleNamespace(
+        task_id="root-dir", root_task_id="root-dir", drive_root=tmp_path,
+        budget_drive_root=str(tmp_path), task_metadata={
+            "root_task_id": "root-dir", "budget_drive_root": str(tmp_path)},
+        pending_events=[], event_queue=queue.Queue(),
+    )
+    root = custody.custody_root(ctx)
+    (root / LEDGER_REL).mkdir(parents=True)
+    with pytest.raises(UsageAccountingError):  # the reader's own verdict on a directory
+        usage_breakdown(root, root_task_id="root-dir")
+
+    for _ in range(2):
+        spend = coordination_live_context(ctx)["settled_spend"]
+        assert spend["state"] == "unknown" and spend["reason"] == "UsageAccountingError"
+        assert spend["settled_usd"] is None and spend["cost_final"] is None
+
+
 def _legacy_settings(monkeypatch, tmp_path):
     """Point config at a settings file whose retired auto-Low pair a
     `load_settings()` WOULD normalize and persist — the write this batch must

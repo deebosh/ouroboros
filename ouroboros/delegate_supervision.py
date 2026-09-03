@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import time
 import uuid
@@ -144,16 +145,21 @@ def _settled_spend_fact(ctx: Any, root_task_id: str) -> dict[str, Any]:
     a tail torn by a SINGLE crash mid-append is quarantined and the file
     truncated to the intact prefix, as every reader does (a crash inside that
     repair — a torn quarantine sink — is a known residual, issue #27); an
-    absent ledger answers known-zero without the reader, whose lock would
-    create ``state/`` on an untouched root."""
+    ABSENT ledger file (``FileNotFoundError`` from ``os.stat``) answers
+    known-zero without the reader, whose lock would create ``state/`` on an
+    untouched root; any other state goes through the reader."""
     try:
         from ouroboros.usage_accounting import usage_breakdown
         from ouroboros.usage_ledger import LEDGER_REL
 
         root = custody.custody_root(ctx)
-        if not (root / LEDGER_REL).is_file():
+        try:
+            os.stat(root / LEDGER_REL)
+        except FileNotFoundError:
             return {"state": "known", "settled_usd": 0.0, "accounted_usd": 0.0,
                     "cost_final": True, "unknown_unmetered": 0, "integrity_degraded": False}
+        except OSError:
+            pass  # a directory, a permission error, ...: the reader's typed judgement
         projection = usage_breakdown(root, root_task_id=root_task_id)
         integrity = bool(projection.get("integrity_degraded"))
         unknown = int(projection.get("unknown_unmetered") or 0)
