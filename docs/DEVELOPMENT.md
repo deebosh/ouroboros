@@ -99,8 +99,14 @@ ephemeral, credential and contract filters narrow it), so the schema is the SSOT
 of the per-tool contract and a prompt sentence about it is a second copy that
 drifts, while SYSTEM.md stays the cross-tool selection policy; mechanism
 documentation lives in ARCHITECTURE or here;
-runtime facts (capabilities, queue, catalog, receipts, health) are injected per
-turn. A new tool therefore requires NO SYSTEM.md mention. Before adding a
+runtime facts (capabilities, queue, catalog, receipts, health invariants,
+memory sections, registry digest, installed skills, review section) are
+assembled ONCE per task attempt in `build_llm_messages`, so the Health
+Invariants block lists custody obligations as of task start and does not
+refresh mid-task (a deliberate frozen-ContextCore / prompt-cache choice; the
+integrate schema, the apply receipts and the absorption digest carry the
+mid-task fact instead). Tool schemas are re-sent every round.
+A new tool therefore requires NO SYSTEM.md mention. Before adding a
 sentence to a prompt, check that the schema or runtime block does not already
 carry it; before removing one, check that they do (or add the missing fact to
 the schema without growing it into a paragraph). Local-model compaction keeps
@@ -1724,6 +1730,14 @@ by "Provider Independence" above. Call-site imperatives:
   otherwise the shared review-cycle cap binds under EVERY policy, giving
   `improvement passes = cycles − 1` (the retired acceptance key is migrated
   into the shared key at settings load and never binds at runtime).
+
+- A `PATCH_DISPOSED` row names its disposer (`disposed_by_task_id`),
+  because a non-owner may write it once the owner task is terminal;
+  wait/cancel/answer authority stays owner-only. A terminal custody
+  obligation is disclosed additively (an objective warning plus the
+  reason code, preserving a truncation rail code); converting a custody
+  fact into a review, objective or execution verdict is the defect this
+  rule prevents.
 
 Enforcement: the adversarial tests the first bullet mandates, plus
 `tests/test_child_result_disposition.py`, `tests/test_acceptance_fence.py`,
