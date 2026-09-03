@@ -1058,19 +1058,34 @@ _REVIEW_CONTINUATION_SWEEP_INTERVAL_SEC = 6 * 3600
 def _periodic_store_gc() -> None:
     """Every ~6h: keep the append/result stores bounded without a restart
     (razzant/ouroboros#139). The startup sweep does the same on boot; a
-    long-lived supervisor needs it on a cadence too."""
+    long-lived supervisor needs it on a cadence too.
+
+    ``compact_ledger`` (ibl-2e24f465212d follow-up) folds the
+    fully-settled, fully-cold usage_attempts.jsonl roots into ONE summary
+    row each + a gzipped monthly archive; it takes its own lock, so the
+    shared 6h throttle is sufficient — no per-tool marker.
+    """
     if time.time() - _LAST_STORE_GC[0] < _STORE_GC_INTERVAL_SEC:
         return
     _LAST_STORE_GC[0] = time.time()
     try:
         from ouroboros.headless import prune_task_results
+        from ouroboros.usage_ledger import compact_ledger
 
-        report = prune_task_results(DATA_DIR)
-        if report.get("pruned") or report.get("errors"):
+        task_results_report = prune_task_results(DATA_DIR)
+        ledger_report = compact_ledger(DATA_DIR)
+        if (
+            task_results_report.get("pruned")
+            or task_results_report.get("errors")
+            or ledger_report.get("status") == "compacted"
+        ):
             from supervisor.state import append_jsonl
 
             append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
-                "ts": utc_now_iso(), "type": "periodic_store_gc", "task_results": report,
+                "ts": utc_now_iso(),
+                "type": "periodic_store_gc",
+                "task_results": task_results_report,
+                "usage_ledger": ledger_report,
             })
     except Exception:
         log.debug("Periodic store GC failed", exc_info=True)
@@ -2085,6 +2100,7 @@ def _startup_prune_sweeps() -> None:
         from ouroboros.headless import (
             prune_headless_task_drives, prune_task_drives, prune_task_results, prune_task_trees,
         )
+        from ouroboros.usage_ledger import compact_ledger
         from ouroboros.utils import sweep_stale_temp_files
 
         prune_report = prune_headless_task_drives(DATA_DIR)
@@ -2094,6 +2110,11 @@ def _startup_prune_sweeps() -> None:
         # task_results/<id>.json + artifacts/<id>/ — glob-parsed on every /api/tasks
         # request and SSE tick, previously never pruned (razzant/ouroboros#139).
         task_results_report = prune_task_results(DATA_DIR)
+        # usage_attempts.jsonl — fold settled cold roots into ONE summary row each
+        # + gzipped monthly archive (ibl-2e24f465212d follow-up). compact_ledger
+        # takes its own lock and is a no-op below min_rows/min_bytes, so a single
+        # boot-time call is the right shape.
+        usage_ledger_report = compact_ledger(DATA_DIR)
         # Reap orphaned atomic-write temp files (.*.tmp.*) left by a hard kill.
         sweep_stale_temp_files(DATA_DIR)
         if (
@@ -2103,6 +2124,7 @@ def _startup_prune_sweeps() -> None:
             or task_drive_report.get("errors")
             or task_results_report.get("pruned")
             or task_results_report.get("errors")
+            or usage_ledger_report.get("status") == "compacted"
         ):
             append_jsonl(DATA_DIR / "logs" / "events.jsonl", {
                 "ts": utc_now_iso(),
@@ -2110,6 +2132,7 @@ def _startup_prune_sweeps() -> None:
                 "report": prune_report,
                 "task_drives": task_drive_report,
                 "task_results": task_results_report,
+                "usage_ledger": usage_ledger_report,
             })
     except Exception:
         log.debug("Headless task drive prune failed", exc_info=True)
