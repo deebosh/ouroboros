@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros.tools.shell import _resolve_effective_timeout, _run_shell
+from ouroboros.tools.shell import _resolve_effective_timeout, _run_script, _run_shell
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +433,6 @@ class TestMaskedGreenDisclosure:
     @pytest.mark.parametrize("text, reason", [
         ("node t.js 2>&1 | tail -5", "pipeline_tail"),
         ("make test || true", "|| true"),
-        ("run.sh 2>/dev/null", "dev_null_redirect"),
     ])
     def test_masked_green_run_command_carries_advisory_note(
         self, text, reason, tmp_path, fake_subprocess,
@@ -450,6 +449,7 @@ class TestMaskedGreenDisclosure:
 
     @pytest.mark.parametrize("cmd", [
         ["sh", "-c", "pytest -q"],
+        ["sh", "-c", "true 2>/dev/null"],
         ["go", "test", "./..."],
     ])
     def test_unmasked_green_carries_no_note(self, cmd, tmp_path, fake_subprocess):
@@ -457,6 +457,17 @@ class TestMaskedGreenDisclosure:
         result = _run_shell(_ctx(tmp_path), cmd)
         assert "EXIT_MASKING_NOTE" not in result
         assert "exit_masking_reasons" not in result.result_meta
+
+    def test_masked_green_run_script_body_preserves_advisory_metadata(
+        self, tmp_path, fake_subprocess,
+    ):
+        fake_subprocess(stdout="ok", returncode=0)
+        result = _run_script(_ctx(tmp_path), "make test || true", interpreter="sh")
+        assert "EXIT_MASKING_NOTE" in result
+        assert "|| true" in result
+        assert result.result_meta["status"] == "ok"
+        assert result.result_meta["is_failure"] is False
+        assert "|| true" in result.result_meta["exit_masking_reasons"]
 
     def test_masked_nonzero_exit_keeps_the_exit_error_envelope(self, tmp_path, fake_subprocess):
         fake_subprocess(stdout="", stderr="boom", returncode=1)

@@ -14,6 +14,7 @@ from ouroboros.shell_parse import (
     collect_leading_env,
     embedded_absolute_path_tokens,
     env_chdir_operand,
+    interpreter_reads_program_from_stdin,
     normalize_check_argv,
     replacement_target_uncertain,
     shell_argv,
@@ -1003,16 +1004,29 @@ def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
         if not argv:
             continue
         executable = pathlib.PurePath(str(argv[0])).name.lower().removesuffix(".exe")
+        program_argv, _stdin_redirects = split_redirections(argv)
         if _depth < _MAX_INLINE_RECURSION and executable in _SHELL_WRAPPER_HEADS:
-            nested = writer_target_rows(shell_command_string(argv), _depth + 1)
+            shell_body = shell_command_string(argv)
+            stdin_bodies = heredoc_bodies if not shell_body and interpreter_reads_program_from_stdin(program_argv) else ()
+            nested = writer_target_rows(shell_body, _depth + 1)
+            for body in stdin_bodies:
+                nested.extend(writer_target_rows(body, _depth + 1))
             if nested:
                 if wrapper_cwd and any(row[1] or row[3] for row in nested):
                     rows.append((["cd", wrapper_cwd], [wrapper_cwd], (), False))
                 rows.extend(nested)
                 continue
+            if stdin_bodies:
+                rows.append((argv, [], tuple(stdin_bodies), True))
+                continue
+            if heredoc_bodies and not shell_body:
+                rows.append((program_argv, [], tuple(heredoc_bodies), True))
+                continue
         family = interpreter_family(executable)
         inline_code = tuple(interpreter_inline_code([str(token) for token in argv]))
-        if family and any(str(token) == "-" for token in argv[1:]):
+        stdin_program = bool(family) and not inline_code and interpreter_reads_program_from_stdin(program_argv)
+        unattached_heredoc = bool(family and heredoc_bodies and not inline_code and not stdin_program)
+        if stdin_program or unattached_heredoc:
             inline_code = (*inline_code, *heredoc_bodies)
         # A code body is program text, not a target. Python targets + UNKNOWN
         # come from `_python_write_targets_and_unknown` only.
@@ -1020,7 +1034,7 @@ def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
             t for t in _writer_target_tokens_single(argv, include_inline=False)
             if t not in inline_code
         ]
-        body_unprovable = False
+        body_unprovable = unattached_heredoc
         for body in inline_code:
             if family == "python":
                 body_targets, body_unknown = _python_write_targets_and_unknown(body)
@@ -1038,14 +1052,14 @@ def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
             targets.extend(str(t) for t in argv[1:] if not str(t).startswith("-"))
         segment_argv, _redirect_targets = split_redirections(argv)
         # `-` means the unobserved program arrives on stdin.
-        stdin_program = bool(family) and not inline_code and any(
+        missing_stdin_program = bool(family) and not inline_code and any(
             str(token) == "-" for token in argv[1:])
         # A write-shaped Perl body remains uncertain even beside file operands.
         opaque_perl_body = (
             family == "perl" and bool(inline_code) and interpreter_write_shape(argv)
         )
         unprovable = (
-            stdin_program or body_unprovable or opaque_perl_body or placeholder_unprovable
+            missing_stdin_program or body_unprovable or opaque_perl_body or placeholder_unprovable
             or (not targets and _segment_write_shape(segment_argv))
         )
         row_argv = segment_argv
@@ -1053,6 +1067,8 @@ def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
             row_argv = [*segment_argv, *structured_rows[row_index - 1][0][1:]]
         if wrapper_cwd and (targets or unprovable):
             rows.append((["cd", wrapper_cwd], [wrapper_cwd], (), False))
+        if not row_argv and not targets and not inline_code and not unprovable:
+            continue
         rows.append((row_argv, targets, inline_code, unprovable))
     return rows
 
@@ -1192,25 +1208,6 @@ def directory_destination_pairs(argv: List[str]) -> List[tuple[str, str, str]]:
         if source:
             result.append((command, destination, source))
     return result
-
-
-def directory_destination_child_name(
-    command: str,
-    argv: List[str],
-    source: str,
-) -> str:
-    """Return the child path a directory destination receives from ``source``."""
-    source_text = str(source or "").replace("\\", "/").rstrip("/")
-    if command == "cp" and "--parents" in {str(item) for item in argv[1:]}:
-        parts = [
-            part
-            for part in pathlib.PurePosixPath(source_text).parts
-            if part not in {"", ".", "/"}
-        ]
-        if not parts or ".." in parts:
-            return ""
-        return "/".join(parts)
-    return pathlib.PurePath(source_text).name
 
 
 def _writer_target_tokens_single(argv: List[str], *, include_inline: bool = True) -> List[str]:

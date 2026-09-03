@@ -28,11 +28,13 @@ from ouroboros.tool_capabilities import (
     META_TOOL_NAMES,
 )
 from ouroboros.shell_parse import (
+    directory_destination_child_name,
     is_absolute_path_text,
     path_text_is_inside,
     shell_argv,
     shell_argv_with_path_tokens,
     shell_command_string,
+    sequential_effective_cwds,
     strip_leading_env_assignments,
     sudo_noninteractive_violation,
     unwrap_env_argv,
@@ -50,7 +52,6 @@ from ouroboros.tools.shell_guards import (
     runtime_data_guard_targets,
     shell_writer_targets_protected,
     workspace_executor_state_write_block,
-    directory_destination_child_name,
     directory_destination_pairs,
     writer_target_rows,
 )
@@ -289,7 +290,7 @@ def _directory_change_argv(argv: list) -> bool:
 
 def _workspace_write_candidates(
     target_rows: list, explicit_write_targets: list[str], raw_cmd: Any,
-) -> list[tuple[str, bool]]:
+) -> list[tuple[str, bool, int]]:
     """Write/mention candidates for the workspace write guard, per segment.
 
     A segment's parsed TARGETS are write candidates; every other token it carries
@@ -298,20 +299,20 @@ def _workspace_write_candidates(
     ./x`) still refuses, while the Deliverables decision and the outside-root
     refusal apply to real write targets only.
     """
-    candidates: list[tuple[str, bool]] = []
-    index_by_token: dict[str, int] = {}
+    candidates: list[tuple[str, bool, int]] = []
+    index_by_token: dict[tuple[str, int], int] = {}
 
-    def _add(token: Any, is_write: bool) -> None:
+    def _add(token: Any, is_write: bool, row_index: int) -> None:
         token_text = str(token)
         if not token_text.strip():
             return
-        position = index_by_token.get(token_text)
+        position = index_by_token.get((token_text, row_index))
         if position is not None:
             if is_write and not candidates[position][1]:
-                candidates[position] = (token_text, True)
+                candidates[position] = (token_text, True, row_index)
             return
-        index_by_token[token_text] = len(candidates)
-        candidates.append((token_text, is_write))
+        index_by_token[(token_text, row_index)] = len(candidates)
+        candidates.append((token_text, is_write, row_index))
 
     for row_index, (segment_argv, targets, inline_code, unprovable) in enumerate(target_rows):
         if _directory_change_argv(segment_argv):
@@ -345,11 +346,11 @@ def _workspace_write_candidates(
                 )
         write_set = set(write_tokens)
         for token in segment_argv:
-            _add(token, str(token) in write_set)
+            _add(token, str(token) in write_set, row_index)
         for token in write_tokens:
-            _add(token, True)
+            _add(token, True, row_index)
     for token in explicit_write_targets:
-        _add(token, True)
+        _add(token, True, -1)
     # The MENTION lane keeps the full harvest of the raw command text: an embedded
     # Windows drive/UNC spelling does not survive POSIX tokenization, so the
     # per-segment argv alone would stop the protected-root and outside-root scans
@@ -358,11 +359,11 @@ def _workspace_write_candidates(
     # makes the two texts identical, so it keeps the write policy.
     collapsed_writes = {
         text.replace("\\", "")
-        for text, is_write in candidates
+        for text, is_write, _row_index in candidates
         if is_write and text.replace("\\", "")
     }
     for token in shell_argv_with_path_tokens(raw_cmd):
-        _add(token, str(token).replace("\\", "") in collapsed_writes)
+        _add(token, str(token).replace("\\", "") in collapsed_writes, -1)
     return candidates
 
 
@@ -2731,9 +2732,11 @@ class ToolRegistry:
         # Deliverables is a TARGET policy: a merely mentioned path takes no
         # Deliverables decision, while every candidate keeps the
         # protected-runtime-root scans below.
-        for token_text, is_write in _workspace_write_candidates(
+        row_cwds = sequential_effective_cwds(target_rows, work_dir)
+        for token_text, is_write, row_index in _workspace_write_candidates(
             target_rows, explicit_write_targets, raw_cmd,
         ):
+            candidate_cwd = row_cwds[row_index] if 0 <= row_index < len(row_cwds) else work_dir
             decide_deliverables = (
                 _deliverables_target_decision if is_write else _no_deliverables_decision
             )
@@ -2833,12 +2836,12 @@ class ToolRegistry:
                     if is_write and not pro_workspace_passthrough:
                         return _workspace_write_block_outside_root_message(candidate, work_dir)
                     continue
-                resolved = (work_dir / pathlib.Path(candidate)).resolve(strict=False)
+                resolved = (candidate_cwd / pathlib.Path(candidate)).resolve(strict=False)
                 # The lexical relative spelling is authoritative for detecting
                 # a Deliverables-origin target; the helper then canonicalizes
                 # it and rejects symlink escapes.
                 deliverables_decision = decide_deliverables(
-                    work_dir / pathlib.Path(candidate)
+                    candidate_cwd / pathlib.Path(candidate)
                 )
                 if deliverables_decision is not None:
                     if deliverables_decision:
