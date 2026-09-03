@@ -105,10 +105,20 @@ def _parent_intent_fact(ctx: Any) -> dict[str, Any]:
 
 
 def _time_fact(ctx: Any) -> dict[str, Any]:
-    try:
-        from ouroboros.task_pacing import build_budget_snapshot, resolve_budget_profile
+    """The task's deadline window, OBSERVED: the whole coordination poll is
+    non-mutating, so this reads through the observation variants of both
+    readers — never the emitting ``resolve_budget_profile`` (deprecation row)
+    or the latching ``build_budget_snapshot`` (fallback anchor).
 
-        snapshot = build_budget_snapshot(ctx, profile=resolve_budget_profile(ctx))
+    Disclosed consequence: a metadata-poor task (no ``created_at``/
+    ``started_at`` and no anchor latched yet) reports ``state: "not_set"``
+    until a path that OWNS a mutation — the acceptance launch — latches the
+    anchor. A poll answering the same question twice never changes its own
+    next answer."""
+    try:
+        from ouroboros.task_pacing import observe_budget_profile, observe_budget_snapshot
+
+        snapshot = observe_budget_snapshot(ctx, profile=observe_budget_profile(ctx))
         if not snapshot.has_deadline:
             return {
                 "state": "not_set", "remaining_sec": None,
