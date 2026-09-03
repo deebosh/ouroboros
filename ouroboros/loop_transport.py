@@ -9,23 +9,24 @@ then a free redial of the SAME round (the round budget is not consumed). A manag
 task waits as long as its existing rails allow — owner deadline minus the
 dispatch-admission reserve, budget, Stop, and the supervisor's absolute ceiling.
 Every turn stamped direct-chat (owner chat and Presence turns) or ephemeral — the
-``interactive`` class — waits the same way but carries no deadline and no queue
-rails, so its episode is bounded by the raw configured task idle timeout
-(``get_task_idle_timeout_sec``): the bound limits idle WAITING, measured from each
-outage episode's entry (a flapping egress starts a new episode); a granted redial
-runs to its own connect timeout and a dispatched response is always accepted —
-the bound never cancels in-flight work. When an explicit deadline window also
-exists, the shorter window binds. When the binding window runs out,
-``_handle_provider_unavailable`` takes a deterministic no-resend terminal keyed on
-the episode's ``wait_cause`` (no forced-final provider call); the durable
-``ended`` detail names the rail that expired — the bound's own
+``interactive`` class — waits the same way but carries no queue rails and
+ordinarily no owner deadline, so its episode is bounded by the raw configured
+task idle timeout (``get_task_idle_timeout_sec``): the bound limits idle WAITING,
+measured from each outage episode's entry (a flapping egress starts a new
+episode); a granted redial runs to its own connect timeout and a dispatched
+response is always accepted — the bound never cancels in-flight work. When an
+explicit deadline window also exists, the shorter window binds. When the binding
+window runs out, ``_handle_provider_unavailable`` takes a deterministic no-resend
+terminal keyed on the episode's ``wait_cause`` (no forced-final provider call);
+the durable ``ended`` detail names the rail that expired — the bound's own
 ``interactive_wait_window_exhausted``, or the deadline's detail when the owner
 window closed first. Interactive notes promise no cancellation (an in-process
 turn has no Stop contract; a direct turn's mailbox message still wakes the
-sleep). Every episode closure — recovery, local adoption, error-kind change,
-exhaustion — is an owner note; only an ephemeral turn's notes carry the typed
-``task_incident`` toast pair, because the browser renders no progress rows for
-that turn (direct turns get live-card rows).
+sleep). Recovery, local adoption, and error-kind change are owner notes for
+every episode; exhaustion is a note for an interactive turn, while a managed
+task's exhaustion is its terminal result; only an ephemeral turn's notes carry
+the typed ``task_incident`` toast pair, because the browser renders no progress
+rows for that turn (direct turns get live-card rows).
 
 Also hosts the owner-facing provider-failure text helpers and terminal salvage
 readers used by that terminal path (extracted from ``loop.py``, which is at its
@@ -48,7 +49,7 @@ from ouroboros.config import (
     get_finalization_grace_sec,
     get_task_idle_timeout_sec,
 )
-from ouroboros.deadline_utils import dispatch_window_remaining_sec, parse_deadline_ts
+from ouroboros.deadline_utils import parse_deadline_ts
 from ouroboros.loop_llm_call import _TRANSIENT_BACKOFF_CAP_SEC
 from ouroboros.utils import append_jsonl, utc_now_iso
 
@@ -266,7 +267,7 @@ def reconcile_transport_wait(
         )
         emit_progress(
             f"🌐 Provider connection restored after {elapsed / 60.0:.1f} min — the redial "
-            f"reached the provider and failed as {error_kind}; normal failure handling resumes.",
+            f"got past the connect phase and failed as {error_kind}; ordinary failure policy resumes.",
             incident=episode.incident(task_id, "recovered"),
         )
         return None
@@ -343,20 +344,27 @@ def transport_wait_step(
     supervisor's absolute 6h ceiling stays an external rail, not duplicated here.
     """
     elapsed = time.monotonic() - episode.started_monotonic
-    deadline_remaining = dispatch_window_remaining_sec(
-        deadline_ts=task_deadline_epoch(tools),
-        reserve_sec=get_finalization_grace_sec(),
+    # Signed windows (negative = how long ago that rail expired) decide the
+    # attribution: the rail that expired EARLIER binds even when a host suspend
+    # inside a sleep overshot both — clamping first would erase the ordering.
+    # Only the value used for sleeping and telemetry is clamped. An exact tie
+    # keeps the deadline's detail (measure-zero; the owner window is the
+    # stronger claim). The positive deadline case equals
+    # ``dispatch_window_remaining_sec(deadline_ts, reserve=grace)``.
+    deadline_ts = task_deadline_epoch(tools)
+    deadline_signed = (
+        None if deadline_ts is None
+        else deadline_ts - max(0.0, float(get_finalization_grace_sec())) - time.time()
     )
-    bound_remaining = (
-        None if episode.wait_bound_sec is None
-        else max(0.0, episode.wait_bound_sec - elapsed)
+    bound_signed = (
+        None if episode.wait_bound_sec is None else episode.wait_bound_sec - elapsed
     )
-    # The interactive bound binds only when it is strictly the shorter window,
-    # so a spent owner deadline keeps its own detail.
-    bound_binds = bound_remaining is not None and (
-        deadline_remaining is None or bound_remaining < deadline_remaining
+    bound_binds = bound_signed is not None and (
+        deadline_signed is None or bound_signed < deadline_signed
     )
-    remaining = bound_remaining if bound_binds else deadline_remaining
+    remaining = bound_signed if bound_binds else deadline_signed
+    if remaining is not None:
+        remaining = max(0.0, remaining)
 
     def _ended(detail: str) -> bool:
         emit_network_wait_event(

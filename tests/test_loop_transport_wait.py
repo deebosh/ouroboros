@@ -174,12 +174,15 @@ def _loop_kwargs(tmp_path, registry, notes, llm=None):
 
 class _FakeClock:
     """loop_transport-local monotonic clock that only faked sleeps advance, so
-    a bound measured from episode entry is exercised deterministically."""
+    a bound measured from episode entry is exercised deterministically; the
+    wall clock (owner deadlines) stays real."""
 
     def __init__(self, monkeypatch, start: float = 1000.0):
         self.now = start
         self.sleeps: list = []
-        monkeypatch.setattr(loop_transport, "time", SimpleNamespace(monotonic=lambda: self.now))
+        monkeypatch.setattr(
+            loop_transport, "time", SimpleNamespace(monotonic=lambda: self.now, time=time.time),
+        )
         monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", self.sleep)
 
     def sleep(self, sec, _wake):
@@ -776,30 +779,36 @@ def test_attempt_capture_propagates_route_locality(tmp_path):
 
 def test_finalize_now_during_episode_takes_no_resend_terminal_via_mailbox(tmp_path, monkeypatch):
     """finalize_now (deadline / ceiling / owner stop flavors share this exit)
-    arriving MID-SLEEP through the REAL owner mailbox: the interruptible sleep
-    wakes within a slice and the terminal is the transport no-resend — zero
-    further provider dials, never a forced-final paid call over the dead
-    egress."""
+    landing through the REAL owner mailbox while an episode is active: the
+    episode's wake check sees it before sleeping, the round top drains it, and
+    the terminal is the transport no-resend — zero further provider dials,
+    never a forced-final paid call over the dead egress. The control is
+    written from inside the first failing dispatch, so it lands after that
+    round's drain and before the episode's first wait whatever the host's
+    speed (a timer raced a cold process's setup)."""
     from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, write_owner_message
 
-    fake_call, calls = _transport_failing_call(fail_times=99)
+    calls = {"n": 0}
+
+    def fake_call(_llm, _messages, _model, _tools, _effort, _max_retries, _drive_logs,
+                  _task_id, _round_idx, _event_queue, accumulated_usage, *_a, **_k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            write_owner_message(tmp_path, "budget ceiling reached", "t-wait", kind=KIND_FINALIZE_NOW)
+        accumulated_usage["_last_llm_error_kind"] = "transport_unavailable"
+        accumulated_usage["_last_llm_error"] = "Connection error."
+        return None, 0.0
+
     monkeypatch.setattr(loop_mod, "call_llm_with_retry", fake_call)
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
     monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     notes = []
-    timer = threading.Timer(0.3, lambda: write_owner_message(
-        tmp_path, "budget ceiling reached", "t-wait", kind=KIND_FINALIZE_NOW,
-    ))
-    timer.start()
     start = time.monotonic()
-    try:
-        result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
-    finally:
-        timer.cancel()
+    result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, notes))
     elapsed = time.monotonic() - start
 
-    assert elapsed < 10.0  # woke within a sleep slice, not the full backoff ladder
+    assert elapsed < 3.5  # the wake check saw the control before the 4 s backoff: no sleep ran
     assert calls["n"] == 1  # the woken redial exited at the round top: zero further dials
     assert usage.get("execution_status") == "infra_failed"
     assert usage.get("reason_code") == "provider_unavailable"

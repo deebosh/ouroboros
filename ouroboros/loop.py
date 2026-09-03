@@ -2746,7 +2746,7 @@ def _provider_unavailable_result(
     """Salvage provider failure without an unsafe retry. ``wait_cause`` is the
     transport-wait episode's latched cause (survives later overwrites of the
     mutable ``_last_llm_error_kind``); ``waited_sec``/``interactive`` keep the
-    terminal text honest for zero-wait and chat turns."""
+    terminal text honest for zero-wait and such turns."""
     kind = str(error_kind or "")
     is_context_overflow = kind == "context_overflow"
     is_transport_wait = str(wait_cause or "") == "transport_unavailable"

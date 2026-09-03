@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import queue
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -178,23 +177,37 @@ def test_explicit_deadline_longer_than_the_bound_yields_the_interactive_detail(t
     assert max(row["window_remaining_sec"] for row in events if row["phase"] == "waiting") <= 60.0
 
 
-def test_spent_deadline_keeps_its_own_detail_when_the_bound_is_also_spent(tmp_path, monkeypatch):
-    """A tie is not an interactive-bound expiry: `deadline_exhausted` implies a
-    real owner deadline, and it stays the truthful detail when that deadline
-    is spent, however spent the idle bound is."""
+@pytest.mark.parametrize("final_redial_done", [False, True])
+@pytest.mark.parametrize("earlier", ["bound", "deadline"])
+def test_both_windows_spent_attributes_the_rail_that_expired_first(
+    tmp_path, monkeypatch, earlier, final_redial_done,
+):
+    """When a step finds BOTH windows already spent (a host suspend inside a
+    sleep overshoots them), the detail names the rail that expired EARLIER by
+    signed lateness — clamping first would erase the ordering — on both exits:
+    the plain exhaustion check and the post-final-redial check."""
     clock = _FakeClock(monkeypatch)
+    bound_late, deadline_late = (40.0, 5.0) if earlier == "bound" else (5.0, 40.0)
     ctx = _ctx(is_direct_chat=True)
     ctx.task_metadata = {
-        "deadline_at": (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat(),
+        "deadline_at": (
+            datetime.now(timezone.utc)
+            + timedelta(seconds=get_finalization_grace_sec() - deadline_late)
+        ).isoformat(),
     }
     episode = loop_transport.TransportWaitEpisode(
-        started_monotonic=clock.now - 1000.0, interactive=True, wait_bound_sec=60.0,
+        started_monotonic=clock.now - (60.0 + bound_late), interactive=True,
+        wait_bound_sec=60.0, final_redial_done=final_redial_done,
     )
     notes = _NoteRecorder()
 
     assert _step(episode, tmp_path, SimpleNamespace(_ctx=ctx), notes) is False
-    assert _read_network_wait_events(tmp_path)[-1]["detail"] == "deadline_exhausted"
     assert clock.sleeps == []
+    detail = _read_network_wait_events(tmp_path)[-1]["detail"]
+    if earlier == "bound":
+        assert detail == INTERACTIVE_DETAIL
+    else:
+        assert detail == ("deadline_after_final_redial" if final_redial_done else "deadline_exhausted")
 
 
 # ------------------------------------------- final free redial at the bound
@@ -274,8 +287,11 @@ def test_finalize_now_terminal_threads_the_interactive_facts(tmp_path, monkeypat
 
 def test_direct_turn_mailbox_message_wakes_the_sleep_and_reaches_the_round_top(tmp_path, monkeypatch):
     """A direct turn keeps accepting owner mailbox messages while it waits: the
-    message interrupts the sleep within a slice, the round top delivers it into
-    the transcript, and the free redial carries it."""
+    episode's wake check sees the message before sleeping, the round top
+    delivers it into the transcript, and the free redial carries it. The
+    message is written from inside the first failing dispatch, so it lands
+    after that round's drain and before the episode's first wait whatever the
+    host's speed (a timer raced a cold process's setup)."""
     from ouroboros.owner_mailbox import write_owner_message
 
     seen = []
@@ -284,6 +300,7 @@ def test_direct_turn_mailbox_message_wakes_the_sleep_and_reaches_the_round_top(t
                   _task_id, _round_idx, _event_queue, accumulated_usage, *_a, **_k):
         seen.append(json.dumps(messages))
         if len(seen) == 1:
+            write_owner_message(tmp_path, "also check the brakes", "t-wait")
             accumulated_usage["_last_llm_error_kind"] = "transport_unavailable"
             return None, 0.0
         accumulated_usage.pop("_last_llm_error_kind", None)
@@ -294,20 +311,13 @@ def test_direct_turn_mailbox_message_wakes_the_sleep_and_reaches_the_round_top(t
     monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     registry._ctx.is_direct_chat = True
-    timer = threading.Timer(
-        0.3, lambda: write_owner_message(tmp_path, "also check the brakes", "t-wait"),
-    )
-    timer.start()
     start = time.monotonic()
-    try:
-        result, usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, []))
-    finally:
-        timer.cancel()
+    result, usage, _trace = run_llm_loop(**_loop_kwargs(tmp_path, registry, []))
     elapsed = time.monotonic() - start
 
     assert result == "done"
     assert usage.get("reason_code") is None
-    assert elapsed < 3.5  # woke inside the first 4 s backoff, at slice granularity
+    assert elapsed < 3.5  # the wake check saw the message before the 4 s backoff: no sleep ran
     assert len(seen) == 2
     assert "also check the brakes" not in seen[0]
     assert "also check the brakes" in seen[1]
@@ -373,8 +383,8 @@ def test_error_kind_change_closure_is_an_owner_note(tmp_path, monkeypatch, flags
         drive_logs=tmp_path, task_id="t-kind", model="m", emit_progress=notes,
     ) is None
 
-    assert "failed as provider_transient" in notes.texts[-1]
-    assert "normal failure handling resumes" in notes.texts[-1]
+    assert "got past the connect phase and failed as provider_transient" in notes.texts[-1]
+    assert "ordinary failure policy resumes" in notes.texts[-1]
     incident = notes.incidents[-1]
     if flags.get("is_ephemeral_turn"):
         assert incident["task_incident"] == "network_wait"
