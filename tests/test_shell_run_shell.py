@@ -450,6 +450,8 @@ class TestMaskedGreenDisclosure:
     @pytest.mark.parametrize("cmd", [
         ["sh", "-c", "pytest -q"],
         ["sh", "-c", "true 2>/dev/null"],
+        ["sh", "-c", "make test && true"],
+        ["sh", "-c", "make test && exit 0"],
         ["go", "test", "./..."],
     ])
     def test_unmasked_green_carries_no_note(self, cmd, tmp_path, fake_subprocess):

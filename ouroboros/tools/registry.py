@@ -349,8 +349,10 @@ def _workspace_write_candidates(
             _add(token, str(token) in write_set, row_index)
         for token in write_tokens:
             _add(token, True, row_index)
+    associated_writes = {text for text, is_write, _row in candidates if is_write}
     for token in explicit_write_targets:
-        _add(token, True, -1)
+        if str(token) not in associated_writes:
+            _add(token, True, -1)
     # The MENTION lane keeps the full harvest of the raw command text: an embedded
     # Windows drive/UNC spelling does not survive POSIX tokenization, so the
     # per-segment argv alone would stop the protected-root and outside-root scans
@@ -362,7 +364,10 @@ def _workspace_write_candidates(
         for text, is_write, _row_index in candidates
         if is_write and text.replace("\\", "")
     }
+    associated_tokens = {text for text, _is_write, row in candidates if row >= 0}
     for token in shell_argv_with_path_tokens(raw_cmd):
+        if str(token) in associated_tokens:
+            continue
         _add(token, str(token).replace("\\", "") in collapsed_writes, -1)
     return candidates
 
@@ -2935,13 +2940,15 @@ class ToolRegistry:
         # only sees the directory operand. Add those argv-visible child names to
         # the same target-first policy without attempting to parse inline code,
         # archive formats, or other deferred Q3 syntax.
-        for target_argv in write_target_argvs:
+        for row_index, target_argv in enumerate(write_target_argvs):
             for command, destination, source in directory_destination_pairs(target_argv):
                 source_name = directory_destination_child_name(command, target_argv, source)
                 if source_name in {"", ".", ".."}:
                     continue
-                explicit_write_targets.append(
-                    destination.rstrip("/\\") + "/" + source_name
+                derived = destination.rstrip("/\\") + "/" + source_name
+                row_argv, row_targets, row_inline, row_unprovable = target_rows[row_index]
+                target_rows[row_index] = (
+                    row_argv, [*row_targets, derived], row_inline, row_unprovable,
                 )
         # A located -e/-E/-c inline CODE BODY is not a write target: the
         # generic fallback reported every non-flag operand of a writer command

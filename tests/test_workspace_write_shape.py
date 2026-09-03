@@ -508,6 +508,12 @@ def test_split_redirections_grammar():
     # belongs to the operator that follows it.
     assert split_redirections(["cp", "a", "b", "2", ">", "/dev/null"]) == (["cp", "a", "b"], [])
     assert split_redirections(shell_argv("echo hi >|out")) == (["echo", "hi"], ["out"])
+    assert split_redirections(shell_argv("echo hi >& /outside/log")) == (["echo", "hi"], ["/outside/log"])
+    assert split_redirections(shell_argv("echo hi >1")) == (["echo", "hi"], ["1"])
+    assert split_redirections(shell_argv("echo hi >2")) == (["echo", "hi"], ["2"])
+    assert split_redirections(shell_argv("echo hi >&word")) == (["echo", "hi"], ["word"])
+    for descriptor_redirect in ("2>&1", ">&-", ">&2"):
+        assert split_redirections(shell_argv(f"echo hi {descriptor_redirect}")) == (["echo", "hi"], [])
     # A `>`/`<` away from position 0 is a literal byte, not an operator.
     assert split_redirections(["sed", "s/>/x/", "f"]) == (["sed", "s/>/x/", "f"], [])
     assert split_redirections(["git", "log", "--pretty=<x>"]) == (
@@ -804,10 +810,22 @@ def test_round5_sequential_effective_cwd_keeps_in_workspace_write_allowed(tmp_pa
     reg = _registry(tmp_path, mode="external")
     workspace = tmp_path / "workspace"
     (workspace / "sub").mkdir()
-    assert reg._run_shell_safety_check(
-        {"cmd": ["sh", "-c", "cd sub && echo x > f"], "cwd": str(workspace)},
-        "advanced",
-    ) is None
+    (workspace / "tools").mkdir()
+    for body in ("cd sub && echo x > f", "cd sub && touch ../file", "cd tools && touch ../shell_parse.py"):
+        args = {"cmd": ["sh", "-c", body], "cwd": str(workspace)}
+        assert reg._run_shell_safety_check(args, "advanced") is None, body
+
+
+def test_round6_redirect_file_targets_outside_workspace_are_blocked(tmp_path):
+    reg = _registry(tmp_path, mode="external")
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace / "1").symlink_to(outside / "numeric-log")
+    for body in (f"echo x >& {outside / 'redirect-log'}", "echo x >1"):
+        args = {"cmd": ["sh", "-c", body], "cwd": str(workspace)}
+        out = reg._run_shell_safety_check(args, "advanced") or ""
+        assert "WORKSPACE_SHELL_BLOCKED" in out, (body, out)
 
 
 @pytest.mark.parametrize(
@@ -839,6 +857,20 @@ def test_round5_python_stdin_heredoc_read_without_dash_is_allowed(tmp_path):
     assert reg._run_shell_safety_check(
         {"cmd": command, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) is None
+
+
+@pytest.mark.parametrize("write", (False, True), ids=("read-allowed", "write-blocked"))
+def test_round6_piped_python_heredoc_write_policy(tmp_path, write):
+    reg = _registry(tmp_path, mode="external")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / ("write" if write else "read")
+    statement = f"open({str(target)!r}, 'w')" if write else f"print(open({str(target)!r}).read())"
+    command = f"python3 <<'EOF' | cat\n{statement}\nEOF"
+    out = reg._run_shell_safety_check(
+        {"cmd": command, "cwd": str(tmp_path / "workspace")}, "advanced"
+    ) or ""
+    assert ("WORKSPACE_SHELL_BLOCKED" in out) is write, out
 
 
 @pytest.mark.parametrize(
