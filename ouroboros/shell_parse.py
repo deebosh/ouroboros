@@ -112,6 +112,73 @@ def unwrap_env_argv(argv: List[str]) -> List[str]:
     return argv[idx:] if idx < len(argv) else []
 
 
+def env_chdir_operand(argv: List[str]) -> str:
+    """Return an ``env`` wrapper's effective cwd operand, if one is present."""
+    if not argv or pathlib.PurePath(argv[0]).name.lower() != "env":
+        return ""
+    index = 1
+    while index < len(argv):
+        token = str(argv[index])
+        if token == "--":
+            break
+        if token in {"-C", "--chdir"}:
+            return str(argv[index + 1]) if index + 1 < len(argv) else ""
+        if token.startswith("--chdir="):
+            return token.split("=", 1)[1]
+        if token in {"-u", "--unset", "--argv0"}:
+            index += 2
+            continue
+        if token == "-S" or token.startswith("--split-string="):
+            break
+        if token.startswith("-") or ("=" in token and not token.startswith("=")):
+            index += 1
+            continue
+        break
+    return ""
+
+
+def replacement_placeholders(argv: List[str]) -> frozenset[str]:
+    """Replacement words are templates, never concrete filesystem targets."""
+    executable = pathlib.PurePath(str(argv[0])).name.lower() if argv else ""
+    placeholders = {"{}"} if executable in {"find", "xargs"} else set()
+    if executable != "xargs":
+        return frozenset(placeholders)
+    index = 1
+    while index < len(argv):
+        token = str(argv[index])
+        if token in {"-I", "--replace"} and index + 1 < len(argv):
+            placeholders.add(str(argv[index + 1]))
+            index += 2
+            continue
+        if token.startswith("--replace="):
+            placeholders.add(token.split("=", 1)[1])
+        elif token.startswith("-I") and len(token) > 2:
+            placeholders.add(token[2:])
+        index += 1
+    return frozenset(item for item in placeholders if item)
+
+
+def replacement_target_uncertain(
+    argv: List[str], targets: List[str], *, write_shaped: bool,
+) -> tuple[List[str], bool]:
+    """Drop template-shaped targets and report when replacement hides a write."""
+    placeholders = replacement_placeholders(argv)
+    uncertain = any(
+        placeholder in str(target)
+        for target in targets for placeholder in placeholders
+    )
+    executable = pathlib.PurePath(str(argv[0])).name.lower() if argv else ""
+    uncertain = uncertain or (
+        executable == "xargs" and write_shaped
+        and any(placeholder in str(token) for token in argv[1:] for placeholder in placeholders)
+    )
+    concrete = [
+        target for target in targets
+        if not any(placeholder in str(target) for placeholder in placeholders)
+    ]
+    return concrete, uncertain
+
+
 def strip_leading_env_assignments(argv: List[str]) -> List[str]:
     idx = 0
     while idx < len(argv) and "=" in argv[idx] and not argv[idx].startswith("="):
@@ -327,6 +394,75 @@ def shell_segments(raw_cmd: Any) -> List[List[str]]:
     if current:
         segments.append(current)
     return segments
+
+
+_HEREDOC_START_RE = re.compile(
+    r"<<-?\s*(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)"
+)
+
+
+def shell_segment_rows(raw_cmd: Any) -> List[tuple[List[str], str, tuple[str, ...]]]:
+    """Segments with their leading operator and any visible heredoc program body.
+
+    Literal/static heredoc bodies are removed from shell tokenization and attached
+    to the command that owns the redirection. This lets interpreter guards inspect
+    stdin code without mistaking its lines for independent shell commands.
+    """
+    if not isinstance(raw_cmd, str) or "<<" not in raw_cmd:
+        scrubbed = raw_cmd
+        body_owners: list[tuple[int, str]] = []
+    else:
+        lines = raw_cmd.splitlines()
+        scrubbed_lines = list(lines)
+        pending: list[tuple[int, str]] = []
+        index = 0
+        while index < len(lines):
+            match = _HEREDOC_START_RE.search(lines[index])
+            delimiter = str(match.group("delimiter") or "") if match else ""
+            if not delimiter:
+                index += 1
+                continue
+            end = index + 1
+            strip_tabs = match.group(0).startswith("<<-")
+            while end < len(lines):
+                candidate = lines[end].lstrip("\t") if strip_tabs else lines[end]
+                if candidate == delimiter:
+                    break
+                end += 1
+            if end >= len(lines):
+                index += 1
+                continue
+            body = "\n".join(lines[index + 1:end])
+            for body_index in range(index + 1, end + 1):
+                scrubbed_lines[body_index] = ""
+            owner_count = len(shell_segments("\n".join(scrubbed_lines[:index + 1])))
+            if owner_count:
+                pending.append((owner_count - 1, body))
+            index = end + 1
+        scrubbed = "\n".join(scrubbed_lines)
+        body_owners = pending
+
+    tokens = shell_tokens(scrubbed)
+    if tokens is None:
+        tokens = [t for t in str(scrubbed or "").split() if t]
+    rows: List[tuple[List[str], str, tuple[str, ...]]] = []
+    current: List[str] = []
+    leading = ""
+    for token in tokens:
+        if token in _SEGMENT_SEPARATORS:
+            if current:
+                rows.append((current, leading, ()))
+                current = []
+            leading = token
+            continue
+        current.append(token)
+    if current:
+        rows.append((current, leading, ()))
+    for owner, body in body_owners:
+        if 0 <= owner < len(rows):
+            argv, operator, bodies = rows[owner]
+            rows[owner] = (argv, operator, (*bodies, body))
+    return rows
 
 
 # The ONE redirection grammar of this module. A redirection operator is only an
