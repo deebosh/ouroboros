@@ -1224,6 +1224,27 @@
  * @property {?boolean} check_ok
  */
 
+/**
+ * The LLM-written update letter, delivered inside the ordinary
+ * `/api/update/status` and `/api/update/check` payloads as the additive
+ * `letter` key (absent or null when the install has none). It outlives the
+ * update it describes: `relation` says what the running checkout is to the
+ * letter's target, and the panel relabels the paragraph instead of deleting
+ * it.
+ *
+ * @typedef {Object} UpdateLetter
+ * @property {'ready'|'failed'} state
+ * @property {'pending'|'applied'|'superseded'|'other'} relation  offered now / already the running version / a newer target appeared after it was written / HEAD moved elsewhere
+ * @property {string} text  markdown, one short paragraph; may be empty when a failed write has no previous good letter
+ * @property {string} author_version  the Ouroboros version that wrote it
+ * @property {string} target_version  the version it describes
+ * @property {string} written_at  ISO 8601
+ * @property {''|'no_credentials'|'budget_exhausted'|'context_overflow'|'timeout'|'provider_unavailable'|'empty_response'} error_kind
+ * @property {string} error_text  short, secret-free; empty when state is ready
+ * @property {{base_sha: string, target_sha: string, update_channel: string, target_ref: string}} key  the exact range the letter was written for
+ * @property {boolean} has_last_good  a previous good letter for the same range is carried in `text`
+ */
+
 export const MAX_LINK_ACTIONS = 12;
 export const MAX_QUIZ_OPTIONS = 6;
 // Mirror of ouroboros/gateway/task_decision.py::_COMMENT_MAX — the ingress
