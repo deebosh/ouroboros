@@ -4462,7 +4462,6 @@ def _forced_fallback_result(
     provider_terminal: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Compose fallback."""
-    provider_terminal = provider_terminal or reason_code in ("context_overflow", "provider_unavailable")
     router_result = _forced_swarm_router_result(ctx, llm_trace, reason_code)
     if router_result is not None:
         return router_result
@@ -4484,8 +4483,7 @@ def _forced_fallback_result(
             sanitize_tool_result_for_log(_compose_delivery_suffix(candidate.full_text, suffix))
         )
         ctx.accumulated_usage.update(
-            terminal_origin=(TERMINAL_ORIGIN_HOST_SALVAGE if provider_terminal
-                             else TERMINAL_ORIGIN_MODEL_FINAL),
+            terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL,
             terminal_plan_review_open=bool(plan_suffix),
         )
         if composed != candidate.full_text:
