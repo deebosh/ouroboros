@@ -67,14 +67,23 @@ def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "") -> 
     address can matter, and a project deleted mid-run keeps its reserved chat.
     """
     project_chat = None
+    reserved_chat = None
     pid = str(project_id or "").strip()
     if pid:
         try:
             from ouroboros.projects_registry import get_reserved_project
 
+            from ouroboros.projects_registry import PROJECT_ACTIVE
+
             row = get_reserved_project(drive_root, pid) or {}
             if row.get("chat_id") is not None:
-                project_chat = int(row["chat_id"])
+                reserved_chat = int(row["chat_id"])
+                # Only an ACTIVE project supplies an address. An inactive one
+                # keeps its reserved chat and stays ACCEPTABLE, so its admission
+                # is refused by the queue's lifecycle fence with its own typed
+                # reason instead of by a different error at a different layer.
+                if str(row.get("lifecycle") or "") == PROJECT_ACTIVE:
+                    project_chat = reserved_chat
         except Exception:
             log.debug("ingress project chat lookup failed for %s", pid, exc_info=True)
     if raw_chat_id is None:
@@ -89,6 +98,12 @@ def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "") -> 
             "chat_id conflicts with the task's project thread: a run scoped to a "
             "registered project is admitted into that project's thread, and cannot "
             "be addressed anywhere else"
+        )
+    if project_chat is None and chat_id not in (HIDDEN_CHAT_ID, reserved_chat):
+        raise ProjectThreadConflict(
+            "chat_id is not available to a task with no registered active project: "
+            "externally launched work lives in its project's thread or in the hidden "
+            "partition, never in a conversation of its own"
         )
     return chat_id
 

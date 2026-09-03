@@ -32,17 +32,35 @@ def test_a_registered_project_run_has_exactly_one_destination(tmp_path):
             ingress_chat_id(elsewhere, tmp_path, "proj_reg")
 
 
-def test_without_a_room_the_explicit_address_is_still_the_callers(tmp_path):
-    """A disclosed residual, not an oversight.
+def test_without_a_room_the_only_address_is_the_hidden_partition(tmp_path):
+    """Owner decision 3A, made true by construction rather than by convention.
 
-    The task API has always accepted a chat id, no first-party client sends one,
-    and nothing about an unscoped task creates the empty-room artifact. Narrowing
-    it would remove a contract capability with no demonstrated harm, so it stays
-    and is disclosed instead.
+    Externally launched work lives in its project's thread or nowhere visible.
+    A caller may still ASK for the hidden partition — that is what running quietly
+    means — but not for a conversation of its own, because Main accepts any
+    unknown positive id and the run would surface there as ordinary dialogue.
     """
-    assert ingress_chat_id("7", tmp_path, "") == 7
-    assert ingress_chat_id(1, tmp_path, "proj_never_registered") == 1
+    assert ingress_chat_id(None, tmp_path, "") == HIDDEN_CHAT_ID
+    assert ingress_chat_id(0, tmp_path, "") == HIDDEN_CHAT_ID
     assert ingress_chat_id(None, tmp_path, "proj_never_registered") == HIDDEN_CHAT_ID
+    for elsewhere in (1, 7, 222594327):
+        with pytest.raises(ProjectThreadConflict):
+            ingress_chat_id(elsewhere, tmp_path, "")
+
+
+def test_an_inactive_project_is_left_to_the_queues_own_lifecycle_fence(tmp_path):
+    """One refusal per question, at the layer that owns it.
+
+    A deleting project keeps its reserved chat, and admission into it is refused
+    by the queue's lifecycle fence with its typed reason. Answering earlier with
+    a different error would change an established response shape for no gain.
+    """
+    from ouroboros.projects_registry import begin_project_deletion, create_project
+
+    row = create_project(tmp_path, "proj_going", name="Going")
+    begin_project_deletion(tmp_path, "proj_going")
+    assert ingress_chat_id(None, tmp_path, "proj_going") == HIDDEN_CHAT_ID
+    assert ingress_chat_id(row["chat_id"], tmp_path, "proj_going") == row["chat_id"]
 
 
 def test_a_chat_id_that_is_not_a_whole_number_is_refused(tmp_path):
@@ -167,8 +185,9 @@ def test_derived_project_id_is_scoped_but_never_announced_in_main(tmp_path, monk
 
     row = create_project(tmp_path, "proj_real", name="Real")
     assert row["chat_id"] > 0
-    task2 = {"id": "t2", "project_id": "proj_real", "description": "run"}
-    result2 = {"status": "completed", "project_id": "proj_real", "result": "done"}
+    task2 = {"id": "t2", "project_id": "proj_real", "description": "run", "chat_id": row["chat_id"]}
+    result2 = {"status": "completed", "project_id": "proj_real", "result": "done",
+               "chat_id": row["chat_id"]}
     assert task_presentation_snapshot(tmp_path, "t2", task=task2, result=result2)["project_routable"] is True
     assert project_dialogue.enqueue_project_completion_summary(
         tmp_path, {}, "t2", task2, result2, {"status": "completed"},
@@ -179,18 +198,19 @@ def test_derived_project_id_is_scoped_but_never_announced_in_main(tmp_path, monk
     assert enqueued[0]["system_type"] == "project_completion_summary"
 
 
-def test_a_run_that_becomes_a_project_mid_flight_still_gets_its_one_main_row(tmp_path, monkeypatch):
-    """Main owes exactly two lifecycle rows, so it must not owe only one.
+def test_main_is_told_a_project_finished_only_when_the_work_went_there(tmp_path, monkeypatch):
+    """Main owes two lifecycle rows for a project, and only for a real one.
 
-    A run admitted with no project is hidden. If the agent then calls into
-    ensure_project_scope, the project is created, the task is BOUND to it and
-    Main is told the project started — so Main must also be told when it
-    finishes. Gating that row on the admission address instead of the room would
-    leave the start row hanging with no completion, which is worse than the
-    artifact it was meant to prevent.
+    A run BOUND to a project mid-flight has its rows re-homed into that room, so
+    Main must be told it finished — otherwise the start row it already received
+    hangs unanswered. A run merely SCOPED to an id that somebody registered later
+    never entered that room, so announcing it would hand the owner the empty
+    "Open Project" this sprint exists to remove.
     """
     from ouroboros import project_dialogue
-    from ouroboros.projects_registry import begin_project_deletion, create_project
+    from ouroboros.projects_registry import (
+        begin_project_deletion, bind_task_to_project, create_project,
+    )
 
     enqueued = []
     monkeypatch.setattr(
@@ -198,17 +218,32 @@ def test_a_run_that_becomes_a_project_mid_flight_still_gets_its_one_main_row(tmp
         lambda drive_root, event: enqueued.append(event) or True,
     )
     row = create_project(tmp_path, "proj_midflight", name="Mid flight")
-    # Admitted hidden, re-homed mid-run: the durable record still carries 0.
-    task = {"id": "m1", "project_id": "proj_midflight", "description": "run", "chat_id": row["chat_id"]}
+    task = {"id": "m1", "project_id": "proj_midflight", "description": "run", "chat_id": 0}
     result = {"status": "completed", "project_id": "proj_midflight", "chat_id": 0, "result": "done"}
+
+    # Registered late, never bound: the room holds none of this run's rows.
+    assert project_dialogue.enqueue_project_completion_summary(
+        tmp_path, {}, "m1", task, result, {"status": "completed"},
+    ) is False
+    assert enqueued == []
+
+    # Bound mid-flight: the binding re-homes its rows, so Main is told.
+    bind_task_to_project(tmp_path, "m1", "proj_midflight", origin={"absent": "system"})
     assert project_dialogue.enqueue_project_completion_summary(
         tmp_path, {}, "m1", task, result, {"status": "completed"},
     ) is True
     assert len(enqueued) == 1 and enqueued[0]["chat_id"] == 1
 
-    # A project on its way out has no room to open, so Main stays silent.
+    # Addressed there at admission is the ordinary case.
+    homed = {**task, "id": "m2", "chat_id": row["chat_id"]}
+    assert project_dialogue.enqueue_project_completion_summary(
+        tmp_path, {}, "m2", homed, {**result, "chat_id": row["chat_id"]}, {"status": "completed"},
+    ) is True
+    assert len(enqueued) == 2
+
+    # A project on its way out has no room to open.
     begin_project_deletion(tmp_path, "proj_midflight")
     assert project_dialogue.enqueue_project_completion_summary(
-        tmp_path, {}, "m2", task, result, {"status": "completed"},
+        tmp_path, {}, "m3", homed, {**result, "chat_id": row["chat_id"]}, {"status": "completed"},
     ) is False
-    assert len(enqueued) == 1
+    assert len(enqueued) == 2
