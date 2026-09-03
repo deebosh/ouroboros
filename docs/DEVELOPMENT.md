@@ -219,6 +219,24 @@ only (a nudge and a disclosed reviewer flag, never a gate); fixing it means
 changing the durable store and deserves its own scope. Beyond the typed seams
 and tests above, this section is review-only.
 
+### Anti-pattern: a chat id tested for truth
+
+A chat id is a VALUE, not a boolean. `HIDDEN_CHAT_ID` (0) is the hidden
+partition — the Skill Review panel plus every headless task admitted without a
+registered project — a REAL destination that no browser surface reads; absence
+is `None`, and a negative id is synthetic A2A traffic. `if chat_id:` therefore
+does two wrong things at once: it drops a partition-bound notice AND re-routes
+hidden work to the owner's main chat, which is how a whole `ouroboros run`
+went invisible while its children surfaced in Main as a nameless card. Use the
+two normalizers instead of a third: `message_bus.notification_chat_route`
+answers "where does this notice go" (first DELIVERABLE candidate, `None` when
+none is) and `message_bus.coerce_chat_identity` answers "what is this row's
+address" (explicit value kept, absence defaulted). Address a headless task
+once, at admission (`log_addressing.ingress_chat_id`), and pass the value
+downstream. Enforcement: `tests/test_chat_id_truthiness_guard.py` is the
+source lint that keeps the class closed; its allowlist is where a deliberate
+exception states its reason.
+
 ### Mutable external-fact inventory
 
 This table is a maintenance inventory, not a second runtime authority. External
@@ -537,9 +555,21 @@ loops, and `EventSource`/streaming connections.
 
 An instance that can be closed, hidden, or replaced (project chat panels are
 the canonical case) must be destroyable without leaving any acquisition
-behind; "hide the DOM node, keep the handlers" is the leak shape this
+behind. A UI instance may survive being hidden only under an explicit,
+owner-visible retention reason — a project chat with pending work, a widget
+card the owner set to Keep running — and even then it owns its disposer, and
+Stop / unload / reload / shutdown remain force-destroy boundaries; the reason
+is re-evaluated at the instance's next lifecycle point, not continuously. The
+untyped shape "hide the DOM node, keep the handlers" remains the leak this
 invariant forbids. Late async continuations check a `destroyed` flag before
-touching state or re-arming loops.
+touching state or re-arming loops. A module widget's disposer is the ordered
+dispose with acknowledgement (ARCHITECTURE "Skills and Widgets"): post the
+dispose message, keep the bridge answering the child's hooks, then abort,
+unlisten and remove the iframe on the acknowledgement or after
+`WIDGET_DISPOSE_ACK_TIMEOUT_MS`; a route iframe disposes synchronously; the
+masonry's `applyMasonry` returns an idempotent disposer for its observers and
+pending frame. That bounded wait is not the forbidden shape: the handlers live
+only until the settle promise the page tracks per card key resolves.
 
 Enforcement (honest disclosure): the deterministic leak test runs in the
 release-tier `ui_browser` lane, not at commit tier; commit-tier coverage is
@@ -1887,9 +1917,13 @@ rules, not a copied color/radius/dimension inventory.
   design-system control (`renderTabStrip` + `.app-tab-strip`/`.app-tab` +
   the `--pill-*` tokens); scroll bodies share the `.scroll-fade-y` mask;
   masonry packing uses `web/modules/masonry.js::applyMasonry` (CSS Grid row
-  packing leaves row gaps under shorter cards); widget order persists
-  through `/api/ui/preferences` + `data/state/ui_preferences.json`, never
-  in extension manifests. New visual dimensions become CSS variables first
+  packing leaves row gaps under shorter cards): it packs in the page's key
+  order and writes only `--masonry-*` custom properties — never move
+  `<article>` nodes to reorder, a moved `<iframe>` reloads; widget order and
+  the per-card start-mode override (`widget_start_mode`, values from
+  `extension_ui_validation.WIDGET_START_MODES`) persist through
+  `/api/ui/preferences` + `data/state/ui_preferences.json`, never in
+  extension manifests. New visual dimensions become CSS variables first
   and are consumed by shared classes; new inline `style=""` markup and
   `.style.<property>` assignments are review debt (a dynamic measured value
   may update a narrowly named custom property when that is the real runtime
@@ -1961,13 +1995,30 @@ disposer; `subscription.render` is transitively passive. Escape text and
 attributes for their actual HTML contexts, constrain media to extension
 routes or safe data URLs, and keep charts accessible through a semantic
 table. Rare `kind: "module"` UI runs only in a sandboxed opaque-origin
-iframe with no `allow-same-origin`; its parent bridge proxies only the
+iframe with no `allow-same-origin`; its document policy admits scripts,
+images, media and fonts only from the skill's own prefix (plus
+`data:`/`blob:`; `connect-src` closed) and its parent bridge proxies only the
 owning extension route — never load skill JavaScript into the SPA origin.
+Both framed mounts live in `web/modules/widget_module.js` (the child-side
+bootstrap is `widget_frame.js`) and return their disposer to the `mountTab`
+dispatcher in `widgets.js`; the framed card chrome — launch policy (owner
+override > author `render.start` > kind default), `retain`, Start/Stop, the
+policy menu, the facade — lives in `widget_card.js`, reorder handles in
+`widget_reorder.js`, chart/table helpers in `widget_chart.js`, the pure
+list-signature and keyed-patch helpers in `widget_list.js`; the page
+compares the list signature after every `GET /api/widgets` and touches no
+card node when it is unchanged.
 Long-running actions use a durable job id and resumable status polling.
 Every timer, listener, observer, stream, abort controller, chart, and
 mounted widget has a paired disposer. Enforcement:
-`tests/test_widgets_ui_static.py` at commit tier;
-`tests/test_widgets_ui_browser.py` in the release-tier `ui_browser` lane.
+`tests/test_widgets_ui_static.py` at commit tier; in the release-tier
+`ui_browser` lane `tests/test_widgets_ui_browser.py` (geometry, job retry),
+`tests/test_widgets_ui_browser_lifecycle.py` (launch policy, ordered stop,
+`retain`, the streaming bridge), `tests/test_widgets_ui_browser_patch.py`
+(keyed patch of a running card, reconnect reconcile) and
+`tests/test_widgets_ui_browser_capabilities.py` (the frame CSP, sandbox and
+permissions boundary on Chromium and WebKit) — run all four before a release
+that touched Widgets.
 
 ## MCP Client Integration
 
@@ -2035,7 +2086,9 @@ topology"):
 - `browser` / `ui_browser` / `ui_browser_docker` launch real Playwright
   engines (agent browser tools / the host UI / the `ouroboros-web:test`
   container; the docker lane skips cleanly when Docker is unavailable
-  locally). `portable_detail` covers build/portable artifact invariants.
+  locally). The marker is the source of truth for what the lane collects;
+  the four Widgets lifecycle suites listed under "Declarative widgets" run
+  in it. `portable_detail` covers build/portable artifact invariants.
 - `skill_smoke` installs the nine pinned official skills from the LIVE
   catalog (list in `tests/test_skill_smoke_official.py`) and runs as the
   dedicated 3-OS CI job in serial pytest invocations with real network and
