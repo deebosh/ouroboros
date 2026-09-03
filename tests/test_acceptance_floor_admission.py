@@ -231,13 +231,18 @@ def test_floor_launch_predicates_and_the_projection_record_nothing(monkeypatch, 
         "gate": "review_launch", "estimated_sec": round(estimate, 3), "floor_sec": 200.0, "spendable_sec": 1000.0}
 
 
-def _floor_band_ctx(monkeypatch, tmp_path, *, seconds_left, claims=1, max_improvement_passes=3):
+def _floor_band_ctx(
+    monkeypatch, tmp_path, *, seconds_left, claims=1, max_improvement_passes=None,
+    policy="adaptive",
+):
     """A REAL root task in the deadline band the projection prices: the packet
     triad, the 200 s configured floor, the 120 s grace as the WHOLE reserve
     (pct 0), `claims` really claimed cycles, and one 200 s timing row of that
     panel's own class (EWMA 200 → estimate 300). Nothing is patched — the
     projection reads the same contract, wallet state and timing history
-    production reads."""
+    production reads. `max_improvement_passes` defaults to NONE so the shipped
+    configuration (2 review cycles → 1 improvement pass) is what these
+    regressions exercise; a task-local cap would mask the count axis."""
     import queue
     from datetime import timedelta
 
@@ -256,7 +261,7 @@ def _floor_band_ctx(monkeypatch, tmp_path, *, seconds_left, claims=1, max_improv
     monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "120")  # the whole reserve (pct 0)
     monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
     now = utc_now()
-    profile = {"improvement_policy": "adaptive", "reserve_finalization_pct": 0}
+    profile = {"improvement_policy": policy, "reserve_finalization_pct": 0}
     if max_improvement_passes is not None:
         profile["max_improvement_passes"] = max_improvement_passes
     contract = build_task_contract({
@@ -298,10 +303,13 @@ def test_the_projection_reports_the_improvement_floor_admission_of_the_2x_window
     projection evaluates BOTH purely and reports each admission in its OWN
     field: the improvement admission arrives as
     `improvement_launch_disclosure`, `launch_disclosure` stays absent, and the
-    improvement gate never touches availability. Every number comes from the
-    real readers and builders (the timing EWMA, the deadline snapshot, one
-    really claimed cycle); no predicate is patched."""
+    improvement gate never touches availability. THE BOUNDARY CASE: the shipped
+    configuration (2 review cycles → 1 improvement pass), ONE paid claim and
+    ZERO completed improvement passes — the count the real gate sees. Every
+    number comes from the real readers and builders (the timing EWMA, the
+    deadline snapshot, one really claimed cycle); no predicate is patched."""
     from ouroboros import task_pacing
+    from ouroboros.review_cycles import acceptance_max_improvement_passes_from_cycles
     from ouroboros.task_results import project_task_acceptance_review_capacity
     from ouroboros.utils import iter_jsonl_objects
 
@@ -312,16 +320,22 @@ def test_the_projection_reports_the_improvement_floor_admission_of_the_2x_window
     assert profile["improvement_policy"] == "adaptive" and estimate == 300.0
     assert snapshot.reserve_sec == 120.0 and 400.0 < snapshot.spendable_sec <= 600.0
     assert 200.0 < estimate < snapshot.spendable_sec  # floor 200 < estimate < spendable <= 2x
+    assert snapshot.spendable_sec > 2 * 200.0  # and above the 2x FLOOR window
+    # The shipped default is the whole point: one improvement pass, no local cap.
+    assert profile["max_improvement_passes"] is None
+    assert acceptance_max_improvement_passes_from_cycles() == 1
 
     reason = task_pacing.REASON_LAUNCHED_AT_FLOOR
+    # ONE paid panel means ZERO completed improvement passes — what production's
+    # `ctx.passes_done` holds when the real gate runs after the first panel.
     assert task_pacing.improvement_pass_allowed(
-        snapshot, 1, profile, estimated_sec=estimate, ctx=None) == (True, reason)
+        snapshot, 0, profile, estimated_sec=estimate, ctx=None) == (True, reason)
     assert task_pacing.review_launch_allowed(snapshot, estimated_sec=estimate) == (True, "")
 
     before = list(iter_jsonl_objects(events))
     projection = project_task_acceptance_review_capacity(ctx, task_id="root-floor-band")
     assert projection["state"] == "available" and projection["reason"] == ""
-    assert projection["claimed_cycles"] == 1 and projection["remaining_cycles"] == 3
+    assert projection["claimed_cycles"] == 1 and projection["remaining_cycles"] == 1
     # The projection prices the SAME 300 s estimate for both gates.
     assert task_pacing.acceptance_review_estimate_sec(
         ctx, passes_done=projection["claimed_cycles"]) == estimate
@@ -352,7 +366,7 @@ def test_the_projection_reports_the_review_launch_floor_admission_alone_below_th
     reason = task_pacing.REASON_LAUNCHED_AT_FLOOR
     assert task_pacing.review_launch_allowed(snapshot, estimated_sec=estimate) == (True, reason)
     assert task_pacing.improvement_pass_allowed(
-        snapshot, 1, profile, estimated_sec=estimate, ctx=None) == (
+        snapshot, 0, profile, estimated_sec=estimate, ctx=None) == (
         False, "improvement_window_inside_reserve")
 
     before = list(iter_jsonl_objects(events))
@@ -360,7 +374,7 @@ def test_the_projection_reports_the_review_launch_floor_admission_alone_below_th
     assert projection["launch_disclosure"] == reason
     assert "improvement_launch_disclosure" not in projection
     assert projection["state"] == "available" and projection["reason"] == ""
-    assert projection["claimed_cycles"] == 1 and projection["remaining_cycles"] == 3
+    assert projection["claimed_cycles"] == 1 and projection["remaining_cycles"] == 1
     assert ctx.pending_events == [] and ctx.event_queue.empty()
     assert list(iter_jsonl_objects(events)) == before
 
@@ -381,8 +395,7 @@ def test_projecting_an_exhausted_cap_emits_no_review_cycles_exhausted_event(monk
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "required")
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")  # 2 cycles => 1 improvement pass
-    ctx, events = _floor_band_ctx(
-        monkeypatch, tmp_path, seconds_left=620, claims=2, max_improvement_passes=None)
+    ctx, events = _floor_band_ctx(monkeypatch, tmp_path, seconds_left=620, claims=2)
     profile = task_pacing.resolve_budget_profile(ctx)
     estimate = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=2)
     snapshot = task_pacing.build_budget_snapshot(ctx, profile=profile)
@@ -396,11 +409,203 @@ def test_projecting_an_exhausted_cap_emits_no_review_cycles_exhausted_event(monk
     assert ctx.pending_events == [] and ctx.event_queue.empty()
     assert _rows(events, REASON_REVIEW_CYCLES_EXHAUSTED) == []  # ctx=None emitted nothing
 
-    # Control: the SAME inputs with a ctx and the caller's enforcement do emit.
+    # Control: the SAME inputs with a ctx do emit — same derived counter
+    # (2 paid cycles → 1 completed improvement pass) and same enforcement.
     assert task_pacing.improvement_pass_allowed(
-        snapshot, 2, profile, required_blocking=True, estimated_sec=estimate, ctx=ctx) == (
+        snapshot, 1, profile, required_blocking=True, estimated_sec=estimate, ctx=ctx) == (
         False, REASON_REVIEW_CYCLES_EXHAUSTED)
     assert len(_rows(events, REASON_REVIEW_CYCLES_EXHAUSTED)) == 1
+
+
+def test_an_armed_owner_hurry_latch_removes_the_projected_improvement_pass(monkeypatch, tmp_path):
+    """The projection resolves the EFFECTIVE profile the real acceptance path
+    resolves (`owner_hurry.effective_budget_profile` over the raw one, exactly
+    as `loop._run_task_acceptance_review_once` does). An armed hurry latch
+    overlays `max_improvement_passes=0`, so the real gate refuses at zero
+    completed passes and the projection reports NO improvement field — in the
+    very band that discloses one without the latch (the test above). Reading the
+    RAW profile would promise a pass the real gate refuses."""
+    from ouroboros import owner_hurry, task_pacing
+    from ouroboros.task_results import project_task_acceptance_review_capacity
+
+    ctx, _events = _floor_band_ctx(monkeypatch, tmp_path, seconds_left=620)
+    assert owner_hurry.latch_from_entry(ctx, {"msg_id": "m1", "ts": "2026-09-03T07:00:00Z"})
+    profile = owner_hurry.effective_budget_profile(ctx, task_pacing.resolve_budget_profile(ctx))
+    snapshot = task_pacing.build_budget_snapshot(ctx, profile=profile)
+    assert profile["max_improvement_passes"] == 0
+    assert task_pacing.improvement_pass_allowed(
+        snapshot, 0, profile, estimated_sec=300.0, ctx=None) == (
+        False, "improvement_passes_exhausted")
+
+    projection = project_task_acceptance_review_capacity(ctx, task_id="root-floor-band")
+    assert projection["state"] == "available"  # the PAID panel itself stays admissible
+    assert projection["claimed_cycles"] == 1 and projection["remaining_cycles"] == 1
+    assert "improvement_launch_disclosure" not in projection
+    assert "improvement_admission" not in projection  # refused, not unavailable
+
+
+def test_polling_a_legacy_alias_metadata_poor_task_writes_and_latches_nothing(monkeypatch, tmp_path):
+    """PURITY, pinned byte-for-byte (owner R49). The two writes reachable from
+    the observed readers are the `deprecated_task_pacing_alias` row
+    (`resolve_budget_profile`) and the fallback-anchor latch
+    (`build_budget_snapshot`); a task carrying the legacy `until_deadline` alias
+    AND no `created_at`/`started_at` arms both. Polling the projection must
+    leave the events stream, the result/ledger file and the event queue
+    byte-identical and touch no ctx attribute — while still answering. Without a
+    usable window it makes no floor claim; `state` still derives from the wallet
+    and the count axis. The controls fire both writes from the OWNING path, so
+    these assertions cannot pass vacuously."""
+    from ouroboros import task_pacing
+    from ouroboros.task_results import project_task_acceptance_review_capacity, task_result_path
+
+    ctx, events = _floor_band_ctx(
+        monkeypatch, tmp_path, seconds_left=620, policy="until_deadline")
+    del ctx.task_metadata["created_at"]  # metadata-poor: no anchor without a WRITE
+    result_file = task_result_path(tmp_path, "root-floor-band", create=False)
+    before = (events.read_bytes(), result_file.read_bytes())
+
+    for _ in range(2):
+        projection = project_task_acceptance_review_capacity(ctx, task_id="root-floor-band")
+        assert projection["state"] == "available" and projection["claimed_cycles"] == 1
+        assert "launch_disclosure" not in projection  # no window facts -> no floor claim
+        assert "improvement_launch_disclosure" not in projection
+        assert "improvement_admission" not in projection  # answered, not omitted
+    assert (events.read_bytes(), result_file.read_bytes()) == before
+    assert ctx.event_queue.empty() and ctx.pending_events == []
+    assert not hasattr(ctx, "_time_budget_started_at")
+    assert not hasattr(ctx, "_acceptance_pacing_deprecation_emitted")
+    assert task_pacing.observe_budget_snapshot(
+        ctx, profile=task_pacing.observe_budget_profile(ctx)).has_deadline is False
+
+    # Controls: the OWNING path still emits the row and latches the anchor from
+    # this same context — both writes are genuinely reachable here.
+    assert task_pacing.resolve_budget_profile(ctx)["improvement_policy"] == "until_deadline"
+    assert ctx._acceptance_pacing_deprecation_emitted is True
+    assert len(_rows(events, "deprecated_task_pacing_alias")) == 1
+    assert task_pacing.build_budget_snapshot(ctx).has_deadline is True
+    assert getattr(ctx, "_time_budget_started_at", None) is not None
+
+
+def test_required_blocking_until_deadline_agrees_with_the_real_gate_on_the_count_axis(
+        monkeypatch, tmp_path):
+    """Required+Blocking is where the `until_deadline` alias stops meaning "no
+    count cap" (owner D10/D20): the shared review-cycle cap binds under EVERY
+    policy. The projection must therefore pass the real gate's enforcement
+    predicate — otherwise it projects an unlimited count axis, and in this band
+    an improvement floor admission, while the real gate refuses
+    `review_cycles_exhausted` at the very same numbers."""
+    from ouroboros import task_pacing
+    from ouroboros.outcomes import REASON_REVIEW_CYCLES_EXHAUSTED
+    from ouroboros.task_results import (
+        project_task_acceptance_review_capacity,
+        task_acceptance_required_blocking,
+    )
+
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "required")
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
+    ctx, events = _floor_band_ctx(
+        monkeypatch, tmp_path, seconds_left=370, claims=2, policy="until_deadline")
+    assert task_acceptance_required_blocking() is True
+    profile = task_pacing.resolve_budget_profile(ctx)
+    snapshot = task_pacing.build_budget_snapshot(ctx, profile=profile)
+    # `until_deadline` keeps the 1x window: floor 200 < spendable <= estimate 300.
+    assert 200.0 < snapshot.spendable_sec <= 300.0
+    # 2 paid cycles -> 1 completed improvement pass, shared cap 1: exhausted.
+    assert task_pacing.improvement_pass_allowed(
+        snapshot, 1, profile, required_blocking=True, estimated_sec=300.0, ctx=None) == (
+        False, REASON_REVIEW_CYCLES_EXHAUSTED)
+    # Dropping the enforcement makes the alias claim no count cap at all, and
+    # this band then admits at the floor — the exact drift being closed.
+    assert task_pacing.improvement_pass_allowed(
+        snapshot, 1, profile, estimated_sec=300.0, ctx=None) == (
+        True, task_pacing.REASON_LAUNCHED_AT_FLOOR)
+
+    projection = project_task_acceptance_review_capacity(ctx, task_id="root-floor-band")
+    assert projection["cap_cycles"] == 2 and projection["claimed_cycles"] == 2
+    assert projection["state"] == "unavailable"
+    assert projection["reason"] == REASON_REVIEW_CYCLES_EXHAUSTED
+    assert "improvement_launch_disclosure" not in projection
+    assert _rows(events, REASON_REVIEW_CYCLES_EXHAUSTED) == []  # ctx=None: still silent
+
+
+def test_a_raising_improvement_gate_never_refuses_the_admissible_paid_panel(monkeypatch, tmp_path):
+    """The optional improvement computation has its OWN try. A raise inside
+    `improvement_pass_allowed` used to degrade the whole projection to
+    `state='unknown'`, and `review_dispatch.task_acceptance_preclaim_refusal`
+    turns any non-available projection into a "no reviewer was called" refusal —
+    so an auxiliary disclosure failure could suppress an admissible PAID panel.
+    The launch-derived state survives, the disclosure is omitted with a typed
+    reason, and the dispatch seam still admits."""
+    from ouroboros import task_pacing
+    from ouroboros.review_dispatch import task_acceptance_preclaim_refusal
+    from ouroboros.task_results import project_task_acceptance_review_capacity
+
+    ctx, _events = _floor_band_ctx(monkeypatch, tmp_path, seconds_left=620)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("improvement gate exploded")
+
+    monkeypatch.setattr(task_pacing, "improvement_pass_allowed", _boom)
+    projection = project_task_acceptance_review_capacity(ctx, task_id="root-floor-band")
+    assert projection["state"] == "available" and projection["reason"] == ""
+    assert projection["claimed_cycles"] == 1 and projection["remaining_cycles"] == 1
+    assert "improvement_launch_disclosure" not in projection
+    assert projection["improvement_admission"] == task_pacing.IMPROVEMENT_ADMISSION_UNKNOWN
+
+    review_ctx = SimpleNamespace(
+        tools=SimpleNamespace(_ctx=ctx), task_id="root-floor-band", review_binding={},
+    )
+    assert task_acceptance_preclaim_refusal(review_ctx) is None  # the PAID panel still runs
+
+
+def test_the_reducer_inputs_equal_what_production_reads_at_its_two_call_sites(
+        monkeypatch, tmp_path):
+    """ONE reducer, one set of inputs — and why only the projection calls it.
+
+    The real path evaluates the two gates at DIFFERENT moments and with
+    different inputs: `loop._run_task_acceptance_review_once` asks only
+    `review_launch_allowed` before the panel, while
+    `acceptance_dialogue._apply_task_acceptance_result` asks only
+    `improvement_pass_allowed` after it — with a ctx (so the escalation CAN
+    fire) and the NEXT pass's estimate. A two-gate, ctx-free reducer there would
+    change real-path behaviour, so it is deliberately not forced. What is pinned
+    instead is that the projection feeds the reducer the same PROFILE, COUNTER
+    and ENFORCEMENT those two call sites read."""
+    import inspect
+
+    from ouroboros import acceptance_dialogue, loop as loop_mod, owner_hurry, task_pacing
+    from ouroboros.task_results import task_acceptance_required_blocking
+
+    ctx, _events = _floor_band_ctx(monkeypatch, tmp_path, seconds_left=620)
+    launch_src = inspect.getsource(loop_mod._run_task_acceptance_review_once)
+    gate_src = inspect.getsource(acceptance_dialogue._apply_task_acceptance_result)
+
+    # PROFILE: loop.py overlays owner-hurry onto the resolved profile and hands
+    # THAT object to both real gates; the observation variant must agree.
+    assert "effective_budget_profile(" in launch_src
+    assert "task_pacing.resolve_budget_profile(tools._ctx)" in launch_src
+    profile = owner_hurry.effective_budget_profile(ctx, task_pacing.resolve_budget_profile(ctx))
+    assert owner_hurry.effective_budget_profile(
+        ctx, task_pacing.observe_budget_profile(ctx)) == profile
+
+    # ENFORCEMENT: the gate's own predicate, with `ctx.mode` being the config read.
+    assert 'ctx.mode == "required" and loop.get_review_enforcement() == "blocking"' in gate_src
+    assert "mode = get_task_review_mode()" in launch_src
+    assert task_acceptance_required_blocking() == (
+        loop_mod.get_task_review_mode() == "required"
+        and loop_mod.get_review_enforcement() == "blocking")
+
+    # COUNTER: production hands the gate `ctx.passes_done`
+    # (`_task_acceptance_improvement_passes`, raised to `passes_done + 1` on
+    # every fed-back capsule) — after N paid panels that is N-1.
+    assert "ctx.passes_done," in gate_src
+    assert "_task_acceptance_improvement_passes = ctx.passes_done + 1" in gate_src
+    snapshot = task_pacing.build_budget_snapshot(ctx, profile=profile)
+    for paid_cycles in (1, 2, 3):
+        assert task_pacing.acceptance_admission_projection(
+            snapshot, profile=profile, paid_cycles=paid_cycles, estimated_sec=300.0,
+        ).improvement == task_pacing.improvement_pass_allowed(
+            snapshot, paid_cycles - 1, profile, estimated_sec=300.0, ctx=None)
 
 
 def _floor_band_native_panel(monkeypatch, tmp_path, *rows):
