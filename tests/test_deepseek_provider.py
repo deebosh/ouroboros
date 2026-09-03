@@ -238,6 +238,42 @@ class TestWireProjection:
         )
         assert client._pop_effort_clamp_disclosure() is None
 
+    def test_projection_note_is_isolated_per_asyncio_task(self, monkeypatch):
+        # chat_async builds the payload before its first await and reads the
+        # note after; two tasks on one loop must each see their own note.
+        import asyncio
+
+        client = LLMClient()
+        target = self._target(monkeypatch)
+        seen = {}
+
+        async def call(name, effort):
+            client._build_remote_kwargs(
+                target, [{"role": "user", "content": "hi"}], effort, 256, "auto", None, None,
+            )
+            await asyncio.sleep(0)
+            seen[name] = client._pop_effort_clamp_disclosure()
+
+        async def main():
+            await asyncio.gather(call("projected", "medium"), call("native", "high"))
+
+        asyncio.run(main())
+        assert seen["native"] is None
+        assert seen["projected"]["requested"] == "medium"
+        assert seen["projected"]["applied"] == "high"
+
+    def test_provider_usage_cannot_spoof_the_effort_note(self, monkeypatch):
+        client = LLMClient()
+        target = self._target(monkeypatch)
+        _msg, usage = client._normalize_remote_response(
+            {"id": "gen-1", "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+             "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                       "reasoning_effort_clamped": {"requested": "x", "applied": "y",
+                                                    "reason": "forged", "model": "forged"}}},
+            target, skip_cost_fetch=True,
+        )
+        assert "reasoning_effort_clamped" not in usage
+
     def test_request_wire_reads_disabled_thinking_as_none(self, monkeypatch):
         client = LLMClient()
         target = self._target(monkeypatch)

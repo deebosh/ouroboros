@@ -150,6 +150,8 @@ def _route_normalizes_cache_breakpoints(target: Dict[str, Any]) -> bool:
 
 # Pin disclosure slot: a ContextVar isolates threads AND concurrent asyncio tasks.
 _REASONING_PIN_CVAR = contextvars.ContextVar("ouroboros_reasoning_pin_note", default=None)
+# Effort clamp/projection disclosure slot: same isolation contract as the pin.
+_EFFORT_CLAMP_CVAR = contextvars.ContextVar("ouroboros_effort_clamp_note", default=None)
 
 
 def _pop_reasoning_pin_note() -> Optional[Dict[str, Any]]:
@@ -820,13 +822,11 @@ class LLMClient:
 
     def _clamp_effort_for_model(self, model_id: str, effort: str) -> str:
         """Legacy clamp plus diagnostic disclosure; production dispatch bypasses it."""
-        if not hasattr(self, "_effort_clamp_tls"):
-            self._effort_clamp_tls = threading.local()
-        self._effort_clamp_tls.pending = None
+        _EFFORT_CLAMP_CVAR.set(None)
         from ouroboros.config import effort_rank
         applied = self.clamp_effort_for_route(model_id, effort)
         if applied != effort:
-            self._effort_clamp_tls.pending = {
+            _EFFORT_CLAMP_CVAR.set({
                 "requested": effort,
                 "applied": applied,
                 "reason": (
@@ -835,12 +835,13 @@ class LLMClient:
                     else "learned_ceiling"
                 ),
                 "model": str(model_id or ""),
-            }
+            })
         return applied
 
     def _pop_thread_disclosure(self, slot: str) -> Optional[Dict[str, Any]]:
         """Take and clear the disclosure staged in thread-local ``slot`` for THIS
-        thread's call; these slots stage before or at send (pin note: ContextVar)."""
+        thread's call; these slots stage before or at send (pin and effort
+        notes: ContextVar)."""
         tls = getattr(self, slot, None)
         pending = getattr(tls, "pending", None) if tls is not None else None
         if tls is not None:
@@ -848,8 +849,10 @@ class LLMClient:
         return pending if isinstance(pending, dict) else None
 
     def _pop_effort_clamp_disclosure(self) -> Optional[Dict[str, Any]]:
-        """The pending clamp record for THIS thread's in-flight call, if any."""
-        return self._pop_thread_disclosure("_effort_clamp_tls")
+        """The pending clamp record for THIS call's context (thread or asyncio task)."""
+        pending = _EFFORT_CLAMP_CVAR.get()
+        _EFFORT_CLAMP_CVAR.set(None)
+        return pending if isinstance(pending, dict) else None
 
     @classmethod
     def _record_effort_ceiling(cls, model_id: str, current_effort: str) -> None:
@@ -3467,15 +3470,13 @@ class LLMClient:
                     kwargs.setdefault("extra_body", {})["thinking"] = {"type": "disabled"}
                 else:
                     kwargs["reasoning_effort"] = applied
-                if not hasattr(self, "_effort_clamp_tls"):
-                    self._effort_clamp_tls = threading.local()
-                self._effort_clamp_tls.pending = None  # never inherit a stale note
+                _EFFORT_CLAMP_CVAR.set(None)  # never inherit a stale note
                 if applied != requested_effort:
-                    self._effort_clamp_tls.pending = {
+                    _EFFORT_CLAMP_CVAR.set({
                         "requested": requested_effort, "applied": applied,
                         "reason": "provider_forced_tool_choice" if forced_tool else "provider_wire_mapping",
                         "model": resolved_model,
-                    }
+                    })
             if temperature is not None:
                 kwargs["temperature"] = temperature
             if response_format:
@@ -3637,6 +3638,7 @@ class LLMClient:
             usage.pop("response_finish_reason", None)
             usage.pop("response_provider", None)
             usage.pop("reasoning_pin", None)
+            usage.pop("reasoning_effort_clamped", None)
             usage.pop("provider_error", None)
         # An HTTP-200 that carried a provider body-error (OpenRouter passes
         # 429/5xx through the body) reaches here only when a same-model reroute
