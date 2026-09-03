@@ -34,8 +34,9 @@ Field-tested configuration and operational hazards from the 2026-07-20 full 1-se
   requires a real chat thread; headless tasks without a `chat_id` keep the idle rail
   (reaper) as an additional bound on the wait. A transport death AFTER dispatch (the
   socket dies mid-request) is repeated by the primary dispatch at most twice per round as
-  new physical attempts, so one logical call can log up to three `llm_api_error` rows and
-  reserve up to three upper bounds against `OUROBOROS_TOTAL_BUDGET`.
+  new physical attempts, so one logical call can log up to three `llm_api_error` rows from
+  that rail alone (on top of the `OUROBOROS_TRANSIENT_RETRY_MAX` burst) and reserve up to
+  three upper bounds against `OUROBOROS_TOTAL_BUDGET`.
 - `OUROBOROS_TOTAL_BUDGET=200` per domain-seed (measured 1-seed domain costs:
   poker $117 · bsm $60 · cohort $58 · code $33 · sales $26 · db $25 — a $60 cap silently
   truncates poker mid-rollout).
