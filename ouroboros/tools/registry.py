@@ -41,6 +41,7 @@ from ouroboros.tools.read_inspection import _is_pure_read_inspection
 from ouroboros.tools.shell_guards import (
     PROTECTED_RUNTIME_PATHS_LOWER,
     interpreter_family,
+    interpreter_inline_code,
     interpreter_write_shape,
     light_shell_repo_mutation,
     non_interpreter_write_shape,
@@ -51,7 +52,7 @@ from ouroboros.tools.shell_guards import (
     workspace_executor_state_write_block,
     directory_destination_child_name,
     directory_destination_pairs,
-    writer_target_tokens,
+    writer_target_rows,
 )
 from ouroboros.tools.deliverables_shell import (
     direct_deliverable_target_block,
@@ -273,6 +274,68 @@ def _workspace_write_block_runtime_message(path_text: Any = "") -> str:
         " payloads: root=skill_payload with bucket/skill_name, or run the command with"
         " cwd=skill_payload), and keep shell writes inside the selected process root."
     )
+
+
+def _no_deliverables_decision(_path: Any) -> None:
+    """Deliverables policy is a TARGET policy: a mention takes no decision."""
+    return None
+
+
+def _workspace_write_candidates(
+    target_rows: list, explicit_write_targets: list[str], raw_cmd: Any,
+) -> list[tuple[str, bool]]:
+    """Write/mention candidates for the workspace write guard, per segment.
+
+    A segment's parsed TARGETS are write candidates; every other token it carries
+    stays a MENTION-only candidate. Protected-runtime-root refusals keep running
+    for every candidate, so a path a writer merely READS (`cp ../data/settings.json
+    ./x`) still refuses, while the Deliverables decision and the outside-root
+    refusal apply to real write targets only.
+    """
+    candidates: list[tuple[str, bool]] = []
+    index_by_token: dict[str, int] = {}
+
+    def _add(token: Any, is_write: bool) -> None:
+        token_text = str(token)
+        if not token_text.strip():
+            return
+        position = index_by_token.get(token_text)
+        if position is not None:
+            if is_write and not candidates[position][1]:
+                candidates[position] = (token_text, True)
+            return
+        index_by_token[token_text] = len(candidates)
+        candidates.append((token_text, is_write))
+
+    for segment_argv, targets, inline_code in target_rows:
+        # Inline-code targets are already extracted paths; an argv-shaped
+        # segment's targets still need the embedded-path pass (sed's in-script
+        # `w FILE` hides the path inside the script operand).
+        if targets and not inline_code:
+            write_tokens = [str(token) for token in shell_argv_with_path_tokens(list(targets))]
+        else:
+            write_tokens = [str(token) for token in targets]
+        write_set = set(write_tokens)
+        for token in segment_argv:
+            _add(token, str(token) in write_set)
+        for token in write_tokens:
+            _add(token, True)
+    for token in explicit_write_targets:
+        _add(token, True)
+    # The MENTION lane keeps the full harvest of the raw command text: an embedded
+    # Windows drive/UNC spelling does not survive POSIX tokenization, so the
+    # per-segment argv alone would stop the protected-root and outside-root scans
+    # from ever seeing it. Such a harvested token is the SAME target in its
+    # unmangled spelling when removing the separators the tokenizer swallowed
+    # makes the two texts identical, so it keeps the write policy.
+    collapsed_writes = {
+        text.replace("\\", "")
+        for text, is_write in candidates
+        if is_write and text.replace("\\", "")
+    }
+    for token in shell_argv_with_path_tokens(raw_cmd):
+        _add(token, str(token).replace("\\", "") in collapsed_writes)
+    return candidates
 
 
 def _workspace_write_block_outside_root_message(path_text: Any = "", work_dir: Any = "") -> str:
@@ -2479,7 +2542,7 @@ class ToolRegistry:
         raw_cmd: Any,
         cmd_path_lower: str,
         explicit_write_targets: list[str],
-        write_target_argvs: list[list[str]],
+        target_rows: list,
         executable_path_tokens: set[str],
         runtime_mode: str,
         acting_subagent: bool,
@@ -2583,7 +2646,7 @@ class ToolRegistry:
         if direct_target_block := direct_deliverable_target_block(
             self._ctx,
             work_dir,
-            write_target_argvs,
+            [list(segment_argv) for segment_argv, _targets, _inline in target_rows],
             deliverables_root_physical,
             _deliverables_target_decision,
         ):
@@ -2626,15 +2689,16 @@ class ToolRegistry:
                 for text in allowed_texts
             ):
                 return _workspace_write_block_runtime_message(root_path)
-        path_tokens = list(shell_argv_with_path_tokens(raw_cmd))
-        path_tokens.extend(
-            token
-            for token in explicit_write_targets
-            if token and token not in path_tokens
-        )
-        for token in path_tokens:
-            token_text = str(token)
-            if token_text in executable_path_tokens and token_text not in explicit_write_targets:
+        # Deliverables is a TARGET policy: a merely mentioned path takes no
+        # Deliverables decision, while every candidate keeps the
+        # protected-runtime-root scans below.
+        for token_text, is_write in _workspace_write_candidates(
+            target_rows, explicit_write_targets, raw_cmd,
+        ):
+            decide_deliverables = (
+                _deliverables_target_decision if is_write else _no_deliverables_decision
+            )
+            if token_text in executable_path_tokens and not is_write:
                 continue
             candidates = [token_text] if is_absolute_path_text(token_text) else []
             if token_text.startswith(("./", "../")):
@@ -2657,7 +2721,7 @@ class ToolRegistry:
                     mapped_executor_lexical = _executor_backend_candidate_path(self._ctx, candidate)
                     if mapped_executor_lexical is not None:
                         mapped_executor = mapped_executor_lexical.resolve(strict=False)
-                        deliverables_decision = _deliverables_target_decision(mapped_executor_lexical)
+                        deliverables_decision = decide_deliverables(mapped_executor_lexical)
                         if deliverables_decision is not None:
                             if deliverables_decision:
                                 continue
@@ -2697,7 +2761,7 @@ class ToolRegistry:
                         # Keep the pre-resolution spelling so a symlink child
                         # cannot resolve into another allowed root and bypass
                         # the Deliverables policy.
-                        deliverables_decision = _deliverables_target_decision(pathlib.Path(candidate))
+                        deliverables_decision = decide_deliverables(pathlib.Path(candidate))
                         if deliverables_decision is not None:
                             if deliverables_decision:
                                 continue
@@ -2712,10 +2776,10 @@ class ToolRegistry:
                                 return _workspace_write_block_runtime_message(resolved)
                             except Exception:
                                 pass
-                        if not pro_workspace_passthrough:
+                        if is_write and not pro_workspace_passthrough:
                             return _workspace_write_block_outside_root_message(resolved, work_dir)
                         continue
-                    deliverables_decision = _deliverables_target_decision(pathlib.Path(candidate))
+                    deliverables_decision = decide_deliverables(pathlib.Path(candidate))
                     if deliverables_decision is not None:
                         if deliverables_decision:
                             continue
@@ -2727,14 +2791,14 @@ class ToolRegistry:
                     for protected_path in protected_paths:
                         if path_text_is_inside(candidate, protected_path):
                             return _workspace_write_block_runtime_message(candidate)
-                    if not pro_workspace_passthrough:
+                    if is_write and not pro_workspace_passthrough:
                         return _workspace_write_block_outside_root_message(candidate, work_dir)
                     continue
                 resolved = (work_dir / pathlib.Path(candidate)).resolve(strict=False)
                 # The lexical relative spelling is authoritative for detecting
                 # a Deliverables-origin target; the helper then canonicalizes
                 # it and rejects symlink escapes.
-                deliverables_decision = _deliverables_target_decision(
+                deliverables_decision = decide_deliverables(
                     work_dir / pathlib.Path(candidate)
                 )
                 if deliverables_decision is not None:
@@ -2751,7 +2815,7 @@ class ToolRegistry:
                         return _workspace_write_block_runtime_message(resolved)
                     except Exception:
                         pass
-                if not pro_workspace_passthrough:
+                if is_write and not pro_workspace_passthrough:
                     return _workspace_write_block_outside_root_message(resolved, work_dir)
         return None
 
@@ -2805,16 +2869,28 @@ class ToolRegistry:
             )
         argv_for_write = argv
         argv_executable = pathlib.PurePath(argv_for_write[0]).name.lower().removesuffix(".exe") if argv_for_write else ""
-        write_target_argvs = [argv_for_write] if argv_for_write else []
         inline_argv: list = []
         if argv_executable in {"sh", "bash", "zsh"}:
             inline_cmd = next((str(argv_for_write[idx + 1] or "") for idx, token in enumerate(argv_for_write[1:], start=1) if str(token or "") in {"-c", "--command"} and idx + 1 < len(argv_for_write)), "")
             if not inline_cmd:
                 inline_cmd = shell_command_string(argv_for_write)
             inline_argv = strip_leading_env_assignments(unwrap_env_argv(shell_argv(inline_cmd)))
-            if inline_argv:
-                write_target_argvs.append(inline_argv)
-        explicit_write_targets = list(dict.fromkeys(str(token) for target_argv in write_target_argvs for token in writer_target_tokens(target_argv) if str(token or "").strip()))
+        # ONE per-segment writer-target SSOT for this lane. The inline body is
+        # carried as a STRING so its own operator grammar survives; re-tokenizing
+        # it with plain shlex glued `2>/dev/null;` onto the following command and
+        # forged the path `/dev/null;` out of a redirection.
+        target_rows = [
+            row
+            for source in ([raw_cmd] + ([inline_cmd] if inline_argv else []))
+            for row in writer_target_rows(source)
+        ]
+        write_target_argvs = [list(segment_argv) for segment_argv, _targets, _inline in target_rows]
+        explicit_write_targets = list(dict.fromkeys(
+            str(token)
+            for _segment_argv, targets, _inline in target_rows
+            for token in targets
+            if str(token or "").strip()
+        ))
         # ``cp source Deliverables/`` (and the equivalent mv/ln form) writes a
         # child named after the source, while the ordinary writer-target parser
         # only sees the directory operand. Add those argv-visible child names to
@@ -2835,10 +2911,9 @@ class ToolRegistry:
         # SSOT (pinned XG-7B3.1); only THIS lane drops the bodies. FILE
         # operands stay write-suspect (`perl -pi -e s/a/b/ file` rewrites
         # `file`); literal in-code targets still arrive via inline extraction.
-        from ouroboros.tools.shell_guards import interpreter_inline_code as _interp_inline_code
         inline_code_bodies: set = set()
         for target_argv in write_target_argvs:
-            inline_code_bodies.update(_interp_inline_code([str(t) for t in target_argv]))
+            inline_code_bodies.update(interpreter_inline_code([str(t) for t in target_argv]))
         if inline_code_bodies:
             explicit_write_targets = [t for t in explicit_write_targets if t not in inline_code_bodies]
         explicit_write_targets = list(dict.fromkeys(explicit_write_targets))
@@ -2894,7 +2969,7 @@ class ToolRegistry:
                 raw_cmd,
                 cmd_path_lower,
                 explicit_write_targets,
-                write_target_argvs,
+                target_rows,
                 executable_path_tokens,
                 runtime_mode,
                 acting_subagent,

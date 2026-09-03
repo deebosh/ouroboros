@@ -11,11 +11,14 @@ from typing import Any, Dict, List
 from ouroboros.runtime_mode_policy import FROZEN_CONTRACT_PATH_PREFIXES, PROTECTED_RUNTIME_PATHS
 from ouroboros.shell_parse import (
     EMBEDDED_WINDOWS_ABSOLUTE_PATH_RE,
+    collect_leading_env,
     embedded_absolute_path_tokens,
     normalize_check_argv,
     shell_argv,
     shell_argv_with_inline,
     shell_command_string,
+    shell_segments,
+    split_redirections,
     strip_leading_env_assignments,
     unwrap_env_argv,
 )
@@ -46,7 +49,6 @@ LIGHT_SHELL_WRITER_COMMANDS = frozenset({
 })
 
 EMBEDDED_RELATIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_.-])(?:\.\.?/)+[^\s'\"\\),;\]]+")
-_REDIRECT_TARGET_TOKENS = frozenset({">", ">>", "1>", "1>>", "2>", "2>>", "&>", "&>>"})
 # ONE structural owner of "is this executable a script interpreter, and of which
 # family?" (XG-2R.2). The write fences used to match interpreter basenames by exact
 # set plus an ad-hoc `startswith("python")`, so the versioned basenames every other
@@ -983,8 +985,6 @@ def repo_target_mentioned(
     )
 
 
-_COMMAND_SEPARATOR_TOKENS = frozenset({"&&", "||", ";", "|", "&"})
-
 # A sed SCRIPT that can write or execute: the `w FILE`/`W FILE` command shape
 # (addressed `1w FILE` included — digits stay out of the lookbehind), the GNU
 # `e`/`e cmd` execute command, or a substitute's trailing flag run carrying w/e
@@ -996,25 +996,36 @@ _SED_SCRIPT_WRITE_RE = re.compile(
 )
 
 
-def writer_target_tokens(argv: List[str]) -> List[str]:
-    """Write TARGETS of a (possibly compound) command line.
+def writer_target_rows(raw_cmd: Any) -> List[tuple]:
+    """Per-SEGMENT write facts of a (possibly compound) command line.
 
-    Compound lines are split at shell separators and each segment contributes
-    only its OWN command's targets (v6.56.0): without segmentation, `touch a &&
-    ./program b` credited every token after `&&` to `touch`, so a mere MENTION
-    of a protected/readonly path in a later command read as a write to it."""
-    segments: List[List[str]] = [[]]
-    for token in argv or []:
-        if str(token) in _COMMAND_SEPARATOR_TOKENS:
-            segments.append([])
+    Each row is ``(segment_argv, targets, inline_code)``: the segment's argv with
+    leading environment assignments and redirections removed, the write targets
+    that segment's own command carries, and any interpreter inline code bodies it
+    passes. Segmentation is the shared operator-aware one (``shell_segments``), so
+    a separator glued to adjacent words splits too; without it `touch a &&
+    ./program b` credited every token after `&&` to `touch`, so a mere MENTION of
+    a protected path read as a write to it."""
+    rows: List[tuple] = []
+    for segment in shell_segments(raw_cmd):
+        _assignments, argv = collect_leading_env(segment)
+        if not argv:
             continue
-        segments[-1].append(token)
-    if len(segments) == 1:
-        return _writer_target_tokens_single(segments[0])
+        targets = _writer_target_tokens_single(argv)
+        inline_code = tuple(interpreter_inline_code([str(token) for token in argv]))
+        segment_argv, _redirect_targets = split_redirections(argv)
+        rows.append((segment_argv, targets, inline_code))
+    return rows
+
+
+def writer_target_tokens(argv: List[str]) -> List[str]:
+    """Write TARGETS of a (possibly compound) command line, flattened.
+
+    The per-segment view (``writer_target_rows``) is the SSOT; this is its
+    deduped flattening for consumers that only need the target set."""
     targets: List[str] = []
-    for segment in segments:
-        if segment:
-            targets.extend(_writer_target_tokens_single(segment))
+    for _segment_argv, segment_targets, _inline_code in writer_target_rows(argv):
+        targets.extend(segment_targets)
     return list(dict.fromkeys(target for target in targets if str(target or "").strip()))
 
 
@@ -1164,6 +1175,9 @@ def directory_destination_child_name(
 def _writer_target_tokens_single(argv: List[str]) -> List[str]:
     if not argv:
         return []
+    argv, redirect_targets = split_redirections(argv)
+    if not argv:
+        return list(dict.fromkeys(t for t in redirect_targets if str(t or "").strip()))
     cmd = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
     # A literal '-' is the STDIN OPERAND, not a flag: dropping it hid uniq's
     # output operand (`uniq - OUT` writes OUT) from every consumer (sol-max r2).
@@ -1324,18 +1338,7 @@ def _writer_target_tokens_single(argv: List[str]) -> List[str]:
                 targets.extend(match.group(2) for match in pattern.finditer(inline_code) if match.group(2))
 
     for index, token in enumerate(argv):
-        token_text = str(token)
-        token_name = pathlib.PurePath(token_text).name.lower().removesuffix(".exe")
-        if token_text in _SAFE_STDIO_REDIRECT_TOKENS:
-            continue
-        if token_text in _REDIRECT_TARGET_TOKENS and index + 1 < len(argv):
-            if str(argv[index + 1]) == "/dev/null":
-                continue
-            targets.append(str(argv[index + 1]))
-            continue
-        redirect_match = re.match(r"^(?:[12]|&)?(?:>|>>)(.+)$", token_text)
-        if redirect_match and redirect_match.group(1) not in {"/dev/null", "&1", "&2", "&-"}:
-            targets.append(redirect_match.group(1))
+        token_name = pathlib.PurePath(str(token)).name.lower().removesuffix(".exe")
         if token_name == "tee":
             for tee_target in argv[index + 1 :]:
                 tee_target_text = str(tee_target)
@@ -1344,6 +1347,7 @@ def _writer_target_tokens_single(argv: List[str]) -> List[str]:
                 if tee_target_text.startswith("-"):
                     continue
                 targets.append(tee_target_text)
+    targets.extend(redirect_targets)
 
     return list(dict.fromkeys(target for target in targets if str(target or "").strip()))
 

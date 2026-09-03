@@ -434,3 +434,150 @@ def test_outside_root_write_block_message_names_path_and_root(tmp_path):
     assert "outside the selected process root" in out
     assert "Blocked path:" in out
     assert "Selected process root:" in out
+
+
+def test_split_redirections_grammar():
+    """One redirect grammar: both the glued and the split spellings, reads and
+    descriptor duplication yield no target, and an operator away from a token's
+    start is left alone."""
+    from ouroboros.shell_parse import shell_argv, split_redirections
+
+    assert split_redirections(shell_argv("cp a b 2>/dev/null")) == (["cp", "a", "b"], [])
+    assert split_redirections(shell_argv("cp x y >> log.txt")) == (["cp", "x", "y"], ["log.txt"])
+    assert split_redirections(shell_argv("node t.js > out.log 2>&1")) == (
+        ["node", "t.js"],
+        ["out.log"],
+    )
+    assert split_redirections(shell_argv("printf x >&2")) == (["printf", "x"], [])
+    assert split_redirections(shell_argv("tee out.txt < in.txt")) == (["tee", "out.txt"], [])
+    assert split_redirections(shell_argv("cat <<'EOF' > out.txt")) == (["cat"], ["out.txt"])
+    # The split spelling the operator-aware lexer emits: a bare descriptor token
+    # belongs to the operator that follows it.
+    assert split_redirections(["cp", "a", "b", "2", ">", "/dev/null"]) == (["cp", "a", "b"], [])
+    assert split_redirections(shell_argv("echo hi >|out")) == (["echo", "hi"], ["out"])
+    # A `>`/`<` away from position 0 is a literal byte, not an operator.
+    assert split_redirections(["sed", "s/>/x/", "f"]) == (["sed", "s/>/x/", "f"], [])
+    assert split_redirections(["git", "log", "--pretty=<x>"]) == (
+        ["git", "log", "--pretty=<x>"],
+        [],
+    )
+
+
+def test_writer_targets_recover_the_destination_behind_a_redirect():
+    """The writer-target lane reads the operator-aware view, so a redirect no
+    longer displaces the command's own destination."""
+    from ouroboros.tools.shell_guards import writer_target_rows, writer_target_tokens
+
+    assert writer_target_tokens(["cp", "x", "y", ">>", "log.txt"]) == ["y", "log.txt"]
+    assert writer_target_rows("cd . && cp src.txt /D/.env") == [
+        (["cd", "."], [], ()),
+        (["cp", "src.txt", "/D/.env"], ["/D/.env"], ()),
+    ]
+
+
+def test_cp_source_outside_root_is_a_read_and_destination_still_blocked(tmp_path):
+    """A writer's SOURCE operand is a read: copying an outside file INTO the
+    process root is the sanctioned transfer route, while an outside DESTINATION
+    stays refused."""
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    def check(cmd):
+        return reg._run_shell_safety_check({"cmd": cmd, "cwd": workspace}, "advanced")
+
+    assert check(["cp", str(outside / "widget.js"), "widget.js"]) is None
+    assert check(["ln", "-s", str(outside / "src"), "link.js"]) is None
+    assert check(["cat", str(outside / "widget.js")]) is None
+    destination_block = check(["cp", "widget.js", str(outside / "copy.js")]) or ""
+    assert "outside the selected process root" in destination_block
+    assert str(outside / "copy.js") in destination_block
+
+
+def test_relative_protected_root_source_still_blocked(tmp_path):
+    """A protected runtime path refuses on MENTION for every candidate, so a
+    writer naming it as a SOURCE still cannot launder a read through shell."""
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    (tmp_path / "data" / "settings.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "system" / "ouroboros").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "system" / "ouroboros" / "safety.py").write_text("x = 1\n", encoding="utf-8")
+
+    for cmd, blocked in (
+        (["cp", "../data/settings.json", "./x"], tmp_path / "data" / "settings.json"),
+        (
+            ["cp", "../system/ouroboros/safety.py", "./x"],
+            tmp_path / "system" / "ouroboros" / "safety.py",
+        ),
+    ):
+        out = reg._run_shell_safety_check({"cmd": cmd, "cwd": workspace}, "advanced") or ""
+        assert "mentions Ouroboros system/data paths" in out, cmd
+        # The blocked path is the FILE, i.e. the per-candidate containment branch
+        # rather than the whole-command text scan.
+        assert f"Blocked path: {blocked}" in out, cmd
+
+
+def test_glued_operator_is_not_a_path_candidate(tmp_path):
+    """A redirection glued to the following separator is not a path: `2>/dev/null;`
+    was forged into the target `/dev/null;` and refused a pure read."""
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    def check(cmd):
+        return reg._run_shell_safety_check({"cmd": cmd, "cwd": workspace}, "advanced")
+
+    assert check(["sh", "-c", "git reset HEAD scratch/ 2>/dev/null; rm -rf scratch/"]) is None
+    assert check(["sh", "-c", "node build.js 2>/dev/null; echo ok"]) is None
+    redirect_block = check(["sh", "-c", f"node t.js > {outside / 'out.log'} 2>&1"]) or ""
+    assert "outside the selected process root" in redirect_block
+    assert str(outside / "out.log") in redirect_block
+
+
+def test_inline_code_segment_keeps_the_mention_scan(tmp_path):
+    """An interpreter body contributes its EXTRACTED write targets as writes and
+    everything else as a mention: regex punctuation stops being a forged path, an
+    extracted outside write target still refuses, and a protected runtime mention
+    inside the body still refuses.
+
+    DISCLOSED FLIP: an outside path merely READ by an in-root writer no longer
+    refuses — the same class as a cp source operand."""
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = tmp_path / "data" / "settings.json"
+    protected.write_text("{}", encoding="utf-8")
+
+    def check(code):
+        return reg._run_shell_safety_check(
+            {"cmd": ["python3", "-c", code], "cwd": workspace}, "advanced"
+        )
+
+    # (a) regex punctuation harvested out of the body is not a path
+    assert check("import re; re.sub('/[^/]+$','',''); open('x','w')") is None
+    # (b) an extracted write target outside the root still refuses
+    outside_write = check(f"open({str(outside / 'ok')!r},'w')") or ""
+    assert "outside the selected process root" in outside_write
+    assert str(outside / "ok") in outside_write
+    # (c) a protected runtime path mentioned by an in-root writer still refuses
+    protected_read = check(f"open('ok','w'); print(open({str(protected)!r}).read())") or ""
+    assert "mentions Ouroboros system/data paths" in protected_read
+    # (d) the disclosed flip: an ordinary outside path merely READ is allowed
+    assert check(f"open('ok','w'); print(open({str(outside / 'y')!r}).read())") is None
+
+
+def test_sed_in_script_target_survives_the_narrowed_scan(tmp_path):
+    """sed's in-script `w FILE` hides the path inside the script operand, so the
+    parsed targets keep their embedded-path pass."""
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    out = reg._run_shell_safety_check(
+        {"cmd": ["sed", f"w {scratch / 'x'}", "f"], "cwd": workspace}, "advanced"
+    ) or ""
+    assert "outside the selected process root" in out
+    assert f"Blocked path: {scratch / 'x'}" in out
