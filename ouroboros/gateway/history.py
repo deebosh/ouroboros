@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, Optional
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
+from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, is_a2a_chat_id
 from ouroboros.gateway._helpers import (
     _TAIL_WINDOW_START_BYTES,
     coerce_int,
@@ -796,10 +796,11 @@ def _make_thread_filter(
             if isinstance(entry, dict) and _matches_project_source(entry, project_source_refs):
                 return True
             return entry_chat == thread_id
-        # chat 0 is the hidden Skill Review panel/archive partition. Main is 1;
-        # explicit panel rows never become ordinary conversation history. Keep
-        # this after the Project branch so durable task binding stays unchanged.
-        if entry_chat == 0:
+        # The hidden partition (Skill Review, and every headless run admitted
+        # without a registered project). Main is 1; explicit partition rows never
+        # become ordinary conversation history. Keep this after the Project
+        # branch so durable task binding stays unchanged.
+        if entry_chat == HIDDEN_CHAT_ID:
             return False
         # Main / non-project view: exactly the two host-stamped Project-root
         # lifecycle rows (started + terminal completion) are admitted from the
