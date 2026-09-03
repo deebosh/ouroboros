@@ -225,6 +225,19 @@ class TestWireProjection:
         assert kwargs["reasoning_effort"] == "high"
         assert "extra_body" not in kwargs
 
+    def test_projection_note_never_inherits_a_stale_entry(self, monkeypatch):
+        # A note staged by an earlier call that never reached usage
+        # normalization must not surface on the next unprojected call.
+        client = LLMClient()
+        target = self._target(monkeypatch)
+        client._build_remote_kwargs(
+            target, [{"role": "user", "content": "hi"}], "medium", 256, "auto", None, None,
+        )
+        client._build_remote_kwargs(
+            target, [{"role": "user", "content": "hi"}], "high", 256, "auto", None, None,
+        )
+        assert client._pop_effort_clamp_disclosure() is None
+
     def test_request_wire_reads_disabled_thinking_as_none(self, monkeypatch):
         client = LLMClient()
         target = self._target(monkeypatch)

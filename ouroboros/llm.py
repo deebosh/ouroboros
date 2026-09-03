@@ -3467,9 +3467,10 @@ class LLMClient:
                     kwargs.setdefault("extra_body", {})["thinking"] = {"type": "disabled"}
                 else:
                     kwargs["reasoning_effort"] = applied
+                if not hasattr(self, "_effort_clamp_tls"):
+                    self._effort_clamp_tls = threading.local()
+                self._effort_clamp_tls.pending = None  # never inherit a stale note
                 if applied != requested_effort:
-                    if not hasattr(self, "_effort_clamp_tls"):
-                        self._effort_clamp_tls = threading.local()
                     self._effort_clamp_tls.pending = {
                         "requested": requested_effort, "applied": applied,
                         "reason": "provider_forced_tool_choice" if forced_tool else "provider_wire_mapping",
