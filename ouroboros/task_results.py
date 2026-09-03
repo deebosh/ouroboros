@@ -224,22 +224,33 @@ def project_task_acceptance_review_capacity(
                 "state": "unknown",
                 "reason": f"cancellation_state_unknown:{type(exc).__name__}",
             }
-        budget = task_pacing.build_budget_snapshot(
-            ctx, profile=task_pacing.resolve_budget_profile(ctx),
-        )
-        # Observe only: the predicate is pure; a launch admitted at the floor is
-        # disclosed on the panel's dispatch fact, never by a projection that
-        # every poll calls. This is the REVIEW-LAUNCH window (1x) alone: an
-        # improvement pass admitted at the floor under the adaptive 2x window
-        # is not projected here, it only enables the next pass.
+        profile = task_pacing.resolve_budget_profile(ctx)
+        budget = task_pacing.build_budget_snapshot(ctx, profile=profile)
+        estimated_sec = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=claimed)
+        # Observe only: BOTH admission gates are evaluated here PURELY (owner
+        # R49) — the review-launch rule over its 1x window and the
+        # improvement-pass rule over the adaptive 2x window — and each floor
+        # admission is reported in its OWN field; the panel's dispatch fact
+        # after the paid seam stays the only place a floor admission is
+        # RECORDED, never this projection that every poll calls. `ctx=None` is
+        # mandatory: with a ctx the improvement gate can EMIT the
+        # `review_cycles_exhausted` escalation event, and a read-only
+        # projection must emit nothing. `required_blocking` stays at its
+        # default because the projection cannot know the calling site's
+        # enforcement, and the improvement gate's own refusals (count cap,
+        # window) never change availability here — that state remains the
+        # review-launch gate's answer, exactly as before.
         launch_ok, launch_reason = task_pacing.review_launch_allowed(
-            budget,
-            estimated_sec=task_pacing.acceptance_review_estimate_sec(
-                ctx, passes_done=claimed,
-            ),
+            budget, estimated_sec=estimated_sec,
+        )
+        improvement = task_pacing.improvement_pass_allowed(
+            budget, claimed, profile, estimated_sec=estimated_sec, ctx=None,
         )
         if launch_ok and launch_reason:
             projection["launch_disclosure"] = launch_reason  # would launch at the floor (R36)
+        if improvement == (True, task_pacing.REASON_LAUNCHED_AT_FLOOR):
+            # The next improvement pass would be admitted at the floor by the 2x window.
+            projection["improvement_launch_disclosure"] = task_pacing.REASON_LAUNCHED_AT_FLOOR
         if not launch_ok:
             projection.update({"state": "unavailable", "reason": launch_reason})
         elif remaining == 0:
