@@ -79,6 +79,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "ANTHROPIC_API_KEY": "",
     "MINIMAX_API_KEY": "",
     "MINIMAX_REGION": "",
+    "DEEPSEEK_API_KEY": "",
     "OUROBOROS_NETWORK_PASSWORD": "",
     "OUROBOROS_SERVER_HOST": "127.0.0.1",
     "OUROBOROS_HOST_SERVICE_PORT": 8767,
@@ -546,15 +547,14 @@ def _exclusive_direct_remote_provider_env() -> str:
         bool(str(os.environ.get("GIGACHAT_USER", "") or "").strip())
         and bool(str(os.environ.get("GIGACHAT_PASSWORD", "") or "").strip())
     )
-    # OpenRouter / legacy OpenAI base / OpenAI-compatible all route through the
-    # OpenRouter-style stack, so their presence means "not an exclusive direct
-    # provider". Among the registered direct providers, return one only when
-    # exactly one is configured.
+    # OpenRouter / legacy base / compatible route through the OpenRouter-style
+    # stack → never exclusive; among registered direct providers, exactly one.
     if has_openrouter or has_legacy_base or has_compatible:
         return ""
     direct = [name for name, present in (
         ("openai", has_openai), ("anthropic", has_anthropic), ("minimax", has_minimax),
         ("cloudru", has_cloudru), ("gigachat", has_gigachat),
+        ("deepseek", bool(str(os.environ.get("DEEPSEEK_API_KEY", "") or "").strip())),
     ) if present]
     return direct[0] if len(direct) == 1 else ""
 
@@ -608,7 +608,7 @@ def resolve_prompt_cache_ttl() -> str:
 
 def direct_provider_review_models_fallback(provider: str) -> list[str]:
     """Return the exact review-models list a direct-provider fallback emits."""
-    if provider not in ("openai", "anthropic", "minimax", "cloudru", "gigachat"):
+    if provider not in ("openai", "anthropic", "minimax", "cloudru", "gigachat", "deepseek"):
         return []
     main_model = str(
         os.environ.get("OUROBOROS_MODEL", SETTINGS_DEFAULTS["OUROBOROS_MODEL"]) or ""
