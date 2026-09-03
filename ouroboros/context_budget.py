@@ -259,6 +259,13 @@ BG_OBSERVATIONS_WARN_BYTES = 20_000_000
 # explicit full-history read becomes seconds-scale; this is observability, not
 # a retention gate and never shortens the memory horizon.
 CHAT_ARCHIVE_SCAN_WARN_BYTES = 100_000_000
+# ``task_results/<id>.json`` is glob-walked on every /api/tasks request and
+# every SSE child-re-discovery tick (razzant/ouroboros#139). prune_task_results
+# bounds it via the GC retention window — this warning flags the discovery
+# window BEFORE the per-tick walk becomes latency-visible. Observability, not
+# a retention gate; remediation is prune_task_results or discovery bounding,
+# never shorter retention.
+TASK_RESULTS_DIR_WARN_BYTES = 200_000_000
 
 
 def estimate_message_chars(messages: Any) -> int:

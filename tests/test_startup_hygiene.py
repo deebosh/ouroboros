@@ -93,6 +93,73 @@ def test_check_version_sync_flags_malformed_rc_badge_url(tmp_path, monkeypatch):
     assert result["readme_badge_url_valid"] is False
 
 
+def test_hot_store_growth_notes_warns_when_task_results_dir_exceeds_threshold(
+    tmp_path, monkeypatch
+):
+    """razzant/ouroboros#139 — task_results/*.json is glob-walked on every
+    /api/tasks request and SSE tick. hot_store_growth_notes surfaces a
+    WARNING with file count + total bytes once the dir exceeds
+    TASK_RESULTS_DIR_WARN_BYTES, and the wording points at
+    prune_task_results / discovery bounding (never shorter retention).
+    """
+    from ouroboros import context_budget as cb
+
+    task_results_dir = tmp_path / "task_results"
+    task_results_dir.mkdir()
+    # 220 MB total across 4 files (each 55 MB). stat().st_size reflects
+    # actual byte count, sparse or not — a single large write per file
+    # is the cleanest fixture.
+    big_block = b"\0" * (55 * 1024 * 1024)
+    for name in ("a.json", "b.json", "c.json", "d.json"):
+        (task_results_dir / name).write_bytes(big_block)
+
+    assert (
+        sum(p.stat().st_size for p in task_results_dir.glob("*.json"))
+        > cb.TASK_RESULTS_DIR_WARN_BYTES
+    )
+
+    env = types.SimpleNamespace(
+        drive_root=tmp_path,
+        drive_path=lambda rel: tmp_path / rel,
+    )
+
+    notes = startup_mod.hot_store_growth_notes(env)
+    matches = [n for n in notes if "task_results/*.json totals" in n]
+    assert len(matches) == 1, f"expected exactly one task_results warning, got {notes}"
+    warning = matches[0]
+    assert "WARNING: HOT STORE GROWTH" in warning
+    assert "4 files" in warning
+    assert f"{cb.TASK_RESULTS_DIR_WARN_BYTES // 1_000_000} MB" in warning
+    # Remediation wording MUST point at prune_task_results / discovery,
+    # NEVER at shortening the GC retention.
+    assert "prune_task_results" in warning
+    assert "do NOT shorten the GC retention" in warning
+
+
+def test_hot_store_growth_notes_silent_when_task_results_dir_below_threshold(
+    tmp_path, monkeypatch
+):
+    """The tripwire must stay silent on a healthy dir — otherwise every
+    boot would carry a warning."""
+    from ouroboros import context_budget as cb
+
+    task_results_dir = tmp_path / "task_results"
+    task_results_dir.mkdir()
+    (task_results_dir / "small.json").write_text("{}")
+
+    env = types.SimpleNamespace(
+        drive_root=tmp_path,
+        drive_path=lambda rel: tmp_path / rel,
+    )
+
+    notes = startup_mod.hot_store_growth_notes(env)
+    assert not any("task_results/*.json totals" in n for n in notes)
+    # And confirm the threshold is sensibly large (we are NOT picking
+    # an arbitrary knob — pinning it stops accidental shrinkage to a
+    # no-op threshold).
+    assert cb.TASK_RESULTS_DIR_WARN_BYTES >= 100_000_000
+
+
 def test_memory_ensure_files_generates_world_profile(tmp_path, monkeypatch):
     calls = []
 
