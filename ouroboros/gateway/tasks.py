@@ -19,7 +19,7 @@ from starlette.responses import FileResponse, JSONResponse
 
 from ouroboros.gateway._helpers import coerce_int, json_error, json_exception, request_drive_root, request_json_or, request_repo_dir, stage_initial_task_attachments
 from ouroboros.depth_evidence import parse_task_depth
-from supervisor.log_addressing import ingress_chat_id
+from supervisor.log_addressing import ProjectThreadConflict, ingress_chat_id
 # Re-exported SSE surface (split out by the 1600-line module gate): route
 # wiring, the CLI, and long-standing monkeypatch pins address these names on
 # gateway.tasks; task_events resolves its patched collaborators back through
@@ -522,6 +522,8 @@ async def api_tasks_create(request: Request) -> JSONResponse:
     try:
         chat_id = ingress_chat_id(body.get("chat_id"), drive_root, _task_project_id)
         depth = parse_task_depth(body.get("depth"), default=0)
+    except ProjectThreadConflict as exc:
+        return json_error(str(exc), 400)
     except (TypeError, ValueError) as exc:
         return json_error(
             "depth must be a non-negative integer"

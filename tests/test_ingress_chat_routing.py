@@ -17,16 +17,22 @@ from starlette.testclient import TestClient
 from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, project_chat_id
 from ouroboros.gateway.tasks import api_tasks_create
 from ouroboros.projects_registry import create_project
-from supervisor.log_addressing import ingress_chat_id
+from supervisor.log_addressing import ProjectThreadConflict, ingress_chat_id
 
 
-def test_explicit_chat_id_wins_verbatim_including_the_hidden_partition(tmp_path):
-    create_project(tmp_path, "proj_reg", name="Registered")
-    # 0 is a real destination, not "missing": a caller that asks for the hidden
-    # partition keeps it even when the run is project-scoped.
+def test_an_explicit_chat_id_is_the_callers_but_may_not_leave_the_project_room(tmp_path):
+    row = create_project(tmp_path, "proj_reg", name="Registered")
+    # 0 is a real destination, not "missing": asking for the hidden partition is
+    # asking to run quietly, and a project-scoped run may do that.
     assert ingress_chat_id(0, tmp_path, "proj_reg") == HIDDEN_CHAT_ID
-    assert ingress_chat_id(1, tmp_path, "proj_reg") == 1
+    assert ingress_chat_id(row["chat_id"], tmp_path, "proj_reg") == row["chat_id"]
+    # Any OTHER conversation is refused: that is the shape that puts a card in
+    # Main whose project room holds none of its work — the reported defect.
+    with pytest.raises(ProjectThreadConflict):
+        ingress_chat_id(1, tmp_path, "proj_reg")
+    # Without a project there is no room to contradict.
     assert ingress_chat_id("7", tmp_path, "") == 7
+    assert ingress_chat_id(1, tmp_path, "proj_never_registered") == 1
 
 
 def test_registered_project_homes_the_run_into_its_thread(tmp_path):
@@ -99,6 +105,12 @@ def test_api_task_without_a_project_stays_hidden_and_explicit_zero_is_honoured(a
         "/api/tasks", json={"description": "bench run", "project_id": "proj_room2", "chat_id": 0},
     ).status_code == 200
     assert captured[-1]["chat_id"] == HIDDEN_CHAT_ID
+    # …but not into a different conversation.
+    conflict = client.post(
+        "/api/tasks", json={"description": "x", "project_id": "proj_room2", "chat_id": 1},
+    )
+    assert conflict.status_code == 400
+    assert "project thread" in conflict.text
 
 
 def test_api_task_with_a_malformed_chat_id_is_still_a_typed_400(admission):
