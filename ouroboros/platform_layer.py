@@ -871,10 +871,13 @@ def tcp_keepalive_socket_options() -> List[tuple]:
     learns at the (deliberately long) transport read timeout. Kernel probes
     detect the dead peer within minutes instead.
 
-    Every platform gets ``SO_KEEPALIVE``; the probe-tuning constants are set
-    only where the platform exposes them (Linux spells the idle threshold
-    ``TCP_KEEPIDLE``, Darwin spells it ``TCP_KEEPALIVE``), each behind a
-    ``hasattr`` guard so an older interpreter still gets the safe minimum.
+    Every platform gets ``SO_KEEPALIVE``; the probe-tuning constants — idle
+    threshold, probe interval, probe count — are set only where the platform
+    exposes them (Linux spells the idle threshold ``TCP_KEEPIDLE``, Darwin
+    spells it ``TCP_KEEPALIVE``; both take ``TCP_KEEPINTVL``/``TCP_KEEPCNT``,
+    which CPython exports on Darwin too, against XNU's 75 s × 8 defaults),
+    each behind a ``hasattr`` guard so an older interpreter still gets the
+    safe minimum. Windows keeps ``SO_KEEPALIVE`` alone.
     """
     import socket
 
@@ -885,24 +888,16 @@ def tcp_keepalive_socket_options() -> List[tuple]:
     )
 
     options: List[tuple] = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
-    if IS_LINUX:
-        if hasattr(socket, "TCP_KEEPIDLE"):
-            options.append(
-                (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPALIVE_IDLE_SEC)
-            )
-        if hasattr(socket, "TCP_KEEPINTVL"):
-            options.append(
-                (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPALIVE_INTERVAL_SEC)
-            )
-        if hasattr(socket, "TCP_KEEPCNT"):
-            options.append(
-                (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPALIVE_PROBE_COUNT)
-            )
-    elif IS_MACOS:
-        if hasattr(socket, "TCP_KEEPALIVE"):
-            options.append(
-                (socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, TCP_KEEPALIVE_IDLE_SEC)
-            )
+    idle_name = "TCP_KEEPIDLE" if IS_LINUX else ("TCP_KEEPALIVE" if IS_MACOS else "")
+    if not idle_name:
+        return options
+    for name, value in (
+        (idle_name, TCP_KEEPALIVE_IDLE_SEC),
+        ("TCP_KEEPINTVL", TCP_KEEPALIVE_INTERVAL_SEC),
+        ("TCP_KEEPCNT", TCP_KEEPALIVE_PROBE_COUNT),
+    ):
+        if hasattr(socket, name):
+            options.append((socket.IPPROTO_TCP, getattr(socket, name), value))
     return options
 
 
