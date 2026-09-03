@@ -136,6 +136,17 @@ def test_host_salvage_terminal_incident_drops_inherited_markdown_format(tmp_path
     )
     assert legacy["format"] == "markdown"
 
+    # A host NOTICE is not salvage: its own words are the answer, and its
+    # markdown must survive or the host's own code spans render escaped.
+    notice = project_terminal_result_event(
+        tmp_path, {"chat_id": 7}, "terminal-a",
+        result_text=raw, terminal_origin="host_notice", base_event=dict(base),
+    )
+    assert notice["format"] == "markdown"
+    assert notice["role"] == "system"
+    assert "system_type" not in notice
+    assert notice["text"] == raw
+
 
 def test_history_normalizes_old_project_rows_on_read_without_rewriting_log(tmp_path):
     """Bug report #10: rows persisted BEFORE the producer stripped markdown are
