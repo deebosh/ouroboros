@@ -538,11 +538,11 @@ def _annotate_terminal_task_truth(
 
     ``floor``/``active_children`` (already computed by ``_apply_window_quotas``)
     extend the progress-stream lineage recency floor to chat FINALS: a
-    non-progress subagent row older than the floor whose child is not active
+    non-progress subagent row older than the floor whose child is not anchored
+    (child active, or parent represented in the emitted window or alive — #496)
     loses its lineage identity (raw fields stripped, legacy injection undone),
-    so an aged swarm's final cannot re-mint an orphaned "Working" parent card
-    on reload. Uses ONLY the floor + the pre-computed active set — zero extra
-    ``task_results`` reads."""
+    so an ABSENT swarm's final cannot re-mint an orphaned "Working" parent card
+    on reload. Uses ONLY the floor + the pre-computed set — zero extra reads."""
 
     try:
         from ouroboros.task_status import FINAL_STATUSES
@@ -565,7 +565,6 @@ def _annotate_terminal_task_truth(
             if message.get("task_id")
             and not message.get("is_progress")
             and str(message.get("role") or "") in {"assistant", "system"}
-            and str(message.get("delegation_role") or "").lower() != "subagent"
             and str(message.get("task_id") or "") not in progress_task_ids
         }
         terminal_status_by_task: Dict[str, str] = {}
@@ -661,6 +660,11 @@ def _annotate_terminal_task_truth(
                 message["task_terminal_status"] = terminal_status_by_task[task_id]
                 if latest_progress_by_task.get(task_id) is message:
                     message.update(terminal_receipt_by_task.get(task_id) or {})
+            elif task_id in active and task_id not in latest_progress_by_task:
+                # #496: a still-anchored child whose progress rows fell out of the
+                # read tail keeps its executor receipt on the one final row the
+                # window still holds, so its harness chip needs no "Load older".
+                message.update(terminal_receipt_by_task.get(task_id) or {})
             is_summary = str(message.get("system_type") or "") == "task_summary"
             if is_summary or (
                 task_id not in summary_task_ids
@@ -1306,8 +1310,9 @@ def _apply_window_quotas(
         and str(m.get("system_type") or "") != "review_reference"
     ]
     other_tail = other[-n_progress:] if n_progress > 0 else []
-    # Recency floor = oldest retained telemetry row. Drop lineage older than it so
-    # long-finished swarms don't re-materialise as stuck "Working" parent cards.
+    # Recency floor = oldest retained telemetry row. Lineage older than it is
+    # dropped unless anchored below, so an ABSENT finished swarm cannot
+    # re-materialise as a stuck "Working" parent card.
     floor = str(other_tail[0].get("ts") or "") if other_tail else ""
     lineage_rows = [m for m in progress if _is_subagent_lineage(m)]
     # perf2 P3 variant A (owner decision 2026-08-09): a QUIET but still-ACTIVE
@@ -1315,21 +1320,37 @@ def _apply_window_quotas(
     # these lineage rows. Terminal truth for the lineage task ids of the READ
     # window is resolved BEFORE the floor/cap slice; the same cache then feeds
     # _annotate_terminal_task_truth after the slice, so each task_results file
-    # is read at most once per request. The floor keeps dropping rows of
-    # terminal/unknown children (anti-zombie preserved), and the effective-
-    # status orphan guard resolves a long-dead raw "running" child as failed,
-    # i.e. terminal, so it cannot pin its lineage forever.
+    # is read at most once per request. The effective-status orphan guard
+    # resolves a long-dead raw "running" child as failed, i.e. terminal, so a
+    # dead child cannot pin its own lineage forever.
+    # #496: recency is the wrong PROXY for "does this child belong to a topology
+    # the window still describes". The honest predicate (owner liveness doctrine
+    # 2026-08-23) anchors a child when the child is itself active, OR its parent
+    # is REPRESENTED among the rows this response actually emits (human, other
+    # telemetry, folded review groups and plan references alike), OR the parent
+    # is still alive. Child chat FINALS are scanned too, so the floor-symmetric
+    # strip in _annotate_terminal_task_truth keeps the identical set.
     result_cache: Dict[str, Dict[str, Any]] = {}
     active_children: set = set()
-    if floor and lineage_rows:
+    emitted = (*human_tail, *other_tail, *folded_reviews, *review_references)
+    child_rows = [m for m in (*lineage_rows, *emitted) if _is_subagent_lineage(m) and m.get("task_id")]
+    if floor and child_rows:
+        represented = {str(m.get("task_id") or "") for m in emitted if m.get("task_id")}
         try:
             from ouroboros.task_status import FINAL_STATUSES
 
-            for task_id in {str(m.get("task_id") or "") for m in lineage_rows if m.get("task_id")}:
+            def _alive(task_id: str) -> bool:
                 status = str(
                     _load_terminal_result(data_dir, task_id, result_cache).get("status") or ""
                 )
-                if status and status not in FINAL_STATUSES:
+                return bool(status) and status not in FINAL_STATUSES
+
+            for m in child_rows:
+                task_id = str(m.get("task_id") or "")
+                if task_id in active_children:
+                    continue
+                parent = str(m.get("parent_task_id") or "")
+                if _alive(task_id) or (parent and (parent in represented or _alive(parent))):
                     active_children.add(task_id)
         except Exception as exc:
             log.debug("Failed to resolve pre-floor lineage terminal truth: %s", exc)
