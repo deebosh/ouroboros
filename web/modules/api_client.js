@@ -224,6 +224,13 @@ export const apiClient = {
      */
     providerTest: (payload) => jsonPost('/api/providers/test', payload),
     extensions: () => fetchJson('/api/extensions', { cache: 'no-store' }),
+    /**
+     * Widgets page cards: live extension UI tabs projected from the loader
+     * snapshot (no skill discovery), each stamped with the owning skill's
+     * payload `revision`.
+     * @returns {Promise<import('./api_types.js').WidgetsResponse>}
+     */
+    widgets: () => fetchJson('/api/widgets', { cache: 'no-store' }),
     skillPublishPreflight,
     createTask,
     skillLifecycleQueue: () => fetchJson('/api/skills/lifecycle-queue', { cache: 'no-store' }),
@@ -241,7 +248,6 @@ export const apiClient = {
         `/api/owner/skills/${encodeURIComponent(skill)}/presence-runtime`,
         payload,
     ),
-    chatHistory: (limit = 1000) => fetchJson(`/api/chat/history?limit=${encodeURIComponent(limit)}`, { cache: 'no-store' }),
     projectFromTask: (taskId, id, name, objectiveHint = '') => jsonPost('/api/projects/from-task', { task_id: taskId, id, name, objective_hint: objectiveHint }),
     /** @param {import('./api_types.js').ProjectCreateRequest} payload */
     projectCreate: (payload) => jsonPost('/api/projects', payload),

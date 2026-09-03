@@ -424,6 +424,15 @@ def _redact_secrets_in_text(text: str) -> str:
 _SAFETY_CONTEXT_CHAR_BUDGET = 4000
 _SAFETY_OMISSION_MARKER = "[… {n} older messages omitted]"
 
+# Character budget for the serialized SUBJECT (the proposed call's own arguments).
+# The subject is embedded VERBATIM — truncating it would hide the tail from the
+# reviewer, so an over-budget subject is REFUSED fail-closed instead: one oversized
+# run_script/run_command payload otherwise inflates this prompt past provider
+# limits, and the conversation budget above cannot help because the subject rides
+# outside it. The refusal is a typed policy denial with a working alternative
+# (split the payload into reviewable calls), never a truncated half-reviewed call.
+_SAFETY_SUBJECT_CHAR_BUDGET = 250_000
+
 
 def _format_messages_for_safety(messages: List[Dict[str, Any]]) -> str:
     """Format compact safety context, redacting before truncation.
@@ -466,16 +475,34 @@ def _format_messages_for_safety(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(kept)
 
 
+def _render_subject_json(arguments: Dict[str, Any]) -> str:
+    """Serialize the redacted call arguments exactly as the check prompt embeds them.
+
+    ``ensure_ascii=False`` keeps serialized length ≈ input length: the default
+    \\uXXXX escaping inflates non-ASCII text 6×, which would make the subject
+    budget below a false promise for e.g. Cyrillic scripts. The prompt goes to
+    an LLM; UTF-8 is fine.
+    """
+    safe_args = _redact_secrets_in_arguments(arguments or {})
+    try:
+        rendered = json.dumps(safe_args, indent=2, default=repr, ensure_ascii=False)
+    except Exception:
+        rendered = repr(safe_args)
+    # A lone surrogate (a validly PARSED \ud800 escape in tool args) survives
+    # json.dumps but is unencodable UTF-8 and would explode the provider send
+    # downstream; the prompt is a rendering, so substitute rather than crash.
+    return rendered.encode("utf-8", "replace").decode("utf-8")
+
+
 def _build_check_prompt(
     tool_name: str,
     arguments: Dict[str, Any],
     messages: Optional[List[Dict[str, Any]]] = None,
+    *,
+    args_json: Optional[str] = None,
 ) -> str:
-    safe_args = _redact_secrets_in_arguments(arguments or {})
-    try:
-        args_json = json.dumps(safe_args, indent=2, default=repr)
-    except Exception:
-        args_json = repr(safe_args)
+    if args_json is None:
+        args_json = _render_subject_json(arguments)
     runtime_mode = os.environ.get("OUROBOROS_RUNTIME_MODE", "advanced") or "advanced"
     prompt = (
         "Proposed tool call:\n"
@@ -560,6 +587,7 @@ _REMOTE_PROVIDER_KEYS = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "MINIMAX_API_KEY",
+    "DEEPSEEK_API_KEY",
     "OPENAI_COMPATIBLE_API_KEY",
     "CLOUDRU_FOUNDATION_MODELS_API_KEY",
     "GIGACHAT_CREDENTIALS",
@@ -580,6 +608,7 @@ _PROVIDER_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "minimax": "MINIMAX_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
     "openai-compatible": "OPENAI_COMPATIBLE_API_KEY",
     "cloudru": "CLOUDRU_FOUNDATION_MODELS_API_KEY",
     "gigachat": "GIGACHAT_CREDENTIALS",
@@ -793,7 +822,7 @@ def _rate_limited_outcome(
     attempts: int = 2,
 ) -> Tuple[bool, str]:
     """Terminal outcome of a rate-limited safety check, split by lane. The local-FALLBACK
-    lane keeps its documented fail-open contract (SYSTEM.md case (c): a broken
+    lane keeps its documented fail-open contract (ARCHITECTURE "Safety and runtime mode" case (c): a broken
     chosen-as-fallback local runtime warns instead of blocking every unknown tool) — a
     429 there must not be stricter than the RuntimeError beside it. Every other lane
     blocks with the typed non-verdict outcome below."""
@@ -822,7 +851,7 @@ def _safety_unavailable_blocked(
     call — reporting it as SAFETY_VIOLATION told the agent its own command was unsafe,
     sending it hunting for a "safer" rewording of a benign command. The honest outcome
     keeps `full` mode's owner contract (an unchecked guarded call never executes; the
-    existing fail-open cases stay exactly the SYSTEM.md-documented no-backend three) while
+    existing fail-open cases stay exactly the ARCHITECTURE-documented no-backend three) while
     removing the false accusation: the ⚠️ *_UNAVAILABLE prefix classifies as a plain
     tool ERROR downstream, never as `safety_violation`, and the message itself carries
     the retry contract (P5: the instruction lives with the fact). Disclosed twice: the
@@ -854,6 +883,36 @@ def _safety_unavailable_blocked(
         "this call. This is infrastructure back-pressure, NOT a verdict about your "
         "command — the call was not executed. Retry the same call shortly; do not "
         f"reword it as if it had been judged unsafe.\n(provider error: {error})"
+    )
+
+
+def _subject_too_large_blocked(
+    ctx: Optional[Any], tool_name: str, subject_chars: int,
+) -> Tuple[bool, str]:
+    """Over-budget subject: BLOCK this one call with a typed policy denial.
+
+    Truncating the subject instead would weaken the check — anything past the cut
+    would run unreviewed — and `full` mode's owner contract is that an unchecked
+    guarded call never executes. The `_BLOCKED` first-line marker classifies as a
+    policy denial downstream (never `safety_violation`), and the message carries
+    the working alternative (P5: the instruction lives with the fact). Disclosed
+    twice: the result the agent reads, and the durable event an owner can find."""
+    log.error(
+        "Safety subject for %s is %d chars (budget %d); refusing the unreviewable call",
+        tool_name, subject_chars, _SAFETY_SUBJECT_CHAR_BUDGET,
+    )
+    _emit_durable_safety_event(ctx, {
+        "type": "safety_subject_too_large", "tool": tool_name,
+        "subject_chars": int(subject_chars),
+        "budget_chars": _SAFETY_SUBJECT_CHAR_BUDGET,
+    })
+    return False, (
+        "⚠️ SAFETY_SUBJECT_TOO_LARGE_BLOCKED: this call's arguments serialize to "
+        f"{subject_chars:,} characters, above the {_SAFETY_SUBJECT_CHAR_BUDGET:,}-character "
+        "budget the Safety Supervisor can review in one prompt. The call was NOT executed "
+        "and the subject was NOT truncated (a partially reviewed call must never run). "
+        "Reshape it: split the payload into smaller calls that each fit the budget, so "
+        "every byte that runs is a byte the supervisor saw."
     )
 
 
@@ -956,7 +1015,10 @@ def _run_llm_check(
             f"({_skip_reason.rstrip('.')}). {_UNCHECKED_WARNING_SUFFIX}"
         )
 
-    prompt = _build_check_prompt(tool_name, arguments, messages)
+    args_json = _render_subject_json(arguments)
+    if len(args_json) > _SAFETY_SUBJECT_CHAR_BUDGET:
+        return _subject_too_large_blocked(ctx, tool_name, len(args_json))
+    prompt = _build_check_prompt(tool_name, arguments, messages, args_json=args_json)
     client = LLMClient()
     light_model = get_light_model()
     log.info(f"Running safety check on {tool_name} using {light_model} (local={_use_local_light})")

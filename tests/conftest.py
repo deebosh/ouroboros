@@ -290,23 +290,6 @@ def _rebind_runtime_roots_between_tests():
 
 
 @pytest.fixture(autouse=True)
-def _restore_process_environment_between_tests():
-    """Code under test may write ``os.environ`` directly — the benchmark launchers
-    do (`run_tb.apply_all_model`, `fixed_model_actor_snapshot(target=os.environ)`)
-    and `monkeypatch.delenv(raising=False)` records nothing for a key that did
-    not exist, so a written key survived the test and reached every later test
-    of the same xdist worker (the `benchmark-scope-1` contamination class).
-    Snapshot the environment before each test and restore it afterwards,
-    whatever the test wrote; tests that need a value set it themselves."""
-    saved = dict(os.environ)
-    try:
-        yield
-    finally:
-        os.environ.clear()
-        os.environ.update(saved)
-
-
-@pytest.fixture(autouse=True)
 def _restore_gateway_settings_bindings_between_tests():
     """``server._sync_gateway_settings_module()`` copies the server module's CURRENT
     ``load_settings`` / ``save_settings`` / ``_apply_settings_to_env`` /
@@ -318,7 +301,8 @@ def _restore_gateway_settings_bindings_between_tests():
     stale "previous rows" and the one-time R12 disclosure fires twice
     (``test_the_save_that_first_makes_the_triad_retrieve_discloses_once_with_numbers``
     after ``test_review_cycles.py``). Snapshot the four bindings before each test and
-    restore them afterwards — the same shape as the environment restore above."""
+    restore them afterwards — the same shape as the autouse `_os_environ_isolation`
+    environment restore below."""
     try:
         from ouroboros.gateway import settings as _gateway_settings
     except Exception:  # pragma: no cover - the gateway package is always importable in CI
@@ -348,6 +332,36 @@ def _scrub_inherited_subagent_selection(monkeypatch):
     monkeypatch.delenv("OUROBOROS_TASK_ABS_CEILING_SEC", raising=False)
 
 
+def restored_os_environ():
+    """Snapshot os.environ, yield, restore it IN PLACE (clear + update).
+
+    Restoring on the real os._Environ preserves the C-level putenv sync that
+    spawned subprocesses inherit from — swapping a plain dict in (the removed
+    monkeypatch idiom) severs it. Plain generator so the isolation contract is
+    directly testable without pytest plumbing.
+    """
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def _os_environ_isolation():
+    """Restore the EXACT pre-test os.environ after every test.
+
+    Tests exercise apply_settings_to_env(), owner-settings writers, and ad-hoc
+    os.environ mutation — the benchmark launchers write it directly
+    (`run_tb.apply_all_model`, `fixed_model_actor_snapshot(target=os.environ)`)
+    and `monkeypatch.delenv(raising=False)` records nothing for a key that did
+    not exist; under xdist a leaked variable poisons whichever tests share the
+    worker afterwards (order-dependent flakes, the `benchmark-scope-1`
+    contamination class). One structural snapshot/restore closes the whole leak
+    class instead of policing each call site.
+    """
+    yield from restored_os_environ()
+
+
 @pytest.fixture(autouse=True)
 def _reset_runtime_mode_baseline_between_tests():
     """v5.1.2 iter-2 test isolation fix (Gemini finding F2-7):
@@ -364,9 +378,8 @@ def _reset_runtime_mode_baseline_between_tests():
     # env (`OUROBOROS_RUNTIME_MODE`, set by apply_settings_to_env/save_settings) is what
     # `get_runtime_mode()` reads.  The operator's inherited runtime mode must not change
     # test semantics either: hermetic review intentionally loads the live non-secret
-    # settings before spawning pytest.  Snapshot it, remove it for the test so the
-    # documented default applies, then restore it at the process boundary.
-    _saved_runtime_mode = os.environ.get("OUROBOROS_RUNTIME_MODE")
+    # settings before spawning pytest.  Remove it for the test so the documented
+    # default applies; the autouse os.environ snapshot restores it afterwards.
     os.environ.pop("OUROBOROS_RUNTIME_MODE", None)
     try:
         from ouroboros.config import reset_runtime_mode_baseline_for_tests
@@ -379,10 +392,6 @@ def _reset_runtime_mode_baseline_between_tests():
         reset_runtime_mode_baseline_for_tests()
     except Exception:
         pass
-    if _saved_runtime_mode is None:
-        os.environ.pop("OUROBOROS_RUNTIME_MODE", None)
-    else:
-        os.environ["OUROBOROS_RUNTIME_MODE"] = _saved_runtime_mode
 
 
 @pytest.fixture(autouse=True)

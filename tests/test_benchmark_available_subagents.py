@@ -48,16 +48,11 @@ PROFILE_TARGETS = {
         "openai/gpt-5.5",
 }
 
-_PROVIDER_ROUTE_ENV_KEYS = (
-    "OPENROUTER_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_BASE_URL",
-    "OPENAI_COMPATIBLE_BASE_URL",
-    "CLOUDRU_FOUNDATION_MODELS_API_KEY",
-    "GIGACHAT_CREDENTIALS",
-    "GIGACHAT_USER",
-    "GIGACHAT_PASSWORD",
+# Registry-derived so a newly registered provider can never leak ambient routing.
+from ouroboros.provider_models import PROVIDER_CREDENTIAL_GROUPS as _CRED_GROUPS
+
+_PROVIDER_ROUTE_ENV_KEYS = tuple(
+    key for group in _CRED_GROUPS.values() for key in group
 )
 
 

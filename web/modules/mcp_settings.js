@@ -1,6 +1,7 @@
 import { apiFetch, jsonPost } from './api_client.js';
 /** MCP settings cards; preserves masked auth tokens until the user edits them. */
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
+import { revealNewRow } from './ui_helpers.js';
 
 const TRANSPORTS = [
     { value: 'streamable_http', label: 'Streamable HTTP' },
@@ -374,6 +375,10 @@ function bindAddButton() {
     btn.addEventListener('click', () => {
         mcpServers.push(emptyServer());
         renderAll();
+        // The Add action lives in the section head while the new card lands
+        // at the list's end — show it there and hand the caret to its id.
+        const card = document.getElementById('mcp-servers-list')?.lastElementChild;
+        revealNewRow(card, card?.querySelector?.('[data-mcp-field="id"]'));
         notifyChanged();
     });
 }

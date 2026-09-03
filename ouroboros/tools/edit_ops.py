@@ -197,8 +197,9 @@ def _finish_mutation(
         "⚠️ Advisory pre-review is now stale — run preflight_review before commit_reviewed."
     )
     # A pro-mode edit of a protected surface announces itself here exactly as it
-    # does from git._repo_write / _str_replace_editor (SYSTEM.md's protected-write
-    # contract): the mode ALLOWS the write, and the notice is what keeps it visible.
+    # does from git._repo_write / _str_replace_editor (the protected-write contract
+    # in ARCHITECTURE "Safety and runtime mode" and SYSTEM.md "Safety-critical
+    # files"): the mode ALLOWS the write, and the notice is what keeps it visible.
     protected = protected_paths_in(changed_paths) if targets_system or not ctx.is_workspace_mode() else []
     if protected and mode_allows_protected_write(_runtime_mode()):
         footer += "\n\n" + core_patch_notice(protected)

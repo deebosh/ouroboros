@@ -188,7 +188,7 @@ def test_child_task_handoff_results_never_truncated():
 # ---------------------------------------------------------------------------
 
 def test_repo_read_default_max_lines_is_2000(tmp_path):
-    """Default max_lines must be 2000 so ARCHITECTURE.md (~1285 lines) fits in one call."""
+    """Default max_lines must be 2000 so ARCHITECTURE.md fits in one call."""
     import inspect
     from ouroboros.tools.core import _repo_read
     sig = inspect.signature(_repo_read)
@@ -212,7 +212,7 @@ def test_repo_read_schema_default_is_2000():
 
 
 def test_repo_read_can_read_architecture_md_in_one_call(tmp_path):
-    """A file of ARCHITECTURE.md length (~1285 lines) is returned fully with default max_lines."""
+    """A file longer than the historical 1050-line default is returned fully with default max_lines."""
     from ouroboros.tools.core import _repo_read
     # Simulate a file slightly longer than the old 1050-line default
     n_lines = 1300

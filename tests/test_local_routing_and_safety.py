@@ -213,3 +213,36 @@ def test_python_named_wrapper_has_no_safe_shell_subject():
     assert _normalize_safe_shell_subject(
         "/tmp/python-malicious -m pytest tests/test_scope_review.py -q"
     ) == ""
+
+
+def test_real_system_prompt_keeps_its_floor_rules_under_local_compaction():
+    """Local-model overflow compaction keeps only the text BEFORE the first
+    `## ` heading of the static block (plus the BIBLE section). The prompt
+    audit therefore put the load-bearing floor — identity, the one-routing-
+    decision rule, the owner-only supervision rule, panic — into that preamble.
+    Pin it: the compacted static block must still carry those rules, and every
+    other section must have been replaced by an omission marker."""
+    import pathlib
+
+    from ouroboros.llm import _compact_local_text
+
+    system_md = (
+        pathlib.Path(__file__).resolve().parent.parent / "prompts" / "SYSTEM.md"
+    ).read_text(encoding="utf-8")
+    compacted = _compact_local_text(system_md + "\n\n## BIBLE.md\n\nBIBLE TEXT\n", "static")
+    normalized = " ".join(compacted.split())
+
+    assert "# I Am Ouroboros" in compacted
+    assert "exactly ONE routing decision" in normalized
+    assert "one self-contained final response" in normalized
+    assert "[Message from my human]" in compacted
+    assert "never bypass, disable, or ignore the Safety Agent" in normalized
+    assert "owner-only" in normalized
+    assert "Panic stops everything" in normalized
+    assert "## BIBLE.md\n\nBIBLE TEXT" in compacted
+    # Everything below the preamble was compacted, not silently kept or lost.
+    assert "## Delegation\n\n[Compacted for local-model context" in compacted
+    assert "## Workmanship\n\n[Compacted for local-model context" in compacted
+    # The floor stays small: it is the whole prompt for a compacted local model.
+    preamble = compacted.split("\n## ", 1)[0]
+    assert len(preamble.encode("utf-8")) <= 1536, len(preamble.encode("utf-8"))

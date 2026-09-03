@@ -8,6 +8,7 @@ import {
     availableSubagentsPreviewPayload,
     collectSubagentsSettings,
     initSubagentsSection,
+    noteSubagentsSaveAttempt,
     reloadSubagentsSection,
     subagentSettingsFingerprint,
     validateSubagentsDraft,
@@ -19,7 +20,7 @@ import { showToast } from './toast.js';
 import { escapeHtmlAttr as escapeHtml, formatDualVersion } from './utils.js';
 import { apiClient, apiFetch, cleanExtensionRoute, extensionRoutePath } from './api_client.js';
 import { claudexorStatus } from './claudexor_status_store.js';
-import { collectSafeFieldValues, renderSafeField, setInlineStatus } from './ui_helpers.js';
+import { collectSafeFieldValues, renderSafeField, setInlineStatus, revealNewRow } from './ui_helpers.js';
 
 let markSettingsDirty = () => {};
 const BASE_SECRET_KEYS = new Set(SECRET_KEYS.map(([key]) => key));
@@ -92,10 +93,15 @@ function isTruthySetting(value) {
     return value === true || ['true', '1', 'yes', 'on'].includes(normalized);
 }
 
-function setStatus(text, tone = 'ok') {
+// `owner` names the surface a message belongs to (today only the Available
+// subagents roster claims one); a later message from anyone else drops it, so
+// an owner may clear its own stale message but never a newer one.
+function setStatus(text, tone = 'ok', owner = '') {
     const status = byId('settings-status');
     status.textContent = text;
     status.dataset.tone = tone;
+    if (owner) status.dataset.owner = owner;
+    else delete status.dataset.owner;
 }
 
 function setButtonBusy(button, busy) {
@@ -326,6 +332,8 @@ const SETTINGS_FALLBACK_MODELS = [
     'anthropic::claude-opus-5',
     'anthropic::claude-opus-4-6',
     'deepseek/deepseek-v4-pro',
+    'deepseek::deepseek-v4-pro',
+    'deepseek::deepseek-v4-flash',
     'minimax::MiniMax-M3',
     'minimax::MiniMax-M2.7',
 ];
@@ -340,11 +348,12 @@ let settingsModelCatalogItems = SETTINGS_FALLBACK_MODELS.map((value) => ({ value
  * Exported for dependency-free node tests.
  */
 export function moreProvidersCredentialConfigured({
-    cloudruKey = '', minimaxKey = '', gigachatCredentials = '', gigachatUser = '', gigachatPassword = '',
+    cloudruKey = '', minimaxKey = '', deepseekKey = '', gigachatCredentials = '', gigachatUser = '', gigachatPassword = '',
 } = {}) {
     const has = (v) => Boolean(String(v ?? '').trim());
     return has(cloudruKey)
         || has(minimaxKey)
+        || has(deepseekKey)
         || has(gigachatCredentials)
         || (has(gigachatUser) && has(gigachatPassword));
 }
@@ -417,6 +426,12 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     initReviewerSlots({ onChange: () => updateSettingsDirtyState() });
     initSubagentsSection({
         onChange: () => updateSettingsDirtyState(),
+        // The roster's section line and the footer message it owns read one
+        // verdict: when the judged rows come clean, the footer clears with the
+        // line and the tint — unless someone else has written the footer since.
+        onJudged: (clean) => {
+            if (clean && byId('settings-status').dataset.owner === 'subagents') setStatus('', 'ok');
+        },
         isOuterDraftClean: () => !settingsDirty,
         onGeneratedApply: () => {
             if (settingsLoaded && !settingsDirty) setSettingsCleanBaseline();
@@ -630,6 +645,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (moreProvidersCredentialConfigured({
             cloudruKey: value('s-cloudru-key'),
             minimaxKey: value('s-minimax-key'),
+            deepseekKey: value('s-deepseek-key'),
             gigachatCredentials: value('s-gigachat-credentials'),
             gigachatUser: value('s-gigachat-user'),
             gigachatPassword: value('s-gigachat-password'),
@@ -1000,8 +1016,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (host.querySelector('.muted')) host.innerHTML = '';
         const row = customSecretRow();
         host.appendChild(row);
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        row.querySelector('[data-custom-secret-key]')?.focus();
+        revealNewRow(row, row.querySelector('[data-custom-secret-key]'));
         markSettingsDirty();
     });
 
@@ -1209,6 +1224,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             setStatus('Reload current settings successfully before saving.', 'warn');
             return;
         }
+        // The owner just tried to commit the draft — every Save click is one,
+        // whichever validation aborts it below — so from here the roster shows
+        // its own errors beside the rows they name, not only in this status.
+        noteSubagentsSaveAttempt();
         // Validate Every-N cadence before save: malformed N must NOT silently coerce
         // into a valid (e.g. every-task) cadence. Abort with a visible error instead.
         if (byId('s-post-task-evolution-mode')?.value === 'every_n'
@@ -1218,7 +1237,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         }
         const subagentErrors = validateSubagentsDraft();
         if (subagentErrors.length) {
-            setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn');
+            setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn', 'subagents');
             return;
         }
         const body = collectBody();

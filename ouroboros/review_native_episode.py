@@ -475,7 +475,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     last_content = content
                 # The envelope joins the record BEFORE any terminal branch, so
                 # the terminal-round fact describes the decision-ending output
-                # itself — an empty or malformed final round included.
+                # itself — an empty or malformed final round included. The WHOLE
+                # dict joins (a reasoning-echo lane's ``reasoning_content`` too), so
+                # the wire-size recompute below charges the replayed thinking tail.
                 assistant = dict(msg) if isinstance(msg, dict) else {"content": content}
                 assistant.setdefault("role", "assistant")
                 messages.append(assistant)

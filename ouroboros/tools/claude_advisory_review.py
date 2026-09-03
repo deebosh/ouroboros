@@ -81,7 +81,7 @@ _MANAGED_SKIP_NOTE = "cannot be split into smaller commits"
 
 
 ADVISORY_REVIEW_CHOICE_GUIDANCE = (
-    "Normally the LLM runs the cheap advisory_review immediately before "
+    "Normally the LLM runs the cheap preflight_review immediately before "
     "commit_reviewed. When advisory review is slow, unhealthy, unavailable, or "
     "low-value, the LLM may deliberately choose skip_advisory_review=True; the "
     "choice is durably audited. This skip bypasses only the requirements for "
@@ -236,7 +236,7 @@ def _build_advisory_prompt(
     expected_items = prompt_context.get("expected_items")
     checklist_name = "Skill Review Checklist" if review_surface == "skill" else "Repo Commit Checklist"
     if governance_by_retrieval:
-        # agent_session delivery: do NOT inline the ~830KB governance bodies —
+        # agent_session delivery: do NOT inline the governance bodies (hundreds of KB) —
         # each becomes a resolvable absolute pointer plus a mandatory-read
         # instruction, and the session reads the docs itself with its own
         # tools. The authority for this form is the plan-review agent_session
@@ -1692,7 +1692,7 @@ def _next_step_guidance(latest: Optional["AdvisoryRunRecord"], state: "AdvisoryR
         )
 
     if latest and latest.status == "bypassed":
-        return "Advisory was bypassed (audited). No open obligations — commit_reviewed should proceed. Consider running advisory_review for a proper review."
+        return "Advisory was bypassed (audited). No open obligations — commit_reviewed should proceed. Consider running preflight_review for a proper review."
 
     fresh_critical = [
         i for i in (latest.items if latest else []) or []

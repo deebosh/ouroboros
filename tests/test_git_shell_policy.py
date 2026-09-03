@@ -133,7 +133,8 @@ ALLOWED_CASES = [
     pytest.param("cd /Users/anton/Ouroboros/repo && git diff", id="readonly_cd_repo_diff"),
     pytest.param("git -C /Users/anton/Ouroboros/repo branch -l", id="readonly_branch_list_repo"),
     # Read-only forms of the verb-dispatched subcommands stay allowed at a runtime
-    # target too — the SYSTEM.md contract ("read-only git works everywhere"). These
+    # target too — the ARCHITECTURE "Safety and runtime mode" contract ("read-only
+    # shell git is allowed everywhere"). These
     # were refused before the mode parse: `remote` had no read-only classifier at
     # all, and `tag -v/--verify` (signature check, writes nothing) sat in the
     # mutating flag set (SC-7).
