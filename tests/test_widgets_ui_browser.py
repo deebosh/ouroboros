@@ -914,3 +914,37 @@ def test_ui_smoke_module_widget_temporal_convergence(direct_server_with_data, br
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
             pytest.skip(str(exc))
         raise
+
+
+@pytest.mark.ui_browser
+def test_ui_smoke_widgets_page_has_a_typed_address_and_one_nav_landmark(
+    direct_server_with_data,
+):
+    """A page could not be linked to and the sidebar was not a landmark.
+
+    Opening the application with a `#widgets` fragment must land on Widgets
+    (browsers gain a shareable link; the desktop shell and the Linux fallback
+    get the same load-time route with no address bar to break), and an
+    automation or assistive client must be able to resolve the navigation by
+    its landmark instead of by an id.
+    """
+    pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
+    url = direct_server_with_data["url"]
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1280, "height": 800})
+            try:
+                page.goto(f"{url}/#widgets", wait_until="domcontentloaded", timeout=30_000)
+                page.wait_for_selector("nav#primary-sidebar", timeout=15_000)
+                page.wait_for_selector("#page-widgets.active", timeout=15_000)
+                assert page.locator('[data-nav-page="widgets"].active').count() == 1
+            finally:
+                browser.close()
+    except PlaywrightError as exc:
+        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+            pytest.skip(str(exc))
+        raise
