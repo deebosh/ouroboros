@@ -994,7 +994,7 @@ _GITHUB_TOKEN_TOOLS = frozenset({
 })
 
 _TOOL_ARG_ALIASES: dict[str, dict[str, str]] = {
-    "*": {"max_entries": "max_results"},
+    "*": {"max_entries": "max_results", "timeout": "timeout_sec"},
 }
 _IGNORE_ROOT_ARG_TOOLS = frozenset({
     "commit_reviewed",
@@ -1163,7 +1163,14 @@ def _prepare_public_builtin_args(entry: "ToolEntry", args: dict[str, Any]) -> st
     }
     accepted_params = public_params | hidden_legacy
     if _entry_has_public_param_schema(entry) and any(key not in accepted_params for key in args):
-        return _format_tool_arg_error(entry)
+        return _format_tool_arg_error(
+            entry,
+            rejected=tuple(sorted(
+                str(key)
+                for key in args
+                if key not in accepted_params and not str(key).startswith("_")
+            )),
+        )
     try:
         inspect.signature(entry.handler).bind(object(), **args)
     except TypeError:
@@ -1365,12 +1372,16 @@ def _payload_dispatch_constraint(
     return synthesized or task_constraint, ""
 
 
-def _format_tool_arg_error(entry: "ToolEntry") -> str:
+def _format_tool_arg_error(entry: "ToolEntry", *, rejected: tuple[str, ...] = ()) -> str:
     params = _entry_public_params(entry)
     accepted = ", ".join(params) if params else "none"
+    # Naming the refused key is the actionable half of the repair hint; a
+    # signature-bind refusal cannot name one, and a PRIVATE dispatch carrier is
+    # never echoed back.
+    named = f"unsupported argument(s): {', '.join(rejected)}. " if rejected else ""
     return (
         f"⚠️ TOOL_ARG_ERROR ({entry.name}): invalid arguments for {entry.name}. "
-        f"Accepted parameters: {accepted}."
+        f"{named}Accepted parameters: {accepted}."
     )
 
 

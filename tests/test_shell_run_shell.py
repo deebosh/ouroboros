@@ -153,14 +153,25 @@ class TestPerCallTimeout:
         _run_shell(_ctx(tmp_path), ["echo", "hi"])
         assert calls[0]["kwargs"]["timeout"] == 600  # config SSOT default (was a buggy effective 360)
 
-    def test_schema_exposes_timeout_sec_and_timeout_alias(self):
+    def test_schema_exposes_timeout_sec_and_registry_owns_the_timeout_alias(self, tmp_path, fake_subprocess):
+        """The alias moved from two duplicated per-tool schema rows to the one
+        registry alias table: `timeout_sec` is the declared property, `timeout`
+        is not, and the raw spelling still reaches the subprocess."""
+        from ouroboros.tools.registry import ToolContext, ToolRegistry
         from ouroboros.tools.shell import get_tools
 
         entries = {e.name: e for e in get_tools()}
         for name in ("run_command", "run_script"):
             props = entries[name].schema["parameters"]["properties"]
             assert "timeout_sec" in props, f"{name} missing timeout_sec"
-            assert "timeout" in props, f"{name} missing timeout alias"
+            assert "timeout" not in props, f"{name} still declares the alias as a property"
+
+        calls = fake_subprocess(stdout="ok")
+        registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+        registry.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path))
+        result = registry.execute("run_command", {"cmd": ["echo", "hi"], "timeout": 7})
+        assert "TOOL_ARG_ERROR" not in result, result
+        assert calls[0]["kwargs"]["timeout"] == 7
 
 
 # ---------------------------------------------------------------------------

@@ -1476,10 +1476,6 @@ def get_tools() -> List[ToolEntry]:
 	                        "Clamped to the remaining task-deadline budget. Omit for the default (deadline-capped)."
 	                    ),
 	                },
-	                "timeout": {
-	                    "type": "integer",
-	                    "description": "Alias for timeout_sec (per-call timeout in seconds).",
-	                },
 	            }, "required": ["cmd"]},
         }, _run_shell, is_code_tool=True, timeout_sec=_RUN_SHELL_DEFAULT_TIMEOUT_SEC, mutates_worktree=True),
         ToolEntry("run_script", {
@@ -1522,10 +1518,6 @@ def get_tools() -> List[ToolEntry]:
 	                        "Optional per-call timeout in seconds for long scripts (alias: timeout). "
 	                        "Clamped to the remaining task-deadline budget. Omit for the default (deadline-capped)."
 	                    ),
-	                },
-	                "timeout": {
-	                    "type": "integer",
-	                    "description": "Alias for timeout_sec (per-call timeout in seconds).",
 	                },
 	            }, "required": ["script"]},
         }, _run_script, is_code_tool=True, timeout_sec=_RUN_SHELL_DEFAULT_TIMEOUT_SEC, mutates_worktree=True),
