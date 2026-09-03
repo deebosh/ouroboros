@@ -1290,6 +1290,9 @@ def _compact_plan_review_wave(wave: Dict[str, Any]) -> Dict[str, Any]:
 
 # Reviewer TRANSPORT rows: how one wave was carried, not what it decided. A continuation
 # inherits the decision, so these are dropped from the newest wave of its authority core.
+# `retry_key` is identity-bearing for the wave that minted it, but a successor task never
+# reads a predecessor's retry key (it is rebuilt from fingerprint + cycle index), so it
+# travels with the transport rows here.
 _PLAN_REVIEW_TRANSPORT_KEYS = frozenset({
     "actors", "actors_degraded", "evidence_manifest", "health_epoch", "reasons", "retry_key",
 })

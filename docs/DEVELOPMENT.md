@@ -673,7 +673,8 @@ reviewing the Ouroboros repo for an external plan.
 The SPEC must state the goal, acceptance claims, invariants, in-scope and
 non-goals, the load-bearing decisions with their rejected alternatives, and
 what is consciously deferred. Plan review publishes exactly `GREEN`,
-`REVIEW_REQUIRED`, `REVISE_PLAN`, or the honest no-quorum `DEGRADED`;
+`REVIEW_REQUIRED`, `REVISE_PLAN`, or the honest `DEGRADED` (no quorum,
+or a paid actor still in flight);
 findings are inputs the main agent may
 accept, reject, or defer. Closure happens without a second LLM call through a
 separate `plan_task` call containing `review_disposition` only —
