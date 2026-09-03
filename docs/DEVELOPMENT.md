@@ -1600,6 +1600,13 @@ by "Provider Independence" above. Call-site imperatives:
   active lease; an already-paid in-flight wave stays eligible for exact
   custody reconciliation without authorizing a new dispatch. An in-flight
   reviewer never counts as final quorum, under either enforcement mode.
+- Every zero-physical acceptance refusal takes that same shape — an
+  unresolvable partial source, an immutable-core overflow, and a slot whose
+  window cannot hold the rendered prompt all record a typed `$0
+  not_dispatched` row that carries its cause in `error`. The panel transport
+  folds to `not_dispatched` and the aggregate stays `DEGRADED` through those
+  typed rows: a refusal that spent nothing is recorded as `not_dispatched`
+  plus its cause and never wears a verdict.
 - A returned provider response (including an empty body) or typed terminal
   408/429/5xx is settled and may use the surface's bounded retry rail;
   `dispatched`/`unresolved` without a typed terminal status stays under the

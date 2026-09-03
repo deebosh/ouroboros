@@ -394,7 +394,7 @@ def test_task_acceptance_abstains_before_review_on_unresolved_partial_source(tmp
     assert paid == []
     assert result.aggregate_signal == "DEGRADED"
     assert result.degraded is True
-    assert result.actors[0]["status"] == "ok"
+    assert result.actors[0]["status"] == "not_dispatched"
     assert result.actors[0]["signal"] == "DEGRADED"
 
 

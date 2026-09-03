@@ -411,7 +411,7 @@ def test_acceptance_zero_physical_refusal_does_not_claim_wallet(
     result = loop._execute_task_acceptance_panel(ctx)
 
     assert result.aggregate_signal == "DEGRADED"
-    assert result.actors[0]["status"] == "ok"
+    assert result.actors[0]["status"] == "not_dispatched"
     state = load_task_acceptance_review_state(tmp_path, ctx.task_id)
     assert state["claims_by_binding"] == {}
 
