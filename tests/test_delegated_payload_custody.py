@@ -245,7 +245,7 @@ def test_pending_invocation_of_a_terminal_owner_releases_the_payload(
     STARTED row leaves only a request row, which had NO liveness axis at all."""
     from ouroboros.task_results import STATUS_FAILED, write_task_result
 
-    ctx = _payload_ctx(tmp_path, monkeypatch)
+    _payload_ctx(tmp_path, monkeypatch)     # installs the runtime env for this tmp
     skill = _seed_skill(tmp_path / "data")
     data = tmp_path / "data"
     assert custody.emit(data, custody.START_REQUESTED, {
