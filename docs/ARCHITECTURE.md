@@ -65,6 +65,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── settings_integrity.py ← Strict settings-snapshot integrity pin; `OUROBOROS_SETTINGS_SHA256` enables the trust root
       ├── credential_shapes.py ← Filename shapes that commonly indicate credential material; blocks root read imports
       ├── update_channels.py   ← Closed Stable/QA/Development channel mapping and update-network defaults
+      ├── update_letter.py     ← The update letter: first-parent range material (commits plus the README history rows they added, recovered from commit diffs because the table is capped and untagged releases have no tag), one accounted LIGHT-slot call with the ordinary task context, `state/update_letter.json`, and the one letter projection shared by the Updates panel payload and the Runtime context `official_update` fact; written synchronously inside a fetching check, never deleted after apply
       ├── colab_bootstrap.py   ← Google Colab source-mode bootstrap: official update source, stable local `ouroboros` branch, Drive-backed settings/data, personal origin, no-UI server command, native Telegram setup
       ├── cli.py               ← Source/headless CLI over gateway tasks, logs, settings, skills, marketplace, local-model, and MCP wrappers
       ├── packaged_cli.py      ← Packaged desktop CLI bridge: resolves bundle roots, bootstraps the launcher-managed repo, delegates to cli.py
@@ -509,6 +510,7 @@ Extension children, delegated runtimes, services, the local model, and companion
 │   │   ├── post_task_evolution_counter.json ← per-drive every_n counter
 │   │   ├── scheduled_tasks.json   ← cron (5-field + tz) and one-shot {type:"once", run_at} schedules; consumed one-shot receipts age out past the unified GC retention
 │   │   ├── claudexor_rotation_provisioning.json ← receipt of the last rotation-reconcile settings POST
+│   │   ├── update_letter.json     ← the last update letter (key = base/target/channel/ref, state, text, `last_good`); kept after apply and projected as pending/applied/superseded/other against the live HEAD (update_letter.py)
 │   │   ├── projects.json          ← Project registry: immutable id/chat identity, working folder, lifecycle/routing fence, revision; tombstones are durable and never age-pruned
 │   │   ├── project_task_bindings.json ← schema v1 root↔Project bindings with REQUIRED typed origin; one-way enrichment; tombstoning never removes a binding
 │   │   ├── ui_preferences.json    ← owner-local layout preferences + monotonic project_seen_revision ACKs
@@ -1008,7 +1010,7 @@ Prompt caching is stable-first: governance and task-stable contracts precede mut
 
 #### Background consciousness and Evolution
 
-Background Consciousness is the high-horizon awareness loop. It can groom memory, identity candidates, knowledge, and the improvement backlog, message the owner, and initiate an already configured reviewed Presence binding; it does not acquire the binding's tools or transport authority, and it does not run shell/code work, subagents, reviews, commits, or evolution toggles — awareness proposes work without bypassing task, budget, and review authority.
+Background Consciousness is the high-horizon awareness loop. It can groom memory, identity candidates, knowledge, and the improvement backlog, message the owner, and initiate an already configured reviewed Presence binding; it does not acquire the binding's tools or transport authority, and it does not run shell/code work, subagents, reviews, commits, or evolution toggles — awareness proposes work without bypassing task, budget, and review authority. Awareness of the body's own version is ambient: the Runtime context of every task and every consciousness cycle carries `official_update` — running version versus the official target as of the last fetching check, plus the update letter (`update_letter.py`); no wake is forced by a check, and whether to mention an update to the owner is the mind's judgment (`prompts/CONSCIOUSNESS.md`).
 
 Its observation inbox is the append-only `state/consciousness_observations.jsonl` store. Producers write a stable-ID `enqueue` row before the wake notification returns; `_ack_observations` appends ACK rows only after the thought receipt, tool receipts, budget settlement, and other durable writes for that snapshot have succeeded, so any failure leaves the snapshot pending with an actor-readable source reference. The status surface reports only pending count, oldest timestamp, source, and gap count. When the same cycle can call `update_identity`, an observation gap joins the identity-completeness envelope and blocks that destructive write until the actor resolves the named source.
 
@@ -1285,6 +1287,7 @@ Providers name the same output-token budget differently: OpenRouter/Anthropic-co
 | Skill publish PR body generation | 8,192 |
 | Background consciousness loop | 65,536 |
 | Project naming LIGHT one-shot (`project_naming.llm_project_name`) | 256 |
+| Update letter LIGHT one-shot (`update_letter.write_letter`) | 1,024 |
 | Provider Test (`llm_probe.PROVIDER_TEST_MAX_TOKENS`) | 16 |
 
 ### Default settings
@@ -1328,6 +1331,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults stay canonical in `conf
 | OUROBOROS_MODEL_SLOT_MAX_WAIT_SEC | 180 | Concurrency-slot wait bound |
 | OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC | 60 | Project-naming call ceiling |
 | OUROBOROS_PROJECT_NAMING_ASYNC_TIMEOUT_SEC | 8 | Proactive-namer async bound |
+| OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC | 120 | Update-letter LIGHT-call transport ceiling (`update_letter.py`) |
 | OUROBOROS_FALLBACK_COOLDOWN_ENABLED | true | 429-aware per-process model cooldown |
 | OUROBOROS_FALLBACK_COOLDOWN_SEC | 120 | Cooldown window |
 | OUROBOROS_FALLBACK_ATTEMPTS_PER_MODEL | 1 | Attempts per model in the fallback walk |

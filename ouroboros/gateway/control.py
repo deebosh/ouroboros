@@ -49,6 +49,21 @@ def _managed_update_payload(*, fetch: bool, include_tags: bool) -> dict[str, Any
     from supervisor.update_merge import active_update_tx
 
     status = compute_managed_update_status(fetch=fetch)
+    # The update letter rides the same payload: written only after a FETCHING
+    # check (never on the passive read), projected against the live HEAD/target.
+    letter = None
+    try:
+        from ouroboros import update_letter as _letter
+
+        if fetch:
+            _letter.refresh_after_check(status)
+        letter = _letter.project_letter(
+            _letter.read_record(),
+            head_sha=str(status.get("current_sha") or ""),
+            latest_sha=str(status.get("latest_sha") or ""),
+        )
+    except Exception:
+        log.debug("update letter projection failed", exc_info=True)
     # Additive minimal public projection of an active managed-update
     # transaction, so a re-opened panel can say "resolution in progress"
     # instead of silently reading as ordinary state (a second apply 409s).
@@ -82,6 +97,7 @@ def _managed_update_payload(*, fetch: bool, include_tags: bool) -> dict[str, Any
         "latest_version": latest_version,
         "official_tags": official_tags,
         "update_tx": update_tx,
+        "letter": letter,
         **status,
     }
 

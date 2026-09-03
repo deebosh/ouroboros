@@ -2648,6 +2648,12 @@ def _boot_managed_update_tasks() -> None:
             _request_restart_exit()
             return
         update_status = compute_managed_update_status(fetch=True)
+        try:
+            from ouroboros.update_letter import refresh_after_check
+
+            refresh_after_check(update_status)
+        except Exception:
+            log.debug("boot update letter refresh failed", exc_info=True)
         broadcast_ws_sync({
             "type": "update_status_ready",
             "available": bool(update_status.get("available")),

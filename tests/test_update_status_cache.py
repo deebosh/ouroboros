@@ -250,3 +250,26 @@ def test_passive_read_hides_checked_at_when_cached_tip_is_unresolvable(monkeypat
     state = git_ops.compute_managed_update_status(fetch=False)
     assert "checked_at" not in state
     assert not state.get("available")
+
+
+def test_passive_payload_projects_letter_without_writing_it(monkeypatch):
+    import ouroboros.update_letter as update_letter
+
+    _wire(monkeypatch)
+    monkeypatch.setattr(
+        update_letter, "refresh_after_check",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("a passive read must not write the letter")),
+    )
+    monkeypatch.setattr(update_letter, "read_record", lambda drive_root=None: {
+        "key": {"base_sha": CURRENT, "target_sha": LATEST, "update_channel": "stable",
+                "target_ref": "refs/ouroboros-managed/tags/v6.87.5"},
+        "checked_head_sha": CURRENT, "state": "ready", "text": "one paragraph",
+        "author_version": "6.87.4", "target_version": "6.87.5", "written_at": "2026-08-03T00:00:00Z",
+        "attempt_id": "att", "error_kind": "", "error_text": "", "last_good": None,
+    })
+
+    payload = control._managed_update_payload(fetch=False, include_tags=False)
+
+    assert payload["letter"]["relation"] == "pending"
+    assert payload["letter"]["text"] == "one paragraph"
+    assert payload["letter"]["author_version"] == "6.87.4"

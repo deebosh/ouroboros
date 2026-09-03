@@ -853,6 +853,8 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
             }
     except Exception:
         log.debug("Failed to inject answer_protocol rule", exc_info=True)
+    from ouroboros.update_letter import official_update_projection  # lazy: never raises
+    runtime_data["official_update"] = official_update_projection(git_sha)
     runtime_ctx = json.dumps(runtime_data, ensure_ascii=False, indent=2)
     out = "## Runtime context\n\n" + runtime_ctx
     try:

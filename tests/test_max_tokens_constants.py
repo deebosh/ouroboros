@@ -834,3 +834,11 @@ def test_triad_fit_sizes_against_the_local_route(monkeypatch, tmp_path):
         "a local-only install must size the triad prompt against the local "
         "route's real window, not the provider inferred from the model text"
     )
+
+
+def test_update_letter_max_tokens_pinned():
+    """The update letter is ONE short paragraph (owner decision 2026-09-03): its LIGHT
+    one-shot budget stays 1024 and matches the ARCHITECTURE 'LLM output token budgets' row."""
+    from ouroboros.update_letter import UPDATE_LETTER_MAX_TOKENS
+
+    assert UPDATE_LETTER_MAX_TOKENS == 1024

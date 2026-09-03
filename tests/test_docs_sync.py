@@ -276,6 +276,8 @@ PROMPT_NON_TOOL_IDENTIFIERS = frozenset({
     "mermaid", "chart",
     # backlog item status value in CONSCIOUSNESS.md
     "done",
+    # runtime-context fact (build_runtime_section -> update_letter.official_update_projection)
+    "official_update",
 })
 
 

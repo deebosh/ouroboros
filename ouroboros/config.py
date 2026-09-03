@@ -137,6 +137,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # (not project_naming.py magic numbers) per DEVELOPMENT "Timeout & Wait Control".
     "OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC": 60,
     "OUROBOROS_PROJECT_NAMING_ASYNC_TIMEOUT_SEC": 8,
+    # Update-letter LIGHT-call provider transport ceiling (update_letter.py); SSOT here.
+    "OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC": 120,
     # Skill lifecycle lane deadline (wedged-job loud-failure bound).
     "OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC": 1800,
     "OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC": 300,
@@ -368,6 +370,15 @@ def _main_model() -> str:
 def get_light_model() -> str:
     """Light slot; empty falls back to Main (heavy/consciousness stay empty->main)."""
     return str(os.environ.get("OUROBOROS_MODEL_LIGHT", "") or "").strip() or _main_model()
+
+
+def get_update_letter_timeout_sec() -> float:
+    """Transport ceiling for the update-letter LIGHT call (default IS the SSOT value)."""
+    default = SETTINGS_DEFAULTS["OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC"]
+    try:
+        return float(os.environ.get("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", default))
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def get_heavy_model() -> str:

@@ -2078,3 +2078,16 @@ def test_delegation_fact_failure_never_drops_capability_digest(tmp_path, monkeyp
     # The surrounding digest survives intact.
     assert "allow_mutative_subagents" in capabilities
     assert "write_surfaces" in capabilities
+
+
+def test_runtime_section_carries_official_update_fact(tmp_path, monkeypatch):
+    env = _make_health_env(tmp_path)
+    monkeypatch.setattr(
+        "ouroboros.update_letter.official_update_projection",
+        lambda head: {"status": "unchecked", "running": {"sha": head}, "letter": None},
+    )
+    section = build_runtime_section(env, {"id": "task-1", "type": "task"})
+    payload = json.loads(section.split("\n\n", 1)[1])
+
+    assert payload["official_update"]["status"] == "unchecked"
+    assert payload["official_update"]["letter"] is None
