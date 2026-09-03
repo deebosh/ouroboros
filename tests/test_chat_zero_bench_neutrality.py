@@ -139,13 +139,19 @@ def test_the_degraded_reason_change_moves_no_benchmark_classification():
             )
 
 
-def test_a_host_toast_never_enters_a_headless_progress_log():
+def test_the_two_toasts_this_sprint_touched_stay_out_of_a_headless_progress_log():
     """ATIF republishes progress rows as the agent's own narration.
 
     The scheduled-subagent and subagent-rejection notices are host lines, not
     the model's. They were dropped for chat 0 before this sprint and stay
     dropped, now for a stated reason rather than by accident: the durable record
     keeps the real address, the live toast needs a reader.
+
+    Scope, stated so this is not read as a general guarantee: OTHER host toasts
+    (the finalization-grace warning, for one) already reached the progress log
+    before this sprint and still do. They carry a HOST_NARRATION marker the
+    trajectory builder does not yet consult, which is a pre-existing gap in the
+    harness rather than something this change introduced — filed separately.
     """
     events = (REPO / "supervisor/events.py").read_text(encoding="utf-8")
     assert "if _notice_chat is not None and _notice_chat != HIDDEN_CHAT_ID:" in events
