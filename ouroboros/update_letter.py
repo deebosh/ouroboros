@@ -459,7 +459,16 @@ def project_letter(
     """Relate the stored letter to the live HEAD and official target by SHA equality."""
     if not record or record.get("state") == "none":
         return None
-    key = record.get("key") if isinstance(record.get("key"), dict) else {}
+    text = str(record.get("text") or "")
+    last_good = record.get("last_good") if isinstance(record.get("last_good"), dict) else None
+    provenance = record
+    if record.get("state") != "ready" and not text and last_good:
+        text, provenance = str(last_good.get("text") or ""), last_good
+    # Relation, key and provenance all describe the TEXT shown: a good letter kept
+    # through a failed rewrite may predate the range that failed (a moved target),
+    # and relating it to that range would present it as the letter for the update
+    # on offer. `has_last_good` says the text is the kept one.
+    key = provenance.get("key") if isinstance(provenance.get("key"), dict) else {}
     base, target = str(key.get("base_sha") or ""), str(key.get("target_sha") or "")
     head, latest = str(head_sha or ""), str(latest_sha or "")
     if head and head == target:
@@ -470,11 +479,6 @@ def project_letter(
         relation = "superseded"
     else:
         relation = "other"
-    text = str(record.get("text") or "")
-    last_good = record.get("last_good") if isinstance(record.get("last_good"), dict) else None
-    provenance = record
-    if record.get("state") != "ready" and not text and last_good:
-        text, provenance = str(last_good.get("text") or ""), last_good
     return {
         "state": "ready" if record.get("state") == "ready" else "failed",
         "relation": relation,

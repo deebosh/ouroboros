@@ -7111,6 +7111,7 @@ textarea.chat-input {
     gap: var(--space-2);
 }
 .updates-letter-label {
+    margin: 0;
     font-size: var(--type-body);
     line-height: var(--line-title);
     font-weight: 600;

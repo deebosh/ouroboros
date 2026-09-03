@@ -351,6 +351,21 @@ def test_project_letter_failed_with_last_good_shows_previous_text_and_provenance
     assert ul.project_letter(None, head_sha="a" * 40, latest_sha="") is None
 
 
+def test_project_letter_kept_last_good_is_related_by_its_own_range():
+    # The target moved (b -> c) and the rewrite for a->c failed: the kept letter is
+    # about a->b, so it reads as superseded, never as the pending letter for a->c.
+    kept = _record(text="older letter", written_at="t-good")
+    record = _record(key=dict(_record()["key"], target_sha="c" * 40), state="failed", text="",
+                     error_kind="provider_unavailable", error_text="503", target_version="6.115.0",
+                     last_good=kept)
+    view = ul.project_letter(record, head_sha="a" * 40, latest_sha="c" * 40)
+    assert view["relation"] == "superseded" and view["text"] == "older letter" and view["has_last_good"] is True
+    assert view["target_version"] == "6.114.0" and view["key"]["target_sha"] == "b" * 40
+    assert view["error_kind"] == "provider_unavailable"
+    # Once the kept letter's own target runs, it is "applied" - the failed range never was.
+    assert ul.project_letter(record, head_sha="b" * 40, latest_sha="c" * 40)["relation"] == "applied"
+
+
 def test_official_update_projection_states(tmp_path):
     drive = tmp_path / "data"
     (drive / "state").mkdir(parents=True)

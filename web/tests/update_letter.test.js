@@ -147,6 +147,28 @@ test('a failed letter with a last good text shows the text plus the failure reas
 });
 
 
+test('a kept letter about an earlier target is labelled by its own range, with the failure beside it', () => {
+    // The backend relates a kept letter by ITS range (update_letter.py::project_letter),
+    // so a letter about 6.114.0 kept through a failed rewrite for 6.115.0 arrives as
+    // superseded: the card offering 6.115.0 must not present it as that update's letter.
+    const view = updateLetterView({
+        ...AVAILABLE,
+        latest_version: '6.115.0',
+        letter: letter({
+            state: 'failed', relation: 'superseded',
+            error_kind: 'provider_unavailable', error_text: '503', has_last_good: true,
+        }),
+    }, '');
+    assert.equal(view.state, 'failed');
+    assert.equal(view.label, "What's new");
+    assert.equal(view.meta.targetVersion, '6.114.0');
+    assert.equal(
+        view.note,
+        'written for 6.113.5 → 6.114.0 · rewriting this letter failed (503); showing the last one that succeeded',
+    );
+});
+
+
 test('a failed letter with no text still names why there is nothing to read', () => {
     const view = updateLetterView({
         ...AVAILABLE,
@@ -180,13 +202,12 @@ test('the letter hides wherever it could only mislead', () => {
         assert.equal(updateVerdict(data, '').state, expected, `fixture no longer produces ${expected}`);
         assert.equal(updateLetterView(data, '').state, 'none', `${expected} must not carry a letter`);
     }
-    // Transient phases whose own headline owns the card.
-    for (const phase of ['loading', 'checking', 'restarting']) {
-        assert.equal(updateLetterView({ ...AVAILABLE, letter: letter() }, phase).state, 'none', phase);
-    }
-    // …and the phases that keep it: an owner mid-update is exactly who wants
-    // to read what the update brings.
-    for (const phase of ['', 'preflighting', 'updating', 'restart_required', 'restart_needed']) {
+    // The restart phase: the served-SHA reload owns the card.
+    assert.equal(updateLetterView({ ...AVAILABLE, letter: letter() }, 'restarting').state, 'none');
+    // …and the phases that keep it: a passive refresh (tab reopen) or a running
+    // check must not blank the last known paragraph, and an owner mid-update is
+    // exactly who wants to read what the update brings.
+    for (const phase of ['', 'loading', 'checking', 'preflighting', 'updating', 'restart_required', 'restart_needed']) {
         assert.equal(updateLetterView({ ...AVAILABLE, letter: letter() }, phase).state, 'ready', phase);
     }
 });
@@ -213,7 +234,7 @@ test('a letter-bearing payload leaves the verdict byte-for-byte identical', () =
 
 test('the letter section sits between the action row and Recovery, and adds no control', () => {
     const actionRow = SOURCE.indexOf('class="settings-action-row updates-action-row"');
-    const section = SOURCE.indexOf('<section class="updates-letter" id="updates-letter" hidden>');
+    const section = SOURCE.indexOf('<section class="updates-letter" id="updates-letter" aria-labelledby="updates-letter-label" hidden>');
     const recovery = SOURCE.indexOf('<details class="updates-recovery">');
     assert.ok(actionRow > -1 && section > -1 && recovery > -1, 'the card template moved');
     assert.ok(actionRow < section, 'the letter belongs BELOW the single primary action');
@@ -221,9 +242,15 @@ test('the letter section sits between the action row and Recovery, and adds no c
 
     const card = SOURCE.slice(section, recovery);
     assert.match(card, /class="updates-letter-head"/);
+    // A real heading names the section (aria-labelledby above), like Recovery's h4.
+    assert.match(card, /<h4 class="updates-letter-label" id="updates-letter-label">/);
     assert.match(card, /class="updates-letter-meta"/);
     assert.match(card, /class="updates-letter-note"/);
-    assert.match(card, /class="updates-letter-body ui-rich-content"[^>]*data-chat-markdown-enhanced="1"/);
+    assert.match(card, /class="updates-letter-body ui-rich-content" id="updates-letter-body">/);
+    // The enhancer marks the body itself; a static or duplicate mark would claim
+    // an un-enhanced node is enhanced.
+    assert.doesNotMatch(card, /data-chat-markdown-enhanced/);
+    assert.doesNotMatch(SOURCE, /chatMarkdownEnhanced/);
     // The letter is a fact, not an action: no button of its own, and above all
     // no Retry (a failed write is the backend's to retry, not a control here).
     assert.doesNotMatch(card, /<button/);

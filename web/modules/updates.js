@@ -206,10 +206,14 @@ export function updateVerdict(data = {}, phase = '') {
 // the verdict.
 
 // Hidden where the letter could only mislead: a checkout that managed updates
-// do not own, a status the panel could not read, and the transient phases
-// whose own headline already owns the card.
+// do not own (unmanaged), a status the panel could not read (check_failed,
+// unknown), a target no fetching check has named yet (unchecked), and the
+// restart phase, whose served-SHA reload owns the card. Loading and checking
+// KEEP it: the paragraph is still the last known fact, and a passive refresh
+// or a running check must not blank it — that is what the letter renderer's
+// content key is for.
 const LETTER_HIDDEN_VERDICTS = new Set(['unmanaged', 'check_failed', 'unknown', 'unchecked']);
-const LETTER_HIDDEN_PHASES = new Set(['loading', 'checking', 'restarting']);
+const LETTER_HIDDEN_PHASES = new Set(['restarting']);
 const LETTER_RELATIONS = new Set(['pending', 'applied', 'superseded', 'other']);
 // `applied` is the one relation whose label changes: the running version IS
 // the letter's target, so the paragraph is history, not a preview.
@@ -370,13 +374,13 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
                     <span class="updates-action-note" id="updates-action-note"></span>
                     <button class="btn btn-primary" id="btn-update-primary" hidden></button>
                 </div>
-                <section class="updates-letter" id="updates-letter" hidden>
+                <section class="updates-letter" id="updates-letter" aria-labelledby="updates-letter-label" hidden>
                     <div class="updates-letter-head">
-                        <span class="updates-letter-label" id="updates-letter-label"></span>
+                        <h4 class="updates-letter-label" id="updates-letter-label"></h4>
                         <span class="updates-letter-meta" id="updates-letter-meta"></span>
                     </div>
                     <div class="updates-letter-note" id="updates-letter-note" hidden></div>
-                    <div class="updates-letter-body ui-rich-content" id="updates-letter-body" data-chat-markdown-enhanced="1"></div>
+                    <div class="updates-letter-body ui-rich-content" id="updates-letter-body"></div>
                 </section>
                 <details class="updates-recovery">
                     <summary>Recovery</summary>
@@ -443,8 +447,8 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
 
     // Called from render() on every phase change and status load. The head is
     // cheap text, but the body is re-rendered ONLY when its content key moves:
-    // an unchanged letter keeps its DOM, and with it the owner's selection and
-    // any mounted chart.
+    // an unchanged letter keeps its DOM through a passive refresh and a running
+    // check, and with it the owner's selection and any mounted chart.
     function renderLetter() {
         const view = updateLetterView(latestStatus || {}, phase);
         if (view.state === 'none') {
@@ -471,7 +475,6 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
         letterBody.hidden = !view.markdown;
         letterBody.innerHTML = view.markdown ? renderChatMarkdown(view.markdown) : '';
         if (!view.markdown) return;
-        letterBody.dataset.chatMarkdownEnhanced = '1';
         // No anchored scroll to protect on this page, so markdown's deferred
         // writes (highlight, latex, mermaid, charts) run directly.
         letterDisposer = enhanceChatMarkdown(letterBody, { onDomWrite: (mutate) => mutate() });

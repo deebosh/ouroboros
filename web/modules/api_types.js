@@ -1242,7 +1242,7 @@
  * @property {''|'no_credentials'|'budget_exhausted'|'context_overflow'|'timeout'|'provider_unavailable'|'empty_response'} error_kind
  * @property {string} error_text  short, secret-free; empty when state is ready
  * @property {{base_sha: string, target_sha: string, update_channel: string, target_ref: string}} key  the exact range the letter was written for
- * @property {boolean} has_last_good  a previous good letter for the same range is carried in `text`
+ * @property {boolean} has_last_good  `text` is the previous good letter kept through a failed rewrite; `relation`, `key` and the provenance describe THAT letter, not the range that failed
  */
 
 export const MAX_LINK_ACTIONS = 12;
