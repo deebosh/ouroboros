@@ -57,6 +57,7 @@ from ouroboros.subagents import (
     envelope_from_task,
     resolve_subagent_dispatch,
 )
+from ouroboros.settings_setup_contract import resolve_total_budget_usd
 from ouroboros.subagent_messages import subagent_message_meta
 
 
@@ -1021,9 +1022,9 @@ class OuroborosAgent:
 
             budget_root_text = str(task.get("budget_drive_root") or "").strip()
             budget_root = pathlib.Path(budget_root_text) if budget_root_text else self.env.drive_root
-            total_budget = float(os.environ.get("TOTAL_BUDGET", "1"))
+            total_budget = resolve_total_budget_usd()
             projection = usage_projection(budget_root, global_limit_usd=total_budget)
-            if total_budget > 0:
+            if total_budget is not None:
                 budget_remaining = max(0.0, total_budget - float(projection.get("accounted_usd") or 0.0))
         except Exception:
             budget_accounting_status = "unavailable"
@@ -1069,10 +1070,7 @@ class OuroborosAgent:
         root_task_id = str(task.get("root_task_id") or metadata.get("root_task_id") or task_id)
         parent_task_id = str(task.get("parent_task_id") or metadata.get("parent_task_id") or "")
         budget_root = task.get("budget_drive_root") or metadata.get("budget_drive_root") or self.env.drive_root
-        try:
-            global_limit = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-        except (TypeError, ValueError):
-            global_limit = 0.0
+        global_limit = resolve_total_budget_usd()
         try:
             root_limit = float(os.environ.get("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
         except (TypeError, ValueError):
@@ -1084,7 +1082,7 @@ class OuroborosAgent:
             parent_task_id=parent_task_id,
             category=str(task.get("type") or "task"),
             source="agent.task",
-            global_limit_usd=global_limit if global_limit > 0 else None,
+            global_limit_usd=global_limit,
             root_limit_usd=root_limit if root_limit > 0 else None,
         )
         with usage_scope(scope):

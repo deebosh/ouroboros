@@ -1498,13 +1498,18 @@ by "Provider Independence" above. Call-site imperatives:
   admission and the transport bound cannot disagree.
 - Tree-spend pacing decides on root-subtree ledger spend including in-flight
   holds; own cost is a disclosed lower-bound fallback, and unavailable is
-  unknown, never `$0`. Refresh `usage_accounting.last_root_accounting` only
+  unknown, never `$0`. One deciding money number per tree, resolved once and
+  disclosed as the same object the loop later decides on, printed with its
+  binding bound named on every host cost surface. Refresh `usage_accounting.last_root_accounting` only
   at rare cache-breaking decision surfaces, never per round or inside a
   stable cached prefix (`tests/test_budget_limits.py`). Graceful
   finalization precedes the ledger fence because the affordability rail
   borrows the fence's own per-attempt reservation (cache-aware from the
   task's last settled split), never a constant margin alone and never a
-  per-round ledger scan (`tests/test_tree_cost_ceiling.py`). Post-task
+  per-round ledger scan (`tests/test_tree_cost_ceiling.py`). Read the
+  configured global budget through the one resolver rather than an
+  inline default, so the loop axis, the bound scope and the ledger fence
+  cannot disagree about the same install. Post-task
   consolidation/synthesis reads `usage_breakdown` once per root subtree and
   passes the same snapshot to summary and reflection; it is explicitly
   non-final because those flows have not spent yet — treating a read

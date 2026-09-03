@@ -1088,9 +1088,9 @@ class ReviewCoordinator:
             global_limit = base_scope.global_limit_usd
         else:
             try:
-                configured_global_limit = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-                global_limit = configured_global_limit if configured_global_limit > 0 else None
-            except (TypeError, ValueError):
+                from ouroboros.settings_setup_contract import resolve_total_budget_usd
+                global_limit = resolve_total_budget_usd()
+            except Exception:
                 global_limit = None
         if base_scope.root_limit_usd is not None:
             root_limit = base_scope.root_limit_usd

@@ -7,6 +7,7 @@ root-resolved ceiling every tree member shares, and the global-budget default.
 from __future__ import annotations
 
 import queue
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -241,3 +242,144 @@ class TestWrapupAffordabilityRail:
 
         assert "$49.900" in text and "$50.00" in text
         assert "wrap-up call" in text
+
+
+class TestOneCeilingPerTree:
+    """Every member of one tree decides on the same money number."""
+
+    def _profile(self):
+        return normalize_budget_profile(None)
+
+    def test_a_non_root_member_under_a_root_cap_drops_the_global_component(self):
+        root = task_pacing.resolve_cost_ceiling(20.0, self._profile(), root_cap_usd=50.0)
+        member = task_pacing.resolve_cost_ceiling(
+            20.0, self._profile(), root_cap_usd=50.0, non_root_member=True,
+        )
+
+        assert "global_pct" in root.basis
+        assert "global_pct" not in member.basis
+        assert "non_root_member" in member.basis
+        assert member.ceiling_usd == 50.0 - task_pacing.COST_PLANNING_MARGIN_USD
+
+    def test_a_descendant_ceiling_does_not_move_when_global_remaining_falls(self):
+        early = task_pacing.resolve_cost_ceiling(
+            40.0, self._profile(), root_cap_usd=50.0, non_root_member=True,
+        )
+        late = task_pacing.resolve_cost_ceiling(
+            4.0, self._profile(), root_cap_usd=50.0, non_root_member=True,
+        )
+
+        assert early.ceiling_usd == late.ceiling_usd
+
+    def test_without_a_root_cap_the_global_component_still_binds(self):
+        member = task_pacing.resolve_cost_ceiling(
+            20.0, self._profile(), root_cap_usd=None, non_root_member=True,
+        )
+
+        assert "global_pct" in member.basis
+        assert member.ceiling_usd == 10.0
+
+    def test_the_default_keeps_the_historical_root_semantics(self):
+        positional = task_pacing.resolve_cost_ceiling(20.0, self._profile(), root_cap_usd=50.0)
+
+        assert positional.basis == "min(global_pct, root_cap_minus_margin)"
+
+    def test_a_tree_member_resolves_the_cap_minus_margin_from_its_scope(self):
+        with _scoped("child", "root", 50.0):
+            ceiling = task_pacing.resolve_task_cost_ceiling(SimpleNamespace(), 40.0)
+
+        assert "non_root_member" in ceiling.basis
+        assert ceiling.ceiling_usd == 50.0 - task_pacing.COST_PLANNING_MARGIN_USD
+
+    def test_the_root_of_the_tree_keeps_both_components(self):
+        with _scoped("root", "root", 50.0):
+            ceiling = task_pacing.resolve_task_cost_ceiling(SimpleNamespace(), 40.0)
+
+        assert "global_pct" in ceiling.basis
+
+    def test_the_disclosed_ceiling_is_the_object_the_loop_decides_on(self):
+        from ouroboros.loop import _resolve_task_cost_ceiling
+
+        ctx = SimpleNamespace()
+        with _scoped("root", "root", 50.0):
+            disclosure = task_pacing.in_task_cost_ceiling_disclosure(ctx, 40.0)
+            deciding = _resolve_task_cost_ceiling(ctx, 4.0)
+
+        assert deciding is ctx._cost_ceiling
+        assert disclosure["ceiling_usd"] == deciding.ceiling_usd
+        assert disclosure["state"] == deciding.state
+
+    def test_a_context_that_cannot_be_stashed_still_discloses(self):
+        disclosure = task_pacing.in_task_cost_ceiling_disclosure(object(), 40.0)
+
+        assert "state" in disclosure and "rule" in disclosure
+
+    def test_the_checkpoint_and_the_pacing_note_share_one_formatter(self):
+        active = task_pacing.resolve_cost_ceiling(
+            None, normalize_budget_profile(None), root_cap_usd=50.0,
+        )
+        line = task_pacing.tree_spend_line(
+            {"accounted_usd": 12.0, "root_limit_usd": 50.0}, active,
+        )
+
+        assert line.startswith("Task tree spend: ~$12.00")
+        assert "in-task cost ceiling" in line and "$50.00 hard tree cap" in line
+        assert task_pacing.tree_spend_line({"accounted_usd": None}, active) == ""
+
+    def test_the_rails_line_names_the_binding_bound(self):
+        ceiling_binds = task_pacing._headroom_phrase(40.0, 10.0, 2.0)
+        wallet_binds = task_pacing._headroom_phrase(3.0, 40.0, 2.0)
+
+        assert ceiling_binds == "$8.00 budget left (in-task cost ceiling binds)"
+        assert wallet_binds == "$3.00 budget left (wallet binds)"
+        assert task_pacing._headroom_phrase(None, None, None) == "budget left unknown"
+
+
+class TestGlobalBudgetDefault:
+    """One number for the global budget, whatever the reader."""
+
+    def test_an_absent_setting_resolves_the_product_default(self, monkeypatch):
+        from ouroboros.config import SETTINGS_DEFAULTS
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+
+        monkeypatch.delenv("TOTAL_BUDGET", raising=False)
+
+        assert resolve_total_budget_usd() == float(SETTINGS_DEFAULTS["TOTAL_BUDGET"])
+
+    def test_an_explicit_zero_stays_no_finite_global_budget(self, monkeypatch):
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+
+        monkeypatch.setenv("TOTAL_BUDGET", "0")
+
+        assert resolve_total_budget_usd() is None
+
+    def test_junk_falls_back_to_the_product_default(self, monkeypatch):
+        from ouroboros.config import SETTINGS_DEFAULTS
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+
+        monkeypatch.setenv("TOTAL_BUDGET", "not-a-number")
+
+        assert resolve_total_budget_usd() == float(SETTINGS_DEFAULTS["TOTAL_BUDGET"])
+
+    def test_every_reader_agrees_on_the_absent_setting(self, monkeypatch):
+        """Regression: an env-less harness install used to see $1 on the loop's
+        money axis, no limit at all on the bound scope, and $200 at the ledger
+        fence -- so one round of work could reject every later task."""
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+        from ouroboros.usage_accounting import _global_limit
+
+        monkeypatch.delenv("TOTAL_BUDGET", raising=False)
+        expected = resolve_total_budget_usd()
+
+        assert expected is not None and expected > 1.0
+        assert _global_limit(_request()) == expected
+
+    def test_an_unset_budget_no_longer_rejects_a_task_at_round_one(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("TOTAL_BUDGET", raising=False)
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+
+        assert resolve_total_budget_usd() is not None
+        ctx = _ctx(round_idx=1, accumulated_usage={"cost": 1.5})
+        disabled = task_pacing.resolve_cost_ceiling(None, normalize_budget_profile(None))
+
+        assert _check_budget_limits(ctx, None, disabled) is None

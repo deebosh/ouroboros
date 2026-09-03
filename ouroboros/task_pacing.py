@@ -447,6 +447,7 @@ def resolve_cost_ceiling(
     profile: Dict[str, Any],
     *,
     root_cap_usd: Optional[float] = None,
+    non_root_member: bool = False,
 ) -> CostCeiling:
     """The in-task cost stop, computed ONCE at loop start (typed; v6.91).
 
@@ -459,6 +460,12 @@ def resolve_cost_ceiling(
     the owner's chosen cap would silently halve it). The ceiling is
     min(available components); NEVER a computed $0 — a root cap at or below the
     margin resolves to ``exhausted_soft_land`` instead.
+
+    ONE deciding number per task tree: a non-root member under a root cap skips
+    the global component entirely, because that component is each member's own
+    view of the shared wallet and would hand every later descendant a tighter
+    ceiling than its parent for spending the same tree's money. Without a root
+    cap the global component is all there is, so it stays.
 
     Stated plainly rather than implied: the ``room <= 0`` bail is the owner's
     "$0 ceiling" rule EXACTLY, no wider. A cap just ABOVE the margin therefore
@@ -487,7 +494,12 @@ def resolve_cost_ceiling(
             )
         components: list[float] = []
         basis_parts: list[str] = []
-        if budget_remaining_start_usd is not None and float(budget_remaining_start_usd) > 0:
+        has_root_cap = root_cap_usd is not None and float(root_cap_usd) > 0
+        if (
+            not (non_root_member and has_root_cap)
+            and budget_remaining_start_usd is not None
+            and float(budget_remaining_start_usd) > 0
+        ):
             components.append(float(budget_remaining_start_usd) * (pct / 100.0))
             basis_parts.append("global_pct")
         margin: Optional[float] = None
@@ -505,6 +517,8 @@ def resolve_cost_ceiling(
                 )
             components.append(room)
             basis_parts.append("root_cap_minus_margin")
+            if non_root_member:
+                basis_parts.append("non_root_member")
         if not components:
             return CostCeiling(state=COST_CEILING_DISABLED, basis="no_finite_budget")
         return CostCeiling(
@@ -521,6 +535,95 @@ def resolve_cost_ceiling(
     except Exception:
         log.warning("Cost ceiling resolution failed; axis stays silent", exc_info=True)
         return CostCeiling(state=COST_CEILING_UNKNOWN, basis="resolve_error")
+
+
+def resolve_task_cost_ceiling(ctx: Any, budget_remaining_usd: Optional[float]) -> CostCeiling:
+    """The typed in-task cost stop of ONE task, resolved once per task.
+
+    The root cap comes from the bound usage scope -- the SAME
+    ``OUROBOROS_PER_TASK_COST_USD``-derived value the ledger fence enforces
+    (``agent.py`` wires it as ``UsageScope.root_limit_usd``), so the graceful
+    stop and the fence can never disagree about the cap. The same scope says
+    whether this task is the root of its tree or one of its members."""
+    root_cap = None
+    non_root_member = False
+    try:
+        from ouroboros.usage_accounting import current_usage_scope
+
+        scope = current_usage_scope()
+        if scope is not None:
+            root_cap = getattr(scope, "root_limit_usd", None)
+            non_root_member = bool(
+                scope.root_task_id and scope.task_id and scope.root_task_id != scope.task_id
+            )
+    except Exception:
+        log.debug("Usage scope unavailable for cost ceiling resolution", exc_info=True)
+    return resolve_cost_ceiling(
+        budget_remaining_usd,
+        resolve_budget_profile(ctx),
+        root_cap_usd=root_cap,
+        non_root_member=non_root_member,
+    )
+
+
+def cost_ceiling_disclosure(ceiling: CostCeiling) -> Dict[str, Any]:
+    """The start-of-task shape of the ceiling the loop will actually decide on."""
+    return {
+        "state": ceiling.state,
+        "ceiling_usd": ceiling.ceiling_usd,
+        "root_cap_usd": ceiling.root_cap_usd,
+        "planning_margin_usd": ceiling.planning_margin_usd,
+        "basis": ceiling.basis,
+        "rule": (
+            "The graceful in-task cost stop of THIS task's whole tree, resolved once at task "
+            "start: the root resolves min(configured share of global remaining, hard tree cap "
+            "minus a planning margin) and every other member of the tree gets the same cap "
+            "minus that margin, so one tree has one deciding number. Crossing it asks for a "
+            "best-effort final answer; the ledger fence at the full cap still binds "
+            "independently. Budget checkpoints during the task report the live tree spend."
+        ),
+    }
+
+
+def in_task_cost_ceiling_disclosure(ctx: Any, budget_remaining_usd: Optional[float]) -> Dict[str, Any]:
+    """Resolve this task's ceiling once, stash it on ctx, and disclose that object.
+
+    The loop reads the same stashed object, so the number the model is shown at
+    task start and the number that later stops the task cannot differ."""
+    ceiling = resolve_task_cost_ceiling(ctx, budget_remaining_usd)
+    try:
+        setattr(ctx, "_cost_ceiling", ceiling)
+    except Exception:
+        log.debug("Cost ceiling could not be stashed on the tool context", exc_info=True)
+    return cost_ceiling_disclosure(ceiling)
+
+
+def tree_spend_line(tree_info: Any, ceiling: Optional[CostCeiling] = None) -> str:
+    """The one live tree-spend line the checkpoint and the pacing note share.
+
+    Names the BINDING bound: the in-task ceiling when one is active (that is
+    what stops the task first), with the hard tree cap the ledger fence
+    enforces beside it. Empty string when tree accounting is unavailable --
+    unknown is never rendered as $0."""
+    if not isinstance(tree_info, dict) or tree_info.get("accounted_usd") is None:
+        return ""
+    raw_cap = tree_info.get("root_limit_usd")
+    cap = float(raw_cap) if raw_cap is not None else None
+    ceiling_usd = (
+        ceiling.ceiling_usd
+        if ceiling is not None and ceiling.state == COST_CEILING_ACTIVE
+        else None
+    )
+    if ceiling_usd is not None:
+        bound = f" of ${ceiling_usd:.2f} in-task cost ceiling"
+        if cap is not None:
+            bound += f" (${cap:.2f} hard tree cap)"
+    else:
+        bound = f" of ${cap:.2f} hard tree cap" if cap is not None else ""
+    return (
+        f"Task tree spend: ~${float(tree_info['accounted_usd']):.2f}{bound} "
+        "(ledger-accounted incl. in-flight holds, subagents included)"
+    )
 
 
 def wrapup_unaffordable_text(deciding_usd: float, ceiling: CostCeiling) -> str:
@@ -775,6 +878,29 @@ def acceptance_rails_line(
         return ""
 
 
+def _headroom_phrase(
+    remaining_known_usd: Optional[float],
+    cost_ceiling_usd: Optional[float],
+    task_cost_usd: Optional[float],
+) -> str:
+    """Money headroom to the bound that actually binds first, and which one it is.
+
+    The wallet remainder alone reads as more room than the task has: the
+    in-task ceiling usually stops it earlier. Both are shown as one number so
+    the mind plans against the real limit, with the binding bound named."""
+    wallet = None if remaining_known_usd is None else float(remaining_known_usd)
+    ceiling_room = None
+    if cost_ceiling_usd is not None and task_cost_usd is not None:
+        ceiling_room = max(0.0, float(cost_ceiling_usd) - float(task_cost_usd))
+    if wallet is None and ceiling_room is None:
+        return "budget left unknown"
+    if ceiling_room is None:
+        return f"${wallet:.2f} budget left (wallet binds)"
+    if wallet is None or ceiling_room <= wallet:
+        return f"${ceiling_room:.2f} budget left (in-task cost ceiling binds)"
+    return f"${wallet:.2f} budget left (wallet binds)"
+
+
 def _acceptance_rails_line_inner(
     budget_snapshot: Any,
     budget_profile: Dict[str, Any],
@@ -807,8 +933,7 @@ def _acceptance_rails_line_inner(
                     scope.drive_root, root_task_id=scope.root_task_id,
                 )
                 remaining = projection.get("remaining_known_usd")
-                if remaining is not None:
-                    money_bits.append(f"${float(remaining):.2f} budget left")
+                money_bits.append(_headroom_phrase(remaining, rails.get("cost_ceiling_usd"), cost))
         except Exception:
             log.debug("rails: budget projection unavailable", exc_info=True)
         if money_bits:
@@ -998,15 +1123,12 @@ def build_intrinsic_pacing_note(
             tree_info = tree_cost_provider()
         except Exception:
             tree_info = None
-        if isinstance(tree_info, dict) and tree_info.get("accounted_usd") is not None:
+        rendered = tree_spend_line(tree_info, getattr(ctx, "_cost_ceiling", None))
+        if rendered:
             tree_accounted = float(tree_info["accounted_usd"])
             raw_cap = tree_info.get("root_limit_usd")
             tree_cap = float(raw_cap) if raw_cap is not None else None
-            cap_text = f" of ${tree_cap:.2f} tree cap" if tree_cap is not None else ""
-            tree_line = (
-                f" | Task tree spend: ~${tree_accounted:.2f}{cap_text} "
-                "(ledger-accounted incl. in-flight holds, subagents included)"
-            )
+            tree_line = f" | {rendered}"
     _marker_tail = (
         " If you have a current best short answer, record it with a `FINAL ANSWER:` line "
         "before continuing so it remains salvageable if later work stalls."

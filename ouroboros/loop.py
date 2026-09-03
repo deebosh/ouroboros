@@ -381,23 +381,13 @@ def _resolve_task_cost_ceiling(
 ) -> "task_pacing.CostCeiling":
     """The typed in-task cost stop, resolved ONCE at loop start.
 
-    The root cap comes from the bound usage scope — the SAME
-    ``OUROBOROS_PER_TASK_COST_USD``-derived value the ledger fence enforces
-    (agent.py wires it as ``UsageScope.root_limit_usd``), so the graceful stop
-    and the fence can never disagree about the cap."""
-    root_cap = None
-    try:
-        from ouroboros.usage_accounting import current_usage_scope
-
-        scope = current_usage_scope()
-        root_cap = getattr(scope, "root_limit_usd", None) if scope is not None else None
-    except Exception:
-        log.debug("Usage scope unavailable for cost ceiling resolution", exc_info=True)
-    return task_pacing.resolve_cost_ceiling(
-        budget_remaining_usd,
-        task_pacing.resolve_budget_profile(ctx),
-        root_cap_usd=root_cap,
-    )
+    The number lives in the pacing SSOT; this prefers the object already
+    resolved and disclosed to the model at task start, so the ceiling the mind
+    was shown and the ceiling that stops the task are the same object."""
+    disclosed = getattr(ctx, "_cost_ceiling", None)
+    if isinstance(disclosed, task_pacing.CostCeiling):
+        return disclosed
+    return task_pacing.resolve_task_cost_ceiling(ctx, budget_remaining_usd)
 
 
 # Bounded staleness for the two DECIDING cost surfaces (ceiling check,
@@ -2051,6 +2041,7 @@ def _maybe_inject_self_check(
     event_queue: Optional[queue.Queue] = None,
     task_id: str = "",
     drive_logs: Optional[pathlib.Path] = None,
+    cost_ceiling: Optional["task_pacing.CostCeiling"] = None,
 ) -> bool:
     """Inject a normal user-turn self-check and emit one checkpoint event."""
     REMINDER_INTERVAL = 15
@@ -2078,15 +2069,12 @@ def _maybe_inject_self_check(
     tree_accounted: Optional[float] = None
     tree_cap: Optional[float] = None
     tree_info = _loop_tree_accounting(refresh=True, max_age_sec=30.0)
-    if isinstance(tree_info, dict) and tree_info.get("accounted_usd") is not None:
+    rendered = task_pacing.tree_spend_line(tree_info, cost_ceiling)
+    if rendered:
         tree_accounted = float(tree_info["accounted_usd"])
         raw_cap = tree_info.get("root_limit_usd")
         tree_cap = float(raw_cap) if raw_cap is not None else None
-        cap_text = f" of ${tree_cap:.2f} hard tree cap" if tree_cap is not None else ""
-        tree_line = (
-            f"Task tree spend: ~${tree_accounted:.2f}{cap_text} "
-            "(ledger-accounted incl. in-flight holds, subagents included)\n"
-        )
+        tree_line = f"{rendered}\n"
 
     tool_trace = _build_recent_tool_trace(messages)
 
@@ -2301,6 +2289,7 @@ def _inject_round_checkpoints(
     checkpoint = _maybe_inject_self_check(
         round_idx, max_rounds, messages, accumulated_usage, emit_progress,
         event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
+        cost_ceiling=cost_ceiling,
     )
     time_budget = _maybe_inject_time_budget_milestone(
         messages, tools, event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
@@ -4074,10 +4063,12 @@ def _no_tool_final_answer(
             _publish_delivery_candidate(tools, candidate, llm_trace)
         content = candidate.full_text
 
+    _rails_ceiling = getattr(tools._ctx, "_cost_ceiling", None)
     tools._ctx._acceptance_loop_rails = {
         "round_idx": limit_ctx.round_idx,
         "max_rounds": limit_ctx.max_rounds,
         "task_cost_usd": limit_ctx.accumulated_usage.get("cost"),
+        "cost_ceiling_usd": getattr(_rails_ceiling, "ceiling_usd", None),
     }
     # v6.78.0 (owner Q20/Q22): mirror the host-attested native-retrieval
     # fact into the trace so `build_task_acceptance_evidence` can show the
