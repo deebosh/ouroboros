@@ -1,4 +1,4 @@
-import { accountedUpperBound, accountedUpperBoundWithChildren, formatUsd4 } from './utils.js';
+import { accountedUpperBound, accountedUpperBoundWithChildren, formatUsd4, joinMarkdownHeadings } from './utils.js';
 import { harnessPresentation } from './harness_presentation.js';
 import {
     classifyReviewLifecycle,
@@ -54,10 +54,15 @@ function shortText(text, maxLen = 180) {
     return s.length > maxLen ? s.slice(0, maxLen - 3) + '...' : s;
 }
 
-function describeText(text, maxLen = 180) {
+// For markdown narration, headings are projected (markers off, ` — ` before the
+// text under them) BEFORE the newlines collapse into the one-line preview:
+// afterwards no line-anchored rule could tell a heading from prose. Typed text
+// (shell commands, errors, traces) is never markdown: a `# comment` stays one.
+// `full` stays the source text either way.
+function describeText(text, maxLen = 180, { markdown = false } = {}) {
     const full = String(text || '').trim();
     if (!full) return { preview: '', full: '' };
-    const previewSource = full.replace(/\s+/g, ' ');
+    const previewSource = (markdown ? joinMarkdownHeadings(full) : full).replace(/\s+/g, ' ');
     return {
         preview: previewSource.length > maxLen ? previewSource.slice(0, maxLen - 3) + '...' : previewSource,
         full,
@@ -234,16 +239,18 @@ export function executorChip(evt) {
     };
 }
 
-function subagentHeadline(sid = '', role = '', label = '', model = '') {
+// The child card's headline is its identity, not its status: `role · model`
+// (or `Subagent · model` when the role is unknown). The status lives in the
+// card's chip, so no ` — Done` suffix, and the short task id is never part of
+// the compact form — chat.js appends it for twins at render time. Logs keep
+// the full diagnostic form (`role · model (id) — status`).
+function subagentHeadline(sid = '', role = '', label = '', model = '', { full = false } = {}) {
     const shortId = String(sid || '').slice(0, 8);
-    const cleanRole = String(role || '').trim();
-    const suffix = label ? ` — ${label}` : '';
+    const cleanRole = String(role || '').trim() || 'Subagent';
+    const suffix = full && label ? ` — ${label}` : '';
     // Show the resolved model compactly NEXT TO the role (e.g. "planning-scout · gemini-3.5-flash").
     const modelPart = compactModel(model) ? ` · ${compactModel(model)}` : '';
-    if (cleanRole) {
-        return `${cleanRole}${modelPart}${shortId ? ` (${shortId})` : ''}${suffix}`;
-    }
-    return `Subagent ${shortId || 'child'}${modelPart}${suffix}`;
+    return `${cleanRole}${modelPart}${shortId && full ? ` (${shortId})` : ''}${suffix}`;
 }
 
 const SUBAGENT_CARD_LABEL = {
@@ -476,7 +483,7 @@ export function summarizeLogEvent(evt) {
             const sid = subagentId(evt);
             const event = String(evt.subagent_event || 'update').toLowerCase();
             const role = String(evt.subagent_role || '').trim();
-            return view(event === 'completed' ? 'done' : event === 'failed' || event === 'rejected' ? 'warn' : 'progress', subagentHeadline(sid, role, event, evt.model), {
+            return view(event === 'completed' ? 'done' : event === 'failed' || event === 'rejected' ? 'warn' : 'progress', subagentHeadline(sid, role, event, evt.model, { full: true }), {
                 body: shortText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240),
                 meta: [
                     sid ? `task=${sid}` : '',
@@ -818,7 +825,7 @@ function chatView({
 export function summarizeChatLiveEvent(evt) {
     const t = evt.type || evt.event || 'unknown';
     const groupId = getLogTaskGroupId(evt);
-    const progressText = describeText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240);
+    const progressText = describeText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240, { markdown: true });
     const key = (...parts) => [t, groupId, ...parts].join(':');
 
     if (t === 'owner_hurry') {
@@ -865,7 +872,7 @@ export function summarizeChatLiveEvent(evt) {
         const rawEvent = String(evt.subagent_event || '').toLowerCase();
         const role = String(evt.subagent_role || '').trim();
         const status = String(evt.status || '').trim();
-        const resultText = describeText(evt.result || '', 320);
+        const resultText = describeText(evt.result || '', 320, { markdown: true });
         const traceText = describeText(evt.trace_summary || '', 320);
         const errorText = describeText(evt.error || '', 220);
         const reasonDetail = evt.reason_code ? `Reason: ${String(evt.reason_code)}` : '';

@@ -88,9 +88,12 @@ loop (answer / promote / route / delegate / do it myself), cross-tool policy
 through its own tools, untrusted external data), prohibitions and safety
 invariants stated once, and the memory contract. What does NOT belong there:
 how a tool or mechanism works. A tool's parameters, signatures, recipes,
-typed outcomes, and "when to choose it" live in its `get_tools()` schema — the
-schema is sent every round to every profile, so a prompt sentence about it is a
-second copy that drifts; mechanism documentation lives in ARCHITECTURE or here;
+typed outcomes, and "when to choose it" live in its `get_tools()` schema — each
+profile receives its own visible schema set on every round (delegated, repair,
+ephemeral, credential and contract filters narrow it), so the schema is the SSOT
+of the per-tool contract and a prompt sentence about it is a second copy that
+drifts, while SYSTEM.md stays the cross-tool selection policy; mechanism
+documentation lives in ARCHITECTURE or here;
 runtime facts (capabilities, queue, catalog, receipts, health) are injected per
 turn. A new tool therefore requires NO SYSTEM.md mention. Before adding a
 sentence to a prompt, check that the schema or runtime block does not already
@@ -1182,7 +1185,7 @@ latest Version History row, the named direct-download links in README and both
 install pages, and the Architecture header byte-identical to its target. At
 integration,
 `ouroboros/tools/release_sync.py::sync_release_metadata()` projects the chosen
-version and `version_carrier_desyncs()` verifies those carriers; changelog prose
+version and `version_carrier_desyncs()` verifies the file carriers (the history row is pinned by the packaging-sync test); changelog prose
 remains a deliberate maintainer edit. The same projection owns the seven public
 installer filename templates and rewrites the named direct-download links in
 README, the source install page, and its generated Pages copy. Those links use
@@ -2778,10 +2781,12 @@ that:
   failures in unrelated files. Mark such a test `@pytest.mark.serial` (or add its file to
   `_SERIAL_TEST_FILES` in `tests/conftest.py`) so it runs in the serial pass instead.
 - **Keep every other test parallel-safe** so it stays in the fast pass: use `tmp_path` (never a fixed
-  path like `/tmp/foo.pid`); use `monkeypatch.setenv` / `monkeypatch.setattr` (never a bare
-  `os.environ[...] = ...`, which leaks to other tests on the same worker); never assume execution
-  order; and if you must mutate a module global, reset it around the test (pattern:
-  `tests/conftest.py::_isolate_workspace_executor_globals`).
+  path like `/tmp/foo.pid`); use `monkeypatch.setenv` / `monkeypatch.delenv` for environment
+  changes — the autouse conftest snapshot (`_os_environ_isolation`) restores `os.environ` at every
+  test boundary, so a bare `os.environ[...] = ...` no longer leaks, but monkeypatch stays the rule
+  because it reverses exactly the named change inside the test (its undo runs last, after the
+  snapshot); never assume execution order; and if you must mutate a module global, reset it around
+  the test (pattern: `tests/conftest.py::_isolate_workspace_executor_globals`).
 
 ### The commit gate mirrors the CI split
 

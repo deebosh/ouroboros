@@ -222,16 +222,27 @@ PROMPT_NON_TOOL_IDENTIFIERS = frozenset({
     "project_id", "project_name", "recommended_use", "review_rebuttal",
     # typed outcomes / statuses / runtime-context keys
     "needs_manual_target", "started_uncustodied", "owner_client",
-    # safety policy class names (ouroboros/safety.py TOOL_POLICY values)
-    "check_conditional",
+    # safety policy class names (ouroboros/safety.py TOOL_POLICY values) and
+    # owner-setting values named as policy
+    "check_conditional", "check", "off", "low",
+    # package managers / interpreters named as acquisition or process choices
+    "pip", "pip3", "uv", "brew", "apt", "python", "python3", "sudo", "grep", "env",
+    # git branches / remotes / skill buckets / write surfaces named as policy
+    "ouroboros", "main", "managed", "origin", "external", "genesis", "deliverables",
+    # fenced-block languages the owner chat renders natively
+    "mermaid", "chart",
+    # backlog item status value in CONSCIOUSNESS.md
+    "done",
 })
 
 
 def _prompt_backticked_identifiers(text: str) -> set:
+    """Backticked lowercase identifiers, single-word ones included (a renamed
+    single-word tool such as `escalate` must be caught too)."""
     found = set()
     for token in re.findall(r"`([^`]+)`", text):
         head = token.split("(", 1)[0]
-        if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", head):
+        if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", head):
             found.add(head)
     return found
 
@@ -268,9 +279,17 @@ def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
         | set(BackgroundConsciousness._BG_TOOL_WHITELIST)
         | PROMPT_NON_TOOL_IDENTIFIERS
     )
-    for rel in ("prompts/SYSTEM.md", "prompts/SAFETY.md", "prompts/CONSCIOUSNESS.md"):
+    # CONSCIOUSNESS.md runs on the background registry, which admits ONLY the
+    # whitelist (consciousness.py _tool_schemas/_execute_tool), so a public tool
+    # that is not whitelisted is a phantom there.
+    bg_universe = set(BackgroundConsciousness._BG_TOOL_WHITELIST) | PROMPT_NON_TOOL_IDENTIFIERS
+    for rel, allowed in (
+        ("prompts/SYSTEM.md", universe),
+        ("prompts/SAFETY.md", universe),
+        ("prompts/CONSCIOUSNESS.md", bg_universe),
+    ):
         text = (root / rel).read_text(encoding="utf-8")
-        unresolved = _prompt_backticked_identifiers(text) - universe
+        unresolved = _prompt_backticked_identifiers(text) - allowed
         assert not unresolved, (
             f"{rel} names identifiers that are neither registered tools nor "
             f"classified non-tool identifiers: {sorted(unresolved)}"
@@ -279,7 +298,7 @@ def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
     # tokens must resolve the same way (the runtime drift check in
     # context_health only catches names with known prefixes).
     bare = _prompt_bare_identifiers((root / "prompts" / "CONSCIOUSNESS.md").read_text(encoding="utf-8"))
-    unresolved_bare = bare - universe
+    unresolved_bare = bare - bg_universe
     assert not unresolved_bare, (
         f"prompts/CONSCIOUSNESS.md names bare identifiers that are neither registered tools "
         f"nor classified non-tool identifiers: {sorted(unresolved_bare)}"
