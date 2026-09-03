@@ -563,6 +563,65 @@ def improvement_pass_allowed(
     return False, "improvement_window_inside_reserve"
 
 
+# The typed omission (owner R49 robustness): the optional improvement gate
+# raised, so its disclosure is absent — NOT a refusal, and never a reason to
+# call the paid panel unavailable.
+IMPROVEMENT_ADMISSION_UNKNOWN = "improvement_admission_unknown"
+
+
+@dataclass(frozen=True)
+class AcceptanceAdmission:
+    """Both acceptance admission answers over ONE set of explicit inputs.
+
+    ``improvement`` is ``None`` exactly when the optional improvement gate
+    raised, and ``improvement_unavailable`` then names that omission; ``launch``
+    is never optional — availability derives from it alone."""
+
+    launch: Tuple[bool, str]
+    improvement: Optional[Tuple[bool, str]] = None
+    improvement_unavailable: str = ""
+
+
+def acceptance_admission_projection(
+    snapshot: BudgetSnapshot,
+    *,
+    profile: Dict[str, Any],
+    paid_cycles: int,
+    estimated_sec: float,
+    required_blocking: bool = False,
+) -> AcceptanceAdmission:
+    """Both acceptance admissions over EXPLICIT inputs — ONE seam, so the
+    read-only capacity projection and the real acceptance gates cannot drift
+    apart again on the counter, the profile or the enforcement.
+
+    ``paid_cycles`` is the durable PAID-panel count (the claims ledger). The
+    improvement gate's ``passes_done`` means COMPLETED IMPROVEMENT PASSES, so
+    this converts: ``max(0, paid_cycles - 1)`` — the same identity
+    ``review_cycles.acceptance_max_improvement_passes_from_cycles`` encodes
+    (cycles - 1), restart-safe, and equal to production's in-memory
+    ``ctx.passes_done`` at the moment that gate runs (after N paid panels, N-1
+    improvements have completed). Handing the paid count straight through would
+    make the shipped default (2 cycles -> 1 pass) report the cap exhausted after
+    the FIRST panel while the real gate still admits.
+
+    PURE: ``ctx=None`` keeps the improvement gate's ``review_cycles_exhausted``
+    escalation unreachable from a poll, and the optional improvement call gets
+    its OWN try — an auxiliary failure omits one disclosure instead of degrading
+    an admissible PAID panel to ``unknown``."""
+    launch = review_launch_allowed(snapshot, estimated_sec=estimated_sec)
+    try:
+        improvement = improvement_pass_allowed(
+            snapshot, max(0, int(paid_cycles) - 1), profile,
+            required_blocking=required_blocking, estimated_sec=estimated_sec, ctx=None,
+        )
+    except Exception:
+        log.debug("acceptance improvement admission unavailable", exc_info=True)
+        return AcceptanceAdmission(
+            launch=launch, improvement_unavailable=IMPROVEMENT_ADMISSION_UNKNOWN,
+        )
+    return AcceptanceAdmission(launch=launch, improvement=improvement)
+
+
 # ---------------------------------------------------------------------------
 # Milestone note content (moved from loop.py; loop keeps only transport).
 

@@ -72,7 +72,6 @@ def _root_task_acceptance_review_cap(
             "TASK_ACCEPTANCE_REVIEW_STATE_UNKNOWN: root cap authority is absent"
         )
 
-    from ouroboros import config
     from ouroboros.contracts.task_contract import (
         VALID_IMPROVEMENT_POLICIES,
         normalize_budget_profile,
@@ -102,14 +101,28 @@ def _root_task_acceptance_review_cap(
     if deadline_at.strip() and deadline is None:
         raise ValueError("TASK_ACCEPTANCE_REVIEW_STATE_UNKNOWN: root deadline is malformed")
     profile = normalize_budget_profile(raw_profile)
-    required_blocking = bool(
-        config.get_task_review_mode() == "required"
-        and config.get_review_enforcement() == "blocking"
-    )
     return effective_task_acceptance_review_cycles(
         profile,
         has_deadline=deadline is not None,
-        required_blocking=required_blocking,
+        required_blocking=task_acceptance_required_blocking(),
+    )
+
+
+def task_acceptance_required_blocking() -> bool:
+    """The Required+Blocking acceptance lane, derived ONCE for every reader.
+
+    Byte-for-byte the real gate's predicate (``acceptance_dialogue`` line 432:
+    ``ctx.mode == "required" and get_review_enforcement() == "blocking"``) —
+    ``ctx.mode`` is ``config.get_task_review_mode()``, captured by
+    ``loop._run_task_acceptance_review_once`` at the acceptance launch, and
+    ``loop.get_review_enforcement`` IS ``config.get_review_enforcement``. The
+    cap reader and the capacity projection share this one derivation so no
+    second spelling can drift from the gate it projects."""
+    from ouroboros import config
+
+    return bool(
+        config.get_task_review_mode() == "required"
+        and config.get_review_enforcement() == "blocking"
     )
 
 
@@ -143,6 +156,7 @@ def project_task_acceptance_review_capacity(
     """
 
     from ouroboros import config, task_pacing
+    from ouroboros.owner_hurry import effective_budget_profile
 
     metadata = getattr(ctx, "task_metadata", {})
     metadata = metadata if isinstance(metadata, dict) else {}
@@ -224,33 +238,43 @@ def project_task_acceptance_review_capacity(
                 "state": "unknown",
                 "reason": f"cancellation_state_unknown:{type(exc).__name__}",
             }
-        profile = task_pacing.resolve_budget_profile(ctx)
-        budget = task_pacing.build_budget_snapshot(ctx, profile=profile)
+        # The EFFECTIVE profile the real acceptance path resolves (loop.py):
+        # an armed owner-hurry latch overlays zero improvement passes, and a
+        # projection reading the raw profile would promise a pass the real gate
+        # refuses. Observation variants of both readers: same answers, no
+        # deprecation row and no fallback-anchor latch from a poll.
+        profile = effective_budget_profile(ctx, task_pacing.observe_budget_profile(ctx))
+        budget = task_pacing.observe_budget_snapshot(ctx, profile=profile)
+        # `claimed` is PAID CYCLES — correct for the wallet (`cap_cycles`,
+        # `remaining_cycles`) and for the estimate, whose `passes_done` means
+        # "reviews already recorded" (production passes 0 before the first panel
+        # and `ctx.passes_done + 1` after it). The improvement CAP counts
+        # completed improvement passes instead, so the reducer derives
+        # `cycles - 1` from this same durable count.
         estimated_sec = task_pacing.acceptance_review_estimate_sec(ctx, passes_done=claimed)
-        # Observe only: BOTH admission gates are evaluated here PURELY (owner
-        # R49) — the review-launch rule over its 1x window and the
-        # improvement-pass rule over the adaptive 2x window — and each floor
-        # admission is reported in its OWN field; the panel's dispatch fact
-        # after the paid seam stays the only place a floor admission is
-        # RECORDED, never this projection that every poll calls. `ctx=None` is
-        # mandatory: with a ctx the improvement gate can EMIT the
-        # `review_cycles_exhausted` escalation event, and a read-only
-        # projection must emit nothing. `required_blocking` stays at its
-        # default because the projection cannot know the calling site's
-        # enforcement, and the improvement gate's own refusals (count cap,
+        # Observe only: BOTH admission rules are evaluated PURELY (owner R49) —
+        # the review-launch rule over its 1x window and the improvement-pass
+        # rule over the adaptive 2x window, over the same profile, counter and
+        # enforcement the real gates use — and each floor admission is reported
+        # in its OWN field; the panel's dispatch fact after the paid seam stays
+        # the only place a floor admission is RECORDED, never this projection
+        # that every poll calls. The improvement gate's own refusals (count cap,
         # window) never change availability here — that state remains the
         # review-launch gate's answer, exactly as before.
-        launch_ok, launch_reason = task_pacing.review_launch_allowed(
-            budget, estimated_sec=estimated_sec,
+        admission = task_pacing.acceptance_admission_projection(
+            budget, profile=profile, paid_cycles=claimed, estimated_sec=estimated_sec,
+            required_blocking=task_acceptance_required_blocking(),
         )
-        improvement = task_pacing.improvement_pass_allowed(
-            budget, claimed, profile, estimated_sec=estimated_sec, ctx=None,
-        )
+        launch_ok, launch_reason = admission.launch
         if launch_ok and launch_reason:
             projection["launch_disclosure"] = launch_reason  # would launch at the floor (R36)
-        if improvement == (True, task_pacing.REASON_LAUNCHED_AT_FLOOR):
+        if admission.improvement == (True, task_pacing.REASON_LAUNCHED_AT_FLOOR):
             # The next improvement pass would be admitted at the floor by the 2x window.
             projection["improvement_launch_disclosure"] = task_pacing.REASON_LAUNCHED_AT_FLOOR
+        if admission.improvement_unavailable:
+            # Typed omission, not a refusal: the auxiliary gate raised, so its
+            # disclosure is absent while the PAID panel stays admissible.
+            projection["improvement_admission"] = admission.improvement_unavailable
         if not launch_ok:
             projection.update({"state": "unavailable", "reason": launch_reason})
         elif remaining == 0:

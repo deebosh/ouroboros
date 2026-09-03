@@ -213,6 +213,7 @@ def test_floor_launch_predicates_and_the_projection_record_nothing(monkeypatch, 
     short = task_pacing.BudgetSnapshot(has_deadline=True, total_sec=1200.0, elapsed_sec=100.0,
                                        remaining_sec=1100.0, reserve_sec=100.0)  # spendable 1000 s: floor band
     monkeypatch.setattr(task_pacing, "build_budget_snapshot", lambda _ctx, profile=None: short)
+    monkeypatch.setattr(task_pacing, "observe_budget_snapshot", lambda _ctx, profile=None: short)
     estimate = task_pacing.acceptance_review_estimate_sec(tools_ctx, passes_done=1, delivery="api_chat")
     reason = task_pacing.REASON_LAUNCHED_AT_FLOOR
     assert estimate > 1000.0 > 200.0
