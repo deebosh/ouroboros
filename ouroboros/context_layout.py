@@ -34,8 +34,8 @@ direct-chat turn in a PROJECT ROOM with no workspace bound keeps the handbook.
 Project MEMBERSHIP is deliberately not the signal — an id in a room does not mean
 the work left Ouroboros's body.
 
-The TIER-0 protected core (SYSTEM, BIBLE, identity, scratchpad, knowledge index,
-recent dialogue) is ALWAYS full in every mode (BIBLE P1 cognitive-horizon / P4)
+The TIER-0 protected core (SYSTEM, BIBLE, identity, self, scratchpad, knowledge
+index, recent dialogue) is ALWAYS full in every mode (BIBLE P1 cognitive-horizon / P4)
 and is declared here as a data invariant. Memory-section SIZE (not inclusion) is
 governed separately by consolidation granularity, not by this layout.
 
@@ -53,6 +53,7 @@ TIER0_ALWAYS_FULL = frozenset({
     "system",
     "bible",
     "identity",
+    "self",
     "scratchpad",
     "knowledge_index",
     "recent_dialogue",

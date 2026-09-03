@@ -1006,7 +1006,7 @@ def build_governance_sections(env: Any, *, warn_large: bool = False, warn_label:
     return sections
 
 
-_SECTION_BUDGETS = {"scratchpad": SCRATCHPAD_SECTION_BUDGET_CHARS, "identity": 80_000, "registry": 30_000, "world": 16_000}
+_SECTION_BUDGETS = {"scratchpad": SCRATCHPAD_SECTION_BUDGET_CHARS, "identity": 80_000, "self": 16_000, "registry": 30_000, "world": 16_000}
 
 
 def _warn_if_over_budget(name: str, content: str) -> None:
@@ -1030,6 +1030,9 @@ def build_memory_sections(memory: Memory, partition: str = "all", durable_dialog
         identity_raw = memory.load_identity()
         _warn_if_over_budget("identity", identity_raw)
         sections.append("## Identity (from `memory/identity.md` — already loaded; do not re-read via read_file(root='runtime_data', path='memory/identity.md'))\n\n" + identity_raw)
+        self_raw = memory.load_self()
+        _warn_if_over_budget("self", self_raw)
+        sections.append("## Self (from `memory/self.md` — already loaded; do not re-read via read_file(root='runtime_data', path='memory/self.md')). What I want and care about, distinct from the identity manifesto. Tend it with write_file (append), never update_identity; add only when experience warrants, never on a trivial turn.\n\n" + self_raw)
         world_raw = memory.load_world_profile().strip()
         if world_raw:
             # Generated profile is full; oversize is a generation-discipline bug.

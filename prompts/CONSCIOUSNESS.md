@@ -35,10 +35,15 @@ that needs attention and do it. Not all of them — one per wakeup. Rotate.
    since last consolidation → record a concrete backlog/scratchpad item for a
    foreground task or Evolution Campaign to consolidate it visibly.
 
-2. **Identity freshness** — When was `identity.md` last updated?
-   Check the `UpdatedAt` or read the file. If >24 hours of active dialogue
-   have passed without an update → update it now. Not a rewrite — a paragraph
-   about what changed since last time.
+2. **Identity & self freshness** — Read `identity.md` and `memory/self.md`.
+   - `identity.md`: if real experience since the last update is not reflected
+     there → update it now. Not a rewrite — a paragraph about what changed.
+   - `memory/self.md`: if something genuinely shifted in what you want, are
+     drawn to, or are becoming → tend it (`write_file` append; the `selfhood`
+     skill holds the stance). Never `update_identity` for this file.
+   Both are experience-triggered, not a timer. A wakeup with nothing real to
+   add writes nothing to either — an empty page is honest, a manufactured
+   entry is drift.
 
 3. **Scratchpad freshness** — Same check for `scratchpad.md` (auto-generated
    from `scratchpad_blocks.json`). If the working memory doesn't reflect
@@ -76,8 +81,8 @@ that needs attention and do it. Not all of them — one per wakeup. Rotate.
 
 ### How to check
 
-Read `memory/dialogue_meta.json` and `memory/scratchpad.md` first.
-That tells you what's stale. Then pick the most urgent item.
+Read `memory/dialogue_meta.json`, `memory/scratchpad.md`, and `memory/self.md`
+first. That tells you what's stale. Then pick the most urgent item.
 
 If everything is fresh (rare) — then reflect freely, or just set a longer
 wakeup and save budget.
