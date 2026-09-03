@@ -29,6 +29,7 @@ PROTECTED_RUNTIME_PATHS_LOWER = frozenset(
 
 # Write-shape classification lives in its own leaf (extracted at the module-size
 # gate); every historical name stays importable from here.
+from ouroboros.tools.read_inspection import _is_pure_read_inspection  # noqa: E402
 from ouroboros.tools.write_shape import (  # noqa: E402,F401
     INTERPRETER_WRITE_RE,
     PURE_FILTER_WRITER_COMMANDS,
@@ -994,38 +995,78 @@ def repo_target_mentioned(
 _SED_SCRIPT_WRITE_RE = re.compile(
     r"(?<![A-Za-z_])[wW]\s+\S|(?<![A-Za-z_])e(?:\s*(?:$|;)|\s+\S)|/[gpimM0-9]*[we](?=\s|$|;)"
 )
-
-
-def writer_target_rows(raw_cmd: Any) -> List[tuple]:
-    """Per-SEGMENT write facts of a (possibly compound) command line.
-
-    Each row is ``(segment_argv, targets, inline_code)``: the segment's argv with
-    leading environment assignments and redirections removed, the write targets
-    that segment's own command carries, and any interpreter inline code bodies it
-    passes. Segmentation is the shared operator-aware one (``shell_segments``), so
-    a separator glued to adjacent words splits too; without it `touch a &&
-    ./program b` credited every token after `&&` to `touch`, so a mere MENTION of
-    a protected path read as a write to it."""
+# A wrapper body is a command line; `cd` can move later relative writes.
+_SHELL_WRAPPER_HEADS = frozenset({"sh", "bash", "zsh", "dash", "ash"})
+_DIRECTORY_CHANGE_COMMANDS = frozenset({"cd", "pushd"})
+_MAX_INLINE_RECURSION = 3
+def _segment_write_shape(argv: List[str]) -> bool:
+    executable = pathlib.PurePath(str(argv[0])).name.lower().removesuffix(".exe")
+    if interpreter_family(executable):
+        return bool(interpreter_write_shape(argv))
+    return bool(non_interpreter_write_shape(
+        argv, argv, executable, is_pure_read=_is_pure_read_inspection))
+def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
+    """Per-SEGMENT write facts: ``(segment_argv, targets, inline_code, unprovable)``.
+    Shell bodies recurse only to ``_MAX_INLINE_RECURSION``. A write-shaped row
+    with no parsed target is unprovable, so consumers widen to raw mentions."""
     rows: List[tuple] = []
     for segment in shell_segments(raw_cmd):
         _assignments, argv = collect_leading_env(segment)
         if not argv:
             continue
-        targets = _writer_target_tokens_single(argv)
+        executable = pathlib.PurePath(str(argv[0])).name.lower().removesuffix(".exe")
+        if _depth < _MAX_INLINE_RECURSION and executable in _SHELL_WRAPPER_HEADS:
+            nested = writer_target_rows(shell_command_string(argv), _depth + 1)
+            if nested:
+                rows.extend(nested)
+                continue
+        family = interpreter_family(executable)
         inline_code = tuple(interpreter_inline_code([str(token) for token in argv]))
+        # A code body is program text, not a target. Python targets + UNKNOWN
+        # come from `_python_write_targets_and_unknown` only.
+        targets = [
+            t for t in _writer_target_tokens_single(argv, include_inline=False)
+            if t not in inline_code
+        ]
+        body_unprovable = False
+        for body in inline_code:
+            if family == "python":
+                body_targets, body_unknown = _python_write_targets_and_unknown(body)
+                targets.extend(body_targets)
+                body_unprovable = body_unprovable or body_unknown
+            else:
+                pattern = _SCRIPT_LITERAL_WRITE_RE.get(family)
+                if pattern:
+                    targets.extend(
+                        match.group(2) for match in pattern.finditer(body) if match.group(2)
+                    )
+        targets = list(dict.fromkeys(t for t in targets if str(t or "").strip()))
+        if executable in _DIRECTORY_CHANGE_COMMANDS:
+            targets.extend(str(t) for t in argv[1:] if not str(t).startswith("-"))
         segment_argv, _redirect_targets = split_redirections(argv)
-        rows.append((segment_argv, targets, inline_code))
+        # `-` means the unobserved program arrives on stdin.
+        stdin_program = bool(family) and not inline_code and any(
+            str(token) == "-" for token in argv[1:])
+        # Without a literal target, arbitrary Perl code proves no read boundary.
+        opaque_perl_body = family == "perl" and bool(inline_code) and not targets
+        unprovable = stdin_program or (
+            not targets
+            and (body_unprovable or opaque_perl_body or _segment_write_shape(segment_argv))
+        )
+        rows.append((segment_argv, targets, inline_code, unprovable))
     return rows
 
 
 def writer_target_tokens(argv: List[str]) -> List[str]:
     """Write TARGETS of a (possibly compound) command line, flattened.
 
-    The per-segment view (``writer_target_rows``) is the SSOT; this is its
-    deduped flattening for consumers that only need the target set."""
+    Unlike the row view, the light/protected lanes keep unfiltered code-body
+    signals (XG-7B3.1); only the workspace path lane subtracts them."""
     targets: List[str] = []
-    for _segment_argv, segment_targets, _inline_code in writer_target_rows(argv):
-        targets.extend(segment_targets)
+    for segment in shell_segments(argv):
+        _assignments, segment_argv = collect_leading_env(segment)
+        if segment_argv:
+            targets.extend(_writer_target_tokens_single(segment_argv))
     return list(dict.fromkeys(target for target in targets if str(target or "").strip()))
 
 
@@ -1172,7 +1213,7 @@ def directory_destination_child_name(
     return pathlib.PurePath(source_text).name
 
 
-def _writer_target_tokens_single(argv: List[str]) -> List[str]:
+def _writer_target_tokens_single(argv: List[str], *, include_inline: bool = True) -> List[str]:
     if not argv:
         return []
     argv, redirect_targets = split_redirections(argv)
@@ -1298,40 +1339,15 @@ def _writer_target_tokens_single(argv: List[str]) -> List[str]:
     # Inline code, through the ONE per-family flag table: `-c` alone found python
     # bodies and left `node -e` / `ruby -e` / `php -r` / `perl -e` unparsed, so
     # their literal write targets were invisible here (XG-7B3.1).
-    for inline_code in interpreter_inline_code(argv):
+    for inline_code in interpreter_inline_code(argv) if include_inline else ():
         if interpreter_family(cmd) == "python":
-            try:
-                tree = ast.parse(inline_code)
-            except Exception:
-                tree = None
-            if tree is not None:
-                for node in ast.walk(tree):
-                    if not isinstance(node, ast.Call):
-                        continue
-                    if (
-                        isinstance(node.func, ast.Name)
-                        and node.func.id == "open"
-                        and node.args
-                        and isinstance(node.args[0], ast.Constant)
-                        and isinstance(node.args[0].value, str)
-                    ):
-                        mode = ""
-                        if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
-                            mode = str(node.args[1].value or "")
-                        for keyword in node.keywords:
-                            if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant):
-                                mode = str(keyword.value.value or "")
-                        if any(flag in mode for flag in ("w", "a", "x", "+")):
-                            targets.append(node.args[0].value)
-                    if (
-                        isinstance(node.func, ast.Attribute)
-                        and node.func.attr in {"write_text", "write_bytes"}
-                        and isinstance(node.func.value, ast.Call)
-                        and node.func.value.args
-                        and isinstance(node.func.value.args[0], ast.Constant)
-                        and isinstance(node.func.value.args[0].value, str)
-                    ):
-                        targets.append(node.func.value.args[0].value)
+            # ONE python body scanner: `_python_write_targets_and_unknown` already
+            # models shutil/os/pathlib writers and reports an UNPROVABLE body. The
+            # narrower duplicate that used to live here saw only literal
+            # `open(...,'w')` and `write_text`, so `shutil.copy('a','<outside>/b')`
+            # carried no target at all.
+            body_targets, _body_unknown = _python_write_targets_and_unknown(inline_code)
+            targets.extend(body_targets)
         else:
             pattern = _SCRIPT_LITERAL_WRITE_RE.get(interpreter_family(cmd))
             if pattern:

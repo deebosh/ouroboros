@@ -469,9 +469,24 @@ def test_writer_targets_recover_the_destination_behind_a_redirect():
     from ouroboros.tools.shell_guards import writer_target_rows, writer_target_tokens
 
     assert writer_target_tokens(["cp", "x", "y", ">>", "log.txt"]) == ["y", "log.txt"]
+    # A row is (segment_argv, targets, inline_code, unprovable); a `cd` operand
+    # takes the target policy because it is how a later relative write escapes.
     assert writer_target_rows("cd . && cp src.txt /D/.env") == [
-        (["cd", "."], [], ()),
-        (["cp", "src.txt", "/D/.env"], ["/D/.env"], ()),
+        (["cd", "."], ["."], (), False),
+        (["cp", "src.txt", "/D/.env"], ["/D/.env"], (), False),
+    ]
+
+
+def test_workspace_rows_filter_bodies_without_weakening_the_light_fence():
+    from ouroboros.tools.shell_guards import writer_target_rows, writer_target_tokens
+
+    body = "print '/outside/mentioned.txt'"
+    # The light fence keeps the historical unfiltered signal. The workspace
+    # lane removes the body from its path targets, but Perl cannot prove the
+    # body read-only and carries that uncertainty explicitly in field four.
+    assert writer_target_tokens(["perl", "-e", body]) == [body]
+    assert writer_target_rows(["perl", "-e", body]) == [
+        (["perl", "-e", body], [], (body,), True),
     ]
 
 
@@ -581,3 +596,40 @@ def test_sed_in_script_target_survives_the_narrowed_scan(tmp_path):
     ) or ""
     assert "outside the selected process root" in out
     assert f"Blocked path: {scratch / 'x'}" in out
+
+
+def _outside_write_result(tmp_path, cmd):
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    rendered = cmd(outside)
+    return rendered, reg._run_shell_safety_check(
+        {"cmd": rendered, "cwd": workspace}, "advanced"
+    ) or ""
+
+
+def test_nested_shell_write_outside_workspace_stays_blocked(tmp_path):
+    cmd, out = _outside_write_result(
+        tmp_path,
+        lambda outside: ["sh", "-c", f"sh -c 'echo x > {outside / 'nested.txt'}'"],
+    )
+    assert "WORKSPACE_SHELL_BLOCKED" in out, cmd
+
+
+def test_find_exec_rm_outside_workspace_stays_blocked(tmp_path):
+    cmd, out = _outside_write_result(
+        tmp_path,
+        lambda outside: ["find", str(outside), "-exec", "rm", "{}", ";"],
+    )
+    assert "WORKSPACE_SHELL_BLOCKED" in out, cmd
+
+
+def test_python_shutil_copy_outside_workspace_stays_blocked(tmp_path):
+    cmd, out = _outside_write_result(
+        tmp_path,
+        lambda outside: [
+            "python3", "-c", f"import shutil; shutil.copy('a','{outside / 'copy.txt'}')",
+        ],
+    )
+    assert "WORKSPACE_SHELL_BLOCKED" in out, cmd

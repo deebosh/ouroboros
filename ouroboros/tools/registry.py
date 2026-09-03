@@ -281,6 +281,12 @@ def _no_deliverables_decision(_path: Any) -> None:
     return None
 
 
+def _directory_change_argv(argv: list) -> bool:
+    return bool(argv) and pathlib.PurePath(
+        str(argv[0])
+    ).name.lower().removesuffix(".exe") in {"cd", "pushd"}
+
+
 def _workspace_write_candidates(
     target_rows: list, explicit_write_targets: list[str], raw_cmd: Any,
 ) -> list[tuple[str, bool]]:
@@ -307,7 +313,19 @@ def _workspace_write_candidates(
         index_by_token[token_text] = len(candidates)
         candidates.append((token_text, is_write))
 
-    for segment_argv, targets, inline_code in target_rows:
+    for row_index, (segment_argv, targets, inline_code, unprovable) in enumerate(target_rows):
+        if _directory_change_argv(segment_argv):
+            # A directory change is not itself a write. Its operand becomes a
+            # write candidate only when a later segment has a parsed or
+            # fail-closed write channel, because that later relative write is
+            # evaluated from the changed directory.
+            later_write = any(
+                later_unprovable
+                or (later_targets and not _directory_change_argv(later_argv))
+                for later_argv, later_targets, _later_inline, later_unprovable
+                in target_rows[row_index + 1:]
+            )
+            targets = targets if later_write else []
         # Inline-code targets are already extracted paths; an argv-shaped
         # segment's targets still need the embedded-path pass (sed's in-script
         # `w FILE` hides the path inside the script operand).
@@ -315,6 +333,14 @@ def _workspace_write_candidates(
             write_tokens = [str(token) for token in shell_argv_with_path_tokens(list(targets))]
         else:
             write_tokens = [str(token) for token in targets]
+        if unprovable:
+            # Doctrine: an unprovable case stays fail-closed. A write-shaped
+            # segment whose channel the target parser does not model keeps the
+            # mention-wide candidate set it had before targets existed.
+            write_tokens.extend(str(token) for token in segment_argv[1:])
+            write_tokens.extend(
+                str(token) for token in shell_argv_with_path_tokens(list(segment_argv))
+            )
         write_set = set(write_tokens)
         for token in segment_argv:
             _add(token, str(token) in write_set)
@@ -333,8 +359,12 @@ def _workspace_write_candidates(
         for text, is_write in candidates
         if is_write and text.replace("\\", "")
     }
+    # When ANY segment is unprovable the parse of this command line is not
+    # trustworthy, so the whole harvest stays fail-closed (a heredoc feeding an
+    # interpreter's stdin puts its paths in no segment's argv).
+    harvest_is_write = any(row[3] for row in target_rows)
     for token in shell_argv_with_path_tokens(raw_cmd):
-        _add(token, str(token).replace("\\", "") in collapsed_writes)
+        _add(token, harvest_is_write or str(token).replace("\\", "") in collapsed_writes)
     return candidates
 
 
@@ -2657,7 +2687,7 @@ class ToolRegistry:
         if direct_target_block := direct_deliverable_target_block(
             self._ctx,
             work_dir,
-            [list(segment_argv) for segment_argv, _targets, _inline in target_rows],
+            [list(row[0]) for row in target_rows],
             deliverables_root_physical,
             _deliverables_target_decision,
         ):
@@ -2890,16 +2920,13 @@ class ToolRegistry:
         # carried as a STRING so its own operator grammar survives; re-tokenizing
         # it with plain shlex glued `2>/dev/null;` onto the following command and
         # forged the path `/dev/null;` out of a redirection.
-        target_rows = [
-            row
-            for source in ([raw_cmd] + ([inline_cmd] if inline_argv else []))
-            for row in writer_target_rows(source)
-        ]
-        write_target_argvs = [list(segment_argv) for segment_argv, _targets, _inline in target_rows]
+        target_rows = writer_target_rows(raw_cmd)
+        write_target_argvs = [list(row[0]) for row in target_rows]
         explicit_write_targets = list(dict.fromkeys(
             str(token)
-            for _segment_argv, targets, _inline in target_rows
-            for token in targets
+            for row in target_rows
+            for token in row[1]
+            if not _directory_change_argv(row[0])
             if str(token or "").strip()
         ))
         # ``cp source Deliverables/`` (and the equivalent mv/ln form) writes a
@@ -2955,7 +2982,11 @@ class ToolRegistry:
                 raw_cmd, argv_for_write, argv_executable, is_pure_read=_is_pure_read_inspection,
             )
         )
-        writeish = coarse_write_shape or bool(explicit_write_targets)
+        writeish = (
+            coarse_write_shape
+            or bool(explicit_write_targets)
+            or any(row[3] for row in target_rows)
+        )
         work_dir = self._resolved_shell_cwd(args, binding)
         if isinstance(work_dir, str):
             return work_dir
