@@ -714,7 +714,7 @@ def test_a_single_crash_torn_ledger_gets_the_quarantine_every_reader_performs(
     never-initialized root and the stale-lock removal are pinned above), in its
     exact bounded shape — proven for a SINGLE crash mid-append (a crash inside
     the repair itself, the torn quarantine sink, is a known residual — draft
-    issue #27, publication pending — and deliberately not exercised here). The
+    issue #586 — and deliberately not exercised here). The
     crash leaves a half-written final
     ledger row; the settled-spend fact reads that ledger, so the poll performs
     the repair EVERY reader of the ledger performs — truncate to the intact
