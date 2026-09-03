@@ -2065,7 +2065,7 @@ class LLMClient:
         Descends one level INTO a block's own ``content`` list: a direct-Anthropic
         ``tool_result`` block nests its blocks (``_anthropic_messages`` builds it from a
         ``role="tool"`` message whose content is a list), so the sealed transcript anchor
-        (``loop.seal_task_transcript``) sits at ``messages[i].content[j].content[k]``.
+        (``context_fit.seal_task_transcript``) sits at ``messages[i].content[j].content[k]``.
         Missing it undercounts the cap and leaves that anchor out of TTL ordering exactly
         on the lane whose provider enforces both. ``tool_result`` is the only nested-content
         shape, and the descent is route-independent because no other payload nests."""

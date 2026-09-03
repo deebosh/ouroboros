@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from ouroboros.context_layout import reference_doc_sections
+from ouroboros.delivery_protocol import extract_plain_text_from_content
 from ouroboros.utils import estimate_tokens
 
 log = logging.getLogger(__name__)
@@ -198,6 +199,52 @@ def _render_context_system_content(
         {"type": "text", "text": core.dynamic_text},
     ]
 
+
+def seal_task_transcript(
+    messages: List[Dict[str, Any]],
+    keep_active: int = 5,
+    min_prefix_tokens: int = 2048,
+) -> None:
+    """Mark one stable old tool-result boundary for provider prompt caching."""
+    for msg in messages:
+        if msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            # Flatten the old sealed boundary before choosing a new one.
+            msg["content"] = extract_plain_text_from_content(content)
+
+    tool_indices = [
+        i for i, m in enumerate(messages)
+        if m.get("role") == "tool"
+    ]
+    if len(tool_indices) <= keep_active:
+        return
+
+    seal_candidate_idx = tool_indices[-(keep_active + 1)]
+
+    prefix_text_len = sum(
+        len(extract_plain_text_from_content(m.get("content", "")))
+        for m in messages[: seal_candidate_idx + 1]
+    )
+    prefix_tokens = prefix_text_len // 4  # rough 4-chars-per-token estimate
+
+    if prefix_tokens < min_prefix_tokens:
+        return
+
+    candidate = messages[seal_candidate_idx]
+    plain_text = str(candidate.get("content", ""))
+    if not plain_text.strip():
+        # Anthropic 400s on cache_control attached to an empty text block; never seal
+        # an empty tool output as the cache anchor (turns the whole task unanswerable).
+        plain_text = "(no tool output)"
+    candidate["content"] = [
+        {
+            "type": "text",
+            "text": plain_text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
 def tool_schema_tokens(tools: Optional[List[Dict[str, Any]]]) -> int:
     """chars/4 estimate of the TOOL-SCHEMA segment of a prompt.
