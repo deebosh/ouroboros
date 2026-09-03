@@ -302,6 +302,26 @@ def _session_evidence(
             mismatches.append(f"capability_delta:{surface}:{slot_id}:{reason}")
 
 
+def _final_session_settlements(drive_root: pathlib.Path) -> dict[str, dict]:
+    """Project session settlement from custody after every panel slot finished."""
+    try:
+        from ouroboros.delegate_custody import replay
+
+        rows = replay(drive_root)
+    except Exception:
+        return {}
+    return {
+        str(run_id): {
+            "settled": row.settled,
+            "ledger_recorded": row.ledger_recorded,
+            "project_retired": not row.project_owned and not row.project_persistent,
+            "project_persistent": row.project_persistent,
+            "bound_at": "panel_complete_custody_replay",
+        }
+        for run_id, row in rows.items()
+    }
+
+
 def bind_execution_receipts(
     *,
     actors: list[tuple[str, dict]],
@@ -332,6 +352,7 @@ def bind_execution_receipts(
 
     receipts: list[dict] = []
     transcripts: list[dict] = []
+    final_settlements = _final_session_settlements(drive_root)
     for surface, actor in actors:
         slot_id = str(actor.get("slot_id") or "")
         row = requested.get((surface, slot_id), {})
@@ -350,6 +371,9 @@ def bind_execution_receipts(
         )
         usage = dict(response.get("usage") or {}) if isinstance(response.get("usage"), dict) else {}
         delegated_route = str(usage.get("delegated_route") or "")
+        final_settlement = final_settlements.get(str(usage.get("delegated_run_id") or ""))
+        if final_settlement:
+            usage["settlement"] = final_settlement
         provider = str(usage.get("provider") or "")
         observed_kind = (
             "agent_session" if delegated_route or provider == "claudexor"
@@ -461,6 +485,8 @@ def finalize_contributor_outcome(
 ) -> tuple[int, dict]:
     """Turn receipt/trust drift into the contributor lane's typed outcome."""
     if mismatches:
+        original_block_reason = str(outcome.get("block_reason") or "")
+        original_message = str(outcome.get("message") or "")
         exit_code = 3
         outcome = {
             **outcome,
@@ -471,6 +497,9 @@ def finalize_contributor_outcome(
                 "receipts; the run is preserved as incomplete evidence."
             ),
             "execution_receipt_mismatches": mismatches,
+            **({"original_block_reason": original_block_reason}
+               if original_block_reason else {}),
+            **({"original_message": original_message} if original_message else {}),
         }
     if snapshot.get("review_substrate_changed") and exit_code == 0:
         exit_code = 3
