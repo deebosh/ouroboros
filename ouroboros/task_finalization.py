@@ -388,6 +388,25 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
             "inter_wave_latency_sec_total": round(inter_wave_latency_total, 3),
             "lanes_requested": lanes,
         }
+        try:
+            # Depth is the one swarm fact the root could not see: its own
+            # contract carries the request, the subtree carries what was
+            # actually reached. Its own try/except — the enclosing one returns
+            # None for the WHOLE rollup, and a subtree read failure must not
+            # erase the fan-out numbers.
+            from ouroboros.depth_evidence import build_depth_summary
+            from ouroboros.task_status import find_child_tasks
+
+            canonical = pathlib.Path(task.get("budget_drive_root") or drive_root)
+            rollup["depth"] = build_depth_summary(
+                task.get("task_contract"),
+                find_child_tasks(
+                    canonical, parent_task_id=task_id, root_task_id=task_id,
+                    scope="subtree", materialize_artifacts=False,
+                ),
+            )
+        except Exception:
+            log.debug("swarm depth summary failed", exc_info=True)
         if swarm_intent:
             rollup["intent_source"] = "swarm"
             # The planned figure under its existing event name — the waves'

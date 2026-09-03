@@ -232,6 +232,8 @@ def test_architecture_mirror_matches_the_split_axes_contracts():
 
     # swarm_efficiency reports the REQUEST: lanes_requested, never lanes_used.
     assert "lanes_requested" in arch
+    # A fanned-out root also reports the depth REQUEST beside those lanes.
+    assert "`requested_depth`" in arch
     assert "lanes_used" not in arch
     # Task-group compaction left with the degenerate lane fan-out (v6.87.28).
     assert "task-group compaction" not in arch

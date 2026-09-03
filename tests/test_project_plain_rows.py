@@ -465,3 +465,39 @@ def test_host_verdict_and_the_card_line_compose_the_same_sentence():
         clause = case.get("acceptance_clause") or ""
         if clause:
             assert _completion_verdict(case["record"], {}) == clause, case["name"]
+
+
+def test_terminal_row_reports_the_depth_request_only_when_one_exists(tmp_path):
+    """S3-05: the owner-visible row is where a nested swarm's depth becomes
+    checkable — numbers first, and no line at all on swarms nobody asked to
+    nest, so an ordinary task's row stays byte-unchanged."""
+    from ouroboros.project_dialogue import append_terminal_task_projection
+
+    task = {"id": "swarm-root", "chat_id": 3, "role": "root"}
+    result = {
+        "task_id": "swarm-root", "status": "completed", "result": "Shipped.",
+        "outcome_axes": {"execution": {"status": "ok"}},
+        "swarm_efficiency": {
+            "subagent_count": 3,
+            "depth": {
+                "requested_depth": 2, "permitted_depth": 4, "attempted_depth": 2,
+                "achieved_depth": 2, "status": "achieved", "host_visible_only": True,
+            },
+        },
+    }
+    done = {"chat_id": 3, "status": "completed", "outcome_axes": result["outcome_axes"]}
+    assert append_terminal_task_projection(tmp_path, "swarm-root", task, result, done)
+
+    flat = {"id": "flat-root", "chat_id": 3, "role": "root"}
+    flat_result = {**result, "task_id": "flat-root", "swarm_efficiency": {"subagent_count": 3}}
+    assert append_terminal_task_projection(tmp_path, "flat-root", flat, flat_result, done)
+
+    rows = {
+        json.loads(line)["task_id"]: json.loads(line)
+        for line in (tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    assert "Depth requested=2, permitted=4, achieved=2 (achieved)." in rows["swarm-root"]["text"]
+    assert "Depth" not in rows["flat-root"]["text"]
+    for marker in ("#", "**", "`"):
+        assert marker not in rows["swarm-root"]["text"]

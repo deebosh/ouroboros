@@ -733,6 +733,9 @@ def _append_terminal_task_projection(
         verdict = _completion_verdict(effective, event)
         if verdict:
             text += f" {verdict}"
+        depth = (effective.get("swarm_efficiency") or {}).get("depth") if isinstance(effective.get("swarm_efficiency"), dict) else None
+        if isinstance(depth, dict) and depth.get("requested_depth") is not None:
+            text += f" Depth requested={depth['requested_depth']}, permitted={depth.get('permitted_depth')}, achieved={depth.get('achieved_depth')} ({depth.get('status')})."
         result_ref = {"kind": "task_result", "task_id": tid, "reader": "get_task_result"}
         row = {
             "ts": str(event.get("ts") or effective.get("ts") or utc_now_iso()),
