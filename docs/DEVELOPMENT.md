@@ -1826,7 +1826,7 @@ Before every commit, verify the following:
 - Top-level tab/pill buttons are a single design-system control: `renderTabStrip` + `.app-tab-strip` + `.app-tab` + the `--pill-*` CSS variables in `web/style.css`. Do not redeclare per-page tab padding, font size, border radius, or active styling in page CSS files.
 - Scrollable page bodies use the shared `.scroll-fade-y` mask when content can pass under fixed page chrome. Do not copy/paste custom gradient masks into page modules; extend the shared class if the fade rhythm changes.
 - Masonry-style widget packing uses `web/modules/masonry.js::applyMasonry`. Do not reintroduce CSS Grid row packing (`align-items: start`) for unequal-height widget cards; it leaves row gaps under shorter cards.
-- Widget card ordering is a host UI preference. Persist it through `/api/ui/preferences` and `data/state/ui_preferences.json`; never rewrite extension manifests or widget declarations to store owner layout.
+- Widget card ordering and the owner's per-card launch-policy override (`widget_start_mode`, values from `extension_ui_validation.WIDGET_START_MODES`) are host UI preferences. Persist them through `/api/ui/preferences` and `data/state/ui_preferences.json`; never rewrite extension manifests or widget declarations to store owner layout or owner overrides.
 - New visual dimensions should become CSS variables first (`--pill-*`, `--button-*`, `--page-header-*`, etc.) and then be consumed by shared classes. Hardcoded page-local dimensions are review debt unless the component is genuinely unique.
 
 #### Setup / Onboarding Layout
@@ -2560,8 +2560,8 @@ durable job id and resumable status polling rather than a foreground request
 lost on remount.
 
 Every timer, listener, observer, stream, abort controller, chart, and mounted
-widget has a paired disposer. UI preferences such as widget order belong in
-host state, never in extension manifests.
+widget has a paired disposer. UI preferences such as widget order and the
+per-card start-mode override belong in host state, never in extension manifests.
 
 ## MCP Client Integration
 

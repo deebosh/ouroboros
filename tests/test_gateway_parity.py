@@ -50,6 +50,7 @@ from ouroboros.gateway.contracts import (
     TaskHurryRequest,
     TaskHurryResponse,
     TypingOutbound,
+    UiPreferencesResponse,
     UpdateApplyErrorResponse,
     UpdateApplyRequest,
     UpdateApplySuccessResponse,
@@ -261,7 +262,9 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
                 ClaudexorCredentialProfileDeleteResponse,
                 ClaudexorVendorCredentialDisposition,
                 ClaudexorStatusReads, ClaudexorStatusResponse,
-                WidgetTab, WidgetsResponse):
+                WidgetTab, WidgetsResponse,
+                # widgets-lifecycle W1b: the owner's per-card start-mode override is checked field by field.
+                UiPreferencesResponse):
         expected = set(get_type_hints(cls, include_extras=True))
         actual = _js_typedef_fields(text, cls.__name__)
         assert actual == expected, f"{cls.__name__} JSDoc fields drifted: missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
