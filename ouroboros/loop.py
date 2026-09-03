@@ -1274,6 +1274,38 @@ def _direct_context_fence_state(tools_ctx: Any, fence_token: Any) -> Any:
     }
 
 
+def _skip_task_acceptance_for_launch_reason(
+    tools_ctx: Any,
+    llm_trace: Dict[str, Any],
+    *,
+    launch_reason: str,
+    snapshot: Any,
+    passes_done: int,
+    emit_progress: Callable[[str], None],
+) -> bool:
+    """The launch rule's ONE skip terminal, shared by both of its evaluation
+    sites — the loop's admission gate and the paid claim's typed refusal
+    (owner R53): no reviewer run is recorded, and `outcomes.derive_loop_outcome`
+    keys on the (status, typed REASON) pair below with source `task_pacing`."""
+    tools_ctx._task_acceptance_reviewed = True
+    _end_task_acceptance_fence(tools_ctx, outcome="terminal")
+    _mark_root_acceptance_checkpoint(
+        tools_ctx, llm_trace, status=launch_reason, pass_index=passes_done,
+    )
+    llm_trace["review_decision"].update({"skipped": launch_reason})
+    _set_acceptance_decision(llm_trace, {
+        "status": ACCEPTANCE_FINALIZED_UNACCEPTED, "reason": launch_reason,
+        "source": "task_pacing",
+        "rationale": (
+            f"Spendable {snapshot.spendable_sec:.0f}s (remaining "
+            f"{snapshot.remaining_sec:.0f}s, reserve {snapshot.reserve_sec:.0f}s) "
+            f"is at or below the {task_pacing._acceptance_floor_sec():.0f}s floor."
+        ),
+    })
+    emit_progress("Task acceptance skipped: spendable at or below floor.")
+    return False
+
+
 def _run_task_acceptance_review_once(
     *,
     tools: ToolRegistry,
@@ -1393,21 +1425,11 @@ def _run_task_acceptance_review_once(
     passes_done = int(getattr(tools._ctx, "_task_acceptance_improvement_passes", 0))
     launch_ok, launch_reason = task_pacing.review_launch_allowed(budget_snapshot)
     if not launch_ok:
-        tools._ctx._task_acceptance_reviewed = True
-        _end_task_acceptance_fence(tools._ctx, outcome="terminal")
-        _mark_root_acceptance_checkpoint(
-            tools._ctx, llm_trace, status=launch_reason, pass_index=passes_done,
+        return _skip_task_acceptance_for_launch_reason(
+            tools._ctx, llm_trace, launch_reason=launch_reason,
+            snapshot=budget_snapshot, passes_done=passes_done,
+            emit_progress=emit_progress,
         )
-        llm_trace["review_decision"].update({"skipped": launch_reason})
-        # The pacing launch reason is now the typed REASON, not the status;
-        # `outcomes.derive_loop_outcome` keys on that PAIR (see its comment).
-        _set_acceptance_decision(llm_trace, {
-            "status": ACCEPTANCE_FINALIZED_UNACCEPTED, "reason": launch_reason,
-            "source": "task_pacing",
-            "rationale": f"Spendable {budget_snapshot.spendable_sec:.0f}s (remaining {budget_snapshot.remaining_sec:.0f}s, reserve {budget_snapshot.reserve_sec:.0f}s) is at or below the {task_pacing._acceptance_floor_sec():.0f}s floor.",
-        })
-        emit_progress("Task acceptance skipped: spendable at or below floor.")
-        return False
     review_ctx = _TaskAcceptanceContext(
         tools=tools,
         content=content,
@@ -1436,6 +1458,7 @@ def _run_task_acceptance_review_once(
     try:
         from types import SimpleNamespace
 
+        from ouroboros.review_dispatch import TaskAcceptanceLaunchRefused
         from ouroboros.review_evidence import task_acceptance_evidence_revision
         from ouroboros.review_substrate import build_review_binding
 
@@ -1488,7 +1511,17 @@ def _run_task_acceptance_review_once(
         passes_before_apply = int(
             getattr(tools._ctx, "_task_acceptance_improvement_passes", 0) or 0
         )
-        panel_result = reused_result or _execute_task_acceptance_panel(review_ctx)
+        try:
+            panel_result = reused_result or _execute_task_acceptance_panel(review_ctx)
+        except TaskAcceptanceLaunchRefused as exc:
+            # R53: the paid claim refused on the launch floor — nothing was
+            # attempted (marker dropped); the launch gate's own skip ends it.
+            seen_bindings.pop(binding_hash, None)
+            return _skip_task_acceptance_for_launch_reason(
+                tools._ctx, llm_trace, launch_reason=exc.launch_reason,
+                snapshot=task_pacing.build_budget_snapshot(tools._ctx, profile=budget_profile),
+                passes_done=passes_done, emit_progress=emit_progress,
+            )
         run_record = (
             prior_run
             if reused_result is not None
@@ -4907,6 +4940,18 @@ def _maybe_inject_finalization_nudges(
         from ouroboros.outcomes import read_verification_receipts
 
         receipt_rows = read_verification_receipts(drive_root, task_id)
+
+    def _inject(reminder: str, note: str) -> bool:
+        # The one nudge protocol every advisory injection below follows: land
+        # the model's pending text, append the reminder, record the note once
+        # (live progress AND the durable trail), re-loop.
+        if content and content.strip():
+            messages.append({"role": "assistant", "content": content})
+        _append_or_merge_user_message(messages, f"[SYSTEM REMINDER]\n{reminder}")
+        emit_progress(note)
+        llm_trace["reasoning_notes"].append(note)
+        return True
+
     if (getattr(tools._ctx, "_nanny_route_dispatched", False)
             and not getattr(tools._ctx, "_nanny_finalization_injected", False)):
         # Nanny postcondition (owner 2026-08-07): a harness-dispatched child
@@ -4947,12 +4992,7 @@ def _maybe_inject_finalization_nudges(
     finalization_msg = _skill_finalization_message(drive_root, llm_trace)
     if finalization_msg and not getattr(tools._ctx, "_skill_finalization_injected", False):
         tools._ctx._skill_finalization_injected = True
-        if content and content.strip():
-            messages.append({"role": "assistant", "content": content})
-        _append_or_merge_user_message(messages, f"[SYSTEM REMINDER]\n{finalization_msg}")
-        emit_progress(finalization_msg)
-        llm_trace["reasoning_notes"].append(finalization_msg)
-        return True
+        return _inject(finalization_msg, finalization_msg)
     if not getattr(tools._ctx, "_verify_red_nudged", False):
         # Red-verification one-shot nudge: the latest host-attested verify
         # receipt is RED and unreconciled — finalizing over your own failing
@@ -4969,18 +5009,13 @@ def _maybe_inject_finalization_nudges(
             _rc = _failed_receipt.get("returncode")
             _on = f" on `{_check}`" if _check else ""
             _exit = f" (exit {_rc})" if _rc is not None else ""
-            if content and content.strip():
-                messages.append({"role": "assistant", "content": content})
-            _append_or_merge_user_message(
-                messages,
-                "[SYSTEM REMINDER]\nYour latest host-attested verification is RED" + _on + _exit +
+            return _inject(
+                "Your latest host-attested verification is RED" + _on + _exit +
                 ". Before a clean final answer, reconcile it: re-check it, explain why this check is "
                 "not the task's acceptance contract, or fix and re-run verification. This is advisory — "
                 "if you finalize anyway, make the residual risk explicit.",
+                "Red-verification nudge injected before final response.",
             )
-            emit_progress("Red-verification nudge injected before final response.")
-            llm_trace["reasoning_notes"].append("Red-verification nudge injected before final response.")
-            return True
     if not getattr(tools._ctx, "_verify_masked_nudged", False):
         # Exit-masking one-shot ADVISORY nudge (v6.52.2): a PASSING verify
         # check can LAUNDER the real exit code (`| tail`/`|| true` — the
@@ -4996,19 +5031,14 @@ def _maybe_inject_finalization_nudges(
             _mreasons = ", ".join(str(x) for x in (_masked_receipt.get("check_exit_masking_reasons") or []))
             _mon = f" on `{_mcheck}`" if _mcheck else ""
             _mwhy = f" ({_mreasons})" if _mreasons else ""
-            if content and content.strip():
-                messages.append({"role": "assistant", "content": content})
-            _append_or_merge_user_message(
-                messages,
-                "[SYSTEM REMINDER]\nYour latest passing verification" + _mon + " uses a shell pipe" + _mwhy +
+            return _inject(
+                "Your latest passing verification" + _mon + " uses a shell pipe" + _mwhy +
                 " that can hide the real command's exit code, so a failing run could read as exit 0. "
                 "Before a clean final answer, re-ground so the exit reflects the real result (drop the "
                 "masking pipe / use the runner's own pass marker), or explain why it is reliable. This is "
                 "advisory — if you finalize anyway, make the residual risk explicit.",
+                "Masked-verification nudge injected before final response.",
             )
-            emit_progress("Masked-verification nudge injected before final response.")
-            llm_trace["reasoning_notes"].append("Masked-verification nudge injected before final response.")
-            return True
     if not getattr(tools._ctx, "_criterion_source_nudged", False):
         # Criterion-provenance one-shot ADVISORY nudge (v6.54.4): the latest
         # passing verification used an AGENT-DEFINED criterion with no stated
@@ -5023,19 +5053,14 @@ def _maybe_inject_finalization_nudges(
             tools._ctx._criterion_source_nudged = True
             _acheck = str(_agent_defined.get("check") or "").strip()
             _aon = f" (`{_acheck}`)" if _acheck else ""
-            if content and content.strip():
-                messages.append({"role": "assistant", "content": content})
-            _append_or_merge_user_message(
-                messages,
-                "[SYSTEM REMINDER]\nYour latest passing verification" + _aon + " uses a success "
+            return _inject(
+                "Your latest passing verification" + _aon + " uses a success "
                 "criterion YOU defined, not one the task states. Before finalizing, double-check the "
                 "criterion is equivalent to what the task actually asks for (format, units, scope) — "
                 "re-run verify_and_record with criterion_basis stating why it suffices, or adjust the "
                 "check. Advisory only — if you finalize anyway, make the assumption explicit.",
+                "Criterion-provenance nudge injected before final response.",
             )
-            emit_progress("Criterion-provenance nudge injected before final response.")
-            llm_trace["reasoning_notes"].append("Criterion-provenance nudge injected before final response.")
-            return True
     suppress_unavailable_zero_run_verify = False
     try:
         from ouroboros.outcomes import _terminal_zero_run_receipt_present
@@ -5059,18 +5084,13 @@ def _maybe_inject_finalization_nudges(
         # acceptance-review gate so it reaches required and auto. Forced
         # finalization paths return earlier and bypass it (land best_effort).
         tools._ctx._verify_nudged = True
-        if content and content.strip():
-            messages.append({"role": "assistant", "content": content})
-        _append_or_merge_user_message(
-            messages,
-            "[SYSTEM REMINDER]\nBefore finalizing: you produced a real deliverable but recorded no "
+        return _inject(
+            "Before finalizing: you produced a real deliverable but recorded no "
             "machine verification. Call verify_and_record — run your test/command (explicit_command/"
             "explicit_metric/visible_verifier), confirm the artifact exists (artifact_observation), or "
             "honestly declare no_visible_machine_contract — so the result is grounded, then continue.",
+            "Verify-before-done nudge injected before final response.",
         )
-        emit_progress("Verify-before-done nudge injected before final response.")
-        llm_trace["reasoning_notes"].append("Verify-before-done nudge injected before final response.")
-        return True
     # A3 one-shot no-op nudge: a declared deliverable (non-empty
     # expected_output) but NO tool calls, reviewable effects, or FINAL ANSWER
     # marker this turn — about-to-finalize-without-attempting (family of the
@@ -5085,8 +5105,6 @@ def _maybe_inject_finalization_nudges(
         and not extract_final_answer(content or "")
     ):
         tools._ctx._noop_attempt_nudged = True
-        if content and content.strip():
-            messages.append({"role": "assistant", "content": content})
         # v6.60.0: the nudge keys on expected_output SEMANTICS; it mentions the FINAL
         # ANSWER marker only when this task's contract actually declares the protocol.
         _marker_bit = (
@@ -5094,16 +5112,13 @@ def _maybe_inject_finalization_nudges(
             if _answer_protocol_active(tools._ctx)
             else "no tool calls, no reviewable effects, no delivered answer"
         )
-        _append_or_merge_user_message(
-            messages,
-            "[SYSTEM REMINDER]\nThis task declares an expected output, but you are about to finalize "
+        return _inject(
+            "This task declares an expected output, but you are about to finalize "
             f"without having attempted it — {_marker_bit}. "
             "Actually attempt the task now (do the work / produce the deliverable / derive the answer), "
             "then finalize. If it is genuinely blocked, say so with the concrete blocker and evidence.",
+            "No-op attempt nudge injected before final response.",
         )
-        emit_progress("No-op attempt nudge injected before final response.")
-        llm_trace["reasoning_notes"].append("No-op attempt nudge injected before final response.")
-        return True
     # P2 one-shot final-answer-marker nudge: REAL work + visible prose but
     # no FINAL ANSWER marker — the typed extractor would drop it, a forced
     # finalization score empty. Strengthen BEHAVIOR (agent marks its OWN
@@ -5120,17 +5135,13 @@ def _maybe_inject_finalization_nudges(
         and ((llm_trace.get("tool_calls") or []) or turn_has_reviewable_effects(llm_trace))
     ):
         tools._ctx._final_marker_nudged = True
-        messages.append({"role": "assistant", "content": content})
-        _append_or_merge_user_message(
-            messages,
-            "[SYSTEM REMINDER]\nYou have done the work but have not marked a final answer. If you "
+        return _inject(
+            "You have done the work but have not marked a final answer. If you "
             "are done, end your response with a single line, exactly: FINAL ANSWER: <answer> — the "
             "bare deliverable only (a number / a few words / a short list), so it is captured even if "
             "the run is cut short. If you are not done, keep working.",
+            "Final-answer marker nudge injected before final response.",
         )
-        emit_progress("Final-answer marker nudge injected before final response.")
-        llm_trace["reasoning_notes"].append("Final-answer marker nudge injected before final response.")
-        return True
     return False
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from ouroboros.contracts.task_contract import normalize_budget_profile
 from ouroboros.review_evidence import build_task_acceptance_evidence
 from ouroboros.review_substrate import (
@@ -278,14 +280,16 @@ def test_acceptance_cancellation_recheck_precedes_wallet_claim(
     assert state["claims_by_binding"] == {}
 
 
-def test_the_panel_seam_rechecks_the_wallet_and_the_floor(tmp_path, monkeypatch):
-    """Owner R53: the seam re-checks the WALLET, the CANCELLATION intent (the
-    test above) and the launch FLOOR — the same `review_launch_allowed` the
-    loop gate used, evaluated at the moment money is about to be committed. A
-    refusal is FREE: no claim row, no reviewer call, and the launch gate's own
-    typed reason carried through the existing refusal path."""
+def test_the_paid_claim_rechecks_the_wallet_and_the_floor(tmp_path, monkeypatch):
+    """Owner R53: wallet, cancellation (the test above) and the launch FLOOR
+    are all re-checked AT THE PAID CLAIM (`_claim` in the dispatch stamp), the
+    moment money is committed — the stub fires the write-ahead stamp exactly
+    as a route does before its first physical send, so the floor check
+    provably lives at the claim, not at panel assembly; the refusal is FREE
+    (no claim row, no reviewer call) and TYPED, never a DEGRADED verdict."""
     import ouroboros.loop as loop
     import ouroboros.review_substrate as substrate
+    from ouroboros.review_dispatch import TaskAcceptanceLaunchRefused
     from ouroboros.task_results import load_task_acceptance_review_state
 
     ctx = _root_acceptance_context(tmp_path, {"evidence": "complete"})
@@ -293,19 +297,16 @@ def test_the_panel_seam_rechecks_the_wallet_and_the_floor(tmp_path, monkeypatch)
     monkeypatch.setattr(
         task_pacing, "review_launch_allowed",
         lambda *_args, **_kwargs: (False, "review_skipped_deadline_reserve"))
-    monkeypatch.setattr(
-        substrate, "run_review_request",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("reviewer must not be called")))
 
-    result = loop._execute_task_acceptance_panel(ctx)
+    def _fire_stamp_then_refuse(_request, *, usage_ctx, **_kwargs):
+        usage_ctx._review_paid_stamp()  # the route's write-ahead call: raises first
+        raise AssertionError("reviewer must not be called")
 
-    assert result.degraded is True
-    assert result.aggregate_signal == "DEGRADED"
-    assert result.degraded_reasons == [
-        "review_skipped_deadline_reserve (no reviewer was called)"]
-    assert load_task_acceptance_review_state(
-        tmp_path, ctx.task_id)["claims_by_binding"] == {}
+    monkeypatch.setattr(substrate, "run_review_request", _fire_stamp_then_refuse)
+    with pytest.raises(TaskAcceptanceLaunchRefused) as refused:
+        loop._execute_task_acceptance_panel(ctx)
+    assert refused.value.launch_reason == "review_skipped_deadline_reserve"
+    assert load_task_acceptance_review_state(tmp_path, ctx.task_id)["claims_by_binding"] == {}
 
 
 def test_acceptance_corrupt_cancellation_projection_is_unknown_without_claim(

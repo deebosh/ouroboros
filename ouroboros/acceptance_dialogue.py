@@ -1015,6 +1015,7 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     from ouroboros.tools.review import _owner_deadline_at
     from ouroboros.review_dispatch import (
         TaskAcceptanceDispatchUnavailable,
+        TaskAcceptanceLaunchRefused,
         bind_task_acceptance_paid_dispatch,
         run_zero_physical_task_acceptance as _free_dispatch,
         task_acceptance_preclaim_refusal,
@@ -1112,26 +1113,29 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
     refusal = task_acceptance_preclaim_refusal(ctx)
     if refusal is not None:
         return refusal
-    # Owner R53: ONE pure time check at the moment money is about to be
-    # committed. The SAME predicate over the SAME root context and effective
-    # profile the loop's launch gate used, re-read AFTER the evidence build —
-    # so a panel whose assembly ate the margin refuses here for $0 (no claim
-    # row, no send) with the launch gate's own typed reason, instead of
-    # dispatching into a window the deadline will cut. The wallet projection
-    # above stays wallet-and-cancellation only; nothing is recorded here.
-    launch_ok, launch_reason = task_pacing.review_launch_allowed(
-        task_pacing.build_budget_snapshot(ctx.tools._ctx, profile=ctx.budget_profile),
-    )
-    if not launch_ok:
-        return _refused(f"{launch_reason} (no reviewer was called)")
+    # Owner R53: the launch rule is asked again INSIDE the paid claim
+    # (`review_dispatch.task_acceptance_paid_dispatch_stamp._claim`),
+    # immediately before the wallet row — the moment money is committed — not
+    # here at assembly. The wallet projection above stays wallet-and-
+    # cancellation only.
     # Q6: bind the exact tree wallet to the target's physical-dispatch stamp.
     # Route/candidate refusals remain free; one strict stamp gates every slot.
     started = time.monotonic()
     try:
         with bind_task_acceptance_paid_dispatch(ctx) as usage_ctx:
+            stamp = usage_ctx._review_paid_stamp
             result = run_review_request(request, slots=slots, drive_root=drive_root, usage_ctx=usage_ctx)
+    except TaskAcceptanceLaunchRefused:
+        raise  # the loop's launch-gate skip owns this typed control result
     except TaskAcceptanceDispatchUnavailable as exc:
         return _refused(f"{exc} (no reviewer was called)")
+    # A route-owned stamp fires inside a per-slot worker whose exception
+    # convention turns the claim's refusal into an error actor; the once-only
+    # stamp keeps the typed refusal itself, so the deadline-admission control
+    # result reaches the loop whatever the buried worker reported.
+    launch_refusal = stamp.typed_launch_refusal()
+    if launch_refusal is not None:
+        raise launch_refusal
     duration_sec = round(time.monotonic() - started, 3)
     try:
         from ouroboros.review_cycles import review_max_cycles, review_max_cycles_source
