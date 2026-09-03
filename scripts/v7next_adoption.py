@@ -102,18 +102,18 @@ DEFERRED_OUT_OF_V70 = {
     # batch №7 5=A (headless cancel receipts), batch №9 №12=A (two frozen modules),
     # batch №12 A (C6 residuals), batch №8 5=A (task_results eternal).
     # Operator disclosures without an owner decision yet (each an open item of
-    # the STOP batch): the wave-4 observations W4-F3/W4-F4, the mutating
-    # delegation scenarios, the never-executed paid E2E lane, spec §6.4
-    # paths/roots, the F23 acceptance capsule. (The five typed process-fact
-    # surfaces LEFT this record: owner batch №13 item 10 = B pulled
-    # DEFER-TYPED-PROC-5 into 7.0, and its row is done.)
+    # the STOP batch): the wave-4 observations W4-F3/W4-F4 and the paid E2E lane's
+    # E2/E3 (executed E1/E13 green; E2/E3 await a logged-in install), spec §6.4
+    # paths/roots. (Left this record by owner batch №13: item 10 = B pulled
+    # DEFER-TYPED-PROC-5 into 7.0; item 15 = B landed the mutating delegation
+    # scenarios S24/S25 — DEFER-E2E-DELEG-MUT reads done at phase F4; item 7 = A
+    # closed F23 as covered by the release bar.)
     "DEFER-HEADLESS-CANCEL": OWNER,
     "DEFER-FROZEN-2": OWNER,
     "DEFER-C6-RESIDUALS": OWNER,
     "DEFER-C19-RETENTION": OWNER,
     "W4-F3": OPERATOR,
     "W4-F4": OPERATOR,
-    "DEFER-E2E-DELEG-MUT": OPERATOR,
     "DEFER-E2E-PAID-LANE": OWNER,  # batch №13 item 2 = A; E1/E13 executed, E2/E3 await a logged-in install
     "DEFER-SPEC64-PATHS": OWNER,  # batch №13 item 8 = A
 }

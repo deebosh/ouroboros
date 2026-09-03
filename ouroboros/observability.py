@@ -639,6 +639,21 @@ def _promote_task_source_ref(
         state["promoted_source_handle_count"] += 1
         return dict(ref)
     except Exception as exc:
+        # A CONCURRENT copy-back of the same task may have claimed this exact
+        # content-addressed destination between our miss above and our write
+        # (its os.replace can refuse ours on Windows, where a destination another
+        # thread holds open cannot be replaced). The promotion's postcondition is
+        # the verified handle at the destination, not authorship of the write, so
+        # ask the destination once more: if it verifies, the copy DID happen and
+        # this caller must publish the same complete custody projection as the
+        # winner. Only a still-unreadable destination is a pending ref.
+        try:
+            read_actor_source_bytes(parent_root, task_id, ref)
+        except Exception:
+            pass
+        else:
+            state["promoted_source_handle_count"] += 1
+            return dict(ref)
         _append_promotion_fact(
             state["pending_refs"],
             _promotion_fact(

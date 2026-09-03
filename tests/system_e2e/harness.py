@@ -104,6 +104,11 @@ SCENARIOS = {
     "S21": ("cancellation with chat lineage: outbox-delivered receipt, chat.jsonl row, cancel_receipt block, intent forensics", LANE_MOCK),
     "S22": ("evolution absorb kill-recovery: SIGKILL after the reviewed commit, markerless boot reconcile absorbs once, never twice", LANE_MOCK),
     "S23": ("delegated interactive answer: waiting_on_user -> delegate_answer -> run continues; wire + custody truth", LANE_MOCK),
+    # Ф4 wave 5: the MUTATING delegated runs the earlier waves carried and never
+    # landed (ADOPTION row DEFER-E2E-DELEG-MUT). The one delegation branch that
+    # changes the owner's tree on behalf of an external harness.
+    "S24": ("delegated MUTATING run, clean pull-in: private snapshot provisioned, harness edits it, containment facts read from the attempt record, integrate_delegated_patch(apply) stages into the live workspace — which is untouched until that call", LANE_MOCK),
+    "S25": ("delegated MUTATING run, conflicting pull-in: the live tree drifts on a patched path, apply is REFUSED typed, and snapshot + patch survive as the nanny's own resolution material", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"
@@ -731,6 +736,46 @@ def process_tree_pids(root_pid: int) -> list:
     return pids
 
 
+def _read_proc_environ_bytes(pid) -> bytes:
+    """Raw ``/proc/<pid>/environ`` bytes, or ``b""`` when it cannot be read.
+
+    The single read seam of both /proc environ oracles below, so the empty-window
+    behaviour they must survive can be pinned deterministically.
+    """
+    try:
+        return pathlib.Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return b""
+
+
+def wait_pid_env_value(pid: int, value: str, timeout: float = 10.0) -> bool:
+    """True once ``/proc/<pid>/environ`` carries *value*, within a bounded window.
+
+    THE POSITIVE ORACLE. ``Popen`` returns as soon as the exec SUCCEEDED — the
+    CLOEXEC error pipe closes inside ``execve`` — but the kernel publishes the NEW
+    image's ``env_start``/``env_end`` later in that same exec path, so a read that
+    lands in that window sees an EMPTY environ for a live, correctly marked child.
+    A positive claim ("this child carries the marker") must therefore poll THE ONE
+    pid until its environ becomes readable or a deadline passes; scanning all of
+    /proc again would only re-roll the same window against a moving target.
+
+    The negative oracle (``pids_with_env_value`` as the no-orphans postcondition)
+    deliberately keeps its SINGLE scan: an orphan that survived a teardown was
+    execed long before the scan, so the post-exec window cannot hide it, while a
+    wait there would only slow every clean teardown down.
+    """
+    needle = str(value).encode()
+    deadline = time.monotonic() + float(timeout)
+    while True:
+        if needle in _read_proc_environ_bytes(pid):
+            return True
+        if not pathlib.Path(f"/proc/{pid}").exists():
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+
+
 def pids_with_env_value(value: str) -> list:
     """Every live pid whose /proc environ carries *value* (readable procs only).
 
@@ -741,17 +786,17 @@ def pids_with_env_value(value: str) -> list:
     teardown would show up here reparented outside it. Same-uid procs only by
     construction (/proc environ of other users is unreadable), which covers the
     whole tree an isolated server can have spawned.
+
+    NEGATIVE-USE ORACLE: one scan, no waiting (see ``wait_pid_env_value`` for why
+    a positive claim about a just-spawned child needs a bounded wait instead).
     """
     needle = str(value).encode()
     found = []
     for pid_dir in pathlib.Path("/proc").iterdir():
         if not pid_dir.name.isdigit():
             continue
-        try:
-            if needle in (pid_dir / "environ").read_bytes():
-                found.append(int(pid_dir.name))
-        except OSError:
-            continue
+        if needle in _read_proc_environ_bytes(pid_dir.name):
+            found.append(int(pid_dir.name))
     return found
 
 
@@ -1130,9 +1175,15 @@ def wait_until(predicate, timeout: float, interval: float = 0.5):
     return last
 
 
-def submit_running(server: IsolatedServer, description: str, *, timeout: float = 120) -> str:
-    """Submit a task and wait until the supervisor actually has it RUNNING."""
-    task_id = server.submit(description)
+def submit_running(server: IsolatedServer, description: str, *,
+                   workspace_root: str = "", timeout: float = 120) -> str:
+    """Submit a task and wait until the supervisor actually has it RUNNING.
+
+    ``workspace_root`` submits the task as an EXTERNAL-WORKSPACE task (the server's
+    own submit sets ``workspace_mode=external`` with it), which is what gives its
+    root agent the mutating delegated shape the delegation-mutation scenarios need.
+    """
+    task_id = server.submit(description, workspace_root=str(workspace_root or ""))
     assert task_id, "submit returned no task id"
     oracle = ArtifactOracle(server.data_root)
     running = wait_until(lambda: task_id in oracle.running_ids(), timeout)

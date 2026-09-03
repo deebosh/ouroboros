@@ -12,9 +12,12 @@ question surface — ``pendingInteractions`` on the detail plus the
 ``POST /v2/runs/:id/interactions/:iid/answer`` verb ``delegate_answer`` speaks,
 with its typed delivered/already_resolved/rejected statuses. Behavior is scripted
 PER RUN by markers in the POSTed prompt (success / hang / typed refusal / ask)
-plus the pinned-profile refusal, so one daemon serves every delegated-transport
-scenario without a second boot. It records every request (method, path,
-idempotency key, body) for wire-truth assertions.
+plus the pinned-profile refusal, and (the mutating wave) the applied facts a
+WRITING run produces: the edits themselves, made inside the private execution
+snapshot the start body names, and the ``attempts/<id>/attempt.yaml`` containment
+record ``gateways/claudexor.py::attempt_containment`` reads. So one daemon serves
+every delegated-transport scenario without a second boot. It records every request
+(method, path, idempotency key, body) for wire-truth assertions.
 
 ``PlaywrightUIClient`` stays an interface stub until the gateway/UI-truth wave
 lands: instantiating it is a scenario bug, and it refuses loudly.
@@ -42,6 +45,19 @@ _NOT_LANDED = (
 FAKE_HANG_MARKER = "[FAKE:HANG]"       # the run never reaches a terminal state
 FAKE_REFUSE_MARKER = "[FAKE:REFUSE]"   # the start POST is refused 400, typed
 FAKE_ASK_MARKER = "[FAKE:ASK]"         # the run asks ONE question and waits for the answer
+# The mutating marker: the run EDITS the workspace its start body was given, exactly
+# as a real harness would, and records the applied containment facts of its attempt.
+# Nothing else in the fake changes for it — a mutating run is an ordinary run whose
+# harness happened to write, which is the shape the integration path must survive.
+FAKE_MUTATE_MARKER = "[FAKE:MUTATE]"
+
+# The edits a [FAKE:MUTATE] run makes when a scenario does not script its own:
+# one NEW untracked text file (eligible for capture) and one rewrite of a tracked
+# file — the two classes ``workspace_patch_capture`` distinguishes.
+DEFAULT_WORKSPACE_EDITS = {
+    "delegated_new.txt": "written by the delegated run\n",
+    "tracked.txt": "one\ntwo\nthree\n",
+}
 
 # The one scripted question a [FAKE:ASK] run raises — the exact
 # ``ControlPendingInteraction`` wire keys ``pending_interactions()`` consumes.
@@ -108,6 +124,7 @@ class FakeClaudexorDaemon:
                  applied_model: str = "mock-model-echo",
                  applied_profile: str = "fake-profile-1",
                  ghost_profile: str = "ghost-profile",
+                 workspace_edits: Optional[Dict[str, str]] = None,
                  runs_dir: Optional[pathlib.Path] = None) -> None:
         self.harness_id = str(harness_id)
         pin_version, pin_sha = _tree_engine_identity()
@@ -116,6 +133,8 @@ class FakeClaudexorDaemon:
         self.applied_model = str(applied_model)
         self.applied_profile = str(applied_profile)
         self.ghost_profile = str(ghost_profile)
+        self.workspace_edits = dict(
+            DEFAULT_WORKSPACE_EDITS if workspace_edits is None else workspace_edits)
         self.token = "fake-daemon-token-" + uuid.uuid4().hex
         self._runs_dir = pathlib.Path(runs_dir) if runs_dir else None
         self._lock = threading.Lock()
@@ -355,9 +374,62 @@ class FakeClaudexorDaemon:
             "run_dir": run_dir, "body": body, "cancel_reason": "",
             "pending": ([_fake_pending_interaction(rid, self.harness_id)]
                         if FAKE_ASK_MARKER in prompt else []),
-            "answers": [],
+            "answers": [], "workspace_written": [],
         }
+        if FAKE_MUTATE_MARKER in prompt:
+            self._perform_run_work(self.runs[rid])
         return _remember(200, {"runId": rid, "runDir": run_dir})
+
+    # -- the mutating half: what a WRITING harness leaves behind ---------------
+
+    def _perform_run_work(self, run: Dict[str, Any]) -> None:
+        """Do a mutating run's work the way a real harness does: edit the workspace
+        the start body named, then record the attempt's APPLIED facts.
+
+        The workspace is ``execution.workspaceRoot`` — the PRIVATE execution snapshot
+        Ouroboros provisioned — and never ``scope.root``, which stays the live tree the
+        engine may only read. A fake writing to ``scope.root`` would be a fake that
+        breaks the isolation the scenarios exist to prove, so the two are read from
+        their own keys and the live root is never touched here.
+        """
+        execution = run["body"].get("execution")
+        execution = execution if isinstance(execution, dict) else {}
+        workspace = pathlib.Path(str(execution.get("workspaceRoot") or ""))
+        if str(workspace) and workspace.is_dir():
+            for rel, text in self.workspace_edits.items():
+                target = workspace.joinpath(*pathlib.PurePosixPath(rel).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+                run["workspace_written"].append(rel)
+        self._write_attempt_record(run)
+
+    def _write_attempt_record(self, run: Dict[str, Any]) -> None:
+        """``<runDir>/attempts/a01/attempt.yaml`` in Claudexor's applied-facts shape.
+
+        The ONLY evidence Ouroboros has that the harness HOME was scoped and that an
+        OS boundary was actually applied (``attempt_containment``): the HOME pair is
+        projected onto no ``/v2`` response. The mechanism is written WITH the path the
+        policy was proved against, because a mechanism without its proof is read as no
+        boundary at all — the fake must not be able to claim a containment the reader
+        would refuse to believe from a real engine.
+        """
+        if not run["run_dir"]:
+            return
+        attempt_dir = pathlib.Path(run["run_dir"]) / "attempts" / "a01"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        home_dir = str(pathlib.Path(run["run_dir"]) / "home")
+        record = {
+            "attempt_id": "a01",
+            "harness_id": self.harness_id,
+            "harness_home_isolated": True,
+            "harness_home_dir": home_dir,
+            "confinement_mechanism": "fake-sandbox",
+            "confinement_verified_denied_path": str(
+                pathlib.Path(run["run_dir"]).parent / "daemon"),
+        }
+        (attempt_dir / "attempt.yaml").write_text(
+            "\n".join(f"{key}: {json.dumps(value)}" for key, value in record.items()) + "\n",
+            encoding="utf-8")
 
     def _detail(self, run: Dict[str, Any]) -> Dict[str, Any]:
         run["polls"] += 1

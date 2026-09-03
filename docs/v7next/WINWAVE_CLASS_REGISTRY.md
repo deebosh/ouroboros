@@ -97,9 +97,11 @@ reads that feed source-text regexes are touched.
    proved. What is genuinely open is FRESHNESS, not colour: 33644668074 is the
    newest verdict (read 2026-09-02 15:00Z); the tips after it (C6 merge, the
    stage-2 fix lanes) await their own dispatch on the release candidate. Second,
-   narrower open point: the attempt-1 Windows failure of 33579445704 has no
-   landed root-cause fix and is carried below as an intermittent class — that is
-   the open O3 question to the owner, not a decided row.
+   narrower open point: the attempt-1 Windows failure of 33579445704 was two
+   failures, and only one is now rooted — the observability copy-back race is
+   fixed by `626b48b7` (owner 15 = B answered O3 with «fix now»), while the
+   `tests/test_preflight_runner` xdist worker timeout still has no landed
+   root-cause fix and is carried below as an intermittent class.
 
 ## 3-OS matrix runs
 
@@ -150,12 +152,22 @@ stand as recorded.
 The two red `system-e2e-mock` subtests on attempt 1 of run 33626834806
 (`43dcc1d2`) were not platform classes and are not registry rows: both were
 races inside the mock lane's own scaffolding — the `/proc`-environ scan of
-`pids_with_env_value` (a process can exit between the listing and the read) and
-an S22 wait that assumed its window was wide enough under CI load. The rerun of
-the same job on the same SHA was green, and the full 57-scenario lane passed
-twice locally on that tree. Recorded here so the attempt-1 red is not read later
-as a cross-OS class: it is lane flakiness on ubuntu, disclosed, and it belongs to
-the E2E lane's own ledger rather than to this row.
+`pids_with_env_value` and an S22 wait that assumed its window was wide enough
+under CI load. Neither is a cross-OS class; both belong to the E2E lane's own
+ledger rather than to this row.
+
+The `/proc`-environ half is no longer «lane flakiness … disclosed»: it is
+**rooted and fixed by `626b48b7`** (owner batch №13 item 15 = B). The cause is
+not «a process can exit between the listing and the read» but the post-exec
+window — `Popen` returns once the exec SUCCEEDED (the CLOEXEC error pipe closes
+inside `execve`), while the kernel publishes the new image's
+`env_start`/`env_end` later in that same path, so a read landing there sees an
+EMPTY environ for a live, correctly marked child (the same shape failed again as
+`assert 3898 in []` on run 33671108287). The harness now separates the positive
+oracle (`wait_pid_env_value`, a bounded poll of THE ONE pid) from the no-orphans
+postcondition (`pids_with_env_value`, still a single scan), and the window is
+pinned deterministically through their shared read seam. The S22 wait remains a
+disclosed lane-timing observation.
 
 ### The two rerun-greens, per row
 
@@ -167,11 +179,19 @@ and whether a code fix followed.
   **failure**, every other job green. Attempt 2 (rerun of the failed job):
   green. Named cause, **operator-read**: two Windows failures —
   `tests/test_phase3c_observability_gc` on its copy-back step (intermittent) and
-  `tests/test_preflight_runner` on an xdist worker timeout. **No code fix
-  followed** either one, so the class stands as **intermittent, unrooted**. That
-  is the open **O3** question to the owner: root the observability copy-back
-  race, or accept it as a disclosed CI-flake class. Until then this SHA's
-  Windows leg is a rerun-green and must not be cited as a first-attempt green.
+  `tests/test_preflight_runner` on an xdist worker timeout. The copy-back half is
+  now **rooted and fixed by `626b48b7`** (owner batch №13 item 15 = B, which
+  answered the open **O3** question with «fix now»): two concurrent copy-backs
+  promote the same content-addressed source handle, and on Windows the loser's
+  `os.replace` over a destination the winner or a verifying reader holds open is a
+  sharing violation, so the loser published an INCOMPLETE promotion while the
+  winner published a complete one. The store is now write-once and the promotion
+  judges by its postcondition rather than by authorship of the write (diagnosis
+  and red-first pins: docs/v7next/LEDGER_CORRECTIONS.md, «From the
+  delegation-mutation and races lane»). The `tests/test_preflight_runner` xdist
+  timeout had **no code fix** and stands as **intermittent, unrooted**. Either
+  way this SHA's Windows leg is a rerun-green and must not be cited as a
+  first-attempt green.
 - **33624546416 (`ac17fa03`).** Attempt 1: `full-test (windows-latest)`
   **failure**, every other job green. Attempt 2: green. Named cause,
   operator-read and independently corroborated by the fix commit's own message:

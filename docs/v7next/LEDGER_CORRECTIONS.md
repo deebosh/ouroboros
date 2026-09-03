@@ -9230,3 +9230,116 @@ the AF_UNIX limit (108 on Linux, 104 on macOS) and every delegated start is refu
 `daemon_spawn_failed` whose log tail reads `listen EINVAL` — the refusal is typed but the cause is not
 named. Ordinary installs (`~/Ouroboros/data`) are far below the limit; deep roots (nested temp dirs,
 long usernames under /Users) are not.
+
+## From the delegation-mutation and races lane (owner 15 = B)
+
+Owner batch №13 item 15 = B («если это не исправлено в основной ветке ouroboros уже») —
+verified before starting: upstream `a76961de..cc2eac50` carries no fix for any of the three
+items below. Branch `lane/deleg-mut-and-races` off `72bb4949`; commits `626b48b7` (the two
+races) and this section's scenario commit.
+
+### 1. MUTATING delegated runs now have system-E2E cover (DEFER-E2E-DELEG-MUT closed)
+
+Every F4 wave delegated only READ-ONLY runs and disclosed the same gap: the ONE delegation
+branch that changes the owner's tree on behalf of an external harness had no system-level
+cover. What was missing was not scenario prose but an ACTOR — the fake daemon had no mutating
+half, so no run could produce the applied facts an integration reads.
+
+`tests/system_e2e/interfaces.py::FakeClaudexorDaemon` gained exactly that half, and nothing
+else: on `[FAKE:MUTATE]` a run (a) edits the workspace its own start body named — read from
+`execution.workspaceRoot`, the PRIVATE snapshot, never from `scope.root`, so the fake cannot
+break the isolation the scenarios exist to prove — and (b) writes
+`<runDir>/attempts/a01/attempt.yaml` in Claudexor's applied-facts shape, the only evidence
+`gateways/claudexor.py::attempt_containment` has that the harness HOME was scoped and an OS
+boundary applied (the mechanism is written WITH its proven denied path, because a mechanism
+without one is read as no boundary at all).
+
+- **S24 — clean pull-in.** An external-workspace task delegates `access=workspace_write`; the
+  host provisions the private Git snapshot and sends it as `execution.workspaceRoot` while
+  `scope.root` stays the live tree; the harness edits the snapshot; `delegate_wait` captures;
+  `integrate_delegated_patch(apply)` stages into the live workspace. Pinned: the durable
+  custody chain (STARTED with access/mode/snapshot_id/execution_root/baseline_sha →
+  PATCH_CAPTURED → APPLY_STARTED → DISPOSED(applied) → the `delegate_run_patch_verdict` row,
+  whose `patch_sha256` equals the capture manifest's), the capture artifacts on disk, the
+  ISOLATION proof, the containment read (no `delegate_run_unconfined` row for this run), the
+  staged-not-committed contract (`rev-list --count HEAD` unchanged), and the released snapshot.
+- **The isolation proof is causal, not timed.** The script step that runs AFTER the wait
+  returned executes in the test process, so it reads the live workspace at a point the
+  server's own ordering guarantees is between the terminal capture and the decision: the
+  run's file is absent and `tracked.txt` is still the owner's. No sleep is a proof.
+- **S25 — conflicting pull-in.** The same script step writes the drift into the live tree
+  before answering with `integrate_delegated_patch(apply)`. The apply is refused typed
+  (`INTEGRATE_CONFLICT` … «YOU own this conflict»; custody row
+  `delegate_run_patch_apply_resolved` reason `baseline_drift`), nothing is disposed, the live
+  file keeps the OWNER's content, and the snapshot, its registry row and the patch all survive.
+- **Finding, recorded rather than fixed (no defect):** a task that ENDS holding an undisposed
+  captured patch is not a success, and the tree says so — S25's terminal is `failed` with
+  `reason_code=delegated_custody_unreconciled`,
+  `delegated_runs_unreconciled=["patch:<run_id>"]` and `outcome_axes.execution=infra_failed`,
+  while the model's own answer is kept verbatim. S25 pins that vocabulary, so a future change
+  that quietly promoted such a task to `completed` is red.
+
+Red-first for a coverage lane is the absence of the capability, so it is recorded as a
+CONTROL run instead: with the fake's mutating half disabled (`_perform_run_work` short-
+circuited) S24 fails at `assert 'ready_no_changes' == 'ready_with_changes'` — the scenario
+tests the mutating path rather than passing vacuously.
+
+### 2. O3 — the copy-back source-handle race (CI 33579445704, windows-latest attempt 1)
+
+Two concurrent copy-backs of one task promote the SAME content-addressed source handle. Both
+miss the destination, both write; on Windows the loser's `os.replace` over a destination the
+winner (or a verifying reader) holds open is a sharing violation — CPython opens files without
+`FILE_SHARE_DELETE`. The loser then published an INCOMPLETE promotion (`pending_refs` non-empty,
+`promoted_source_handle_count=0`) while the winner published complete/1: two different custody
+projections for one settled fact, which is the `child_ref_promotion` mismatch the Windows leg
+read. Fixed as a class at both seams, with no sleeps and no test-side retry:
+
+- `artifacts.py::store_actor_source_bytes` is WRITE-ONCE — the digest is in the file name, so a
+  destination already holding exactly these bytes IS this handle, and the contended replace is
+  removed outright for the ordinary second copier;
+- `observability.py::_promote_task_source_ref` judges by the POSTCONDITION, not by authorship
+  of the write: when the store raises it asks the destination once more through
+  `read_actor_source_bytes`, and a verified handle there counts as promoted. Only a
+  still-unreadable destination stays a pending ref.
+
+The mechanism is Windows-only (POSIX `rename(2)` never refuses an open destination); the fix is
+platform-neutral, because the postcondition is the same everywhere and both pins run on every OS.
+
+### 3. The `/proc` env-marker race of the system-E2E lane (CI 33671108287, attempt 1)
+
+`assert 3898 in []`: `Popen` returns as soon as the exec SUCCEEDED — the CLOEXEC error pipe
+closes inside `execve` — but the kernel publishes the new image's `env_start`/`env_end` later in
+that same path, so a read landing in that window sees an EMPTY environ for a live, correctly
+marked child. The harness now separates the two oracles it had conflated:
+`wait_pid_env_value` polls THE ONE pid for a bounded window (the POSITIVE claim), while
+`pids_with_env_value` keeps its single scan (the no-orphans postcondition — an orphan was execed
+long before the scan, so the window cannot hide it, and a wait there would slow every clean
+teardown). Both read through one seam (`_read_proc_environ_bytes`), which is what makes the
+window pinnable at all.
+
+### Red-first table
+
+| pin | file | red on `72bb4949` |
+| --- | --- | --- |
+| copy-back postcondition | `tests/test_phase3c_observability_gc.py::test_copyback_source_handle_promotion_survives_a_lost_write_race` | `AssertionError: assert 'incomplete' == 'complete'` (loser publishes a pending ref, count 0) |
+| content-addressed write-once | `tests/test_phase3c_observability_gc.py::test_store_actor_source_bytes_does_not_rewrite_an_identical_handle` | `assert ['…/tool-<sha>.txt'] == []` — the identical re-store replaced the file |
+| post-exec environ window | `tests/system_e2e/test_system_scenarios_w2.py::test_pid_env_wait_rides_out_the_post_exec_empty_environ_window` | `ImportError: cannot import name 'wait_pid_env_value'`; the mechanism itself demonstrated on the base harness: a single scan returns False for a live, correctly marked pid inside the window |
+| mutating delegated run (S24) | `tests/system_e2e/test_system_scenarios_w5.py` | control run with the fake's mutating half disabled: `assert 'ready_no_changes' == 'ready_with_changes'` |
+
+### Verification of this lane
+
+`OUROBOROS_E2E_DEEP=mock … pytest tests/system_e2e/ -q` on isolated roots: **61 passed in
+16:47**, rc 0 (57 scenario tests + the default-lane contract pins, now including S24/S25 and
+the fake's mutating-half pin). Also green on the candidate tree: `ruff check . --select F`,
+`scripts/regenerate_size_ratchet.py --check`, `scripts/v7next_adoption.py --release`
+(53 rows, 39 done / 14 deferred), `tests/test_docs_sync.py`,
+`tests/test_system_e2e_ci_lane.py`, `tests/test_generated_inventories.py`,
+`tests/test_phase3c_observability_gc.py` (16) and the 12 neighbouring suites that read
+`child_ref_promotion` / `copy_child_task_result` (229 passed).
+
+Lane hazard worth carrying: the mock lane needs a SHORT `TMPDIR`. The suite's isolated
+servers spawn a `multiprocessing.Manager`, whose AF_UNIX listener path is built under
+`TMPDIR`, and the 108-byte sockaddr limit turns a deep temp root into
+`EOFError` from `Manager().start()` — the server then reports `supervisor_ready=True
+workers=0` and every scenario dies in `_wait_ready` after its full timeout, with the real
+cause only in `data/logs/server.log`.
