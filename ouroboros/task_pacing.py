@@ -641,7 +641,7 @@ def prospective_wrapup_attempt_request(
     allow_server_web_search: bool = False, prompt_tokens: int = 0,
 ) -> Any:
     """Build the conservative request facts from the prospective wire payload."""
-    from ouroboros.llm import _attempt_request, _physical_candidate
+    from ouroboros.llm import _attempt_request, _finalized_physical_candidate
     from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
     from ouroboros.request_wire_recovery import request_wire_call_scope
     from ouroboros.pricing import infer_provider_from_model
@@ -661,8 +661,12 @@ def prospective_wrapup_attempt_request(
             skip_capability_fetch=True, allow_server_web_search=allow_server_web_search,
         )
         llm._normalize_payload_cache_ttl(target, candidate)
+        candidate = _finalized_physical_candidate(
+            target, candidate,
+            "messages" if target.get("provider") == "anthropic" else "chat.completions",
+        )
         llm._pop_thread_disclosure("_cache_breakpoint_tls")
-    return _merge_scope(_attempt_request(target, _physical_candidate(candidate)))[0]
+    return _merge_scope(_attempt_request(target, candidate))[0]
 
 
 def wrapup_reservation_fits(
@@ -977,10 +981,11 @@ def _acceptance_rails_line_inner(
             scope = current_usage_scope()
             if scope is not None and scope.root_task_id:
                 projection = usage_projection(
-                    scope.drive_root, root_task_id=scope.root_task_id,
+                    scope.drive_root, global_limit_usd=scope.global_limit_usd,
                 )
+                root = (projection.get("by_root") or {}).get(scope.root_task_id) or {}
                 remaining = projection.get("remaining_known_usd")
-                money_bits.append(_headroom_phrase(remaining, rails.get("cost_ceiling_usd"), projection.get("accounted_usd")))
+                money_bits.append(_headroom_phrase(remaining, rails.get("cost_ceiling_usd"), root.get("accounted_usd")))
         except Exception:
             log.debug("rails: budget projection unavailable", exc_info=True)
         if money_bits:

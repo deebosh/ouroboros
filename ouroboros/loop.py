@@ -272,9 +272,7 @@ def _check_budget_limits(
                 _force_plan_disclosure(tool_ctx, trace, forced_reason="budget_exhausted")
                 if tool_ctx is not None else ""
             )
-            # A forced sink like every other: a queued/headless root still
-            # OWED a panel; returning without the record left `not_eligible /
-            # run_count=0` — as if no panel was owed. Pure ledger write.
+            # Record the owed panel even when rejection happens before work.
             _record_forced_finalization(
                 ctx,
                 trace,
@@ -307,17 +305,17 @@ def _check_budget_limits(
     wrapup_fits = None
     if cost_ceiling.root_cap_usd is not None and deciding is not None and prompt_estimate > 0:
         finish_reason = task_pacing.wrapup_last_fit_text(deciding, cost_ceiling)
+        forced_prompt = f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}"
         prospective_messages = [dict(message) for message in ctx.messages]
-        _append_or_merge_user_message(
-            prospective_messages,
-            f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}",
-        )
-        wrapup_request = task_pacing.prospective_wrapup_attempt_request(
-            llm=ctx.llm, messages=prospective_messages, model=ctx.active_model,
-            reasoning_effort=ctx.active_effort, tools=ctx.tool_schemas,
-            allow_server_web_search=_server_web_allowed_by_task(
+        _append_or_merge_user_message(prospective_messages, forced_prompt)
+        request_args = dict(
+            llm=ctx.llm, model=ctx.active_model, reasoning_effort=ctx.active_effort,
+            tools=ctx.tool_schemas, allow_server_web_search=_server_web_allowed_by_task(
                 getattr(getattr(ctx, "tools", None), "_ctx", None)
             ), prompt_tokens=prompt_estimate,
+        )
+        wrapup_request = task_pacing.prospective_wrapup_attempt_request(
+            messages=prospective_messages, **request_args,
         ) if not ctx.active_use_local else None
         wrapup_args = dict(
             request=wrapup_request, root_cap_usd=cost_ceiling.root_cap_usd,
@@ -327,10 +325,28 @@ def _check_budget_limits(
         if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
             **wrapup_args, reservation_count=2,
         ) is False:
+            trace = ctx.llm_trace if isinstance(ctx.llm_trace, dict) else {}
+            priced_prompt = _prepare_forced_prompt(ctx, forced_prompt, trace)
+            prospective_messages = [dict(message) for message in ctx.messages]
+            _append_or_merge_user_message(prospective_messages, priced_prompt)
+            wrapup_args["request"] = task_pacing.prospective_wrapup_attempt_request(
+                messages=prospective_messages, **request_args,
+            )
+            wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
+            two_fit = task_pacing.wrapup_reservation_fits(
+                **wrapup_args, reservation_count=2,
+            )
             accumulated_usage["cost_stop_spend_basis"] = spend_basis
             accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
+            if wrapup_fits is False:
+                return _forced_fallback_result(
+                    ctx, trace, finish_reason, "budget_exhausted",
+                    source="budget_wrapup_unaffordable",
+                )
+            if wrapup_fits is not True or two_fit is not False:
+                return None
             return _forced_final_answer(
-                ctx, prompt=f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}",
+                ctx, prompt=priced_prompt, _prompt_prepared=True,
                 fallback_text=finish_reason, reason_code="budget_exhausted",
             )
     if deciding is not None and ceiling_usd is not None and deciding > ceiling_usd:
@@ -370,9 +386,6 @@ def _check_budget_limits(
             fallback_text=finish_reason,
             reason_code="budget_exhausted",
         )
-    # The old round-gated "[INFO] ... Wrap up if possible" nudge is replaced by
-    # the latched cost milestones in task_pacing (transport: _inject_round_checkpoints).
-
     return None
 
 
@@ -398,16 +411,7 @@ _TREE_ACCOUNTING_MAX_STALE_SEC = 120.0
 def _loop_tree_accounting(
     *, refresh: bool, max_age_sec: float = 30.0,
 ) -> Optional[Dict[str, Any]]:
-    """The root subtree's accounted spend for the CURRENT task's tree (nullable).
-
-    Reads the reserve-time scope telemetry for free; ``refresh=True`` may do
-    one real ledger projection read when the stash is older than
-    ``max_age_sec``. Callers: loop start / 600s pacing note / 15-round
-    checkpoint (cache-breaking, small max_age), plus the two DECIDING
-    surfaces (ceiling check + milestone note) on the wider
-    ``_TREE_ACCOUNTING_MAX_STALE_SEC`` bound — free while rounds are shorter
-    (every dispatch refreshes the stash); never per-round unconditionally
-    (e4a87344). Only under a root cap; None otherwise (unknown ≠ $0)."""
+    """Return nullable, bounded-stale spend for the current task's root tree."""
     try:
         from ouroboros.usage_accounting import (
             current_usage_scope,
@@ -2347,14 +2351,14 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
             schema = tools_registry.get_schema_by_name(name)
             if schema and name not in active_tool_names:
                 tool_schemas.append(schema)
+                invalidate_task_cache_splits(getattr(ctx, "task_id", ""))
                 enabled_extra.add(name)
                 active_tool_names.add(name)
                 enabled.append(f"{name} (registered late)")
             elif name in active_tool_names:
                 enabled.append(f"{name} (already active)")
             else:
-                # F3 (2026-08-10 saga): a policy-filtered tool is not "Not found" —
-                # answer with the typed reason so the agent stops guessing names.
+                # A policy-filtered tool is distinct from an unknown name.
                 reason = (
                     tools_registry.policy_hidden_reason(name)
                     if hasattr(tools_registry, "policy_hidden_reason") else None
@@ -4261,6 +4265,14 @@ def _finalize_forced_services(
     )
 
 
+def _prepare_forced_prompt(
+    ctx: _RoundLimitContext, prompt: str, llm_trace: Dict[str, Any],
+) -> str:
+    _finalize_forced_services(ctx, llm_trace)
+    tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+    return prompt + _forced_delegation_note(tools_ctx, llm_trace)
+
+
 def _drain_forced_owner_directives(
     ctx: _RoundLimitContext,
     llm_trace: Dict[str, Any],
@@ -4604,15 +4616,7 @@ def _resolve_forced_delivery_control(
 
 
 def _forced_delegation_note(tools_ctx: Any, llm_trace: Dict[str, Any]) -> str:
-    """The nanny postcondition's forced-path half, grounded in DURABLE custody.
-
-    A forced finalization may not re-loop, so the substrate fact rides the
-    one final prompt. `delegate_custody.task_execution_evidence` on the
-    custody root (canonical/budget root — the Phase A split-root rule)
-    decides, not just this execution's trace: succeeded → no note;
-    started-but-unsettled → pending wording (no retry pressure);
-    settled-without-success → truthful failure wording; zero started with
-    readable evidence → no-delegation wording; unreadable → no accusation."""
+    """Build the forced-path nanny note from durable delegation custody."""
     if not getattr(tools_ctx, "_nanny_route_dispatched", False):
         return ""
     try:
@@ -4678,11 +4682,13 @@ def _forced_final_answer(
     reason_code: str,
     single_semantic_turn: bool = False,
     provider_terminal: bool = False,
+    _prompt_prepared: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Forced rail."""
     live_trace = getattr(ctx, "llm_trace", None)
     llm_trace = live_trace if isinstance(live_trace, dict) else {}
-    _finalize_forced_services(ctx, llm_trace)
+    if not _prompt_prepared:
+        prompt = _prepare_forced_prompt(ctx, prompt, llm_trace)
     if ctx.deadline_ts is not None and time.time() >= float(ctx.deadline_ts):
         ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code)
         return _forced_fallback_result(
@@ -4693,7 +4699,6 @@ def _forced_final_answer(
     if router_result is not None:
         return router_result
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
-    prompt += _forced_delegation_note(tools_ctx, llm_trace)
     _append_or_merge_user_message(ctx.messages, prompt)
     extracted = ""
     response_meta: Dict[str, Any] = {}

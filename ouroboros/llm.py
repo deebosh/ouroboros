@@ -295,6 +295,14 @@ def _physical_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
     return candidate
 
 
+def _finalized_physical_candidate(
+    target: Dict[str, Any], payload: Dict[str, Any], api_surface: str,
+) -> Dict[str, Any]:
+    return prepare_wire_payload_for_send(
+        target, _physical_candidate(payload), api_surface=api_surface,
+    )
+
+
 def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptRequest):
     """Close over one final candidate without putting it in accounting rows."""
     predicate = current_physical_attempt_predicate()
@@ -3094,10 +3102,7 @@ class LLMClient:
         request_timeout = float(timeout) if timeout and timeout > 0 else 120
 
         def _send(candidate: Dict[str, Any]):
-            candidate = _physical_candidate(candidate)
-            candidate = prepare_wire_payload_for_send(
-                target, candidate, api_surface="messages",
-            )
+            candidate = _finalized_physical_candidate(target, candidate, "messages")
             request = _attempt_request(target, candidate, source="llm.anthropic")
 
             def _post():
@@ -3935,10 +3940,7 @@ class LLMClient:
         _pop_reasoning_pin_note()
 
         def _send(candidate: Dict[str, Any]) -> Any:
-            candidate = _physical_candidate(candidate)
-            candidate = prepare_wire_payload_for_send(
-                target, candidate, api_surface="chat.completions",
-            )
+            candidate = _finalized_physical_candidate(target, candidate, "chat.completions")
             request = _attempt_request(target, candidate)
             try:
                 result = _execute_candidate(
@@ -4072,10 +4074,7 @@ class LLMClient:
         _pop_reasoning_pin_note()
 
         async def _send(candidate: Dict[str, Any]) -> Any:
-            candidate = _physical_candidate(candidate)
-            candidate = prepare_wire_payload_for_send(
-                target, candidate, api_surface="chat.completions",
-            )
+            candidate = _finalized_physical_candidate(target, candidate, "chat.completions")
             request = _attempt_request(target, candidate)
             try:
                 result = await _execute_candidate_async(

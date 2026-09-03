@@ -127,6 +127,27 @@ class TestCacheAwareReservation:
 
         assert usage_accounting._reservation_cost(request) == cold
 
+    def test_enabling_a_tool_makes_the_next_reservation_cold(self, tmp_path):
+        from ouroboros import loop
+        from ouroboros.tool_policy import initial_tool_schemas
+        from ouroboros.tools.registry import ToolRegistry
+
+        registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+        registry._ctx.task_id = "enabled"
+        schemas = initial_tool_schemas(registry)
+        schemas[:] = [s for s in schemas if s["function"]["name"] != "read_file"]
+        loop._setup_dynamic_tools(registry, schemas, [])
+        request = _request(task_id="enabled")
+        cold = usage_accounting._reservation_cost(request)
+        usage_accounting.stash_task_cache_split(
+            "enabled", request.model, 90_000,
+            provider=request.provider, ttl_seconds=300.0,
+        )
+        assert usage_accounting._reservation_cost(request) < cold
+
+        assert "registered late" in registry.execute("enable_tools", {"tools": "read_file"})
+        assert usage_accounting._reservation_cost(request) == cold
+
     def test_direct_route_and_ledger_identity_share_a_split(self):
         usage_accounting.stash_task_cache_split(
             "t1", "anthropic/claude-test", 95_000, provider="anthropic", ttl_seconds=300.0,
@@ -350,6 +371,83 @@ class TestWrapupAffordability:
         assert prospective.candidate_raw_size_bytes == actual.candidate_raw_size_bytes
         assert prospective.candidate_raw_sha256 == actual.candidate_raw_sha256
 
+    def test_direct_openai_route_matches_physical_candidate(self, monkeypatch, tmp_path):
+        from ouroboros import llm as llm_module
+        from ouroboros.llm import LLMClient
+
+        monkeypatch.setenv("OPENAI_API_KEY", "unused")
+        client = LLMClient(api_key="unused")
+        model = "openai::gpt-test"
+        target = client._resolve_remote_target(model)
+        messages = [{"role": "system", "content": "policy"}, {"role": "user", "content": "x" * 1600}]
+        tools = [{"type": "function", "function": {
+            "name": "inspect", "description": "inspect",
+            "parameters": {"type": "object", "properties": {}},
+        }}]
+        captured = {}
+
+        def execute(request, _send, _before_dispatch):
+            captured["request"] = request
+            return SimpleNamespace(model_dump=lambda: {"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+        monkeypatch.setattr(llm_module, "_execute_candidate", execute)
+        with usage_accounting.usage_scope(usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="openai", root_task_id="openai", global_limit_usd=100.0,
+        )):
+            prospective = task_pacing.prospective_wrapup_attempt_request(
+                llm=client, messages=messages, model=model, reasoning_effort="high", tools=tools,
+            )
+            candidate = client._build_remote_candidate(
+                target, messages, "high", prospective.max_completion_tokens, "auto", None, tools,
+                skip_capability_fetch=True,
+            )
+            client._normalize_payload_cache_ttl(target, candidate)
+            client._create_chat_completion_with_retries(lambda **_kwargs: None, candidate, target)
+
+        actual = captured["request"]
+        assert prospective.candidate_raw_size_bytes == actual.candidate_raw_size_bytes
+        assert prospective.candidate_raw_sha256 == actual.candidate_raw_sha256
+
+    def test_wire_recovery_matches_physical_candidate(self, monkeypatch, tmp_path):
+        from ouroboros import llm as llm_module
+        from ouroboros.llm import LLMClient
+
+        monkeypatch.setenv("OPENAI_API_KEY", "unused")
+        client = LLMClient(api_key="unused")
+        model = "openai::gpt-test"
+        target = client._resolve_remote_target(model)
+        messages = [{"role": "user", "content": "recover me"}]
+        captured = {}
+        real_prepare = llm_module.prepare_wire_payload_for_send
+
+        def prepare(target_, payload, *, api_surface):
+            prepared = real_prepare(target_, payload, api_surface=api_surface)
+            prepared["recovered_wire_field"] = True
+            return prepared
+
+        def execute(request, _send, _before_dispatch):
+            captured["request"] = request
+            return SimpleNamespace(model_dump=lambda: {"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+        monkeypatch.setattr(llm_module, "prepare_wire_payload_for_send", prepare)
+        monkeypatch.setattr(llm_module, "_execute_candidate", execute)
+        with usage_accounting.usage_scope(usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="recovery", root_task_id="recovery", global_limit_usd=100.0,
+        )):
+            prospective = task_pacing.prospective_wrapup_attempt_request(
+                llm=client, messages=messages, model=model, reasoning_effort="high",
+            )
+            candidate = client._build_remote_candidate(
+                target, messages, "high", prospective.max_completion_tokens, "auto", None, None,
+                skip_capability_fetch=True,
+            )
+            client._normalize_payload_cache_ttl(target, candidate)
+            client._create_chat_completion_with_retries(lambda **_kwargs: None, candidate, target)
+
+        actual = captured["request"]
+        assert prospective.candidate_raw_size_bytes == actual.candidate_raw_size_bytes
+        assert prospective.candidate_raw_sha256 == actual.candidate_raw_sha256
+
 
 class TestWrapupAffordabilityRail:
     """The loop soft-lands on the rail, and stays silent when it cannot know."""
@@ -364,7 +462,7 @@ class TestWrapupAffordabilityRail:
         monkeypatch.setattr(
             "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
         )
-        answers, calls, builds = iter((True, False)), [], []
+        answers, calls, builds = iter((True, False, True, False)), [], []
         request = object()
         monkeypatch.setattr(
             task_pacing, "prospective_wrapup_attempt_request",
@@ -378,15 +476,26 @@ class TestWrapupAffordabilityRail:
             "ouroboros.loop._forced_final_answer",
             lambda ctx_, **kwargs: ("wrapped up", ctx_.accumulated_usage, {"kwargs": kwargs}),
         )
+        monkeypatch.setattr(
+            "ouroboros.loop._finalize_forced_services",
+            lambda ctx_, _trace: ctx_.messages.append({"role": "user", "content": "service evidence"}),
+        )
+        monkeypatch.setattr(
+            "ouroboros.loop._forced_delegation_note", lambda *_args: "\nforced delegation note",
+        )
 
         result = _check_budget_limits(ctx, None, self._ceiling(50.0))
 
         assert result is not None
         assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_last_fit"
         assert result[2]["kwargs"]["reason_code"] == "budget_exhausted"
-        assert "[BUDGET LIMIT]" in builds[0]["messages"][-1]["content"]
-        assert len(builds) == 1
-        assert [call["request"] for call in calls] == [request, request]
+        assert result[2]["kwargs"]["_prompt_prepared"] is True
+        assert "forced delegation note" in result[2]["kwargs"]["prompt"]
+        assert "[BUDGET LIMIT]" in builds[1]["messages"][-1]["content"]
+        assert "forced delegation note" in builds[1]["messages"][-1]["content"]
+        assert "service evidence" in str(builds[1]["messages"])
+        assert len(builds) == 2
+        assert [call["request"] for call in calls] == [request] * 4
 
     def test_a_missing_prompt_estimate_keeps_the_rail_silent(self, monkeypatch):
         ctx = _ctx(accumulated_usage={"cost": 1.0})
@@ -533,12 +642,20 @@ class TestOneCeilingPerTree:
         assert wallet_binds == "$3.00 budget left (wallet binds)"
         assert task_pacing._headroom_phrase(None, None, None) == "budget left unknown"
 
-    def test_acceptance_rails_use_tree_spend_for_ceiling_headroom(self, monkeypatch):
-        monkeypatch.setattr(
-            usage_accounting, "usage_projection",
-            lambda *_a, **_k: {"accounted_usd": 42.0, "remaining_known_usd": 58.0},
-        )
-        with _scoped("child", "root", 47.0):
+    def test_acceptance_rails_use_global_wallet_and_tree_spend(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("TOTAL_BUDGET", "50")
+        for task_id, root_id, cost in (("child", "root", 42.0), ("other", "other", 7.0)):
+            with usage_accounting.usage_scope(usage_accounting.UsageScope(
+                drive_root=tmp_path, task_id=task_id, root_task_id=root_id,
+                global_limit_usd=50.0, root_limit_usd=100.0,
+            )):
+                reservation = usage_accounting.reserve_attempt(_request(reservation_usd=cost))
+                usage_accounting.mark_dispatched(reservation)
+                usage_accounting.settle_attempt(reservation, {}, cost_usd=cost, cost_final=True)
+        with usage_accounting.usage_scope(usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="child", root_task_id="root",
+            global_limit_usd=50.0, root_limit_usd=100.0,
+        )):
             line = task_pacing._acceptance_rails_line_inner(
                 SimpleNamespace(has_deadline=False), self._profile(), 0,
                 {"task_cost_usd": 2.0, "cost_ceiling_usd": 47.0},
@@ -546,7 +663,7 @@ class TestOneCeilingPerTree:
             )
 
         assert "$2.00 spent this task" in line
-        assert "$5.00 budget left (in-task cost ceiling binds)" in line
+        assert "$1.00 budget left (wallet binds)" in line
 
 
 class TestGlobalBudgetDefault:
