@@ -175,6 +175,36 @@ def test_transcript_counter_includes_system_schemas_and_args(subject_repo, monke
     assert not llm.calls, "the send bound must refuse before paying for a send"
 
 
+def test_transcript_counter_includes_replayed_reasoning(subject_repo, monkeypatch):
+    """The reasoning-echo lane (DeepSeek) keeps ``reasoning_content`` on the
+    canonical assistant message the loop appends, and replays it verbatim on
+    every later send. The SEND bound must count it like content — previously
+    the whole dict joined ``messages`` while the counter saw only content and
+    tool-call JSON, so a large thinking tail drifted past the promised bound
+    unmeasured.
+    """
+    import ouroboros.review_native_episode as native_episode
+
+    llm = _ScriptedLLM([
+        {
+            "tool_calls": [_tool_call("read_file", {"path": "greeting.txt"})],
+            "reasoning_content": "r" * 1_000_000,
+        },
+        # No second entry ON PURPOSE: the counter must refuse before send 2.
+    ])
+    executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    # Generously admits the first send (prompt + ~9K system/schema cost) and
+    # anything the round adds EXCEPT the megachar reasoning tail.
+    cap = len(executor.episode_prompt) + 200_000
+    monkeypatch.setattr(
+        native_episode, "review_native_max_transcript_chars", lambda: cap
+    )
+    with pytest.raises(ReviewRouteUnavailable) as exc:
+        executor.execute()
+    assert exc.value.code == "native_transcript_cap_exceeded"
+    assert len(llm.calls) == 1, "the bound must refuse before paying for send 2"
+
+
 def test_uninspectable_tool_is_refused_in_episode(subject_repo):
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("write_file", {"path": "greeting.txt", "content": "hacked"})]},
