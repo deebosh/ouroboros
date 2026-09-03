@@ -110,25 +110,43 @@ def test_api_task_with_a_malformed_chat_id_is_still_a_typed_400(admission):
     assert "integers" in response.text
 
 
-def test_derived_project_id_is_scoped_but_never_announced_in_main(tmp_path):
+def test_derived_project_id_is_scoped_but_never_announced_in_main(tmp_path, monkeypatch):
     """Owner decision 3A: no room, no Main row.
 
     A ``--workspace`` run derives ``proj_<hash>``; that id is project-SCOPED for
     lease and memory, but it has no registry row and therefore no thread. The
     Main completion line offers "Open Project", so announcing a derived id would
     hand the owner a door into an empty duplicate of Main.
+
+    The assertion is the GATE, not the delivery: the outbox needs a live
+    supervisor event bus, which is process-global and not this test's subject.
     """
-    from ouroboros.project_dialogue import enqueue_project_completion_summary
+    from ouroboros import project_dialogue
     from ouroboros.projects_registry import create_project, task_presentation_snapshot
+
+    enqueued = []
+    monkeypatch.setattr(
+        "supervisor.terminal_delivery.enqueue_terminal_delivery",
+        lambda drive_root, event: enqueued.append(event) or True,
+    )
 
     task = {"id": "t1", "project_id": "proj_deadbeef1234", "description": "run"}
     result = {"status": "completed", "project_id": "proj_deadbeef1234", "result": "done"}
     assert task_presentation_snapshot(tmp_path, "t1", task=task, result=result)["project_registered"] is False
-    assert enqueue_project_completion_summary(tmp_path, {}, "t1", task, result, {"status": "completed"}) is False
+    assert project_dialogue.enqueue_project_completion_summary(
+        tmp_path, {}, "t1", task, result, {"status": "completed"},
+    ) is False
+    assert enqueued == [], "a derived project id must not reach the Main outbox at all"
 
     row = create_project(tmp_path, "proj_real", name="Real")
     assert row["chat_id"] > 0
     task2 = {"id": "t2", "project_id": "proj_real", "description": "run"}
     result2 = {"status": "completed", "project_id": "proj_real", "result": "done"}
     assert task_presentation_snapshot(tmp_path, "t2", task=task2, result=result2)["project_registered"] is True
-    assert enqueue_project_completion_summary(tmp_path, {}, "t2", task2, result2, {"status": "completed"}) is True
+    assert project_dialogue.enqueue_project_completion_summary(
+        tmp_path, {}, "t2", task2, result2, {"status": "completed"},
+    ) is True
+    # Main gets exactly one row, and it points at the room that exists.
+    assert len(enqueued) == 1
+    assert enqueued[0]["chat_id"] == 1
+    assert enqueued[0]["system_type"] == "project_completion_summary"
