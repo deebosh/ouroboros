@@ -119,3 +119,22 @@ def test_a_title_hidden_in_metadata_is_refused_like_a_project_id(admission):
     other = client.post("/api/tasks", json={"description": "x", "metadata": {"project_id": "p"}})
     assert other.status_code == 400
     assert "project_id must be a top-level field, not metadata" in other.text
+
+
+def test_a_derived_name_is_not_reported_as_model_coined():
+    """Turn-into-project reuses the name slot; it must not claim authorship.
+
+    Two producers fill `suggested_name`: the proactive namer coins one with a
+    model, and headless admission derives one from the request's first line.
+    The conversion cannot tell them apart, so its naming reason names the SLOT
+    it read rather than a coiner that may not exist.
+    """
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[1] / "ouroboros/gateway/projects.py").read_text(
+        encoding="utf-8",
+    )
+    assert '"proactive_namer"' not in source
+    assert '"preset_suggested_name"' in source
+    # An explicit caller title still reports itself as exactly that.
+    assert '"explicit_task_title"' in source

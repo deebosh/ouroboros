@@ -2380,17 +2380,17 @@ def test_handle_schedule_task_uses_event_chat_id_without_owner(tmp_path, monkeyp
     )
 
     # B1 (v6.33.0): a headless subagent with no chat target is no longer
-    # rejected — it is enqueued and runs. Membership, not truthiness: its live
-    # "🗓️ Scheduled" notice is no longer DROPPED either, because chat 0 is the
-    # hidden partition — a real durable destination that follows the tree if the
-    # root is later homed into a project — rather than "no chat at all".
+    # rejected — it is enqueued and runs. The durable record now keeps its real
+    # address instead of recording the hidden partition as "no chat" (that is the
+    # truthiness class this sprint closed), while the LIVE toast is still skipped:
+    # a progress notice needs a reader, the hidden partition has none, and a
+    # headless run's progress log is read back as its benchmark trajectory.
     assert len(enqueued) == 2
     assert enqueued[1]["id"] == "headless2"
     scheduled2 = json.loads((tmp_path / "task_results" / "headless2.json").read_text(encoding="utf-8"))
     assert scheduled2["status"] == STATUS_SCHEDULED
     assert scheduled2["chat_id"] == 0
-    assert len(sent) == 2
-    assert sent[1][0] == 0 and "headless2" in sent[1][1]
+    assert len(sent) == 1
 
 
 def test_handle_schedule_task_depth_rejection_writes_failed_status(tmp_path, monkeypatch):

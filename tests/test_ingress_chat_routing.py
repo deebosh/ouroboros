@@ -132,7 +132,7 @@ def test_derived_project_id_is_scoped_but_never_announced_in_main(tmp_path, monk
 
     task = {"id": "t1", "project_id": "proj_deadbeef1234", "description": "run"}
     result = {"status": "completed", "project_id": "proj_deadbeef1234", "result": "done"}
-    assert task_presentation_snapshot(tmp_path, "t1", task=task, result=result)["project_registered"] is False
+    assert task_presentation_snapshot(tmp_path, "t1", task=task, result=result)["project_routable"] is False
     assert project_dialogue.enqueue_project_completion_summary(
         tmp_path, {}, "t1", task, result, {"status": "completed"},
     ) is False
@@ -142,7 +142,7 @@ def test_derived_project_id_is_scoped_but_never_announced_in_main(tmp_path, monk
     assert row["chat_id"] > 0
     task2 = {"id": "t2", "project_id": "proj_real", "description": "run"}
     result2 = {"status": "completed", "project_id": "proj_real", "result": "done"}
-    assert task_presentation_snapshot(tmp_path, "t2", task=task2, result=result2)["project_registered"] is True
+    assert task_presentation_snapshot(tmp_path, "t2", task=task2, result=result2)["project_routable"] is True
     assert project_dialogue.enqueue_project_completion_summary(
         tmp_path, {}, "t2", task2, result2, {"status": "completed"},
     ) is True
@@ -150,3 +150,44 @@ def test_derived_project_id_is_scoped_but_never_announced_in_main(tmp_path, monk
     assert len(enqueued) == 1
     assert enqueued[0]["chat_id"] == 1
     assert enqueued[0]["system_type"] == "project_completion_summary"
+
+
+def test_an_explicitly_hidden_run_is_not_announced_into_a_room_it_left(tmp_path, monkeypatch):
+    """The room exists, but this run was addressed away from it.
+
+    A caller may scope a task to an active project AND ask for the hidden
+    partition. Announcing "Open the Project" then points at a room holding none
+    of that task's rows — the exact artifact this sprint removed — so Main stays
+    silent while the project itself keeps its lifecycle rows for tasks that do
+    live there.
+    """
+    from ouroboros import project_dialogue
+    from ouroboros.projects_registry import begin_project_deletion, create_project
+
+    enqueued = []
+    monkeypatch.setattr(
+        "supervisor.terminal_delivery.enqueue_terminal_delivery",
+        lambda drive_root, event: enqueued.append(event) or True,
+    )
+    row = create_project(tmp_path, "proj_room3", name="Room")
+    common = {"id": "hidden1", "project_id": "proj_room3", "description": "bench run"}
+    result = {"status": "completed", "project_id": "proj_room3", "result": "done"}
+
+    hidden = {**common, "chat_id": HIDDEN_CHAT_ID}
+    assert project_dialogue.enqueue_project_completion_summary(
+        tmp_path, {}, "hidden1", hidden, result, {"status": "completed"},
+    ) is False
+    assert enqueued == []
+
+    homed = {**common, "chat_id": row["chat_id"]}
+    assert project_dialogue.enqueue_project_completion_summary(
+        tmp_path, {}, "hidden1", homed, result, {"status": "completed"},
+    ) is True
+    assert len(enqueued) == 1
+
+    # A project on its way out has no room to open either.
+    begin_project_deletion(tmp_path, "proj_room3")
+    assert project_dialogue.enqueue_project_completion_summary(
+        tmp_path, {}, "hidden2", homed, result, {"status": "completed"},
+    ) is False
+    assert len(enqueued) == 1

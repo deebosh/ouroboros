@@ -1488,7 +1488,9 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
         "model": model,
     })
     persist_queue_snapshot(reason="deep_self_review_enqueued")
-    send_with_budget(int(target_chat_id), f"🔎 Deep self-review queued: {tid} ({reason})")
+    # Typed SYSTEM row: an acknowledgement is never a task's answer, and the bench
+    # trajectory reader takes the last UNTYPED outbound row as one.
+    send_with_budget(int(target_chat_id), f"🔎 Deep self-review queued: {tid} ({reason})", role="system", system_type="deep_self_review_queued")
     return tid
 
 

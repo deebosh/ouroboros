@@ -41,7 +41,7 @@ from supervisor.cognitive_operations import EVENT_HANDLERS as _CEH, _handle_cogn
 from supervisor.chat_delivery_events import EVENT_HANDLERS as _CDE
 from supervisor.telemetry_events import TELEMETRY_EVENT_HANDLERS as _TELEMETRY_EVENT_HANDLERS
 from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID
-from supervisor.message_bus import coerce_chat_identity, notification_chat_route
+from supervisor.message_bus import coerce_chat_identity, notification_chat_route, row_chat_identity
 from supervisor.log_addressing import (  # re-export: one events surface
     address_ctx_event as _address_ctx,
     address_task_event as _address_task_event,  # noqa: F401  (tests pin it here)
@@ -374,7 +374,8 @@ def _send_subagent_rejection(
     chat_id = notification_chat_route(
         _bound_project_chat_id(ctx, tid, parent_id, root_task_id) or None, chat_id
     )
-    if chat_id is None:
+    # Same rule as the scheduled toast: a live progress notice needs a reader.
+    if chat_id is None or chat_id == HIDDEN_CHAT_ID:
         return
     ctx.send_with_budget(
         chat_id,
@@ -1950,12 +1951,13 @@ def _resolve_lifecycle_fault(
         "type": "task_done",
         "task_id": task_id,
         "task_type": task_type,
-        "chat_id": notification_chat_route(
+        "chat_id": row_chat_identity(
             _bound_project_chat_id(
                 ctx, task_id, task_row.get("parent_task_id"), task_row.get("root_task_id")
             ) or None,
             evt.get("chat_id"), task_row.get("chat_id"), stored.get("chat_id"),
-        ) or HIDDEN_CHAT_ID,
+            default=HIDDEN_CHAT_ID,
+        ),
         "status": status,
         "reason_code": str(stored.get("reason_code") or "task_done_lifecycle_fault"),
         "outcome_axes": normalize_outcome_axes(stored),
@@ -2212,7 +2214,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         "type": "task_done",
         "task_id": task_id,
         "task_type": task_type,
-        "chat_id": notification_chat_route(
+        "chat_id": row_chat_identity(
             _bound_project_chat_id(
                 ctx, task_id,
                 (final_task_result.get("parent_task_id") if isinstance(final_task_result, dict) else "") or evt.get("parent_task_id"),
@@ -2220,7 +2222,8 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             ) or None,
             evt.get("chat_id"),
             (final_task_result.get("chat_id") if isinstance(final_task_result, dict) else None),
-        ) or HIDDEN_CHAT_ID,
+            default=HIDDEN_CHAT_ID,
+        ),
         "status": str(final_task_result.get("status") or evt.get("status") or ""),
         "outcome_axes": outcome_axes,
         "reason_code": reason_code,
@@ -3874,7 +3877,11 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
             if delegation_role == "subagent" else None,
             chat_id,
         )
-        if _notice_chat is not None:
+        # A LIVE toast needs a chat a human reads. The hidden partition has none,
+        # and a headless run's progress log is a benchmark trajectory input, so a
+        # host toast there would be published as the agent's own narration. The
+        # durable record still keeps the true address (row_chat_identity).
+        if _notice_chat is not None and _notice_chat != HIDDEN_CHAT_ID:
             ctx.send_with_budget(
                 _notice_chat,
                 f"🗓️ Scheduled subagent {tid} ({role}): {desc}{suffix}" if delegation_role == "subagent" else f"🗓️ Scheduled task {tid}: {desc}",

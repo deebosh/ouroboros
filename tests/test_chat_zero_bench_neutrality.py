@@ -1,11 +1,13 @@
 """Closing the chat-id truthiness class must not move a benchmark's answer.
 
 Terminal-Bench reads a run's final answer straight out of ``chat.jsonl``: the
-LAST untyped row with ``direction == "out"`` (``atif._final_answer``). Headless
-benchmark roots run in the hidden partition (chat 0), which is exactly the
-partition the class fix stops dropping — so every notice that now REACHES chat 0
-has to land somewhere ATIF ignores, or a crashed run's incident line would be
-recorded as the model's answer.
+LAST untyped row with ``direction == "out"`` (``atif._final_answer``). It ALSO
+reads ``progress.jsonl`` and publishes those rows as the agent's own narration
+(``atif.build_trajectory``). Headless benchmark roots run in the hidden partition
+(chat 0), which is exactly the partition the class fix stops dropping — so a
+notice that now reaches chat 0 must be a typed or system chat row (invisible to
+the answer reader), and a live host TOAST must not be written there at all, or a
+supervisor line would be published as something the model said.
 """
 
 import json
@@ -86,18 +88,33 @@ def test_typed_delivery_rows_after_the_answer_are_still_skipped(tmp_path):
     assert _final_answer(agent_dir) == "the real answer"
 
 
-def test_an_untyped_out_row_would_hijack_the_answer(tmp_path):
-    """The hazard this suite exists to prevent, stated as an executable fact.
+def test_the_extraction_rule_every_producer_must_respect(tmp_path):
+    """States the rule the rest of this suite enforces, so it cannot be misread.
 
-    Any future notice that reaches the hidden partition as a plain outbound chat
-    row REPLACES the benchmark's recorded answer. Route such a notice through
-    progress or a typed/system row instead.
+    The reader takes the LAST untyped outbound row, whatever it says. That is
+    not a contract anyone should satisfy — it is the constraint every notice
+    producer has to route around, by being a progress row, a typed row or a
+    system row. The assertion below is what happens when a producer does NOT,
+    which is why the deep-review acknowledgement was typed rather than left
+    plain once the class fix let it reach this partition.
     """
     agent_dir = _agent_dir(tmp_path, [
         {"direction": "out", "chat_id": HIDDEN_CHAT_ID, "text": "the real answer"},
-        {"direction": "out", "chat_id": HIDDEN_CHAT_ID, "text": "⚠️ some later notice"},
+        {"direction": "out", "chat_id": HIDDEN_CHAT_ID, "text": "⚠️ an untyped later notice"},
     ])
-    assert _final_answer(agent_dir) == "⚠️ some later notice"
+    assert _final_answer(agent_dir) == "⚠️ an untyped later notice"
+
+
+def test_the_deep_review_acknowledgement_is_typed_and_cannot_be_read_as_an_answer():
+    """The one plain outbound producer the class fix newly pointed at chat 0.
+
+    `/review` sent with an explicit chat 0 is now answered in the hidden
+    partition instead of being re-routed to the owner. Its acknowledgement is a
+    SYSTEM row, so a run's recorded answer cannot be replaced by it.
+    """
+    source = (REPO / "supervisor/queue.py").read_text(encoding="utf-8")
+    ack = next(line for line in source.splitlines() if "Deep self-review queued" in line)
+    assert 'role="system"' in ack and "system_type=" in ack, ack.strip()
 
 
 def test_the_degraded_reason_change_moves_no_benchmark_classification():
@@ -120,3 +137,21 @@ def test_the_degraded_reason_change_moves_no_benchmark_classification():
             assert "degraded_reason" not in line, (
                 "a benchmark bucket must not be derived from the degraded reason: " + line.strip()
             )
+
+
+def test_a_host_toast_never_enters_a_headless_progress_log():
+    """ATIF republishes progress rows as the agent's own narration.
+
+    The scheduled-subagent and subagent-rejection notices are host lines, not
+    the model's. They were dropped for chat 0 before this sprint and stay
+    dropped, now for a stated reason rather than by accident: the durable record
+    keeps the real address, the live toast needs a reader.
+    """
+    events = (REPO / "supervisor/events.py").read_text(encoding="utf-8")
+    assert "if _notice_chat is not None and _notice_chat != HIDDEN_CHAT_ID:" in events
+    assert "if chat_id is None or chat_id == HIDDEN_CHAT_ID:" in events
+
+    atif = (REPO / "devtools/benchmarks/terminal_bench/atif.py").read_text(encoding="utf-8")
+    assert 'progress.jsonl' in atif and 'narration_rows' in atif, (
+        "if ATIF stops reading progress.jsonl this guard can be revisited"
+    )

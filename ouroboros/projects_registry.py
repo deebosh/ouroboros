@@ -583,11 +583,14 @@ def task_presentation_snapshot(drive_root: Any, task_id: str, *, task: Any = Non
     registered = False
     if pid:
         # ONE registry read serves both the display name and the additive
-        # ``project_registered`` fact: a workspace-derived proj_<hash> is
+        # ``project_routable`` fact: a workspace-derived proj_<hash> is
         # project-SCOPED without having a room, and a producer that announces it
         # would point the owner at a project that does not exist.
         project = get_reserved_project(drive_root, pid) or {}
-        registered = bool(project)
+        # ROUTABLE, not merely reserved: list_reserved_projects deliberately
+        # includes deleting/tombstoned history reservations, and those have no
+        # room left to open.
+        registered = str(project.get("lifecycle") or "") == PROJECT_ACTIVE
         pname = _bounded_presentation_name(project.get("name"))
     if pname == pid:
         pname = ""
@@ -605,7 +608,7 @@ def task_presentation_snapshot(drive_root: Any, task_id: str, *, task: Any = Non
             break
     task_name = task_name or "Task"
     return {"project_id": pid, "project_name": pname, "task_id": tid,
-            "project_registered": registered, "task_name": task_name,
+            "project_routable": registered, "task_name": task_name,
             "target_label": f"{pname} › {task_name}" if pname else task_name}
 
 
