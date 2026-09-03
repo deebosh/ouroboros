@@ -626,6 +626,13 @@ INTENTION, and every absence is a named pointer or a typed `need_evidence`
 finding the host attaches on the next cycle under the same evidence policy —
 the locator enters the manifest hash, so the next envelope is a new
 fingerprint, never an idempotent replay; nothing is silently omitted (P1).
+Two branches follow, and only one of them stops a review. A REQUIRED
+governance pack that cannot be assembled is a typed assembly failure and the
+review does not run (`PlanPacketError`). Declared or reviewer-requested
+evidence the policy cannot attach is a named absence instead — a
+`[reviewer-requested]` omission row, or the head attached with the cut named
+`truncated_to_<N>` — and the panel still runs and judges with it; a re-asked
+locator becomes a `need_evidence_repeat` note that keeps the wave open at $0.
 DEVELOPMENT.md is not resident in a plan-review packet; it is one such request
 away. Packet composition, bounds, and wave/replay mechanics: ARCHITECTURE
 "Plan construction and review" and `ouroboros/tools/plan_packet.py` /
@@ -665,7 +672,8 @@ reviewing the Ouroboros repo for an external plan.
 The SPEC must state the goal, acceptance claims, invariants, in-scope and
 non-goals, the load-bearing decisions with their rejected alternatives, and
 what is consciously deferred. Plan review publishes exactly `GREEN`,
-`REVIEW_REQUIRED`, or `REVISE_PLAN`; findings are inputs the main agent may
+`REVIEW_REQUIRED`, `REVISE_PLAN`, or the honest no-quorum `DEGRADED`;
+findings are inputs the main agent may
 accept, reject, or defer. Closure happens without a second LLM call through a
 separate `plan_task` call containing `review_disposition` only —
 `{review_fingerprint, items: [{finding_id, decision, rationale}]}` — covering
