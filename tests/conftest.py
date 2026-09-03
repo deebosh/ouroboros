@@ -307,6 +307,35 @@ def _restore_process_environment_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _restore_gateway_settings_bindings_between_tests():
+    """``server._sync_gateway_settings_module()`` copies the server module's CURRENT
+    ``load_settings`` / ``save_settings`` / ``_apply_settings_to_env`` /
+    ``apply_runtime_provider_defaults`` onto ``ouroboros.gateway.settings`` on every
+    settings GET/POST, so a test that monkeypatches ``server.load_settings`` and then
+    hits the endpoint leaves the TEST-LOCAL loader bound on the gateway module after
+    its own monkeypatch is undone (monkeypatch never saw that assignment). The next
+    test of the same xdist worker that saves settings through the gateway then reads
+    stale "previous rows" and the one-time R12 disclosure fires twice
+    (``test_the_save_that_first_makes_the_triad_retrieve_discloses_once_with_numbers``
+    after ``test_review_cycles.py``). Snapshot the four bindings before each test and
+    restore them afterwards — the same shape as the environment restore above."""
+    try:
+        from ouroboros.gateway import settings as _gateway_settings
+    except Exception:  # pragma: no cover - the gateway package is always importable in CI
+        yield
+        return
+    names = ("load_settings", "save_settings", "_apply_settings_to_env", "apply_runtime_provider_defaults")
+    saved = {name: getattr(_gateway_settings, name, None) for name in names}
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                continue
+            setattr(_gateway_settings, name, value)
+
+
+@pytest.fixture(autouse=True)
 def _scrub_inherited_subagent_selection(monkeypatch):
     """Keep tests independent of the operator's saved actor list, account pin
     and structured reviewer panel: a test that pins the legacy comma-list
