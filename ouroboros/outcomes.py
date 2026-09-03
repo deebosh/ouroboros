@@ -1354,6 +1354,11 @@ def refresh_verification_ledger_artifacts(
 
     if not isinstance(ledger, dict):
         return ledger
+    # An omitted-to-artifact stub is a PROJECTION of the artifact file, not a
+    # source: it carries no entries, so rebuilding from it would mint "0
+    # entries / no failures / execution ok" over the real ledger's summary.
+    if ledger.get("omitted_to_artifact"):
+        return ledger
     entries = [
         item for item in (ledger.get("entries") or [])
         if not (isinstance(item, dict) and item.get("kind") == "artifact_bundle")
