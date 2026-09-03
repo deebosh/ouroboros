@@ -1166,9 +1166,7 @@ class _TaskAcceptanceContext:
     # in loop.py from each real source, fed into the improvement capsule
     # (v6.74.0 A1, owner Q6); the capsule builder never gains ctx.
     rails_line: str = ""
-    # The packet ceiling, resolved ONCE per task from the review quorum's real
-    # windows: the packet is built twice per pass, and a ceiling that moved in
-    # between would flip the evidence revision and supersede the paid identity.
+    # Int-like ceiling plus per-slot caps, resolved once so rebuilds cannot drift.
     packet_budget_chars: int = 0
 
 
@@ -1281,6 +1279,7 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
             "fail_closed_on_errors": True,
             "classify_outcome_tier": True,
             "max_physical_attempts_per_actor": 2,
+            "slot_input_caps": getattr(ctx.packet_budget_chars, "slot_input_caps", {}),
         },
         task_id=ctx.task_id, retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
     )

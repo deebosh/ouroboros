@@ -94,7 +94,16 @@ _ACCEPT_OBLIGATIONS_MAX = 40           # obligation-catalog row cap (open-first,
 _ACCEPT_RETRIEVAL_URLS_MAX = 20        # native-retrieval URLs carried inline (+ disclosed omitted count)
 
 
-def acceptance_packet_budget_chars(slots: Any) -> int:
+class AcceptancePacketBudget(int):
+    """An integer packet ceiling carrying the caps calibrated with it."""
+
+    def __new__(cls, chars: int, slot_input_caps: Dict[str, int] | None = None):
+        value = super().__new__(cls, chars)
+        value.slot_input_caps = dict(slot_input_caps or {})
+        return value
+
+
+def acceptance_packet_budget_chars(slots: Any) -> AcceptancePacketBudget:
     """Whole-packet char ceiling for THIS task's acceptance panel.
 
     The packet is one shared prompt fanned across the configured reviewer slots,
@@ -118,7 +127,7 @@ def acceptance_packet_budget_chars(slots: Any) -> int:
     models = [str(getattr(s, "model", "") or "") for s in rows]
     models = [m for m in models if m]
     if not models:
-        return _ACCEPT_TOTAL_BUDGET
+        return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET)
     output_reserve = max(
         [int(getattr(s, "max_tokens", 0) or 0) for s in rows] or [0]
     ) or 16_384
@@ -129,11 +138,11 @@ def acceptance_packet_budget_chars(slots: Any) -> int:
         tokens = int(quorum_input_token_limit(models, limits))
     except Exception:
         log.debug("acceptance packet budget calibration failed; using the floor", exc_info=True)
-        return _ACCEPT_TOTAL_BUDGET
+        return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET)
     if tokens <= 0:
-        return _ACCEPT_TOTAL_BUDGET
+        return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET, limits)
     chars = int(tokens * _ACCEPT_DENSE_CHARS_PER_TOKEN) - ACCEPTANCE_PROMPT_OVERHEAD_CHARS
-    return max(_ACCEPT_TOTAL_BUDGET, chars)
+    return AcceptancePacketBudget(max(_ACCEPT_TOTAL_BUDGET, chars), limits)
 
 
 def obligation_is_pending(row: Any) -> bool:
@@ -810,7 +819,7 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
             "reason": "evidence_budget",
         })
     traj = ev.get("tool_trajectory")
-    if isinstance(traj, list) and len(traj) > 20:
+    if _size() > budget and isinstance(traj, list) and len(traj) > 20:
         dropped = len(traj) - 20
         ev["tool_trajectory"] = traj[-20:]
         ev["tool_trajectory_omitted_leading"] = int(ev.get("tool_trajectory_omitted_leading", 0) or 0) + dropped

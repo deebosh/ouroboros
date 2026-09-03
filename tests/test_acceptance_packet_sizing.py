@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from ouroboros.review_dispatch import ACCEPTANCE_FIT_CHECK_MIN_CHARS
 from ouroboros.review_substrate import (
     ReviewRequest,
     ReviewSlot,
@@ -35,29 +34,20 @@ def _heavy_evidence(chars: int = 600_000) -> dict:
     return {"owner_requirements_and_decisions": "O" * chars, "__provenance__": {}}
 
 
-def _pin_caps(monkeypatch, caps: dict) -> None:
-    from ouroboros.tools import review_synthesis
-
-    monkeypatch.setattr(
-        review_synthesis, "per_slot_input_token_limits",
-        lambda models, **kwargs: {str(m): int(caps.get(str(m), 0) or 0) for m in models},
-    )
-
-
-def _acceptance_request(evidence: dict) -> ReviewRequest:
+def _acceptance_request(evidence: dict, caps: dict | None = None) -> ReviewRequest:
     return ReviewRequest(
         surface="task_acceptance", goal="verify the final claim", subject="done",
-        evidence=evidence, task_id="task-sizing",
+        evidence=evidence, policy={"slot_input_caps": caps or {}}, task_id="task-sizing",
     )
 
 
 # ── the per-slot fit backstop ────────────────────────────────────────────────
 
-def test_a_slot_whose_window_cannot_hold_the_prompt_is_a_typed_zero_cost_row(tmp_path, monkeypatch):
-    _pin_caps(monkeypatch, {"wide-1": 1_000_000, "wide-2": 1_000_000, "narrow": 20_000})
+def test_a_slot_whose_window_cannot_hold_the_prompt_is_a_typed_zero_cost_row(tmp_path):
+    caps = {"wide-1": 1_000_000, "wide-2": 1_000_000, "narrow": 20_000}
     llm = FakeLLM()
     result = run_review_request(
-        _acceptance_request(_heavy_evidence()),
+        _acceptance_request(_heavy_evidence(), caps),
         slots=[
             ReviewSlot(slot_id="slot_1", model="wide-1", effort="high"),
             ReviewSlot(slot_id="slot_2", model="wide-2", effort="high"),
@@ -79,12 +69,12 @@ def test_a_slot_whose_window_cannot_hold_the_prompt_is_a_typed_zero_cost_row(tmp
     assert result.aggregate_signal == "PASS"         # the quorum still reviewed
 
 
-def test_every_slot_oversize_refuses_the_panel_for_zero_and_names_each_cap(tmp_path, monkeypatch):
-    _pin_caps(monkeypatch, {"narrow-1": 20_000, "narrow-2": 20_000})
+def test_every_slot_oversize_refuses_the_panel_for_zero_and_names_each_cap(tmp_path):
+    caps = {"narrow-1": 20_000, "narrow-2": 20_000}
     llm = FakeLLM()
     paid: list = []
     result = run_review_request(
-        _acceptance_request(_heavy_evidence()),
+        _acceptance_request(_heavy_evidence(), caps),
         slots=[
             ReviewSlot(slot_id="slot_1", model="narrow-1", effort="high"),
             ReviewSlot(slot_id="slot_2", model="narrow-2", effort="high"),
@@ -106,34 +96,6 @@ def test_every_slot_oversize_refuses_the_panel_for_zero_and_names_each_cap(tmp_p
     }])["panels"][0]
     assert panel["transport_status"] == "not_dispatched"
     assert panel["coverage"]["transport_success"] == 0
-
-
-def test_a_small_prompt_never_pays_for_the_calibration(tmp_path, monkeypatch):
-    """The fit check is a backstop for oversize packets. Resolving Capability
-    Evidence per slot inside the dispatch path costs real latency and would
-    spend a slot's timeout budget before the send, so a prompt that no plausible
-    reviewer window can reject skips it entirely."""
-    from ouroboros.tools import review_synthesis
-
-    calls: list = []
-
-    def _explode(models, **kwargs):
-        calls.append(list(models))
-        raise AssertionError("calibration must not run for a small prompt")
-
-    monkeypatch.setattr(review_synthesis, "per_slot_input_token_limits", _explode)
-    llm = FakeLLM()
-    result = run_review_request(
-        _acceptance_request({"task_contract": {"requirements": "do X"}, "__provenance__": {}}),
-        slots=[ReviewSlot(slot_id="slot_1", model="wide-1", effort="high")],
-        drive_root=tmp_path,
-        llm=llm,
-    )
-
-    assert calls == []
-    assert len(llm.calls) == 1
-    assert result.actors[0]["status"] == "ok"
-    assert ACCEPTANCE_FIT_CHECK_MIN_CHARS > 0
 
 
 # ── the typed zero-physical row ──────────────────────────────────────────────

@@ -1232,6 +1232,7 @@ class ReviewCoordinator:
         *,
         operation_id: str = "",
         operation_state: str = "settled",
+        prompt_ref: Dict[str, Any] | None = None,
     ) -> ReviewActorRecord:
         actor_status = "not_dispatched" if operation_state == "not_dispatched" else "error"
         call_id = new_call_id(f"review_{request.surface}_{slot.slot_id}_error")
@@ -1246,19 +1247,20 @@ class ReviewCoordinator:
             prompt_projection = _review_route_executor(assignment, llm=self.llm).prompt_payload()
         except Exception:
             prompt_projection = {}
-        prompt_ref: Dict[str, Any] = {}
         response_ref: Dict[str, Any] = {}
-        try:
-            prompt_ref = persist_call(
-                self.drive_root,
-                task_id=request.task_id or "review",
-                call_id=f"{call_id}_prompt",
-                call_type=f"{base_call_type}_prompt",
-                payload={"request": asdict(request), "slot": asdict(slot), **prompt_projection},
-                manifest={"surface": request.surface, "slot_id": slot.slot_id, "model": slot.model, "synthetic": True},
-            )
-        except Exception:
+        if prompt_ref is None:
             prompt_ref = {}
+            try:
+                prompt_ref = persist_call(
+                    self.drive_root,
+                    task_id=request.task_id or "review",
+                    call_id=f"{call_id}_prompt",
+                    call_type=f"{base_call_type}_prompt",
+                    payload={"request": asdict(request), "slot": asdict(slot), **prompt_projection},
+                    manifest={"surface": request.surface, "slot_id": slot.slot_id, "model": slot.model, "synthetic": True},
+                )
+            except Exception:
+                prompt_ref = {}
         try:
             response_ref = persist_call(
                 self.drive_root,
@@ -1336,19 +1338,19 @@ class ReviewCoordinator:
             # ``error`` so the aggregate names the real blocker.
             return self._error_actor(
                 request, slot, f"{free_refusal['status']}: {free_refusal['summary']}",
-                operation_id=call_id, operation_state="not_dispatched",
+                operation_id=call_id, operation_state="not_dispatched", prompt_ref=prompt_ref,
             )
         # Backstop for the quorum-sized packet ceiling: a narrower slot in the
         # same panel can still be handed more than it holds, and refusing it
         # costs nothing while the rest of the panel reviews.
         if request.surface == "task_acceptance" and not slot.retrieves:
-            cap, estimated = acceptance_slot_fit(slot, executor)
+            cap, estimated = acceptance_slot_fit(slot, executor, slot_input_caps=request.policy.get("slot_input_caps"))
             if cap and estimated > cap:
                 return self._error_actor(
                     request, slot,
                     f"preflight_oversize: assembled acceptance prompt ~{estimated:,} tokens "
                     f"exceeds this slot's calibrated input cap {cap:,}",
-                    operation_id=call_id, operation_state="not_dispatched",
+                    operation_id=call_id, operation_state="not_dispatched", prompt_ref=prompt_ref,
                 )
         owner_deadline = str(getattr(request, "deadline_at", "") or "")
         from ouroboros.config import get_finalization_grace_sec
@@ -1373,6 +1375,7 @@ class ReviewCoordinator:
                 "Owner deadline exhausted before physical review dispatch",
                 operation_id=call_id,
                 operation_state="not_dispatched",
+                prompt_ref=prompt_ref,
             )
         try:
             p3_actor = request.surface in {"multi_model_review", "scope_review"}

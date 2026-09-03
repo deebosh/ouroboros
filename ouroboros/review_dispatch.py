@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import logging
+import math
 import pathlib
 import threading
 from typing import Any, Callable, Iterator
@@ -75,32 +76,25 @@ def task_acceptance_zero_physical_refusal(evidence: Any) -> dict[str, str]:
     return {}
 
 
-# Below this rendered prompt size no plausible reviewer window can be exceeded,
-# so the calibration (a real Capability Evidence resolution, ~0.3s per model) is
-# not worth paying inside the dispatch path — it would spend a slot's timeout
-# budget before the send. The fit check is a backstop for oversize packets.
-ACCEPTANCE_FIT_CHECK_MIN_CHARS = 100_000
-
-
-def acceptance_slot_fit(slot: Any, executor: Any) -> tuple[int, int]:
+def acceptance_slot_fit(
+    slot: Any, executor: Any, *, slot_input_caps: Any = None,
+) -> tuple[int, int]:
     """This slot's calibrated input cap and the rendered prompt's token estimate.
 
     The packet ceiling is resolved once against the review QUORUM's windows, so
     a narrower slot in the same panel needs its own fit check before any send.
-    An unmeasurable prompt or a failed calibration reads ``(0, 0)`` and
+    An unmeasurable prompt or an absent cached cap reads ``(0, 0)`` and
     dispatches — the fit check is a backstop, never a new way to withhold a
     panel.
     """
-    from ouroboros.tools.review_synthesis import per_slot_input_token_limits
+    from ouroboros.review_evidence import _ACCEPT_DENSE_CHARS_PER_TOKEN
 
     try:
         chars = int(executor.prompt_chars())
-        if chars < ACCEPTANCE_FIT_CHECK_MIN_CHARS:
-            return 0, 0
-        limits = per_slot_input_token_limits(
-            [slot.model], output_reserve=slot.max_tokens, tokenizer_margin=50_000,
+        cap = int((slot_input_caps or {}).get(slot.model, 0) or 0)
+        return cap, math.ceil(
+            chars / _ACCEPT_DENSE_CHARS_PER_TOKEN
         )
-        return int(limits.get(slot.model, 0) or 0), (chars + 3) // 4
     except Exception:
         log.debug("acceptance per-slot fit check failed; dispatching", exc_info=True)
         return 0, 0
