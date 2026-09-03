@@ -13,10 +13,13 @@ from ouroboros.shell_parse import (
     EMBEDDED_WINDOWS_ABSOLUTE_PATH_RE,
     collect_leading_env,
     embedded_absolute_path_tokens,
+    env_chdir_operand,
     normalize_check_argv,
+    replacement_target_uncertain,
     shell_argv,
     shell_argv_with_inline,
     shell_command_string,
+    shell_segment_rows,
     shell_segments,
     split_redirections,
     strip_leading_env_assignments,
@@ -29,7 +32,6 @@ PROTECTED_RUNTIME_PATHS_LOWER = frozenset(
 
 # Write-shape classification lives in its own leaf (extracted at the module-size
 # gate); every historical name stays importable from here.
-from ouroboros.tools.read_inspection import _is_pure_read_inspection  # noqa: E402
 from ouroboros.tools.write_shape import (  # noqa: E402,F401
     INTERPRETER_WRITE_RE,
     PURE_FILTER_WRITER_COMMANDS,
@@ -41,6 +43,8 @@ from ouroboros.tools.write_shape import (  # noqa: E402,F401
     _shell_write_indicator_scan,
     interpreter_write_shape,
     non_interpreter_write_shape,
+    script_literal_write_targets_and_unknown,
+    segment_write_shape as _segment_write_shape,
     shell_has_write_indicator,
 )
 
@@ -158,26 +162,6 @@ def interpreter_inline_code(argv: List[str]) -> List[str]:
                 break
         index += 1
     return [body for body in bodies if body]
-
-
-_SCRIPT_LITERAL_WRITE_RE = {
-    # LITERAL write targets, where a family's write call happens to name one. This is
-    # a PRECISION aid for the allow path (and for writer_target_tokens' other
-    # consumers), never the containment oracle: containment no longer depends on any
-    # write vocabulary being complete (see light_shell_repo_mutation).
-    "node": re.compile(
-        r"""(?is)(?:fs\.|require\(['"]fs['"]\)\.)"""
-        r"""(?:writeFileSync|appendFileSync|createWriteStream|mkdirSync|rmSync|rmdirSync|unlinkSync)\s*\(\s*(['"])(.*?)\1"""
-    ),
-    "ruby": re.compile(
-        # File.write / FileUtils writers always write; File.open / File.new name a
-        # write TARGET only with a write-mode 2nd arg (sol review: the mode-blind
-        # form reported File.open('/x','r') and blocked a read outside the root).
-        r"""(?is)(?:File\.write|FileUtils\.(?:touch|mkdir_p|rm|rm_rf|remove|copy|cp|mv)|"""
-        r"""File\.(?:open|new)(?=\s*\([^)]*,\s*['"][^'"]*[wax+])"""
-        r""")\s*\(\s*(['"])(.*?)\1"""
-    ),
-}
 
 
 def _pure_path_flavor(text: str):
@@ -999,18 +983,14 @@ _SED_SCRIPT_WRITE_RE = re.compile(
 _SHELL_WRAPPER_HEADS = frozenset({"sh", "bash", "zsh", "dash", "ash"})
 _DIRECTORY_CHANGE_COMMANDS = frozenset({"cd", "pushd"})
 _MAX_INLINE_RECURSION = 3
-def _segment_write_shape(argv: List[str]) -> bool:
-    executable = pathlib.PurePath(str(argv[0])).name.lower().removesuffix(".exe")
-    if interpreter_family(executable):
-        return bool(interpreter_write_shape(argv))
-    return bool(non_interpreter_write_shape(
-        argv, argv, executable, is_pure_read=_is_pure_read_inspection))
 def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
     """Per-SEGMENT write facts: ``(segment_argv, targets, inline_code, unprovable)``.
-    Shell bodies recurse only to ``_MAX_INLINE_RECURSION``. A write-shaped row
-    with no parsed target is unprovable, so consumers widen to raw mentions."""
+    Shell bodies recurse only to ``_MAX_INLINE_RECURSION``. Unknown body effects,
+    replacement templates, and write shapes without targets are unprovable."""
     rows: List[tuple] = []
-    for segment in shell_segments(raw_cmd):
+    structured_rows = shell_segment_rows(raw_cmd)
+    for row_index, (segment, leading_operator, heredoc_bodies) in enumerate(structured_rows):
+        wrapper_cwd = env_chdir_operand(segment)
         _assignments, argv = collect_leading_env(segment)
         if not argv:
             continue
@@ -1018,10 +998,14 @@ def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
         if _depth < _MAX_INLINE_RECURSION and executable in _SHELL_WRAPPER_HEADS:
             nested = writer_target_rows(shell_command_string(argv), _depth + 1)
             if nested:
+                if wrapper_cwd and any(row[1] or row[3] for row in nested):
+                    rows.append((["cd", wrapper_cwd], [wrapper_cwd], (), False))
                 rows.extend(nested)
                 continue
         family = interpreter_family(executable)
         inline_code = tuple(interpreter_inline_code([str(token) for token in argv]))
+        if family and any(str(token) == "-" for token in argv[1:]):
+            inline_code = (*inline_code, *heredoc_bodies)
         # A code body is program text, not a target. Python targets + UNKNOWN
         # come from `_python_write_targets_and_unknown` only.
         targets = [
@@ -1035,11 +1019,12 @@ def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
                 targets.extend(body_targets)
                 body_unprovable = body_unprovable or body_unknown
             else:
-                pattern = _SCRIPT_LITERAL_WRITE_RE.get(family)
-                if pattern:
-                    targets.extend(
-                        match.group(2) for match in pattern.finditer(body) if match.group(2)
-                    )
+                body_targets, body_unknown = script_literal_write_targets_and_unknown(family, body)
+                targets.extend(body_targets)
+                body_unprovable = body_unprovable or body_unknown
+        targets, placeholder_unprovable = replacement_target_uncertain(
+            argv, targets, write_shaped=_segment_write_shape(argv),
+        )
         targets = list(dict.fromkeys(t for t in targets if str(t or "").strip()))
         if executable in _DIRECTORY_CHANGE_COMMANDS:
             targets.extend(str(t) for t in argv[1:] if not str(t).startswith("-"))
@@ -1047,13 +1032,20 @@ def writer_target_rows(raw_cmd: Any, _depth: int = 0) -> List[tuple]:
         # `-` means the unobserved program arrives on stdin.
         stdin_program = bool(family) and not inline_code and any(
             str(token) == "-" for token in argv[1:])
-        # Without a literal target, arbitrary Perl code proves no read boundary.
-        opaque_perl_body = family == "perl" and bool(inline_code) and not targets
-        unprovable = stdin_program or (
-            not targets
-            and (body_unprovable or opaque_perl_body or _segment_write_shape(segment_argv))
+        # A write-shaped Perl body remains uncertain even beside file operands.
+        opaque_perl_body = (
+            family == "perl" and bool(inline_code) and interpreter_write_shape(argv)
         )
-        rows.append((segment_argv, targets, inline_code, unprovable))
+        unprovable = (
+            stdin_program or body_unprovable or opaque_perl_body or placeholder_unprovable
+            or (not targets and _segment_write_shape(segment_argv))
+        )
+        row_argv = segment_argv
+        if placeholder_unprovable and leading_operator in {"|", "|&"} and row_index:
+            row_argv = [*segment_argv, *structured_rows[row_index - 1][0][1:]]
+        if wrapper_cwd and (targets or unprovable):
+            rows.append((["cd", wrapper_cwd], [wrapper_cwd], (), False))
+        rows.append((row_argv, targets, inline_code, unprovable))
     return rows
 
 
@@ -1349,9 +1341,10 @@ def _writer_target_tokens_single(argv: List[str], *, include_inline: bool = True
             body_targets, _body_unknown = _python_write_targets_and_unknown(inline_code)
             targets.extend(body_targets)
         else:
-            pattern = _SCRIPT_LITERAL_WRITE_RE.get(interpreter_family(cmd))
-            if pattern:
-                targets.extend(match.group(2) for match in pattern.finditer(inline_code) if match.group(2))
+            body_targets, _body_unknown = script_literal_write_targets_and_unknown(
+                interpreter_family(cmd), inline_code,
+            )
+            targets.extend(body_targets)
 
     for index, token in enumerate(argv):
         token_name = pathlib.PurePath(str(token)).name.lower().removesuffix(".exe")

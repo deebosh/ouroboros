@@ -334,13 +334,15 @@ def _workspace_write_candidates(
         else:
             write_tokens = [str(token) for token in targets]
         if unprovable:
-            # Doctrine: an unprovable case stays fail-closed. A write-shaped
-            # segment whose channel the target parser does not model keeps the
-            # mention-wide candidate set it had before targets existed.
+            # Uncertainty widens only this row and its attached program bodies.
             write_tokens.extend(str(token) for token in segment_argv[1:])
             write_tokens.extend(
                 str(token) for token in shell_argv_with_path_tokens(list(segment_argv))
             )
+            for body in inline_code:
+                write_tokens.extend(
+                    str(token) for token in shell_argv_with_path_tokens(str(body))
+                )
         write_set = set(write_tokens)
         for token in segment_argv:
             _add(token, str(token) in write_set)
@@ -359,12 +361,8 @@ def _workspace_write_candidates(
         for text, is_write in candidates
         if is_write and text.replace("\\", "")
     }
-    # When ANY segment is unprovable the parse of this command line is not
-    # trustworthy, so the whole harvest stays fail-closed (a heredoc feeding an
-    # interpreter's stdin puts its paths in no segment's argv).
-    harvest_is_write = any(row[3] for row in target_rows)
     for token in shell_argv_with_path_tokens(raw_cmd):
-        _add(token, harvest_is_write or str(token).replace("\\", "") in collapsed_writes)
+        _add(token, str(token).replace("\\", "") in collapsed_writes)
     return candidates
 
 
