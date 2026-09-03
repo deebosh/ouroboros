@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.skill_loader import skill_state_dir
-from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
+from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -248,6 +248,43 @@ def status_for_runtime_state(state: Dict[str, Any]) -> str:
     return INACTIVE
 
 
+def record_health_for_runtime_state(
+    drive_root: pathlib.Path, skill_name: str, state: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Persist the health projection of one completed runtime reconcile."""
+    version, sha = fresh_code_stamp()
+    health = record_extension_health(
+        drive_root,
+        skill_name,
+        status=status_for_runtime_state(state),
+        version=version,
+        sha=sha,
+        reason=str(state.get("reason") or ""),
+        load_error=str(state.get("load_error") or ""),
+    )
+    if health.get("newly_regressed"):
+        observed = health.get("last_observed") or {}
+        regression = {
+            "skill": skill_name,
+            "last_known_good_sha": (health.get("last_known_good") or {}).get("sha", ""),
+            "sha": sha,
+            "load_error": str(state.get("load_error") or ""),
+        }
+        log.error(
+            "Extension regression: %s was live at %s, broken now at %s: %s",
+            skill_name, (regression["last_known_good_sha"] or "?")[:12],
+            (sha or "?")[:12], regression["load_error"],
+        )
+        try:
+            append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
+                "ts": str(observed.get("ts") or utc_now_iso()), "type": "extension_regression",
+                "git_sha": sha, "version": version, "regressions": [regression],
+            })
+        except Exception:
+            log.debug("Failed to append extension_regression event", exc_info=True)
+    return health
+
+
 __all__ = [
     "HEALTH_FILENAME",
     "LIVE",
@@ -262,6 +299,7 @@ __all__ = [
     "read_extension_health",
     "record_companion_restart_exhausted",
     "record_extension_health",
+    "record_health_for_runtime_state",
     "regressed_extensions",
     "status_for_runtime_state",
 ]

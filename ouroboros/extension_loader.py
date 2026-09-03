@@ -145,29 +145,31 @@ def _record_companion_name(bundle: _ExtensionRegistrations, name: str) -> None:
         bundle.companion_names.append(name)
 
 
-def _request_server_reconcile_if_worker(
+def _finalize_extension_reconcile(
     state: Dict[str, Any],
     drive_root: pathlib.Path | None,
     skill_name: str,
     *,
     reason: str,
 ) -> None:
-    """Signal the server process after a worker-side extension state change.
+    """Record health and signal the server after a worker-side state change.
 
     Stamps ``state['server_reconcile']``: the receipt says whether the marker was
     written, while the handoff itself stays asynchronous and fail-soft.
     """
     state["server_reconcile"] = ""
-    if drive_root is None or is_server_process():
+    if drive_root is None:
         return
-    try:
-        from ouroboros.extension_reconcile_queue import request_extension_reconcile
-
-        request_extension_reconcile(drive_root, skill_name, reason=reason, source="worker")
-        state["server_reconcile"] = "requested"
-    except Exception:
-        state["server_reconcile"] = "request_failed"
-        log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
+    if not is_server_process():
+        try:
+            from ouroboros.extension_reconcile_queue import request_extension_reconcile
+            request_extension_reconcile(drive_root, skill_name, reason=reason, source="worker")
+            state["server_reconcile"] = "requested"
+        except Exception:
+            state["server_reconcile"] = "request_failed"
+            log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
+    from ouroboros.extension_health import record_health_for_runtime_state
+    record_health_for_runtime_state(drive_root, skill_name, state)
 
 
 def _reject_extension_child_side_effect(capability: str) -> None:
@@ -1694,7 +1696,7 @@ def reconcile_extension(
         elif state.get("reason") == "load_error" and not loaded_present:
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="reconcile_load_error")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="reconcile_load_error")
             return state
         if state.get("reason") == "missing" or state.get("reason") == "not_extension":
             if loaded_present:
@@ -1702,7 +1704,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason=str(state.get("reason") or "inactive"))
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason=str(state.get("reason") or "inactive"))
             return state
 
         if not state.get("desired_live"):
@@ -1711,7 +1713,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="desired_disabled")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="desired_disabled")
             return state
 
         if was_live:
@@ -1724,7 +1726,7 @@ def reconcile_extension(
                     repo_path=repo_path,
                     selected_skill=selected_skill,
                 )
-            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="already_live")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="already_live")
             return state
 
         safe_name = _sanitize_skill_name(skill_name)
@@ -1732,7 +1734,7 @@ def reconcile_extension(
         if loaded is None:
             state["reason"] = "missing"
             state["action"] = "extension_inactive"
-            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="missing")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="missing")
             return state
         if loaded_present:
             unload_extension(skill_name)
@@ -1758,7 +1760,7 @@ def reconcile_extension(
             state["load_error"] = err
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _request_server_reconcile_if_worker(state, drive_root, skill_name, reason="load_error")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="load_error")
             return state
         refreshed = runtime_state_for_skill_name(
             skill_name,
@@ -1767,7 +1769,7 @@ def reconcile_extension(
             skills=peers,
         )
         refreshed["action"] = "extension_loaded"
-        _request_server_reconcile_if_worker(refreshed, drive_root, skill_name, reason="loaded")
+        _finalize_extension_reconcile(refreshed, drive_root, skill_name, reason="loaded")
         return refreshed
 
 
@@ -2144,15 +2146,13 @@ def reload_all(
     repo_path: str | None = None,
 ) -> Dict[str, Any]:
     """Refresh all extension liveness and return ``skill: error_or_None``."""
-    from ouroboros.extension_health import fresh_code_stamp, record_extension_health, status_for_runtime_state
+    from ouroboros.extension_health import record_health_for_runtime_state
 
     skills = discover_skills(drive_root, repo_path=repo_path)
     skill_names = {s.name for s in skills if s.manifest.is_extension()}
     with _lock:
         loaded_names = set(_extensions.keys())
     results: Dict[str, Any] = {}
-    hv_version, hv_sha = fresh_code_stamp()
-    regressions: List[Dict[str, Any]] = []
     for gone in loaded_names - skill_names:
         try:
             unload_extension(gone)
@@ -2177,21 +2177,6 @@ def reload_all(
             if load_error:
                 log.error("Extension reload failed for %s: %s", skill.name, load_error)
             results[skill.name] = load_error or (None if state.get("desired_live") else state.get("reason"))
-            try:
-                health = record_extension_health(
-                    drive_root, skill.name, status=status_for_runtime_state(state),
-                    version=hv_version, sha=hv_sha, reason=str(state.get("reason") or ""),
-                    load_error=str(state.get("load_error") or ""),
-                )
-                if health.get("newly_regressed"):
-                    regressions.append({
-                        "skill": skill.name,
-                        "last_known_good_sha": (health.get("last_known_good") or {}).get("sha", ""),
-                        "sha": hv_sha,
-                        "load_error": str(state.get("load_error") or ""),
-                    })
-            except Exception:
-                log.debug("extension health record failed for %s", skill.name, exc_info=True)
         except Exception as exc:
             log.exception("Extension reload failed for %s; continuing", skill.name)
             error = f"{type(exc).__name__}: {exc}"
@@ -2207,31 +2192,11 @@ def reload_all(
                 )
             results[skill.name] = error
             try:
-                record_extension_health(
-                    drive_root, skill.name, status="broken",
-                    version=hv_version, sha=hv_sha, reason="reconcile_exception", load_error=error,
-                )
+                record_health_for_runtime_state(drive_root, skill.name, {
+                    "desired_live": True, "reason": "load_error", "load_error": error,
+                })
             except Exception:
                 log.debug("extension health record failed for %s", skill.name, exc_info=True)
-    if regressions:
-        for reg in regressions:
-            log.error(
-                "Extension regression: %s was live at %s, broken now at %s: %s",
-                reg["skill"], (reg.get("last_known_good_sha") or "?")[:12],
-                (reg.get("sha") or "?")[:12], reg.get("load_error"),
-            )
-        try:
-            from ouroboros.utils import append_jsonl
-
-            append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
-                "ts": utc_now_iso(),
-                "type": "extension_regression",
-                "git_sha": hv_sha,
-                "version": hv_version,
-                "regressions": regressions,
-            })
-        except Exception:
-            log.debug("Failed to append extension_regression event", exc_info=True)
     return results
 
 

@@ -228,6 +228,28 @@ def test_reconcile_receipt_names_the_answering_process(tmp_path, monkeypatch):
     assert list((drive_root / "state" / "extension_reconcile").glob("*")), "no marker written"
 
 
+def test_reconcile_records_health_for_the_resulting_runtime_state(tmp_path, monkeypatch):
+    """Each reconcile receipt updates the durable health projection."""
+    from ouroboros import extension_health, extension_loader
+    from ouroboros.skill_loader import save_enabled
+
+    loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
+    monkeypatch.setattr(extension_loader, "is_server_process", lambda: True)
+
+    state = extension_loader.reconcile_extension(
+        loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
+    )
+    assert state["live_loaded"] is True
+    assert (extension_health.read_extension_health(drive_root, loaded.name) or {})["status"] == "live"
+
+    save_enabled(drive_root, loaded.name, False, actor="test_fixture")
+    state = extension_loader.reconcile_extension(
+        loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
+    )
+    assert state["desired_live"] is False
+    assert (extension_health.read_extension_health(drive_root, loaded.name) or {})["status"] == "inactive"
+
+
 def test_reconcile_receipt_reports_a_failed_marker_request(tmp_path, monkeypatch):
     """A failed marker write is disclosed on the receipt and never raises."""
     from ouroboros import extension_loader
