@@ -491,11 +491,100 @@ class TestWrapupAffordabilityRail:
         assert result[2]["kwargs"]["reason_code"] == "budget_exhausted"
         assert result[2]["kwargs"]["_prompt_prepared"] is True
         assert "forced delegation note" in result[2]["kwargs"]["prompt"]
-        assert "[BUDGET LIMIT]" in builds[1]["messages"][-1]["content"]
-        assert "forced delegation note" in builds[1]["messages"][-1]["content"]
-        assert "service evidence" in str(builds[1]["messages"])
-        assert len(builds) == 2
-        assert [call["request"] for call in calls] == [request] * 4
+        assert "[BUDGET LIMIT]" in builds[0]["messages"][-1]["content"]
+        assert "forced delegation note" in builds[0]["messages"][-1]["content"]
+        assert "service evidence" in str(builds[0]["messages"])
+        assert len(builds) == 1
+        assert [call.get("request") for call in calls] == [None, None, request, request]
+
+    def test_repriced_nondecision_does_not_stamp_a_cost_stop(self, monkeypatch):
+        ctx = _ctx()
+        monkeypatch.setattr(
+            "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
+        )
+        answers = iter((True, False, None, False))
+        monkeypatch.setattr(
+            task_pacing, "wrapup_reservation_fits", lambda **_kwargs: next(answers),
+        )
+        monkeypatch.setattr(
+            task_pacing, "prospective_wrapup_attempt_request", lambda **_kwargs: object(),
+        )
+
+        assert _check_budget_limits(ctx, None, self._ceiling(50.0)) is None
+        assert "cost_stop_spend_basis" not in ctx.accumulated_usage
+        assert "cost_stop_rail" not in ctx.accumulated_usage
+
+    def test_captioned_wrapup_candidate_is_the_initial_forced_dispatch(
+        self, monkeypatch, tmp_path,
+    ):
+        import ouroboros.loop as loop_module
+        from ouroboros.llm import LLMClient
+
+        ctx = _ctx(drive_logs=tmp_path / "logs", llm=LLMClient(api_key="unused"))
+        ctx.messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "inspect"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,aaa"},
+                    "_caption": "wire caption",
+                },
+            ],
+        }]
+        monkeypatch.setenv("OUROBOROS_IMAGE_INPUT_MODE", "caption")
+        monkeypatch.setattr(
+            "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
+        )
+        answers = iter((True, False, True, False))
+        monkeypatch.setattr(
+            task_pacing, "wrapup_reservation_fits", lambda **_kwargs: next(answers),
+        )
+        built = {}
+        real_build = task_pacing.prospective_wrapup_attempt_request
+
+        def build(**kwargs):
+            built["messages"] = kwargs["messages"]
+            built["request"] = real_build(**kwargs)
+            return built["request"]
+
+        monkeypatch.setattr(task_pacing, "prospective_wrapup_attempt_request", build)
+        dispatched = {}
+
+        def call(*_args, **kwargs):
+            dispatched["messages"] = kwargs["initial_messages"]
+            from ouroboros.llm import _attempt_request, _finalized_physical_candidate
+            from ouroboros.request_wire_recovery import request_wire_call_scope
+
+            target = ctx.llm._resolve_remote_target(ctx.active_model)
+            with request_wire_call_scope():
+                candidate = ctx.llm._build_remote_candidate(
+                    target, kwargs["initial_messages"], ctx.active_effort,
+                    built["request"].max_completion_tokens, "auto", None, ctx.tool_schemas,
+                    skip_capability_fetch=True,
+                )
+                ctx.llm._normalize_payload_cache_ttl(target, candidate)
+                candidate = _finalized_physical_candidate(
+                    target, candidate,
+                    "messages" if target.get("provider") == "anthropic" else "chat.completions",
+                )
+            actual = _attempt_request(target, candidate)
+            dispatched["accepted"] = kwargs["candidate_predicate"](actual)
+            dispatched["sha256"] = actual.candidate_raw_sha256
+            return {"content": "wrapped up"}, 0.0
+
+        monkeypatch.setattr(loop_module, "call_llm_with_retry", call)
+
+        result = _check_budget_limits(ctx, None, self._ceiling(50.0))
+
+        assert result is not None
+        assert dispatched["messages"] is built["messages"]
+        assert dispatched["accepted"] is True
+        assert dispatched["sha256"] == built["request"].candidate_raw_sha256
+        assert built["messages"][0]["content"][1] == {
+            "type": "text", "text": "[image caption: wire caption]",
+        }
+        assert ctx.messages[0]["content"][1]["type"] == "image_url"
 
     def test_a_missing_prompt_estimate_keeps_the_rail_silent(self, monkeypatch):
         ctx = _ctx(accumulated_usage={"cost": 1.0})

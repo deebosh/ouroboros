@@ -669,6 +669,30 @@ def prospective_wrapup_attempt_request(
     return _merge_scope(_attempt_request(target, candidate))[0]
 
 
+def prepared_wrapup_candidate(
+    ctx: Any, messages: list[Dict[str, Any]], *, allow_server_web_search: bool,
+) -> Tuple[Any, list[Dict[str, Any]]]:
+    """Prepare the exact first-send transcript and price that same payload."""
+    from ouroboros.loop_llm_call import _prepare_main_messages
+
+    send_messages = _prepare_main_messages(
+        messages, model=ctx.active_model, llm=ctx.llm,
+        accumulated_usage=ctx.accumulated_usage,
+        drive_root=ctx.drive_root or pathlib.Path(ctx.drive_logs or ".").parent,
+        task_id=ctx.task_id, event_queue=ctx.event_queue,
+        use_local=ctx.active_use_local,
+        task_attempt=ctx.accumulated_usage.get("_task_attempt"),
+        deadline_ts=ctx.deadline_ts,
+    )
+    request = prospective_wrapup_attempt_request(
+        llm=ctx.llm, messages=send_messages, model=ctx.active_model,
+        reasoning_effort=ctx.active_effort, tools=ctx.tool_schemas,
+        allow_server_web_search=allow_server_web_search,
+        prompt_tokens=int(ctx.accumulated_usage.get("_context_prompt_estimate") or 0),
+    )
+    return request, send_messages
+
+
 def wrapup_reservation_fits(
     *,
     model: str = "",

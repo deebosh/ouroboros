@@ -3092,6 +3092,70 @@ def test_terminal_failed_reviewer_retry_emits_one_row_per_dispatched_attempt(tmp
     assert rows[0]["ledger_attempt_ids"] != rows[1]["ledger_attempt_ids"]
 
 
+def test_terminal_budget_refusal_keeps_prior_dispatched_retry_usage(tmp_path):
+    from ouroboros.usage_accounting import (
+        AttemptRequest, capture_attempt_ids, execute_physical_attempt,
+    )
+
+    class BudgetStopsRetryLLM:
+        def chat(self, **_kwargs):
+            request = AttemptRequest(
+                model="same/model", provider="openrouter",
+                reservation_usd=1.0, global_limit_usd=1.0,
+            )
+            with capture_attempt_ids():
+                try:
+                    execute_physical_attempt(
+                        request, lambda: (_ for _ in ()).throw(RuntimeError("dispatched")),
+                    )
+                except RuntimeError:
+                    pass
+                execute_physical_attempt(request, lambda: None)
+
+    ctx = SimpleNamespace(task_id="budget-refusal-usage", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="task_acceptance", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=BudgetStopsRetryLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(rows) == 1
+    assert len(rows[0]["ledger_attempt_ids"]) == 1
+
+
+def test_terminal_attempt_limit_keeps_prior_send_but_excludes_released_hold(tmp_path):
+    from ouroboros.usage_accounting import (
+        AttemptRequest, capture_attempt_ids, execute_physical_attempt,
+        physical_attempt_limit,
+    )
+
+    class RailStopsRetryLLM:
+        def chat(self, **_kwargs):
+            request = AttemptRequest(
+                model="same/model", provider="openrouter", reservation_usd=0.0,
+            )
+            with capture_attempt_ids(), physical_attempt_limit(1):
+                try:
+                    execute_physical_attempt(
+                        request, lambda: (_ for _ in ()).throw(RuntimeError("dispatched")),
+                    )
+                except RuntimeError:
+                    pass
+                execute_physical_attempt(request, lambda: None)
+
+    ctx = SimpleNamespace(task_id="rail-refusal-usage", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="task_acceptance", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=RailStopsRetryLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(rows) == 1
+    assert len(rows[0]["ledger_attempt_ids"]) == 1
+
+
 def test_internal_reviewer_transport_attempts_each_get_one_usage_row(tmp_path):
     class RetriedLLM:
         def chat(self, **_kwargs):

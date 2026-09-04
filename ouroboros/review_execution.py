@@ -28,7 +28,10 @@ from ouroboros.review_slot_cancel import (  # noqa: F401 — re-exported seam su
     _slot_cancel_outcome,
 )
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
-from ouroboros.usage_accounting import POSITIVE_PHYSICAL_ATTEMPT_STATES
+from ouroboros.usage_accounting import (
+    POSITIVE_PHYSICAL_ATTEMPT_STATES, _drive_root, _final_rows, _locked,
+    _read_records_locked_cached, current_usage_scope,
+)
 from ouroboros.triad_review import (
     ACCEPTANCE_SURFACE_RULES,
     REVIEW_JSON_ARRAY_CONTRACT,
@@ -324,12 +327,31 @@ class ReviewSlotExecutor:
 
     def _observe_failed_send(self, exc: BaseException) -> None:
         capture = getattr(exc, "physical_attempt_capture", None)
-        if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
-            attempt_ids = [str(value) for value in (getattr(exc, "ledger_attempt_ids", None) or []) if value]
+        attempt_ids = [str(value) for value in (getattr(exc, "ledger_attempt_ids", None) or []) if value]
+        capture_id = str(getattr(capture, "attempt_id", "") or "")
+        if capture_id and capture_id not in attempt_ids:
+            attempt_ids.append(capture_id)
+        rows: Dict[str, Dict[str, Any]] = {}
+        try:
+            scope = current_usage_scope()
+            root = _drive_root(getattr(scope, "drive_root", None))
+            with _locked(root):
+                finals = _final_rows(_read_records_locked_cached(root))
+            rows = {attempt_id: finals[attempt_id] for attempt_id in attempt_ids if attempt_id in finals}
+        except Exception:
+            log.debug("failed to resolve review attempt states", exc_info=True)
+        capture_state = str(getattr(capture, "state", "") or "")
+        for attempt_id in attempt_ids:
+            row = rows.get(attempt_id, {})
+            state = str(row.get("state") or (capture_state if attempt_id == capture_id else ""))
+            if state not in POSITIVE_PHYSICAL_ATTEMPT_STATES and not (
+                not rows and attempt_id != capture_id
+            ):
+                continue
             self._observe_usage({
-                "resolved_model": str(getattr(capture, "model", "") or ""),
-                "provider": str(getattr(capture, "provider", "") or ""),
-                "ledger_attempt_ids": attempt_ids or [str(getattr(capture, "attempt_id", "") or "")],
+                "resolved_model": str(row.get("model") or getattr(capture, "model", "") or ""),
+                "provider": str(row.get("provider") or getattr(capture, "provider", "") or ""),
+                "ledger_attempt_ids": [attempt_id],
             })
 
     def prompt_payload(self) -> Dict[str, Any]:

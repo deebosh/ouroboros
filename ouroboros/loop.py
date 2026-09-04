@@ -247,13 +247,6 @@ def _check_budget_limits(
     budget_remaining_usd: Optional[float],
     cost_ceiling: Optional["task_pacing.CostCeiling"] = None,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """Return a final response when a budget axis requires stopping.
-
-    ``cost_ceiling`` is resolved once at loop start. Root-capped tasks decide
-    on ledger-accounted tree spend; own cost is the disclosed fallback and
-    unknown spend is never $0. The axes are independent: a
-    ``budget_remaining_usd`` of None means the owner explicitly chose no
-    finite global budget, and must not silence a live per-task root cap."""
     accumulated_usage = ctx.accumulated_usage
     raw_task_cost = accumulated_usage.get("cost")
     task_cost = float(raw_task_cost) if raw_task_cost is not None else None
@@ -272,7 +265,6 @@ def _check_budget_limits(
                 _force_plan_disclosure(tool_ctx, trace, forced_reason="budget_exhausted")
                 if tool_ctx is not None else ""
             )
-            # Record the owed panel even when rejection happens before work.
             _record_forced_finalization(
                 ctx,
                 trace,
@@ -308,18 +300,10 @@ def _check_budget_limits(
         forced_prompt = f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}"
         prospective_messages = [dict(message) for message in ctx.messages]
         _append_or_merge_user_message(prospective_messages, forced_prompt)
-        request_args = dict(
-            llm=ctx.llm, model=ctx.active_model, reasoning_effort=ctx.active_effort,
-            tools=ctx.tool_schemas, allow_server_web_search=_server_web_allowed_by_task(
-                getattr(getattr(ctx, "tools", None), "_ctx", None)
-            ), prompt_tokens=prompt_estimate,
-        )
-        wrapup_request = task_pacing.prospective_wrapup_attempt_request(
-            messages=prospective_messages, **request_args,
-        ) if not ctx.active_use_local else None
+        request_args = dict(model=ctx.active_model, prompt_tokens=prompt_estimate,
+                            use_local=ctx.active_use_local)
         wrapup_args = dict(
-            request=wrapup_request, root_cap_usd=cost_ceiling.root_cap_usd,
-            deciding_usd=deciding,
+            **request_args, root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding,
         )
         wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
         if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
@@ -329,25 +313,34 @@ def _check_budget_limits(
             priced_prompt = _prepare_forced_prompt(ctx, forced_prompt, trace)
             prospective_messages = [dict(message) for message in ctx.messages]
             _append_or_merge_user_message(prospective_messages, priced_prompt)
-            wrapup_args["request"] = task_pacing.prospective_wrapup_attempt_request(
-                messages=prospective_messages, **request_args,
+            wrapup_request, send_messages = task_pacing.prepared_wrapup_candidate(
+                ctx, prospective_messages,
+                allow_server_web_search=_server_web_allowed_by_task(
+                    getattr(getattr(ctx, "tools", None), "_ctx", None)),
+            )
+            wrapup_args = dict(
+                request=wrapup_request, root_cap_usd=cost_ceiling.root_cap_usd,
+                deciding_usd=deciding,
             )
             wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
             two_fit = task_pacing.wrapup_reservation_fits(
                 **wrapup_args, reservation_count=2,
             )
-            accumulated_usage["cost_stop_spend_basis"] = spend_basis
-            accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
             if wrapup_fits is False:
+                accumulated_usage["cost_stop_spend_basis"] = spend_basis
+                accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
                 return _forced_fallback_result(
                     ctx, trace, finish_reason, "budget_exhausted",
                     source="budget_wrapup_unaffordable",
                 )
             if wrapup_fits is not True or two_fit is not False:
                 return None
+            accumulated_usage["cost_stop_spend_basis"] = spend_basis
+            accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
             return _forced_final_answer(
                 ctx, prompt=priced_prompt, _prompt_prepared=True,
                 fallback_text=finish_reason, reason_code="budget_exhausted",
+                _initial_messages=send_messages, _admitted_request=wrapup_request,
             )
     if deciding is not None and ceiling_usd is not None and deciding > ceiling_usd:
         if wrapup_fits is False:
@@ -360,8 +353,6 @@ def _check_budget_limits(
                 else f"Task tree spent ${deciding:.3f} (ledger-accounted incl. in-flight holds)"
             )
         elif spend_basis == task_pacing.SPEND_BASIS_OWN_TREE_UNKNOWN:
-            # Stopping on a disclosed lower bound beats not stopping at all, but
-            # the substitution is stated, never silent (BIBLE P1).
             spent_text = (
                 f"Task spent ${deciding:.3f} on its OWN calls (the tree-accounted total "
                 "is unavailable right now, so subagent spend is not included — this is a "
@@ -377,8 +368,6 @@ def _check_budget_limits(
             f"{spent_text}, over the in-task cost ceiling ${ceiling_usd:.2f}{cap_text}. "
             "Budget exhausted."
         )
-        # The basis rides the usage record too, so a later reader can tell a
-        # tree-decided stop from an own-cost stand-in without parsing prose.
         accumulated_usage["cost_stop_spend_basis"] = spend_basis
         return _forced_final_answer(
             ctx,
@@ -4321,8 +4310,17 @@ def _drain_forced_owner_directives(
     return True
 
 
-def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
+def _call_forced_model_once(
+    ctx: _RoundLimitContext, *, initial_messages: Any = None, admitted_request: Any = None,
+) -> str:
     response_meta: Dict[str, Any] = {}
+    identity = (
+        "model", "provider", "candidate_raw_sha256", "candidate_raw_size_bytes",
+    )
+    candidate_predicate = (
+        lambda actual: all(getattr(actual, key, None) == getattr(admitted_request, key, None) for key in identity)
+        if admitted_request is not None else None
+    )
     final_msg, _final_cost = call_llm_with_retry(
         ctx.llm,
         ctx.messages,
@@ -4343,6 +4341,8 @@ def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
         allow_server_web_search=_server_web_allowed_by_task(
             getattr(getattr(ctx, "tools", None), "_ctx", None)
         ),
+        initial_messages=initial_messages,
+        candidate_predicate=candidate_predicate,
     )
     ctx.accumulated_usage["_forced_response_meta"] = response_meta
     return str((final_msg or {}).get("content") or "").strip()
@@ -4683,6 +4683,8 @@ def _forced_final_answer(
     single_semantic_turn: bool = False,
     provider_terminal: bool = False,
     _prompt_prepared: bool = False,
+    _initial_messages: Any = None,
+    _admitted_request: Any = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Forced rail."""
     live_trace = getattr(ctx, "llm_trace", None)
@@ -4705,9 +4707,12 @@ def _forced_final_answer(
     for attempt in range(1 if single_semantic_turn else 2):
         try:
             ctx.accumulated_usage.pop("_forced_response_meta", None)
-            extracted, response_meta = forced_response_parts(
-                _call_forced_model_once(ctx), ctx.accumulated_usage,
-            )
+            if attempt == 0 and _admitted_request is not None:
+                forced = _call_forced_model_once(
+                    ctx, initial_messages=_initial_messages, admitted_request=_admitted_request)
+            else:
+                forced = _call_forced_model_once(ctx)
+            extracted, response_meta = forced_response_parts(forced, ctx.accumulated_usage)
         except BudgetExceeded:
             _drain_forced_owner_directives(ctx, llm_trace)
             raise
@@ -4836,12 +4841,6 @@ def _rebind_context_fit_plan(
     preferred_mode: str,
     tool_schemas: List[Dict[str, Any]],
 ) -> Tuple[Any, str]:
-    """Recalibrate the captured immutable core for one new exact route.
-
-    Route switches reuse the plan's already-rendered Low/Max projections; only
-    exact-route evidence, calibration, and fit are rebound.  This avoids both a
-    stale initial-route retry plan and a second context-builder/intent corpus.
-    """
     if plan is None or not all(
         hasattr(plan, name) for name in ("max_projection", "low_projection", "core_sha256")
     ):
@@ -4907,6 +4906,7 @@ def _rebind_context_fit_plan(
     mode = initial_mode
     projected_prompt_tokens = rebound.projected_tokens_with_tools(mode, tool_schemas)
     messages[:] = rebound.reproject_transcript(messages, mode)
+    invalidate_task_cache_splits(getattr(tools._ctx, "task_id", ""))
     tools._ctx.context_fit_plan = rebound
     tools._ctx.messages = messages
     tools._ctx.active_context_mode = mode
