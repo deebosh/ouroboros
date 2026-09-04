@@ -515,13 +515,15 @@ def test_native_advisory_episode_bound_is_derived_from_the_advisory_models_windo
 
 
 class _CapturingChat:
-    """Answers at once; keeps every messages payload it was sent."""
+    """Answers at once; keeps every messages payload it was sent and the lane it rode."""
 
     def __init__(self):
         self.messages = []
+        self.lanes = []
 
     def chat(self, **kwargs):
         self.messages.append(copy.deepcopy(kwargs["messages"]))
+        self.lanes.append(kwargs.get("use_local"))
         return {"content": _ADVISORY_ITEMS}, {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0}
 
 
@@ -624,6 +626,70 @@ def test_native_prompt_and_facts_carry_the_typed_code_when_the_reading_does_not_
     assert "MANDATORY_READ_DISCLOSURE: native_mandatory_read_exceeds_bound" in task
     assert f"name {corpus:,} chars" in task and f"bound is {bound:,} chars" in task
     assert "MANDATORY FULL READ" in task and "mark every checklist item you could not ground" in task
+
+
+def test_local_advisory_model_previews_the_bound_on_its_own_local_window(tmp_path, monkeypatch):
+    """The preview slot rides the dispatch builder (``reviewer_slots``: ``use_local``
+    off the resolved route), so a LOCAL advisory model previews and dispatches on
+    ITS window. Built with the default ``use_local=False`` the preview resolved the
+    remote/unknown route instead: a local model with a smaller window had its bound
+    lifted past the real local capacity and the typed shortfall never disclosed."""
+    import ouroboros.llm as llm_mod
+    import ouroboros.review_native_episode as native_episode
+    import ouroboros.reviewer_window as reviewer_window
+    from ouroboros.provider_models import provider_for_model
+    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_native_episode import native_mandatory_read_bound
+
+    model = "qwen3-32b (local)"
+    assert provider_for_model(model) == "local"
+    resolved, seen = [], {}
+    _real_executor = native_episode.NativeToolRoundReviewExecutor
+
+    class _RecordingExecutor(_real_executor):
+        def __init__(self, assignment, **kwargs):
+            seen["slot"] = assignment.slot
+            super().__init__(assignment, **kwargs)
+
+    monkeypatch.setattr(native_episode, "NativeToolRoundReviewExecutor", _RecordingExecutor)
+
+    def _window(model_id, *, use_local=None, **_kwargs):
+        resolved.append(use_local)
+        # The local lane's real window is small; the remote/unknown route would size at 1M.
+        return ReviewerWindow(window_tokens=200_000 if use_local else 1_000_000,
+                              status="confirmed", model=str(model_id))
+
+    monkeypatch.setattr(reviewer_window, "resolve_reviewer_window", _window)
+    chat = _CapturingChat()
+    monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: chat)
+    ctx = _ctx(tmp_path)
+    _write_governance_docs(ctx.repo_dir)
+    (ctx.repo_dir / "docs" / "ARCHITECTURE.md").write_text(
+        "# ARCH\n" + ("architecture line\n" * 30_000), encoding="utf-8")
+    prompt = advisory._build_advisory_prompt(
+        ctx.repo_dir, "commit msg",
+        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": "file-a"},
+        governance_by_retrieval=True,
+    )
+    corpus = advisory._mandatory_read_corpus_chars(ctx.repo_dir)
+    assert corpus > 500_000
+    slot = SimpleNamespace(effort="low", subagent_id="")
+    result, _model = advisory._run_advisory_native(
+        prompt, ctx.repo_dir, ctx, slot, model, mandatory_read_corpus_chars=corpus)
+    assert result.success is True, result.error
+    assert resolved and all(lane is True for lane in resolved)  # preview AND episode: the local route
+    assert chat.lanes == [True]  # the provider call rode the same lane
+    usage = result.usage
+    bound = usage["native_transcript_bound"]
+    assert 400_000 <= bound <= 460_000 < native_mandatory_read_bound(usage["native_mandatory_read_chars"])
+    assert usage["native_mandatory_read_disclosure"] == "native_mandatory_read_exceeds_bound"
+    task = _sent_task(chat)
+    assert "MANDATORY_READ_DISCLOSURE: native_mandatory_read_exceeds_bound" in task
+    assert f"bound is {bound:,} chars" in task
+    # The slot the assignment carried is the dispatch builder's: local route, api_chat, advisory identity.
+    rslot = seen["slot"]
+    assert (rslot.slot_id, rslot.model, rslot.use_local, rslot.route, rslot.effort, rslot.subagent_id) == (
+        "advisory_slot_1", model, True, ReviewRouteKind.API_CHAT, "low", "")
 
 
 def test_declared_mandatory_reading_lifts_the_bound_past_the_ceiling_up_to_the_window(monkeypatch):

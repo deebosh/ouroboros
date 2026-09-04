@@ -137,13 +137,21 @@ Notes:
   ratify them and the owner answered that he had not read that item; the F3
   owner batch (2026-09-04) re-asked, and its item 5 = A pulled W4-F3 into 7.0 —
   that row reads `done` (marker always written, one writer helper, S22 kept) and
-  left `DEFERRED_OUT_OF_V70`. W4-F4 alone still carries `operator-disclosed`
-  authority there and no owner quote. The sentence that called them
+  left `DEFERRED_OUT_OF_V70`. The same answer kept W4-F4 deferred: its row
+  carries the owner's quote and a backlog item (delete the rescue-local refs of
+  a refused/unwound update), and the register records it as an owner deferral —
+  the declaration below mirrors that register. The sentence that called them
   rowless «disclosed observations» outlived d348ea46 by two days past a green
   bar; the prose-id lint above is its class fix. W4-F1 and W4-F2 are rows
   because they are crash windows nobody decided to keep — and the owner pulled
   both into 7.0 (batch №13 item 9 = B), so those two rows read `done` with
   red-first pins.
+- Deferral authorities, as `DEFERRED_OUT_OF_V70` in scripts/v7next_adoption.py
+  records them (a declaration that disagrees with the register turns the bar
+  red — free prose about authority is not read): ABI-8 owner, DEFER-BROWSER
+  owner, DEFER-HEADLESS-CANCEL owner, DEFER-FROZEN-2 owner, DEFER-C6-RESIDUALS
+  owner, DEFER-C19-RETENTION owner, W4-F4 owner, DEFER-E2E-PAID-LANE owner,
+  DEFER-SPEC64-PATHS owner.
 - Hook cells are honest about existence. For a `done` row the validator
   resolves every `tests/`, `scripts/` or `docs/` token it finds and refuses a
   missing file, so a shipped row cannot point at a suite nobody wrote. For a

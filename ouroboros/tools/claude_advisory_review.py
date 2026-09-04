@@ -182,12 +182,10 @@ def _run_advisory_native(
     from types import SimpleNamespace
 
     from ouroboros.llm import LLMClient
-    from ouroboros.review_execution import ReviewAssignment, ReviewRouteKind
-    from ouroboros.review_native_episode import (
-        NativeToolRoundReviewExecutor,
-        native_episode_transcript_bound,
-    )
-    from ouroboros.review_substrate import ReviewRequest, ReviewSlot
+    from ouroboros.review_execution import ReviewAssignment
+    from ouroboros.review_native_episode import NativeToolRoundReviewExecutor, native_episode_transcript_bound
+    from ouroboros.review_substrate import ReviewRequest
+    from ouroboros.reviewer_slot_config import reviewer_slots
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
     _task_metadata = getattr(ctx, "task_metadata", {}) or {}
@@ -209,9 +207,11 @@ def _run_advisory_native(
         no_proxy=True,
         deadline_at=deadline_at,
     )
-    rslot = ReviewSlot(
-        slot_id="advisory_slot_1", model=model, effort=slot.effort or "low",
-        role_hint="advisory pre-reviewer", route=ReviewRouteKind.API_CHAT,
+    # The dispatch builder for api_chat rows (`use_local` off the resolved
+    # route): the bound previewed below and the episode's window are ONE route.
+    rslot = _dc_replace(
+        reviewer_slots([model], effort=slot.effort or "low", role_hint="advisory pre-reviewer",
+                       id_prefix="advisory_slot")[0],
         subagent_id=str(getattr(slot, "subagent_id", "") or ""),
     )
     if int(mandatory_read_corpus_chars or 0) > 0:

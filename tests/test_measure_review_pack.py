@@ -177,6 +177,104 @@ def test_headroom_is_derived_from_the_zero_diff_message(synthetic_repo, isolated
     assert fit["headroom_for_diff_after"] < limit - estimate_tokens(stable) - pack["after"]["chars_div_4"]
 
 
+def _plan(rows):
+    """``commit_triad_delivery()``'s aligned vectors from ``(model, route, subagent_id)`` rows."""
+    from ouroboros.review_execution import ReviewRouteKind
+
+    return {
+        "models": [model for model, _route, _actor in rows],
+        "routes": [ReviewRouteKind(route) for _model, route, _actor in rows],
+        "subagent_ids": [actor for _model, _route, actor in rows],
+    }
+
+
+def test_only_the_rows_that_receive_the_api_pack_bound_the_headroom(synthetic_repo, isolated_roots, monkeypatch):
+    """``review._prepare_unified_review`` hands ``fit_triad_prompt`` the api_chat
+    rows WITHOUT a configured-subagent binding; a session row and a subagent api
+    row retrieve with their own tools. The headroom/quorum limit must be sized
+    over exactly that filtered set — the whole delivery plan overstated a mixed
+    panel's constraint by every retrieving row."""
+    import ouroboros.reviewer_slot_config as rsc
+
+    monkeypatch.setattr(rsc, "commit_triad_delivery", lambda: _plan([
+        ("openai/packet", "api_chat", ""),
+        ("claude=opus", "agent_session", ""),
+        ("openai/native", "api_chat", "reviewer-b"),
+    ]))
+    sized = []
+
+    def _limit(models):
+        sized.append(list(models))
+        return 10_000, {m: {"window": 1_000_000, "evidence": "e", "input_limit_chars_div_4": 10_000} for m in models}
+
+    monkeypatch.setattr(mrp, "_quorum_limit", _limit)
+    monkeypatch.setattr(mrp, "_o200k", _no_bpe)
+
+    fit = mrp.measure(synthetic_repo)["fit"]
+
+    assert sized == [["openai/packet"]]
+    assert fit["panel_models"] == ["openai/packet", "claude=opus", "openai/native"]
+    assert fit["api_pack_models"] == ["openai/packet"] and list(fit["slots"]) == ["openai/packet"]
+    assert [(r["route"], r["subagent_id"], r["receives_pack"]) for r in fit["panel_rows"]] == [
+        ("api_chat", "", True), ("agent_session", "", False), ("api_chat", "reviewer-b", False)]
+    assert fit["quorum_input_limit_chars_div_4"] == 10_000 and "no_api_pack" not in fit
+
+
+def test_an_all_retrieving_panel_reports_no_api_pack_instead_of_a_number(
+        synthetic_repo, isolated_roots, monkeypatch, capsys):
+    """A panel with no api row skips pack assembly entirely in production, so
+    the measurer says so explicitly rather than printing a limit and a headroom
+    nobody is bound by."""
+    import ouroboros.reviewer_slot_config as rsc
+
+    monkeypatch.setattr(rsc, "commit_triad_delivery", lambda: _plan([
+        ("claude=opus", "agent_session", ""), ("openai/native", "api_chat", "reviewer-b")]))
+
+    def _never(models):
+        raise AssertionError(f"no api row receives a pack, nothing to size: {models}")
+
+    monkeypatch.setattr(mrp, "_quorum_limit", _never)
+    monkeypatch.setattr(mrp, "_o200k", _no_bpe)
+
+    fit = mrp.measure(synthetic_repo)["fit"]
+    assert fit["api_pack_models"] == [] and fit["no_api_pack"] == mrp.NO_API_PACK_NOTE
+    assert "no API pack is assembled for this panel" in fit["no_api_pack"]
+    assert not {"slots", "quorum_input_limit_chars_div_4", "headroom_after_zero_diff_message",
+                "headroom_for_diff_before", "headroom_for_diff_after"} & fit.keys()
+    assert mrp.main(["--repo", str(synthetic_repo)]) == 0
+    out = capsys.readouterr().out
+    assert "no API pack is assembled for this panel" in out
+    assert "api pack rows" not in out and "headroom after" not in out  # no number for a pack nobody gets
+    assert "claude=opus" in out and "retrieves" in out
+
+
+def test_a_checkout_whose_index_is_not_its_working_tree_is_refused(synthetic_repo, isolated_roots, monkeypatch, capsys):
+    """The advisory arm resolves its paths from ``git status --porcelain`` and
+    every pack reads working-tree text, while the index arms take the staged
+    list: one change only when the index IS the working tree. That used to be a
+    comment; now an unstaged edit or an untracked file is a typed refusal, and
+    a clean checkout reports the one path set both advisory arms measured."""
+    monkeypatch.setattr(mrp, "_quorum_limit", lambda models: (10_000, {}))
+    monkeypatch.setattr(mrp, "_o200k", _no_bpe)
+
+    clean = mrp.measure(synthetic_repo)
+    assert clean["advisory_touched"]["paths"] == ["app.py"] == clean["staged_paths"]
+
+    # An unstaged edit of the staged file: the advisory arm would read text the index arms never see.
+    (synthetic_repo / "app.py").write_text("BUTTON_COLOUR = 'green'\n", encoding="utf-8")
+    with pytest.raises(mrp.MeasuredCheckoutDirty, match=r"MM app\.py"):
+        mrp.measure(synthetic_repo)
+    _git(synthetic_repo, "add", "app.py")
+    assert mrp.measure(synthetic_repo)["advisory_touched"]["paths"] == ["app.py"]
+
+    # An untracked file: the porcelain-resolved arm would pack a path the index does not name.
+    (synthetic_repo / "scratch.txt").write_text("stray\n", encoding="utf-8")
+    with pytest.raises(mrp.MeasuredCheckoutDirty, match=r"\?\? scratch\.txt"):
+        mrp.measure(synthetic_repo)
+    assert mrp.main(["--repo", str(synthetic_repo)]) == 2
+    assert "refused: the checkout's index is not its working tree" in capsys.readouterr().err
+
+
 def test_repo_selects_every_governance_corpus(synthetic_repo, isolated_roots, monkeypatch):
     monkeypatch.setattr(mrp, "_quorum_limit", lambda models: (10_000, {}))
     monkeypatch.setattr(mrp, "_o200k", _no_bpe)

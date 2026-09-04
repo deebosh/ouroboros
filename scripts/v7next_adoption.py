@@ -37,6 +37,11 @@ Checks (plan §5.1, roast F2 — artifact/train-based manifest):
   read — a word marker was tried and misfired on «No row carries
   pending-decision any more» — so the schema gives the claim its declared
   form and the id resolution is the check that does not depend on wording;
+- the Notes' ``Deferral authorities: <id> <authority>, …`` declaration (the
+  register's mirror) names exactly the ids ``DEFERRED_OUT_OF_V70`` records with
+  exactly their authority — the Notes called W4-F4 operator-disclosed for a day
+  after the register made it an owner deferral, and nothing read the Notes;
+  free prose about authority is still not read, the declared form is;
 - ``--release``: no ``pending-decision`` dispositions and every row ``done``
   ("no unresolved rows at release", plan §10), with post-release rows leaving
   the bar only through a recorded deferral (owner-authored for the required
@@ -175,6 +180,12 @@ _NO_ROW_DECL_RE = re.compile(r"^\s*(?:-\s*)?No-row ids:(.*)$", re.M)
 # The manifest's quote convention for an owner decision, as every OWNER row
 # already spells it — the marker the authority lint keys on.
 _OWNER_QUOTE_MARKER = "owner verbatim «"
+# The one declared form for the deferral authorities the Notes claim — a
+# `Deferral authorities…: <id> <authority>, …` bullet (continuation lines
+# indented) mirroring DEFERRED_OUT_OF_V70. Free prose about authority is not read.
+_DEFERRAL_DECL_RE = re.compile(
+    r"^\s*(?:-\s*)?Deferral authorities\b[^:]*:(?P<body>.*(?:\n[ \t]+(?!-\s).*)*)", re.M)
+_DEFERRAL_PAIR_RE = re.compile(_PROSE_ID_RE.pattern + rf"\s+({OPERATOR}|{OWNER})\b")
 
 
 def split_row(line: str) -> list[str]:
@@ -243,6 +254,36 @@ def _prose_id_errors(prose: str, by_id: dict[str, dict[str, str]]) -> list[str]:
     for rid in sorted(named - by_id.keys() - declared):
         errors.append(f"prose: {rid} is named outside the table but has no row "
                       "and no 'No-row ids:' declaration")
+    return errors
+
+
+def declared_deferral_authorities(prose: str) -> dict[str, str] | None:
+    """The Notes' ``Deferral authorities:`` declaration as ``{id: authority}``;
+    ``None`` when the prose carries no declaration."""
+    m = _DEFERRAL_DECL_RE.search(prose)
+    if m is None:
+        return None
+    return dict(_DEFERRAL_PAIR_RE.findall(m.group("body")))
+
+
+def _deferral_declaration_errors(prose: str) -> list[str]:
+    """A declared deferral-authority list must match ``DEFERRED_OUT_OF_V70``
+    exactly — the same ids, each with its recorded authority — so the Notes
+    cannot tell a different story than the register."""
+    declared = declared_deferral_authorities(prose)
+    if declared is None:
+        return []
+    errors: list[str] = []
+    for rid in sorted(declared.keys() - DEFERRED_OUT_OF_V70.keys()):
+        errors.append(f"prose: Deferral authorities declares {rid}, which "
+                      "DEFERRED_OUT_OF_V70 does not record")
+    for rid in sorted(DEFERRED_OUT_OF_V70.keys() - declared.keys()):
+        errors.append(f"prose: Deferral authorities omits {rid} "
+                      f"({DEFERRED_OUT_OF_V70[rid]} in DEFERRED_OUT_OF_V70) — declare every recorded deferral")
+    for rid in sorted(declared.keys() & DEFERRED_OUT_OF_V70.keys()):
+        if declared[rid] != DEFERRED_OUT_OF_V70[rid]:
+            errors.append(f"prose: Deferral authorities says {rid} is {declared[rid]} while "
+                          f"DEFERRED_OUT_OF_V70 records {DEFERRED_OUT_OF_V70[rid]}")
     return errors
 
 
@@ -360,6 +401,7 @@ def validate(rows: list[dict[str, str]], release: bool, prose: str = "") -> list
                           "and an update to REQUIRED_PHASE)")
     if prose:
         errors.extend(_prose_id_errors(prose, by_id))
+        errors.extend(_deferral_declaration_errors(prose))
     if release:
         for r in rows:
             if r["disposition"] == "pending-decision":

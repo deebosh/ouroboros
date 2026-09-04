@@ -24,6 +24,7 @@ from scripts.v7next_adoption import (
     OWNER,
     REQUIRED_PHASE,
     REQUIRED_TRAINS,
+    declared_deferral_authorities,
     manifest_prose,
     parse_rows,
     validate,
@@ -219,6 +220,31 @@ def test_an_owner_deferral_row_must_carry_the_owner_quote(rows):
     unquoted = victim["what"].replace("owner verbatim «", "owner said «")
     errors = validate(_mutate(rows, victim["id"], what=unquoted), release=False)
     assert any(victim["id"] in e and "owner deferral" in e for e in errors), errors
+
+
+def test_the_notes_declare_the_deferral_authorities_the_register_records(prose):
+    """The Notes carry the register's mirror in the one declared form, and it
+    agrees with ``DEFERRED_OUT_OF_V70`` id for id. Free prose about authority is
+    not read: the Notes called W4-F4 operator-disclosed for a day after the
+    register made it an owner deferral."""
+    assert declared_deferral_authorities(prose) == DEFERRED_OUT_OF_V70
+
+
+@pytest.mark.parametrize("mutant", ["register_moves", "declaration_omits", "declaration_invents"])
+def test_a_deferral_declaration_that_disagrees_with_the_register_turns_the_bar_red(
+        rows, prose, monkeypatch, mutant):
+    """Both directions and both edges: the register moves under a standing
+    declaration, the declaration drops a recorded id, the declaration invents one."""
+    if mutant == "register_moves":
+        monkeypatch.setitem(DEFERRED_OUT_OF_V70, "W4-F4", OPERATOR)
+        text, needle = prose, "W4-F4 is owner while DEFERRED_OUT_OF_V70 records operator-disclosed"
+    elif mutant == "declaration_omits":
+        text, needle = prose.replace("W4-F4 owner, ", ""), "omits W4-F4"
+    else:
+        text, needle = prose.replace("W4-F4 owner,", "W4-F4 owner, DEFER-NO-SUCH-ROW owner,"), "declares DEFER-NO-SUCH-ROW"
+    assert text != prose or mutant == "register_moves"
+    errors = validate(copy.deepcopy(rows), release=False, prose=text)
+    assert any(e.startswith("prose: Deferral authorities") and needle in e for e in errors), errors
 
 
 def test_an_operator_disclosure_row_must_not_carry_an_owner_quote(rows, monkeypatch):

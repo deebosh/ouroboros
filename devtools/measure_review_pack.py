@@ -17,13 +17,25 @@ DESIGN.md, ARCHITECTURE.md — is read from that one checkout):
 * the ZERO-DIFF message — everything an api row receives before the first pack
   or diff byte, serialized as ``_multi_model_review_async`` sends it: the
   constitutional head + the stable prefix + the dynamic scaffolding rendered
-  with an empty pack and diff + the fixed user turn — the panel's quorum input
-  limit, and the headroom that limit leaves for the pack + diff.
+  with an empty pack and diff + the fixed user turn — the quorum input limit of
+  the rows that RECEIVE the pack (the ``api_chat`` rows without a configured-
+  subagent binding, filtered exactly as ``review`` filters them before
+  ``fit_triad_prompt``; a session row or a subagent api row retrieves with its
+  own tools and never constrains the ladder), and the headroom that limit
+  leaves for the pack + diff. A panel whose every row retrieves gets the
+  explicit "no API pack is assembled for this panel" instead of a number.
 
 Units: chars, the host's own ``utils.estimate_tokens`` (chars/4 — the unit
 ``review_admission.fit_triad_prompt`` compares against the quorum limit, so every
 limit/headroom figure is in it) and tiktoken ``o200k_base`` (not Anthropic's
 tokenizer) are printed side by side and never conflated.
+
+One change, checked: every arm reads the checkout's INDEX as the reviewed change
+while the packs read working-tree text and the advisory arm resolves its paths
+from ``git status --porcelain`` (HEAD→working tree, as the run does). Those
+coincide only when the index IS the working tree, so a checkout with an
+unstaged edit or an untracked file is refused with the typed
+:class:`MeasuredCheckoutDirty` (exit 2) instead of measured across two changes.
 
 Offline by construction: reviewer windows are read from the Capability Evidence
 CACHE only (``capability_evidence.probe(allow_fetch=False)`` under
@@ -53,10 +65,18 @@ sys.path.insert(0, str(REPO_ROOT))
 TRIAD_USER_TURN = "Review the staged diff and context provided in the instructions above."
 FIT_UNITS = ("chars/4 (utils.estimate_tokens) — the unit review_admission.fit_triad_prompt "
              "compares against the quorum limit")
+NO_API_PACK_NOTE = (
+    "no API pack is assembled for this panel: every configured row retrieves the subject with its "
+    "own tools (agent_session rows and configured-subagent api rows), so there is no quorum input "
+    "limit and no headroom to report")
 
 
 class TokenizerUnavailable(RuntimeError):
     """The o200k BPE is not in the local tiktoken cache; this measurer never downloads it."""
+
+
+class MeasuredCheckoutDirty(RuntimeError):
+    """The checkout's index is not its working tree: its arms would measure two different changes."""
 
 
 def _o200k():
@@ -98,6 +118,42 @@ def _staged_paths(repo: pathlib.Path) -> list[str]:
         check=True, capture_output=True, text=True,
     ).stdout
     return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _porcelain(repo: pathlib.Path) -> str:
+    """``git status --porcelain`` — the text the advisory run resolves its paths from."""
+    return subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(repo), check=True, capture_output=True, text=True).stdout
+
+
+def _require_index_is_worktree(porcelain: str) -> None:
+    """The one-change invariant every arm rests on (module docstring): an entry
+    with a worktree-column status — an unstaged edit (``XM``), an untracked file
+    (``??``) — means the advisory arm would pack text or paths the index arms
+    never see. Typed refusal, never a silently cross-arm number."""
+    dirty = [line for line in porcelain.splitlines() if len(line) > 1 and line[1] != " "]
+    if dirty:
+        raise MeasuredCheckoutDirty(
+            "the checkout's index is not its working tree — stage or stash these before measuring: "
+            + "; ".join(dirty))
+
+
+def _panel_rows(plan: dict) -> list[dict]:
+    """Every configured triad row with its delivery class, decided exactly as
+    ``review`` decides it before ``fit_triad_prompt``: an ``api_chat`` row with
+    no configured-subagent binding RECEIVES the api pack; a session row and a
+    subagent api row retrieve with their own tools (``delivery_retrieves`` — the
+    one delivery-class predicate) and neither constrain the fit ladder nor get
+    the pack (5.2/5.7). The aligned vectors are ``commit_triad_delivery``'s."""
+    from ouroboros.review_execution import delivery_retrieves
+
+    actors = list(plan.get("subagent_ids") or [])
+    rows = []
+    for i, (model, route) in enumerate(zip(plan["models"], plan["routes"])):
+        actor = str(actors[i] if i < len(actors) else "")
+        rows.append({"model": model, "route": str(getattr(route, "value", route)), "subagent_id": actor,
+                     "receives_pack": not delivery_retrieves(route, actor)})
+    return rows
 
 
 def _checklist_section(repo: pathlib.Path) -> str:
@@ -237,6 +293,8 @@ def measure(repo: pathlib.Path) -> dict:
     except (ImportError, TokenizerUnavailable) as exc:
         enc, tokenizer = None, f"o200k unavailable (cache-only): {exc}"
     paths = _staged_paths(repo)
+    porcelain = _porcelain(repo)
+    _require_index_is_worktree(porcelain)
     prefix = _governance_prefix(repo)
 
     def _pack(exclude: set[str], note: str) -> str:
@@ -256,8 +314,10 @@ def measure(repo: pathlib.Path) -> dict:
         one, _ = build_touched_file_pack(repo, [rel])
         per_file[rel] = {**_measure(one, enc), "excluded": rel in excluded}
     # The scope pack (its own HEAD→index pair) and the advisory pack (its
-    # HEAD→working tree pair) before/after the same carrier cut. For the
-    # measured checkout the index IS the working tree, so the pairs coincide.
+    # HEAD→working tree pair, paths resolved from the porcelain as the run
+    # resolves them) before/after the same carrier cut. The index IS the working
+    # tree — checked above, and re-checked on the resolved path set — so both
+    # advisory arms measure the one staged change.
     from ouroboros.tools import scope_review_pack as _sp
     from ouroboros.tools.review_file_pack import build_advisory_changed_context
 
@@ -267,17 +327,42 @@ def measure(repo: pathlib.Path) -> dict:
     scope_before = _sp._render_touched_section(repo, ctx_paths, [], skipped, [])[0]
     scope_after = _sp._render_touched_section(
         repo, [p for p in ctx_paths if p not in carriers], [], skipped, [], carrier_span_only=carriers)[0]
-    porcelain = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=str(repo), check=True, capture_output=True, text=True).stdout
     advisory_paths = [p for p in paths if p != "docs/ARCHITECTURE.md"]  # the run's exclude_paths
     advisory_before, _ = build_touched_file_pack(repo, advisory_paths)
-    _, advisory_after, _ = build_advisory_changed_context(
+    resolved, advisory_after, _ = build_advisory_changed_context(
         repo, changed_files_text=porcelain, exclude_paths={"docs/ARCHITECTURE.md"})
-    models = list(commit_triad_delivery()["models"])
-    limit, slots = _quorum_limit(models)
+    resolved = [p for p in resolved if p != "docs/ARCHITECTURE.md"]
+    if sorted(resolved) != sorted(advisory_paths):
+        raise MeasuredCheckoutDirty(
+            f"the advisory arm resolved {resolved} from the porcelain while the index names "
+            f"{advisory_paths}; the checkout is not one staged change")
+    panel_rows = _panel_rows(commit_triad_delivery())
+    api_models = [row["model"] for row in panel_rows if row["receives_pack"]]
     zero_parts = _zero_diff_message(repo, prefix, paths)
     zero_tokens = _measure("".join(zero_parts.values()), enc)["chars_div_4"]
-    headroom = limit - zero_tokens
+    fit: dict = {
+        "units": FIT_UNITS,
+        "panel_models": [row["model"] for row in panel_rows],
+        "panel_rows": panel_rows,
+        "api_pack_models": api_models,
+        "zero_diff_message_chars_div_4": zero_tokens,
+    }
+    if api_models:
+        limit, slots = _quorum_limit(api_models)
+        headroom = limit - zero_tokens
+        fit.update({
+            "slots": slots,
+            "quorum_input_limit_chars_div_4": limit,
+            "headroom_after_zero_diff_message": headroom,
+            "headroom_for_diff_before": headroom - _measure(before, enc)["chars_div_4"],
+            "headroom_for_diff_after": headroom - _measure(after, enc)["chars_div_4"],
+            # fit_triad_prompt sizes stable prefix + dynamic tail only: the head
+            # and the user turn are billed input it never counts.
+            "uncounted_by_fit_triad_prompt_chars_div_4": _measure(
+                zero_parts["constitutional_head_preamble_plus_BIBLE"] + zero_parts["user_turn"], enc)["chars_div_4"],
+        })
+    else:
+        fit["no_api_pack"] = NO_API_PACK_NOTE
     return {
         "repo": str(repo),
         "staged_paths": paths,
@@ -295,6 +380,7 @@ def measure(repo: pathlib.Path) -> dict:
         },
         "advisory_touched": {
             "before": _measure(advisory_before, enc), "after": _measure(advisory_after, enc),
+            "paths": advisory_paths,  # both arms: the index list == the porcelain-resolved list
         },
         "governance_prefix": {
             "stable_prefix_total": _measure(prefix["stable_prefix"], enc),
@@ -312,20 +398,7 @@ def measure(repo: pathlib.Path) -> dict:
             "total": _measure("".join(zero_parts.values()), enc),
             "parts": {name: _measure(text, enc) for name, text in zero_parts.items()},
         },
-        "fit": {
-            "units": FIT_UNITS,
-            "panel_models": models,
-            "slots": slots,
-            "quorum_input_limit_chars_div_4": limit,
-            "zero_diff_message_chars_div_4": zero_tokens,
-            "headroom_after_zero_diff_message": headroom,
-            "headroom_for_diff_before": headroom - _measure(before, enc)["chars_div_4"],
-            "headroom_for_diff_after": headroom - _measure(after, enc)["chars_div_4"],
-            # fit_triad_prompt sizes stable prefix + dynamic tail only: the head
-            # and the user turn are billed input it never counts.
-            "uncounted_by_fit_triad_prompt_chars_div_4": _measure(
-                zero_parts["constitutional_head_preamble_plus_BIBLE"] + zero_parts["user_turn"], enc)["chars_div_4"],
-        },
+        "fit": fit,
     }
 
 
@@ -334,7 +407,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", required=True, help="checkout whose staged change is measured")
     parser.add_argument("--json", action="store_true", help="print the full JSON report only")
     args = parser.parse_args(argv)
-    report = measure(pathlib.Path(args.repo).resolve())
+    try:
+        report = measure(pathlib.Path(args.repo).resolve())
+    except MeasuredCheckoutDirty as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
@@ -360,13 +437,22 @@ def main(argv: list[str] | None = None) -> int:
     zero = report["zero_diff_message"]
     print(f"zero-diff message ({' + '.join(zero['components'])}): "
           f"{zero['total']['chars']:,} chars  {zero['total']['chars_div_4']:,} chars/4  {zero['total']['o200k']!s} o200k")
-    print(f"panel {fit['panel_models']}: quorum input limit {fit['quorum_input_limit_chars_div_4']:,} [{fit['units']}]")
-    for model, slot in fit["slots"].items():
-        print(f"  {model:36} window {slot['window']:>9,} — {slot['evidence']}; slot limit {slot['input_limit_chars_div_4']:,}")
-    print(f"headroom after the zero-diff message: {fit['headroom_after_zero_diff_message']:,}; "
-          f"for the pack + diff: before {fit['headroom_for_diff_before']:,} -> after {fit['headroom_for_diff_after']:,}")
-    print(f"  (fit_triad_prompt sizes stable prefix + dynamic tail only; it does not count the "
-          f"{fit['uncounted_by_fit_triad_prompt_chars_div_4']:,} chars/4 of constitutional head + user turn)")
+    print("panel rows (delivery class as review.py decides it before fit_triad_prompt):")
+    for row in fit["panel_rows"]:
+        actor = f" via configured subagent {row['subagent_id']}" if row["subagent_id"] else ""
+        print(f"  {row['model']:36} {row['route']}{actor}: "
+              f"{'receives the api pack' if row['receives_pack'] else 'retrieves — no pack, outside the fit ladder'}")
+    if "no_api_pack" in fit:
+        print(fit["no_api_pack"])
+    else:
+        print(f"api pack rows {fit['api_pack_models']}: quorum input limit "
+              f"{fit['quorum_input_limit_chars_div_4']:,} [{fit['units']}]")
+        for model, slot in fit["slots"].items():
+            print(f"  {model:36} window {slot['window']:>9,} — {slot['evidence']}; slot limit {slot['input_limit_chars_div_4']:,}")
+        print(f"headroom after the zero-diff message: {fit['headroom_after_zero_diff_message']:,}; "
+              f"for the pack + diff: before {fit['headroom_for_diff_before']:,} -> after {fit['headroom_for_diff_after']:,}")
+        print(f"  (fit_triad_prompt sizes stable prefix + dynamic tail only; it does not count the "
+              f"{fit['uncounted_by_fit_triad_prompt_chars_div_4']:,} chars/4 of constitutional head + user turn)")
     print(f"tokenizer: {report['tokenizer']}")
     print(pack["exclusion_note"] or "(no exclusion note)")
     return 0
