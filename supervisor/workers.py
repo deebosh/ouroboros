@@ -379,7 +379,9 @@ def direct_chat_turn(task_id: str = "") -> Optional[Dict[str, Any]]:
     return record
 
 
-def arm_direct_chat_turn(task_id: str, arm: Any) -> Optional[Dict[str, Any]]:
+def arm_direct_chat_turn(
+    task_id: str, arm: Any, *, latch_key: str = "stop_control_msg_id", **extra_stamps: Any,
+) -> Optional[Dict[str, Any]]:
     """Atomically arm an owner control against the live direct turn.
 
     The turn's completion path flips ``_busy``/``_accepting_owner_messages``
@@ -390,7 +392,10 @@ def arm_direct_chat_turn(task_id: str, arm: Any) -> Optional[Dict[str, Any]]:
     msg_id, or "" when nothing was written) and the stamp all happen under
     that same lock: either the turn is live for the whole arm and ends only
     after it, or it was already gone and NOTHING is written. Returns the
-    armed record, or None when the turn was gone."""
+    armed record, or None when the turn was gone. ``latch_key`` names the
+    stamp the control's msg_id lands under (the immediate stop and the
+    graceful owner-stop episode keep separate latches, so one never hides
+    the other); ``extra_stamps`` ride along under the same lock."""
     agent = _chat_agent
     if agent is None:
         return None
@@ -401,8 +406,8 @@ def arm_direct_chat_turn(task_id: str, arm: Any) -> Optional[Dict[str, Any]]:
             return None
         written = arm(turn)
         if written:
-            stamp_direct_chat_turn(task_id, stop_control_msg_id=written)
-            turn["stop_control_msg_id"] = written
+            stamp_direct_chat_turn(task_id, **{latch_key: written, **extra_stamps})
+            turn.update({latch_key: written, **extra_stamps})
         return turn
 
 

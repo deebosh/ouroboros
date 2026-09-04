@@ -638,30 +638,39 @@ def _arm_owner_stop_episode(
             control_text = f"{control_text}\n{projection}"
     grace_deadline = owner_stop_deadline_ts(intent, queue_grace_sec(q))
     remaining = max(0, int(grace_deadline - now)) if grace_deadline else 0
-    written = request_finalization_grace(
-        pathlib.Path(task_drive), task_id, REASON_OWNER_REQUESTED_FINALIZATION,
-        chat_id=chat_id, stamp=int(_requested_ts(intent) or now),
-        control_msg_id=control_id, control_text=control_text,
-        toast_text=(
-            f"⏳ The owner asked task {task_id} to summarize and stop. One final "
-            f"answer is being produced now (≤{remaining}s); Stop now remains "
-            "available and escalates the same stop request immediately."
-        ),
-    )
+    def _write_control(_turn: Any = None) -> str:
+        return request_finalization_grace(
+            pathlib.Path(task_drive), task_id, REASON_OWNER_REQUESTED_FINALIZATION,
+            chat_id=chat_id, stamp=int(_requested_ts(intent) or now),
+            control_msg_id=control_id, control_text=control_text,
+            toast_text=(
+                f"⏳ The owner asked task {task_id} to summarize and stop. One final "
+                f"answer is being produced now (≤{remaining}s); Stop now remains "
+                "available and escalates the same stop request immediately."
+            ),
+        )
+
+    if direct_turn is not None:
+        # Atomic against the turn's completion (its admission lock): a turn
+        # that already ended arms nothing — custody settles it on the sweep.
+        from supervisor import workers
+
+        armed = workers.arm_direct_chat_turn(
+            task_id, _write_control,
+            latch_key="finalization_control_msg_id",
+            finalization_requested_at=_requested_ts(intent) or now,
+            finalization_reason=REASON_OWNER_REQUESTED_FINALIZATION,
+        )
+        if armed is None:
+            return False
+        written = str(armed.get("finalization_control_msg_id") or "")
+    else:
+        written = _write_control()
     if not written:
         # The control write failed; hold anyway (the deadline still bounds the
         # episode) and let the next sweep tick retry the same deterministic id.
         _forensic(q, task_id, "owner_stop_arm_failed", intent)
         return True
-    if direct_turn is not None:
-        from supervisor import workers
-
-        workers.stamp_direct_chat_turn(
-            task_id,
-            finalization_requested_at=_requested_ts(intent) or now,
-            finalization_reason=REASON_OWNER_REQUESTED_FINALIZATION,
-            finalization_control_msg_id=written,
-        )
     with q._queue_lock:
         meta = q.RUNNING.get(task_id)
         if isinstance(meta, dict):

@@ -467,3 +467,43 @@ def test_arming_the_stop_holds_the_turn_admission_lock_and_a_turn_that_ended_und
     assert _mailbox_kinds(tmp_path, "beefcafe") == []
     assert toasts == []
     assert threading.current_thread() is threading.main_thread()
+
+
+def test_wrap_up_on_a_turn_that_ended_under_its_lock_arms_nothing(tmp_path, monkeypatch):
+    """Audit finding: the graceful episode must arm through the same atomic
+    seam as the immediate stop. A completion that took the turn's admission
+    lock first leaves no control and no toast; the episode reports "not
+    armed" so custody settles the intent against the stored terminal."""
+    queue = _isolate_queue(monkeypatch, tmp_path)
+    agent = _live_chat_agent(monkeypatch)
+    write_task_result(tmp_path, TURN_ID, "running", chat_id=0, description="modify yourself")
+    _write_snapshot(tmp_path, running_ids=())
+    monkeypatch.setattr(queue, "FINALIZATION_GRACE_SEC", 60, raising=False)
+    from supervisor import workers
+    from supervisor.owner_stop import begin_graceful_stop
+
+    monkeypatch.setattr("supervisor.owner_stop.begin_graceful_stop", lambda task_id: None)
+    with _client(tmp_path) as client:
+        cancel = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "finalize_then_cancel"})
+    assert cancel.status_code == 202, cancel.text
+    toasts = []
+    monkeypatch.setattr(workers, "get_event_q", lambda: type("Q", (), {"put": lambda self, evt: toasts.append(evt)})())
+    real_reader = workers.direct_chat_turn
+    reads = {"n": 0}
+
+    def _ends_before_the_locked_arm(task_id=""):
+        # The episode's first read still sees the turn; the completion then
+        # takes the admission lock and ends it before the arm re-reads.
+        reads["n"] += 1
+        record = real_reader(task_id)
+        if reads["n"] == 1:
+            with agent._owner_message_admission_lock:
+                write_task_result(tmp_path, TURN_ID, "completed", chat_id=0, description="modify yourself")
+                agent._busy = False
+        return record
+
+    monkeypatch.setattr(workers, "direct_chat_turn", _ends_before_the_locked_arm)
+    begin_graceful_stop(TURN_ID)
+    assert _mailbox_kinds(tmp_path) == []
+    assert toasts == []
+    assert load_task_result(tmp_path, TURN_ID)["status"] == "completed"
