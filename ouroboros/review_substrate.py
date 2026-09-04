@@ -38,6 +38,7 @@ from ouroboros.review_execution import (  # noqa: F401  (compat re-exports)
     ReviewRouteKind,
     ReviewRouteUnavailable,
     ReviewSlotExecutor,
+    delivery_retrieves,
     _execute_slot_attempt,
     _messages_char_count,
     _render_prompt,
@@ -134,12 +135,12 @@ class ReviewSlot:
     @property
     def native_retrieval(self) -> bool:
         # An api-route actor row: bounded native tool rounds, never the packet.
-        return bool(self.subagent_id) and self.route is ReviewRouteKind.API_CHAT
+        return bool(str(self.subagent_id or "").strip()) and str(getattr(self.route, "value", self.route) or "") == ReviewRouteKind.API_CHAT.value
 
     @property
     def retrieves(self) -> bool:
         # DELIVERY class for admission/fit/authority; transport tests the route.
-        return self.route is ReviewRouteKind.AGENT_SESSION or self.native_retrieval
+        return delivery_retrieves(self.route, self.subagent_id)
 
 
 @dataclass
@@ -159,10 +160,11 @@ class ReviewRequest:
     max_tokens: int | None = None
     temperature: float | None = None
     no_proxy: bool = False
-    # Session route owns a compact task and repository root; API ignores both.
-    # It is the same criteria without the pack because the agent retrieves it.
+    # RETRIEVING deliveries own a compact task and repository root: the session
+    # route AND native API-route rows (`session_root`, `slot_session_tasks`).
     session_root: str = ""
     session_task: str = ""
+    slot_session_tasks: Dict[str, str] = field(default_factory=dict)  # per-slot work order over session_task
     session_threads: Dict[str, str] = field(default_factory=dict)
     usage_attribution: Dict[str, str] = field(default_factory=dict)
     deadline_at: str = ""
@@ -971,9 +973,8 @@ from ouroboros.review_dispatch import (  # noqa: E402,F401 — re-exports
 )
 
 
-# reviewer_slots() lives in reviewer_slot_config (altitude, P7); re-exported
-# because acceptance surfaces and tests import it from here.
-from ouroboros.reviewer_slot_config import reviewer_slots  # noqa: F401,E402
+# reviewer_slots()/triad_delivery_slots() live in reviewer_slot_config (altitude, P7); re-exported for callers here.
+from ouroboros.reviewer_slot_config import reviewer_slots, triad_delivery_slots  # noqa: F401,E402
 
 
 def scope_reviewer_slots(
@@ -1329,7 +1330,7 @@ class ReviewCoordinator:
         except Exception:
             prompt_ref = {}
         free_refusal = (
-            task_acceptance_zero_physical_refusal(request.evidence)
+            task_acceptance_zero_physical_refusal(request.evidence, retrieving=bool(slot.retrieves))
             if request.surface == "task_acceptance"
             else {}
         )
@@ -1383,9 +1384,9 @@ class ReviewCoordinator:
             acceptance_actor = request.surface == "task_acceptance"
             actor_attempts = 2 if (p3_actor or acceptance_actor) else 1
             # Acceptance and P3 share one two-send rail: transport/empty retry
-            # or same-route format repair; a native tool-round slot instead
-            # gets its episode's own config-owned send cap (its second actor
-            # attempt repairs format locally, spending no send).
+            # or same-route format repair for PACKET rows; a retrieving row
+            # (native episode, agent session) carries no send count — its
+            # executor canonicalizes its own answer, so no repair resend below.
             from ouroboros.review_native_episode import native_or_packet_attempt_rail
 
             attempt_rail = native_or_packet_attempt_rail(
@@ -1457,7 +1458,7 @@ class ReviewCoordinator:
                     _last_msg, _last_usage, _last_text, _has_prior = msg, usage, raw_text, True
                     if raw_text.strip():
                         if (
-                            acceptance_actor
+                            acceptance_actor and not slot.retrieves
                             and actor_attempt + 1 < actor_attempts
                             and parse_review_findings(raw_text)[0] is None
                         ):

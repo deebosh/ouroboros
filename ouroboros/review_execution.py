@@ -34,8 +34,9 @@ from ouroboros.usage_accounting import (
 )
 from ouroboros.triad_review import (
     ACCEPTANCE_SURFACE_RULES,
-    REVIEW_JSON_ARRAY_CONTRACT,
     TIER_CLASSIFICATION_RULES,
+    default_output_contract,
+    review_output_shape,
 )
 from ouroboros.deadline_utils import (
     bounded_seconds, owner_deadline_exhausted,
@@ -66,6 +67,21 @@ class ReviewRouteKind(str, Enum):
 
     API_CHAT = "api_chat"
     AGENT_SESSION = "agent_session"
+
+
+def delivery_retrieves(route: Any, subagent_id: Any) -> bool:
+    """THE delivery-class predicate: does this reviewer row read the subject
+    with its own tools (a hosted session, or a configured-subagent api row's
+    native tool rounds) instead of receiving the assembled packet?
+
+    One definition for every caller — slot properties, admission, packet fit
+    and the surfaces' request builders — so a delivery class can never be
+    recognised by one caller and missed by another. ``route`` may be a
+    ``ReviewRouteKind`` or its wire string."""
+    return (
+        str(getattr(route, "value", route) or "") == ReviewRouteKind.AGENT_SESSION.value
+        or bool(str(subagent_id or "").strip())
+    )
 
 class ReviewRouteUnavailable(RuntimeError):
     """Typed refusal for a route with no executor in this build.
@@ -107,18 +123,41 @@ def _poll_detail(gateway: Any, run_id: str, seconds: float) -> Dict[str, Any]:
         return bounded_poll(gateway, run_id, seconds, strict=True)
     return expiring_poll(gateway, run_id, strict=True) or {}
 
-def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str, str, str]:
-    """Return (stable_governance, task_stable, dynamic_evidence) for one slot.
+_DELIVERY_RANK = {"api_chat": 0, "native_tool_rounds": 1, "agent_session": 2}
 
-    Cache segmentation (v6.74.0, B1): the byte-stable governance instruction and
-    the task-stable contract (goal/scope/checklist/policy — stable across the
-    improvement passes of ONE task) are the two cache-marked segments; the
-    mutable tail (subject, evidence, refs) is never marked, and the slot label
-    lives at its TAIL so concurrent same-model slots share a warm prefix."""
-    evidence = json.dumps(request.evidence, ensure_ascii=False, indent=2, default=str)
-    refs = json.dumps(request.evidence_refs, ensure_ascii=False, indent=2, default=str)
-    policy = json.dumps(request.policy, ensure_ascii=False, indent=2, default=str)
+
+def slot_delivery(slot: Any) -> str:
+    """The delivery a slot runs on — `api_chat` (packet), `native_tool_rounds`
+    (an api row bound to a configured subagent) or `agent_session` — the same
+    names the executors stamp on actor usage."""
+    if getattr(slot, "route", None) is ReviewRouteKind.AGENT_SESSION:
+        return "agent_session"
+    return "native_tool_rounds" if getattr(slot, "retrieves", False) else "api_chat"
+
+
+def panel_delivery_class(slots: Any) -> str:
+    """A panel's delivery CLASS is its slowest delivery: session over native
+    over packet, and an empty panel is a packet panel. TELEMETRY classification
+    only (owner R52) — it labels the timing row and paces nothing."""
+    return max((slot_delivery(slot) for slot in slots or ()), key=_DELIVERY_RANK.__getitem__, default="api_chat")
+
+
+# Policy keys a retrieving executor consumes itself (`review_native_episode`,
+# `AgentSessionReviewExecutor`); the rendered Policy JSON omits them so the api
+# pack states the review contract once, in its governance segment.
+ROUTE_OWNED_POLICY_KEYS = frozenset({"output_contract", "native_data_root"})
+
+
+def review_output_contract(request: ReviewRequest) -> str:
+    """The surface's output contract — required keys, tier and acceptance rules,
+    the DEGRADED escape hatch — as ONE text every delivery honours: the api pack
+    renders it into its byte-stable governance segment, and a surface hands the
+    same text to its retrieving rows as ``policy["output_contract"]``."""
     classify_tier = bool(request.policy.get("classify_outcome_tier"))
+    # Acceptance-only prompt POLICY (criteria/dialogue/obligation keys and the
+    # surface rules) keys on the surface; the output SHAPE those keys imply is
+    # the separate form fact `review_output_shape` the canonicalizer consumes.
+    acceptance = request.surface == "task_acceptance"
     # The tier keys belong in the REQUIRED key list, not trailing prose — models
     # honor the explicit "Return JSON with keys" list and otherwise drop them,
     # which silently kills the best_effort/completion-coach lexicon.
@@ -145,7 +184,7 @@ def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str,
         'or HOST-ATTESTED top-level packet section names (the agent-supplied sections — reasoning_notes, '
         'candidate_answers, agent_supplied — and task_contract itself are NOT evidence: cite the exhibit '
         'that proves the work instead) — a ref that resolves to nothing cannot support a criterion)'
-        if request.surface == "task_acceptance"
+        if acceptance
         else ""
     )
     # v6.74.0 acceptance-dialogue keys (A3/A5): reviewer-authored obligation
@@ -153,29 +192,46 @@ def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str,
     # list for the same reason as the tier keys above.
     dialogue_key = (
         ', dialogue_status ("continue_actionable"|"unreachable_here"|"stable_disagreement")'
-        if request.surface == "task_acceptance"
+        if acceptance
         else ""
     )
     findings_shape = (
         '[{severity, item, evidence, recommendation, disposition_kind ("new"|"re_raise"), '
         'obligation_id (required when disposition_kind="re_raise")}]'
-        if request.surface == "task_acceptance"
+        if acceptance
         else "[{severity, item, evidence, recommendation}]"
     )
     tier_rules = TIER_CLASSIFICATION_RULES if classify_tier else ""
-    acceptance_rules = (
-        ACCEPTANCE_SURFACE_RULES if request.surface == "task_acceptance" else ""
+    acceptance_rules = ACCEPTANCE_SURFACE_RULES if acceptance else ""
+    return (
+        f"Return JSON with keys: verdict (PASS|FAIL|DEGRADED){tier_keys}{criteria_key}{dialogue_key}, findings "
+        f"({findings_shape}), and summary. "
+        + tier_rules
+        + acceptance_rules
+        + "If you cannot judge because evidence is missing, return DEGRADED and explain."
+    )
+
+
+def _render_prompt_parts(request: ReviewRequest, slot: ReviewSlot) -> tuple[str, str, str]:
+    """Return (stable_governance, task_stable, dynamic_evidence) for one slot.
+
+    Cache segmentation (v6.74.0, B1): the byte-stable governance instruction and
+    the task-stable contract (goal/scope/checklist/policy — stable across the
+    improvement passes of ONE task) are the two cache-marked segments; the
+    mutable tail (subject, evidence, refs) is never marked, and the slot label
+    lives at its TAIL so concurrent same-model slots share a warm prefix."""
+    evidence = json.dumps(request.evidence, ensure_ascii=False, indent=2, default=str)
+    refs = json.dumps(request.evidence_refs, ensure_ascii=False, indent=2, default=str)
+    policy = json.dumps(
+        {k: v for k, v in request.policy.items() if k not in ROUTE_OWNED_POLICY_KEYS},
+        ensure_ascii=False, indent=2, default=str,
     )
     stable = (
         "You are an independent Ouroboros reviewer slot.\n"
         f"Surface: {request.surface}\n"
         f"Role hint: {slot.role_hint or 'general reviewer'}\n\n"
         "The review subject and evidence packet arrive in the user message.\n\n"
-        f"Return JSON with keys: verdict (PASS|FAIL|DEGRADED){tier_keys}{criteria_key}{dialogue_key}, findings "
-        f"({findings_shape}), and summary. "
-        + tier_rules
-        + acceptance_rules
-        + "If you cannot judge because evidence is missing, return DEGRADED and explain."
+        + review_output_contract(request)
         + "\n\n"  # trailing separator: block-flattening providers glue segments
     )
     task_stable = (
@@ -559,15 +615,69 @@ REVIEW_SESSION_OUTPUT_SCHEMA: Dict[str, Any] = {
 }
 
 
-def review_session_output_schema(surface: str) -> Dict[str, Any]:
+# The OBJECT contract's schema (task acceptance): the whole verdict object. The
+# host keeps exact evidence-ref resolution and tier/coach demotion for itself
+# (an enum of every exhibit key would mint a schema larger than the packet), so
+# the schema pins only the shape the canonicalizer preserves whole.
+ACCEPTANCE_SESSION_OUTPUT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "required": ["verdict", "findings", "summary"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["PASS", "FAIL", "DEGRADED"]},
+        "outcome_tier": {"type": "string", "enum": ["solved", "best_effort", "blocked_with_evidence"]},
+        "completion_coach": {"type": "string"},
+        "criteria_used": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["criterion", "status"],
+                "properties": {
+                    "criterion": {"type": "string"},
+                    "status": {"type": "string", "enum": ["supported", "missing", "partial", "rejected"]},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
+        "dialogue_status": {
+            "type": "string",
+            "enum": ["continue_actionable", "unreachable_here", "stable_disagreement"],
+        },
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["severity", "item", "evidence", "recommendation"],
+                "properties": {
+                    "severity": {"type": "string"},
+                    "item": {"type": "string"},
+                    "evidence": {"type": "string"},
+                    "recommendation": {"type": "string"},
+                    "disposition_kind": {"type": "string", "enum": ["new", "re_raise"]},
+                    "obligation_id": {"type": "string"},
+                },
+            },
+        },
+        "summary": {"type": "string"},
+    },
+}
+
+
+def review_session_output_schema(surface: str) -> Optional[Dict[str, Any]]:
     """The session verdict schema, shaped to the SURFACE's own clean contract.
 
     The shared schema admits ``{"findings": []}`` — the honest clean verdict for a
     triad or ordinary advisory reviewer. Scope's coverage contract requires all
     checklist rows (PASS included); Skill Review has the same matrix shape. Their
     schemas demand ``minItems: 1`` so an engine cannot conform with an empty answer;
-    each surface's downstream parser still verifies exact item coverage.
+    each surface's downstream parser still verifies exact item coverage. An
+    ``object``-shaped surface (task acceptance) asks for the whole verdict object; a
+    ``report`` surface asks for NO schema — its prose passes through verbatim.
     """
+    shape = review_output_shape(surface)
+    if shape == "report":
+        return None
+    if shape == "object":
+        return ACCEPTANCE_SESSION_OUTPUT_SCHEMA
     if surface == "plan_review":
         # plan review's own element contract (4e133c8a): the generic item/verdict shape
         # would conform-and-launder — an unknown class demotes to a note.
@@ -1125,7 +1235,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
 
     def _output_contract(self) -> str:
         contract = str((self.assignment.request.policy or {}).get("output_contract") or "")
-        return contract or REVIEW_JSON_ARRAY_CONTRACT
+        return contract or default_output_contract(review_output_shape(self.assignment.request.surface))
 
     def prompt_payload(self) -> Dict[str, Any]:
         return {"session_prompt": self.session_prompt}
@@ -1135,13 +1245,16 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
 
     @property
     def session_prompt(self) -> str:
-        """The compact task this route sends — the SAME task, criteria and
-        output contract as the api pack, minus the assembled evidence: a
-        delegated reviewer retrieves context on the fly with its tools (D12),
-        so the giant pack the session replaces is never built here (plan 5.2)."""
+        """The compact task this route sends — the slot's own work order when the
+        surface supplies one (``slot_session_tasks``), else the shared
+        ``session_task``: the SAME task, criteria and output contract as the api
+        pack, minus the assembled evidence unless the surface chose to include
+        it — a delegated reviewer retrieves context with its tools (D12), so
+        the api pack is never assembled here (plan 5.2)."""
         if self._session_prompt is None:
             request, slot = self.assignment.request, self.assignment.slot
-            task = str(request.session_task or "").strip()
+            task = str((getattr(request, "slot_session_tasks", None) or {}).get(slot.slot_id)
+                       or request.session_task or "").strip()
             if not task:
                 raise ReviewRouteUnavailable(
                     "agent_session slot has no session task: the surface must supply "
@@ -1290,17 +1403,20 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         self._run_id = facts["run_id"]
         conformance = facts["conformance"]
         self._conformance_passed = conformance == "passed"
-        if not facts["schema_asked"]:
-            # This route always REQUESTS the structured verdict; an effective
-            # transport that cannot carry the schema is a landing below the
-            # ask, disclosed rather than silently downgraded to prose (D4).
+        # Array/object surfaces REQUEST the structured verdict; a report surface
+        # asks for no schema, so neither its absence nor its non-conformance is
+        # a landing of any reason.
+        schema_requested = review_session_output_schema(request.surface) is not None
+        if schema_requested and not facts["schema_asked"]:
+            # An effective transport that cannot carry the schema is a landing
+            # below the ask, disclosed rather than silently downgraded (D4).
             self._deltas.append({
                 "kind": "capability_delta",
                 "requested": "outputSchema (structured verdict)",
                 "effective": f"no structured output on effective route {facts['route_id']}",
                 "reason": "schema_unavailable_on_effective_route",
             })
-        elif not self._conformance_passed:
+        elif schema_requested and not self._conformance_passed:
             self._deltas.append({
                 "kind": "capability_delta",
                 "requested": "outputSchema (structured verdict)",
@@ -1384,6 +1500,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             llm=self.llm,
             deadline_at=getattr(self.assignment.request, "deadline_at", "") or "",
             transport_timeout_sec=getattr(self.assignment.slot, "transport_timeout_sec", None),
+            shape=review_output_shape(self.assignment.request.surface),
         )
         usage = dict(self._session_usage)
         deltas = list(self._deltas)

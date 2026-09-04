@@ -1192,13 +1192,13 @@ export function reviewExecutionEvidence(execution) {
     if (!executed || typeof executed !== 'object') return null;
     const kind = text(executed.kind || executed.route_kind || executed.channel).toLowerCase();
     const harness = text(executed.harness_id || executed.harness);
-    const api = ['api', 'api_chat', 'api_model'].includes(kind);
+    const api = ['api', 'api_chat', 'api_model', 'native'].includes(kind);
     const harnessReceipt = kind === 'harness' || kind === 'agent_session' || (wrapped && Boolean(harness));
     if (!api && (!harnessReceipt || !harness)) return null;
     return {
         harness: api ? 'api' : harness,
         channel: api ? 'api' : '',
-        label: text(executed.label),
+        label: kind === 'native' ? 'API · native tool rounds' : text(executed.label),
         model: text(executed.model || executed.model_id),
     };
 }

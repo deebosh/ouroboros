@@ -19,7 +19,6 @@ import logging
 import pathlib
 from typing import Any, Dict, List, Optional
 
-from ouroboros.config import review_model_uses_local
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
 from ouroboros.llm import LLMClient
 from ouroboros.review_execution_projection import review_executions_from_actor_usage
@@ -208,36 +207,19 @@ def record_raw_plan_request_attempt(
 
 
 def plan_review_slots() -> list:
-    """The configured commit-triad rows as plan-review ``ReviewSlot`` objects.
-
-    Both kinds ride: an ``api_chat`` row is one in-process call over the lean
-    packet; an ``agent_session`` row is a delegated retrieving reviewer
-    (``session_target``/``session_profile`` carried per row). Effort is the row's
-    explicit value, else a compound Cursor/Agy route's encoded value, else
-    ``PLAN_REVIEW_EFFORT``. Slot ids are the rows' own (structured:
-    owner-assigned; legacy: ``slot_N`` from the one mint).
+    """The configured commit-triad rows as plan-review ``ReviewSlot`` objects:
+    the shared ``triad_delivery_slots`` builder (one reader of the triad rows
+    for plan, skill and acceptance review) with plan review's own slot
+    properties — timeout, output budget, temperature, and ``PLAN_REVIEW_EFFORT``
+    as the effort default. Both delivery kinds ride; slot ids are the rows' own.
     """
-    from ouroboros.review_execution import ReviewRouteKind
-    from ouroboros.review_substrate import ReviewSlot
-    from ouroboros.reviewer_slot_config import load_reviewer_slot_config, row_effort
+    from ouroboros.reviewer_slot_config import triad_delivery_slots
 
-    return [
-        ReviewSlot(
-            slot_id=row.slot_id,
-            model=row.target_id,
-            effort=row_effort(row, "review", default=PLAN_REVIEW_EFFORT),
-            timeout_sec=PLAN_REVIEW_SLOT_TIMEOUT_SEC,
-            max_tokens=PLAN_REVIEW_MAX_TOKENS,
-            temperature=0.2,
-            role_hint="plan reviewer",
-            use_local=review_model_uses_local(row.target_id),
-            route=ReviewRouteKind.AGENT_SESSION if row.is_session else ReviewRouteKind.API_CHAT,
-            session_target=row.session_target,
-            session_profile=row.profile_id,
-            subagent_id=row.subagent_id,
-        )
-        for row in load_reviewer_slot_config().triad
-    ]
+    return triad_delivery_slots(
+        role_hint="plan reviewer", default_effort=PLAN_REVIEW_EFFORT,
+        timeout_sec=PLAN_REVIEW_SLOT_TIMEOUT_SEC, max_tokens=PLAN_REVIEW_MAX_TOKENS,
+        temperature=0.2,
+    )
 
 
 def slot_is_session(slot: Any) -> bool:

@@ -2154,15 +2154,14 @@ setattr(_schedule_task, "_hidden_legacy_params", HIDDEN_LEGACY_SCHEDULE_PARAMS)
 
 
 def _request_deep_self_review(ctx: ToolContext, reason: str) -> str:
-    from ouroboros.deep_self_review import is_review_available
-    available, model = is_review_available()
-    if not available:
-        return (
-            "❌ Deep self-review unavailable: configure OUROBOROS_MODEL_DEEP_SELF_REVIEW "
-            "and the matching provider API key."
-        )
-    ctx.pending_events.append({"type": "deep_self_review_request", "reason": reason, "model": model, "ts": utc_now_iso()})
-    return f"Deep self-review requested (model: {model}). It will be queued and executed asynchronously."
+    # Availability follows the configured deep-review ROW (packed api model,
+    # native inspection episode, or delegated session), not the model key alone.
+    from ouroboros.deep_self_review import deep_review_route, deep_review_unavailable_text
+    unavailable, identity = deep_review_route()
+    if unavailable:
+        return deep_review_unavailable_text(unavailable)
+    ctx.pending_events.append({"type": "deep_self_review_request", "reason": reason, "model": identity, "ts": utc_now_iso()})
+    return f"Deep self-review requested (reviewer: {identity}). It will be queued and executed asynchronously."
 
 
 def _chat_history(
@@ -3184,7 +3183,7 @@ def get_tools() -> List[ToolEntry]:
         # cancel_task + peek_task + discard_child_result are registered by ouroboros/tools/join_ledger.py.
         ToolEntry("request_deep_self_review", {
             "name": "request_deep_self_review",
-            "description": "Request an Atlas-backed deep self-review of the entire Ouroboros project. Uses OUROBOROS_MODEL_DEEP_SELF_REVIEW with its matching provider key, full core memory whitelist, and manifest accounting for every tracked repo path against the Constitution. Results go to chat and memory.",
+            "description": "Request a deep self-review of the entire Ouroboros project against the Constitution, on the configured deep-review reviewer row (Settings → Agents → Review lanes; absent, the OUROBOROS_MODEL_DEEP_SELF_REVIEW model runs one packed Atlas review): a packed API model reads the Atlas plus the full core memory whitelist; a configured subagent or agent session reads the repository itself with read-only tools and receives the same memory whitelist inline byte-exact (memory is never receipt-checked). Results go to chat and memory.",
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string", "description": "Why you want a review (context for the reviewer)"},
             }, "required": ["reason"]},

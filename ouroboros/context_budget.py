@@ -257,8 +257,10 @@ CHAT_ARCHIVE_SCAN_WARN_BYTES = 100_000_000
 def estimate_message_chars(messages: Any) -> int:
     """Message chars with image blocks at the provider-billing proxy.
 
-    The bounded basis shared by the fit estimator, the density witness and
-    the compaction proxy — image base64 never counts as text here.
+    Serves the local-context compaction proxy (`llm.py`); the remote fit
+    estimator and the density witness measure on `context_fit`'s
+    `estimate_context_prompt_tokens` basis instead, which serializes message
+    dicts recursively. Image base64 never counts as text here.
     """
     total = 0
     for msg in messages:
@@ -273,4 +275,10 @@ def estimate_message_chars(messages: Any) -> int:
                 total += len(str(block.get("text", "")))
         else:
             total += len(str(content or ""))
+        # Reasoning kept on canonical assistant turns is replayed verbatim on
+        # the reasoning-echo lane (DeepSeek), so it is real wire prompt. A
+        # mixed transcript sent to a non-echo lane still carries the key here
+        # while the wire copy strips it — a conservative over-count, the safe
+        # direction for a compaction trigger.
+        total += len(str(msg.get("reasoning_content") or ""))
     return total

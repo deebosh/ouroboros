@@ -25,7 +25,7 @@ from ouroboros.anthropic_native_custody import (
     scrub_native_custody,
 )
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
-from ouroboros.provider_models import OPENROUTER_DEFAULTS, PROVIDER_PREFIXES, normalize_anthropic_model_id, normalize_model_identity, resolve_minimax_base_url
+from ouroboros.provider_models import DEEPSEEK_BASE_URL, OPENROUTER_DEFAULTS, PROVIDER_PREFIXES, normalize_anthropic_model_id, normalize_deepseek_reasoning_effort, normalize_model_identity, resolve_minimax_base_url
 from ouroboros.reasoning_artifacts import sealed_reasoning_pin_fact, transcript_has_sealed_reasoning
 from ouroboros.request_wire_recovery import (
     finalize_wire_response,
@@ -150,6 +150,8 @@ def _route_normalizes_cache_breakpoints(target: Dict[str, Any]) -> bool:
 
 # Pin disclosure slot: a ContextVar isolates threads AND concurrent asyncio tasks.
 _REASONING_PIN_CVAR = contextvars.ContextVar("ouroboros_reasoning_pin_note", default=None)
+# Effort clamp/projection disclosure slot: same isolation contract as the pin.
+_EFFORT_CLAMP_CVAR = contextvars.ContextVar("ouroboros_effort_clamp_note", default=None)
 
 
 def _pop_reasoning_pin_note() -> Optional[Dict[str, Any]]:
@@ -500,188 +502,13 @@ def add_usage(total: Dict[str, Any], usage: Dict[str, Any]) -> None:
     merge_request_wire_usage(total, usage)
 
 
-def fetch_openrouter_pricing(*, timeout_sec: float = 5.0) -> Dict[str, Tuple[Optional[float], ...]]:
-    """Fetch OpenRouter pricing as model_id -> per-1M prices.
-
-    Tuples are ``(input, cached_read, cache_write, output)``. Missing cache
-    prices remain ``None`` instead of inheriting a synthetic coefficient.
-    """
-    import logging
-    from ouroboros.pricing import PricingSchedule
-    log = logging.getLogger("ouroboros.llm")
-
-    try:
-        import requests
-    except ImportError:
-        log.warning("requests not installed, cannot fetch pricing")
-        return {}
-
-    try:
-        url = "https://openrouter.ai/api/v1/models"
-        resp = requests.get(url, timeout=max(0.1, min(5.0, float(timeout_sec))))
-        resp.raise_for_status()
-
-        data = resp.json()
-        models = data.get("data", [])
-
-        pricing_dict = {}
-        for model in models:
-            model_id = str(model.get("id") or "").strip()
-
-            pricing = model.get("pricing", {})
-            if not pricing or pricing.get("prompt") is None or pricing.get("completion") is None:
-                continue
-
-            raw_prompt = float(pricing.get("prompt", 0))
-            raw_completion = float(pricing.get("completion", 0))
-            raw_cached_str = pricing.get("input_cache_read")
-            raw_cached = float(raw_cached_str) if raw_cached_str is not None else None
-            raw_cache_write_str = pricing.get("input_cache_write")
-            raw_cache_write = float(raw_cache_write_str) if raw_cache_write_str is not None else None
-            if raw_prompt < 0 or raw_completion < 0:
-                continue
-            if raw_cached is not None and raw_cached < 0:
-                raw_cached = None
-            if raw_cache_write is not None and raw_cache_write < 0:
-                raw_cache_write = None
-
-            prompt_price = round(raw_prompt * 1_000_000, 4)
-            completion_price = round(raw_completion * 1_000_000, 4)
-            cached_price = round(raw_cached * 1_000_000, 4) if raw_cached is not None else None
-            cache_write_price = (
-                round(raw_cache_write * 1_000_000, 4)
-                if raw_cache_write is not None else None
-            )
-
-            if prompt_price > 1000 or completion_price > 1000:
-                log.warning(f"Skipping {model_id}: prices seem wrong (prompt={prompt_price}, completion={completion_price})")
-                continue
-
-            row = (prompt_price, cached_price, cache_write_price, completion_price)
-
-            tiers = []
-            raw_overrides = pricing.get("overrides") or []
-            if isinstance(raw_overrides, list):
-                for override in raw_overrides:
-                    if not isinstance(override, dict):
-                        continue
-                    try:
-                        min_prompt_tokens = int(override.get("min_prompt_tokens") or 0)
-                        if min_prompt_tokens <= 0:
-                            continue
-                        tier_raw_prompt = float(override.get("prompt", raw_prompt))
-                        tier_raw_completion = float(override.get("completion", raw_completion))
-                        tier_prompt = round(tier_raw_prompt * 1_000_000, 4)
-                        tier_completion = round(tier_raw_completion * 1_000_000, 4)
-                        override_cached = override.get("input_cache_read")
-                        tier_cached = (
-                            round(float(override_cached) * 1_000_000, 4)
-                            if override_cached is not None else None
-                        )
-                        override_write = override.get("input_cache_write")
-                        if override_write is not None:
-                            tier_write = round(float(override_write) * 1_000_000, 4)
-                        else:
-                            tier_write = None
-                        if tier_prompt > 1000 or tier_completion > 1000:
-                            continue
-                        tier_row = (tier_prompt, tier_cached, tier_write, tier_completion)
-                        tiers.append((min_prompt_tokens, tier_row))
-                    except (TypeError, ValueError):
-                        log.warning("Skipping malformed pricing override for %s", model_id)
-            if tiers:
-                row = PricingSchedule(row, tuple(tiers))
-            pricing_dict[model_id] = row
-            normalized_model_id = normalize_model_identity(model_id)
-            if normalized_model_id != model_id:
-                pricing_dict[normalized_model_id] = row
-
-        log.info(f"Fetched pricing for {len(pricing_dict)} models from OpenRouter")
-        return pricing_dict
-
-    except (requests.RequestException, ValueError, KeyError) as e:
-        log.warning(f"Failed to fetch OpenRouter pricing: {e}")
-        return {}
-
-
-def fetch_cloudru_pricing(*, timeout_sec: float = 5.0) -> Dict[str, Tuple[Optional[float], ...]]:
-    """Fetch cloud.ru Foundation Models pricing as ``cloudru/<id>`` -> per-1M USD.
-
-    cloud.ru's ``GET /v1/models`` returns per-model ``metadata`` with token costs
-    (``prompt_tokens_cost``, ``generated_tokens_cost``, ``cache_read_tokens_cost``,
-    ``cache_write_tokens_cost``) in RUB per 1M tokens — i.e. the real resale price
-    the owner pays. We convert to USD via ``OUROBOROS_RUB_USD_RATE`` so the catalog
-    is the SSOT for ALL cloud.ru models (no hardcoded per-model table). Models with
-    ``is_billable=false`` is an exact free row; missing billability or an absent
-    explicit ``OUROBOROS_RUB_USD_RATE`` stays unknown. Returns {} when the catalog
-    cannot be queried. Tuples are ``(input, cached_read, cache_write, output)``."""
-    import logging
-    log = logging.getLogger("ouroboros.llm")
-
-    api_key = (os.environ.get("CLOUDRU_FOUNDATION_MODELS_API_KEY", "") or "").strip()
-    if not api_key:
-        return {}
-    try:
-        import requests
-    except ImportError:
-        return {}
-
-    base_url = (
-        os.environ.get("CLOUDRU_FOUNDATION_MODELS_BASE_URL", "") or ""
-    ).strip() or "https://foundation-models.api.cloud.ru/v1"
-    try:
-        rate = float(os.environ.get("OUROBOROS_RUB_USD_RATE", ""))
-    except (TypeError, ValueError):
-        return {}
-    if rate <= 0:
-        return {}
-
-    try:
-        resp = requests.get(
-            f"{base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=max(0.1, min(5.0, float(timeout_sec))),
-        )
-        resp.raise_for_status()
-        models = resp.json().get("data", []) or []
-
-        def _rub_per_1m_to_usd(value: Any) -> Optional[float]:
-            try:
-                num = float(value)
-            except (TypeError, ValueError):
-                return None
-            if num < 0:  # cloud.ru uses -1 for "n/a" (e.g. embedding output)
-                return None
-            return round(num / rate, 6)
-
-        pricing_dict: Dict[str, Tuple[Optional[float], ...]] = {}
-        for model in models:
-            model_id = str(model.get("id") or "").strip()
-            meta = model.get("metadata") if isinstance(model.get("metadata"), dict) else {}
-            if not model_id or not meta or meta.get("is_billable") is None:
-                continue
-            if meta.get("is_billable") is False:
-                pricing_dict[normalize_model_identity(f"cloudru::{model_id}")] = (0.0, 0.0, 0.0, 0.0)
-                continue
-            prompt_price = _rub_per_1m_to_usd(meta.get("prompt_tokens_cost"))
-            output_price = _rub_per_1m_to_usd(meta.get("generated_tokens_cost"))
-            if prompt_price is None or output_price is None:
-                continue
-            cached_price = _rub_per_1m_to_usd(meta.get("cache_read_tokens_cost"))
-            cache_write_price = _rub_per_1m_to_usd(meta.get("cache_write_tokens_cost"))
-            row = (
-                prompt_price,
-                cached_price,
-                cache_write_price,
-                output_price,
-            )
-            pricing_dict[normalize_model_identity(f"cloudru::{model_id}")] = row
-
-        log.info(f"Fetched pricing for {len(pricing_dict)} models from cloud.ru")
-        return pricing_dict
-    except (requests.RequestException, ValueError, KeyError) as e:
-        log.warning(f"Failed to fetch cloud.ru pricing: {e}")
-        return {}
+# Live pricing-catalog fetchers moved whole to ouroboros/provider_catalogs.py
+# at the 200,000-byte module ratchet ceiling; re-exported here so existing
+# importers (ouroboros.pricing, tests) keep the historical names.
+from ouroboros.provider_catalogs import (  # noqa: F401,E402
+    fetch_cloudru_pricing,
+    fetch_openrouter_pricing,
+)
 
 
 class LLMClient:
@@ -1003,13 +830,11 @@ class LLMClient:
 
     def _clamp_effort_for_model(self, model_id: str, effort: str) -> str:
         """Legacy clamp plus diagnostic disclosure; production dispatch bypasses it."""
-        if not hasattr(self, "_effort_clamp_tls"):
-            self._effort_clamp_tls = threading.local()
-        self._effort_clamp_tls.pending = None
+        _EFFORT_CLAMP_CVAR.set(None)
         from ouroboros.config import effort_rank
         applied = self.clamp_effort_for_route(model_id, effort)
         if applied != effort:
-            self._effort_clamp_tls.pending = {
+            _EFFORT_CLAMP_CVAR.set({
                 "requested": effort,
                 "applied": applied,
                 "reason": (
@@ -1018,12 +843,13 @@ class LLMClient:
                     else "learned_ceiling"
                 ),
                 "model": str(model_id or ""),
-            }
+            })
         return applied
 
     def _pop_thread_disclosure(self, slot: str) -> Optional[Dict[str, Any]]:
         """Take and clear the disclosure staged in thread-local ``slot`` for THIS
-        thread's call; these slots stage before or at send (pin note: ContextVar)."""
+        thread's call; these slots stage before or at send (pin and effort
+        notes: ContextVar)."""
         tls = getattr(self, slot, None)
         pending = getattr(tls, "pending", None) if tls is not None else None
         if tls is not None:
@@ -1031,8 +857,10 @@ class LLMClient:
         return pending if isinstance(pending, dict) else None
 
     def _pop_effort_clamp_disclosure(self) -> Optional[Dict[str, Any]]:
-        """The pending clamp record for THIS thread's in-flight call, if any."""
-        return self._pop_thread_disclosure("_effort_clamp_tls")
+        """The pending clamp record for THIS call's context (thread or asyncio task)."""
+        pending = _EFFORT_CLAMP_CVAR.get()
+        _EFFORT_CLAMP_CVAR.set(None)
+        return pending if isinstance(pending, dict) else None
 
     @classmethod
     def _record_effort_ceiling(cls, model_id: str, current_effort: str) -> None:
@@ -1312,6 +1140,8 @@ class LLMClient:
             return f"gigachat/{resolved_model}"
         if provider == "minimax":
             return f"minimax/{resolved_model}"
+        if provider == "deepseek":
+            return f"deepseek/{resolved_model}"
         return f"openai-compatible/{resolved_model}"
 
     def _resolve_remote_target(
@@ -1363,6 +1193,26 @@ class LLMClient:
                 "api_key": configured("MINIMAX_API_KEY", ""),
                 "base_url": resolve_minimax_base_url(configured("MINIMAX_REGION", "")),
                 "default_headers": {},
+                "supports_openrouter_extensions": False,
+                "supports_generation_cost": False,
+            }
+
+        if provider == "deepseek":
+            return {
+                "provider": provider,
+                "resolved_model": resolved_model,
+                "usage_model": usage_model,
+                "api_key": configured("DEEPSEEK_API_KEY", ""),
+                # One official endpoint; no owner-configurable base URL
+                # (proxy/mirror setups belong to the openai-compatible slot).
+                "base_url": DEEPSEEK_BASE_URL,
+                "default_headers": {},
+                # v4 thinks by default and carries reasoning_effort; the
+                # canonical scale is projected onto its low/high/max enum in
+                # _build_remote_kwargs. Tool-bearing requests MUST replay every
+                # previous assistant turn's reasoning_content (v4-pro enforces
+                # with a 400; "" is accepted for foreign turns — probed 2026-09-01).
+                "requires_reasoning_echo": True,
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
             }
@@ -1577,6 +1427,7 @@ class LLMClient:
         *,
         allow_message_cache_control: bool,
         flatten_tool_content_blocks: bool,
+        flatten_non_user_content_blocks: bool = False,
         allow_cache_ttl: bool = False,
     ) -> List[Dict[str, Any]]:
         cleaned = scrub_native_custody(messages)
@@ -1584,7 +1435,12 @@ class LLMClient:
             content = msg.get("content")
             if not isinstance(content, list):
                 continue
-            if msg.get("role") == "tool" and flatten_tool_content_blocks:
+            role = msg.get("role")
+            if (role == "tool" and flatten_tool_content_blocks) or (
+                role != "user" and flatten_non_user_content_blocks
+            ):
+                # String-only roles: text blocks fold into one string, so host
+                # metadata and cache markers never reach the wire either.
                 msg["content"] = "".join(
                     block.get("text", "") if isinstance(block, dict) else str(block)
                     for block in content
@@ -1618,7 +1474,12 @@ class LLMClient:
     _REASONING_CONTENT_BLOCK_TYPES = frozenset({"thinking", "reasoning", "redacted_thinking"})
 
     @classmethod
-    def _strip_openrouter_roundtrip_metadata(cls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _strip_openrouter_roundtrip_metadata(
+        cls,
+        messages: List[Dict[str, Any]],
+        *,
+        keep_reasoning_content: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Strip provider-private reasoning round-trip artifacts that a DIFFERENT
         upstream family rejects: assistant-level ``reasoning``/``reasoning_details``/
         ``reasoning_content``/``response_id`` keys AND ``thinking``/``reasoning``
@@ -1630,14 +1491,19 @@ class LLMClient:
         OpenRouter/Anthropic ``reasoning``/``reasoning_details`` shapes. Strict
         OpenAI-compatible servers (vLLM/SGLang) reject an echoed ``reasoning_content``
         with HTTP 400 ``Extra inputs are not permitted``, so it must be scrubbed on
-        the cloudru / openai-compatible / local lanes too."""
+        the cloudru / openai-compatible / local lanes too. DeepSeek is the third
+        class — a server that REQUIRES its own echo (tool-bearing requests 400
+        without the previous turns' ``reasoning_content``) — so its lane passes
+        ``keep_reasoning_content=True`` to retain that one field while every
+        other round-trip artifact is still stripped."""
         cleaned = scrub_native_custody(messages)
         for msg in cleaned:
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
                 continue
             msg.pop("reasoning", None)
             msg.pop("reasoning_details", None)
-            msg.pop("reasoning_content", None)
+            if not keep_reasoning_content:
+                msg.pop("reasoning_content", None)
             msg.pop("response_id", None)
             content = msg.get("content")
             if isinstance(content, list):
@@ -3536,7 +3402,20 @@ class LLMClient:
         # normalized vision prefix, and blinded every direct-provider install —
         # same identity contract as the browser-screenshot call site (E1).
         from ouroboros.provider_models import supports_vision
-        if not supports_vision(str(target.get("usage_model") or resolved_model)):
+        # Judge vision on EITHER identity: direct lanes strip the
+        # ``provider::`` prefix from ``resolved_model``, so the bare id never
+        # matched the slash-form vision prefixes and provider-namespaced direct
+        # routes (openai::/deepseek::/...) were treated blind regardless of
+        # real capability — ``usage_model`` carries their qualified spelling.
+        # The BARE id stays in the judgment too, because the openai-compatible
+        # lane's qualifier (``openai-compatible/<id>``) can never match while
+        # a vendor-form bare id (``qwen/qwen2.5-vl-…``) legitimately does —
+        # judging only the qualified name would flip that lane blind. On
+        # OpenRouter both spellings are the same string.
+        if not (
+            supports_vision(str(target.get("usage_model") or resolved_model))
+            or supports_vision(resolved_model)
+        ):
             messages = self._replace_image_blocks_with_placeholder(messages)
         # Official direct OpenAI Chat uses the current completion-token carrier:
         # provider-wide; model names are not capability authority across routes.
@@ -3552,8 +3431,22 @@ class LLMClient:
                     messages,
                     allow_message_cache_control=False,
                     flatten_tool_content_blocks=True,
-                )
+                    # DeepSeek accepts content arrays only on user turns.
+                    flatten_non_user_content_blocks=provider == "deepseek",
+                ),
+                keep_reasoning_content=bool(target.get("requires_reasoning_echo")),
             )
+            if target.get("requires_reasoning_echo"):
+                # A reasoning-echo route (DeepSeek) REQUIRES every assistant
+                # turn's ``reasoning_content`` on tool-bearing requests (v4-pro
+                # 400s otherwise; probed 2026-09-01). Foreign or non-string
+                # values become the explicit empty string the gate accepts —
+                # the honest value for reasoning that does not exist. Harmless
+                # without tools (the API ignores the field).
+                for _msg in clean_messages:
+                    if isinstance(_msg, dict) and _msg.get("role") == "assistant":
+                        if not isinstance(_msg.get("reasoning_content"), str):
+                            _msg["reasoning_content"] = ""
             kwargs: Dict[str, Any] = {
                 "model": resolved_model,
                 "messages": clean_messages,
@@ -3570,11 +3463,33 @@ class LLMClient:
                     kwargs["prompt_cache_key"] = cache_identity
             requested_effort = normalize_reasoning_effort(reasoning_effort)
             if direct_openai:
-                # Direct-OpenAI route honors the configured OUROBOROS_EFFORT_*
-                # lanes instead of silently dropping them (OpenRouter parity).
-                # Exact-route request-wire evidence, not legacy model-global
-                # rows, owns any provider-required adaptation after this build.
+                # Effort-carrying routes honor the OUROBOROS_EFFORT_* lanes
+                # instead of dropping them like generic compatible lanes.
+                # Keyed on the PROVIDER id, not a target capability field, so
+                # a hand-built target (fixtures, probes) cannot silently drop
+                # the carriage; request-wire recovery adapts on a provider 400.
                 kwargs["reasoning_effort"] = requested_effort
+            elif provider == "deepseek":
+                # Same carriage, projected onto DeepSeek's wire dialect
+                # (low/high/max; thinking is switched off by a toggle, not an
+                # effort value). Thinking mode accepts only tool_choice
+                # auto/none (probed 2026-09-03: required and named 400 on both
+                # v4 models), so a forced tool call is served with thinking
+                # disabled. Any tier change is disclosed on usage as
+                # ``reasoning_effort_clamped``.
+                forced_tool = bool(prepared_tools) and tool_choice not in (None, "", "auto", "none")
+                applied = "none" if forced_tool else normalize_deepseek_reasoning_effort(requested_effort)
+                if applied == "none":
+                    kwargs.setdefault("extra_body", {})["thinking"] = {"type": "disabled"}
+                else:
+                    kwargs["reasoning_effort"] = applied
+                _EFFORT_CLAMP_CVAR.set(None)  # never inherit a stale note
+                if applied != requested_effort:
+                    _EFFORT_CLAMP_CVAR.set({
+                        "requested": requested_effort, "applied": applied,
+                        "reason": "provider_forced_tool_choice" if forced_tool else "provider_wire_mapping",
+                        "model": resolved_model,
+                    })
             if temperature is not None:
                 kwargs["temperature"] = temperature
             if response_format:
@@ -3591,6 +3506,24 @@ class LLMClient:
                     _eb["cache"] = {"no-cache": True}
             return kwargs
 
+        if any(isinstance(m, dict) and "reasoning_content" in m for m in messages):
+            # ``reasoning_content`` in canonical history is direct-DeepSeek
+            # custody (the inbound normalizer pops it from every other lane's
+            # responses, OpenRouter included). OR upstreams of other families
+            # reject the echoed field, and leaving it here would also trip the
+            # replay-artifact pin below (allow_fallbacks=False), silently
+            # killing same-model failover for a mixed transcript. Dropping it
+            # from the OR physical copy restores the exact pre-DeepSeek OR
+            # wire; the canonical transcript is untouched. Keyed on key
+            # PRESENCE, not truthiness: an empty-string echo (a legal kept
+            # value) must not ride the OR wire either.
+            messages = [
+                (
+                    {k: v for k, v in m.items() if k != "reasoning_content"}
+                    if isinstance(m, dict) else m
+                )
+                for m in messages
+            ]
         effort = normalize_reasoning_effort(reasoning_effort)
         raw_return_reasoning = os.environ.get("OUROBOROS_RETURN_REASONING")
         return_reasoning = (
@@ -3718,6 +3651,7 @@ class LLMClient:
             usage.pop("response_finish_reason", None)
             usage.pop("response_provider", None)
             usage.pop("reasoning_pin", None)
+            usage.pop("reasoning_effort_clamped", None)
             usage.pop("provider_error", None)
         # An HTTP-200 that carried a provider body-error (OpenRouter passes
         # 429/5xx through the body) reaches here only when a same-model reroute
@@ -3786,12 +3720,33 @@ class LLMClient:
         # their OWN echoed ``reasoning_content`` with a 400 ``Extra inputs are not
         # permitted`` on the very next same-model turn. Drop it here so it never enters
         # the canonical transcript; the outbound scrubber is the second layer.
-        msg.pop("reasoning_content", None)
+        # DeepSeek is the inverse class: its documented tool contract REQUIRES the
+        # previous turns' ``reasoning_content`` back on every tools-bearing request
+        # (v4-pro enforces with a 400), so that lane KEEPS the field on the canonical
+        # assistant message — the same-family-continuity treatment ``reasoning_details``
+        # already gets. Cross-family sends strip it (sanitize_reasoning_on_model_switch
+        # + the outbound scrubber), and the deepseek outbound build replays it.
+        if str(target.get("provider") or "") != "deepseek":
+            msg.pop("reasoning_content", None)
+        elif not isinstance(msg.get("reasoning_content", ""), str):
+            # The SDK surfaces server extras verbatim (same hazard the
+            # refusal/annotations pops above guard): a null here would live on
+            # the canonical assistant turn forever and the direct lane has no
+            # message-level 400 recovery. Only strings enter the transcript.
+            msg.pop("reasoning_content", None)
 
         if not usage.get("cached_tokens"):
             prompt_details = usage.get("prompt_tokens_details") or {}
             if isinstance(prompt_details, dict) and prompt_details.get("cached_tokens"):
                 usage["cached_tokens"] = int(prompt_details["cached_tokens"])
+        if not usage.get("cached_tokens") and usage.get("prompt_cache_hit_tokens"):
+            # DeepSeek mirrors its automatic-cache split as top-level
+            # prompt_cache_hit/miss_tokens beside the details block; the
+            # details block wins when present, this is the fallback.
+            try:
+                usage["cached_tokens"] = int(usage["prompt_cache_hit_tokens"])
+            except (TypeError, ValueError):
+                pass
         # LM Studio MLX exposes prefix-cache hits only in stderr/logs, not
         # OpenAI-compatible usage; cached_tokens=0 is therefore expected.
 

@@ -76,6 +76,9 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
         "ouroboros/tools/scope_review_session.py",
         "ouroboros/tools/scope_window.py",
         "ouroboros/subagents.py",
+        "ouroboros/review_native_episode.py",
+        "ouroboros/review_verdict_extraction.py",
+        "ouroboros/review_execution_projection.py",
         "scripts/contributor_review_evidence.py",
     }.issubset(_REVIEW_SUBSTRATE_PATHS)
 

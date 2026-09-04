@@ -42,19 +42,25 @@ SCOPE_SLOT_ID_PREFIX = "scope_slot"
 PLAN_SLOT_ID_PREFIX = "plan_slot"
 
 
-def task_acceptance_zero_physical_refusal(evidence: Any) -> dict[str, str]:
-    """Describe an acceptance refusal that needs no reviewer transport."""
+def task_acceptance_zero_physical_refusal(evidence: Any, *, retrieving: bool = False) -> dict[str, str]:
+    """Describe an acceptance refusal that needs no reviewer transport.
+
+    A retrieving row (native episode, agent session) reads the exact source
+    itself, so a partial tool-result PROJECTION does not refuse it; the
+    immutable-core overflow refuses every delivery — no owner requirement is
+    truncated for any reviewer."""
     packet = evidence if isinstance(evidence, dict) else {}
     # Only a genuinely UNAVAILABLE source withholds the panel. A row the budget
     # ladder shed still has a durable, actor-resolvable source ref, so it is a
     # disclosed omission — refusing on it burned real acceptance panels for $0
     # while the reviewer could have read the exact bytes.
     partials = packet.get("__unresolved_partial_artifacts__")
-    unavailable = [
-        row for row in (partials if isinstance(partials, list) else [])
-        if isinstance(row, dict) and str(row.get("status") or "") == "source_unavailable"
-    ]
-    if unavailable:
+    unavailable = (
+        [row for row in partials
+         if isinstance(row, dict) and str(row.get("status") or "") == "source_unavailable"]
+        if isinstance(partials, list) else ([partials] if partials else [])
+    )
+    if unavailable and not retrieving:
         return {
             "status": "degraded_partial_source",
             "summary": (
@@ -103,8 +109,14 @@ def acceptance_slot_fit(
 def run_zero_physical_task_acceptance(
     request: Any, slots: Any, *, drive_root: Any, usage_ctx: Any,
 ) -> Any:
-    """Return the substrate's synthetic refusal, or ``None`` for physical work."""
-    if not task_acceptance_zero_physical_refusal(request.evidence):
+    """Return the substrate's synthetic refusal when EVERY row would be refused
+    free, or ``None`` for physical work — a mixed panel refuses its packet rows
+    inside `_run_slot` ($0) and runs its retrieving rows."""
+    if not all(
+        task_acceptance_zero_physical_refusal(
+            request.evidence, retrieving=bool(getattr(slot, "retrieves", False)))
+        for slot in slots
+    ):
         return None
     from ouroboros.review_substrate import run_review_request
 
@@ -221,7 +233,12 @@ def task_acceptance_paid_dispatch_stamp(
     task_id: str,
     binding: dict[str, Any],
 ) -> ReviewPaidStamp:
-    """Build the strict once-only wallet claim for a physical panel dispatch."""
+    """Build the strict once-only wallet claim for a physical panel dispatch.
+
+    The claim checks cancellation and the paid-cycle wallet only (owner R55):
+    the launch floor is evaluated once per panel, at loop admission, and a
+    running panel is bounded by the R23 deadline clamps and the per-send
+    wallet fence."""
 
     def _claim() -> None:
         refusal = task_acceptance_preclaim_refusal(ctx)

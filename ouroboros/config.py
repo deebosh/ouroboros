@@ -79,6 +79,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "ANTHROPIC_API_KEY": "",
     "MINIMAX_API_KEY": "",
     "MINIMAX_REGION": "",
+    "DEEPSEEK_API_KEY": "",
     "OUROBOROS_NETWORK_PASSWORD": "",
     "OUROBOROS_SERVER_HOST": "127.0.0.1",
     "OUROBOROS_HOST_SERVICE_PORT": 8767,
@@ -204,9 +205,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_ONBOARDING_COMPLETED_AT": "",
     # Pre-commit review enforcement: advisory | blocking
     "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
-    # Native tool-round reviewer episode caps (review_native_episode.py owns
-    # the getters); both fail CLOSED — typed refusal, never compaction/resume.
-    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS": "16",
+    # Native tool-round reviewer episode transcript CEILING (chars); the effective
+    # bound is derived from the reviewer window (review_native_episode.py). No round cap.
     "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS": "900000",
     # Auto-grant reviewed-skill requests by default; grants stay bound to the
     # reviewed content hash and editing a skill still invalidates them.
@@ -270,8 +270,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # wait ceiling is min(configured ceiling, remaining/4); below this floor plan_task SKIPS
     # with a typed reason + telemetry rather than eat the tail of the budget.
     "OUROBOROS_PLAN_TASK_DEADLINE_MIN_SEC": 300,
-    # Acceptance-review budget layer (task_pacing SSOT). The first final review
-    # reserves at least 200s; later passes use max(this floor, 1.5×timing EWMA).
+    # Acceptance-review budget layer (task_pacing SSOT): the configurable
+    # acceptance admission floor, clamped to >=200 s by task_pacing.
     "OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC": 200,
     # Shared paid-review-cycle cap (SSOT + per-gate meaning: ouroboros/review_cycles.py):
     # STRING "N"|"unlimited": plan review, acceptance (passes = cycles - 1), commit gate and skill review (paid cycles per root task / manual snapshot); identical material is never re-reviewed for pay on any gate.
@@ -535,15 +535,14 @@ def _exclusive_direct_remote_provider_env() -> str:
         bool(str(os.environ.get("GIGACHAT_USER", "") or "").strip())
         and bool(str(os.environ.get("GIGACHAT_PASSWORD", "") or "").strip())
     )
-    # OpenRouter / legacy OpenAI base / OpenAI-compatible all route through the
-    # OpenRouter-style stack, so their presence means "not an exclusive direct
-    # provider". Among the registered direct providers, return one only when
-    # exactly one is configured.
+    # OpenRouter / legacy base / compatible route through the OpenRouter-style
+    # stack → never exclusive; among registered direct providers, exactly one.
     if has_openrouter or has_legacy_base or has_compatible:
         return ""
     direct = [name for name, present in (
         ("openai", has_openai), ("anthropic", has_anthropic), ("minimax", has_minimax),
         ("cloudru", has_cloudru), ("gigachat", has_gigachat),
+        ("deepseek", bool(str(os.environ.get("DEEPSEEK_API_KEY", "") or "").strip())),
     ) if present]
     return direct[0] if len(direct) == 1 else ""
 
@@ -597,7 +596,7 @@ def resolve_prompt_cache_ttl() -> str:
 
 def direct_provider_review_models_fallback(provider: str) -> list[str]:
     """Return the exact review-models list a direct-provider fallback emits."""
-    if provider not in ("openai", "anthropic", "minimax", "cloudru", "gigachat"):
+    if provider not in ("openai", "anthropic", "minimax", "cloudru", "gigachat", "deepseek"):
         return []
     main_model = str(
         os.environ.get("OUROBOROS_MODEL", SETTINGS_DEFAULTS["OUROBOROS_MODEL"]) or ""
@@ -993,7 +992,7 @@ def get_llm_transport_read_timeout_sec() -> float:
 
 
 def get_acceptance_review_est_sec() -> float:
-    """Estimated duration of one acceptance review/improvement pass (v6.54.4)."""
+    """The configurable acceptance admission floor, clamped to >=200 s by task_pacing."""
     return _clamped_number_setting("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", low=10.0, high=3600.0)
 
 
@@ -1308,6 +1307,7 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     "OUROBOROS_PLAN_TASK_SWARM_TIMEOUT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_MAX_WAIT_SEC",
     "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
+    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS",  # a ceiling on rounds; bounds are transcript/deadline/ledger
 )
 
 
@@ -1497,14 +1497,14 @@ def get_claudexor_harness_install_timeout_sec() -> int:
 
 
 def get_finalization_grace_sec(settings: Optional[dict] = None) -> int:
+    """Grace window in seconds: env, else the ``settings`` argument, else the
+    shipped default — the ``_clamped_number_setting`` shape. Deliberately NO
+    ``load_settings()`` fallback: a READ must never persist settings, and that
+    call runs the context-mode compatibility migration, which can WRITE a
+    normalized file under read-only observers (``task_pacing._reserve_sec``)."""
     raw = os.environ.get("OUROBOROS_FINALIZATION_GRACE_SEC")
     if raw is None and isinstance(settings, dict):
         raw = settings.get("OUROBOROS_FINALIZATION_GRACE_SEC")
-    if raw is None:
-        try:
-            raw = load_settings().get("OUROBOROS_FINALIZATION_GRACE_SEC")
-        except Exception:
-            raw = None
     try:
         parsed = int(raw)
     except (TypeError, ValueError):

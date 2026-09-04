@@ -7,8 +7,8 @@
 # Tier 3 (Build+Release): Tag v*                                                       → PyInstaller + GitHub Release (~15 min)
 #
 # Tier 2.5 requires OPENROUTER_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY.
-# Optional MiniMax / Cloud.ru / GigaChat rows run when their repository secrets
-# exist. The job runs the `integration` pytest marker; locally these tests are
+# Optional MiniMax / DeepSeek / Cloud.ru / GigaChat rows run when their
+# repository secrets exist. The job runs the `integration` pytest marker; locally these tests are
 # excluded by `addopts = -m 'not integration'` in pyproject.toml.
 
 name: CI
@@ -134,6 +134,41 @@ jobs:
         run: python -m pytest tests/test_no_core_a2a_telegram_imports.py -q
 
   # ──────────────────────────────────────────────────────────────────
+  # Benchmark methodology tests (owner decision R42). The devtools/benchmarks
+  # suites live OUTSIDE pyproject's `testpaths = ["tests"]`, so the full-suite
+  # passes above never collect them; this job runs them explicitly beside
+  # their in-tree sibling tests/test_devtools_benchmarks.py, under the same
+  # canonical marker exclusions, in one serial pass (the serial-marked rows
+  # are included; nothing here needs -n). Deterministic and hermetic: no
+  # provider secret, no docker, no `harbor` / `inspect_ai` (the suites stub
+  # them or never import them); the OUROBOROS_* roots point at a runner-temp
+  # data root the way betterleaks-platform-smoke pins its own. Ubuntu-only:
+  # the terminal_bench methodology targets a Linux harness (harbor + docker)
+  # and its suites have never run on the Windows/macOS matrix.
+  # ──────────────────────────────────────────────────────────────────
+  benchmark-methodology:
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/ouroboros')
+      || (github.event_name == 'pull_request' && github.base_ref == 'ouroboros')
+      || github.event_name == 'workflow_dispatch'
+      || github.ref == 'refs/heads/ouroboros-stable'
+      || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-python-env
+      # `devtools/benchmarks` as a directory IS the `devtools/benchmarks/**/test_*.py`
+      # glob (pyproject `python_files`): no shell globstar, no list to maintain
+      # when a bench adds a suite. The roots ride the STEP env: the `runner`
+      # context is step-only (the same shape as betterleaks-platform-smoke).
+      - name: Run benchmark methodology tests (tests/test_devtools_benchmarks.py + devtools/benchmarks/**/test_*.py)
+        env:
+          OUROBOROS_APP_ROOT: ${{ runner.temp }}/ouroboros-benchmark-methodology
+          OUROBOROS_DATA_DIR: ${{ runner.temp }}/ouroboros-benchmark-methodology/data
+          OUROBOROS_SETTINGS_PATH: ${{ runner.temp }}/ouroboros-benchmark-methodology/data/settings.json
+        run: python -m pytest tests/test_devtools_benchmarks.py devtools/benchmarks -m "not integration and not browser and not ui_browser and not ui_browser_docker and not portable_detail and not skill_smoke and not size_ratchet" --timeout=300 --timeout-method=thread -q --tb=short
+
+  # ──────────────────────────────────────────────────────────────────
   # Tier 2: Full matrix (stable branch, manual, or tag push)
   # ──────────────────────────────────────────────────────────────────
   full-test:
@@ -226,8 +261,8 @@ jobs:
   # Tier 2.5: Integration tests against real provider APIs
   # Triggered on push to main / ouroboros / ouroboros-stable, manual,
   # or tag v*. OPENROUTER_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY
-  # are required in the official trusted job; MiniMax / Cloud.ru / GigaChat
-  # credentials are optional and their absent rows remain visible as skips.
+  # are required in the official trusted job; MiniMax / DeepSeek / Cloud.ru /
+  # GigaChat credentials are optional and their absent rows remain visible as skips.
   # The `integration` pytest marker controls inclusion via `-m integration`.
   # Confirmed provider-contract failures block release-preflight; the test
   # classifier keeps quota/rate-limit/5xx/timeout outcomes inconclusive.
@@ -249,6 +284,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           CLOUDRU_FOUNDATION_MODELS_API_KEY: ${{ secrets.CLOUDRU_FOUNDATION_MODELS_API_KEY }}
           CLOUDRU_FOUNDATION_MODELS_BASE_URL: ${{ secrets.CLOUDRU_FOUNDATION_MODELS_BASE_URL }}
           GIGACHAT_CREDENTIALS: ${{ secrets.GIGACHAT_CREDENTIALS }}
