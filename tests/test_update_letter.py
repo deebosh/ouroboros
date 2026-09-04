@@ -137,6 +137,23 @@ def test_material_keeps_every_commit_subject_and_bounds_only_the_bodies(history_
     assert "oldest 1 row(s) above carry version and date only" in summarized
 
 
+def test_material_ignores_tables_outside_the_version_history(history_repo):
+    # A README carries other pipe tables. Their rows are not releases, and reporting them
+    # as dropped would tell the author a release was withheld when none was.
+    repo = history_repo["repo"]
+    (repo / "README.md").write_text(
+        "# Demo\n\n## Providers\n\n| Provider | Key |\n|---|---|\n| openrouter | set |\n| local | n/a |\n"
+        "\n## Version History\n\n| Version | Date | Description |\n|---|---|---|\n"
+        "| 1.5.0 | 2026-01-08 | a real release |\n",
+        encoding="utf-8",
+    )
+    c5 = _commit(repo, "readme: a provider table beside the history")
+    material = ul.collect_range_material(history_repo["c4"], c5, git=_capture_for(repo))
+    assert [row["version"] for row in material["releases"]] == ["1.5.0"]
+    assert material["omitted_rows"] == 0, "another table's rows are not withheld releases"
+    assert material["omitted_row_commits"] == []
+
+
 def test_material_reads_a_release_row_with_the_repository_version_grammar(history_repo):
     # ONE grammar for what a release version looks like: a real rc row is a release, and a
     # dashed word is not a version at all. Retyping the pattern here got both backwards.
@@ -182,7 +199,7 @@ def test_material_discloses_an_added_row_whose_version_is_not_one(history_repo):
     repo = history_repo["repo"]
     (repo / "README.md").write_text(
         "# Demo\n\n## Version History\n\n| Version | Date | Description |\n|---|---|---|\n"
-        "| v6.114.0-rc | 2026-01-05 | a version this parser does not read |\n"
+        "| 6.114 | 2026-01-05 | opens like a version but is not one |\n"
         "| 1.4.0 | 2026-01-04 | fourth |\n",
         encoding="utf-8",
     )
@@ -194,8 +211,8 @@ def test_material_discloses_an_added_row_whose_version_is_not_one(history_repo):
     assert material["omitted_row_commits"] == [c5]
     assert f"1 unreadable history row(s) omitted; read them in {c5}" in ul.material_text(material)
 
-    # Furniture is the EXACT canonical header and separator, nothing that merely resembles
-    # them: a real row whose first cell happens to read "version" is content, not furniture.
+    # A release row is recognised by its own first cell, so a row that opens with a word
+    # belongs to some other table and is passed over rather than reported as a lost release.
     (repo / "README.md").write_text(
         "# Demo\n\n## Version History\n\n| Version | Date | Description |\n|---|---|---|\n"
         "| version | 2026-01-06 | a row that only looks like a header |\n",
@@ -203,7 +220,7 @@ def test_material_discloses_an_added_row_whose_version_is_not_one(history_repo):
     )
     c6 = _commit(repo, "readme: a row that looks like the header")
     lookalike = ul.collect_range_material(c5, c6, git=_capture_for(repo))
-    assert lookalike["omitted_rows"] == 1 and lookalike["releases"] == []
+    assert lookalike["omitted_rows"] == 0 and lookalike["releases"] == []
 
 
 def test_material_text_carries_full_provenance(history_repo):
@@ -317,6 +334,51 @@ def test_write_letter_stores_the_model_s_shape_without_policing_it(letter_env, m
     source = (pathlib.Path(ul.__file__)).read_text(encoding="utf-8")
     floor = source.split("Floor (host code):", 1)[1].split("Ceiling", 1)[0]
     assert "paragraph" not in floor, "the floor must not claim a shape the host does not enforce"
+
+
+def test_write_letter_shares_one_ceiling_between_the_slot_wait_and_the_call(letter_env, monkeypatch):
+    # The slot wait spends the SAME budget the provider call does: a busy slot must not
+    # hand the transport a second full window.
+    monkeypatch.setattr(ul, "_letter_timeout_sec", lambda: 10.0)
+    import ouroboros.model_concurrency as mc
+    from contextlib import contextmanager
+
+    @contextmanager
+    def slow_slot(model, use_local, deadline_ts=None):
+        monkeypatch.setattr(ul.time, "time", lambda: real_now + 7.0)
+        yield
+
+    real_now = ul.time.time()
+    monkeypatch.setattr(mc, "model_call_slot", slow_slot)
+    seen = {}
+
+    def fake_chat(client, *, drive_root, **kwargs):
+        seen.update(kwargs)
+        return {"content": "A paragraph."}, {"ledger_attempt_ids": ["att"]}
+
+    monkeypatch.setattr(ul, "_chat", fake_chat)
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert record["state"] == "ready"
+    assert 2.5 < seen["timeout"] < 3.5, f"the call gets what the slot left, not 10s: {seen['timeout']}"
+
+
+def test_write_letter_reports_a_ceiling_spent_on_the_slot_as_a_timeout(letter_env, monkeypatch):
+    monkeypatch.setattr(ul, "_letter_timeout_sec", lambda: 10.0)
+    import ouroboros.model_concurrency as mc
+    from contextlib import contextmanager
+
+    real_now = ul.time.time()
+
+    @contextmanager
+    def exhausting_slot(model, use_local, deadline_ts=None):
+        monkeypatch.setattr(ul.time, "time", lambda: real_now + 11.0)
+        yield
+
+    monkeypatch.setattr(mc, "model_call_slot", exhausting_slot)
+    monkeypatch.setattr(ul, "_chat", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no call past the ceiling")))
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert record["state"] == "failed" and record["error_kind"] == "timeout"
+    assert "waiting for a model slot" in record["error_text"]
 
 
 def test_write_letter_without_light_credentials_fails_typed_and_never_calls(letter_env, monkeypatch):

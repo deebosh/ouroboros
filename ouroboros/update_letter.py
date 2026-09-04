@@ -64,15 +64,13 @@ def _row_re() -> "re.Pattern":
     from ouroboros.tools.release_sync import PRE_SUFFIX
 
     return re.compile(r"^\+\|\s*(\d+\.\d+\.\d+" + PRE_SUFFIX + r")\s*\|", re.IGNORECASE)
-# The table's own furniture: the EXACT canonical header and the dashed separator under it
-# carry no release and are the only added rows that may be skipped in silence. The match is
-# whole-row on purpose — a row merely STARTING with "version" is a row whose content the
-# author would otherwise never see, so it is counted and disclosed like any other.
-_ROW_FURNITURE_RE = re.compile(
-    r"^\+\|\s*version\s*\|\s*date\s*\|\s*description\s*\|\s*$"
-    r"|^\+\|(?:\s*:?-{2,}:?\s*\|)+\s*$",
-    re.IGNORECASE,
-)
+# A README carries several pipe tables, and `git log -p -U0` gives no section context to
+# tell them apart. What identifies a RELEASE row is its own first cell: a release row opens
+# with a version. So a row whose first cell starts with a digit is a release row — read it,
+# or disclose that it could not be read — and any other added row (a provider table, the
+# history table's own header and separator) belongs to something else and is passed over
+# in silence. Counting those would tell the author a release was withheld when none was.
+_ROW_CANDIDATE_RE = re.compile(r"^\+\|\s*\d")
 _UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 _REFRESH_LOCK = threading.Lock()
 # Bumped by every letter write under the lock, so a refresh that waited for the lock can
@@ -132,6 +130,9 @@ def collect_range_material(
 ) -> Dict[str, Any]:
     """Collect the first-parent commits and the README history rows they added.
 
+    A release row is recognised by its own first cell (a version), so rows of the README's
+    other tables are passed over rather than reported as dropped releases.
+
     ``commits`` are EVERY first-parent commit of the range, newest-first: the subject of
     each one always reaches the author, so a long range is never an invisible one. Only
     the bodies are bounded — the newest ``max_bodies`` keep theirs, ``bodies_omitted``
@@ -189,7 +190,7 @@ def collect_range_material(
             if line.startswith("\x01"):
                 current_sha = line[1:].strip()
                 continue
-            if not line.startswith("+|") or _ROW_FURNITURE_RE.match(line):
+            if not _ROW_CANDIDATE_RE.match(line):
                 continue
             cells = _split_row(line)
             if cells is None or not row_re.match(line):
@@ -425,13 +426,22 @@ def write_letter(
             global_limit_usd=global_limit if global_limit > 0 else None,
         )
         client = llm_client or LLMClient()
-        timeout = _letter_timeout_sec()
-        with model_concurrency.model_call_slot(model, use_local, deadline_ts=time.time() + timeout):
+        # ONE absolute ceiling for the whole one-shot. The slot wait spends the same budget
+        # the provider call does, so the call gets what is LEFT — otherwise a busy slot could
+        # hand the transport a second full window and double the ceiling behind the owner's
+        # "Checking…" button.
+        deadline_ts = time.time() + _letter_timeout_sec()
+        with model_concurrency.model_call_slot(model, use_local, deadline_ts=deadline_ts):
+            remaining = deadline_ts - time.time()
+            if remaining <= 0:
+                record.update(error_kind="timeout",
+                              error_text="the update-letter ceiling was spent waiting for a model slot")
+                return record
             with usage_scope(scope):
                 msg, usage = _chat(
                     client, drive_root=data_root, messages=messages, model=model, tools=None,
                     reasoning_effort="low", max_tokens=UPDATE_LETTER_MAX_TOKENS,
-                    use_local=use_local, timeout=timeout,
+                    use_local=use_local, timeout=remaining,
                 )
         attempt_ids = [str(a) for a in ((usage or {}).get("ledger_attempt_ids") or [])]
         record["attempt_ids"] = attempt_ids
