@@ -23,9 +23,10 @@ Storage is one file, ``data/state/update_letter.json``, with one writer —
 the Updates panel's "Check for updates" button) — and one reader shape, ``project_letter``,
 shared by the Updates panel payload and the agent's Runtime context
 (``official_update_projection``). The projection compares recorded SHAs with the live HEAD by
-equality plus the check's own zero-behind fact (no git on the hot context path): a divergent
-install consumes an official target through a merge commit (``supervisor/update_merge.py``), so
-``applied`` cannot mean HEAD == target; a HEAD that merely moved elsewhere reads as ``other``.
+equality plus ONE ancestry fact the check recorded (``target_in_head``; no git on the hot
+context path): a divergent install consumes an official target through a merge commit
+(``supervisor/update_merge.py``), so ``applied`` cannot mean HEAD == target; a HEAD that merely
+moved elsewhere reads as ``other``.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from ouroboros.update_channels import normalize_update_channel
 from ouroboros.utils import atomic_write_json, read_json_dict, truncate_within_limit, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -135,8 +137,8 @@ def collect_range_material(
 
     ``commits`` are EVERY first-parent commit of the range, newest-first: the subject of
     each one always reaches the author, so a long range is never an invisible one. Only
-    the bodies are bounded — the newest ``max_bodies`` keep theirs, ``bodies_omitted``
-    discloses the rest. ``releases`` are every row added anywhere in the range,
+    the bodies are bounded — the newest ``max_bodies`` are read at all, ``bodies_omitted``
+    discloses how many older ones were not. ``releases`` are every row added anywhere in the range,
     newest-first with first-wins per version; the newest ``max_rows`` keep their text and
     older rows stay as version and date (``rows_summarized``), malformed ones are counted
     in ``omitted_rows`` with the commits that carried them in ``omitted_row_commits``, so an
@@ -151,29 +153,39 @@ def collect_range_material(
         "commits": [], "bodies_omitted": 0, "omitted_commit_chunks": 0, "releases": [],
         "omitted_rows": 0, "omitted_row_commits": [], "rows_summarized": 0, "versions": {},
     }
+    # Two reads on purpose: the subject line of EVERY commit (small, unbounded by design) and
+    # the bodies of only the newest ``max_bodies`` — git never hands this process the bodies
+    # of a whole long history just so most of them can be dropped again.
     rc, out, err = capture([
-        "git", "log", "--first-parent", "--format=%H%x1f%aI%x1f%s%x1f%b%x1e", spec,
+        "git", "log", "--first-parent", "--format=%H%x1f%aI%x1f%s%x1e", spec,
     ])
     if rc != 0:
         raise MaterialUnavailable(f"git log --first-parent {spec} failed (rc={rc}): {str(err)[:200]}")
     commits: List[Dict[str, Any]] = []
-    if out.strip():
-        for chunk in out.split("\x1e"):
-            chunk = chunk.strip("\n")
-            if not chunk.strip():
-                continue
-            parts = chunk.split("\x1f", 3)
-            if len(parts) < 3:
-                material["omitted_commit_chunks"] += 1
-                continue
-            body = parts[3].strip() if len(parts) > 3 else ""
-            keeps_body = len(commits) < max_bodies
-            commits.append({
-                "sha": parts[0].strip(), "date": parts[1].strip(), "subject": parts[2].strip(),
-                "body": truncate_within_limit(body, COMMIT_BODY_MAX_CHARS) if (body and keeps_body) else "",
-            })
-            if body and not keeps_body:
-                material["bodies_omitted"] += 1
+    for chunk in out.split("\x1e") if out.strip() else []:
+        chunk = chunk.strip("\n")
+        if not chunk.strip():
+            continue
+        parts = chunk.split("\x1f", 2)
+        if len(parts) < 3:
+            material["omitted_commit_chunks"] += 1
+            continue
+        commits.append({"sha": parts[0].strip(), "date": parts[1].strip(), "subject": parts[2].strip(), "body": ""})
+    if commits and max_bodies > 0:
+        rc, out, err = capture([
+            "git", "log", "--first-parent", "-n", str(int(max_bodies)), "--format=%H%x1f%b%x1e", spec,
+        ])
+        if rc != 0:
+            raise MaterialUnavailable(f"git log bodies {spec} failed (rc={rc}): {str(err)[:200]}")
+        bodies: Dict[str, str] = {}
+        for chunk in out.split("\x1e") if out.strip() else []:
+            parts = chunk.strip("\n").split("\x1f", 1)
+            if len(parts) == 2 and parts[0].strip():
+                bodies[parts[0].strip()] = parts[1].strip()
+        for commit in commits[:max_bodies]:
+            body = bodies.get(commit["sha"], "")
+            commit["body"] = truncate_within_limit(body, COMMIT_BODY_MAX_CHARS) if body else ""
+    material["bodies_omitted"] = max(0, len(commits) - max_bodies)
     material["commits"] = commits
 
     rc, out, err = capture([
@@ -258,7 +270,7 @@ def material_text(material: Dict[str, Any]) -> str:
             lines.append(f"- [{material['omitted_commit_chunks']} commit record(s) git returned unreadably]")
         if material.get("bodies_omitted"):
             lines.append(
-                f"- [the bodies of {material['bodies_omitted']} older commit(s) are omitted; "
+                f"- [the bodies of the {material['bodies_omitted']} oldest commit(s) were not read; "
                 "their subjects are all listed above]"
             )
     if not lines:
@@ -301,17 +313,21 @@ def _request_text(status: Dict[str, Any], material: Dict[str, Any], target_versi
     )
 
 
-def _context_messages(env: Any, memory: Any, task: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The ordinary task context in the owner's mode, dropping to the Low projection only
-    when the light route's KNOWN window cannot take Max (a light slot smaller than the main
-    model must still be able to write the letter; unknown windows keep the owner's mode)."""
+def _fit_plan(env: Any, memory: Any, task: Dict[str, Any]) -> Any:
+    """The ordinary task context, projected for Max and Low from one captured core.
+
+    The owner's mode is what gets SENT. DEVELOPMENT "Context mode": predicted pressure
+    never swaps in Low documents — only an actual provider overflow may use the task-local
+    Low projection, once, on the same route (``write_letter`` does exactly that).
+    """
     from ouroboros.context import build_context_fit_plan
 
-    plan = build_context_fit_plan(env, memory, task)
-    mode = plan.initial_mode
-    if plan.projection(mode).fits_known_window is False and plan.low_projection.fits_known_window:
-        mode = "low"
-    return plan.messages_for(mode)
+    return build_context_fit_plan(env, memory, task)
+
+
+# Provider stop markers that mean "the output budget ran out mid-answer" (the same names
+# loop_llm_call recognises). A letter cut there is a partial cognitive artifact, never ready.
+_OUTPUT_LIMIT_STOPS = frozenset({"length", "max_tokens"})
 
 
 def _letter_timeout_sec() -> float:
@@ -416,7 +432,8 @@ def write_letter(
             "model": model, "use_local_model": use_local, "metadata": {},
             "text": _request_text(status, material, target_version),
         }
-        messages = _context_messages(env, memory, task)
+        plan = _fit_plan(env, memory, task)
+        messages = plan.messages_for(plan.initial_mode)
         # The global money limit comes from its ONE resolver (an absent key is the product
         # default, a non-positive value is the owner's "no limit"), exactly as the naming
         # one-shot reads it — every reader that invented its own fallback disagreed.
@@ -437,18 +454,42 @@ def write_letter(
                 record.update(error_kind="timeout",
                               error_text="the update-letter ceiling was spent waiting for a model slot")
                 return record
+            attempt_ids: List[str] = []
             with usage_scope(scope):
-                msg, usage = _chat(
-                    client, drive_root=data_root, messages=messages, model=model, tools=None,
-                    reasoning_effort="low", max_tokens=UPDATE_LETTER_MAX_TOKENS,
-                    use_local=use_local, timeout=remaining,
-                )
-        attempt_ids = [str(a) for a in ((usage or {}).get("ledger_attempt_ids") or [])]
+                try:
+                    msg, usage = _chat(
+                        client, drive_root=data_root, messages=messages, model=model, tools=None,
+                        reasoning_effort="low", max_tokens=UPDATE_LETTER_MAX_TOKENS,
+                        use_local=use_local, timeout=remaining,
+                    )
+                except Exception as exc:  # noqa: BLE001 — classified below, re-raised unless overflow
+                    kind, _safe = _classify(exc)
+                    if kind != "context_overflow" or plan.initial_mode == "low":
+                        raise
+                    # An ACTUAL provider overflow: one same-route retry on the task-local Low
+                    # projection, inside the same ceiling, both attempts accounted.
+                    attempt_ids.extend(str(a) for a in (getattr(exc, "ledger_attempt_ids", None) or []))
+                    remaining = deadline_ts - time.time()
+                    if remaining <= 0:
+                        raise
+                    msg, usage = _chat(
+                        client, drive_root=data_root, messages=plan.messages_for("low"), model=model,
+                        tools=None, reasoning_effort="low", max_tokens=UPDATE_LETTER_MAX_TOKENS,
+                        use_local=use_local, timeout=remaining,
+                    )
+        attempt_ids.extend(str(a) for a in ((usage or {}).get("ledger_attempt_ids") or []))
         record["attempt_ids"] = attempt_ids
         record["attempt_id"] = attempt_ids[-1] if attempt_ids else ""
         text = str((msg or {}).get("content") or "").strip()
         if not text:
             record.update(error_kind="empty_response", error_text="the model returned no text")
+            return record
+        stop = str((msg or {}).get("finish_reason") or (msg or {}).get("stop_reason") or "").strip().lower()
+        if stop in _OUTPUT_LIMIT_STOPS:
+            # Cut mid-answer by the output budget: storing it as ready would present a
+            # partial cognitive artifact as the letter (BIBLE P1). Typed, last good kept.
+            record.update(error_kind="output_truncated",
+                          error_text=f"the model hit the {UPDATE_LETTER_MAX_TOKENS}-token output budget ({stop})")
             return record
         record.update(state="ready", text=text, written_at=utc_now_iso())
         return record
@@ -538,6 +579,7 @@ def refresh_after_check(
                 # failed rewrite, whatever range the failed attempt was for.
                 previous_good = current if current.get("state") == "ready" else current.get("last_good")
                 record["last_good"] = previous_good or None
+            record["target_in_head"] = _shown_target_in_head(record, key["base_sha"])
             atomic_write_json(record_path(drive_root), record)
             _note_written(key, drive_root, record)
             return record
@@ -570,8 +612,31 @@ def _mark_checked(current: Optional[Dict[str, Any]], key: Dict[str, str],
         record["key"] = key
         record["target_version"] = _version_at(git or _default_git(), key["target_sha"] or key["base_sha"])
     record["checked_head_sha"] = key["base_sha"]
+    record["target_in_head"] = _shown_target_in_head(record, key["base_sha"], git=git)
     atomic_write_json(record_path(drive_root), record)
     return record
+
+
+def _shown_target_in_head(record: Dict[str, Any], head_sha: str, *, git: Optional[GitCapture] = None) -> bool:
+    """Whether the SHOWN letter's target is already inside ``head_sha`` without being it.
+
+    Answered here, at the check, because the check runs where git is — the Updates panel and
+    the Runtime context then read this ONE recorded fact instead of each proving it their own
+    way, which is what kept the two surfaces describing one install differently. A divergent
+    install applies an official target as a merge commit (``supervisor/update_merge.py``), so
+    the target is never HEAD itself; ancestry is the proof.
+    """
+    if record.get("state") == "none":
+        return False
+    target = str((shown_letter(record)[0].get("key") or {}).get("target_sha") or "")
+    head = str(head_sha or "")
+    if not target or not head or target == head:
+        return False
+    try:
+        return (git or _default_git())(["git", "merge-base", "--is-ancestor", target, head])[0] == 0
+    except Exception:  # noqa: BLE001 — an unprovable ancestry is simply not proof
+        log.debug("target-in-head ancestry check failed", exc_info=True)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -599,17 +664,15 @@ def project_letter(
     *,
     head_sha: str,
     latest_sha: str,
-    consumed: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Relate the stored letter to the live HEAD and official target.
 
-    ``consumed`` is the caller's proof that THIS letter's target is already in HEAD without
-    being HEAD: a divergent install applies an official target as a merge commit
-    (``supervisor/update_merge.py``), so HEAD never equals the target it consumed, and that
-    proof — not SHA equality — is what makes such a letter ``applied``. The panel proves it
-    with git ancestry; the Runtime fact, which has no git, proves it from the check that
-    still describes this HEAD. It is never inferred from ``latest_sha``, which a passive
-    read leaves empty exactly when the cached target has been consumed.
+    ``applied`` is SHA equality, or the fact the last check recorded about this very HEAD:
+    a divergent install applies an official target as a merge commit
+    (``supervisor/update_merge.py``), so HEAD never equals the target it consumed, and the
+    check — which runs where git is — proves the ancestry once (``target_in_head``) for
+    both readers. Nothing here infers it from ``latest_sha``, which a passive read leaves
+    empty exactly when the cached target has been consumed.
     """
     if not record or record.get("state") == "none":
         return None
@@ -617,9 +680,10 @@ def project_letter(
     key = provenance.get("key") if isinstance(provenance.get("key"), dict) else {}
     base, target = str(key.get("base_sha") or ""), str(key.get("target_sha") or "")
     head, latest = str(head_sha or ""), str(latest_sha or "")
+    consumed = bool(record.get("target_in_head")) and head and head == str(record.get("checked_head_sha") or "")
     if head and head == target:
         relation = "applied"
-    elif consumed and target and head:
+    elif consumed and target:
         relation = "applied"
     elif head and head == base and latest == target:
         relation = "pending"
@@ -645,38 +709,13 @@ def project_letter_for_panel(
     status: Dict[str, Any],
     *,
     drive_root: Optional[pathlib.Path] = None,
-    git: Optional[GitCapture] = None,
 ) -> Optional[Dict[str, Any]]:
-    """The Updates panel's projection of the stored letter.
-
-    The panel HAS git, so it proves a consumed target by ancestry instead of inferring it
-    from the status: a passive read leaves ``latest_sha`` empty EXACTLY when the cached
-    target has already been consumed, which is when the answer matters most. The Runtime
-    fact reaches the same verdict without git in ``official_update_projection``; keeping
-    both here is what stops the panel and the mind from describing one install differently.
-    """
-    record = read_record(drive_root)
-    head = str(status.get("current_sha") or "")
-    # The ancestry question is about the letter that will be SHOWN, which after a failed
-    # rewrite is the kept one about an older target.
-    shown = shown_letter(record)[0] if record else {}
-    target = str((shown.get("key") or {}).get("target_sha") or "")
-    consumed = False
-    # Ancestry is asked wherever it can change the answer. The ONE case that needs no git
-    # is a letter about the update this very check is still OFFERING: that is pending by
-    # definition (and HEAD == target needs no git either). Naming the target alone is not
-    # enough — a fetching check reports `latest_sha` for a target it has just consumed as
-    # well — so the skip turns on the offer itself.
-    still_offered = bool(status.get("available")) and target == str(status.get("latest_sha") or "")
-    if record and head and target and head != target and not still_offered:
-        try:
-            consumed = (git or _default_git())(
-                ["git", "merge-base", "--is-ancestor", target, head]
-            )[0] == 0
-        except Exception:  # noqa: BLE001 — an unprovable ancestry is simply not proof
-            log.debug("consumed-target ancestry check failed", exc_info=True)
+    """The Updates panel's projection: the same record, the same reader, the same answer as
+    the Runtime context — the ancestry fact was recorded by the check, so no git runs here."""
     return project_letter(
-        record, head_sha=head, latest_sha=str(status.get("latest_sha") or ""), consumed=consumed,
+        read_record(drive_root),
+        head_sha=str(status.get("current_sha") or ""),
+        latest_sha=str(status.get("latest_sha") or ""),
     )
 
 
@@ -714,19 +753,23 @@ def official_update_projection(
         cache = state.get("managed_update_cache") if isinstance(state, dict) else None
         cache = cache if isinstance(cache, dict) else {}
         record = read_record(drive_root)
+        # The cached check describes ONE channel. After the owner switches channels it says
+        # nothing about the active one (the panel asks for a new check for the same reason),
+        # so the fact is honestly "unchecked" there — the letter stays, as history.
+        active_channel = normalize_update_channel(os.environ.get("OUROBOROS_UPDATE_CHANNEL"))
+        cached_channel = str(cache.get("update_channel") or "")
+        if cached_channel and cached_channel != active_channel:
+            return {
+                "status": "unchecked", "status_as_of": "",
+                "running": {"version": get_version(), "sha": head},
+                "update_channel": active_channel, "target": None, "behind": None, "ahead": None,
+                "letter": project_letter(record, head_sha=head, latest_sha=""),
+            }
         latest = str(cache.get("latest_sha") or "")
         checked_head = str((record or {}).get("checked_head_sha") or "")
         shown = shown_letter(record)[0] if record else {}
         record_key = shown.get("key") if isinstance(shown.get("key"), dict) else {}
-        # No git here: the check itself is the proof, and only while it still describes
-        # THIS head and names THIS letter's target as the one with nothing incoming.
-        consumed = bool(
-            head and head == checked_head
-            and cache.get("behind") == 0
-            and latest and latest == str(record_key.get("target_sha") or "")
-            and head != latest
-        )
-        letter = project_letter(record, head_sha=head, latest_sha=latest, consumed=consumed)
+        letter = project_letter(record, head_sha=head, latest_sha=latest)
         if not cache:
             status = "unchecked"
         elif head and head == checked_head:

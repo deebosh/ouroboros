@@ -86,6 +86,14 @@ test('a pending letter is "What\'s new" with its provenance and no note', () => 
 });
 
 
+test('an applied letter about an older version than the running one says so', () => {
+    // The kept letter describes a version this one includes but has moved past.
+    const view = updateLetterView({ ...CURRENT, current_version: '6.115.0', letter: letter({ relation: 'applied' }) }, '');
+    assert.equal(view.label, 'What changed in this version');
+    assert.equal(view.note, 'written about 6.114.0; the running version is 6.115.0');
+});
+
+
 test('an applied letter is relabelled, never deleted', () => {
     const view = updateLetterView({ ...CURRENT, letter: letter({ relation: 'applied' }) }, '');
     assert.equal(view.state, 'ready');

@@ -117,13 +117,13 @@ def test_material_keeps_every_commit_subject_and_bounds_only_the_bodies(history_
     ]
     assert material["commits"][0]["body"] == "Details of the untagged tail."
     assert [c["body"] for c in material["commits"][1:]] == ["", "", ""]
-    assert material["bodies_omitted"] == 1  # only c1 of the older three had a body at all
+    assert material["bodies_omitted"] == 3  # the three older bodies were never even read
     rendered = ul.material_text(material)
     # Both ends of the range are named; only the older BODY is gone, and it says so.
     assert "tail work" in rendered and "release: 1.1.0" in rendered
     assert "Details of the untagged tail." in rendered
     assert "Body of the second release." not in rendered
-    assert "bodies of 1 older commit(s) are omitted" in rendered
+    assert "bodies of the 3 oldest commit(s) were not read" in rendered
     assert "1 unreadable history row(s) omitted" in rendered
 
     capped = ul.collect_range_material(
@@ -291,11 +291,20 @@ def letter_env(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.provider_models.model_has_credentials", lambda model: True)
     calls = []
 
-    def fake_context(env, memory, task):
-        calls.append(("context", task))
-        return [{"role": "system", "content": "identity"}, {"role": "user", "content": task["text"]}]
+    class FakePlan:
+        initial_mode = "max"
 
-    monkeypatch.setattr(ul, "_context_messages", fake_context)
+        def __init__(self, task):
+            self.task = task
+
+        def messages_for(self, mode):
+            return [{"role": "system", "content": f"identity:{mode}"}, {"role": "user", "content": self.task["text"]}]
+
+    def fake_plan(env, memory, task):
+        calls.append(("context", task))
+        return FakePlan(task)
+
+    monkeypatch.setattr(ul, "_fit_plan", fake_plan)
     return {"drive": drive, "repo": repo, "calls": calls}
 
 
@@ -620,85 +629,57 @@ def test_project_letter_relations(head, latest, relation):
     assert view["relation"] == relation and view["state"] == "ready" and view["text"] == "letter"
 
 
-def test_project_letter_consumed_target_reads_applied_after_a_merge_apply():
-    # A divergent install applies the official target as a synthetic merge commit
-    # (supervisor/update_merge.py): HEAD never equals the target, but the check that
-    # follows reports zero behind for that target — the applied fact.
+def test_project_letter_applied_from_the_recorded_ancestry_fact():
+    # A divergent install applies the official target as a merge commit: HEAD never equals
+    # the target, and the CHECK (which has git) records that the target is inside HEAD.
     merged = "e" * 40
-    assert ul.project_letter(_record(), head_sha=merged, latest_sha="b" * 40, consumed=True)["relation"] == "applied"
-    # The proof is about THIS letter's target, so it holds however the caller learned it —
-    # a passive read that could not even name the official target included.
-    assert ul.project_letter(_record(), head_sha=merged, latest_sha="", consumed=True)["relation"] == "applied"
-    # Without the proof a moved HEAD stays "other" (no git on the hot path).
-    assert ul.project_letter(_record(), head_sha=merged, latest_sha="b" * 40)["relation"] == "other"
+    rec = _record(checked_head_sha=merged, target_in_head=True)
+    assert ul.project_letter(rec, head_sha=merged, latest_sha="b" * 40)["relation"] == "applied"
+    # The fact is about the head the check described; a HEAD that moved on is not covered.
+    assert ul.project_letter(rec, head_sha="f" * 40, latest_sha="b" * 40)["relation"] == "other"
+    # Without the fact a moved HEAD stays "other" (no git on the hot path).
+    assert ul.project_letter(_record(checked_head_sha=merged), head_sha=merged, latest_sha="b" * 40)["relation"] == "other"
 
 
-def test_panel_projection_proves_a_consumed_target_with_git(tmp_path):
-    # The passive status leaves latest_sha EMPTY exactly when the cached target has been
-    # consumed, so the panel must prove the ancestry itself rather than infer it.
+def test_the_check_records_the_shown_target_in_head_and_both_surfaces_read_it(tmp_path, monkeypatch):
+    # One proof, recorded where git is (the check), read by the panel and the Runtime
+    # fact alike — so the two can never describe one install differently.
     drive = tmp_path / "data"
     (drive / "state").mkdir(parents=True)
     ul.record_path(drive).write_text(json.dumps(_record()))
     merged, target = "e" * 40, "b" * 40
     calls = []
 
-    def ancestor(argv):
+    def git(argv):
         calls.append(argv)
-        return (0, "", "") if argv[:3] == ["git", "merge-base", "--is-ancestor"] else (1, "", "")
+        if argv[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return (0, "", "") if argv[3:] == [target, merged] else (1, "", "")
+        return (0, "6.114.0", "") if argv[:2] == ["git", "show"] else (1, "", "")
 
-    view = ul.project_letter_for_panel({"current_sha": merged, "latest_sha": ""}, drive_root=drive, git=ancestor)
-    assert view["relation"] == "applied" and calls[0][3:] == [target, merged]
-    # A HEAD that does NOT descend from the target keeps the honest "other".
-    stranger = ul.project_letter_for_panel(
-        {"current_sha": merged, "latest_sha": ""}, drive_root=drive, git=lambda argv: (1, "", ""),
-    )
-    assert stranger["relation"] == "other"
-    # A letter about the update this check is still OFFERING is pending by definition:
-    # no git is asked.
-    offered = ul.project_letter_for_panel(
-        {"current_sha": "a" * 40, "latest_sha": target, "available": True}, drive_root=drive,
-        git=lambda argv: (_ for _ in ()).throw(AssertionError("nothing to prove while the update is offered")),
-    )
-    assert offered["relation"] == "pending"
-    # …but a FETCHING check names `latest_sha` for a target it has just CONSUMED too. The
-    # owner clicks Check right after a divergent merge apply: HEAD is the merge commit, the
-    # check reports that same target with nothing incoming, and the letter is applied.
-    just_applied = ul.project_letter_for_panel(
-        {"current_sha": merged, "latest_sha": target, "available": False, "behind": 0},
-        drive_root=drive, git=ancestor,
-    )
-    assert just_applied["relation"] == "applied", "the panel must not disagree with the Runtime fact"
-    # …and the same instant on the Runtime side says exactly the same thing.
-    ul.record_path(drive).write_text(json.dumps(_record(checked_head_sha=merged)))
+    monkeypatch.setattr(ul, "_default_git", lambda: git)
+    monkeypatch.setattr(ul, "collect_range_material", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no update")))
+    record = ul.refresh_after_check(_status(current_sha=merged, available=False, latest_sha=target, behind=0), drive_root=drive)
+    assert record["target_in_head"] is True and record["checked_head_sha"] == merged
+    assert any(a[:3] == ["git", "merge-base", "--is-ancestor"] for a in calls), "the check asks git, the readers do not"
+    calls.clear()
+    panel = ul.project_letter_for_panel({"current_sha": merged, "latest_sha": ""}, drive_root=drive)
     cache = {"managed_update_cache": {"latest_sha": target, "available": False, "behind": 0,
                                       "checked_at": "t", "update_channel": "stable"}}
-    assert ul.official_update_projection(
-        merged, drive_root=drive, state=cache,
-    )["letter"]["relation"] == "applied"
+    fact = ul.official_update_projection(merged, drive_root=drive, state=cache)
+    assert panel["relation"] == "applied" and fact["letter"]["relation"] == "applied"
+    assert calls == [], "no git on the reading paths"
+    # A HEAD that is NOT a descendant keeps the honest "other" on both surfaces.
     ul.record_path(drive).write_text(json.dumps(_record()))
-    # …but an applied OLD target under a NEWER available one is still proven and relabelled.
-    newer = ul.project_letter_for_panel(
-        {"current_sha": merged, "latest_sha": "c" * 40, "available": True}, drive_root=drive, git=ancestor,
-    )
-    assert newer["relation"] == "applied"
-    # A git that cannot answer is not proof, and never takes the letter down with it.
-    unprovable = ul.project_letter_for_panel(
-        {"current_sha": merged, "latest_sha": ""}, drive_root=drive,
-        git=lambda argv: (_ for _ in ()).throw(OSError("git missing")),
-    )
-    assert unprovable["relation"] == "other" and unprovable["text"] == "letter"
-    # HEAD == target needs no ancestry call at all.
-    no_git = ul.project_letter_for_panel(
-        {"current_sha": target, "latest_sha": target}, drive_root=drive,
-        git=lambda argv: (_ for _ in ()).throw(AssertionError("no git needed for SHA equality")),
-    )
-    assert no_git["relation"] == "applied"
+    stranger = "d" * 40
+    ul.refresh_after_check(_status(current_sha=stranger, available=False, latest_sha=target, behind=0), drive_root=drive)
+    assert ul.project_letter_for_panel({"current_sha": stranger, "latest_sha": ""}, drive_root=drive)["relation"] == "other"
+    assert ul.official_update_projection(stranger, drive_root=drive, state=cache)["letter"]["relation"] == "other"
 
 
-def test_a_kept_letter_is_related_by_ITS_target_on_both_surfaces(tmp_path):
-    # a->b letter, a failed rewrite for a->c, and a HEAD that merge-applied b. The text
-    # shown is the kept one about b, so BOTH surfaces must ask their question about b —
-    # the outer failed record's target (c) is not the letter anyone is reading.
+def test_a_kept_letter_is_related_by_ITS_target_on_both_surfaces(tmp_path, monkeypatch):
+    # a->b letter, a failed rewrite for a->c, then c applied as merge H (so b is inside H).
+    # The text shown is the kept one about b; the check records the ancestry for THAT
+    # letter, and both surfaces call it applied, with b's own version beside b's own sha.
     drive = tmp_path / "data"
     (drive / "state").mkdir(parents=True)
     kept = _record(text="the letter about 6.114.0")
@@ -706,55 +687,59 @@ def test_a_kept_letter_is_related_by_ITS_target_on_both_surfaces(tmp_path):
                      error_kind="provider_unavailable", target_version="6.115.0", last_good=kept)
     ul.record_path(drive).write_text(json.dumps(failed))
     merged = "e" * 40
-
-    def ancestor(argv):
-        # b IS in HEAD; the failed range's target c is not.
-        return (0, "", "") if argv[-2] == "b" * 40 else (1, "", "")
-
-    panel = ul.project_letter_for_panel(
-        {"current_sha": merged, "latest_sha": "c" * 40, "available": True}, drive_root=drive, git=ancestor,
-    )
+    monkeypatch.setattr(ul, "_default_git", lambda: (lambda argv: (0, "", "") if argv[:3] == ["git", "merge-base", "--is-ancestor"] else (1, "", "")))
+    monkeypatch.setattr(ul, "collect_range_material", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no update")))
+    ul.refresh_after_check(_status(current_sha=merged, available=False, latest_sha="c" * 40, behind=0), drive_root=drive)
+    panel = ul.project_letter_for_panel({"current_sha": merged, "latest_sha": "c" * 40, "available": False}, drive_root=drive)
     assert panel["relation"] == "applied" and panel["text"] == "the letter about 6.114.0"
     assert panel["target_version"] == "6.114.0" and panel["has_last_good"] is True
-
-    # The Runtime fact reaches the same verdict from the check that consumed b.
-    consumed_cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": False, "behind": 0,
-                                               "checked_at": "t2", "update_channel": "stable"}}
-    ul.record_path(drive).write_text(json.dumps(dict(failed, checked_head_sha=merged)))
-    fact = ul.official_update_projection(merged, drive_root=drive, state=consumed_cache)
+    cache = {"managed_update_cache": {"latest_sha": "c" * 40, "available": False, "behind": 0,
+                                      "checked_at": "t2", "update_channel": "stable"}}
+    fact = ul.official_update_projection(merged, drive_root=drive, state=cache)
     assert fact["letter"]["relation"] == "applied" and fact["letter"]["text"] == "the letter about 6.114.0"
-    # The version travels with the sha it belongs to: the failed newer range's 6.115.0 must
-    # never be paired with the kept letter's target.
-    assert fact["target"] == {"version": "6.114.0", "sha": "b" * 40}
+    # The version travels with the sha it belongs to: the failed range's 6.115.0 is never
+    # paired with the kept letter's target.
+    assert fact["target"] == {"version": "", "sha": "c" * 40}
 
 
-def test_official_update_projection_consumed_only_while_the_check_describes_this_head(tmp_path):
-    # The Runtime fact has no git, so the CHECK is its proof — and only while that check
-    # still describes this HEAD and names this letter's target.
+def test_official_update_projection_applied_only_while_the_check_describes_this_head(tmp_path):
     drive = tmp_path / "data"
     (drive / "state").mkdir(parents=True)
     merged = "e" * 40
-    ul.record_path(drive).write_text(json.dumps(_record(checked_head_sha=merged)))
-    consumed_cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": False, "behind": 0,
-                                               "checked_at": "t1", "update_channel": "stable"}}
-    assert ul.official_update_projection(merged, drive_root=drive, state=consumed_cache)["letter"]["relation"] == "applied"
-    # HEAD moved on after the consumed check: the same cache proves nothing about it.
-    moved = ul.official_update_projection("f" * 40, drive_root=drive, state=consumed_cache)
+    ul.record_path(drive).write_text(json.dumps(_record(checked_head_sha=merged, target_in_head=True)))
+    cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": False, "behind": 0,
+                                      "checked_at": "t1", "update_channel": "stable"}}
+    assert ul.official_update_projection(merged, drive_root=drive, state=cache)["letter"]["relation"] == "applied"
+    # HEAD moved on after that check: the recorded fact is about another head.
+    moved = ul.official_update_projection("f" * 40, drive_root=drive, state=cache)
     assert moved["status"] == "moved_since_check" and moved["letter"]["relation"] == "other"
-    # A zero-behind check about a DIFFERENT official target proves nothing either.
-    other_target = {"managed_update_cache": dict(consumed_cache["managed_update_cache"], latest_sha="c" * 40)}
-    assert ul.official_update_projection(merged, drive_root=drive, state=other_target)["letter"]["relation"] == "other"
 
 
 def test_official_update_projection_applied_after_divergent_merge(tmp_path):
     drive = tmp_path / "data"
     (drive / "state").mkdir(parents=True)
-    ul.record_path(drive).write_text(json.dumps(_record(checked_head_sha="e" * 40)))
+    ul.record_path(drive).write_text(json.dumps(_record(checked_head_sha="e" * 40, target_in_head=True)))
     cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": False, "behind": 0, "ahead": 2,
                                       "checked_at": "t1", "update_channel": "stable"}}
     fact = ul.official_update_projection("e" * 40, drive_root=drive, state=cache)
     assert fact["status"] == "up_to_date" and fact["letter"]["relation"] == "applied"
     assert fact["target"] == {"version": "6.114.0", "sha": "b" * 40}
+
+
+def test_official_update_projection_after_a_channel_switch_is_unchecked(tmp_path, monkeypatch):
+    # The cached check described Stable; the owner switched to Development. That check says
+    # nothing about the active channel, so the fact is unchecked — the letter stays, as history.
+    drive = tmp_path / "data"
+    (drive / "state").mkdir(parents=True)
+    ul.record_path(drive).write_text(json.dumps(_record()))
+    cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": False, "behind": 0,
+                                      "checked_at": "t1", "update_channel": "stable"}}
+    monkeypatch.setenv("OUROBOROS_UPDATE_CHANNEL", "development")
+    fact = ul.official_update_projection("a" * 40, drive_root=drive, state=cache)
+    assert fact["status"] == "unchecked" and fact["target"] is None and fact["update_channel"] == "development"
+    assert fact["letter"]["text"] == "letter" and fact["letter"]["relation"] in ("superseded", "other")
+    monkeypatch.setenv("OUROBOROS_UPDATE_CHANNEL", "stable")
+    assert ul.official_update_projection("a" * 40, drive_root=drive, state=cache)["status"] == "up_to_date"
 
 
 def test_project_letter_failed_with_last_good_shows_previous_text_and_provenance():
@@ -846,27 +831,52 @@ class _Plan:
         return [self.projection(mode).system_message(), {"role": "user", "content": "req"}]
 
 
-@pytest.mark.parametrize("preferred, max_fits, low_fits, expected", [
-    ("max", True, True, "max"),      # the owner's mode when it fits
-    ("max", None, None, "max"),      # unknown window: keep the owner's mode
-    ("max", False, True, "low"),     # a small light slot: the projection that fits
-    ("max", False, False, "max"),    # nothing fits: send the owner's mode and let it fail typed
-    ("low", True, True, "low"),
-])
-def test_context_messages_use_the_ordinary_plan_and_the_fitting_projection(monkeypatch, preferred, max_fits, low_fits, expected):
-    import ouroboros.context as context
+def test_write_letter_sends_the_owner_mode_and_retries_low_only_on_an_actual_overflow(letter_env, monkeypatch):
+    # DEVELOPMENT "Context mode": predicted pressure never swaps in Low — the owner's mode is
+    # sent, and ONE same-route Low retry follows an ACTUAL provider overflow.
+    class Overflow(RuntimeError):
+        ledger_attempt_ids = ["att-max"]
 
-    captured = {}
+    monkeypatch.setattr(ul, "_fit_plan", lambda env, memory, task: _Plan("max", False, True))
+    real_classify = ul._classify
+    monkeypatch.setattr(ul, "_classify", lambda exc: ("context_overflow", "overflow") if isinstance(exc, Overflow) else real_classify(exc))
+    sent = []
 
-    def fake_plan(env, memory, task, *a, **k):
-        captured["task"] = task
-        return _Plan(preferred, max_fits, low_fits)
+    def fake_chat(client, *, drive_root, **kwargs):
+        sent.append(kwargs["messages"][0]["content"])
+        if len(sent) == 1:
+            raise Overflow("prompt is too long")
+        return {"content": "A Low paragraph."}, {"ledger_attempt_ids": ["att-low"]}
 
-    monkeypatch.setattr(context, "build_context_fit_plan", fake_plan)
-    task = {"id": ul.SYSTEM_TASK_ID, "type": "update_letter", "model": "test/light",
-            "use_local_model": False, "text": "req", "metadata": {}}
-    messages = ul._context_messages(object(), object(), task)
-    assert captured["task"] is task and messages[0]["content"] == expected and messages[-1]["content"] == "req"
+    monkeypatch.setattr(ul, "_chat", fake_chat)
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert sent == ["max", "low"], "Max first (even though the plan says it will not fit), Low only after the overflow"
+    assert record["state"] == "ready" and record["attempt_ids"] == ["att-max", "att-low"]
+
+    # A second overflow is the typed failure — never a third, strictly-smaller call.
+    sent.clear()
+    monkeypatch.setattr(ul, "_chat", lambda *a, **k: (_ for _ in ()).throw(Overflow("still too long")))
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert record["state"] == "failed" and record["error_kind"] == "context_overflow"
+
+    # Owner Low: nothing smaller to retry with, so the overflow is typed at once.
+    monkeypatch.setattr(ul, "_fit_plan", lambda env, memory, task: _Plan("low", True, True))
+    calls = []
+    monkeypatch.setattr(ul, "_chat", lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(Overflow("too long")))
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert record["error_kind"] == "context_overflow" and len(calls) == 1
+
+
+def test_write_letter_treats_an_output_budget_cut_as_a_typed_failure(letter_env, monkeypatch):
+    # A reply stopped by the output budget is a partial cognitive artifact (BIBLE P1):
+    # never stored as ready, always named for what it is.
+    for stop_key, stop in (("finish_reason", "length"), ("stop_reason", "max_tokens")):
+        monkeypatch.setattr(ul, "_chat", lambda *a, _k=stop_key, _s=stop, **k: ({"content": "This update brings…", _k: _s}, {"ledger_attempt_ids": ["att"]}))
+        record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+        assert record["state"] == "failed" and record["error_kind"] == "output_truncated", stop
+        assert str(ul.UPDATE_LETTER_MAX_TOKENS) in record["error_text"] and record["text"] == ""
+    monkeypatch.setattr(ul, "_chat", lambda *a, **k: ({"content": "Done.", "finish_reason": "stop"}, {"ledger_attempt_ids": ["att"]}))
+    assert ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])["state"] == "ready"
 
 
 def test_write_letter_local_only_install_inherits_the_local_route(letter_env, monkeypatch):
@@ -932,3 +942,6 @@ def test_boot_check_writes_the_letter_before_the_readiness_broadcast(monkeypatch
     server._boot_managed_update_tasks()
 
     assert calls == [("letter", "b" * 40), ("update_status_ready", "")]
+    # And at boot the local model server is started BEFORE the check that may need it.
+    source = pathlib.Path(server.__file__).read_text(encoding="utf-8")
+    assert source.index('name="local-model-autostart"') < source.index('name="boot-managed-update"')

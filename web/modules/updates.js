@@ -270,6 +270,11 @@ export function updateLetterView(data = {}, phase = '') {
         : null;
 
     const notes = [];
+    if (relation === 'applied' && meta.targetVersion && data.current_version
+        && meta.targetVersion !== String(data.current_version)) {
+        // The kept letter describes a version that this one includes but has moved past.
+        notes.push(`written about ${meta.targetVersion}; the running version is ${data.current_version}`);
+    }
     if (relation === 'superseded' || relation === 'other') {
         notes.push(meta.authorVersion && meta.targetVersion
             ? `written for ${meta.authorVersion} → ${meta.targetVersion}`
