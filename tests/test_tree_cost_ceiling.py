@@ -654,6 +654,70 @@ class TestForcedIncompletenessIsAuthoritative:
         assert trace.get("forced_finalization", {}).get("source") == "forced_model_incomplete"
 
 
+class TestOneUsageRowPerDelegatedRun:
+    def _executor(self, tmp_path, rows):
+        from ouroboros.review_execution import AgentSessionReviewExecutor, ReviewAssignment
+        from ouroboros.review_substrate import ReviewRequest, ReviewSlot
+
+        request = ReviewRequest(
+            surface="plan_review", goal="review", task_id="task-1",
+            session_root=str(tmp_path), session_task="review exact evidence",
+            policy={"output_contract": "return findings"},
+        )
+        slot = ReviewSlot(
+            slot_id="slot_a", model="fable", route="agent_session",
+            session_target="claude=fable", session_profile="profile-a",
+        )
+        executor = AgentSessionReviewExecutor(
+            ReviewAssignment(request=request, slot=slot, custody_root=tmp_path)
+        )
+        executor.usage_observer = rows.append
+        return executor
+
+    def test_a_fresh_executor_reconciling_the_same_run_emits_no_second_row(self, monkeypatch, tmp_path):
+        import ouroboros.review_execution as review_execution
+        from tests.test_phase4_plan_review_continuity import _session_run
+
+        review_execution._EMITTED_SESSION_USAGE.clear()
+        rows = []
+        monkeypatch.setattr(
+            review_execution, "run_delegated_review_session",
+            lambda **_k: _session_run(run_id="run-same"),
+        )
+        first = self._executor(tmp_path, rows)
+        first.execute()
+        second = self._executor(tmp_path, rows)
+        second.execute()
+        assert len(rows) == 1
+        assert rows[0].get("delegated_run_id") == "run-same"
+
+    def test_a_pending_start_then_a_settled_recovery_is_one_row(self, monkeypatch, tmp_path):
+        import ouroboros.review_execution as review_execution
+        from tests.test_phase4_plan_review_continuity import _session_run
+
+        review_execution._EMITTED_SESSION_USAGE.clear()
+        rows = []
+
+        def pending(**_k):
+            exc = RuntimeError("provider outcome unknown")
+            exc.delegated_run_id = "run-pending"
+            exc.delegated_run_started = True
+            raise exc
+
+        monkeypatch.setattr(review_execution, "run_delegated_review_session", pending)
+        first = self._executor(tmp_path, rows)
+        with pytest.raises(RuntimeError):
+            first.execute()
+        assert len(rows) == 1 and rows[0].get("cost") is None
+        monkeypatch.setattr(
+            review_execution, "run_delegated_review_session",
+            lambda **_k: _session_run(run_id="run-pending"),
+        )
+        second = self._executor(tmp_path, rows)
+        second.execute()
+        assert len(rows) == 1
+
+
 class TestForcedCandidatePredicate:
     """The admitted wrap-up candidate is checked at the physical send, Main metadata or not."""
 
@@ -721,7 +785,8 @@ class TestWrapupAffordabilityRail:
         monkeypatch.setattr(
             "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
         )
-        answers, calls, builds = iter((True, False, True, False)), [], []
+        # proxy last-fit → exact probe last-fit → prepared candidate last-fit
+        answers, calls, builds = iter((True, False, True, False, True, False)), [], []
         request = object()
         monkeypatch.setattr(
             task_pacing, "prospective_wrapup_attempt_request",
@@ -750,17 +815,20 @@ class TestWrapupAffordabilityRail:
         assert result[2]["kwargs"]["reason_code"] == "budget_exhausted"
         assert result[2]["kwargs"]["_prompt_prepared"] is True
         assert "forced delegation note" in result[2]["kwargs"]["prompt"]
-        assert "[BUDGET LIMIT]" in builds[0]["messages"][-1]["content"]
-        assert "forced delegation note" in builds[0]["messages"][-1]["content"]
-        assert "service evidence" in str(builds[0]["messages"])
-        assert len(builds) == 1
-        assert [call.get("request") for call in calls] == [None, None, request, request]
+        assert "[BUDGET LIMIT]" in builds[-1]["messages"][-1]["content"]
+        assert "forced delegation note" in builds[-1]["messages"][-1]["content"]
+        assert "service evidence" in str(builds[-1]["messages"])
+        # the probe priced a COPY without the forced services' evidence
+        assert "service evidence" not in str(builds[0]["messages"])
+        assert len(builds) == 2
+        assert [call.get("request") for call in calls] == [None, None, request, request, request, request]
 
     def test_repriced_nondecision_does_not_stamp_a_cost_stop(self, monkeypatch):
-        ctx = _ctx()
+        ctx = _ctx(messages=[{"role": "user", "content": "work"}])
         monkeypatch.setattr(
             "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
         )
+        # proxy last-fit → the exact probe disagrees (None): nothing destructive may run
         answers = iter((True, False, None, False))
         monkeypatch.setattr(
             task_pacing, "wrapup_reservation_fits", lambda **_kwargs: next(answers),
@@ -769,7 +837,15 @@ class TestWrapupAffordabilityRail:
             task_pacing, "prospective_wrapup_attempt_request", lambda **_kwargs: object(),
         )
 
+        def destructive(*_a, **_k):
+            raise AssertionError("service finalization before a confirmed stop")
+
+        monkeypatch.setattr("ouroboros.loop._prepare_forced_prompt", destructive)
+        monkeypatch.setattr("ouroboros.loop._finalize_forced_services", destructive)
+        monkeypatch.setattr(task_pacing, "prepared_wrapup_candidate", destructive)
+
         assert _check_budget_limits(ctx, None, self._ceiling(50.0)) is None
+        assert ctx.messages == [{"role": "user", "content": "work"}]
         assert "cost_stop_spend_basis" not in ctx.accumulated_usage
         assert "cost_stop_rail" not in ctx.accumulated_usage
 
@@ -837,11 +913,16 @@ class TestWrapupAffordabilityRail:
         monkeypatch.setattr(
             "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
         )
-        answers, calls = iter((False, False)), []
+        # proxy no-fit → exact probe no-fit → prepared candidate no-fit
+        answers, calls = iter((False, False, False)), []
         request = object()
         monkeypatch.setattr(
             task_pacing, "prospective_wrapup_attempt_request", lambda **_kwargs: request,
         )
+        monkeypatch.setattr(
+            task_pacing, "prepared_wrapup_candidate", lambda ctx_, messages, **_k: (request, messages),
+        )
+        monkeypatch.setattr("ouroboros.loop._prepare_forced_prompt", lambda _c, prompt, _t: prompt)
         monkeypatch.setattr(
             task_pacing, "wrapup_reservation_fits",
             lambda **kwargs: (calls.append(kwargs), next(answers))[1],
@@ -859,8 +940,9 @@ class TestWrapupAffordabilityRail:
         assert result is not None
         assert seen["source"] == "budget_wrapup_unaffordable"
         assert seen["reason"] == "budget_exhausted"
+        assert "not even one wrap-up call" in seen["text"]
         assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_last_fit"
-        assert [call.get("request") for call in calls] == [None, request]
+        assert [call.get("request") for call in calls] == [None, request, request]
 
     def test_an_affordable_wrapup_still_reaches_the_ceiling_stop(self, monkeypatch):
         ceiling = self._ceiling(50.0)
@@ -910,7 +992,7 @@ class TestWrapupAffordabilityRail:
         monkeypatch.setattr(
             "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
         )
-        answers = iter((True, False, True, False))
+        answers = iter((True, False, True, False, True, False))
         monkeypatch.setattr(
             task_pacing, "wrapup_reservation_fits", lambda **_kwargs: next(answers),
         )
