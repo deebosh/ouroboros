@@ -98,25 +98,41 @@ def test_material_recovers_rows_from_commit_diffs_and_lists_first_parent_commits
         history_repo["c4"], history_repo["c3"], history_repo["c2"], history_repo["c1"],
     ]
     assert material["commits"][0]["body"] == "Details of the untagged tail."
-    assert material["omitted_commits"] == 0
+    assert material["bodies_omitted"] == 0
     assert material["versions"] == {"base": "1.0.0", "target": "1.4.0"}
-    assert set(material) == {"base_sha", "target_sha", "commits", "omitted_commits", "releases",
-                             "omitted_rows", "omitted_older_rows", "versions"}
+    assert set(material) == {"base_sha", "target_sha", "commits", "bodies_omitted", "releases",
+                             "omitted_rows", "rows_summarized", "versions"}
 
 
-def test_material_caps_commits_but_keeps_every_release_row(history_repo):
+def test_material_keeps_every_commit_subject_and_bounds_only_the_bodies(history_repo):
+    # EVERY subject reaches the author however long the range is; the bound is on
+    # bodies and on the text of the oldest release rows, and both are disclosed.
     material = ul.collect_range_material(
-        history_repo["base"], history_repo["c4"], git=_capture_for(history_repo["repo"]), max_commits=2,
+        history_repo["base"], history_repo["c4"], git=_capture_for(history_repo["repo"]), max_bodies=1,
     )
-    assert len(material["commits"]) == 2 and material["omitted_commits"] == 2
-    assert len(material["releases"]) == 4
+    assert [c["sha"] for c in material["commits"]] == [
+        history_repo["c4"], history_repo["c3"], history_repo["c2"], history_repo["c1"],
+    ]
+    assert material["commits"][0]["body"] == "Details of the untagged tail."
+    assert [c["body"] for c in material["commits"][1:]] == ["", "", ""]
+    assert material["bodies_omitted"] == 1  # only c1 of the older three had a body at all
+    rendered = ul.material_text(material)
+    # Both ends of the range are named; only the older BODY is gone, and it says so.
+    assert "tail work" in rendered and "release: 1.1.0" in rendered
+    assert "Details of the untagged tail." in rendered
+    assert "Body of the second release." not in rendered
+    assert "bodies of 1 older commit(s) are omitted" in rendered
+    assert "1 malformed history row(s) omitted" in rendered
+
     capped = ul.collect_range_material(
         history_repo["base"], history_repo["c4"], git=_capture_for(history_repo["repo"]), max_rows=3,
     )
-    assert [row["version"] for row in capped["releases"]] == ["1.4.0", "1.2.0", "1.1.1"]
-    assert capped["omitted_older_rows"] == 1 and "1 older release row(s) omitted" in ul.material_text(capped)
-    rendered = ul.material_text(material)
-    assert "2 older commit(s) omitted" in rendered and "1 malformed history row(s) omitted" in rendered
+    assert [row["version"] for row in capped["releases"]] == ["1.4.0", "1.2.0", "1.1.1", "1.1.0"]
+    assert capped["releases"][-1]["text"] == "" and capped["rows_summarized"] == 1
+    summarized = ul.material_text(capped)
+    assert "- 1.1.0 (2026-01-02)\n" in summarized + "\n"  # version and date, no text
+    assert "second with an escaped | pipe" not in summarized
+    assert "oldest 1 row(s) above carry version and date only" in summarized
 
 
 def test_material_reworded_row_is_first_wins_newest_first(history_repo):
@@ -159,7 +175,7 @@ def _material():
     return {
         "commits": [{"sha": "b" * 40, "date": "2026-09-03", "subject": "s", "body": ""}],
         "releases": [{"version": "6.114.0", "date": "2026-09-01", "text": "row", "commit": "b" * 40}],
-        "omitted_commits": 0, "omitted_rows": 0,
+        "bodies_omitted": 0, "omitted_rows": 0,
         "versions": {"base": "6.113.5", "target": "6.114.0"},
     }
 

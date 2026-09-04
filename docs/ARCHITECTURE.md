@@ -65,7 +65,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── settings_integrity.py ← Strict settings-snapshot integrity pin; `OUROBOROS_SETTINGS_SHA256` enables the trust root
       ├── credential_shapes.py ← Filename shapes that commonly indicate credential material; blocks root read imports
       ├── update_channels.py   ← Closed Stable/QA/Development channel mapping and update-network defaults
-      ├── update_letter.py     ← The update letter: first-parent range material (commits + the README history rows their diffs added), one accounted LIGHT-slot call with the ordinary task context, `state/update_letter.json`, one projection shared by the Updates payload and the Runtime context `official_update` fact
+      ├── update_letter.py     ← The update letter: first-parent range material (EVERY commit subject of the range + the README history rows their diffs added; only bodies and the oldest row texts are bounded, and disclosed), one accounted LIGHT-slot call with the ordinary task context, `state/update_letter.json`, one projection shared by the Updates payload and the Runtime context `official_update` fact
       ├── colab_bootstrap.py   ← Google Colab source-mode bootstrap: official update source, stable local `ouroboros` branch, Drive-backed settings/data, personal origin, no-UI server command, native Telegram setup
       ├── cli.py               ← Source/headless CLI over gateway tasks, logs, settings, skills, marketplace, local-model, and MCP wrappers
       ├── packaged_cli.py      ← Packaged desktop CLI bridge: resolves bundle roots, bootstraps the launcher-managed repo, delegates to cli.py

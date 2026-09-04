@@ -43,8 +43,10 @@ USAGE_CATEGORY = "update_letter"
 # Output budget of the LIGHT one-shot (the letter is one short paragraph; docs/ARCHITECTURE.md §7).
 UPDATE_LETTER_MAX_TOKENS = 1024
 # Per-commit body bound inside the material (a disclosed cut, never a silent slice).
-COMMIT_BODY_MAX_CHARS = 1200
-DEFAULT_MAX_COMMITS = 200
+COMMIT_BODY_MAX_CHARS = 10000
+# EVERY commit subject in the range reaches the author; only the bodies and the older
+# release-row texts are bounded, because a long range must not become an invisible one.
+DEFAULT_MAX_BODIES = 200
 DEFAULT_MAX_ROWS = 60
 
 _ROW_RE = re.compile(r"^\+\|\s*(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)\s*\|")
@@ -94,26 +96,27 @@ def collect_range_material(
     target_sha: str,
     *,
     git: Optional[GitCapture] = None,
-    max_commits: int = DEFAULT_MAX_COMMITS,
+    max_bodies: int = DEFAULT_MAX_BODIES,
     max_rows: int = DEFAULT_MAX_ROWS,
 ) -> Dict[str, Any]:
     """Collect the first-parent commits and the README history rows they added.
 
-    ``commits`` are newest-first and capped at ``max_commits`` (``omitted_commits``
-    discloses the rest); ``releases`` are every row added anywhere in the range,
-    newest-first with first-wins per version; malformed rows are counted in
-    ``omitted_rows``, rows past ``max_rows`` in ``omitted_older_rows``; ``versions`` are
-    the VERSION files at both ends. Divergence
-    counts stay on the status dict that triggered the letter — nothing is
-    collected that neither the model nor the record reads. An empty range yields
-    empty lists.
+    ``commits`` are EVERY first-parent commit of the range, newest-first: the subject of
+    each one always reaches the author, so a long range is never an invisible one. Only
+    the bodies are bounded — the newest ``max_bodies`` keep theirs, ``bodies_omitted``
+    discloses the rest. ``releases`` are every row added anywhere in the range,
+    newest-first with first-wins per version; the newest ``max_rows`` keep their text and
+    older rows stay as version and date (``rows_summarized``), malformed ones are counted
+    in ``omitted_rows``. ``versions`` are the VERSION files at both ends. Divergence
+    counts stay on the status dict that triggered the letter — nothing is collected that
+    neither the model nor the record reads. An empty range yields empty lists.
     """
     capture = git or _default_git()
     spec = f"{base_sha}..{target_sha}"
     material: Dict[str, Any] = {
         "base_sha": base_sha, "target_sha": target_sha,
-        "commits": [], "omitted_commits": 0, "releases": [], "omitted_rows": 0,
-        "omitted_older_rows": 0, "versions": {},
+        "commits": [], "bodies_omitted": 0, "releases": [], "omitted_rows": 0,
+        "rows_summarized": 0, "versions": {},
     }
     rc, out, _err = capture([
         "git", "log", "--first-parent", "--format=%H%x1f%aI%x1f%s%x1f%b%x1e", spec,
@@ -127,14 +130,15 @@ def collect_range_material(
             parts = chunk.split("\x1f", 3)
             if len(parts) < 3:
                 continue
-            sha = parts[0].strip()
             body = parts[3].strip() if len(parts) > 3 else ""
+            keeps_body = len(commits) < max_bodies
             commits.append({
-                "sha": sha, "date": parts[1].strip(), "subject": parts[2].strip(),
-                "body": truncate_within_limit(body, COMMIT_BODY_MAX_CHARS) if body else "",
+                "sha": parts[0].strip(), "date": parts[1].strip(), "subject": parts[2].strip(),
+                "body": truncate_within_limit(body, COMMIT_BODY_MAX_CHARS) if (body and keeps_body) else "",
             })
-    material["omitted_commits"] = max(0, len(commits) - max_commits)
-    material["commits"] = commits[:max_commits]
+            if body and not keeps_body:
+                material["bodies_omitted"] += 1
+    material["commits"] = commits
 
     rc, out, _err = capture([
         "git", "log", "-m", "--first-parent", "-p", "-U0", "--format=%x01%H", spec, "--", "README.md",
@@ -161,8 +165,10 @@ def collect_range_material(
                 continue
             seen_versions.add(version)
             releases.append({"version": version, "date": date, "text": text, "commit": current_sha})
-    material["omitted_older_rows"] = max(0, len(releases) - max_rows)
-    material["releases"] = releases[:max_rows]
+    for row in releases[max_rows:]:
+        row["text"] = ""
+        material["rows_summarized"] += 1
+    material["releases"] = releases
     for label, sha in (("base", base_sha), ("target", target_sha)):
         material["versions"][label] = _version_at(capture, sha)
     return material
@@ -180,23 +186,28 @@ def material_text(material: Dict[str, Any]) -> str:
     if releases:
         lines.append("Release notes added in this range (newest first):")
         for row in releases:
-            lines.append(f"- {row.get('version')} ({row.get('date')}): {row.get('text')}")
+            head = f"- {row.get('version')} ({row.get('date')})"
+            lines.append(f"{head}: {row['text']}" if row.get("text") else head)
         if material.get("omitted_rows"):
             lines.append(f"- [{material['omitted_rows']} malformed history row(s) omitted]")
-        if material.get("omitted_older_rows"):
-            lines.append(f"- [{material['omitted_older_rows']} older release row(s) omitted]")
+        if material.get("rows_summarized"):
+            lines.append(f"- [the oldest {material['rows_summarized']} row(s) above carry version and date only]")
     commits = material.get("commits") or []
     if commits:
         lines.append("")
-        lines.append("First-parent commits in this range (newest first):")
+        lines.append("First-parent commits in this range (newest first, every one of them):")
         for commit in commits:
-            head = f"- {str(commit.get('sha') or '')[:8]} {commit.get('date', '')[:10]} {commit.get('subject', '')}"
-            lines.append(head)
+            lines.append(
+                f"- {str(commit.get('sha') or '')[:8]} {commit.get('date', '')[:10]} {commit.get('subject', '')}"
+            )
             body = str(commit.get("body") or "").strip()
             if body:
                 lines.append("  " + body.replace("\n", "\n  "))
-        if material.get("omitted_commits"):
-            lines.append(f"- [{material['omitted_commits']} older commit(s) omitted]")
+        if material.get("bodies_omitted"):
+            lines.append(
+                f"- [the bodies of {material['bodies_omitted']} older commit(s) are omitted; "
+                "their subjects are all listed above]"
+            )
     if not lines:
         lines.append("(no commits in this range)")
     return "\n".join(lines)
