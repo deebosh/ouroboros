@@ -496,7 +496,14 @@ def _run_claude_advisory(
             scope_effort = _slot.effort or "low"
             if _car().owner_deadline_exhausted_for_context(ctx, reserve_sec=_car().get_finalization_grace_sec()):
                 raise TimeoutError("owner deadline leaves no dispatch window for advisory review")
-            result, model = _car()._run_advisory_native(prompt, repo_dir, ctx, _slot, model)
+            # The documents the pointer form requires read IN FULL, measured
+            # from the files at prompt-build time: the episode's bound is
+            # lifted to hold them when the reviewer's window allows, else the
+            # prompt and the episode facts carry the typed shortfall code.
+            result, model = _car()._run_advisory_native(
+                prompt, repo_dir, ctx, _slot, model,
+                mandatory_read_corpus_chars=_car()._mandatory_read_corpus_chars(repo_dir, review_surface),
+            )
 
         meta = {
             "model": model,

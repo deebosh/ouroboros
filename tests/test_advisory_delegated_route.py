@@ -489,7 +489,7 @@ def test_native_route_applies_the_advisory_rows_model_and_effort(tmp_path, monke
     monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", _SLOTS_API_ADVISORY)
     captured = {}
 
-    def _capture_native(prompt, repo_dir, ctx_, slot, model):
+    def _capture_native(prompt, repo_dir, ctx_, slot, model, **_):
 
         captured.update({"model": model, "effort": slot.effort})
         return SimpleNamespace(
@@ -572,7 +572,7 @@ def test_native_route_empty_target_falls_back_to_the_routed_default(tmp_path, mo
     monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps(slots))
     captured = {}
 
-    def _capture_native(prompt, repo_dir, ctx_, slot, model):
+    def _capture_native(prompt, repo_dir, ctx_, slot, model, **_):
 
         captured.update({"model": model, "effort": slot.effort or "low"})
         return SimpleNamespace(

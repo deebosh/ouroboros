@@ -19,6 +19,7 @@ downstream as a false "harness crashed / Retry" classification. Now:
 Offline fixtures throughout: the window resolver and the transports are faked.
 """
 
+import copy
 import json
 from types import SimpleNamespace
 
@@ -99,7 +100,7 @@ def _stub_run_readonly(monkeypatch, **overrides):
         setattr(result, key, value)
     monkeypatch.setattr(
         advisory, "_run_advisory_native",
-        lambda prompt, repo_dir, ctx_, slot, model: (result, model),
+        lambda prompt, repo_dir, ctx_, slot, model, **_: (result, model),
     )
     return result
 
@@ -480,7 +481,7 @@ def test_native_advisory_episode_bound_is_derived_from_the_advisory_models_windo
 
     bound_calls = []
 
-    def _bound(model_id, *, output_reserve, use_local=None):
+    def _bound(model_id, *, output_reserve, use_local=None, mandatory_read_chars=0):
         bound_calls.append((model_id, output_reserve))
         return 60_000  # above the first send; the floor below it is its own typed end
 
@@ -505,3 +506,160 @@ def test_native_advisory_episode_bound_is_derived_from_the_advisory_models_windo
     assert advisory._predispatch_size_skip(ctx, True, "openai/adv-window", "p" * 40_000, False) is None
     native_skip = advisory._predispatch_size_skip(ctx, False, "openai/adv-window", "p" * 40_000, False)
     assert native_skip is not None and "does not fit the api route window" in native_skip[1]
+
+
+# ---------------------------------------------------------------------------
+# 6. the MANDATORY READ budget: measured corpus, lifted bound, typed shortfall
+# ---------------------------------------------------------------------------
+
+
+class _CapturingChat:
+    """Answers at once; keeps every messages payload it was sent."""
+
+    def __init__(self):
+        self.messages = []
+
+    def chat(self, **kwargs):
+        self.messages.append(copy.deepcopy(kwargs["messages"]))
+        return {"content": _ADVISORY_ITEMS}, {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0}
+
+
+def _sent_task(chat):
+    return [m for m in chat.messages[0] if m.get("role") == "user"][0]["content"]
+
+
+def test_mandatory_read_corpus_is_measured_from_the_pointed_files(tmp_path):
+    """The corpus is the wire size (JSON-serialized, as a read_file result rides
+    a send) of exactly what the five pointers name: four full documents plus
+    the surface's CHECKLISTS.md section; a missing document or section counts 0."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_governance_docs(repo)
+    checklists = (repo / "docs" / "CHECKLISTS.md").read_text(encoding="utf-8")
+    section = checklists[checklists.find("## Repo Commit Checklist"):]
+    docs = [(repo / rel).read_text(encoding="utf-8")
+            for rel in ("BIBLE.md", "docs/DEVELOPMENT.md", "docs/DESIGN.md", "docs/ARCHITECTURE.md")]
+    expected = sum(len(json.dumps(t, ensure_ascii=False)) for t in docs + [section])
+    assert advisory._mandatory_read_corpus_chars(repo) == expected > sum(len(t) for t in docs)
+    # The skill surface reads the Skill Review Checklist section, absent here.
+    assert advisory._mandatory_read_corpus_chars(repo, "skill") == expected - len(json.dumps(section))
+    (repo / "docs" / "DESIGN.md").unlink()
+    assert advisory._mandatory_read_corpus_chars(repo) == expected - len(json.dumps(docs[2]))
+
+
+def test_native_prompt_names_the_corpus_and_the_lifted_bound_when_the_reading_fits(tmp_path, monkeypatch):
+    """Fits branch: the episode's bound is lifted past the owner ceiling to
+    hold the declared reading; the prompt's MANDATORY READ budget names the
+    corpus and THAT bound (the number the episode applies); the facts carry the
+    declaration and no shortfall code."""
+    import ouroboros.llm as llm_mod
+    from ouroboros.review_native_episode import native_landing_at, native_mandatory_read_bound
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "50000")
+    _fake_window(monkeypatch, 1_000_000)
+    chat = _CapturingChat()
+    monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: chat)
+    ctx = _ctx(tmp_path)
+    _write_governance_docs(ctx.repo_dir)
+    prompt = advisory._build_advisory_prompt(
+        ctx.repo_dir, "commit msg",
+        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": "file-a"},
+        governance_by_retrieval=True,
+    )
+    corpus = advisory._mandatory_read_corpus_chars(ctx.repo_dir)
+    slot = SimpleNamespace(effort="low", subagent_id="")
+    result, _model = advisory._run_advisory_native(
+        prompt, ctx.repo_dir, ctx, slot, "openai/adv", mandatory_read_corpus_chars=corpus)
+    assert result.success is True, result.error
+    usage = result.usage
+    need = len(prompt) + corpus
+    assert usage["native_mandatory_read_chars"] == need
+    bound = usage["native_transcript_bound"]
+    assert bound == native_mandatory_read_bound(need) > 50_000  # lifted past the 50K ceiling
+    assert "native_mandatory_read_disclosure" not in usage
+    task = _sent_task(chat)
+    assert prompt in task and "## MANDATORY READ budget" in task
+    assert f"name {corpus:,} chars" in task and f"needs {need:,} transcript chars" in task
+    assert f"bound is {bound:,} chars" in task and f"landing notice at {native_landing_at(bound):,} chars" in task
+    assert "lands before the landing notice" in task
+    assert "native_mandatory_read_exceeds_bound" not in task
+    # Undeclared (the corpus argument left at 0): the prompt and the facts are untouched.
+    chat.messages.clear()
+    result, _model = advisory._run_advisory_native(prompt, ctx.repo_dir, ctx, slot, "openai/adv")
+    assert "native_mandatory_read_chars" not in result.usage and result.usage["native_transcript_bound"] == 50_000
+    assert "MANDATORY READ budget" not in _sent_task(chat)
+
+
+def test_native_prompt_and_facts_carry_the_typed_code_when_the_reading_does_not_fit(tmp_path, monkeypatch, api_env):
+    """Does-not-fit branch, end to end through _run_claude_advisory: a 200K
+    window carries ≈446K chars and the pointed corpus alone is over 500K, so
+    the bound stays at the window's capacity and BOTH the prompt's MANDATORY
+    READ budget and the advisory meta's usage carry
+    native_mandatory_read_exceeds_bound with the corpus and the bound — never
+    a silent full-read contradiction."""
+    import ouroboros.llm as llm_mod
+    from ouroboros.review_native_episode import native_mandatory_read_bound
+
+    _fake_window(monkeypatch, 200_000)
+    chat = _CapturingChat()
+    monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: chat)
+    ctx = _ctx(tmp_path)
+    _write_governance_docs(ctx.repo_dir)
+    (ctx.repo_dir / "docs" / "ARCHITECTURE.md").write_text(
+        "# ARCH\n" + ("architecture line\n" * 30_000), encoding="utf-8")
+    corpus = advisory._mandatory_read_corpus_chars(ctx.repo_dir)
+    assert corpus > 500_000
+    items, raw, _model, _chars = advisory._run_claude_advisory(
+        ctx.repo_dir, "msg", ctx, options={"include_repo_diff": False},
+    )
+    assert not raw.startswith("⚠️ ADVISORY"), raw
+    assert [i["item"] for i in items] == ["correctness"]
+    meta = dict(getattr(ctx, "_last_claude_advisory_meta", {}) or {})
+    usage = meta["usage"]
+    assert usage["native_mandatory_read_disclosure"] == "native_mandatory_read_exceeds_bound"
+    bound = usage["native_transcript_bound"]
+    assert 400_000 <= bound <= 460_000 < native_mandatory_read_bound(usage["native_mandatory_read_chars"])
+    task = _sent_task(chat)
+    assert "MANDATORY_READ_DISCLOSURE: native_mandatory_read_exceeds_bound" in task
+    assert f"name {corpus:,} chars" in task and f"bound is {bound:,} chars" in task
+    assert "MANDATORY FULL READ" in task and "mark every checklist item you could not ground" in task
+
+
+def test_declared_mandatory_reading_lifts_the_bound_past_the_ceiling_up_to_the_window(monkeypatch):
+    """The episode-side arithmetic behind both branches (pinned here beside its
+    advisory caller: tests/test_native_tool_round_executor.py sits at the band
+    cap). A declared mandatory reading is a FLOOR (P13): it lifts the bound
+    past the owner ceiling to where the reading lands one result cap before
+    the landing notice — never past what the window carries; short of that,
+    the typed shortfall code names it. An undeclared episode is unchanged."""
+    import ouroboros.review_native_episode as native_episode
+    import ouroboros.reviewer_window as reviewer_window
+    from ouroboros.reviewer_window import REVIEWER_FULL_WINDOW
+
+    monkeypatch.setenv("OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS", "200000")
+    windows = {"openai/big": REVIEWER_FULL_WINDOW, "openai/small": 200_000}
+    monkeypatch.setattr(reviewer_window, "reviewer_context_window",
+                        lambda model_id, **_: windows[model_id])
+    need = 300_000
+    required = native_episode.native_mandatory_read_bound(need)
+    assert required == 525_000  # ceil((300K + the 120K result cap) / 0.8)
+    assert native_episode.native_landing_at(required) >= need + native_episode._EPISODE_TOOL_RESULT_CHAR_CAP
+    # Undeclared: the owner ceiling, exactly as before.
+    assert native_episode.review_native_transcript_bound("openai/big", output_reserve=16_000) == 200_000
+    big = native_episode.review_native_transcript_bound(
+        "openai/big", output_reserve=16_000, mandatory_read_chars=need)
+    assert big == required  # lifted past the 200K ceiling; far below the 1M window's capacity
+    assert native_episode.native_mandatory_read_disclosure(big, need) == ""
+    # The 200K window carries ≈446K chars: the floor is capped there and typed.
+    small = native_episode.review_native_transcript_bound(
+        "openai/small", output_reserve=16_000, mandatory_read_chars=need)
+    assert 400_000 <= small <= 460_000 and small < required
+    assert native_episode.native_mandatory_read_disclosure(small, need) == "native_mandatory_read_exceeds_bound"
+    assert native_episode.native_mandatory_read_disclosure(small, 0) == ""
+    # The facts helper the episode folds into its custody: declared chars, plus the code only when short.
+    request = SimpleNamespace(policy={"native_mandatory_read_chars": need})
+    assert native_episode.native_mandatory_read_facts(request, big) == {"native_mandatory_read_chars": need}
+    assert native_episode.native_mandatory_read_facts(request, small) == {
+        "native_mandatory_read_chars": need,
+        "native_mandatory_read_disclosure": "native_mandatory_read_exceeds_bound"}
+    assert native_episode.native_mandatory_read_facts(SimpleNamespace(policy={}), big) == {}

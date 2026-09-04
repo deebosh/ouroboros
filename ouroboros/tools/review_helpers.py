@@ -379,9 +379,10 @@ def build_scope_actor_record(scope_result: object, *, fallback_model_id: str = "
     }
 
 
-def load_checklist_section(section_name: str) -> str:
-    """Extract one ``## Header`` section from docs/CHECKLISTS.md."""
-    checklist_path = REPO_ROOT / "docs" / "CHECKLISTS.md"
+def load_checklist_section(section_name: str, checklist_path: Optional[Path] = None) -> str:
+    """Extract one ``## Header`` section from docs/CHECKLISTS.md (the host
+    repo's by default; ``checklist_path`` reads another tree's copy)."""
+    checklist_path = Path(checklist_path) if checklist_path else REPO_ROOT / "docs" / "CHECKLISTS.md"
     text = checklist_path.read_text(encoding="utf-8")
 
     header = f"## {section_name}"

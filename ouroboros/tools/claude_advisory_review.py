@@ -166,18 +166,27 @@ def _advisory_child_timeout(ctx: object) -> Optional[float]:
 
 def _run_advisory_native(
     prompt: str, repo_dir: pathlib.Path, ctx: ToolContext, slot, model: str,
+    mandatory_read_corpus_chars: int = 0,
 ):
     """The advisory as a bounded native inspection episode, rehydrated into the
     same result structure the retired SDK path produced (only the transport
     changes). Cost: every provider call already rode the usage ledger inside
     the rebound scope, so ``cost_usd`` stays 0.0 here — the ledger is the one
-    charge source; the disclosed total rides ``usage`` for forensics."""
+    charge source; the disclosed total rides ``usage`` for forensics.
+    ``mandatory_read_corpus_chars`` (wire size of the documents the prompt's
+    MANDATORY FULL READ pointers name) declares the episode's mandatory reading
+    on ``policy["native_mandatory_read_chars"]`` — task text plus corpus, a
+    floor on the episode's bound up to the window — and appends the prompt's
+    MANDATORY READ budget (corpus, bound, typed shortfall code)."""
     from dataclasses import replace as _dc_replace
     from types import SimpleNamespace
 
     from ouroboros.llm import LLMClient
     from ouroboros.review_execution import ReviewAssignment, ReviewRouteKind
-    from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
+    from ouroboros.review_native_episode import (
+        NativeToolRoundReviewExecutor,
+        native_episode_transcript_bound,
+    )
     from ouroboros.review_substrate import ReviewRequest, ReviewSlot
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
@@ -205,6 +214,14 @@ def _run_advisory_native(
         role_hint="advisory pre-reviewer", route=ReviewRouteKind.API_CHAT,
         subagent_id=str(getattr(slot, "subagent_id", "") or ""),
     )
+    if int(mandatory_read_corpus_chars or 0) > 0:
+        # Declared on the request FIRST: the bound the budget section names is
+        # the very computation the episode makes from this assignment.
+        request.policy["native_mandatory_read_chars"] = len(prompt) + int(mandatory_read_corpus_chars)
+        request.session_task += _mandatory_read_budget_section(
+            int(mandatory_read_corpus_chars), request.policy["native_mandatory_read_chars"],
+            native_episode_transcript_bound(request, rslot),
+        )
     assignment = ReviewAssignment(
         request=request, slot=rslot,
         call_id=f"advisory:{request.task_id or 'manual'}",
@@ -1451,6 +1468,8 @@ from ouroboros.tools.preflight_review_prompt import (  # noqa: E402, F401 -- int
     _build_blocking_history_section,
     _get_changed_file_list,
     _get_staged_diff,
+    _mandatory_read_budget_section,
+    _mandatory_read_corpus_chars,
 )
 from ouroboros.tools.preflight_review_run import (  # noqa: E402, F401 -- intentional public re-exports
     _ADVISORY_EXTRACT_CONTRACT,
