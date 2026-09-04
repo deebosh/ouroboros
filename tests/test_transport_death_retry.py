@@ -217,6 +217,11 @@ def test_budget_refusal_on_the_second_send_propagates_untouched(data_root, tmp_p
     assert [row["state"] for row in rows] == ["reserved", "dispatched", "unresolved"]
     assert len(_events(tmp_path, "llm_api_error")) == 1  # only the death itself was a provider failure
     assert _events(tmp_path, "llm_non_retryable_same_request") == []
+    # The refused repeat never left the host: it is taken back off the round record
+    # (the budget rail writes its own durable row) and the flag no longer claims it.
+    assert TRANSPORT_DEATHS_KEY not in usage
+    assert usage["_last_llm_retry_same_request"] is False
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"  # the sticky kind is untouched
 
 
 # --------------------------------------------------------- bounded, truthful flags

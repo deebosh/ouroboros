@@ -34,6 +34,7 @@ from ouroboros.provider_models import provider_for_model
 from ouroboros.transport_custody import attempt_custody_event_fields, is_pre_dispatch_transport_failure, is_retryable_transport_death
 from ouroboros._usage_response import provider_cost_value as _provider_cost_value
 from ouroboros.usage_accounting import (
+    BudgetExceeded,
     PhysicalAttemptContext,
     UsageAccountingError,
     bind_physical_attempt_context,
@@ -407,7 +408,6 @@ def _deadline_not_dispatched(
     if _transport_death_repeats(accumulated_usage, round_id) and accumulated_usage.get("_last_llm_error_kind") == "provider_outcome_unknown":
         if accumulated_usage.get("_last_llm_retry_same_request"):
             _uncount_transport_death(accumulated_usage)
-        accumulated_usage["_last_llm_retry_same_request"] = False
     else:
         accumulated_usage.update(
             _last_llm_error_kind="deadline_exhausted",
@@ -905,6 +905,7 @@ def _uncount_transport_death(accumulated_usage: Dict[str, Any]) -> None:
     record["count"] = int(record.get("count") or 0) - 1
     if record["count"] <= 0:
         accumulated_usage.pop(TRANSPORT_DEATHS_KEY, None)
+    accumulated_usage["_last_llm_retry_same_request"] = False
 
 
 def _transport_death_repeats(accumulated_usage: Dict[str, Any], round_id: str) -> int:
@@ -1562,11 +1563,8 @@ def call_llm_with_retry(
                 "attempt": attempt + 1,
                 "model": display_model,
                 "reasoning_effort": effort,
-                "prompt_tokens": _round_event["prompt_tokens"],
-                "completion_tokens": _round_event["completion_tokens"],
-                "cached_tokens": _round_event["cached_tokens"],
-                "cache_write_tokens": _round_event["cache_write_tokens"],
-                "prompt_cache_ttl": _round_event["prompt_cache_ttl"],
+                **{key: _round_event[key] for key in (
+                    "prompt_tokens", "completion_tokens", "cached_tokens", "cache_write_tokens", "prompt_cache_ttl")},
                 "cost_usd": cost,
                 "response_kind": "tool_calls" if tool_calls else "message",
                 "tool_call_count": len(tool_calls),
@@ -1576,7 +1574,9 @@ def call_llm_with_retry(
             _emit_llm_operation(event_queue, task_id, llm_call_id, "finished", task_attempt, execution_id, round_id)
             _emit_main_llm_call_state(event_queue, call_identity, "finished")
             return msg, cost
-        except UsageAccountingError:
+        except UsageAccountingError as e:
+            if isinstance(e, BudgetExceeded) and accumulated_usage.get("_last_llm_retry_same_request"):
+                _uncount_transport_death(accumulated_usage)  # the granted repeat never left the host
             _emit_llm_operation(event_queue, task_id, llm_call_id, "failed", task_attempt, execution_id, round_id)
             _emit_main_llm_call_state(event_queue, call_identity, "failed")
             raise  # Monetary/ledger rails are not provider failures.
