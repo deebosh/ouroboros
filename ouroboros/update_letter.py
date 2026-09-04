@@ -347,11 +347,38 @@ def _chat(client: Any, *, drive_root: pathlib.Path, **kwargs: Any) -> Tuple[Dict
     return chat_observed(client, drive_root=drive_root, task_id=SYSTEM_TASK_ID, call_type=USAGE_CATEGORY, **kwargs)
 
 
-def _classify(exc: Exception) -> Tuple[str, str]:
-    from ouroboros.usage_accounting import BudgetExceeded
+def _safe_text(text: str) -> str:
+    """Secret-free, bounded text for the record (the same sanitizer every log line uses)."""
     from ouroboros.utils import sanitize_tool_result_for_log
 
-    safe = sanitize_tool_result_for_log(f"{type(exc).__name__}: {exc}")[:300]
+    return sanitize_tool_result_for_log(str(text or ""))[:300]
+
+
+def _ledger_ids(carrier: Any) -> List[str]:
+    """The attempt ids the transport accounted — on the usage of a served call, on the
+    exception of a failed one (usage_accounting attaches them) — so a letter that failed
+    still points at what it cost."""
+    raw = carrier.get("ledger_attempt_ids") if isinstance(carrier, dict) else getattr(carrier, "ledger_attempt_ids", None)
+    return [str(value) for value in (raw or []) if value]
+
+
+def _body_error_kind(body_err: Any) -> str:
+    """OpenRouter serves 429/5xx/context_length_exceeded INSIDE an HTTP 200; llm.py keeps
+    that verdict in usage["provider_error"], not in an exception. Classified the way
+    loop_llm_call does — a structured overflow code is an overflow, anything else a
+    provider failure — so it never reads as "the model returned no text"."""
+    if not isinstance(body_err, dict):
+        return ""
+    from ouroboros.context_budget import CONTEXT_OVERFLOW_CODES
+
+    codes = (str(body_err.get(key) or "").strip().lower() for key in ("code", "type"))
+    return "context_overflow" if any(code in CONTEXT_OVERFLOW_CODES for code in codes) else "provider_unavailable"
+
+
+def _classify(exc: Exception) -> Tuple[str, str]:
+    from ouroboros.usage_accounting import BudgetExceeded
+
+    safe = _safe_text(f"{type(exc).__name__}: {exc}")
     if isinstance(exc, MaterialUnavailable):
         return "material_unavailable", safe
     if isinstance(exc, BudgetExceeded):
@@ -411,6 +438,7 @@ def write_letter(
     key = _key_from_status(status)
     target_version = str((material.get("versions") or {}).get("target") or "")
     record = _new_record(key, target_version)
+    attempt_ids: List[str] = []
     model = get_light_model()
     use_local = _light_uses_local(model)
     record["model"] = model
@@ -458,32 +486,48 @@ def write_letter(
                 record.update(error_kind="timeout",
                               error_text="the update-letter ceiling was spent waiting for a model slot")
                 return record
-            attempt_ids: List[str] = []
+            call = dict(drive_root=data_root, model=model, tools=None, reasoning_effort="low",
+                        max_tokens=UPDATE_LETTER_MAX_TOKENS, use_local=use_local)
+            low_retries = 0
+
+            def retry_low() -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+                # An ACTUAL provider overflow — raised, or served as an HTTP-200 body error —
+                # earns ONE same-route retry on the task-local Low projection, inside the same
+                # ceiling, every attempt accounted. Never a second, never a predicted one.
+                nonlocal low_retries
+                left = deadline_ts - time.time()
+                if low_retries or plan.initial_mode == "low" or left <= 0:
+                    return None
+                low_retries += 1
+                return _chat(client, messages=plan.messages_for("low"), timeout=left, **call)
+
             with usage_scope(scope):
                 try:
-                    msg, usage = _chat(
-                        client, drive_root=data_root, messages=messages, model=model, tools=None,
-                        reasoning_effort="low", max_tokens=UPDATE_LETTER_MAX_TOKENS,
-                        use_local=use_local, timeout=remaining,
-                    )
+                    msg, usage = _chat(client, messages=messages, timeout=remaining, **call)
                 except Exception as exc:  # noqa: BLE001 — classified below, re-raised unless overflow
-                    kind, _safe = _classify(exc)
-                    if kind != "context_overflow" or plan.initial_mode == "low":
+                    if _classify(exc)[0] != "context_overflow":
                         raise
-                    # An ACTUAL provider overflow: one same-route retry on the task-local Low
-                    # projection, inside the same ceiling, both attempts accounted.
-                    attempt_ids.extend(str(a) for a in (getattr(exc, "ledger_attempt_ids", None) or []))
-                    remaining = deadline_ts - time.time()
-                    if remaining <= 0:
+                    attempt_ids.extend(_ledger_ids(exc))
+                    retried = retry_low()
+                    if retried is None:
                         raise
-                    msg, usage = _chat(
-                        client, drive_root=data_root, messages=plan.messages_for("low"), model=model,
-                        tools=None, reasoning_effort="low", max_tokens=UPDATE_LETTER_MAX_TOKENS,
-                        use_local=use_local, timeout=remaining,
-                    )
-        attempt_ids.extend(str(a) for a in ((usage or {}).get("ledger_attempt_ids") or []))
-        record["attempt_ids"] = attempt_ids
-        record["attempt_id"] = attempt_ids[-1] if attempt_ids else ""
+                    msg, usage = retried
+                attempt_ids.extend(_ledger_ids(usage))
+                body_kind = _body_error_kind((usage or {}).get("provider_error"))
+                if body_kind == "context_overflow":
+                    retried = retry_low()
+                    if retried is not None:
+                        msg, usage = retried
+                        attempt_ids.extend(_ledger_ids(usage))
+                        body_kind = _body_error_kind((usage or {}).get("provider_error"))
+        record["attempt_ids"] = list(dict.fromkeys(attempt_ids))
+        record["attempt_id"] = record["attempt_ids"][-1] if attempt_ids else ""
+        if body_kind:
+            # The provider's own verdict on the served call, named as itself.
+            body = (usage or {}).get("provider_error") or {}
+            record.update(error_kind=body_kind, error_text=_safe_text(
+                f"provider body error (code={body.get('code')}): {body.get('message')}"))
+            return record
         text = str((msg or {}).get("content") or "").strip()
         if not text:
             record.update(error_kind="empty_response", error_text="the model returned no text")
@@ -506,6 +550,8 @@ def write_letter(
         kind, safe = _classify(exc)
         log.debug("update letter generation failed (%s)", kind, exc_info=True)
         record.update(error_kind=kind, error_text=safe)
+        record["attempt_ids"] = list(dict.fromkeys([*attempt_ids, *_ledger_ids(exc)]))
+        record["attempt_id"] = record["attempt_ids"][-1] if record["attempt_ids"] else ""
         return record
 
 

@@ -883,6 +883,80 @@ def test_write_letter_sends_the_owner_mode_and_retries_low_only_on_an_actual_ove
     assert record["error_kind"] == "context_overflow" and len(calls) == 1
 
 
+def test_write_letter_treats_an_http_200_body_error_as_the_provider_s_verdict(letter_env, monkeypatch):
+    # OpenRouter serves 429/5xx/context_length_exceeded INSIDE an HTTP 200; llm.py keeps that
+    # in usage["provider_error"]. Never "the model returned no text" — and a body overflow
+    # earns the same ONE Low retry a raised overflow does.
+    monkeypatch.setattr(ul, "_fit_plan", lambda env, memory, task: _Plan("max", False, True))
+    overflow = {"code": "context_length_exceeded", "type": "invalid_request_error",
+                "kind": "provider_error", "message": "prompt too long"}
+    sent = []
+
+    def body_overflow_then_low(client, *, drive_root, **kwargs):
+        sent.append(kwargs["messages"][0]["content"])
+        if len(sent) == 1:
+            return {"content": ""}, {"ledger_attempt_ids": ["att-max"], "provider_error": dict(overflow)}
+        return {"content": "A Low paragraph."}, {"ledger_attempt_ids": ["att-low"]}
+
+    monkeypatch.setattr(ul, "_chat", body_overflow_then_low)
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert sent == ["max", "low"] and record["state"] == "ready"
+    assert record["attempt_ids"] == ["att-max", "att-low"] and record["attempt_id"] == "att-low"
+
+    # Overflow again on the Low call: typed, never a third call.
+    sent.clear()
+
+    def body_overflow_always(client, *, drive_root, **kwargs):
+        sent.append(kwargs["messages"][0]["content"])
+        return {"content": ""}, {"ledger_attempt_ids": [f"att-{len(sent)}"], "provider_error": dict(overflow)}
+
+    monkeypatch.setattr(ul, "_chat", body_overflow_always)
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert sent == ["max", "low"] and record["state"] == "failed"
+    assert record["error_kind"] == "context_overflow" and record["attempt_ids"] == ["att-1", "att-2"]
+
+    # A raised overflow whose Low retry is served with a body overflow: still one retry.
+    class Overflow(RuntimeError):
+        ledger_attempt_ids = ["att-raised"]
+
+    real_classify = ul._classify
+    monkeypatch.setattr(ul, "_classify", lambda exc: ("context_overflow", "x") if isinstance(exc, Overflow) else real_classify(exc))
+    sent.clear()
+
+    def raise_then_body_overflow(client, *, drive_root, **kwargs):
+        sent.append(kwargs["messages"][0]["content"])
+        if len(sent) == 1:
+            raise Overflow("too long")
+        return {"content": ""}, {"ledger_attempt_ids": ["att-low"], "provider_error": dict(overflow)}
+
+    monkeypatch.setattr(ul, "_chat", raise_then_body_overflow)
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert sent == ["max", "low"] and record["error_kind"] == "context_overflow"
+    assert record["attempt_ids"] == ["att-raised", "att-low"]
+
+    # A rate-limit / transient body error is a provider failure carrying its code, no retry.
+    sent.clear()
+    limited = {"code": 429, "kind": "rate_limit", "message": "rate limited"}
+    monkeypatch.setattr(ul, "_chat", lambda client, *, drive_root, **kw: (sent.append(kw["messages"][0]["content"])
+                        or ({"content": ""}, {"ledger_attempt_ids": ["att"], "provider_error": dict(limited)})))
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert sent == ["max"] and record["state"] == "failed"
+    assert record["error_kind"] == "provider_unavailable" and "429" in record["error_text"]
+    assert record["attempt_ids"] == ["att"] and record["text"] == ""
+
+
+def test_write_letter_keeps_the_attempt_ids_of_a_call_that_raised(letter_env, monkeypatch):
+    # usage_accounting attaches the accounted attempt ids to the exception of a failed call;
+    # the record keeps them, so a failed letter still points at what it cost.
+    class Boom(RuntimeError):
+        ledger_attempt_ids = ["att-boom"]
+
+    monkeypatch.setattr(ul, "_chat", lambda *a, **k: (_ for _ in ()).throw(Boom("boom")))
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert record["state"] == "failed" and "boom" in record["error_text"]
+    assert record["attempt_ids"] == ["att-boom"] and record["attempt_id"] == "att-boom"
+
+
 def test_write_letter_treats_an_output_budget_cut_as_a_typed_failure(letter_env, monkeypatch):
     # A reply stopped by the output budget is a partial cognitive artifact (BIBLE P1):
     # never stored as ready, always named for what it is.
