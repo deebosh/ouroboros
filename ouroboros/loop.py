@@ -87,7 +87,7 @@ from ouroboros.loop_tool_execution import (
     reclaim_negative_memo,
     reclaim_trace_refs,
 )
-from ouroboros.loop_llm_call import call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source
+from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS, _TRANSPORT_DEATH_RETRIES, TRANSPORT_DEATHS_KEY, _emit_live_log, call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source
 from ouroboros.delegate_hold import (
     close_hold as _delegate_hold_close,
     hold_step as _delegate_hold_step,
@@ -496,7 +496,6 @@ def _emit_checkpoint_event(
     data: Dict[str, Any],
 ) -> bool:
     """Emit a task_checkpoint via event queue or direct events.jsonl append."""
-    from ouroboros.loop_llm_call import _emit_live_log
     payload = {"type": "task_checkpoint", "task_id": task_id, **data}
     if event_queue is not None:
         _emit_live_log(event_queue, payload)
@@ -1661,10 +1660,9 @@ def _run_cross_model_fallback_chain(
     """Try fallbacks; unknown dispatch stops the chain."""
     from ouroboros import fallback_cooldown as _fcd
     from ouroboros.config import get_fallback_models
-    from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS as _cooldown_kinds
 
     def _cooled(model: str, use_local: bool) -> None:
-        if str(accumulated_usage.get("_last_llm_error_kind") or "") in _cooldown_kinds:
+        if str(accumulated_usage.get("_last_llm_error_kind") or "") in _COOLDOWN_ERROR_KINDS:
             _fcd.mark_cooldown(model, use_local)
 
     _cooled(active_model, active_use_local)
@@ -2118,9 +2116,8 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
     """Attach list/enable tool handlers and mutate the active schema list."""
     enabled_extra: set = set()
     active_tool_names = {
-        str(schema.get("function", {}).get("name") or "").strip()
-        for schema in tool_schemas
-        if str(schema.get("function", {}).get("name") or "").strip()
+        name for schema in tool_schemas
+        if (name := str(schema.get("function", {}).get("name") or "").strip())
     }
 
     def _handle_list_tools(ctx=None, **kwargs):
@@ -2300,6 +2297,10 @@ def _drain_incoming_messages(
                 except Exception:
                     pass
     return controls
+
+
+def _fit_key(fit: Any) -> Tuple[str, str]:
+    return (fit.measurement.route_fp, fit.measurement.round_id)
 
 
 def _context_reclaim_passes(tool_ctx: Any) -> set[Tuple[str, str]]:
@@ -2494,14 +2495,14 @@ def _handle_owner_stop_finalization(
 
 def _handle_provider_unavailable(
     ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
-    wait_cause: str = "", waited: bool = False, wait_eligible: bool = True,
+    wait_cause: str = "", waited_sec: float = 0.0, interactive: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Provider-death rail wrapper: every arm carries terminal provenance.
     The forced-finalization sink stamps ``host_notice``; retained/generated
     model candidates stamp ``model_final``."""
     text, usage, llm_trace = _provider_unavailable_result(
-        ctx, error_kind=error_kind, wait_cause=wait_cause, waited=waited,
-        wait_eligible=wait_eligible,
+        ctx, error_kind=error_kind, wait_cause=wait_cause, waited_sec=waited_sec,
+        interactive=interactive,
     )
     if str(usage.get("reason_code") or "") not in ("", "deadline_local") and usage.get(
             "terminal_origin") in (None, TERMINAL_ORIGIN_HOST_NOTICE):
@@ -2511,17 +2512,20 @@ def _handle_provider_unavailable(
 
 def _provider_unavailable_result(
     ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
-    wait_cause: str = "", waited: bool = False, wait_eligible: bool = True,
+    wait_cause: str = "", waited_sec: float = 0.0, interactive: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Salvage provider failure without an unsafe retry. ``wait_cause`` is the
     transport-wait episode's latched cause (survives later overwrites of the
-    mutable ``_last_llm_error_kind``); ``waited``/``wait_eligible`` keep the
-    terminal text honest for zero-wait turns."""
+    mutable ``_last_llm_error_kind``); ``waited_sec``/``interactive`` keep the
+    terminal text honest for zero-wait and such turns."""
     kind = str(error_kind or "")
-    is_context_overflow = kind == "context_overflow"
-    is_transport_wait = str(wait_cause or "") == "transport_unavailable"
+    # Terminal precedence is decided here alone (the text helper takes both flags as given): a
+    # round record (a granted transport-death repeat, no usable response since) leaves an attempt
+    # unresolved and outranks the wait terminal, which in turn outranks the overflow salvage.
+    record = isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict)
+    is_transport_wait = wait_cause == "transport_unavailable"
+    is_context_overflow = kind == "context_overflow" and not (record or is_transport_wait)
     is_deadline_exhausted = kind == "deadline_exhausted" or str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") == "deadline_exhausted"
-    forced_reason = "deadline_local" if is_deadline_exhausted else "provider_unavailable"
     llm_trace = getattr(ctx, "llm_trace", None)
     llm_trace = llm_trace if isinstance(llm_trace, dict) else {}
     candidate = _live_delivery_candidate(ctx)
@@ -2537,8 +2541,8 @@ def _provider_unavailable_result(
     else:
         fallback = _provider_terminal_fallback_text(
             ctx.accumulated_usage, is_context_overflow=is_context_overflow,
-            is_transport_wait=is_transport_wait, waited=waited,
-            wait_eligible=wait_eligible,
+            is_transport_wait=is_transport_wait, waited_sec=waited_sec,
+            interactive=interactive,
             is_deadline_exhausted=is_deadline_exhausted,
         )
     if is_context_overflow:
@@ -2554,15 +2558,12 @@ def _provider_unavailable_result(
         return text, usage, llm_trace
     if is_transport_wait:
         # No-resend terminal over dead egress.
-        live_trace = getattr(ctx, "llm_trace", None)
-        llm_trace = live_trace if isinstance(live_trace, dict) else {}
-        ctx.accumulated_usage["execution_status"] = RESULT_INFRA_FAILED
-        ctx.accumulated_usage["reason_code"] = "provider_unavailable"
+        ctx.accumulated_usage.update(execution_status=RESULT_INFRA_FAILED, reason_code="provider_unavailable")
         text, usage, llm_trace = _forced_fallback_result(
             ctx, llm_trace, fallback, reason_code="provider_unavailable",
-            source="transport_unavailable_no_resend",
+            source="provider_outcome_unknown_no_resend" if record else "transport_unavailable_no_resend",
         )
-        if str(usage.get("reason_code") or "") == "provider_unavailable":
+        if usage.get("reason_code") == "provider_unavailable":
             usage["execution_status"] = RESULT_INFRA_FAILED
         return text, usage, llm_trace
     no_call, wall = provider_no_call_source(ctx.accumulated_usage, is_deadline_exhausted)
@@ -2585,12 +2586,12 @@ def _provider_unavailable_result(
         "verified work so far and state plainly what remains undone."
     )
     text, usage, llm_trace = _forced_final_answer(
-        ctx, prompt=prompt, fallback_text=fallback, reason_code=forced_reason,
+        ctx, prompt=prompt, fallback_text=fallback,
+        reason_code="deadline_local" if is_deadline_exhausted else "provider_unavailable",
         provider_terminal=not is_deadline_exhausted,
     )
-    if not is_deadline_exhausted and str(usage.get("reason_code") or "") == "provider_unavailable":
+    if not is_deadline_exhausted and usage.get("reason_code") == "provider_unavailable":
         usage["execution_status"] = RESULT_INFRA_FAILED
-        usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_SALVAGE)
     return text, usage, llm_trace
 
 
@@ -2755,14 +2756,15 @@ def _delivery_evidence_state(
 
     owner_directives = getattr(tools._ctx, "_owner_directives", [])
     owner_directives = owner_directives if isinstance(owner_directives, list) else []
-    children = []
-    for child in _direct_child_results(ctx):
-        children.append({
+    children = [
+        {
             "task_id": str(child.get("task_id") or child.get("id") or ""),
             "status": str(child.get("status") or ""),
             "sha256": _child_result_sha256(child),
             "disposition": _child_disposition_state(child),
-        })
+        }
+        for child in _direct_child_results(ctx)
+    ]
     receipt_root = pathlib.Path(
         str(
             getattr(tools._ctx, "drive_root", "")
@@ -3434,9 +3436,8 @@ def _forced_orphan_note(ctx: _RoundLimitContext, *, include_terminal: bool = Tru
                 "integrated", "irrelevant", "deferred", "discarded", "cancelled",
             }:
                 return False  # explicitly handled
-            if not include_terminal and str(c.get("status") or "").strip().lower() in FINAL_STATUSES:
-                return False  # completed children were already surfaced via the reminder
-            return True
+            # completed children were already surfaced via the reminder
+            return include_terminal or str(c.get("status") or "").strip().lower() not in FINAL_STATUSES
 
         undecided = [c for c in children if _undecided(c)]
         deferred = [c for c in children if _child_disposition_state(c) == "deferred"]
@@ -5114,12 +5115,14 @@ def _contract_expected_output(ctx: Any) -> str:
     """Read the declared expected_output (as carried on the task contract/metadata for the
     running ctx — the same declared field the M2 ungrounded flag keys on), for the A3 no-op nudge gate."""
     contract = getattr(ctx, "task_contract", {})
-    if isinstance(contract, dict) and str(contract.get("expected_output") or "").strip():
-        return str(contract.get("expected_output") or "")
+    declared = str(contract.get("expected_output") or "") if isinstance(contract, dict) else ""
+    if declared.strip():
+        return declared
     metadata = getattr(ctx, "task_metadata", {})
     if isinstance(metadata, dict):
-        if str(metadata.get("expected_output") or "").strip():
-            return str(metadata.get("expected_output") or "")
+        declared = str(metadata.get("expected_output") or "")
+        if declared.strip():
+            return declared
         meta_contract = metadata.get("task_contract")
         if isinstance(meta_contract, dict):
             return str(meta_contract.get("expected_output") or "")
@@ -5245,6 +5248,7 @@ def _dispatch_round_model(
         deadline_ts=_task_deadline_epoch(ctx.tools),
         transport_reserve_sec=task_pacing.get_finalization_grace_sec(),
         attempt_cap=attempt_cap,
+        transport_death_retries=_TRANSPORT_DEATH_RETRIES if attempt_cap is None else 0,
         allow_server_web_search=_server_web_allowed_by_task(ctx.tools._ctx),
         physical_context=(
             _physical_context_for_fit(disposition) if disposition is not None else None
@@ -5260,7 +5264,7 @@ def _run_main_reclaim(
     minimum_goal_tokens: int = 0,
 ) -> Any:
     measurement = disposition.measurement
-    key = (measurement.route_fp, measurement.round_id)
+    key = _fit_key(disposition)
     passes = _context_reclaim_passes(ctx.tools._ctx)
     if key in passes:
         return None
@@ -5317,7 +5321,7 @@ def _measure_after_reclaim(ctx: _RoundModelCallContext) -> Any:
     disposition = _measure_round_main_fit(ctx, automatic_pass_used=True)
     if disposition is None:
         return None
-    key = (disposition.measurement.route_fp, disposition.measurement.round_id)
+    key = _fit_key(disposition)
     used = key in _context_reclaim_materializations(ctx.tools._ctx)
     if disposition.automatic_pass_used != used:
         disposition = replace(disposition, automatic_pass_used=used)
@@ -5375,20 +5379,11 @@ def _strict_context_shrink_predicate(failed: Any) -> Callable[[Any], bool]:
     return predicate
 
 
-def _emit_overflow_retry_skipped(ctx: _RoundModelCallContext, reason: str) -> None:
-    _emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
-        "type": "context_overflow_retry_skipped",
-        "round": ctx.round_idx,
-        "route_fp": str(getattr(ctx.context_fit_plan, "route_fp", "") or ""),
-        "reason": reason,
-    })
-
-
 def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     """Measure, optionally reclaim, dispatch, and recover one Main round."""
     disposition = _measure_round_main_fit(ctx, automatic_pass_used=False)
     if disposition is not None:
-        key = (disposition.measurement.route_fp, disposition.measurement.round_id)
+        key = _fit_key(disposition)
         already_reclaimed = key in _context_reclaim_passes(ctx.tools._ctx)
         if disposition.action == "reclaim_once" and not already_reclaimed:
             _run_main_reclaim(ctx, disposition)
@@ -5409,8 +5404,20 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     failed_capture = last_physical_attempt_capture()
     if disposition is None:
         return msg, cost, ctx.active_context_mode
+
+    def _skipped(reason: str) -> Tuple[Any, float, str]:
+        _emit_checkpoint_event(ctx.event_queue, ctx.task_id, ctx.drive_logs, {
+            "type": "context_overflow_retry_skipped",
+            "round": ctx.round_idx,
+            "route_fp": str(getattr(ctx.context_fit_plan, "route_fp", "") or ""),
+            "reason": reason,
+        })
+        return msg, cost, ctx.active_context_mode
+
+    if isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict):
+        return _skipped("round_holds_unresolved_attempt")
     _reproject_actual_overflow_low(ctx)
-    reclaim_key = (disposition.measurement.route_fp, disposition.measurement.round_id)
+    reclaim_key = _fit_key(disposition)
     overflow_fit = (
         _measure_after_reclaim(ctx)
         if reclaim_key in _context_reclaim_passes(ctx.tools._ctx)
@@ -5418,7 +5425,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     )
     if overflow_fit is None:
         return msg, cost, ctx.active_context_mode
-    key = (overflow_fit.measurement.route_fp, overflow_fit.measurement.round_id)
+    key = _fit_key(overflow_fit)
     if key not in _context_reclaim_passes(ctx.tools._ctx):
         _run_main_reclaim(ctx, overflow_fit, minimum_goal_tokens=1)
         overflow_fit = _measure_after_reclaim(ctx)
@@ -5427,11 +5434,9 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
 
     retries = _context_overflow_retries(ctx.tools._ctx)
     if key in retries:
-        _emit_overflow_retry_skipped(ctx, "route_round_retry_already_used")
-        return msg, cost, ctx.active_context_mode
+        return _skipped("route_round_retry_already_used")
     if not _failed_capture_is_comparable(failed_capture):
-        _emit_overflow_retry_skipped(ctx, "failed_candidate_not_comparable")
-        return msg, cost, ctx.active_context_mode
+        return _skipped("failed_candidate_not_comparable")
     retries.add(key)
     try:
         retry_msg, retry_cost = _dispatch_round_model(
@@ -5443,8 +5448,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
             ),
         )
     except PhysicalAttemptPreconditionFailed:
-        _emit_overflow_retry_skipped(ctx, "context_candidate_not_strictly_smaller")
-        return msg, cost, ctx.active_context_mode
+        return _skipped("context_candidate_not_strictly_smaller")
     return retry_msg, retry_cost, ctx.active_context_mode
 
 
@@ -5521,7 +5525,7 @@ def _handle_budget_exceeded(
     if (
         scope == "root"
         and ctx.event_queue is not None
-        and not bool(getattr(ctx.tools._ctx, "is_direct_chat", False))
+        and not direct_chat
     ):
         try:
             ctx.event_queue.put_nowait({
@@ -5817,7 +5821,7 @@ def run_llm_loop(
     tools: ToolRegistry,
     llm: LLMClient,
     drive_logs: pathlib.Path,
-    emit_progress: Callable[[str], None],
+    emit_progress: Callable[..., None],
     incoming_messages: queue.Queue,
     task_type: str = "",
     task_id: str = "",
@@ -6004,7 +6008,7 @@ def run_llm_loop(
             transport_wait = _reconcile_transport_wait(
                 transport_wait, ctx, msg_present=msg is not None, error_kind=last_error_kind,
                 drive_logs=drive_logs, task_id=task_id, model=active_model, emit_progress=emit_progress)
-            if msg is None and _fallback_chain_allowed(ctx, last_error_kind, transport_wait):
+            if msg is None and _fallback_chain_allowed(ctx, last_error_kind, transport_wait, accumulated_usage):
                 _episode_before_chain = transport_wait is not None
                 (
                     msg,
@@ -6043,9 +6047,8 @@ def run_llm_loop(
                     limit_ctx,
                     error_kind=str(accumulated_usage.get("_last_llm_error_kind") or "provider_unavailable"),
                     wait_cause=transport_wait.wait_cause if transport_wait is not None else "",
-                    waited=transport_wait is not None and (
-                        transport_wait.wait_iterations > 0 or transport_wait.redials > 0),
-                    wait_eligible=transport_wait.wait_eligible if transport_wait is not None else True)
+                    waited_sec=transport_wait.waited_sec if transport_wait is not None else 0.0,
+                    interactive=transport_wait.interactive if transport_wait is not None else False)
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
 

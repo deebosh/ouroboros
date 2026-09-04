@@ -88,6 +88,11 @@ log = logging.getLogger("server")
 RESTART_EXIT_CODE = 42
 PANIC_EXIT_CODE = 99
 _restart_requested = threading.Event()
+# Set FIRST in the lifespan teardown: the supervisor loop reads it in its
+# ``while`` and in its crash handler, so the bus/Manager being torn down by
+# the shutdown itself never counts as a loop crash (no false "died after 3
+# consecutive crashes" alarm on a graceful window close / SIGTERM).
+_supervisor_stop = threading.Event()
 # Set only when the OWNER asked for the restart (the chat Restart button, and the
 # control endpoints that restart on the owner's behalf). The single fact the
 # re-exec needs to decide whether the runtime-mode ratchet pin rides along.
@@ -213,6 +218,7 @@ def _start_supervisor_if_needed(settings: dict) -> bool:
     if _supervisor_thread and _supervisor_thread.is_alive():
         return False
     _supervisor_error = None
+    _supervisor_stop.clear()  # in-process revival after a teardown-stopped generation
     _supervisor_thread = threading.Thread(
         target=_run_supervisor,
         args=(settings,),
@@ -2284,7 +2290,7 @@ def _run_supervisor(settings: dict) -> None:
     _loop_liveness = [time.monotonic()]
     _watchdog_stop = threading.Event()  # per-generation: stops the watchdog when THIS loop exits
     _start_supervisor_liveness_watchdog(_loop_liveness, _watchdog_stop)
-    while not _restart_requested.is_set():
+    while not _restart_requested.is_set() and not _supervisor_stop.is_set():
         try:
             _loop_liveness[0] = time.monotonic()
             rotate_chat_log_if_needed(DATA_DIR)
@@ -2342,6 +2348,11 @@ def _run_supervisor(settings: dict) -> None:
             time.sleep(0.5)
 
         except Exception as exc:
+            if _supervisor_stop.is_set() or _restart_requested.is_set():
+                # The shutdown/restart tore the bus down under this tick (a
+                # Manager proxy raising BrokenPipe/EOF): not a crash, no alarm.
+                log.info("Supervisor loop exiting on shutdown: %s", exc)
+                break
             crash_count += 1
             log.error("Supervisor loop crash #%d: %s", crash_count, exc, exc_info=True)
             if crash_count >= 3:
@@ -2363,10 +2374,10 @@ def _run_supervisor(settings: dict) -> None:
                         )
                 except Exception:
                     log.debug("Failed to notify owner about supervisor death", exc_info=True)
-                _watchdog_stop.set()  # this generation is dead — stop its liveness watchdog
-                return
-            time.sleep(min(30, 2 ** crash_count))
-    _watchdog_stop.set()  # loop exited (restart) — stop this generation's watchdog
+                break  # this generation is dead: the shared exit below stops its watchdog
+            # Backoff on the stop event, not time.sleep, so a shutdown is prompt.
+            _supervisor_stop.wait(min(30, 2 ** crash_count))
+    _watchdog_stop.set()  # every ordinary exit (restart, shutdown, crash death) stops this generation's watchdog
     _supervisor_thread = None
 
 
@@ -2862,6 +2873,7 @@ async def lifespan(app):
     except Exception:
         log.warning("Project registry boot reconcile failed", exc_info=True)
 
+    _supervisor_stop.clear()  # a fresh lifespan owns a fresh generation (symmetric with the teardown set)
     if has_startup_ready_provider(settings):
         _start_supervisor_if_needed(settings)
     else:
@@ -2998,6 +3010,7 @@ async def lifespan(app):
     try:
         yield
     finally:
+        _supervisor_stop.set()  # first: the loop must know a teardown owns what follows
         if extension_reconcile_task is not None:
             extension_reconcile_task.cancel()
             with suppress(asyncio.CancelledError, asyncio.TimeoutError):
@@ -3019,6 +3032,14 @@ async def lifespan(app):
             await ws_heartbeat_task
 
         log.info("Server shutting down...")
+        # Let the loop leave its current tick BEFORE workers are killed and the
+        # bridge/Manager go down: a tick still running would otherwise respawn
+        # a killed worker or meet BrokenPipe/EOF. Bounded well inside the
+        # launcher's force-exit budget; the stop flag already suppresses the
+        # crash counter if the join times out.
+        supervisor_thread = _supervisor_thread
+        if supervisor_thread is not None and supervisor_thread.is_alive():
+            supervisor_thread.join(timeout=2)
         try:
             from ouroboros.local_model import get_manager
             get_manager().stop_server()

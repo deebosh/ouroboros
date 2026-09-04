@@ -758,6 +758,10 @@ def test_classify_llm_exception_keeps_text_only_token_rate_retryable():
 
 
 def test_dispatched_unknown_outcome_is_not_retried(tmp_path):
+    """A dispatched request with no terminal provider outcome whose failure is
+    NOT a typed transport death (here: a bare timeout — "we gave up", the
+    provider may still be working) is never resent, even by the primary
+    dispatch that carries the bounded transport-death budget."""
     usage = {}
 
     class _AmbiguousLLM:
@@ -776,7 +780,7 @@ def test_dispatched_unknown_outcome_is_not_retried(tmp_path):
     msg, _cost = call_llm_with_retry(
         llm, [{"role": "user", "content": "hi"}], "openai/gpt-5.5",
         None, "medium", 3, tmp_path, "task-unknown", 1, None, usage,
-        "task", False,
+        "task", False, transport_death_retries=2,
     )
 
     assert msg is None
