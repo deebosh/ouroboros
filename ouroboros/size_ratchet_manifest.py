@@ -159,6 +159,7 @@ BAND_PATHS = {
     "ouroboros/safety.py": "Entered the band from 954 lines with the safety-supervisor rate-limit fix: ONE shared model-call helper now serves both the primary and repair safety calls (it already deletes the duplicated call block), recognising a provider rate limit in BOTH wire shapes, taking one bounded deadline-capped backoff plus one retry, then blocking that one call with the typed non-verdict SAFETY_UNAVAILABLE outcome plus a durable audit row (a short storm latch answers further checks in the window without provider calls); the bounded newest-first conversation budget is the second half.",
     "ouroboros/skill_review_runner.py": None,
     "ouroboros/subagent_runtime.py": "Configured-retry refusals mirrored typed (triad 2026-08-30) push the module just over 1000; no new subsystem, same seam.",
+    "ouroboros/task_pacing.py": "Cost-ceiling SSOT grew into the band while absorbing the cache-aware wrap-up reservation, the prepared/prospective wrap-up candidates, the deciding-spend basis vocabulary and the exhausted-ceiling texts; one owner for pacing decisions instead of a second pricing authority beside usage_accounting.py (at its ceiling).",
     "ouroboros/task_status.py": None,
     "ouroboros/tools/browser.py": None,
     "ouroboros/tools/commit_gate.py": "Grew INTO the band by the review-wave fix binding the actor reference (delivery class) into the commit review contract fingerprint \u2014 same-module contract identity, splitting it would separate the fingerprint from its gate.",
@@ -175,7 +176,6 @@ BAND_PATHS = {
     "supervisor/evolution_lifecycle.py": None,
     "supervisor/message_bus.py": "push_log gained the A2A frame suppression and explicit-addressing contract comments in the live log routing fix (fix/main-chat-leak sprint); the module sat at exactly 1000 lines before it",
     "supervisor/queue_transitions.py": "Queue-owned admission/quiescence transitions: the budget-pause predicate, the settled-tree fence release, and the restore-time orphan sweep join their resume/fence siblings (one queue authority).",
-    "supervisor/terminal_delivery.py": None,
     "tests/test_advisory_observability.py": None,
     "tests/test_build_scripts.py": None,
     "tests/test_commit_gate.py": None,
@@ -183,11 +183,12 @@ BAND_PATHS = {
     "tests/test_delegate_answer.py": "Entered the band by the #204 escalation-route pins (walk-up, schema and expiry-note source pins) on top of the phase-B interaction suite; one coherent delegated-question surface, split only when a natural seam appears.",
     "tests/test_delegated_skill_payload.py": "Sol scope-review fix batch: P1 trust probes (forged index, symlinked git metadata), P2 golden-E2E review close and schema/docs pins joined the existing R1+gate-fix payload suite.",
     "tests/test_evolution_redesign.py": None,
+    "tests/test_external_review_script.py": "Contributor review-lane coverage entered the band with the settlement, omissions-dispatch and substrate-inventory regressions of the acceptance-packet phase; one focused suite for the lane script.",
     "tests/test_external_workspace_access.py": "Deliverables custody matrix covers nested roots, executor aliases, Presence ceilings, and direct shell target semantics.",
+    "tests/test_gateway_history.py": "History API coverage entered the band with the outcome_phase/outcome_final parity fixtures of the terminal-presentation phase; one focused suite for the gateway history endpoints.",
     "tests/test_llm_provider_routing.py": "Entered the band from 1000 lines: the issue #468 shape-first reasoning classifier added its single-form/roster/mixed-artifact unit table, the gap-merge cases against the owner provider policy, and the pin-telemetry guards beside the dispatch and reroute tests they constrain.",
     "tests/test_loop_transport_wait.py": "Contract suite for the transport-wait episode: classification, custody, round-level wait, terminals, and the final-review regression pins live together as one coherent surface.",
     "tests/test_managed_review_subject.py": "Lane L-review contract suite: the managed resolution-delta subject (gate/advisory surfaces, M0 fallback), Q25-A admission, Q28-A yield outcomes and enforcement-honest advisory texts grew past 1000 across the adversarial fix round; one subject, one suite.",
-    "tests/test_nested_rights_depth.py": "Nested delegation depth authority regression coverage",
     "tests/test_observability_outcomes_v2.py": None,
     "tests/test_onboarding_complete_endpoint.py": None,
     "tests/test_onboarding_wizard.py": None,
@@ -206,6 +207,7 @@ BAND_PATHS = {
     "tests/test_telegram_miniapp_lifecycle.py": None,
     "tests/test_terminal_durability_v664.py": "Entered the band from 974 lines: terminal durability coverage now pins retry-admission failure custody so an unpersisted terminal row cannot publish task_done or lose the retry marker.",
     "tests/test_timeout_policy.py": "Adaptive timeout and custody regression suite covers raw-deadline admission, explicit finalization reserve, transport bounds, and late-result reconciliation.",
+    "tests/test_tree_cost_ceiling.py": "Budget-rail coverage entered the band with the cache-split ownership, candidate-predicate, soft-landing, probe-confirmed stop and one-row-per-delegated-run regressions; one focused suite for the tree cost ceiling.",
     "tests/test_ui_smoke_project_continuity.py": "Playwright smoke of the Project continuity contracts (panel/Main re-homing, lifecycle rows, the Main-root project pointer): each test drives one end-to-end owner flow across both surfaces, so the cross-surface assertions cannot be split into smaller files without losing what they prove.",
     "tests/test_usage_accounting.py": None,
     "tests/test_v6730_origin_invariant.py": None,
@@ -233,8 +235,8 @@ BYTE_BASELINE_DEBT = {
 }
 
 BYTE_DEBT = {
-    "ouroboros/loop.py": 284435,
+    "ouroboros/loop.py": 281714,
     "tests/test_delegated_subagent_transport.py": 320337,
     "tests/test_devtools_benchmarks.py": 328116,
-    "web/modules/chat.js": 206949,
+    "web/modules/chat.js": 206940,
 }

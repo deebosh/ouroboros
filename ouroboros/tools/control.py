@@ -1937,8 +1937,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     # destination now rather than a synonym for "unset".
     current_chat_id = _schedule_parent_chat(ctx)
     budget_drive_root = str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root)
-    root_cost_ceiling_usd = getattr(getattr(ctx, "_cost_ceiling", None), "ceiling_usd", None)
-    status_drive_root = Path(budget_drive_root)
+    status_drive_root, root_cost_ceiling_usd = Path(budget_drive_root), getattr(getattr(ctx, "_cost_ceiling", None), "ceiling_usd", None)
     if refusal := schedule_delegation_refusal(parent_contract, status_drive_root, parent_task_id):
         return refusal
     workspace_root = str(getattr(ctx, "workspace_root", "") or metadata.get("workspace_root") or "").strip()
