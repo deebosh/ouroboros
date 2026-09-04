@@ -613,6 +613,7 @@ _REVIEW_SESSION_INSTRUCTIONS = (
 
 _SESSION_POLL_SEC = 3.0
 _CLAUDEXOR_MAX_SECONDS = 604_800
+_EMITTED_SESSION_USAGE: Dict[str, float] = {}  # delegated run id -> first llm_usage emission
 
 
 def _retire_orphaned_review_registration(
@@ -1087,6 +1088,17 @@ def _full_session_text(gateway: Any, run_id: str, detail: Dict[str, Any]) -> str
         final_summary = detail.get("finalSummary")
         text = final_summary if isinstance(final_summary, str) else ""
     return text
+def _session_usage_once(run_id: str) -> bool:
+    """One llm_usage row per delegated run, across executors (process-local)."""
+    key = str(run_id or "")
+    if key in _EMITTED_SESSION_USAGE:
+        return False
+    if key:
+        _EMITTED_SESSION_USAGE.clear() if len(_EMITTED_SESSION_USAGE) >= 256 else None
+        _EMITTED_SESSION_USAGE[key] = time.monotonic()
+    return True
+
+
 class AgentSessionReviewExecutor(ReviewSlotExecutor):
     """One pinned Claudexor run per reviewer slot.
 
@@ -1164,7 +1176,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         except BaseException as exc:
             self._run_id = self._run_id or str(getattr(exc, "delegated_run_id", "") or "")
             started = bool(self._run_id or getattr(exc, "delegated_run_started", False))
-            if started and not self._session_usage_observed:
+            if started and not self._session_usage_observed and _session_usage_once(self._run_id):
                 self._observe_usage({
                     "provider": "claudexor", "resolved_model": str(self.assignment.slot.model or ""),
                     "delegated_run_started": True, "delegated_run_id": self._run_id, "cost": None,
@@ -1173,9 +1185,9 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             if not self._retry_state.get("pending_invocation_id"):
                 self._settled_failure = exc
             raise
-        if not self._session_usage_observed:
+        if not self._session_usage_observed and _session_usage_once(self._run_id):
             self._observe_usage(self._session_usage)
-            self._session_usage_observed = True
+        self._session_usage_observed = True
         return self._verdict_result()
 
     def failure_custody(self) -> Dict[str, Any]:

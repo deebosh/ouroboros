@@ -287,9 +287,12 @@ def _check_budget_limits(
         wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
         two_fit = task_pacing.wrapup_reservation_fits(**wrapup_args, reservation_count=2) if wrapup_fits is True else None
         server_web = _server_web_allowed_by_task(getattr(getattr(ctx, "tools", None), "_ctx", None))
-        if wrapup_fits is True and two_fit is not False and messages_carry_native_images(ctx.messages):
-            # The proxy understates images: price the raw bytes without touching
-            # the task (no finalization) before destructive prep.
+        if wrapup_fits is False or two_fit is False or (
+            wrapup_fits is True and messages_carry_native_images(ctx.messages)
+        ):
+            # Pre-screen only: every proxy stop, and every image prompt the proxy
+            # understates, is priced exactly on a COPY of the transcript (no
+            # service finalization) before anything destructive happens.
             probe_messages = [dict(message) for message in ctx.messages]
             _append_or_merge_user_message(probe_messages, forced_prompt)
             probe = task_pacing.prospective_wrapup_attempt_request(
@@ -301,8 +304,8 @@ def _check_budget_limits(
             wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
             two_fit = task_pacing.wrapup_reservation_fits(**wrapup_args, reservation_count=2) if wrapup_fits is True else None
         if wrapup_fits is False or two_fit is False:
-            # Only at a real stop decision: finalize services, prepare the exact
-            # candidate that will be dispatched.
+            # The exact probe confirmed a stop: finalize services and prepare the
+            # candidate that will be dispatched (forced augmentations included).
             trace = ctx.llm_trace if isinstance(ctx.llm_trace, dict) else {}
             priced_prompt = _prepare_forced_prompt(ctx, forced_prompt, trace)
             prospective_messages = [dict(message) for message in ctx.messages]
@@ -319,8 +322,8 @@ def _check_budget_limits(
                 accumulated_usage["cost_stop_spend_basis"] = spend_basis
                 accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
                 return _forced_fallback_result(
-                    ctx, trace, finish_reason, "budget_exhausted",
-                    source="budget_wrapup_unaffordable",
+                    ctx, trace, task_pacing.wrapup_unaffordable_text(deciding, cost_ceiling),
+                    "budget_exhausted", source="budget_wrapup_unaffordable",
                 )
             if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
                 **wrapup_args, reservation_count=2,
@@ -3973,10 +3976,9 @@ def _no_tool_final_answer(
             _arm_delivery_control(tools, limit_ctx, llm_trace)
         return None
 
-    # Declared service outputs and teardown failures are acceptance evidence,
-    # not postscript cleanup: finalize them before the host panel and, when
-    # that changes evidence, require one complete replacement answer bound to
-    # the new revision. The finally-path reuses the same idempotent helper.
+    # Declared service outputs and teardown failures are acceptance evidence:
+    # finalize them before the host panel and, when that changes evidence,
+    # require one replacement answer bound to the new revision (idempotent helper).
     service_exit_ctx = _LoopExitContext(
         tools=tools,
         drive_root=limit_ctx.drive_root,
@@ -5187,9 +5189,8 @@ def _maybe_inject_finalization_nudges(
             return True
     if not getattr(tools._ctx, "_criterion_source_nudged", False):
         # Criterion-provenance one-shot ADVISORY nudge (v6.54.4): a green check on
-        # an agent-defined criterion with no stated basis gets one reminder to
-        # confirm equivalence (or state criterion_basis). After the masked nudge,
-        # before FR3; keyed on the typed receipt field, never content (P5).
+        # an agent-defined criterion with no basis gets one reminder; after the
+        # masked nudge, before FR3; typed receipt field, never content (P5).
         _agent_defined = latest_agent_defined_verification(
             drive_root, task_id, receipts=receipt_rows,
         )
@@ -5278,8 +5279,7 @@ def _maybe_inject_finalization_nudges(
         return True
     # P2 one-shot final-answer-marker nudge: real work + prose, no FINAL ANSWER
     # marker — the agent marks its OWN answer, prose is never mined (P5). Own
-    # latch after verify/red/A3; the protocol gate alone suffices (an extra
-    # expected_output gate once suppressed the only salvage surface, v6.56.0).
+    # latch after verify/red/A3; the protocol gate alone suffices (v6.56.0).
     if (
         not getattr(tools._ctx, "_final_marker_nudged", False)
         and _answer_protocol_active(tools._ctx)  # v6.60.0: marker nudge is protocol-gated

@@ -628,6 +628,16 @@ def tree_spend_line(tree_info: Any, ceiling: Optional[CostCeiling] = None) -> st
     )
 
 
+def wrapup_unaffordable_text(deciding_usd: float, ceiling: CostCeiling) -> str:
+    """The owner-facing reason a task ends without even one affordable wrap-up send."""
+    cap = ceiling.root_cap_usd
+    cap_text = f" of the ${cap:.2f} hard tree cap" if cap is not None else ""
+    return (
+        f"Task tree spent ${deciding_usd:.3f}{cap_text}; not even one wrap-up call can "
+        "be reserved, so the host delivers the retained evidence without a model synthesis."
+    )
+
+
 def wrapup_last_fit_text(deciding_usd: float, ceiling: CostCeiling) -> str:
     """The owner-facing reason a task claims the last affordable wrap-up send."""
     cap = ceiling.root_cap_usd
