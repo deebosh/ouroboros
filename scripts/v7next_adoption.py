@@ -113,10 +113,12 @@ DEFERRED_OUT_OF_V70 = {
     # ledger until the stage-2 bookkeeping made them rows (quotes in each row):
     # batch №7 5=A (headless cancel receipts), batch №9 №12=A (two frozen modules),
     # batch №12 A (C6 residuals), batch №8 5=A (task_results eternal).
-    # Operator disclosures WITHOUT an owner decision: the wave-4 observations
-    # W4-F3/W4-F4 only. Batch №13 item 13(и) asked to ratify them and the owner
-    # answered that he had not read that item, so no per-item quote exists;
-    # the F3 owner batch of 2026-09-04 re-asks. Owner-decided since batch №13:
+    # Operator disclosure WITHOUT an owner decision: the wave-4 observation
+    # W4-F4 only. Batch №13 item 13(и) asked to ratify W4-F3/W4-F4 and the owner
+    # answered that he had not read that item; the F3 owner batch of 2026-09-04
+    # re-asked, and its item 5 = A pulled W4-F3 INTO 7.0 (the marker is always
+    # written; that row reads done and is no longer a deferral). Owner-decided
+    # since batch №13:
     # DEFER-E2E-PAID-LANE (item 2 = A ordered the paid lane RUN once — E1/E13
     # executed green; E2/E3 stay unexecuted for a structural reason, the real
     # Claudexor lane needs a logged-in Claude account, which is the owner's act
@@ -130,7 +132,6 @@ DEFERRED_OUT_OF_V70 = {
     "DEFER-FROZEN-2": OWNER,
     "DEFER-C6-RESIDUALS": OWNER,
     "DEFER-C19-RETENTION": OWNER,
-    "W4-F3": OPERATOR,
     "W4-F4": OPERATOR,
     "DEFER-E2E-PAID-LANE": OWNER,  # batch №13 item 2 = A (the run order); E2/E3 blocked structurally
     "DEFER-SPEC64-PATHS": OWNER,  # batch №13 item 8 = A

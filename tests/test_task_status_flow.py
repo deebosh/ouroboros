@@ -3411,12 +3411,16 @@ def test_request_restart_latches_reason_until_task_end(tmp_path, monkeypatch):
     from ouroboros.tools import control as control_module
     from ouroboros.tools import control_runtime
 
+    from supervisor import evolution_lifecycle
+
     monkeypatch.setattr(control_runtime, "run_cmd", lambda *args, **kwargs: "value")
     written = {}
+    # The marker write lives in the shared writer helper (W4-F3: one schema for
+    # the tool and the supervisor), so the capture sits at its seam.
     monkeypatch.setattr(
-        control_runtime,
+        evolution_lifecycle,
         "atomic_write_json",
-        lambda path, payload: written.setdefault(str(path), payload),
+        lambda path, payload, **_kwargs: written.setdefault(str(path), payload),
     )
 
     class _Ctx:
@@ -3425,6 +3429,7 @@ def test_request_restart_latches_reason_until_task_end(tmp_path, monkeypatch):
         pending_events = []
         pending_restart_reason = None
         repo_dir = tmp_path
+        drive_root = tmp_path
 
         def drive_path(self, rel):
             return tmp_path / rel

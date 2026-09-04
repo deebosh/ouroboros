@@ -455,13 +455,18 @@ def test_evolution_restart_write_failure_does_not_become_generic_restart(tmp_pat
         control, "run_cmd",
         lambda cmd, cwd=None: "f" * 40 if cmd[-1] == "HEAD" else "ouroboros",
     )
+    # The marker write lives in the shared writer helper (W4-F3: one schema for
+    # the tool and the supervisor), so the disk failure is injected at its seam.
+    from supervisor import evolution_lifecycle
+
     monkeypatch.setattr(
-        control, "atomic_write_json",
+        evolution_lifecycle, "atomic_write_json",
         lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
     )
     ctx = SimpleNamespace(
         current_task_type="evolution",
         repo_dir=tmp_path,
+        drive_root=tmp_path,
         drive_path=lambda name: tmp_path / name,
         task_id="evo",
         task_metadata={"evolution_transaction": {}},
