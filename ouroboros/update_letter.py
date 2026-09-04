@@ -188,8 +188,12 @@ def collect_range_material(
     material["bodies_omitted"] = max(0, len(commits) - max_bodies)
     material["commits"] = commits
 
+    # `--diff-merges=first-parent`, never `-m`: `-m` diffs a merge against EVERY parent, and the
+    # second-parent comparison of an official merge re-emits rows that were already on the
+    # first-parent line — presenting an old release as added inside this range.
     rc, out, err = capture([
-        "git", "log", "-m", "--first-parent", "-p", "-U0", "--format=%x01%H", spec, "--", "README.md",
+        "git", "log", "--first-parent", "--diff-merges=first-parent", "-p", "-U0",
+        "--format=%x01%H", spec, "--", "README.md",
     ])
     if rc != 0:
         raise MaterialUnavailable(f"git log -p README.md {spec} failed (rc={rc}): {str(err)[:200]}")
@@ -484,7 +488,12 @@ def write_letter(
         if not text:
             record.update(error_kind="empty_response", error_text="the model returned no text")
             return record
-        stop = str((msg or {}).get("finish_reason") or (msg or {}).get("stop_reason") or "").strip().lower()
+        # The stop marker travels in the message for some providers and in
+        # usage["response_finish_reason"] for OpenAI-compatible ones (llm.py stores it there).
+        stop = str(
+            (msg or {}).get("finish_reason") or (msg or {}).get("stop_reason")
+            or (usage or {}).get("response_finish_reason") or ""
+        ).strip().lower()
         if stop in _OUTPUT_LIMIT_STOPS:
             # Cut mid-answer by the output budget: storing it as ready would present a
             # partial cognitive artifact as the letter (BIBLE P1). Typed, last good kept.

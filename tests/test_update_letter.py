@@ -166,6 +166,22 @@ def test_material_reads_a_release_row_with_the_repository_version_grammar(histor
     assert material["omitted_rows"] == 1 and material["omitted_row_commits"] == [c5]
 
 
+def test_material_ignores_a_merge_second_parent_diff(history_repo):
+    # `-m` would diff the merge against its SECOND parent too and re-emit a row that the
+    # first-parent line already had before the range — an old release presented as added.
+    repo = history_repo["repo"]
+    # A side branch from BEFORE the 1.4.0 row existed, with unrelated work.
+    _git(repo, "checkout", "-q", "-b", "side", history_repo["c2"])
+    (repo / "side.txt").write_text("side\n")
+    side = _commit(repo, "side work")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge side", side)
+    merged = _git(repo, "rev-parse", "HEAD")
+    material = ul.collect_range_material(history_repo["c4"], merged, git=_capture_for(repo))
+    assert [c["subject"] for c in material["commits"]] == ["merge side"]
+    assert material["releases"] == [], "the merge added no README row on the first-parent line"
+
+
 def test_material_reworded_row_is_first_wins_newest_first(history_repo):
     repo = history_repo["repo"]
     _write_readme(repo, [("1.4.0", "2026-01-04", "fourth, reworded"), ("1.2.0", "2026-01-03", "third")])
@@ -870,10 +886,16 @@ def test_write_letter_sends_the_owner_mode_and_retries_low_only_on_an_actual_ove
 def test_write_letter_treats_an_output_budget_cut_as_a_typed_failure(letter_env, monkeypatch):
     # A reply stopped by the output budget is a partial cognitive artifact (BIBLE P1):
     # never stored as ready, always named for what it is.
-    for stop_key, stop in (("finish_reason", "length"), ("stop_reason", "max_tokens")):
-        monkeypatch.setattr(ul, "_chat", lambda *a, _k=stop_key, _s=stop, **k: ({"content": "This update brings…", _k: _s}, {"ledger_attempt_ids": ["att"]}))
+    shapes = [
+        ({"content": "This update brings…", "finish_reason": "length"}, {"ledger_attempt_ids": ["att"]}),
+        ({"content": "This update brings…", "stop_reason": "max_tokens"}, {"ledger_attempt_ids": ["att"]}),
+        # llm.py keeps the OpenAI-compatible marker in usage["response_finish_reason"]
+        ({"content": "This update brings…"}, {"ledger_attempt_ids": ["att"], "response_finish_reason": "length"}),
+    ]
+    for msg, usage in shapes:
+        monkeypatch.setattr(ul, "_chat", lambda *a, _m=msg, _u=usage, **k: (dict(_m), dict(_u)))
         record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
-        assert record["state"] == "failed" and record["error_kind"] == "output_truncated", stop
+        assert record["state"] == "failed" and record["error_kind"] == "output_truncated", (msg, usage)
         assert str(ul.UPDATE_LETTER_MAX_TOKENS) in record["error_text"] and record["text"] == ""
     monkeypatch.setattr(ul, "_chat", lambda *a, **k: ({"content": "Done.", "finish_reason": "stop"}, {"ledger_attempt_ids": ["att"]}))
     assert ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])["state"] == "ready"
