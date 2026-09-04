@@ -8,10 +8,15 @@ those commits ADDED. Rows are recovered from the commit diffs rather than read f
 README snapshot, because the history table is capped (rows roll off inside one range) and
 untagged releases have no tag to look up.
 
-Floor (host code): exact versions/SHAs, the material, one paragraph, the truth rule ("only
-what the material says"), physical-attempt accounting, no silent model substitution, and a
-letter that is never deleted after the update lands. Ceiling (the mind): language,
-register, what matters to this human, and whether to mention it at all.
+Floor (host code): exact versions and SHAs, the material and its disclosed bounds, an output
+budget, physical-attempt accounting, no silent model substitution, and a letter that is never
+deleted after the update lands. Ceiling (the mind): the SHAPE of the paragraph as well as its
+language, register, and what matters to this human — the request asks for one short paragraph
+that only says what the material says, and the host does not police the answer. Deliberate
+(reviewed three times): a host shape gate would either edit a cognitive artifact (BIBLE P1) or
+throw away a useful letter over its formatting, and ``UPDATE_LETTER_MAX_TOKENS`` already bounds
+the size. The panel renders whatever comes back through the same sanitizing markdown pipeline
+the chat uses.
 
 Storage is one file, ``data/state/update_letter.json``, with one writer —
 ``refresh_after_check``, which runs synchronously inside a FETCHING update check (boot and
@@ -50,6 +55,10 @@ DEFAULT_MAX_BODIES = 200
 DEFAULT_MAX_ROWS = 60
 
 _ROW_RE = re.compile(r"^\+\|\s*(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)\s*\|")
+# The table's own furniture: a header row and the dashed separator under it carry no release
+# and are the ONLY added rows that may be skipped in silence. Anything else that fails to
+# parse is a row the author will never see, so it is counted and disclosed.
+_ROW_FURNITURE_RE = re.compile(r"^\+\|\s*(?:-{2,}|:?-+:?|version)\s*\|", re.IGNORECASE)
 _UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 _REFRESH_LOCK = threading.Lock()
 # Bumped by every letter write under the lock, so a refresh that waited for the lock can
@@ -163,13 +172,12 @@ def collect_range_material(
             if line.startswith("\x01"):
                 current_sha = line[1:].strip()
                 continue
-            if not line.startswith("+|"):
-                continue
-            match = _ROW_RE.match(line)
-            if not match:
+            if not line.startswith("+|") or _ROW_FURNITURE_RE.match(line):
                 continue
             cells = _split_row(line)
-            if cells is None:
+            if cells is None or not _ROW_RE.match(line):
+                # Wrong cell count, or a first cell that is not a version: either way this
+                # row said something the letter's author would otherwise never learn.
                 material["omitted_rows"] += 1
                 continue
             version, date, text = cells
@@ -200,7 +208,9 @@ def material_text(material: Dict[str, Any]) -> str:
     if releases or material.get("omitted_rows"):
         lines.append("Release notes added in this range (newest first):")
         for row in releases:
-            head = f"- {row.get('version')} ({row.get('date')})"
+            # The row's own commit travels with it: a row whose text is not rendered here
+            # still names where to read it in full.
+            head = f"- {row.get('version')} ({row.get('date')}, added in {row.get('commit') or 'unknown commit'})"
             lines.append(f"{head}: {row['text']}" if row.get("text") else head)
         if material.get("omitted_rows"):
             lines.append(f"- [{material['omitted_rows']} malformed history row(s) omitted]")
@@ -211,8 +221,10 @@ def material_text(material: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("First-parent commits in this range (newest first, every one of them):")
         for commit in commits:
+            # The FULL sha, not a display prefix: the subject is a summary, the sha is the
+            # only thing that makes the rest of that commit retrievable.
             lines.append(
-                f"- {str(commit.get('sha') or '')[:8]} {commit.get('date', '')[:10]} {commit.get('subject', '')}"
+                f"- {commit.get('sha') or ''} {commit.get('date', '')[:10]} {commit.get('subject', '')}"
             )
             body = str(commit.get("body") or "").strip()
             if body:

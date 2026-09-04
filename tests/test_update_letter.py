@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import subprocess
 import threading
 import time
@@ -130,7 +131,7 @@ def test_material_keeps_every_commit_subject_and_bounds_only_the_bodies(history_
     assert [row["version"] for row in capped["releases"]] == ["1.4.0", "1.2.0", "1.1.1", "1.1.0"]
     assert capped["releases"][-1]["text"] == "" and capped["rows_summarized"] == 1
     summarized = ul.material_text(capped)
-    assert "- 1.1.0 (2026-01-02)\n" in summarized + "\n"  # version and date, no text
+    assert "- 1.1.0 (2026-01-02, added in " in summarized  # version, date, provenance, no text
     assert "second with an escaped | pipe" not in summarized
     assert "oldest 1 row(s) above carry version and date only" in summarized
 
@@ -160,6 +161,34 @@ def test_material_unreadable_range_is_a_typed_failure_not_an_empty_one(history_r
 
     with pytest.raises(ul.MaterialUnavailable):
         ul.collect_range_material(history_repo["base"], history_repo["c4"], git=readme_broken)
+
+
+def test_material_discloses_an_added_row_whose_version_is_not_one(history_repo):
+    # A row the parser cannot read as a release is a row the author will never see, so it
+    # is counted — while the table's own header and separator stay silent, carrying nothing.
+    repo = history_repo["repo"]
+    (repo / "README.md").write_text(
+        "# Demo\n\n## Version History\n\n| Version | Date | Description |\n|---|---|---|\n"
+        "| v6.114.0-rc | 2026-01-05 | a version this parser does not read |\n"
+        "| 1.4.0 | 2026-01-04 | fourth |\n",
+        encoding="utf-8",
+    )
+    c5 = _commit(repo, "readme: a row with an unparsed version")
+    material = ul.collect_range_material(history_repo["c4"], c5, git=_capture_for(repo))
+    assert [row["version"] for row in material["releases"]] == []
+    assert material["omitted_rows"] == 1, "the unreadable row is disclosed, the furniture is not"
+    assert "1 malformed history row(s) omitted" in ul.material_text(material)
+
+
+def test_material_text_carries_full_provenance(history_repo):
+    # Full commit shas and the commit each row came from: an omission has to stay resolvable.
+    material = ul.collect_range_material(
+        history_repo["base"], history_repo["c4"], git=_capture_for(history_repo["repo"]),
+    )
+    rendered = ul.material_text(material)
+    assert history_repo["c4"] in rendered and history_repo["c1"] in rendered
+    assert f"added in {history_repo['c3']}" in rendered
+    assert history_repo["c4"][:8] + " " not in rendered.replace(history_repo["c4"], ""), "no bare 8-char prefixes"
 
 
 def test_material_text_discloses_malformed_rows_with_no_valid_row_left(history_repo):
@@ -248,6 +277,20 @@ def test_write_letter_ready_record_carries_attempt_and_versions(letter_env, monk
     assert task["id"] == ul.SYSTEM_TASK_ID and task["model"] == "test/light"
     assert "[UPDATE LETTER REQUEST]" in task["text"] and "6.114.0" in task["text"]
     assert "ONE short paragraph" in seen["messages"][-1]["content"]
+
+
+def test_write_letter_stores_the_model_s_shape_without_policing_it(letter_env, monkeypatch):
+    # The shape is the mind's ceiling, not a host gate (owner decision; reviewed three
+    # times): an oddly shaped answer is stored and shown, never edited and never thrown
+    # away. What bounds it is the output budget, and the panel's sanitizing renderer.
+    odd = "# A heading\n\n- one\n- two\n\nAnd a second paragraph."
+    monkeypatch.setattr(ul, "_chat", lambda *a, **k: ({"content": odd}, {"ledger_attempt_ids": ["att"]}))
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert record["state"] == "ready" and record["text"] == odd
+    # Nothing in the module promises the host enforces one paragraph.
+    source = (pathlib.Path(ul.__file__)).read_text(encoding="utf-8")
+    floor = source.split("Floor (host code):", 1)[1].split("Ceiling", 1)[0]
+    assert "paragraph" not in floor, "the floor must not claim a shape the host does not enforce"
 
 
 def test_write_letter_without_light_credentials_fails_typed_and_never_calls(letter_env, monkeypatch):
