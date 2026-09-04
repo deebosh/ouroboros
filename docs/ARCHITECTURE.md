@@ -450,7 +450,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
 
 ### Devtools boundary
 
-`devtools/` (including `devtools/benchmarks/cybergym/`) lives outside the runtime and package discovery: no runtime imports, normal review, artifacts in an external output root; a sentinel-marked isolated root suppresses rotation warnings.
+`devtools/` (including `devtools/benchmarks/cybergym/`) lives outside the runtime and package discovery: no runtime imports, normal review, artifacts in an external output root; a sentinel-marked isolated root suppresses rotation warnings. `devtools/e2e_live/` is the live E2E stand: K staggered isolated real servers running the owner-shaped scenarios SM1/SW1/SK1 with acceptance over durable artifacts and a browser probe, admitted through the same seed gate and manifest seams as the benchmark launchers (DEVELOPMENT "Live E2E stand").
 
 ### Gateway Boundary v1
 

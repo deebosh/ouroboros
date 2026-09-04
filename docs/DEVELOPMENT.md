@@ -1233,6 +1233,42 @@ architecture and methodology live beside the devtool, not in core governance
 docs. No automated import guard — review-only (triad/scope review of touched
 devtool files).
 
+### Live E2E stand (`devtools/e2e_live/`)
+
+`python -m devtools.e2e_live.run_live_lanes` drives K isolated REAL servers
+(`--lanes`, default 4, at most 6, starts staggered 2–3 s apart), one
+owner-shaped scenario attempt per lane, from the scenario table in
+`scenarios.py`: SM1 (a `web/style.css` custom property landed through
+`commit_reviewed` under advanced runtime and blocking enforcement; acceptance is
+the S2 set plus the computed style read by a browser from the COMMITTED CSS after
+a restart), SW1 (the Swarm button arms `force_plan`; at least two children with
+causal lineage, the `swarm_fanout` receipt, the with-children cost rollup, no
+orphan process by the `/proc` environ scan), SK1 (the model authors
+`SKILL.md`+`plugin.py` and runs `skill_preflight`; the runner reviews, grants
+exactly the manifest's one privileged permission, enables, dispatches, deletes).
+Every acceptance is a callable over durable artifacts, never a reading of model
+prose. The launcher follows the benchmark family's admission contract
+(`launcher_audit.audit_source` is pinned on it by source): a dirty seed is refused
+with the refusal persisted in `run_manifest.json`; the key is read by NAME from
+`$OUROBOROS_E2E_LIVE_OPENROUTER_KEY` (`--key-env`; the pool file is never opened
+and the value never leaves the applied settings file, mode 0600); the preflight
+takes `min(key limit remaining, account credits)` and refuses below
+`--min-credit-usd`; `--total-budget` (default 100) and `--per-task-usd` (default
+8) are SETTINGS keys of the lane, never environment guesses; the manifest names
+the model from the applied settings file, not from argv; `--self-mod` enables
+post-task evolution with the real re-exec restart and records the absorb outcome
+as a diagnostic. Per lane: `lanes/<id>_a<n>/result.json` (checks, digests
+including the settings sha256 and its secret-free config digest, seed `git
+describe`, pre/post HEAD and the exact diff digest, grants by fingerprint,
+runtime terminal disclosure) plus screenshots when a browser client exists
+(`ui_probe.resolve_ui_client`: the suite's `PlaywrightUIClient` when it carries
+this surface, else headless Chromium, else a typed `ui_unavailable` reason — never
+a silently passed check). `--stub` runs the same scenarios against the loopback
+stub model of `tests/system_e2e/harness.py` for $0 (`stub_lane.py` routes the
+swarm wire by role); `--attempts N --pass-of K` records every attempt. Run roots
+are append-only outside `repo/` and live `data/`; a watcher line prints lane
+states, free disk on `/` and `/mnt/data`, and the key headroom.
+
 ### Light mode and external deliverables
 
 - `runtime_mode=light` is a self-modification boundary (`ouroboros/config.py`
