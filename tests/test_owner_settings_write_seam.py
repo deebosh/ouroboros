@@ -481,11 +481,18 @@ def test_settings_save_body_runs_off_the_event_loop():
         pathlib.Path(__file__).resolve().parents[1]
         / "ouroboros" / "gateway" / "settings.py"
     ).read_text(encoding="utf-8")
-    endpoint_text = ""
+    endpoint_text = writer_seam_text = ""
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "api_settings_post":
             endpoint_text = ast.unparse(node)
-    assert "asyncio.to_thread(_api_settings_post_sync" in endpoint_text
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_settings_writer":
+            writer_seam_text = ast.unparse(node)
+    # The endpoint hands its body to the ONE writer seam, and that seam is
+    # what runs it off the loop (and maps the bounded document lock's typed
+    # refusal to 503 settings_busy for every writer).
+    assert "_run_settings_writer(_api_settings_post_sync" in endpoint_text
+    assert "asyncio.to_thread(fn, request, body)" in writer_seam_text
+    assert "SettingsDocumentBusy" in writer_seam_text
 
     # Worker threads do not inherit the event loop's free serialization: a
     # writer interleaving read-merge-write with another would silently drop
@@ -513,7 +520,9 @@ def test_settings_save_body_runs_off_the_event_loop():
             "api_owner_runtime_mode", "api_owner_auto_grant", "api_owner_context_mode",
             "api_owner_safety_mode",
         }:
-            assert "asyncio.to_thread" in ast.unparse(node), (
+            # Off the loop through the ONE writer seam (itself pinned above to
+            # asyncio.to_thread + the typed busy mapping), never inline.
+            assert "_run_settings_writer(" in ast.unparse(node), (
                 f"{node.name} must run its locked body off the event loop"
             )
     seen = {}

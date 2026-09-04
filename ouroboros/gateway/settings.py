@@ -23,6 +23,7 @@ from ouroboros.config import ENDPOINT_AUTHORED_SETTINGS as _ENDPOINT_AUTHORED_SE
 from ouroboros.gateway._helpers import json_error, json_exception, request_drive_root
 from ouroboros.gateway.owner_settings import (
     CommitBoundary,
+    SettingsDocumentBusy,
     SettingsLockUnavailable,
     _CONTEXT_MODE_KEYS,
     _owner_audit,
@@ -377,6 +378,21 @@ def _has_started_agent_tasks() -> bool:
         return False
 
 
+async def _run_settings_writer(fn: Any, request: Request, body: Any) -> JSONResponse:
+    """Run one settings WRITER endpoint body off the event loop.
+
+    Every writer serializes on the bounded in-process document lock
+    (``settings_document_mutation``); its typed refusal answers the same
+    503 ``settings_busy`` on every endpoint — the generic save, the four
+    single-decision endpoints and onboarding alike — never an untyped 500
+    from one of them while another answers honestly.
+    """
+    try:
+        return await asyncio.to_thread(fn, request, body)
+    except SettingsDocumentBusy as exc:
+        return unsaved_error(str(exc), 503, code="settings_busy")
+
+
 @owner_write_guard
 async def api_owner_runtime_mode(request: Request) -> JSONResponse:
     """Persist the owner-selected runtime mode for the next boot."""
@@ -384,7 +400,7 @@ async def api_owner_runtime_mode(request: Request) -> JSONResponse:
     # Off the event loop, under the document lock (held inside): a slow
     # generic save must not be able to freeze the loop THROUGH this
     # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_runtime_mode_sync, request, body)
+    return await _run_settings_writer(_api_owner_runtime_mode_sync, request, body)
 
 
 def _api_owner_runtime_mode_sync(request: Request, body: Any) -> JSONResponse:
@@ -440,7 +456,7 @@ async def api_owner_auto_grant(request: Request) -> JSONResponse:
     # Off the event loop, under the document lock (held inside): a slow
     # generic save must not be able to freeze the loop THROUGH this
     # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_auto_grant_sync, request, body)
+    return await _run_settings_writer(_api_owner_auto_grant_sync, request, body)
 
 
 def _api_owner_auto_grant_sync(request: Request, body: Any) -> JSONResponse:
@@ -715,7 +731,7 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
     # Off the event loop, under the document lock (held inside): a slow
     # generic save must not be able to freeze the loop THROUGH this
     # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_context_mode_sync, request, body)
+    return await _run_settings_writer(_api_owner_context_mode_sync, request, body)
 
 
 def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
@@ -788,7 +804,7 @@ async def api_owner_safety_mode(request: Request) -> JSONResponse:
     # Off the event loop, under the document lock (held inside): a slow
     # generic save must not be able to freeze the loop THROUGH this
     # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_safety_mode_sync, request, body)
+    return await _run_settings_writer(_api_owner_safety_mode_sync, request, body)
 
 
 def _api_owner_safety_mode_sync(request: Request, body: Any) -> JSONResponse:
@@ -1085,7 +1101,7 @@ async def api_settings_post(request: Request) -> JSONResponse:
     except Exception as exc:
         # Same answer the broad in-body handler used to give a parse failure.
         return unsaved_error(str(exc), 400)
-    return await asyncio.to_thread(_api_settings_post_sync, request, body)
+    return await _run_settings_writer(_api_settings_post_sync, request, body)
 
 
 def _api_settings_post_sync(request: Request, body: Any) -> JSONResponse:
@@ -1426,4 +1442,6 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
             return post_commit_failure_response(e, boundary)
         if isinstance(e, SettingsLockUnavailable):
             return unsaved_error(str(e), 503, code="settings_locked")
+        if isinstance(e, SettingsDocumentBusy):
+            return unsaved_error(str(e), 503, code="settings_busy")
         return unsaved_error(str(e), 400)
