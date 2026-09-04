@@ -87,7 +87,7 @@ def test_review_models_default_in_config():
     assert val  # non-empty
     models = [m.strip() for m in val.split(",") if m.strip()]
     assert models == [
-        "google/gemini-3.7-flash",
+        "google/gemini-3.8-flash",
         "openai/gpt-5.6-terra",
         "anthropic/claude-opus-5",
     ]

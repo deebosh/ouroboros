@@ -20,7 +20,7 @@ const SETTINGS_TABS = [
 // Guard markers: renderTabStrip emits behavior/advanced tabs at runtime.
 
 const MODEL_CARDS = [
-    ['Main', 'Primary reasoning model.', 's-model', 's-local-main', 'google/gemini-3.7-flash'],
+    ['Main', 'Primary reasoning model.', 's-model', 's-local-main', 'google/gemini-3.8-flash'],
     ['Light', 'Fast summaries, lightweight internal work, reflections, and the default Fast scout. Empty uses Main.', 's-model-light', 's-local-light', 'openai/gpt-5.6-luna'],
     ['Vision', 'Caption and VLM lane. Empty uses Main.', 's-model-vision', '', ''],
     ['Consciousness', 'High-horizon background consciousness. Empty uses Main.', 's-model-consciousness', 's-local-consciousness', ''],
