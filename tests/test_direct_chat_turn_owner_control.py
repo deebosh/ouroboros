@@ -396,3 +396,29 @@ def test_cascade_custody_stops_the_direct_turn_quietly(tmp_path, monkeypatch):
     assert outcome == worker_chat_lane.DIRECT_TURN_STOP_LIVE
     assert _mailbox_kinds(tmp_path) == ["finalize_now"]
     assert toasts == []
+
+
+def test_settled_row_does_not_hide_a_still_busy_direct_turn_from_custody(tmp_path, monkeypatch):
+    """Scope-review finding: the pipeline persists the terminal BEFORE post-task
+    cognition, so a direct turn can be settled on disk and still busy (and
+    spending). Custody must not take the settled fast path past a live turn:
+    it arms the stop and answers "still live" until the agent is really done,
+    then settles already_settled against the stored terminal."""
+    import ouroboros.config as config
+
+    _isolate_queue(monkeypatch, tmp_path)
+    agent = _live_chat_agent(monkeypatch)
+    write_task_result(tmp_path, TURN_ID, "completed", chat_id=0, description="modify yourself")
+    _write_snapshot(tmp_path, running_ids=())
+    monkeypatch.setattr(config, "get_direct_turn_stop_wait_sec", lambda: 0.3)
+    with _client(tmp_path) as client:
+        first = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
+        assert first.status_code == 503, first.text          # armed, still busy
+        assert "finalize_now" in _mailbox_kinds(tmp_path)
+        agent._busy = False                                    # post-task cognition ends
+        second = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
+    assert second.status_code == 404, second.text              # already settled, honestly
+    assert load_task_result(tmp_path, TURN_ID)["status"] == "completed"
+    from ouroboros.cancel_intents import active_intent
+
+    assert not active_intent(tmp_path, TURN_ID)

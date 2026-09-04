@@ -657,7 +657,12 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
                     captured_worker.reaping = True
                     break
 
-    if not settled and captured_pending is None and captured_worker is None:
+    if captured_pending is None and captured_worker is None:
+        # A settled row does not prove the direct turn is done: the pipeline
+        # persists the terminal BEFORE post-task cognition, and the chat agent
+        # stays busy through it (the pooled twin: a settled-but-live worker
+        # still goes through the kill path). Live ownership wins over the
+        # settled fast path; the stored terminal stays the answer either way.
         turn = workers.direct_chat_turn(task_id)
         if turn is not None:
             from supervisor.cancel_publication import _finish_captured_chat_turn
