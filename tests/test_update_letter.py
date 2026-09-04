@@ -144,6 +144,33 @@ def test_material_reworded_row_is_first_wins_newest_first(history_repo):
     assert [row["version"] for row in material["releases"]] == ["1.4.0", "1.2.0", "1.1.1", "1.1.0"]
 
 
+def test_material_unreadable_range_is_a_typed_failure_not_an_empty_one(history_repo):
+    # A git that CANNOT read the range must never be recorded as "this update has
+    # nothing to say": the two are opposite facts about the same state file.
+    def broken(cmd):
+        return (128, "", "fatal: bad object")
+
+    with pytest.raises(ul.MaterialUnavailable):
+        ul.collect_range_material(history_repo["base"], history_repo["c4"], git=broken)
+
+    def readme_broken(cmd):
+        if "README.md" in cmd:
+            return (128, "", "fatal: bad object")
+        return _capture_for(history_repo["repo"])(cmd)
+
+    with pytest.raises(ul.MaterialUnavailable):
+        ul.collect_range_material(history_repo["base"], history_repo["c4"], git=readme_broken)
+
+
+def test_material_text_discloses_malformed_rows_with_no_valid_row_left(history_repo):
+    # Every candidate row malformed: there is nothing to print and the omission is
+    # exactly what the author still has to be told.
+    material = {"commits": [], "releases": [], "omitted_rows": 3, "rows_summarized": 0,
+                "bodies_omitted": 0}
+    rendered = ul.material_text(material)
+    assert "3 malformed history row(s) omitted" in rendered
+
+
 def test_material_empty_range_and_non_ancestor_base(history_repo):
     repo = history_repo["repo"]
     empty = ul.collect_range_material(history_repo["c4"], history_repo["c4"], git=_capture_for(repo))
@@ -317,6 +344,40 @@ def test_refresh_writes_record_and_keeps_last_good_on_failure(tmp_path, monkeypa
     assert view["state"] == "failed" and view["has_last_good"] is True
 
 
+def test_refresh_records_a_typed_failure_when_the_range_cannot_be_read(tmp_path, monkeypatch):
+    drive = tmp_path / "data"
+    (drive / "state").mkdir(parents=True)
+    good = _record(text="the letter about 6.114.0")
+    ul.atomic_write_json(ul.record_path(drive), good)
+    monkeypatch.setattr(ul, "collect_range_material",
+                        lambda *a, **k: (_ for _ in ()).throw(ul.MaterialUnavailable("git log failed (rc=128)")))
+    monkeypatch.setattr(ul, "write_letter",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no model call without material")))
+    record = ul.refresh_after_check(_status(), drive_root=drive)
+    assert record["state"] == "failed" and record["error_kind"] == "material_unavailable"
+    assert "git log failed" in record["error_text"]
+    # D-KEEP: the previous good letter survives an unreadable range.
+    assert record["last_good"]["text"] == "the letter about 6.114.0"
+    view = ul.project_letter(record, head_sha="a" * 40, latest_sha="b" * 40)
+    assert view["text"] == "the letter about 6.114.0" and view["has_last_good"] is True
+
+
+def test_mark_checked_takes_the_same_lock_as_the_writer(tmp_path, monkeypatch):
+    # A no-update check that read the record before a letter landed must not write its
+    # stale copy back over it: every record write goes through the one lock.
+    drive = tmp_path / "data"
+    (drive / "state").mkdir(parents=True)
+    monkeypatch.setattr(ul, "_letter_timeout_sec", lambda: 0.2)
+    monkeypatch.setattr(ul, "_default_git", lambda: (lambda argv: (0, "6.114.0", "")))
+    assert ul._REFRESH_LOCK.acquire(blocking=False)
+    try:
+        assert ul.refresh_after_check(_status(available=False), drive_root=drive) is None
+        assert not ul.record_path(drive).exists(), "the letterless mark must not bypass the lock"
+    finally:
+        ul._REFRESH_LOCK.release()
+    assert ul.refresh_after_check(_status(available=False), drive_root=drive)["state"] == "none"
+
+
 def test_refresh_is_single_flight(tmp_path, monkeypatch):
     # A held lock is waited for (bounded by the letter timeout), never bypassed by a
     # second physical write; past the bound the current record is returned as it is.
@@ -407,10 +468,69 @@ def test_project_letter_consumed_target_reads_applied_after_a_merge_apply():
     # follows reports zero behind for that target — the applied fact.
     merged = "e" * 40
     assert ul.project_letter(_record(), head_sha=merged, latest_sha="b" * 40, consumed=True)["relation"] == "applied"
-    # The same zero-behind fact for a DIFFERENT official target says nothing about this letter.
-    assert ul.project_letter(_record(), head_sha=merged, latest_sha="c" * 40, consumed=True)["relation"] == "other"
-    # Without the fact a moved HEAD stays "other" (no git on the hot path).
+    # The proof is about THIS letter's target, so it holds however the caller learned it —
+    # a passive read that could not even name the official target included.
+    assert ul.project_letter(_record(), head_sha=merged, latest_sha="", consumed=True)["relation"] == "applied"
+    # Without the proof a moved HEAD stays "other" (no git on the hot path).
     assert ul.project_letter(_record(), head_sha=merged, latest_sha="b" * 40)["relation"] == "other"
+
+
+def test_panel_projection_proves_a_consumed_target_with_git(tmp_path):
+    # The passive status leaves latest_sha EMPTY exactly when the cached target has been
+    # consumed, so the panel must prove the ancestry itself rather than infer it.
+    drive = tmp_path / "data"
+    (drive / "state").mkdir(parents=True)
+    ul.record_path(drive).write_text(json.dumps(_record()))
+    merged, target = "e" * 40, "b" * 40
+    calls = []
+
+    def ancestor(argv):
+        calls.append(argv)
+        return (0, "", "") if argv[:3] == ["git", "merge-base", "--is-ancestor"] else (1, "", "")
+
+    view = ul.project_letter_for_panel({"current_sha": merged, "latest_sha": ""}, drive_root=drive, git=ancestor)
+    assert view["relation"] == "applied" and calls[0][3:] == [target, merged]
+    # A HEAD that does NOT descend from the target keeps the honest "other".
+    stranger = ul.project_letter_for_panel(
+        {"current_sha": merged, "latest_sha": ""}, drive_root=drive, git=lambda argv: (1, "", ""),
+    )
+    assert stranger["relation"] == "other"
+    # A status that still offers the update has consumed nothing: no git is asked at all.
+    offered = ul.project_letter_for_panel(
+        {"current_sha": "a" * 40, "latest_sha": target, "available": True}, drive_root=drive,
+        git=lambda argv: (_ for _ in ()).throw(AssertionError("nothing to prove while the update is offered")),
+    )
+    assert offered["relation"] == "pending"
+    # A git that cannot answer is not proof, and never takes the letter down with it.
+    unprovable = ul.project_letter_for_panel(
+        {"current_sha": merged, "latest_sha": ""}, drive_root=drive,
+        git=lambda argv: (_ for _ in ()).throw(OSError("git missing")),
+    )
+    assert unprovable["relation"] == "other" and unprovable["text"] == "letter"
+    # HEAD == target needs no ancestry call at all.
+    no_git = ul.project_letter_for_panel(
+        {"current_sha": target, "latest_sha": target}, drive_root=drive,
+        git=lambda argv: (_ for _ in ()).throw(AssertionError("no git needed for SHA equality")),
+    )
+    assert no_git["relation"] == "applied"
+
+
+def test_official_update_projection_consumed_only_while_the_check_describes_this_head(tmp_path):
+    # The Runtime fact has no git, so the CHECK is its proof — and only while that check
+    # still describes this HEAD and names this letter's target.
+    drive = tmp_path / "data"
+    (drive / "state").mkdir(parents=True)
+    merged = "e" * 40
+    ul.record_path(drive).write_text(json.dumps(_record(checked_head_sha=merged)))
+    consumed_cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": False, "behind": 0,
+                                               "checked_at": "t1", "update_channel": "stable"}}
+    assert ul.official_update_projection(merged, drive_root=drive, state=consumed_cache)["letter"]["relation"] == "applied"
+    # HEAD moved on after the consumed check: the same cache proves nothing about it.
+    moved = ul.official_update_projection("f" * 40, drive_root=drive, state=consumed_cache)
+    assert moved["status"] == "moved_since_check" and moved["letter"]["relation"] == "other"
+    # A zero-behind check about a DIFFERENT official target proves nothing either.
+    other_target = {"managed_update_cache": dict(consumed_cache["managed_update_cache"], latest_sha="c" * 40)}
+    assert ul.official_update_projection(merged, drive_root=drive, state=other_target)["letter"]["relation"] == "other"
 
 
 def test_official_update_projection_applied_after_divergent_merge(tmp_path):

@@ -60,6 +60,14 @@ _LAST_WRITTEN: Tuple[Dict[str, str], Optional[Dict[str, Any]]] = ({}, None)
 GitCapture = Callable[[List[str]], Tuple[int, str, str]]
 
 
+class MaterialUnavailable(RuntimeError):
+    """The range could not be read at all (git failed), which is NOT an empty range.
+
+    Collapsing the two would record "this update has nothing to say" over a repository
+    the host could not read — a silent, durable falsehood in the letter's own state file.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Material: the update range as evidence
 # ---------------------------------------------------------------------------
@@ -118,11 +126,13 @@ def collect_range_material(
         "commits": [], "bodies_omitted": 0, "releases": [], "omitted_rows": 0,
         "rows_summarized": 0, "versions": {},
     }
-    rc, out, _err = capture([
+    rc, out, err = capture([
         "git", "log", "--first-parent", "--format=%H%x1f%aI%x1f%s%x1f%b%x1e", spec,
     ])
+    if rc != 0:
+        raise MaterialUnavailable(f"git log --first-parent {spec} failed (rc={rc}): {str(err)[:200]}")
     commits: List[Dict[str, Any]] = []
-    if rc == 0 and out.strip():
+    if out.strip():
         for chunk in out.split("\x1e"):
             chunk = chunk.strip("\n")
             if not chunk.strip():
@@ -140,12 +150,14 @@ def collect_range_material(
                 material["bodies_omitted"] += 1
     material["commits"] = commits
 
-    rc, out, _err = capture([
+    rc, out, err = capture([
         "git", "log", "-m", "--first-parent", "-p", "-U0", "--format=%x01%H", spec, "--", "README.md",
     ])
+    if rc != 0:
+        raise MaterialUnavailable(f"git log -p README.md {spec} failed (rc={rc}): {str(err)[:200]}")
     seen_versions: set = set()
     releases: List[Dict[str, Any]] = []
-    if rc == 0 and out:
+    if out:
         current_sha = ""
         for line in out.splitlines():
             if line.startswith("\x01"):
@@ -183,7 +195,9 @@ def material_text(material: Dict[str, Any]) -> str:
     """Render the material as compact evidence text for the prompt (releases first)."""
     lines: List[str] = []
     releases = material.get("releases") or []
-    if releases:
+    # The disclosures live OUTSIDE the `releases` branch: a range whose every candidate row
+    # was malformed has no rows to print and the omission is exactly what must still be said.
+    if releases or material.get("omitted_rows"):
         lines.append("Release notes added in this range (newest first):")
         for row in releases:
             head = f"- {row.get('version')} ({row.get('date')})"
@@ -279,6 +293,8 @@ def _classify(exc: Exception) -> Tuple[str, str]:
     from ouroboros.utils import sanitize_tool_result_for_log
 
     safe = sanitize_tool_result_for_log(f"{type(exc).__name__}: {exc}")[:300]
+    if isinstance(exc, MaterialUnavailable):
+        return "material_unavailable", safe
     if isinstance(exc, BudgetExceeded):
         return "budget_exhausted", safe
     if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
@@ -294,6 +310,18 @@ def _classify(exc: Exception) -> Tuple[str, str]:
     return "provider_unavailable", safe
 
 
+def _new_record(key: Dict[str, str], target_version: str) -> Dict[str, Any]:
+    """The record every write starts from: failed until something better is proven."""
+    from ouroboros import get_version
+
+    return {
+        "schema": 1, "key": key, "checked_head_sha": key["base_sha"], "state": "failed",
+        "text": "", "author_version": get_version(), "target_version": target_version,
+        "model": "", "written_at": utc_now_iso(), "attempt_id": "", "attempt_ids": [],
+        "error_kind": "", "error_text": "", "last_good": None,
+    }
+
+
 def write_letter(
     status: Dict[str, Any],
     material: Dict[str, Any],
@@ -302,29 +330,13 @@ def write_letter(
     llm_client: Any = None,
 ) -> Dict[str, Any]:
     """One accounted LIGHT-slot call; returns the letter record (``ready`` or ``failed``)."""
-    from ouroboros import get_version
     from ouroboros.config import DATA_DIR, REPO_DIR, get_light_model
 
     data_root = pathlib.Path(drive_root or DATA_DIR)
     repo_root = pathlib.Path(REPO_DIR)
     key = _key_from_status(status)
     target_version = str((material.get("versions") or {}).get("target") or "")
-    record: Dict[str, Any] = {
-        "schema": 1,
-        "key": key,
-        "checked_head_sha": key["base_sha"],
-        "state": "failed",
-        "text": "",
-        "author_version": get_version(),
-        "target_version": target_version,
-        "model": "",
-        "written_at": utc_now_iso(),
-        "attempt_id": "",
-        "attempt_ids": [],
-        "error_kind": "",
-        "error_text": "",
-        "last_good": None,
-    }
+    record = _new_record(key, target_version)
     model = get_light_model()
     use_local = str(os.environ.get("USE_LOCAL_LIGHT", "") or "").lower() in ("true", "1")
     record["model"] = model
@@ -430,9 +442,11 @@ def refresh_after_check(
         key = _key_from_status(status)
         if not key["base_sha"]:
             return current
-        if not status.get("available") or not key["target_sha"]:
-            return _mark_checked(current, key, drive_root)
+        no_update = not status.get("available") or not key["target_sha"]
         seen = _WRITE_SEQ
+        # EVERY record write goes through this lock, the letterless mark included: a
+        # no-update check that read the record before a letter landed would otherwise
+        # write its stale copy back over it.
         if not _REFRESH_LOCK.acquire(timeout=_letter_timeout_sec()):
             return read_record(drive_root)
         try:
@@ -441,10 +455,21 @@ def refresh_after_check(
             if _WRITE_SEQ > seen and _LAST_WRITTEN[0] == key:
                 return _LAST_WRITTEN[1]
             current = read_record(drive_root)
-            material = collect_range_material(key["base_sha"], key["target_sha"])
-            if not material.get("commits") and not material.get("releases"):
+            if no_update:
                 return _mark_checked(current, key, drive_root)
-            record = write_letter(status, material, drive_root=drive_root, llm_client=llm_client)
+            try:
+                material = collect_range_material(key["base_sha"], key["target_sha"])
+            except MaterialUnavailable as exc:
+                # The range could not be READ. That is a typed failure with the previous
+                # good letter kept, never "this update has nothing to say".
+                kind, safe = _classify(exc)
+                record = _new_record(key, "")
+                record.update(error_kind=kind, error_text=safe)
+                material = None
+            else:
+                if not material.get("commits") and not material.get("releases"):
+                    return _mark_checked(current, key, drive_root)
+                record = write_letter(status, material, drive_root=drive_root, llm_client=llm_client)
             if record.get("state") != "ready" and current:
                 # D-KEEP for the supersede case too: a good letter is never lost to a
                 # failed rewrite, whatever range the failed attempt was for.
@@ -493,10 +518,13 @@ def project_letter(
 ) -> Optional[Dict[str, Any]]:
     """Relate the stored letter to the live HEAD and official target.
 
-    ``consumed`` is the caller's zero-behind fact for ``latest_sha`` (the check reported
-    nothing incoming): a divergent install applies an official target as a merge commit, so
-    HEAD never equals the target it consumed, and that fact — not SHA equality — is what
-    makes such a letter ``applied``.
+    ``consumed`` is the caller's proof that THIS letter's target is already in HEAD without
+    being HEAD: a divergent install applies an official target as a merge commit
+    (``supervisor/update_merge.py``), so HEAD never equals the target it consumed, and that
+    proof — not SHA equality — is what makes such a letter ``applied``. The panel proves it
+    with git ancestry; the Runtime fact, which has no git, proves it from the check that
+    still describes this HEAD. It is never inferred from ``latest_sha``, which a passive
+    read leaves empty exactly when the cached target has been consumed.
     """
     if not record or record.get("state") == "none":
         return None
@@ -514,7 +542,7 @@ def project_letter(
     head, latest = str(head_sha or ""), str(latest_sha or "")
     if head and head == target:
         relation = "applied"
-    elif consumed and target and target == latest and head and head != base:
+    elif consumed and target and head:
         relation = "applied"
     elif head and head == base and latest == target:
         relation = "pending"
@@ -534,6 +562,38 @@ def project_letter(
         "key": dict(key),
         "has_last_good": bool(last_good and last_good.get("text")),
     }
+
+
+def project_letter_for_panel(
+    status: Dict[str, Any],
+    *,
+    drive_root: Optional[pathlib.Path] = None,
+    git: Optional[GitCapture] = None,
+) -> Optional[Dict[str, Any]]:
+    """The Updates panel's projection of the stored letter.
+
+    The panel HAS git, so it proves a consumed target by ancestry instead of inferring it
+    from the status: a passive read leaves ``latest_sha`` empty EXACTLY when the cached
+    target has already been consumed, which is when the answer matters most. The Runtime
+    fact reaches the same verdict without git in ``official_update_projection``; keeping
+    both here is what stops the panel and the mind from describing one install differently.
+    """
+    record = read_record(drive_root)
+    head = str(status.get("current_sha") or "")
+    target = str(((record or {}).get("key") or {}).get("target_sha") or "")
+    consumed = False
+    # Ancestry is asked only where it can change the answer: a status that still reports
+    # the update as available has not consumed anything, and HEAD == target needs no git.
+    if record and head and target and head != target and not status.get("available"):
+        try:
+            consumed = (git or _default_git())(
+                ["git", "merge-base", "--is-ancestor", target, head]
+            )[0] == 0
+        except Exception:  # noqa: BLE001 — an unprovable ancestry is simply not proof
+            log.debug("consumed-target ancestry check failed", exc_info=True)
+    return project_letter(
+        record, head_sha=head, latest_sha=str(status.get("latest_sha") or ""), consumed=consumed,
+    )
 
 
 def official_update_projection(
@@ -565,9 +625,17 @@ def official_update_projection(
         cache = cache if isinstance(cache, dict) else {}
         record = read_record(drive_root)
         latest = str(cache.get("latest_sha") or "")
-        letter = project_letter(record, head_sha=head, latest_sha=latest, consumed=cache.get("behind") == 0)
         checked_head = str((record or {}).get("checked_head_sha") or "")
         record_key = (record or {}).get("key") if isinstance((record or {}).get("key"), dict) else {}
+        # No git here: the check itself is the proof, and only while it still describes
+        # THIS head and names THIS letter's target as the one with nothing incoming.
+        consumed = bool(
+            head and head == checked_head
+            and cache.get("behind") == 0
+            and latest and latest == str(record_key.get("target_sha") or "")
+            and head != latest
+        )
+        letter = project_letter(record, head_sha=head, latest_sha=latest, consumed=consumed)
         if not cache:
             status = "unchecked"
         elif head and head == checked_head:

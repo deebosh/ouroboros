@@ -57,12 +57,7 @@ def _managed_update_payload(*, fetch: bool, include_tags: bool) -> dict[str, Any
 
         if fetch:
             _letter.refresh_after_check(status)
-        letter = _letter.project_letter(
-            _letter.read_record(),
-            head_sha=str(status.get("current_sha") or ""),
-            latest_sha=str(status.get("latest_sha") or ""),
-            consumed=status.get("behind") == 0,
-        )
+        letter = _letter.project_letter_for_panel(status)
     except Exception:
         log.debug("update letter projection failed", exc_info=True)
     # Additive minimal public projection of an active managed-update

@@ -300,9 +300,11 @@ function letterProvenance({ authorVersion, targetVersion, ageText }) {
         .filter(Boolean).join(' · ');
 }
 
-/** Content identity of a rendered letter: re-render only when this changes. */
+/** Content identity of a rendered letter: re-render only when this changes.
+ *  The markdown itself, never a length proxy — two different paragraphs of equal length
+ *  are a different letter, and one paragraph is small enough to compare outright. */
 function letterContentKey(view) {
-    return [view.state, view.relation, view.meta.writtenAt, view.markdown.length].join('|');
+    return [view.state, view.relation, view.markdown].join('|');
 }
 
 // Mirrors the two boot-recovery phases admitted by server.py's serialized

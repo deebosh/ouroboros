@@ -271,7 +271,10 @@ test('the letter body goes through the sanitizing markdown pipeline and is dispo
     assert.equal((render.match(/releaseLetterBody\(\)/g) || []).length, 2, 'hide path and content path both release');
     // Unchanged content keeps its DOM (and the owner's selection with it).
     assert.match(render, /const nextKey = letterContentKey\(view\);\s*if \(nextKey === letterKey\) return;/);
-    assert.match(SOURCE, /function letterContentKey\(view\) \{\s*return \[view\.state, view\.relation, view\.meta\.writtenAt, view\.markdown\.length\]/);
+    // Content identity is the CONTENT: two different paragraphs of equal length must not
+    // share a key, and a rewrite that produced the same text must not throw the DOM away.
+    assert.match(SOURCE, /function letterContentKey\(view\) \{[\s\S]*?return \[view\.state, view\.relation, view\.markdown\]/);
+    assert.doesNotMatch(SOURCE, /view\.markdown\.length/);
 });
 
 
