@@ -1574,8 +1574,10 @@ by "Provider Independence" above. Call-site imperatives:
   candidates, review actors, safety, external-harness delegated runs — keeps
   `transport_death_retries=0`. A round that holds an unresolved attempt
   sends nothing further except the typed-death repeats — a repeat that fails
-  with any other class ends the round on the unknown no-resend terminal (a
-  released $0 repeat stays the free wait episode's to redial).
+  with any other class (a provider status, a transient, an empty response, a
+  context overflow) ends the round on the unknown no-resend terminal with no
+  compaction retry (a released $0 repeat stays the free wait episode's to
+  redial).
 
 #### Timeout & Wait Control
 

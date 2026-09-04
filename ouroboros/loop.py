@@ -83,7 +83,7 @@ from ouroboros.loop_tool_execution import (
     reclaim_negative_memo,
     reclaim_trace_refs,
 )
-from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS, _TRANSPORT_DEATH_RETRIES, _emit_live_log, call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source
+from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS, _TRANSPORT_DEATH_RETRIES, TRANSPORT_DEATHS_KEY, _emit_live_log, call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source
 from ouroboros.delegate_hold import (
     close_hold as _delegate_hold_close,
     hold_step as _delegate_hold_step,
@@ -149,8 +149,7 @@ def _skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
         candidates = [str(args.get("path") or "")]
         for raw in candidates:
             norm = raw.replace("\\", "/").strip().lstrip("/")
-            if norm.startswith("data/"):
-                norm = norm[len("data/"):]
+            norm = norm.removeprefix("data/")
             parts = pathlib.PurePosixPath(norm).parts
             if len(parts) >= 3 and parts[0] == "skills" and parts[1] in {"external", "clawhub", "ouroboroshub", "native"}:
                 name = parts[2]
@@ -2350,9 +2349,8 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
     """Attach list/enable tool handlers and mutate the active schema list."""
     enabled_extra: set = set()
     active_tool_names = {
-        str(schema.get("function", {}).get("name") or "").strip()
-        for schema in tool_schemas
-        if str(schema.get("function", {}).get("name") or "").strip()
+        name for schema in tool_schemas
+        if (name := str(schema.get("function", {}).get("name") or "").strip())
     }
 
     def _handle_list_tools(ctx=None, **kwargs):
@@ -2532,6 +2530,10 @@ def _drain_incoming_messages(
                 except Exception:
                     pass
     return controls
+
+
+def _fit_key(fit: Any) -> Tuple[str, str]:
+    return (fit.measurement.route_fp, fit.measurement.round_id)
 
 
 def _context_reclaim_passes(tool_ctx: Any) -> set[Tuple[str, str]]:
@@ -2746,7 +2748,8 @@ def _provider_unavailable_result(
     mutable ``_last_llm_error_kind``); ``waited_sec``/``interactive`` keep the
     terminal text honest for zero-wait and such turns."""
     kind = str(error_kind or "")
-    is_context_overflow = kind == "context_overflow"
+    # An overflow on a granted transport-death repeat leaves attempt #1 unresolved: the unknown rail wins.
+    is_context_overflow = kind == "context_overflow" and not isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict)
     is_transport_wait = str(wait_cause or "") == "transport_unavailable"
     is_deadline_exhausted = kind == "deadline_exhausted" or str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") == "deadline_exhausted"
     forced_reason = "deadline_local" if is_deadline_exhausted else "provider_unavailable"
@@ -2784,8 +2787,6 @@ def _provider_unavailable_result(
         # No-resend terminal: salvage, no forced-final call over a dead
         # egress. Stamp BEFORE the composer (owner-stop pattern): a SCHEDULED
         # swarm handoff clears it; guard mirrors the sibling below.
-        live_trace = getattr(ctx, "llm_trace", None)
-        llm_trace = live_trace if isinstance(live_trace, dict) else {}
         ctx.accumulated_usage["execution_status"] = RESULT_INFRA_FAILED
         ctx.accumulated_usage["reason_code"] = "provider_unavailable"
         text, usage, llm_trace = _forced_fallback_result(
@@ -2988,14 +2989,15 @@ def _delivery_evidence_state(
 
     owner_directives = getattr(tools._ctx, "_owner_directives", [])
     owner_directives = owner_directives if isinstance(owner_directives, list) else []
-    children = []
-    for child in _direct_child_results(ctx):
-        children.append({
+    children = [
+        {
             "task_id": str(child.get("task_id") or child.get("id") or ""),
             "status": str(child.get("status") or ""),
             "sha256": _child_result_sha256(child),
             "disposition": _child_disposition_state(child),
-        })
+        }
+        for child in _direct_child_results(ctx)
+    ]
     receipt_root = pathlib.Path(
         str(
             getattr(tools._ctx, "drive_root", "")
@@ -5380,12 +5382,14 @@ def _contract_expected_output(ctx: Any) -> str:
     """Read the declared expected_output (as carried on the task contract/metadata for the
     running ctx — the same declared field the M2 ungrounded flag keys on), for the A3 no-op nudge gate."""
     contract = getattr(ctx, "task_contract", {})
-    if isinstance(contract, dict) and str(contract.get("expected_output") or "").strip():
-        return str(contract.get("expected_output") or "")
+    declared = str(contract.get("expected_output") or "") if isinstance(contract, dict) else ""
+    if declared.strip():
+        return declared
     metadata = getattr(ctx, "task_metadata", {})
     if isinstance(metadata, dict):
-        if str(metadata.get("expected_output") or "").strip():
-            return str(metadata.get("expected_output") or "")
+        declared = str(metadata.get("expected_output") or "")
+        if declared.strip():
+            return declared
         meta_contract = metadata.get("task_contract")
         if isinstance(meta_contract, dict):
             return str(meta_contract.get("expected_output") or "")
@@ -5583,7 +5587,7 @@ def _measure_after_reclaim(ctx: _RoundModelCallContext) -> Any:
     disposition = _measure_round_main_fit(ctx, automatic_pass_used=True)
     if disposition is None:
         return None
-    key = (disposition.measurement.route_fp, disposition.measurement.round_id)
+    key = _fit_key(disposition)
     used = key in _context_reclaim_materializations(ctx.tools._ctx)
     if disposition.automatic_pass_used != used:
         disposition = replace(disposition, automatic_pass_used=used)
@@ -5653,7 +5657,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     """Measure, optionally reclaim, dispatch, and recover one Main round."""
     disposition = _measure_round_main_fit(ctx, automatic_pass_used=False)
     if disposition is not None:
-        key = (disposition.measurement.route_fp, disposition.measurement.round_id)
+        key = _fit_key(disposition)
         already_reclaimed = key in _context_reclaim_passes(ctx.tools._ctx)
         if disposition.action == "reclaim_once" and not already_reclaimed:
             _run_main_reclaim(ctx, disposition)
@@ -5674,8 +5678,15 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     failed_capture = last_physical_attempt_capture()
     if disposition is None:
         return msg, cost, ctx.active_context_mode
+
+    def _skipped(reason: str) -> Tuple[Any, float, str]:
+        _emit_overflow_retry_skipped(ctx, reason)
+        return msg, cost, ctx.active_context_mode
+
+    if isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict):
+        return _skipped("round_holds_unresolved_attempt")
     _reproject_actual_overflow_low(ctx)
-    reclaim_key = (disposition.measurement.route_fp, disposition.measurement.round_id)
+    reclaim_key = _fit_key(disposition)
     overflow_fit = (
         _measure_after_reclaim(ctx)
         if reclaim_key in _context_reclaim_passes(ctx.tools._ctx)
@@ -5683,7 +5694,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     )
     if overflow_fit is None:
         return msg, cost, ctx.active_context_mode
-    key = (overflow_fit.measurement.route_fp, overflow_fit.measurement.round_id)
+    key = _fit_key(overflow_fit)
     if key not in _context_reclaim_passes(ctx.tools._ctx):
         _run_main_reclaim(ctx, overflow_fit, minimum_goal_tokens=1)
         overflow_fit = _measure_after_reclaim(ctx)
@@ -5692,11 +5703,9 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
 
     retries = _context_overflow_retries(ctx.tools._ctx)
     if key in retries:
-        _emit_overflow_retry_skipped(ctx, "route_round_retry_already_used")
-        return msg, cost, ctx.active_context_mode
+        return _skipped("route_round_retry_already_used")
     if not _failed_capture_is_comparable(failed_capture):
-        _emit_overflow_retry_skipped(ctx, "failed_candidate_not_comparable")
-        return msg, cost, ctx.active_context_mode
+        return _skipped("failed_candidate_not_comparable")
     retries.add(key)
     try:
         retry_msg, retry_cost = _dispatch_round_model(
@@ -5708,8 +5717,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
             ),
         )
     except PhysicalAttemptPreconditionFailed:
-        _emit_overflow_retry_skipped(ctx, "context_candidate_not_strictly_smaller")
-        return msg, cost, ctx.active_context_mode
+        return _skipped("context_candidate_not_strictly_smaller")
     return retry_msg, retry_cost, ctx.active_context_mode
 
 

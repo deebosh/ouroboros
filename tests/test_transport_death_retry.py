@@ -722,3 +722,61 @@ def test_native_subagent_child_primary_dispatch_opts_in(tmp_path, monkeypatch, n
     assert llm.calls == 3
     assert usage.get("reason_code") is None
     assert TRANSPORT_DEATHS_KEY not in usage
+
+
+def _overflow_failure():
+    """The repeat rejected as a context overflow (a structured provider code)."""
+    exc = RuntimeError("upstream window is smaller than the routed payload")
+    exc.code = "context_length_exceeded"
+    exc.physical_attempt_capture = ua.PhysicalAttemptCapture(
+        attempt_id="pa-overflow", model="test-model", provider="openrouter", state="unresolved",
+        candidate_measurement_kind="opaque", provider_status_code=400, provider_code="context_length_exceeded",
+    )
+    return exc
+
+
+def test_repeat_failing_as_context_overflow_takes_the_unknown_terminal(tmp_path, monkeypatch, no_sleep):
+    """A granted repeat rejected as a context overflow must not open the
+    compaction retry or the overflow-salvage terminal while attempt #1 of the
+    round is unresolved: the unknown no-resend rail wins and the hint names
+    both facts."""
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    llm = _ScriptedLLM(_death, _overflow_failure, _death, _death)
+    notes = []
+    result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, notes))
+
+    assert llm.calls == 2
+    assert usage["_last_llm_error_kind"] == "context_overflow"
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
+    assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
+    assert usage.get("execution_status") == "infra_failed"
+    assert usage.get("reason_code") == "provider_unavailable"
+    assert "the repeat failed as context_overflow" in result
+    assert "no further retry or paid fallback was sent" in result
+
+
+def test_refused_free_redial_keeps_the_base_deadline_stamps(tmp_path, no_sleep):
+    """death → granted repeat RELEASED → wait episode → free redial refused by
+    the deadline: the sticky kind is `transport_unavailable`, so the refusal
+    keeps the base `deadline_exhausted` stamps (the episode attributes the
+    refusal), the record is not un-counted, and it still fences the no-call
+    rail whatever the kind says."""
+    import time
+
+    usage = {}
+    first = _ScriptedLLM(_death, _released_connect)
+    msg, _cost = _primary_call(first, tmp_path, usage, round_idx=1)
+    assert msg is None and first.calls == 2
+    assert usage["_last_llm_error_kind"] == "transport_unavailable"
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
+
+    redial = _ScriptedLLM(_death)
+    msg, _cost = _primary_call(redial, tmp_path, usage, round_idx=1, deadline_ts=time.time() - 1)
+    assert msg is None and redial.calls == 0
+    assert usage["_last_llm_error_kind"] == "deadline_exhausted"
+    assert usage["reason_code"] == "deadline_exhausted"
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
+    assert provider_no_call_source(usage, True) == ("provider_outcome_unknown_no_resend", False)

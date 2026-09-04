@@ -399,12 +399,13 @@ def _deadline_not_dispatched(
             execution_id, round_id,
         )
     # Record the refusal without minting an LLM operation or attempt. While THIS
-    # round holds an unresolved attempt (its transport-death record) the kind must
-    # not become `deadline_exhausted` — that would re-open the forced-final rail (a
-    # paid resend) over a possibly live request; a repeat this invocation granted
-    # but never sent is un-counted so the terminal hint names only real repeats.
-    if _transport_death_repeats(accumulated_usage, round_id):
-        if accumulated_usage.get("_last_llm_retry_same_request") and accumulated_usage.get("_last_llm_error_kind") == "provider_outcome_unknown":
+    # round holds an unresolved attempt (its record) AND the sticky kind is unknown
+    # (a pending granted repeat, or the unknown terminal) the kind must not become
+    # `deadline_exhausted` — that would re-open the forced-final rail over a possibly
+    # live request — and a never-sent grant is un-counted; a refused FREE redial
+    # keeps the base stamps (the record still fences forced-final and the chain).
+    if _transport_death_repeats(accumulated_usage, round_id) and accumulated_usage.get("_last_llm_error_kind") == "provider_outcome_unknown":
+        if accumulated_usage.get("_last_llm_retry_same_request"):
             _uncount_transport_death(accumulated_usage)
         accumulated_usage["_last_llm_retry_same_request"] = False
     else:
