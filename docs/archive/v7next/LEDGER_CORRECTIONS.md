@@ -4998,8 +4998,8 @@ mock-lane, every scenario green on this host. Commits: 68b19a61 (W2-F2),
    |---|---|---|---|
    | W4-F1 | evolution absorb, commit-vs-receipt crash window | A crash between the reviewed `git commit` and `record_evolution_commit` leaves a landed reviewed commit that NO boot path will ever attribute: the markerless reconcile short-circuits on an empty `commit_sha` (it only stamps the generation), and `_preserve_evolution_orphan` runs only on the AUTHORITY-REFUSAL path, never on a crash. The commit sits on HEAD forever — not lost as code, but the cycle never resolves and is never counted. | ouroboros/tools/git.py:1411-1436 (commit → receipt order); ouroboros/tools/git_evolution.py:272-330; ouroboros/agent_startup_checks.py:1130-1142 (`if not commit_sha … return`) |
    | W4-F2 | absorb outcome ledger atomicity | The campaign absorb write and the `cycle_outcome` checkpoint append are NOT one transaction: the reconcile writes the campaign under `update_json_locked` and appends the checkpoint row AFTER the lock (same shape on the claim path). A crash in between yields a campaign that says `absorbed` with no `cycle_outcome` row — `build_solve_capability_digest` then under-reports the cycle forever, and nothing re-derives the row. | ouroboros/agent_startup_checks.py:1227-1243 (locked `update_json_locked` → post-lock `_append_cycle_outcome_tag`); S22 asserts the row IS written on the clean path |
-   | W4-F3 | evolution restart marker vs manual restarts | `request_evolution_restart` returns BEFORE writing `pending_restart_verify.json` when `OUROBOROS_EVOLUTION_AUTO_RESTART` is off — the exact-claim verify path (campaign∧transaction∧task∧commit authority, `require_claim=True`) is structurally unreachable for installs that restart manually; absorb attribution then rests wholly on the weaker markerless reconciliation. Deliberate-looking (the knob predates the claim machinery), named so the asymmetry is a decision, not an accident. S22 exploits exactly this to make its crash window deterministic. | supervisor/evolution_lifecycle.py:1362-1368 (early return before the marker write) |
-   | W4-F4 | rescue-local ref accumulation | `create_rescue_local_ref` pins every update stash to a durable `rescue-local-<stash12>` branch and NOTHING ever deletes them — a refused/unwound attempt (S19's shape) leaves its ref behind exactly like a successful one. Deliberate durability ("git-gc can never lose the owner's work"); the unbounded per-distinct-stash accumulation is the disclosed cost. | supervisor/update_merge.py:293-304; no deletion call site in the update flow (`rg rescue-local`) |
+   | W4-F3 | evolution restart marker vs manual restarts | `request_evolution_restart` returns BEFORE writing `pending_restart_verify.json` when `OUROBOROS_EVOLUTION_AUTO_RESTART` is off — the exact-claim verify path (campaign∧transaction∧task∧commit authority, `require_claim=True`) is structurally unreachable for installs that restart manually; absorb attribution then rests wholly on the weaker markerless reconciliation. Deliberate-looking (the knob predates the claim machinery), named so the asymmetry is a decision, not an accident. S22 exploits exactly this to make its crash window deterministic. | supervisor/evolution_lifecycle.py:1437-1438 (early return before the marker write at :1457; re-anchored on rc.9 c1a4b2bc by the F3-C lane — the F2 relocation moved it from :1362-1368) |
+   | W4-F4 | rescue-local ref accumulation | `create_rescue_local_ref` pins every update stash to a durable `rescue-local-<stash12>` branch and NOTHING ever deletes them — a refused/unwound attempt (S19's shape) leaves its ref behind exactly like a successful one. Deliberate durability ("git-gc can never lose the owner's work"); the unbounded per-distinct-stash accumulation is the disclosed cost. | supervisor/update_merge.py:294-305 (re-anchored on rc.9 c1a4b2bc by the F3-C lane; was :293-304); no deletion call site in the update flow (`rg rescue-local`) |
 
 5. LANE BUDGET + GATE COUNTERS (host 0897-oma, 2026-09-01; every pytest via
    ~/ouro/venv with isolated OUROBOROS_APP_ROOT/DATA_DIR mktemp roots;
@@ -7988,7 +7988,7 @@ wired: 19 passed.
 | `DEFER-BROWSER` | owner batch №9 №14, 2026-09-01, archive `[A-BATCH-9-ANSWERS]`; owner verbatim «14. A» on the option recorded as «браузерная волна пост-релиз, смоук зелёным до тега» | The gateway/UI-truth E2E actor is deferred out of 7.0 by the owner, and the condition on the tag is a green smoke rather than a green browser lane. Hook: `tests/system_e2e/interfaces.py`'s refusing `PlaywrightUIClient` stub and its pin `tests/system_e2e/test_system_scenarios.py::test_interface_stubs_refuse_instantiation_until_their_lanes_land`. `residual:` clause names what nobody covers in 7.0 |
 | `W4-F1` | `docs/v7next/LEDGER_CORRECTIONS.md` «From the F4 wave 4» findings table (this file, the W4-F1 row) | Crash window between the reviewed `git commit` and `record_evolution_commit`: a landed reviewed commit no boot path will attribute. `post-release` |
 | `W4-F2` | same table, W4-F2 row | Absorb write and `cycle_outcome` append are not one transaction; the digest can under-report a cycle forever. `post-release` |
-| — | same table, W4-F3 and W4-F4 | **disclosed observations, no row.** Both are named asymmetries of decisions that already exist (the restart-marker knob predates the claim machinery; rescue-local refs are deliberately durable), not work owed. Recorded as such in the manifest Notes |
+| — | same table, W4-F3 and W4-F4 | **SUPERSEDED by d348ea46 (2026-09-02): both ARE rows, `operator-disclosed`, no owner quote — corrected by the F3-C lane, see «From the F3-C lane» at the end of this file.** Original note: **disclosed observations, no row.** Both are named asymmetries of decisions that already exist (the restart-marker knob predates the claim machinery; rescue-local refs are deliberately durable), not work owed. Recorded as such in the manifest Notes |
 
 The validator's single post-release allowlist (`OWNER_DEFERRED = {"ABI-8"}`)
 became `DEFERRED_OUT_OF_V70`, an id → authority record. Every post-release row
@@ -10239,3 +10239,49 @@ proved are marked **UNVERIFIED** in place; there are none remaining at the time 
 | 17 | `process_custody.spawn_supervised` docstring + ARCHITECTURE component row said the ledger record lands "BEFORE" the child can be orphaned | the write follows `Popen`; a hard kill of the spawner inside that window leaves an unledgered child — now disclosed as the residual in both places (delta review, codex MAJOR-2) | `ouroboros/process_custody.py:168-171`, `docs/ARCHITECTURE.md` process_custody row |
 | 18 | `tests/test_contracts.py` progress_meta scan claimed to see `cancel_physical_task_id` | the collector only followed nodes literally named `progress_meta`; the emitter hands over `progress_meta=incident_meta`. The scan now resolves such aliases and pins the key explicitly (delta review, codex MAJOR-1 / fable N1) | `tests/test_contracts.py::_collect_literal_progress_meta_keys` |
 | 19 | `tests/system_e2e/harness.ModelGate` expiry | `Event.wait()` result was ignored: an expired hold silently resumed the round. Expiry now sets `timed_out` and raises `TimeoutError` in the request thread; S26 asserts the flag; a default-lane test pins the path; the real-port gate test carries `serial` (delta review, codex MAJOR-3/MINOR-6, fable N2) | `tests/system_e2e/harness.py`, `tests/system_e2e/test_system_scenarios_w6.py` |
+
+## From the F3-C lane (base c1a4b2bc = rc.9, 2026-09-04) — OPERATOR deferrals of 7.0 (owner decision D-14)
+
+Bookkeeping over the ten post-release rows: no runtime semantics, no protected file. The three
+rows that need an owner word — W4-F3, W4-F4, DEFER-SPEC64-PATHS — were left exactly as they are;
+the F3 owner batch asks. Every correction below was read from the rc.9 tree.
+
+| # | where | correction | proof |
+|---|---|---|---|
+| 1 | ADOPTION Notes + this file, «Rows added (commit b89b9bd2)» | «W4-F3/W4-F4 get no row» → both ARE rows since d348ea46 (2026-09-02); the sentence outlived that commit by two days past a green bar | `git log -S'\| W4-F3 \| plan-item \|' -- ADOPTION_v7next.md` = d348ea46; `scripts/v7next_adoption.py --release` rc 0 on both days |
+| 2 | scripts/v7next_adoption.py (class fix) | the validator read rows only, never the prose: `manifest_prose` + `_prose_id_errors` now resolve every id-shaped token outside the table against the table by the table's own id grammar (the declared form for a rowless id is a `No-row ids: …` line) — a phrasing-independent check, not a keyword gate on «gets no row» | red-first pins in tests/test_v7next_adoption.py: `- No-row ids: <any row>` and an undeclared ghost id both turn the bar red |
+| 3 | scripts/v7next_adoption.py (record comment + authority lint) | the comment over `DEFERRED_OUT_OF_V70` called E2/E3 and spec §6.4 «operator disclosures without an owner decision yet» beside OWNER values (batch №13 items 2 = A / 8 = A); rewritten, and the validator now requires the `owner verbatim «…»` quote on OWNER rows and refuses it on operator-disclosed rows, so the record and the row cannot drift apart again | red-first pins on both directions |
+| 4 | ADOPTION row ABI-8 | «(owner one-line confirm queued)» → the confirm arrived on 2026-09-01: owner verbatim «6. ок» (batch №7, [A-BATCH-7-ANSWERS], «№6=ок: ABI-8 подтверждён в пост-релизный бэклог»); the no-«7.1» frame is Q16=A + поправка ([A-V7NEXT-BATCH-2], 2026-08-30) | requirements archive |
+| 5 | ADOPTION row DEFER-C6-RESIDUALS | «the test-suite cap is an owner question (C6-TESTCAP)» → closed by batch №13 item 11 = A; the split landed (tests/test_usage_compaction.py 900 + tests/test_usage_compaction_archive.py 660 lines, was 1600/1600); open post-release: `ouroboros/platform_layer.py` 1587 → ≤1500 lines + issue | `wc -l` on rc.9; ouroboros/size_ratchet_manifest.py:53 (BAND_BASELINE_PATHS) |
+| 6 | ADOPTION row DEFER-E2E-PAID-LANE | «has never been executed … the four scenarios are unverified» stood glued to «EXECUTED BY OWNER DECISION … E13 GREEN … E1 GREEN» with two `residual:` clauses; the stale opening is gone and the row says what «2. A» is authority for (the run) and what the E2/E3 remainder is (a structural block — a logged-in Claude account is the owner's act, which the operator may not perform); the OWNER value in `DEFERRED_OUT_OF_V70` is unchanged | [A-BATCH-13-ANSWERS] «2=A: прогнать платную E-полосу (E1–E3, E13) один раз» |
+| 7 | this file, w4 findings table, W4-F3/W4-F4 evidence cells | file:line anchors moved by the F2 relocation: supervisor/evolution_lifecycle.py :1362-1368 → :1437-1438 (marker write at :1457); supervisor/update_merge.py :293-304 → :294-305 | `grep -n OUROBOROS_EVOLUTION_AUTO_RESTART supervisor/evolution_lifecycle.py`; `grep -n "def create_rescue_local_ref" supervisor/update_merge.py` |
+
+Verified on rc.9, not changed — the batch-13 lanes the plan named all landed: DEFER-TYPED-PROC-5
+(row done/F6; tests/test_process_signal_observability.py), W4-F1 and W4-F2 (rows done/F6),
+DEFER-E2E-DELEG-MUT (row done/F4; tests/system_e2e/test_system_scenarios_w5.py), the C6-TESTCAP
+split (item 5 above).
+
+Held for the owner batch, with the facts that batch must carry:
+
+- W4-F3: the obvious fix (write `pending_restart_verify.json` before the auto-restart check) breaks
+  the determinism lever S22 depends on — tests/system_e2e/test_system_scenarios_w4.py:822-826 sets
+  `OUROBOROS_EVOLUTION_AUTO_RESTART=false` precisely to make the crash window stable. A second
+  writer of the same marker exists (ouroboros/tools/control_runtime.py:69-87, the agent-callable
+  `restart` with an `evolution_claim`), so the row's «structurally unreachable» is scoped to the
+  supervisor auto-restart path, not to every install.
+- W4-F4: the disclosure sentence belongs in docs/ARCHITECTURE.md, not docs/PERSISTENCE.md —
+  tests/test_persistence_inventory.py:764 anchors that inventory both ways to the DATA root, and a
+  git ref under repo/.git matches no scanned writer path.
+- DEFER-SPEC64-PATHS: the row's «seven domain modules» are FOUR silent fallbacks
+  (ouroboros/tools/browser.py:336, ouroboros/tools/evolution_stats.py:17,
+  ouroboros/gateway/files.py:802, ouroboros/server_process.py:18) plus TWO live-repo pytest fuses
+  that must never be removed — supervisor/git_ops.py:69 (protected file) and
+  supervisor/evolution_lifecycle.py:912 — plus the packaged composition root
+  ouroboros/packaged_cli.py:116; the `SimpleNamespace` anchors :241/:681 are :242/:685 on rc.9.
+  A post-release lane sized from the row's current text would walk into the fuses.
+
+Cross-lane hand-over: DEFER-BROWSER's hook is
+tests/system_e2e/test_system_scenarios.py::test_interface_stubs_refuse_instantiation_until_their_lanes_land,
+which pins that `PlaywrightUIClient()` REFUSES. The lane that lands the client (plan Ф4-B) must
+flip that row to `done` and replace the pin in the same commit — the validator resolves hooks for
+`done` rows only and cannot see the collision.

@@ -25,6 +25,18 @@ Checks (plan §5.1, roast F2 — artifact/train-based manifest):
   names something the file actually defines (read by AST);
 - a ``done`` row does not say the work is open, unless it declares what stays
   open in an explicit ``residual:`` clause;
+- a post-release row's recorded authority and its text tell one story: an
+  OWNER deferral carries the owner's ``owner verbatim «…»`` quote in the row,
+  an operator disclosure carries none;
+- the prose outside the table (header, schema, Notes) names ids only as the
+  table has them: every id-shaped token there resolves to a row unless the
+  prose declares it on a ``No-row ids: …`` line, and a declared no-row id must
+  not have a row (the Notes called W4-F3/W4-F4 rowless for two days after
+  d348ea46 made them rows — a green bar both days, because nothing read the
+  Notes). Disclosed residual: a rowless claim written as free English is not
+  read — a word marker was tried and misfired on «No row carries
+  pending-decision any more» — so the schema gives the claim its declared
+  form and the id resolution is the check that does not depend on wording;
 - ``--release``: no ``pending-decision`` dispositions and every row ``done``
   ("no unresolved rows at release", plan §10), with post-release rows leaving
   the bar only through a recorded deferral (owner-authored for the required
@@ -101,20 +113,26 @@ DEFERRED_OUT_OF_V70 = {
     # ledger until the stage-2 bookkeeping made them rows (quotes in each row):
     # batch №7 5=A (headless cancel receipts), batch №9 №12=A (two frozen modules),
     # batch №12 A (C6 residuals), batch №8 5=A (task_results eternal).
-    # Operator disclosures without an owner decision yet (each an open item of
-    # the STOP batch): the wave-4 observations W4-F3/W4-F4 and the paid E2E lane's
-    # E2/E3 (executed E1/E13 green; E2/E3 await a logged-in install), spec §6.4
-    # paths/roots. (Left this record by owner batch №13: item 10 = B pulled
-    # DEFER-TYPED-PROC-5 into 7.0; item 15 = B landed the mutating delegation
-    # scenarios S24/S25 — DEFER-E2E-DELEG-MUT reads done at phase F4; item 7 = A
-    # closed F23 as covered by the release bar.)
+    # Operator disclosures WITHOUT an owner decision: the wave-4 observations
+    # W4-F3/W4-F4 only. Batch №13 item 13(и) asked to ratify them and the owner
+    # answered that he had not read that item, so no per-item quote exists;
+    # the F3 owner batch of 2026-09-04 re-asks. Owner-decided since batch №13:
+    # DEFER-E2E-PAID-LANE (item 2 = A ordered the paid lane RUN once — E1/E13
+    # executed green; E2/E3 stay unexecuted for a structural reason, the real
+    # Claudexor lane needs a logged-in Claude account, which is the owner's act
+    # — so the quote covers the execution and the remainder is a disclosed
+    # block, not a waiver) and DEFER-SPEC64-PATHS (item 8 = A). (Left this
+    # record by the same batch: item 10 = B pulled DEFER-TYPED-PROC-5 into 7.0;
+    # item 15 = B landed the mutating delegation scenarios S24/S25 —
+    # DEFER-E2E-DELEG-MUT reads done at phase F4; item 7 = A closed F23 as
+    # covered by the release bar.)
     "DEFER-HEADLESS-CANCEL": OWNER,
     "DEFER-FROZEN-2": OWNER,
     "DEFER-C6-RESIDUALS": OWNER,
     "DEFER-C19-RETENTION": OWNER,
     "W4-F3": OPERATOR,
     "W4-F4": OPERATOR,
-    "DEFER-E2E-PAID-LANE": OWNER,  # batch №13 item 2 = A; E1/E13 executed, E2/E3 await a logged-in install
+    "DEFER-E2E-PAID-LANE": OWNER,  # batch №13 item 2 = A (the run order); E2/E3 blocked structurally
     "DEFER-SPEC64-PATHS": OWNER,  # batch №13 item 8 = A
 }
 # Post-cutoff upstream adoption trains: id -> (upstream tip, campaign merge).
@@ -146,6 +164,16 @@ STATUSES = frozenset({"pending", "in-progress", "done", "deferred"})
 PHASES = frozenset({"F0", "F1", "F2", "F3", "F4", "F5", "F6", "POST"})
 ID_RE = re.compile(r"^(D\d\d|ABI-\d+|CPL-\d+|R-[A-Z0-9]+|TRAIN-[A-Za-z0-9._-]+"
                    r"|DEFER-[A-Z0-9][A-Z0-9-]*|W\d-F\d+)$")  # DEFER ids may carry hyphenated tokens (DEFER-E2E-PAID-LANE)
+# The same id grammar, unanchored, for the prose outside the table. The
+# boundaries keep `D-14` (a plan decision) and `CPL4-C6` (a lane label) out;
+# the TRAIN class admits dots, so a sentence-final one is stripped by the reader.
+_PROSE_ID_RE = re.compile(r"(?<![\w-])" + ID_RE.pattern[1:-1] + r"(?![\w-])")
+# The one declared form for an id the prose names without a row (a folded or
+# withdrawn row): a line `No-row ids: A, B`, optionally as a Notes bullet.
+_NO_ROW_DECL_RE = re.compile(r"^\s*(?:-\s*)?No-row ids:(.*)$", re.M)
+# The manifest's quote convention for an owner decision, as every OWNER row
+# already spells it — the marker the authority lint keys on.
+_OWNER_QUOTE_MARKER = "owner verbatim «"
 
 
 def split_row(line: str) -> list[str]:
@@ -192,7 +220,32 @@ def parse_rows(text: str) -> tuple[list[dict[str, str]], list[str]]:
     return rows, errors
 
 
-def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
+def manifest_prose(text: str) -> str:
+    """Everything outside the table — the header, the schema, the Notes — by
+    the rule ``parse_rows`` already uses: a table line starts with ``|``."""
+    return "\n".join(line for line in text.splitlines() if not line.startswith("|"))
+
+
+def _prose_id_errors(prose: str, by_id: dict[str, dict[str, str]]) -> list[str]:
+    """The prose may name a row id only as the table has it. Tokens are read by
+    the table's own id grammar, not by phrasing, so the check does not depend
+    on how a sentence says 'gets no row': an id without a row must be declared
+    on a ``No-row ids:`` line, and a declared id must not have a row."""
+    declared: set[str] = set()
+    for m in _NO_ROW_DECL_RE.finditer(prose):
+        declared.update(t.rstrip(".-") for t in _PROSE_ID_RE.findall(m.group(1)))
+    named = {t.rstrip(".-") for t in _PROSE_ID_RE.findall(prose)}
+    errors: list[str] = []
+    for rid in sorted(declared & by_id.keys()):
+        errors.append(f"prose: {rid} is declared under 'No-row ids:' while the "
+                      "table has its row — drop the declaration or the row")
+    for rid in sorted(named - by_id.keys() - declared):
+        errors.append(f"prose: {rid} is named outside the table but has no row "
+                      "and no 'No-row ids:' declaration")
+    return errors
+
+
+def validate(rows: list[dict[str, str]], release: bool, prose: str = "") -> list[str]:
     errors: list[str] = []
     ids = [r["id"] for r in rows]
     for rid, n in Counter(ids).items():
@@ -254,6 +307,21 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
                     f"{r['id']}: a row of the required inventory can only be "
                     f"parked post-release by an owner decision, not by "
                     f"{authority}")
+            # The record and the row tell one story: an owner deferral carries
+            # the owner's quote, an operator disclosure carries none. The
+            # comment block over the record drifted from its values once
+            # (E2/E3 and spec §6.4 read operator-disclosed beside OWNER), and
+            # a reader trusts the prose first.
+            quoted = _OWNER_QUOTE_MARKER in r["what"]
+            if authority == OWNER and not quoted:
+                errors.append(
+                    f"{r['id']}: recorded as an owner deferral but the row carries "
+                    f"no '{_OWNER_QUOTE_MARKER}…»' quote — quote the decision or "
+                    f"record the row as {OPERATOR}")
+            elif authority == OPERATOR and quoted:
+                errors.append(
+                    f"{r['id']}: recorded as {OPERATOR} but the row carries an owner "
+                    f"quote — record the row as {OWNER} or drop the quote")
     # Every upstream train the campaign absorbed must keep its row, and the row
     # must still name the tip and the merge it is a record of. Both modes: the
     # deletion in 285ab66d survived because only the default mode was run.
@@ -289,6 +357,8 @@ def validate(rows: list[dict[str, str]], release: bool) -> list[str]:
             errors.append(f"{rid}: phase {row['phase']!r} != pinned {want!r} "
                           "(rescheduling a required row needs a new owner decision "
                           "and an update to REQUIRED_PHASE)")
+    if prose:
+        errors.extend(_prose_id_errors(prose, by_id))
     if release:
         for r in rows:
             if r["disposition"] == "pending-decision":
@@ -415,12 +485,13 @@ def main() -> int:
     if not args.manifest.is_file():
         print(f"missing manifest: {args.manifest}", file=sys.stderr)
         return 2
-    rows, errors = parse_rows(args.manifest.read_text(encoding="utf-8"))
+    text = args.manifest.read_text(encoding="utf-8")
+    rows, errors = parse_rows(text)
     if not rows and errors:
         for e in errors:
             print(f"ERROR: {e}", file=sys.stderr)
         return 2
-    errors += validate(rows, args.release)
+    errors += validate(rows, args.release, prose=manifest_prose(text))
 
     by_phase = Counter(r["phase"] for r in rows)
     by_disp = Counter(r["disposition"] for r in rows)
