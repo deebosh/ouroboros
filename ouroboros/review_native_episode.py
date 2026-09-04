@@ -457,9 +457,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 tool_calls = [] if raw_calls is None else (raw_calls if isinstance(raw_calls, list) else [raw_calls])
                 usage = dict(usage or {})
                 self._observe_usage(usage)
-                # Pop the wire-validation sidecar BEFORE accumulation, exactly
-                # like the existing bounded loops — receipts are per-round
-                # execution facts, not usage numbers.
+                # Pop the wire-validation sidecar BEFORE accumulation (receipts are per-round facts, not usage).
                 wire_validation = pop_custom_validation_receipts(usage, tool_calls)
                 validation_by_id = custom_validation_by_call_id(wire_validation)
                 add_usage(total_usage, usage)

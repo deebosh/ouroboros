@@ -28,9 +28,9 @@ from ouroboros.review_slot_cancel import (  # noqa: F401 — re-exported seam su
     _slot_cancel_outcome,
 )
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
-from ouroboros.usage_accounting import (
-    POSITIVE_PHYSICAL_ATTEMPT_STATES, _drive_root, _final_rows, _locked,
-    _read_records_locked_cached, current_usage_scope,
+from ouroboros.usage_accounting import POSITIVE_PHYSICAL_ATTEMPT_STATES
+from ouroboros.delegate_custody_usage import (
+    observe_failed_review_send, observe_review_usage, session_usage_once,
 )
 from ouroboros.triad_review import (
     ACCEPTANCE_SURFACE_RULES,
@@ -368,47 +368,10 @@ class ReviewSlotExecutor:
         self.usage_observer: Optional[Callable[[Dict[str, Any]], None]] = None
 
     def _observe_usage(self, usage: Optional[Dict[str, Any]]) -> None:
-        if self.usage_observer is None:
-            return
-        row = dict(usage or {})
-        attempt_ids = [str(value) for value in (row.get("ledger_attempt_ids") or []) if value]
-        for attempt_id in attempt_ids[:-1]:
-            self.usage_observer({
-                "resolved_model": row.get("resolved_model"), "provider": row.get("provider"),
-                "ledger_attempt_ids": [attempt_id],
-            })
-        if attempt_ids:
-            row["ledger_attempt_ids"] = attempt_ids[-1:]
-        self.usage_observer(row)
+        observe_review_usage(self.usage_observer, usage)
 
     def _observe_failed_send(self, exc: BaseException) -> None:
-        capture = getattr(exc, "physical_attempt_capture", None)
-        attempt_ids = [str(value) for value in (getattr(exc, "ledger_attempt_ids", None) or []) if value]
-        capture_id = str(getattr(capture, "attempt_id", "") or "")
-        if capture_id and capture_id not in attempt_ids:
-            attempt_ids.append(capture_id)
-        rows: Dict[str, Dict[str, Any]] = {}
-        try:
-            scope = current_usage_scope()
-            root = _drive_root(getattr(scope, "drive_root", None))
-            with _locked(root):
-                finals = _final_rows(_read_records_locked_cached(root))
-            rows = {attempt_id: finals[attempt_id] for attempt_id in attempt_ids if attempt_id in finals}
-        except Exception:
-            log.debug("failed to resolve review attempt states", exc_info=True)
-        capture_state = str(getattr(capture, "state", "") or "")
-        for attempt_id in attempt_ids:
-            row = rows.get(attempt_id, {})
-            state = str(row.get("state") or (capture_state if attempt_id == capture_id else ""))
-            if state not in POSITIVE_PHYSICAL_ATTEMPT_STATES and not (
-                not rows and attempt_id != capture_id
-            ):
-                continue
-            self._observe_usage({
-                "resolved_model": str(row.get("model") or getattr(capture, "model", "") or ""),
-                "provider": str(row.get("provider") or getattr(capture, "provider", "") or ""),
-                "ledger_attempt_ids": [attempt_id],
-            })
+        observe_failed_review_send(self.usage_observer, exc)
 
     def prompt_payload(self) -> Dict[str, Any]:
         """Route-owned projection of what will actually be sent (for the durable
@@ -723,7 +686,6 @@ _REVIEW_SESSION_INSTRUCTIONS = (
 
 _SESSION_POLL_SEC = 3.0
 _CLAUDEXOR_MAX_SECONDS = 604_800
-_EMITTED_SESSION_USAGE: Dict[str, float] = {}  # delegated run id -> first llm_usage emission
 
 
 def _retire_orphaned_review_registration(
@@ -1198,17 +1160,6 @@ def _full_session_text(gateway: Any, run_id: str, detail: Dict[str, Any]) -> str
         final_summary = detail.get("finalSummary")
         text = final_summary if isinstance(final_summary, str) else ""
     return text
-def _session_usage_once(run_id: str) -> bool:
-    """One llm_usage row per delegated run, across executors (process-local)."""
-    key = str(run_id or "")
-    if key in _EMITTED_SESSION_USAGE:
-        return False
-    if key:
-        _EMITTED_SESSION_USAGE.clear() if len(_EMITTED_SESSION_USAGE) >= 256 else None
-        _EMITTED_SESSION_USAGE[key] = time.monotonic()
-    return True
-
-
 class AgentSessionReviewExecutor(ReviewSlotExecutor):
     """One pinned Claudexor run per reviewer slot.
 
@@ -1289,7 +1240,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         except BaseException as exc:
             self._run_id = self._run_id or str(getattr(exc, "delegated_run_id", "") or "")
             started = bool(self._run_id or getattr(exc, "delegated_run_started", False))
-            if started and not self._session_usage_observed and _session_usage_once(self._run_id):
+            if started and not self._session_usage_observed and session_usage_once(self._run_id):
                 self._observe_usage({
                     "provider": "claudexor", "resolved_model": str(self.assignment.slot.model or ""),
                     "delegated_run_started": True, "delegated_run_id": self._run_id, "cost": None,
@@ -1298,7 +1249,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             if not self._retry_state.get("pending_invocation_id"):
                 self._settled_failure = exc
             raise
-        if not self._session_usage_observed and _session_usage_once(self._run_id):
+        if not self._session_usage_observed and session_usage_once(self._run_id):
             self._observe_usage(self._session_usage)
         self._session_usage_observed = True
         return self._verdict_result()

@@ -678,7 +678,7 @@ class TestOneUsageRowPerDelegatedRun:
         import ouroboros.review_execution as review_execution
         from tests.test_phase4_plan_review_continuity import _session_run
 
-        review_execution._EMITTED_SESSION_USAGE.clear()
+        __import__("ouroboros.delegate_custody_usage", fromlist=["x"])._EMITTED_SESSION_USAGE.clear()
         rows = []
         monkeypatch.setattr(
             review_execution, "run_delegated_review_session",
@@ -695,7 +695,7 @@ class TestOneUsageRowPerDelegatedRun:
         import ouroboros.review_execution as review_execution
         from tests.test_phase4_plan_review_continuity import _session_run
 
-        review_execution._EMITTED_SESSION_USAGE.clear()
+        __import__("ouroboros.delegate_custody_usage", fromlist=["x"])._EMITTED_SESSION_USAGE.clear()
         rows = []
 
         def pending(**_k):
