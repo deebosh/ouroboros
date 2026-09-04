@@ -24,9 +24,12 @@ window closed first. Interactive notes promise no cancellation (an in-process
 turn has no Stop contract; a direct turn's mailbox message still wakes the
 sleep). Recovery, local adoption, and error-kind change are owner notes for
 every episode; exhaustion is a note for an interactive turn, while a managed
-task's exhaustion is its terminal result; only an ephemeral turn's notes carry
-the typed ``task_incident`` toast pair, because the browser renders no progress
-rows for that turn (direct turns get live-card rows).
+task's exhaustion is its terminal result; only an ephemeral turn's episode-boundary
+notes (entry, recovery/closure, exhaustion) carry the typed ``task_incident``
+toast pair, because the browser renders no progress rows for that turn (direct
+turns get live-card rows); periodic notes stay silent. Every episode note passes
+``incident=`` (``None`` unless it is such a boundary note), so an ``emit_progress``
+callable handed to ``run_llm_loop`` must accept that keyword.
 
 Also hosts the owner-facing provider-failure text helpers and terminal salvage
 readers used by that terminal path (extracted from ``loop.py``, which is at its
@@ -420,7 +423,8 @@ def transport_wait_step(
         episode.last_note_monotonic = time.monotonic()
         emit_progress(
             f"🌐 Still waiting for a provider connection — {elapsed / 60.0:.0f} min "
-            f"elapsed, {episode.redials} redials; will resume automatically."
+            f"elapsed, {episode.redials} redials; will resume automatically.",
+            incident=None,  # a periodic note is never a toast; the episode always passes incident=
         )
     emit_network_wait_event(
         drive_logs, task_id=task_id, phase="waiting", elapsed_sec=elapsed,

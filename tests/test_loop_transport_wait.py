@@ -714,7 +714,8 @@ def test_wait_step_caps_sleep_at_note_interval_for_low_idle_timeouts(tmp_path, m
     redial = loop_transport.transport_wait_step(
         episode, tools=tools, error_kind="transport_unavailable",
         drive_root=None, drive_logs=tmp_path, task_id="t-idle", model="m",
-        emit_progress=notes.append, incoming_messages=None, owner_msg_seen=set(),
+        emit_progress=lambda text, *, incident=None: notes.append(text),
+        incoming_messages=None, owner_msg_seen=set(),
     )
     assert redial is True
     assert sleeps == [30.0]  # min(60s backoff cap, 60/2 note interval)
@@ -1008,7 +1009,7 @@ def test_final_redial_reserves_named_margin_before_admission_close(tmp_path, mon
     redial = loop_transport.transport_wait_step(
         episode, tools=tools, error_kind="transport_unavailable",
         drive_root=None, drive_logs=tmp_path, task_id="t-margin", model="m",
-        emit_progress=lambda _n: None, incoming_messages=None, owner_msg_seen=set(),
+        emit_progress=lambda _n, *, incident=None: None, incoming_messages=None, owner_msg_seen=set(),
     )
     assert redial is True
     assert episode.final_redial_done is True
@@ -1017,7 +1018,7 @@ def test_final_redial_reserves_named_margin_before_admission_close(tmp_path, mon
     assert loop_transport.transport_wait_step(
         episode, tools=tools, error_kind="transport_unavailable",
         drive_root=None, drive_logs=tmp_path, task_id="t-margin", model="m",
-        emit_progress=lambda _n: None, incoming_messages=None, owner_msg_seen=set(),
+        emit_progress=lambda _n, *, incident=None: None, incoming_messages=None, owner_msg_seen=set(),
     ) is False  # deadline_after_final_redial
 
 

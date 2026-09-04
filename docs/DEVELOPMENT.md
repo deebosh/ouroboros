@@ -1598,6 +1598,13 @@ by "Provider Independence" above. Call-site imperatives:
   a keyword or regex over content (BIBLE P5). Fixed kill-timeouts (hard
   task/tool ceilings, watchdog) remain the outer safety bound; progress-aware
   waiting tunes the passive wait only.
+- The transport-wait episode's owner notes always pass `incident=` — the
+  typed `task_incident`/`toast_once` pair on an ephemeral turn's
+  episode-boundary notes (entry, recovery/closure, exhaustion), `None` on
+  every other note — so any `emit_progress` callable handed to `run_llm_loop`
+  must accept the `incident=` keyword; `OuroborosAgent._emit_progress` is the
+  production implementation and a test fake mirrors it
+  (`lambda text, *, incident=None: ...`).
 - Timeout contract classes differ; keep the axes separate. A transport
   timeout only bounds a dead socket
   (`OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC`) — it is not a reasoning cutoff
