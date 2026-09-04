@@ -1568,7 +1568,10 @@ by "Provider Independence" above. Call-site imperatives:
   twice per round, each repeat a NEW physical attempt on its own ledger row
   and never a resend of the unresolved one, deciding the `retry_same_request`
   flag before the durable row is written
-  (`tests/test_transport_death_retry.py`). Every other caller keeps
+  (`tests/test_transport_death_retry.py`); the rail belongs to the primary
+  round dispatch of every main-loop actor (owner turns, managed tasks, native
+  API subagent children). Every other caller — forced-final, fallback
+  candidates, review actors, safety, external-harness delegated runs — keeps
   `transport_death_retries=0`. A round that holds an unresolved attempt
   sends nothing further except the typed-death repeats — a repeat that fails
   with any other class ends the round on the unknown no-resend terminal (a
@@ -1625,8 +1628,9 @@ by "Provider Independence" above. Call-site imperatives:
   `dispatched`/`unresolved` without a typed terminal status stays under the
   custody-lost/no-resend classification. Positive capture evidence outranks a
   contradictory synthetic `not_dispatched` label; across one bounded rail,
-  retain the strongest earlier capture — on side-effect surfaces (review,
-  delegation, forced-final, the fallback chain) any unknown prior outcome
+  retain the strongest earlier capture — on side-effect surfaces (review
+  actors, external-harness delegated runs, forced-final, fallback candidates)
+  any unknown prior outcome
   monotonically forces no-resend. A dispatched request whose socket or
   stream ends without terminal provider evidence is
   `provider_outcome_unknown`: its `unresolved` ledger row is terminal and
