@@ -104,28 +104,34 @@ def _capture_on_chain(error: BaseException) -> Any:
     return capture
 
 
-def _carries_requests_protocol_death(exc: BaseException) -> bool:
-    """requests wraps the urllib3 ``ProtocolError`` (whose own args carry the
-    ``RemoteDisconnected``) as the ``ConnectionError``'s first argument."""
+def _requests_protocol_death(exc: BaseException) -> Any:
+    """The innermost typed death inside a requests ``ConnectionError``, or None.
+
+    requests wraps the urllib3 ``ProtocolError`` (whose own args carry the
+    ``RemoteDisconnected``) as the ``ConnectionError``'s first argument, and
+    urllib3 keeps a wrapped failure as ``reason`` on ``MaxRetryError`` — none of
+    it is on ``__cause__``. The deepest match wins so the durable cause type is
+    the most specific fact (``RemoteDisconnected`` over ``ProtocolError``).
+    """
     try:
         import http.client
         import requests
         import urllib3
     except Exception:  # pragma: no cover - optional transport dependency
-        return False
+        return None
     if not isinstance(exc, requests.exceptions.ConnectionError) or isinstance(
         exc, requests.exceptions.Timeout,
     ):
-        return False
+        return None
+    found = None
     pending = list(getattr(exc, "args", ()))
     while pending:
         value = pending.pop(0)
         if isinstance(value, (urllib3.exceptions.ProtocolError, http.client.RemoteDisconnected)):
-            return True
+            found = value
         if isinstance(value, BaseException):
-            # urllib3 keeps the wrapped failure as ``reason`` on MaxRetryError.
             pending.extend((*getattr(value, "args", ()), getattr(value, "reason", None)))
-    return False
+    return found
 
 
 def is_retryable_transport_death(exc: BaseException) -> bool:
@@ -162,7 +168,7 @@ def is_retryable_transport_death(exc: BaseException) -> bool:
     current: BaseException | None = exc
     while isinstance(current, BaseException) and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, death_types) or _carries_requests_protocol_death(current):
+        if isinstance(current, death_types) or _requests_protocol_death(current) is not None:
             return True
         current = current.__cause__
     return False
@@ -204,14 +210,22 @@ def attempt_custody_event_fields(error: BaseException) -> dict:
         provider_error_type = str(getattr(capture, "provider_error_type", "") or "")
         if provider_error_type:
             fields["provider_error_type"] = provider_error_type
+    # The same walk the death predicate uses: the explicit ``__cause__`` chain,
+    # plus — at every link including the error itself, because the requests lane
+    # raises its ConnectionError bare — the typed death requests keeps in
+    # ``args``/``reason`` rather than on ``__cause__``.
     seen = set()
-    current = getattr(error, "__cause__", None)
+    current: Any = error
     while isinstance(current, BaseException) and id(current) not in seen:
         seen.add(id(current))
+        death = _requests_protocol_death(current)
         module = type(current).__module__ or ""
-        if module.split(".")[0] in (
+        if death is not None:
+            fields["transport_cause_type"] = type(death).__name__
+            break
+        if current is not error and (module.split(".")[0] in (
             "httpx", "httpcore", "requests", "urllib3", "ssl", "socket", "anyio",
-        ) or (module == "builtins" and isinstance(current, (ConnectionError, TimeoutError))):
+        ) or (module == "builtins" and isinstance(current, (ConnectionError, TimeoutError)))):
             fields["transport_cause_type"] = type(current).__name__
             break
         current = current.__cause__

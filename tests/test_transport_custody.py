@@ -315,6 +315,43 @@ def test_requests_protocol_error_with_remote_disconnected_is_a_transport_death()
     assert is_retryable_transport_death(retried) is True
 
 
+def test_requests_lane_event_fields_name_the_innermost_typed_cause(data_root):
+    """The durable row and the ledger's bounded cause text see the requests
+    lane's typed death, which lives in ``args``/``reason``, not ``__cause__``:
+    RemoteDisconnected over its ProtocolError wrapper; ProtocolError alone when
+    urllib3 hands it over as MaxRetryError.reason; wrappers keep it."""
+    import http.client
+    import json
+
+    import requests
+    import urllib3
+    from ouroboros.transport_custody import attempt_custody_event_fields
+
+    disconnected = http.client.RemoteDisconnected("Remote end closed connection without response")
+    bare = requests.exceptions.ConnectionError(urllib3.exceptions.ProtocolError("Connection aborted.", disconnected))
+    bare.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+    fields = attempt_custody_event_fields(bare)
+    assert fields["transport_cause_type"] == "RemoteDisconnected"
+    assert fields["physical_attempt_id"] == "pa-death"
+    assert attempt_custody_event_fields(_sdk_wrapped(bare))["transport_cause_type"] == "RemoteDisconnected"
+    retried = requests.exceptions.ConnectionError(urllib3.exceptions.MaxRetryError(
+        None, "/messages", reason=urllib3.exceptions.ProtocolError("Connection aborted."),
+    ))
+    assert attempt_custody_event_fields(retried)["transport_cause_type"] == "ProtocolError"
+    # A pre-dispatch requests shape carries no typed death and stays unnamed, as before.
+    refused = requests.exceptions.ConnectionError(urllib3.exceptions.MaxRetryError(
+        None, "/messages", reason=urllib3.exceptions.NewConnectionError(None, "connection refused"),
+    ))
+    assert "transport_cause_type" not in attempt_custody_event_fields(refused)
+    # The ledger terminalization path reads the same fact into its bounded reason.
+    reservation = ua.reserve_attempt(_request(data_root))
+    ua.mark_dispatched(reservation)
+    assert ua._terminalize_failed_attempt(reservation, bare) == "unresolved"
+    rows = [json.loads(line) for line in (data_root / ua.LEDGER_REL).read_text().splitlines() if line.strip()]
+    assert rows[-1]["state"] == "unresolved"
+    assert rows[-1]["reason"].startswith("ConnectionError [cause: RemoteDisconnected]:")
+
+
 def test_requests_read_timeout_and_connect_shapes_are_not_transport_deaths():
     import requests
     import urllib3
