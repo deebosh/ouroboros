@@ -332,18 +332,22 @@ def provider_credential_plan(
 # provider profiles gives onboarding, runtime defaults, and tests one vocabulary
 # instead of repeating model ids across those surfaces.
 OPENROUTER_DEFAULTS = {
-    "main": "google/gemini-3.7-flash",
+    "main": "google/gemini-3.8-flash",
     "heavy": "",
     "light": "openai/gpt-5.6-luna",
     "vision": "",
     "consciousness": "",
     "fallback": "openai/gpt-5.6-luna",
-    "deep_self_review": "openai/gpt-5.6-sol-pro",
+    # Plain Sol, not the `-pro` routing slug: a pro-mode call bills the prompt
+    # three to four times over (parallel test-time compute), so the density
+    # witness it records can never admit a repository-sized pack, and every
+    # packed review costs that multiple. Same id the direct-OpenAI slot ships.
+    "deep_self_review": "openai/gpt-5.6-sol",
 }
 
 OPENROUTER_REVIEW_DEFAULTS = {
     "triad": (
-        "google/gemini-3.7-flash",
+        "google/gemini-3.8-flash",
         "openai/gpt-5.6-terra",
         "anthropic/claude-opus-5",
     ),
@@ -366,15 +370,13 @@ OPENAI_DIRECT_DEFAULTS = {
     # Cloud.ru and GigaChat are documented BELOW that floor, so filling their slot
     # would advertise a deep review that is doomed to overflow its real route.
     #
-    # DELIBERATELY plain Sol, NOT the OpenRouter default's `-pro`: that suffix is an
-    # OpenRouter slug, not an OpenAI model id. Live-probed 2026-07-29 against
-    # api.openai.com: `gpt-5.6-sol-pro` on /v1/chat/completions -> 404; the pro
+    # Plain Sol, the same model the OpenRouter default names. A `-pro` suffix is an
+    # OpenRouter routing slug, not an OpenAI model id: live-probed 2026-07-29 against
+    # api.openai.com, `gpt-5.6-sol-pro` on /v1/chat/completions -> 404; the pro
     # reasoning mode exists only on /v1/responses as `reasoning.mode="pro"` (200),
     # and passing `reasoning` to /v1/chat/completions -> 400 "Unknown parameter".
-    # Every LLM call in llm.py is a chat.completions call, so a direct-OpenAI
-    # install runs deep review on plain Sol — an owner-accepted capability
-    # difference from the OpenRouter default, disclosed in README/ARCHITECTURE
-    # rather than papered over with a slug that does not exist.
+    # Every LLM call in llm.py is a chat.completions call, so an owner's pinned
+    # `-pro` slug lands here too (deep_self_review.deep_review_route).
     "deep_self_review": "openai::gpt-5.6-sol",
 }
 

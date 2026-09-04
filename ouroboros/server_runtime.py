@@ -54,9 +54,9 @@ _DIRECT_PROVIDER_LEGACY_DEFAULTS = {
         "OUROBOROS_MODEL_FALLBACKS": {
             "anthropic/claude-sonnet-4.6", "openai/gpt-5.4-mini", "openai::gpt-5.4-mini",
         },
-        # The SHIPPED OpenRouter deep default and its migrated direct spelling both
-        # name a router slug that does not exist on api.openai.com (404) — a direct
-        # install must land on the real model, not on the -pro id.
+        # Prior shipped OpenRouter deep defaults and their migrated direct spellings
+        # all name router slugs that do not exist on api.openai.com (404) — a direct
+        # install must land on the real model, not on a -pro id.
         "OUROBOROS_MODEL_DEEP_SELF_REVIEW": {
             "openai/gpt-5.6-sol-pro", "openai::gpt-5.6-sol-pro",
             "openai/gpt-5.5-pro", "openai::gpt-5.5-pro",
@@ -91,7 +91,7 @@ _LEGACY_GEMINI_3_FLASH_PREVIEW = "google/gemini-" + "3-flash-preview"
 for _legacy_defaults in _DIRECT_PROVIDER_LEGACY_DEFAULTS.values():
     for _slot in ("OUROBOROS_MODEL", "OUROBOROS_MODEL_HEAVY", "OUROBOROS_MODEL_LIGHT"):
         _legacy_defaults[_slot].add(_LEGACY_GEMINI_31_FLASH_LITE)
-# Outgoing SHIPPED OpenRouter defaults (through v6.104), applied for EVERY
+# Outgoing SHIPPED OpenRouter defaults, applied for EVERY
 # exclusive-direct provider (incl. cloudru/gigachat/minimax/deepseek, which have no per-provider
 # legacy table): before each defaults refresh a stored copy of the shipped default matched the
 # `current in {"", default}` check because SETTINGS_DEFAULTS still carried it;
@@ -101,6 +101,7 @@ for _legacy_defaults in _DIRECT_PROVIDER_LEGACY_DEFAULTS.values():
 _PRIOR_SHIPPED_SLOT_DEFAULTS = {
     "OUROBOROS_MODEL": {
         "google/gemini-3.5-flash",
+        "google/gemini-3.7-flash",
         "x-ai/grok-4.5",
     },
     "OUROBOROS_MODEL_HEAVY": {"google/gemini-3.5-flash"},
@@ -109,9 +110,13 @@ _PRIOR_SHIPPED_SLOT_DEFAULTS = {
         "google/gemini-3.6-flash",
     },
     "OUROBOROS_MODEL_FALLBACKS": {"anthropic/claude-sonnet-4.6"},
-    # v6.81's shipped deep-review value: an upgraded direct-provider install still
-    # carries it, and it is just as unreachable without an OpenRouter credential.
-    "OUROBOROS_MODEL_DEEP_SELF_REVIEW": {"openai/gpt-5.5-pro", "openai::gpt-5.5-pro"},
+    # Prior shipped deep-review values (v6.81's gpt-5.5-pro, then the gpt-5.6-sol-pro
+    # routing slug): an upgraded direct-provider install still carries one, and each
+    # is just as unreachable without an OpenRouter credential.
+    "OUROBOROS_MODEL_DEEP_SELF_REVIEW": {
+        "openai/gpt-5.5-pro", "openai::gpt-5.5-pro",
+        "openai/gpt-5.6-sol-pro", "openai::gpt-5.6-sol-pro",
+    },
 }
 # Heavy is no longer an active role, but its bounded migration reader still
 # needs to distinguish an owner's custom value from values Ouroboros itself

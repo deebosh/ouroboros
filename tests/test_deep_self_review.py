@@ -784,7 +784,7 @@ class TestOmissionSectionBound:
 def test_direct_openai_deep_review_sends_a_real_openai_model_id():
     """PHYSICAL-PAYLOAD proof, not a defaults-table assertion.
 
-    The OpenRouter default is the slug `openai/gpt-5.6-sol-pro`. That `-pro`
+    An owner may pin the slug `openai/gpt-5.6-sol-pro`. That `-pro`
     suffix is an OpenRouter routing slug, NOT an OpenAI model id: live-probed
     2026-07-29, `gpt-5.6-sol-pro` on api.openai.com /v1/chat/completions returns
     404, while pro reasoning exists only on /v1/responses as
