@@ -526,6 +526,22 @@ def _mark_checked(current: Optional[Dict[str, Any]], key: Dict[str, str],
 # The one projection shared by the panel payload and the Runtime context
 # ---------------------------------------------------------------------------
 
+def shown_letter(record: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Optional[Dict[str, Any]]]:
+    """``(provenance, text, last_good)`` — the letter a reader will actually SEE.
+
+    A failed rewrite keeps the previous good letter, which may be about an OLDER target
+    than the range that failed. Relation, key, versions and every ancestry question must
+    therefore be asked about this provenance and never about the outer record: asking the
+    outer one presents a kept letter as the letter for the update currently on offer, and
+    hides an already-applied one behind the range that failed.
+    """
+    last_good = record.get("last_good") if isinstance(record.get("last_good"), dict) else None
+    text = str(record.get("text") or "")
+    if record.get("state") != "ready" and not text and last_good:
+        return last_good, str(last_good.get("text") or ""), last_good
+    return record, text, last_good
+
+
 def project_letter(
     record: Optional[Dict[str, Any]],
     *,
@@ -545,15 +561,7 @@ def project_letter(
     """
     if not record or record.get("state") == "none":
         return None
-    text = str(record.get("text") or "")
-    last_good = record.get("last_good") if isinstance(record.get("last_good"), dict) else None
-    provenance = record
-    if record.get("state") != "ready" and not text and last_good:
-        text, provenance = str(last_good.get("text") or ""), last_good
-    # Relation, key and provenance all describe the TEXT shown: a good letter kept
-    # through a failed rewrite may predate the range that failed (a moved target),
-    # and relating it to that range would present it as the letter for the update
-    # on offer. `has_last_good` says the text is the kept one.
+    provenance, text, last_good = shown_letter(record)
     key = provenance.get("key") if isinstance(provenance.get("key"), dict) else {}
     base, target = str(key.get("base_sha") or ""), str(key.get("target_sha") or "")
     head, latest = str(head_sha or ""), str(latest_sha or "")
@@ -597,7 +605,10 @@ def project_letter_for_panel(
     """
     record = read_record(drive_root)
     head = str(status.get("current_sha") or "")
-    target = str(((record or {}).get("key") or {}).get("target_sha") or "")
+    # The ancestry question is about the letter that will be SHOWN, which after a failed
+    # rewrite is the kept one about an older target.
+    shown = shown_letter(record)[0] if record else {}
+    target = str((shown.get("key") or {}).get("target_sha") or "")
     consumed = False
     # Ancestry is asked only where it can change the answer: a letter about the target
     # still ON OFFER is pending by definition, and HEAD == target needs no git. Everything
@@ -647,7 +658,8 @@ def official_update_projection(
         record = read_record(drive_root)
         latest = str(cache.get("latest_sha") or "")
         checked_head = str((record or {}).get("checked_head_sha") or "")
-        record_key = (record or {}).get("key") if isinstance((record or {}).get("key"), dict) else {}
+        shown = shown_letter(record)[0] if record else {}
+        record_key = shown.get("key") if isinstance(shown.get("key"), dict) else {}
         # No git here: the check itself is the proof, and only while it still describes
         # THIS head and names THIS letter's target as the one with nothing incoming.
         consumed = bool(

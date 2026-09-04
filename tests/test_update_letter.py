@@ -574,6 +574,36 @@ def test_panel_projection_proves_a_consumed_target_with_git(tmp_path):
     assert no_git["relation"] == "applied"
 
 
+def test_a_kept_letter_is_related_by_ITS_target_on_both_surfaces(tmp_path):
+    # a->b letter, a failed rewrite for a->c, and a HEAD that merge-applied b. The text
+    # shown is the kept one about b, so BOTH surfaces must ask their question about b —
+    # the outer failed record's target (c) is not the letter anyone is reading.
+    drive = tmp_path / "data"
+    (drive / "state").mkdir(parents=True)
+    kept = _record(text="the letter about 6.114.0")
+    failed = _record(key=dict(_record()["key"], target_sha="c" * 40), state="failed", text="",
+                     error_kind="provider_unavailable", target_version="6.115.0", last_good=kept)
+    ul.record_path(drive).write_text(json.dumps(failed))
+    merged = "e" * 40
+
+    def ancestor(argv):
+        # b IS in HEAD; the failed range's target c is not.
+        return (0, "", "") if argv[-2] == "b" * 40 else (1, "", "")
+
+    panel = ul.project_letter_for_panel(
+        {"current_sha": merged, "latest_sha": "c" * 40, "available": True}, drive_root=drive, git=ancestor,
+    )
+    assert panel["relation"] == "applied" and panel["text"] == "the letter about 6.114.0"
+    assert panel["target_version"] == "6.114.0" and panel["has_last_good"] is True
+
+    # The Runtime fact reaches the same verdict from the check that consumed b.
+    consumed_cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": False, "behind": 0,
+                                               "checked_at": "t2", "update_channel": "stable"}}
+    ul.record_path(drive).write_text(json.dumps(dict(failed, checked_head_sha=merged)))
+    fact = ul.official_update_projection(merged, drive_root=drive, state=consumed_cache)
+    assert fact["letter"]["relation"] == "applied" and fact["letter"]["text"] == "the letter about 6.114.0"
+
+
 def test_official_update_projection_consumed_only_while_the_check_describes_this_head(tmp_path):
     # The Runtime fact has no git, so the CHECK is its proof — and only while that check
     # still describes this HEAD and names this letter's target.

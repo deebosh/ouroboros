@@ -15,7 +15,7 @@ pytest_plugins = ("tests.test_ui_smoke_playwright",)
 
 
 @pytest.mark.ui_browser
-def test_ui_smoke_update_letter_renders_below_the_action(direct_server):
+def test_ui_smoke_update_letter_renders_below_the_action(direct_server, tmp_path):
     """The update letter on the real Dashboard -> Updates flow at a phone width: a named
     section under the single action button and above Recovery, markdown sanitized (no
     script survives, emphasis does), the verdict untouched, and no horizontal page scroll."""
@@ -75,6 +75,13 @@ def test_ui_smoke_update_letter_renders_below_the_action(direct_server):
                     };
                 }"""
             )
+            # The rendered card is saved for the human who runs this lane: DEVELOPMENT's
+            # visible-change rule is satisfied by INSPECTING it, and a stored file alone is
+            # not that inspection — it is what makes the inspection possible from CI.
+            shot = tmp_path / "updates_letter.png"
+            page.screenshot(path=str(shot), full_page=True)
+            assert shot.stat().st_size > 0
+            print(f"update letter card rendered for inspection: {shot}")
         finally:
             browser.close()
     assert info["tag"] == "H4" and info["label"] == "What's new"
