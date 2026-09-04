@@ -945,6 +945,41 @@ def test_write_letter_treats_an_http_200_body_error_as_the_provider_s_verdict(le
     assert record["attempt_ids"] == ["att"] and record["text"] == ""
 
 
+@pytest.mark.parametrize("body, kind", [
+    # A generic 400 whose MESSAGE is the overflow (the shape OpenRouter forwards for many routes).
+    ({"code": 400, "type": "invalid_request_error", "kind": "provider_error",
+      "message": "prompt is too long: 250000 tokens > 128000 maximum"}, "context_overflow"),
+    # Output/body-size rejections take precedence: shrinking the prompt cannot fix them.
+    ({"code": 400, "type": "invalid_request_error", "kind": "provider_error",
+      "message": "max_tokens 65536 exceeds maximum context length 32768"}, "provider_unavailable"),
+    # A rate limit that happens to mention the context window is still a rate limit.
+    ({"code": 429, "kind": "rate_limit",
+      "message": "rate limit exceeded for this context window tier"}, "provider_unavailable"),
+    ({"code": 502, "kind": "provider_transient", "message": "upstream unavailable"}, "provider_unavailable"),
+    ({"code": "context_length_exceeded", "message": ""}, "context_overflow"),
+    (None, ""), ("not a dict", ""),
+])
+def test_body_error_kind_uses_the_shared_overflow_vocabulary(body, kind):
+    assert ul._body_error_kind(body) == kind
+
+
+def test_write_letter_retries_low_on_a_generic_400_whose_message_is_the_overflow(letter_env, monkeypatch):
+    monkeypatch.setattr(ul, "_fit_plan", lambda env, memory, task: _Plan("max", False, True))
+    sent = []
+
+    def generic_400_then_low(client, *, drive_root, **kwargs):
+        sent.append(kwargs["messages"][0]["content"])
+        if len(sent) == 1:
+            return {"content": ""}, {"ledger_attempt_ids": ["att-max"], "provider_error": {
+                "code": 400, "type": "invalid_request_error", "kind": "provider_error",
+                "message": "prompt is too long: 250000 tokens > 128000 maximum"}}
+        return {"content": "A Low paragraph."}, {"ledger_attempt_ids": ["att-low"]}
+
+    monkeypatch.setattr(ul, "_chat", generic_400_then_low)
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert sent == ["max", "low"] and record["state"] == "ready" and record["attempt_ids"] == ["att-max", "att-low"]
+
+
 def test_write_letter_keeps_the_attempt_ids_of_a_call_that_raised(letter_env, monkeypatch):
     # usage_accounting attaches the accounted attempt ids to the exception of a failed call;
     # the record keeps them, so a failed letter still points at what it cost.

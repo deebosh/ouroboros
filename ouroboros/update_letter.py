@@ -363,16 +363,25 @@ def _ledger_ids(carrier: Any) -> List[str]:
 
 
 def _body_error_kind(body_err: Any) -> str:
-    """OpenRouter serves 429/5xx/context_length_exceeded INSIDE an HTTP 200; llm.py keeps
-    that verdict in usage["provider_error"], not in an exception. Classified the way
-    loop_llm_call does — a structured overflow code is an overflow, anything else a
-    provider failure — so it never reads as "the model returned no text"."""
+    """OpenRouter serves 429/5xx/context overflows INSIDE an HTTP 200; llm.py keeps that
+    verdict in usage["provider_error"], not in an exception. Classified with the shared
+    overflow vocabulary the Main classifier uses — a structured overflow code, or an
+    overflow-shaped message (a generic 400 "prompt is too long") that is neither a
+    rate limit nor an output/body-size rejection — is an overflow; anything else is a
+    provider failure. Never "the model returned no text"."""
     if not isinstance(body_err, dict):
         return ""
-    from ouroboros.context_budget import CONTEXT_OVERFLOW_CODES
+    from ouroboros.context_budget import CONTEXT_OVERFLOW_CODES, context_overflow_message
+    from ouroboros.loop_llm_call import is_rate_limit_text
 
     codes = (str(body_err.get(key) or "").strip().lower() for key in ("code", "type"))
-    return "context_overflow" if any(code in CONTEXT_OVERFLOW_CODES for code in codes) else "provider_unavailable"
+    if any(code in CONTEXT_OVERFLOW_CODES for code in codes):
+        return "context_overflow"
+    message = str(body_err.get("message") or "")
+    if str(body_err.get("kind") or "") != "rate_limit" and not is_rate_limit_text(message) \
+            and context_overflow_message(message):
+        return "context_overflow"
+    return "provider_unavailable"
 
 
 def _classify(exc: Exception) -> Tuple[str, str]:
