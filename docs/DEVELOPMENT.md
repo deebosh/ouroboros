@@ -1725,13 +1725,16 @@ by "Provider Independence" above. Call-site imperatives:
   round dispatch of every main-loop actor (owner turns, managed tasks, native
   API subagent children). Every other caller — forced-final, fallback
   candidates, review actors, safety, external-harness delegated runs — keeps
-  `transport_death_retries=0`. A round that holds an unresolved attempt
-  sends nothing further except the typed-death repeats — a repeat that fails
-  with any other class (a provider status, a transient, an empty response, a
-  context overflow) ends the round on the unknown no-resend terminal with no
-  compaction retry (a released $0 repeat stays the free wait episode's to
-  redial, and an exhausted episode on such a round still ends on the unknown
-  terminal, worded as both the wait and the unresolved attempt).
+  `transport_death_retries=0`. A round that holds a transport-death repeat
+  record sends nothing further except the typed-death repeats — a repeat that
+  fails with any other class (a provider status, a transient, an empty
+  response, a context overflow) ends the round on the unknown no-resend
+  terminal with no compaction retry (a released $0 repeat stays the free wait
+  episode's to redial, and an exhausted episode on such a round still ends on
+  the unknown terminal, worded as both the wait and the unresolved attempt;
+  a wait episode's local-only pass that ends unknown writes no record, so the
+  episode keeps its latched cause and its free redials while that dispatched
+  local attempt is never resent).
 
 #### Timeout & Wait Control
 
@@ -1805,10 +1808,13 @@ by "Provider Independence" above. Call-site imperatives:
   stream ends without terminal provider evidence is
   `provider_outcome_unknown`: its `unresolved` ledger row is terminal and
   THAT physical attempt is never resent by any route; the primary main-loop
-  completion may send the same request again only after a typed transport
-  death, at most twice per round, as a new physical attempt with its own row
-  (a transport retry is literally a new attempt); a NEW logical request is
-  legal only with a unique host-attested input absent from the unknown one
+  completion may repeat the same logical request only after a typed transport
+  death, at most twice per round, as a new physical attempt with its own row,
+  re-prepared at send time (a transport retry is literally a new attempt, so a
+  non-deterministic projection such as a vision caption that failed on the
+  first attempt may differ and may cost its own preparation call); a NEW
+  logical request is legal only with a unique host-attested input absent from
+  the unknown one
   (e.g. the nanny-leaf hold contract in `ouroboros/delegate_hold.py`).
 - A custody retry key names semantic material and an admitted cycle, not its
   rendered prompt: prior-round scaffolding may change while the same physical
