@@ -31,6 +31,14 @@ from tests.test_loop_transport_wait import (
 
 INTERACTIVE_DETAIL = "interactive_wait_window_exhausted"
 
+# A managed episode's owner-visible texts are a frozen contract: these are the
+# literal wordings the base emits, and the ONLY notes a managed episode gets.
+BASE_MANAGED_ENTRY = (
+    "🌐 Could not establish a provider connection — waiting and "
+    "redialing automatically (failed attempts are $0). Stop cancels."
+)
+BASE_MANAGED_RECOVERY = "🌐 Provider connection restored after 1.5 min — resuming."
+
 
 class _NoteRecorder:
     """emit_progress fake honoring the ``incident=`` keyword contract."""
@@ -413,10 +421,11 @@ def test_direct_turn_waits_with_plain_notes_and_no_toast_pair(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("flags", [{}, {"is_direct_chat": True}, {"is_ephemeral_turn": True}])
-def test_error_kind_change_closure_is_an_owner_note(tmp_path, monkeypatch, flags):
+def test_error_kind_change_closure_is_an_interactive_note(tmp_path, monkeypatch, flags):
     """A redial that reaches the provider and fails differently closes the
-    episode with an owner note naming the fresh kind; only the ephemeral
-    episode's note carries the recovered toast pair."""
+    episode with a durable row for every episode; the owner note naming the
+    fresh kind is an interactive turn's only closure surface, so a managed
+    episode gets none (only the ephemeral note carries the recovered toast pair)."""
     _FakeClock(monkeypatch)
     ctx = _ctx(**flags)
     notes = _NoteRecorder()
@@ -426,6 +435,10 @@ def test_error_kind_change_closure_is_an_owner_note(tmp_path, monkeypatch, flags
         drive_logs=tmp_path, task_id="t-kind", model="m", emit_progress=notes,
     ) is None
 
+    assert _read_network_wait_events(tmp_path)[-1]["detail"] == "error_kind_changed:provider_transient"
+    if not flags:
+        assert notes.texts == [BASE_MANAGED_ENTRY]  # the managed closure is its row, not a note
+        return
     assert "got past the connect phase and failed as provider_transient" in notes.texts[-1]
     assert "ordinary failure policy resumes" in notes.texts[-1]
     incident = notes.incidents[-1]
@@ -434,14 +447,14 @@ def test_error_kind_change_closure_is_an_owner_note(tmp_path, monkeypatch, flags
         assert incident["toast_once"].startswith("t-kind:network_wait:recovered:")
     else:
         assert incident is None
-    assert _read_network_wait_events(tmp_path)[-1]["detail"] == "error_kind_changed:provider_transient"
 
 
 @pytest.mark.parametrize("flags", [{}, {"is_direct_chat": True}, {"is_ephemeral_turn": True}])
-def test_local_fallback_adoption_closure_is_an_owner_note(tmp_path, monkeypatch, flags):
-    """Adopting the local fallback route closes the episode with an owner note
-    saying the remote connection is still down; only the ephemeral episode's
-    note carries the ended toast pair."""
+def test_local_fallback_adoption_closure_is_an_interactive_note(tmp_path, monkeypatch, flags):
+    """Adopting the local fallback route closes the episode with a durable row
+    for every episode; the owner note saying the remote connection is still
+    down is an interactive turn's only closure surface, so a managed episode
+    gets none (only the ephemeral note carries the ended toast pair)."""
     _FakeClock(monkeypatch)
     ctx = _ctx(**flags)
     notes = _NoteRecorder()
@@ -451,6 +464,10 @@ def test_local_fallback_adoption_closure_is_an_owner_note(tmp_path, monkeypatch,
         task_id="t-local", model="m", emit_progress=notes, after_local_pass=True,
     ) is None
 
+    assert _read_network_wait_events(tmp_path)[-1]["detail"] == "local_fallback_adopted"
+    if not flags:
+        assert notes.texts == [BASE_MANAGED_ENTRY]  # the managed closure is its row, not a note
+        return
     assert "still unavailable" in notes.texts[-1]
     assert "local fallback model" in notes.texts[-1]
     incident = notes.incidents[-1]
@@ -459,27 +476,37 @@ def test_local_fallback_adoption_closure_is_an_owner_note(tmp_path, monkeypatch,
         assert incident["toast_once"].startswith("t-local:network_wait:ended:")
     else:
         assert incident is None
-    assert _read_network_wait_events(tmp_path)[-1]["detail"] == "local_fallback_adopted"
 
 
-def test_managed_entry_and_recovery_notes_are_unchanged(tmp_path, monkeypatch):
+@pytest.mark.parametrize("closure", ["recovered", "local_fallback_adopted", "error_kind_changed"])
+def test_managed_episode_owner_texts_are_byte_identical_to_base(tmp_path, monkeypatch, closure):
     """The managed wordings are a frozen contract: entry still ends with the
-    Stop promise its cancel authority honors, recovery still says resuming."""
+    Stop promise its cancel authority honors, recovery still says resuming,
+    and the two other closures write their durable row and no note at all —
+    the literal texts the base emits, nothing more."""
     clock = _FakeClock(monkeypatch)
     ctx = _ctx()
     notes = _NoteRecorder()
     episode = _enter(tmp_path, ctx, notes, task_id="t-managed")
     clock.now += 90.0
+    outcome = {
+        "recovered": dict(msg_present=True, error_kind=""),
+        "local_fallback_adopted": dict(msg_present=True, error_kind="", after_local_pass=True),
+        "error_kind_changed": dict(msg_present=False, error_kind="provider_transient"),
+    }[closure]
     assert loop_transport.reconcile_transport_wait(
-        episode, ctx, msg_present=True, error_kind="", drive_logs=tmp_path,
-        task_id="t-managed", model="m", emit_progress=notes,
+        episode, ctx, drive_logs=tmp_path, task_id="t-managed", model="m", emit_progress=notes, **outcome,
     ) is None
-    assert notes.texts == [
-        "🌐 Could not establish a provider connection — waiting and "
-        "redialing automatically (failed attempts are $0). Stop cancels.",
-        "🌐 Provider connection restored after 1.5 min — resuming.",
-    ]
-    assert notes.incidents == [None, None]
+
+    expected = [BASE_MANAGED_ENTRY] + ([BASE_MANAGED_RECOVERY] if closure == "recovered" else [])
+    assert notes.texts == expected
+    assert notes.incidents == [None] * len(expected)
+    last = _read_network_wait_events(tmp_path)[-1]
+    assert (last["phase"], last.get("detail")) == {
+        "recovered": ("recovered", None),
+        "local_fallback_adopted": ("ended", "local_fallback_adopted"),
+        "error_kind_changed": ("ended", "error_kind_changed:provider_transient"),
+    }[closure]
 
 
 def test_ephemeral_episode_entry_recovery_and_exhaustion_carry_distinct_incident_toasts(tmp_path, monkeypatch):

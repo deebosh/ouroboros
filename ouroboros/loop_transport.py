@@ -22,9 +22,12 @@ the durable ``ended`` detail names the rail that expired — the bound's own
 ``interactive_wait_window_exhausted``, or the deadline's detail when the owner
 window closed first. Interactive notes promise no cancellation (an in-process
 turn has no Stop contract; a direct turn's mailbox message still wakes the
-sleep). Recovery, local adoption, and error-kind change are owner notes for
-every episode; exhaustion is a note for an interactive turn, while a managed
-task's exhaustion is its terminal result; only an ephemeral turn's episode-boundary
+sleep). Recovery is an owner note for every episode; local adoption and
+error-kind change are notes for interactive turns only, because such a turn
+has no progress row to show the closure — a managed task keeps the durable
+row and its ordinary progress; exhaustion is a note for an interactive turn,
+while a managed task's exhaustion is its terminal result; only an ephemeral
+turn's episode-boundary
 notes (entry, recovery/closure, exhaustion) carry the typed ``task_incident``
 toast pair, because the browser renders no progress rows for that turn (direct
 turns get live-card rows); periodic notes stay silent. Every episode note passes
@@ -204,9 +207,11 @@ def reconcile_transport_wait(
     turn's episode gets the idle-timeout bound at entry, because the bound is
     measured from entry and the turn has no other rail. ``emit_progress``
     honors the ``incident=`` keyword (``OuroborosAgent._emit_progress``): the
-    typed toast pair rides the note for ephemeral episodes; recovery, local
-    adoption and error-kind change are notes for all episodes, and exhaustion
-    is separately noted only for interactive turns (``transport_wait_step``).
+    typed toast pair rides the note for ephemeral episodes; recovery is a note
+    for every episode, local adoption and error-kind change are notes for
+    interactive turns only (a managed episode keeps its durable ``ended`` row
+    and its ordinary progress), and exhaustion is separately noted only for
+    interactive turns (``transport_wait_step``).
     The round gate reconciles twice per failed dispatch: once with the
     pre-chain kind, and once after the fallback chain with the FRESH kind — so
     an outage first observed MID-chain (a remote candidate dying pre-dispatch
@@ -251,11 +256,12 @@ def reconcile_transport_wait(
                 drive_logs, task_id=task_id, phase="ended", elapsed_sec=elapsed,
                 redials=episode.redials, model=model, detail="local_fallback_adopted",
             )
-            emit_progress(
-                f"🌐 Provider connection still unavailable after {elapsed / 60.0:.1f} min "
-                "— continuing on the local fallback model.",
-                incident=episode.incident(task_id, "ended"),
-            )
+            if episode.interactive:  # a managed task keeps its durable row and ordinary progress
+                emit_progress(
+                    f"🌐 Provider connection still unavailable after {elapsed / 60.0:.1f} min "
+                    "— continuing on the local fallback model.",
+                    incident=episode.incident(task_id, "ended"),
+                )
         else:
             emit_network_wait_event(
                 drive_logs, task_id=task_id, phase="recovered", elapsed_sec=elapsed,
@@ -277,11 +283,12 @@ def reconcile_transport_wait(
             redials=episode.redials, model=model,
             detail=f"error_kind_changed:{error_kind}",
         )
-        emit_progress(
-            f"🌐 Provider connection restored after {elapsed / 60.0:.1f} min — the redial "
-            f"got past the connect phase and failed as {error_kind}; ordinary failure policy resumes.",
-            incident=episode.incident(task_id, "recovered"),
-        )
+        if episode.interactive:  # a managed task keeps its durable row and ordinary progress
+            emit_progress(
+                f"🌐 Provider connection restored after {elapsed / 60.0:.1f} min — the redial "
+                f"got past the connect phase and failed as {error_kind}; ordinary failure policy resumes.",
+                incident=episode.incident(task_id, "recovered"),
+            )
         return None
     return episode
 
