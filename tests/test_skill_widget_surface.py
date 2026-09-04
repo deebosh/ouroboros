@@ -182,6 +182,56 @@ def test_skill_preflight_parses_module_entry_as_classic_script(
         assert row["ok"] is True
 
 
+def test_skill_preflight_validator_env_keeps_windows_process_base_keys(tmp_path, monkeypatch):
+    """The scrubbed validator env still lets a Windows child start.
+
+    A node started without SystemRoot aborts before it reads the script, so the
+    valid entry above read as a syntax error on windows-latest (7.0.0-rc.9).
+    Pinned on every host by simulating that environment: the process-base keys
+    are forwarded, everything else stays scrubbed, a POSIX env is byte-identical
+    to before, and the validator's pipes stay BYTES decoded as UTF-8 with
+    replacement -- the 0x8f that kills a locale-decoded (cp1252) reader thread
+    is inert here.
+    """
+    from ouroboros.tools import skill_preflight as sp
+
+    seen: dict = {}
+
+    class _FakeProc:
+        returncode = 0
+        pid = 4242
+
+        def communicate(self, timeout=None):
+            return b"", b"\x8f\xff not utf-8"
+
+    def _fake_popen(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        seen["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(sp, "Popen", _fake_popen)
+    for key in sp._WINDOWS_BASE_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "must-not-reach-the-validator")
+
+    result = sp._run_check(["node", "--check", "widget.js"], cwd=tmp_path)
+    posix_env = seen["kwargs"]["env"]
+    assert set(posix_env) == {"PATH", "HOME", "LANG"}
+    assert posix_env["LANG"] == "C.UTF-8"
+    assert not any(key in seen["kwargs"] for key in ("text", "universal_newlines", "encoding"))
+    assert result["returncode"] == 0
+    assert result["stderr"] == "\ufffd\ufffd not utf-8"
+
+    monkeypatch.setenv("SYSTEMROOT", "C:\\Windows")
+    monkeypatch.setenv("TEMP", "C:\\Users\\runneradmin\\AppData\\Local\\Temp")
+    sp._run_check(["node", "--check", "widget.js"], cwd=tmp_path)
+    windows_env = seen["kwargs"]["env"]
+    assert windows_env["SYSTEMROOT"] == "C:\\Windows"
+    assert windows_env["TEMP"] == "C:\\Users\\runneradmin\\AppData\\Local\\Temp"
+    assert set(windows_env) == {"PATH", "HOME", "LANG", "SYSTEMROOT", "TEMP"}
+    assert "OPENROUTER_API_KEY" not in windows_env
+
+
 # ------------------------------------------------------------- S1-07 / S1-02 / F14
 
 

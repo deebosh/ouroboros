@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import os
 import pathlib
 import shutil
 import subprocess
@@ -45,6 +46,17 @@ log = logging.getLogger(__name__)
 _PREFLIGHT_TIMEOUT_SEC = 30
 _PREFLIGHT_MAX_OUTPUT_BYTES = 16 * 1024
 _PREFLIGHT_HARD_FILE_LIMIT = 60  # independent preflight headroom (skill_review now uses a pack-level token budget)
+# The scrubbed validator env keeps the Windows process-base variables a child
+# needs to START: without SystemRoot a Windows process cannot initialise the
+# system services it loads (node dies in libuv's Winsock startup before it
+# reads the script), so `node --check` on a VALID file exited non-zero and
+# preflight reported a syntax error that did not exist (windows-latest,
+# 7.0.0-rc.9). TEMP/TMP back the msys `bash -n` /tmp. Forwarded only when set,
+# so a POSIX child env is byte-identical to before; the same base-env class as
+# extension_companion._COMPANION_BASE_ENV_KEYS (SYSTEMROOT/WINDIR/TEMP/TMP) and
+# CPython's own test.support.script_helper ("Windows requires at least the
+# SYSTEMROOT environment variable to start").
+_WINDOWS_BASE_ENV_KEYS: Tuple[str, ...] = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
 
 # Extension -> argv template + runtime; {path} is substituted into argv only.
 _VALIDATORS: Dict[str, Tuple[List[str], str]] = {
@@ -106,16 +118,18 @@ def _run_check(cmd: List[str], cwd: pathlib.Path) -> Dict[str, Any]:
     also published on the typed process-facts channel so the preflight CALL's
     result_meta, tools.jsonl row and UI card carry them; a clean validator is
     described by its finding and leaves the channel alone."""
+    env: Dict[str, str] = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": "C.UTF-8",
+    }
+    env.update({key: os.environ[key] for key in _WINDOWS_BASE_ENV_KEYS if os.environ.get(key)})
     popen_kwargs: Dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "stdin": subprocess.DEVNULL,
         "cwd": str(cwd),
-        "env": {
-            "PATH": str(__import__("os").environ.get("PATH", "")),
-            "HOME": str(__import__("os").environ.get("HOME", "")),
-            "LANG": "C.UTF-8",
-        },
+        "env": env,
     }
     popen_kwargs.update(subprocess_new_group_kwargs())
     _check_started_ts = time.monotonic()

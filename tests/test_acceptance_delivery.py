@@ -633,7 +633,11 @@ def test_session_row_claims_the_same_wallet_and_receives_the_full_packet(monkeyp
     (start,) = FakeGateway.instances[0].start_requests
     wire = json.dumps(start)
     assert "RETRIEVAL POINTERS" in wire and "TRAJECTORY-RESULT-3-passed" in wire and "not guaranteed" in wire
-    assert str(workspace) in wire
+    # The start request carries the workspace root: as the run scope (parsed
+    # field, never a substring of the serialized wire — json.dumps escapes the
+    # backslashes of an OS-native path) and as the work order's retrieval pointer.
+    assert start["scope"] == {"kind": "project", "root": str(workspace)}
+    assert str(workspace) in start["prompt"]
 
 
 def test_replayed_panel_keeps_the_delivery_it_actually_ran_on(monkeypatch, tmp_path):

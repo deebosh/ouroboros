@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import posixpath
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -47,6 +48,7 @@ from ouroboros.tools.review_helpers import (  # noqa: E402
     calibrated_input_token_limit,
     load_governance_doc,
 )
+from ouroboros.shell_parse import is_absolute_path_text  # noqa: E402
 from ouroboros.utils import atomic_write_json, estimate_tokens, utc_now_iso  # noqa: E402
 from ouroboros.config import get_context_mode  # noqa: E402
 from ouroboros.provider_models import provider_for_model, provider_has_credentials  # noqa: E402
@@ -606,25 +608,31 @@ def _record_execution(slot: Any, usage: Dict[str, Any], *, status: str, error: s
 
 
 def _repo_relative(path: Any, repo_dir: pathlib.Path) -> str:
-    """A receipt path as a repo-relative POSIX path. Coverage hands it the
-    receipt's ``opened_path`` (the root-relative path the reader actually
-    opened — already free of the model's spelling: absolute, whitespace-padded,
-    ``repo/``-prefixed or ``/``-qualified forms all arrive as ``BIBLE.md``)
-    and, for a receipt WITHOUT one (nothing rendered), the raw spelling.
-    Absolute paths under the repository are relativized, relative ones
-    normalized — but a ``..`` component is kept AS SPELLED and so names no
-    mandatory read: the registry refuses traversal shapes before dispatch, so
-    ``a/../BIBLE.md`` delivered nothing and is never folded onto ``BIBLE.md``."""
+    """A receipt path as a repo-relative POSIX path — on EVERY host OS.
+    Coverage hands it the receipt's ``opened_path`` (the root-relative path
+    the reader actually opened — already free of the model's spelling:
+    absolute, whitespace-padded, ``repo/``-prefixed or ``/``-qualified forms
+    all arrive as ``BIBLE.md``) and, for a receipt WITHOUT one (nothing
+    rendered), the raw spelling. Absolute paths under the repository are
+    relativized, relative ones normalized — but a ``..`` component is kept AS
+    SPELLED and so names no mandatory read: the registry refuses traversal
+    shapes before dispatch, so ``a/../BIBLE.md`` delivered nothing and is
+    never folded onto ``BIBLE.md``. The POSIX contract is by construction:
+    separators are folded to ``/`` first, absolute spellings are recognized
+    for every OS (``/``, drive-letter and UNC forms — ``PurePosixPath`` alone
+    is blind to ``C:/``), and normalization is ``posixpath``'s, never
+    ``os.path``'s, whose Windows form renders ``docs\\ARCHITECTURE.md`` and
+    would never match a mandatory read."""
     text = str(path or "").replace("\\", "/")
     pure = pathlib.PurePosixPath(text)
     if ".." in pure.parts:
         return text
-    if pure.is_absolute():
+    if is_absolute_path_text(text):
         try:
             return pathlib.Path(text).resolve().relative_to(pathlib.Path(repo_dir).resolve()).as_posix()
         except (ValueError, OSError):
             return pure.as_posix()
-    return pathlib.PurePosixPath(os.path.normpath(text)).as_posix().removeprefix("./")
+    return posixpath.normpath(text).removeprefix("./")
 
 
 def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict[str, Dict[str, Any]]:

@@ -530,14 +530,17 @@ def resolve_constitutional(
                 if label == "evidence" and not exists(resolved):
                     skipped.append(locator)
                     continue
+                # The locator is quoted VERBATIM (never ``repr``): the note is disclosure a
+                # reviewer copies back, and ``repr`` doubles every backslash of a Windows path.
                 return True, (
-                    f"constitutional: {label} locator {locator!r} resolves under the "
+                    f"constitutional: {label} locator '{locator}' resolves under the "
                     "Ouroboros system repository (structural fact)"
                 )
     if skipped:
+        listed = ", ".join(f"'{item}'" for item in skipped[:5])
         return False, (
             "not constitutional: the only system-repo locators declared are EVIDENCE paths that do "
-            f"not exist ({', '.join(repr(item) for item in skipped[:5])}) — declare them under "
+            f"not exist ({listed}) — declare them under "
             "affected_resources if the work will change them"
         )
     return False, "not constitutional: no declared locator resolves under the Ouroboros system repository"
