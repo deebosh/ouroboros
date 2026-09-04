@@ -38,6 +38,7 @@ from ouroboros.loop_tool_execution import StatefulToolExecutor, _truncate_tool_r
 from ouroboros.memory import Memory
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 from ouroboros.pricing import infer_provider_from_model
+from ouroboros.settings_setup_contract import resolve_total_budget_usd
 from ouroboros.utils import (
     append_jsonl,
     emit_log_event,
@@ -672,8 +673,8 @@ class BackgroundConsciousness:
         try:
             from ouroboros.usage_accounting import usage_projection
 
-            total_budget = float(os.environ.get("TOTAL_BUDGET", "1"))
-            if total_budget <= 0:
+            total_budget = resolve_total_budget_usd()
+            if total_budget is None:
                 return True
             max_bg = total_budget * (self._bg_budget_pct / 100.0)
             projection = usage_projection(
@@ -690,18 +691,16 @@ class BackgroundConsciousness:
         """Bind each wakeup to the global ledger and its background sub-budget."""
         from ouroboros.usage_accounting import UsageScope, usage_scope
 
-        try:
-            total_budget = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-        except (TypeError, ValueError):
-            total_budget = 0.0
-        root_limit = total_budget * (self._bg_budget_pct / 100.0) if total_budget > 0 else None
+        total_budget = resolve_total_budget_usd()
+        root_limit = total_budget * (self._bg_budget_pct / 100.0) if total_budget else None
+
         with usage_scope(UsageScope(
             drive_root=self._drive_root,
             task_id="bg-consciousness",
             root_task_id="bg-consciousness",
             category="consciousness",
             source="background_consciousness",
-            global_limit_usd=total_budget if total_budget > 0 else None,
+            global_limit_usd=total_budget,
             root_limit_usd=root_limit,
         )):
             return self._think_scoped()

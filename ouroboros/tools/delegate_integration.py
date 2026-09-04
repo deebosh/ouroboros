@@ -576,8 +576,8 @@ def capture_stranded_patch(drive_root: Any, run: _RunCustody) -> Dict[str, Any]:
 # The profiles allowed to hold this authority. Mirrors the top-level principal
 # set of the tool-access policy: child/acting/repair/ephemeral contexts keep
 # their current gates and never acquire delegated payload mutation.
-_PAYLOAD_PRINCIPAL_PROFILES = frozenset({
-    "workspace_task", "external_workspace_task", "self_modification"})
+from ouroboros.tool_access import (
+    _TOP_LEVEL_PRINCIPAL_PROFILES as _PAYLOAD_PRINCIPAL_PROFILES)
 
 
 def payload_content_hash(payload_root: Any) -> str:
@@ -619,17 +619,27 @@ def _payload_delegation_busy(drive: pathlib.Path, target: pathlib.Path) -> str:
     snapshot — two separate log reads let the holder's REQUESTED→STARTED
     transition land between them and a second start slipped the claim lock;
     against one snapshot the holder is in exactly one state, never missed.
+
+    An obligation is held by the payload, not by the task that created it: a
+    holder whose OWNER TASK is terminal cannot race the CAS baseline (its
+    snapshot is frozen; the apply-time whole-payload CAS is the real race
+    guard), so it stops locking the payload. Unprovable terminality keeps the
+    lock, and the cheap authority/target filters short-circuit first.
     """
+    from ouroboros.delegate_terminal import _task_is_terminal
+
     resolved = _resolved(target)
     rows = list(custody._iter_rows(custody.event_log_path(drive)))
     for run in custody.replay(drive, rows=rows).values():
         if (run.authority_source == "skill_payload"
                 and _resolved(run.target_root) == resolved
-                and not (run.settled and run.patch_disposed)):
+                and not (run.settled and run.patch_disposed)
+                and not _task_is_terminal(drive, run.task_id)):
             return run.run_id or run.invocation_id
     for record in custody.pending_invocations(drive, rows=rows):
         if (str(record.get("authority_source") or "") == "skill_payload"
-                and _resolved(record.get("target_root")) == resolved):
+                and _resolved(record.get("target_root")) == resolved
+                and not _task_is_terminal(drive, str(record.get("task_id") or ""))):
             return str(record.get("invocation_id") or "")
     return ""
 
@@ -756,13 +766,22 @@ def _payload_mutation_authority(
             bucket=b, skill_name=s)
     busy = _payload_delegation_busy(drive, target)
     if busy:
+        # Name the HOLDER'S OWNER, not a call the refused caller cannot make:
+        # delegate_wait and integrate_delegated_patch both refuse a non-owner.
+        # A PENDING (START_REQUESTED-only) holder has no replayed run row.
+        holder_owner = str(
+            getattr(custody.lookup(drive, "", busy)[1], "task_id", "") or "") or next(
+            (str(r.get("task_id") or "") for r in custody.pending_invocations(drive)
+             if str(r.get("invocation_id") or "") == busy), "")
         return None, None, _fail(
             "delegate_start", "payload_delegation_busy",
-            "Another delegated run already holds this exact payload open (its "
-            "custody is not yet settled AND disposed). Finish that run — "
-            "delegate_wait it and integrate_delegated_patch its capture — before "
-            "starting another delegation against the same skill.",
-            holder=busy, target_root=str(target))
+            "Another delegated run holds this exact payload open: its custody is "
+            "not yet settled AND disposed, and its owner task is still live (or its "
+            "terminality cannot be proven from task results). Wait for that task to "
+            "finish, or pick another skill: a non-owner can neither delegate_wait "
+            "that run nor integrate its capture.",
+            holder=busy, holder_owner_task_id=holder_owner,
+            target_root=str(target))
     record = {
         "target_root": str(target),
         "source": "skill_payload",
@@ -1323,7 +1342,9 @@ def integrate_payload_patch(
             )
 
     def _dispose(disposition: str, cleanup: bool) -> Tuple[bool, str]:
-        return _dispose_delegated(drive, entry, snapshot_key, reason, disposition, cleanup)
+        return _dispose_delegated(
+            drive, entry, snapshot_key, reason, disposition, cleanup,
+            disposed_by=str(getattr(ctx, "task_id", "") or ""))
 
     if decision == "reject":
         # A reject RELEASES the snapshot (the child's only copy): ready-only. It
@@ -1369,7 +1390,18 @@ def integrate_payload_patch(
         tool="integrate_delegated_patch", context=f"run_id={rid}")
     if rebind_refusal:
         return rebind_refusal
-    patch_touched, parse_error = _patch_touched_paths(patch_path, target)
+    from ouroboros.subagent_worktrees import isolated_git_env
+
+    # NO-REPOSITORY mode for BOTH git invocations below (the touched-path reader
+    # and the apply): the live payload is NOT a Git repository, and an ancestor
+    # `.git` above the runtime data root makes git treat the payload as a mere
+    # subdirectory prefix — every hunk is silently skipped at rc=0 while
+    # `git apply --numstat` prints nothing at all. git still SEARCHES the ceiling
+    # entry itself, so the ceiling must be the PARENT of the payload: pinning it
+    # at the payload leaves the silent no-op in place.
+    git_env = {**isolated_git_env(),
+               "GIT_CEILING_DIRECTORIES": str(target.resolve().parent)}
+    patch_touched, parse_error = _patch_touched_paths(patch_path, target, env=git_env)
     if parse_error:
         return (f"⚠️ INTEGRATE_PATCH_UNREADABLE: cannot parse run {rid}'s captured "
                 f"patch (git apply --numstat failed): {parse_error[:300]}")
@@ -1441,11 +1473,9 @@ def integrate_payload_patch(
                 "log and retry. Nothing was changed.")
     # Index-free apply with cwd = the LIVE payload (R1 item 3, probed): no .git,
     # no index, no staging is created in the live payload. Atomic on failure.
-    # Config-isolated like every parent-side git invocation of this surface.
-    from ouroboros.subagent_worktrees import isolated_git_env
-
+    # Config-isolated and repository-free (see the git_env comment above).
     proc = subprocess.run(["git", "apply", str(patch_path)], cwd=str(target),
-                          capture_output=True, text=True, env=isolated_git_env())
+                          capture_output=True, text=True, env=git_env)
     if proc.returncode != 0:
         custody.record_patch_apply_resolved(drive, entry, reason="apply_failed")
         stderr = (proc.stderr or proc.stdout or "").strip()
@@ -1468,6 +1498,28 @@ def integrate_payload_patch(
         hash_error = ""
     except Exception as exc:
         live_after, hash_error = "", f"{type(exc).__name__}: {exc}"
+    # A PROVABLE non-mutation is refused typed BEFORE the result-hash conditional
+    # (git exited 0, the patch names at least one path, and the live payload still
+    # hashes to its recorded BASELINE), so a run whose manifest recorded no result
+    # hash can never route a silent no-op into the success finalizer.
+    if bool(ordered) and not hash_error and live_after == baseline_hash:
+        custody.record_patch_apply_resolved(drive, entry, reason="apply_no_op")
+        verdict_path = _write_verdict(
+            ctx, f"run_{rid}", outcome="apply_no_op", reason=reason, files=touched,
+            manifest=manifest, applied=False, conflicts=["live==baseline"],
+            protected=[], target=str(target))
+        return (
+            f"⚠️ INTEGRATE_APPLY_NO_OP: run {rid}'s patch applied NOTHING into "
+            f"{target}: git exited 0, but the live payload still equals its recorded "
+            "BASELINE content hash: a provable non-mutation. No success is claimed, "
+            "nothing was disposed, no reconcile marker was queued, and the durable "
+            "apply intent is RESOLVED so the retry lane stays open. Read the captured "
+            "patch artifact and re-check the payload, or "
+            "integrate_delegated_patch(decision='reject') to release the snapshot "
+            "while keeping the patch artifact. Finalizing your task while this run is "
+            "neither applied nor rejected leaves your custody audit unreconciled (Done "
+            "with warnings, reason delegated_custody_unreconciled). "
+            f"Verdict: {verdict_path or '(unwritten)'}.")
     if result_hash and live_after != result_hash:
         try:
             from ouroboros.review_state import invalidate_advisory_after_mutation
@@ -1512,10 +1564,13 @@ def integrate_payload_patch(
             f"representation ({hash_error or 'hash divergence'}). No success is "
             f"claimed: nothing was disposed; {reconciled}; the durable "
             "apply intent stays PENDING, so the next integrate_delegated_patch "
-            "answers APPLY_AMBIGUOUS for explicit owner recovery "
-            "(decision='acknowledge_ambiguous' after inspection). The snapshot and "
-            f"the patch are preserved as forensic material. Verdict: "
-            f"{verdict_path or '(unwritten)'}.")
+            "answers APPLY_AMBIGUOUS for explicit owner recovery (call it again with "
+            "acknowledge_ambiguous=true after inspection, or with decision='reject' "
+            "to release the snapshot while keeping the patch artifact). The snapshot "
+            "and the patch are preserved as forensic material. Finalizing your task "
+            "while this run is neither applied nor rejected leaves your custody audit "
+            "unreconciled (the task completes as Done with warnings, reason "
+            f"delegated_custody_unreconciled). Verdict: {verdict_path or '(unwritten)'}.")
     return _finalize_payload_apply(
         ctx, rid=rid, reason=reason, target=target, touched=touched,
         ordered=ordered, manifest=manifest, state_root=state_root,

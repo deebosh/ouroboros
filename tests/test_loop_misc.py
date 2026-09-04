@@ -975,6 +975,22 @@ def test_skill_finalization_message_blocks_unreviewed_self_authored_skill(tmp_pa
     assert "alpha" in message
 
 
+def test_skill_finalization_message_sees_real_skill_payload_selectors(tmp_path):
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir()
+    _write_self_authored_skill(drive_root)
+
+    for tool, selector in (
+        ("run_command", {"cmd": ["true"], "cwd": "skill_payload"}),
+        ("run_script", {"script": "pass", "cwd": "skill_payload/scripts"}),
+        ("delegate_start", {"prompt": "repair", "root": "skill_payload"}),
+    ):
+        trace = {"tool_calls": [{"tool": tool, "args": {
+            **selector, "bucket": "external", "skill_name": "alpha",
+        }}]}
+        assert "alpha" in _skill_finalization_message(drive_root, trace)
+
+
 def test_skill_finalization_message_allows_ready_self_authored_skill(tmp_path):
     drive_root = tmp_path / "drive"
     drive_root.mkdir()
@@ -1296,7 +1312,9 @@ def test_run_llm_loop_finalize_now_control_forces_best_effort_answer(tmp_path, m
     assert usage["reason_code"] == "finalization_grace"
     assert usage["execution_status"] == "failed"  # lifted to best_effort by the outcome gate
     assert usage["_best_effort_extracted"] is True  # typed fact: real model answer
-    assert seen["tools"] is None  # tool-less final extraction
+    # The forced turn keeps the round's tool envelope so the provider prefix
+    # stays a cache hit; "tool-less" is an instruction in text, not an empty envelope.
+    assert seen["tools"] is not None
     joined = json.dumps(seen["messages"], ensure_ascii=False)
     assert "[FINALIZE_NOW]" in joined
 

@@ -116,6 +116,36 @@ def _set_acceptance_decision(llm_trace: Dict[str, Any], decision: Dict[str, Any]
     llm_trace["acceptance_decision"] = merged
 
 
+def terminalize_dangling_revision(llm_trace: Dict[str, Any], *, rail: str) -> bool:
+    """Close a dangling ``revision_requested`` when a forced rail fires.
+
+    A forced rail cannot take another model round, so a recorded revision
+    request would otherwise promise a pass that never comes. The prior reason is
+    named in the rationale because "the panel requested an improvement pass" is
+    false for the superseded-binding shape. Returns True when it terminalized.
+
+    No bypass reason is stamped: the panel really ran. ``accepted`` and
+    ``finalized_unaccepted`` decisions are never overwritten, and the
+    reason/status pair stays outside the blocked-terminal set, so the objective
+    remains best_effort.
+    """
+    decision = llm_trace.get("acceptance_decision")
+    decision = decision if isinstance(decision, dict) else {}
+    if str(decision.get("status") or "") != ACCEPTANCE_REVISION_REQUESTED:
+        return False
+    prior = str(decision.get("reason") or "") or ACCEPTANCE_REASON_UNSPECIFIED
+    _set_acceptance_decision(llm_trace, {
+        "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
+        "reason": "revision_unavailable_on_forced_rail",
+        "source": "forced_finalization",
+        "rationale": (
+            f"The acceptance decision was {prior}; the forced {rail} rail cannot "
+            "take another model round."
+        ),
+    })
+    return True
+
+
 def _collect_acceptance_obligations(llm_trace: Dict[str, Any], result: Any) -> None:
     """Typed PER-TASK obligations from critical contributing findings (v6.54.4).
 
@@ -841,10 +871,7 @@ def _latest_agent_acceptance_evidence(llm_trace: Dict[str, Any]) -> Dict[str, An
 
 def _build_host_acceptance_evidence(ctx: Any) -> Dict[str, Any]:
     """Build the one bounded host packet shared by binding and reviewer input."""
-    from ouroboros.review_evidence import (
-        UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY,
-        build_task_acceptance_evidence,
-    )
+    from ouroboros.review_evidence import build_task_acceptance_evidence
 
     committed_this_turn = any(
         isinstance(call, dict)
@@ -862,20 +889,11 @@ def _build_host_acceptance_evidence(ctx: Any) -> Dict[str, Any]:
         include_recent_commit=committed_this_turn,
         canonical_subject=str(ctx.content or ""),
         subtree_statuses=ctx.subtree_statuses,
+        undispositioned_children=getattr(
+            ctx.tools._ctx, "_forced_undispositioned_children", None),
+        acceptance_dialogue_history=acceptance_dialogue_history(ctx.llm_trace),
+        budget_chars=ctx.packet_budget_chars,
     )
-    # Owner Q2A: the forced children_unabsorbed rail stashes the process debt
-    # (undispositioned children) so the panel sees it; part of the binding hash.
-    undecided = getattr(ctx.tools._ctx, "_forced_undispositioned_children", None)
-    if isinstance(undecided, list) and undecided:
-        evidence["undispositioned_children"] = undecided
-    # The dialogue so far, so this panel adjudicates knowing what the previous
-    # ones judged instead of re-raising blind. Bounded here rather than by the
-    # packet budget because it is attached AFTER the builder's budget pass — and
-    # it is the one key `task_acceptance_evidence_revision` excludes, so growing
-    # history can never mint a fresh revision (and thus a fresh paid binding).
-    history = acceptance_dialogue_history(ctx.llm_trace)
-    if history:
-        evidence[UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY] = history
     return evidence
 
 
@@ -1053,6 +1071,7 @@ def _execute_task_acceptance_panel(ctx: Any) -> Any:
             "fail_closed_on_errors": True,
             "classify_outcome_tier": True,
             "max_physical_attempts_per_actor": 2,
+            "slot_input_caps": getattr(ctx.packet_budget_chars, "slot_input_caps", {}),
         },
         task_id=ctx.task_id, retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
         deadline_at=_owner_deadline_at(ctx.tools._ctx),  # R23: the owner window bounds every row

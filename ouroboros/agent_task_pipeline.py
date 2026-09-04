@@ -24,11 +24,12 @@ from ouroboros.outcomes import (
     EXECUTION_FAILED,
     EXECUTION_INFRA_FAILED,
     EXECUTION_OK,
+    BEST_EFFORT_REASON_CODES,
     apply_receipt_absent_flag,
     artifact_bundle_from_result,
     build_verification_ledger,
+    custody_debt_axes,
     derive_loop_outcome,
-    infra_failed_axes,
     maybe_write_verification_artifact,
     normalize_outcome_axes,
 )
@@ -616,14 +617,17 @@ def _apply_terminal_custody_outcome(
     unreconciled = existing.get("delegated_runs_unreconciled")
     if not isinstance(unreconciled, list) or not unreconciled:
         return loop_outcome
-    return {
+    overlaid = {
         **loop_outcome,
         "reason_code": "delegated_custody_unreconciled",
-        "outcome_axes": infra_failed_axes(
-            "delegated_custody_unreconciled",
-            review_trigger="delegate_terminal_reconciliation",
-        ),
+        "outcome_axes": custody_debt_axes(loop_outcome.get("outcome_axes")),
     }
+    # A task truncated by the rails keeps ITS reason on the one Reason line; the
+    # custody debt rides objective.warning(s) and the row's debt list instead.
+    rail = str(loop_outcome.get("reason_code") or "")
+    if rail in BEST_EFFORT_REASON_CODES:
+        overlaid["reason_code"] = rail
+    return overlaid
 
 def emit_task_results(
     env: Any, memory: Any, llm: Any,
@@ -1011,12 +1015,8 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
                 expected_output=str(task.get("expected_output") or ""),
                 receipts=task_verification_receipts(None, env.drive_root, task),
             )
-        outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
         loop_outcome = _apply_terminal_custody_outcome(env, task, loop_outcome)
-        if str(loop_outcome.get("reason_code") or "") == "delegated_custody_unreconciled":
-            outcome_axes = normalize_outcome_axes(
-                {"outcome_axes": loop_outcome["outcome_axes"]}
-            )
+        outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
         execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
         reason_code = str(loop_outcome.get("reason_code") or "")
         status = (
@@ -1207,7 +1207,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                       sealed_final=None):
     """Generate a detailed task summary and inject it into chat.jsonl."""
     try:
-        from ouroboros.project_dialogue import append_authored_task_summary, completion_status_label
+        from ouroboros.project_dialogue import append_authored_task_summary, completion_status_label, outcome_phase
         from ouroboros.projects_registry import project_thread_note_for_task
         from ouroboros.consolidator import CONSOLIDATION_REASONING_EFFORT, _consolidation_route
         task_id = str(task.get("id") or "unknown")
@@ -1230,7 +1230,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                 "summary_kind": "authored_root_summary", "summary_id": summary_id,
                 "task_id": task_id, "parent_task_id": str(task.get("parent_task_id") or ""), "root_task_id": str(task.get("root_task_id") or task_id),
                 "project_id": str(task.get("project_id") or ""), "chat_id": int(task.get("chat_id") or 0), "delegation_role": str(task.get("delegation_role") or ""), "role": str(task.get("role") or ""),
-                "status": str(stored_result.get("status") or "completed"), "outcome": completion_status_label(stored_result, usage),
+                "status": str(stored_result.get("status") or "completed"), "outcome": completion_status_label(stored_result, usage), "outcome_phase": outcome_phase(stored_result, usage),
                 "outcome_final": False, "outcome_authority": "pre_finalization_narrative_context",
                 "text": value, "tool_calls": n_tool_calls, "rounds": rounds, "outcome_axes": outcome_axes, "reason_code": reason_code,
                 "result_ref": result_ref, "source_coverage": {"task_result": result_ref}, **_summary_row_cost_fields(usage), **presence_fields,
@@ -1254,7 +1254,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
         trace = build_trace_summary(llm_trace)
         try:
             from ouroboros.review_evidence import format_review_evidence_for_prompt
-            review_section = format_review_evidence_for_prompt(review_evidence or {}, max_chars=8000)
+            review_section = format_review_evidence_for_prompt(review_evidence or {}, max_chars=8000, acceptance_panels=review_projection.get("panels"))
         except Exception:
             review_section = "(review evidence unavailable)"
         prompt = _TASK_SUMMARY_PROMPT.format(

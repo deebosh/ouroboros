@@ -446,6 +446,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                             self._rounds_used, last_send_chars = round_idx, transcript_chars  # a dispatched send IS the last one
                             landing_sent = landing_sent or landed  # the dispatched send carried the notice
                             invoke_review_paid_stamp(self.assignment.dispatch_stamp)
+                        self._observe_failed_send(exc)
                         if isinstance(exc, BudgetExceeded) and shape == "report" and last_content:
                             break  # nothing was sent; a report keeps its draft
                         raise
@@ -455,9 +456,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 # absent = no calls; a list = calls; ANY other value (falsy too) = one malformed entry
                 tool_calls = [] if raw_calls is None else (raw_calls if isinstance(raw_calls, list) else [raw_calls])
                 usage = dict(usage or {})
-                # Pop the wire-validation sidecar BEFORE accumulation, exactly
-                # like the existing bounded loops — receipts are per-round
-                # execution facts, not usage numbers.
+                self._observe_usage(usage)
+                # Pop the wire-validation sidecar BEFORE accumulation (receipts are per-round facts, not usage).
                 wire_validation = pop_custom_validation_receipts(usage, tool_calls)
                 validation_by_id = custom_validation_by_call_id(wire_validation)
                 add_usage(total_usage, usage)

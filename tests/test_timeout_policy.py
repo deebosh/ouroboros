@@ -1042,7 +1042,9 @@ def test_expired_local_deadline_does_not_dispatch_a_paid_final_call(monkeypatch,
 
     assert result is not None
     assert result[0].startswith("⚠️ Task reached its deadline")
-    assert ctx.accumulated_usage == {
+    usage = dict(ctx.accumulated_usage)
+    assert usage.pop("terminal_origin") == "host_notice"
+    assert usage == {
         "execution_status": "failed",
         "reason_code": "deadline_local",
     }

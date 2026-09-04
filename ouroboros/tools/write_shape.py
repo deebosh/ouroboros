@@ -135,6 +135,78 @@ _MIDTOKEN_REDIRECT_RE = re.compile(r"(?<![<>=&|'\"-])>{1,2}(?![>=&])")
 # interpreter members (ruby/perl) take interpreter_write_shape instead.
 PURE_FILTER_WRITER_COMMANDS = frozenset({"gunzip", "gzip", "sed", "sort", "tar", "uniq"})
 
+_NODE_FS_PREFIX = r'''(?:fs(?:\.promises)?\.|require\(['"]fs['"]\)(?:\.promises)?\.)'''
+_NODE_LITERAL_WRITE_RE = re.compile(
+    rf'''(?is){_NODE_FS_PREFIX}'''
+    r'''(?:writeFile(?:Sync)?|appendFile(?:Sync)?|createWriteStream|mkdir(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|unlink(?:Sync)?)\s*\(\s*(['"])(.*?)\1'''
+)
+_NODE_LITERAL_DESTINATION_RE = re.compile(
+    rf'''(?is){_NODE_FS_PREFIX}(?:rename(?:Sync)?|copyFile(?:Sync)?)'''
+    r'''\s*\(\s*[^,()]*,\s*(['"])(.*?)\1'''
+)
+_NODE_WRITE_CALL_RE = re.compile(
+    rf'''(?is){_NODE_FS_PREFIX}(?:writeFile(?:Sync)?|appendFile(?:Sync)?|createWriteStream|'''
+    r'''mkdir(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|unlink(?:Sync)?|rename(?:Sync)?|copyFile(?:Sync)?)\s*\('''
+)
+_NODE_OPAQUE_EXEC_RE = re.compile(
+    r'''(?is)(?:child_process\.|require\(['"]child_process['"]\)\.)'''
+    r'''(?:exec|spawn|execSync|spawnSync)\s*\('''
+)
+_RUBY_LITERAL_WRITE_RE = re.compile(
+    r'''(?is)(?:File\.(?:write|delete)|FileUtils\.(?:touch|mkdir|mkdir_p|makedirs|'''
+    r'''rm|rm_r|rm_rf|remove|remove_dir|rmdir|remove_entry|remove_entry_secure)|'''
+    r'''File\.(?:open|new)(?=\s*\([^)]*,\s*['"][^'"]*[wax+])'''
+    r''')\s*\(\s*(['"])(.*?)\1'''
+)
+_RUBY_FILEUTILS_COPY_RE = re.compile(
+    r'''(?is)(?:File\.rename|FileUtils\.(?:copy|cp|cp_r|mv|move|install))'''
+    r'''\s*\(\s*[^,()]*,\s*(['"])(.*?)\1'''
+)
+_RUBY_WRITE_CALL_RE = re.compile(
+    r'''(?is)(?:File\.(?:write|delete|rename)|FileUtils\.[A-Za-z_]+)\s*\('''
+)
+_RUBY_MULTI_TARGET_TAIL_RE = re.compile(
+    r'''(?is)(?:File\.delete|FileUtils\.(?:touch|mkdir|mkdir_p|makedirs|rm|rm_r|rm_rf|'''
+    r'''remove|remove_dir|rmdir|remove_entry|remove_entry_secure))\s*\(\s*(['"])(.*?)\1\s*,'''
+)
+
+
+def script_literal_write_targets_and_unknown(family: str, body: str) -> tuple[list[str], bool]:
+    """Literal non-Python script targets plus execution/argument uncertainty."""
+    if family == "node":
+        targets = [match.group(2) for match in _NODE_LITERAL_WRITE_RE.finditer(body)]
+        destinations = list(_NODE_LITERAL_DESTINATION_RE.finditer(body))
+        targets.extend(match.group(2) for match in destinations)
+        resolved = len(_NODE_LITERAL_WRITE_RE.findall(body)) + len(destinations)
+        unknown = bool(_NODE_OPAQUE_EXEC_RE.search(body)) or len(_NODE_WRITE_CALL_RE.findall(body)) != resolved
+        return list(dict.fromkeys(targets)), unknown
+    if family == "ruby":
+        targets = [match.group(2) for match in _RUBY_LITERAL_WRITE_RE.finditer(body)]
+        copies = list(_RUBY_FILEUTILS_COPY_RE.finditer(body))
+        targets.extend(match.group(2) for match in copies)
+        resolved = len(_RUBY_LITERAL_WRITE_RE.findall(body)) + len(copies)
+        ambiguous = (
+            len(_RUBY_WRITE_CALL_RE.findall(body)) != resolved
+            or bool(_RUBY_MULTI_TARGET_TAIL_RE.search(body))
+        )
+        return list(dict.fromkeys(targets)), ambiguous
+    return [], False
+
+
+def segment_write_shape(argv: List[str]) -> bool:
+    """Write shape for one already-tokenized command row."""
+    from ouroboros.tools.read_inspection import _is_pure_read_inspection
+    from ouroboros.tools.shell_guards import interpreter_family
+
+    if not argv:
+        return False
+    executable = str(argv[0]).replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    if interpreter_family(executable):
+        return bool(interpreter_write_shape(argv))
+    return bool(non_interpreter_write_shape(
+        argv, argv, executable, is_pure_read=_is_pure_read_inspection,
+    ))
+
 
 def _shell_write_indicator_scan(
     raw_cmd: Any,

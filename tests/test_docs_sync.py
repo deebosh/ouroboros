@@ -48,6 +48,28 @@ def test_architecture_mentions_shared_log_grouping_and_direct_provider_review_fa
     assert "claudeRuntimeHasError" not in arch
 
 
+def test_architecture_limits_finality_and_verdict_claims_to_actual_rows():
+    arch = _read("docs/ARCHITECTURE.md")
+
+    assert "The start row carries neither outcome finality nor a verdict" in arch
+    assert "The pre-finalization authored row carries the phase with `outcome_final=false`" in arch
+    assert "only terminal `task_summary` rows append the host verdict clause" in arch
+    assert "Both Main rows, the Project thread rows" not in arch
+
+
+def test_architecture_maps_cache_split_and_total_budget_authorities():
+    arch = _read("docs/ARCHITECTURE.md")
+
+    assert "_usage_cache_splits.py" in arch
+    assert "process-local" in next(
+        line for line in arch.splitlines() if "_usage_cache_splits.py" in line
+    )
+    settings_row = next(
+        line for line in arch.splitlines() if "settings_setup_contract.py" in line
+    )
+    assert "resolve_total_budget_usd" in settings_row
+
+
 def test_architecture_documents_skill_schedule_lifecycle_and_evolution_light_block():
     arch = _read("docs/ARCHITECTURE.md")
 
@@ -186,6 +208,11 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
     assert "state/consciousness_observations.jsonl" in architecture
     assert "Source-complete decision pipeline" in development
     assert "Context and growth matrix" in development
+    assert "state/skill_review_root_tasks.jsonl" in development
+    assert "state/skill_review_root_tasks.jsonl" in architecture
+    assert "SKILL_REVIEW_ROOT_TASKS_WARN_BYTES" in architecture
+    assert "seven hot stores" in architecture
+    assert "seven os.stat calls" in _read("ouroboros/agent_startup_checks.py")
     for item in (
         "source_completeness",
         "actor_readable_projection",
@@ -194,6 +221,15 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
         "display_identity_replay",
     ):
         assert item in checklists
+
+
+def test_architecture_names_all_window_surfaces_and_settlement_order():
+    architecture = _read("docs/ARCHITECTURE.md")
+    assert (
+        "on those four surfaces (triad, plan review, task acceptance, and deep self-review)"
+        in architecture
+    )
+    assert "SETTLED is published before registration retirement" in architecture
 
 
 def test_phase3_widget_authoring_docs_match_recursive_schema_v1():
@@ -232,6 +268,8 @@ def test_architecture_mirror_matches_the_split_axes_contracts():
 
     # swarm_efficiency reports the REQUEST: lanes_requested, never lanes_used.
     assert "lanes_requested" in arch
+    # A fanned-out root also reports the depth REQUEST beside those lanes.
+    assert "`requested_depth`" in arch
     assert "lanes_used" not in arch
     # Task-group compaction left with the degenerate lane fan-out (v6.87.28).
     assert "task-group compaction" not in arch
