@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import socket
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -18,8 +19,11 @@ def is_loopback_base_url(base_url: Any) -> bool:
     "local": its connect failure means that server is down, not that the
     network egress is — so such routes must never classify as a remote
     transport outage worth waiting out, nor earn a paid repeat. Loopback is
-    the whole class: ``localhost`` by name, every 127.0.0.0/8 address, ``::1``
-    and the IPv4-mapped IPv6 form; any other name stays remote.
+    the whole class: ``localhost`` by name (one trailing dot tolerated, as the
+    resolver does), every 127.0.0.0/8 address in every form ``inet_aton``
+    accepts — the dotted quad, the ``127.1`` / ``127.0.1`` shorthands, decimal
+    ``2130706433``, hex ``0x7f000001``, octal ``0177.0.0.1`` — ``::1`` and the
+    IPv4-mapped IPv6 form; any other name stays remote.
     """
     text = str(base_url or "").strip()
     if not text:
@@ -28,12 +32,17 @@ def is_loopback_base_url(base_url: Any) -> bool:
         host = (urlsplit(text).hostname or "").lower()  # IPv6 brackets already stripped
     except ValueError:
         return False
+    host = host.removesuffix(".")
     if host == "localhost":
         return True
     try:
-        address = ipaddress.ip_address(host)
+        address = ipaddress.ip_address(host)  # exact dotted quad, IPv6, IPv4-mapped
     except ValueError:
-        return False
+        try:
+            # The OS accepts every inet_aton spelling for a local server's URL; so must the class.
+            address = ipaddress.IPv4Address(socket.inet_aton(host))
+        except (OSError, ValueError):
+            return False
     mapped = getattr(address, "ipv4_mapped", None)
     return bool(address.is_loopback or (mapped is not None and mapped.is_loopback))
 

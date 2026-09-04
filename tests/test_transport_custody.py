@@ -144,6 +144,16 @@ def test_requests_proxy_error_without_connect_evidence_stays_untyped(data_root):
     ("https://api.anthropic.com/v1", False),
     ("", False),
     ("not a url", False),
+    # every inet_aton spelling the OS accepts for a local server, and a trailing-dot name
+    ("http://127.1:8000/v1", True),
+    ("http://127.0.1:8000/v1", True),
+    ("http://2130706433:8000/v1", True),
+    ("http://0x7f000001:8000/v1", True),
+    ("http://0177.0.0.1:8000/v1", True),
+    ("http://localhost.:11434/v1", True),
+    ("http://10.1:8000/v1", False),  # an inet_aton shorthand of a remote address stays remote
+    ("http://8.8.8.8/v1", False),
+    ("http://example.com./v1", False),
 ])
 def test_is_loopback_base_url(url, expected):
     from ouroboros.transport_custody import is_loopback_base_url
