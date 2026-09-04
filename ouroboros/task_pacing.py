@@ -390,11 +390,11 @@ COST_PLANNING_MARGIN_USD = max(1.0, 2.0 * _WRAPUP_CALL_RESERVATION_BOUND_USD)
 
 
 # Deciding-spend basis vocabulary (v6.91). The tree-accounted number is the
-# authority whenever a root cap exists (the ledger fence counts the TREE); when
-# it is momentarily unavailable the own-cost number still decides — but the
-# substitution is DISCLOSED, never silent (BIBLE P1: represent the gap). Without
-# a root cap there is no tree fence at all, so own cost is complete, not a
-# fallback — the three states are kept distinct for exactly that reason.
+# authority for every rooted task (with a root cap the ledger fence counts the
+# TREE; without one the in-task ceiling still decides on the subtree); when it
+# is momentarily unavailable the own-cost number still decides — but the
+# substitution is DISCLOSED as a lower bound, never silent (BIBLE P1). Only a
+# task with no root at all has no tree to read, so its own cost is complete.
 SPEND_BASIS_TREE = "tree_accounted"
 SPEND_BASIS_OWN_TREE_UNKNOWN = "own_fallback_tree_unknown"
 SPEND_BASIS_OWN_NO_TREE_CAP = "own_only_no_tree_cap"
@@ -411,10 +411,13 @@ def resolve_deciding_spend(
     Shared by the loop's ceiling check and the milestone note so the stop and
     the nudge can never disagree about which number they are reading. Unknown
     spend stays None end-to-end — it is never coerced to $0."""
+    from ouroboros.usage_accounting import current_usage_scope
+
     if tree_cost_usd is not None:
         return float(tree_cost_usd), SPEND_BASIS_TREE
     deciding = None if task_cost_usd is None else float(task_cost_usd)
-    if root_cap_usd is not None:
+    scope = current_usage_scope()
+    if root_cap_usd is not None or (scope is not None and scope.root_task_id):
         return deciding, SPEND_BASIS_OWN_TREE_UNKNOWN
     return deciding, SPEND_BASIS_OWN_NO_TREE_CAP
 

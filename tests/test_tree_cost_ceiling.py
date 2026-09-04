@@ -531,6 +531,36 @@ class TestGlobalOnlyTreeAccounting:
         assert info == {"accounted_usd": 7.5, "root": "root1"}
 
 
+    def test_an_uncapped_rooted_attempt_refreshes_the_real_tree_cache(self, tmp_path):
+        scope = usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="child-u", root_task_id="root-u", global_limit_usd=100.0,
+        )
+        with usage_accounting.usage_scope(scope):
+            usage_accounting.reserve_attempt(usage_accounting.AttemptRequest(
+                model="test/model", provider="openrouter", reservation_usd=2.5, drive_root=tmp_path,
+            ))
+            entry = usage_accounting.last_root_accounting("root-u")
+            assert entry is not None and entry["accounted_usd"] == 2.5
+            assert entry["root_limit_usd"] is None
+            usage_accounting.reserve_attempt(usage_accounting.AttemptRequest(
+                model="test/model", provider="openrouter", reservation_usd=1.0, drive_root=tmp_path,
+            ))
+            assert usage_accounting.last_root_accounting("root-u")["accounted_usd"] == 3.5
+
+    def test_missing_tree_telemetry_for_a_rooted_task_is_a_disclosed_lower_bound(self, tmp_path):
+        with usage_accounting.usage_scope(usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="c", root_task_id="r", global_limit_usd=100.0,
+        )):
+            deciding, basis = task_pacing.resolve_deciding_spend(
+                tree_cost_usd=None, task_cost_usd=4.0, root_cap_usd=None,
+            )
+        assert (deciding, basis) == (4.0, task_pacing.SPEND_BASIS_OWN_TREE_UNKNOWN)
+        deciding, basis = task_pacing.resolve_deciding_spend(
+            tree_cost_usd=None, task_cost_usd=4.0, root_cap_usd=None,
+        )
+        assert basis == task_pacing.SPEND_BASIS_OWN_NO_TREE_CAP
+
+
 class TestExhaustedCeilingSoftLanding:
     def _exhausted(self):
         return task_pacing.resolve_cost_ceiling(100.0, normalize_budget_profile(None), root_cap_usd=0.5)
