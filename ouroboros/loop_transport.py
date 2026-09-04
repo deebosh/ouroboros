@@ -50,7 +50,7 @@ from ouroboros.config import (
     get_task_idle_timeout_sec,
 )
 from ouroboros.deadline_utils import parse_deadline_ts
-from ouroboros.loop_llm_call import _TRANSIENT_BACKOFF_CAP_SEC
+from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, _TRANSIENT_BACKOFF_CAP_SEC
 from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -158,8 +158,6 @@ def fallback_chain_allowed(
     accumulated_usage: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Whether this round may walk the cross-model fallback chain."""
-    from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
-
     if bool(getattr(ctx, "exact_model_route", False)):
         return False
     if isinstance((accumulated_usage or {}).get(TRANSPORT_DEATHS_KEY), dict):
@@ -579,8 +577,6 @@ def provider_failure_hint(accumulated_usage: Dict[str, Any]) -> str:
 
 def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
     """Explain whether retrying later is likely to help."""
-    from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
-
     kind = str(accumulated_usage.get("_last_llm_error_kind") or "").strip()
     deaths = accumulated_usage.get(TRANSPORT_DEATHS_KEY)
     repeats = int(deaths.get("count") or 0) if isinstance(deaths, dict) else 0
