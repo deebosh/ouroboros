@@ -2681,6 +2681,12 @@ def _boot_managed_update_tasks() -> None:
             _request_restart_exit()
             return
         update_status = compute_managed_update_status(fetch=True)
+        try:
+            from ouroboros.update_letter import refresh_after_check
+
+            refresh_after_check(update_status)
+        except Exception:
+            log.debug("boot update letter refresh failed", exc_info=True)
         broadcast_ws_sync({
             "type": "update_status_ready",
             "available": bool(update_status.get("available")),
@@ -2866,16 +2872,20 @@ async def lifespan(app):
     # and run a one-shot boot-time update check (check-on-restart) so the main-screen
     # Update badge reflects availability. Both run OFF the startup critical path and
     # fail-soft — a missing managed remote / offline boot simply yields no badge.
-    threading.Thread(
-        target=_boot_managed_update_tasks, daemon=True, name="boot-managed-update",
-    ).start()
-
+    # Local autostart goes FIRST: a local-only install's boot check may write its update
+    # letter through the local model, and the git fetch ahead of that call is the head
+    # start the model server gets (no readiness wait — a letter that still finds the
+    # model loading fails typed and is rewritten by the next check).
     if has_local and settings.get("LOCAL_MODEL_SOURCE"):
         from ouroboros.local_model_autostart import auto_start_local_model
         threading.Thread(
             target=auto_start_local_model, args=(settings,),
             daemon=True, name="local-model-autostart",
         ).start()
+
+    threading.Thread(
+        target=_boot_managed_update_tasks, daemon=True, name="boot-managed-update",
+    ).start()
 
     host_service_task = None
     host_service_server = None
