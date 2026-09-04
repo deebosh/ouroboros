@@ -2474,11 +2474,14 @@ def test_forced_bypass_never_overwrites_an_existing_host_decision(tmp_path, monk
 
     # The prior host decision lane keeps authority (here the forced replacement
     # superseded the PASS through the existing revision machinery); the bypass
-    # recorder never overwrites an existing decision with a bypass reason.
+    # recorder never overwrites an existing decision with a bypass reason. The
+    # dangling revision request itself is closed, because this rail cannot take
+    # the improvement pass it promised.
     decision = returned_trace["acceptance_decision"]
-    assert decision["status"] in {"accepted", "revision_requested"}
+    assert decision["status"] == "finalized_unaccepted"
     assert decision.get("reason", "") != "acceptance_bypassed_round_limit"
-    assert decision.get("source", "") != "forced_finalization"
+    assert decision.get("reason", "") == "revision_unavailable_on_forced_rail"
+    assert decision.get("source", "") == "forced_finalization"
 
 
 def test_forced_bypass_stamps_over_deferred_agent_stance(tmp_path, monkeypatch):

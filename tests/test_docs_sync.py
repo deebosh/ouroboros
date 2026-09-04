@@ -186,6 +186,11 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
     assert "state/consciousness_observations.jsonl" in architecture
     assert "Source-complete decision pipeline" in development
     assert "Context and growth matrix" in development
+    assert "state/skill_review_root_tasks.jsonl" in development
+    assert "state/skill_review_root_tasks.jsonl" in architecture
+    assert "SKILL_REVIEW_ROOT_TASKS_WARN_BYTES" in architecture
+    assert "seven hot stores" in architecture
+    assert "seven os.stat calls" in _read("ouroboros/agent_startup_checks.py")
     for item in (
         "source_completeness",
         "actor_readable_projection",
@@ -194,6 +199,15 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
         "display_identity_replay",
     ):
         assert item in checklists
+
+
+def test_architecture_names_all_window_surfaces_and_settlement_order():
+    architecture = _read("docs/ARCHITECTURE.md")
+    assert (
+        "on those four surfaces (triad, plan review, task acceptance, and deep self-review)"
+        in architecture
+    )
+    assert "SETTLED is published before registration retirement" in architecture
 
 
 def test_phase3_widget_authoring_docs_match_recursive_schema_v1():

@@ -336,7 +336,7 @@ def _append_terminal_history(
                 "job_id": str(job_data.get("job_id") or ""),
                 "status": status,
                 "terminal_reason": terminal_reason,
-                "reason": "terminal history append failed",
+                "reason": "terminal history or root-task projection append failed",
             },
         )
     return appended

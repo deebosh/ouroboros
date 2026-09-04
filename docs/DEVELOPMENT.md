@@ -465,6 +465,14 @@ Every new or changed continuity surface is reviewed as one narrow chain:
   that the *same actor* can resolve through an existing reader.
   `source_complete` is a coverage fact, not a permission to infer missing
   material.
+- Every over-limit tool result persists its exact source; there is no per-tool
+  exemption, because the DECIDER must be able to resolve what the actor could
+  page. A bounded row whose exact source is durable and referenced is an
+  omission for the acceptance panel, and only `source_unavailable` — no
+  actor-resolvable source at all — is an unresolved partial that withholds
+  dispatch. An `api_chat` acceptance reviewer has no tools and cannot resolve
+  `repo_diff_source_ref`, so a criterion that depends on the unseen part of the
+  diff is at most `partial`.
 - A consumer that can authorize PASS, a destructive rewrite, or replacement of
   a full contract must materialize the named source first. A known `partial`
   marker and an unverified claim that some host might retrieve more are not
@@ -514,6 +522,7 @@ contracts.
 | Background observations | `BackgroundConsciousness.inject_observation` → `state/consciousness_observations.jsonl` enqueue rows | Cached pending/oldest status and bounded `_render_observations` view; identity-update consumer reads the gap marker and source ref | `BG_OBSERVATIONS_WARN_BYTES` in `context_budget.py` / `agent_startup_checks.py`; append-only rows, including unacknowledged rows, are not GC-pruned by the hot-store warning |
 | Chat and biography | Canonical `logs/chat.jsonl`, rotated generations, and dialogue blocks | Main/Project context and archive-aware `chat_history` | Rotation/archive readers carry generation/gap coverage; blocks are the compression path, not a deletion of the horizon |
 | Plan/review evidence | Exact task-artifact/observability bodies and reviewer route/thread receipts | Bounded review hot index, obligations, and latest-wave status | Exact artifact refs and candidate SHA bind the decision; index rotation cannot certify a missing or partial wave |
+| Skill-review root tasks | Per-skill `state/skills/<name>/review_history.jsonl`; `skill_review_runner._append_terminal_history` projects terminal identities to `state/skill_review_root_tasks.jsonl` | `skill_readiness._skill_names_from_review_history` reads a bounded newest-first suffix for acceptance | Derived index is append-only and idempotent by root/task/outcome identity; `SKILL_REVIEW_ROOT_TASKS_WARN_BYTES` warns at 20 MB |
 | Task/project execution | Canonical task result plus promoted child artifacts and summaries | Status cards, terminal rows, and Main/Project summary projections | Canonical promotion precedes child-drive GC; disposable task scratch follows the unified retention owner |
 
 ### Invariant: Continuation authority and bounded Main projection
@@ -1049,7 +1058,9 @@ Enforcement: `tests/test_extension_dispatch_threaded.py`,
   (`id`, `claim`, `surface`, `support`, `priority`); `success_criteria` is an
   input alias, not a second persisted carrier, and
   `effective_acceptance_claims` is the only binder; its read-time semantics
-  live in ARCHITECTURE §11.1. A child receives only claims
+  live in ARCHITECTURE §11.1. An OPEN wave binds nothing and is disclosed as
+  `none_open_plan_wave` with the non-binding `plan_claims_exhibit` (declared
+  intent, never in the resolvable vocabulary). A child receives only claims
   explicitly passed to its own `schedule_subagent` call. Reviewer
   `evidence_refs` resolve by exact membership in the already-built host
   packet — no fuzzy matching, filesystem reads, or re-execution — and
@@ -1286,9 +1297,9 @@ both critical. The imperatives:
   manifest observation is a preflight, not a lease. `subagents.route_health`
   is the ONE route reader for every consumer; quota readers project one
   `ClaudexorGateway.quota_state()` envelope
-  (`tests/test_available_subagents_runtime.py`). Substrate facts in the
-  acceptance packet are VISIBILITY ONLY — acceptance judges quality, never
-  the execution route — and an unreadable custody log reads
+  (`tests/test_available_subagents_runtime.py`). Substrate facts and the
+  packet's per-skill lifecycle facts are VISIBILITY ONLY — acceptance judges
+  quality, never the execution route — and an unreadable custody log reads
   `evidence_read_failed`, never a proven-empty substrate.
 - `task_constraint` boolean parsing is strict (`"false"` is false); deadlines
   only narrow, delegation budgets only reduce, absent depth requests stay
@@ -1529,7 +1540,10 @@ by "Provider Independence" above. Call-site imperatives:
   at rare cache-breaking decision surfaces, never per round or inside a
   stable cached prefix (`tests/test_budget_limits.py`). Post-task
   consolidation/synthesis reads `usage_breakdown` once per root subtree and
-  passes the same snapshot to summary and reflection; it is explicitly
+  passes the same snapshot to summary and reflection; both prompts also
+  receive the task's own acceptance-panel projection (typed counts plus a
+  bounded reason preview, never full reviewer prose), and a host-supplied
+  absence statement names the lens it describes; it is explicitly
   non-final because those flows have not spent yet — treating a read
   failure as `$0` would create false accounting certainty. No second
   ledger, no reconciliation LLM call.
@@ -1627,6 +1641,13 @@ by "Provider Independence" above. Call-site imperatives:
   active lease; an already-paid in-flight wave stays eligible for exact
   custody reconciliation without authorizing a new dispatch. An in-flight
   reviewer never counts as final quorum, under either enforcement mode.
+- Every zero-physical acceptance refusal takes that same shape — an
+  unresolvable partial source, an immutable-core overflow, and a slot whose
+  window cannot hold the rendered prompt all record a typed `$0
+  not_dispatched` row that carries its cause in `error`. The panel transport
+  folds to `not_dispatched` and the aggregate stays `DEGRADED` through those
+  typed rows: a refusal that spent nothing is recorded as `not_dispatched`
+  plus its cause and never wears a verdict.
 - A returned provider response (including an empty body) or typed terminal
   408/429/5xx is settled and may use the surface's bounded retry rail;
   `dispatched`/`unresolved` without a typed terminal status stays under the
@@ -1724,8 +1745,13 @@ by "Provider Independence" above. Call-site imperatives:
   unknown status fails closed. When you add a writer, add its reason to the
   closed set AND check every value-keyed reader —
   `outcomes.derive_loop_outcome` keys degradations and blocked terminals on
-  status+reason PAIRS, and breaking a pairing is a silent false green. The
-  reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
+  status+reason PAIRS, and breaking a pairing is a silent false green.
+  Every forced rail closes a dangling `revision_requested` through
+  `acceptance_dialogue.terminalize_dangling_revision`: it promises a pass the
+  rail cannot take. `accepted` and `finalized_unaccepted` are never
+  overwritten, no bypass reason is stamped over a panel that ran, and the
+  resulting pair stays outside `_ACCEPTANCE_BLOCKED_TERMINAL_REASONS`.
+  The reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
   `adaptive_quorum` applies, any contributing FAIL fails, DEGRADED abstains,
   and no quorum is a terminal HOST decision. Chat and Logs use the same
   severity reducer; degraded review or a best-effort objective must never
@@ -1839,6 +1865,9 @@ quarantine).
   reviewing actor must see without the host inventing a semantic outcome. Do
   not turn blockers into structural outcome vetoes, and do not add a
   lease/holder service, a second ledger, or runtime writer keyword scanners.
+- The acceptance packet reads mutation evidence from the canonical results
+  root (`budget_drive_root` first), the same root the writer and the outcome
+  consumer use.
 - Git staging is attribution-based: `paths=None` means the clean-at-baseline
   candidate set, an explicit list must be its subset, and empty never means
   `git add -A`. Preserve pre-existing user dirt as excluded evidence.

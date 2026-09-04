@@ -2,7 +2,30 @@
 
 from __future__ import annotations
 
+import hashlib
+import pathlib
+from contextlib import contextmanager
 from typing import Any, Dict, Optional, Tuple
+
+
+@contextmanager
+def project_retirement_lock(drive_root: Any, project_id: str):
+    """Cross-process lock for one project's settlement/retirement decision."""
+    from ouroboros.platform_layer import (
+        acquire_exclusive_file_lock, release_exclusive_file_lock,
+    )
+
+    digest = hashlib.sha256(str(project_id or "").encode("utf-8")).hexdigest()[:24]
+    lock_path = pathlib.Path(drive_root) / "state" / "delegate_project_retirements" / f"{digest}.lock"
+    fd = acquire_exclusive_file_lock(
+        lock_path, timeout_sec=20.0, stale_sec=120.0, owner_aware_stale=True,
+    )
+    if fd is None:
+        raise TimeoutError("project retirement lock is unavailable")
+    try:
+        yield
+    finally:
+        release_exclusive_file_lock(lock_path, fd)
 
 
 def summary_of(detail: Dict[str, Any]) -> Dict[str, Any]:

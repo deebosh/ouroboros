@@ -422,10 +422,15 @@ def _truncate_tool_result(
         return s
     marker = f"\n... (truncated from {len(s)} chars, limit={limit})"
     if isinstance(source_ref, dict) and source_ref:
+        recover = (
+            "Read the exact source above, or page this tool (offset/limit) for the omitted range."
+            if tool_name in _PAGEABLE_TOOL_RESULTS
+            else "Do not rerun this tool to recover omitted output. Read the exact source above."
+        )
         marker += (
             "\nFULL_RESULT_SOURCE_JSON="
             + json.dumps(source_ref, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            + "\nDo not rerun this tool to recover omitted output. Read the exact source above."
+            + "\n" + recover
         )
     else:
         marker += (
@@ -435,7 +440,11 @@ def _truncate_tool_result(
     return s[:limit] + marker
 
 
-_SELF_PAGEABLE_TOOL_RESULTS = frozenset({
+# Tools whose own affordance IS paging. This selects the marker WORDING only: it
+# no longer exempts the result from source persistence, because the acceptance
+# decider has no way to page a tool the agent ran — it can only read the exact
+# bytes the host persisted.
+_PAGEABLE_TOOL_RESULTS = frozenset({
     "read_file", "chat_history", "journal_read", "tree_read", "recent_tasks", "query_code",
 })
 
@@ -451,8 +460,7 @@ def _persist_truncated_tool_source(
 
     text = str(result)
     if (
-        tool_name in _SELF_PAGEABLE_TOOL_RESULTS
-        or _should_skip_tool_result_truncation(tool_name, tool_args)
+        _should_skip_tool_result_truncation(tool_name, tool_args)
         or len(text) <= _tool_result_limit(tool_name)
     ):
         return {}

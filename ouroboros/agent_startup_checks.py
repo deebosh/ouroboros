@@ -713,6 +713,7 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
         BG_OBSERVATIONS_WARN_BYTES,
         PROGRESS_LOG_WARN_BYTES,
         SCHEDULED_TASKS_WARN_BYTES,
+        SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
         TOOLS_LOG_WARN_BYTES,
         USAGE_LEDGER_WARN_BYTES,
     )
@@ -752,6 +753,12 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
             "under the queue lock, and consumed one-shot follow-ups are retained "
             "as durable receipts; pruning old consumed receipts is the remediation.",
         ),
+        (
+            "state/skill_review_root_tasks.jsonl",
+            SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
+            "Acceptance packet assembly reads this compact skill-review index; "
+            "archive old root-task rows with their review histories.",
+        ),
     )
 
 
@@ -760,7 +767,7 @@ def hot_store_growth_notes(env: Any) -> list:
 
     Reused live by context.py::build_health_invariants (the
     check_stray_server_processes pattern). Deliberately NOT TTL-cached
-    (contrast context._STRAY_PROBE_CACHE): four os.stat calls per task turn
+    (contrast context._STRAY_PROBE_CACHE): seven os.stat calls per task turn
     are orders of magnitude cheaper than the pgrep probe that cache exists
     for, and a stale reading would delay the regression signal."""
     from supervisor.state import ISOLATED_BENCHMARK_SENTINEL

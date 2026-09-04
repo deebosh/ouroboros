@@ -34,6 +34,7 @@ from ouroboros.acceptance_dialogue import (  # noqa: F401 — re-export
     _set_acceptance_decision,
     acceptance_dialogue_history,
     bind_acceptance_paid_identity,
+    terminalize_dangling_revision,
 )
 from ouroboros.config import adaptive_quorum, get_context_mode, get_light_model, get_review_enforcement, get_task_review_mode, resolve_effort
 from ouroboros.outcomes import ACCEPTANCE_BYPASS_REASON_BY_RAIL, ACCEPTANCE_DECISION_STATUSES, ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_DELIVERY_CONTROL_DEGRADED, REASON_OWNER_REQUESTED_FINALIZATION, RESULT_INFRA_FAILED, extract_final_answer, latest_agent_defined_verification, latest_unreconciled_failed_verification, latest_unreconciled_masked_verification, reviewable_effect_projection, should_nudge_verification, turn_has_reviewable_effects
@@ -131,32 +132,11 @@ def _handle_text_response(
     return safe_content, accumulated_usage, llm_trace
 
 
-def _skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
-    names: List[str] = []
-    for call in llm_trace.get("tool_calls") or []:
-        if not isinstance(call, dict):
-            continue
-        tool = str(call.get("tool") or "")
-        if tool not in {"write_file", "edit_text"}:
-            continue
-        args = call.get("args") if isinstance(call.get("args"), dict) else {}
-        bucket = str(args.get("bucket") or "").strip().lower()
-        skill_name = str(args.get("skill_name") or "").strip()
-        if bucket in {"external", "clawhub", "ouroboroshub"} and skill_name:
-            if skill_name not in names:
-                names.append(skill_name)
-            continue
-        candidates = [str(args.get("path") or "")]
-        for raw in candidates:
-            norm = raw.replace("\\", "/").strip().lstrip("/")
-            if norm.startswith("data/"):
-                norm = norm[len("data/"):]
-            parts = pathlib.PurePosixPath(norm).parts
-            if len(parts) >= 3 and parts[0] == "skills" and parts[1] in {"external", "clawhub", "ouroboroshub", "native"}:
-                name = parts[2]
-                if name and name not in names:
-                    names.append(name)
-    return names
+# The trace-touched skill name scan lives with the readiness predicate that
+# consumes it; the historical private name stays bound here.
+from ouroboros.skill_readiness import (  # noqa: E402
+    skill_names_touched_by_trace as _skill_names_touched_by_trace,
+)
 
 
 def _skill_finalization_message(drive_root: pathlib.Path, llm_trace: Dict[str, Any]) -> str:
@@ -1186,6 +1166,8 @@ class _TaskAcceptanceContext:
     # in loop.py from each real source, fed into the improvement capsule
     # (v6.74.0 A1, owner Q6); the capsule builder never gains ctx.
     rails_line: str = ""
+    # Int-like ceiling plus per-slot caps, resolved once so rebuilds cannot drift.
+    packet_budget_chars: int = 0
 
 
 def _latest_agent_acceptance_evidence(llm_trace: Dict[str, Any]) -> Dict[str, Any]:
@@ -1212,10 +1194,7 @@ def _latest_agent_acceptance_evidence(llm_trace: Dict[str, Any]) -> Dict[str, An
 
 def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, Any]:
     """Build the one bounded host packet shared by binding and reviewer input."""
-    from ouroboros.review_evidence import (
-        UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY,
-        build_task_acceptance_evidence,
-    )
+    from ouroboros.review_evidence import build_task_acceptance_evidence
 
     committed_this_turn = any(
         isinstance(call, dict)
@@ -1233,20 +1212,11 @@ def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, An
         include_recent_commit=committed_this_turn,
         canonical_subject=str(ctx.content or ""),
         subtree_statuses=ctx.subtree_statuses,
+        undispositioned_children=getattr(
+            ctx.tools._ctx, "_forced_undispositioned_children", None),
+        acceptance_dialogue_history=acceptance_dialogue_history(ctx.llm_trace),
+        budget_chars=ctx.packet_budget_chars,
     )
-    # Owner Q2A: the forced children_unabsorbed rail stashes the process debt
-    # (undispositioned children) so the panel sees it; part of the binding hash.
-    undecided = getattr(ctx.tools._ctx, "_forced_undispositioned_children", None)
-    if isinstance(undecided, list) and undecided:
-        evidence["undispositioned_children"] = undecided
-    # The dialogue so far, so this panel adjudicates knowing what the previous
-    # ones judged instead of re-raising blind. Bounded here rather than by the
-    # packet budget because it is attached AFTER the builder's budget pass — and
-    # it is the one key `task_acceptance_evidence_revision` excludes, so growing
-    # history can never mint a fresh revision (and thus a fresh paid binding).
-    history = acceptance_dialogue_history(ctx.llm_trace)
-    if history:
-        evidence[UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY] = history
     return evidence
 
 
@@ -1296,6 +1266,7 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
             "fail_closed_on_errors": True,
             "classify_outcome_tier": True,
             "max_physical_attempts_per_actor": 2,
+            "slot_input_caps": getattr(ctx.packet_budget_chars, "slot_input_caps", {}),
         },
         task_id=ctx.task_id, retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
     )
@@ -1518,6 +1489,8 @@ def _run_task_acceptance_review_once(
     _latch_final_answer_marker(llm_trace, content)
     if getattr(tools._ctx, "_task_acceptance_reviewed", False):
         return False
+    from ouroboros.review_evidence import acceptance_packet_budget_chars
+    from ouroboros.reviewer_slot_config import reviewer_slots
     from ouroboros.task_results import resolve_task_lineage
 
     meta = getattr(tools._ctx, "task_metadata", {})
@@ -1665,6 +1638,9 @@ def _run_task_acceptance_review_once(
             required_blocking=(
                 mode == "required" and get_review_enforcement() == "blocking"
             ), workspace=task_pacing._workspace_delivery(tools._ctx),
+        ),
+        packet_budget_chars=acceptance_packet_budget_chars(
+            reviewer_slots(effort=resolve_effort("review"), role_hint="task acceptance"),
         ),
     )
     try:
@@ -3360,6 +3336,9 @@ def _record_forced_acceptance_bypass(
     # bypass unrecorded when owed); `_set_acceptance_decision` stamps.
     decision = llm_trace.get("acceptance_decision")
     if isinstance(decision, dict) and str(decision.get("status") or "") in ACCEPTANCE_DECISION_STATUSES:
+        # A revision request is not a terminal host decision: this rail cannot
+        # take the pass it promised, so close it instead of leaving it dangling.
+        terminalize_dangling_revision(llm_trace, rail=str(reason_code or ""))
         return
     if getattr(tools_ctx, "_task_acceptance_reviewed", False):
         return
@@ -3904,20 +3883,9 @@ def _run_forced_children_acceptance(
             return
         tools_ctx._task_acceptance_reviewed = True
         _end_task_acceptance_fence(tools_ctx, outcome="terminal")
-        decision = llm_trace.get("acceptance_decision")
-        status = str(decision.get("status") or "") if isinstance(decision, dict) else ""
-        if status == ACCEPTANCE_REVISION_REQUESTED:
-            # A panel DID run and asked for an improvement pass; record the honest
-            # terminal state instead of leaving a dangling revision request.
-            _set_acceptance_decision(llm_trace, {
-                "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
-                "reason": "revision_unavailable_on_forced_rail",
-                "source": "forced_finalization",
-                "rationale": (
-                    "The acceptance panel requested an improvement pass, but the "
-                    "forced children_unabsorbed rail cannot take another model round."
-                ),
-            })
+        # This rail records its bypass BEFORE its panel, so the terminalisation
+        # belongs here rather than in the bypass recorder.
+        if terminalize_dangling_revision(llm_trace, rail="children_unabsorbed"):
             emit_progress(
                 "Task acceptance ran on the forced rail; the requested improvement "
                 "pass is unavailable, finalizing unaccepted."

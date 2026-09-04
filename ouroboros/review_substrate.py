@@ -297,9 +297,14 @@ def _review_actor_projection(actor: Any, surface: str) -> Dict[str, Any]:
     error = str(row.get("error") or "")
     transport = str(row.get("transport_status") or "")
     if not transport:
+        not_dispatched = (
+            str(row.get("status") or "") == "not_dispatched"
+            or str(row.get("operation_state") or "") == "not_dispatched"
+        )
         transport = (
-            "success" if str(row.get("status") or "") in {"ok", "empty"}
-            else _transport_error_status(error)
+            "not_dispatched" if not_dispatched
+            else ("success" if str(row.get("status") or "") in {"ok", "empty"}
+                  else _transport_error_status(error))
         )
     criteria = parsed.get("criteria_used") if isinstance(parsed, dict) else []
     criteria = criteria if isinstance(criteria, list) else []
@@ -476,8 +481,9 @@ def compact_review_projection(review_runs: Any) -> Dict[str, Any]:
         transport = (
             "success" if transport_statuses and all(s == "success" for s in transport_statuses)
             else ("partial" if "success" in transport_statuses else (
-                "timeout" if transport_statuses and all(s == "timeout" for s in transport_statuses)
-                else "provider_transport_error"
+                "not_dispatched" if transport_statuses and all(s == "not_dispatched" for s in transport_statuses)
+                else ("timeout" if transport_statuses and all(s == "timeout" for s in transport_statuses)
+                      else "provider_transport_error")
             ))
         )
         reasons = raw_run.get("degraded_reasons") if isinstance(raw_run.get("degraded_reasons"), list) else []
@@ -954,6 +960,7 @@ def build_improvement_capsule(
 
 # Historical dispatch names remain re-exported for existing consumers.
 from ouroboros.review_dispatch import (  # noqa: E402,F401 — re-exports
+    acceptance_slot_fit,
     PLAN_SLOT_ID_PREFIX,
     ReviewPaidStamp,
     SCOPE_SLOT_ID_PREFIX,
@@ -1225,6 +1232,7 @@ class ReviewCoordinator:
         *,
         operation_id: str = "",
         operation_state: str = "settled",
+        prompt_ref: Dict[str, Any] | None = None,
     ) -> ReviewActorRecord:
         actor_status = "not_dispatched" if operation_state == "not_dispatched" else "error"
         call_id = new_call_id(f"review_{request.surface}_{slot.slot_id}_error")
@@ -1239,19 +1247,20 @@ class ReviewCoordinator:
             prompt_projection = _review_route_executor(assignment, llm=self.llm).prompt_payload()
         except Exception:
             prompt_projection = {}
-        prompt_ref: Dict[str, Any] = {}
         response_ref: Dict[str, Any] = {}
-        try:
-            prompt_ref = persist_call(
-                self.drive_root,
-                task_id=request.task_id or "review",
-                call_id=f"{call_id}_prompt",
-                call_type=f"{base_call_type}_prompt",
-                payload={"request": asdict(request), "slot": asdict(slot), **prompt_projection},
-                manifest={"surface": request.surface, "slot_id": slot.slot_id, "model": slot.model, "synthetic": True},
-            )
-        except Exception:
+        if prompt_ref is None:
             prompt_ref = {}
+            try:
+                prompt_ref = persist_call(
+                    self.drive_root,
+                    task_id=request.task_id or "review",
+                    call_id=f"{call_id}_prompt",
+                    call_type=f"{base_call_type}_prompt",
+                    payload={"request": asdict(request), "slot": asdict(slot), **prompt_projection},
+                    manifest={"surface": request.surface, "slot_id": slot.slot_id, "model": slot.model, "synthetic": True},
+                )
+            except Exception:
+                prompt_ref = {}
         try:
             response_ref = persist_call(
                 self.drive_root,
@@ -1324,35 +1333,25 @@ class ReviewCoordinator:
             else {}
         )
         if free_refusal:
-            raw_text = json.dumps({
-                "verdict": "DEGRADED",
-                "findings": [],
-                "summary": free_refusal["summary"],
-            })
-            try:
-                response_ref = persist_call(
-                    self.drive_root,
-                    task_id=request.task_id or "review",
-                    call_id=f"{call_id}_response",
-                    call_type=f"{base_call_type}_response",
-                    payload={"message": {"content": raw_text}, "usage": {}},
-                    manifest={
-                        "surface": request.surface, "slot_id": slot.slot_id,
-                        "model": slot.model, "status": free_refusal["status"],
-                        "physical_attempts": 0,
-                    },
-                )
-            except Exception:
-                response_ref = {}
-            return ReviewActorRecord(
-                slot_id=slot.slot_id,
-                model=slot.model,
-                status="ok",
-                raw_text=raw_text,
-                prompt_ref=prompt_ref,
-                response_ref=response_ref,
-                duration_sec=round(time.time() - start, 3),
+            # Nothing was sent, so the row must not wear a verdict: it is a
+            # typed $0 ``not_dispatched`` actor whose refusal token rides into
+            # ``error`` so the aggregate names the real blocker.
+            return self._error_actor(
+                request, slot, f"{free_refusal['status']}: {free_refusal['summary']}",
+                operation_id=call_id, operation_state="not_dispatched", prompt_ref=prompt_ref,
             )
+        # Backstop for the quorum-sized packet ceiling: a narrower slot in the
+        # same panel can still be handed more than it holds, and refusing it
+        # costs nothing while the rest of the panel reviews.
+        if request.surface == "task_acceptance" and not slot.retrieves:
+            cap, estimated = acceptance_slot_fit(slot, executor, slot_input_caps=request.policy.get("slot_input_caps"))
+            if cap and estimated > cap:
+                return self._error_actor(
+                    request, slot,
+                    f"preflight_oversize: assembled acceptance prompt ~{estimated:,} tokens "
+                    f"exceeds this slot's calibrated input cap {cap:,}",
+                    operation_id=call_id, operation_state="not_dispatched", prompt_ref=prompt_ref,
+                )
         owner_deadline = str(getattr(request, "deadline_at", "") or "")
         from ouroboros.config import get_finalization_grace_sec
         from ouroboros.deadline_utils import owner_deadline_exhausted
@@ -1376,6 +1375,7 @@ class ReviewCoordinator:
                 "Owner deadline exhausted before physical review dispatch",
                 operation_id=call_id,
                 operation_state="not_dispatched",
+                prompt_ref=prompt_ref,
             )
         try:
             p3_actor = request.surface in {"multi_model_review", "scope_review"}

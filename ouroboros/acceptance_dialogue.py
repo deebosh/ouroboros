@@ -106,6 +106,36 @@ def _set_acceptance_decision(llm_trace: Dict[str, Any], decision: Dict[str, Any]
     llm_trace["acceptance_decision"] = merged
 
 
+def terminalize_dangling_revision(llm_trace: Dict[str, Any], *, rail: str) -> bool:
+    """Close a dangling ``revision_requested`` when a forced rail fires.
+
+    A forced rail cannot take another model round, so a recorded revision
+    request would otherwise promise a pass that never comes. The prior reason is
+    named in the rationale because "the panel requested an improvement pass" is
+    false for the superseded-binding shape. Returns True when it terminalized.
+
+    No bypass reason is stamped: the panel really ran. ``accepted`` and
+    ``finalized_unaccepted`` decisions are never overwritten, and the
+    reason/status pair stays outside the blocked-terminal set, so the objective
+    remains best_effort.
+    """
+    decision = llm_trace.get("acceptance_decision")
+    decision = decision if isinstance(decision, dict) else {}
+    if str(decision.get("status") or "") != ACCEPTANCE_REVISION_REQUESTED:
+        return False
+    prior = str(decision.get("reason") or "") or ACCEPTANCE_REASON_UNSPECIFIED
+    _set_acceptance_decision(llm_trace, {
+        "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
+        "reason": "revision_unavailable_on_forced_rail",
+        "source": "forced_finalization",
+        "rationale": (
+            f"The acceptance decision was {prior}; the forced {rail} rail cannot "
+            "take another model round."
+        ),
+    })
+    return True
+
+
 def _collect_acceptance_obligations(llm_trace: Dict[str, Any], result: Any) -> None:
     """Typed PER-TASK obligations from critical contributing findings (v6.54.4).
 
