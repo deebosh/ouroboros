@@ -377,9 +377,11 @@ def _body_error_kind(body_err: Any) -> str:
     codes = (str(body_err.get(key) or "").strip().lower() for key in ("code", "type"))
     if any(code in CONTEXT_OVERFLOW_CODES for code in codes):
         return "context_overflow"
+    # A structured transient verdict (429 / 5xx kinds) wins over the message shape, as it
+    # does in the Main classifier: "context window shard unavailable" is an outage.
     message = str(body_err.get("message") or "")
-    if str(body_err.get("kind") or "") != "rate_limit" and not is_rate_limit_text(message) \
-            and context_overflow_message(message):
+    if str(body_err.get("kind") or "") not in ("rate_limit", "provider_transient") \
+            and not is_rate_limit_text(message) and context_overflow_message(message):
         return "context_overflow"
     return "provider_unavailable"
 

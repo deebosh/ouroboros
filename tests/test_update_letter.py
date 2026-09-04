@@ -956,6 +956,9 @@ def test_write_letter_treats_an_http_200_body_error_as_the_provider_s_verdict(le
     ({"code": 429, "kind": "rate_limit",
       "message": "rate limit exceeded for this context window tier"}, "provider_unavailable"),
     ({"code": 502, "kind": "provider_transient", "message": "upstream unavailable"}, "provider_unavailable"),
+    # A structured transient verdict wins over overflow-shaped wording: an outage, not an overflow.
+    ({"code": 503, "kind": "provider_transient",
+      "message": "context window shard temporarily unavailable"}, "provider_unavailable"),
     ({"code": "context_length_exceeded", "message": ""}, "context_overflow"),
     (None, ""), ("not a dict", ""),
 ])
