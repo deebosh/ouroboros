@@ -3245,6 +3245,7 @@ Runtime floors:
 | OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC | 1800 | Skill lifecycle lane deadline before a wedged job fails loudly |
 | OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC | 300 | Hard ceiling on Connect's one-shot vendor-CLI install through the exact managed Claudexor CLI; on expiry the panic-tracked installer's process group is killed and Connect returns a typed refusal |
 | OUROBOROS_CLAUDEXOR_QUOTA_REFRESH_TIMEOUT_SEC | 90 | Read bound for the explicit foreground Claudexor quota POST only, clamped to at most 90 seconds so the mandatory 60-second handshake plus the structural 30-second settlement margin always fit Hub's 180-second outer wait. Passive quota GET retains the ordinary 60-second control-plane bound. |
+| OUROBOROS_ONBOARDING_SNAPSHOT_TIMEOUT_SEC | 45 | Bound (1–300 s) of the single Claudexor status read that onboarding completion performs when subscriptions were declared; on expiry the completion answers the typed, skippable `daemon_timeout` preset failure instead of holding the wizard on "Saving..." |
 | OUROBOROS_BUNDLE_DIR | (unset) | Packaged bundle root, handed down by `launcher.start_agent` / `packaged_cli` so a child of the embedded interpreter can find bundled payloads (`node-standalone`, `ripgrep-standalone`). Set by the launcher, not by the owner. |
 | OUROBOROS_BG_MAX_ROUNDS | 10 | Max LLM rounds per consciousness cycle |
 | OUROBOROS_BG_WAKEUP_MIN | 30 | Min wakeup interval (seconds) |

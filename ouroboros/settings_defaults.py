@@ -126,6 +126,10 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_SKILL_LIFECYCLE_TIMEOUT_SEC": 1800,
     "OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC": 300,
     "OUROBOROS_CLAUDEXOR_QUOTA_REFRESH_TIMEOUT_SEC": 90,
+    # Onboarding completion: the ONE blocking Claudexor snapshot read is bounded so a
+    # wedged owned-daemon initialization surfaces as a typed preset failure, not a
+    # wizard stuck on "Saving..." (issue #464).
+    "OUROBOROS_ONBOARDING_SNAPSHOT_TIMEOUT_SEC": 45,
     # Activity-based liveness (the flat wall-clock pair it replaced is RETIRED below):
     # idle window = no real progress AND no progressing subtree; abs ceiling = the
     # unconditional per-task backstop (budget/cost stays a separate hard axis).

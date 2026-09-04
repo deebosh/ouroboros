@@ -258,6 +258,45 @@ def test_daemon_unavailable_persists_nothing_and_keeps_the_wizard_open(onboardin
     assert onboarding.calls["env"] == []
 
 
+def test_snapshot_read_that_never_answers_is_a_typed_timeout_not_a_hang(onboarding, monkeypatch):
+    """Issue #464: the owner pressed the final save and the button stayed on
+    "Saving..." forever because the ONE Claudexor snapshot read blocked inside
+    the owned-daemon manager. The read is bounded by the config SSOT; a read
+    that outlives the bound answers the same skippable 503 the dead-engine
+    case does, and nothing is written."""
+    import threading
+    import time
+
+    import ouroboros.config as config
+    import ouroboros.gateway.onboarding as gw_onboarding
+
+    monkeypatch.setattr(config, "get_onboarding_snapshot_timeout_sec", lambda: 1)
+    release = threading.Event()
+
+    def _wedged_read():
+        release.wait(30)  # never released before the bound; released at teardown
+        return {"daemon": {"state": "running"}, "harnesses": [], "profiles": {}}
+
+    monkeypatch.setattr(gw_onboarding, "_read_harness_snapshot", _wedged_read)
+    started = time.monotonic()
+    try:
+        response = onboarding.client.post(
+            "/api/onboarding/complete",
+            json={**WIZARD_PAYLOAD, "subscriptionsConnected": True},
+        )
+    finally:
+        release.set()
+    elapsed = time.monotonic() - started
+    assert elapsed < 10, f"completion blocked for {elapsed:.1f}s instead of timing out"
+    assert response.status_code == 503, response.text
+    body = response.json()
+    assert body["code"] == "daemon_timeout"
+    assert body["can_skip"] is True
+    assert body["saved"] is False
+    assert not onboarding.settings_path.exists()
+    assert onboarding.calls["supervisor"] == 0
+
+
 def test_unresolvable_model_refuses_before_any_write(onboarding):
     onboarding.calls["snapshot_payload"] = {
         "daemon": {"state": "running"},

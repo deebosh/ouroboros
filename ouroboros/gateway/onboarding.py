@@ -458,8 +458,27 @@ async def resolve_install_preset(
     discoveries: Sequence[HarnessDiscovery] = ()
     capability: Mapping[str, Any] = {}
     if subscriptions_connected:
+        from ouroboros.config import get_onboarding_snapshot_timeout_sec
+
+        timeout_sec = get_onboarding_snapshot_timeout_sec()
         try:
-            snapshot = await asyncio.to_thread(_read_harness_snapshot)
+            snapshot = await asyncio.wait_for(
+                asyncio.to_thread(_read_harness_snapshot), timeout=timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            # A wedged owned-daemon initialization (a lock held by an earlier
+            # read that never returned, issue #464) must not hold the wizard on
+            # "Saving..." forever: the read is abandoned to its thread and the
+            # completion answers with the same typed, skippable failure the
+            # dead-engine case uses.
+            log.warning(
+                "Claudexor snapshot for onboarding presets did not answer within %ss",
+                timeout_sec,
+            )
+            return None, PresetFailure(
+                "daemon_timeout",
+                f"the Claudexor status read did not answer within {timeout_sec}s",
+            )
         except Exception as exc:  # a dead/broken engine is a failure, not a crash
             log.warning("Claudexor snapshot for onboarding presets failed", exc_info=True)
             return None, PresetFailure("daemon_unavailable", f"{type(exc).__name__}: {exc}")

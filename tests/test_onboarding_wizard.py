@@ -1171,3 +1171,27 @@ def test_the_review_step_spells_a_family_the_way_the_agents_step_did():
     step = (REPO / "web/modules/onboarding_agents_step.js").read_text(encoding="utf-8")
     assert "get snapshot()" in step
     assert "get catalogKnown()" in step
+
+
+def test_browser_render_smoke_fixture_is_the_live_bootstrap():
+    """web/tests/onboarding_wizard_render.test.js boots the wizard module under a
+    DOM stand-in with THIS fixture as ``window.__OURO_ONBOARDING_BOOTSTRAP__``.
+    The fixture must be byte-for-byte the bootstrap the server injects for a
+    fresh desktop install, so the browser smoke walks the real step order and
+    field lists; regenerate it with
+    ``python -c 'import json; from ouroboros.settings_setup_contract import
+    build_setup_bootstrap; print(json.dumps(build_setup_bootstrap({}, "desktop"),
+    indent=2, sort_keys=True))'`` when the contract changes."""
+    import json
+    import pathlib
+
+    from ouroboros.settings_setup_contract import build_setup_bootstrap
+
+    fixture_path = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "web" / "tests" / "fixtures" / "onboarding_bootstrap.json"
+    )
+    live = json.dumps(build_setup_bootstrap({}, "desktop"), indent=2, sort_keys=True) + "\n"
+    assert fixture_path.read_text(encoding="utf-8") == live, (
+        "web/tests/fixtures/onboarding_bootstrap.json drifted from build_setup_bootstrap({}, 'desktop')"
+    )
