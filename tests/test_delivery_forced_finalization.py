@@ -2692,17 +2692,16 @@ def test_forced_final_tool_call_only_reply_falls_back_to_host_text(tmp_path, mon
     assert trace.get("forced_finalization", {}).get("source") != "forced_model_incomplete"
 
 
-def test_forced_final_mixed_content_and_tool_calls_publishes_as_model_final(
-    tmp_path, monkeypatch
-):
-    """A reply carrying both content and tool calls publishes as an ordinary final."""
+def test_forced_final_mixed_content_and_tool_calls_is_degraded(tmp_path, monkeypatch):
+    """Content beside an unexecuted tool call is a preamble, not a final."""
 
     loop, _registry, limit_ctx, _trace = _forced_test_context(tmp_path)
     limit_ctx.tool_schemas = [{"type": "function", "function": {"name": "read_file"}}]
     monkeypatch.setattr(
         loop,
         "call_llm_with_retry",
-        lambda *_args, **_kwargs: (
+        lambda *_args, **kwargs: (
+            kwargs["response_meta_out"].update(tool_call_count=1, finish_reason="tool_calls") or
             {
                 "role": "assistant",
                 "content": "here is the answer",
@@ -2721,8 +2720,8 @@ def test_forced_final_mixed_content_and_tool_calls_publishes_as_model_final(
     text, usage, trace = loop._handle_round_limit(limit_ctx)
 
     assert "here is the answer" in text
-    assert usage.get("_best_effort_extracted") is True
-    assert trace.get("forced_finalization", {}).get("source") == "model"
+    assert "terminal_origin" not in usage
+    assert trace.get("forced_finalization", {}).get("source") == "forced_model_incomplete"
 
 
 def test_web_forbidding_contract_keeps_the_forced_call_web_free(tmp_path, monkeypatch):

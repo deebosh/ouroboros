@@ -306,9 +306,12 @@ def _check_budget_limits(
             **request_args, root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding,
         )
         wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
-        if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
-            **wrapup_args, reservation_count=2,
-        ) is False:
+        # The proxy decides only the cheap positive; the priced candidate decides
+        # a proxy stop and every prompt the proxy can understate (native images).
+        if wrapup_fits is False or (wrapup_fits is True and (
+            task_pacing.wrapup_reservation_fits(**wrapup_args, reservation_count=2) is False
+            or messages_carry_native_images(ctx.messages)
+        )):
             trace = ctx.llm_trace if isinstance(ctx.llm_trace, dict) else {}
             priced_prompt = _prepare_forced_prompt(ctx, forced_prompt, trace)
             prospective_messages = [dict(message) for message in ctx.messages]
@@ -323,9 +326,6 @@ def _check_budget_limits(
                 deciding_usd=deciding,
             )
             wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
-            two_fit = task_pacing.wrapup_reservation_fits(
-                **wrapup_args, reservation_count=2,
-            )
             if wrapup_fits is False:
                 accumulated_usage["cost_stop_spend_basis"] = spend_basis
                 accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
@@ -333,18 +333,17 @@ def _check_budget_limits(
                     ctx, trace, finish_reason, "budget_exhausted",
                     source="budget_wrapup_unaffordable",
                 )
-            if wrapup_fits is not True or two_fit is not False:
-                return None
-            accumulated_usage["cost_stop_spend_basis"] = spend_basis
-            accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
-            return _forced_final_answer(
-                ctx, prompt=priced_prompt, _prompt_prepared=True,
-                fallback_text=finish_reason, reason_code="budget_exhausted",
-                _initial_messages=send_messages, _admitted_request=wrapup_request,
-            )
+            if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
+                **wrapup_args, reservation_count=2,
+            ) is False:
+                accumulated_usage["cost_stop_spend_basis"] = spend_basis
+                accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
+                return _forced_final_answer(
+                    ctx, prompt=priced_prompt, _prompt_prepared=True,
+                    fallback_text=finish_reason, reason_code="budget_exhausted",
+                    _initial_messages=send_messages, _admitted_request=wrapup_request,
+                )
     if deciding is not None and ceiling_usd is not None and deciding > ceiling_usd:
-        if wrapup_fits is False:
-            return None
         if spend_basis == task_pacing.SPEND_BASIS_TREE:
             spent_text = (
                 f"Task tree spent ${deciding:.3f} (ledger-accounted incl. in-flight holds, "
@@ -2180,7 +2179,7 @@ def _maybe_inject_cost_budget_milestone(
     return True
 
 
-from ouroboros.context_fit import seal_task_transcript  # noqa: F401
+from ouroboros.context_fit import messages_carry_native_images, seal_task_transcript  # noqa: F401
 from ouroboros.nanny_pacing import (
     _nanny_burn_phrase,
     _nanny_metered_since_delegate_activity,
@@ -4746,7 +4745,7 @@ def _forced_final_answer(
             "[FORCED_OWNER_REFRESH] Answer all current directives; ignore the stale draft.",
         )
 
-    incomplete = provider_terminal and extracted and forced_response_is_incomplete(response_meta)
+    incomplete = bool(extracted) and forced_response_is_incomplete(response_meta)
     extracted, degraded, retained, replaced = _resolve_forced_delivery_control(
         tools_ctx, extracted)
     current = _current_delivery_candidate(ctx, llm_trace)
@@ -4759,7 +4758,8 @@ def _forced_final_answer(
     if incomplete and (current is not None or not replaced):
         return _forced_fallback_result(
             ctx, llm_trace, extracted or fallback_text, reason_code,
-            source="forced_model_incomplete", candidate_reason=degraded, provider_terminal=True,
+            source="forced_model_incomplete", candidate_reason=degraded,
+            provider_terminal=provider_terminal,
         )
     if extracted:
         ctx.accumulated_usage["_best_effort_extracted"] = True
@@ -5217,12 +5217,10 @@ def _maybe_inject_finalization_nudges(
             llm_trace["reasoning_notes"].append("Masked-verification nudge injected before final response.")
             return True
     if not getattr(tools._ctx, "_criterion_source_nudged", False):
-        # Criterion-provenance one-shot ADVISORY nudge (v6.54.4): the latest
-        # passing verification used an AGENT-DEFINED criterion with no stated
-        # basis — green check, synthesized criterion. One reminder to confirm
-        # equivalence with the task's real requirement (or state the basis via
-        # criterion_basis). AFTER the masked nudge, BEFORE FR3. Flag-driven on
-        # the typed receipt field, never content (P5); forced paths bypass.
+        # Criterion-provenance one-shot ADVISORY nudge (v6.54.4): a green check on
+        # an agent-defined criterion with no stated basis gets one reminder to
+        # confirm equivalence (or state criterion_basis). After the masked nudge,
+        # before FR3; keyed on the typed receipt field, never content (P5).
         _agent_defined = latest_agent_defined_verification(
             drive_root, task_id, receipts=receipt_rows,
         )
@@ -5311,14 +5309,10 @@ def _maybe_inject_finalization_nudges(
         emit_progress("No-op attempt nudge injected before final response.")
         llm_trace["reasoning_notes"].append("No-op attempt nudge injected before final response.")
         return True
-    # P2 one-shot final-answer-marker nudge: REAL work + visible prose but
-    # no FINAL ANSWER marker — the typed extractor would drop it, a forced
-    # finalization score empty. Strengthen BEHAVIOR (agent marks its OWN
-    # answer), never mine prose into a claimed answer (P5). Own latch, AFTER
-    # verify/red/A3; forced paths return earlier. The protocol gate alone
-    # suffices — it must not ALSO require expected_output: GAIA-shaped
-    # contracts keep it empty; that extra gate once suppressed the only
-    # salvage surface (v6.56.0: last-round refusal finalized empty).
+    # P2 one-shot final-answer-marker nudge: real work + prose, no FINAL ANSWER
+    # marker — the agent marks its OWN answer, prose is never mined (P5). Own
+    # latch after verify/red/A3; the protocol gate alone suffices (an extra
+    # expected_output gate once suppressed the only salvage surface, v6.56.0).
     if (
         not getattr(tools._ctx, "_final_marker_nudged", False)
         and _answer_protocol_active(tools._ctx)  # v6.60.0: marker nudge is protocol-gated

@@ -514,6 +514,93 @@ class TestWrapupAffordabilityRail:
         assert "cost_stop_spend_basis" not in ctx.accumulated_usage
         assert "cost_stop_rail" not in ctx.accumulated_usage
 
+    def _image_messages(self):
+        return [{"role": "user", "content": [
+            {"type": "text", "text": "inspect"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aaa"}},
+        ]}]
+
+    def test_native_images_reprice_even_when_the_proxy_says_two_fit(self, monkeypatch):
+        ctx = _ctx(messages=self._image_messages())
+        monkeypatch.setattr(
+            "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
+        )
+        answers, calls = iter((True, True, True, False)), []
+        request = object()
+        monkeypatch.setattr(
+            task_pacing, "prospective_wrapup_attempt_request", lambda **_kwargs: request,
+        )
+        monkeypatch.setattr(
+            task_pacing, "wrapup_reservation_fits",
+            lambda **kwargs: (calls.append(kwargs), next(answers))[1],
+        )
+        monkeypatch.setattr(
+            "ouroboros.loop._forced_final_answer",
+            lambda ctx_, **kwargs: ("wrapped up", ctx_.accumulated_usage, {"kwargs": kwargs}),
+        )
+
+        result = _check_budget_limits(ctx, None, self._ceiling(50.0))
+
+        assert result is not None
+        assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_last_fit"
+        assert [call.get("request") for call in calls] == [None, None, request, request]
+
+    def test_a_proxy_stop_is_confirmed_by_the_priced_candidate(self, monkeypatch):
+        ctx = _ctx()
+        monkeypatch.setattr(
+            "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
+        )
+        answers, calls = iter((False, False)), []
+        request = object()
+        monkeypatch.setattr(
+            task_pacing, "prospective_wrapup_attempt_request", lambda **_kwargs: request,
+        )
+        monkeypatch.setattr(
+            task_pacing, "wrapup_reservation_fits",
+            lambda **kwargs: (calls.append(kwargs), next(answers))[1],
+        )
+        seen = {}
+        monkeypatch.setattr(
+            "ouroboros.loop._forced_fallback_result",
+            lambda ctx_, _trace, text, reason, **kwargs: (
+                seen.update(kwargs, text=text, reason=reason) or ("stopped", ctx_.accumulated_usage, {})
+            ),
+        )
+
+        result = _check_budget_limits(ctx, None, self._ceiling(50.0))
+
+        assert result is not None
+        assert seen["source"] == "budget_wrapup_unaffordable"
+        assert seen["reason"] == "budget_exhausted"
+        assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_last_fit"
+        assert [call.get("request") for call in calls] == [None, request]
+
+    def test_an_affordable_wrapup_still_reaches_the_ceiling_stop(self, monkeypatch):
+        ceiling = self._ceiling(50.0)
+        ctx = _ctx()
+        monkeypatch.setattr(
+            "ouroboros.loop._loop_tree_accounting",
+            lambda **_k: {"accounted_usd": ceiling.ceiling_usd + 1.0},
+        )
+        answers = iter((True, False, True, True))
+        monkeypatch.setattr(
+            task_pacing, "wrapup_reservation_fits", lambda **_kwargs: next(answers),
+        )
+        monkeypatch.setattr(
+            task_pacing, "prospective_wrapup_attempt_request", lambda **_kwargs: object(),
+        )
+        monkeypatch.setattr(
+            "ouroboros.loop._forced_final_answer",
+            lambda ctx_, **kwargs: ("ceiling stop", ctx_.accumulated_usage, {"kwargs": kwargs}),
+        )
+
+        result = _check_budget_limits(ctx, None, ceiling)
+
+        assert result is not None
+        assert "over the in-task cost ceiling" in result[2]["kwargs"]["prompt"]
+        assert "cost_stop_rail" not in ctx.accumulated_usage
+        assert ctx.accumulated_usage["cost_stop_spend_basis"]
+
     def test_captioned_wrapup_candidate_is_the_initial_forced_dispatch(
         self, monkeypatch, tmp_path,
     ):

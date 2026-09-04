@@ -322,6 +322,18 @@ def bounded_prompt_tokens_for_payload(prompt_payload: Dict[str, Any], fallback_c
     return max(0, int(fallback_chars) // 4)
 
 
+def messages_carry_native_images(messages: Any) -> bool:
+    """Whether a message carries an image part the proxy bounds instead of pricing."""
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and str(part.get("type") or "") in {"image", "image_url"}
+            for part in content
+        ):
+            return True
+    return False
+
+
 def estimate_context_prompt_tokens(
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]] = None,
