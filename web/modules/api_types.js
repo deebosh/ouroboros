@@ -283,7 +283,9 @@
  * @property {string=} status
  * @property {boolean=} cancelable
  *   v6.82 (P5): host-attested — this frame's task is a supervisor-queue task that
- *   POST /api/tasks/{id}/cancel can force-cancel (never set for direct-chat turns).
+ *   POST /api/tasks/{id}/cancel can force-cancel: a lineage-resolved pooled root or
+ *   the live in-process direct-chat turn (stopped cooperatively through the same
+ *   ownership seam); never a subagent frame or an ephemeral decision turn.
  * @property {?number=} accounted_upper_bound_usd
  *   C2: an accounted upper bound, not a settled receipt; null when unknown.
  *   (ABI-3: the deprecated `cost_usd` alias is removed from the contract.)

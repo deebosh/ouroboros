@@ -662,7 +662,7 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
         if turn is not None:
             from supervisor.cancel_publication import _finish_captured_chat_turn
 
-            return _finish_captured_chat_turn(q, task_id, turn, intent=intent)
+            return _finish_captured_chat_turn(q, task_id, turn, intent=intent, deliver=deliver)
     if settled and captured_worker is None and not captured_was_reaping:
         # A slot stranded at ``reaping`` by a custody attempt that crashed is
         # recovered HERE too: the task settled on its own afterwards, so nothing

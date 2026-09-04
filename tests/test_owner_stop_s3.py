@@ -1406,3 +1406,24 @@ def test_stopped_direct_turn_without_a_candidate_ends_with_the_typed_fallback(tm
     assert calls == []
     assert usage["reason_code"] == REASON_OWNER_REQUESTED_FINALIZATION
     assert "owner stopped this chat turn" in text
+
+
+def test_stopped_direct_turn_hard_stop_wins_over_the_transport_diversion(tmp_path, monkeypatch):
+    """Adversarial finding: during an active transport-wait episode every
+    finalize_now flavour was diverted to the provider-outage terminal, so the
+    owner's zero-call stop was reported as an outage. The direct-turn control
+    is routed first."""
+    from tests.test_delivery_forced_finalization import _forced_test_context
+    from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN
+
+    from ouroboros import loop_round_limits
+
+    _loop, _registry, ctx, _trace = _forced_test_context(tmp_path)
+    routed = []
+    monkeypatch.setattr(loop_round_limits, "_handle_direct_turn_hard_stop", lambda c: routed.append("hard_stop") or ("stopped", ctx.accumulated_usage, {}))
+    monkeypatch.setattr(loop_round_limits, "_finalize_now_transport_terminal", lambda *a, **k: routed.append("transport") or ("outage", {}, {}))
+    text, _usage, _trace2 = loop_round_limits._maybe_early_finalize(
+        ctx, None, {"finalize_now": REASON_OWNER_STOPPED_DIRECT_TURN}, transport_episode=object(),
+    )
+    assert routed == ["hard_stop"]
+    assert text == "stopped"

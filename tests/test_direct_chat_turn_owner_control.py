@@ -175,7 +175,7 @@ def test_stop_now_finalizes_the_direct_turn_cooperatively_and_answers_ok(tmp_pat
         # simulate exactly that — the control is really written, then the
         # turn ends and the pipeline publishes its own terminal result.
         msg_id = real_request(task_drive, task_id, reason, **kwargs)
-        write_task_result(tmp_path, TURN_ID, "done", chat_id=0, description="modify yourself")
+        write_task_result(tmp_path, TURN_ID, "completed", chat_id=0, description="modify yourself")
         agent._busy = False
         return msg_id
 
@@ -188,7 +188,7 @@ def test_stop_now_finalizes_the_direct_turn_cooperatively_and_answers_ok(tmp_pat
     assert cancel.json()["ok"] is True
     assert "finalize_now" in _mailbox_kinds(tmp_path)
     # The pipeline's own terminal is the truth; custody did not overwrite it.
-    assert load_task_result(tmp_path, TURN_ID)["status"] == "done"
+    assert load_task_result(tmp_path, TURN_ID)["status"] == "completed"
     from ouroboros.cancel_intents import active_intent
 
     assert not active_intent(tmp_path, TURN_ID)
@@ -289,3 +289,110 @@ def test_direct_turn_progress_frames_carry_the_host_attested_cancelable_marker(t
     }, ctx)
     assert sent[0]["progress_meta"].get("cancelable") is True
     assert (sent[1].get("progress_meta") or {}).get("cancelable") is not True
+
+
+def test_stop_now_on_a_turn_that_dies_without_a_terminal_publishes_cancelled(tmp_path, monkeypatch):
+    """Adversarial finding: the lane's error path writes no task_result. If
+    custody settled ``already_settled`` against a row still saying ``running``,
+    the intent would be consumed and the row unreachable by any control
+    forever — the rc.7 symptom re-created by a "successful" stop. Such a turn
+    takes the same miss finalizer a pooled task does: durable ``cancelled``."""
+    import ouroboros.config as config
+
+    _isolate_queue(monkeypatch, tmp_path)
+    agent = _live_chat_agent(monkeypatch)
+    write_task_result(tmp_path, TURN_ID, "running", chat_id=0, description="modify yourself")
+    _write_snapshot(tmp_path, running_ids=())
+    monkeypatch.setattr(config, "get_direct_turn_stop_wait_sec", lambda: 5.0)
+    from supervisor import task_reaper
+
+    real_request = task_reaper.request_finalization_grace
+
+    def _control_then_crash(task_drive, task_id, reason, **kwargs):
+        msg_id = real_request(task_drive, task_id, reason, **kwargs)
+        agent._busy = False  # the turn raised past the pipeline: no terminal written
+        return msg_id
+
+    monkeypatch.setattr(task_reaper, "request_finalization_grace", _control_then_crash)
+    with _client(tmp_path) as client:
+        cancel = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
+    assert cancel.status_code == 200, cancel.text
+    assert load_task_result(tmp_path, TURN_ID)["status"] == "cancelled"
+    from ouroboros.cancel_intents import active_intent
+
+    assert not active_intent(tmp_path, TURN_ID)
+
+
+def test_stop_now_on_a_turn_that_already_ended_arms_nothing_and_answers_already_settled(tmp_path, monkeypatch):
+    """Adversarial finding: a turn that finished between custody's ownership
+    read and the control write must get neither a false owner toast over an
+    answer that already landed nor an orphaned control; the pooled lane's
+    ``already_settled`` envelope (404) applies."""
+    import ouroboros.config as config
+
+    _isolate_queue(monkeypatch, tmp_path)
+    agent = _live_chat_agent(monkeypatch)
+    write_task_result(tmp_path, TURN_ID, "running", chat_id=0, description="modify yourself")
+    _write_snapshot(tmp_path, running_ids=())
+    monkeypatch.setattr(config, "get_direct_turn_stop_wait_sec", lambda: 5.0)
+    from supervisor import worker_chat_lane, workers
+
+    real_reader = workers.direct_chat_turn
+    reads = {"n": 0}
+
+    def _turn_ends_after_custody_captured(task_id=""):
+        reads["n"] += 1
+        if reads["n"] == 3:  # ownership predicate, custody capture, then the lane's re-check
+            write_task_result(tmp_path, TURN_ID, "completed", chat_id=0, description="modify yourself")
+            agent._busy = False
+        return real_reader(task_id)
+
+    monkeypatch.setattr(workers, "direct_chat_turn", _turn_ends_after_custody_captured)
+    toasts = []
+    monkeypatch.setattr(workers, "get_event_q", lambda: type("Q", (), {"put": lambda self, evt: toasts.append(evt)})())
+    with _client(tmp_path) as client:
+        cancel = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
+    assert cancel.status_code == 404, cancel.text
+    assert _mailbox_kinds(tmp_path) == []
+    assert toasts == []
+    assert load_task_result(tmp_path, TURN_ID)["status"] == "completed"
+    assert worker_chat_lane.DIRECT_TURN_STOP_GONE == "gone"
+
+
+def test_custody_retry_on_an_armed_turn_does_not_wait_again(tmp_path, monkeypatch):
+    """Adversarial finding: the sweep runs custody every tick; a pass that finds
+    the control already stamped answers at once instead of sleeping the bound
+    on every tick."""
+    import time
+
+    import ouroboros.config as config
+
+    _isolate_queue(monkeypatch, tmp_path)
+    _live_chat_agent(monkeypatch)
+    from supervisor import worker_chat_lane, workers
+
+    monkeypatch.setattr(config, "get_direct_turn_stop_wait_sec", lambda: 5.0)
+    workers.stamp_direct_chat_turn(TURN_ID, stop_control_msg_id="ctl-1")
+    started = time.monotonic()
+    outcome = worker_chat_lane.stop_direct_chat_turn(TURN_ID, workers.direct_chat_turn(TURN_ID))
+    assert outcome == worker_chat_lane.DIRECT_TURN_STOP_LIVE
+    assert time.monotonic() - started < 1.0
+    assert _mailbox_kinds(tmp_path) == []
+
+
+def test_cascade_custody_stops_the_direct_turn_quietly(tmp_path, monkeypatch):
+    """``deliver=False`` (a cascade sweep speaks for the tree once): the control
+    is written, the owner toast is not."""
+    import ouroboros.config as config
+
+    _isolate_queue(monkeypatch, tmp_path)
+    _live_chat_agent(monkeypatch)
+    from supervisor import worker_chat_lane, workers
+
+    monkeypatch.setattr(config, "get_direct_turn_stop_wait_sec", lambda: 0.2)
+    toasts = []
+    monkeypatch.setattr(workers, "get_event_q", lambda: type("Q", (), {"put": lambda self, evt: toasts.append(evt)})())
+    outcome = worker_chat_lane.stop_direct_chat_turn(TURN_ID, workers.direct_chat_turn(TURN_ID), deliver=False)
+    assert outcome == worker_chat_lane.DIRECT_TURN_STOP_LIVE
+    assert _mailbox_kinds(tmp_path) == ["finalize_now"]
+    assert toasts == []

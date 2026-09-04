@@ -164,9 +164,12 @@ class ChatOutbound(TypedDict):
     task_group_id: NotRequired[str]
     task_event: NotRequired[str]
     status: NotRequired[str]
-    # v6.82 (P5): host-attested marker — this frame's task is a supervisor-queue
-    # task that POST /api/tasks/{id}/cancel can force-cancel (never set for
-    # in-process direct-chat turns). Gates the UI "Cancel run" card action.
+    # v6.82 (P5): host-attested marker, stamped by the supervisor's delivery
+    # seam ONLY for a task POST /api/tasks/{id}/cancel will actually stop — a
+    # lineage-resolved pooled ROOT (its RUNNING row) or the live in-process
+    # direct-chat turn (resolved through the same ownership reader the
+    # endpoint uses, supervisor.workers.direct_chat_turn); never a subagent
+    # frame, never an ephemeral decision turn. Gates the UI "Cancel run" action.
     cancelable: NotRequired[bool]
     # Monetary projections are nullable when the physical-attempt ledger cannot
     # be read.  ``None`` is deliberately distinct from a confirmed $0 result.

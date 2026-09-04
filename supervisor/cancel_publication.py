@@ -524,29 +524,41 @@ def _cascade_delivery_row_locked(q: Any, task_id: str) -> Dict[str, Any]:
 
 def _finish_captured_chat_turn(
     q: Any, task_id: str, turn: Dict[str, Any], *, intent: Optional[Dict[str, Any]] = None,
+    deliver: bool = True,
 ) -> str:
     """Custody's half of stopping the in-process direct-chat turn: the lane
     arms the cooperative stop and waits its short bound
     (``worker_chat_lane.stop_direct_chat_turn``); custody settles the intent
     against what the turn published, or releases the claim so the sweep
     retries — the HTTP caller then sees "still live", never a fabricated
-    ``cancelled`` row over a turn that is still running."""
+    ``cancelled`` row over a turn that is still running. A turn that ENDED
+    without publishing a terminal (the lane's error path writes none) takes
+    the same miss finalizer a pooled task does — ``cancelled`` with the
+    reconstructed cost — so a "successful" stop can never leave a ``running``
+    row that no control can reach again. A turn that was already gone before
+    the stop could be armed is the pooled lane's ``already_settled``."""
     from supervisor.task_lifecycle import (
-        CANCEL_CANCELLED, CANCEL_FAILED, SETTLED_ALREADY, _release_intent_claim, _settle_intent,
+        CANCEL_FAILED, SETTLED_ALREADY, _release_intent_claim, _settle_intent,
     )
-    from supervisor.worker_chat_lane import stop_direct_chat_turn
+    from supervisor.worker_chat_lane import (
+        DIRECT_TURN_STOP_GONE, DIRECT_TURN_STOP_LIVE, stop_direct_chat_turn,
+    )
     from ouroboros.task_results import load_task_result
+    from ouroboros.task_status import SETTLED_STATUSES
 
-    if not stop_direct_chat_turn(task_id, turn):
+    outcome = stop_direct_chat_turn(task_id, turn, deliver=deliver)
+    if outcome == DIRECT_TURN_STOP_LIVE:
         _release_intent_claim(
             q, task_id, error="direct chat turn has not reached its next step yet",
             intent=intent,
         )
         return CANCEL_FAILED
     stored = load_task_result(q.DRIVE_ROOT, task_id) or {}
+    if str(stored.get("status") or "") not in SETTLED_STATUSES:
+        return _finalize_cancel_intent_on_miss(q, task_id, intent=intent)
     _settle_intent(q, task_id, outcome=SETTLED_ALREADY,
                    detail=str(stored.get("status") or ""), intent=intent)
-    return CANCEL_CANCELLED
+    return CANCEL_ALREADY_SETTLED if outcome == DIRECT_TURN_STOP_GONE else CANCEL_CANCELLED
 
 
 def _finalize_cancel_intent_on_miss(

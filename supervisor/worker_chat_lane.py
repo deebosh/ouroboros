@@ -457,8 +457,13 @@ def auto_resume_after_restart() -> None:
         })
 
 
-def stop_direct_chat_turn(task_id: str, turn: Dict[str, Any]) -> bool:
-    """Stop the in-process direct-chat turn COOPERATIVELY; True once it ended.
+DIRECT_TURN_STOP_GONE = "gone"        # the turn had already ended before the stop could be armed
+DIRECT_TURN_STOP_ENDED = "ended"      # armed, and the turn reached its boundary within the wait
+DIRECT_TURN_STOP_LIVE = "live"        # armed, still inside a step (the sweep retries custody)
+
+
+def stop_direct_chat_turn(task_id: str, turn: Dict[str, Any], *, deliver: bool = True) -> str:
+    """Stop the in-process direct-chat turn COOPERATIVELY; a typed outcome.
 
     There is no worker process to kill: the turn runs on the long-lived chat
     agent inside the supervisor. The lane writes the typed ``finalize_now``
@@ -466,10 +471,19 @@ def stop_direct_chat_turn(task_id: str, turn: Dict[str, Any]) -> bool:
     owner mailbox — the one the turn's loop drains at every round boundary,
     where it ends the turn with ZERO further model calls — then waits the
     short config-owned bound for the turn to reach that boundary (the same
-    custody pass runs on the supervisor sweep, so the wait stays short). The
-    control is written ONCE per turn: the turn's stamp is the latch, as the
-    RUNNING row is for a pooled task, so a retry neither duplicates the
-    control nor re-toasts the owner.
+    custody pass runs on the supervisor sweep, so the wait stays short).
+
+    Two things the write must never do: arm a turn that is already gone (a
+    turn that ended between custody's ownership read and this write would get
+    a false owner toast over an answer that already landed, and an orphaned
+    control in a mailbox the settled-cleanup may already have pruned) — so
+    liveness is re-read immediately before the write and ``GONE`` names that
+    lane; and re-arm on a retry: the control is written ONCE per turn (the
+    turn's stamp is the latch, as the RUNNING row is for a pooled task) and a
+    custody pass that finds the stamp already there answers WITHOUT waiting
+    (the supervisor tick must not spend the bound on every pass).
+    ``deliver=False`` (a cascade sweep, which speaks for the tree once)
+    suppresses the owner toast.
     """
     from supervisor import queue as q
     from supervisor import workers
@@ -477,21 +491,25 @@ def stop_direct_chat_turn(task_id: str, turn: Dict[str, Any]) -> bool:
     from supervisor.task_reaper import request_finalization_grace
     from ouroboros.config import get_direct_turn_stop_wait_sec
 
-    if not turn.get("stop_control_msg_id"):
-        # The canonical drive: a direct turn runs on the main data root, and
-        # its loop drains that root's owner mailbox (the same root custody
-        # settles the intent on).
-        written = request_finalization_grace(
-            pathlib.Path(q.DRIVE_ROOT), task_id, REASON_OWNER_STOPPED_DIRECT_TURN,
-            chat_id=int(turn.get("chat_id") or 0), stamp=int(time.time()),
-            toast_text=(
-                f"⏹ The owner stopped chat turn {task_id}; it ends at its next "
-                "step without further work."
-            ),
-        )
-        if written:
-            workers.stamp_direct_chat_turn(task_id, stop_control_msg_id=written)
+    if turn.get("stop_control_msg_id"):
+        return DIRECT_TURN_STOP_LIVE if workers.direct_chat_turn(task_id) is not None else DIRECT_TURN_STOP_ENDED
+    if workers.direct_chat_turn(task_id) is None:
+        return DIRECT_TURN_STOP_GONE
+    # The canonical drive: a direct turn runs on the main data root, and its
+    # loop drains that root's owner mailbox (the same root custody settles
+    # the intent on).
+    written = request_finalization_grace(
+        pathlib.Path(q.DRIVE_ROOT), task_id, REASON_OWNER_STOPPED_DIRECT_TURN,
+        chat_id=int(turn.get("chat_id") or 0), stamp=int(time.time()),
+        toast_text=(
+            f"⏹ The owner stopped chat turn {task_id}; it ends at its next "
+            "step without further work."
+        ) if deliver else "",
+        quiet=not deliver,
+    )
+    if written:
+        workers.stamp_direct_chat_turn(task_id, stop_control_msg_id=written)
     deadline = time.monotonic() + float(get_direct_turn_stop_wait_sec())
     while workers.direct_chat_turn(task_id) is not None and time.monotonic() < deadline:
         time.sleep(0.1)
-    return workers.direct_chat_turn(task_id) is None
+    return DIRECT_TURN_STOP_LIVE if workers.direct_chat_turn(task_id) is not None else DIRECT_TURN_STOP_ENDED

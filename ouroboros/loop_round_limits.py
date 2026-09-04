@@ -415,8 +415,14 @@ def _maybe_early_finalize(
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     """Consume supervisor grace first, then a local deadline."""
     if controls.get("finalize_now"):
+        # The owner's "Stop now" on a direct turn costs no call, so it is
+        # honest whatever the transport is doing — never reported to the owner
+        # as a provider-outage terminal.
+        control_text = str(controls["finalize_now"])
+        if control_text.strip() and control_text.splitlines()[0].strip() == REASON_OWNER_STOPPED_DIRECT_TURN:
+            return _handle_direct_turn_hard_stop(limit_ctx)
         if transport_episode is not None:
-            # Every finalize_now flavor during an active outage takes the
+            # Every other finalize_now flavor during an active outage takes the
             # honest no-resend terminal (rationale in the helper); control
             # bookkeeping was done by the drain, terminalization is prompt.
             return _finalize_now_transport_terminal(
