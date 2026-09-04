@@ -474,7 +474,10 @@ def get_rejected_params(drive_root: Any, fingerprint: str) -> Set[str]:
 # One raw pair namespace keyed by normalized model. Reducers choose witnessed
 # values; no independently refreshed aggregate scalar is an authority.
 
-_TOKEN_DENSITY_TTL_SEC = 14 * 24 * 3600.0
+# 90 days: a model's tokenizer does not drift week to week, and an install that
+# idles past the TTL would otherwise fall back to the cold floor and refuse the
+# packed deep self-review it could assemble warm (owner decision R60/R61).
+_TOKEN_DENSITY_TTL_SEC = 90 * 24 * 3600.0
 _TOKEN_DENSITY_FRESH_SEC = 6 * 3600.0
 _TOKEN_DENSITY_MAX_PAIRS = 5
 _TOKEN_DENSITY_DRIFT_TOLERANCE = 0.05

@@ -59,6 +59,7 @@ from ouroboros.reviewer_slot_config import (  # noqa: E402
     row_effort,
 )
 from ouroboros.usage_accounting import BudgetExceeded  # noqa: E402
+from ouroboros.outcomes import REASON_DEEP_SELF_REVIEW_PACK_UNFIT  # noqa: E402
 from ouroboros.triad_review import REVIEW_REPORT_CONTRACT  # noqa: E402
 
 # Output reservation inside the reviewer's 1M window (same class of fix as
@@ -68,6 +69,14 @@ from ouroboros.triad_review import REVIEW_REPORT_CONTRACT  # noqa: E402
 _DEEP_MAX_OUTPUT_TOKENS = 100_000
 _DEEP_MODEL_CONTEXT_WINDOW = 1_000_000
 _DEEP_OUTPUT_MARGIN_TOKENS = 155_000
+# Cold-start density probe (R60/R61): when the packed assembly refuses under the
+# COLD density floor, ONE bounded send on the exact model records a real witness.
+_PROBE_SAMPLE_CHARS = 80_000
+# Room for a reasoning model to finish thinking AND answer: a cap that ends the
+# call mid-reasoning comes back with no content and no usage — no witness.
+_PROBE_MAX_TOKENS = 256
+_PROBE_EFFORT = "low"
+_PROBE_SYSTEM_PROMPT = "Token-density calibration probe: reply with the single word OK."
 _DEEP_INPUT_TOKEN_LIMIT = min(
     REVIEW_PROMPT_TOKEN_BUDGET,
     _DEEP_MODEL_CONTEXT_WINDOW - _DEEP_MAX_OUTPUT_TOKENS - _DEEP_OUTPUT_MARGIN_TOKENS,
@@ -962,6 +971,127 @@ def _run_retrieving_review(
     return _provenance_header(delivery, model, usage, task_facts["memory"], coverage, human, incomplete=incomplete) + text, usage
 
 
+def _probe_sample(repo_dir: pathlib.Path, manifest: Dict[str, Any]) -> str:
+    """A bounded slice of the REAL pack content (the refused required rows
+    first, then the selected rows) so the probe measures the density of what
+    the pack is made of, not of an unrelated text."""
+    parts: list[str] = []
+    total = 0
+    rows = list(manifest.get("unassembled_required") or []) + list(manifest.get("selected") or [])
+    for row in rows:
+        rel = str((row or {}).get("path") or "")
+        if not rel or rel.startswith("/") or ".." in rel.split("/"):
+            continue
+        try:
+            text = (repo_dir / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        room = _PROBE_SAMPLE_CHARS - total
+        if room <= 0:
+            break
+        chunk = text[:room]
+        parts.append(f"### {rel}\n{chunk}\n")
+        total += len(chunk)
+    return "".join(parts)
+
+
+def _cold_start_density_probe(
+    repo_dir: pathlib.Path,
+    drive_root: pathlib.Path,
+    llm: Any,
+    emit_progress: Callable[[str], None],
+    row: ConfiguredReviewerSlot,
+    model: str,
+    manifest: Dict[str, Any],
+) -> bool:
+    """The cold-start rung of the packed delivery (owner decisions R60/R61).
+
+    The calibrated input cap is the density-form bound over a FRESH exact-model
+    witness, else the cold floor 1.65 — which lies above every measured
+    density, so a repository whose required set fits warm is refused cold, and
+    the refusal happens before any send, so the model never records the
+    witness that would have admitted it. This rung breaks that loop with ONE
+    bounded send on the exact model (a slice of the real pack, a few output
+    tokens) through the ordinary observed call, records the witness, and
+    returns True when a fresh exact-model witness now governs — the caller
+    recomputes the cap and rebuilds ONCE. It never runs on a warm store, never
+    retries, and never falls back to another delivery: a pack that still does
+    not fit is the typed ``deep_self_review_pack_unfit`` refusal that asks the
+    owner to switch the row.
+    """
+    from ouroboros.capability_evidence import record_token_density, resolve_review_token_density
+    from ouroboros.llm_observability import chat_observed
+    from ouroboros.provider_models import normalize_model_identity
+
+    _density, source = resolve_review_token_density(drive_root, model)
+    if source == "measured":
+        return False
+    sample = _probe_sample(repo_dir, manifest)
+    if not sample:
+        return False
+    emit_progress(
+        f"No fresh token-density witness for {model}: one bounded probe "
+        f"(~{estimate_tokens(sample):,} estimated tokens) calibrates the input cap..."
+    )
+    try:
+        _response, usage = chat_observed(
+            llm,
+            drive_root=drive_root,
+            task_id="deep_self_review",
+            call_type="deep_self_review_density_probe",
+            messages=[
+                {"role": "system", "content": _PROBE_SYSTEM_PROMPT},
+                {"role": "user", "content": sample},
+            ],
+            model=model,
+            tools=None,
+            reasoning_effort=_PROBE_EFFORT,
+            max_tokens=_PROBE_MAX_TOKENS,
+            temperature=None,
+            no_proxy=True,
+        )
+    except BudgetExceeded:
+        raise
+    except Exception as exc:
+        log.warning("Deep self-review density probe failed: %s", exc, exc_info=True)
+        emit_progress(f"Density probe failed ({type(exc).__name__}); the cold input cap stands.")
+        return False
+    real = int((usage or {}).get("prompt_tokens") or 0)
+    if real <= 0:
+        emit_progress("Density probe returned no usage (prompt_tokens=0); the cold input cap stands.")
+        return False
+    record_token_density(
+        drive_root,
+        normalize_model_identity(model),
+        prompt_chars=len(_PROBE_SYSTEM_PROMPT) + len(sample),
+        prompt_tokens=real,
+        source="deep_review_cold_start_probe",
+    )
+    density, source = resolve_review_token_density(drive_root, model)
+    emit_progress(f"Token density for {model}: {density:.2f} ({source}).")
+    return source == "measured"
+
+
+def _pack_unfit_failure(
+    drive_root: pathlib.Path, model: str, stats: Dict[str, Any], input_limit: int, deep_window: int,
+) -> Tuple[str, Dict[str, Any]]:
+    """The typed refusal for a required set that does not fit this model's
+    calibrated cap even warm. Its text is the agent's cue to ask the owner to
+    switch the ``deep_review`` row — the host never switches deliveries itself."""
+    from ouroboros.capability_evidence import resolve_review_token_density
+
+    density, source = resolve_review_token_density(drive_root, model)
+    return _failed(
+        "❌ Deep self-review pack unfit: the one-packet review does not fit this repository on "
+        f"{model} — {stats['skipped'][0]}. Calibrated input cap ~{input_limit:,} tokens "
+        f"({deep_window:,}-token window, token density {density:.2f} {source}). "
+        "No automatic fallback runs: ask the owner to switch the `deep_review` reviewer row "
+        "(Settings → Review lanes) to a retrieving delivery — a configured subagent (native tool "
+        "rounds) or an agent session — or to a model with a larger context window.",
+        reason_code=REASON_DEEP_SELF_REVIEW_PACK_UNFIT,
+    )
+
+
 def _run_packed_review(
     repo_dir: pathlib.Path,
     drive_root: pathlib.Path,
@@ -1001,6 +1131,7 @@ def _run_packed_review(
         context_window=deep_window,
         output_reserve=deep_output_reserve,
         tokenizer_margin=deep_margin,
+        drive_root=drive_root,
     ))
 
     emit_progress("Building generated review atlas and memory pack...")
@@ -1010,6 +1141,27 @@ def _run_packed_review(
         fixed_prompt_tokens=estimate_tokens(_SYSTEM_PROMPT),
         input_token_limit=input_limit,
     )
+    if not pack_text and stats.get("skipped") and stats.get("context_manifest"):
+        # The required set did not fit under the calibrated cap. Cold store →
+        # one probe, one rebuild under the recalibrated cap; still unfit → the
+        # typed refusal that asks the owner to switch the row (never a fallback).
+        if _cold_start_density_probe(repo_dir, drive_root, llm, emit_progress, row, model, stats["context_manifest"]):
+            input_limit = max(0, calibrated_input_token_limit(
+                model,
+                context_window=deep_window,
+                output_reserve=deep_output_reserve,
+                tokenizer_margin=deep_margin,
+                drive_root=drive_root,
+            ))
+            emit_progress(f"Rebuilding the pack under the recalibrated input cap (~{input_limit:,} tokens)...")
+            pack_text, stats = build_review_pack(
+                repo_dir,
+                drive_root,
+                fixed_prompt_tokens=estimate_tokens(_SYSTEM_PROMPT),
+                input_token_limit=input_limit,
+            )
+        if not pack_text and stats.get("skipped") and stats.get("context_manifest"):
+            return _pack_unfit_failure(drive_root, model, stats, input_limit, deep_window)
     if not pack_text and stats.get("skipped"):
         return _failed(f"❌ Failed to build review pack: {stats['skipped'][0]}", reason_code="deep_self_review_error")
 
