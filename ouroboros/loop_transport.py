@@ -346,7 +346,7 @@ def transport_wait_step(
     """
     elapsed = time.monotonic() - episode.started_monotonic
     # Signed windows (negative = how long ago that rail expired) decide the
-    # attribution: the rail that expired EARLIER binds even when a host suspend
+    # attribution: the rail that expired EARLIER binds even when a process stall
     # inside a sleep overshot both — clamping first would erase the ordering.
     # Only the value used for sleeping and telemetry is clamped. An exact tie
     # keeps the deadline's detail (measure-zero; the owner window is the

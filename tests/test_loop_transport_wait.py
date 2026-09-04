@@ -243,7 +243,7 @@ def test_interactive_turns_wait_redial_free_and_terminalize_at_the_idle_bound(tm
     for free until the RAW configured task idle timeout — their only rail, as
     they carry no deadline and no queue rails — is spent, then take the
     deterministic no-resend terminal whose detail names that bound and whose
-    wording calls the turn a chat turn, never a task."""
+    wording calls it "this turn", never a task."""
     fake_call, calls = _transport_failing_call(fail_times=99)
     clock = _FakeClock(monkeypatch)
     monkeypatch.setattr(loop_transport, "get_task_idle_timeout_sec", lambda: 120)

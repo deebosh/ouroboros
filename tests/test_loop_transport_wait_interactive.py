@@ -182,7 +182,7 @@ def test_explicit_deadline_longer_than_the_bound_yields_the_interactive_detail(t
 def test_both_windows_spent_attributes_the_rail_that_expired_first(
     tmp_path, monkeypatch, earlier, final_redial_done,
 ):
-    """When a step finds BOTH windows already spent (a host suspend inside a
+    """When a step finds BOTH windows already spent (a process stall inside a
     sleep overshoots them), the detail names the rail that expired EARLIER by
     signed lateness — clamping first would erase the ordering — on both exits:
     the plain exhaustion check and the post-final-redial check."""
