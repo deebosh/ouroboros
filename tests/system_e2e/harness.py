@@ -438,8 +438,10 @@ class ModelGate:
     sleep would only turn the catch into a race. ``match(body)`` selects the
     call to hold: the FIRST match sets ``arrived`` (the scenario's proof that the
     round is in flight) and blocks that request thread until the scenario sets
-    ``release`` — bounded by ``timeout`` so a broken scenario fails instead of
-    hanging the lane. Every later match passes through untouched; ``matched``
+    ``release`` — bounded by ``timeout``: expiry sets ``timed_out`` and raises
+    ``TimeoutError`` in the request thread (the held call fails loudly), so a
+    broken scenario fails by name instead of hanging the lane or silently
+    resuming the round. Every later match passes through untouched; ``matched``
     counts them all (the scenario's "how many rounds did this turn get" fact)
     and ``held`` stays at one. The hold runs OUTSIDE the model's call lock (see
     ``LoopbackModelServer.do_POST``), so unrelated calls and the scenario's own
@@ -453,6 +455,7 @@ class ModelGate:
         self.release = threading.Event()
         self.matched = 0
         self.held = 0
+        self.timed_out = False
         self._lock = threading.Lock()
 
     def __call__(self, body: dict) -> None:
@@ -464,7 +467,10 @@ class ModelGate:
                 return
             self.held += 1
         self.arrived.set()
-        self.release.wait(self.timeout)
+        if not self.release.wait(self.timeout):
+            self.timed_out = True
+            raise TimeoutError(
+                f"ModelGate: the scenario never released the held round within {self.timeout:.0f}s")
 
 
 class LoopbackModelServer:

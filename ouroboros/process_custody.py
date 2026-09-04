@@ -166,9 +166,10 @@ def spawn_supervised(
 ) -> subprocess.Popen:
     """Popen + durable custody record (the single supervised chokepoint).
 
-    The record is written immediately after spawn, so even a SIGKILL of the
-    spawning worker cannot orphan the child invisibly — the reaper finds it
-    in the ledger on the next generation.
+    The record is written right after ``Popen`` returns, so a spawner that dies
+    any time later cannot orphan the child invisibly (the reaper finds it in the
+    ledger); a hard kill INSIDE that spawn-to-record window is the disclosed
+    residual — such a child is unledgered and the reaper cannot see it.
     """
     if new_process_group:
         merged = dict(subprocess_new_group_kwargs())

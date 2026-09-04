@@ -646,7 +646,7 @@ def test_s20_crash_mid_apply_boot_finalize_and_rollback_are_honest(tmp_path_fact
 # S21 — cancellation WITH chat lineage: outbox receipt + chat row + forensics.
 # ===========================================================================
 
-S21_CHAT_ID = 1  # WEB_UI_CHAT_ID: the ordinary owner chat thread
+S21_PROJECT_NAME = "s21 lineage"  # a file-less project: its thread IS the lineage
 
 
 @pytest.mark.integration
@@ -660,10 +660,21 @@ def test_s21_chat_lineage_cancel_delivers_receipt_to_outbox_and_chat(
         server = start_server(e2e_clone, root, keyless_settings(stub))
         try:
             oracle = ArtifactOracle(server.data_root)
-            # The ONLY delta vs S7: the task-create body carries chat lineage.
+            # The ONLY delta vs S7: the task is admitted WITH chat lineage. Under
+            # the ingress capture rule (upstream 68eab3ea/fed16935, absorbed by
+            # F2) an externally launched task lives in its REGISTERED project's
+            # thread or in the hidden partition — never in a conversation of its
+            # own — so the lineage is a project thread: register a file-less
+            # project and address the task into its room.
+            project = (_api(server.base_url, "POST", "/api/projects",
+                            {"name": S21_PROJECT_NAME}, timeout=60).get("project") or {})
+            project_id = str(project.get("id") or "")
+            lineage_chat = int(project.get("chat_id") or 0)
+            assert project_id and lineage_chat, project
             created = _api(server.base_url, "POST", "/api/tasks", {
                 "description": "Keep listing the repository root until stopped.",
-                "chat_id": S21_CHAT_ID,
+                "project_id": project_id,
+                "chat_id": lineage_chat,
                 "memory_mode": "forked",
                 "actor_id": "e2e-driver", "source": "e2e-driver",
                 "metadata": {"source": "e2e-driver", "delegation_role": "root"},
@@ -710,7 +721,7 @@ def test_s21_chat_lineage_cancel_delivers_receipt_to_outbox_and_chat(
             assert chat_rows, "no cancel_receipt row in chat.jsonl"
             chat_row = chat_rows[-1]
             assert chat_row.get("direction") == "system", chat_row
-            assert int(chat_row.get("chat_id") or 0) == S21_CHAT_ID, chat_row
+            assert int(chat_row.get("chat_id") or 0) == lineage_chat, chat_row
             assert f"Task {task_id} was cancelled" in str(chat_row.get("text") or ""), chat_row
 
             # (b) The details-panel block on the durable result (the W2-F1 fact

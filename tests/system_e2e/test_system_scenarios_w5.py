@@ -362,18 +362,22 @@ def test_s25_mutating_delegated_patch_conflict_is_refused_and_keeps_its_material
                 "integrate its captured patch.",
                 workspace_root=str(workspace))
             result = server.wait_task(task_id, timeout=600)
-            # A task that ENDS holding an undisposed captured patch is not a success,
-            # and the tree says so in its own vocabulary: the model's answer is kept
-            # verbatim, the terminal is failed, and the reason names the unreconciled
-            # custody rather than the model's work.
-            assert result.get("status") == "failed", result
+            # A task that ENDS holding an undisposed captured patch completes with a
+            # DISCLOSED custody debt (upstream 09ac51b2, absorbed by F2): the model's
+            # answer is kept verbatim, the execution axis stays the model's own work,
+            # the one Reason line names the unreconciled custody, and the debt rides
+            # objective.warning(s) plus the row's debt list — never a fabricated failure.
+            assert result.get("status") == "completed", result
             oracle = ArtifactOracle(server.data_root)
             stored = wait_durable_result(oracle, task_id)
             assert S25_MARKER in str(stored.get("result") or ""), stored
             assert stub.script_consumed(), "S25 script was not fully consumed"
             assert stored.get("reason_code") == "delegated_custody_unreconciled", stored
             axes = stored.get("outcome_axes") or {}
-            assert (axes.get("execution") or {}).get("status") == "infra_failed", axes
+            assert (axes.get("execution") or {}).get("status") == "ok", axes
+            assert "delegated_custody_unreconciled" in ((axes.get("objective") or {}).get("warnings") or []), axes
+            envelope = stored.get("delegate_terminal_reconciliation") or {}
+            assert envelope.get("audit_status") == "ok", envelope
 
             started = _custody_rows(oracle, "delegate_run_started")
             assert len(started) == 1, started
@@ -382,6 +386,7 @@ def test_s25_mutating_delegated_patch_conflict_is_refused_and_keeps_its_material
             execution_root = str(started[0].get("execution_root") or "")
 
             assert stored.get("delegated_runs_unreconciled") == [f"patch:{run_id}"], stored
+            assert envelope.get("undisposed_patch_run_ids") == [run_id], envelope
 
             # -- the refusal reached the model, typed and owned ----------------
             transcript = "\n".join(body_text(call_body) for _kind, call_body in stub.calls)

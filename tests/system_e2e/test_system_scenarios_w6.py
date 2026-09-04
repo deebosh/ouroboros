@@ -29,7 +29,9 @@ WHAT S26 ASSERTS, in order:
    in ``/api/state.active_chat_activities`` as kind ``direct_chat`` linked to the
    client_message_id, listed by ``GET /api/tasks?status=running`` (its durable
    running row), absent from the queue snapshot (the class: no queue row), and
-   ``events.jsonl`` carries its ``task_started`` with ``direct_chat=true``;
+   ``events.jsonl`` carries its durable ``task_received`` row with
+   ``_is_direct_chat=true`` and the client_message_id link (``task_started`` is a
+   session-only live log, never persisted);
 2. STOP-NOW over the UI's ``POST /api/tasks/{id}/cancel`` (empty body = immediate)
    mid-round is NOT 404: the typed 503 "still live" naming the task; the
    cooperative control is ARMED — exactly one ``finalize_now`` row with the
@@ -49,7 +51,8 @@ WHAT S26 ASSERTS, in order:
 5. the chat CONCLUDED (no "Working…" forever) — over the SAME /ws the SPA opens
    the turn announced itself (typing frame: activity_id = task id, kind
    ``direct_chat``, the client_message_id link), the toast frame carried
-   ``cancelable``, the keyed FINAL assistant frame (task_id = the turn, not
+   ``cancelable``, the keyed FINAL system frame (the host-authored stop notice;
+   task_id = the turn, not
    progress) arrived, the activity left ``/api/state``, the running list no
    longer names the turn, and the final landed in chat.jsonl under the task id;
 6. custody SETTLED the intent against the turn's OWN terminal (the sweep's
@@ -113,6 +116,7 @@ def _tool_body(text: str) -> dict:
             "tools": [{"type": "function", "function": {"name": "list_files"}}]}
 
 
+@pytest.mark.serial  # a real loopback port (ScriptedStubModel) — the serial pass
 def test_model_gate_holds_once_outside_the_call_lock_and_releases():
     gate = ModelGate(lambda body: bool(body.get("tools")) and "HOLD-ME" in body_text(body),
                      timeout=30)
@@ -138,6 +142,26 @@ def test_model_gate_holds_once_outside_the_call_lock_and_releases():
         _post_completion(stub, _tool_body("HOLD-ME again"), again)
         assert again and gate.matched == 2 and gate.held == 1
         assert stub.kinds() == ["final", "agent", "agent"]
+        assert gate.timed_out is False
+
+
+def test_model_gate_expiry_is_loud_not_a_silent_release():
+    """An unreleased hold must fail BY NAME: flag set, TimeoutError raised."""
+    gate = ModelGate(lambda body: True, timeout=0.2)
+    raised: list = []
+
+    def _call():
+        try:
+            gate({"messages": []})
+        except TimeoutError as exc:
+            raised.append(str(exc))
+
+    t = threading.Thread(target=_call, daemon=True)
+    t.start()
+    t.join(10)
+    assert not t.is_alive()
+    assert gate.timed_out is True and gate.held == 1 and gate.matched == 1
+    assert raised and "never released" in raised[0], raised
 
 
 # ===========================================================================
@@ -293,6 +317,14 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
                 running_row = oracle.task_result(task_id)
                 assert running_row.get("status") == "running", running_row
                 assert int(running_row.get("chat_id") or 0) == S26_CHAT_ID, running_row
+                received = wait_until(
+                    lambda: [r for r in oracle.events("task_received")
+                             if str((r.get("task") or {}).get("id") or "") == task_id] or None, 30)
+                assert received, [str((r.get("task") or {}).get("id")) for r in oracle.events("task_received")]
+                received_task = received[-1].get("task") or {}
+                assert received_task.get("_is_direct_chat") is True, received_task
+                assert ((received_task.get("metadata") or {}).get("origin_message_ref") or {}).get(
+                    "client_message_id") == client_message_id, received_task
 
                 # 2. STOP-NOW over the UI's endpoint, mid-round: typed, never 404,
                 #    the cooperative control ARMED.
@@ -327,7 +359,7 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
                 toasts = wait_until(lambda: _toast_rows(oracle, task_id) or None, 30)
                 assert toasts and len(toasts) == 1, toasts
                 assert toasts[0].get("cancelable") is True, toasts[0]
-                # The typed incident vocabulary rides the toast (and its once-key).
+                # The typed incident vocabulary rides the toast.
                 assert toasts[0].get("task_incident") == REASON_OWNER_STOPPED_DIRECT_TURN, toasts[0]
                 toast_frames = wait_until(
                     lambda: [f for f in frames.find(type="chat", task_id=task_id, is_progress=True)
@@ -411,6 +443,7 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
 
             # ZERO further model rounds, end to end: one held round, nothing after it.
             assert gate.matched == 1 and gate.held == 1, (gate.matched, gate.held)
+            assert gate.timed_out is False, "the gate expired: the scenario lost its mid-round premise"
             assert not stub.script_consumed(), "the keepalive script was run down: the stop was not honored"
         finally:
             gate.release.set()  # never leave the stub's request thread parked on a failed scenario

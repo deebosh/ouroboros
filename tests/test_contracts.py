@@ -382,13 +382,22 @@ def _collect_literal_progress_meta_keys(source_path: pathlib.Path) -> set[str]:
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     keys: set[str] = set()
     meta_helper_names = {"_subagent_rejection_meta", "_subagent_progress_meta", "_subagent_scheduled_meta"}
+    # A producer may build the dict under a local name and hand it over as
+    # ``progress_meta=<name>`` (events_runtime_controls: ``incident_meta``);
+    # every such name is an alias of ``progress_meta`` for the walk below, or
+    # the scan is blind to exactly those emitters and stays green when their
+    # keys drop out of the carriers.
+    meta_names = {"progress_meta"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == "progress_meta" and isinstance(node.value, ast.Name):
+            meta_names.add(node.value.id)
     for node in ast.walk(tree):
         if isinstance(node, ast.keyword) and node.arg == "progress_meta" and isinstance(node.value, ast.Dict):
             literal_keys, unknown = _dict_literal_keys(node.value)
             assert not unknown, f"progress_meta literal in {source_path.name} has dynamic keys: {unknown}"
             keys.update(literal_keys)
         elif isinstance(node, ast.Assign):
-            if any(isinstance(target, ast.Name) and target.id == "progress_meta" for target in node.targets) and isinstance(node.value, ast.Dict):
+            if any(isinstance(target, ast.Name) and target.id in meta_names for target in node.targets) and isinstance(node.value, ast.Dict):
                 literal_keys, unknown = _dict_literal_keys(node.value)
                 assert not unknown, f"progress_meta assignment in {source_path.name} has dynamic keys: {unknown}"
                 keys.update(literal_keys)
@@ -399,7 +408,7 @@ def _collect_literal_progress_meta_keys(source_path: pathlib.Path) -> set[str]:
                     and isinstance(target.slice.value, str)
                 ):
                     base = target.value
-                    if isinstance(base, ast.Name) and base.id == "progress_meta":
+                    if isinstance(base, ast.Name) and base.id in meta_names:
                         keys.add(target.slice.value)
                     # evt.setdefault("progress_meta", {})["key"] = ... — the
                     # in-place producer idiom (task_finalization stamps).
@@ -418,7 +427,7 @@ def _collect_literal_progress_meta_keys(source_path: pathlib.Path) -> set[str]:
                 isinstance(func, ast.Attribute)
                 and func.attr == "update"
                 and isinstance(func.value, ast.Name)
-                and func.value.id == "progress_meta"
+                and func.value.id in meta_names
                 and node.args
                 and isinstance(node.args[0], ast.Dict)
             ):
@@ -548,6 +557,9 @@ def test_chat_outbound_declares_progress_meta_keys_used_by_runtime():
         progress_keys.update(_collect_literal_progress_meta_keys(source_path))
 
     assert progress_keys, "no literal progress_meta keys found"
+    # The named-dict idiom must be seen: this key has exactly one emitter and
+    # it hands the dict over as ``progress_meta=incident_meta``.
+    assert "cancel_physical_task_id" in progress_keys, sorted(progress_keys)
     assert progress_keys <= declared, (
         "progress_meta emits keys not declared in ChatOutbound: "
         f"{sorted(progress_keys - declared)}"
