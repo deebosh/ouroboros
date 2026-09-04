@@ -258,7 +258,10 @@ def material_text(material: Dict[str, Any]) -> str:
         if material.get("rows_summarized"):
             lines.append(f"- [the oldest {material['rows_summarized']} row(s) above carry version and date only]")
     commits = material.get("commits") or []
-    if commits:
+    # Same rule as the rows: a range whose every commit record came back unreadable has no
+    # commits to print, and that omission is exactly what must still be said — never
+    # "(no commits in this range)".
+    if commits or material.get("omitted_commit_chunks"):
         lines.append("")
         lines.append("First-parent commits in this range (newest first, every one of them):")
         for commit in commits:

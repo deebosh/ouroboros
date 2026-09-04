@@ -250,6 +250,16 @@ def test_material_text_carries_full_provenance(history_repo):
     assert history_repo["c4"][:8] + " " not in rendered.replace(history_repo["c4"], ""), "no bare 8-char prefixes"
 
 
+def test_material_text_discloses_unreadable_commit_records_with_no_valid_commit_left():
+    # Every git record malformed: the omission is said, the range is never called empty.
+    material = {"commits": [], "omitted_commit_chunks": 2, "bodies_omitted": 0,
+                "releases": [], "omitted_rows": 0, "omitted_row_commits": [], "rows_summarized": 0}
+    text = ul.material_text(material)
+    assert "2 commit record(s) git returned unreadably" in text
+    assert "(no commits in this range)" not in text
+    assert ul.material_text({**material, "omitted_commit_chunks": 0}) == "(no commits in this range)"
+
+
 def test_material_text_discloses_malformed_rows_with_no_valid_row_left(history_repo):
     # Every candidate row malformed: there is nothing to print and the omission is
     # exactly what the author still has to be told.
