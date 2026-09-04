@@ -55,9 +55,9 @@ def _enter(tmp_path, ctx, notes, task_id="t-i"):
     )
 
 
-def _step(episode, tmp_path, tools, notes, task_id="t-i"):
+def _step(episode, tmp_path, tools, notes, task_id="t-i", error_kind="transport_unavailable"):
     return loop_transport.transport_wait_step(
-        episode, tools=tools, error_kind="transport_unavailable",
+        episode, tools=tools, error_kind=error_kind,
         drive_root=None, drive_logs=tmp_path, task_id=task_id, model="m",
         emit_progress=notes, incoming_messages=None, owner_msg_seen=set(),
     )
@@ -208,6 +208,49 @@ def test_both_windows_spent_attributes_the_rail_that_expired_first(
         assert detail == INTERACTIVE_DETAIL
     else:
         assert detail == ("deadline_after_final_redial" if final_redial_done else "deadline_exhausted")
+
+
+@pytest.mark.parametrize("case", ["bound_earlier", "deadline_earlier", "managed"])
+def test_deadline_refused_redial_uses_the_same_signed_attribution(tmp_path, monkeypatch, case):
+    """A redial refused by the deadline admission gate ends the episode under
+    the same attribution rule as every other exit: with both windows spent,
+    the rail that expired earlier names the detail (the refusal itself stays
+    visible in the loop's `llm_not_dispatched` row); a managed episode has no
+    bound and keeps `deadline_refused_dispatch` with no exhaustion note."""
+    clock = _FakeClock(monkeypatch)
+    bound_late, deadline_late = {
+        "bound_earlier": (60.0, 5.0), "deadline_earlier": (5.0, 60.0), "managed": (None, 5.0),
+    }[case]
+    ctx = _ctx() if case == "managed" else _ctx(is_direct_chat=True)
+    ctx.task_metadata = {
+        "deadline_at": (
+            datetime.now(timezone.utc)
+            + timedelta(seconds=get_finalization_grace_sec() - deadline_late)
+        ).isoformat(),
+    }
+    if bound_late is None:
+        episode = loop_transport.TransportWaitEpisode(started_monotonic=clock.now - 1000.0)
+    else:
+        episode = loop_transport.TransportWaitEpisode(
+            started_monotonic=clock.now - (60.0 + bound_late), interactive=True,
+            wait_bound_sec=60.0,
+        )
+    notes = _NoteRecorder()
+
+    assert _step(
+        episode, tmp_path, SimpleNamespace(_ctx=ctx), notes, error_kind="deadline_exhausted",
+    ) is False
+    assert clock.sleeps == []
+    detail = _read_network_wait_events(tmp_path)[-1]["detail"]
+    assert detail == {
+        "bound_earlier": INTERACTIVE_DETAIL,
+        "deadline_earlier": "deadline_refused_dispatch",
+        "managed": "deadline_refused_dispatch",
+    }[case]
+    if case == "managed":
+        assert notes.texts == []  # a managed exhaustion is its terminal result, not a note
+    else:
+        assert "this turn ends as a provider outage" in notes.texts[-1]
 
 
 # ------------------------------------------- final free redial at the bound

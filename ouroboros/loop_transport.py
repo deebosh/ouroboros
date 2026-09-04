@@ -193,8 +193,9 @@ def reconcile_transport_wait(
     turn's episode gets the idle-timeout bound at entry, because the bound is
     measured from entry and the turn has no other rail. ``emit_progress``
     honors the ``incident=`` keyword (``OuroborosAgent._emit_progress``): the
-    typed toast pair rides the note for ephemeral episodes, and every episode
-    closure is an owner note.
+    typed toast pair rides the note for ephemeral episodes; recovery, local
+    adoption and error-kind change are notes for all episodes, and exhaustion
+    is separately noted only for interactive turns (``transport_wait_step``).
     The round gate reconciles twice per failed dispatch: once with the
     pre-chain kind, and once after the fallback chain with the FRESH kind — so
     an outage first observed MID-chain (a remote candidate dying pre-dispatch
@@ -380,8 +381,12 @@ def transport_wait_step(
         return False
 
     if error_kind == "deadline_exhausted":
-        # The redial was refused before dispatch: the owner window is spent.
-        return _ended("deadline_refused_dispatch")
+        # The redial was refused before dispatch: the owner window is spent. One
+        # attribution rule everywhere — a bound that expired earlier keeps its
+        # own detail; the refusal stays visible in the llm_not_dispatched row.
+        return _ended(
+            "interactive_wait_window_exhausted" if bound_binds else "deadline_refused_dispatch"
+        )
     if episode.final_redial_done:
         return _ended(
             "interactive_wait_window_exhausted" if bound_binds else "deadline_after_final_redial"
