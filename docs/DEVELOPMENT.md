@@ -1581,7 +1581,8 @@ by "Provider Independence" above. Call-site imperatives:
   with any other class (a provider status, a transient, an empty response, a
   context overflow) ends the round on the unknown no-resend terminal with no
   compaction retry (a released $0 repeat stays the free wait episode's to
-  redial).
+  redial, and an exhausted episode on such a round still ends on the unknown
+  terminal, worded as both the wait and the unresolved attempt).
 
 #### Timeout & Wait Control
 

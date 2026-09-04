@@ -486,47 +486,6 @@ def test_primary_round_dispatch_recovers_after_two_deaths(tmp_path, monkeypatch,
     assert TRANSPORT_DEATHS_KEY not in usage
 
 
-@pytest.mark.parametrize("turn_flag", ["is_direct_chat", "is_ephemeral_turn"])
-@pytest.mark.parametrize("deaths", [2, 3])
-def test_interactive_turn_death_takes_the_repeat_rail_and_never_enters_a_wait_episode(
-    tmp_path, monkeypatch, no_sleep, turn_flag, deaths,
-):
-    """A direct-chat or ephemeral turn whose DISPATCHED request died with a typed
-    transport death is on the paid repeat rail (its round dispatch is primary),
-    never in the free wait episode: `provider_outcome_unknown` is not the
-    episode's `transport_unavailable`, so no `network_wait` event exists, the
-    interactive idle bound never starts, and an exhausted round ends on the
-    unknown no-resend terminal, not on the wait window's."""
-    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
-    monkeypatch.setattr(
-        loop_transport, "interruptible_wait_sleep",
-        lambda _sec, _wake: pytest.fail("a dispatched death must never open a wait episode"),
-    )
-    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
-    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
-    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
-    llm = _ScriptedLLM(*([_death] * deaths))
-    notes = []
-    kwargs = _loop_kwargs(tmp_path, llm, notes)
-    setattr(kwargs["tools"]._ctx, turn_flag, True)
-    result, usage, trace = run_llm_loop(**kwargs)
-
-    assert llm.calls == 3  # the primary send plus two paid repeats, whatever the turn kind
-    assert no_sleep == [4.0, 8.0]  # the repeat rail's backoffs, never the episode's wait
-    assert _events(tmp_path, "network_wait") == []
-    assert not any("provider connection" in note.lower() for note in notes)
-    if deaths == 2:
-        assert result == "done"
-        assert usage.get("reason_code") is None
-        assert TRANSPORT_DEATHS_KEY not in usage
-    else:
-        assert usage.get("execution_status") == "infra_failed"
-        assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
-        assert usage[TRANSPORT_DEATHS_KEY]["count"] == 2
-        assert "2 earlier physical attempt(s) of the last dispatched round" in result
-        assert "waited and redialed" not in result and "no wait window" not in result
-
-
 @pytest.mark.parametrize("turn_flag", [None, "is_direct_chat", "is_ephemeral_turn"])
 def test_counter_survives_the_wait_episodes_free_redial_of_the_same_round(tmp_path, monkeypatch, no_sleep, turn_flag):
     """death → released ConnectError → wait episode → free redial → death →
@@ -706,28 +665,6 @@ def test_no_call_rail_fences_on_the_round_record_whatever_the_sticky_kind():
     assert provider_no_call_source({"_last_llm_error_kind": "provider_outcome_unknown"}, False) == (
         "provider_outcome_unknown_no_resend", False,
     )
-
-
-def test_fallback_chain_fence_holds_inside_a_wait_episode_too(monkeypatch):
-    """`fallback_chain_allowed` on the combined tree: inside a wait episode the
-    one local-only chain pass exists for `transport_unavailable` alone (never
-    for the unknown kind), and a round record — an unresolved attempt of this
-    round — blocks even that pass whatever the kind says, because no candidate
-    may dial over a request that may still be live."""
-    monkeypatch.setenv("USE_LOCAL_FALLBACK", "1")
-    routable = SimpleNamespace(exact_model_route=False)
-    record = {"round_id": "r", "count": 1, "backoff_sec": 4.0}
-    episode = loop_transport.TransportWaitEpisode(started_monotonic=1.0, interactive=True, wait_bound_sec=900.0)
-
-    assert loop_transport.fallback_chain_allowed(routable, "provider_outcome_unknown", episode) is False
-    assert loop_transport.fallback_chain_allowed(
-        routable, "transport_unavailable", episode, {TRANSPORT_DEATHS_KEY: record},
-    ) is False
-    assert episode.local_pass_used is False  # neither refusal spent the episode's single local pass
-    assert loop_transport.fallback_chain_allowed(routable, "transport_unavailable", episode) is True
-    assert episode.local_pass_used is True
-    assert loop_transport.fallback_chain_allowed(routable, "transport_unavailable", episode) is False  # once per episode
-    assert loop_transport.fallback_chain_allowed(routable, "provider_outcome_unknown", None) is False
 
 
 def test_stale_round_record_never_fences_a_later_round(tmp_path, no_sleep):

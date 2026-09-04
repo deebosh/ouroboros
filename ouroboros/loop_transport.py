@@ -535,30 +535,37 @@ def provider_terminal_fallback_text(
             "Any files written so far are preserved in the workspace."
         )
     if is_transport_wait:
-        if interactive:
-            if waited_sec > 0:
-                return (
-                    "⚠️ Could not establish a provider connection; this turn waited and "
-                    f"redialed for {waited_sec / 60.0:.1f} min and ended as a provider outage, "
-                    "not completed. Retry when connectivity returns."
-                )
-            return (
+        if interactive and waited_sec > 0:
+            text = (
+                "⚠️ Could not establish a provider connection; this turn waited and "
+                f"redialed for {waited_sec / 60.0:.1f} min and ended as a provider outage, "
+                "not completed. Retry when connectivity returns."
+            )
+        elif interactive:
+            text = (
                 "⚠️ Could not establish a provider connection, and no wait window was left; "
                 "this turn ended as a provider outage, not completed. Retry when "
                 "connectivity returns."
             )
-        if waited_sec > 0:
-            return (
+        elif waited_sec > 0:
+            text = (
                 "⚠️ Could not establish a provider connection; the task waited and redialed "
                 "until its own limits ran out and ended as a provider outage, not completed. "
                 "Any files written so far are preserved in the workspace. Retry when "
                 "connectivity returns."
             )
-        return (
-            "⚠️ Could not establish a provider connection, and the owner deadline left no "
-            "time to wait; the task ended as a provider outage, not completed. Any files "
-            "written so far are preserved in the workspace. Retry when connectivity returns."
-        )
+        else:
+            text = (
+                "⚠️ Could not establish a provider connection, and the owner deadline left no "
+                "time to wait; the task ended as a provider outage, not completed. Any files "
+                "written so far are preserved in the workspace. Retry when connectivity returns."
+            )
+        if isinstance(accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict):
+            # The episode redialed a granted transport-death repeat that never left the
+            # host: an earlier attempt of the round is still unresolved at its upper
+            # bound, and the owner text says both facts (the wait and the fence).
+            text += provider_recovery_hint(accumulated_usage)
+        return text
     if is_deadline_exhausted:
         return "⚠️ The owner deadline ended primary model work; any files written so far are preserved."
     return (

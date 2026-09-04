@@ -2748,11 +2748,12 @@ def _provider_unavailable_result(
     mutable ``_last_llm_error_kind``); ``waited_sec``/``interactive`` keep the
     terminal text honest for zero-wait and such turns."""
     kind = str(error_kind or "")
-    # An overflow on a granted transport-death repeat leaves attempt #1 unresolved: the unknown rail wins.
-    is_context_overflow = kind == "context_overflow" and not isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict)
-    is_transport_wait = str(wait_cause or "") == "transport_unavailable"
+    # A round record (a granted transport-death repeat, no usable response since) leaves an attempt
+    # unresolved: the unknown rail outranks the overflow salvage and the wait terminal's source.
+    record = isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict)
+    is_context_overflow = kind == "context_overflow" and not record
+    is_transport_wait = wait_cause == "transport_unavailable"
     is_deadline_exhausted = kind == "deadline_exhausted" or str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") == "deadline_exhausted"
-    forced_reason = "deadline_local" if is_deadline_exhausted else "provider_unavailable"
     llm_trace = getattr(ctx, "llm_trace", None)
     llm_trace = llm_trace if isinstance(llm_trace, dict) else {}
     candidate = _live_delivery_candidate(ctx)
@@ -2787,13 +2788,12 @@ def _provider_unavailable_result(
         # No-resend terminal: salvage, no forced-final call over a dead
         # egress. Stamp BEFORE the composer (owner-stop pattern): a SCHEDULED
         # swarm handoff clears it; guard mirrors the sibling below.
-        ctx.accumulated_usage["execution_status"] = RESULT_INFRA_FAILED
-        ctx.accumulated_usage["reason_code"] = "provider_unavailable"
+        ctx.accumulated_usage.update(execution_status=RESULT_INFRA_FAILED, reason_code="provider_unavailable")
         text, usage, llm_trace = _forced_fallback_result(
             ctx, llm_trace, fallback, reason_code="provider_unavailable",
-            source="transport_unavailable_no_resend",
+            source="provider_outcome_unknown_no_resend" if record else "transport_unavailable_no_resend",
         )
-        if str(usage.get("reason_code") or "") == "provider_unavailable":
+        if usage.get("reason_code") == "provider_unavailable":
             usage["execution_status"] = RESULT_INFRA_FAILED
         return text, usage, llm_trace
     # No-call shapes; see provider_no_call_source
@@ -2817,12 +2817,12 @@ def _provider_unavailable_result(
         "verified work so far and state plainly what remains undone."
     )
     text, usage, llm_trace = _forced_final_answer(
-        ctx, prompt=prompt, fallback_text=fallback, reason_code=forced_reason,
+        ctx, prompt=prompt, fallback_text=fallback,
+        reason_code="deadline_local" if is_deadline_exhausted else "provider_unavailable",
         provider_terminal=not is_deadline_exhausted,
     )
-    if not is_deadline_exhausted and str(usage.get("reason_code") or "") == "provider_unavailable":
+    if not is_deadline_exhausted and usage.get("reason_code") == "provider_unavailable":
         usage["execution_status"] = RESULT_INFRA_FAILED
-        usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_SALVAGE)
     return text, usage, llm_trace
 
 
