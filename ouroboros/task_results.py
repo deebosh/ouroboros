@@ -1288,6 +1288,13 @@ def _compact_plan_review_wave(wave: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def plan_review_authority_core(state: Dict[str, Any], *, source_ref: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Project plan authority through the exact-wave companion."""
+    from ouroboros.tools.plan_review_artifacts import plan_review_authority_core as project
+
+    return project(state, source_ref=source_ref)
+
+
 _PLAN_REVIEW_TRUNCATION_MARKER = "…[truncated to fit the durable state]"
 _PLAN_REVIEW_TRUNCATION_TIERS = (600, 200, 80, 40)
 # Identity-bearing keys the last-resort cut never touches (authority, not prose).

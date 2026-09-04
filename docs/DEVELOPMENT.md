@@ -636,18 +636,31 @@ MUST include these artifacts as **first-class context sections** — not as
 optional or opportunistic inclusions via touched-file packs.
 
 Plan review is the one flow whose governance pack is tiered, and by ONE
-structural fact — whether the plan's declared targets resolve under the
-Ouroboros system repository — never by prose and never by a plan-kind
+structural fact — whether a declared `affected_resources` target, or an
+EXISTING `evidence` path, resolves under the Ouroboros system repository —
+never by prose and never by a plan-kind
 taxonomy, which is what keeps classification un-gameable. This is a tiering,
 not an omission: before any work exists the reviewer's subject is the
 INTENTION, and every absence is a named pointer or a typed `need_evidence`
 finding the host attaches on the next cycle under the same evidence policy —
 the locator enters the manifest hash, so the next envelope is a new
 fingerprint, never an idempotent replay; nothing is silently omitted (P1).
+Two branches follow, and only one of them stops a review. A REQUIRED
+governance pack that cannot be assembled is a typed assembly failure and the
+review does not run (`PlanPacketError`). Declared or reviewer-requested
+evidence the policy cannot attach is a named absence instead — a
+`[reviewer-requested]` omission row, or the head attached with the cut named
+`truncated_to_<N>` — and the panel still runs and judges with it; a re-asked
+locator becomes a `need_evidence_repeat` note that keeps the wave open at $0.
 DEVELOPMENT.md is not resident in a plan-review packet; it is one such request
 away. Packet composition, bounds, and wave/replay mechanics: ARCHITECTURE
 "Plan construction and review" and `ouroboros/tools/plan_packet.py` /
 `plan_spec.py`.
+
+Exact-wave custody is fail-closed: the evidence continuation uses a fresh
+full-packet dispatch only when no exact artifact reference exists. An unreadable
+referenced artifact returns `plan_review_exact_artifact_unavailable`; it never
+mints replacement authority.
 
 The context-delivery registry:
 
@@ -660,7 +673,7 @@ The context-delivery registry:
 | Advisory pre-review (`tools/claude_advisory_review.py`) | Two delivery classes: an `api_chat` row runs the bounded NATIVE inspection episode (governance docs reached through its read-only tools); an `agent_session` row receives a resolvable pointer marked MANDATORY FULL READ and the session reads the full doc itself — retrieval is disclosed (native reads are host-observed; vendor-session reads are not) | same two delivery classes | same two delivery classes |
 | Scope review (`tools/scope_review.py`) | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting |
 | Skill review (`skill_review.py`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) |
-| Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (structural path fact: a declared target resolves under the system repo); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the lossless navigation map + a resolvable pointer (W3) | named on-demand pointer; a reviewer that needs it returns `need_evidence` and the host attaches it on the next cycle |
+| Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (structural path fact: a declared `affected_resources` target, or an existing `evidence` path, resolves under the system repo); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the lossless navigation map + a resolvable pointer (W3) | named on-demand pointer; a reviewer that needs it returns `need_evidence` (an exact `::lines=A-B` range for one section) and the host attaches what the evidence policy allows on the next cycle, naming every absence |
 | Deep self-review (`deep_self_review.py`) | full canonical doc + Atlas accounting | full (max) / navigation map (low) + Atlas accounting | full canonical doc + Atlas accounting |
 
 Skill Review keeps the full stable governance/host prefix for cache-friendly
@@ -683,7 +696,9 @@ reviewing the Ouroboros repo for an external plan.
 The SPEC must state the goal, acceptance claims, invariants, in-scope and
 non-goals, the load-bearing decisions with their rejected alternatives, and
 what is consciously deferred. Plan review publishes exactly `GREEN`,
-`REVIEW_REQUIRED`, or `REVISE_PLAN`; findings are inputs the main agent may
+`REVIEW_REQUIRED`, `REVISE_PLAN`, or the honest `DEGRADED` (no quorum,
+or a paid actor still in flight);
+findings are inputs the main agent may
 accept, reject, or defer. Closure happens without a second LLM call through a
 separate `plan_task` call containing `review_disposition` only —
 `{review_fingerprint, items: [{finding_id, decision, rationale}]}` — covering
@@ -900,7 +915,15 @@ refusal-streak eligibility is about VERDICTS (a rebuttal is spent only by the
 substantive verdict it bought), while money is about DISPATCH (every
 physically dispatched wave counts whatever its terminal; infra facts refused
 at assembly never dispatched and stay outside the count; the paid fact is
-recorded write-ahead). Exhaustion is always the typed
+recorded write-ahead). A free refusal never wears the form of a verdict: a
+refusal that spent nothing is recorded as a typed `not_dispatched` fact plus
+its reason, never as a DEGRADED panel, a synthetic actor, or a verdict. That
+holds for a plan-review locator the evidence policy cannot attach (a named
+omission row the panel is dispatched with), an acceptance packet that
+overflows (the ladder, not a verdict), a truncated or self-pageable row (the
+cut is named), and a request that was never sent (one
+`operation_state='not_dispatched'` seat that stays in the denominator).
+Exhaustion is always the typed
 `review_cycles_exhausted` event with honest exits — under advisory
 enforcement a commit after exhaustion proceeds as a free replay with a loud
 typed disclosure; blocking refuses it.
