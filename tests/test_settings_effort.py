@@ -507,9 +507,13 @@ def test_apply_settings_to_env_includes_effort_keys(monkeypatch, tmp_path):
     assert os.environ.get("OUROBOROS_EFFORT_REVIEW") == "high"
     assert os.environ.get("OUROBOROS_EFFORT_SCOPE_REVIEW") == "low"
     assert os.environ.get("OUROBOROS_EFFORT_CONSCIOUSNESS") == "none"
-    assert os.environ.get("OUROBOROS_REVIEW_MODELS") != "model-a,model-b"
+    # ABI-10: the retired comma-list INPUT is ignored; the env carries the projection of the
+    # configured reviewer slots (defaults here), never the retired value.
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS as _rd
+
+    assert os.environ.get("OUROBOROS_REVIEW_MODELS") == ",".join(_rd["triad"])
     assert os.environ.get("OUROBOROS_REVIEW_ENFORCEMENT") == "advisory"
-    assert os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS") != "scope-a,scope-b"
+    assert os.environ.get("OUROBOROS_SCOPE_REVIEW_MODELS") == ",".join(_rd["scope"])
     assert os.environ.get("OUROBOROS_TASK_REVIEW_MODE") == "required"
     assert os.environ.get("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS") == "true"
     assert os.environ.get("OUROBOROS_RETURN_REASONING") == ""

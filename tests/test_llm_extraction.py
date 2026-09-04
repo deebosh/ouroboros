@@ -201,8 +201,11 @@ def test_llm_client_member_inventory_is_unchanged():
     retired ``_has_openrouter_reasoning_details`` (the shape-first classifier in
     ``reasoning_artifacts`` answers the sealed question the broad presence predicate
     could not), and added ``_stage_reasoning_pin_disclosure`` beside the payload it
-    describes. A member appearing or vanishing without that kind of provenance is
-    what this pin exists to catch.
+    describes. (3) The F2 upstream absorption (upstream b7a73355) added
+    ``_build_remote_candidate`` — one provider-aware candidate builder serving both
+    the direct-Anthropic send and ``task_pacing``'s prospective wrap-up estimate —
+    homed on the Anthropic lane mixin. A member appearing or vanishing without that
+    kind of provenance is what this pin exists to catch.
     """
     assert _defined_members(pathlib.Path(llm.__file__), "LLMClient") == _PARENT_MEMBERS
     moved = {name for names in _MIXIN_OWNERS.values() for name in names.split()}

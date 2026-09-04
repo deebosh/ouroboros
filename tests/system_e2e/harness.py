@@ -109,6 +109,11 @@ SCENARIOS = {
     # changes the owner's tree on behalf of an external harness.
     "S24": ("delegated MUTATING run, clean pull-in: private snapshot provisioned, harness edits it, containment facts read from the attempt record, integrate_delegated_patch(apply) stages into the live workspace — which is untouched until that call", LANE_MOCK),
     "S25": ("delegated MUTATING run, conflicting pull-in: the live tree drifts on a patched path, apply is REFUSED typed, and snapshot + patch survive as the nanny's own resolution material", LANE_MOCK),
+    # v7 follow-up Ф1 (sprint plan §5.1 Ф1-B, D-05 chat-turn addressability): the
+    # in-process DIRECT-CHAT turn — no queue row, no worker process — stopped by
+    # the owner through the same cancel endpoint the UI drives, caught MID-ROUND
+    # on an event-gated model hold (ModelGate), never a timed race.
+    "S26": ("direct-chat owner stop: an in-flight direct turn is addressable (running list + activity snapshot), stop-now mid-round answers the typed 'still live' with the cooperative control armed ONCE (a repeat is idempotent), the turn ends at its next step with ZERO further model rounds under the owner-stop reason, the chat concludes, custody settles already_settled against the turn's own terminal, and a later stop is the typed 404", LANE_MOCK),
 }
 
 MOCK_SLUG = "openai-compatible::mock-model"
@@ -424,6 +429,44 @@ def scripted_completion(body: dict, seq: int, script_next, final_answer: str,
     }
 
 
+class ModelGate:
+    """An event-gated HOLD on the loopback model: "the model is still thinking".
+
+    An owner-control scenario needs a turn that is provably INSIDE a model round
+    when the owner acts, and that stays there until the scenario says otherwise —
+    a stub answering in microseconds cannot be caught mid-round, and a latency
+    sleep would only turn the catch into a race. ``match(body)`` selects the
+    call to hold: the FIRST match sets ``arrived`` (the scenario's proof that the
+    round is in flight) and blocks that request thread until the scenario sets
+    ``release`` — bounded by ``timeout`` so a broken scenario fails instead of
+    hanging the lane. Every later match passes through untouched; ``matched``
+    counts them all (the scenario's "how many rounds did this turn get" fact)
+    and ``held`` stays at one. The hold runs OUTSIDE the model's call lock (see
+    ``LoopbackModelServer.do_POST``), so unrelated calls and the scenario's own
+    readers (``kinds()``) never wait behind it.
+    """
+
+    def __init__(self, match, *, timeout: float = 180.0) -> None:
+        self.match = match
+        self.timeout = float(timeout)
+        self.arrived = threading.Event()
+        self.release = threading.Event()
+        self.matched = 0
+        self.held = 0
+        self._lock = threading.Lock()
+
+    def __call__(self, body: dict) -> None:
+        if not self.match(body):
+            return
+        with self._lock:
+            self.matched += 1
+            if self.held:
+                return
+            self.held += 1
+        self.arrived.set()
+        self.release.wait(self.timeout)
+
+
 class LoopbackModelServer:
     """Shared HTTP plumbing of the loopback OpenAI-compatible model servers.
 
@@ -433,8 +476,9 @@ class LoopbackModelServer:
     wire shape and the window evidence can never drift between them.
     """
 
-    def __init__(self, *, latency_sec: float = 0.0) -> None:
+    def __init__(self, *, latency_sec: float = 0.0, gate: "ModelGate | None" = None) -> None:
         self.latency_sec = latency_sec
+        self.gate = gate
         self.calls: list = []          # (kind, body) in arrival order
         self._lock = threading.Lock()
         outer = self
@@ -463,6 +507,10 @@ class LoopbackModelServer:
                     body = {}
                 if not isinstance(body, dict):
                     body = {}
+                if outer.gate is not None:
+                    # Before the call lock on purpose: a held round must not
+                    # block the model's other callers or the scenario's readers.
+                    outer.gate(body)
                 if outer.latency_sec:
                     time.sleep(outer.latency_sec)
                 return self._send(outer._completion(body))
@@ -534,8 +582,9 @@ class ScriptedStubModel(LoopbackModelServer):
     """
 
     def __init__(self, script=None, *, final_answer: str = "Final answer: scripted scenario complete.",
-                 latency_sec: float = 0.0, review_script: "ReviewScript | None" = None) -> None:
-        super().__init__(latency_sec=latency_sec)
+                 latency_sec: float = 0.0, review_script: "ReviewScript | None" = None,
+                 gate: "ModelGate | None" = None) -> None:
+        super().__init__(latency_sec=latency_sec, gate=gate)
         self.script = list(script or [])
         self.final_answer = final_answer
         self.review_script = review_script

@@ -222,7 +222,7 @@ def _patch_execute_candidate(monkeypatch, llm_module, execute):
     import importlib
 
     monkeypatch.setattr(llm_module, "_execute_candidate", execute)
-    for name in ("ouroboros.llm_anthropic", "ouroboros.llm_fallback", "ouroboros.llm_gigachat"):
+    for name in ("ouroboros.llm_anthropic", "ouroboros.llm_fallback", "ouroboros.llm_gigachat", "ouroboros.llm_local"):
         module = importlib.import_module(name)
         if hasattr(module, "_execute_candidate"):
             monkeypatch.setattr(module, "_execute_candidate", execute)
@@ -447,6 +447,12 @@ class TestWrapupAffordability:
             return SimpleNamespace(model_dump=lambda: {"choices": [{"message": {"content": "ok"}}], "usage": {}})
 
         monkeypatch.setattr(llm_module, "prepare_wire_payload_for_send", prepare)
+        # v7 split: the physical send binds the wire-recovery preparer from
+        # llm_attempt (its own import from request_wire_recovery), so the facade
+        # patch alone would leave the real preparer running.
+        import ouroboros.llm_attempt as llm_attempt
+
+        monkeypatch.setattr(llm_attempt, "prepare_wire_payload_for_send", prepare)
         _patch_execute_candidate(monkeypatch, llm_module, execute)
         with usage_accounting.usage_scope(usage_accounting.UsageScope(
             drive_root=tmp_path, task_id="recovery", root_task_id="recovery", global_limit_usd=100.0,

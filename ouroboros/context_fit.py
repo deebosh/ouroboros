@@ -18,10 +18,22 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from ouroboros.context_layout import reference_doc_sections
-from ouroboros.delivery_protocol import extract_plain_text_from_content
 from ouroboros.utils import estimate_tokens
 
 log = logging.getLogger(__name__)
+
+
+def extract_plain_text_from_content(content: Any) -> str:
+    """Text of a string or multipart message content, for transcript sealing.
+
+    The one extractor lives in ``loop_messages`` (the retired ``delivery_protocol``
+    leaf carried a copy). Read at CALL time: ``loop_messages`` imports
+    ``ouroboros.llm`` at module top and the LLM lanes import this module, so a
+    top-level import here would be an import cycle.
+    """
+    from ouroboros.loop_messages import _extract_plain_text_from_content
+
+    return _extract_plain_text_from_content(content)
 
 ContextProfile = Literal["owner_max", "owner_low", "task_local_low"]
 MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]

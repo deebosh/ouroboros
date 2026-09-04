@@ -155,12 +155,19 @@ def test_projecting_an_exhausted_cap_emits_no_review_cycles_exhausted_event(monk
     assertion from passing vacuously."""
     from ouroboros import task_pacing
     from ouroboros.outcomes import REASON_REVIEW_CYCLES_EXHAUSTED
-    from ouroboros.task_results import project_task_acceptance_review_capacity
+    from ouroboros.task_results import (
+        project_task_acceptance_review_capacity,
+        task_acceptance_required_blocking,
+    )
 
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "required")
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")  # 2 cycles => 1 improvement pass
     ctx, events = _floor_band_ctx(monkeypatch, tmp_path, seconds_left=620, claims=2)
+    # The lane really is Required+Blocking through the ONE derivation every
+    # reader shares (the control the retired `until_deadline` count-axis test
+    # carried): otherwise the typed reason below could come from a default.
+    assert task_acceptance_required_blocking() is True
     profile = task_pacing.resolve_budget_profile(ctx)
     snapshot = task_pacing.build_budget_snapshot(ctx, profile=profile)
     assert profile["max_improvement_passes"] is None
@@ -180,6 +187,15 @@ def test_projecting_an_exhausted_cap_emits_no_review_cycles_exhausted_event(monk
     assert task_pacing.improvement_pass_allowed(
         snapshot, 1, profile, required_blocking=True, ctx=ctx) == (
         False, REASON_REVIEW_CYCLES_EXHAUSTED)
+    assert len(_rows(events, REASON_REVIEW_CYCLES_EXHAUSTED)) == 1
+    # Counter-control (owner D10/D20, 7.0 ABI): the SHARED cap binds under every
+    # policy, so the very same numbers stay refused WITHOUT the enforcement —
+    # what the enforcement changes is the typed reason and the escalation
+    # event, not whether the count axis bites; no second row is written.
+    assert task_pacing.improvement_pass_allowed(snapshot, 1, profile, ctx=None) == (
+        False, "improvement_passes_exhausted")
+    assert task_pacing.improvement_pass_allowed(snapshot, 1, profile, ctx=ctx) == (
+        False, "improvement_passes_exhausted")
     assert len(_rows(events, REASON_REVIEW_CYCLES_EXHAUSTED)) == 1
 
 
@@ -633,9 +649,9 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
     a legacy context-mode settings file (the settings write armed): the settings
     bytes and mtime, the events stream, the task result and the event queue are
     byte-identical, no ctx attribute appears, and the `time` fact honestly
-    answers `not_set` for a task whose window nobody has latched yet. The three
-    controls below fire all three writes from the paths that OWN them, so
-    nothing passes vacuously."""
+    answers `not_set` for a task whose window nobody has latched yet. The two
+    controls below fire both writes from the paths that OWN them, so nothing
+    passes vacuously."""
     from ouroboros import config as cfg, task_pacing
     from ouroboros.delegate_supervision import coordination_live_context
     from ouroboros.task_results import task_result_path
@@ -647,6 +663,7 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
     settings_path, settings_before = _legacy_settings(monkeypatch, tmp_path)
     result_file = task_result_path(tmp_path, "root-floor-band", create=False)
     before = (events.read_bytes(), result_file.read_bytes())
+    attrs_before = set(vars(ctx))
 
     for _ in range(2):
         live = coordination_live_context(ctx)
@@ -658,15 +675,17 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
     assert (settings_path.read_bytes(), settings_path.stat().st_mtime_ns) == settings_before
     assert (events.read_bytes(), result_file.read_bytes()) == before
     assert ctx.event_queue.empty() and ctx.pending_events == []
-    assert not hasattr(ctx, "_time_budget_started_at")
-    assert not hasattr(ctx, "_acceptance_pacing_deprecation_emitted")
+    assert set(vars(ctx)) == attrs_before  # the EXACT attribute set: nothing latched, nothing cached
+    assert not hasattr(ctx, "_time_budget_started_at")  # the one latch a poll could take
 
     # Controls: each armed write really is reachable from its owning path.
     assert cfg.load_settings().get("OUROBOROS_CONTEXT_MODE") == "max"
     assert settings_path.read_bytes() != settings_before[0]  # load_settings persists
     assert task_pacing.resolve_budget_profile(ctx)["improvement_policy"] == "adaptive"
-    # (the third control of the upstream test — the alias deprecation row — is
-    # void: the ``until_deadline`` alias and its emission are retired, 7.0 ABI Q10=A)
+    # (the third control of the upstream test — the alias deprecation row and
+    # its `_acceptance_pacing_deprecation_emitted` latch — is void: the
+    # ``until_deadline`` alias and its emission are retired, 7.0 ABI Q10=A, and
+    # nothing in the tree writes that attribute any more)
     assert task_pacing.build_budget_snapshot(ctx).has_deadline is True
     assert getattr(ctx, "_time_budget_started_at", None) is not None
 

@@ -369,7 +369,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_TREE_ACCOUNTING_MAX_STALE_SEC", "_append_or_merge_user_message",
         "_emit_checkpoint_event", "_extract_plain_text_from_content",
         "_force_plan_decision", "_loop_tree_accounting", "_skill_finalization_message",
-        "get_review_enforcement",
+        "_skill_names_touched_by_trace", "get_review_enforcement",
     })),
     # F2.3a D06 lane rows (oracle ouroboros_v7_wip @ 9f691656, re-cut on tip
     # bytes). Declared sets are the tool-derived exact read sets; the

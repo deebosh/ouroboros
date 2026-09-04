@@ -351,10 +351,16 @@ def _masked_green_disclosure(ctx: ToolContext, result: str, cmd) -> str:
         "filter, use `set -o pipefail`, or check each stage."
     )
     base = _published_tool_result(ctx, None)
-    if not isinstance(base, ToolResult) or base.status != "ok" or base.text != str(result):
-        # Only a GREEN typed result is a laundered exit: a non-ok publication
-        # (exit error, block, timeout) already says what happened — judged by
-        # the typed status, never by inspecting the text.
+    if (
+        not isinstance(base, ToolResult)
+        or base.meta.get("exit_code") != 0
+        or base.text != str(result)
+    ):
+        # Only an exit-0 PROCESS is a laundered exit: the trusted process fact
+        # decides, never the typed status (an undeclared-output nudge or an
+        # artifact-registration error is still a green exit that the shape
+        # laundered) and never an inspection of the text. A non-zero exit
+        # already says what happened.
         return result
     # Republish the SAME typed result with the note and the reasons: status,
     # code and the trusted process facts (exit_code, signal) are carried

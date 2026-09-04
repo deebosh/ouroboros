@@ -232,6 +232,9 @@
  *   Typed terminal fact on a frame that IS the turn's conclusion (stamped on
  *   direct/ephemeral finals and the direct error branch).
  * @property {string=} task_incident
+ * @property {string=} cancel_physical_task_id
+ *   A cancellation fault names the physical task it could not settle when that
+ *   differs from the displayed task id.
  * @property {string=} toast_once
  * @property {boolean=} task_id_pending
  *   X3: a repair receipt whose managed task id does not exist yet (minted at

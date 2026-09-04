@@ -244,6 +244,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     # never have to appear in the browser's typedef (ARCHITECTURE.md §11.3).
     for cls in (ChatInbound, ChatOutbound, PhotoOutbound, VideoOutbound, DocumentOutbound,
                 DecisionRequest, DecisionResponse, LinkAction, LinksOutbound, QuizOption, QuizOutbound, QuizStateOutbound,
+                # widgets-lifecycle W1b: the owner's per-card start-mode override is checked field by field.
                 UiPreferencesResponse,
                 ActiveDirectTurn, ActiveChatActivity, TypingOutbound,
                 StateResponse, UpdateMergePlan,
@@ -262,9 +263,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
                 ClaudexorCredentialProfileDeleteResponse,
                 ClaudexorVendorCredentialDisposition,
                 ClaudexorStatusReads, ClaudexorStatusResponse,
-                WidgetTab, WidgetsResponse,
-                # widgets-lifecycle W1b: the owner's per-card start-mode override is checked field by field.
-                UiPreferencesResponse):
+                WidgetTab, WidgetsResponse):
         expected = set(get_type_hints(cls, include_extras=True))
         actual = _js_typedef_fields(text, cls.__name__)
         # ABI 7.0 (ABI-3): the alias JSDoc lines were cleaned up in the F3.3

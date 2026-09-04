@@ -230,13 +230,28 @@ def _clean_loader_state(monkeypatch):
     clean_extension_runtime_state()
 
 
+
+def _set_process_role(monkeypatch, server: bool) -> None:
+    """Pin which process "answers" a reconcile.
+
+    v7 split: the loader stamps its own receipts through its imported binding,
+    while the reconcile queue and the liveness projection read the OWNER
+    (``extension_companion.is_server_process``) at call time — so the pin must
+    land on both, or the receipt vocabulary (``requested`` / ``request_failed``)
+    is decided by whatever process-pid state an earlier test left behind."""
+    import ouroboros.extension_companion as extension_companion
+    import ouroboros.extension_loader as extension_loader
+
+    monkeypatch.setattr(extension_companion, "is_server_process", lambda: server)
+    monkeypatch.setattr(extension_loader, "is_server_process", lambda: server)
+
 def test_reconcile_receipt_names_the_answering_process(tmp_path, monkeypatch):
     """A reconcile receipt says which process answered and whether the marker landed."""
     from ouroboros import extension_loader
 
     loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
 
-    monkeypatch.setattr(extension_loader, "is_server_process", lambda: True)
+    _set_process_role(monkeypatch, True)
     state = extension_loader.reconcile_extension(
         loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
     )
@@ -244,7 +259,7 @@ def test_reconcile_receipt_names_the_answering_process(tmp_path, monkeypatch):
     assert state["server_reconcile"] == ""
 
     extension_loader.unload_extension(loaded.name)
-    monkeypatch.setattr(extension_loader, "is_server_process", lambda: False)
+    _set_process_role(monkeypatch, False)
     state = extension_loader.reconcile_extension(
         loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
     )
@@ -259,7 +274,7 @@ def test_reconcile_records_health_for_the_resulting_runtime_state(tmp_path, monk
     from ouroboros.skill_loader import save_enabled
 
     loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
-    monkeypatch.setattr(extension_loader, "is_server_process", lambda: True)
+    _set_process_role(monkeypatch, True)
 
     state = extension_loader.reconcile_extension(
         loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
@@ -288,7 +303,7 @@ def test_reconcile_receipt_reports_a_failed_marker_request(tmp_path, monkeypatch
         drive_root, loaded.name, status="broken", version="0.0.2", sha="shared-sha",
         reason="load_error", load_error="server import failed",
     )
-    monkeypatch.setattr(extension_loader, "is_server_process", lambda: False)
+    _set_process_role(monkeypatch, False)
 
     def boom(*_a, **_k):
         raise OSError("marker directory is read-only")

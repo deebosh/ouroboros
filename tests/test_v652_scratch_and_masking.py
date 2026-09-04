@@ -39,8 +39,11 @@ def _reg(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     home = tmp_path / "home"
     # NEUTRAL layout, not home/Ouroboros/data: the registry gets explicit
-    # roots, and a live-SHAPED path under the (patched) home now trips the
-    # pytest fail-closed guard in append_jsonl (issue #455 class).
+    # roots. The pytest fail-closed guard (`utils.assert_test_data_path`, the
+    # issue #455 class) reads `os.path.expanduser("~")`, deliberately NOT
+    # `Path.home()`, so the `Path.home` patch below neither trips nor moves it;
+    # keeping these roots off a live-shaped `Ouroboros/data` path just keeps
+    # the fixture visibly hermetic rather than relying on that distinction.
     repo = tmp_path / "repo"
     data = tmp_path / "data"
     desktop = home / "Desktop"
@@ -200,8 +203,8 @@ def test_run_script_success_keeps_payload_alongside_undeclared_nudge(tmp_path, m
     assert "ARTIFACT_OUTPUT_UNDECLARED" in result, result  # the nudge still fires
     assert "THE ANSWER IS 42" in result, result            # ...without eating stdout
     assert "exit_code=0" in result, result                 # ...or the exit description
-    # v7 typed publication (the retired text-envelope `result_meta` and the
-    # retired loop classifier pair are gone): the nudge is the typed
+    # v7 typed publication (the text-envelope `result_meta` is retired; the loop
+    # classifier reads the published ToolResult): the nudge is the typed
     # policy-denial code on the SAME published result, blocked, not ok.
     assert published.code == "ARTIFACT_OUTPUT_UNDECLARED"
     assert published.status == "blocked"

@@ -4,9 +4,10 @@ Verifies:
 - tool_capabilities.py is the single source of truth
 - tool_policy.py imports from capabilities (no local copy)
 - loop_tool_execution.py imports from capabilities (no local copy)
-- search_code is classified correctly
 - run_shell list-cmd happy path (string-cmd cascade lives in test_shell_run_shell.py)
-- search_code tool works
+
+search_code classification and behavior were split out verbatim into
+tests/test_tool_capabilities_search_code.py.
 """
 import inspect
 import pathlib
@@ -204,14 +205,6 @@ def test_loop_execution_parallel_tools_from_capabilities():
     assert loop_set is cap_set
 
 
-# ---------------------------------------------------------------------------
-# search_code classification tests
-# ---------------------------------------------------------------------------
-
-
-
-
-
 def test_extract_video_frames_visible_where_media_siblings_are_visible():
     from ouroboros.tool_capabilities import (
         ACTING_SUBAGENT_TOOL_NAMES,
@@ -235,23 +228,6 @@ def test_extract_video_frames_visible_to_workspace_tasks(tmp_path):
     registry.set_context(ToolContext(repo_dir=repo, drive_root=data, workspace_root=workspace, workspace_mode="external"))
 
     assert registry.get_schema_by_name("extract_video_frames") is not None
-
-
-# ---------------------------------------------------------------------------
-# search_code tool behavior tests
-# ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------

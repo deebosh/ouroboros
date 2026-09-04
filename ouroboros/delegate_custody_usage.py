@@ -110,7 +110,6 @@ def complete_custody_rows(path, marker: str, *, started_type: str = ""):
             return rows
     except (JsonlChainUnreadable, OSError):
         return None
-    return rows
 
 
 # ---- reviewer usage observation (one llm_usage row per physical send) ----

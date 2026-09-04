@@ -483,7 +483,11 @@ _RESIDUAL_TEXT_INSPECTIONS: Mapping[str, tuple[int, str]] = MappingProxyType({
     # Post-cutoff upstream module: the request-wire custom-tool receipts compose
     # their own ⚠️ argument-error texts; predates the organ, upstream truth.
     "ouroboros/openai_chat_dispatch.py": (2, "private helper-failure checks between two functions of one tool"),
-    "ouroboros/tools/core_file_tools.py": (3, "private helper-failure checks between two functions of one tool"),
+    "ouroboros/tools/core_file_tools.py": (1, "private helper-failure check between two functions of one tool"),
+    # The two listing-side redaction markers moved with the restricted-subagent
+    # read-denial policy (F2 absorption: core_file_tools -> core_secret_paths); the
+    # inventory total is unchanged.
+    "ouroboros/tools/core_secret_paths.py": (2, "listing-side redaction markers of the restricted-subagent read-denial policy"),
     "ouroboros/tools/services.py": (1, "private helper-failure check between two functions of one tool"),
     "ouroboros/tools/core.py": (1, "private helper-failure check between two functions of one tool"),
     "ouroboros/tools/control_delegation.py": (1, "private helper-failure check between two functions of one tool"),

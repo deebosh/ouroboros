@@ -121,6 +121,9 @@ class ChatOutbound(TypedDict):
     task_terminal_status: NotRequired[str]
     ephemeral_decision: NotRequired[bool]
     task_incident: NotRequired[str]
+    # A cancellation fault names the PHYSICAL task it could not settle when that
+    # differs from the displayed (logical) task id.
+    cancel_physical_task_id: NotRequired[str]
     toast_once: NotRequired[str]
     lifecycle: NotRequired[Dict[str, Any]]
     # C4 multi-chat dedupe: a duplicate lifecycle initiator's typed pointer to

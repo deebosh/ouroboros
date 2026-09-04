@@ -718,10 +718,8 @@ def test_all_delegated_triad_writes_no_fallback_record_and_reaches_acceptance(mo
     rows — there is no API-default substitution to disclose, no durable
     fallback record, and the retired disclosure apparatus is gone from the
     module. The save check still validates (400 on malformed) and stays quiet."""
-    import importlib
     import pathlib
 
-    from ouroboros import reviewer_slot_config as rsc
     from ouroboros.config import DATA_DIR
     from ouroboros.reviewer_slot_config import (
         project_reviewer_slots_into_env,
@@ -734,7 +732,6 @@ def test_all_delegated_triad_writes_no_fallback_record_and_reaches_acceptance(mo
         "scope": [{"slot_id": "s1", "route": {"kind": "agent_session", "target_id": "codex"}}],
         "advisory": {"enabled": True, "route": {"kind": "agent_session", "target_id": "codex"}},
     }
-    importlib.reload(rsc)  # the retired names are pinned absent repository-wide below
     # R12: the FIRST save that makes the triad retrieve discloses once, with the
     # measured numbers and the rows; a save that keeps it retrieving is silent.
     disclosure = reviewer_slot_save_check(json.dumps(payload))

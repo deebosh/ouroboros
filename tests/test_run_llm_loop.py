@@ -248,6 +248,7 @@ def test_run_llm_loop_finalize_now_control_forces_best_effort_answer(tmp_path, m
     final answer and stamp the finalization_grace reason (typed best_effort
     gate downstream) — a deadline never returns emptiness."""
     from ouroboros.owner_mailbox import KIND_FINALIZE_NOW, write_owner_message
+    from ouroboros.tool_policy import initial_tool_schemas
     from ouroboros.tools.registry import ToolRegistry
 
     write_owner_message(tmp_path, "deadline", task_id="graceful1", kind=KIND_FINALIZE_NOW)
@@ -264,9 +265,16 @@ def test_run_llm_loop_finalize_now_control_forces_best_effort_answer(tmp_path, m
 
     monkeypatch.setattr(loop_mod, "call_llm_with_retry", fake_call_llm_with_retry)
 
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    # The round-1 envelope, taken where the loop takes it (`initial_tool_schemas`
+    # is run_llm_loop's first step on the untouched registry): the same call
+    # AFTER the run answers differently once the loop has bound its context
+    # (credential-gated tools drop out), so the snapshot must precede the run.
+    expected_envelope = initial_tool_schemas(registry)
+    assert expected_envelope  # a real envelope: equality below is not empty == empty
     result, usage, _trace = run_llm_loop(
         messages=[{"role": "user", "content": "long job"}],
-        tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
+        tools=registry,
         llm=FakeLLM(),
         drive_logs=tmp_path,
         emit_progress=lambda _text: None,
@@ -280,8 +288,10 @@ def test_run_llm_loop_finalize_now_control_forces_best_effort_answer(tmp_path, m
     assert usage["execution_status"] == "failed"  # lifted to best_effort by the outcome gate
     assert usage["_best_effort_extracted"] is True  # typed fact: real model answer
     # The forced turn keeps the round's tool envelope so the provider prefix
-    # stays a cache hit; "tool-less" is an instruction in text, not an empty envelope.
-    assert seen["tools"] is not None
+    # stays a cache hit; "tool-less" is an instruction in text, not an empty
+    # envelope. Pinned to the EXACT round-1 envelope snapshotted above — not
+    # merely "something was passed".
+    assert seen["tools"] == expected_envelope
     joined = json.dumps(seen["messages"], ensure_ascii=False)
     assert "[FINALIZE_NOW]" in joined
 

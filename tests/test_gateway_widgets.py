@@ -266,7 +266,6 @@ def test_module_widget_without_readable_sources_is_not_live(tmp_path, files, exp
     assert extension_loader.live_widget_projection("ext_broken") is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
 def _reviewed_widget_skill(tmp_path: pathlib.Path, name: str):
     """A reviewed+enabled out-of-process widget extension the staged publication
     path (``_publish_out_of_process_registration``) accepts: a real
@@ -308,6 +307,7 @@ def _publish_oop(skill, drive_root, *, catalog, current_hash):
     )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
 def test_module_sources_never_follow_symlinks_out_of_the_skill(tmp_path):
     """The capture is the review-hash surface: a sibling symlink escaping the skill
     root is not reviewed, so it is not captured (the endpoint's 404); an escaping

@@ -178,7 +178,7 @@ def test_root_acceptance_tool_defers_to_host_without_model_calls(monkeypatch, tm
     )
     monkeypatch.setattr(
         rs,
-        "reviewer_slots",
+        "triad_delivery_slots",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("review slots must not resolve")),
     )
     ctx = NS(
@@ -239,7 +239,7 @@ def test_typed_retry_root_defers_self_review_and_is_host_eligible(
     )
     monkeypatch.setattr(
         rs,
-        "reviewer_slots",
+        "triad_delivery_slots",
         lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("normalized root self-call must not resolve review slots")
         ),
@@ -312,7 +312,7 @@ def test_retry_root_markers_must_agree_before_acceptance_authority(
     calls = []
     monkeypatch.setattr(
         rs,
-        "reviewer_slots",
+        "triad_delivery_slots",
         lambda **kwargs: [ReviewSlot(slot_id="legacy", model="m")],
     )
     monkeypatch.setattr(rs, "build_improvement_capsule", lambda _result: "")
@@ -520,7 +520,7 @@ def test_stale_parent_lineage_cannot_trigger_a_second_host_panel(monkeypatch, tm
     monkeypatch.setattr(re_mod, "collect_turn_diff", lambda ctx, **kwargs: "")
     monkeypatch.setattr(
         rs,
-        "reviewer_slots",
+        "triad_delivery_slots",
         lambda **kwargs: [ReviewSlot(slot_id="a", model="m")],
     )
     monkeypatch.setattr(rs, "build_improvement_capsule", lambda _result: "")

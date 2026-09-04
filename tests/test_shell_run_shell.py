@@ -493,6 +493,28 @@ class TestMaskedGreenDisclosure:
         assert published.meta["exit_code"] == 0
         assert "|| true" in published.meta["exit_masking_reasons"]
 
+    def test_masked_green_with_undeclared_output_still_discloses(self, tmp_path):
+        """A green exit the shape laundered is disclosed even when the producer
+        published a non-ok CODE for another reason (the undeclared-output nudge
+        is a blocked code over an exit-0 process): the process fact decides."""
+        from ouroboros.tools.shell_audit import _masked_green_disclosure
+        from ouroboros.tools.tool_result import _publish_process_result
+
+        ctx = _ctx(tmp_path)
+        published = self._published(
+            ctx,
+            lambda: _masked_green_disclosure(
+                ctx,
+                _publish_process_result(ctx, "ARTIFACT_OUTPUT_UNDECLARED", "ok", exit_code=0),
+                ["sh", "-c", "make test || true"],
+            ),
+        )
+        assert published.code == "ARTIFACT_OUTPUT_UNDECLARED"
+        assert published.status == "blocked"
+        assert "EXIT_MASKING_NOTE" in published.text
+        assert "|| true" in published.meta["exit_masking_reasons"]
+        assert published.meta["exit_code"] == 0
+
     def test_masked_nonzero_exit_keeps_the_exit_error_envelope(self, tmp_path, fake_subprocess):
         fake_subprocess(stdout="", stderr="boom", returncode=1)
         ctx = _ctx(tmp_path)

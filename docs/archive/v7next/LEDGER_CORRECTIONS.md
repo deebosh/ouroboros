@@ -10215,3 +10215,22 @@ of the retired names and the docs directory layout were all read from the worktr
 
 Nothing in this ledger is asserted from a lane report alone. Statements that could not be
 proved are marked **UNVERIFIED** in place; there are none remaining at the time of writing.
+
+### F2 absorption — corrections after the review wave (9698e2e0)
+
+| # | row | correction | proof |
+|---|---|---|---|
+| 1 | §3.5 `_masked_green_disclosure` home | lives in `ouroboros/tools/shell_audit.py` (imported into `tools/shell.py`), not `tools/shell.py` | `grep -n "def _masked_green_disclosure" ouroboros/tools/shell_audit.py` |
+| 2 | §3.2 `_read_module_sources` home | verbatim body is `extension_ui_validation.read_module_sources` (exported), imported by `extension_plugin_api.py` and `extension_child_catalog.py` | `grep -n "def read_module_sources" ouroboros/extension_ui_validation.py` |
+| 3 | §1.9 `seal_task_transcript` "import resolves" | it resolved only through the shared venv's editable install of the live repo; `context_fit.py` imported the retired `ouroboros.delivery_protocol` — fixed to `loop_messages._extract_plain_text_from_content`; hermetic runs now strip that finder | review wave (grok lane, lens D) + hermetic import smoke |
+| 4 | web tests absent (`web/tests/chat_ledgers.test.js`, `web/tests/skill_review_detail_store.test.js`) | deleted by upstream itself before 23ab428f (their subjects were dropped); not a merge loss | `git cat-file -e 23ab428f:<path>` fails for both |
+| 5 | masked-green gate | the disclosure gates on the trusted process fact `exit_code == 0`, not on the typed status, so the undeclared-output and artifact-error publications (exit-0, non-ok codes) keep upstream's disclosure | lens B M-1; `tests/test_shell_run_shell.py::TestMaskedGreenDisclosure::test_masked_green_with_undeclared_output_still_discloses` |
+| 6 | §2.7 "8 × `setattr(rs, "reviewer_slots")` → `triad_delivery_slots`" | only the four single-line sites were converted by the merge; the four multi-line sites (tests/test_review_substrate_acceptance.py ~:181,242,315,523) stayed on the dead name until the review wave (lens A F1) converted them | `grep -c '"reviewer_slots"' tests/test_review_substrate_acceptance.py` → 0 after the fix |
+| 7 | §2.1 `emit_review_usage` S3 proof | the cited reader (`review_multi_model`) no longer reads it; the live reader is `tools/preflight_review_run.py` through the `_car()` handle (`claude_advisory_review.py`) | `grep -n emit_review_usage ouroboros/tools/preflight_review_run.py` |
+| 8 | §4.5 `api_tasks_create` "v7's fuller comment kept" | false — the block is upstream's bytes; one upstream three-line comment was folded to one line during the 300-line paydown | `git diff 23ab428f -- ouroboros/gateway/tasks.py` |
+| 9 | §1.9 `test_acceptance_floor_admission.py` | undisclosed: upstream's `until_deadline` count-axis test was dropped (retired alias, Q10=A pin in tests/test_abi5_q10_removals.py); the surviving `adaptive` test carries the Required+Blocking control | tests/test_acceptance_floor_admission.py NOTE above the surviving test |
+| 10 | §3.2 vs §6 `control_scheduling` reflows | the code carries upstream's one-line forms (§6 is right, §3.2's "not carried" is stale) | `grep -n "status_drive_root, root_cost_ceiling_usd" ouroboros/tools/control_scheduling.py` |
+| 11 | O3 absent-by-rename | `_read_module_sources` → `extension_ui_validation.read_module_sources` (fifth rename the O3 list omitted) | `grep -n "def read_module_sources" ouroboros/extension_ui_validation.py` |
+| 12 | `complete_custody_rows` | an unreachable trailing `return rows` (auto-merge residue after v7's try/with return) was removed | lens A F2 |
+| 13 | §7 `_process_role` | reads `extension_companion.is_server_process` at call time (the owner), not the loader facade; the loader still stamps `state["process"]` on its own receipts from the same owner, so the two agree by construction | `ouroboros/extension_liveness.py:113-123` (lens C MINOR-1) |
+| 14 | test patch reachability (upstream-new tests) | `tests/test_tree_cost_ceiling.py::test_wire_recovery_matches_physical_candidate` must patch `ouroboros.llm_attempt.prepare_wire_payload_for_send` (the send binds it there), not only the `ouroboros.llm` re-export | lens C MAJOR-1; fixed in the review-wave batch |

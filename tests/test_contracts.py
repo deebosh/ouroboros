@@ -533,18 +533,19 @@ def test_chat_outbound_declares_progress_meta_keys_used_by_runtime():
 
     declared = set(ChatOutbound.__annotations__)
     progress_keys: set[str] = set()
-    for rel in (
-        "supervisor/events.py",
-        # F2.2: the cancel/custody organ's literal progress_meta emitters moved
-        # into their family leaves with the module split.
-        "supervisor/events_runtime_controls.py",
-        "supervisor/events_task_done.py",
-        "supervisor/workers.py",
-        "ouroboros/agent.py",
-        "ouroboros/skill_lifecycle_queue.py",
-        "ouroboros/task_finalization.py",
-    ):
-        progress_keys.update(_collect_literal_progress_meta_keys(REPO_ROOT / rel))
+    # The v7 module split scattered the supervisor's literal emitters over the
+    # family leaves (events_chat_delivery, events_schedule_task,
+    # events_subagent_admission, events_task_done, task_reaper, worker_*), so
+    # walk the whole package instead of naming leaves: a hand-list went stale
+    # the moment supervisor/events.py stopped carrying a literal key and
+    # silently skipped every leaf it did not name.
+    sources = sorted((REPO_ROOT / "supervisor").rglob("*.py")) + [
+        REPO_ROOT / "ouroboros" / "agent.py",
+        REPO_ROOT / "ouroboros" / "skill_lifecycle_queue.py",
+        REPO_ROOT / "ouroboros" / "task_finalization.py",
+    ]
+    for source_path in sources:
+        progress_keys.update(_collect_literal_progress_meta_keys(source_path))
 
     assert progress_keys, "no literal progress_meta keys found"
     assert progress_keys <= declared, (

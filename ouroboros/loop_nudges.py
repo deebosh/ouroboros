@@ -40,7 +40,7 @@ def _loop():
 
 
 def _skill_finalization_message(drive_root: pathlib.Path, llm_trace: Dict[str, Any]) -> str:
-    names = _skill_names_touched_by_trace(llm_trace)
+    names = _loop()._skill_names_touched_by_trace(llm_trace)
     if not names:
         return ""
     try:

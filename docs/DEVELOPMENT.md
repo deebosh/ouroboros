@@ -1853,7 +1853,7 @@ by "Provider Independence" above. Call-site imperatives:
   exists, with host control exposure as sticky candidate provenance inherited
   through every replacement (mechanism and the disclosed test-pinned
   residuals: ARCHITECTURE "Task lifecycle" and
-  `ouroboros/delivery_protocol.py`). A FORCED finalization resolves an armed
+  `ouroboros/loop_delivery.py`). A FORCED finalization resolves an armed
   control purely and without retry: valid keep/replace is honored, anything
   malformed preserves the retained candidate with a typed degraded reason,
   and protocol JSON never reaches chat or the durable result. Owner
