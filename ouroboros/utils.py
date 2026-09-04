@@ -891,13 +891,18 @@ def extract_trailing_json_object(
     return prefix, parsed, duplicate_flagged
 
 
-def run_cmd(cmd: List[str], cwd: Optional[pathlib.Path] = None) -> str:
+def run_cmd(
+    cmd: List[str],
+    cwd: Optional[pathlib.Path] = None,
+    timeout: Optional[float] = None,
+) -> str:
     # Tool output is PARSED (git error signatures, porcelain text), so it must not
     # depend on the operator's locale: a Russian-locale git answers «метка … уже
     # существует» where the code and its tests match "already exists".
     env = {**os.environ, "LC_ALL": "C", "LANG": "C"}
     res = subprocess.run(
         cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True, env=env,
+        timeout=timeout,
     )
     if res.returncode != 0:
         raise RuntimeError(

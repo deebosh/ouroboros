@@ -159,6 +159,50 @@ class TestCentralWorktreeInvalidation:
         registry._invalidate_advisory_if_worktree_changed("run_command", " M a.py")
         assert calls["invalidate"] == 1
 
+    def test_worktree_snapshot_reads_real_git_status(self, tmp_path):
+        # The test above stubs _worktree_status_snapshot, so it cannot see the
+        # snapshot itself failing. This one drives the real method against a real
+        # repo: run_cmd used to reject the timeout= kwarg it is called with, so
+        # every snapshot degraded to "<status-unavailable>", before == after, and
+        # _invalidate_advisory_if_worktree_changed became a permanent no-op.
+        import subprocess
+
+        from ouroboros.tools.registry import ToolRegistry
+
+        subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+
+        registry = ToolRegistry.__new__(ToolRegistry)
+
+        class _Ctx:
+            repo_dir = tmp_path
+            drive_root = tmp_path / "data"
+
+        registry._ctx = _Ctx()
+
+        before = registry._worktree_status_snapshot()
+        assert before != "<status-unavailable>"
+
+        (tmp_path / "written_by_tool.py").write_text("x = 1\n", encoding="utf-8")
+        after = registry._worktree_status_snapshot()
+
+        assert after != "<status-unavailable>"
+        assert "written_by_tool.py" in after
+        assert after != before, "a mutated worktree must not look unchanged"
+
+    def test_run_cmd_accepts_and_honors_timeout(self, tmp_path):
+        import subprocess
+        import sys
+
+        import pytest
+
+        from ouroboros.utils import run_cmd
+
+        subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+        assert run_cmd(["git", "status", "--porcelain"], cwd=tmp_path, timeout=20) == ""
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_cmd([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.2)
+
     def test_mutating_tools_are_flagged(self):
         from ouroboros.tools import git_pr, services, shell
 
