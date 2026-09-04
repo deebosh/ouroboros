@@ -426,10 +426,13 @@ def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None)
     if isinstance(data.get("artifact_bundle"), dict):
         summary["artifact_bundle"] = data.get("artifact_bundle")
     if ledger:
+        # An omitted-to-artifact stub carries no entries; its summary is the
+        # count authority, and for a full ledger the two always agree.
+        ledger_summary = ledger.get("summary") if isinstance(ledger.get("summary"), dict) else {}
         summary["verification_ledger"] = {
             "schema_version": ledger.get("schema_version"),
-            "summary": ledger.get("summary") if isinstance(ledger.get("summary"), dict) else {},
-            "entry_count": len(ledger.get("entries") or []) if isinstance(ledger.get("entries"), list) else 0,
+            "summary": ledger_summary,
+            "entry_count": ledger_summary.get("entry_count", len(ledger.get("entries") or []) if isinstance(ledger.get("entries"), list) else 0),
         }
     if receipts:
         # W2: bounded per-receipt rows for the FULL single-child handoff ONLY
@@ -1704,6 +1707,10 @@ def schedule_subagent_properties() -> Dict[str, Any]:
         "may_mutate": {"type": "boolean", "default": False, "description": "Optional: grant this child the intent to spawn MUTATIVE (acting) descendants of its own. Still bounded by the usual mutative-subagent gating and depth/active caps."},
         "may_fan_out": {"type": "boolean", "default": True, "description": "Optional: whether this child may spawn MULTIPLE children (a wave). Bounded by the per-root active cap."},
         "max_children": {"type": "integer", "default": 0, "description": "Optional soft cap on this child's own direct children (0 = inherit / configured cap)."},
+        "requested_depth": {
+            "type": "integer", "default": 0,
+            "description": "Optional: how deep, counted ABSOLUTELY FROM THE ROOT, you intend this branch to nest (root=0, direct children=1; asking for children, grandchildren and great-grandchildren is 3). Recorded as your attested request and reported back as requested/permitted/achieved on the root result; it never widens or narrows the configured caps. 0 or omitted = no request.",
+        },
         "required_capabilities": {
             "type": "array",
             "items": {"type": "string", "enum": list(SUBAGENT_CAPABILITIES)},
@@ -2014,6 +2021,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         may_mutate=may_mutate, may_fan_out=params.get("may_fan_out", True),
         max_children=params.get("max_children", 0),
         intent_note=params.get("delegation_intent", ""),
+        requested_depth=params.get("requested_depth", 0),
     )
 
     child_contract = _build_child_subagent_contract({

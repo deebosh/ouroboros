@@ -1521,6 +1521,39 @@ def test_recent_tasks_includes_outcome_contract_and_ledger(tmp_path):
     assert record["artifact_bundle"]["status"] == "ready_no_changes"
     assert record["verification_ledger"]["entry_count"] == 1
 
+    # A ledger above the inline threshold rides as a stub with NO entries: its
+    # own summary is the count authority, so the row must not report zero.
+    write_task_result(
+        tmp_path,
+        "recent2",
+        STATUS_COMPLETED,
+        result="done",
+        verification_ledger={
+            "schema_version": 1, "omitted_to_artifact": True,
+            "summary": {"entry_count": 9, "has_failures": True},
+        },
+    )
+    payload = json.loads(_handle_recent_tasks(SimpleNamespace(drive_root=tmp_path), limit=2))
+    stub_record = next(row for row in payload["tasks"] if row["task_id"] == "recent2")
+    assert stub_record["verification_ledger"]["entry_count"] == 9
+    assert stub_record["verification_ledger"]["summary"]["has_failures"] is True
+
+
+def test_subtask_outcome_summary_reports_a_stub_ledger_count(tmp_path):
+    """The same count authority on the parent-visible child summary: a stub
+    ledger used to report ``0 entries / no failures`` to its parent."""
+    from ouroboros.tools.control import _subtask_outcome_summary
+
+    summary = json.loads(_subtask_outcome_summary({
+        "status": "completed", "result": "done",
+        "verification_ledger": {
+            "schema_version": 1, "omitted_to_artifact": True,
+            "summary": {"entry_count": 9, "has_failures": True},
+        },
+    }))
+    assert summary["verification_ledger"]["entry_count"] == 9
+    assert summary["verification_ledger"]["summary"]["has_failures"] is True
+
 
 def test_effective_status_keeps_workspace_finalization_nonterminal_without_child_drive(tmp_path):
     from ouroboros.headless import ARTIFACT_STATUS_FINALIZING

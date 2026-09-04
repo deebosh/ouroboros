@@ -1320,7 +1320,11 @@ both critical. The imperatives:
   `integrate_subagent_patch` and runs its own `commit_reviewed`. The shared
   `external_workspace` surface verifies and records without re-applying; a
   genesis project is durable because the project directory IS the
-  deliverable. The canonical/replica terminal field-custody projection is
+  deliverable. A genesis project starts without a `.gitignore`, so its small
+  text build output (`dist/`, `build/`) rides the `workspace.patch` record
+  until the project declares one — a disclosed residual, bounded only by the
+  per-file size cap and git's binary verdict, since there is no total-patch
+  cap. The canonical/replica terminal field-custody projection is
   ONE pure reducer reused by copy-back and effective reads — every change
   adds a stale-replica regression at BOTH seams
   (`tests/test_available_subagents_runtime_review_fixes.py`). Do not broaden
@@ -1719,7 +1723,9 @@ by "Provider Independence" above. Call-site imperatives:
   Binding the complete-result SHA-256 means a parent cannot claim it
   integrated a result that later changed. `deferred` suppresses only the
   reminder and forces an honest degraded/best-effort terminal answer until
-  resolved. A child wedged in the legacy `cancel_requested` latch is intent,
+  resolved. That per-value consequence is carried by the
+  `tree_note` payload schema itself, which is the SSOT for when to choose each
+  value, and its enum reads the validator's own set. A child wedged in the legacy `cancel_requested` latch is intent,
   not outcome — it stays visible as cancel-pending until custody settles it.
 - Host task acceptance is root-only; eligibility uses structured facts
   (`outcomes.turn_has_reviewable_effects` plus a typed
@@ -1753,9 +1759,11 @@ by "Provider Independence" above. Call-site imperatives:
   resulting pair stays outside `_ACCEPTANCE_BLOCKED_TERMINAL_REASONS`.
   The reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
   `adaptive_quorum` applies, any contributing FAIL fails, DEGRADED abstains,
-  and no quorum is a terminal HOST decision. Chat and Logs use the same
-  severity reducer; degraded review or a best-effort objective must never
-  render as green solved. Do not add task scope review or reuse the commit
+  and no quorum is a terminal HOST decision. Chat, Logs, the
+  durable Project lifecycle rows and the Telegram notifier use the same phase
+  (`taskOutcomeSeverity`/`taskTerminalPhase` mirrored by
+  `project_dialogue.outcome_phase`); degraded review or a best-effort
+  objective must never render as green solved on any of them. Do not add task scope review or reuse the commit
   gate.
 - The acceptance improvement loop is a reviewer-authored DIALOGUE: obligation
   identity comes from the reviewer's typed
@@ -2009,7 +2017,14 @@ rules, not a copied color/radius/dimension inventory.
 - Task outcome truth stays in `log_events.js::taskOutcomeSeverity` and
   `taskTerminalPhase`; `taskPresentation` is the one compact factual
   projection consumed by chips, live completion, history replay, and child
-  terminal presentation. A non-terminal diagnostic may add a timeline fact
+  terminal presentation. Its host mirror is
+  `project_dialogue.outcome_phase`, pinned to the browser by one shared
+  fixture (`web/tests/fixtures/outcome_phase_parity.json`): a new axis, reason
+  or acceptance status is added to both sides in the same commit, with a row
+  in that fixture. The detail line under the headline comes from
+  `taskReasonDetail` in the order soft stop, hard failure or cancellation
+  reason, host acceptance decision (status plus stored rationale), typed
+  reason phrase or raw code — never from a second producer. A non-terminal diagnostic may add a timeline fact
   but must not promote the whole task; unknown event names never acquire
   Chat severity from `error`/`crash`/`fail` keyword matching. The Chat
   header reports connection and server-authoritative activity only; failed

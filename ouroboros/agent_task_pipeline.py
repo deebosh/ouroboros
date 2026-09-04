@@ -1207,7 +1207,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                       sealed_final=None):
     """Generate a detailed task summary and inject it into chat.jsonl."""
     try:
-        from ouroboros.project_dialogue import append_authored_task_summary, completion_status_label
+        from ouroboros.project_dialogue import append_authored_task_summary, completion_status_label, outcome_phase
         from ouroboros.projects_registry import project_thread_note_for_task
         from ouroboros.consolidator import CONSOLIDATION_REASONING_EFFORT, _consolidation_route
         task_id = str(task.get("id") or "unknown")
@@ -1230,7 +1230,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                 "summary_kind": "authored_root_summary", "summary_id": summary_id,
                 "task_id": task_id, "parent_task_id": str(task.get("parent_task_id") or ""), "root_task_id": str(task.get("root_task_id") or task_id),
                 "project_id": str(task.get("project_id") or ""), "chat_id": int(task.get("chat_id") or 0), "delegation_role": str(task.get("delegation_role") or ""), "role": str(task.get("role") or ""),
-                "status": str(stored_result.get("status") or "completed"), "outcome": completion_status_label(stored_result, usage),
+                "status": str(stored_result.get("status") or "completed"), "outcome": completion_status_label(stored_result, usage), "outcome_phase": outcome_phase(stored_result, usage),
                 "outcome_final": False, "outcome_authority": "pre_finalization_narrative_context",
                 "text": value, "tool_calls": n_tool_calls, "rounds": rounds, "outcome_axes": outcome_axes, "reason_code": reason_code,
                 "result_ref": result_ref, "source_coverage": {"task_result": result_ref}, **_summary_row_cost_fields(usage), **presence_fields,

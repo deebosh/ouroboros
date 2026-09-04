@@ -68,6 +68,7 @@ from ouroboros.usage_accounting import (
     last_physical_attempt_capture,
 )
 from ouroboros.task_finalization import (
+    TERMINAL_ORIGIN_HOST_NOTICE,
     TERMINAL_ORIGIN_HOST_SALVAGE,
     TERMINAL_ORIGIN_MODEL_FINAL,
 )
@@ -2701,17 +2702,16 @@ def _handle_provider_unavailable(
     ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
     wait_cause: str = "", waited: bool = False, wait_eligible: bool = True,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Provider-death rail wrapper: every arm carries a terminal provenance;
-    ``setdefault`` keeps explicit stamps authoritative. Not every exit is a
-    provider death: the deadline grace arm can return a MODEL-AUTHORED final
-    (``deadline_local``) and a scheduled swarm handoff pops its reason code —
-    both keep their legacy shape."""
+    """Provider-death rail wrapper: every arm carries terminal provenance.
+    The forced-finalization sink stamps ``host_notice``; retained/generated
+    model candidates stamp ``model_final``."""
     text, usage, llm_trace = _provider_unavailable_result(
         ctx, error_kind=error_kind, wait_cause=wait_cause, waited=waited,
         wait_eligible=wait_eligible,
     )
-    if str(usage.get("reason_code") or "") not in ("", "deadline_local"):
-        usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_SALVAGE)
+    if str(usage.get("reason_code") or "") not in ("", "deadline_local") and usage.get(
+            "terminal_origin") in (None, TERMINAL_ORIGIN_HOST_NOTICE):
+        usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_SALVAGE
     return text, usage, llm_trace
 
 
@@ -2759,9 +2759,7 @@ def _provider_unavailable_result(
         )
         return text, usage, llm_trace
     if is_transport_wait:
-        # No-resend terminal: salvage, no forced-final call over a dead
-        # egress. Stamp BEFORE the composer (owner-stop pattern): a SCHEDULED
-        # swarm handoff clears it; guard mirrors the sibling below.
+        # No-resend terminal over dead egress.
         live_trace = getattr(ctx, "llm_trace", None)
         llm_trace = live_trace if isinstance(live_trace, dict) else {}
         ctx.accumulated_usage["execution_status"] = RESULT_INFRA_FAILED
@@ -2773,7 +2771,6 @@ def _provider_unavailable_result(
         if str(usage.get("reason_code") or "") == "provider_unavailable":
             usage["execution_status"] = RESULT_INFRA_FAILED
         return text, usage, llm_trace
-    # No-call shapes; see provider_no_call_source
     no_call, wall = provider_no_call_source(ctx.accumulated_usage, is_deadline_exhausted)
     if no_call:
         if wall:
@@ -3404,6 +3401,7 @@ def _record_forced_finalization(
     # answer (`_forced_final_answer`) and the no-spend host-fallback fence
     # path (`_handle_budget_exceeded` -> `_forced_fallback_result`).
     _record_forced_acceptance_bypass(ctx, llm_trace, reason_code)
+    ctx.accumulated_usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_NOTICE)
     binding = dict(candidate.acceptance_binding or {}) if candidate is not None else {}
     tools = getattr(ctx, "tools", None)
     current_fingerprint = str(
@@ -4429,8 +4427,7 @@ def _forced_fallback_result(
     candidate_reason: str = "",
     provider_terminal: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Return a current or fallback candidate."""
-
+    """Compose fallback."""
     router_result = _forced_swarm_router_result(ctx, llm_trace, reason_code)
     if router_result is not None:
         return router_result
@@ -4451,11 +4448,10 @@ def _forced_fallback_result(
             candidate.model_text or candidate.full_text if provider_terminal else
             sanitize_tool_result_for_log(_compose_delivery_suffix(candidate.full_text, suffix))
         )
-        if provider_terminal:
-            ctx.accumulated_usage.update(
-                terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL,
-                terminal_plan_review_open=bool(plan_suffix),
-            )
+        ctx.accumulated_usage.update(
+            terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL,
+            terminal_plan_review_open=bool(plan_suffix),
+        )
         if composed != candidate.full_text:
             candidate = _publish_model_forced_candidate(
                 ctx, llm_trace, composed, reason_code,
@@ -4757,13 +4753,11 @@ def _forced_final_answer(
             _force_plan_disclosure(tools_ctx, llm_trace, forced_reason=reason_code)
             if tools_ctx is not None else ""
         )
-        if provider_terminal:
-            ctx.accumulated_usage["terminal_plan_review_open"] = bool(plan_suffix)
+        ctx.accumulated_usage["terminal_plan_review_open"] = bool(plan_suffix)
         full_text = extracted if provider_terminal else _compose_delivery_suffix(
             extracted, plan_suffix + _forced_orphan_note(ctx),
         )
-        if provider_terminal:
-            ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
+        ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
         candidate = _publish_model_forced_candidate(
             ctx, llm_trace, full_text, reason_code,
             degraded_reason=degraded,
