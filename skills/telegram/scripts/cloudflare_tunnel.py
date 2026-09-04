@@ -20,6 +20,7 @@ import os
 import platform
 import re
 import secrets
+import time
 import shutil
 import stat
 import subprocess
@@ -48,6 +49,7 @@ from platform_support import (
 
 CLOUDFLARED_VERSION = "2026.7.2"
 CLOUDFLARED_BUILD = "2026-07-15-13:30 UTC"
+DOWNLOAD_DEADLINE_SEC = 300  # whole-download bound (see _download_asset)
 MAX_ASSET_BYTES = 70 * 1024 * 1024
 MAX_LOG_BYTES = 64 * 1024
 _DOWNLOAD_HOSTS = frozenset({"github.com", "release-assets.githubusercontent.com"})
@@ -274,6 +276,11 @@ def _download_asset(spec: _AssetSpec, destination: Path) -> None:
     )
     digest = hashlib.sha256()
     total = 0
+    # The per-operation socket timeout bounds one stalled read, not a trickling
+    # server; the whole download is bounded too, so the private install lock
+    # (and the worker thread an async caller cannot cancel) is held at most
+    # DOWNLOAD_DEADLINE_SEC.
+    deadline = time.monotonic() + DOWNLOAD_DEADLINE_SEC
     try:
         with opener.open(request, timeout=30) as response, destination.open("xb") as output:
             _validate_download_url(response.geturl())
@@ -289,6 +296,10 @@ def _download_asset(spec: _AssetSpec, destination: Path) -> None:
                 total += len(chunk)
                 if total > MAX_ASSET_BYTES:
                     raise CloudflaredError("Cloudflared download exceeds the 70 MiB safety limit.")
+                if time.monotonic() > deadline:
+                    raise CloudflaredError(
+                        f"Cloudflared download exceeded the {DOWNLOAD_DEADLINE_SEC}s deadline."
+                    )
                 output.write(chunk)
                 digest.update(chunk)
             output.flush()

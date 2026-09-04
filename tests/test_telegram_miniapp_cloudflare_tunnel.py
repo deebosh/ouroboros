@@ -694,3 +694,35 @@ def test_stop_recovers_already_cancelled_owned_watcher(
 def test_quick_tunnel_accepts_only_a_numeric_sidecar_port(port: Any) -> None:
     with pytest.raises(cloudflare.CloudflaredError):
         cloudflare.QuickTunnel(Path("/not-used"), Path("/not-used"), port)
+
+
+def test_download_is_bounded_by_a_whole_download_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-read socket timeout bounds one stalled read, not a trickling
+    server; the whole download is bounded too, so the private install lock
+    (and the worker thread an async caller cannot cancel) is held at most
+    DOWNLOAD_DEADLINE_SEC."""
+    response = _FakeDownloadResponse(
+        b"12345",
+        "https://release-assets.githubusercontent.com/asset",
+    )
+    monkeypatch.setattr(cloudflare, "DOWNLOAD_DEADLINE_SEC", -1)
+    monkeypatch.setattr(
+        cloudflare.urllib.request,
+        "build_opener",
+        lambda *_args: _FakeDownloadOpener(response),
+    )
+    spec = cloudflare._AssetSpec(
+        platform_id="fixture",
+        arch="arm64",
+        filename="cloudflared",
+        kind="raw",
+        download_size=5,
+        url="https://github.com/pinned-asset",
+        archive_sha256=hashlib.sha256(b"12345").hexdigest(),
+        binary_sha256="0" * 64,
+    )
+    with pytest.raises(cloudflare.CloudflaredError, match="deadline"):
+        cloudflare._download_asset(spec, tmp_path / "asset.tgz")
+    assert not (tmp_path / "asset.tgz").exists() or (tmp_path / "asset.tgz").stat().st_size <= 5
