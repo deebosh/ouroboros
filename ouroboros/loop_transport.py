@@ -571,15 +571,11 @@ def provider_terminal_fallback_text(
         if isinstance(accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict):
             # The episode redialed a granted transport-death repeat that never left the
             # host: an earlier attempt of the round is still unresolved at its upper
-            # bound, and the owner text says both facts (the wait and the fence). Such a
-            # repeat was always RELEASED as ``transport_unavailable`` — any other class
-            # ends the round before an episode can hold the record — so the hint is told
-            # that class instead of reading the sticky kind, which by the time the window
-            # closes names a LATER free redial's refusal (``deadline_exhausted``) and
-            # would misname the repeat.
-            text += provider_recovery_hint(
-                {**accumulated_usage, "_last_llm_error_kind": "transport_unavailable"}
-            )
+            # bound, and the owner text says both facts (the wait and the fence). The
+            # class the repeat was released with is on the record, and the hint reads it
+            # there — never the sticky kind, which by the time the window closes names a
+            # LATER free redial's refusal (``deadline_exhausted``).
+            text += provider_recovery_hint(accumulated_usage)
         return text
     if is_deadline_exhausted:
         return "⚠️ The owner deadline ended primary model work; any files written so far are preserved."
@@ -606,10 +602,16 @@ def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
         # Paid repeats already spent on the last dispatched round's typed transport
         # deaths (the record is round-keyed and cleared only by a usable response):
         # name them, and the class the repeat failed with, so the terminal never
-        # reads as "sent once" and never promises a retry the fence forbids.
+        # reads as "sent once" and never promises a retry the fence forbids. That
+        # class lives on the record, stamped by the repeat's own failure: the sticky
+        # kind may by now belong to a later free redial of the round, or to a refusal,
+        # and would misname the paid attempt. A record without the stamp (its granted
+        # repeat never left the host) falls back to the sticky kind, which the refusal
+        # paths keep as the unknown class.
+        failed_as = str(deaths.get("error_kind") or kind)
         last = (
             " the dispatched request has no terminal provider outcome;"
-            if kind == "provider_outcome_unknown" else f" the repeat failed as {kind};"
+            if failed_as == "provider_outcome_unknown" else f" the repeat failed as {failed_as};"
         )
         return (
             f" {repeats} earlier physical attempt(s) of the last dispatched round died "

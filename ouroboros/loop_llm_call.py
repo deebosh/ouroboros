@@ -960,6 +960,9 @@ def _record_llm_call_error(
         ctx.accumulated_usage[TRANSPORT_DEATHS_KEY] = {
             "round_id": ctx.round_id, "count": repeats + 1, "backoff_sec": backoff,
         }
+    elif repeats:
+        # The granted repeat's own failure class (a grant writes no class; a later free redial finds it filled).
+        ctx.accumulated_usage[TRANSPORT_DEATHS_KEY].setdefault("error_kind", classification.kind)
     identity = {
         "task_id": ctx.task_id, "execution_id": ctx.execution_id, "round_id": ctx.round_id,
         "llm_call_id": ctx.llm_call_id, "round": ctx.round_idx, "attempt": ctx.attempt + 1,
@@ -979,9 +982,8 @@ def _record_llm_call_error(
         **(ctx.context_fit_event_fields or {}),
         "request_ref": ctx.request_ref.get("manifest_ref") if ctx.request_ref else None,
     })
-    ctx.accumulated_usage["_last_llm_error"] = _short_error_text(safe_error)
-    ctx.accumulated_usage["_last_llm_error_kind"] = classification.kind
-    ctx.accumulated_usage["_last_llm_retry_same_request"] = will_retry
+    ctx.accumulated_usage.update(_last_llm_error=_short_error_text(safe_error),
+                                 _last_llm_error_kind=classification.kind, _last_llm_retry_same_request=will_retry)
     if classification.retry_after_sec is not None:
         ctx.accumulated_usage["_last_llm_retry_after_sec"] = classification.retry_after_sec
         ctx.accumulated_usage["_last_llm_reset_at"] = classification.reset_at
@@ -1086,16 +1088,14 @@ def _emit_empty_response_events(
     """
     content = details.get("content")
     tool_calls = details.get("tool_calls")
-    request_ref = details.get("request_ref") or {}
-    response_ref = details.get("response_ref") or {}
     _emit_live_log(event_queue, {"type": event_type, "task_type": task_type, **base})
     append_jsonl(drive_logs / "events.jsonl", {
         "ts": utc_now_iso(), "type": event_type,
         **base,
         "raw_content": repr(content)[:500] if content else None,
         "raw_tool_calls": repr(tool_calls)[:500] if tool_calls else None,
-        "request_ref": request_ref.get("manifest_ref") if request_ref else None,
-        "response_ref": response_ref.get("manifest_ref") if response_ref else None,
+        "request_ref": (details.get("request_ref") or {}).get("manifest_ref"),
+        "response_ref": (details.get("response_ref") or {}).get("manifest_ref"),
     })
 
 

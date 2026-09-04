@@ -11,8 +11,9 @@ wait terminal:
   alone, and a round record blocks even that pass;
 - an episode exhausted on a round that still holds a repeat record ends on the
   record's source, worded as both the wait and the unresolved attempt — and that
-  wording names the class the repeat was RELEASED with, never the later refusal
-  that closed the window;
+  wording names the class the repeat was RELEASED with (it rides the round record,
+  so the generic no-call terminal names it too), never the later refusal that
+  closed the window or the later free redial's own class;
 - the terminal precedence is decided once, at the provider-death rail: a round
   record outranks the latched wait cause, which outranks the overflow salvage —
   so the ``context_overflow`` a failed local-only pass leaves in the mutable kind
@@ -40,6 +41,7 @@ from tests.test_transport_death_retry import (
     _no_chain,
     _overflow_failure,
     _released_connect,
+    _status_failure,
 )
 
 
@@ -196,6 +198,37 @@ def test_deadline_refused_redial_still_names_the_class_the_repeat_was_released_w
     assert "deadline_exhausted" not in result
 
 
+def test_generic_terminal_names_the_class_the_repeat_was_released_with(tmp_path, monkeypatch, no_sleep):
+    """death → granted repeat RELEASED (`transport_unavailable`) → wait episode →
+    the free redial gets past the connect phase and fails as a 400, which ends
+    the episode (the transport is passable) and leaves the round fenced on its
+    record. The generic no-call terminal names the class the repeat itself
+    failed with, exactly as the wait terminal does: the sticky `bad_request`
+    belongs to the free redial, not to the paid attempt the owner is told about."""
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", lambda _sec, _wake: False)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    llm = _ScriptedLLM(_death, _released_connect, lambda: _status_failure(400))
+    notes = []
+    result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, notes))
+
+    assert llm.calls == 3  # the primary send, its released repeat, one free redial
+    assert no_sleep == [4.0]
+    ended = [row["detail"] for row in _events(tmp_path, "network_wait") if row["phase"] == "ended"]
+    assert ended == ["error_kind_changed:bad_request"]
+    assert usage["_last_llm_error_kind"] == "bad_request"  # the free redial's class stays the sticky kind
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
+    assert usage[TRANSPORT_DEATHS_KEY]["error_kind"] == "transport_unavailable"
+    assert trace["forced_finalization"]["source"] == "provider_outcome_unknown_no_resend"
+    assert usage["execution_status"] == "infra_failed" and usage["reason_code"] == "provider_unavailable"
+    assert "waited and redialed" not in result  # the generic arm, not the wait terminal
+    assert "1 earlier physical attempt(s) of the last dispatched round" in result
+    assert "the repeat failed as transport_unavailable" in result
+    assert "the repeat failed as bad_request" not in result
+
+
 def test_fallback_chain_fence_holds_inside_a_wait_episode_too(monkeypatch):
     """`fallback_chain_allowed` on the combined tree: inside a wait episode the
     one local-only chain pass exists for `transport_unavailable` alone (never
@@ -331,7 +364,8 @@ def test_round_record_outranks_a_wait_cause_that_holds_an_overflow_kind(tmp_path
     itself: the record's source, the wait terminal's stamps, and text saying
     both the wait and the unresolved attempt, never the overflow salvage."""
     accumulated = {
-        TRANSPORT_DEATHS_KEY: {"round_id": "r", "count": 1, "backoff_sec": 4.0},
+        # A record an episode can hold names the class its repeat was released with.
+        TRANSPORT_DEATHS_KEY: {"round_id": "r", "count": 1, "backoff_sec": 4.0, "error_kind": "transport_unavailable"},
         "_last_llm_error_kind": "context_overflow",
         "execution_status": "infra_failed", "reason_code": "llm_api_error",
     }

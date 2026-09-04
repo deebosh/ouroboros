@@ -433,7 +433,10 @@ def test_counter_is_keyed_by_round_and_survives_re_entry_of_the_same_round(tmp_p
     llm = _ScriptedLLM(_death, _death, _death)
     msg, _cost = _primary_call(llm, tmp_path, usage, round_idx=1)
     assert msg is None and llm.calls == 3
-    assert usage[TRANSPORT_DEATHS_KEY] == {"round_id": f"{usage['execution_id']}:round:1", "count": 2, "backoff_sec": 8.0}
+    assert usage[TRANSPORT_DEATHS_KEY] == {  # the exhausted repeat's own class rides the record
+        "round_id": f"{usage['execution_id']}:round:1", "count": 2, "backoff_sec": 8.0,
+        "error_kind": "provider_outcome_unknown",
+    }
 
     redial = _ScriptedLLM(_death, _death)
     msg, _cost = _primary_call(redial, tmp_path, usage, round_idx=1)
@@ -682,6 +685,48 @@ def test_recovery_hint_names_the_spent_repeats():
     assert "no further retry or paid fallback was sent" in mixed
     bare = loop_transport.provider_recovery_hint({"_last_llm_error_kind": "provider_outcome_unknown"})
     assert "no retry or paid fallback was sent" in bare
+
+
+def test_recovery_hint_names_the_class_on_the_record_over_the_sticky_kind():
+    """The record carries the class the repeat itself failed with; the sticky kind
+    may by then belong to a later free redial (or a refusal) of the same round.
+    A record without the stamp keeps reading the sticky kind."""
+    record = {"round_id": "r", "count": 1, "backoff_sec": 4.0, "error_kind": "transport_unavailable"}
+    released = loop_transport.provider_recovery_hint({"_last_llm_error_kind": "bad_request", TRANSPORT_DEATHS_KEY: record})
+    assert "the repeat failed as transport_unavailable" in released
+    assert "bad_request" not in released
+    exhausted = loop_transport.provider_recovery_hint({
+        "_last_llm_error_kind": "deadline_exhausted",
+        TRANSPORT_DEATHS_KEY: {**record, "count": 2, "error_kind": "provider_outcome_unknown"},
+    })
+    assert "2 earlier physical attempt(s) of the last dispatched round" in exhausted
+    assert "no terminal provider outcome" in exhausted and "deadline_exhausted" not in exhausted
+    unstamped = loop_transport.provider_recovery_hint({"_last_llm_error_kind": "bad_request", TRANSPORT_DEATHS_KEY: {"round_id": "r", "count": 1}})
+    assert "the repeat failed as bad_request" in unstamped
+
+
+def test_round_record_carries_the_class_the_repeat_itself_failed_with(tmp_path, no_sleep):
+    """death → granted repeat RELEASED: the record names `transport_unavailable`.
+    The round's later free redial failing as a 400 leaves that stamp alone (the
+    sticky kind moves on to `bad_request`): only the repeat's own failure writes
+    the class, and the hint names it whichever terminal reads the record."""
+    usage = {}
+    msg, _cost = _primary_call(_ScriptedLLM(_death, _released_connect), tmp_path, usage, round_idx=1)
+    assert msg is None and no_sleep == [4.0]
+    assert usage[TRANSPORT_DEATHS_KEY] == {
+        "round_id": f"{usage['execution_id']}:round:1", "count": 1, "backoff_sec": 4.0,
+        "error_kind": "transport_unavailable",
+    }
+
+    redial = _ScriptedLLM(lambda: _status_failure(400))
+    msg, _cost = _primary_call(redial, tmp_path, usage, round_idx=1)
+    assert msg is None and redial.calls == 1  # fenced on the record, no burst
+    assert usage["_last_llm_error_kind"] == "bad_request"  # the free redial's class is the sticky kind
+    assert usage[TRANSPORT_DEATHS_KEY]["error_kind"] == "transport_unavailable"
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
+    hint = loop_transport.provider_recovery_hint(usage)
+    assert "the repeat failed as transport_unavailable" in hint
+    assert "bad_request" not in hint
 
 
 # ------------------------------------ the fence: nothing else after a granted repeat
