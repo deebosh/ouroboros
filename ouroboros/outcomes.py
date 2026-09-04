@@ -1012,23 +1012,15 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
     )
     disposition_projection = _trace_mapping(llm_trace, "child_result_dispositions")
     deferred_child_count = int(disposition_projection.get("deferred_count") or 0)
-    deferred_child_suffix = bool(
-        deferred_child_count
-        and str(delivery_candidate.get("degraded_reason") or "")
-        == "host_child_status_suffix"
-    )
+    degraded_reason = str(delivery_candidate.get("degraded_reason") or "")
+    deferred_child_suffix = bool(deferred_child_count and degraded_reason == "host_child_status_suffix")
     forced_best_effort_with_deferred_child = bool(
         deferred_child_count
-        and (
-            str(delivery_candidate.get("degraded_reason") or "")
-            in BEST_EFFORT_REASON_CODES
-            # provider_unavailable left the best-effort set (2026-08-10 saga:
-            # a provider-killed task is failed, not best-effort), but a forced
-            # provider rail must still not erase the more specific
-            # deferred-child objective below.
-            or str(delivery_candidate.get("degraded_reason") or "")
-            == "provider_unavailable"
-        )
+        # provider_unavailable left the best-effort set (2026-08-10 saga:
+        # a provider-killed task is failed, not best-effort), but a forced
+        # provider rail must still not erase the more specific
+        # deferred-child objective below.
+        and (degraded_reason in BEST_EFFORT_REASON_CODES or degraded_reason == "provider_unavailable")
     )
     verification_failures: List[Dict[str, Any]] = []
     for event in llm_trace.get("verification_events") or []:
@@ -1050,7 +1042,10 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         execution_status = EXECUTION_INFRA_FAILED
         reason_code = usage_reason or REASON_PROVIDER_FAILURE
         failure = {"kind": "provider", "reason_code": reason_code}
-        if str(usage.get("_last_llm_error_kind") or "") == "context_overflow":
+        # The overflow salvage keeps `llm_api_error`; a waited-out outage or the unknown
+        # no-resend fence may leave the same sticky kind behind under its own reason code,
+        # and the published projection must not contradict the terminal that chose it.
+        if reason_code == "llm_api_error" and str(usage.get("_last_llm_error_kind") or "") == "context_overflow":
             failure["error_kind"] = "context_overflow"
     elif (
         usage_status == RESULT_FAILED
@@ -1084,7 +1079,7 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         failure = {"kind": _infra[1], "reason_code": reason_code}
     elif delivery_candidate.get("degraded") and not deferred_child_suffix:
         execution_status = EXECUTION_DEGRADED
-        reason_code = usage_reason or str(delivery_candidate.get("degraded_reason") or "") or REASON_DELIVERY_CONTROL_DEGRADED
+        reason_code = usage_reason or degraded_reason or REASON_DELIVERY_CONTROL_DEGRADED
         failure = {"kind": "finalization_control", "reason_code": reason_code}
     elif deferred_child_count:
         execution_status = EXECUTION_DEGRADED
@@ -1257,7 +1252,7 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         # is not "missing" one; marker-free tasks (no answer_protocol) simply read True,
         # which downstream consumers must interpret via the contract, not as a failure.
         "final_answer_missing_sentinel": not final_answer_payload,
-        "failure": headline_failure, "degraded": bool(delivery_candidate.get("degraded")), "degraded_reason": str(delivery_candidate.get("degraded_reason") or ""),
+        "failure": headline_failure, "degraded": bool(delivery_candidate.get("degraded")), "degraded_reason": degraded_reason,
         "recoveries": recovered_tool_errors[:20],
         "usage": {
             "cost_usd": (

@@ -32,6 +32,7 @@ import ouroboros.loop_llm_call as call_mod
 import ouroboros.loop_transport as loop_transport
 from ouroboros.loop import run_llm_loop
 from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
+from ouroboros.outcomes import derive_loop_outcome
 from tests.test_loop_transport_wait import _FakeClock
 from tests.test_transport_death_retry import (
     _ScriptedLLM,
@@ -327,6 +328,8 @@ def test_latched_wait_cause_outranks_the_overflow_a_failed_local_pass_left(tmp_p
     assert result == base  # byte-identical zero-wait outage wording
     assert "Could not establish a provider connection" in result
     assert "context exceeded" not in result
+    # The published projection says what the terminal said: no overflow kind under the wait terminal's reason code.
+    assert derive_loop_outcome(result, usage, trace)["failure"] == {"kind": "provider", "reason_code": "provider_unavailable"}
 
 
 def test_context_overflow_with_no_episode_keeps_the_overflow_salvage(tmp_path, monkeypatch):
@@ -386,3 +389,18 @@ def test_round_record_outranks_a_wait_cause_that_holds_an_overflow_kind(tmp_path
     assert "1 earlier physical attempt(s) of the last dispatched round" in text
     assert "the repeat failed as transport_unavailable" in text
     assert "context exceeded" not in text
+
+
+def test_published_failure_projection_never_contradicts_the_terminal():
+    """`derive_loop_outcome` stamps `failure.error_kind = context_overflow` only for
+    the overflow salvage's own reason code: a waited-out outage (or the unknown
+    no-resend fence) may leave that sticky kind behind under `provider_unavailable`,
+    and the published projection must say what the terminal said."""
+    overflow = {"execution_status": "infra_failed", "reason_code": "llm_api_error", "_last_llm_error_kind": "context_overflow"}
+    assert derive_loop_outcome("⚠️ The context exceeded the selected model window", overflow, {})["failure"] == {
+        "kind": "provider", "reason_code": "llm_api_error", "error_kind": "context_overflow",
+    }
+    waited_out = {**overflow, "reason_code": "provider_unavailable"}
+    assert derive_loop_outcome("⚠️ Could not establish a provider connection", waited_out, {})["failure"] == {
+        "kind": "provider", "reason_code": "provider_unavailable",
+    }
