@@ -537,7 +537,7 @@ def test_task_acceptance_agent_tool_is_advisory_before_auto_host_gate(monkeypatc
     )
     panel_state = {"calls": 0, "reviewed_at_dispatch": None}
     monkeypatch.setattr(loop_mod, "get_task_review_mode", lambda: "auto")
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **_kwargs: [object(), object(), object()])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **_kwargs: [object(), object(), object()])
     ctx = SimpleNamespace(
         _task_acceptance_reviewed=False,
         is_direct_chat=True,
@@ -698,7 +698,7 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
         return clean
 
     monkeypatch.setattr(loop_mod, "get_task_review_mode", lambda: "auto")
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **_kwargs: [object(), object(), object()])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **_kwargs: [object(), object(), object()])
     monkeypatch.setattr(rs, "run_review_request", panel)
     trace = {"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}
     messages = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
@@ -765,7 +765,7 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
     import ouroboros.review_substrate as rs
 
     monkeypatch.setattr(loop_mod, "get_task_review_mode", lambda: "required")
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [object(), object(), object()])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [object(), object(), object()])
 
     # (a) CONTRACT-VALID solved PASS (a non-empty completion_coach, as the required
     # contract demands) with no actionable findings -> still NO injection, finalize.
@@ -879,7 +879,7 @@ def test_required_review_blocked_commit_does_not_surface_prior_head(monkeypatch,
         request = {"surface": "task_acceptance"}
 
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: _FakeResult())
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [object(), object(), object()])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [object(), object(), object()])
 
     captured = {}
 

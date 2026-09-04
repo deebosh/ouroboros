@@ -38,11 +38,21 @@ from ouroboros.review_cycles import (
     get_acceptance_max_improvement_passes,
     review_max_cycles,
 )
-from ouroboros.utils import append_jsonl, iter_jsonl_objects, utc_now_iso
+from ouroboros.utils import append_jsonl, utc_now_iso
 
 
+# The host never predicts how long a review takes (owner R52, 2026-09-03). A
+# task has three host-owned rails: a deadline, a paid-cycle cap and a wallet —
+# and the time rail is this ONE number, the minimum spendable window (remaining
+# time above the finalization reserve) an acceptance panel needs in order to
+# START. `OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC` configures it and never lowers it
+# below this floor; an improvement pass needs the same floor scaled by
+# `_window_scale` (×2 under the adaptive policy, ×1 otherwise). Once launched a
+# review is an ordinary operation, clamped to the owner deadline and the task
+# ceiling with the per-send money fence, and a deadline-cut review is a typed
+# degraded outcome. Panel durations are recorded as telemetry
+# (`task_acceptance_review_timing`) and nothing decides on them.
 _ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC = 200.0
-_ACCEPTANCE_REVIEW_EWMA_ALPHA = 0.5
 
 # Proportional nanny-economics reminder thresholds (poltergeist phase B; owner
 # decision 2=B: NO absolute round cap — reminders only, sized to the measured
@@ -61,7 +71,6 @@ NANNY_REMINDER_USD = 2.0
 # delegate activity, and for every re-arm after the first firing, the ordinary
 # dual-axis thresholds above apply unchanged. Same SSOT home as its siblings.
 NANNY_FIRST_REMINDER_ROUNDS = 3
-_ACCEPTANCE_TIMING_EVENT = "task_acceptance_review_timing"
 log = logging.getLogger(__name__)
 
 
@@ -108,80 +117,77 @@ class BudgetSnapshot:
         return self.remaining_sec - self.reserve_sec
 
 
-def resolve_budget_profile(ctx: Any) -> Dict[str, Any]:
-    """The task's normalized budget_profile (from task_contract; absent -> defaults)."""
+def _supplied_budget_profile(ctx: Any) -> Any:
+    """The task's budget_profile exactly as SUPPLIED (task_contract, else the
+    metadata copy); ``None`` when the task carries none."""
     contract = getattr(ctx, "task_contract", None)
     if not isinstance(contract, dict):
         meta = getattr(ctx, "task_metadata", {})
         contract = meta.get("task_contract") if isinstance(meta, dict) else None
-    profile = contract.get("budget_profile") if isinstance(contract, dict) else None
-    if isinstance(profile, dict):
-        legacy_keys = []
-        if str(profile.get("improvement_policy") or "").strip().lower() == "until_deadline":
-            legacy_keys.append("until_deadline")
-        # Normalization materializes this field as ``None`` for every task.
-        # Only a supplied value is a deprecated alias; defaults stay quiet.
-        if profile.get("stall_rounds_threshold") is not None:
-            legacy_keys.append("stall_rounds_threshold")
-        if legacy_keys and not getattr(ctx, "_acceptance_pacing_deprecation_emitted", False):
-            try:
-                append_jsonl(
-                    pathlib.Path(getattr(ctx, "drive_root")) / "logs" / "events.jsonl",
-                    {
-                        "ts": utc_now_iso(),
-                        "type": "deprecated_task_pacing_alias",
-                        "task_id": str(getattr(ctx, "task_id", "") or ""),
-                        "aliases": legacy_keys,
-                        "removal": "next_major",
-                    },
-                )
-                ctx._acceptance_pacing_deprecation_emitted = True
-            except Exception:
-                log.warning(
-                    "Failed to persist deprecated task-pacing aliases %s",
-                    legacy_keys,
-                    exc_info=True,
-                )
+    return contract.get("budget_profile") if isinstance(contract, dict) else None
+
+
+def _deprecated_pacing_aliases(profile: Any) -> list:
+    """The one-minor compatibility aliases a SUPPLIED profile carries."""
+    if not isinstance(profile, dict):
+        return []
+    legacy_keys = []
+    if str(profile.get("improvement_policy") or "").strip().lower() == "until_deadline":
+        legacy_keys.append("until_deadline")
+    # Normalization materializes this field as ``None`` for every task.
+    # Only a supplied value is a deprecated alias; defaults stay quiet.
+    if profile.get("stall_rounds_threshold") is not None:
+        legacy_keys.append("stall_rounds_threshold")
+    return legacy_keys
+
+
+def observe_budget_profile(ctx: Any) -> Dict[str, Any]:
+    """The task's normalized budget_profile resolved SIDE-EFFECT FREE (R49).
+
+    The same answer ``resolve_budget_profile`` returns: the deprecation row and
+    its ctx latch belong to the path that OWNS a mutation, so this reader — the
+    coordination poll's ``delegate_supervision._time_fact`` — writes nothing and
+    mutates no context attribute."""
+    return normalize_budget_profile(_supplied_budget_profile(ctx))
+
+
+def resolve_budget_profile(ctx: Any) -> Dict[str, Any]:
+    """The task's normalized budget_profile (from task_contract; absent ->
+    defaults), plus the one-shot ``deprecated_task_pacing_alias`` row a supplied
+    legacy alias owes. For the acceptance/pacing paths that own a mutation;
+    observers call ``observe_budget_profile`` for the same answer."""
+    profile = _supplied_budget_profile(ctx)
+    legacy_keys = _deprecated_pacing_aliases(profile)
+    if legacy_keys and not getattr(ctx, "_acceptance_pacing_deprecation_emitted", False):
+        try:
+            append_jsonl(
+                pathlib.Path(getattr(ctx, "drive_root")) / "logs" / "events.jsonl",
+                {
+                    "ts": utc_now_iso(),
+                    "type": "deprecated_task_pacing_alias",
+                    "task_id": str(getattr(ctx, "task_id", "") or ""),
+                    "aliases": legacy_keys,
+                    "removal": "next_major",
+                },
+            )
+            ctx._acceptance_pacing_deprecation_emitted = True
+        except Exception:
+            log.warning(
+                "Failed to persist deprecated task-pacing aliases %s",
+                legacy_keys,
+                exc_info=True,
+            )
     return normalize_budget_profile(profile)
 
 
-def acceptance_review_estimate_sec(ctx: Any, *, passes_done: int = 0) -> float:
-    """Return the review-time reservation reconstructed from existing events.
+def _acceptance_floor_sec() -> float:
+    """The time rail: the configured floor, never below 200 s."""
+    return max(_ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC, float(get_acceptance_review_est_sec()))
 
-    The first review reserves 200 seconds.  Later reviews use
-    ``max(200, 1.5 * EWMA)`` with alpha 0.5.  The existing
-    ``OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC`` value remains the initial estimate
-    and a floor; no additional timing database is introduced.
-    """
-    configured = max(
-        _ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC,
-        float(get_acceptance_review_est_sec()),
-    )
-    if passes_done <= 0:
-        return configured
-    try:
-        events_path = acceptance_timing_events_path(ctx)
-    except (TypeError, OSError, ValueError):
-        return configured
-    ewma: Optional[float] = None
-    for event in iter_jsonl_objects(
-        events_path, max_entries=4000, tail_bytes=8_000_000,
-    ):
-        if str(event.get("type") or "") != _ACCEPTANCE_TIMING_EVENT:
-            continue
-        try:
-            duration = float(event.get("duration_sec") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if duration <= 0.0:
-            continue
-        ewma = duration if ewma is None else (
-            _ACCEPTANCE_REVIEW_EWMA_ALPHA * duration
-            + (1.0 - _ACCEPTANCE_REVIEW_EWMA_ALPHA) * ewma
-        )
-    if ewma is None:
-        return configured
-    return max(configured, 1.5 * ewma)
+
+def _window_scale(profile: Any) -> float:
+    """The improvement window is 2× the floor under the adaptive policy."""
+    return 2.0 if isinstance(profile, dict) and profile.get("improvement_policy") == "adaptive" else 1.0
 
 
 def acceptance_timing_events_path(ctx: Any) -> pathlib.Path:
@@ -224,6 +230,23 @@ def effective_finalization_reserve_sec(ctx: Any) -> float:
 
 def build_budget_snapshot(ctx: Any, *, profile: Optional[Dict[str, Any]] = None) -> BudgetSnapshot:
     """Snapshot the task's time budget from task_metadata deadline facts."""
+    return _budget_snapshot(ctx, profile=profile, latch=True)
+
+
+def observe_budget_snapshot(ctx: Any, *, profile: Dict[str, Any]) -> BudgetSnapshot:
+    """The same snapshot WITHOUT the fallback-anchor latch (owner R49).
+
+    A metadata-poor task (no ``created_at``/``started_at`` and no anchor latched
+    yet) has no usable window facts a read-only observer could obtain without
+    WRITING one, so it is reported as having no deadline axis — which its one
+    caller, ``delegate_supervision._time_fact``, reports as ``not_set``.
+    ``profile`` is required: an observer never falls back to the emitting resolver."""
+    return _budget_snapshot(ctx, profile=profile, latch=False)
+
+
+def _budget_snapshot(
+    ctx: Any, *, profile: Optional[Dict[str, Any]], latch: bool,
+) -> BudgetSnapshot:
     meta = getattr(ctx, "task_metadata", {})
     if not isinstance(meta, dict):
         return BudgetSnapshot(has_deadline=False)
@@ -234,6 +257,8 @@ def build_budget_snapshot(ctx: Any, *, profile: Optional[Dict[str, Any]] = None)
     if created is None:
         created = getattr(ctx, "_time_budget_started_at", None)
         if created is None:
+            if not latch:
+                return BudgetSnapshot(has_deadline=False)
             # Latch the fallback anchor exactly like the note path does (fable-5
             # cumulative review F4): without the latch every metadata-poor
             # snapshot re-anchors total to "now" and the pct reserve silently
@@ -257,22 +282,19 @@ def build_budget_snapshot(ctx: Any, *, profile: Optional[Dict[str, Any]] = None)
     )
 
 
-def review_launch_allowed(
-    snapshot: BudgetSnapshot, *, estimated_sec: Optional[float] = None,
-) -> Tuple[bool, str]:
+def review_launch_allowed(snapshot: BudgetSnapshot) -> Tuple[bool, str]:
     """Gate 1: run an acceptance review only when it fits ABOVE the reserve.
 
     Historically a review could start two minutes before the deadline and kill
     the task; skipping inside the reserve is a strict improvement. No deadline →
-    always allowed (the pass counter is the only axis)."""
+    always allowed (the pass counter is the only axis). The host does not
+    predict the panel's duration (owner R52): the configured floor
+    (``_acceptance_floor_sec``) is the whole time rail, and a spendable window
+    at or below it is refused ``review_skipped_deadline_reserve``. PURE — a
+    read-only observer may ask; nothing is recorded here."""
     if not snapshot.has_deadline:
         return True, ""
-    estimate = (
-        float(estimated_sec)
-        if estimated_sec is not None
-        else max(_ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC, float(get_acceptance_review_est_sec()))
-    )
-    if snapshot.spendable_sec > estimate:
+    if snapshot.spendable_sec > _acceptance_floor_sec():
         return True, ""
     return False, "review_skipped_deadline_reserve"
 
@@ -317,14 +339,14 @@ def improvement_pass_allowed(
     profile: Dict[str, Any],
     *,
     required_blocking: bool = False,
-    estimated_sec: Optional[float] = None,
     ctx: Any = None,
 ) -> Tuple[bool, str]:
     """Gate 2: one more improvement/obligation pass?
 
     The count cap (task-local or the shared review-cycle cap) and the
-    deadline/reserve rail are independent; ``adaptive`` stops early once the
-    spendable window can no longer fit a review comfortably (2× the estimate).
+    deadline/reserve rail are independent; ``adaptive`` demands a comfortable
+    window — twice the floor (``_window_scale``) — before spending another
+    pass. The host predicts no duration (owner R52): the floor is the rail.
     Under Required+Blocking the SHARED cap (no task-local cap) exhausting is the
     typed ``review_cycles_exhausted`` reason (owner D10/D27) and — when ``ctx``
     is supplied — the typed escalation event; a task-local cap (owner hurry,
@@ -347,13 +369,7 @@ def improvement_pass_allowed(
         return False, "improvement_passes_exhausted"
     if not snapshot.has_deadline:
         return True, ""
-    est = (
-        float(estimated_sec)
-        if estimated_sec is not None
-        else max(_ACCEPTANCE_REVIEW_RESERVE_FLOOR_SEC, float(get_acceptance_review_est_sec()))
-    )
-    needed = est * 2.0 if profile.get("improvement_policy") == "adaptive" else est
-    if snapshot.spendable_sec > needed:
+    if snapshot.spendable_sec > _acceptance_floor_sec() * _window_scale(profile):
         return True, ""
     return False, "improvement_window_inside_reserve"
 

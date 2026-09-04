@@ -92,19 +92,19 @@ def test_summary_and_background_token_budgets():
     assert context_compaction._summarizer_spec()["output_budget"] == 32_768
 
 
-def test_native_review_episode_caps_are_ssot():
-    """The bounded native inspection episode (the advisory/actor-row successor
-    of the retired Claude-SDK max-turns budget) reads its caps from config
-    SSOT settings with shipped defaults, never a hardcoded literal."""
-    from ouroboros.config import SETTINGS_DEFAULTS
-    from ouroboros.review_native_episode import (
-        review_native_max_rounds,
-        review_native_max_transcript_chars,
-    )
+def test_native_review_episode_ceiling_is_ssot_and_round_cap_is_retired():
+    """The native inspection episode (the advisory/actor-row successor of the
+    retired Claude-SDK max-turns budget) reads its transcript CEILING from
+    config SSOT with a shipped default, never a hardcoded literal — and has
+    no round cap at all (P13: the floor is hardcoded, never the ceiling)."""
+    from ouroboros.config import RETIRED_SETTING_KEYS, SETTINGS_DEFAULTS
+    from ouroboros import review_native_episode
+    from ouroboros.review_native_episode import review_native_max_transcript_chars
 
-    assert SETTINGS_DEFAULTS["OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS"] == "16"
     assert SETTINGS_DEFAULTS["OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS"] == "900000"
-    assert review_native_max_rounds() >= 1
+    assert "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS" not in SETTINGS_DEFAULTS
+    assert "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS" in RETIRED_SETTING_KEYS
+    assert not hasattr(review_native_episode, "review_native_max_rounds")
     assert review_native_max_transcript_chars() >= 10_000
 
 
@@ -282,8 +282,9 @@ def test_calibrated_input_limit_shared_helper(tmp_path, monkeypatch):
     assert limit("openai/gpt-5.5") == 1_000_000 - 100_000 - 155_000  # margin-bounded
     assert limit("openai/gpt-5.5") > int(900_000 / COLD_START_TOKEN_DENSITY)
 
-    # Deep self-review consumes the same helper for its model-aware gate.
-    assert "calibrated_input_token_limit" in inspect.getsource(deep_self_review.run_deep_self_review)
+    # Deep self-review's PACKED delivery consumes the same helper for its
+    # model-aware gate (the retrieving deliveries have no pack to size).
+    assert "calibrated_input_token_limit" in inspect.getsource(deep_self_review._run_packed_review)
     # ...as does the triad, whose pack size moves with the same formula.
     from ouroboros.tools import review as triad
     assert "calibrated_input_token_limit" in inspect.getsource(triad)
@@ -391,46 +392,30 @@ def test_scope_actor_record_surfaces_error_text():
     assert build_scope_actor_record(ok, slot_id="s")["error"] == ""
 
 
-def test_deep_self_review_budget_uses_ssot():
-    """``deep_self_review`` must gate the FULL assembled prompt (system + user)
-    on an input limit derived from the SSOT constant WITH output reservation
-    (min(SSOT, window − output − margin)) — matching scope_review/plan_review —
-    using the shared ``estimate_tokens(chars/4)`` helper.
+def test_deep_self_review_budget_uses_ssot(tmp_path, monkeypatch):
+    """The packed deep review gates the FULL assembled prompt (system + user)
+    on the model-calibrated, output-reserving input limit the shared helper
+    returns (min(SSOT, window − output − margin), as scope/plan review do),
+    measured with the shared ``estimate_tokens`` (chars/4) — pinned by
+    BEHAVIOR: the limit is what the helper says, the measure includes the
+    system prompt, and a pack over it is refused before any send.
     """
-    import pathlib
-    src = pathlib.Path("ouroboros/deep_self_review.py").read_text(encoding="utf-8")
-    assert "REVIEW_PROMPT_TOKEN_BUDGET" in src, (
-        "deep_self_review must derive its gate from the SSOT constant"
-    )
-    assert "estimated_tokens > input_limit" in src, (
-        "deep_self_review must gate on the model-calibrated output-reserving input limit"
-    )
-    assert "calibrated_input_token_limit(" in src, (
-        "deep_self_review must resolve its gate through the shared model-family calibration helper"
-    )
-    assert "estimate_tokens(_SYSTEM_PROMPT + pack_text)" in src, (
-        "deep_self_review must gate on the FULL assembled prompt "
-        "(system + user) using the shared estimate_tokens(chars/4) helper."
-    )
-    # Old hardcoded literals must not survive — drift would silently desync.
-    assert "estimated_tokens > 850_000" not in src, (
-        "deep_self_review still has the old hardcoded literal; switch to the SSOT constant"
-    )
-    assert "estimated_tokens > 920_000" not in src, (
-        "deep_self_review hardcodes the current budget; use the SSOT constant instead"
-    )
-    assert "int(stats[\"total_chars\"] / 3.5)" not in src, (
-        "deep_self_review must not use its old chars/3.5 estimator"
-    )
+    from unittest import mock
 
+    from ouroboros import deep_self_review
     from ouroboros.deep_self_review import (
         _DEEP_INPUT_TOKEN_LIMIT,
         _DEEP_MAX_OUTPUT_TOKENS,
         _DEEP_MODEL_CONTEXT_WINDOW,
         _DEEP_OUTPUT_MARGIN_TOKENS,
+        _SYSTEM_PROMPT,
+        run_deep_self_review,
     )
+    from ouroboros.reviewer_slot_config import DEEP_REVIEW_SLOT_ID, ConfiguredReviewerSlot
     from ouroboros.tools.review_helpers import REVIEW_PROMPT_TOKEN_BUDGET
+    from ouroboros.utils import estimate_tokens
 
+    # The uncalibrated window arithmetic: SSOT budget with the output reserve.
     assert _DEEP_INPUT_TOKEN_LIMIT == min(
         REVIEW_PROMPT_TOKEN_BUDGET,
         _DEEP_MODEL_CONTEXT_WINDOW - _DEEP_MAX_OUTPUT_TOKENS - _DEEP_OUTPUT_MARGIN_TOKENS,
@@ -439,6 +424,28 @@ def test_deep_self_review_budget_uses_ssot():
         "deep review input cap + reserved output exceeds the reviewer window; "
         "the provider would hard-400."
     )
+
+    # The ENFORCED limit is the shared helper's answer (here: a sentinel), and
+    # the gated measure is system prompt + pack: a pack that fits alone but
+    # not with the system prompt is refused, quoting the enforced number.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    limit = estimate_tokens(_SYSTEM_PROMPT) + 100
+    monkeypatch.setattr(deep_self_review, "calibrated_input_token_limit", lambda *a, **k: limit)
+    row = ConfiguredReviewerSlot(slot_id=DEEP_REVIEW_SLOT_ID, kind="api_chat", target_id="openai/x")
+    llm = mock.Mock()
+    llm.chat.return_value = ({"content": "ok"}, {"cost": 0.0})
+    (tmp_path / "state").mkdir()
+    too_big = "x" * (4 * 150)  # ~150 tokens: fits the limit alone, not with the system prompt
+    with mock.patch.object(deep_self_review, "build_review_pack",
+                           return_value=(too_big, {"file_count": 1, "total_chars": len(too_big), "skipped": []})):
+        text, usage = run_deep_self_review(tmp_path, tmp_path, llm, lambda _m: None, slot=row)
+    assert "too large" in text and f"~{limit:,} tokens" in text
+    assert usage["execution_status"] == "infra_failed" and not llm.chat.called
+    fits = "x" * (4 * 50)
+    with mock.patch.object(deep_self_review, "build_review_pack",
+                           return_value=(fits, {"file_count": 1, "total_chars": len(fits), "skipped": []})):
+        text, _usage = run_deep_self_review(tmp_path, tmp_path, llm, lambda _m: None, slot=row)
+    assert text.endswith("ok") and llm.chat.call_count == 1
 
 
 def test_tool_timeout_uses_max_of_settings_and_per_tool():

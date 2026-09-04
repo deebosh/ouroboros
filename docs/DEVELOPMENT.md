@@ -653,7 +653,7 @@ The context-delivery registry:
 | Scope review (`tools/scope_review.py`) | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting |
 | Skill review (`skill_review.py`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) |
 | Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (structural path fact: a declared target resolves under the system repo); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the lossless navigation map + a resolvable pointer (W3) | named on-demand pointer; a reviewer that needs it returns `need_evidence` and the host attaches it on the next cycle |
-| Deep self-review (`deep_self_review.py`) | full canonical doc + Atlas accounting | full (max) / navigation map (low) + Atlas accounting | full canonical doc + Atlas accounting |
+| Deep self-review (`deep_self_review.py`) | Three deliveries on the `deep_review` row. Packed api row: full canonical doc + Atlas accounting. Native inspection episode / agent session: MANDATORY full read at the repository root, named with its size in the task; the native episode's `read_file` receipts carry the delivered line extent and the host merges the repository-root intervals for BIBLE.md afterwards — `read` only on full coverage, else `partial`/`missing`/`unobserved` — disclosed in the report header and as a typed `capability_delta` (host-observed reads); a session's reads are `unobserved`. Memory (up to seven whitelisted files) is INLINED byte-exact on every delivery, each entry's disposition disclosed (task text, `deep_review_memory`, header `memory=n/7`) — never receipt-checked | Packed: full (max) / navigation map (low) + Atlas accounting. Retrieving rows: navigation map (`generate_doc_nav_map`), sections read on demand | Packed: full canonical doc + Atlas accounting. Retrieving rows: navigation map, sections read on demand (CHECKLISTS.md likewise) |
 
 Skill Review keeps the full stable governance/host prefix for cache-friendly
 API rows; a retrieving session reads those same canonical files from its
@@ -863,8 +863,25 @@ authoritative once its window is sourced at ≥200K, and "the host did not
 observe which files it read" is a provenance disclosure, never a
 missing-authority finding. The gate is one logical reviewer interaction per
 API slot, with at most one bounded second physical send on a same-route
-transport rail; a hosted agent-session slot is one multistep execution whose
-local extraction reuses its collected transcript.
+transport rail for a PACKET api row; a hosted agent-session slot is one
+multistep execution whose local extraction reuses its collected transcript.
+A native tool-round slot (an api
+row bound to a configured subagent) is likewise one multistep episode with no
+send count: its bounds are the window-derived transcript bound (measured on
+the serialized messages of the next send — each appended element charged as
+envelope plus list separator, so the counter equals the wire size), the owner
+deadline together with the slot's logical window (each send's transport
+timeout is clamped to the remainder and a spent window refuses before
+dispatch; the LLM client's recovery ladder reuses that timeout per recovery
+send — a disclosed residual), and the paid ledger; exhaustion is a typed
+refusal (`native_transcript_cap_exceeded`) for verdict shapes or a disclosed
+`native_incomplete` product for the report shape, and every end leaves its
+facts on the actor usage and custody row. A retrieving delivery canonicalizes
+its answer by the surface's output SHAPE (`triad_review.review_output_shape`:
+`array` | `object` | `report`), never by surface-name branches inside the
+canonicalizer: the shape table is form only, and a new object- or
+report-shaped surface registers there instead of teaching the extraction rail
+another `if`.
 
 Paid review cycles across the gates are bounded by one shared owner knob,
 `OUROBOROS_REVIEW_MAX_CYCLES` — a STRING, positive integer or `unlimited`,
@@ -875,11 +892,31 @@ deadline, budget, and lifecycle rails still bind — and a malformed value fails
 closed to the default, logged once.
 
 For task acceptance, the exact-binding tree-wallet claim is a strict
-write-ahead stamp immediately before physical dispatch: panel assembly or any
-pre-transport refusal consumes no claim, and an unavailable claim releases the
-usage reservation and blocks every parallel panel slot rather than degrading
-hard authority into fail-open cost telemetry. Task acceptance remains
-API-only.
+write-ahead stamp bound to every delivery the panel's rows run (owner R11,
+2026-09-01: the paid identity is material, not route): a packet row fires it
+when the API usage ledger crosses into physical dispatch, a native inspection
+row on each paid send of its episode, an agent-session row before its
+replayable `START_REQUESTED` — one idempotent claim per panel. Panel assembly,
+an unavailable route, or another pre-transport refusal consumes no claim and
+leaves the binding retryable. The paid claim itself checks cancellation and
+the paid-cycle wallet only (owner R55): the launch floor is evaluated ONCE per
+panel, at loop admission, and a RUNNING panel is bounded by the R23 deadline
+clamps and the per-send wallet fence. Disclosed residual: a panel whose
+evidence build consumed the margin after admission dispatches and may be cut
+by the deadline — one ADMITTED panel: admission prices one work-order send per
+paid row, but packet rows may use the permitted repair/retry send and native
+rows may run several rounds — every send remains deadline- and wallet-fenced
+where pricing exists, so the total is NOT bounded to one floor wave; a panel
+the deadline actually cuts is DEGRADED, a panel that finishes keeps its normal
+verdict; never a free skip. An unavailable claim releases the usage
+reservation and blocks every parallel panel slot before reviewer transport
+rather than degrading hard authority into fail-open cost telemetry. Disclosed
+residual (pre-existing release behaviour, b9bcc2da; issue #588; out of
+this change's scope): a compatibility transport
+that raises with positive physical capture invokes the paid stamp after the
+send; if the tree's last paid cycle is consumed concurrently at that late
+stamp, the wallet refusal replaces the captured exception and the substrate
+may resend.
 
 Never pay for byte-identical review material (`ouroboros/tools/commit_gate.py` owns
 the mechanism): the commit gate refuses a byte-identical staged diff for free
@@ -1273,6 +1310,22 @@ both critical. The imperatives:
   acceptance packet are VISIBILITY ONLY — acceptance judges quality, never
   the execution route — and an unreadable custody log reads
   `evidence_read_failed`, never a proven-empty substrate.
+- The coordination poll is READ-ONLY of task state: it observes the budget
+  profile and snapshot rather than resolving and latching them, so a
+  metadata-poor task (no `created_at`/`started_at` and no anchor latched yet)
+  honestly reports `time.state = "not_set"` until a path that owns a mutation
+  — the acceptance launch — latches the anchor, and a poll can never change
+  its own next answer. Polling writes nothing of its own; it inherits the
+  canonical usage-ledger reader's own bounded maintenance — today: the
+  torn-tail quarantine after a SINGLE crash mid-append, which every reader
+  performs identically (a crash inside that repair itself — a torn quarantine
+  sink — is a known residual, issue #586), the empty
+  `state/` directory the reader's lock lives in on a never-initialized root,
+  and removal of a stale `usage_attempts.lock` older than the reader's 90 s
+  stale window (`usage_ledger._locked` →
+  `platform_layer.acquire_exclusive_file_lock`, whose stale-age branch unlinks
+  the lock file and retries) — each pinned by a regression; every ledger
+  state, an absent file included, is answered through the canonical reader.
 - `task_constraint` boolean parsing is strict (`"false"` is false); deadlines
   only narrow, delegation budgets only reduce, absent depth requests stay
   unknown rather than inferred from prose; preserve the persisted
@@ -1700,6 +1753,38 @@ by "Provider Independence" above. Call-site imperatives:
   identity replays the recorded verdict for FREE, terminalizing with the
   typed `identical_acceptance_refused` reason. This prices changed
   substance, never cosmetic evidence revision.
+- Task-acceptance actors are the configured triad rows (owner R0–R2,
+  2026-09-01; `reviewer_slot_config.triad_delivery_slots`, malformed config
+  refuses typed) and receive one substantive interaction on their own
+  delivery: a packet row at most two physical attempts total, a native
+  inspection row one bounded episode, an agent-session row one delegated
+  session. A retrieving row receives the route-owned work order
+  (`acceptance_dialogue.acceptance_retrieving_work_order`: a session the FULL
+  packet plus absolute pointers and the access disclosure; a native row the
+  packet without its freely degradable tail plus the real data root) over the
+  task's ACTIVE workspace, and its `evidence_refs` resolve against the FULL
+  packet — never the rendered projection. The wave budget gate prices API
+  money only (session rows excluded) and DECIDES on one work-order send per
+  paid row — that is the whole money rule, with no rounds multiplier and no
+  second read-only pricing pass; the per-send wallet binding at dispatch is
+  the fence. The host predicts no review duration (owner R52): the launch rule
+  (`task_pacing.review_launch_allowed`, spendable > the configured floor) is
+  evaluated ONCE per panel, at loop admission (owner R55, 2026-09-03), and the
+  separate post-panel improvement gate adds only that floor × `_window_scale`;
+  the paid claim (`task_acceptance_paid_dispatch_stamp._claim`) checks
+  cancellation and the paid-cycle wallet only, and the read-only capacity
+  projection is WALLET and cancellation only and reads no time axis. A RUNNING
+  panel is bounded by the R23 deadline clamps and the per-send wallet fence (a
+  deadline-cut review is a typed degraded outcome). Disclosed residual: a
+  panel whose evidence build consumed the margin after admission dispatches
+  and may be cut by the deadline — one ADMITTED panel: admission prices one
+  work-order send per paid row, but packet rows may use the permitted
+  repair/retry send and native rows may run several rounds — every send
+  remains deadline- and wallet-fenced where pricing exists, so the total is
+  NOT bounded to one floor wave; a panel the deadline actually cuts is
+  DEGRADED, a panel that finishes keeps its normal verdict; never a free skip.
+  Format-repair resends are packet-row only; child/`off` acceptance runs
+  packet rows only.
 - The host acceptance decision is written ONLY by
   `acceptance_dialogue._set_acceptance_decision`, with exactly three
   owner-facing states (`accepted | revision_requested |
