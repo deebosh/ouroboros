@@ -14,6 +14,7 @@ while another answers honestly.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from starlette.applications import Starlette
@@ -60,8 +61,16 @@ def test_every_settings_writer_answers_the_typed_busy_within_the_bound(
     import ouroboros.config as config
     import ouroboros.gateway.owner_settings as owner_settings
 
+    from supervisor import workers
+
     isolated_settings.write_text(json.dumps({"OUROBOROS_RUNTIME_MODE": "advanced"}), encoding="utf-8")
     monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 1)
+    # The context-mode writer refuses max->low while agent work is live — a
+    # pre-lock check that reads the supervisor's process-global maps. Pin them
+    # idle so a sibling module's leftovers cannot turn this pin into a 409.
+    monkeypatch.setattr(workers, "PENDING", [], raising=False)
+    monkeypatch.setattr(workers, "RUNNING", {}, raising=False)
+    monkeypatch.setattr(workers, "_chat_agent", SimpleNamespace(_busy=False), raising=False)
     app = Starlette(routes=[Route(path, endpoint=endpoint, methods=["POST"])])
     app.state.drive_root = isolated_settings.parent
     assert owner_settings._settings_document_lock.acquire(timeout=5)
