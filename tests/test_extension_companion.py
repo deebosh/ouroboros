@@ -14,6 +14,7 @@ import ouroboros.gateway.host_service as host_service
 from ouroboros.contracts.plugin_api import ExtensionRegistrationError
 from ouroboros.extension_companion import (
     CompanionDescriptor,
+    companion_spawn_env,
     CompanionSupervisor,
     init_server_process_pid,
 )
@@ -813,10 +814,10 @@ def _node_companion_api(tmp_path: pathlib.Path, monkeypatch, *, runtime: str, co
 
 def _staged_companion_env(api: PluginAPIImpl) -> tuple:
     """The staged descriptor plus its env AFTER the post-fence materialization
-    (the campaign structure defers env to `PluginAPIImpl._companion_env`)."""
+    (the campaign structure defers env to `extension_companion.companion_spawn_env`)."""
 
     spawn = api._staged.companion_spawns[0]
-    spawn.descriptor.env.update(api._companion_env(spawn.spec, "test-token"))
+    spawn.descriptor.env.update(companion_spawn_env(spawn.spec, "test-token", env_allow=api._env_allow, granted_upper=api._granted_upper, skill=api._skill, skill_dir=api._skill_dir, state_dir=api._state_dir))
     return spawn.descriptor, spawn.descriptor.env
 
 
@@ -936,3 +937,65 @@ def test_windows_companion_start_does_not_request_console_process_group(tmp_path
     assert captured_upper["WINDIR"] == "C:\\Windows"
     assert captured_upper["COMSPEC"].endswith("cmd.exe")
     assert "OPENROUTER_API_KEY" not in captured["env"]
+
+
+def test_companion_processes_start_outside_the_registry_lock_after_publication(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """A companion spawn forks a child and probes its ports — seconds, under
+    load. Every other extension call (dispatch, event delivery, a sibling
+    skill's load) serializes on the registry lock, so a spawn held UNDER it
+    stalled the whole extension surface (the Telegram companion wedge). The
+    process starts after the lock is released, against the already-published
+    bundle; a start failure still routes to the standard dispose+unload path."""
+    init_server_process_pid()
+    staged_skill = tmp_path / "import" / "skill"
+    (staged_skill / "scripts").mkdir(parents=True)
+    (staged_skill / "scripts" / "daemon.py").write_text("print('ok')\n", encoding="utf-8")
+    observed = {}
+
+    class LockProbeSupervisor:
+        def __init__(self, fail=False):
+            self.fail = fail
+
+        def start(self, descriptor):
+            free = extension_plugin_api._lock.acquire(blocking=False)
+            if free:
+                extension_plugin_api._lock.release()
+            observed["lock_free_at_start"] = free
+            observed["published_at_start"] = extension_plugin_api._extensions.get("demo") is not None
+            if self.fail:
+                raise RuntimeError("spawn failed")
+            return True
+
+        def stop(self, skill_name, name):
+            return True
+
+    def _api(supervisor):
+        monkeypatch.setattr(extension_plugin_api, "get_global_supervisor", lambda: supervisor)
+        monkeypatch.setattr(extension_loader, "get_global_supervisor", lambda: supervisor)
+        api = PluginAPIImpl(_PluginAPIConfig(
+            skill_name="demo",
+            permissions=["companion_process"],
+            env_allowlist=[],
+            state_dir=tmp_path / "state",
+            settings_reader=lambda: {},
+            companion_processes=[{
+                "name": "daemon",
+                "command": ["python3", "scripts/daemon.py"],
+                "runtime": "python3",
+            }],
+            skill_dir=tmp_path / "mutable",
+            runtime_skill_dir=staged_skill,
+        ))
+        api.register_companion_process("daemon")
+        return api
+
+    api = _api(LockProbeSupervisor())
+    api._publish_registrations()
+    assert observed["lock_free_at_start"] is True
+    assert observed["published_at_start"] is True
+
+    with extension_plugin_api._lock:
+        extension_plugin_api._extensions.pop("demo", None)
+    failing = _api(LockProbeSupervisor(fail=True))
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        failing._publish_registrations()

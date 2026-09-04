@@ -36,7 +36,7 @@ from ouroboros.contracts.plugin_api import (
     normalize_extension_route_methods,
 )
 from ouroboros.event_bus import VALID_TOPICS as VALID_EVENT_TOPICS, get_global_event_bus
-from ouroboros.extension_companion import CompanionDescriptor, get_global_supervisor, is_server_process
+from ouroboros.extension_companion import companion_spawn_env, CompanionDescriptor, get_global_supervisor, is_server_process
 from ouroboros.extension_isolated_deps import (
     async_isolated_site_dirs_scope,
     isolated_site_dirs_scope,
@@ -76,8 +76,6 @@ from ouroboros.extension_ui_validation import (
 )
 from ouroboros.gateway.host_service import AUTH_TOKEN_FILENAME
 from ouroboros.node_runtime import (
-    prepend_skill_node_emergency_path,
-    skill_manifest_owns_path,
     skill_node_argv,
 )
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
@@ -567,54 +565,6 @@ class PluginAPIImpl:
                 _StagedCompanionSpawn(name=clean_name, descriptor=descriptor, spec=dict(spec))
             )
 
-    def _companion_env(self, spec: Dict[str, Any], token: str) -> Dict[str, str]:
-        """The env one staged companion is spawned with (fix-round-6).
-
-        Built only inside ``_publish_registrations``'s post-swap attach, after
-        the generation fence admitted the publication: the settings-derived
-        values (``_scrub_env`` -> ``load_settings`` takes the settings lock and
-        may persist a settings migration), the manifest env overlay, the Host
-        Service bridge URL/token and the isolated-dep PYTHONPATH are all
-        resolved HERE, so the pre-fence descriptor build stays purely
-        computational.
-        """
-        from ouroboros.extension_isolated_deps import _isolated_python_site_dirs
-        from ouroboros.gateway.host_service import DEFAULT_HOST_SERVICE_HOST, host_service_port
-        from ouroboros.tools.skill_exec import _scrub_env
-        # Case-aware merge (delta finding D2-8): a manifest "Path" must REPLACE
-        # the allowlisted "PATH" on Windows, never sit next to it — duplicate
-        # case-variant env keys make CreateProcess-era spawns fail or pick an
-        # undefined winner. Same contract as the executor-local service lane.
-        from ouroboros.workspace_executor import overlay_env
-
-        reserved = set(FORBIDDEN_SKILL_SETTINGS) | {"HOST_SERVICE_TOKEN", "HOST_SERVICE_URL"}
-        env = overlay_env(
-            _scrub_env(
-                list(self._env_allow), self._state_dir, self._skill,
-                granted_keys=list(self._granted_upper),
-            ),
-            {
-                str(key): str(value)
-                for key, value in (spec.get("env") or {}).items()
-                if str(key).upper() not in reserved
-            },
-        )
-        env["HOST_SERVICE_URL"] = f"http://{DEFAULT_HOST_SERVICE_HOST}:{host_service_port()}"
-        env["HOST_SERVICE_TOKEN"] = token
-        site_dirs = [] if self._skill_dir is None else [
-            str(path) for path in _isolated_python_site_dirs(self._skill_dir)
-        ]
-        if site_dirs:
-            inherited = env.get("PYTHONPATH")
-            env["PYTHONPATH"] = os.pathsep.join([*site_dirs, inherited] if inherited else site_dirs)
-        if str(spec.get("runtime") or "").strip() in {"node", "npm"} and not skill_manifest_owns_path(spec):
-            # T14 emergency PATH prepend, the other half of the argv rewrite in
-            # register_companion_process: descriptor env keys win over the
-            # supervisor's `_companion_base_env` merge, so the prepend reaches
-            # the child (and the PATH it would otherwise inherit) and survives
-            # supervisor restarts.
-            prepend_skill_node_emergency_path(env, fallback_path=os.environ.get("PATH", ""))
-        return env
 
     def _stage_companion_name_locked(self, name: str) -> None:
         if name not in self._staged.companion_names:
@@ -855,22 +805,24 @@ class PluginAPIImpl:
             self._registration_closed = True
             self._staged = _StagedRegistrations()
             # ATTACH (post-swap, same lock hold): deferred side effects start
-            # only against the already-published bundle.
+            # only against the already-published bundle — except the companion
+            # PROCESSES, which start after the lock is released (below).
+            companion_spawns = list(staged.companion_spawns)
             try:
-                if staged.companion_spawns:
-                    # Fix-round-5/6: the companion env materializes only HERE,
-                    # after the generation fence admitted this publication —
-                    # the state dir, the auth token (a mint during descriptor
-                    # build would let a stale recovery rotate auth_token.json
-                    # before its typed refusal, de-authorizing the LIVE
-                    # publication's companions) and the settings-derived
-                    # values (``load_settings`` takes the settings lock and
-                    # may persist a migration). The pre-fence build is pure.
+                if companion_spawns:
+                    # The env and the auth token materialize only HERE, after
+                    # the generation fence admitted this publication (a mint
+                    # during descriptor build would let a stale recovery rotate
+                    # auth_token.json before its typed refusal); the pre-fence
+                    # build is pure — see ``extension_companion.companion_spawn_env``.
                     self._state_dir.mkdir(parents=True, exist_ok=True)
                     token = mint_skill_token(self._state_dir, self._skill, self._skill_dir)
                     for spawn in staged.companion_spawns:
                         spawn.descriptor.env.clear()
-                        spawn.descriptor.env.update(self._companion_env(spawn.spec, token))
+                        spawn.descriptor.env.update(companion_spawn_env(
+                            spawn.spec, token, env_allow=self._env_allow, granted_upper=self._granted_upper,
+                            skill=self._skill, skill_dir=self._skill_dir, state_dir=self._state_dir,
+                        ))
                 bus = get_global_event_bus()
                 for sub in staged.event_subscriptions:
                     bus.subscribe(self._skill, sub.topic, sub.handler, sub_id=sub.sub_id)
@@ -878,11 +830,8 @@ class PluginAPIImpl:
                     future = self._start_supervised_task(spec)
                     if future is not None:
                         bundle.supervised_futures.append(future)
-                for spawn in staged.companion_spawns:
-                    supervisor = get_global_supervisor()
-                    if supervisor is None:
-                        raise ExtensionRegistrationError("companion supervisor is not initialized")
-                    supervisor.start(spawn.descriptor)
+                if companion_spawns and get_global_supervisor() is None:
+                    raise ExtensionRegistrationError("companion supervisor is not initialized")
             except Exception:
                 # Disclosure: the snapshot IS published; the raise routes the
                 # caller into the standard dispose+unload path, which reaps
@@ -892,6 +841,19 @@ class PluginAPIImpl:
                     "bundle is disposed through the standard unload path",
                     self._skill, exc_info=True,
                 )
+                raise
+        # Companion PROCESSES start OUTSIDE the registry lock (the pre-split
+        # loader's shape): a spawn forks a child and probes its ports — seconds
+        # under load — while every extension call serializes on ``_lock``, so
+        # a spawn under it stalled the whole surface (the Telegram wedge). The
+        # names are already on the bundle, so a start failure routes to the
+        # same dispose+unload path as a mid-attach failure.
+        for spawn in companion_spawns:
+            try:
+                get_global_supervisor().start(spawn.descriptor)
+            except Exception:
+                log.warning("extension %s companion %s failed to start; disposed through "
+                            "the standard unload path", self._skill, spawn.descriptor.name, exc_info=True)
                 raise
 
     def _close_runtime_access(self) -> None:
