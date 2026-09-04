@@ -29,6 +29,9 @@ from ouroboros.review_slot_cancel import (  # noqa: F401 — re-exported seam su
 )
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.usage_accounting import POSITIVE_PHYSICAL_ATTEMPT_STATES
+from ouroboros.delegate_custody_usage import (
+    observe_failed_review_send, observe_review_usage, session_usage_once,
+)
 from ouroboros.triad_review import (
     ACCEPTANCE_SURFACE_RULES,
     TIER_CLASSIFICATION_RULES,
@@ -362,6 +365,13 @@ class ReviewSlotExecutor:
     def __init__(self, assignment: ReviewAssignment, *, llm: Any = None):
         self.assignment = assignment
         self.llm = llm
+        self.usage_observer: Optional[Callable[[Dict[str, Any]], None]] = None
+
+    def _observe_usage(self, usage: Optional[Dict[str, Any]]) -> None:
+        observe_review_usage(self.usage_observer, usage)
+
+    def _observe_failed_send(self, exc: BaseException) -> None:
+        observe_failed_review_send(self.usage_observer, exc)
 
     def prompt_payload(self) -> Dict[str, Any]:
         """Route-owned projection of what will actually be sent (for the durable
@@ -458,9 +468,11 @@ class ApiChatReviewExecutor(ReviewSlotExecutor):
                 capture = getattr(exc, "physical_attempt_capture", None)
                 if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                     invoke_review_paid_stamp(self.assignment.dispatch_stamp)
+                self._observe_failed_send(exc)
                 raise
         # Null/non-object provider messages follow the caller's empty-response rail.
         raw_text = str(msg.get("content") or "") if isinstance(msg, dict) else ""
+        self._observe_usage(usage)
         return ReviewAttemptResult(message=msg, usage=usage, raw_text=raw_text)
 
 
@@ -1162,6 +1174,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         self._conformance_passed = False
         self._run_id = ""
         self._session_usage: Dict[str, Any] = {}
+        self._session_usage_observed = False
         self._deltas: List[Dict[str, Any]] = []
         # Unknown starts retain the exact invocation token for the permitted retry.
         self._retry_state: Dict[str, Any] = {}
@@ -1226,9 +1239,19 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             self._run_session()
         except BaseException as exc:
             self._run_id = self._run_id or str(getattr(exc, "delegated_run_id", "") or "")
+            started = bool(self._run_id or getattr(exc, "delegated_run_started", False))
+            if started and not self._session_usage_observed and session_usage_once(self._run_id):
+                self._observe_usage({
+                    "provider": "claudexor", "resolved_model": str(self.assignment.slot.model or ""),
+                    "delegated_run_started": True, "delegated_run_id": self._run_id, "cost": None,
+                })
+                self._session_usage_observed = True
             if not self._retry_state.get("pending_invocation_id"):
                 self._settled_failure = exc
             raise
+        if not self._session_usage_observed and session_usage_once(self._run_id):
+            self._observe_usage(self._session_usage)
+        self._session_usage_observed = True
         return self._verdict_result()
 
     def failure_custody(self) -> Dict[str, Any]:

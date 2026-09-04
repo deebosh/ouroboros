@@ -473,7 +473,7 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     ),
     "delegated_custody_unreconciled": (
         False,
-        "agent_task_pipeline.py terminal custody audit; a delegated-child infrastructure terminal, never a root benchmark capability result",
+        "agent_task_pipeline.py terminal custody overlay; an additive custody-debt disclosure (Done with warnings) on any task that finished with an undisposed own delegated patch, never a truncation; a truncation rail code is preserved",
     ),
     "provider_outcome_unknown": (
         False,

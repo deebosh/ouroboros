@@ -2144,11 +2144,18 @@ class TestSharedLLMRouting:
         assert "requests.post" not in source
         assert "httpx" not in source
 
-    def test_triad_emits_llm_usage_events(self):
-        """Triad review must use the shared review usage emitter."""
-        mod = _get_module("ouroboros.tools.review")
-        source = inspect.getsource(mod._multi_model_review_async)
-        assert "emit_review_usage" in source
+    def test_triad_emits_llm_usage_once_via_substrate(self):
+        """Triad usage is emitted exactly ONCE, by the shared review substrate.
+
+        The former job-level re-emit in _multi_model_review_async doubled every
+        triad call in llm_usage telemetry and mislabelled a delegated session's
+        provider: the substrate per-slot emission is the single source, the
+        same shape scope review already received.
+        """
+        source = inspect.getsource(_get_module("ouroboros.tools.review"))
+        assert 'source="review"' not in source  # no job-level re-emit
+        substrate = inspect.getsource(_get_module("ouroboros.review_substrate"))
+        assert 'source=f"review_substrate:{request.surface}"' in substrate
         helper = inspect.getsource(_get_module("ouroboros.tools.review_helpers").emit_review_usage)
         assert "llm_usage" in helper
         assert "emit_review_event" in helper

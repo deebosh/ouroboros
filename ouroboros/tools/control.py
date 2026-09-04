@@ -426,10 +426,13 @@ def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None)
     if isinstance(data.get("artifact_bundle"), dict):
         summary["artifact_bundle"] = data.get("artifact_bundle")
     if ledger:
+        # An omitted-to-artifact stub carries no entries; its summary is the
+        # count authority, and for a full ledger the two always agree.
+        ledger_summary = ledger.get("summary") if isinstance(ledger.get("summary"), dict) else {}
         summary["verification_ledger"] = {
             "schema_version": ledger.get("schema_version"),
-            "summary": ledger.get("summary") if isinstance(ledger.get("summary"), dict) else {},
-            "entry_count": len(ledger.get("entries") or []) if isinstance(ledger.get("entries"), list) else 0,
+            "summary": ledger_summary,
+            "entry_count": ledger_summary.get("entry_count", len(ledger.get("entries") or []) if isinstance(ledger.get("entries"), list) else 0),
         }
     if receipts:
         # W2: bounded per-receipt rows for the FULL single-child handoff ONLY
@@ -1704,6 +1707,10 @@ def schedule_subagent_properties() -> Dict[str, Any]:
         "may_mutate": {"type": "boolean", "default": False, "description": "Optional: grant this child the intent to spawn MUTATIVE (acting) descendants of its own. Still bounded by the usual mutative-subagent gating and depth/active caps."},
         "may_fan_out": {"type": "boolean", "default": True, "description": "Optional: whether this child may spawn MULTIPLE children (a wave). Bounded by the per-root active cap."},
         "max_children": {"type": "integer", "default": 0, "description": "Optional soft cap on this child's own direct children (0 = inherit / configured cap)."},
+        "requested_depth": {
+            "type": "integer", "default": 0,
+            "description": "Optional: how deep, counted ABSOLUTELY FROM THE ROOT, you intend this branch to nest (root=0, direct children=1; asking for children, grandchildren and great-grandchildren is 3). Recorded as your attested request and reported back as requested/permitted/achieved on the root result; it never widens or narrows the configured caps. 0 or omitted = no request.",
+        },
         "required_capabilities": {
             "type": "array",
             "items": {"type": "string", "enum": list(SUBAGENT_CAPABILITIES)},
@@ -1930,7 +1937,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     # destination now rather than a synonym for "unset".
     current_chat_id = _schedule_parent_chat(ctx)
     budget_drive_root = str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root)
-    status_drive_root = Path(budget_drive_root)
+    status_drive_root, root_cost_ceiling_usd = Path(budget_drive_root), getattr(getattr(ctx, "_cost_ceiling", None), "ceiling_usd", None)
     if refusal := schedule_delegation_refusal(parent_contract, status_drive_root, parent_task_id):
         return refusal
     workspace_root = str(getattr(ctx, "workspace_root", "") or metadata.get("workspace_root") or "").strip()
@@ -1991,9 +1998,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     parent_cognitive_route = {
         "model": str(getattr(ctx, "active_model", "") or metadata.get("model") or ""),
         "effort": str(getattr(ctx, "active_effort", "") or metadata.get("reasoning_effort") or ""),
-        "use_local_model": bool(
-            getattr(ctx, "active_use_local", metadata.get("use_local_model", False))
-        ),
+        "use_local_model": bool(getattr(ctx, "active_use_local", metadata.get("use_local_model", False))),
     }
     child_drive, _drive_err = _prepare_child_drive(
         tid, status_drive_root, memory_mode, parent_project_id)
@@ -2014,6 +2019,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         may_mutate=may_mutate, may_fan_out=params.get("may_fan_out", True),
         max_children=params.get("max_children", 0),
         intent_note=params.get("delegation_intent", ""),
+        requested_depth=params.get("requested_depth", 0),
     )
 
     child_contract = _build_child_subagent_contract({
@@ -2063,6 +2069,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "memory_mode": memory_mode,
         "project_id": parent_project_id,
         "budget_drive_root": budget_drive_root,
+        "root_cost_ceiling_usd": root_cost_ceiling_usd,
         "task_constraint": task_constraint,
         "write_surface": requested_surface,
         "task_contract": child_contract,
@@ -2104,6 +2111,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
             drive_root=str(child_drive) if child_drive is not None else "",
             child_drive_root=str(child_drive) if child_drive is not None else "",
             budget_drive_root=budget_drive_root,
+            root_cost_ceiling_usd=root_cost_ceiling_usd,
             task_constraint=task_constraint,
             **intent_fields,
             subagent_envelope=envelope,
@@ -3154,7 +3162,9 @@ def get_tools() -> List[ToolEntry]:
                 "BURST + ABSORB: when several children are INDEPENDENT, emit them in ONE batch (parallel "
                 "schedule_subagent calls in the same round) so they run concurrently, then absorb with "
                 "wait_tasks(any_terminal) — handling whichever finishes first — instead of scheduling and "
-                "blocking on them one at a time with serial wait_task calls. "
+                "blocking on them one at a time with serial wait_task calls — on cache-write-priced "
+                "routes each sibling launched before the first sibling's first response pays its own full "
+                "prefix write, so burst buys latency and spacing buys cash; your call. "
                 "INDEPENDENT VERIFIER: to check a finished deliverable without builder bias, spawn a "
                 "read-only child with memory_mode=empty whose objective carries ONLY the deliverable "
                 "location + the task's acceptance criteria (NOT your own probes/assumptions) and have it "

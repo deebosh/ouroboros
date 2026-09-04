@@ -113,7 +113,7 @@ def test_depth_summary_reports_lower_cap_as_typed_reduction(monkeypatch):
     assert build_depth_summary(root_contract, statuses) == {
         "requested_depth": 3, "permitted_depth": 2,
         "attempted_depth": 2, "achieved_depth": 2,
-        "status": "capability_reduced", "host_visible_only": True,
+        "status": "capability_reduced", "host_visible_only": True
     }
 
 
@@ -140,15 +140,55 @@ def test_depth_summary_is_order_independent_and_allows_chosen_shallower():
     expected = {
         "requested_depth": 3, "permitted_depth": 2,
         "attempted_depth": 2, "achieved_depth": 2,
-        "status": "capability_reduced", "host_visible_only": True,
+        "status": "capability_reduced", "host_visible_only": True
     }
     assert build_depth_summary(root_contract, mixed) == expected
     assert build_depth_summary(root_contract, reversed(mixed)) == expected
     assert build_depth_summary(root_contract, [mixed[0]]) == {
         "requested_depth": 3, "permitted_depth": 3,
         "attempted_depth": 1, "achieved_depth": 1,
-        "status": "chosen_shallower", "host_visible_only": True,
+        "status": "chosen_shallower", "host_visible_only": True
     }
+
+
+def test_depth_summary_mixed_requests_uses_strongest_ask_and_branch_status():
+    mixed = [
+        {"depth_provenance": {
+            "requested_depth": 2, "permitted_depth": 2,
+            "attempted_depth": 2, "achieved_depth": 2,
+        }},
+        {"depth_provenance": {
+            "requested_depth": 4, "permitted_depth": 4,
+            "attempted_depth": 3, "achieved_depth": 3,
+        }},
+    ]
+    expected = {
+        "requested_depth": 4, "permitted_depth": 4,
+        "attempted_depth": 3, "achieved_depth": 3,
+        "status": "chosen_shallower", "host_visible_only": True
+    }
+    assert build_depth_summary({}, mixed) == expected
+    assert build_depth_summary({}, reversed(mixed)) == expected
+
+
+def test_depth_summary_reduced_chain_decides_over_deeper_achieved_chain():
+    mixed = [
+        {"depth_provenance": {
+            "requested_depth": 5, "permitted_depth": 5,
+            "attempted_depth": 5, "achieved_depth": 5,
+        }},
+        {"depth_provenance": {
+            "requested_depth": 3, "permitted_depth": 2,
+            "attempted_depth": 2, "achieved_depth": 2,
+        }},
+    ]
+    expected = {
+        "requested_depth": 3, "permitted_depth": 2,
+        "attempted_depth": 2, "achieved_depth": 2,
+        "status": "capability_reduced", "host_visible_only": True,
+    }
+    assert build_depth_summary({}, mixed) == expected
+    assert build_depth_summary({}, reversed(mixed)) == expected
 
 
 def test_depth_summary_never_recomputes_missing_history_from_live_settings(monkeypatch):
@@ -157,7 +197,7 @@ def test_depth_summary_never_recomputes_missing_history_from_live_settings(monke
     assert build_depth_summary(root_contract, []) == {
         "requested_depth": 3, "permitted_depth": None,
         "attempted_depth": 0, "achieved_depth": 0,
-        "status": "evidence_unknown", "host_visible_only": True,
+        "status": "evidence_unknown", "host_visible_only": True
     }
 
 

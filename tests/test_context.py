@@ -1634,6 +1634,34 @@ def test_installed_skills_section_includes_warnings_verdict(tmp_path, monkeypatc
     assert "warnings" in section
 
 
+def test_installed_skills_section_qualifies_extension_liveness_process(tmp_path, monkeypatch):
+    from ouroboros.context import _build_installed_skills_section
+
+    class FakeEnv:
+        drive_root = tmp_path
+
+    monkeypatch.setattr(
+        "ouroboros.skill_loader.summarize_skills",
+        lambda _root: {
+            "skills": [{
+                "name": "weather_widget",
+                "type": "extension",
+                "enabled": True,
+                "review_status": "pass",
+                "executable_review": True,
+                "review_stale": False,
+                "live_loaded": False,
+                "live_reason": "load_error",
+                "process": "worker",
+            }],
+        },
+    )
+
+    section = _build_installed_skills_section(FakeEnv())
+
+    assert "Live (worker): no (load_error)" in section
+
+
 def test_health_invariants_come_first_in_dynamic_context(tmp_path):
     from ouroboros.context import build_llm_messages
     from ouroboros.memory import Memory
@@ -2082,12 +2110,16 @@ def test_delegation_fact_failure_never_drops_capability_digest(tmp_path, monkeyp
 
 def test_runtime_section_carries_official_update_fact(tmp_path, monkeypatch):
     env = _make_health_env(tmp_path)
+    # Patched WHERE IT IS USED: context.py binds the name at import, so patching the
+    # defining module would leave this test asserting the real projection's own answer
+    # and proving nothing about the injection.
     monkeypatch.setattr(
-        "ouroboros.update_letter.official_update_projection",
-        lambda head: {"status": "unchecked", "running": {"sha": head}, "letter": None},
+        "ouroboros.context.official_update_projection",
+        lambda head: {"status": "update_available", "running": {"sha": head}, "letter": {"state": "ready"}},
     )
     section = build_runtime_section(env, {"id": "task-1", "type": "task"})
     payload = json.loads(section.split("\n\n", 1)[1])
 
-    assert payload["official_update"]["status"] == "unchecked"
-    assert payload["official_update"]["letter"] is None
+    assert payload["official_update"]["status"] == "update_available"
+    assert payload["official_update"]["letter"] == {"state": "ready"}
+    assert payload["official_update"]["running"]["sha"] == payload["git_head"], "the fact reads THIS repo's HEAD"

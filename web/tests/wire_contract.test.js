@@ -260,3 +260,9 @@ test('live structured delivery frames keep additive grouping and size fields', (
     assert.match(chat, /enhanceMarkdown: enhanceMountedMarkdown/);
     assert.match(contracts, /WS_MESSAGE_TYPES[\s\S]*?"links"/);
 });
+
+test('history typedef declares task outcome terminality fields', () => {
+    const types = moduleFile('api_types.js');
+    assert.match(types, /@property \{"working"\|"done"\|"warn"\|"error"\|"cancelled"=\} outcome_phase/);
+    assert.match(types, /@property \{boolean=\} outcome_final/);
+});

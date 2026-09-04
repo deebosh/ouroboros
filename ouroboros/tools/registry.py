@@ -28,11 +28,13 @@ from ouroboros.tool_capabilities import (
     META_TOOL_NAMES,
 )
 from ouroboros.shell_parse import (
+    directory_destination_child_name,
     is_absolute_path_text,
     path_text_is_inside,
     shell_argv,
     shell_argv_with_path_tokens,
     shell_command_string,
+    sequential_effective_cwds,
     strip_leading_env_assignments,
     sudo_noninteractive_violation,
     unwrap_env_argv,
@@ -41,6 +43,7 @@ from ouroboros.tools.read_inspection import _is_pure_read_inspection
 from ouroboros.tools.shell_guards import (
     PROTECTED_RUNTIME_PATHS_LOWER,
     interpreter_family,
+    interpreter_inline_code,
     interpreter_write_shape,
     light_shell_repo_mutation,
     non_interpreter_write_shape,
@@ -49,9 +52,8 @@ from ouroboros.tools.shell_guards import (
     runtime_data_guard_targets,
     shell_writer_targets_protected,
     workspace_executor_state_write_block,
-    directory_destination_child_name,
     directory_destination_pairs,
-    writer_target_tokens,
+    writer_target_rows,
 )
 from ouroboros.tools.deliverables_shell import (
     direct_deliverable_target_block,
@@ -273,6 +275,101 @@ def _workspace_write_block_runtime_message(path_text: Any = "") -> str:
         " payloads: root=skill_payload with bucket/skill_name, or run the command with"
         " cwd=skill_payload), and keep shell writes inside the selected process root."
     )
+
+
+def _no_deliverables_decision(_path: Any) -> None:
+    """Deliverables policy is a TARGET policy: a mention takes no decision."""
+    return None
+
+
+def _directory_change_argv(argv: list) -> bool:
+    return bool(argv) and pathlib.PurePath(
+        str(argv[0])
+    ).name.lower().removesuffix(".exe") in {"cd", "pushd"}
+
+
+def _workspace_write_candidates(
+    target_rows: list, explicit_write_targets: list[str], raw_cmd: Any,
+) -> list[tuple[str, bool, int]]:
+    """Write/mention candidates for the workspace write guard, per segment.
+
+    A segment's parsed TARGETS are write candidates; every other token it carries
+    stays a MENTION-only candidate. Protected-runtime-root refusals keep running
+    for every candidate, so a path a writer merely READS (`cp ../data/settings.json
+    ./x`) still refuses, while the Deliverables decision and the outside-root
+    refusal apply to real write targets only.
+    """
+    candidates: list[tuple[str, bool, int]] = []
+    index_by_token: dict[tuple[str, int], int] = {}
+
+    def _add(token: Any, is_write: bool, row_index: int) -> None:
+        token_text = str(token)
+        if not token_text.strip():
+            return
+        position = index_by_token.get((token_text, row_index))
+        if position is not None:
+            if is_write and not candidates[position][1]:
+                candidates[position] = (token_text, True, row_index)
+            return
+        index_by_token[(token_text, row_index)] = len(candidates)
+        candidates.append((token_text, is_write, row_index))
+
+    for row_index, (segment_argv, targets, inline_code, unprovable) in enumerate(target_rows):
+        if _directory_change_argv(segment_argv):
+            # A directory change is not itself a write. Its operand becomes a
+            # write candidate only when a later segment has a parsed or
+            # fail-closed write channel, because that later relative write is
+            # evaluated from the changed directory.
+            later_write = any(
+                later_unprovable
+                or (later_targets and not _directory_change_argv(later_argv))
+                for later_argv, later_targets, _later_inline, later_unprovable
+                in target_rows[row_index + 1:]
+            )
+            targets = targets if later_write else []
+        # Inline-code targets are already extracted paths; an argv-shaped
+        # segment's targets still need the embedded-path pass (sed's in-script
+        # `w FILE` hides the path inside the script operand).
+        if targets and not inline_code:
+            write_tokens = [str(token) for token in shell_argv_with_path_tokens(list(targets))]
+        else:
+            write_tokens = [str(token) for token in targets]
+        if unprovable:
+            # Uncertainty widens only this row and its attached program bodies.
+            write_tokens.extend(str(token) for token in segment_argv[1:])
+            write_tokens.extend(
+                str(token) for token in shell_argv_with_path_tokens(list(segment_argv[1:]))
+            )
+            for body in inline_code:
+                write_tokens.extend(
+                    str(token) for token in shell_argv_with_path_tokens(str(body))
+                )
+        write_set = set(write_tokens)
+        for token in segment_argv:
+            _add(token, str(token) in write_set, row_index)
+        for token in write_tokens:
+            _add(token, True, row_index)
+    associated_writes = {text for text, is_write, _row in candidates if is_write}
+    for token in explicit_write_targets:
+        if str(token) not in associated_writes:
+            _add(token, True, -1)
+    # The MENTION lane keeps the full harvest of the raw command text: an embedded
+    # Windows drive/UNC spelling does not survive POSIX tokenization, so the
+    # per-segment argv alone would stop the protected-root and outside-root scans
+    # from ever seeing it. Such a harvested token is the SAME target in its
+    # unmangled spelling when removing the separators the tokenizer swallowed
+    # makes the two texts identical, so it keeps the write policy.
+    collapsed_writes = {
+        text.replace("\\", "")
+        for text, is_write, _row_index in candidates
+        if is_write and text.replace("\\", "")
+    }
+    associated_tokens = {text for text, _is_write, row in candidates if row >= 0}
+    for token in shell_argv_with_path_tokens(raw_cmd):
+        if str(token) in associated_tokens:
+            continue
+        _add(token, str(token).replace("\\", "") in collapsed_writes, -1)
+    return candidates
 
 
 def _workspace_write_block_outside_root_message(path_text: Any = "", work_dir: Any = "") -> str:
@@ -931,7 +1028,7 @@ _GITHUB_TOKEN_TOOLS = frozenset({
 })
 
 _TOOL_ARG_ALIASES: dict[str, dict[str, str]] = {
-    "*": {"max_entries": "max_results"},
+    "*": {"max_entries": "max_results", "timeout": "timeout_sec"},
 }
 _IGNORE_ROOT_ARG_TOOLS = frozenset({
     "commit_reviewed",
@@ -1100,7 +1197,14 @@ def _prepare_public_builtin_args(entry: "ToolEntry", args: dict[str, Any]) -> st
     }
     accepted_params = public_params | hidden_legacy
     if _entry_has_public_param_schema(entry) and any(key not in accepted_params for key in args):
-        return _format_tool_arg_error(entry)
+        return _format_tool_arg_error(
+            entry,
+            rejected=tuple(sorted(
+                str(key)
+                for key in args
+                if key not in accepted_params and not str(key).startswith("_")
+            )),
+        )
     try:
         inspect.signature(entry.handler).bind(object(), **args)
     except TypeError:
@@ -1302,12 +1406,16 @@ def _payload_dispatch_constraint(
     return synthesized or task_constraint, ""
 
 
-def _format_tool_arg_error(entry: "ToolEntry") -> str:
+def _format_tool_arg_error(entry: "ToolEntry", *, rejected: tuple[str, ...] = ()) -> str:
     params = _entry_public_params(entry)
     accepted = ", ".join(params) if params else "none"
+    # Naming the refused key is the actionable half of the repair hint; a
+    # signature-bind refusal cannot name one, and a PRIVATE dispatch carrier is
+    # never echoed back.
+    named = f"unsupported argument(s): {', '.join(rejected)}. " if rejected else ""
     return (
         f"⚠️ TOOL_ARG_ERROR ({entry.name}): invalid arguments for {entry.name}. "
-        f"Accepted parameters: {accepted}."
+        f"{named}Accepted parameters: {accepted}."
     )
 
 
@@ -2479,7 +2587,7 @@ class ToolRegistry:
         raw_cmd: Any,
         cmd_path_lower: str,
         explicit_write_targets: list[str],
-        write_target_argvs: list[list[str]],
+        target_rows: list,
         executable_path_tokens: set[str],
         runtime_mode: str,
         acting_subagent: bool,
@@ -2583,7 +2691,7 @@ class ToolRegistry:
         if direct_target_block := direct_deliverable_target_block(
             self._ctx,
             work_dir,
-            write_target_argvs,
+            [list(row[0]) for row in target_rows],
             deliverables_root_physical,
             _deliverables_target_decision,
         ):
@@ -2626,15 +2734,18 @@ class ToolRegistry:
                 for text in allowed_texts
             ):
                 return _workspace_write_block_runtime_message(root_path)
-        path_tokens = list(shell_argv_with_path_tokens(raw_cmd))
-        path_tokens.extend(
-            token
-            for token in explicit_write_targets
-            if token and token not in path_tokens
-        )
-        for token in path_tokens:
-            token_text = str(token)
-            if token_text in executable_path_tokens and token_text not in explicit_write_targets:
+        # Deliverables is a TARGET policy: a merely mentioned path takes no
+        # Deliverables decision, while every candidate keeps the
+        # protected-runtime-root scans below.
+        row_cwds = sequential_effective_cwds(target_rows, work_dir)
+        for token_text, is_write, row_index in _workspace_write_candidates(
+            target_rows, explicit_write_targets, raw_cmd,
+        ):
+            candidate_cwd = row_cwds[row_index] if 0 <= row_index < len(row_cwds) else work_dir
+            decide_deliverables = (
+                _deliverables_target_decision if is_write else _no_deliverables_decision
+            )
+            if token_text in executable_path_tokens and not is_write:
                 continue
             candidates = [token_text] if is_absolute_path_text(token_text) else []
             if token_text.startswith(("./", "../")):
@@ -2657,7 +2768,7 @@ class ToolRegistry:
                     mapped_executor_lexical = _executor_backend_candidate_path(self._ctx, candidate)
                     if mapped_executor_lexical is not None:
                         mapped_executor = mapped_executor_lexical.resolve(strict=False)
-                        deliverables_decision = _deliverables_target_decision(mapped_executor_lexical)
+                        deliverables_decision = decide_deliverables(mapped_executor_lexical)
                         if deliverables_decision is not None:
                             if deliverables_decision:
                                 continue
@@ -2697,7 +2808,7 @@ class ToolRegistry:
                         # Keep the pre-resolution spelling so a symlink child
                         # cannot resolve into another allowed root and bypass
                         # the Deliverables policy.
-                        deliverables_decision = _deliverables_target_decision(pathlib.Path(candidate))
+                        deliverables_decision = decide_deliverables(pathlib.Path(candidate))
                         if deliverables_decision is not None:
                             if deliverables_decision:
                                 continue
@@ -2712,10 +2823,10 @@ class ToolRegistry:
                                 return _workspace_write_block_runtime_message(resolved)
                             except Exception:
                                 pass
-                        if not pro_workspace_passthrough:
+                        if is_write and not pro_workspace_passthrough:
                             return _workspace_write_block_outside_root_message(resolved, work_dir)
                         continue
-                    deliverables_decision = _deliverables_target_decision(pathlib.Path(candidate))
+                    deliverables_decision = decide_deliverables(pathlib.Path(candidate))
                     if deliverables_decision is not None:
                         if deliverables_decision:
                             continue
@@ -2727,15 +2838,15 @@ class ToolRegistry:
                     for protected_path in protected_paths:
                         if path_text_is_inside(candidate, protected_path):
                             return _workspace_write_block_runtime_message(candidate)
-                    if not pro_workspace_passthrough:
+                    if is_write and not pro_workspace_passthrough:
                         return _workspace_write_block_outside_root_message(candidate, work_dir)
                     continue
-                resolved = (work_dir / pathlib.Path(candidate)).resolve(strict=False)
+                resolved = (candidate_cwd / pathlib.Path(candidate)).resolve(strict=False)
                 # The lexical relative spelling is authoritative for detecting
                 # a Deliverables-origin target; the helper then canonicalizes
                 # it and rejects symlink escapes.
-                deliverables_decision = _deliverables_target_decision(
-                    work_dir / pathlib.Path(candidate)
+                deliverables_decision = decide_deliverables(
+                    candidate_cwd / pathlib.Path(candidate)
                 )
                 if deliverables_decision is not None:
                     if deliverables_decision:
@@ -2751,7 +2862,7 @@ class ToolRegistry:
                         return _workspace_write_block_runtime_message(resolved)
                     except Exception:
                         pass
-                if not pro_workspace_passthrough:
+                if is_write and not pro_workspace_passthrough:
                     return _workspace_write_block_outside_root_message(resolved, work_dir)
         return None
 
@@ -2805,28 +2916,39 @@ class ToolRegistry:
             )
         argv_for_write = argv
         argv_executable = pathlib.PurePath(argv_for_write[0]).name.lower().removesuffix(".exe") if argv_for_write else ""
-        write_target_argvs = [argv_for_write] if argv_for_write else []
         inline_argv: list = []
         if argv_executable in {"sh", "bash", "zsh"}:
             inline_cmd = next((str(argv_for_write[idx + 1] or "") for idx, token in enumerate(argv_for_write[1:], start=1) if str(token or "") in {"-c", "--command"} and idx + 1 < len(argv_for_write)), "")
             if not inline_cmd:
                 inline_cmd = shell_command_string(argv_for_write)
             inline_argv = strip_leading_env_assignments(unwrap_env_argv(shell_argv(inline_cmd)))
-            if inline_argv:
-                write_target_argvs.append(inline_argv)
-        explicit_write_targets = list(dict.fromkeys(str(token) for target_argv in write_target_argvs for token in writer_target_tokens(target_argv) if str(token or "").strip()))
+        # ONE per-segment writer-target SSOT for this lane. The inline body is
+        # carried as a STRING so its own operator grammar survives; re-tokenizing
+        # it with plain shlex glued `2>/dev/null;` onto the following command and
+        # forged the path `/dev/null;` out of a redirection.
+        target_rows = writer_target_rows(raw_cmd)
+        write_target_argvs = [list(row[0]) for row in target_rows]
+        explicit_write_targets = list(dict.fromkeys(
+            str(token)
+            for row in target_rows
+            for token in row[1]
+            if not _directory_change_argv(row[0])
+            if str(token or "").strip()
+        ))
         # ``cp source Deliverables/`` (and the equivalent mv/ln form) writes a
         # child named after the source, while the ordinary writer-target parser
         # only sees the directory operand. Add those argv-visible child names to
         # the same target-first policy without attempting to parse inline code,
         # archive formats, or other deferred Q3 syntax.
-        for target_argv in write_target_argvs:
+        for row_index, target_argv in enumerate(write_target_argvs):
             for command, destination, source in directory_destination_pairs(target_argv):
                 source_name = directory_destination_child_name(command, target_argv, source)
                 if source_name in {"", ".", ".."}:
                     continue
-                explicit_write_targets.append(
-                    destination.rstrip("/\\") + "/" + source_name
+                derived = destination.rstrip("/\\") + "/" + source_name
+                row_argv, row_targets, row_inline, row_unprovable = target_rows[row_index]
+                target_rows[row_index] = (
+                    row_argv, [*row_targets, derived], row_inline, row_unprovable,
                 )
         # A located -e/-E/-c inline CODE BODY is not a write target: the
         # generic fallback reported every non-flag operand of a writer command
@@ -2835,10 +2957,9 @@ class ToolRegistry:
         # SSOT (pinned XG-7B3.1); only THIS lane drops the bodies. FILE
         # operands stay write-suspect (`perl -pi -e s/a/b/ file` rewrites
         # `file`); literal in-code targets still arrive via inline extraction.
-        from ouroboros.tools.shell_guards import interpreter_inline_code as _interp_inline_code
         inline_code_bodies: set = set()
         for target_argv in write_target_argvs:
-            inline_code_bodies.update(_interp_inline_code([str(t) for t in target_argv]))
+            inline_code_bodies.update(interpreter_inline_code([str(t) for t in target_argv]))
         if inline_code_bodies:
             explicit_write_targets = [t for t in explicit_write_targets if t not in inline_code_bodies]
         explicit_write_targets = list(dict.fromkeys(explicit_write_targets))
@@ -2869,7 +2990,11 @@ class ToolRegistry:
                 raw_cmd, argv_for_write, argv_executable, is_pure_read=_is_pure_read_inspection,
             )
         )
-        writeish = coarse_write_shape or bool(explicit_write_targets)
+        writeish = (
+            coarse_write_shape
+            or bool(explicit_write_targets)
+            or any(row[3] for row in target_rows)
+        )
         work_dir = self._resolved_shell_cwd(args, binding)
         if isinstance(work_dir, str):
             return work_dir
@@ -2894,7 +3019,7 @@ class ToolRegistry:
                 raw_cmd,
                 cmd_path_lower,
                 explicit_write_targets,
-                write_target_argvs,
+                target_rows,
                 executable_path_tokens,
                 runtime_mode,
                 acting_subagent,

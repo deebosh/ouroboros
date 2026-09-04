@@ -86,6 +86,21 @@ export function renderWidgetCardControls(tab) {
 const STATUS_TEXT = { starting: 'Starting…', running: 'Running', stopping: 'Stopping…' };
 
 /**
+ * Show a widget fault in the card's own status slot. Only the status span is
+ * written: the lifecycle state is untouched, because the frame really is still
+ * mounted and its Stop button must keep saying Stop. The status node persists
+ * the fault for its keyed card until a real lifecycle transition clears it.
+ */
+export function setWidgetCardFault(card, text) {
+    const status = card?.querySelector('[data-widget-status]');
+    if (!status) return;
+    status.hidden = false;
+    status.dataset.tone = 'error';
+    status.dataset.widgetFault = text;
+    status.textContent = text;
+}
+
+/**
  * Keep the head controls truthful. `state` is one of stopped | starting |
  * running | stopping — expressed through the button label, `disabled` while a
  * transition is in flight, and the status sentence; no state machine object.
@@ -100,11 +115,19 @@ export function syncWidgetCardControls(card, state, mode = '') {
     power.disabled = state === 'starting' || state === 'stopping';
     const status = card.querySelector('[data-widget-status]');
     if (status) {
-        status.hidden = state === 'stopped';
-        status.dataset.tone = state === 'running' ? 'ok' : 'neutral';
-        status.textContent = state === 'running' && mode === 'retain'
-            ? 'Keeps running'
-            : (STATUS_TEXT[state] || 'Stopped');
+        const fault = status.dataset.widgetFault;
+        if (state === 'running' && fault) {
+            status.hidden = false;
+            status.dataset.tone = 'error';
+            status.textContent = fault;
+        } else {
+            delete status.dataset.widgetFault;
+            status.hidden = state === 'stopped';
+            status.dataset.tone = state === 'running' ? 'ok' : 'neutral';
+            status.textContent = state === 'running' && mode === 'retain'
+                ? 'Keeps running'
+                : (STATUS_TEXT[state] || 'Stopped');
+        }
     }
     if (!mode) return;
     card.querySelectorAll('[data-widget-start-mode]').forEach((item) => {

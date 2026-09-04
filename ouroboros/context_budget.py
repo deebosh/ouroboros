@@ -245,6 +245,8 @@ SCHEDULED_TASKS_WARN_BYTES = 2_000_000
 # owner on each wake.  This is a warning, not a retention gate: acknowledged
 # and unacknowledged rows remain durable until a future owner-approved archive.
 BG_OBSERVATIONS_WARN_BYTES = 20_000_000
+# Compact root-task -> skill review index used by acceptance packet assembly.
+SKILL_REVIEW_ROOT_TASKS_WARN_BYTES = 20_000_000
 # ``chat_history`` can deliberately replay the archive chain, while ordinary
 # context reads only the unconsolidated generation suffix.  Warn before an
 # explicit full-history read becomes seconds-scale; this is observability, not

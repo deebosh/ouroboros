@@ -668,6 +668,33 @@ def test_failed_session_state_is_an_error_actor_not_a_verdict(tmp_path, fake_rou
     assert "ended failed" in actor["error"]
 
 
+def test_positive_custody_session_failure_emits_one_unknown_cost_usage_row(tmp_path):
+    from ouroboros.review_execution import AgentSessionReviewExecutor, ReviewAssignment
+
+    error = RuntimeError("session failed after start")
+    error.delegated_run_started = True
+    error.delegated_run_id = "run-paid-failure"
+    executor = AgentSessionReviewExecutor(ReviewAssignment(
+        request=_agent_request(), slot=_agent_slot(), call_id="c-paid-failure",
+        call_type="scope_review", custody_root=tmp_path,
+    ), llm=FakeLLM())
+    executor._run_session = lambda: (_ for _ in ()).throw(error)
+    rows = []
+    executor.usage_observer = rows.append
+
+    with pytest.raises(RuntimeError, match="session failed after start"):
+        executor.execute()
+    with pytest.raises(RuntimeError, match="session failed after start"):
+        executor.execute()
+
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "claudexor"
+    assert rows[0]["resolved_model"] == "api/model-a"
+    assert rows[0]["delegated_run_started"] is True
+    assert rows[0]["delegated_run_id"] == "run-paid-failure"
+    assert rows[0]["cost"] is None
+
+
 def test_applied_access_is_the_receipt_alone_never_the_request_echoed_back(tmp_path, fake_route):
     """`applied_access` promises APPLIED facts, verbatim from the run's own telemetry
     receipt. The daemon computes `access` as `effectiveAccess ?? the client's own parsed

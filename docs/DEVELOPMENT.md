@@ -99,8 +99,14 @@ ephemeral, credential and contract filters narrow it), so the schema is the SSOT
 of the per-tool contract and a prompt sentence about it is a second copy that
 drifts, while SYSTEM.md stays the cross-tool selection policy; mechanism
 documentation lives in ARCHITECTURE or here;
-runtime facts (capabilities, queue, catalog, receipts, health) are injected per
-turn. A new tool therefore requires NO SYSTEM.md mention. Before adding a
+runtime facts (capabilities, queue, catalog, receipts, health invariants,
+memory sections, registry digest, installed skills, review section) are
+assembled ONCE per task attempt in `build_llm_messages`, so the Health
+Invariants block lists custody obligations as of task start and does not
+refresh mid-task (a deliberate frozen-ContextCore / prompt-cache choice; the
+integrate schema, the apply receipts and the absorption digest carry the
+mid-task fact instead). Tool schemas are re-sent every round.
+A new tool therefore requires NO SYSTEM.md mention. Before adding a
 sentence to a prompt, check that the schema or runtime block does not already
 carry it; before removing one, check that they do (or add the missing fact to
 the schema without growing it into a paragraph). Local-model compaction keeps
@@ -196,7 +202,10 @@ costs a human a second look, a false green costs the thing this surface
 exists for. The full mechanism (masked-path rules, `IDENTITY_KINDS`,
 projections, bounds, rendering stamps) lives in
 `ouroboros/_outcome_receipts.py`, enforced by
-`tests/test_v678_receipt_reconciliation.py`. Four rules generalize:
+`tests/test_v678_receipt_reconciliation.py`. The process-tool lane discloses a
+masked exit code in its result envelope only and writes no receipt, so nothing
+there participates in masked-pass reconciliation or the masked-verification
+nudge. Four rules generalize:
 
 - **Whatever decides must be what is reported**: the reporting path reads the
   deciding path through one shared projection, never a re-derivation beside
@@ -466,6 +475,14 @@ Every new or changed continuity surface is reviewed as one narrow chain:
   that the *same actor* can resolve through an existing reader.
   `source_complete` is a coverage fact, not a permission to infer missing
   material.
+- Every over-limit tool result persists its exact source; there is no per-tool
+  exemption, because the DECIDER must be able to resolve what the actor could
+  page. A bounded row whose exact source is durable and referenced is an
+  omission for the acceptance panel, and only `source_unavailable` — no
+  actor-resolvable source at all — is an unresolved partial that withholds
+  dispatch. An `api_chat` acceptance reviewer has no tools and cannot resolve
+  `repo_diff_source_ref`, so a criterion that depends on the unseen part of the
+  diff is at most `partial`.
 - A consumer that can authorize PASS, a destructive rewrite, or replacement of
   a full contract must materialize the named source first. A known `partial`
   marker and an unverified claim that some host might retrieve more are not
@@ -515,6 +532,7 @@ contracts.
 | Background observations | `BackgroundConsciousness.inject_observation` → `state/consciousness_observations.jsonl` enqueue rows | Cached pending/oldest status and bounded `_render_observations` view; identity-update consumer reads the gap marker and source ref | `BG_OBSERVATIONS_WARN_BYTES` in `context_budget.py` / `agent_startup_checks.py`; append-only rows, including unacknowledged rows, are not GC-pruned by the hot-store warning |
 | Chat and biography | Canonical `logs/chat.jsonl`, rotated generations, and dialogue blocks | Main/Project context and archive-aware `chat_history` | Rotation/archive readers carry generation/gap coverage; blocks are the compression path, not a deletion of the horizon |
 | Plan/review evidence | Exact task-artifact/observability bodies and reviewer route/thread receipts | Bounded review hot index, obligations, and latest-wave status | Exact artifact refs and candidate SHA bind the decision; index rotation cannot certify a missing or partial wave |
+| Skill-review root tasks | Per-skill `state/skills/<name>/review_history.jsonl`; `skill_review_runner._append_terminal_history` projects terminal identities to `state/skill_review_root_tasks.jsonl` | `skill_readiness._skill_names_from_review_history` reads a bounded newest-first suffix for acceptance | Derived index is append-only and idempotent by root/task/outcome identity; `SKILL_REVIEW_ROOT_TASKS_WARN_BYTES` warns at 20 MB |
 | Task/project execution | Canonical task result plus promoted child artifacts and summaries | Status cards, terminal rows, and Main/Project summary projections | Canonical promotion precedes child-drive GC; disposable task scratch follows the unified retention owner |
 
 ### Invariant: Continuation authority and bounded Main projection
@@ -603,7 +621,14 @@ content measurement includes the measured document's bottom padding and border
 Feedback-sensitive verification is event-driven on the relevant engine: it
 proves temporal convergence to a quiet fixed point with a real consumer or
 production-derived fixture that crosses the known wrapping threshold, rather
-than comparing two snapshots. Module source loading and declarative requests
+than comparing two snapshots. A module widget's own faults are declared error semantics, not silence: an
+in-frame script error, an unhandled rejection or a CSP refusal reaches the
+card's status slot as one bounded, deduplicated line, while the lifecycle
+state stays running because the frame really is still mounted. There is no
+server-side widget fault ledger, so those faults are visible only while the
+Widgets page is open; that is safe to defer because the browser is the
+verification path for a widget in the first place.
+Module source loading and declarative requests
 have a bounded host timeout; declarative job widgets keep their `job_id` and
 bounded retry/timeout behavior visible in the refresh contract. Missing or
 malformed job status is an immediate protocol error, while unknown non-empty
@@ -628,18 +653,31 @@ MUST include these artifacts as **first-class context sections** — not as
 optional or opportunistic inclusions via touched-file packs.
 
 Plan review is the one flow whose governance pack is tiered, and by ONE
-structural fact — whether the plan's declared targets resolve under the
-Ouroboros system repository — never by prose and never by a plan-kind
+structural fact — whether a declared `affected_resources` target, or an
+EXISTING `evidence` path, resolves under the Ouroboros system repository —
+never by prose and never by a plan-kind
 taxonomy, which is what keeps classification un-gameable. This is a tiering,
 not an omission: before any work exists the reviewer's subject is the
 INTENTION, and every absence is a named pointer or a typed `need_evidence`
 finding the host attaches on the next cycle under the same evidence policy —
 the locator enters the manifest hash, so the next envelope is a new
 fingerprint, never an idempotent replay; nothing is silently omitted (P1).
+Two branches follow, and only one of them stops a review. A REQUIRED
+governance pack that cannot be assembled is a typed assembly failure and the
+review does not run (`PlanPacketError`). Declared or reviewer-requested
+evidence the policy cannot attach is a named absence instead — a
+`[reviewer-requested]` omission row, or the head attached with the cut named
+`truncated_to_<N>` — and the panel still runs and judges with it; a re-asked
+locator becomes a `need_evidence_repeat` note that keeps the wave open at $0.
 DEVELOPMENT.md is not resident in a plan-review packet; it is one such request
 away. Packet composition, bounds, and wave/replay mechanics: ARCHITECTURE
 "Plan construction and review" and `ouroboros/tools/plan_packet.py` /
 `plan_spec.py`.
+
+Exact-wave custody is fail-closed: the evidence continuation uses a fresh
+full-packet dispatch only when no exact artifact reference exists. An unreadable
+referenced artifact returns `plan_review_exact_artifact_unavailable`; it never
+mints replacement authority.
 
 The context-delivery registry:
 
@@ -652,8 +690,8 @@ The context-delivery registry:
 | Advisory pre-review (`tools/claude_advisory_review.py`) | Two delivery classes: an `api_chat` row runs the bounded NATIVE inspection episode (governance docs reached through its read-only tools); an `agent_session` row receives a resolvable pointer marked MANDATORY FULL READ and the session reads the full doc itself — retrieval is disclosed (native reads are host-observed; vendor-session reads are not) | same two delivery classes | same two delivery classes |
 | Scope review (`tools/scope_review.py`) | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting | full canonical doc + Atlas accounting |
 | Skill review (`skill_review.py`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) | full inline (`api_chat`) / mandatory full source-root read (`agent_session`) |
-| Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (structural path fact: a declared target resolves under the system repo); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the lossless navigation map + a resolvable pointer (W3) | named on-demand pointer; a reviewer that needs it returns `need_evidence` and the host attaches it on the next cycle |
-| Deep self-review (`deep_self_review.py`) | Three deliveries on the `deep_review` row. Packed api row: full canonical doc + Atlas accounting. Native inspection episode / agent session: MANDATORY full read at the repository root, named with its size in the task; the native episode's `read_file` receipts carry the delivered line extent and the host merges the repository-root intervals for BIBLE.md afterwards — `read` only on full coverage, else `partial`/`missing`/`unobserved` — disclosed in the report header and as a typed `capability_delta` (host-observed reads); a session's reads are `unobserved`. Memory (up to seven whitelisted files) is INLINED byte-exact on every delivery, each entry's disposition disclosed (task text, `deep_review_memory`, header `memory=n/7`) — never receipt-checked | Packed: full (max) / navigation map (low) + Atlas accounting. Retrieving rows: navigation map (`generate_doc_nav_map`), sections read on demand | Packed: full canonical doc + Atlas accounting. Retrieving rows: navigation map, sections read on demand (CHECKLISTS.md likewise) |
+| Plan review (`tools/plan_review.py`) | full for a SELF-MODIFICATION plan (structural path fact: a declared `affected_resources` target, or an existing `evidence` path, resolves under the system repo); otherwise a heading-derived navigation map of BIBLE.md generated at runtime (never a copy) | inline, in full, for a self-modification plan; otherwise the lossless navigation map + a resolvable pointer (W3) | named on-demand pointer; a reviewer that needs it returns `need_evidence` (an exact `::lines=A-B` range for one section) and the host attaches what the evidence policy allows on the next cycle, naming every absence |
+| Deep self-review (`deep_self_review.py`) | Three deliveries on the `deep_review` row. Packed api row: full canonical doc + Atlas accounting; a required set unfit under a cold density cap gets one bounded probe send and one rebuild, and a pack still unfit is the typed `deep_self_review_pack_unfit` refusal asking the owner to switch the row (no automatic fallback). Native inspection episode / agent session: MANDATORY full read at the repository root, named with its size in the task; the native episode's `read_file` receipts carry the delivered line extent and the host merges the repository-root intervals for BIBLE.md afterwards — `read` only on full coverage, else `partial`/`missing`/`unobserved` — disclosed in the report header and as a typed `capability_delta` (host-observed reads); a session's reads are `unobserved`. Memory (up to seven whitelisted files) is INLINED byte-exact on every delivery, each entry's disposition disclosed (task text, `deep_review_memory`, header `memory=n/7`) — never receipt-checked | Packed: full (max) / navigation map (low) + Atlas accounting. Retrieving rows: navigation map (`generate_doc_nav_map`), sections read on demand | Packed: full canonical doc + Atlas accounting. Retrieving rows: navigation map, sections read on demand (CHECKLISTS.md likewise) |
 
 Skill Review keeps the full stable governance/host prefix for cache-friendly
 API rows; a retrieving session reads those same canonical files from its
@@ -675,7 +713,9 @@ reviewing the Ouroboros repo for an external plan.
 The SPEC must state the goal, acceptance claims, invariants, in-scope and
 non-goals, the load-bearing decisions with their rejected alternatives, and
 what is consciously deferred. Plan review publishes exactly `GREEN`,
-`REVIEW_REQUIRED`, or `REVISE_PLAN`; findings are inputs the main agent may
+`REVIEW_REQUIRED`, `REVISE_PLAN`, or the honest `DEGRADED` (no quorum,
+or a paid actor still in flight);
+findings are inputs the main agent may
 accept, reject, or defer. Closure happens without a second LLM call through a
 separate `plan_task` call containing `review_disposition` only —
 `{review_fingerprint, items: [{finding_id, decision, rationale}]}` — covering
@@ -929,7 +969,15 @@ refusal-streak eligibility is about VERDICTS (a rebuttal is spent only by the
 substantive verdict it bought), while money is about DISPATCH (every
 physically dispatched wave counts whatever its terminal; infra facts refused
 at assembly never dispatched and stay outside the count; the paid fact is
-recorded write-ahead). Exhaustion is always the typed
+recorded write-ahead). A free refusal never wears the form of a verdict: a
+refusal that spent nothing is recorded as a typed `not_dispatched` fact plus
+its reason, never as a DEGRADED panel, a synthetic actor, or a verdict. That
+holds for a plan-review locator the evidence policy cannot attach (a named
+omission row the panel is dispatched with), an acceptance packet that
+overflows (the ladder, not a verdict), a truncated or self-pageable row (the
+cut is named), and a request that was never sent (one
+`operation_state='not_dispatched'` seat that stays in the denominator).
+Exhaustion is always the typed
 `review_cycles_exhausted` event with honest exits — under advisory
 enforcement a commit after exhaustion proceeds as a free replay with a loud
 typed disclosure; blocking refuses it.
@@ -1087,7 +1135,9 @@ Enforcement: `tests/test_extension_dispatch_threaded.py`,
   (`id`, `claim`, `surface`, `support`, `priority`); `success_criteria` is an
   input alias, not a second persisted carrier, and
   `effective_acceptance_claims` is the only binder; its read-time semantics
-  live in ARCHITECTURE §11.1. A child receives only claims
+  live in ARCHITECTURE §11.1. An OPEN wave binds nothing and is disclosed as
+  `none_open_plan_wave` with the non-binding `plan_claims_exhibit` (declared
+  intent, never in the resolvable vocabulary). A child receives only claims
   explicitly passed to its own `schedule_subagent` call. Reviewer
   `evidence_refs` resolve by exact membership in the already-built host
   packet — no fuzzy matching, filesystem reads, or re-execution — and
@@ -1170,11 +1220,29 @@ devtool files).
 - For argv-visible targets, the shell guard checks lexical Deliverables origin
   before generic workspace or executor roots, then the symlink-resolved
   destination; direct `cp`/`mv`/`ln` directory destinations derive their
-  immediate child target. The undeclared-output audit is best-effort, not a
-  full shell parser: in-command `cd`, variable/indirect destinations, and
-  inline-code path construction are disclosed parser residuals, and hardlinks
-  remain a disclosed filesystem residual (`ouroboros/tools/shell_guards.py`,
-  `ouroboros/tools/deliverables_shell.py`).
+  immediate child target. The pre-execution workspace lane uses
+  `shell_parse.split_redirections` as its one redirect grammar and emits one
+  `(segment_argv, targets, inline_code, unprovable)` row per shell segment. It
+  recurses through shell `-c` bodies at most three levels. A visible heredoc is
+  attached as program text only when its interpreter has no inline program or
+  script-file operand; shell stdin programs recurse like `-c` bodies. Python
+  UNKNOWN is independent of recovered targets; Node opaque execution and
+  write-shaped Perl bodies follow the same rule. `cd`/`pushd` and `env
+  -C`/`--chdir` update a sequential, symlink-resolved effective cwd used for
+  later/wrapped relative writes, while find/xargs replacement placeholders are
+  never concrete targets. An `unprovable` row widens only that
+  row's tokens and inline/heredoc body mentions, never an independent read-only
+  segment. The raw mention lane remains separate so POSIX shlex cannot erase
+  Windows drive/UNC spellings; the light fence likewise retains its unfiltered
+  inline-body signal.
+- This is conservative target extraction, not a full shell interpreter.
+  Variable/indirect destinations, path construction performed at runtime,
+  wrapper grammars beyond the bounded shell-body recursion, and inode aliases
+  remain parser residuals. The post-execution undeclared-output audit also
+  cannot reconstruct post-`cd` relative writes or unwalked recursive copies
+  (`ouroboros/tools/shell_guards.py`, `ouroboros/tools/deliverables_shell.py`).
+  Known parser gaps remain `dd of=`, `install`, `git -C /outside apply`, and bare
+  `xargs -I{} cp x {}` without a visible producer; they are not broadened here.
 - `scratch=[...]` is a DISTINCT channel from `outputs=[...]`: ephemeral
   in-cwd verification files, exempt from the undeclared-output guard, never
   registered as artifacts, adopted only with a declaration-time sha through
@@ -1306,9 +1374,9 @@ both critical. The imperatives:
   manifest observation is a preflight, not a lease. `subagents.route_health`
   is the ONE route reader for every consumer; quota readers project one
   `ClaudexorGateway.quota_state()` envelope
-  (`tests/test_available_subagents_runtime.py`). Substrate facts in the
-  acceptance packet are VISIBILITY ONLY — acceptance judges quality, never
-  the execution route — and an unreadable custody log reads
+  (`tests/test_available_subagents_runtime.py`). Substrate facts and the
+  packet's per-skill lifecycle facts are VISIBILITY ONLY — acceptance judges
+  quality, never the execution route — and an unreadable custody log reads
   `evidence_read_failed`, never a proven-empty substrate.
 - The coordination poll is READ-ONLY of task state: it observes the budget
   profile and snapshot rather than resolving and latching them, so a
@@ -1345,7 +1413,11 @@ both critical. The imperatives:
   `integrate_subagent_patch` and runs its own `commit_reviewed`. The shared
   `external_workspace` surface verifies and records without re-applying; a
   genesis project is durable because the project directory IS the
-  deliverable. The canonical/replica terminal field-custody projection is
+  deliverable. A genesis project starts without a `.gitignore`, so its small
+  text build output (`dist/`, `build/`) rides the `workspace.patch` record
+  until the project declares one — a disclosed residual, bounded only by the
+  per-file size cap and git's binary verdict, since there is no total-patch
+  cap. The canonical/replica terminal field-custody projection is
   ONE pure reducer reused by copy-back and effective reads — every change
   adds a stale-replica regression at BOTH seams
   (`tests/test_available_subagents_runtime_review_fixes.py`). Do not broaden
@@ -1561,11 +1633,24 @@ by "Provider Independence" above. Call-site imperatives:
   admission and the transport bound cannot disagree.
 - Tree-spend pacing decides on root-subtree ledger spend including in-flight
   holds; own cost is a disclosed lower-bound fallback, and unavailable is
-  unknown, never `$0`. Refresh `usage_accounting.last_root_accounting` only
+  unknown, never `$0`. The root's deciding ceiling bounds every tree member;
+  each descendant intersects that root-cap component with its own current
+  global resolution, resolves once, and discloses the same object the loop later decides on, printed with its
+  binding bound named on every host cost surface. Refresh `usage_accounting.last_root_accounting` only
   at rare cache-breaking decision surfaces, never per round or inside a
-  stable cached prefix (`tests/test_budget_limits.py`). Post-task
+  stable cached prefix (`tests/test_budget_limits.py`). Graceful
+  finalization precedes the ledger fence because the affordability rail
+  borrows the fence's own per-attempt reservation (cache-aware only from the
+  task's last settled same-provider normalized-route split), never a constant margin alone and never a
+  per-round ledger scan (`tests/test_tree_cost_ceiling.py`). Read the
+  configured global budget through the one resolver rather than an
+  inline default, so the loop axis, the bound scope and the ledger fence
+  cannot disagree about the same install. Post-task
   consolidation/synthesis reads `usage_breakdown` once per root subtree and
-  passes the same snapshot to summary and reflection; it is explicitly
+  passes the same snapshot to summary and reflection; both prompts also
+  receive the task's own acceptance-panel projection (typed counts plus a
+  bounded reason preview, never full reviewer prose), and a host-supplied
+  absence statement names the lens it describes; it is explicitly
   non-final because those flows have not spent yet — treating a read
   failure as `$0` would create false accounting certainty. No second
   ledger, no reconciliation LLM call.
@@ -1580,8 +1665,19 @@ by "Provider Independence" above. Call-site imperatives:
   fewer; `tests/test_review_prompt_caching.py`); only
   `LLMClient._normalize_payload_cache_ttl` finalizes the assembled wire
   payload. Prompt-cache support stays deliberately narrow — no provider
-  hops, body rerouting, or a generic cache/retry framework. Review gate:
-  CHECKLISTS item 22 (`cache_friendliness`).
+  hops, body rerouting, or a generic cache/retry framework. A tool-less
+  variant of an otherwise identical request rebuilds the whole provider
+  prefix, and a `tool_choice` change rebuilds the messages tier, so a
+  wrap-up call keeps the schemas, the server-web flag and `tool_choice`
+  identical to the working round and instructs in text instead.
+  `context_fit.seal_task_transcript` owns the single message-side
+  breakpoint -- the task message until the rolling tool-result seal
+  qualifies, migrated in the same call -- preserved on the
+  direct-Anthropic lane by `_anthropic_blocks_from_content` and on
+  OpenRouter by `supports_message_cache_control`, and pinned by
+  `tests/test_review_prompt_caching.py`;
+  `review_substrate.assert_cache_breakpoint_cap` covers only the review
+  builders. Review gate: CHECKLISTS item 22 (`cache_friendliness`).
 - Provider fallback is disabled only when the transcript carries a SEALED
   reasoning artifact
   (`ouroboros/reasoning_artifacts.py::transcript_has_sealed_reasoning`),
@@ -1663,6 +1759,13 @@ by "Provider Independence" above. Call-site imperatives:
   active lease; an already-paid in-flight wave stays eligible for exact
   custody reconciliation without authorizing a new dispatch. An in-flight
   reviewer never counts as final quorum, under either enforcement mode.
+- Every zero-physical acceptance refusal takes that same shape — an
+  unresolvable partial source, an immutable-core overflow, and a slot whose
+  window cannot hold the rendered prompt all record a typed `$0
+  not_dispatched` row that carries its cause in `error`. The panel transport
+  folds to `not_dispatched` and the aggregate stays `DEGRADED` through those
+  typed rows: a refusal that spent nothing is recorded as `not_dispatched`
+  plus its cause and never wears a verdict.
 - A returned provider response (including an empty body) or typed terminal
   408/429/5xx is settled and may use the surface's bounded retry rail;
   `dispatched`/`unresolved` without a typed terminal status stays under the
@@ -1734,7 +1837,9 @@ by "Provider Independence" above. Call-site imperatives:
   Binding the complete-result SHA-256 means a parent cannot claim it
   integrated a result that later changed. `deferred` suppresses only the
   reminder and forces an honest degraded/best-effort terminal answer until
-  resolved. A child wedged in the legacy `cancel_requested` latch is intent,
+  resolved. That per-value consequence is carried by the
+  `tree_note` payload schema itself, which is the SSOT for when to choose each
+  value, and its enum reads the validator's own set. A child wedged in the legacy `cancel_requested` latch is intent,
   not outcome — it stays visible as cancel-pending until custody settles it.
 - Host task acceptance is root-only; eligibility uses structured facts
   (`outcomes.turn_has_reviewable_effects` plus a typed
@@ -1792,12 +1897,19 @@ by "Provider Independence" above. Call-site imperatives:
   unknown status fails closed. When you add a writer, add its reason to the
   closed set AND check every value-keyed reader —
   `outcomes.derive_loop_outcome` keys degradations and blocked terminals on
-  status+reason PAIRS, and breaking a pairing is a silent false green. The
-  reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
+  status+reason PAIRS, and breaking a pairing is a silent false green.
+  Every forced rail closes a dangling `revision_requested` through
+  `acceptance_dialogue.terminalize_dangling_revision`: it promises a pass the
+  rail cannot take. `accepted` and `finalized_unaccepted` are never
+  overwritten, no bypass reason is stamped over a panel that ran, and the
+  resulting pair stays outside `_ACCEPTANCE_BLOCKED_TERMINAL_REASONS`.
+  The reviewer verdict vocabulary `PASS|FAIL|DEGRADED` is NOT narrowable;
   `adaptive_quorum` applies, any contributing FAIL fails, DEGRADED abstains,
-  and no quorum is a terminal HOST decision. Chat and Logs use the same
-  severity reducer; degraded review or a best-effort objective must never
-  render as green solved. Do not add task scope review or reuse the commit
+  and no quorum is a terminal HOST decision. Chat, Logs, the
+  durable Project lifecycle rows and the Telegram notifier use the same phase
+  (`taskOutcomeSeverity`/`taskTerminalPhase` mirrored by
+  `project_dialogue.outcome_phase`); degraded review or a best-effort
+  objective must never render as green solved on any of them. Do not add task scope review or reuse the commit
   gate.
 - The acceptance improvement loop is a reviewer-authored DIALOGUE: obligation
   identity comes from the reviewer's typed
@@ -1819,6 +1931,14 @@ by "Provider Independence" above. Call-site imperatives:
   otherwise the shared review-cycle cap binds under EVERY policy, giving
   `improvement passes = cycles − 1` (the retired acceptance key is migrated
   into the shared key at settings load and never binds at runtime).
+
+- A `PATCH_DISPOSED` row names its disposer (`disposed_by_task_id`),
+  because a non-owner may write it once the owner task is terminal;
+  wait/cancel/answer authority stays owner-only. A terminal custody
+  obligation is disclosed additively (an objective warning plus the
+  reason code, preserving a truncation rail code); converting a custody
+  fact into a review, objective or execution verdict is the defect this
+  rule prevents.
 
 Enforcement: the adversarial tests the first bullet mandates, plus
 `tests/test_child_result_disposition.py`, `tests/test_acceptance_fence.py`,
@@ -1899,6 +2019,9 @@ quarantine).
   reviewing actor must see without the host inventing a semantic outcome. Do
   not turn blockers into structural outcome vetoes, and do not add a
   lease/holder service, a second ledger, or runtime writer keyword scanners.
+- The acceptance packet reads mutation evidence from the canonical results
+  root (`budget_drive_root` first), the same root the writer and the outcome
+  consumer use.
 - Git staging is attribution-based: `paths=None` means the clean-at-baseline
   candidate set, an explicit list must be its subset, and empty never means
   `git add -A`. Preserve pre-existing user dirt as excluded evidence.
@@ -2040,7 +2163,14 @@ rules, not a copied color/radius/dimension inventory.
 - Task outcome truth stays in `log_events.js::taskOutcomeSeverity` and
   `taskTerminalPhase`; `taskPresentation` is the one compact factual
   projection consumed by chips, live completion, history replay, and child
-  terminal presentation. A non-terminal diagnostic may add a timeline fact
+  terminal presentation. Its host mirror is
+  `project_dialogue.outcome_phase`, pinned to the browser by one shared
+  fixture (`web/tests/fixtures/outcome_phase_parity.json`): a new axis, reason
+  or acceptance status is added to both sides in the same commit, with a row
+  in that fixture. The detail line under the headline comes from
+  `taskReasonDetail` in the order soft stop, hard failure or cancellation
+  reason, host acceptance decision (status plus stored rationale), typed
+  reason phrase or raw code — never from a second producer. A non-terminal diagnostic may add a timeline fact
   but must not promote the whole task; unknown event names never acquire
   Chat severity from `error`/`crash`/`fail` keyword matching. The Chat
   header reports connection and server-authoritative activity only; failed

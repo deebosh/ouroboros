@@ -480,7 +480,7 @@ def test_tool_timeout_settings_wins_when_higher():
 def test_review_evidence_no_truncation_by_default():
     """format_review_evidence_for_prompt must NOT truncate by default (max_chars=0)."""
     from ouroboros.review_evidence import format_review_evidence_for_prompt
-    big = {"has_evidence": True, "data": "x" * 10000}
+    big = {"has_evidence": True, "task_id": "task-review", "data": "x" * 10000}
     result = format_review_evidence_for_prompt(big)
     assert "truncated" not in result.lower()
     assert len(result) > 10000
@@ -489,7 +489,7 @@ def test_review_evidence_no_truncation_by_default():
 def test_review_evidence_bounded_with_omission_note():
     """format_review_evidence_for_prompt truncates with explicit omission note when max_chars>0."""
     from ouroboros.review_evidence import format_review_evidence_for_prompt
-    big = {"has_evidence": True, "data": "x" * 10000}
+    big = {"has_evidence": True, "task_id": "task-review", "data": "x" * 10000}
     result = format_review_evidence_for_prompt(big, max_chars=500)
     assert "OMISSION NOTE" in result
     assert "truncated at 500 chars" in result
@@ -849,3 +849,45 @@ def test_update_letter_max_tokens_pinned():
     from ouroboros.update_letter import UPDATE_LETTER_MAX_TOKENS
 
     assert UPDATE_LETTER_MAX_TOKENS == 1024
+
+
+def test_acceptance_panels_reach_the_synthesis_prompts():
+    """AP7/F27: the post-task summariser and the reflection were told there was
+    no review evidence even when the task bought an acceptance panel — the
+    commit/advisory lens simply does not know about it. The panels ride along,
+    and the absence statement names the lens it describes."""
+    from ouroboros.review_evidence import format_review_evidence_for_prompt
+
+    panels = [{
+        "panel_id": "panel_1", "surface": "task_acceptance", "authority": "host",
+        "aggregate_signal": "DEGRADED", "transport_status": "not_dispatched",
+        "parse_status": "malformed", "superseded": False,
+        "quorum": {"required": 2, "contributed": 0, "configured": 3},
+        "reason": "slot_1:degraded_partial_source: the exact source is unavailable",
+    }]
+    out = format_review_evidence_for_prompt({}, max_chars=8000, acceptance_panels=panels)
+    assert "TASK ACCEPTANCE PANELS" in out
+    assert "no structured review evidence" not in out
+    assert "DEGRADED" in out and "not_dispatched" in out
+    assert '"required": 2' in out and '"contributed": 0' in out
+    assert "degraded_partial_source" in out
+
+    # No lens and no panels: the sentinel names WHICH evidence is absent.
+    bare = format_review_evidence_for_prompt({}, max_chars=8000)
+    assert bare == "(no commit/advisory review evidence recorded for this task)"
+
+    # Both together, and the existing bound still applies.
+    both = format_review_evidence_for_prompt(
+        {"has_evidence": True, "task_id": "task-review", "data": "x" * 10_000}, max_chars=500,
+        acceptance_panels=panels,
+    )
+    assert "OMISSION NOTE" in both
+    assert "truncated at 500 chars" in both
+
+
+def test_summary_and_reflection_callers_pass_the_acceptance_panels():
+    from pathlib import Path
+
+    for filename in ("ouroboros/agent_task_pipeline.py", "ouroboros/reflection.py"):
+        src = Path(filename).read_text(encoding="utf-8")
+        assert "acceptance_panels=" in src, filename

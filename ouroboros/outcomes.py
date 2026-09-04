@@ -9,6 +9,7 @@ success, while typed runtime evidence may conservatively degrade an otherwise
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import pathlib
@@ -148,6 +149,7 @@ REASON_PROVIDER_FAILURE = "provider_failure"
 REASON_TASK_EXCEPTION = "task_exception"
 REASON_DEEP_SELF_REVIEW_UNAVAILABLE = "deep_self_review_unavailable"
 REASON_DEEP_SELF_REVIEW_ERROR = "deep_self_review_error"
+REASON_DEEP_SELF_REVIEW_PACK_UNFIT = "deep_self_review_pack_unfit"
 REASON_TOOL_FAILURE = "tool_failure"
 REASON_DELIVERY_CONTROL_DEGRADED = "delivery_control_degraded"
 REASON_CHILD_RESULTS_DEFERRED = "child_results_deferred"
@@ -495,6 +497,27 @@ def infra_failed_axes(reason_code: str, *, lifecycle: str = "failed", review_tri
         reason_code=reason_code,
         review_trigger=review_trigger,
     )
+
+
+# An undisposed own delegated patch is a DEBT, not a failure: the task's own
+# derived verdicts (execution, review, objective, artifacts) are what it earned
+# and must survive, so the custody fact is ADDED as an objective warning rather
+# than replacing the axes with an infrastructure terminal.
+WARN_DELEGATED_CUSTODY_UNRECONCILED = "delegated_custody_unreconciled"
+
+
+def custody_debt_axes(axes: Any) -> Dict[str, Any]:
+    """Add the custody-debt warning to derived axes without rewriting them.
+
+    Idempotent: the overlay is applied again when the result row is stored, and
+    ``_merge_objective_warning`` already dedups. Nothing is copied onto the
+    execution axis — the debt list itself lives on the row as
+    ``delegated_runs_unreconciled`` plus the reconciliation envelope."""
+    out = copy.deepcopy(axes) if isinstance(axes, dict) and axes else {}
+    objective = out.setdefault(
+        "objective", {"status": OBJECTIVE_NOT_EVALUATED, "source": "none"})
+    _merge_objective_warning(objective, WARN_DELEGATED_CUSTODY_UNRECONCILED)
+    return out
 
 # Tools/roots whose successful use means the turn produced reviewable work.
 # Root-aware write tools: these take a `root` arg, so the scratch-exclusion rule
@@ -910,6 +933,7 @@ _INFRA_TEXT_PREFIXES = (
     ("❌ Deep self-review unavailable:", "runtime", REASON_DEEP_SELF_REVIEW_UNAVAILABLE),
     ("⚠️ Deep self-review error:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
     ("❌ Deep self-review failed:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
+    ("❌ Deep self-review pack unfit:", "runtime", REASON_DEEP_SELF_REVIEW_PACK_UNFIT),
 )
 
 
@@ -1353,6 +1377,11 @@ def refresh_verification_ledger_artifacts(
     """Return ``ledger`` with artifact status synchronized after finalization."""
 
     if not isinstance(ledger, dict):
+        return ledger
+    # An omitted-to-artifact stub is a PROJECTION of the artifact file, not a
+    # source: it carries no entries, so rebuilding from it would mint "0
+    # entries / no failures / execution ok" over the real ledger's summary.
+    if ledger.get("omitted_to_artifact"):
         return ledger
     entries = [
         item for item in (ledger.get("entries") or [])
