@@ -55,10 +55,15 @@ DEFAULT_MAX_BODIES = 200
 DEFAULT_MAX_ROWS = 60
 
 _ROW_RE = re.compile(r"^\+\|\s*(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)\s*\|")
-# The table's own furniture: a header row and the dashed separator under it carry no release
-# and are the ONLY added rows that may be skipped in silence. Anything else that fails to
-# parse is a row the author will never see, so it is counted and disclosed.
-_ROW_FURNITURE_RE = re.compile(r"^\+\|\s*(?:-{2,}|:?-+:?|version)\s*\|", re.IGNORECASE)
+# The table's own furniture: the EXACT canonical header and the dashed separator under it
+# carry no release and are the only added rows that may be skipped in silence. The match is
+# whole-row on purpose — a row merely STARTING with "version" is a row whose content the
+# author would otherwise never see, so it is counted and disclosed like any other.
+_ROW_FURNITURE_RE = re.compile(
+    r"^\+\|\s*version\s*\|\s*date\s*\|\s*description\s*\|\s*$"
+    r"|^\+\|(?:\s*:?-{2,}:?\s*\|)+\s*$",
+    re.IGNORECASE,
+)
 _UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 _REFRESH_LOCK = threading.Lock()
 # Bumped by every letter write under the lock, so a refresh that waited for the lock can
@@ -594,9 +599,11 @@ def project_letter_for_panel(
     head = str(status.get("current_sha") or "")
     target = str(((record or {}).get("key") or {}).get("target_sha") or "")
     consumed = False
-    # Ancestry is asked only where it can change the answer: a status that still reports
-    # the update as available has not consumed anything, and HEAD == target needs no git.
-    if record and head and target and head != target and not status.get("available"):
+    # Ancestry is asked only where it can change the answer: a letter about the target
+    # still ON OFFER is pending by definition, and HEAD == target needs no git. Everything
+    # else — including an applied older target under a newer available one — is asked.
+    offered = str(status.get("latest_sha") or "")
+    if record and head and target and head != target and target != offered:
         try:
             consumed = (git or _default_git())(
                 ["git", "merge-base", "--is-ancestor", target, head]
@@ -616,10 +623,12 @@ def official_update_projection(
 ) -> Dict[str, Any]:
     """The typed fact for the Runtime context: O(1), no git, never raises.
 
-    ``status`` is honest about freshness: ``up_to_date`` only when HEAD equals the last
-    checked official target, ``update_available`` only when the letter was written for
-    this exact HEAD, ``moved_since_check`` when HEAD matches neither, ``unchecked`` when
-    no fetching check has completed. ``status_as_of`` names the check the fact comes from.
+    ``status`` is honest about freshness. It follows the CHECK, not the letter:
+    ``update_available``/``up_to_date`` while the last check still describes this HEAD (the
+    availability is the cache's, so an available update may carry a failed letter or none at
+    all), ``up_to_date`` also when HEAD is the checked target itself, ``moved_since_check``
+    when HEAD matches neither, ``unchecked`` before any fetching check has completed.
+    ``status_as_of`` names the check the fact comes from.
     ``head_sha`` is the HEAD the caller already resolved for its own repository; a
     child worktree that committed reads ``moved_since_check`` for its own tree, which
     is a true statement about that tree, not about the canonical body.

@@ -179,6 +179,17 @@ def test_material_discloses_an_added_row_whose_version_is_not_one(history_repo):
     assert material["omitted_rows"] == 1, "the unreadable row is disclosed, the furniture is not"
     assert "1 malformed history row(s) omitted" in ul.material_text(material)
 
+    # Furniture is the EXACT canonical header and separator, nothing that merely resembles
+    # them: a real row whose first cell happens to read "version" is content, not furniture.
+    (repo / "README.md").write_text(
+        "# Demo\n\n## Version History\n\n| Version | Date | Description |\n|---|---|---|\n"
+        "| version | 2026-01-06 | a row that only looks like a header |\n",
+        encoding="utf-8",
+    )
+    c6 = _commit(repo, "readme: a row that looks like the header")
+    lookalike = ul.collect_range_material(c5, c6, git=_capture_for(repo))
+    assert lookalike["omitted_rows"] == 1 and lookalike["releases"] == []
+
 
 def test_material_text_carries_full_provenance(history_repo):
     # Full commit shas and the commit each row came from: an omission has to stay resolvable.
@@ -538,12 +549,17 @@ def test_panel_projection_proves_a_consumed_target_with_git(tmp_path):
         {"current_sha": merged, "latest_sha": ""}, drive_root=drive, git=lambda argv: (1, "", ""),
     )
     assert stranger["relation"] == "other"
-    # A status that still offers the update has consumed nothing: no git is asked at all.
+    # A letter about the target still ON OFFER is pending by definition: no git is asked.
     offered = ul.project_letter_for_panel(
         {"current_sha": "a" * 40, "latest_sha": target, "available": True}, drive_root=drive,
         git=lambda argv: (_ for _ in ()).throw(AssertionError("nothing to prove while the update is offered")),
     )
     assert offered["relation"] == "pending"
+    # …but an applied OLD target under a NEWER available one is still proven and relabelled.
+    newer = ul.project_letter_for_panel(
+        {"current_sha": merged, "latest_sha": "c" * 40, "available": True}, drive_root=drive, git=ancestor,
+    )
+    assert newer["relation"] == "applied"
     # A git that cannot answer is not proof, and never takes the letter down with it.
     unprovable = ul.project_letter_for_panel(
         {"current_sha": merged, "latest_sha": ""}, drive_root=drive,
