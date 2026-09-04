@@ -343,6 +343,43 @@ def test_requests_protocol_error_with_remote_disconnected_is_a_transport_death()
     assert is_retryable_transport_death(retried) is True
 
 
+def test_requests_chunked_body_disconnect_is_a_transport_death():
+    """The lane's OTHER wrapper. The Anthropic-native POST is non-streaming, so
+    the body is read inside ``requests.post``: a socket that dies mid-BODY
+    surfaces as ``ChunkedEncodingError(ProtocolError(RemoteDisconnected))``,
+    which does NOT subclass ``ConnectionError``. It is the same post-dispatch
+    death and earns the same bounded repeat; without a typed transport cause the
+    wrapper proves nothing and keeps the base no-resend terminal."""
+    import http.client
+
+    import requests
+    import urllib3
+    from ouroboros.transport_custody import (
+        attempt_custody_event_fields,
+        is_pre_dispatch_transport_failure,
+        is_retryable_transport_death,
+    )
+
+    assert not issubclass(
+        requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError,
+    )  # why this class has to be named explicitly
+    disconnected = http.client.RemoteDisconnected("Remote end closed connection without response")
+    exc = requests.exceptions.ChunkedEncodingError(
+        urllib3.exceptions.ProtocolError("Connection broken: IncompleteRead(0 bytes read)", disconnected)
+    )
+    exc.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+    assert is_retryable_transport_death(exc) is True
+    assert is_pre_dispatch_transport_failure(exc) is False  # the two predicates stay exclusive
+    assert attempt_custody_event_fields(exc)["transport_cause_type"] == "RemoteDisconnected"
+    # The same fact through an explicit wrapper (the recovery ladder re-raises with a cause).
+    assert is_retryable_transport_death(_sdk_wrapped(exc, _unresolved_capture(provider="anthropic"))) is True
+    # A body failure with no typed transport cause is not a death.
+    untyped = requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead(0 bytes read)")
+    untyped.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+    assert is_retryable_transport_death(untyped) is False
+    assert "transport_cause_type" not in attempt_custody_event_fields(untyped)
+
+
 def test_requests_lane_event_fields_name_the_innermost_typed_cause(data_root):
     """The durable row and the ledger's bounded cause text see the requests
     lane's typed death, which lives in ``args``/``reason``, not ``__cause__``:

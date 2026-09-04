@@ -384,6 +384,46 @@ def test_requests_lane_death_repeats_on_the_same_rail(tmp_path, no_sleep):
     assert api_errors[0]["transport_cause_type"] == "RemoteDisconnected"
 
 
+def test_requests_chunked_body_disconnect_repeats_on_the_same_rail(data_root, tmp_path, no_sleep):
+    """The Anthropic-native POST is non-streaming, so the body is read inside
+    ``requests.post`` and a socket that dies mid-body raises a BARE
+    ``ChunkedEncodingError`` — no ``ConnectionError`` in its MRO — out of the
+    physical send. Through the REAL ledger: one bounded repeat, two physical
+    lifecycles (the dead one left unresolved at its upper bound), and the durable
+    row names the innermost typed cause."""
+    import http.client
+
+    import requests
+    import urllib3
+
+    def chunked_body_death():
+        raise requests.exceptions.ChunkedEncodingError(urllib3.exceptions.ProtocolError(
+            "Connection broken: IncompleteRead(0 bytes read)",
+            http.client.RemoteDisconnected("closed without response"),
+        ))
+
+    llm = _LedgerLLM(data_root, chunked_body_death)
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage)
+
+    assert msg == OK_RESPONSE[0]
+    assert llm.calls == 2
+    by_attempt = {}
+    for row in _ledger(data_root):
+        by_attempt.setdefault(row["attempt_id"], []).append(row["state"])
+    assert list(by_attempt.values()) == [
+        ["reserved", "dispatched", "unresolved"],
+        ["reserved", "dispatched", "settled"],
+    ]
+    assert ua.usage_projection(data_root)["unresolved_upper_bound_usd"] == 1.0
+    api_errors = _events(tmp_path, "llm_api_error")
+    assert [(row["error_kind"], row["retry_same_request"]) for row in api_errors] == [
+        ("provider_outcome_unknown", True),
+    ]
+    assert api_errors[0]["transport_cause_type"] == "RemoteDisconnected"
+    assert _events(tmp_path, "llm_non_retryable_same_request") == []
+
+
 # ------------------------------------------------------- round-keyed counter
 
 def test_counter_is_keyed_by_round_and_survives_re_entry_of_the_same_round(tmp_path, no_sleep):

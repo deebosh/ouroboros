@@ -122,13 +122,22 @@ def _capture_on_chain(error: BaseException) -> Any:
 
 
 def _requests_protocol_death(exc: BaseException) -> Any:
-    """The innermost typed death inside a requests ``ConnectionError``, or None.
+    """The innermost typed death inside a requests body-disconnect wrapper, or None.
+
+    Both of requests' wrappers for a socket that died mid-request count, because
+    the Anthropic-native lane's non-streaming ``requests.post`` reads the body
+    inside the call: the ``ConnectionError`` raised while the request is in
+    flight, and the ``ChunkedEncodingError`` ``Response.iter_content`` raises
+    when urllib3 signals a ``ProtocolError`` while the BODY is being read.
+    ``ChunkedEncodingError`` does NOT subclass ``ConnectionError`` (its MRO goes
+    straight to ``RequestException``), so it has to be named here; it can only
+    carry a body-read failure, so the walk below decides it exactly as before.
 
     requests wraps the urllib3 ``ProtocolError`` (whose own args carry the
-    ``RemoteDisconnected``) as the ``ConnectionError``'s first argument, and
-    urllib3 keeps a wrapped failure as ``reason`` on ``MaxRetryError`` — none of
-    it is on ``__cause__``. The deepest match wins so the durable cause type is
-    the most specific fact (``RemoteDisconnected`` over ``ProtocolError``). A
+    ``RemoteDisconnected``) as the wrapper's first argument, and urllib3 keeps a
+    wrapped failure as ``reason`` on ``MaxRetryError`` — none of it is on
+    ``__cause__``. The deepest match wins so the durable cause type is the most
+    specific fact (``RemoteDisconnected`` over ``ProtocolError``). A
     proxy-tunnel failure (a requests or urllib3 ``ProxyError`` anywhere on the
     walk) is never a death, whatever it wraps: the tunnel, not the provider
     request, is what died, and that class keeps the base no-resend terminal.
@@ -139,7 +148,9 @@ def _requests_protocol_death(exc: BaseException) -> Any:
         import urllib3
     except Exception:  # pragma: no cover - optional transport dependency
         return None
-    if not isinstance(exc, requests.exceptions.ConnectionError) or isinstance(
+    if not isinstance(exc, (
+        requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError,
+    )) or isinstance(
         exc, (requests.exceptions.Timeout, requests.exceptions.ProxyError),
     ):
         return None
@@ -163,7 +174,8 @@ def is_retryable_transport_death(exc: BaseException) -> bool:
     The class is deliberately narrow: httpx ``ReadError`` / ``WriteError`` /
     ``RemoteProtocolError`` reached through the explicit ``__cause__`` chain the
     OpenAI SDK sets (``raise APIConnectionError(request=request) from err``), or
-    the requests/urllib3 Anthropic-native shape — a ``ConnectionError`` carrying
+    the requests/urllib3 Anthropic-native shape — a ``ConnectionError`` or a
+    body-read ``ChunkedEncodingError`` carrying
     ``urllib3.exceptions.ProtocolError`` / ``http.client.RemoteDisconnected``.
     NOT a timeout of any kind (a ``ReadTimeout`` is "we gave up", the provider
     may still be working), NOT a provider status/body error, NOT a pre-dispatch
