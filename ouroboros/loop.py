@@ -387,7 +387,7 @@ def _loop_tree_accounting(
         )
 
         scope = current_usage_scope()
-        if scope is None or not scope.root_task_id or scope.root_limit_usd is None:
+        if scope is None or not scope.root_task_id:
             return None
         if refresh:
             return refresh_root_accounting(scope.drive_root, scope.root_task_id, max_age_sec=max_age_sec)
@@ -402,11 +402,9 @@ def _soft_land_exhausted_ceiling(
     cost_ceiling: "task_pacing.CostCeiling",
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     """Typed soft landing (v6.91): a root cap at or below the planning margin
-    leaves no working room — enter the existing graceful best-effort wrap-up
-    BEFORE spending a work round; never run uncapped (the pre-typed shape
-    resolved this to the same None as "unlimited"). The ledger fence stays the
-    untouched backstop. Returns the forced-final tuple, or None when the
-    ceiling is not in the ``exhausted_soft_land`` state."""
+    wraps up BEFORE a work round through the same priced candidate as the
+    last-fit rail; an unaffordable wrap-up ends as budget_wrapup_unaffordable
+    instead of a fence pause. None when the ceiling is not exhausted."""
     if cost_ceiling.state != task_pacing.COST_CEILING_EXHAUSTED_SOFT_LAND:
         return None
     cap_text = (
@@ -421,16 +419,35 @@ def _soft_land_exhausted_ceiling(
         f"Per-task tree cap {cap_text} leaves no working room above the "
         f"wrap-up planning margin ({margin_text}). Budget exhausted."
     )
+    trace = limit_ctx.llm_trace if isinstance(limit_ctx.llm_trace, dict) else {}
+    priced_prompt = _prepare_forced_prompt(
+        limit_ctx, f"[BUDGET LIMIT] {soft_land_reason} {_FORCED_BEST_EFFORT_TAIL}", trace,
+    )
+    prospective = [dict(message) for message in limit_ctx.messages]
+    _append_or_merge_user_message(prospective, priced_prompt)
+    request, send_messages = task_pacing.prepared_wrapup_candidate(
+        limit_ctx, prospective, allow_server_web_search=_server_web_allowed_by_task(
+            getattr(getattr(limit_ctx, "tools", None), "_ctx", None)),
+    )
+    tree_info = _loop_tree_accounting(refresh=True, max_age_sec=0.0)
+    deciding, spend_basis = task_pacing.resolve_deciding_spend(
+        tree_cost_usd=tree_info.get("accounted_usd") if isinstance(tree_info, dict) else None,
+        task_cost_usd=float(limit_ctx.accumulated_usage.get("cost") or 0.0),
+        root_cap_usd=cost_ceiling.root_cap_usd,
+    )
+    limit_ctx.accumulated_usage["cost_stop_spend_basis"] = spend_basis
+    if task_pacing.wrapup_reservation_fits(
+        request=request, root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding or 0.0,
+    ) is False:
+        limit_ctx.accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
+        return _forced_fallback_result(
+            limit_ctx, trace, soft_land_reason, "budget_exhausted",
+            source="budget_wrapup_unaffordable",
+        )
     return _forced_final_answer(
-        limit_ctx,
-        prompt=(
-            f"[BUDGET LIMIT] {soft_land_reason} Produce your best final answer "
-            "NOW from the verified work so far; clearly mark anything unverified "
-            "or incomplete. An honest best-effort result is the expected outcome "
-            "here, not a failure."
-        ),
-        fallback_text=soft_land_reason,
-        reason_code="budget_exhausted",
+        limit_ctx, prompt=priced_prompt, _prompt_prepared=True,
+        fallback_text=soft_land_reason, reason_code="budget_exhausted",
+        _initial_messages=send_messages, _admitted_request=request,
     )
 
 
@@ -3478,10 +3495,9 @@ def _resolve_delivery_control(
             tools._ctx._delivery_control_required = True
         elif candidate.finalization_control in _DELIVERY_HOLD_CONTROLS:
             # Bounded action gates (skill lifecycle, child absorption): a tool
-            # action or a reconsidered full prose answer may proceed; a typed
-            # keep cannot acknowledge the gate and no JSON prompt rides the
-            # action round. A typed control attempt escalates to the ONE
-            # replace-required literal for BOTH holds (plan-rejected widening).
+            # action or a reconsidered full prose answer may proceed; a typed keep
+            # cannot acknowledge the gate; a typed control attempt escalates to
+            # the ONE replace-required literal for BOTH holds.
             if not is_control_intent:
                 return "fresh", _extract_plain_text_from_content(content)
             candidate.finalization_control = "skill_revision_required"
@@ -3609,13 +3625,10 @@ def _forced_orphan_note(ctx: _RoundLimitContext, *, include_terminal: bool = Tru
             tid = str(c.get("task_id") or c.get("id") or "?")
             st = str(c.get("status") or "?").strip().lower()
             lifecycle = "running" if st not in FINAL_STATUSES else st
-            # W2: a child whose LATEST blackboard decision row no longer
-            # binds the current result was READ and decided — say that, not
-            # "unread"; only what the ledger PROVES: the row EXISTS, the
-            # binding did not. Scoped to children the projection left
-            # UNDECIDED: a carried disposition (deferred / integrated /
-            # irrelevant / discarded / cancelled) is no failed binding —
-            # "re-submit to close it" would be false there.
+            # W2: a child whose latest decision row no longer binds the current
+            # result was read and decided — say that, not "unread" (the row
+            # exists, the binding did not). Only for children left UNDECIDED:
+            # a carried disposition is no failed binding.
             claim = claimed.get(tid) if not _child_disposition_state(c) else None
             if claim is not None:
                 disposition, row_sha = claim
@@ -4042,12 +4055,10 @@ def _no_tool_final_answer(
         messages=messages,
         emit_progress=emit_progress,
     ):
-        # v6.71.1: an acceptance improvement pass is an ORDINARY substantive
-        # answer round — do NOT arm delivery-control: layering "return
-        # exactly one JSON object" on OPEN OBLIGATIONS plus the self-check
-        # froze the model into resubmitting the same answer. The next
-        # free-form answer re-enters the acceptance panel (blocking not
-        # weakened); other lanes still arm where JSON keep/replace is needed.
+        # v6.71.1: an acceptance improvement pass is an ORDINARY answer round —
+        # do NOT arm delivery-control (a JSON-only demand on open obligations
+        # froze the model into resubmitting); the next free-form answer
+        # re-enters the acceptance panel, other lanes still arm.
         return None
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if isinstance(candidate, DeliveryCandidate):
@@ -4717,7 +4728,11 @@ def _forced_final_answer(
             source="model_control_retained", candidate_reason=degraded,
             provider_terminal=provider_terminal,
         )
-    if incomplete and (current is not None or not replaced):
+    # A reply that still asks for a tool is a preamble on every rail, replace
+    # control or not; other incompleteness may still be resolved by a replace.
+    if incomplete and (
+        bool(response_meta.get("tool_call_count")) or current is not None or not replaced
+    ):
         return _forced_fallback_result(
             ctx, llm_trace, extracted or fallback_text, reason_code,
             source="forced_model_incomplete", candidate_reason=degraded,
@@ -5076,12 +5091,10 @@ def _maybe_inject_finalization_nudges(
         receipt_rows = read_verification_receipts(drive_root, task_id)
     if (getattr(tools._ctx, "_nanny_route_dispatched", False)
             and not getattr(tools._ctx, "_nanny_finalization_injected", False)):
-        # Nanny postcondition (owner 2026-08-07): a harness-dispatched child
-        # must not finalize as if that decision never existed. One structural
-        # fact, one re-loop; delegating OR finalizing with a typed reason
-        # both stay open — never a hard gate (P5). A delegate_start in THIS
-        # trace rides into the message decision (triad, e84475f2);
-        # suppressions live in _nanny_finalization_message.
+        # Nanny postcondition (owner 2026-08-07): a harness-dispatched child must
+        # not finalize as if that decision never existed — one structural fact,
+        # one re-loop, never a hard gate (P5); suppressions live in
+        # _nanny_finalization_message.
         _trace_attempted = any(
             str(c.get("tool") or "") == "delegate_start"
             for c in (llm_trace.get("tool_calls") or [])
@@ -5122,11 +5135,9 @@ def _maybe_inject_finalization_nudges(
         return True
     if not getattr(tools._ctx, "_verify_red_nudged", False):
         # Red-verification one-shot nudge: the latest host-attested verify
-        # receipt is RED and unreconciled — finalizing over your own failing
-        # check is a self-contradiction (P3/P12), distinct from receipt_absent
-        # below ("no grounding" vs "grounding says FAIL"). BEFORE the FR3
-        # verify nudge. Binary latch; advisory; forced-finalization paths
-        # bypass it. Keyed on the typed receipt status, never content (P5).
+        # receipt is RED and unreconciled (distinct from receipt_absent below).
+        # Before FR3; binary latch; advisory; forced paths bypass; keyed on the
+        # typed receipt status, never content (P5).
         _failed_receipt = latest_unreconciled_failed_verification(
             drive_root, task_id, receipts=receipt_rows,
         )
@@ -5236,12 +5247,10 @@ def _maybe_inject_finalization_nudges(
         emit_progress("Verify-before-done nudge injected before final response.")
         llm_trace["reasoning_notes"].append("Verify-before-done nudge injected before final response.")
         return True
-    # A3 one-shot no-op nudge: a declared deliverable (non-empty
-    # expected_output) but NO tool calls, reviewable effects, or FINAL ANSWER
-    # marker this turn — about-to-finalize-without-attempting (family of the
-    # M2 expected_output_ungrounded flag). Own latch, AFTER the verify nudge;
-    # never forces acceptance review; forced paths return earlier. Structural
-    # facts only (no refusal-text matching).
+    # A3 one-shot no-op nudge: a declared deliverable but no tool calls,
+    # reviewable effects or FINAL ANSWER marker this turn (family of the M2
+    # expected_output_ungrounded flag). Own latch after the verify nudge; never
+    # forces acceptance review; structural facts only.
     if (
         not getattr(tools._ctx, "_noop_attempt_nudged", False)
         and str(_contract_expected_output(tools._ctx)).strip()
