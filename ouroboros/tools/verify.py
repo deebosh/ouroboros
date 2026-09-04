@@ -118,7 +118,7 @@ def _check_has_exit_masking(argv: List[str]) -> tuple[bool, list[str]]:
     SHELL-STRING check `["sh"/"bash"/..., "-c", text]`, constructs that launder the real exit code
     so a failing runner reads as exit 0 (the false-green tutanota hit): a trailing pipe into a text
     filter (`... | tail/head/grep/...`; POSIX pipeline exit = the LAST stage), `|| true` / `|| :`,
-    or a `>/dev/null`/`2>/dev/null` swallow. Token-scans via shlex OUTSIDE quotes so a quoted
+    or an explicit successful tail. Token-scans via shlex OUTSIDE quotes so a quoted
     literal (e.g. grep PATTERN '| tail') is not flagged. Mirrors the artifact_lifecycle flag: it
     informs the advisory reviewer + the agent, P5-clean (it decides nothing). Returns (masked, reasons)."""
     if not argv or len(argv) < 3:
@@ -131,7 +131,7 @@ def _check_has_exit_masking(argv: List[str]) -> tuple[bool, list[str]]:
     # shlex.split is whitespace-only and would miss the no-space forms. Quotes are still respected,
     # so a quoted literal (e.g. a grep pattern `'| tail'`) is NOT flagged.
     try:
-        lexer = shlex.shlex(text, posix=True, punctuation_chars="|&<>")
+        lexer = shlex.shlex(text, posix=True, punctuation_chars="|&<>;")
         lexer.whitespace_split = True
         toks = list(lexer)
     except ValueError:
@@ -147,11 +147,18 @@ def _check_has_exit_masking(argv: List[str]) -> tuple[bool, list[str]]:
         last_stage = pathlib.PurePath(toks[nxt]).name.lower() if nxt < len(toks) else ""
         if last_stage in _EXIT_MASK_FILTER_CMDS:
             reasons.append(f"pipeline_{last_stage}")
-    if ">/dev/null" in text.replace(" ", ""):
-        reasons.append("dev_null_redirect")
+    if len(toks) >= 2 and toks[-1] in {"true", ":"} and toks[-2] == ";":
+        reasons.append(f"{toks[-2]} true")
+    if len(toks) >= 3 and toks[-2:] == ["exit", "0"] and toks[-3] in {";", "||"}:
+        reasons.append("exit 0")
     seen: set = set()
     ordered = [r for r in reasons if not (r in seen or seen.add(r))]
     return bool(ordered), ordered
+
+
+# Public name for the SECOND consumer: run_command/run_script read the same
+# sensor to disclose a masked green in their result envelope.
+check_exit_masking = _check_has_exit_masking
 
 
 _OBSERVABLE_EXTRA_ROOTS = ("subagent_projects", "deliverables", "artifact_store", "task_drive")

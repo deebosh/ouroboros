@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import pathlib
 from typing import Any, Callable, Dict, Optional
 
@@ -278,14 +277,12 @@ def make_cost_breakdown_endpoint(data_dir: pathlib.Path):
             try:
                 from supervisor.state import TOTAL_BUDGET_LIMIT
 
-                limit = float(TOTAL_BUDGET_LIMIT or 0.0)
+                live_limit = float(TOTAL_BUDGET_LIMIT or 0.0)
             except (ImportError, TypeError, ValueError):
-                limit = 0.0
-            if limit <= 0 and "TOTAL_BUDGET" in os.environ:
-                try:
-                    limit = max(0.0, float(os.environ.get("TOTAL_BUDGET") or 0.0))
-                except (TypeError, ValueError):
-                    limit = 0.0
+                live_limit = 0.0
+            from ouroboros.settings_setup_contract import resolve_total_budget_usd
+            resolved_limit = resolve_total_budget_usd()
+            limit = live_limit if 0 < live_limit < float("inf") else float(resolved_limit or 0.0)
             accounting = {field: breakdown.get(field) for field in _ACCOUNTING_SUMMARY_FIELDS}
             accounting.update({
                 "available": True,
@@ -484,11 +481,9 @@ def _copy_task_summary_metadata(rec: Dict[str, Any], entry: Dict[str, Any]) -> N
         rec["reason_code"] = str(entry.get("reason_code") or "")
     if isinstance(entry.get("review_projection"), dict):
         rec["review_projection"] = dict(entry.get("review_projection") or {})
-    # v6.82 P1: the summary row now carries the flat task-scope cost snapshot
-    # written by agent_task_pipeline; replay it so a reload still shows cost.
-    # _annotate_terminal_task_truth later OVERRIDES these with the persisted
-    # task_results values when the result file survives (row = fallback only).
-    for key in _TASK_COST_META_FIELDS:
+    # The summary row is the pruned-result fallback for cost and finality.
+    # Persisted task_results values still override cost fields below.
+    for key in ("outcome_phase", "outcome_final", *_TASK_COST_META_FIELDS):
         if key in entry:
             rec[key] = entry[key]
 
@@ -546,6 +541,7 @@ def _annotate_terminal_task_truth(
     the pre-computed set — zero extra reads."""
 
     try:
+        from ouroboros.project_dialogue import outcome_phase
         from ouroboros.task_status import FINAL_STATUSES
 
         cache = result_cache if result_cache is not None else {}
@@ -599,6 +595,7 @@ def _annotate_terminal_task_truth(
                 terminal_status_by_task[task_id] = status
                 terminal_truth: Dict[str, Any] = {
                     "outcome_axes": normalize_outcome_axes(result),
+                    "outcome_phase": outcome_phase(result, {}), "outcome_final": True,
                 }
                 if result.get("reason_code"):
                     terminal_truth["reason_code"] = str(result.get("reason_code") or "")

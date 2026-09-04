@@ -12,6 +12,7 @@ export function bridgeChunkBuffer(view) {
 // Child side of the one bridge grammar (nonce-bound, parent ⇄ frame):
 //   child → parent  ouro-widget-fetch {id, url, init} · ouro-widget-fetch-abort {id}
 //                   ouro-widget-events {op: subscribe | unsubscribe} · ouro-widget-disposed
+//                   ouro-widget-error {kind: error | rejection | csp, message, source, line}
 //   parent → child  ouro-widget-fetch-chunk {id, phase: headers | data | end | error, …}
 //                   ouro-widget-event {event, data} · ouro-widget-dispose
 // Every bridged fetch streams: the child rebuilds a real Response over a
@@ -54,6 +55,9 @@ export function moduleBridgeScript(nonce) {
                 pending.clear();
                 eventListeners.clear();
                 window.removeEventListener('message', onMessage);
+                window.removeEventListener('error', onError);
+                window.removeEventListener('unhandledrejection', onRejection);
+                window.removeEventListener('securitypolicyviolation', onCsp);
             };
             const onMessage = (event) => {
                 if (event.source !== window.parent) return;
@@ -174,6 +178,28 @@ export function moduleBridgeScript(nonce) {
                     if (!eventListeners.size && !disposed) post({ type: 'ouro-widget-events', op: 'unsubscribe' });
                 };
             };
+            // Fault channel: a script that throws at top level, an unhandled
+            // rejection or a CSP refusal otherwise paints a blank frame while the
+            // card still says Running. Bounded (10 posts, deduped on kind+message)
+            // so a throwing animation loop cannot flood the parent. All three
+            // listeners go on window, never document: securitypolicyviolation
+            // bubbles to window, and not every host of this bridge has a document.
+            const seenFaults = new Set();
+            let faultCount = 0;
+            const fault = (kind, message, source, line) => {
+                const text = String(message ?? '').slice(0, 500);
+                const key = kind + '\u0000' + text;
+                if (faultCount >= 10 || seenFaults.has(key)) return;
+                seenFaults.add(key);
+                faultCount += 1;
+                post({ type: 'ouro-widget-error', kind, message: text, source: String(source ?? '').slice(0, 200), line: Number(line) || 0 });
+            };
+            const onError = (event) => fault('error', event.message || event.error, event.filename, event.lineno);
+            const onRejection = (event) => fault('rejection', event.reason, '', 0);
+            const onCsp = (event) => fault('csp', event.violatedDirective || 'blocked', event.blockedURI, event.lineNumber);
+            window.addEventListener('error', onError);
+            window.addEventListener('unhandledrejection', onRejection);
+            window.addEventListener('securitypolicyviolation', onCsp);
             window.addEventListener('message', onMessage);
             window.__ouroWidgetOnDispose = onDispose;
             window.fetch = request;

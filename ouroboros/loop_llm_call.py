@@ -1178,7 +1178,7 @@ def _send_main_candidate(
     candidate_predicate: Optional[Callable[[Any], Any]],
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     with model_concurrency.model_call_slot(model, use_local, deadline_ts):
-        if physical_context is None:
+        if physical_context is None and candidate_predicate is None:
             return llm.chat(**kwargs)
         with bind_physical_attempt_context(
             physical_context, candidate_predicate=candidate_predicate,
@@ -1319,7 +1319,7 @@ def call_llm_with_retry(
     candidate_predicate: Optional[Callable[[Any], Any]] = None,
     task_attempt: Any = None,
     response_meta_out: Optional[Dict[str, Any]] = None,
-    transport_reserve_sec: Optional[float] = None,
+    transport_reserve_sec: Optional[float] = None, initial_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
     """Call one model with bounded retries and deadline-aware transport."""
     msg = None
@@ -1346,7 +1346,7 @@ def call_llm_with_retry(
         request_ref: Dict[str, Any] = {}
         try:
             _emit_llm_operation(event_queue, task_id, llm_call_id, "started", task_attempt, execution_id, round_id)
-            send_messages = _prepare_main_messages(
+            send_messages = initial_messages if attempt == 0 and initial_messages is not None else _prepare_main_messages(
                 messages, model=model, llm=llm, accumulated_usage=accumulated_usage,
                 drive_root=drive_root, task_id=task_id, event_queue=event_queue,
                 use_local=use_local, task_attempt=task_attempt, deadline_ts=deadline_ts,
@@ -1421,7 +1421,7 @@ def call_llm_with_retry(
             _emit_main_llm_call_state(event_queue, call_identity, "started")
             resp_msg, usage = _send_main_candidate(
                 llm, kwargs, model=model, use_local=use_local, deadline_ts=deadline_ts,
-                physical_context=physical_context, candidate_predicate=candidate_predicate,
+                physical_context=physical_context, candidate_predicate=candidate_predicate if attempt == 0 else None,
             )
             msg = resp_msg
             _take_custom_receipts(usage, msg, accumulated_usage)

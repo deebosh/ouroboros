@@ -41,6 +41,17 @@ _SEALED_FINAL_TEXT_PROMPT_CHARS = 4000
 # never be inferred from result text or lifecycle status.
 TERMINAL_ORIGIN_MODEL_FINAL = "model_final"
 TERMINAL_ORIGIN_HOST_SALVAGE = "host_salvage"
+# A terminal text the HOST wrote alone (a budget rejection, a round-limit rail
+# with nothing to deliver, a scheduled swarm handoff). It is not salvage: its
+# own words ARE the answer, so they are published verbatim on every transport
+# instead of being replaced by the outage receipt.
+TERMINAL_ORIGIN_HOST_NOTICE = "host_notice"
+HOST_AUTHORED_TERMINAL_ORIGINS = frozenset({
+    TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_HOST_NOTICE,
+})
+_STAMPED_TERMINAL_ORIGINS = frozenset({
+    TERMINAL_ORIGIN_MODEL_FINAL, *HOST_AUTHORED_TERMINAL_ORIGINS,
+})
 TERMINAL_PLAN_REVIEW_NOTE = (
     "Plan review was still open when the outage forced finalization; "
     "its details remain in the task."
@@ -98,9 +109,7 @@ def prepare_terminal_send_event(
         # branch (supervisor/workers.py stamps task_terminal_status="failed")
         # and lets the live concludesTurn gate settle the activity.
         send_event.setdefault("progress_meta", {})["task_terminal_status"] = "completed"
-    if ephemeral or presence or origin not in {
-        TERMINAL_ORIGIN_MODEL_FINAL, TERMINAL_ORIGIN_HOST_SALVAGE,
-    }:
+    if ephemeral or presence or origin not in _STAMPED_TERMINAL_ORIGINS:
         return send_event
     canonical_root = pathlib.Path(task.get("budget_drive_root") or env_drive_root)
     preserved_path = ""
@@ -126,7 +135,7 @@ def terminal_result_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
     """Additive durable origin/full-copy fields; unknown producers stay legacy."""
     fields: Dict[str, Any] = {}
     origin = str(usage.get("terminal_origin") or "")
-    if origin in {TERMINAL_ORIGIN_MODEL_FINAL, TERMINAL_ORIGIN_HOST_SALVAGE}:
+    if origin in _STAMPED_TERMINAL_ORIGINS:
         fields["terminal_origin"] = origin
     path = str(usage.get("terminal_salvage_path") or "")
     if path:
@@ -388,6 +397,25 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
             "inter_wave_latency_sec_total": round(inter_wave_latency_total, 3),
             "lanes_requested": lanes,
         }
+        try:
+            # Depth is the one swarm fact the root could not see: its own
+            # contract carries the request, the subtree carries what was
+            # actually reached. Its own try/except — the enclosing one returns
+            # None for the WHOLE rollup, and a subtree read failure must not
+            # erase the fan-out numbers.
+            from ouroboros.depth_evidence import build_depth_summary
+            from ouroboros.task_status import find_child_tasks
+
+            canonical = pathlib.Path(task.get("budget_drive_root") or drive_root)
+            rollup["depth"] = build_depth_summary(
+                task.get("task_contract"),
+                find_child_tasks(
+                    canonical, parent_task_id=task_id, root_task_id=task_id,
+                    scope="subtree", materialize_artifacts=False,
+                ),
+            )
+        except Exception:
+            log.debug("swarm depth summary failed", exc_info=True)
         if swarm_intent:
             rollup["intent_source"] = "swarm"
             # The planned figure under its existing event name — the waves'

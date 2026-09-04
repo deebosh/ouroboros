@@ -551,9 +551,11 @@ def test_partial_source_refusal_spares_retrieving_rows_and_core_overflow_refuses
         tmp_path, evidence=partial, repo_dir=str(governance),
         workspace_root=str(workspace), workspace_mode="project"))
     by_id = {a["slot_id"]: a for a in result.actors}
-    # The packet row is refused free (a partial PROJECTION is not complete evidence);
-    # the native row reads the exact source itself and runs.
-    assert by_id["t_api"]["parsed"]["verdict"] == "DEGRADED" and "partial" in by_id["t_api"]["parsed"]["summary"]
+    # The packet row is refused free (a partial PROJECTION is not complete evidence)
+    # as a typed `not_dispatched` transport state — never a verdict — with the
+    # refusal cause on the row; the native row reads the exact source itself and runs.
+    assert by_id["t_api"]["status"] == "not_dispatched" and by_id["t_api"]["parsed"] is None
+    assert "partial" in str(by_id["t_api"]["error"])
     assert by_id["t_actor"]["parsed"]["verdict"] == "PASS"
     assert len(llm.calls) == 1 and "tools" in llm.calls[0]
     # The immutable-core overflow refuses EVERY delivery: no owner requirement is truncated for anyone.
@@ -561,7 +563,8 @@ def test_partial_source_refusal_spares_retrieving_rows_and_core_overflow_refuses
     result = loop_mod._execute_task_acceptance_panel(_acceptance_ctx(
         tmp_path, evidence=overflow, repo_dir=str(governance),
         workspace_root=str(workspace), workspace_mode="project"))
-    assert [a["parsed"]["verdict"] for a in result.actors] == ["DEGRADED", "DEGRADED"]
+    assert [a["status"] for a in result.actors] == ["not_dispatched", "not_dispatched"]
+    assert all(a["parsed"] is None and "overflow" in str(a["error"]) for a in result.actors)
     assert len(llm.calls) == 1  # nothing further was sent
 
 

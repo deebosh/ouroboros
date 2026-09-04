@@ -196,6 +196,29 @@ def test_run_script_success_keeps_payload_alongside_undeclared_nudge(tmp_path, m
     assert "ARTIFACT_OUTPUT_UNDECLARED" in result, result  # the nudge still fires
     assert "THE ANSWER IS 42" in result, result            # ...without eating stdout
     assert "exit_code=0" in result, result                 # ...or the exit description
+    assert result.result_meta["status"] == "artifact_output_undeclared"
+    assert result.result_meta["is_failure"] is True
+    from ouroboros.loop_tool_execution import _extract_result_metadata, _is_tool_execution_failure
+
+    assert _is_tool_execution_failure(True, result) is True
+    assert _extract_result_metadata("run_script", result, True)["status"] == "artifact_output_undeclared"
+
+
+def test_undeclared_output_audit_detects_clobber_redirect(tmp_path, monkeypatch):
+    from ouroboros.tools.shell_audit import _mentioned_user_file_outputs_without_declaration
+
+    registry, _repo, _data, desktop = _reg(tmp_path, monkeypatch)
+    existing = desktop / "existing"
+    existing.mkdir()
+    target = desktop / "clobber-redirect.txt"
+    target.write_text("")
+    mentioned = _mentioned_user_file_outputs_without_declaration(
+        registry._ctx,
+        ["mkdir", "-p", str(existing), ">|", str(target)],
+        None,
+        cwd=desktop,
+    )
+    assert str(target) in mentioned
 
 
 def test_run_script_body_audit_runs_on_failure_path(tmp_path, monkeypatch):
@@ -346,7 +369,12 @@ def test_check_has_exit_masking_detection():
 
     assert _check_has_exit_masking(["sh", "-c", "node t.js -f 2>&1 | tail -5"])[0] is True
     assert _check_has_exit_masking(["bash", "-c", "make test || true"])[0] is True
-    assert _check_has_exit_masking(["sh", "-c", "run.sh 2>/dev/null"])[0] is True
+    assert _check_has_exit_masking(["sh", "-c", "run.sh 2>/dev/null"])[0] is False
+    assert _check_has_exit_masking(["sh", "-c", "make test ; true"])[0] is True
+    assert _check_has_exit_masking(["sh", "-c", "make test && true"])[0] is False
+    assert _check_has_exit_masking(["sh", "-c", "make test ; exit 0"])[0] is True
+    assert _check_has_exit_masking(["sh", "-c", "make test && exit 0"])[0] is False
+    assert _check_has_exit_masking(["sh", "-c", "make test || exit 0"])[0] is True
     assert _check_has_exit_masking(["sh", "-c", "pytest -q"])[0] is False
     assert _check_has_exit_masking(["go", "test", "./..."])[0] is False  # list argv, no shell
     # a QUOTED `| tail` literal (e.g. a grep pattern) must NOT be flagged (shlex token scan)

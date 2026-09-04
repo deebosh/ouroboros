@@ -9,6 +9,7 @@ import { apiFetch, extensionRoutePath, extensionRoutePrefix } from './api_client
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { bridgeChunkBuffer, moduleBridgeScript, moduleResizeScript } from './widget_frame.js';
 import { boundedNumber, WIDGET_DISPOSE_ACK_TIMEOUT_MS, WIDGET_REQUEST_TIMEOUT_MS } from './widget_job.js';
+import { setWidgetCardFault } from './widget_card.js';
 
 export const WIDGET_FRAME_DEFAULT_HEIGHT = 320;
 export const WIDGET_FRAME_MAX_HEIGHT = 8192;
@@ -233,9 +234,20 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
             const measured = Number(msg.height);
             if (!Number.isFinite(measured) || measured <= 0) return;
             const nextHeight = Math.min(maxHeight, Math.max(WIDGET_FRAME_DEFAULT_HEIGHT, measured + WIDGET_FRAME_BORDER_RESERVE));
+            // Stamped before the early return: that return fires exactly when the
+            // frame is pinned at max_height, which is the one case these two
+            // attributes exist to explain ("grew past the ceiling" vs "painted nothing").
+            iframe.dataset.widgetContentHeight = String(measured);
+            iframe.dataset.widgetFrameCapped = String(nextHeight >= maxHeight);
             if (nextHeight === appliedHeight) return;
             appliedHeight = nextHeight;
             setFrameHeight(iframe, appliedHeight);
+            return;
+        }
+        if (msg.type === 'ouro-widget-error') {
+            const label = msg.kind === 'csp' ? 'Widget blocked by frame policy' : 'Widget script error';
+            const detail = msg.kind === 'csp' ? (msg.source || msg.message) : msg.message;
+            setWidgetCardFault(mount.closest('[data-widget-key]'), `${label}: ${detail || 'unknown'}`);
             return;
         }
         if (msg.type === 'ouro-widget-events') {

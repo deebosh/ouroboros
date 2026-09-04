@@ -206,3 +206,38 @@ test('dispose awaits hooks (bridge live), acks, then fails pending work and unli
     assert.equal(posted.length, count);
     assert.deepEqual(window.OuroborosWidget.onEvent(() => {})(), undefined);
 });
+
+test('an in-frame fault posts one bounded, deduplicated ouro-widget-error', () => {
+    const { posted, listeners } = bridgeHarness();
+    const long = 'x'.repeat(900);
+    listeners.get('error')({ message: long, filename: 'y'.repeat(400), lineno: '17' });
+    const faults = posted.filter((item) => item.type === 'ouro-widget-error');
+    assert.equal(faults.length, 1);
+    assert.equal(faults[0].nonce, 'nonce-1');
+    assert.equal(faults[0].kind, 'error');
+    assert.equal(faults[0].message.length, 500);
+    assert.equal(faults[0].source.length, 200);
+    assert.equal(faults[0].line, 17);
+
+    // Same kind + message posts nothing further.
+    listeners.get('error')({ message: long, filename: 'z', lineno: 1 });
+    assert.equal(posted.filter((item) => item.type === 'ouro-widget-error').length, 1);
+
+    // A rejection and a CSP refusal are their own kinds.
+    listeners.get('unhandledrejection')({ reason: new Error('boom') });
+    listeners.get('securitypolicyviolation')({ violatedDirective: 'script-src', blockedURI: 'https://cdn' });
+    const kinds = posted.filter((item) => item.type === 'ouro-widget-error').map((item) => item.kind);
+    assert.deepEqual(kinds, ['error', 'rejection', 'csp']);
+});
+
+test('the fault channel caps at 10 posts per frame and is removed on dispose', async () => {
+    const { posted, listeners, deliver, flush } = bridgeHarness();
+    for (let i = 0; i < 25; i += 1) listeners.get('error')({ message: `fault ${i}`, filename: '', lineno: i });
+    assert.equal(posted.filter((item) => item.type === 'ouro-widget-error').length, 10);
+
+    deliver({ type: 'ouro-widget-dispose' });
+    await flush();
+    for (const type of ['error', 'unhandledrejection', 'securitypolicyviolation', 'message']) {
+        assert.equal(listeners.has(type), false, type);
+    }
+});

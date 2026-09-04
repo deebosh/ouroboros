@@ -719,7 +719,8 @@ SPEC, the task objective, the evidence the agent declared (attached bounded, wit
 named), and — for a self-modification plan — BIBLE.md and ARCHITECTURE.md in full (inline for
 an api reviewer; a retrieving reviewer reads both in full with its own tools, the pack names them
 as mandatory reads); every other plan gets the heading-derived navigation maps of BIBLE.md and
-ARCHITECTURE.md and may request more with `need_evidence` (the host attaches it on the next cycle).
+ARCHITECTURE.md and may request more with `need_evidence` (the host attaches it on the next cycle,
+or names its absence as an omission row when the locator cannot be resolved).
 Judge only the evidence actually present; nothing missing is ever silent.
 
 **One question: is this SPEC sufficient to START the work safely?** Not "is everything
@@ -763,7 +764,9 @@ structurally unverifiable, that is blocking against the claim, not a `need_evide
 - `need_evidence` — a typed request `{locator, why}`. It never blocks by itself and the same
   locator cannot be asked twice on one task; the host attaches the locator on the next cycle
   (through the same evidence policy), so the agent's next envelope carries it — a new
-  fingerprint, i.e. a paid cycle that actually has the evidence.
+  fingerprint, i.e. a paid cycle that actually has the evidence — or, when the locator cannot
+  be resolved, carries a named omission row for it, so the panel judges the absence instead
+  of waiting for a source that will not arrive.
 
 ### Output
 

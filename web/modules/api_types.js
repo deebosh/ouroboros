@@ -562,6 +562,12 @@
  * @property {boolean=} project_mirror
  */
 
+/** Additive /api/chat/history terminality projection.
+ * @typedef {Object} TaskOutcomeHistoryFields
+ * @property {"working"|"done"|"warn"|"error"|"cancelled"=} outcome_phase  // canonical display phase; "working" is not terminal
+ * @property {boolean=} outcome_final  // true only after the canonical task outcome settles; false marks a pre-finalization narrative
+ */
+
 /**
  * Additive /api/chat/history row fields on `system_type: "skill_review"` rows:
  * the exact-job reference the producer already writes into chat.jsonl. A row
@@ -720,6 +726,29 @@
  * @property {?{slug: string, version: string, content_hash: string, repository: string, pr_number: number, pr_url: string, published_at: string}=} published
  * @property {boolean=} published_malformed
  * @property {boolean=} identity_collision
+ * @property {string=} process
+ * @property {string=} server_reconcile
+ */
+
+/**
+ * @typedef {Object} SkillToggleResponse
+ * @property {string} skill
+ * @property {boolean} enabled
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
+ * @property {string=} process
+ * @property {string=} server_reconcile
+ */
+
+/**
+ * @typedef {Object} SkillReconcileResponse
+ * @property {string} skill
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
+ * @property {boolean} live_loaded
+ * @property {?string} load_error
+ * @property {string=} process
+ * @property {string=} server_reconcile
  */
 
 /**
@@ -787,6 +816,16 @@
  * @property {string} reason_code
  * @property {string} summary
  * @property {string} repair_hint
+ */
+
+/**
+ * @typedef {Object} SkillReviewResponse
+ * @property {string} skill
+ * @property {string} status
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
+ * @property {string=} extension_process
+ * @property {string=} extension_server_reconcile
  */
 
 /**

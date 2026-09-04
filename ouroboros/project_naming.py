@@ -136,10 +136,9 @@ def _project_naming_usage_scope(drive_root: Optional[Any], task_id: str):
     root_task_id = str(persisted.get("root_task_id") or metadata.get("root_task_id") or scoped_task_id)
     parent_task_id = str(persisted.get("parent_task_id") or metadata.get("parent_task_id") or "")
     budget_root = persisted.get("budget_drive_root") or metadata.get("budget_drive_root") or drive_root
-    try:
-        global_limit = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-    except (TypeError, ValueError):
-        global_limit = 0.0
+    from ouroboros.settings_setup_contract import resolve_total_budget_usd
+
+    global_limit = resolve_total_budget_usd()
     try:
         root_limit = float(os.environ.get("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
     except (TypeError, ValueError):
@@ -151,7 +150,7 @@ def _project_naming_usage_scope(drive_root: Optional[Any], task_id: str):
         parent_task_id=parent_task_id,
         category="project_naming",
         source="project_naming",
-        global_limit_usd=global_limit if global_limit > 0 else None,
+        global_limit_usd=global_limit,
         root_limit_usd=root_limit if root_limit > 0 else None,
     )
 

@@ -975,7 +975,7 @@ def test_project_completion_enqueues_once_for_root_and_never_for_child_or_epheme
         "type": "send_message",
         "chat_id": 1,
         "task_id": "root-project",
-        "text": "Launch 🚀 › Ship release · Completed\nRelease shipped.",
+        "text": "Launch 🚀 › Ship release · Done\nRelease shipped.",
         "role": "system",
         "system_type": "project_completion_summary",
         "delivery_id": "project-completion:root-project",
@@ -1012,15 +1012,15 @@ def test_project_completion_enqueues_once_for_root_and_never_for_child_or_epheme
         (
             {"status": "completed"},
             {"outcome_axes": {"execution": {"status": "degraded"}}},
-            "Completed with limitations",
+            "Done with warnings",
         ),
         (
             {"status": "completed", "outcome_axes": {"execution": {"status": "degraded"}}},
             {},
-            "Completed with limitations",
+            "Done with warnings",
         ),
         (
-            {"status": "completed", "outcome_axes": {"objective": {"status": "fail"}}},
+            {"status": "completed", "outcome_axes": {"objective": {"status": "fail", "source": "task_acceptance_review"}}},
             {},
             "Failed",
         ),

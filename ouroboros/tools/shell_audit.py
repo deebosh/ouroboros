@@ -13,6 +13,7 @@ from ouroboros.shell_parse import (
     shell_argv_with_inline,
     shell_command_string,
     shell_segments,
+    split_redirections,
 )
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
@@ -43,25 +44,12 @@ _UNDECLARED_OUTPUTS_MARKER = "⚠️ ARTIFACT_OUTPUT_UNDECLARED"
 _UNDECLARED_OUTPUT_SCAN_MAX_FILES = 5000
 _UNDECLARED_OUTPUT_METADATA_COMMANDS = frozenset({"chmod", "chown", "mkdir", "rm"})
 _SHELL_WRAPPER_COMMANDS = frozenset({"sh", "bash", "zsh"})
-_SHELL_REDIRECT_TARGET_TOKENS = frozenset({
-    ">", ">>", "1>", "1>>", "2>", "2>>", "&>", "&>>",
-})
 
 
 def _redirect_targets_for_audit(argv: list[str]) -> set[str]:
     """Return only syntactic redirect destinations from one command segment."""
-    targets: set[str] = set()
-    for index, token in enumerate(argv[:-1]):
-        text = str(token)
-        if text in _SHELL_REDIRECT_TARGET_TOKENS:
-            destination = str(argv[index + 1])
-            if destination != "/dev/null":
-                targets.add(destination)
-            continue
-        match = re.match(r"^(?:[12]|&)?(?:>|>>)(.+)$", text)
-        if match and match.group(1) not in {"/dev/null", "&1", "&2", "&-"}:
-            targets.add(match.group(1))
-    return targets
+    _command_argv, targets = split_redirections(argv)
+    return set(targets)
 
 
 def _writer_targets_for_output_audit(argv: list[str]) -> set[str]:

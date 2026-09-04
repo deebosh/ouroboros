@@ -31,6 +31,7 @@ from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
 from ouroboros.delegate_custody_usage import (
     disclosed_spend,
     disclosed_tokens,
+    project_retirement_lock,
     summary_of,
 )
 from ouroboros.utils import append_jsonl, utc_now_iso
@@ -397,10 +398,12 @@ def _apply(state: Dict[str, RunCustody], row: Dict[str, Any]) -> None:
     elif kind == SETTLED_UNREAD:
         custody.unread_disclosed = True
     elif kind == PROJECT_RETIRED:
-        # Recorded on SUCCESS too, not only on failure: without it, a retirement that
-        # landed before a failed ledger write would be replayed as still-owned after a
+        # Recorded on SUCCESS too: without it, a retirement before a failed ledger write replays as owned after a
         # restart, and the retry would keep failing on an already-removed project.
-        custody.project_owned = False
+        project_id = str(row.get("project_id") or custody.project_id or "")
+        for sibling in state.values():
+            if sibling is custody or (project_id and sibling.project_id == project_id):
+                sibling.project_owned = False
     elif kind == OUTPUT_SPILLED:
         if row.get("staged") and str(row.get("artifact") or ""):
             custody.output_artifact = str(row.get("artifact") or "")
@@ -778,26 +781,20 @@ def is_terminal(detail: Dict[str, Any]) -> bool:
 
 
 def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
-    """Discharge the registration obligation. Absence IS discharge (a 404 on
-    the project is the asked-for outcome, never a failure). REFCOUNT
-    DEFERRAL: the daemon refuses removal while runs live, so only the
-    LOWEST-run_id sharer keeps attempting; the rest defer quietly and
-    discharge on the daemon's 404 (deterministic tie-break: someone always
-    attempts)."""
+    """Serialize the replay-to-retirement decision for one shared project."""
+    with project_retirement_lock(drive_root, custody.project_id):
+        _retire_project_locked(drive_root, gateway, custody)
+
+
+def _retire_project_locked(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
     if custody.project_persistent:
-        # #362: stable identity outlives the run — discharge the duty DURABLY
-        # (replay must not resurrect owned=True), keep the project itself.
         custody.project_owned = False
         emit(drive_root, PROJECT_RETIRED, {"run_id": custody.run_id, "task_id": custody.task_id,
                                            "project_id": custody.project_id, "project_kept": True})
         return
-    if not (custody.project_owned and custody.project_id):
+    if not custody.project_id:
         return
     try:
-        # Sharers = EVERY run in the project (only the creator carries
-        # project_owned, but the daemon refuses removal while ANY sibling
-        # lives); the caller is mid-settlement, so only OTHERS defer.
-        # Removal is an AUTHORITY decision: complete view, caller row in it.
         from ouroboros.delegate_custody_usage import complete_custody_rows
 
         rows_raw = complete_custody_rows(
@@ -811,6 +808,8 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
             return
         rows = [run for run in state.values()
                 if run.project_id == custody.project_id and run.run_id]
+        if not any(run.project_owned for run in rows):
+            return
         if any(run.project_persistent for run in rows):
             # #362: ANY persistent sharer makes the project a durable user
             # identity — a non-persistent creator must not delete it either.
@@ -820,13 +819,10 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
             return
         if any(not run.settled and run.run_id != custody.run_id for run in rows):
             return
-        sharers = sorted(run.run_id for run in rows if run.project_owned)
     except Exception:
         log.warning("Retirement deferred: replay failed for %s",
                     custody.run_id, exc_info=True)
         return
-    if sharers and custody.run_id and custody.run_id != sharers[0]:
-        return  # deferred quietly: the canonical sharer carries the lane
     try:
         gateway.remove_project(custody.project_id)
     except Exception as exc:
@@ -839,6 +835,9 @@ def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
                                                      "reason": str(exc)[:500]})
             return
     custody.project_owned = False
+    for sibling in _CUSTODY.values():
+        if sibling.project_id == custody.project_id:
+            sibling.project_owned = False
     emit(drive_root, PROJECT_RETIRED, {"run_id": custody.run_id, "task_id": custody.task_id,
                                        "project_id": custody.project_id})
 
@@ -923,39 +922,38 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
             custody.ledger_recorded = True
             emit(drive_root, LEDGER_RECORDED, {"run_id": custody.run_id, "task_id": custody.task_id,
                                                "route": custody.route_id})
-    retire_project(drive_root, gateway, custody)
-    if custody.ledger_recorded:
-        # The claim follows the row, not the call. DECOUPLED from retirement:
-        # a sibling holding the shared project must not convert a SUCCEEDED
-        # run into an unreconciled failure - the registration debt stays on
-        # ``project_owned`` for the sweep and later sharers.
-        custody.settled = emit(drive_root, SETTLED, {
-            "run_id": custody.run_id,
-            "task_id": custody.task_id,
-            "route": custody.route_id,
-            # The ENGINE-reported model (the STARTED row carries only the requested
-            # pin, which is usually empty) — so execution evidence can name what
-            # the harness really ran without joining to the ledger.
-            "model": str(summary.get("model") or ""),
-            "state": str(summary.get("state") or ""),
-            # The SAME facts the ledger row just recorded. An undisclosed spend was emitted
-            # here as `0.0` beside a flag — the render-unknown-as-zero shape the ledger row
-            # itself stopped doing — and finality ignored the estimated half exactly as the
-            # ledger write did. One envelope, one story.
-            "cost_usd": spend,
-            "cost_final": spend is not None and not estimated,
-            "spend_disclosed": spend is not None,
-            "spend_estimated": estimated,
-            # D29: the applied account rides the settlement event too, so the
-            # durable event stream answers "which account paid" without joining
-            # to the ledger row.
-            "credential_profile_id": applied_profile,
-            "access_profile": applied_access,
-        })
+    if not custody.ledger_recorded:
+        retire_project(drive_root, gateway, custody)
+    else:
+        with project_retirement_lock(drive_root, custody.project_id):
+            custody.settled = emit(drive_root, SETTLED, {
+                "run_id": custody.run_id,
+                "task_id": custody.task_id,
+                "route": custody.route_id,
+                # The ENGINE-reported model (the STARTED row carries only the requested
+                # pin, which is usually empty) — so execution evidence can name what
+                # the harness really ran without joining to the ledger.
+                "model": str(summary.get("model") or ""),
+                "state": str(summary.get("state") or ""),
+                # The SAME facts the ledger row just recorded. An undisclosed spend was emitted
+                # here as `0.0` beside a flag — the render-unknown-as-zero shape the ledger row
+                # itself stopped doing — and finality ignored the estimated half exactly as the
+                # ledger write did. One envelope, one story.
+                "cost_usd": spend,
+                "cost_final": spend is not None and not estimated,
+                "spend_disclosed": spend is not None,
+                "spend_estimated": estimated,
+                # D29: the applied account rides the settlement event too, so the
+                # durable event stream answers "which account paid" without joining
+                # to the ledger row.
+                "credential_profile_id": applied_profile,
+                "access_profile": applied_access,
+            })
+            if custody.settled:
+                _retire_project_locked(drive_root, gateway, custody)
     if custody.settled:
         resolve_containment_fault(drive_root, custody, "settled_terminal")
-    # CONSUMPTION BEFORE SETTLEMENT is the owner's directive - a LOUD FACT,
-    # not a gate, and NOT recorded here: this runs BEFORE staging, so asking
+    # CONSUMPTION BEFORE SETTLEMENT is a fact, not a gate; asking before staging
     # now would answer "no omission" for every first settlement (the render-
     # unknown-as-a-fact shape this module refuses). ``record_settled_unread``
     # records it where staging IS known: the wait path and reconciliation.

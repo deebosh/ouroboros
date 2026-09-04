@@ -254,6 +254,28 @@ def _main_loop_messages(system_ttl: dict) -> list:
     return messages
 
 
+def test_short_transcript_payload_declares_exactly_four_breakpoints(monkeypatch):
+    """Before a rolling seal qualifies, the task message is the fourth breakpoint:
+    tools + two system blocks + the task message == the Anthropic cap, so the
+    mutable tail below the system prefix is cached from round two instead of
+    being re-sent whole on every round of a short-lived task."""
+    from ouroboros.loop import seal_task_transcript
+
+    messages = [
+        {"role": "system", "content": [
+            {"type": "text", "text": "governance prefix", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "semi-stable prefix", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "dynamic tail"},
+        ]},
+        {"role": "user", "content": "task"},
+    ]
+    seal_task_transcript(messages, keep_active=5, min_prefix_tokens=0)
+    payload, usage = _send_direct_anthropic(monkeypatch, messages, _tools())
+
+    assert len(_deep_markers(payload)) == LLMClient._MAX_CACHE_BREAKPOINTS
+    assert usage.get("prompt_cache_breakpoints_reduced") is None
+
+
 def test_finalizer_counts_the_sealed_tool_result_anchor_on_direct_anthropic(monkeypatch):
     """The anchor that `seal_task_transcript` marks becomes a NESTED block on the direct
     lane (`tool_result.content` is itself a list of blocks), so a one-level walker missed

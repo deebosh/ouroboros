@@ -277,6 +277,9 @@ async def run_plan_review_slots(
         session_root=session_root,
         session_threads=dict(session_threads or {}),
         retry_key=str(retry_key or ""),
+        # The paid cycle's identity (plan fingerprint + cycle) owns its cache
+        # split: a revised plan under the same task/model/slot starts cold.
+        usage_attribution={"review_wave_id": str(retry_key or "")} if retry_key else {},
         policy={"output_contract": output_contract} if output_contract else {},
     )
     loop = asyncio.get_running_loop()

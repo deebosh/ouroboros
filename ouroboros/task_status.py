@@ -1235,8 +1235,18 @@ def format_subagent_absorption_message(
             if terminal_status and terminal_status != str(child.get("status") or "")
             else ""
         )
+        # A child's typed custody debt travels WITH its result: the parent could
+        # absorb the work while its child's own delegated patch sat undisposed,
+        # and nothing in the digest said so. Bounded, and silent for a clean
+        # child. Visibility only — authority over that patch is the orphan rule.
+        debt = child.get("delegated_runs_unreconciled")
+        debt = [str(x) for x in debt] if isinstance(debt, list) else []
+        debt_suffix = f", custody_debt={','.join(debt[:10])}" if debt else ""
+        if len(debt) > 10:
+            debt_suffix += f' (+{len(debt) - 10} more — get_task_result("{cid}"))'
         lines.append(
-            f"\n## child {cid} ({role}) — status={child.get('status')}{status_suffix}, "
+            f"\n## child {cid} ({role}) — status={child.get('status')}{status_suffix}"
+            f"{debt_suffix}, "
             # SSOT cost projection (C2): unknown says unknown, never $0.0000.
             f"cost={cost_display(child, decimals=4)}, child_result_sha256={_child_result_sha256(child)}"
         )
