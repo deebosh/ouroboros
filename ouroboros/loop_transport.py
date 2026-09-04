@@ -567,8 +567,15 @@ def provider_terminal_fallback_text(
         if isinstance(accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict):
             # The episode redialed a granted transport-death repeat that never left the
             # host: an earlier attempt of the round is still unresolved at its upper
-            # bound, and the owner text says both facts (the wait and the fence).
-            text += provider_recovery_hint(accumulated_usage)
+            # bound, and the owner text says both facts (the wait and the fence). Such a
+            # repeat was always RELEASED as ``transport_unavailable`` — any other class
+            # ends the round before an episode can hold the record — so the hint is told
+            # that class instead of reading the sticky kind, which by the time the window
+            # closes names a LATER free redial's refusal (``deadline_exhausted``) and
+            # would misname the repeat.
+            text += provider_recovery_hint(
+                {**accumulated_usage, "_last_llm_error_kind": "transport_unavailable"}
+            )
         return text
     if is_deadline_exhausted:
         return "⚠️ The owner deadline ended primary model work; any files written so far are preserved."

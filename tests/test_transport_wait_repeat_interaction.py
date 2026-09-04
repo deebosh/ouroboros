@@ -10,7 +10,9 @@ wait terminal:
 - inside an episode the chain's local-only pass exists for ``transport_unavailable``
   alone, and a round record blocks even that pass;
 - an episode exhausted on a round that still holds a repeat record ends on the
-  record's source, worded as both the wait and the unresolved attempt.
+  record's source, worded as both the wait and the unresolved attempt — and that
+  wording names the class the repeat was RELEASED with, never the later refusal
+  that closed the window.
 """
 
 from __future__ import annotations
@@ -139,6 +141,54 @@ def test_wait_episode_exhausted_on_a_round_holding_a_repeat_record_takes_the_unk
         assert trace["forced_finalization"]["source"] == "transport_unavailable_no_resend"
         assert TRANSPORT_DEATHS_KEY not in usage
         assert result == base  # byte-identical base wording
+
+
+def test_deadline_refused_redial_still_names_the_class_the_repeat_was_released_with(
+    tmp_path, monkeypatch, no_sleep,
+):
+    """death → granted repeat RELEASED (`transport_unavailable`) → wait episode →
+    the owner window closes while the episode sleeps, so the next FREE redial is
+    refused before dispatch (`deadline_refused_dispatch`) and the sticky kind
+    becomes `deadline_exhausted`. The terminal is still the record's, and its
+    repeat sentence names the class the repeat itself was released with — the
+    sticky kind by then belongs to the refusal of a later, free, $0 redial and
+    would misname the paid attempt the owner is being told about."""
+    from ouroboros.config import get_finalization_grace_sec
+
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "other/model")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    llm = _ScriptedLLM(_death, _released_connect, _released_connect)
+    notes = []
+    kwargs = _loop_kwargs(tmp_path, llm, notes)
+    # Room for the grant (backoff 4 s + the admission reserve) and for one wait.
+    metadata = {"deadline_at": (
+        datetime.now(timezone.utc) + timedelta(seconds=get_finalization_grace_sec() + 8)
+    ).isoformat()}
+    kwargs["tools"]._ctx.task_metadata = metadata
+    waits = []
+
+    def _window_closes_while_waiting(sec, _wake):
+        waits.append(sec)
+        metadata["deadline_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        return False
+
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", _window_closes_while_waiting)
+    result, usage, trace = run_llm_loop(**kwargs)
+
+    assert llm.calls == 2  # the primary send and its granted repeat; the redial never dispatched
+    assert no_sleep == [4.0] and len(waits) == 1
+    assert [row["reason_code"] for row in _events(tmp_path, "llm_not_dispatched")] == ["deadline_exhausted"]
+    ended = [row["detail"] for row in _events(tmp_path, "network_wait") if row["phase"] == "ended"]
+    assert ended == ["deadline_refused_dispatch"]
+    assert usage["_last_llm_error_kind"] == "deadline_exhausted"  # the refusal's kind, not the repeat's
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
+    assert trace["forced_finalization"]["source"] == "provider_outcome_unknown_no_resend"
+    assert usage["execution_status"] == "infra_failed" and usage["reason_code"] == "provider_unavailable"
+    assert "waited and redialed" in result  # the wait wording is still there
+    assert "the repeat failed as transport_unavailable" in result
+    assert "deadline_exhausted" not in result
 
 
 def test_fallback_chain_fence_holds_inside_a_wait_episode_too(monkeypatch):
