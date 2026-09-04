@@ -3816,3 +3816,126 @@ def test_expired_evidence_is_re_sourced_instead_of_wedging_the_process(monkeypat
         [], scope_model_id=model, result_kwargs={},
     )
     assert result is None, "a healthy install must not block its own commits after 24h"
+
+
+class TestTriadPackExclusions:
+    """The triad pack's disclosed exclusion classes (review economics, D-06a).
+
+    The builder takes the advisory seam's ``exclude_paths`` shape and marks an
+    excluded path ONCE; ``triad_pack_exclusions`` names exactly two classes the
+    host can back — span-only release carriers on a VERSION-staged commit
+    (``release_sync`` carrier SSOT) and governance docs byte-identical to the
+    inlined prefix copy — and returns the disclosure note the caller appends."""
+
+    def test_exclude_paths_withhold_the_text_with_one_marker(self, tmp_path):
+        mod = _get_module("ouroboros.tools.review_helpers")
+        # Oversize AND excluded: the exclusion marker wins, never two markers.
+        (tmp_path / "uv.lock").write_bytes(b"x" * (1_048_576 + 1))
+        (tmp_path / "a.py").write_text("print('kept')", encoding="utf-8")
+        pack, omitted = mod.build_touched_file_pack(
+            tmp_path, ["uv.lock", "a.py"], exclude_paths={"uv.lock"})
+        assert omitted == ["uv.lock"]
+        assert pack.count("### uv.lock") == 1
+        assert "withheld by the caller's exclusion note" in pack
+        assert "byte limit" not in pack and "xxxx" not in pack
+        assert "print('kept')" in pack
+        # The default is byte-identical to the pre-exclusion builder.
+        pack_default, omitted_default = mod.build_touched_file_pack(tmp_path, ["a.py"])
+        assert omitted_default == [] and "print('kept')" in pack_default
+
+    @staticmethod
+    def _carrier_repo(tmp_path, *, with_lock=True):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(repo), check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=str(repo), check=True)
+        (repo / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+        (repo / "pyproject.toml").write_text(
+            '[project]\nname = "ouroboros"\nversion = "1.0.0"\n', encoding="utf-8")
+        if with_lock:
+            (repo / "uv.lock").write_text(_uv_lock_text("1.0.0"), encoding="utf-8")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "ARCHITECTURE.md").write_text(
+            "# Ouroboros v1.0.0 — Architecture\n\nArchitecture body.\n", encoding="utf-8")
+        (repo / "docs" / "DEVELOPMENT.md").write_text("# DEV\n\nHandbook body.\n", encoding="utf-8")
+        (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=str(repo), check=True)
+        return repo
+
+    @staticmethod
+    def _staged_paths(repo):
+        out = subprocess.run(["git", "diff", "--cached", "--name-only"], cwd=str(repo),
+                             check=True, capture_output=True, text=True).stdout
+        return [line for line in out.splitlines() if line]
+
+    def test_span_only_carriers_and_prefix_duplicates_are_cut_on_a_version_bump(self, tmp_path):
+        mod = _get_module("ouroboros.tools.review_file_pack")
+        repo = self._carrier_repo(tmp_path)
+        (repo / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+        (repo / "uv.lock").write_text(_uv_lock_text("1.0.1"), encoding="utf-8")
+        # pyproject: version bump PLUS a dependency edit outside its span.
+        (repo / "pyproject.toml").write_text(
+            '[project]\nname = "ouroboros"\nversion = "1.0.1"\ndependencies = ["httpx"]\n',
+            encoding="utf-8")
+        (repo / "docs" / "ARCHITECTURE.md").write_text(
+            "# Ouroboros v1.0.1 — Architecture\n\nArchitecture body.\n", encoding="utf-8")
+        (repo / "docs" / "DEVELOPMENT.md").write_text("# DEV\n\nHandbook body, revised.\n", encoding="utf-8")
+        (repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+        paths = self._staged_paths(repo)
+        dev_text = (repo / "docs" / "DEVELOPMENT.md").read_text(encoding="utf-8")
+
+        excluded, note = mod.triad_pack_exclusions(
+            repo, paths, prefix_texts={"docs/DEVELOPMENT.md": dev_text, "docs/DESIGN.md": ""})
+
+        assert excluded == {"VERSION", "uv.lock", "docs/ARCHITECTURE.md", "docs/DEVELOPMENT.md"}
+        assert "pyproject.toml" not in excluded and "app.py" not in excluded
+        assert note.startswith("⚠️ PACK EXCLUSION NOTE: full text withheld for 4 touched file(s)")
+        assert "VERSION_CARRIER_SPANS" in note and "version_carrier_desyncs" in note
+        assert "uv.lock" in note and "byte-identical" in note and "docs/DEVELOPMENT.md" in note
+        # The pack renders the cut through the builder's own marker + omitted list.
+        pack, omitted = mod.build_touched_file_pack(repo, paths, exclude_paths=excluded)
+        assert set(omitted) == excluded
+        assert "httpx" in pack and "x = 2" in pack  # kept texts
+        assert "Handbook body, revised." not in pack and "editable" not in pack  # withheld texts
+
+    def test_without_version_staged_carriers_keep_their_text(self, tmp_path):
+        """The carrier class is a release-bump mechanism: no VERSION staged, no
+        carrier cut (the preflight carrier gate did not run); the prefix-dedup
+        class is independent of it."""
+        mod = _get_module("ouroboros.tools.review_file_pack")
+        repo = self._carrier_repo(tmp_path)
+        (repo / "uv.lock").write_text(_uv_lock_text("1.0.1"), encoding="utf-8")
+        (repo / "docs" / "DEVELOPMENT.md").write_text("# DEV\n\nHandbook body, revised.\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+        paths = self._staged_paths(repo)
+        dev_text = (repo / "docs" / "DEVELOPMENT.md").read_text(encoding="utf-8")
+
+        excluded, note = mod.triad_pack_exclusions(
+            repo, paths, prefix_texts={"docs/DEVELOPMENT.md": dev_text})
+        assert excluded == {"docs/DEVELOPMENT.md"}
+        assert "release carrier" not in note and "byte-identical" in note
+        # A prefix copy with DIFFERENT bytes (or none) keeps the doc's full text.
+        assert mod.triad_pack_exclusions(
+            repo, paths, prefix_texts={"docs/DEVELOPMENT.md": "# DEV\n\nOther bytes.\n"}) == (set(), "")
+        assert mod.triad_pack_exclusions(repo, paths, prefix_texts={}) == (set(), "")
+
+    def test_a_carrier_new_at_head_keeps_its_text(self, tmp_path):
+        mod = _get_module("ouroboros.tools.review_file_pack")
+        repo = self._carrier_repo(tmp_path, with_lock=False)
+        (repo / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+        (repo / "uv.lock").write_text(_uv_lock_text("1.0.1"), encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+        excluded, _note = mod.triad_pack_exclusions(
+            repo, self._staged_paths(repo), prefix_texts={})
+        assert excluded == {"VERSION"}
+
+
+def _uv_lock_text(version):
+    return (
+        'version = 1\n\n[[package]]\nname = "ouroboros"\n'
+        f'version = "{version}"\nsource = {{ editable = "." }}\n\n'
+        '[[package]]\nname = "httpx"\nversion = "0.27.0"\n'
+    )

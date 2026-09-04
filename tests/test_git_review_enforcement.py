@@ -608,3 +608,109 @@ class TestReviewEnforcementModes:
     # ``test_copy_source_not_treated_as_deletion`` was removed with the
     # tests-required preflight heuristic (#447): a false D entry for a copy
     # source no longer has any observable preflight effect to pin.
+
+
+# --- the triad call site's pack exclusions (review economics, D-06a) ----------
+
+
+def _mock_triad_gates(review, monkeypatch, *, changed=("uv.lock", "VERSION")):
+    """Deterministic gates around the touched-pack seam of _prepare_unified_review."""
+    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "advisory")
+    name_status = "\n".join(f"M\t{p}" for p in changed)
+    name_only = "\n".join(changed)
+
+    def _run_cmd(cmd, cwd=None):
+        cmd = list(cmd)
+        if cmd[:5] == ["git", "diff", "--cached", "--name-status"]:
+            return name_status
+        if cmd[:4] == ["git", "diff", "--cached", "--name-only"]:
+            return name_only
+        if cmd[:3] == ["git", "diff", "--cached"]:
+            return "diff --cached"
+        return ""
+
+    monkeypatch.setattr(review, "run_cmd", _run_cmd)
+    import ouroboros.tools.review_binary_context as _rbc
+    monkeypatch.setattr(_rbc, "capture_staged_diff", lambda _repo, *, unified=3: "diff --cached")
+    monkeypatch.setattr(review, "_preflight_check", lambda *a, **k: None)
+    monkeypatch.setattr(review, "_load_checklist_section", lambda: "## checklist")
+    monkeypatch.setattr(review, "load_governance_doc", lambda repo, rel, **k: f"{rel} PREFIX TEXT")
+    captured = {}
+
+    def _fake_review(*_a, **kw):
+        captured["prompt"] = kw["prompt"]
+        return json.dumps({"results": [{
+            "model": "m", "verdict": "PASS", "tokens_in": 1, "tokens_out": 1, "cost_estimate": 0.0,
+            "text": '[{"item":"x","verdict":"PASS","severity":"advisory","reason":"ok"}]',
+        }]})
+
+    monkeypatch.setattr(review, "_handle_multi_model_review", _fake_review)
+    return captured
+
+
+def test_triad_pack_exclusions_reach_the_pack_and_the_prompt(review_ctx, monkeypatch):
+    """The call site computes the two disclosed exclusion classes from the
+    touched paths and the SAME prefix texts it inlines, hands them to the
+    touched pack through the advisory seam's ``exclude_paths`` shape, and
+    appends the disclosure note AFTER the builder's OMISSION NOTE."""
+    review, ctx = review_ctx
+    captured = _mock_triad_gates(review, monkeypatch)
+    seen = {}
+
+    def _exclusions(repo_dir, paths, *, prefix_texts):
+        seen["paths"] = list(paths)
+        seen["prefix_texts"] = dict(prefix_texts)
+        return {"uv.lock"}, "PACK-EXCLUSION-NOTE-SENTINEL"
+
+    def _pack(repo_dir, paths, **kw):
+        seen["exclude_paths"] = kw.get("exclude_paths")
+        return "### uv.lock\n\n*(omitted — withheld)*\n\n### VERSION\n```\n1.0.1\n```\n", ["uv.lock"]
+
+    monkeypatch.setattr(review, "triad_pack_exclusions", _exclusions)
+    monkeypatch.setattr(review, "build_touched_file_pack", _pack)
+
+    review._run_unified_review(ctx, "release: 1.0.1", repo_dir=ctx.repo_dir)
+
+    assert seen["paths"] == ["uv.lock", "VERSION"]
+    assert seen["prefix_texts"] == {
+        "docs/DEVELOPMENT.md": "docs/DEVELOPMENT.md PREFIX TEXT",
+        "docs/DESIGN.md": "docs/DESIGN.md PREFIX TEXT",
+        "docs/ARCHITECTURE.md": "docs/ARCHITECTURE.md PREFIX TEXT",
+    }
+    assert seen["exclude_paths"] == {"uv.lock"}
+    prompt = captured["prompt"]
+    omission = prompt.index("⚠️ OMISSION NOTE: 1 file(s) omitted from direct context: uv.lock")
+    assert prompt.index("PACK-EXCLUSION-NOTE-SENTINEL") > omission
+    assert prompt.index("## Staged diff") > prompt.index("PACK-EXCLUSION-NOTE-SENTINEL")
+
+
+def test_a_managed_subject_keeps_every_full_text(review_ctx, monkeypatch):
+    """A managed resolution's reviewed delta is M0→staged, not HEAD→staged, so
+    the call site never computes the cut for it: the pack receives no
+    ``exclude_paths`` and no exclusion note is appended."""
+    from types import SimpleNamespace
+
+    review, ctx = review_ctx
+    captured = _mock_triad_gates(review, monkeypatch)
+    import ouroboros.tools.review_subject as _subject
+    fake_subject = SimpleNamespace(
+        render_prompt_diff=lambda unified=3: "diff --managed", touched_paths=lambda: ["uv.lock"],
+        m0_tree="", staged_tree="", name_status=[("M", "uv.lock")],
+    )
+    monkeypatch.setattr(_subject, "managed_review_subject", lambda ctx_, repo: fake_subject)
+    monkeypatch.setattr(review, "triad_pack_exclusions",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no cut on a managed subject")))
+    seen = {}
+
+    def _pack(repo_dir, paths, **kw):
+        seen["exclude_paths"] = kw.get("exclude_paths")
+        seen["represent_binary"] = kw.get("represent_binary")
+        return "### uv.lock\n```\nfull text\n```\n", []
+
+    monkeypatch.setattr(review, "build_touched_file_pack", _pack)
+
+    review._run_unified_review(ctx, "managed update", repo_dir=ctx.repo_dir)
+
+    assert seen["exclude_paths"] == set() and seen["represent_binary"] is True
+    assert "PACK EXCLUSION NOTE" not in captured["prompt"]
+    assert "full text" in captured["prompt"]

@@ -218,9 +218,13 @@ def _run_advisory_native(
         with usage_scope(_scope):
             attempt = executor.execute()
     except Exception as exc:
+        # The episode's proven facts (rounds, receipts, transcript vs bound,
+        # paid ledger) and its typed code survive the failure: the caller
+        # classifies on ``failure_code``, never on the message text.
         return SimpleNamespace(
             success=False, result_text="(no output)", session_id="", cost_usd=0.0,
-            usage={}, error=f"{type(exc).__name__}: {exc}", stderr_tail="",
+            usage=executor.failure_custody(), failure_code=str(getattr(exc, "code", "") or ""),
+            error=f"{type(exc).__name__}: {exc}", stderr_tail="",
         ), model
     usage = dict(attempt.usage or {})
     usage["cost_disclosed_usd"] = usage.get("cost")
@@ -465,6 +469,7 @@ def _maybe_overflow_skip(
     failure: object,
     stderr_tail: object = "",
     verb: str = "reported",
+    failure_code: str = "",
 ) -> Optional[tuple]:
     """Post-dispatch overflow classification: the typed skip tuple, or ``None``.
 
@@ -474,7 +479,26 @@ def _maybe_overflow_skip(
     crashed harness and invites a doomed retry of the identical prompt.
     Serves both dispatched-failure shapes: a returned failure result
     (``verb="reported"``, with its stderr tail and run meta) and a raised
-    exception (``verb="raised"``)."""
+    exception (``verb="raised"``). The native episode's own bound end is keyed
+    on its STRUCTURED code (``review_native_episode``:
+    ``native_transcript_cap_exceeded``), never on message text, and is NOT a
+    provider window refusal — it keeps its own skip reason and the episode's
+    numbers (bound, refused chars, paid rounds) from ``failure_custody``."""
+    if failure_code == "native_transcript_cap_exceeded":
+        facts = dict((meta or {}).get("usage") or {})
+        bound, rounds = int(facts.get("native_transcript_bound") or 0), int(facts.get("native_rounds") or 0)
+        refused = int(facts.get("native_transcript_refused_chars") or facts.get("native_transcript_chars") or 0)
+        log.warning("Advisory skipped — native episode transcript bound exceeded after %d round(s) "
+                    "(%d > %d chars)", rounds, refused, bound)
+        _stamp_advisory_skip_meta(ctx, meta, "native_transcript_bound_exceeded")
+        return [], (
+            "⚠️ ADVISORY_SKIPPED: native_transcript_bound_exceeded — the advisory's native "
+            f"inspection episode exhausted its window-derived transcript bound after {rounds} paid "
+            f"round(s) ({refused:,} chars against the {bound:,}-char bound) before a final answer. "
+            "Advisory review skipped — non-blocking and audited; the paid rounds' usage stays on the "
+            "advisory meta. Levers: a larger-window advisory row, or "
+            "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS."
+        ), model, prompt_chars
     if not _overflow_failure_text(failure, stderr_tail):
         return None
     route_name = "agent_session" if delegated_route else "native"

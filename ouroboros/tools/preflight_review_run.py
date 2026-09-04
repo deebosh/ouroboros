@@ -516,7 +516,8 @@ def _run_claude_advisory(
         if not result.success:
             skip = _car()._maybe_overflow_skip(
                 ctx, delegated_route, prompt_chars, model, meta,
-                result.error, getattr(result, "stderr_tail", ""))
+                result.error, getattr(result, "stderr_tail", ""),
+                failure_code=str(getattr(result, "failure_code", "") or ""))
             if skip is not None:
                 return skip
             err_msg = _car()._format_advisory_error(

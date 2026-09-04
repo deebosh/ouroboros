@@ -354,3 +354,154 @@ def test_output_limit_rejection_is_not_reclassified(tmp_path, monkeypatch, api_e
         ctx.repo_dir, "msg", ctx, options={"include_repo_diff": False},
     )
     assert raw.startswith("⚠️ ADVISORY_ERROR"), raw
+
+
+# ---------------------------------------------------------------------------
+# 4. the native episode's own bound end: typed, disclosed, money-bearing
+# ---------------------------------------------------------------------------
+
+
+_NATIVE_BOUND_FACTS = {
+    "native_rounds": 7, "native_tool_calls": 11, "native_transcript_chars": 887_000,
+    "native_transcript_bound": 900_000, "native_transcript_refused_chars": 912_345,
+    "native_end_reason": "transcript_bound", "delivery": "native_tool_rounds",
+    "prompt_tokens": 480_000, "completion_tokens": 3_000, "cost": 1.25,
+}
+
+
+def test_native_bound_end_is_a_typed_skip_carrying_the_episodes_numbers(tmp_path, monkeypatch, api_env):
+    """``native_transcript_cap_exceeded`` is keyed on the STRUCTURED code, is
+    NOT the provider window vocabulary, and reaches the caller as the typed
+    non-blocking skip with the episode's bound/refused/rounds facts — never
+    the generic ADVISORY_ERROR that reads as a crashed harness."""
+    _fake_window(monkeypatch, 1_000_000)
+    _stub_run_readonly(
+        monkeypatch, success=False, result_text="(no output)",
+        error="ReviewRouteUnavailable: native review episode transcript (912345 chars) "
+              "exceeded its bound (900000) before a final answer; the episode fails closed",
+        failure_code="native_transcript_cap_exceeded", usage=dict(_NATIVE_BOUND_FACTS),
+    )
+    ctx = _ctx(tmp_path)
+    items, raw, model, _chars = advisory._run_claude_advisory(
+        ctx.repo_dir, "msg", ctx, options={"include_repo_diff": False},
+    )
+    assert items == []
+    assert raw.startswith("⚠️ ADVISORY_SKIPPED: native_transcript_bound_exceeded"), raw
+    assert "7 paid round(s)" in raw and "912,345 chars" in raw and "900,000-char bound" in raw
+    assert "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS" in raw
+    assert "context_window_exceeded" not in raw and "ADVISORY_ERROR" not in raw
+    meta = dict(getattr(ctx, "_last_claude_advisory_meta", {}) or {})
+    assert meta.get("status") == "skipped"
+    assert meta.get("skip_reason") == "native_transcript_bound_exceeded"
+    # The paid rounds' custody survives on the meta (D-06d: never an empty {}).
+    assert meta.get("usage", {}).get("native_rounds") == 7
+    assert meta.get("usage", {}).get("cost") == 1.25
+    assert model == advisory._advisory_default_model()
+
+
+def _fake_native_executor(monkeypatch, *, raise_exc=None, facts=None):
+    """Replace the native episode with a scripted executor; returns the log."""
+    import ouroboros.llm as llm_mod
+    import ouroboros.review_native_episode as native_episode
+
+    seen = {}
+
+    class _Executor:
+        def __init__(self, assignment, *, llm=None):
+            seen["assignment"] = assignment
+            self._facts = dict(facts or {})
+
+        def execute(self):
+            if raise_exc is not None:
+                raise raise_exc
+            from ouroboros.review_execution import ReviewAttemptResult
+            return ReviewAttemptResult(message={}, usage=dict(self._facts), raw_text=_ADVISORY_ITEMS)
+
+        def failure_custody(self):
+            return dict(self._facts)
+
+    monkeypatch.setattr(native_episode, "NativeToolRoundReviewExecutor", _Executor)
+    monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: object())
+    return seen
+
+
+def test_native_episode_failure_keeps_custody_and_the_typed_code(tmp_path, monkeypatch):
+    """``_run_advisory_native`` no longer collapses an episode exception to
+    ``usage={}``: the failure result carries ``failure_custody()`` and the
+    exception's structured code; ``cost_usd`` stays the ledger's 0.0."""
+    from ouroboros.review_execution import ReviewRouteUnavailable
+
+    _fake_native_executor(
+        monkeypatch, facts=_NATIVE_BOUND_FACTS,
+        raise_exc=ReviewRouteUnavailable("exceeded its bound", code="native_transcript_cap_exceeded"),
+    )
+    ctx = _ctx(tmp_path)
+    slot = SimpleNamespace(effort="low", subagent_id="")
+    result, model = advisory._run_advisory_native("prompt", ctx.repo_dir, ctx, slot, "openai/adv")
+    assert result.success is False and model == "openai/adv"
+    assert result.failure_code == "native_transcript_cap_exceeded"
+    assert result.usage == _NATIVE_BOUND_FACTS
+    assert result.cost_usd == 0.0
+    assert result.error.startswith("ReviewRouteUnavailable: exceeded its bound")
+
+
+def test_uncoded_native_failure_stays_an_error_but_keeps_the_paid_rounds(tmp_path, monkeypatch, api_env):
+    """A transport failure with no structured code keeps the ADVISORY_ERROR
+    shape (no text sniffing), yet the rounds it paid for stay on the meta."""
+    _fake_window(monkeypatch, 1_000_000)
+    _stub_run_readonly(
+        monkeypatch, success=False, result_text="(no output)",
+        error="RuntimeError: transport reset by peer", failure_code="",
+        usage={"native_rounds": 2, "native_transcript_bound": 900_000, "cost": 0.4},
+    )
+    ctx = _ctx(tmp_path)
+    _items, raw, _model, _chars = advisory._run_claude_advisory(
+        ctx.repo_dir, "msg", ctx, options={"include_repo_diff": False},
+    )
+    assert raw.startswith("⚠️ ADVISORY_ERROR"), raw
+    meta = dict(getattr(ctx, "_last_claude_advisory_meta", {}) or {})
+    assert meta.get("status") == "error"
+    assert meta.get("usage", {}).get("native_rounds") == 2
+
+
+# ---------------------------------------------------------------------------
+# 5. the window-derived transcript bound IS applied on the advisory's native episode
+# ---------------------------------------------------------------------------
+
+
+def test_native_advisory_episode_bound_is_derived_from_the_advisory_models_window(tmp_path, monkeypatch):
+    """Pin for the default advisory delivery (an api_chat row = the native
+    episode): the episode's send bound is ``review_native_transcript_bound``
+    of the ADVISORY's own routed model, and the delivered usage discloses it.
+    The pre-dispatch window gate runs on the same branch (``_predispatch_size_skip``
+    returns None only for the delegated route)."""
+    import ouroboros.llm as llm_mod
+    import ouroboros.review_native_episode as native_episode
+
+    bound_calls = []
+
+    def _bound(model_id, *, output_reserve, use_local=None):
+        bound_calls.append((model_id, output_reserve))
+        return 60_000  # above the first send; the floor below it is its own typed end
+
+    monkeypatch.setattr(native_episode, "review_native_transcript_bound", _bound)
+
+    class _Chat:
+        def chat(self, **kwargs):
+            return {"content": _ADVISORY_ITEMS}, {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0}
+
+    monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: _Chat())
+    ctx = _ctx(tmp_path)
+    (ctx.repo_dir / "a.txt").write_text("x\n", encoding="utf-8")
+    slot = SimpleNamespace(effort="low", subagent_id="")
+    result, model = advisory._run_advisory_native(
+        "Review the worktree.", ctx.repo_dir, ctx, slot, "openai/adv-window")
+    assert result.success is True, result.error
+    assert bound_calls and bound_calls[0][0] == "openai/adv-window"
+    assert result.usage["native_transcript_bound"] == 60_000
+    assert result.usage["delivery"] == "native_tool_rounds"
+    # The pre-dispatch window gate is the native branch's, not the delegated one's.
+    _fake_window(monkeypatch, 1_000)
+    assert advisory._predispatch_size_skip(ctx, True, "openai/adv-window", "p" * 40_000, False) is None
+    native_skip = advisory._predispatch_size_skip(ctx, False, "openai/adv-window", "p" * 40_000, False)
+    assert native_skip is not None and "does not fit the api route window" in native_skip[1]
