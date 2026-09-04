@@ -132,7 +132,7 @@ DEFERRED_OUT_OF_V70 = {
     "DEFER-FROZEN-2": OWNER,
     "DEFER-C6-RESIDUALS": OWNER,
     "DEFER-C19-RETENTION": OWNER,
-    "W4-F4": OPERATOR,
+    "W4-F4": OWNER,
     "DEFER-E2E-PAID-LANE": OWNER,  # batch №13 item 2 = A (the run order); E2/E3 blocked structurally
     "DEFER-SPEC64-PATHS": OWNER,  # batch №13 item 8 = A
 }
