@@ -92,18 +92,23 @@ from ouroboros.runtime_limits import (
     _clamped_number_setting,  # noqa: F401
     get_acceptance_reserve_pct,  # noqa: F401
     get_acceptance_review_est_sec,  # noqa: F401
+    get_claudexor_harness_install_timeout_sec,  # noqa: F401
+    get_claudexor_quota_refresh_timeout_sec,  # noqa: F401
     get_delegate_wait_max_sec,  # noqa: F401
     get_delegate_wait_sec,  # noqa: F401
+    get_direct_turn_stop_wait_sec,  # noqa: F401
     get_llm_transport_read_timeout_sec,  # noqa: F401
     get_max_active_subagents_per_root,  # noqa: F401
     get_max_subagent_depth,  # noqa: F401
     get_max_workers,  # noqa: F401
+    get_onboarding_snapshot_timeout_sec,  # noqa: F401
     get_pacing_interval_sec,  # noqa: F401
     get_per_call_timeout_ceiling_sec,  # noqa: F401
     get_plan_task_deadline_min_sec,  # noqa: F401
     get_post_task_evolution_budget_usd,  # noqa: F401
     get_restart_drain_max_sec,  # noqa: F401
     get_safety_call_timeout_sec,  # noqa: F401
+    get_settings_document_lock_timeout_sec,  # noqa: F401
     get_safety_max_tokens,  # noqa: F401
     get_search_code_wall_sec,  # noqa: F401
     get_supervisor_liveness_deadline_sec,  # noqa: F401
@@ -934,28 +939,6 @@ def get_mcp_tool_timeout_sec() -> int:
         parsed = 0
     return parsed if parsed > 0 else int(SETTINGS_DEFAULTS["MCP_TOOL_TIMEOUT_SEC"])
 
-
-def get_claudexor_quota_refresh_timeout_sec() -> int:
-    return _clamped_number_setting("OUROBOROS_CLAUDEXOR_QUOTA_REFRESH_TIMEOUT_SEC", low=1, high=90, cast=int)
-
-
-def get_claudexor_harness_install_timeout_sec() -> int:
-    return _clamped_number_setting("OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC", low=1, cast=int)
-
-
-def get_onboarding_snapshot_timeout_sec() -> int:
-    """Bound of the single Claudexor snapshot read during onboarding completion (#464)."""
-    return _clamped_number_setting("OUROBOROS_ONBOARDING_SNAPSHOT_TIMEOUT_SEC", low=1, high=300, cast=int)
-
-
-def get_settings_document_lock_timeout_sec() -> int:
-    """Bound of the in-process settings-document lock (one read-merge-write plus its effects)."""
-    return _clamped_number_setting("OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC", low=1, high=300, cast=int)
-
-
-def get_direct_turn_stop_wait_sec() -> float:
-    """How long custody waits for a stopped direct-chat turn to reach its next round boundary."""
-    return _clamped_number_setting("OUROBOROS_DIRECT_TURN_STOP_WAIT_SEC", low=0, high=10, cast=float)
 
 
 def get_finalization_grace_sec(settings: Optional[dict] = None) -> int:

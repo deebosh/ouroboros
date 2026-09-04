@@ -108,6 +108,29 @@ def get_plan_task_deadline_min_sec() -> float:
     return _clamped_number_setting("OUROBOROS_PLAN_TASK_DEADLINE_MIN_SEC", low=30.0, high=3600.0)
 
 
+def get_claudexor_quota_refresh_timeout_sec() -> int:
+    return _clamped_number_setting("OUROBOROS_CLAUDEXOR_QUOTA_REFRESH_TIMEOUT_SEC", low=1, high=90, cast=int)
+
+
+def get_claudexor_harness_install_timeout_sec() -> int:
+    return _clamped_number_setting("OUROBOROS_CLAUDEXOR_HARNESS_INSTALL_TIMEOUT_SEC", low=1, cast=int)
+
+
+def get_onboarding_snapshot_timeout_sec() -> int:
+    """Bound of the single Claudexor snapshot read during onboarding completion (#464)."""
+    return _clamped_number_setting("OUROBOROS_ONBOARDING_SNAPSHOT_TIMEOUT_SEC", low=1, high=300, cast=int)
+
+
+def get_settings_document_lock_timeout_sec() -> int:
+    """Bound of the in-process settings-document lock (one read-merge-write plus its effects)."""
+    return _clamped_number_setting("OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC", low=1, high=300, cast=int)
+
+
+def get_direct_turn_stop_wait_sec() -> float:
+    """How long custody waits for a stopped direct-chat turn to reach its next round boundary."""
+    return _clamped_number_setting("OUROBOROS_DIRECT_TURN_STOP_WAIT_SEC", low=0, high=10, cast=float)
+
+
 def get_vision_caption_timeout_sec() -> int:
     return _clamped_number_setting("OUROBOROS_VISION_CAPTION_TIMEOUT_SEC", low=1, cast=int)
 
