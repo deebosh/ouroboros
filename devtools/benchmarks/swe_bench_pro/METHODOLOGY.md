@@ -346,11 +346,11 @@ successful sample.
 
 `api_errors` counts real physical failures: a transport death inside one
 request (the socket died after dispatch) produces one `llm_api_error` per
-physical attempt — up to three from the transport-death rail alone (the
-primary dispatch repeats such a death at most twice), on top of the transient
-burst (`OUROBOROS_TRANSIENT_RETRY_MAX`) that shares the same attempt loop — so
-a flaky uplink can cross the `< 3` threshold on its own and legitimately
-trigger a resample.
+physical attempt. One call has one outer attempt budget
+(`OUROBOROS_TRANSIENT_RETRY_MAX`), within which up to three rows can be typed
+transport-death failures (the first death plus at most two repeats by the
+primary dispatch) — so a flaky uplink can cross the `< 3` threshold on its
+own and legitimately trigger a resample.
 
 ### 3.2 Seed provenance
 
