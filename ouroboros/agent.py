@@ -1152,47 +1152,42 @@ class OuroborosAgent:
             elif str(cap_info.get("executor_blocked_reason") or ""):
                 text, usage, llm_trace = _blocked_executor_terminal(cap_info, task)
             elif task_type_str == "deep_self_review":
-                # Deep self-review bypasses the tool loop.
+                # Deep self-review bypasses the tool loop: it runs on the
+                # configured deep-review ROW (the row decides the delivery).
                 try:
-                    from ouroboros.deep_self_review import run_deep_self_review, is_review_available
+                    from ouroboros.deep_self_review import run_deep_self_review
                     self._emit_progress("Starting deep self-review... This may take several minutes.")
-                    review_model = str(task.get("model") or "")
-                    if not review_model:
-                        avail, review_model = is_review_available()
-                        if not avail:
-                            review_model = ""
-                    if not review_model:
-                        text = (
-                            "❌ Deep self-review unavailable: configure "
-                            "OUROBOROS_MODEL_DEEP_SELF_REVIEW and the matching provider API key."
-                        )
-                        usage = {
-                            "execution_status": "infra_failed",
-                            "reason_code": "deep_self_review_unavailable",
-                        }
-                    else:
-                        text, usage = run_deep_self_review(
-                            repo_dir=self.env.repo_dir,
-                            drive_root=self.env.drive_root,
-                            llm=self.llm,
-                            emit_progress=self._emit_progress,
-                            event_queue=self._event_queue,
-                            model=review_model,
-                        )
+                    text, usage = run_deep_self_review(
+                        repo_dir=self.env.repo_dir,
+                        drive_root=self.env.drive_root,
+                        llm=self.llm,
+                        emit_progress=self._emit_progress,
+                        task_id=str(task.get("id") or ""),
+                        deadline_at=str((self._current_task_metadata or {}).get("deadline_at") or ""),
+                    )
                     if usage:
                         self._pending_events.append({
                             "type": "llm_usage",
                             "ts": utc_now_iso(),
                             "task_id": str(task.get("id") or ""),
-                            "model": review_model,
+                            "model": str(usage.get("resolved_model") or ""),
                             "usage": usage,
                             "category": "deep_self_review",
                         })
-                    try:
-                        review_path = pathlib.Path(self.env.drive_root) / "memory" / "deep_review.md"
-                        review_path.write_text(text, encoding="utf-8")
-                    except Exception as save_err:
-                        log.warning("Failed to save deep review to memory: %s", save_err)
+                    if str(usage.get("execution_status") or "") == "infra_failed":
+                        # The last report stays: an error is the task result plus a
+                        # typed event, never the durable memory of the review.
+                        append_jsonl(drive_logs / "events.jsonl", {
+                            "ts": utc_now_iso(), "type": "task_error",
+                            "task_id": task.get("id"), "error": text,
+                            "reason_code": str(usage.get("reason_code") or ""),
+                        })
+                    else:
+                        try:
+                            review_path = pathlib.Path(self.env.drive_root) / "memory" / "deep_review.md"
+                            review_path.write_text(text, encoding="utf-8")
+                        except Exception as save_err:
+                            log.warning("Failed to save deep review to memory: %s", save_err)
                     llm_trace = {"reasoning_notes": ["deep_self_review"], "tool_calls": []}
                 except BudgetExceeded:
                     raise

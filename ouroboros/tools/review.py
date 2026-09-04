@@ -156,7 +156,7 @@ def _handle_task_acceptance_review(
     rationale: str = "",
     obligation_dispositions: Optional[list] = None,
 ) -> str:
-    from ouroboros.config import get_task_review_mode, resolve_effort
+    from ouroboros.config import get_task_review_mode
     from ouroboros.review_evidence import (
         build_task_acceptance_evidence,
         task_acceptance_evidence_revision,
@@ -297,8 +297,8 @@ def _handle_task_acceptance_review(
         ReviewRequest,
         build_improvement_capsule,
         dissent_findings,
-        reviewer_slots,
         run_review_request,
+        triad_delivery_slots,
     )
 
     request = ReviewRequest(
@@ -317,9 +317,27 @@ def _handle_task_acceptance_review(
         },
         task_id=str(getattr(ctx, "task_id", "") or ""), retry_key=f"task_acceptance:{task_acceptance_evidence_revision(evidence)}",
     )
-    # Task acceptance alone stays API-only by owner decision (D15); configured
-    # rows now also route commit, scope, advisory, plan, and Skill Review.
-    slots = reviewer_slots(effort=resolve_effort("review"), role_hint="task acceptance")
+    # Child-task and `off`-mode acceptance is advisory evidence, never the root
+    # verdict, and buys no retrieving panel (owner R2; plan roast item 12): it
+    # runs the configured triad's PACKET rows only, refusing typed when none
+    # remain — never a silently projected default panel (R3).
+    try:
+        slots = [
+            slot for slot in triad_delivery_slots(role_hint="task acceptance")
+            if not getattr(slot, "retrieves", False)
+        ]
+    except ValueError as exc:
+        return json.dumps({
+            "status": "not_dispatched",
+            "error": f"invalid reviewer-slot configuration blocks task acceptance: {exc}",
+        }, ensure_ascii=False)
+    if not slots:
+        return json.dumps({
+            "status": "not_dispatched", "reason": "no_packet_reviewer_rows",
+            "detail": "every configured triad row retrieves (agent session or configured "
+                      "subagent); child/off task acceptance runs packet rows only, so no "
+                      "reviewer was called",
+        }, ensure_ascii=False)
     request.policy["min_successful_slots"] = _cfg.adaptive_quorum(len(slots))
     result = run_review_request(request, slots=slots, drive_root=pathlib.Path(ctx.drive_root), usage_ctx=ctx)
     # Agent self-call (auto): lead with the compact improvement capsule (the
@@ -383,6 +401,12 @@ def _review_output_budget() -> int:
     return max(8192, min(raw, 65536))
 
 
+def _owner_deadline_at(ctx: Any) -> str:
+    """The task's owner deadline (ISO text) from the tool context, or ''."""
+    metadata = getattr(ctx, "task_metadata", None) if ctx is not None else None
+    return str(metadata.get("deadline_at") or "") if isinstance(metadata, dict) else ""
+
+
 async def _query_model(
     llm_client: LLMClient,
     model: str,
@@ -402,15 +426,13 @@ async def _query_model(
     async with semaphore:
         slot = None
         try:
-            from ouroboros.review_execution import ReviewRouteKind
+            from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
             from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_request
             slot_route = route if route is not None else ReviewRouteKind.API_CHAT
             delegated = slot_route is ReviewRouteKind.AGENT_SESSION
             # RETRIEVES class (session row OR configured-subagent api row): the
             # compact session task replaces the assembled pack for both.
-            retrieves = delegated or (
-                bool(subagent_id) and slot_route is ReviewRouteKind.API_CHAT
-            )
+            retrieves = delivery_retrieves(slot_route, subagent_id)
             _out_budget = _review_output_budget()
             request = ReviewRequest(
                 surface=surface,
@@ -429,6 +451,9 @@ async def _query_model(
                 task_attempt=getattr(ctx, "task_attempt", None) if ctx is not None else None,
                 retry_key=str(retry_key or ""),
                 reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
+                # The owner deadline is a bound of every retrieving episode; it
+                # reaches the row here exactly as the advisory passes it.
+                deadline_at=_owner_deadline_at(ctx),
             )
             slot = ReviewSlot(
                 slot_id=slot_id,
@@ -495,7 +520,7 @@ async def _multi_model_review_async(content: str, prompt: str,
                                      session_policy: dict = None,
                                      usage_attribution: dict = None,
                                      retry_key: str = ""):
-    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
 
     row_routes = list(routes or []) + [ReviewRouteKind.API_CHAT] * max(0, len(models) - len(routes or []))
     # Per-row strength/target/identity vectors (6.1). Absent tails keep the
@@ -513,7 +538,7 @@ async def _multi_model_review_async(content: str, prompt: str,
     # api-route row bound to a configured subagent retrieves with its own
     # tools and must never trigger (or be counted into) the assembled pack.
     any_api_rows = any(
-        route is ReviewRouteKind.API_CHAT and not row_actors[idx]
+        not delivery_retrieves(route, row_actors[idx])
         for idx, route in enumerate(row_routes[:len(models)])
     )
     if not content:
