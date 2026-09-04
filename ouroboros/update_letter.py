@@ -54,7 +54,16 @@ COMMIT_BODY_MAX_CHARS = 10000
 DEFAULT_MAX_BODIES = 200
 DEFAULT_MAX_ROWS = 60
 
-_ROW_RE = re.compile(r"^\+\|\s*(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)\s*\|")
+def _row_re() -> "re.Pattern":
+    """An added README history row, recognised with the repository's ONE version grammar.
+
+    Retyping it here drifted: this regex used to reject a real ``4.50.0rc1`` row and accept
+    a ``4.50.0-foo`` that is not a version at all, which then counted a valid release as an
+    omission. ``release_sync`` owns the grammar because it WRITES those rows.
+    """
+    from ouroboros.tools.release_sync import PRE_SUFFIX
+
+    return re.compile(r"^\+\|\s*(\d+\.\d+\.\d+" + PRE_SUFFIX + r")\s*\|", re.IGNORECASE)
 # The table's own furniture: the EXACT canonical header and the dashed separator under it
 # carry no release and are the only added rows that may be skipped in silence. The match is
 # whole-row on purpose — a row merely STARTING with "version" is a row whose content the
@@ -129,7 +138,8 @@ def collect_range_material(
     discloses the rest. ``releases`` are every row added anywhere in the range,
     newest-first with first-wins per version; the newest ``max_rows`` keep their text and
     older rows stay as version and date (``rows_summarized``), malformed ones are counted
-    in ``omitted_rows``. ``versions`` are the VERSION files at both ends. Divergence
+    in ``omitted_rows`` with the commits that carried them in ``omitted_row_commits``, so an
+    omission always names where to read it. ``versions`` are the VERSION files at both ends. Divergence
     counts stay on the status dict that triggered the letter — nothing is collected that
     neither the model nor the record reads. An empty range yields empty lists.
     """
@@ -137,8 +147,8 @@ def collect_range_material(
     spec = f"{base_sha}..{target_sha}"
     material: Dict[str, Any] = {
         "base_sha": base_sha, "target_sha": target_sha,
-        "commits": [], "bodies_omitted": 0, "releases": [], "omitted_rows": 0,
-        "rows_summarized": 0, "versions": {},
+        "commits": [], "bodies_omitted": 0, "omitted_commit_chunks": 0, "releases": [],
+        "omitted_rows": 0, "omitted_row_commits": [], "rows_summarized": 0, "versions": {},
     }
     rc, out, err = capture([
         "git", "log", "--first-parent", "--format=%H%x1f%aI%x1f%s%x1f%b%x1e", spec,
@@ -153,6 +163,7 @@ def collect_range_material(
                 continue
             parts = chunk.split("\x1f", 3)
             if len(parts) < 3:
+                material["omitted_commit_chunks"] += 1
                 continue
             body = parts[3].strip() if len(parts) > 3 else ""
             keeps_body = len(commits) < max_bodies
@@ -171,6 +182,7 @@ def collect_range_material(
         raise MaterialUnavailable(f"git log -p README.md {spec} failed (rc={rc}): {str(err)[:200]}")
     seen_versions: set = set()
     releases: List[Dict[str, Any]] = []
+    row_re = _row_re()
     if out:
         current_sha = ""
         for line in out.splitlines():
@@ -180,10 +192,13 @@ def collect_range_material(
             if not line.startswith("+|") or _ROW_FURNITURE_RE.match(line):
                 continue
             cells = _split_row(line)
-            if cells is None or not _ROW_RE.match(line):
+            if cells is None or not row_re.match(line):
                 # Wrong cell count, or a first cell that is not a version: either way this
-                # row said something the letter's author would otherwise never learn.
+                # row said something the letter's author would otherwise never learn. The
+                # commit it came from travels with the count, so the omission is resolvable.
                 material["omitted_rows"] += 1
+                if current_sha and current_sha not in material["omitted_row_commits"]:
+                    material["omitted_row_commits"].append(current_sha)
                 continue
             version, date, text = cells
             if version in seen_versions:
@@ -218,7 +233,11 @@ def material_text(material: Dict[str, Any]) -> str:
             head = f"- {row.get('version')} ({row.get('date')}, added in {row.get('commit') or 'unknown commit'})"
             lines.append(f"{head}: {row['text']}" if row.get("text") else head)
         if material.get("omitted_rows"):
-            lines.append(f"- [{material['omitted_rows']} malformed history row(s) omitted]")
+            where = ", ".join(material.get("omitted_row_commits") or [])
+            lines.append(
+                f"- [{material['omitted_rows']} unreadable history row(s) omitted"
+                + (f"; read them in {where}]" if where else "]")
+            )
         if material.get("rows_summarized"):
             lines.append(f"- [the oldest {material['rows_summarized']} row(s) above carry version and date only]")
     commits = material.get("commits") or []
@@ -234,6 +253,8 @@ def material_text(material: Dict[str, Any]) -> str:
             body = str(commit.get("body") or "").strip()
             if body:
                 lines.append("  " + body.replace("\n", "\n  "))
+        if material.get("omitted_commit_chunks"):
+            lines.append(f"- [{material['omitted_commit_chunks']} commit record(s) git returned unreadably]")
         if material.get("bodies_omitted"):
             lines.append(
                 f"- [the bodies of {material['bodies_omitted']} older commit(s) are omitted; "
@@ -339,6 +360,21 @@ def _new_record(key: Dict[str, str], target_version: str) -> Dict[str, Any]:
     }
 
 
+def _light_uses_local(model: str) -> bool:
+    """Whether this LIGHT one-shot travels the LOCAL route.
+
+    The explicit slot flag, OR the same routing authority every review dispatch consults:
+    a local-only install leaves the Light slot empty, inherits the local Main route, and
+    would otherwise be asked for remote credentials it has no reason to hold — refusing a
+    letter that install can perfectly well write.
+    """
+    from ouroboros.provider_models import review_model_uses_local
+
+    if str(os.environ.get("USE_LOCAL_LIGHT", "") or "").strip().lower() in ("true", "1", "yes", "on"):
+        return True
+    return review_model_uses_local(model)
+
+
 def write_letter(
     status: Dict[str, Any],
     material: Dict[str, Any],
@@ -355,7 +391,7 @@ def write_letter(
     target_version = str((material.get("versions") or {}).get("target") or "")
     record = _new_record(key, target_version)
     model = get_light_model()
-    use_local = str(os.environ.get("USE_LOCAL_LIGHT", "") or "").lower() in ("true", "1")
+    use_local = _light_uses_local(model)
     record["model"] = model
     if not use_local:
         from ouroboros.provider_models import model_has_credentials

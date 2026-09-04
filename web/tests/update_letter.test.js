@@ -261,7 +261,12 @@ test('the letter section sits between the action row and Recovery, and adds no c
 test('the letter body goes through the sanitizing markdown pipeline and is disposed before re-render', () => {
     assert.match(SOURCE, /import \{ destroyChatMarkdown, enhanceChatMarkdown, renderChatMarkdown \} from '\.\/chat_markdown\.js'/);
     assert.match(SOURCE, /letterBody\.innerHTML = view\.markdown \? renderChatMarkdown\(view\.markdown\) : ''/);
-    assert.match(SOURCE, /letterDisposer = enhanceChatMarkdown\(letterBody, \{ onDomWrite:/);
+    assert.match(SOURCE, /letterDisposer = enhanceChatMarkdown\(letterBody, \{[\s\S]*?onDomWrite:/);
+    // Controls the pipeline adds are scrubbed after EVERY write it makes: a fenced block
+    // gets its Copy button at render, a degrading mermaid block gets one asynchronously.
+    assert.match(SOURCE, /function stripLetterControls\(\)[\s\S]*?querySelectorAll\('button'\)[\s\S]*?remove\(\)/);
+    const enhanceCall = SOURCE.slice(SOURCE.indexOf('letterDisposer = enhanceChatMarkdown'));
+    assert.match(enhanceCall.slice(0, 400), /onDomWrite: \(mutate\) => \{\s*mutate\(\);\s*stripLetterControls\(\);/);
     // The disposer (or the module-level destroyer, when none was kept) runs
     // BEFORE the innerHTML that would orphan its charts and timers — on the
     // content path and on the hide path alike.

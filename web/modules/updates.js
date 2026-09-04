@@ -447,6 +447,11 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
         }
     }
 
+    /** The letter is a fact: no control the markdown pipeline adds may survive in it. */
+    function stripLetterControls() {
+        letterBody.querySelectorAll('button').forEach((control) => control.remove());
+    }
+
     // Called from render() on every phase change and status load. The head is
     // cheap text, but the body is re-rendered ONLY when its content key moves:
     // an unchanged letter keeps its DOM through a passive refresh and a running
@@ -479,11 +484,18 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
         if (!view.markdown) return;
         // No anchored scroll to protect on this page, so markdown's deferred
         // writes (highlight, latex, mermaid, charts) run directly.
-        letterDisposer = enhanceChatMarkdown(letterBody, { onDomWrite: (mutate) => mutate() });
         // The card carries exactly ONE action and it is never inside the letter. The shared
         // markdown pipeline adds controls of its own to some blocks (a Copy button on a
-        // fenced one), so whatever it produced is removed here; the text stays untouched.
-        letterBody.querySelectorAll('button').forEach((control) => control.remove());
+        // fenced one, and another when a mermaid block DEGRADES asynchronously), so the
+        // scrub runs after every write it makes, not once. The text stays untouched.
+        stripLetterControls();
+        letterDisposer = enhanceChatMarkdown(letterBody, {
+            onDomWrite: (mutate) => {
+                mutate();
+                stripLetterControls();
+            },
+        });
+        stripLetterControls();
     }
 
     function render() {

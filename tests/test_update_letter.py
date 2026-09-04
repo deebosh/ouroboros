@@ -101,8 +101,9 @@ def test_material_recovers_rows_from_commit_diffs_and_lists_first_parent_commits
     assert material["commits"][0]["body"] == "Details of the untagged tail."
     assert material["bodies_omitted"] == 0
     assert material["versions"] == {"base": "1.0.0", "target": "1.4.0"}
-    assert set(material) == {"base_sha", "target_sha", "commits", "bodies_omitted", "releases",
-                             "omitted_rows", "rows_summarized", "versions"}
+    assert set(material) == {"base_sha", "target_sha", "commits", "bodies_omitted",
+                             "omitted_commit_chunks", "releases", "omitted_rows",
+                             "omitted_row_commits", "rows_summarized", "versions"}
 
 
 def test_material_keeps_every_commit_subject_and_bounds_only_the_bodies(history_repo):
@@ -123,7 +124,7 @@ def test_material_keeps_every_commit_subject_and_bounds_only_the_bodies(history_
     assert "Details of the untagged tail." in rendered
     assert "Body of the second release." not in rendered
     assert "bodies of 1 older commit(s) are omitted" in rendered
-    assert "1 malformed history row(s) omitted" in rendered
+    assert "1 unreadable history row(s) omitted" in rendered
 
     capped = ul.collect_range_material(
         history_repo["base"], history_repo["c4"], git=_capture_for(history_repo["repo"]), max_rows=3,
@@ -134,6 +135,18 @@ def test_material_keeps_every_commit_subject_and_bounds_only_the_bodies(history_
     assert "- 1.1.0 (2026-01-02, added in " in summarized  # version, date, provenance, no text
     assert "second with an escaped | pipe" not in summarized
     assert "oldest 1 row(s) above carry version and date only" in summarized
+
+
+def test_material_reads_a_release_row_with_the_repository_version_grammar(history_repo):
+    # ONE grammar for what a release version looks like: a real rc row is a release, and a
+    # dashed word is not a version at all. Retyping the pattern here got both backwards.
+    repo = history_repo["repo"]
+    _write_readme(repo, [("4.50.0rc1", "2026-01-07", "a real pre-release row"),
+                         ("4.50.0-foo", "2026-01-07", "not a version at all")])
+    c5 = _commit(repo, "readme: an rc row and a lookalike")
+    material = ul.collect_range_material(history_repo["c4"], c5, git=_capture_for(repo))
+    assert [row["version"] for row in material["releases"]] == ["4.50.0rc1"]
+    assert material["omitted_rows"] == 1 and material["omitted_row_commits"] == [c5]
 
 
 def test_material_reworded_row_is_first_wins_newest_first(history_repo):
@@ -177,7 +190,9 @@ def test_material_discloses_an_added_row_whose_version_is_not_one(history_repo):
     material = ul.collect_range_material(history_repo["c4"], c5, git=_capture_for(repo))
     assert [row["version"] for row in material["releases"]] == []
     assert material["omitted_rows"] == 1, "the unreadable row is disclosed, the furniture is not"
-    assert "1 malformed history row(s) omitted" in ul.material_text(material)
+    # …and the omission names the commit it can be read in (BIBLE P1: resolvable, not a count).
+    assert material["omitted_row_commits"] == [c5]
+    assert f"1 unreadable history row(s) omitted; read them in {c5}" in ul.material_text(material)
 
     # Furniture is the EXACT canonical header and separator, nothing that merely resembles
     # them: a real row whose first cell happens to read "version" is content, not furniture.
@@ -206,9 +221,9 @@ def test_material_text_discloses_malformed_rows_with_no_valid_row_left(history_r
     # Every candidate row malformed: there is nothing to print and the omission is
     # exactly what the author still has to be told.
     material = {"commits": [], "releases": [], "omitted_rows": 3, "rows_summarized": 0,
-                "bodies_omitted": 0}
+                "bodies_omitted": 0, "omitted_row_commits": ["f" * 40]}
     rendered = ul.material_text(material)
-    assert "3 malformed history row(s) omitted" in rendered
+    assert "3 unreadable history row(s) omitted; read them in " + "f" * 40 in rendered
 
 
 def test_material_empty_range_and_non_ancestor_base(history_repo):
@@ -751,6 +766,26 @@ def test_context_messages_use_the_ordinary_plan_and_the_fitting_projection(monke
             "use_local_model": False, "text": "req", "metadata": {}}
     messages = ul._context_messages(object(), object(), task)
     assert captured["task"] is task and messages[0]["content"] == expected and messages[-1]["content"] == "req"
+
+
+def test_write_letter_local_only_install_inherits_the_local_route(letter_env, monkeypatch):
+    # A local-only install leaves the LIGHT slot empty, so it inherits the local Main route.
+    # Asking the remote credential gate about it would refuse a letter it can write.
+    monkeypatch.delenv("USE_LOCAL_LIGHT", raising=False)
+    monkeypatch.setattr("ouroboros.provider_models.review_model_uses_local", lambda model: True)
+    monkeypatch.setattr(
+        "ouroboros.provider_models.model_has_credentials",
+        lambda model: (_ for _ in ()).throw(AssertionError("a local route asks no remote gate")),
+    )
+    seen = {}
+
+    def fake_chat(client, *, drive_root, **kwargs):
+        seen.update(kwargs)
+        return {"content": "A local paragraph."}, {"ledger_attempt_ids": ["att"]}
+
+    monkeypatch.setattr(ul, "_chat", fake_chat)
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert record["state"] == "ready" and seen["use_local"] is True
 
 
 def test_write_letter_local_light_route_skips_the_credential_gate(letter_env, monkeypatch):
