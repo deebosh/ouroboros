@@ -295,6 +295,14 @@ def _physical_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
     return candidate
 
 
+def _finalized_physical_candidate(
+    target: Dict[str, Any], payload: Dict[str, Any], api_surface: str,
+) -> Dict[str, Any]:
+    return prepare_wire_payload_for_send(
+        target, _physical_candidate(payload), api_surface=api_surface,
+    )
+
+
 def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptRequest):
     """Close over one final candidate without putting it in accounting rows."""
     predicate = current_physical_attempt_predicate()
@@ -2065,7 +2073,7 @@ class LLMClient:
         Descends one level INTO a block's own ``content`` list: a direct-Anthropic
         ``tool_result`` block nests its blocks (``_anthropic_messages`` builds it from a
         ``role="tool"`` message whose content is a list), so the sealed transcript anchor
-        (``loop.seal_task_transcript``) sits at ``messages[i].content[j].content[k]``.
+        (``context_fit.seal_task_transcript``) sits at ``messages[i].content[j].content[k]``.
         Missing it undercounts the cap and leaves that anchor out of TTL ordering exactly
         on the lane whose provider enforces both. ``tool_result`` is the only nested-content
         shape, and the descent is route-independent because no other payload nests."""
@@ -3005,8 +3013,7 @@ class LLMClient:
         usage["cost_final"] = bool(
             usage.get("cost") is not None and not usage.get("cost_estimated")
         )
-        # Preserve any legacy diagnostic disclosure already staged by a compatibility
-        # caller; normal dispatch adaptation is disclosed through usage.request_wire.
+        # Preserve legacy compatibility disclosure; normal adaptation uses request_wire.
         _clamp_note = self._pop_effort_clamp_disclosure()
         if _clamp_note:
             usage["reasoning_effort_clamped"] = _clamp_note
@@ -3020,9 +3027,7 @@ class LLMClient:
         }
         if tool_calls:
             message["tool_calls"] = tool_calls
-        # Anthropic always returns stop_reason on success; surface it so the empty-
-        # response classifier isn't blind on the direct lane (otherwise every direct
-        # response looks like a finish_reason=null transient glitch).
+        # Surface Anthropic's stop_reason for direct-lane empty-response classification.
         stop_reason = resp_dict.get("stop_reason")
         if stop_reason:
             message["stop_reason"] = str(stop_reason)
@@ -3031,6 +3036,40 @@ class LLMClient:
             message = mark_replayed_receipts_consumed(message)
         finalize_wire_response(message, usage)
         return message, usage
+
+    def _build_remote_candidate(
+        self, target: Dict[str, Any], messages: List[Dict[str, Any]],
+        reasoning_effort: str, max_tokens: int, tool_choice: str,
+        temperature: Optional[float], tools: Optional[List[Dict[str, Any]]],
+        **remote_kwargs: Any,
+    ) -> Dict[str, Any]:
+        if target.get("provider") != "anthropic":
+            return self._build_remote_kwargs(
+                target, messages, reasoning_effort, max_tokens, tool_choice,
+                temperature, tools, **remote_kwargs,
+            )
+        system, messages = self._build_anthropic_messages(messages, target)
+        payload: Dict[str, Any] = {
+            "model": str(target.get("resolved_model") or ""),
+            "messages": messages, "max_tokens": max_tokens,
+        }
+        effort = normalize_reasoning_effort(reasoning_effort)
+        if effort == "none":
+            payload["thinking"] = {"type": "disabled"}
+        elif effort:
+            payload["thinking"] = {"type": "adaptive"}
+            payload["output_config"] = {"effort": "low" if effort == "minimal" else effort}
+        if system:
+            payload["system"] = system
+        if temperature is not None:
+            payload["temperature"] = temperature
+        anthropic_tools = self._build_anthropic_tools(tools)
+        if anthropic_tools:
+            payload["tools"] = anthropic_tools
+            choice = self._build_anthropic_tool_choice(tool_choice)
+            if choice:
+                payload["tool_choice"] = choice
+        return payload
 
     @request_wire_scoped
     @anthropic_replay_scoped
@@ -3049,30 +3088,9 @@ class LLMClient:
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         import requests
 
-        system, anthropic_messages = self._build_anthropic_messages(messages, target)
-        payload: Dict[str, Any] = {
-            "model": str(target.get("resolved_model") or ""),
-            "messages": anthropic_messages,
-            "max_tokens": max_tokens,
-        }
-        # Modern Anthropic uses adaptive thinking plus output_config.effort.
-        _eff = normalize_reasoning_effort(reasoning_effort)
-        if _eff == "none":
-            payload["thinking"] = {"type": "disabled"}
-        elif _eff:
-            payload["thinking"] = {"type": "adaptive"}
-            # Anthropic has no "minimal" effort; map it to the provider floor.
-            payload["output_config"] = {"effort": "low" if _eff == "minimal" else _eff}
-        if system:
-            payload["system"] = system
-        if temperature is not None:
-            payload["temperature"] = temperature
-        anthropic_tools = self._build_anthropic_tools(tools)
-        if anthropic_tools:
-            payload["tools"] = anthropic_tools
-            anthropic_tool_choice = self._build_anthropic_tool_choice(tool_choice)
-            if anthropic_tool_choice:
-                payload["tool_choice"] = anthropic_tool_choice
+        payload = self._build_remote_candidate(
+            target, messages, reasoning_effort, max_tokens, tool_choice, temperature, tools,
+        )
         prompt_cache_ttl = self._normalize_payload_cache_ttl(target, payload)
 
         url = f"{str(target.get('base_url') or '').rstrip('/')}/messages"
@@ -3084,15 +3102,11 @@ class LLMClient:
         request_timeout = float(timeout) if timeout and timeout > 0 else 120
 
         def _send(candidate: Dict[str, Any]):
-            candidate = _physical_candidate(candidate)
-            candidate = prepare_wire_payload_for_send(
-                target, candidate, api_surface="messages",
-            )
+            candidate = _finalized_physical_candidate(target, candidate, "messages")
             request = _attempt_request(target, candidate, source="llm.anthropic")
 
             def _post():
                 if no_proxy:
-                    # Build a session with proxy detection disabled for macOS fork-safety.
                     with requests.Session() as session:
                         session.trust_env = False
                         sent = session.post(url, headers=headers, json=candidate, timeout=request_timeout)
@@ -3115,7 +3129,6 @@ class LLMClient:
                 note_wire_send_succeeded(last_physical_attempt_capture())
                 return result
             except UsageAccountingError:
-                # Central UAE discard, driver parity (triad r4).
                 self._pop_effort_clamp_disclosure()
                 note_wire_send_failed()
                 raise
@@ -3126,7 +3139,7 @@ class LLMClient:
         try:
             response = _send(payload)
         except UsageAccountingError:
-            raise  # _send already discarded any pending clamp note (triad r4)
+            raise
         except Exception as exc:
             retry_payload = plan_next_wire_retry(payload, error=exc)
             if retry_payload is None:
@@ -3927,10 +3940,7 @@ class LLMClient:
         _pop_reasoning_pin_note()
 
         def _send(candidate: Dict[str, Any]) -> Any:
-            candidate = _physical_candidate(candidate)
-            candidate = prepare_wire_payload_for_send(
-                target, candidate, api_surface="chat.completions",
-            )
+            candidate = _finalized_physical_candidate(target, candidate, "chat.completions")
             request = _attempt_request(target, candidate)
             try:
                 result = _execute_candidate(
@@ -4064,10 +4074,7 @@ class LLMClient:
         _pop_reasoning_pin_note()
 
         async def _send(candidate: Dict[str, Any]) -> Any:
-            candidate = _physical_candidate(candidate)
-            candidate = prepare_wire_payload_for_send(
-                target, candidate, api_surface="chat.completions",
-            )
+            candidate = _finalized_physical_candidate(target, candidate, "chat.completions")
             request = _attempt_request(target, candidate)
             try:
                 result = await _execute_candidate_async(

@@ -16,10 +16,6 @@ import logging
 
 from ouroboros.llm import LLMClient, normalize_reasoning_effort, add_usage
 from ouroboros import task_pacing
-# The acceptance obligations/dialogue/decision machinery moved WHOLE into
-# `acceptance_dialogue.py`; loop.py keeps the fence, checkpoint, panel-execution
-# and message rails. Names unused here are re-exported on purpose: external
-# callers and the acceptance-writer inventory still import them from `loop`.
 from ouroboros.acceptance_dialogue import (  # noqa: F401 — re-export
     ACCEPTANCE_DECISION_REASONS,
     ACCEPTANCE_REASON_UNSPECIFIED,
@@ -65,6 +61,7 @@ from ouroboros.usage_accounting import (
     BudgetExceeded,
     PhysicalAttemptContext,
     PhysicalAttemptPreconditionFailed,
+    invalidate_task_cache_splits,
     last_physical_attempt_capture,
 )
 from ouroboros.task_finalization import (
@@ -179,12 +176,7 @@ def _force_plan_decision(
     *,
     hard_rail: str = "",
 ) -> Dict[str, Any]:
-    """Project force-plan finalization from existing review + policy SSOTs.
-
-    Body extracted to ``owner_hurry.force_plan_decision`` (the hurry latch makes
-    the projection task-locally advisory for reviewed/open/unavailable states —
-    §19.7.2 item 9); unlatched behavior is byte-identical.
-    """
+    """Project force-plan finalization from existing review + policy SSOTs."""
     from ouroboros.owner_hurry import force_plan_decision
 
     return force_plan_decision(
@@ -224,23 +216,18 @@ def _swarm_handoff_attempt(ctx: Any) -> Dict[str, Any]:
     return dict(attempt) if isinstance(attempt, dict) else {}
 
 
+_FORCED_BEST_EFFORT_TAIL = (
+    "Produce your best final answer now from the verified work so far; clearly "
+    "mark anything unverified or incomplete. An honest best-effort result is the "
+    "expected outcome here, not a failure."
+)
+
+
 def _check_budget_limits(
     ctx: "_RoundLimitContext",
     budget_remaining_usd: Optional[float],
     cost_ceiling: Optional["task_pacing.CostCeiling"] = None,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """Return a final-response tuple when budget limits require stopping.
-
-    ``cost_ceiling`` is the typed in-task stop resolved ONCE at loop start
-    (``task_pacing.resolve_cost_ceiling``). Only an ``active`` ceiling stops
-    here; ``exhausted_soft_land`` fires at the round top. The deciding spend
-    is the root subtree's ledger-accounted number when a root cap exists (the
-    fence counts the TREE, not own calls); own cost is the DISCLOSED fallback
-    and diagnostic. Unknown spend never becomes $0. The axes are INDEPENDENT
-    (v6.91): ``budget_remaining_usd`` None only means no finite GLOBAL budget
-    (TOTAL_BUDGET unset — the GAIA-shaped run) and must not silence a live
-    per-task ROOT CAP; with neither, the ceiling resolves ``disabled`` and
-    the whole cost axis stays silent, as before."""
     accumulated_usage = ctx.accumulated_usage
     raw_task_cost = accumulated_usage.get("cost")
     task_cost = float(raw_task_cost) if raw_task_cost is not None else None
@@ -259,9 +246,6 @@ def _check_budget_limits(
                 _force_plan_disclosure(tool_ctx, trace, forced_reason="budget_exhausted")
                 if tool_ctx is not None else ""
             )
-            # A forced sink like every other: a queued/headless root still
-            # OWED a panel; returning without the record left `not_eligible /
-            # run_count=0` — as if no panel was owed. Pure ledger write.
             _record_forced_finalization(
                 ctx,
                 trace,
@@ -280,11 +264,6 @@ def _check_budget_limits(
             fallback_text=finish_reason,
             reason_code="budget_exhausted",
         )
-    # The pre-v6.91 per-task soft "[COST NOTE]" is gone: since v6.64.0 the
-    # same settings key hard-fences the whole TREE at the ledger, so an
-    # own-cost note keyed to it could never fire before the fence (proven
-    # live: silent through two tree deaths); v6.56.0 milestones are the nudge.
-
     if cost_ceiling is None or cost_ceiling.state != task_pacing.COST_CEILING_ACTIVE:
         return None
     tree_info = _loop_tree_accounting(refresh=True, max_age_sec=_TREE_ACCOUNTING_MAX_STALE_SEC)
@@ -295,6 +274,54 @@ def _check_budget_limits(
         root_cap_usd=cost_ceiling.root_cap_usd,
     )
     ceiling_usd = cost_ceiling.ceiling_usd
+    prompt_estimate = int(accumulated_usage.get("_context_prompt_estimate") or 0)
+    wrapup_fits = None
+    if cost_ceiling.root_cap_usd is not None and deciding is not None and prompt_estimate > 0:
+        finish_reason = task_pacing.wrapup_last_fit_text(deciding, cost_ceiling)
+        forced_prompt = f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}"
+        request_args = dict(model=ctx.active_model, prompt_tokens=prompt_estimate,
+                            use_local=ctx.active_use_local)
+        wrapup_args = dict(
+            **request_args, root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding,
+        )
+        wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
+        # The proxy decides only the cheap positive; the priced candidate decides
+        # a proxy stop and every prompt the proxy can understate (native images).
+        if wrapup_fits is False or (wrapup_fits is True and (
+            task_pacing.wrapup_reservation_fits(**wrapup_args, reservation_count=2) is False
+            or messages_carry_native_images(ctx.messages)
+        )):
+            trace = ctx.llm_trace if isinstance(ctx.llm_trace, dict) else {}
+            priced_prompt = _prepare_forced_prompt(ctx, forced_prompt, trace)
+            prospective_messages = [dict(message) for message in ctx.messages]
+            _append_or_merge_user_message(prospective_messages, priced_prompt)
+            wrapup_request, send_messages = task_pacing.prepared_wrapup_candidate(
+                ctx, prospective_messages,
+                allow_server_web_search=_server_web_allowed_by_task(
+                    getattr(getattr(ctx, "tools", None), "_ctx", None)),
+            )
+            wrapup_args = dict(
+                request=wrapup_request, root_cap_usd=cost_ceiling.root_cap_usd,
+                deciding_usd=deciding,
+            )
+            wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
+            if wrapup_fits is False:
+                accumulated_usage["cost_stop_spend_basis"] = spend_basis
+                accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
+                return _forced_fallback_result(
+                    ctx, trace, finish_reason, "budget_exhausted",
+                    source="budget_wrapup_unaffordable",
+                )
+            if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
+                **wrapup_args, reservation_count=2,
+            ) is False:
+                accumulated_usage["cost_stop_spend_basis"] = spend_basis
+                accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
+                return _forced_final_answer(
+                    ctx, prompt=priced_prompt, _prompt_prepared=True,
+                    fallback_text=finish_reason, reason_code="budget_exhausted",
+                    _initial_messages=send_messages, _admitted_request=wrapup_request,
+                )
     if deciding is not None and ceiling_usd is not None and deciding > ceiling_usd:
         if spend_basis == task_pacing.SPEND_BASIS_TREE:
             spent_text = (
@@ -304,8 +331,6 @@ def _check_budget_limits(
                 else f"Task tree spent ${deciding:.3f} (ledger-accounted incl. in-flight holds)"
             )
         elif spend_basis == task_pacing.SPEND_BASIS_OWN_TREE_UNKNOWN:
-            # Stopping on a disclosed lower bound beats not stopping at all, but
-            # the substitution is stated, never silent (BIBLE P1).
             spent_text = (
                 f"Task spent ${deciding:.3f} on its OWN calls (the tree-accounted total "
                 "is unavailable right now, so subagent spend is not included — this is a "
@@ -321,47 +346,26 @@ def _check_budget_limits(
             f"{spent_text}, over the in-task cost ceiling ${ceiling_usd:.2f}{cap_text}. "
             "Budget exhausted."
         )
-        # The basis rides the usage record too, so a later reader can tell a
-        # tree-decided stop from an own-cost stand-in without parsing prose.
         accumulated_usage["cost_stop_spend_basis"] = spend_basis
         return _forced_final_answer(
             ctx,
-            prompt=(
-                f"[BUDGET LIMIT] {finish_reason} Produce your best final answer now from "
-                "the verified work so far; clearly mark anything unverified or incomplete. "
-                "An honest best-effort result is the expected outcome here, not a failure."
-            ),
+            prompt=f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}",
             fallback_text=finish_reason,
             reason_code="budget_exhausted",
         )
-    # The old round-gated "[INFO] ... Wrap up if possible" nudge is replaced by
-    # the latched cost milestones in task_pacing (transport: _inject_round_checkpoints).
-
     return None
 
 
 def _resolve_task_cost_ceiling(
     ctx: Any, budget_remaining_usd: Optional[float],
 ) -> "task_pacing.CostCeiling":
-    """The typed in-task cost stop, resolved ONCE at loop start.
-
-    The root cap comes from the bound usage scope — the SAME
-    ``OUROBOROS_PER_TASK_COST_USD``-derived value the ledger fence enforces
-    (agent.py wires it as ``UsageScope.root_limit_usd``), so the graceful stop
-    and the fence can never disagree about the cap."""
-    root_cap = None
-    try:
-        from ouroboros.usage_accounting import current_usage_scope
-
-        scope = current_usage_scope()
-        root_cap = getattr(scope, "root_limit_usd", None) if scope is not None else None
-    except Exception:
-        log.debug("Usage scope unavailable for cost ceiling resolution", exc_info=True)
-    return task_pacing.resolve_cost_ceiling(
-        budget_remaining_usd,
-        task_pacing.resolve_budget_profile(ctx),
-        root_cap_usd=root_cap,
-    )
+    """Return and retain the task's once-resolved cost stop."""
+    disclosed = getattr(ctx, "_cost_ceiling", None)
+    if isinstance(disclosed, task_pacing.CostCeiling):
+        return disclosed
+    resolved = task_pacing.resolve_task_cost_ceiling(ctx, budget_remaining_usd)
+    setattr(ctx, "_cost_ceiling", resolved)
+    return resolved
 
 
 # Bounded staleness for the two DECIDING cost surfaces (ceiling check,
@@ -374,16 +378,7 @@ _TREE_ACCOUNTING_MAX_STALE_SEC = 120.0
 def _loop_tree_accounting(
     *, refresh: bool, max_age_sec: float = 30.0,
 ) -> Optional[Dict[str, Any]]:
-    """The root subtree's accounted spend for the CURRENT task's tree (nullable).
-
-    Reads the reserve-time scope telemetry for free; ``refresh=True`` may do
-    one real ledger projection read when the stash is older than
-    ``max_age_sec``. Callers: loop start / 600s pacing note / 15-round
-    checkpoint (cache-breaking, small max_age), plus the two DECIDING
-    surfaces (ceiling check + milestone note) on the wider
-    ``_TREE_ACCOUNTING_MAX_STALE_SEC`` bound — free while rounds are shorter
-    (every dispatch refreshes the stash); never per-round unconditionally
-    (e4a87344). Only under a root cap; None otherwise (unknown ≠ $0)."""
+    """Return nullable, bounded-stale spend for the current task's root tree."""
     try:
         from ouroboros.usage_accounting import (
             current_usage_scope,
@@ -2011,6 +2006,7 @@ def _maybe_inject_self_check(
     event_queue: Optional[queue.Queue] = None,
     task_id: str = "",
     drive_logs: Optional[pathlib.Path] = None,
+    cost_ceiling: Optional["task_pacing.CostCeiling"] = None,
 ) -> bool:
     """Inject a normal user-turn self-check and emit one checkpoint event."""
     REMINDER_INTERVAL = 15
@@ -2038,15 +2034,12 @@ def _maybe_inject_self_check(
     tree_accounted: Optional[float] = None
     tree_cap: Optional[float] = None
     tree_info = _loop_tree_accounting(refresh=True, max_age_sec=30.0)
-    if isinstance(tree_info, dict) and tree_info.get("accounted_usd") is not None:
+    rendered = task_pacing.tree_spend_line(tree_info, cost_ceiling)
+    if rendered:
         tree_accounted = float(tree_info["accounted_usd"])
         raw_cap = tree_info.get("root_limit_usd")
         tree_cap = float(raw_cap) if raw_cap is not None else None
-        cap_text = f" of ${tree_cap:.2f} hard tree cap" if tree_cap is not None else ""
-        tree_line = (
-            f"Task tree spend: ~${tree_accounted:.2f}{cap_text} "
-            "(ledger-accounted incl. in-flight holds, subagents included)\n"
-        )
+        tree_line = f"{rendered}\n"
 
     tool_trace = _build_recent_tool_trace(messages)
 
@@ -2161,6 +2154,7 @@ def _maybe_inject_cost_budget_milestone(
     return True
 
 
+from ouroboros.context_fit import messages_carry_native_images, seal_task_transcript  # noqa: F401
 from ouroboros.nanny_pacing import (
     _nanny_burn_phrase,
     _nanny_metered_since_delegate_activity,
@@ -2260,6 +2254,7 @@ def _inject_round_checkpoints(
     checkpoint = _maybe_inject_self_check(
         round_idx, max_rounds, messages, accumulated_usage, emit_progress,
         event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
+        cost_ceiling=cost_ceiling,
     )
     time_budget = _maybe_inject_time_budget_milestone(
         messages, tools, event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
@@ -2276,53 +2271,6 @@ def _inject_round_checkpoints(
         event_queue=event_queue, task_id=task_id, drive_logs=drive_logs,
     )
     return bool(checkpoint or time_budget or cost_budget or nanny_economics)
-
-
-def seal_task_transcript(
-    messages: List[Dict[str, Any]],
-    keep_active: int = 5,
-    min_prefix_tokens: int = 2048,
-) -> None:
-    """Mark one stable old tool-result boundary for provider prompt caching."""
-    for msg in messages:
-        if msg.get("role") != "tool":
-            continue
-        content = msg.get("content")
-        if isinstance(content, list):
-            # Flatten the old sealed boundary before choosing a new one.
-            msg["content"] = _extract_plain_text_from_content(content)
-
-    tool_indices = [
-        i for i, m in enumerate(messages)
-        if m.get("role") == "tool"
-    ]
-    if len(tool_indices) <= keep_active:
-        return
-
-    seal_candidate_idx = tool_indices[-(keep_active + 1)]
-
-    prefix_text_len = sum(
-        len(_extract_plain_text_from_content(m.get("content", "")))
-        for m in messages[: seal_candidate_idx + 1]
-    )
-    prefix_tokens = prefix_text_len // 4  # rough 4-chars-per-token estimate
-
-    if prefix_tokens < min_prefix_tokens:
-        return
-
-    candidate = messages[seal_candidate_idx]
-    plain_text = str(candidate.get("content", ""))
-    if not plain_text.strip():
-        # Anthropic 400s on cache_control attached to an empty text block; never seal
-        # an empty tool output as the cache anchor (turns the whole task unanswerable).
-        plain_text = "(no tool output)"
-    candidate["content"] = [
-        {
-            "type": "text",
-            "text": plain_text,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
 
 
 def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
@@ -2366,14 +2314,14 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
             schema = tools_registry.get_schema_by_name(name)
             if schema and name not in active_tool_names:
                 tool_schemas.append(schema)
+                invalidate_task_cache_splits(getattr(ctx, "task_id", ""))
                 enabled_extra.add(name)
                 active_tool_names.add(name)
                 enabled.append(f"{name} (registered late)")
             elif name in active_tool_names:
                 enabled.append(f"{name} (already active)")
             else:
-                # F3 (2026-08-10 saga): a policy-filtered tool is not "Not found" —
-                # answer with the typed reason so the agent stops guessing names.
+                # A policy-filtered tool is distinct from an unknown name.
                 reason = (
                     tools_registry.policy_hidden_reason(name)
                     if hasattr(tools_registry, "policy_hidden_reason") else None
@@ -2567,6 +2515,7 @@ def _run_round_compaction(
             f"⚠️ Context compaction kept the transcript unchanged ({receipt.status})."
         )
     if receipt.status == "applied":
+        invalidate_task_cache_splits(ctx.task_id)
         prune_reclaim_trace_refs(ctx.tools._ctx, rebuilt)
     return rebuilt, usage
 
@@ -2601,6 +2550,10 @@ class _RoundLimitContext:
     incoming_messages: Optional[queue.Queue] = None
     owner_msg_seen: Optional[set] = None
     forced_service_evidence_fingerprint: str = ""
+    # The round's exact tool envelope, so a forced wrap-up call keeps the same
+    # provider prefix as the working round instead of rebuilding it tool-less.
+    # LAST field: existing positional construction (tests included) stays valid.
+    tool_schemas: Optional[List[Dict[str, Any]]] = None
 
 
 def _account_compaction_usage(
@@ -4065,10 +4018,12 @@ def _no_tool_final_answer(
             _publish_delivery_candidate(tools, candidate, llm_trace)
         content = candidate.full_text
 
+    _rails_ceiling = getattr(tools._ctx, "_cost_ceiling", None)
     tools._ctx._acceptance_loop_rails = {
         "round_idx": limit_ctx.round_idx,
         "max_rounds": limit_ctx.max_rounds,
         "task_cost_usd": limit_ctx.accumulated_usage.get("cost"),
+        "cost_ceiling_usd": getattr(_rails_ceiling, "ceiling_usd", None),
     }
     # v6.78.0 (owner Q20/Q22): mirror the host-attested native-retrieval
     # fact into the trace so `build_task_acceptance_evidence` can show the
@@ -4262,6 +4217,14 @@ def _finalize_forced_services(
     )
 
 
+def _prepare_forced_prompt(
+    ctx: _RoundLimitContext, prompt: str, llm_trace: Dict[str, Any],
+) -> str:
+    _finalize_forced_services(ctx, llm_trace)
+    tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+    return prompt + _forced_delegation_note(tools_ctx, llm_trace)
+
+
 def _drain_forced_owner_directives(
     ctx: _RoundLimitContext,
     llm_trace: Dict[str, Any],
@@ -4310,13 +4273,22 @@ def _drain_forced_owner_directives(
     return True
 
 
-def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
+def _call_forced_model_once(
+    ctx: _RoundLimitContext, *, initial_messages: Any = None, admitted_request: Any = None,
+) -> str:
     response_meta: Dict[str, Any] = {}
+    identity = (
+        "model", "provider", "candidate_raw_sha256", "candidate_raw_size_bytes",
+    )
+    candidate_predicate = (
+        lambda actual: all(getattr(actual, key, None) == getattr(admitted_request, key, None) for key in identity)
+        if admitted_request is not None else None
+    )
     final_msg, _final_cost = call_llm_with_retry(
         ctx.llm,
         ctx.messages,
         ctx.active_model,
-        None,
+        getattr(ctx, "tool_schemas", None),
         ctx.active_effort,
         ctx.max_retries,
         ctx.drive_logs,
@@ -4329,6 +4301,11 @@ def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
         deadline_ts=ctx.deadline_ts,
         response_meta_out=response_meta,
         transport_reserve_sec=0.0,
+        allow_server_web_search=_server_web_allowed_by_task(
+            getattr(getattr(ctx, "tools", None), "_ctx", None)
+        ),
+        initial_messages=initial_messages,
+        candidate_predicate=candidate_predicate,
     )
     ctx.accumulated_usage["_forced_response_meta"] = response_meta
     return str((final_msg or {}).get("content") or "").strip()
@@ -4600,15 +4577,7 @@ def _resolve_forced_delivery_control(
 
 
 def _forced_delegation_note(tools_ctx: Any, llm_trace: Dict[str, Any]) -> str:
-    """The nanny postcondition's forced-path half, grounded in DURABLE custody.
-
-    A forced finalization may not re-loop, so the substrate fact rides the
-    one final prompt. `delegate_custody.task_execution_evidence` on the
-    custody root (canonical/budget root — the Phase A split-root rule)
-    decides, not just this execution's trace: succeeded → no note;
-    started-but-unsettled → pending wording (no retry pressure);
-    settled-without-success → truthful failure wording; zero started with
-    readable evidence → no-delegation wording; unreadable → no accusation."""
+    """Build the forced-path nanny note from durable delegation custody."""
     if not getattr(tools_ctx, "_nanny_route_dispatched", False):
         return ""
     try:
@@ -4674,11 +4643,15 @@ def _forced_final_answer(
     reason_code: str,
     single_semantic_turn: bool = False,
     provider_terminal: bool = False,
+    _prompt_prepared: bool = False,
+    _initial_messages: Any = None,
+    _admitted_request: Any = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Forced rail."""
     live_trace = getattr(ctx, "llm_trace", None)
     llm_trace = live_trace if isinstance(live_trace, dict) else {}
-    _finalize_forced_services(ctx, llm_trace)
+    if not _prompt_prepared:
+        prompt = _prepare_forced_prompt(ctx, prompt, llm_trace)
     if ctx.deadline_ts is not None and time.time() >= float(ctx.deadline_ts):
         ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code)
         return _forced_fallback_result(
@@ -4689,16 +4662,18 @@ def _forced_final_answer(
     if router_result is not None:
         return router_result
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
-    prompt += _forced_delegation_note(tools_ctx, llm_trace)
     _append_or_merge_user_message(ctx.messages, prompt)
     extracted = ""
     response_meta: Dict[str, Any] = {}
     for attempt in range(1 if single_semantic_turn else 2):
         try:
             ctx.accumulated_usage.pop("_forced_response_meta", None)
-            extracted, response_meta = forced_response_parts(
-                _call_forced_model_once(ctx), ctx.accumulated_usage,
-            )
+            if attempt == 0 and _admitted_request is not None:
+                forced = _call_forced_model_once(
+                    ctx, initial_messages=_initial_messages, admitted_request=_admitted_request)
+            else:
+                forced = _call_forced_model_once(ctx)
+            extracted, response_meta = forced_response_parts(forced, ctx.accumulated_usage)
         except BudgetExceeded:
             _drain_forced_owner_directives(ctx, llm_trace)
             raise
@@ -4732,7 +4707,7 @@ def _forced_final_answer(
             "[FORCED_OWNER_REFRESH] Answer all current directives; ignore the stale draft.",
         )
 
-    incomplete = provider_terminal and extracted and forced_response_is_incomplete(response_meta)
+    incomplete = bool(extracted) and forced_response_is_incomplete(response_meta)
     extracted, degraded, retained, replaced = _resolve_forced_delivery_control(
         tools_ctx, extracted)
     current = _current_delivery_candidate(ctx, llm_trace)
@@ -4745,7 +4720,8 @@ def _forced_final_answer(
     if incomplete and (current is not None or not replaced):
         return _forced_fallback_result(
             ctx, llm_trace, extracted or fallback_text, reason_code,
-            source="forced_model_incomplete", candidate_reason=degraded, provider_terminal=True,
+            source="forced_model_incomplete", candidate_reason=degraded,
+            provider_terminal=provider_terminal,
         )
     if extracted:
         ctx.accumulated_usage["_best_effort_extracted"] = True
@@ -4825,12 +4801,6 @@ def _rebind_context_fit_plan(
     preferred_mode: str,
     tool_schemas: List[Dict[str, Any]],
 ) -> Tuple[Any, str]:
-    """Recalibrate the captured immutable core for one new exact route.
-
-    Route switches reuse the plan's already-rendered Low/Max projections; only
-    exact-route evidence, calibration, and fit are rebound.  This avoids both a
-    stale initial-route retry plan and a second context-builder/intent corpus.
-    """
     if plan is None or not all(
         hasattr(plan, name) for name in ("max_projection", "low_projection", "core_sha256")
     ):
@@ -4896,6 +4866,7 @@ def _rebind_context_fit_plan(
     mode = initial_mode
     projected_prompt_tokens = rebound.projected_tokens_with_tools(mode, tool_schemas)
     messages[:] = rebound.reproject_transcript(messages, mode)
+    invalidate_task_cache_splits(getattr(tools._ctx, "task_id", ""))
     tools._ctx.context_fit_plan = rebound
     tools._ctx.messages = messages
     tools._ctx.active_context_mode = mode
@@ -5206,12 +5177,10 @@ def _maybe_inject_finalization_nudges(
             llm_trace["reasoning_notes"].append("Masked-verification nudge injected before final response.")
             return True
     if not getattr(tools._ctx, "_criterion_source_nudged", False):
-        # Criterion-provenance one-shot ADVISORY nudge (v6.54.4): the latest
-        # passing verification used an AGENT-DEFINED criterion with no stated
-        # basis — green check, synthesized criterion. One reminder to confirm
-        # equivalence with the task's real requirement (or state the basis via
-        # criterion_basis). AFTER the masked nudge, BEFORE FR3. Flag-driven on
-        # the typed receipt field, never content (P5); forced paths bypass.
+        # Criterion-provenance one-shot ADVISORY nudge (v6.54.4): a green check on
+        # an agent-defined criterion with no stated basis gets one reminder to
+        # confirm equivalence (or state criterion_basis). After the masked nudge,
+        # before FR3; keyed on the typed receipt field, never content (P5).
         _agent_defined = latest_agent_defined_verification(
             drive_root, task_id, receipts=receipt_rows,
         )
@@ -5300,14 +5269,10 @@ def _maybe_inject_finalization_nudges(
         emit_progress("No-op attempt nudge injected before final response.")
         llm_trace["reasoning_notes"].append("No-op attempt nudge injected before final response.")
         return True
-    # P2 one-shot final-answer-marker nudge: REAL work + visible prose but
-    # no FINAL ANSWER marker — the typed extractor would drop it, a forced
-    # finalization score empty. Strengthen BEHAVIOR (agent marks its OWN
-    # answer), never mine prose into a claimed answer (P5). Own latch, AFTER
-    # verify/red/A3; forced paths return earlier. The protocol gate alone
-    # suffices — it must not ALSO require expected_output: GAIA-shaped
-    # contracts keep it empty; that extra gate once suppressed the only
-    # salvage surface (v6.56.0: last-round refusal finalized empty).
+    # P2 one-shot final-answer-marker nudge: real work + prose, no FINAL ANSWER
+    # marker — the agent marks its OWN answer, prose is never mined (P5). Own
+    # latch after verify/red/A3; the protocol gate alone suffices (an extra
+    # expected_output gate once suppressed the only salvage surface, v6.56.0).
     if (
         not getattr(tools._ctx, "_final_marker_nudged", False)
         and _answer_protocol_active(tools._ctx)  # v6.60.0: marker nudge is protocol-gated
@@ -5523,6 +5488,7 @@ def _run_main_reclaim(
     if usage:
         _account_compaction_usage(ctx.accumulated_usage, usage, ctx.event_queue, ctx.task_id)
     if receipt.status == "applied":
+        invalidate_task_cache_splits(ctx.task_id)
         ctx.messages[:] = rebuilt
         ctx.tools._ctx.messages = ctx.messages
         seal_task_transcript(ctx.messages)
@@ -5559,6 +5525,7 @@ def _reproject_actual_overflow_low(ctx: _RoundModelCallContext) -> None:
     if ctx.active_context_mode == "low" or ctx.context_fit_plan is None:
         return
     ctx.messages[:] = ctx.context_fit_plan.reproject_transcript(ctx.messages, "low")
+    invalidate_task_cache_splits(ctx.task_id)
     ctx.active_context_mode = "low"
     ctx.tools._ctx.messages = ctx.messages
     ctx.tools._ctx.active_context_mode = "low"
@@ -6079,6 +6046,7 @@ def run_llm_loop(
     llm_trace: Dict[str, Any] = {"reasoning_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {"_task_attempt": getattr(ctx, "task_attempt", None)}
     tools._ctx._accumulated_usage = ctx._accumulated_usage = accumulated_usage
+    invalidate_task_cache_splits(task_id or getattr(ctx, "task_id", ""))  # rebuilt attempt = new prefix
     max_retries = 3
     cost_ceiling = _resolve_task_cost_ceiling(ctx, budget_remaining_usd)
     if cost_ceiling.root_cap_usd is not None:
@@ -6139,16 +6107,17 @@ def run_llm_loop(
             ctx.active_use_local = active_use_local
 
             # One forced-wrap-up context per round: consumed by the round-limit
-            # path and the supervisor finalize_now control path below.
+            # path and supervisor finalize_now control path below.
             limit_ctx = _RoundLimitContext(
                 messages, llm, active_model, active_effort, max_retries, drive_logs,
                 task_id, round_idx, event_queue, accumulated_usage, task_type,
                 active_use_local, MAX_ROUNDS, drive_root=drive_root, llm_trace=llm_trace,
-                incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen)
+                incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen, tool_schemas=tool_schemas)
             _finalize_limit_ctx(limit_ctx, tools, llm_trace)
             if round_idx > MAX_ROUNDS:
                 # Live hold: a paid [ROUND_LIMIT] dial would be a resend (no wake receipt) — no-call unknown terminal.
-                if _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="round_limit") == "active":
+                if _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id,
+                    detail="round_limit") == "active":
                     accumulated_usage["_last_llm_error_kind"] = "provider_outcome_unknown"
                     text, accumulated_usage, forced_trace = _handle_provider_unavailable(limit_ctx, error_kind="provider_outcome_unknown")
                 else:

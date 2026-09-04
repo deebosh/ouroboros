@@ -85,6 +85,8 @@ def test_episode_reads_then_answers(subject_repo):
         {"content": _VERDICT},
     ])
     executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    observed_usage = []
+    executor.usage_observer = observed_usage.append
     result = executor.execute()
     assert result.raw_text == _VERDICT
     assert result.message["native_transcript"] == _VERDICT
@@ -93,6 +95,7 @@ def test_episode_reads_then_answers(subject_repo):
     assert usage["host_file_read_attestation"] == "host_observed"
     assert usage["native_tool_receipts"][0]["tool"] == "read_file"
     assert usage["native_tool_receipts"][0]["path"] == "greeting.txt"
+    assert len(observed_usage) == 2
     # The REAL inspection tool ran against the pinned root: its output (with
     # the file body) went back to the model as a role=tool message.
     round2_messages = llm.calls[1]["messages"]

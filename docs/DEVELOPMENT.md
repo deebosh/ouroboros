@@ -1570,9 +1570,19 @@ by "Provider Independence" above. Call-site imperatives:
   admission and the transport bound cannot disagree.
 - Tree-spend pacing decides on root-subtree ledger spend including in-flight
   holds; own cost is a disclosed lower-bound fallback, and unavailable is
-  unknown, never `$0`. Refresh `usage_accounting.last_root_accounting` only
+  unknown, never `$0`. The root's deciding ceiling bounds every tree member;
+  each descendant intersects that root-cap component with its own current
+  global resolution, resolves once, and discloses the same object the loop later decides on, printed with its
+  binding bound named on every host cost surface. Refresh `usage_accounting.last_root_accounting` only
   at rare cache-breaking decision surfaces, never per round or inside a
-  stable cached prefix (`tests/test_budget_limits.py`). Post-task
+  stable cached prefix (`tests/test_budget_limits.py`). Graceful
+  finalization precedes the ledger fence because the affordability rail
+  borrows the fence's own per-attempt reservation (cache-aware only from the
+  task's last settled same-provider normalized-route split), never a constant margin alone and never a
+  per-round ledger scan (`tests/test_tree_cost_ceiling.py`). Read the
+  configured global budget through the one resolver rather than an
+  inline default, so the loop axis, the bound scope and the ledger fence
+  cannot disagree about the same install. Post-task
   consolidation/synthesis reads `usage_breakdown` once per root subtree and
   passes the same snapshot to summary and reflection; both prompts also
   receive the task's own acceptance-panel projection (typed counts plus a
@@ -1592,8 +1602,19 @@ by "Provider Independence" above. Call-site imperatives:
   fewer; `tests/test_review_prompt_caching.py`); only
   `LLMClient._normalize_payload_cache_ttl` finalizes the assembled wire
   payload. Prompt-cache support stays deliberately narrow — no provider
-  hops, body rerouting, or a generic cache/retry framework. Review gate:
-  CHECKLISTS item 22 (`cache_friendliness`).
+  hops, body rerouting, or a generic cache/retry framework. A tool-less
+  variant of an otherwise identical request rebuilds the whole provider
+  prefix, and a `tool_choice` change rebuilds the messages tier, so a
+  wrap-up call keeps the schemas, the server-web flag and `tool_choice`
+  identical to the working round and instructs in text instead.
+  `context_fit.seal_task_transcript` owns the single message-side
+  breakpoint -- the task message until the rolling tool-result seal
+  qualifies, migrated in the same call -- preserved on the
+  direct-Anthropic lane by `_anthropic_blocks_from_content` and on
+  OpenRouter by `supports_message_cache_control`, and pinned by
+  `tests/test_review_prompt_caching.py`;
+  `review_substrate.assert_cache_breakpoint_cap` covers only the review
+  builders. Review gate: CHECKLISTS item 22 (`cache_friendliness`).
 - Provider fallback is disabled only when the transcript carries a SEALED
   reasoning artifact
   (`ouroboros/reasoning_artifacts.py::transcript_has_sealed_reasoning`),

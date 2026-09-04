@@ -196,6 +196,7 @@ class UsageScope:
     review_slot_id: str = ""
     global_limit_usd: Optional[float] = None
     root_limit_usd: Optional[float] = None
+    root_cost_ceiling_usd: Optional[float] = None
 @dataclass(frozen=True)
 class PhysicalAttemptContext:
     profile: Literal["owner_max", "owner_low", "task_local_low"]
@@ -291,11 +292,11 @@ def current_usage_scope() -> Optional[UsageScope]:
 
 @contextlib.contextmanager
 def bind_physical_attempt_context(
-    context: PhysicalAttemptContext,
+    context: Optional[PhysicalAttemptContext],
     candidate_predicate: Optional[Callable[[AttemptRequest], Any]] = None,
-) -> Iterator[PhysicalAttemptContext]:
-    """Bind frozen Main metadata and an optional final-fact predicate."""
-    if not isinstance(context, PhysicalAttemptContext):
+) -> Iterator[Optional[PhysicalAttemptContext]]:
+    """Bind frozen Main metadata (None = no Main metadata) and/or a final-fact predicate."""
+    if context is not None and not isinstance(context, PhysicalAttemptContext):
         raise TypeError("physical attempt context must be PhysicalAttemptContext")
     context_token = _PHYSICAL_CONTEXT.set(context)
     predicate_token = _PHYSICAL_PREDICATE.set(candidate_predicate)
@@ -312,8 +313,6 @@ def current_physical_attempt_context() -> Optional[PhysicalAttemptContext]:
 
 def current_physical_attempt_predicate() -> Optional[Callable[[AttemptRequest], Any]]:
     return _PHYSICAL_PREDICATE.get()
-
-
 def last_physical_attempt_capture() -> Optional[PhysicalAttemptCapture]:
     return _LAST_PHYSICAL_ATTEMPT.get()
 
@@ -321,8 +320,6 @@ def last_physical_attempt_capture() -> Optional[PhysicalAttemptCapture]:
 def physical_attempt_capture_from_exception(exc: BaseException) -> Optional[PhysicalAttemptCapture]:
     capture = getattr(exc, "physical_attempt_capture", None)
     return capture if isinstance(capture, PhysicalAttemptCapture) else last_physical_attempt_capture()
-
-
 @contextlib.contextmanager
 def capture_attempt_ids() -> Iterator[list[str]]:
     """Collect physical attempt ids for one compatibility ``llm_usage`` row."""
@@ -330,10 +327,14 @@ def capture_attempt_ids() -> Iterator[list[str]]:
     token = _ATTEMPT_COLLECTOR.set(bucket)
     try:
         yield bucket
+    except BaseException as exc:
+        prior = [str(v) for v in (getattr(exc, "ledger_attempt_ids", None) or []) if v]
+        try:
+            setattr(exc, "ledger_attempt_ids", list(dict.fromkeys([*prior, *bucket])))
+        except Exception: pass
+        raise
     finally:
         _ATTEMPT_COLLECTOR.reset(token)
-
-
 @contextlib.contextmanager
 def physical_attempt_limit(maximum: int) -> Iterator[None]:
     """Bound physical provider sends in this actor context (acceptance uses 2)."""
@@ -365,12 +366,19 @@ def _merge_scope(request: AttemptRequest) -> Tuple[AttemptRequest, UsageScope]:
             request.global_limit_usd if request.global_limit_usd is not None else bound.global_limit_usd
         ),
         root_limit_usd=(request.root_limit_usd if request.root_limit_usd is not None else bound.root_limit_usd),
+        root_cost_ceiling_usd=bound.root_cost_ceiling_usd,
     )
     if not scope.root_task_id and scope.task_id:
         scope = replace(scope, root_task_id=scope.task_id)
     if request.global_limit_usd is None and scope.global_limit_usd is not None:
         request = replace(request, global_limit_usd=scope.global_limit_usd)
+    if not request.task_id and scope.task_id:
+        # The reservation below keys the task's observed cache split off this id.
+        request = replace(request, task_id=scope.task_id, root_task_id=scope.root_task_id)
     return request, scope
+from ouroboros._usage_cache_splits import (  # noqa: F401,E402  (re-exported seam)
+    invalidate_task_cache_splits, last_task_cache_split,
+    reset_task_cache_splits as _reset_task_cache_splits, stash_task_cache_split)
 from ouroboros._usage_rows_memo import (  # noqa: F401,E402  (re-exported seam)
     _LedgerRowsMemo, _ROWS_MEMO, _ROWS_MEMO_LOCK,
     _memoized_final_rows, _read_records_locked_cached, _render_cached,
@@ -405,10 +413,9 @@ def usage_projection(
     if global_limit_usd is not None:
         configured_limit = max(0.0, float(global_limit_usd))
     else:
-        try:
-            configured_limit = float(os.environ.get("TOTAL_BUDGET", "200") or 0.0)
-        except (TypeError, ValueError):
-            configured_limit = 200.0
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+
+        configured_limit = resolve_total_budget_usd() or 0.0
     apply_limit = global_limit_usd is not None or configured_limit > 0
     cache_key = (
         "usage_projection", "", "",
@@ -541,6 +548,12 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
     cache_write_tokens = (
         prompt_tokens if str(request.model or "").lstrip("~").startswith(("anthropic/", "anthropic::")) else 0
     )
+    cached_tokens = 0
+    if cache_write_tokens:
+        # Price the task's OWN last observed split, not a full write every round;
+        # a missing, stale or other-model split keeps today's full-write reservation.
+        cached_tokens = min(prompt_tokens, last_task_cache_split(request.task_id, request.model, provider=request.provider) or 0)
+        cache_write_tokens = prompt_tokens - cached_tokens
     prompt_cache_ttl: Optional[str] = None
     if cache_write_tokens:
         # Price the applied candidate TTL; unknown construction sites use the owner SSOT.
@@ -561,6 +574,7 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
         prompt_tokens,
         max(0, int(request.max_completion_tokens or 0)),
         cache_usage={"cache_write_tokens": cache_write_tokens,
+                     "cached_tokens": cached_tokens,
                      "prompt_cache_ttl": prompt_cache_ttl},
         allow_live_fetch=True,
         provider=request.provider,
@@ -630,11 +644,10 @@ def review_wave_admission(
 def _global_limit(request: AttemptRequest) -> float:
     if request.global_limit_usd is not None:
         return max(0.0, float(request.global_limit_usd))
-    try:
-        configured = float(os.environ.get("TOTAL_BUDGET", "200") or 0.0)
-        return configured if configured > 0 else float("inf")
-    except (TypeError, ValueError):
-        return 200.0
+    from ouroboros.settings_setup_contract import resolve_total_budget_usd
+
+    configured = resolve_total_budget_usd()
+    return float("inf") if configured is None else max(0.0, configured)
 
 
 def _active_root_budget_fence(root: pathlib.Path, root_task_id: str) -> Optional[Dict[str, Any]]:
@@ -1056,6 +1069,10 @@ def settle_attempt(
         cached_tokens=cached_tokens,
         cache_write_tokens=cache_write_tokens,
         prompt_cache_ttl=str(normalized.get("prompt_cache_ttl") or ""),
+    )
+    stash_task_cache_split(
+        (_CURRENT_SCOPE.get() or UsageScope()).task_id, reservation.model, int(cached_tokens or 0), provider=reservation.provider,
+        ttl_seconds=3600.0 if str(normalized.get("prompt_cache_ttl") or "") == "1h" else 300.0,
     )
 
 

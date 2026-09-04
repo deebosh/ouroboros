@@ -1937,6 +1937,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     # destination now rather than a synonym for "unset".
     current_chat_id = _schedule_parent_chat(ctx)
     budget_drive_root = str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root)
+    root_cost_ceiling_usd = getattr(getattr(ctx, "_cost_ceiling", None), "ceiling_usd", None)
     status_drive_root = Path(budget_drive_root)
     if refusal := schedule_delegation_refusal(parent_contract, status_drive_root, parent_task_id):
         return refusal
@@ -1998,9 +1999,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     parent_cognitive_route = {
         "model": str(getattr(ctx, "active_model", "") or metadata.get("model") or ""),
         "effort": str(getattr(ctx, "active_effort", "") or metadata.get("reasoning_effort") or ""),
-        "use_local_model": bool(
-            getattr(ctx, "active_use_local", metadata.get("use_local_model", False))
-        ),
+        "use_local_model": bool(getattr(ctx, "active_use_local", metadata.get("use_local_model", False))),
     }
     child_drive, _drive_err = _prepare_child_drive(
         tid, status_drive_root, memory_mode, parent_project_id)
@@ -2071,6 +2070,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "memory_mode": memory_mode,
         "project_id": parent_project_id,
         "budget_drive_root": budget_drive_root,
+        "root_cost_ceiling_usd": root_cost_ceiling_usd,
         "task_constraint": task_constraint,
         "write_surface": requested_surface,
         "task_contract": child_contract,
@@ -2112,6 +2112,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
             drive_root=str(child_drive) if child_drive is not None else "",
             child_drive_root=str(child_drive) if child_drive is not None else "",
             budget_drive_root=budget_drive_root,
+            root_cost_ceiling_usd=root_cost_ceiling_usd,
             task_constraint=task_constraint,
             **intent_fields,
             subagent_envelope=envelope,
@@ -3163,7 +3164,9 @@ def get_tools() -> List[ToolEntry]:
                 "BURST + ABSORB: when several children are INDEPENDENT, emit them in ONE batch (parallel "
                 "schedule_subagent calls in the same round) so they run concurrently, then absorb with "
                 "wait_tasks(any_terminal) — handling whichever finishes first — instead of scheduling and "
-                "blocking on them one at a time with serial wait_task calls. "
+                "blocking on them one at a time with serial wait_task calls — on cache-write-priced "
+                "routes each sibling launched before the first sibling's first response pays its own full "
+                "prefix write, so burst buys latency and spacing buys cash; your call. "
                 "INDEPENDENT VERIFIER: to check a finished deliverable without builder bias, spawn a "
                 "read-only child with memory_mode=empty whose objective carries ONLY the deliverable "
                 "location + the task's acceptance criteria (NOT your own probes/assumptions) and have it "

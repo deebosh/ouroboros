@@ -454,12 +454,12 @@ def check_budget(env: Any) -> Tuple[dict, int]:
                 "error": "state.json missing or invalid",
                 "path": str(state_path),
             }, 1
-        total_budget_str = os.environ.get("TOTAL_BUDGET", "")
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+        total_budget = resolve_total_budget_usd()
 
-        if not total_budget_str or float(total_budget_str) == 0:
+        if total_budget is None:
             return {"status": "unconfigured"}, 0
         else:
-            total_budget = float(total_budget_str)
             from ouroboros.usage_accounting import ensure_legacy_imported, usage_projection
 
             ensure_legacy_imported(accounting_root)

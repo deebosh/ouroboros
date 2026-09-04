@@ -1095,9 +1095,9 @@ class ReviewCoordinator:
             global_limit = base_scope.global_limit_usd
         else:
             try:
-                configured_global_limit = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-                global_limit = configured_global_limit if configured_global_limit > 0 else None
-            except (TypeError, ValueError):
+                from ouroboros.settings_setup_contract import resolve_total_budget_usd
+                global_limit = resolve_total_budget_usd()
+            except Exception:
                 global_limit = None
         if base_scope.root_limit_usd is not None:
             root_limit = base_scope.root_limit_usd
@@ -1302,6 +1302,7 @@ class ReviewCoordinator:
             dispatch_stamp=self._review_paid_stamp,
         )
         executor = _review_route_executor(assignment, llm=self.llm)
+        executor.usage_observer = lambda usage: self._emit_usage(request, slot, usage, prompt_chars=executor.prompt_chars())
         executor._logical_deadline_monotonic = logical_deadline_monotonic
         # The physical session and the logical waiter must share this exact
         # mutable cell.  A fresh cell is normally empty, so ``state or {}``
@@ -1491,7 +1492,6 @@ class ReviewCoordinator:
                         break
                     if actor_attempt + 1 >= actor_attempts:
                         break
-            self._emit_usage(request, slot, usage, prompt_chars=executor.prompt_chars())
             try:
                 response_ref = persist_call(
                     self.drive_root,
@@ -1566,8 +1566,8 @@ class ReviewCoordinator:
 
             emit_review_usage(
                 self.usage_ctx,
-                model=slot.model,
-                usage=usage,
+                model=str(usage.get("resolved_model") or slot.model),
+                provider=str(usage.get("provider") or ""), usage=usage,
                 source=f"review_substrate:{request.surface}",
                 prompt_chars=prompt_chars,
                 extra={"surface": request.surface, "slot_id": slot.slot_id},
