@@ -487,6 +487,32 @@ class TestCacheSplitOwnership:
         with usage_accounting.usage_scope(triad):
             assert splits.last_task_cache_split("shared", "anthropic/claude-test") == 70_000
 
+    def test_plan_review_cycles_own_their_split_through_the_wave_id(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from ouroboros import review_substrate
+        from ouroboros.tools import plan_review_runtime
+        from tests.test_reviewer_slot_identity import _fake_ctx, _substrate_stub
+
+        seen, ran = [], []
+        real = _substrate_stub(ran)
+
+        def capture(request, **kwargs):
+            seen.append(dict(request.usage_attribution))
+            return real(request, **kwargs)
+
+        monkeypatch.setattr(review_substrate, "run_review_request", capture)
+        monkeypatch.setattr(plan_review_runtime, "LLMClient", lambda *a, **k: object())
+        monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
+        monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "m/one")
+        ctx = _fake_ctx(tmp_path)
+        slots = plan_review_runtime.plan_review_slots()
+        for key in ("plan_review:fp-a:1", "plan_review:fp-b:2"):
+            asyncio.run(plan_review_runtime.run_plan_review_slots(
+                ctx, slots, system_prompt="s", user_content="u", retry_key=key,
+            ))
+        assert [row.get("review_wave_id") for row in seen] == ["plan_review:fp-a:1", "plan_review:fp-b:2"]
+
     def test_a_rebuilt_attempt_starts_from_a_cold_split(self, tmp_path, monkeypatch):
         import queue as queue_module
 
@@ -758,14 +784,20 @@ class TestWrapupAffordabilityRail:
         monkeypatch.setattr(
             "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
         )
-        answers, calls = iter((True, True, True, False)), []
-        request = object()
+        # proxy (1, 2) → non-destructive probe (1, 2) → prepared candidate (1, 2)
+        answers, calls = iter((True, True, True, False, True, False)), []
+        probe, prepared = object(), object()
+        monkeypatch.setattr(task_pacing, "prospective_wrapup_attempt_request", lambda **_k: probe)
         monkeypatch.setattr(
-            task_pacing, "prospective_wrapup_attempt_request", lambda **_kwargs: request,
+            task_pacing, "prepared_wrapup_candidate", lambda ctx_, messages, **_k: (prepared, messages),
         )
         monkeypatch.setattr(
             task_pacing, "wrapup_reservation_fits",
             lambda **kwargs: (calls.append(kwargs), next(answers))[1],
+        )
+        finalized = []
+        monkeypatch.setattr(
+            "ouroboros.loop._prepare_forced_prompt", lambda _c, prompt, _t: (finalized.append(1), prompt)[1],
         )
         monkeypatch.setattr(
             "ouroboros.loop._forced_final_answer",
@@ -776,7 +808,29 @@ class TestWrapupAffordabilityRail:
 
         assert result is not None
         assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_last_fit"
-        assert [call.get("request") for call in calls] == [None, None, request, request]
+        assert [call.get("request") for call in calls] == [None, None, probe, probe, prepared, prepared]
+        assert finalized == [1]
+        assert result[2]["kwargs"]["_admitted_request"] is prepared
+
+    def test_an_image_probe_with_headroom_never_finalizes_services(self, monkeypatch):
+        ctx = _ctx(messages=self._image_messages())
+        monkeypatch.setattr(
+            "ouroboros.loop._loop_tree_accounting", lambda **_k: {"accounted_usd": 20.0},
+        )
+        answers = iter((True, True, True, True))
+        monkeypatch.setattr(task_pacing, "prospective_wrapup_attempt_request", lambda **_k: object())
+        monkeypatch.setattr(task_pacing, "wrapup_reservation_fits", lambda **_k: next(answers))
+
+        def destructive(*_a, **_k):
+            raise AssertionError("service finalization before a stop decision")
+
+        monkeypatch.setattr("ouroboros.loop._prepare_forced_prompt", destructive)
+        monkeypatch.setattr("ouroboros.loop._finalize_forced_services", destructive)
+        monkeypatch.setattr(task_pacing, "prepared_wrapup_candidate", destructive)
+
+        assert _check_budget_limits(ctx, None, self._ceiling(50.0)) is None
+        assert ctx.messages == self._image_messages()
+        assert "cost_stop_rail" not in ctx.accumulated_usage
 
     def test_a_proxy_stop_is_confirmed_by_the_priced_candidate(self, monkeypatch):
         ctx = _ctx()
