@@ -1178,7 +1178,7 @@ def _send_main_candidate(
     candidate_predicate: Optional[Callable[[Any], Any]],
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     with model_concurrency.model_call_slot(model, use_local, deadline_ts):
-        if physical_context is None:
+        if physical_context is None and candidate_predicate is None:
             return llm.chat(**kwargs)
         with bind_physical_attempt_context(
             physical_context, candidate_predicate=candidate_predicate,

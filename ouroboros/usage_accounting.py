@@ -292,11 +292,11 @@ def current_usage_scope() -> Optional[UsageScope]:
 
 @contextlib.contextmanager
 def bind_physical_attempt_context(
-    context: PhysicalAttemptContext,
+    context: Optional[PhysicalAttemptContext],
     candidate_predicate: Optional[Callable[[AttemptRequest], Any]] = None,
-) -> Iterator[PhysicalAttemptContext]:
-    """Bind frozen Main metadata and an optional final-fact predicate."""
-    if not isinstance(context, PhysicalAttemptContext):
+) -> Iterator[Optional[PhysicalAttemptContext]]:
+    """Bind frozen Main metadata (None = no Main metadata) and/or a final-fact predicate."""
+    if context is not None and not isinstance(context, PhysicalAttemptContext):
         raise TypeError("physical attempt context must be PhysicalAttemptContext")
     context_token = _PHYSICAL_CONTEXT.set(context)
     predicate_token = _PHYSICAL_PREDICATE.set(candidate_predicate)

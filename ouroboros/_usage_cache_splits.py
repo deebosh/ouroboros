@@ -12,13 +12,28 @@ from __future__ import annotations
 import time
 from typing import Dict, Optional, Tuple
 
-# (task_id, provider, route identity) -> (cached prompt tokens, monotonic stamp, horizon)
-_SPLITS: Dict[Tuple[str, str, str], Tuple[int, float, float]] = {}
+# (task_id, provider, route identity, review surface) -> (cached tokens, monotonic stamp, horizon)
+_SPLITS: Dict[Tuple[str, str, str, str], Tuple[int, float, float]] = {}
 _SPLITS_CAP = 64
 
 
-def _key(task_id: str, provider: str, model: str) -> Tuple[str, str, str]:
-    """One key per (task, provider, route), normalizing only model spelling.
+def _surface() -> str:
+    """The logical prompt surface of the current usage scope: "" for the task's
+    own transcript, else the review attribution — plan, acceptance and skill
+    reviewer sends settle under the task id too, and their prefixes must never
+    pose as the transcript's own split."""
+    from ouroboros.usage_accounting import current_usage_scope
+
+    scope = current_usage_scope()
+    if scope is None:
+        return ""
+    return "|".join(
+        part for part in (scope.review_skill, scope.review_wave_id, scope.review_slot_id) if part
+    )
+
+
+def _key(task_id: str, provider: str, model: str) -> Tuple[str, str, str, str]:
+    """One key per (task, provider, route, surface), normalizing only model spelling.
 
     The two sides of this store reach it by different names for the same model:
     the fence settles under the ledger's qualified identity
@@ -33,7 +48,7 @@ def _key(task_id: str, provider: str, model: str) -> Tuple[str, str, str]:
     from ouroboros.provider_models import normalize_model_identity
 
     route = normalize_model_identity(str(model or "").strip().removeprefix("~"))
-    return (str(task_id or "").strip(), str(provider or "").strip().lower(), route)
+    return (str(task_id or "").strip(), str(provider or "").strip().lower(), route, _surface())
 
 
 def stash_task_cache_split(
@@ -51,7 +66,7 @@ def stash_task_cache_split(
 def last_task_cache_split(task_id: str, model: str, *, provider: str = "") -> Optional[int]:
     """The task's own last observed cached-token count, or None once it lapsed.
 
-    None also covers a different provider, model, or route.
+    None also covers a different provider, model, route, or review surface.
     """
     split = _SPLITS.get(_key(task_id, provider, model))
     if split is None or time.monotonic() - split[1] > split[2]:

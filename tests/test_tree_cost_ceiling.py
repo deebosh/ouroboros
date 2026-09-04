@@ -449,6 +449,114 @@ class TestWrapupAffordability:
         assert prospective.candidate_raw_sha256 == actual.candidate_raw_sha256
 
 
+class TestCacheSplitOwnership:
+    """Splits belong to one prompt surface; a rebuilt attempt starts cold."""
+
+    def _scope(self, tmp_path, **attribution):
+        return usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="shared", root_task_id="shared",
+            global_limit_usd=100.0, **attribution,
+        )
+
+    def test_reviewer_sends_never_pose_as_the_transcripts_split(self, tmp_path):
+        from ouroboros import _usage_cache_splits as splits
+
+        splits.reset_task_cache_splits()
+        with usage_accounting.usage_scope(self._scope(tmp_path)):
+            splits.stash_task_cache_split("shared", "anthropic/claude-test", 90_000, ttl_seconds=300.0)
+        review = self._scope(tmp_path, review_wave_id="w1", review_slot_id="slot_1")
+        with usage_accounting.usage_scope(review):
+            assert splits.last_task_cache_split("shared", "anthropic/claude-test") is None
+            splits.stash_task_cache_split("shared", "anthropic/claude-test", 5, ttl_seconds=300.0)
+        with usage_accounting.usage_scope(self._scope(tmp_path)):
+            assert splits.last_task_cache_split("shared", "anthropic/claude-test") == 90_000
+        splits.invalidate_task_cache_splits("shared")
+        with usage_accounting.usage_scope(review):
+            assert splits.last_task_cache_split("shared", "anthropic/claude-test") is None
+
+    def test_a_rebuilt_attempt_starts_from_a_cold_split(self, tmp_path, monkeypatch):
+        import queue as queue_module
+
+        import ouroboros.loop as loop_module
+        from ouroboros import _usage_cache_splits as splits
+        from ouroboros.tools.registry import ToolRegistry
+
+        splits.reset_task_cache_splits()
+        splits.stash_task_cache_split("retry1", "anthropic/claude-test", 40_000, ttl_seconds=300.0)
+        seen = {}
+
+        class FakeLLM:
+            def default_model(self):
+                return "anthropic/claude-test"
+
+        def fake_call(*_args, **_kwargs):
+            seen["split_at_first_send"] = splits.last_task_cache_split("retry1", "anthropic/claude-test")
+            return {"role": "assistant", "content": "FINAL ANSWER: done"}, 0.0
+
+        monkeypatch.setattr(loop_module, "call_llm_with_retry", fake_call)
+        loop_module.run_llm_loop(
+            messages=[{"role": "user", "content": "again"}],
+            tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
+            llm=FakeLLM(), drive_logs=tmp_path, emit_progress=lambda _t: None,
+            incoming_messages=queue_module.Queue(), task_id="retry1", drive_root=tmp_path,
+        )
+        assert seen["split_at_first_send"] is None
+
+
+class TestForcedCandidatePredicate:
+    """The admitted wrap-up candidate is checked at the physical send, Main metadata or not."""
+
+    def test_predicate_binds_without_physical_context(self):
+        from ouroboros.loop_llm_call import _send_main_candidate
+
+        predicate = object()
+        seen = {}
+
+        class FakeLLM:
+            def chat(self, **kwargs):
+                seen["bound"] = usage_accounting.current_physical_attempt_predicate()
+                seen["context"] = usage_accounting.current_physical_attempt_context()
+                return {"role": "assistant", "content": "ok"}, {}
+
+        _send_main_candidate(
+            FakeLLM(), {}, model="anthropic/claude-test", use_local=False, deadline_ts=None,
+            physical_context=None, candidate_predicate=predicate,
+        )
+        assert seen["bound"] is predicate
+        assert seen["context"] is None
+
+    def test_a_mismatched_candidate_is_rejected_before_the_real_send(self, monkeypatch, tmp_path):
+        from ouroboros import llm as llm_module
+        from ouroboros.llm import LLMClient
+
+        monkeypatch.setenv("OPENAI_API_KEY", "unused")
+        client = LLMClient(api_key="unused")
+        model = "openai::gpt-test"
+        target = client._resolve_remote_target(model)
+        sent = []
+        real_execute = llm_module._execute_candidate
+
+        def execute(request, send, before_dispatch):
+            before_dispatch(SimpleNamespace(attempt_id="a1", drive_root=tmp_path))
+            sent.append(request)
+            return real_execute(request, send, before_dispatch)
+
+        monkeypatch.setattr(llm_module, "_execute_candidate", execute)
+        with usage_accounting.usage_scope(usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="pred", root_task_id="pred", global_limit_usd=100.0,
+        )), usage_accounting.bind_physical_attempt_context(
+            None, candidate_predicate=lambda actual: False,
+        ):
+            candidate = client._build_remote_candidate(
+                target, [{"role": "user", "content": "wrap up"}], "high", 64, "auto", None, None,
+                skip_capability_fetch=True,
+            )
+            client._normalize_payload_cache_ttl(target, candidate)
+            with pytest.raises(usage_accounting.PhysicalAttemptPreconditionFailed):
+                client._create_chat_completion_with_retries(lambda **_kwargs: None, candidate, target)
+        assert sent == []
+
+
 class TestWrapupAffordabilityRail:
     """The loop soft-lands on the rail, and stays silent when it cannot know."""
 

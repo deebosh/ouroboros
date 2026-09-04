@@ -298,8 +298,6 @@ def _check_budget_limits(
     if cost_ceiling.root_cap_usd is not None and deciding is not None and prompt_estimate > 0:
         finish_reason = task_pacing.wrapup_last_fit_text(deciding, cost_ceiling)
         forced_prompt = f"[BUDGET LIMIT] {finish_reason} {_FORCED_BEST_EFFORT_TAIL}"
-        prospective_messages = [dict(message) for message in ctx.messages]
-        _append_or_merge_user_message(prospective_messages, forced_prompt)
         request_args = dict(model=ctx.active_model, prompt_tokens=prompt_estimate,
                             use_local=ctx.active_use_local)
         wrapup_args = dict(
@@ -6086,6 +6084,7 @@ def run_llm_loop(
     llm_trace: Dict[str, Any] = {"reasoning_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {"_task_attempt": getattr(ctx, "task_attempt", None)}
     tools._ctx._accumulated_usage = ctx._accumulated_usage = accumulated_usage
+    invalidate_task_cache_splits(task_id or getattr(ctx, "task_id", ""))  # rebuilt attempt = new prefix
     max_retries = 3
     cost_ceiling = _resolve_task_cost_ceiling(ctx, budget_remaining_usd)
     if cost_ceiling.root_cap_usd is not None:
