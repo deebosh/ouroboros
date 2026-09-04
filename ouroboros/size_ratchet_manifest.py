@@ -183,7 +183,6 @@ BAND_PATHS = {
     "tests/test_managed_review_subject.py": "Lane L-review contract suite: the managed resolution-delta subject (gate/advisory surfaces, M0 fallback), Q25-A admission, Q28-A yield outcomes and enforcement-honest advisory texts grew past 1000 across the adversarial fix round; one subject, one suite.",
     "tests/test_nested_rights_depth.py": "Nested delegation depth authority regression coverage",
     "tests/test_observability_outcomes_v2.py": None,
-    "tests/test_onboarding_complete_endpoint.py": None,
     "tests/test_onboarding_wizard.py": None,
     "tests/test_owner_stop_s3.py": "Entered the band from 821 lines: the S3 contract suite now covers retry-root aliasing, graceful-to-immediate hardening, stale-control drain races, hard deadline preservation, descendant settlement failure, and late resweep exactly-once root finalization.",
     "tests/test_packaged_runtime_and_lifecycle.py": None,
