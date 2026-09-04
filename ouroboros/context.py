@@ -53,6 +53,7 @@ from ouroboros.context_layout import architecture_context_section
 from ouroboros.contracts.task_contract import normalize_bool
 from ouroboros.memory import Memory
 from ouroboros.task_pacing import in_task_cost_ceiling_disclosure as _in_task_cost_ceiling
+from ouroboros.update_letter import official_update_projection  # contract: never raises
 from ouroboros.utils import (
     get_git_info,
     read_json_dict,
@@ -857,8 +858,8 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
             }
     except Exception:
         log.debug("Failed to inject answer_protocol rule", exc_info=True)
-    runtime_ctx = json.dumps(runtime_data, ensure_ascii=False, indent=2)
-    out = "## Runtime context\n\n" + runtime_ctx
+    runtime_data["official_update"] = official_update_projection(git_sha)
+    out = "## Runtime context\n\n" + json.dumps(runtime_data, ensure_ascii=False, indent=2)
     try:
         from ouroboros.task_tree_ledger import tree_ledger_tail_digest
         _root_id = str(task.get("root_task_id") or task.get("id") or "")

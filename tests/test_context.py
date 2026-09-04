@@ -2106,3 +2106,20 @@ def test_delegation_fact_failure_never_drops_capability_digest(tmp_path, monkeyp
     # The surrounding digest survives intact.
     assert "allow_mutative_subagents" in capabilities
     assert "write_surfaces" in capabilities
+
+
+def test_runtime_section_carries_official_update_fact(tmp_path, monkeypatch):
+    env = _make_health_env(tmp_path)
+    # Patched WHERE IT IS USED: context.py binds the name at import, so patching the
+    # defining module would leave this test asserting the real projection's own answer
+    # and proving nothing about the injection.
+    monkeypatch.setattr(
+        "ouroboros.context.official_update_projection",
+        lambda head: {"status": "update_available", "running": {"sha": head}, "letter": {"state": "ready"}},
+    )
+    section = build_runtime_section(env, {"id": "task-1", "type": "task"})
+    payload = json.loads(section.split("\n\n", 1)[1])
+
+    assert payload["official_update"]["status"] == "update_available"
+    assert payload["official_update"]["letter"] == {"state": "ready"}
+    assert payload["official_update"]["running"]["sha"] == payload["git_head"], "the fact reads THIS repo's HEAD"
