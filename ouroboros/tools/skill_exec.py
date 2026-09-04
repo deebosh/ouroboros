@@ -631,6 +631,39 @@ def _non_text_script_refusal(script_path: pathlib.Path, script_rel: str) -> str:
     return ""
 
 
+def _extension_not_executable_message(loaded: Any, drive_root: pathlib.Path) -> str:
+    """Explain why an extension does not execute, with its typed live state.
+
+    The prior wording asserted unconditionally that ``register(api)`` had already
+    run, which is false for an extension that failed to load.
+    """
+    try:
+        from ouroboros.extension_loader import runtime_state_for_loaded_skill
+
+        live = runtime_state_for_loaded_skill(loaded, drive_root)
+    except Exception:
+        log.debug("skill_exec extension liveness lookup failed", exc_info=True)
+        live = {}
+    facts = (
+        f"live_loaded={bool(live.get('live_loaded'))}, "
+        f"desired_live={bool(live.get('desired_live'))}, "
+        f"reason={str(live.get('reason') or 'unknown')!r}, "
+        f"process={str(live.get('process') or 'unknown')!r}"
+    )
+    if live.get("load_error"):
+        facts += f", load_error={str(live.get('load_error'))!r}"
+    return (
+        f"⚠️ SKILL_EXEC_EXTENSION: skill {loaded.name!r} is a "
+        "type=extension plugin and does not execute through the "
+        f"subprocess substrate. Its current live state is {facts} "
+        "(inspect the registered surfaces via the snapshot produced by "
+        "``ouroboros.extension_loader.snapshot()``). Use its "
+        "provider-safe ``ext_<len>_<token>_*`` tools, "
+        "``/api/extensions/<skill>/...`` routes, or provider-safe "
+        "extension WebSocket handlers instead."
+    )
+
+
 def _handle_skill_exec(
     ctx: ToolContext,
     skill: str = "",
@@ -659,17 +692,7 @@ def _handle_skill_exec(
             f"({loaded.load_error}). Fix the skill package and re-review."
         )
     if loaded.manifest.is_extension():
-        return (
-            f"⚠️ SKILL_EXEC_EXTENSION: skill {skill_name!r} is a "
-            "type=extension plugin and does not execute through the "
-            "subprocess substrate. Its ``register(api)`` has already "
-            "been called; the loader registered whatever ``plugin.py`` "
-            "declared (inspect via the snapshot produced by "
-            "``ouroboros.extension_loader.snapshot()``). Use its "
-            "provider-safe ``ext_<len>_<token>_*`` tools, "
-            "``/api/extensions/<skill>/...`` routes, or provider-safe "
-            "extension WebSocket handlers instead."
-        )
+        return _extension_not_executable_message(loaded, drive_root)
     if not loaded.manifest.is_script():
         return (
             f"⚠️ SKILL_EXEC_ERROR: skill {skill_name!r} has type "
@@ -1041,11 +1064,13 @@ def _handle_toggle_skill(
             stale = loaded.review.is_stale_for(loaded.content_hash)
             gate = skill_review_gate(loaded.review.status, stale=stale)
             return json.dumps({"skill": loaded.name, "enabled": False, "review_status": loaded.review.status, "review_gate": gate, "executable_review": gate["executable_review"], "extension_action": extension_action, "extension_reason": extension_reason, "message": f"Skill {loaded.name!r} was not persisted as disabled because its sanitized identity collides with another skill directory. Rename one of the directories first."}, ensure_ascii=False, indent=2)
-        save_enabled(drive_root, loaded.name, coerced)
+        save_enabled(drive_root, loaded.name, coerced, actor="agent_tool", reason=str(ctx.task_id or ""))
         loaded.enabled = coerced
         extension_action = None
         extension_reason = "not_extension"
         extension_load_error_msg = ""
+        extension_process = ""
+        extension_server_reconcile = ""
         from ouroboros import extension_loader
         if loaded.manifest.is_extension() or loaded.name in extension_loader.snapshot()["extensions"]:
             from ouroboros.config import load_settings as _load_settings
@@ -1057,6 +1082,8 @@ def _handle_toggle_skill(
             extension_action = live_state.get("action")
             extension_reason = str(live_state.get("reason") or "")
             extension_load_error_msg = str(live_state.get("load_error") or "")
+            extension_process = str(live_state.get("process") or "")
+            extension_server_reconcile = str(live_state.get("server_reconcile") or "")
         # Mirror schedule readiness immediately (parallel to the HTTP toggle path).
         try:
             from supervisor.queue import resync_skill_schedules
@@ -1075,14 +1102,16 @@ def _handle_toggle_skill(
             f"cannot enable {loaded.name!r}: {extension_load_error_msg or 'extension failed to load'}"
             if reverted else f"Skill {loaded.name!r} enabled={effective_enabled}"
         )
-        return json.dumps({"skill": loaded.name, "enabled": effective_enabled, "review_status": loaded.review.status, "review_gate": gate, "executable_review": gate["executable_review"], "extension_action": extension_action, "extension_reason": extension_reason, "message": message}, ensure_ascii=False, indent=2)
+        return json.dumps({"skill": loaded.name, "enabled": effective_enabled, "review_status": loaded.review.status, "review_gate": gate, "executable_review": gate["executable_review"], "extension_action": extension_action, "extension_reason": extension_reason, "process": extension_process, "server_reconcile": extension_server_reconcile, "message": message}, ensure_ascii=False, indent=2)
 
 _LIST_SCHEMA = {
     "name": "list_skills",
     "description": (
         "List external skill packages discovered in OUROBOROS_SKILLS_REPO_PATH. "
-        "Returns counts + per-skill metadata (name, type, enabled, review_status, "
-        "available_for_execution). Read-only."
+        "Returns counts + per-skill metadata (name, type, enabled, review_status, and "
+        "available_for_execution, which is the SCRIPT-execution flag only). Extension "
+        "rows also carry desired_live, live_loaded, live_reason, load_error and process, "
+        "which is where an extension's liveness actually lives. Read-only."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }

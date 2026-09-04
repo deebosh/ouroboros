@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from typing import Any, Dict
 
 from ouroboros.contracts.plugin_api import ExtensionRegistrationError, VALID_EXTENSION_ROUTE_METHODS
@@ -394,12 +395,21 @@ def validate_ui_render(render: Dict[str, Any]) -> Dict[str, Any]:
     _validate_start_mode(clean, kind=kind)
     if kind in {"iframe", "module"}:
         _validate_frame_geometry(clean, kind=kind)
+    if kind == "iframe" and not _text(clean.get("route")):
+        raise ExtensionRegistrationError("iframe widget render requires route (the extension route the frame loads)")
     if kind == "module":
         entry = _text(clean.get("entry"))
         if not entry:
             raise ExtensionRegistrationError("module widget render requires entry filename (e.g. 'widget.js')")
         if "/" in entry or ".." in entry or entry.startswith(".") or entry.endswith("/"):
             raise ExtensionRegistrationError(f"module widget entry {entry!r} must be a bare filename inside the skill directory")
+        if re.fullmatch(r"[A-Za-z0-9._-]+", entry) is None:
+            raise ExtensionRegistrationError(
+                f"module widget entry {entry!r} must use browser-safe characters [A-Za-z0-9._-] only"
+            )
+        # The suffix is cosmetic for the ENTRY: the host injects it as a classic
+        # inline script, so top-level import/export in it will not run. Files the
+        # entry pulls in via dynamic import() may be real ES modules.
         if not entry.endswith((".js", ".mjs")):
             raise ExtensionRegistrationError("module widget entry must be a .js / .mjs file")
         clean["entry"] = entry  # normalized once: the loader capture and the module URL agree

@@ -361,9 +361,13 @@ dropped in silence.
 When you are writing a skill (or repairing one in heal mode),
 `skill_preflight` runs cheap, offline syntax validators on the
 payload — in-process Python `compile()` for `.py` files (no
-`__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs`,
+`__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs` (a
+declared module-widget entry is instead parsed as a classic script, the
+grammar the widget frame runs it in, so top-level `import`/`export` in the
+entry fails preflight),
 `bash -n` for `.sh`/`.bash`, plus a manifest parse, explicit
-entry/script existence checks, and static widget render-schema
+entry/script existence checks (including a module widget's `render.entry`
+existence and containment), and static widget render-schema
 validation. It validates manifest `ui_tab.render` plus actual
 `register_ui_tab` and `register_settings_section` calls in `plugin.py`
 through the same runtime validator as `extension_loader`. The static
@@ -374,6 +378,10 @@ interpret eval, comprehensions, or merges. A schema it can resolve but that is
 invalid fails preflight; an unresolved dynamic registration is recorded as
 `verified=false`, `skipped=true`, `skip_reason=dynamic_ui_schema` with its source
 reference, while runtime registration remains the final fail-closed validator.
+One frozen compatibility exception is intentionally asymmetric: deterministic
+preflight reports an iframe declaration with an omitted `route` as invalid,
+while runtime registration preserves that route-less shape so an existing
+extension still loads (the card remains not-supported rather than executable).
 It does not call any LLM and does not mutate review state, so the agent can
 iterate without burning review tokens.
 

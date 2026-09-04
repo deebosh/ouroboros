@@ -145,21 +145,35 @@ def _record_companion_name(bundle: _ExtensionRegistrations, name: str) -> None:
         bundle.companion_names.append(name)
 
 
-def _request_server_reconcile_if_worker(
+def _finalize_extension_reconcile(
+    state: Dict[str, Any],
     drive_root: pathlib.Path | None,
     skill_name: str,
     *,
     reason: str,
+    health_stamp: tuple[str, str] | None = None,
 ) -> None:
-    """Signal the server process after a worker-side extension state change."""
-    if drive_root is None or is_server_process():
-        return
-    try:
-        from ouroboros.extension_reconcile_queue import request_extension_reconcile
+    """Record health and signal the server after a worker-side state change.
 
-        request_extension_reconcile(drive_root, skill_name, reason=reason, source="worker")
-    except Exception:
-        log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
+    Stamps ``state['server_reconcile']``: the receipt says whether the marker was
+    written, while the handoff itself stays asynchronous and fail-soft.
+    """
+    state["server_reconcile"] = ""
+    if drive_root is None:
+        return
+    if not is_server_process():
+        try:
+            from ouroboros.extension_reconcile_queue import request_extension_reconcile
+            request_extension_reconcile(drive_root, skill_name, reason=reason, source="worker")
+            state["server_reconcile"] = "requested"
+        except Exception:
+            state["server_reconcile"] = "request_failed"
+            log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
+    from ouroboros.extension_health import record_health_for_runtime_state
+    if health_stamp is None:
+        record_health_for_runtime_state(drive_root, skill_name, state)
+    else:
+        record_health_for_runtime_state(drive_root, skill_name, state, stamp=health_stamp)
 
 
 def _reject_extension_child_side_effect(capability: str) -> None:
@@ -242,12 +256,25 @@ def _validate_child_ws_descriptor(skill_name: str, item: Dict[str, Any]) -> Dict
     return item
 
 
+def _validate_runtime_ui_render(render: Any) -> Dict[str, Any]:
+    """Validate UI while retaining the public contract's route-less iframe shape."""
+    if not isinstance(render, dict):
+        return _validate_ui_render(render)
+    if str(render.get("kind") or "").strip() != "iframe" or str(render.get("route") or "").strip():
+        return _validate_ui_render(render)
+    compatible = dict(render)
+    compatible["route"] = "legacy-contract-placeholder"
+    clean = _validate_ui_render(compatible)
+    clean.pop("route", None)
+    return clean
+
+
 def _validate_child_ui_descriptor(skill_name: str, item: Dict[str, Any]) -> Dict[str, Any]:
     key = str(item.get("key") or "")
     _validate_child_catalog_namespace(skill_name, "ui tab", key)
     if not isinstance(item.get("render", {}), dict):
         raise ExtensionRegistrationError(f"out-of-process ui tab {key!r} render must be an object")
-    render = _validate_ui_render(dict(item.get("render") or {}))
+    render = _validate_runtime_ui_render(dict(item.get("render") or {}))
     item["render"] = render
     span = _widget_span_from_render(render)
     item["span"] = span
@@ -856,7 +883,7 @@ class PluginAPIImpl:
         self._require("widget")
         clean_tab = _assert_tool_name(tab_id)  # same syntax rules
         key = f"{self._skill}:{clean_tab}"
-        validated_render = _validate_ui_render({} if render is None else render)
+        validated_render = _validate_runtime_ui_render({} if render is None else render)
         span = _widget_span_from_render(validated_render)
         # A module widget's reviewed JavaScript (its entry plus every sibling
         # .js/.mjs) is captured here (disk read, outside the lock) so the module
@@ -1505,6 +1532,7 @@ def _extension_runtime_state(
         "loaded_present": loaded_present,
         "loaded_matches_current": live_loaded,
         "reason": reason,
+        "process": "server" if is_server_process() else "worker",
     }
 
 
@@ -1566,7 +1594,7 @@ def runtime_state_for_skill_name(
     if skill is None:
         with _lock:
             live_loaded = skill_name in _extensions
-        return {
+        state = {
             "skill": skill_name,
             "type": "extension",
             "runtime_mode": "",
@@ -1580,17 +1608,19 @@ def runtime_state_for_skill_name(
             "loaded_matches_current": False,
             "reason": "missing",
         }
-    state = _apply_deps_block(
-        _extension_runtime_state(
-            skill,
-            drive_root=pathlib.Path(drive_root),
-            skills=peers,
-            repo_path=resolved_repo_path,
-        ),
-        pathlib.Path(drive_root),
-        skill,
-    )
-    return _apply_durable_extension_health(state, pathlib.Path(drive_root), skill)
+    else:
+        state = _apply_durable_extension_health(
+            _apply_deps_block(
+                _extension_runtime_state(
+                    skill, drive_root=pathlib.Path(drive_root), skills=peers,
+                    repo_path=resolved_repo_path,
+                ),
+                pathlib.Path(drive_root), skill,
+            ),
+            pathlib.Path(drive_root), skill,
+        )
+    state["process"] = "server" if is_server_process() else "worker"
+    return state
 
 
 def runtime_state_for_loaded_skill(
@@ -1635,22 +1665,17 @@ def _revert_enabled_after_load_error(
     try:
         from ouroboros.skill_loader import save_enabled
 
-        save_enabled(pathlib.Path(drive_root), skill_name, False)
+        save_enabled(pathlib.Path(drive_root), skill_name, False, actor="load_error_revert")
         state["reverted_enabled"] = True
     except Exception:
         log.debug("Failed to revert enabled for %s after load error", skill_name, exc_info=True)
 
 
 def reconcile_extension(
-    skill_name: str,
-    drive_root: pathlib.Path,
-    settings_reader: Callable[[], Dict[str, Any]],
-    *,
-    repo_path: str | None = None,
-    skills: Optional[List[LoadedSkill]] = None,
-    selected_skill: LoadedSkill | None = None,
-    retry_load_error: bool = False,
-    revert_enabled_on_error: bool = False,
+    skill_name: str, drive_root: pathlib.Path, settings_reader: Callable[[], Dict[str, Any]], *,
+    repo_path: str | None = None, skills: Optional[List[LoadedSkill]] = None,
+    selected_skill: LoadedSkill | None = None, retry_load_error: bool = False,
+    revert_enabled_on_error: bool = False, health_stamp: tuple[str, str] | None = None,
 ) -> Dict[str, Any]:
     """Reconcile one extension's desired and actual live state.
 
@@ -1690,7 +1715,7 @@ def reconcile_extension(
         elif state.get("reason") == "load_error" and not loaded_present:
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="reconcile_load_error")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="reconcile_load_error", health_stamp=health_stamp)
             return state
         if state.get("reason") == "missing" or state.get("reason") == "not_extension":
             if loaded_present:
@@ -1698,7 +1723,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason=str(state.get("reason") or "inactive"))
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason=str(state.get("reason") or "inactive"), health_stamp=health_stamp)
             return state
 
         if not state.get("desired_live"):
@@ -1707,7 +1732,7 @@ def reconcile_extension(
             state["action"] = "extension_unloaded" if loaded_present else "extension_inactive"
             state["live_loaded"] = False
             state["loaded_present"] = False
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="desired_disabled")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="desired_disabled", health_stamp=health_stamp)
             return state
 
         if was_live:
@@ -1720,7 +1745,7 @@ def reconcile_extension(
                     repo_path=repo_path,
                     selected_skill=selected_skill,
                 )
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="already_live")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="already_live", health_stamp=health_stamp)
             return state
 
         safe_name = _sanitize_skill_name(skill_name)
@@ -1728,7 +1753,7 @@ def reconcile_extension(
         if loaded is None:
             state["reason"] = "missing"
             state["action"] = "extension_inactive"
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="missing")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="missing", health_stamp=health_stamp)
             return state
         if loaded_present:
             unload_extension(skill_name)
@@ -1754,7 +1779,7 @@ def reconcile_extension(
             state["load_error"] = err
             state["action"] = "extension_load_error"
             _revert_enabled_after_load_error(revert_enabled_on_error, drive_root, skill_name, state)
-            _request_server_reconcile_if_worker(drive_root, skill_name, reason="load_error")
+            _finalize_extension_reconcile(state, drive_root, skill_name, reason="load_error", health_stamp=health_stamp)
             return state
         refreshed = runtime_state_for_skill_name(
             skill_name,
@@ -1763,7 +1788,7 @@ def reconcile_extension(
             skills=peers,
         )
         refreshed["action"] = "extension_loaded"
-        _request_server_reconcile_if_worker(drive_root, skill_name, reason="loaded")
+        _finalize_extension_reconcile(refreshed, drive_root, skill_name, reason="loaded", health_stamp=health_stamp)
         return refreshed
 
 
@@ -2140,23 +2165,14 @@ def reload_all(
     repo_path: str | None = None,
 ) -> Dict[str, Any]:
     """Refresh all extension liveness and return ``skill: error_or_None``."""
-    from ouroboros.extension_health import record_extension_health, status_for_runtime_state
+    from ouroboros.extension_health import fresh_code_stamp, record_health_for_runtime_state
 
     skills = discover_skills(drive_root, repo_path=repo_path)
+    health_stamp = fresh_code_stamp()
     skill_names = {s.name for s in skills if s.manifest.is_extension()}
     with _lock:
         loaded_names = set(_extensions.keys())
     results: Dict[str, Any] = {}
-    # Version/commit stamp for the durable health vector (live->broken attribution).
-    try:
-        from ouroboros.config import read_version as _read_version
-        from ouroboros.utils import get_git_info as _get_git_info
-
-        hv_version = str(_read_version())
-        hv_sha = _get_git_info(pathlib.Path(__file__).resolve().parents[1])[1]
-    except Exception:
-        hv_version, hv_sha = "", ""
-    regressions: List[Dict[str, Any]] = []
     for gone in loaded_names - skill_names:
         try:
             unload_extension(gone)
@@ -2176,30 +2192,12 @@ def reload_all(
                 repo_path=repo_path,
                 skills=skills,
                 retry_load_error=True,
+                health_stamp=health_stamp,
             )
             load_error = state.get("load_error")
             if load_error:
                 log.error("Extension reload failed for %s: %s", skill.name, load_error)
             results[skill.name] = load_error or (None if state.get("desired_live") else state.get("reason"))
-            try:
-                health = record_extension_health(
-                    drive_root,
-                    skill.name,
-                    status=status_for_runtime_state(state),
-                    version=hv_version,
-                    sha=hv_sha,
-                    reason=str(state.get("reason") or ""),
-                    load_error=str(state.get("load_error") or ""),
-                )
-                if health.get("newly_regressed"):
-                    regressions.append({
-                        "skill": skill.name,
-                        "last_known_good_sha": (health.get("last_known_good") or {}).get("sha", ""),
-                        "sha": hv_sha,
-                        "load_error": str(state.get("load_error") or ""),
-                    })
-            except Exception:
-                log.debug("extension health record failed for %s", skill.name, exc_info=True)
         except Exception as exc:
             log.exception("Extension reload failed for %s; continuing", skill.name)
             error = f"{type(exc).__name__}: {exc}"
@@ -2215,31 +2213,12 @@ def reload_all(
                 )
             results[skill.name] = error
             try:
-                record_extension_health(
-                    drive_root, skill.name, status="broken",
-                    version=hv_version, sha=hv_sha, reason="reconcile_exception", load_error=error,
-                )
+                record_health_for_runtime_state(drive_root, skill.name, {
+                    "desired_live": True, "reason": "load_error", "load_error": error,
+                    "process": "server" if is_server_process() else "worker",
+                }, stamp=health_stamp)
             except Exception:
                 log.debug("extension health record failed for %s", skill.name, exc_info=True)
-    if regressions:
-        for reg in regressions:
-            log.error(
-                "Extension regression: %s was live at %s, broken now at %s: %s",
-                reg["skill"], (reg.get("last_known_good_sha") or "?")[:12],
-                (reg.get("sha") or "?")[:12], reg.get("load_error"),
-            )
-        try:
-            from ouroboros.utils import append_jsonl
-
-            append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
-                "ts": utc_now_iso(),
-                "type": "extension_regression",
-                "git_sha": hv_sha,
-                "version": hv_version,
-                "regressions": regressions,
-            })
-        except Exception:
-            log.debug("Failed to append extension_regression event", exc_info=True)
     return results
 
 

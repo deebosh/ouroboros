@@ -14,7 +14,7 @@ direct_server_with_data = _direct_server_with_data
 
 
 def _write_module_widget_smoke_extension(data_dir: pathlib.Path) -> str:
-    """Install reviewed module tabs that exercise host geometry and teardown."""
+    """Install reviewed module tabs that exercise geometry, faults, and teardown."""
     from ouroboros.skill_loader import SkillReviewState, compute_content_hash, save_review_state
 
     name = "module_widget_smoke"
@@ -50,6 +50,7 @@ def _write_module_widget_smoke_extension(data_dir: pathlib.Path) -> str:
                 api.register_ui_tab("auto", "Auto module", render={"kind": "module", "entry": "widget.js", "start": "auto"})
                 api.register_ui_tab("fixed", "Fixed module", render={"kind": "module", "entry": "widget.js", "height": 480, "start": "auto"})
                 api.register_ui_tab("capped", "Capped module", render={"kind": "module", "entry": "widget.js", "max_height": 640, "start": "auto"})
+                api.register_ui_tab("fault", "Fault module", render={"kind": "module", "entry": "fault.js", "max_height": 640, "start": "auto"})
                 api.register_ui_tab("small", "Small module", render={"kind": "module", "entry": "small.js", "start": "auto"})
             """
         ),
@@ -91,9 +92,31 @@ def _write_module_widget_smoke_extension(data_dir: pathlib.Path) -> str:
         "document.getElementById('root').textContent = 'Small content';\n",
         encoding="utf-8",
     )
+    (skill_dir / "fault.js").write_text(
+        textwrap.dedent(
+            """\
+            const root = document.getElementById('root');
+            root.innerHTML = '<div style="height: 900px">Deterministic fault fixture</div>';
+            throw new Error('Deterministic module widget fault: ' + 'x'.repeat(320));
+            """
+        ),
+        encoding="utf-8",
+    )
     content_hash = compute_content_hash(skill_dir, manifest_entry="plugin.py")
     save_review_state(data_dir, name, SkillReviewState(status="pass", content_hash=content_hash))
     return name
+
+
+def test_module_widget_smoke_fixture_has_deterministic_fault(tmp_path):
+    name = _write_module_widget_smoke_extension(tmp_path)
+    skill_dir = tmp_path / "skills" / "external" / name
+    plugin = (skill_dir / "plugin.py").read_text(encoding="utf-8")
+    fault = (skill_dir / "fault.js").read_text(encoding="utf-8")
+
+    assert 'register_ui_tab("fault", "Fault module"' in plugin
+    assert '"entry": "fault.js", "max_height": 640, "start": "auto"' in plugin
+    assert "height: 900px" in fault
+    assert "throw new Error('Deterministic module widget fault: ' + 'x'.repeat(320));" in fault
 
 
 def _write_temporal_module_widget_extension(data_dir: pathlib.Path) -> str:
