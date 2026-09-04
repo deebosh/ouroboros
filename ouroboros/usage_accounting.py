@@ -727,12 +727,12 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
             )
         root_rows: Optional[list[Dict[str, Any]]] = None
         root_limit: Optional[float] = None
-        if scope.root_task_id and scope.root_limit_usd is not None:
+        if scope.root_task_id:  # every rooted attempt refreshes the subtree telemetry, cap or not
             root_rows = [row for row in finals if str(row.get("root_task_id") or "") == scope.root_task_id]
             root_accounted = float(_summary(root_rows)["accounted_usd"])
-            root_limit = max(0.0, float(scope.root_limit_usd))
-            # Piggyback the measured pre-append subtree sum on this locked read.
-            _stash_root_accounting(scope.root_task_id, root_accounted, root_limit)
+            root_limit = None if scope.root_limit_usd is None else max(0.0, float(scope.root_limit_usd))
+            _stash_root_accounting(scope.root_task_id, root_accounted, root_limit)  # pre-append subtree sum
+        if root_limit is not None:
             if root_limit <= 0 or root_accounted >= root_limit - 1e-9 or (
                 bound is not None and root_accounted + bound > root_limit + 1e-9
             ):
@@ -948,7 +948,7 @@ def _transition(reservation: AttemptReservation, state: str, **fields: Any) -> D
         appended = _append_rows_locked(reservation.drive_root, records, [row])
         root_task_id = str(current.get("root_task_id") or "")
         root_limit = _number(current.get("root_limit_usd"))
-        if root_task_id and root_limit is not None:
+        if root_task_id:
             # Refresh from post-transition finals without another ledger read.
             subtree = [
                 r for r in _final_rows([*records, *appended]).values()
