@@ -18,17 +18,21 @@ _SPLITS_CAP = 64
 
 
 def _surface() -> str:
-    """The logical prompt surface of the current usage scope: "" for the task's
-    own transcript, else the review attribution — plan, acceptance and skill
-    reviewer sends settle under the task id too, and their prefixes must never
-    pose as the transcript's own split."""
+    """The logical prompt surface of the current usage scope: its category plus
+    the review attribution. Plan, acceptance and skill reviewer sends settle
+    under the task id too (ordinary reviews carry their surface only in
+    ``category``), and their prefixes must never pose as the transcript's own
+    split or as each other's."""
     from ouroboros.usage_accounting import current_usage_scope
 
     scope = current_usage_scope()
     if scope is None:
         return ""
+    category = "" if str(scope.category or "task") == "task" else str(scope.category)
     return "|".join(
-        part for part in (scope.review_skill, scope.review_wave_id, scope.review_slot_id) if part
+        part for part in (
+            category, scope.review_skill, scope.review_wave_id, scope.review_slot_id,
+        ) if part
     )
 
 
