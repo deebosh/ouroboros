@@ -17,6 +17,7 @@ from ouroboros import task_pacing
 from ouroboros.context_budget import ContextReclaimRequest
 from ouroboros.context_compaction import context_reclaim_transcript_sha256
 from ouroboros.llm import LLMClient
+from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, _TRANSPORT_DEATH_RETRIES
 from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
 from ouroboros.observability import new_execution_id
 from ouroboros.tools.registry import ToolRegistry
@@ -394,6 +395,10 @@ def _physical_context_for_fit(disposition: Any) -> PhysicalAttemptContext:
     )
 
 
+def _fit_key(fit: Any) -> Tuple[str, str]:
+    return (fit.measurement.route_fp, fit.measurement.round_id)
+
+
 def _dispatch_round_model(
     ctx: _RoundModelCallContext,
     disposition: Any,
@@ -418,6 +423,7 @@ def _dispatch_round_model(
         deadline_ts=_loop()._task_deadline_epoch(ctx.tools),
         transport_reserve_sec=task_pacing.get_finalization_grace_sec(),
         attempt_cap=attempt_cap,
+        transport_death_retries=_TRANSPORT_DEATH_RETRIES if attempt_cap is None else 0,
         allow_server_web_search=_loop()._server_web_allowed_by_task(ctx.tools._ctx),
         physical_context=(
             _physical_context_for_fit(disposition) if disposition is not None else None
@@ -433,7 +439,7 @@ def _run_main_reclaim(
     minimum_goal_tokens: int = 0,
 ) -> Any:
     measurement = disposition.measurement
-    key = (measurement.route_fp, measurement.round_id)
+    key = _fit_key(disposition)
     passes = _loop()._context_reclaim_passes(ctx.tools._ctx)
     if key in passes:
         return None
@@ -490,7 +496,7 @@ def _measure_after_reclaim(ctx: _RoundModelCallContext) -> Any:
     disposition = _loop()._measure_round_main_fit(ctx, automatic_pass_used=True)
     if disposition is None:
         return None
-    key = (disposition.measurement.route_fp, disposition.measurement.round_id)
+    key = _fit_key(disposition)
     used = key in _loop()._context_reclaim_materializations(ctx.tools._ctx)
     if disposition.automatic_pass_used != used:
         disposition = replace(disposition, automatic_pass_used=used)
@@ -561,7 +567,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     """Measure, optionally reclaim, dispatch, and recover one Main round."""
     disposition = _loop()._measure_round_main_fit(ctx, automatic_pass_used=False)
     if disposition is not None:
-        key = (disposition.measurement.route_fp, disposition.measurement.round_id)
+        key = _fit_key(disposition)
         already_reclaimed = key in _loop()._context_reclaim_passes(ctx.tools._ctx)
         if disposition.action == "reclaim_once" and not already_reclaimed:
             _loop()._run_main_reclaim(ctx, disposition)
@@ -582,8 +588,15 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     failed_capture = _loop().last_physical_attempt_capture()
     if disposition is None:
         return msg, cost, ctx.active_context_mode
+
+    def _skipped(reason: str) -> Tuple[Any, float, str]:
+        _emit_overflow_retry_skipped(ctx, reason)
+        return msg, cost, ctx.active_context_mode
+
+    if isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict):
+        return _skipped("round_holds_unresolved_attempt")
     _reproject_actual_overflow_low(ctx)
-    reclaim_key = (disposition.measurement.route_fp, disposition.measurement.round_id)
+    reclaim_key = _fit_key(disposition)
     overflow_fit = (
         _measure_after_reclaim(ctx)
         if reclaim_key in _loop()._context_reclaim_passes(ctx.tools._ctx)
@@ -591,7 +604,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     )
     if overflow_fit is None:
         return msg, cost, ctx.active_context_mode
-    key = (overflow_fit.measurement.route_fp, overflow_fit.measurement.round_id)
+    key = _fit_key(overflow_fit)
     if key not in _loop()._context_reclaim_passes(ctx.tools._ctx):
         _loop()._run_main_reclaim(ctx, overflow_fit, minimum_goal_tokens=1)
         overflow_fit = _measure_after_reclaim(ctx)
@@ -600,11 +613,9 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
 
     retries = _loop()._context_overflow_retries(ctx.tools._ctx)
     if key in retries:
-        _emit_overflow_retry_skipped(ctx, "route_round_retry_already_used")
-        return msg, cost, ctx.active_context_mode
+        return _skipped("route_round_retry_already_used")
     if not _failed_capture_is_comparable(failed_capture):
-        _emit_overflow_retry_skipped(ctx, "failed_candidate_not_comparable")
-        return msg, cost, ctx.active_context_mode
+        return _skipped("failed_candidate_not_comparable")
     retries.add(key)
     try:
         retry_msg, retry_cost = _loop()._dispatch_round_model(
@@ -616,6 +627,5 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
             ),
         )
     except PhysicalAttemptPreconditionFailed:
-        _emit_overflow_retry_skipped(ctx, "context_candidate_not_strictly_smaller")
-        return msg, cost, ctx.active_context_mode
+        return _skipped("context_candidate_not_strictly_smaller")
     return retry_msg, retry_cost, ctx.active_context_mode

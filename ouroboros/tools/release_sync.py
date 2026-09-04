@@ -23,7 +23,10 @@ _NUMERIC_CLAIM_RE = re.compile(
 )
 
 # Author-facing pre-release suffix; pyproject gets the PEP 440-normalized form.
-_PRE_SUFFIX = r'(?:-?(?:rc|alpha|beta|a|b)\.?\d+)?'
+# The canonical author-facing pre-release grammar, shared by every surface that has
+# to recognise a release version (update_letter reads README rows with it too).
+PRE_SUFFIX = r'(?:-?(?:rc|alpha|beta|a|b)\.?\d+)?'
+_PRE_SUFFIX = PRE_SUFFIX
 
 _VERSION_RE = re.compile(r'^\d+\.\d+\.\d+' + _PRE_SUFFIX + r'$', re.IGNORECASE)
 

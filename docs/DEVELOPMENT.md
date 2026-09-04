@@ -1742,7 +1742,34 @@ by "Provider Independence" above. Call-site imperatives:
   non-retryable as-is (record the exact category and surface a recovery
   hint); a typed 408/429/5xx or a failure proven pre-dispatch may retry; a
   dispatched request with no terminal provider outcome stops same-model and
-  cross-model sends until reconciled.
+  cross-model sends until reconciled — with one typed exception: the primary
+  main-loop round dispatch may repeat a request that died with a typed
+  transport death (`transport_custody.is_retryable_transport_death`) at most
+  twice per round, each repeat a NEW physical attempt on its own ledger row
+  and never a resend of the unresolved one, deciding the `retry_same_request`
+  flag before the durable row is written
+  (`tests/test_transport_death_retry.py`): the flag records that a repeat
+  was granted when the row was written, and exactly two refusal paths take a
+  never-sent repeat back off the round record, each recorded by its own
+  durable row — the admission gate (`llm_not_dispatched`) and the sleep gate
+  (`llm_retry_deadline_exhausted`). A budget refusal does NOT un-count: the
+  budget rail cannot prove the repeat never left the host (`llm.chat` retries
+  on the wire before a later reservation can be refused), so the record keeps
+  the attempt booked and the budget terminal, not the provider terminal, ends
+  the round; the rail belongs to the primary
+  round dispatch of every main-loop actor (owner turns, managed tasks, native
+  API subagent children). Every other caller — forced-final, fallback
+  candidates, review actors, safety, external-harness delegated runs — keeps
+  `transport_death_retries=0`. A round that holds a transport-death repeat
+  record sends nothing further except the typed-death repeats — a repeat that
+  fails with any other class (a provider status, a transient, an empty
+  response, a context overflow) ends the round on the unknown no-resend
+  terminal with no compaction retry (a released $0 repeat stays the free wait
+  episode's to redial, and an exhausted episode on such a round still ends on
+  the unknown terminal, worded as both the wait and the unresolved attempt;
+  a wait episode's local-only pass that ends unknown writes no record, so the
+  episode keeps its latched cause and its free redials while that dispatched
+  local attempt is never resent).
 
 #### Timeout & Wait Control
 
@@ -1758,6 +1785,13 @@ by "Provider Independence" above. Call-site imperatives:
   a keyword or regex over content (BIBLE P5). Fixed kill-timeouts (hard
   task/tool ceilings, watchdog) remain the outer safety bound; progress-aware
   waiting tunes the passive wait only.
+- The transport-wait episode's owner notes always pass `incident=` — the
+  typed `task_incident`/`toast_once` pair on an ephemeral turn's
+  episode-boundary notes (entry, recovery/closure, exhaustion), `None` on
+  every other note — so any `emit_progress` callable handed to `run_llm_loop`
+  must accept the `incident=` keyword; `OuroborosAgent._emit_progress` is the
+  production implementation and a test fake mirrors it
+  (`lambda text, *, incident=None: ...`).
 - Timeout contract classes differ; keep the axes separate. A transport
   timeout only bounds a dead socket
   (`OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC`) — it is not a reasoning cutoff
@@ -1805,13 +1839,21 @@ by "Provider Independence" above. Call-site imperatives:
   `dispatched`/`unresolved` without a typed terminal status stays under the
   custody-lost/no-resend classification. Positive capture evidence outranks a
   contradictory synthetic `not_dispatched` label; across one bounded rail,
-  retain the strongest earlier capture — any unknown prior outcome
+  retain the strongest earlier capture — on side-effect surfaces (review
+  actors, external-harness delegated runs, forced-final, fallback candidates)
+  any unknown prior outcome
   monotonically forces no-resend. A dispatched request whose socket or
   stream ends without terminal provider evidence is
-  `provider_outcome_unknown`: THAT request is never resent by any route, its
-  `unresolved` ledger row is terminal, and a NEW logical request is legal
-  only with a unique host-attested input absent from the unknown one (e.g.
-  the nanny-leaf hold contract in `ouroboros/delegate_hold.py`).
+  `provider_outcome_unknown`: its `unresolved` ledger row is terminal and
+  THAT physical attempt is never resent by any route; the primary main-loop
+  completion may repeat the same logical request only after a typed transport
+  death, at most twice per round, as a new physical attempt with its own row,
+  re-prepared at send time (a transport retry is literally a new attempt, so a
+  non-deterministic projection such as a vision caption that failed on the
+  first attempt may differ and may cost its own preparation call); a NEW
+  logical request is legal only with a unique host-attested input absent from
+  the unknown one
+  (e.g. the nanny-leaf hold contract in `ouroboros/delegate_hold.py`).
 - A custody retry key names semantic material and an admitted cycle, not its
   rendered prompt: prior-round scaffolding may change while the same physical
   operation settles and must still join it; changed snapshots, owner intent,

@@ -87,7 +87,7 @@ def _apply_ctx(tmp_path, *, prior_trace=None, passes_done=0, budget_profile=None
         llm_trace=trace,
         drive_root=None,
         messages=[{"role": "user", "content": "goal"}],
-        emit_progress=lambda _m: None,
+        emit_progress=lambda _m, *, incident=None: None,
         mode="required",
         subtree_statuses=[],
         budget_profile=budget_profile or {},
@@ -808,7 +808,7 @@ def test_deadline_reserve_writer_and_reader_move_together(monkeypatch, tmp_path)
     assert loop_mod._run_task_acceptance_review_once(
         tools=SimpleNamespace(_ctx=ctx), content="done", task_id="t", task_type="task",
         llm_trace=trace, drive_root=None,
-        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m: None,
+        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m, *, incident=None: None,
     ) is False
     decision = trace["acceptance_decision"]
     assert decision["status"] == ACCEPTANCE_FINALIZED_UNACCEPTED

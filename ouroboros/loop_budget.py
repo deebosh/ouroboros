@@ -396,7 +396,7 @@ def _handle_budget_exceeded(
     if (
         scope == "root"
         and ctx.event_queue is not None
-        and not bool(getattr(ctx.tools._ctx, "is_direct_chat", False))
+        and not direct_chat
     ):
         try:
             ctx.event_queue.put_nowait({

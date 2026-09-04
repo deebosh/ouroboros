@@ -292,7 +292,7 @@ def test_typed_retry_root_defers_self_review_and_is_host_eligible(
         llm_trace={"tool_calls": []},
         drive_root=tmp_path,
         messages=[],
-        emit_progress=lambda _message: None,
+        emit_progress=lambda _message, *, incident=None: None,
     ) is True
     assert seen == {
         "is_root_task": True,
@@ -425,7 +425,7 @@ def test_root_acceptance_agent_refs_reach_host_packet_beyond_trajectory_cap(
         }],
         [],
         trace,
-        emit_progress=lambda _message: None,
+        emit_progress=lambda _message, *, incident=None: None,
     )
 
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
@@ -441,7 +441,7 @@ def test_root_acceptance_agent_refs_reach_host_packet_beyond_trajectory_cap(
         llm_trace=trace,
         drive_root=tmp_path,
         messages=[],
-        emit_progress=lambda _message: None,
+        emit_progress=lambda _message, *, incident=None: None,
         mode="auto",
         subtree_statuses=[],
         budget_profile=None,
@@ -569,7 +569,7 @@ def test_stale_parent_lineage_cannot_trigger_a_second_host_panel(monkeypatch, tm
         llm_trace=trace,
         drive_root=tmp_path,
         messages=[],
-        emit_progress=lambda _message: None,
+        emit_progress=lambda _message, *, incident=None: None,
     ) is False
     assert trace["review_decision"] == {
         "eligibility": "not_eligible",
@@ -591,7 +591,7 @@ def test_host_acceptance_enforcement_impact_records_applied_action(tmp_path):
         llm_trace={"review_runs": []},
         drive_root=tmp_path,
         messages=[],
-        emit_progress=lambda _message: None,
+        emit_progress=lambda _message, *, incident=None: None,
         mode="required",
         subtree_statuses=[],
         budget_profile={},

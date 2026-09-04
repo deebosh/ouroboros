@@ -324,7 +324,7 @@ def test_unknown_dispatched_outcome_skips_cross_model_fallback(tmp_path, monkeyp
         tools=registry,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda _text: None,
+        emit_progress=lambda _text, *, incident=None: None,
         incoming_messages=queue.Queue(),
         task_id="unknown-provider-task",
         drive_root=tmp_path,

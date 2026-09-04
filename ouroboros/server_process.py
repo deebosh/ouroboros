@@ -22,6 +22,11 @@ log = logging.getLogger("server")
 
 
 _restart_requested = threading.Event()
+# Set FIRST in the lifespan teardown: the supervisor loop reads it in its
+# ``while`` and in its crash handler, so the bus/Manager being torn down by
+# the shutdown itself never counts as a loop crash (no false "died after 3
+# consecutive crashes" alarm on a graceful window close / SIGTERM).
+_supervisor_stop = threading.Event()
 
 
 # Set only when the OWNER asked for the restart (the chat Restart button, and the

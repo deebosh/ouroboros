@@ -387,7 +387,7 @@ def test_acceptance_panel_skips_with_typed_reason_and_zero_reviewer_calls(tmp_pa
     assert loop_mod._run_task_acceptance_review_once(
         tools=SimpleNamespace(_ctx=ctx), content="done", task_id="t-acc", task_type="task",
         llm_trace=trace, drive_root=None,
-        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m: None,
+        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m, *, incident=None: None,
     ) is False
     # Exact typed vocabulary (§19.7.2 item 8).
     assert trace["review_decision"] == {
@@ -430,7 +430,7 @@ def test_unlatched_task_reaches_the_normal_acceptance_machinery(tmp_path, monkey
     loop_mod._run_task_acceptance_review_once(
         tools=SimpleNamespace(_ctx=ctx), content="done", task_id="t-acc", task_type="task",
         llm_trace=trace, drive_root=None,
-        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m: None,
+        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m, *, incident=None: None,
     )
     assert trace["review_decision"].get("skipped") != "owner_hurry"
     assert resolved, "the unlatched path must reach the real pacing machinery"

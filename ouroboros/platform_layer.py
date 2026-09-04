@@ -1043,12 +1043,19 @@ def kill_processes_referencing(marker: str) -> None:
 def tcp_keepalive_socket_options() -> List[tuple]:
     """Cross-platform TCP keepalive options for long-lived remote sockets.
 
-    A NAT/VPN gateway that silently drops an idle mapping leaves the socket
-    half-open until the (deliberately long) transport read timeout; kernel
-    probes detect the dead peer within minutes instead.  Every platform gets
-    ``SO_KEEPALIVE``; probe tuning is set only where the platform names the
-    constant (Linux ``TCP_KEEPIDLE``, Darwin ``TCP_KEEPALIVE``), each behind
-    a ``hasattr`` guard so an older interpreter keeps the safe minimum.
+    A NAT/VPN gateway that silently drops an idle connection's mapping leaves
+    the local socket half-open: without keepalive probes the process only
+    learns at the (deliberately long) transport read timeout. Kernel probes
+    detect the dead peer within minutes instead.
+
+    Every platform gets ``SO_KEEPALIVE``; the probe-tuning constants — idle
+    threshold, probe interval, probe count — are set only where the platform
+    exposes them (Linux spells the idle threshold ``TCP_KEEPIDLE``, Darwin
+    spells it ``TCP_KEEPALIVE``; both take ``TCP_KEEPINTVL``/``TCP_KEEPCNT``,
+    which CPython exports on Darwin too, against XNU's 75 s × 8 defaults),
+    each behind its own ``hasattr`` guard so the tuning degrades per option on
+    an older interpreter. Every other platform (Windows included) keeps
+    ``SO_KEEPALIVE`` alone.
     """
     import socket
 
@@ -1059,14 +1066,14 @@ def tcp_keepalive_socket_options() -> List[tuple]:
     )
 
     options: List[tuple] = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
-    tuning = (
-        (("TCP_KEEPIDLE", TCP_KEEPALIVE_IDLE_SEC),
-         ("TCP_KEEPINTVL", TCP_KEEPALIVE_INTERVAL_SEC),
-         ("TCP_KEEPCNT", TCP_KEEPALIVE_PROBE_COUNT)) if IS_LINUX
-        else (("TCP_KEEPALIVE", TCP_KEEPALIVE_IDLE_SEC),) if IS_MACOS
-        else ()
-    )
-    for name, value in tuning:
+    idle_name = "TCP_KEEPIDLE" if IS_LINUX else ("TCP_KEEPALIVE" if IS_MACOS else "")
+    if not idle_name:
+        return options
+    for name, value in (
+        (idle_name, TCP_KEEPALIVE_IDLE_SEC),
+        ("TCP_KEEPINTVL", TCP_KEEPALIVE_INTERVAL_SEC),
+        ("TCP_KEEPCNT", TCP_KEEPALIVE_PROBE_COUNT),
+    ):
         if hasattr(socket, name):
             options.append((socket.IPPROTO_TCP, getattr(socket, name), value))
     return options

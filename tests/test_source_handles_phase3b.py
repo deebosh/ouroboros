@@ -124,7 +124,7 @@ def _project_large_result(tmp_path, *, tool_name: str, call_id: str, result: str
         }],
         messages,
         trace,
-        emit_progress=lambda _message: None,
+        emit_progress=lambda _message, *, incident=None: None,
         tools=tools,
     )
     return ctx, messages[0]["content"], trace["tool_calls"][0]

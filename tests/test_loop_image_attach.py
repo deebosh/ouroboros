@@ -52,7 +52,7 @@ def test_tool_results_carrying_auto_attach_image_get_the_image_same_round(tmp_pa
                  "result": ok_result, "is_error": False, "args_for_log": {},
                  "tool_args": {}, "result_meta": {}})
     errors = process_tool_results(rows, messages, {"tool_calls": []},
-                                  emit_progress=lambda _m: None, tools=tools)
+                                  emit_progress=lambda _m, *, incident=None: None, tools=tools)
     assert attached == ["/x/shot.png"], "exactly the opted-in successful result attaches"
     assert errors == 1
     # Ordering: in a multi-result round the image lands AFTER the round's complete
@@ -68,12 +68,12 @@ def test_tool_results_carrying_auto_attach_image_get_the_image_same_round(tmp_pa
     tools2 = SimpleNamespace(_ctx=SimpleNamespace(messages=messages2, drive_root=str(tmp_path)))
     errors2 = process_tool_results(
         [dict(rows[0], tool_call_id="c4")], messages2, {"tool_calls": []},
-        emit_progress=lambda _m: None, tools=tools2)
+        emit_progress=lambda _m, *, incident=None: None, tools=tools2)
     assert errors2 == 0 and messages2[0]["role"] == "tool"
     # Legacy callers without `tools` keep exactly the old behavior.
     errors3 = process_tool_results(
         [dict(rows[0], tool_call_id="c5")], [], {"tool_calls": []},
-        emit_progress=lambda _m: None)
+        emit_progress=lambda _m, *, incident=None: None)
     assert errors3 == 0
 
 def test_undecodable_image_fails_the_attach_not_the_provider_call():

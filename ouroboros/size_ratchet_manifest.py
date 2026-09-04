@@ -206,6 +206,7 @@ BAND_PATHS = {
     "tests/test_tool_result.py": "F3.1 typed-organ pins carried with the D02 organ (D04 entry 9): the closed code table, the one legacy-text adapter, the publish/sidecar seam and the meta-boundary contracts pin one organ in one suite; sibling suites (meta_boundaries, t46, classification differential) already hold the spill-over families.",
     "tests/test_tree_cost_ceiling.py": "Budget-rail coverage entered the band with the cache-split ownership, candidate-predicate, soft-landing, probe-confirmed stop and one-row-per-delegated-run regressions; one focused suite for the tree cost ceiling.",
     "tests/test_ui_smoke_project_continuity.py": "Playwright smoke of the Project continuity contracts (panel/Main re-homing, lifecycle rows, the Main-root project pointer): each test drives one end-to-end owner flow across both surfaces, so the cross-surface assertions cannot be split into smaller files without losing what they prove.",
+    "tests/test_update_letter.py": "Entered the band from 969 lines: the update-letter contract gained the HTTP-200 body-error verdicts (a body overflow earns the same single Low retry, other body errors are typed provider failures) and the attempt ids of calls that raised (update-letter sprint 2026-09-04).",
     "tests/test_usage_accounting.py": None,
     "tests/test_v6730_origin_invariant.py": None,
     "tests/test_v678_receipt_reconciliation.py": None,

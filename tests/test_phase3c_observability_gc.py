@@ -222,7 +222,7 @@ def test_real_truncated_tool_source_envelope_remains_actor_readable_after_gc(tmp
         }],
         messages,
         trace,
-        emit_progress=lambda _message: None,
+        emit_progress=lambda _message, *, incident=None: None,
         tools=SimpleNamespace(_ctx=ctx),
     )
     produced_ref = _source_ref_from_visible_result(messages[0]["content"])

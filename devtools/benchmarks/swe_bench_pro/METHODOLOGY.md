@@ -346,6 +346,14 @@ secret-opt-in gate: a task refused for missing opt-in is classified by the same
 `ok` gate; treat a refused/empty run as not-resolved when reporting, not as a
 successful sample.
 
+`api_errors` counts real physical failures: a transport death inside one
+request (the socket died after dispatch) produces one `llm_api_error` per
+physical attempt. One call has one outer attempt budget
+(`OUROBOROS_TRANSIENT_RETRY_MAX`), within which up to three rows can be typed
+transport-death failures (the first death plus at most two repeats by the
+primary dispatch) — so a flaky uplink can cross the `< 3` threshold on its
+own and legitimately trigger a resample.
+
 ### 3.2 Seed provenance
 
 The agent under test is seeded from the mounted source (`/opt/ouroboros-ro` →

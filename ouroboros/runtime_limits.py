@@ -81,6 +81,11 @@ def get_safety_call_timeout_sec() -> float:
     return _clamped_number_setting("OUROBOROS_SAFETY_CALL_TIMEOUT_SEC", low=5.0, high=600.0)
 
 
+def get_update_letter_timeout_sec() -> float:
+    """Transport ceiling of the update-letter LIGHT one-shot (`update_letter.py`)."""
+    return _clamped_number_setting("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", low=10.0, high=600.0)
+
+
 def get_websearch_timeout_sec() -> float:
     """Per-attempt transport timeout for provider-backed web_search calls."""
     return _clamped_number_setting("OUROBOROS_WEBSEARCH_TIMEOUT_SEC", low=30.0, high=3600.0)

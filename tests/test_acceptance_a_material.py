@@ -93,7 +93,7 @@ def _ctx(tmp_path, *, trace=None, mode="required", passes_done=0, messages=None)
         llm_trace=trace if trace is not None else {"tool_calls": []},
         drive_root=None,
         messages=messages if messages is not None else [{"role": "user", "content": "goal"}],
-        emit_progress=lambda _m: None,
+        emit_progress=lambda _m, *, incident=None: None,
         mode=mode,
         subtree_statuses=[],
         budget_profile={"max_improvement_passes": 99},

@@ -752,7 +752,7 @@ def _acceptance_ctx(tmp_path, *, passes_done, events=None):
     return loop_mod._TaskAcceptanceContext(
         tools=SimpleNamespace(_ctx=tool_ctx), content="done", task_id="acc-1", task_type="task",
         llm_trace={"tool_calls": [{"tool": "write_file", "args": {"path": "x.py"}}]}, drive_root=None,
-        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m: None, mode="required",
+        messages=[{"role": "user", "content": "goal"}], emit_progress=lambda _m, *, incident=None: None, mode="required",
         subtree_statuses=[], budget_profile={}, passes_done=passes_done,
     )
 

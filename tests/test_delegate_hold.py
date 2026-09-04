@@ -71,7 +71,7 @@ def _loop_kwargs(tmp_path, registry, notes):
         tools=registry,
         llm=SimpleNamespace(default_model=lambda: "test-model"),
         drive_logs=tmp_path,
-        emit_progress=notes.append,
+        emit_progress=lambda text, *, incident=None: notes.append(text),
         incoming_messages=queue.Queue(),
         task_id=str(registry._ctx.task_id),
         drive_root=tmp_path,

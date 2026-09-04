@@ -53,7 +53,7 @@ from ouroboros.loop_tool_execution import (
     reclaim_negative_memo,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     reclaim_trace_refs,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 )
-from ouroboros.loop_llm_call import call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
+from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, call_llm_with_retry, emit_llm_usage_event, forced_response_is_incomplete, forced_response_parts, provider_no_call_source  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.delegate_hold import (
     close_hold as _delegate_hold_close,
     hold_step as _delegate_hold_step,
@@ -121,9 +121,8 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
     """Attach list/enable tool handlers and mutate the active schema list."""
     enabled_extra: set = set()
     active_tool_names = {
-        str(schema.get("function", {}).get("name") or "").strip()
-        for schema in tool_schemas
-        if str(schema.get("function", {}).get("name") or "").strip()
+        name for schema in tool_schemas
+        if (name := str(schema.get("function", {}).get("name") or "").strip())
     }
 
     def _handle_list_tools(ctx=None, **kwargs):
@@ -220,17 +219,20 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
 
 def _provider_unavailable_result(
     ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
-    wait_cause: str = "", waited: bool = False, wait_eligible: bool = True,
+    wait_cause: str = "", waited_sec: float = 0.0, interactive: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Salvage provider failure without an unsafe retry. ``wait_cause`` is the
     transport-wait episode's latched cause (survives later overwrites of the
-    mutable ``_last_llm_error_kind``); ``waited``/``wait_eligible`` keep the
-    terminal text honest for zero-wait turns."""
+    mutable ``_last_llm_error_kind``); ``waited_sec``/``interactive`` keep the
+    terminal text honest for zero-wait and such turns."""
     kind = str(error_kind or "")
-    is_context_overflow = kind == "context_overflow"
-    is_transport_wait = str(wait_cause or "") == "transport_unavailable"
+    # Terminal precedence is decided here alone (the text helper takes both flags as given): a
+    # round record (a granted transport-death repeat, no usable response since) leaves an attempt
+    # unresolved and outranks the wait terminal, which in turn outranks the overflow salvage.
+    record = isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict)
+    is_transport_wait = wait_cause == "transport_unavailable"
+    is_context_overflow = kind == "context_overflow" and not (record or is_transport_wait)
     is_deadline_exhausted = kind == "deadline_exhausted" or str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") == "deadline_exhausted"
-    forced_reason = "deadline_local" if is_deadline_exhausted else "provider_unavailable"
     llm_trace = getattr(ctx, "llm_trace", None)
     llm_trace = llm_trace if isinstance(llm_trace, dict) else {}
     candidate = _live_delivery_candidate(ctx)
@@ -246,8 +248,8 @@ def _provider_unavailable_result(
     else:
         fallback = _provider_terminal_fallback_text(
             ctx.accumulated_usage, is_context_overflow=is_context_overflow,
-            is_transport_wait=is_transport_wait, waited=waited,
-            wait_eligible=wait_eligible,
+            is_transport_wait=is_transport_wait, waited_sec=waited_sec,
+            interactive=interactive,
             is_deadline_exhausted=is_deadline_exhausted,
         )
     if is_context_overflow:
@@ -263,15 +265,12 @@ def _provider_unavailable_result(
         return text, usage, llm_trace
     if is_transport_wait:
         # No-resend terminal over dead egress.
-        live_trace = getattr(ctx, "llm_trace", None)
-        llm_trace = live_trace if isinstance(live_trace, dict) else {}
-        ctx.accumulated_usage["execution_status"] = RESULT_INFRA_FAILED
-        ctx.accumulated_usage["reason_code"] = "provider_unavailable"
+        ctx.accumulated_usage.update(execution_status=RESULT_INFRA_FAILED, reason_code="provider_unavailable")
         text, usage, llm_trace = _forced_fallback_result(
             ctx, llm_trace, fallback, reason_code="provider_unavailable",
-            source="transport_unavailable_no_resend",
+            source="provider_outcome_unknown_no_resend" if record else "transport_unavailable_no_resend",
         )
-        if str(usage.get("reason_code") or "") == "provider_unavailable":
+        if usage.get("reason_code") == "provider_unavailable":
             usage["execution_status"] = RESULT_INFRA_FAILED
         return text, usage, llm_trace
     no_call, wall = provider_no_call_source(ctx.accumulated_usage, is_deadline_exhausted)
@@ -294,12 +293,12 @@ def _provider_unavailable_result(
         "verified work so far and state plainly what remains undone."
     )
     text, usage, llm_trace = _forced_final_answer(
-        ctx, prompt=prompt, fallback_text=fallback, reason_code=forced_reason,
+        ctx, prompt=prompt, fallback_text=fallback,
+        reason_code="deadline_local" if is_deadline_exhausted else "provider_unavailable",
         provider_terminal=not is_deadline_exhausted,
     )
-    if not is_deadline_exhausted and str(usage.get("reason_code") or "") == "provider_unavailable":
+    if not is_deadline_exhausted and usage.get("reason_code") == "provider_unavailable":
         usage["execution_status"] = RESULT_INFRA_FAILED
-        usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_SALVAGE)
     return text, usage, llm_trace
 
 
@@ -346,7 +345,7 @@ def run_llm_loop(
     tools: ToolRegistry,
     llm: LLMClient,
     drive_logs: pathlib.Path,
-    emit_progress: Callable[[str], None],
+    emit_progress: Callable[..., None],
     incoming_messages: queue.Queue,
     task_type: str = "",
     task_id: str = "",
@@ -533,7 +532,7 @@ def run_llm_loop(
             transport_wait = _reconcile_transport_wait(
                 transport_wait, ctx, msg_present=msg is not None, error_kind=last_error_kind,
                 drive_logs=drive_logs, task_id=task_id, model=active_model, emit_progress=emit_progress)
-            if msg is None and _fallback_chain_allowed(ctx, last_error_kind, transport_wait):
+            if msg is None and _fallback_chain_allowed(ctx, last_error_kind, transport_wait, accumulated_usage):
                 _episode_before_chain = transport_wait is not None
                 (
                     msg,
@@ -572,9 +571,8 @@ def run_llm_loop(
                     limit_ctx,
                     error_kind=str(accumulated_usage.get("_last_llm_error_kind") or "provider_unavailable"),
                     wait_cause=transport_wait.wait_cause if transport_wait is not None else "",
-                    waited=transport_wait is not None and (
-                        transport_wait.wait_iterations > 0 or transport_wait.redials > 0),
-                    wait_eligible=transport_wait.wait_eligible if transport_wait is not None else True)
+                    waited_sec=transport_wait.waited_sec if transport_wait is not None else 0.0,
+                    interactive=transport_wait.interactive if transport_wait is not None else False)
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
 

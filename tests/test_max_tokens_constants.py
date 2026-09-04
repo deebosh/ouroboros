@@ -843,6 +843,14 @@ def test_triad_fit_sizes_against_the_local_route(monkeypatch, tmp_path):
     )
 
 
+def test_update_letter_max_tokens_pinned():
+    """The update letter is ONE short paragraph (owner decision 2026-09-03): its LIGHT
+    one-shot budget stays 1024 and matches the ARCHITECTURE 'LLM output token budgets' row."""
+    from ouroboros.update_letter import UPDATE_LETTER_MAX_TOKENS
+
+    assert UPDATE_LETTER_MAX_TOKENS == 1024
+
+
 def test_acceptance_panels_reach_the_synthesis_prompts():
     """AP7/F27: the post-task summariser and the reflection were told there was
     no review evidence even when the task bought an acceptance panel — the

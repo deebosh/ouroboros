@@ -200,9 +200,8 @@ def _forced_orphan_note(ctx: _RoundLimitContext, *, include_terminal: bool = Tru
                 "integrated", "irrelevant", "deferred", "discarded", "cancelled",
             }:
                 return False  # explicitly handled
-            if not include_terminal and str(c.get("status") or "").strip().lower() in FINAL_STATUSES:
-                return False  # completed children were already surfaced via the reminder
-            return True
+            # completed children were already surfaced via the reminder
+            return include_terminal or str(c.get("status") or "").strip().lower() not in FINAL_STATUSES
 
         undecided = [c for c in children if _undecided(c)]
         deferred = [c for c in children if _loop()._child_disposition_state(c) == "deferred"]

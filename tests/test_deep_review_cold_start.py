@@ -65,7 +65,7 @@ def _run(repo, drive, model, llm, build, chat, monkeypatch, *, window_ok=True):
         mock.patch("ouroboros.deep_self_review._run_retrieving_review") as retrieving,
     ):
         text, usage = run_deep_self_review(
-            repo_dir=repo, drive_root=drive, llm=llm, emit_progress=progress.append, slot=_packed_row(model),
+            repo_dir=repo, drive_root=drive, llm=llm, emit_progress=lambda text, *, incident=None: progress.append(text), slot=_packed_row(model),
         )
     return text, usage, progress, retrieving
 

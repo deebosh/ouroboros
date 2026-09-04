@@ -545,7 +545,7 @@ def _acceptance_harness(monkeypatch, tmp_path, review_result, *, enforcement="bl
     tools = SimpleNamespace(_ctx=ctx)
     out = loop_mod._run_task_acceptance_review_once(
         tools=tools, content="done", task_id="t", task_type="task",
-        llm_trace=trace, drive_root=None, messages=messages, emit_progress=lambda _m: None,
+        llm_trace=trace, drive_root=None, messages=messages, emit_progress=lambda _m, *, incident=None: None,
     )
     return out, ctx, trace, messages
 
