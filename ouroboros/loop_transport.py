@@ -618,7 +618,11 @@ def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
         # returned an empty response left the host and stamps no exception class, so
         # the sticky kind is that response's own class (provider_incomplete_response,
         # rate_limit, provider_body_error, ...); a repeat refused before it was sent
-        # (admission, sleep gate, budget) is un-counted and keeps the unknown class.
+        # by the admission gate or the sleep gate (each writes its own durable row) is
+        # un-counted and keeps the unknown class. A budget refusal does not un-count:
+        # the budget rail cannot prove the repeat never left the host, so the record
+        # keeps the attempt booked and the budget terminal, not this hint's provider
+        # terminal, ends the round.
         failed_as = str(deaths.get("error_kind") or kind)
         last = (
             " the dispatched request has no terminal provider outcome;"

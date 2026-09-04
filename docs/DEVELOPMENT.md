@@ -1718,10 +1718,14 @@ by "Provider Independence" above. Call-site imperatives:
   and never a resend of the unresolved one, deciding the `retry_same_request`
   flag before the durable row is written
   (`tests/test_transport_death_retry.py`): the flag records that a repeat
-  was granted when the row was written, and a later admission or sleep-gate
-  refusal is recorded by its own durable row (`llm_not_dispatched` /
-  `llm_retry_deadline_exhausted`) and takes the never-sent repeat back off
-  the round record; the rail belongs to the primary
+  was granted when the row was written, and exactly two refusal paths take a
+  never-sent repeat back off the round record, each recorded by its own
+  durable row — the admission gate (`llm_not_dispatched`) and the sleep gate
+  (`llm_retry_deadline_exhausted`). A budget refusal does NOT un-count: the
+  budget rail cannot prove the repeat never left the host (`llm.chat` retries
+  on the wire before a later reservation can be refused), so the record keeps
+  the attempt booked and the budget terminal, not the provider terminal, ends
+  the round; the rail belongs to the primary
   round dispatch of every main-loop actor (owner turns, managed tasks, native
   API subagent children). Every other caller — forced-final, fallback
   candidates, review actors, safety, external-harness delegated runs — keeps
