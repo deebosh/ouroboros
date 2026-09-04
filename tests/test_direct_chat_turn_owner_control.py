@@ -73,12 +73,15 @@ def _live_chat_agent(monkeypatch, task_id=TURN_ID, *, accepting=True):
     fields steering.py and workers.chat_turn_liveness read)."""
     from supervisor import workers
 
+    import threading
+
     agent = SimpleNamespace(
         _busy=True, _accepting_owner_messages=accepting,
         _current_task_id=task_id, _current_chat_id=0,
         _current_task_metadata={"title": "Modify yourself"},
         _current_task_text="change the bubble colour and commit",
         _task_started_ts=1000.0, _last_activity_ts=1000.0,
+        _owner_message_admission_lock=threading.Lock(),
     )
     monkeypatch.setattr(workers, "_chat_agent", agent, raising=False)
     return agent
@@ -422,3 +425,45 @@ def test_settled_row_does_not_hide_a_still_busy_direct_turn_from_custody(tmp_pat
     from ouroboros.cancel_intents import active_intent
 
     assert not active_intent(tmp_path, TURN_ID)
+
+
+def test_arming_the_stop_holds_the_turn_admission_lock_and_a_turn_that_ended_under_it_arms_nothing(tmp_path, monkeypatch):
+    """Delta review: the liveness re-read and the control write must be ONE
+    step under the agent's owner-message admission lock — the lock the turn's
+    completion path flips ``_busy`` under — so a turn cannot end between them
+    and still receive a control and a toast. Two pins: the write happens with
+    the lock held; a completion that took the lock first leaves nothing."""
+    import threading
+
+    import ouroboros.config as config
+
+    _isolate_queue(monkeypatch, tmp_path)
+    agent = _live_chat_agent(monkeypatch)
+    from supervisor import task_reaper, worker_chat_lane, workers
+
+    monkeypatch.setattr(config, "get_direct_turn_stop_wait_sec", lambda: 0.2)
+    real_request = task_reaper.request_finalization_grace
+    held = []
+
+    def _observe_lock(task_drive, task_id, reason, **kwargs):
+        held.append(agent._owner_message_admission_lock.locked())
+        return real_request(task_drive, task_id, reason, **kwargs)
+
+    monkeypatch.setattr(task_reaper, "request_finalization_grace", _observe_lock)
+    outcome = worker_chat_lane.stop_direct_chat_turn(TURN_ID, workers.direct_chat_turn(TURN_ID))
+    assert outcome == worker_chat_lane.DIRECT_TURN_STOP_LIVE
+    assert held == [True]
+    assert _mailbox_kinds(tmp_path) == ["finalize_now"]
+
+    # A second turn: its completion takes the lock and ends it before the arm.
+    agent2 = _live_chat_agent(monkeypatch, task_id="beefcafe")
+    toasts = []
+    monkeypatch.setattr(workers, "get_event_q", lambda: type("Q", (), {"put": lambda self, evt: toasts.append(evt)})())
+    with agent2._owner_message_admission_lock:
+        agent2._busy = False
+    record_before = {"id": "beefcafe", "chat_id": 0}
+    outcome2 = worker_chat_lane.stop_direct_chat_turn("beefcafe", record_before)
+    assert outcome2 == worker_chat_lane.DIRECT_TURN_STOP_GONE
+    assert _mailbox_kinds(tmp_path, "beefcafe") == []
+    assert toasts == []
+    assert threading.current_thread() is threading.main_thread()

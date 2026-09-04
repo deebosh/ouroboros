@@ -379,6 +379,33 @@ def direct_chat_turn(task_id: str = "") -> Optional[Dict[str, Any]]:
     return record
 
 
+def arm_direct_chat_turn(task_id: str, arm: Any) -> Optional[Dict[str, Any]]:
+    """Atomically arm an owner control against the live direct turn.
+
+    The turn's completion path flips ``_busy``/``_accepting_owner_messages``
+    under the agent's owner-message admission lock; a liveness read followed
+    by an unlocked control write could therefore arm a turn that ended in
+    between — a control and an owner toast over an answer that already
+    landed. So the re-read, the write (``arm(turn)`` returns the control's
+    msg_id, or "" when nothing was written) and the stamp all happen under
+    that same lock: either the turn is live for the whole arm and ends only
+    after it, or it was already gone and NOTHING is written. Returns the
+    armed record, or None when the turn was gone."""
+    agent = _chat_agent
+    if agent is None:
+        return None
+    lock = getattr(agent, "_owner_message_admission_lock", None)
+    with (lock if lock is not None else _threading.Lock()):
+        turn = direct_chat_turn(task_id)
+        if turn is None:
+            return None
+        written = arm(turn)
+        if written:
+            stamp_direct_chat_turn(task_id, stop_control_msg_id=written)
+            turn["stop_control_msg_id"] = written
+        return turn
+
+
 def stamp_direct_chat_turn(task_id: str, **fields: Any) -> bool:
     """Record owner-control state on the live direct turn — the direct-chat
     twin of the latch a pooled task keeps on its RUNNING row (for example the

@@ -493,22 +493,25 @@ def stop_direct_chat_turn(task_id: str, turn: Dict[str, Any], *, deliver: bool =
 
     if turn.get("stop_control_msg_id"):
         return DIRECT_TURN_STOP_LIVE if workers.direct_chat_turn(task_id) is not None else DIRECT_TURN_STOP_ENDED
-    if workers.direct_chat_turn(task_id) is None:
+
+    def _write_control(live_turn: Dict[str, Any]) -> str:
+        # The canonical drive: a direct turn runs on the main data root, and
+        # its loop drains that root's owner mailbox (the same root custody
+        # settles the intent on).
+        return request_finalization_grace(
+            pathlib.Path(q.DRIVE_ROOT), task_id, REASON_OWNER_STOPPED_DIRECT_TURN,
+            chat_id=int(live_turn.get("chat_id") or 0), stamp=int(time.time()),
+            toast_text=(
+                f"⏹ The owner stopped chat turn {task_id}; it ends at its next "
+                "step without further work."
+            ) if deliver else "",
+            quiet=not deliver,
+        )
+
+    # Atomic against the turn's own completion (its admission lock): a turn
+    # that ended first gets no control and no toast.
+    if workers.arm_direct_chat_turn(task_id, _write_control) is None:
         return DIRECT_TURN_STOP_GONE
-    # The canonical drive: a direct turn runs on the main data root, and its
-    # loop drains that root's owner mailbox (the same root custody settles
-    # the intent on).
-    written = request_finalization_grace(
-        pathlib.Path(q.DRIVE_ROOT), task_id, REASON_OWNER_STOPPED_DIRECT_TURN,
-        chat_id=int(turn.get("chat_id") or 0), stamp=int(time.time()),
-        toast_text=(
-            f"⏹ The owner stopped chat turn {task_id}; it ends at its next "
-            "step without further work."
-        ) if deliver else "",
-        quiet=not deliver,
-    )
-    if written:
-        workers.stamp_direct_chat_turn(task_id, stop_control_msg_id=written)
     deadline = time.monotonic() + float(get_direct_turn_stop_wait_sec())
     while workers.direct_chat_turn(task_id) is not None and time.monotonic() < deadline:
         time.sleep(0.1)
