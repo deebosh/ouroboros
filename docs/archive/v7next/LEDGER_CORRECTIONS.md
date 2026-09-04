@@ -10285,3 +10285,10 @@ tests/system_e2e/test_system_scenarios.py::test_interface_stubs_refuse_instantia
 which pins that `PlaywrightUIClient()` REFUSES. The lane that lands the client (plan Ф4-B) must
 flip that row to `done` and replace the pin in the same commit — the validator resolves hooks for
 `done` rows only and cannot see the collision.
+
+### Second absorption (62f87cc9, upstream db6d7cf8) — corrections after the review wave
+
+| # | claim | correction | evidence |
+|---|---|---|---|
+| 20 | commit message of 62f87cc9: `loop_llm_call.py` lands **verbatim** | not byte-verbatim: v7's typed `ProviderPolicyRefusal` branch (the provider-policy refusal classified as its own kind, `loop_llm_call.py` ~:31 and ~:735-746) is PRESERVED over upstream's body — an S3 preservation with proof: `tests/test_llm_typed_policy_refusal.py:270` pins it; upstream has no equivalent and the branch is unreachable for upstream's inputs. Removing it needs an owner decision. Upstream's own ± lines in the range all landed. | codex delta review finding #3; `git diff db6d7cf8..62f87cc9 -- ouroboros/loop_llm_call.py` |
+| 21 | `ouroboros/update_letter.py` joined the tree without a domain row | assigned to D12 "Settings & configuration" beside `update_channels.py` (a human assignment; `scripts/check_domains.py --write` refuses to invent one); `context.py:55` imports the projection module-level, which the regenerated `[graph]` records | grok finding #1; commit 591e80f5 |
