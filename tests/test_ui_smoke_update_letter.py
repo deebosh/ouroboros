@@ -25,7 +25,8 @@ def test_ui_smoke_update_letter_renders_below_the_action(direct_server, tmp_path
     letter = {
         "state": "ready", "relation": "pending",
         "text": ("This update makes the **Updates panel** explain itself <script>window.__letter_xss = 1</script> "
-                 "and carries a very long unbroken token " + "x" * 160 + " to prove wrapping."),
+                 "and carries a very long unbroken token " + "x" * 160 + " to prove wrapping.\n\n"
+                 "```python\nprint('a fenced block the shared renderer would give a Copy button')\n```"),
         "author_version": "6.113.5", "target_version": "6.114.0",
         "written_at": "2026-09-03T20:10:10+00:00", "error_kind": "", "error_text": "",
         "key": {"base_sha": "a" * 40, "target_sha": "b" * 40, "update_channel": "stable", "target_ref": "managed/ouroboros"},
@@ -67,6 +68,7 @@ def test_ui_smoke_update_letter_renders_below_the_action(direct_server, tmp_path
                         scripts: body.querySelectorAll('script').length,
                         xss: window.__letter_xss === 1,
                         buttons: section.querySelectorAll('button').length,
+                        codeBlocks: section.querySelectorAll('.md-code-block').length,
                         headline: document.querySelector('#updates-summary').textContent,
                         action: document.querySelector('#btn-update-primary').textContent,
                         order: [top('.updates-action-row'), top('#updates-letter'), top('.updates-recovery')],
@@ -88,7 +90,8 @@ def test_ui_smoke_update_letter_renders_below_the_action(direct_server, tmp_path
     assert info["labelledBy"] == "updates-letter-label"
     assert info["meta"].startswith("written by Ouroboros 6.113.5 about 6.114.0")
     assert info["strong"] == 1 and info["scripts"] == 0 and info["xss"] is False
-    assert info["buttons"] == 0, "the letter is a fact, never an action"
+    assert info["buttons"] == 0, "the letter is a fact, never an action — not even a Copy control"
+    assert info["codeBlocks"] == 1, "the fenced block still renders; only its control is gone"
     assert info["headline"].startswith("Update available") and info["action"] == "Update to 6.114.0"
     assert info["order"][0] < info["order"][1] < info["order"][2], "action row, then letter, then Recovery"
     assert info["scrollWidth"] == info["clientWidth"], "no horizontal page scroll at a phone width"

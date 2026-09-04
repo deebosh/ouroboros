@@ -480,6 +480,10 @@ export function initUpdates({ mount, state, ws, openSettingsTab }) {
         // No anchored scroll to protect on this page, so markdown's deferred
         // writes (highlight, latex, mermaid, charts) run directly.
         letterDisposer = enhanceChatMarkdown(letterBody, { onDomWrite: (mutate) => mutate() });
+        // The card carries exactly ONE action and it is never inside the letter. The shared
+        // markdown pipeline adds controls of its own to some blocks (a Copy button on a
+        // fenced one), so whatever it produced is removed here; the text stays untouched.
+        letterBody.querySelectorAll('button').forEach((control) => control.remove());
     }
 
     function render() {

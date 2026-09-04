@@ -679,9 +679,11 @@ def official_update_projection(
             status = "moved_since_check"
         target = None
         if latest:
+            # Key AND version from the SAME provenance: reading the version off the outer
+            # record would pair the newer failed range's version with the kept letter's sha.
             same_target = str(record_key.get("target_sha") or "") == latest
             target = {
-                "version": str((record or {}).get("target_version") or "") if same_target else "",
+                "version": str(shown.get("target_version") or "") if same_target else "",
                 "sha": latest,
             }
         return {

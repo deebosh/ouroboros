@@ -602,6 +602,9 @@ def test_a_kept_letter_is_related_by_ITS_target_on_both_surfaces(tmp_path):
     ul.record_path(drive).write_text(json.dumps(dict(failed, checked_head_sha=merged)))
     fact = ul.official_update_projection(merged, drive_root=drive, state=consumed_cache)
     assert fact["letter"]["relation"] == "applied" and fact["letter"]["text"] == "the letter about 6.114.0"
+    # The version travels with the sha it belongs to: the failed newer range's 6.115.0 must
+    # never be paired with the kept letter's target.
+    assert fact["target"] == {"version": "6.114.0", "sha": "b" * 40}
 
 
 def test_official_update_projection_consumed_only_while_the_check_describes_this_head(tmp_path):
