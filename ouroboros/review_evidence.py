@@ -18,7 +18,11 @@ log = logging.getLogger(__name__)
 # (wrong tool / wrong direction / finalized over a red check). Typed sections with
 # explicit PROVENANCE tags; full artifacts/trace stay durable off-axis — the prompt
 # gets bounded, redacted, DISCLOSED-truncated projections (Bible P1/P3/P12/P7).
-# Generous caps: a one-shot reviewer call on a 1M-context model, owner-accepted cost (P8).
+# The whole-packet ceiling below is a FLOOR, not the ceiling: the real ceiling is
+# resolved per task from the review quorum's calibrated input windows
+# (``acceptance_packet_budget_chars``), so a wide panel reads the packet its
+# models can actually hold and a narrow one is never handed a prompt that a 400
+# would reject after the money is spent (P1/P8).
 # Evidence-parity (v6.71.1): the acceptance reviewer's per-result cap tracks the
 # ACTOR's own default tool-result window (SSOT: tool_capabilities.DEFAULT_TOOL_RESULT_LIMIT),
 # so a decider never adjudicates less of a tool result than the agent saw. The old
@@ -45,6 +49,41 @@ from ouroboros.review_evidence_refs import (
 )
 from ouroboros.review_evidence_refs import (
     resolve_criteria_evidence_refs as resolve_criteria_evidence_refs,
+)
+
+# Commit-review status renderers: extracted to the ``review_status_projection``
+# leaf (module size gate); re-exported here so every historical import site keeps
+# resolving. The private ``_review_status_*`` renderers are part of that surface
+# — they are imported by name from this module today.
+from ouroboros.review_status_projection import (
+    build_review_projection as build_review_projection,
+)
+from ouroboros.review_status_projection import (
+    build_review_status_payload as build_review_status_payload,
+)
+from ouroboros.review_status_projection import (
+    _run_failure_reason as _run_failure_reason,
+)
+from ouroboros.review_status_projection import (
+    _review_status_run_to_dict as _review_status_run_to_dict,
+)
+from ouroboros.review_status_projection import (
+    _review_status_attempt_payload as _review_status_attempt_payload,
+)
+from ouroboros.review_status_projection import (
+    _review_status_attempt_to_dict as _review_status_attempt_to_dict,
+)
+from ouroboros.review_status_projection import (
+    _review_status_actor_summary as _review_status_actor_summary,
+)
+from ouroboros.review_status_projection import (
+    _review_status_obligation_to_dict as _review_status_obligation_to_dict,
+)
+from ouroboros.review_status_projection import (
+    _review_status_debt_to_dict as _review_status_debt_to_dict,
+)
+from ouroboros.review_status_projection import (
+    _review_status_message as _review_status_message,
 )
 
 
@@ -97,6 +136,9 @@ def build_task_acceptance_evidence(
     include_recent_commit: bool = False,
     canonical_subject: str = "",
     subtree_statuses: List[Dict[str, Any]] | None = None,
+    undispositioned_children: List[Dict[str, Any]] | None = None,
+    acceptance_dialogue_history: List[Dict[str, Any]] | None = None,
+    budget_chars: int = 0,
 ) -> Dict[str, Any]:
     """Process-aware task-acceptance evidence packet (v6.51.0 idea-2). Typed sections with
     explicit PROVENANCE tags (`host_attested`/`agent_supplied`/`tool_result`/`artifact`/
@@ -141,7 +183,9 @@ def build_task_acceptance_evidence(
     # W2: resolve the claims that bind this task through the ONE seam — ingress
     # first, plan-frozen only when ingress is empty. The packet VIEW carries them;
     # the durable/live contract is never mutated.
-    claims, claims_source = _accept_effective_claims(ctx, contract, drive_root, task_id)
+    claims, claims_source, plan_exhibit = _accept_effective_claims(
+        ctx, contract, drive_root, task_id,
+    )
     if claims_source == "plan_review":
         contract = {**contract, "acceptance_claims": claims}
     receipts = read_context_verification_receipts(ctx, task_id, fallback_root=drive_root) if task_id else []
@@ -158,6 +202,9 @@ def build_task_acceptance_evidence(
         if claims_source:
             ev["acceptance_claims_source"] = claims_source
             prov["acceptance_claims_source"] = "host_attested"
+        if plan_exhibit:
+            ev["plan_claims_exhibit"] = redact_projection(plan_exhibit).value
+            prov["plan_claims_exhibit"] = "host_attested"
         support_refs = _accept_claim_support_refs(contract, receipts)
         if support_refs:
             ev["acceptance_support_refs"] = redact_projection(support_refs).value
@@ -173,7 +220,12 @@ def build_task_acceptance_evidence(
     if drive_root is not None and task_id:
         from ouroboros.mutation_attribution import load_mutation_evidence_projection
 
-        mutation_projection = load_mutation_evidence_projection(drive_root, task_id)
+        # The writer and the outcome consumer resolve the canonical results root
+        # first; on a split-root install reading the execution drive made the
+        # whole section silently vanish from the packet.
+        mutation_projection = load_mutation_evidence_projection(
+            getattr(ctx, "budget_drive_root", None) or drive_root, task_id,
+        )
         if mutation_projection:
             ev["mutation_attribution"] = mutation_projection
             prov["mutation_attribution"] = "host_attested"
@@ -195,6 +247,23 @@ def build_task_acceptance_evidence(
         if patch_dispositions := acceptance_patch_dispositions(drive_root, task_id):
             ev["delegated_patch_dispositions"] = redact_projection(patch_dispositions).value
             prov["delegated_patch_dispositions"] = "host_attested"
+        # The lifecycle (review status, readiness, enablement) of every skill the
+        # task touched — the same VISIBILITY-ONLY charter as substrate_execution.
+        from ouroboros.skill_readiness import acceptance_skill_lifecycle
+
+        lifecycle_root = getattr(ctx, "budget_drive_root", None) or drive_root
+        skill_history_coverage: Dict[str, Any] = {}
+        if lifecycle := acceptance_skill_lifecycle(
+            lifecycle_root, llm_trace or {}, root_task_id,
+            task_started_at=str(meta.get("started_at") or meta.get("created_at") or ""),
+            history_coverage=skill_history_coverage,
+        ):
+            ev["skill_lifecycle"] = redact_projection(lifecycle).value
+            prov["skill_lifecycle"] = "host_attested"
+        if skill_history_coverage:
+            ev["skill_lifecycle_history_coverage"] = skill_history_coverage
+            prov["skill_lifecycle_history_coverage"] = "host_attested"
+            ev["skill_lifecycle_complete"] = bool(skill_history_coverage.get("complete"))
     repo_diff = collect_turn_diff(ctx, include_recent_commit=include_recent_commit)
     diff_meta: Dict[str, Any] = {}
     if "OMISSION NOTE: truncated at " in str(repo_diff or "") or "... (truncated from " in str(repo_diff or ""):
@@ -224,8 +293,12 @@ def build_task_acceptance_evidence(
         if traj or omitted:
             ev["tool_trajectory"] = traj
             prov["tool_trajectory"] = "tool_result"
+            from ouroboros.artifacts import persist_tool_trajectory_source
+            if source_ref := persist_tool_trajectory_source(drive_root, task_id, llm_trace.get("tool_calls")):
+                ev["tool_trajectory_source_ref"] = source_ref
             if omitted:
                 ev["tool_trajectory_omitted_leading"] = omitted
+                ev["tool_trajectory_complete"] = False
         if unresolved:
             partial_sources.extend(unresolved)
         notes = llm_trace.get("reasoning_notes") or []
@@ -307,6 +380,10 @@ def build_task_acceptance_evidence(
             prov["artifacts"] = "artifact"
             if any(isinstance(row, dict) and row.get("name") == "…" for row in arts):
                 partial_sources.append({"tool": "artifact_manifest", "status": "source_unavailable", "reason": "artifact_manifest_truncated_without_exact_range", "source_ref": {}})
+    if ev.get("skill_lifecycle_complete") is False:
+        coverage = ev.get("skill_lifecycle_history_coverage") or {}
+        partial_sources.append({"tool": "skill_lifecycle", "status": "not_materialized_for_reviewer",
+                                "reason": "bounded_history_projection", "source_ref": coverage.get("source_ref") or {}})
     if partial_sources:
         ev["__unresolved_partial_artifacts__"] = partial_sources
     # Set task_type BEFORE budget enforcement so the whole packet stays deterministically
@@ -314,8 +391,12 @@ def build_task_acceptance_evidence(
     if str(task_type).strip():
         ev["task_type"] = str(task_type)
         prov["task_type"] = "host_attested"
+    if isinstance(undispositioned_children, list) and undispositioned_children:
+        ev["undispositioned_children"] = undispositioned_children
+    if isinstance(acceptance_dialogue_history, list) and acceptance_dialogue_history:
+        ev[UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY] = acceptance_dialogue_history
     ev["__provenance__"] = prov
-    return _accept_enforce_budget(ev)
+    return _accept_enforce_budget(ev, budget=budget_chars)
 
 
 def collect_review_evidence(
@@ -421,10 +502,33 @@ def collect_review_evidence(
     return evidence
 
 
+_ACCEPTANCE_PANEL_ROW_KEYS = (
+    "panel_id", "surface", "authority", "aggregate_signal", "transport_status",
+    "parse_status", "quorum", "superseded",
+)
+
+
+def _acceptance_panel_prompt_row(panel: Dict[str, Any]) -> Dict[str, Any]:
+    row = {key: panel.get(key) for key in _ACCEPTANCE_PANEL_ROW_KEYS if key in panel}
+    reason = str(panel.get("reason") or "")
+    if reason:
+        limit = 300
+        row["reason"] = truncate_review_artifact(reason, limit=limit)
+        row["reason_omitted_chars"] = max(0, len(reason) - limit)
+        refs = [
+            actor.get("response_ref") for actor in (panel.get("actors") or [])
+            if isinstance(actor, dict) and actor.get("response_ref")
+        ]
+        if refs:
+            row["response_refs"] = refs
+    return row
+
+
 def format_review_evidence_for_prompt(
     evidence: Dict[str, Any],
     *,
     max_chars: int = 0,
+    acceptance_panels: Any = None,
     **_kwargs,
 ) -> str:
     """Format review evidence as JSON for prompt injection.
@@ -433,324 +537,67 @@ def format_review_evidence_for_prompt(
     Callers that inject evidence into bounded prompts (summaries, reflections)
     can pass a positive *max_chars* to get an explicit omission note instead
     of silent clipping.
+
+    ``acceptance_panels`` leads with the task's OWN acceptance-panel projection.
+    The commit/advisory lens knows nothing about it, so its absence statement
+    names the lens it describes rather than claiming the task bought no review.
     """
-    if not evidence or not evidence.get("has_evidence"):
-        return "(no structured review evidence)"
-    full = json.dumps(evidence, ensure_ascii=False, indent=2)
-    if max_chars > 0 and len(full) > max_chars:
-        return full[:max_chars] + f"\n⚠️ OMISSION NOTE: review evidence truncated at {max_chars} chars; original length {len(full)}"
-    return full
-
-
-def build_review_projection(
-    drive_root: Any,
-    *,
-    repo_dir: Any = None,
-    repo_key: str = "",
-    tool_name: str = "",
-    task_id: str = "",
-    attempt: int | None = None,
-    snapshot_hash_fn: Any = None,
-) -> Dict[str, Any]:
-    """Build the semantic read-model shared by review_status-style renderers."""
-    from ouroboros.review_state import (
-        advisory_commit_ready,
-        compute_snapshot_hash,
-        load_state,
-        make_repo_key,
-    )
-
-    drive_root_path = pathlib.Path(drive_root)
-    repo_dir_path = pathlib.Path(repo_dir) if repo_dir else None
-    state = load_state(drive_root_path)
-    repo_filter = repo_key or (make_repo_key(repo_dir_path) if repo_dir_path is not None else None)
-    tool_filter = tool_name or None
-    task_filter = task_id or None
-    runs = state.filter_advisory_runs(
-        repo_key=repo_filter,
-        tool_name=tool_filter,
-        task_id=task_filter,
-        attempt=attempt,
-    )
-    attempts = state.filter_attempts(
-        repo_key=repo_filter,
-        tool_name=tool_filter,
-        task_id=task_filter,
-        attempt=attempt,
-    )
-    latest = runs[-1] if runs else None
-    selected_attempt = attempts[-1] if attempts else (
-        None if (repo_filter or tool_filter or task_filter or attempt is not None) else state.latest_attempt()
-    )
-    try:
-        if repo_dir_path is None:
-            raise ValueError("repo_dir unavailable")
-        hasher = snapshot_hash_fn or compute_snapshot_hash
-        current_hash = hasher(repo_dir_path, "", paths=latest.snapshot_paths if latest else None)
-        hash_mismatch = bool(
-            latest
-            and latest.status in {"fresh", "bypassed", "skipped", "parse_failure", "preflight_blocked", "tests_preflight_blocked"}
-            and latest.snapshot_hash != current_hash
-        )
-    except Exception:
-        current_hash = ""
-        hash_mismatch = False
-    matching_run = state.find_by_hash(current_hash, repo_key=repo_filter) if current_hash else None
-    effective_is_fresh = bool(state.is_fresh(current_hash, repo_key=repo_filter) if current_hash else False)
-    stale_matches_repo = state.last_stale_repo_key in ("", repo_filter)
-    stale_from_edit = bool(hash_mismatch or (state.last_stale_from_edit_ts and stale_matches_repo))
-    effective_status = matching_run.status if matching_run else ("stale" if latest else "none")
-    open_obligations = state.get_open_obligations(repo_key=repo_filter)
-    open_debts = state.get_open_commit_readiness_debts(repo_key=repo_filter)
-    try:
-        from ouroboros.utils import read_json_dict
-
-        advisory_overrides = read_json_dict(drive_root_path / "state" / "advisory_overrides.json") or {}
-    except Exception:
-        advisory_overrides = {}
-    return {
-        "state": state,
-        "filters": {
-            "repo_key": repo_filter,
-            "tool_name": tool_filter,
-            "task_id": task_filter,
-            "attempt": attempt,
-        },
-        "runs": runs,
-        "attempts": attempts,
-        "latest_run": latest,
-        "matching_run": matching_run,
-        "guidance_run": matching_run or latest,
-        "selected_attempt": selected_attempt,
-        "current_hash": current_hash,
-        "effective_status": effective_status,
-        "effective_hash": matching_run.snapshot_hash[:12] if matching_run and matching_run.snapshot_hash else None,
-        "effective_is_fresh": effective_is_fresh,
-        "stale_from_edit": stale_from_edit,
-        "stale_from_edit_ts": (
-            state.last_stale_from_edit_ts if state.last_stale_from_edit_ts and stale_matches_repo
-            else ("now (hash mismatch)" if hash_mismatch else None)
-        ),
-        "stale_reason": (
-            state.last_stale_reason if stale_matches_repo else ""
-        ) or ("Current snapshot hash no longer matches the latest advisory run." if hash_mismatch else None),
-        "open_obligations": open_obligations,
-        "open_debts": open_debts,
-        "repo_commit_ready": advisory_commit_ready(bool(effective_is_fresh), open_obligations, open_debts),
-        "retry_anchor": "commit_readiness_debt" if open_debts else None,
-        "advisory_overrides": advisory_overrides,
-    }
-
-
-def build_review_status_payload(projection: Dict[str, Any], *, next_step: str, include_raw: bool = False) -> Dict[str, Any]:
-    selected_attempt = projection.get("selected_attempt")
-    open_obligations = list(projection.get("open_obligations") or [])
-    open_debts = list(projection.get("open_debts") or [])
-    payload: Dict[str, Any] = {
-        "latest_advisory_status": projection["effective_status"],
-        "latest_advisory_hash": projection["effective_hash"],
-        "stale_from_edit": projection["stale_from_edit"],
-        "stale_from_edit_ts": projection["stale_from_edit_ts"],
-        "stale_reason": projection["stale_reason"],
-        "filters": projection["filters"],
-        "advisory_runs": [_review_status_run_to_dict(run) for run in reversed(projection.get("runs") or [])],
-        "attempts": [_review_status_attempt_to_dict(item) for item in reversed(projection.get("attempts") or [])],
-        "selected_commit_attempt": _review_status_attempt_payload(selected_attempt),
-        "open_obligations": [_review_status_obligation_to_dict(item) for item in open_obligations],
-        "open_obligations_count": len(open_obligations),
-        "commit_readiness_debts": [_review_status_debt_to_dict(item) for item in open_debts],
-        "commit_readiness_debts_count": len(open_debts),
-        "repo_commit_ready": projection["repo_commit_ready"],
-        "retry_anchor": projection["retry_anchor"],
-        "status_summary": _review_status_message(projection),
-        "next_step": next_step,
-    }
-    payload["message"] = payload["status_summary"]
-    # Persistent advisory-enforcement visibility (BIBLE P3 loud-advisory bound):
-    # how many blocking-grade signals advisory enforcement waved through.
-    overrides = projection.get("advisory_overrides")
-    if isinstance(overrides, dict) and overrides.get("count"):
-        payload["advisory_overrides_count"] = int(overrides.get("count") or 0)
-        payload["advisory_overrides_recent"] = list(overrides.get("recent") or [])
-    if include_raw and selected_attempt is not None:
-        payload["raw_evidence"] = {
-            "attempt_ts": selected_attempt.ts,
-            "attempt_number": int(selected_attempt.attempt or 0) or None,
-            "tool_name": selected_attempt.tool_name or None,
-            "triad_raw_results": list(selected_attempt.triad_raw_results or []),
-            "scope_raw_result": dict(selected_attempt.scope_raw_result or {}),
-        }
-    return payload
-
-
-def _run_failure_reason(run: Any) -> str | None:
-    """Typed cause for a non-parseable advisory run. Diagnostics only.
-
-    Never consumed by the commit gate, freshness, or debt: it exists so a
-    repeated deterministic failure is visible after the FIRST attempt instead of
-    reading as a generic ``parse_failure`` for hours.
-    """
-    if str(getattr(run, "status", "") or "") != "parse_failure":
-        return None
-    from ouroboros.triad_review import empty_array_is_verified_clean
-
-    raw = str(getattr(run, "raw_result", "") or "").strip()
-    if not raw:
-        return "empty_response"
-    if empty_array_is_verified_clean(raw):
-        # A contract-compliant clean verdict was still rejected: that is a
-        # regression of the sentinel contract, not a model failure. Asking the
-        # shared predicate — not a second substring test — is what keeps this
-        # diagnostic honest when the contract changes.
-        return "clean_sentinel_rejected"
-    if raw.startswith("[") or raw.startswith("```"):
-        return "malformed_array"
-    return "non_json_prose"
-
-
-def _review_status_run_to_dict(run: Any) -> Dict[str, Any]:
-    findings = [
-        item for item in (getattr(run, "items", []) or [])
-        if isinstance(item, dict) and str(item.get("verdict", "")).upper() == "FAIL"
+    rows = [
+        _acceptance_panel_prompt_row(panel)
+        for panel in (acceptance_panels if isinstance(acceptance_panels, list) else [])
+        if isinstance(panel, dict)
     ]
-    data = {
-        "snapshot_hash": str(getattr(run, "snapshot_hash", ""))[:12],
-        "critical_findings": sum(1 for item in findings if str(item.get("severity", "")).lower() == "critical"),
-        "total_findings": len(findings),
-        "attempt": int(getattr(run, "attempt", 0) or 0) or None,
-    }
-    for key in ("commit_message", "status", "ts", "snapshot_summary"):
-        data[key] = str(getattr(run, key, "") or "")
-    for key in ("bypass_reason", "repo_key", "tool_name", "task_id"):
-        data[key] = str(getattr(run, key, "") or "") or None
-    # Already persisted per run, previously dropped from the projection: without
-    # these the owner sees repeated identical statuses with no usable cause.
-    data["failure_reason"] = _run_failure_reason(run)
-    data["model_used"] = str(getattr(run, "model_used", "") or "") or None
-    duration = getattr(run, "duration_sec", None)
-    data["duration_sec"] = round(float(duration), 2) if duration else None
-    prompt_chars = getattr(run, "prompt_chars", None)
-    data["prompt_chars"] = int(prompt_chars) or None if prompt_chars else None
-    # Deliberately NO raw excerpt here: raw_result is untrusted reviewer output
-    # that can echo secret-bearing diff content, and this projection is returned
-    # to the active model. The typed reason above is derived, not raw, and the
-    # complete text stays in the durable advisory run record addressed by the
-    # snapshot_hash/ts already on this row.
-    return data
+    task_id = str(evidence.get("task_id") or _kwargs.get("task_id") or "")
+    source_ref: Dict[str, Any] = (
+        {"kind": "task_result", "reader": "get_task_result", "task_id": task_id}
+        if task_id else {}
+    )
+    if not source_ref:
+        source_ref = next((
+            ref for row in rows for ref in (row.get("response_refs") or [])
+            if isinstance(ref, dict) and ref
+        ), {})
+    sections: List[str] = []
+    if rows:
+        from ouroboros._outcome_receipts import disclosed_list_projection
 
-
-def _review_status_attempt_payload(ca: Any) -> Dict[str, Any] | None:
-    if ca is None:
-        return None
-    data = {
-        key: getattr(ca, key) or None
-        for key in ("block_reason", "repo_key", "tool_name", "task_id", "phase", "fingerprint_status")
-    }
-    data.update({
-        "status": ca.status,
-        "commit_message": ca.commit_message,
-        "ts": ca.ts,
-        "duration_sec": round(ca.duration_sec, 1),
-        "block_details_preview": truncate_review_artifact(ca.block_details, limit=300) if ca.block_details else None,
-        "attempt": int(ca.attempt or 0) or None,
-        "blocked": bool(ca.blocked),
-        "late_result_pending": bool(ca.late_result_pending),
-        "critical_findings": len(ca.critical_findings or []),
-        "advisory_findings": len(ca.advisory_findings or []),
-        "obligation_ids": list(ca.obligation_ids or []),
-        "readiness_warnings": list(ca.readiness_warnings or []),
-        "pre_review_fingerprint": ca.pre_review_fingerprint[:12] or None,
-        "post_review_fingerprint": ca.post_review_fingerprint[:12] or None,
-        "degraded_reasons": list(ca.degraded_reasons or []),
-        # Max-Review-Cycles accounting facts (Q16 auditability): the typed
-        # block class, the dispatch-paid fact, and the identities the free
-        # refusal/replay decisions key on.
-        "block_class": str(getattr(ca, "block_class", "") or "") or None,
-        "paid": bool(getattr(ca, "paid", False)),
-        "rebuttal_sha256": str(getattr(ca, "rebuttal_sha256", "") or "")[:12] or None,
-        "review_contract_fingerprint": str(getattr(ca, "review_contract_fingerprint", "") or "")[:12] or None,
-        "root_task_id": str(getattr(ca, "root_task_id", "") or "") or None,
-        **_review_status_actor_summary(ca),
-    })
-    return data
-
-
-def _review_status_attempt_to_dict(item: Any) -> Dict[str, Any]:
-    data = _review_status_attempt_payload(item) or {}
-    data.pop("commit_message", None)
-    data.pop("block_details_preview", None)
-    data["ts"] = item.ts
-    return data
-
-
-def _review_status_actor_summary(attempt: Any) -> Dict[str, Any]:
-    scope_raw = getattr(attempt, "scope_raw_result", None) or {}
-    return {
-        "triad_actors": [
-            {"model_id": r.get("model_id", "?"), "status": r.get("status", "?")}
-            for r in (getattr(attempt, "triad_raw_results", None) or [])
-        ],
-        "scope_actor": (
-            {"model_id": scope_raw.get("model_id", "?"), "status": scope_raw.get("status", "?")}
-            if scope_raw.get("status") else None
-        ),
-    }
-
-
-def _review_status_obligation_to_dict(item: Any) -> Dict[str, Any]:
-    return {
-        **{key: getattr(item, key, "") for key in ("obligation_id", "fingerprint", "item", "severity", "status")},
-        "reason": truncate_review_artifact(item.reason, limit=200),
-        "source_ts": item.source_attempt_ts,
-        "source_commit": item.source_attempt_msg,
-    }
-
-
-def _review_status_debt_to_dict(item: Any) -> Dict[str, Any]:
-    return {
-        "debt_id": item.debt_id,
-        "category": item.category,
-        "title": item.title,
-        "summary": truncate_review_artifact(item.summary, limit=220),
-        "status": item.status,
-        "severity": item.severity,
-        "source": item.source,
-        "repo_key": item.repo_key or None,
-        "source_obligation_ids": list(item.source_obligation_ids or []),
-        "evidence": list(item.evidence or []),
-        "updated_at": item.updated_at,
-    }
-
-
-def _review_status_message(projection: Dict[str, Any]) -> str:
-    ca = projection.get("selected_attempt")
-    current = f"Current advisory: {projection['effective_status']}"
-    if ca and ca.status in ("blocked", "failed"):
-        reason_map = {
-            "no_advisory": "No fresh advisory review found. Run preflight_review first.",
-            "critical_findings": "Reviewers found critical issues. Fix all issues listed, then re-run advisory.",
-            "review_quorum": "Not enough review models responded. Retry — usually transient.",
-            "parse_failure": "Review models could not produce parseable output. Retry the commit.",
-            "infra_failure": "Infrastructure failure. Check block_details.",
-            "scope_blocked": "Scope reviewer blocked the commit. Address scope review findings.",
-            "preflight": "Preflight check failed. Stage all related files.",
-            "revalidation_failed": "The staged diff changed after review. Re-run advisory and review.",
-            "fingerprint_unavailable": "The staged diff could not be fingerprinted. Fix git diff and retry.",
-            "overlap_guard": "Another reviewed attempt is still active. Wait or expire it before retrying.",
-            "attempt_cap_reached": "The same staged diff was review-blocked repeatedly. Change the diff or rebut via review_rebuttal.",
-            "identical_diff_refused": "This exact staged diff was already review-blocked. Change the diff or supply a NEW review_rebuttal (identical bytes are never re-reviewed for pay).",
-            "review_cycles_exhausted": "This task tree spent its paid review cycles (OUROBOROS_REVIEW_MAX_CYCLES). Finalize honestly or ask the owner to raise the cap.",
-            "review_subject_binding_mismatch": "The reviewed managed subject is not the tree this commit would write. Re-stage the intended candidate and retry so review and commit describe the same tree.",
-        }
-        label = "BLOCKED" if ca.status == "blocked" else "FAILED"
-        current = (
-            f"Last commit {label} ({ca.block_reason or 'unclassified'}): "
-            f"{reason_map.get(ca.block_reason, ca.block_reason or 'unknown')}"
-            f"  |  {current}"
+        keep = len(rows)
+        projection = disclosed_list_projection(
+            rows, key="records", limit=keep, item=lambda row: row,
         )
-    if projection.get("open_debts"):
-        current = f"{current}  |  Commit-readiness debt: {len(projection['open_debts'])}"
-    return current
+        while source_ref and max_chars > 0 and keep > 1:
+            candidate = "TASK ACCEPTANCE PANELS:\n" + json.dumps(
+                projection, ensure_ascii=False, indent=2,
+            )
+            if len(candidate) <= max_chars:
+                break
+            keep -= 1
+            projection = disclosed_list_projection(
+                rows, key="records", limit=keep, item=lambda row: row,
+            )
+        if projection["records_omitted"]:
+            projection["omission_note"] = "whole trailing panel records omitted"
+            projection["omission_source_ref"] = source_ref
+        sections.append(
+            "TASK ACCEPTANCE PANELS:\n"
+            + json.dumps(projection, ensure_ascii=False, indent=2)
+        )
+    if evidence and evidence.get("has_evidence"):
+        rendered_evidence = json.dumps(evidence, ensure_ascii=False, indent=2)
+        prefix_chars = len(sections[0]) + 2 if sections else 0
+        limit = max_chars - prefix_chars if max_chars > 0 else 0
+        if source_ref and max_chars > 0 and len(rendered_evidence) > max(1, limit):
+            rendered_evidence = truncate_review_artifact(
+                rendered_evidence, limit=max(1, limit),
+            )
+            rendered_evidence += (
+                f"\n⚠️ OMISSION SOURCE: review evidence truncated at {max_chars} chars; "
+                f"canonical source_ref={json.dumps(source_ref, ensure_ascii=False)}"
+            )
+        sections.append(rendered_evidence)
+    if not sections:
+        return "(no commit/advisory review evidence recorded for this task)"
+    return "\n\n".join(sections)
 
 
 def _attempt_to_dict(item: Any) -> Dict[str, Any]:
@@ -865,15 +712,19 @@ def _debt_to_dict(item: Any) -> Dict[str, Any]:
 # v7next F2.3a (D06): moved spans live in their owner leaves; re-exported
 # here so this facade stays the single import surface for callers and tests.
 from ouroboros.review_evidence_sections import (  # noqa: E402, F401 -- intentional public re-exports
+    ACCEPTANCE_PROMPT_OVERHEAD_CHARS,
+    AcceptancePacketBudget,
     _ACCEPT_ARGS_CAP,
     _ACCEPT_ARTIFACT_PREVIEW_CAP,
     _ACCEPT_ARTIFACT_PREVIEW_MAX_BYTES,
+    _ACCEPT_DENSE_CHARS_PER_TOKEN,
     _ACCEPT_NOTES_CAP,
     _ACCEPT_OBLIGATIONS_MAX,
     _ACCEPT_RESULT_CAP,
     _ACCEPT_RETRIEVAL_URLS_MAX,
     _ACCEPT_TOTAL_BUDGET,
     _ACCEPT_TRAJECTORY_MAX_CALLS,
+    acceptance_packet_budget_chars,
     _accept_artifact_manifest,
     _accept_claim_support_refs,
     _accept_effective_claims,

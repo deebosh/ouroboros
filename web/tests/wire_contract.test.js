@@ -45,11 +45,13 @@ function pythonTupleNames(source, name) {
 }
 
 test('every accounting field the costs page reads is a field the history endpoint emits', () => {
-    const history = repoFile('ouroboros/gateway/history.py');
+    // v7 moved the cost-breakdown endpoint (and its field tuple) out of
+    // gateway/history.py into gateway/cost_breakdown.py; history.py re-exports it.
+    const costBreakdown = repoFile('ouroboros/gateway/cost_breakdown.py');
     const taskResults = repoFile('ouroboros/task_results.py');
     // What the server puts on the wire: the projected ledger fields plus the four
     // keys the endpoint attaches itself right after the projection.
-    const emitted = pythonTupleNames(history, '_ACCOUNTING_SUMMARY_FIELDS');
+    const emitted = pythonTupleNames(costBreakdown, '_ACCOUNTING_SUMMARY_FIELDS');
     for (const literal of ['available', 'authority', 'limit_usd', 'remaining_known_usd']) {
         emitted.add(literal);
     }
@@ -233,4 +235,10 @@ test('live structured delivery frames keep additive grouping and size fields', (
     assert.match(chat, /renderMarkdown: renderChatMarkdown/);
     assert.match(chat, /enhanceMarkdown: enhanceMountedMarkdown/);
     assert.match(contracts, /WS_MESSAGE_TYPES[\s\S]*?"links"/);
+});
+
+test('history typedef declares task outcome terminality fields', () => {
+    const types = moduleFile('api_types.js');
+    assert.match(types, /@property \{"working"\|"done"\|"warn"\|"error"\|"cancelled"=\} outcome_phase/);
+    assert.match(types, /@property \{boolean=\} outcome_final/);
 });

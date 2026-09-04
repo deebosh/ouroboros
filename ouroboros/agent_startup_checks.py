@@ -152,6 +152,10 @@ def _automatic_predecessor_authority_projection(
     from ouroboros.contracts.task_contract import bounded_continuation_envelope
 
     authority = task_result_authority_projection(row, drive_root=drive_root)
+    if isinstance(authority.get("plan_review_state"), dict):
+        from ouroboros.task_results import plan_review_authority_core
+
+        authority["plan_review_state"] = plan_review_authority_core(authority["plan_review_state"], source_ref=source)
     contract = authority.get("task_contract") if isinstance(authority.get("task_contract"), dict) else {}
     nested = contract.get("predecessor_authority") if isinstance(contract.get("predecessor_authority"), dict) else {}
     nested_source = nested.get("source") if isinstance(nested.get("source"), dict) else {}
@@ -454,12 +458,12 @@ def check_budget(env: Any) -> Tuple[dict, int]:
                 "error": "state.json missing or invalid",
                 "path": str(state_path),
             }, 1
-        total_budget_str = os.environ.get("TOTAL_BUDGET", "")
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+        total_budget = resolve_total_budget_usd()
 
-        if not total_budget_str or float(total_budget_str) == 0:
+        if total_budget is None:
             return {"status": "unconfigured"}, 0
         else:
-            total_budget = float(total_budget_str)
             from ouroboros.usage_accounting import ensure_legacy_imported, usage_projection
 
             ensure_legacy_imported(accounting_root)
@@ -717,6 +721,7 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
         BG_OBSERVATIONS_WARN_BYTES,
         PROGRESS_LOG_WARN_BYTES,
         SCHEDULED_TASKS_WARN_BYTES,
+        SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
         SUPERVISOR_LOG_WARN_BYTES,
         TASK_REFLECTIONS_LOG_WARN_BYTES,
         TOOLS_LOG_WARN_BYTES,
@@ -767,6 +772,12 @@ def _hot_store_thresholds() -> Tuple[Tuple[str, int, str], ...]:
             "retention on the same tick — growth past this size means the prune "
             "is broken or the live schedule set itself is this large.",
         ),
+        (
+            "state/skill_review_root_tasks.jsonl",
+            SKILL_REVIEW_ROOT_TASKS_WARN_BYTES,
+            "Acceptance packet assembly reads this compact skill-review index; "
+            "archive old root-task rows with their review histories.",
+        ),
     )
 
 
@@ -775,7 +786,7 @@ def hot_store_growth_notes(env: Any) -> list:
 
     Reused live by context.py::build_health_invariants (the
     check_stray_server_processes pattern). Deliberately NOT TTL-cached
-    (contrast context._STRAY_PROBE_CACHE): four os.stat calls per task turn
+    (contrast context._STRAY_PROBE_CACHE): nine os.stat calls per task turn
     are orders of magnitude cheaper than the pgrep probe that cache exists
     for, and a stale reading would delay the regression signal."""
     from supervisor.state import ISOLATED_BENCHMARK_SENTINEL

@@ -31,6 +31,7 @@ class _MessageShapingMixin:
         *,
         allow_message_cache_control: bool,
         flatten_tool_content_blocks: bool,
+        flatten_non_user_content_blocks: bool = False,
         allow_cache_ttl: bool = False,
     ) -> List[Dict[str, Any]]:
         cleaned = scrub_native_custody(messages)
@@ -38,7 +39,12 @@ class _MessageShapingMixin:
             content = msg.get("content")
             if not isinstance(content, list):
                 continue
-            if msg.get("role") == "tool" and flatten_tool_content_blocks:
+            role = msg.get("role")
+            if (role == "tool" and flatten_tool_content_blocks) or (
+                role != "user" and flatten_non_user_content_blocks
+            ):
+                # String-only roles: text blocks fold into one string, so host
+                # metadata and cache markers never reach the wire either.
                 msg["content"] = "".join(
                     block.get("text", "") if isinstance(block, dict) else str(block)
                     for block in content
@@ -72,7 +78,12 @@ class _MessageShapingMixin:
     _REASONING_CONTENT_BLOCK_TYPES = frozenset({"thinking", "reasoning", "redacted_thinking"})
 
     @classmethod
-    def _strip_openrouter_roundtrip_metadata(cls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _strip_openrouter_roundtrip_metadata(
+        cls,
+        messages: List[Dict[str, Any]],
+        *,
+        keep_reasoning_content: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Strip provider-private reasoning round-trip artifacts that a DIFFERENT
         upstream family rejects: assistant-level ``reasoning``/``reasoning_details``/
         ``reasoning_content``/``response_id`` keys AND ``thinking``/``reasoning``
@@ -84,14 +95,19 @@ class _MessageShapingMixin:
         OpenRouter/Anthropic ``reasoning``/``reasoning_details`` shapes. Strict
         OpenAI-compatible servers (vLLM/SGLang) reject an echoed ``reasoning_content``
         with HTTP 400 ``Extra inputs are not permitted``, so it must be scrubbed on
-        the cloudru / openai-compatible / local lanes too."""
+        the cloudru / openai-compatible / local lanes too. DeepSeek is the third
+        class — a server that REQUIRES its own echo (tool-bearing requests 400
+        without the previous turns' ``reasoning_content``) — so its lane passes
+        ``keep_reasoning_content=True`` to retain that one field while every
+        other round-trip artifact is still stripped."""
         cleaned = scrub_native_custody(messages)
         for msg in cleaned:
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
                 continue
             msg.pop("reasoning", None)
             msg.pop("reasoning_details", None)
-            msg.pop("reasoning_content", None)
+            if not keep_reasoning_content:
+                msg.pop("reasoning_content", None)
             msg.pop("response_id", None)
             content = msg.get("content")
             if isinstance(content, list):

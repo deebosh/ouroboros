@@ -9360,3 +9360,858 @@ cause only in `data/logs/server.log`.
   `test_pid_env_wait_rides_out_the_post_exec_empty_environ_window` reading `/proc` on macOS and
   Windows — the sibling pin already carried `skipif(sys.platform != "linux")`, this one did not (run
   cancelled). rc.7 carries the skip; every step of its chain is gated on the pins' rc.
+
+
+---
+
+# F2 absorption (upstream 23ab428f into 18b9832e): per-symbol relocation ledger
+
+> Appended here per roast correction R6 (no new campaign file: S1 rows summarize the transplant, S2/S3 carry their proofs). Body follows verbatim.
+
+
+## What this records
+
+Phase 2 of the v7 follow-up sprint absorbs the frozen upstream `ouroboros` branch into the
+v7 line. The v7 line had already split most large modules into leaves that reach parent-owned
+names through a call-time handle (`_loop()`, `_registry()`, `_rev()`, `_sub()`, `_car()`,
+`_queue()`, `_events()`), so an upstream change to a function almost never lands in the file
+the conflict marker points at. This ledger names, per symbol or per hunk, where each upstream
+change actually went and on what authority.
+
+It is the per-symbol relocation ledger the sprint plan requires (§5.2 item 2). It is a record
+of one merge, not a live inventory: the authorities for the merged tree itself are
+`ouroboros/size_ratchet_manifest.py`, `ouroboros/domains.toml`, `docs/ARCHITECTURE.md` and the
+generated inventories under `docs/v7next/`.
+
+## The three trees
+
+| role | commit | what it is |
+|---|---|---|
+| merge base | `a76961de` | the last commit both lines share |
+| upstream | `23ab428f` | frozen tip of `ouroboros` (`6.114.0` line) — the side being absorbed |
+| v7 | `18b9832e` | `ouroboros_v7next` at `v7.0.0-rc.8` — the side being merged into |
+
+The merge is `git merge --no-commit --no-ff 23ab428f` on top of `18b9832e`: 51 conflicted files,
+370 auto-merged, one modify/delete (`ouroboros/acceptance_dialogue.py`).
+
+## Class vocabulary
+
+| class | meaning |
+|---|---|
+| **S1** | Upstream changed the function and v7 did not. The result is upstream's body — comments and docstrings verbatim, since they carry the owner's numbered decisions — placed in v7's owning leaf with v7's mechanical rewrites (handle prefixes, local imports) re-applied. Never a duplicate definition beside the leaf copy. |
+| **S2** | Both sides changed the same function. Hand-merged so both intents survive; every S2 row carries its proof on the same line. |
+| **S3** | v7 supersedes. Admitted only with proof: v7's mechanism already covers upstream's, or a v7 ABI 7.0 decision retired the surface, or upstream's change targets code v7 deleted. Retired 7.0 surfaces do not come back. |
+
+Where a v7 design decision (D-nn) collided with a *later* upstream owner decision (R-nn, the
+September 2026 commits), upstream was implemented provisionally and the collision is listed in
+§7 as an owner fork rather than being settled silently.
+
+## How to read the tables
+
+`upstream symbol or hunk` names the thing that changed on the upstream side. `upstream
+commit(s)` are short SHAs in `a76961de..23ab428f` (all validated in range). `v7 home (file)`
+is where it lives in the merged tree; every path and symbol in this ledger was checked against
+the worktree (see §9). Rows marked **UNVERIFIED** could not be proved and are called out as
+such rather than asserted.
+
+---
+
+## 1. G1 — loop / llm / context / pipeline
+
+### 1.1 `context.py` → `context_runtime_facts.py`
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `_runtime_budget_info` (`+ctx=None`, `TOTAL_BUDGET` env → `resolve_total_budget_usd()`, `status="no_global_limit"`, `remaining_usd=None`, `+in_task_cost_ceiling`) | 8bbdac50, d4fd933c | S1 | `ouroboros/context_runtime_facts.py` | v7's copy was byte-identical to base, so upstream's body was transplanted whole |
+| `+from ouroboros.task_pacing import in_task_cost_ceiling_disclosure as _in_task_cost_ceiling` | 8bbdac50, d4fd933c | S1 | `ouroboros/context_runtime_facts.py` | moved to the leaf that uses it; left in `context.py` it would be F401 |
+| call site `_runtime_budget_info(env, task, ctx)` | 8bbdac50 | S1 (auto-merged, broken, fixed) | `ouroboros/context.py` | 3-arg call auto-merged against the 2-arg relocated callee — `TypeError` at every task start; fixed by the transplant above, not by reverting the call |
+| `_build_installed_skills_section` `+live_loaded`/`live_reason` | 9d2fcdc0, 01a9df8e | S1 | `ouroboros/context.py` | symbol stayed in `context.py`; auto-merged and verified |
+| `_project_room_fact` | — | S3 | `ouroboros/context_runtime_facts.py` | no upstream delta; the conflict was only v7's extraction |
+| `_promoted_task_toolset` | — | S3 | `ouroboros/context_runtime_facts.py` | no upstream delta |
+| `_delegation_capability_fact` | — | S3 | `ouroboros/context_runtime_facts.py` | no upstream delta |
+
+### 1.2 `agent_task_pipeline.py` → `post_task_synthesis.py`
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `outcomes` import swap (`+BEST_EFFORT_REASON_CODES`, `+custody_debt_axes`, `−infra_failed_axes`) | 2421e7e5, 65e6614b | S1 | `ouroboros/agent_task_pipeline.py` | auto-merged; both new names exist in the merged `outcomes.py` |
+| `_apply_terminal_custody_outcome` custody-debt overlay; best-effort rail keeps its own reason | 2421e7e5 | S1 | `ouroboros/agent_task_pipeline.py` | auto-merged, verified |
+| `_store_task_result` axes ordering | 2421e7e5 | S1 | `ouroboros/agent_task_pipeline.py` | auto-merged, verified |
+| `_run_task_summary` `+"outcome_phase": outcome_phase(stored_result, usage)` | 00ec9fd3 | S1 relocated | `ouroboros/post_task_synthesis.py` | `project_dialogue.outcome_phase` exists; imported function-locally in the leaf |
+| `_run_task_summary` `acceptance_panels=review_projection.get("panels")` | 96cb95a3 | S1 relocated | `ouroboros/post_task_synthesis.py` | `review_evidence.format_review_evidence_for_prompt` accepts `acceptance_panels`; `review_projection` is in scope in the same function |
+| `_TASK_SUMMARY_PROMPT`, `_run_chat_consolidation`, `_run_scratchpad_consolidation`, `_run_reflection` | — | S3 | `ouroboros/post_task_synthesis.py` | conflict hunk resolved to HEAD; these bodies carry no upstream delta |
+
+### 1.3 `llm.py` and the ten lane mixins
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `+DEEPSEEK_BASE_URL`, `+normalize_deepseek_reasoning_effort` | 75c78ca2, 080be086, f109af3f | S1 | `ouroboros/llm.py` (prior-import surface) + `llm_routing.py`, `llm_openai_compatible.py` | the real consumers are the two lane leaves; the `llm.py` names are import-surface parity only |
+| `+_EFFORT_CLAMP_CVAR` (ContextVar) | 1a525dbd | S1 | `ouroboros/llm_capability_policy.py` | both readers live there; `import threading` became dead and was removed |
+| `_clamp_effort_for_model` thread-local → ContextVar | 1a525dbd | S1 | `ouroboros/llm_capability_policy.py` | |
+| `_pop_thread_disclosure` docstring | 1a525dbd | S1 | `ouroboros/llm_capability_policy.py` | |
+| `_pop_effort_clamp_disclosure` | 1a525dbd | S1 | `ouroboros/llm_capability_policy.py` | |
+| `+_finalized_physical_candidate` (new) | ca775882, f9e0d840, 5dc32a8a | S1 | `ouroboros/llm_attempt.py`, re-exported from `llm.py` | `task_pacing.py` and `tests/test_tree_cost_ceiling.py` import it from `ouroboros.llm`; upstream's function-local `prepare_wire_payload_for_send` hoisted to module scope so the body stays upstream-verbatim |
+| `−fetch_openrouter_pricing`, `−fetch_cloudru_pricing` → new `provider_catalogs.py` | 1a525dbd | **S2 → D-18(c)** | `ouroboros/llm_pricing.py`; `provider_catalogs.py` **deleted** | two destinations for one extraction; bodies identical apart from the logger, so v7's leaf keeps them and `llm.py` re-exports, as v7 already did. Two pricing SSOTs would otherwise ship |
+| `_qualified_model_name` `+deepseek` | 080be086, f109af3f | S1 | `ouroboros/llm_routing.py` | |
+| `_resolve_remote_target` `+deepseek` target (incl. `requires_reasoning_echo`) | 080be086, f109af3f | S1 | `ouroboros/llm_routing.py` | `+DEEPSEEK_BASE_URL` import added to the leaf |
+| `_copy_messages_with_cache_policy` `+flatten_non_user_content_blocks` | c174522c | S1 | `ouroboros/llm_messages.py` | |
+| `_strip_openrouter_roundtrip_metadata` `+keep_reasoning_content` | f109af3f | S1 | `ouroboros/llm_messages.py` | |
+| `_payload_cache_breakpoints` docstring `loop.seal_task_transcript` → `context_fit.seal_task_transcript` | 743597ee | S1 (coupled to D-18a) | `ouroboros/llm_attempt.py` | |
+| `_normalize_anthropic_response` (two comment trims) | b7a73355 | S1 | `ouroboros/llm_anthropic.py` | |
+| **new** `_build_remote_candidate` | b7a73355 | S1, **placement decision** | `ouroboros/llm_anthropic.py::_AnthropicLaneMixin` | one provider-aware builder serves the Anthropic send and `task_pacing`'s wrap-up estimate; `llm.py` cannot host it under the 750-line pin. Owner fork §7 |
+| `_chat_anthropic` payload build → `_build_remote_candidate`; `_send` → `_finalized_physical_candidate`; 3 comment trims | b7a73355, ca775882 | S1 | `ouroboros/llm_anthropic.py` | unused `_physical_candidate` / `prepare_wire_payload_for_send` imports removed |
+| `_build_remote_kwargs` (+95 lines: dual-identity vision judgment, `flatten_non_user_content_blocks`, DeepSeek effort dialect, thinking-disabled forced tool choice, OR `reasoning_content` strip) | c174522c, 080be086, f109af3f, 1a525dbd | S1, byte-identical | `ouroboros/llm_openai_compatible.py` | v7's copy was verbatim to base, so upstream's body replaced it wholesale (proved by diff against upstream) |
+| `_normalize_remote_response` (`reasoning_effort_clamped` pop, DeepSeek `reasoning_content` retention, `prompt_cache_hit_tokens` fallback) | ca775882, f9e0d840, f109af3f | **S2** | `ouroboros/llm_openai_compatible.py` | after the three upstream hunks the function differs from upstream by exactly v7's rename `_pop_reasoning_pin_note()` → `reasoning_artifacts.pop_reasoning_pin_note()` — nothing else |
+| `_create_chat_completion_with_retries` `_send` prologue → `_finalized_physical_candidate(target, candidate, "chat.completions")` | ca775882, 5dc32a8a | **S2** | `ouroboros/llm_fallback.py` | after the edit the ladder differs from upstream by exactly v7's D09 typed-refusal rail (3 × `_is_provider_policy_refusal`) plus the `pop_reasoning_pin_note` rename; both intents kept |
+| `_create_chat_completion_with_retries_async` same prologue | ca775882, 5dc32a8a | **S2** | `ouroboros/llm_fallback.py` | same proof as the sync ladder |
+| `_openrouter_main_web_search_tool`, `_chat_gigachat`, lane bodies (hunks 4/5) | — | S3 | `llm_openai_compatible.py`, `llm_gigachat.py`, `llm_local.py` | unchanged upstream; the conflict was only v7's mixin split |
+
+### 1.4 `acceptance_dialogue.py` — D-20: stays deleted, no shim
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `_apply_task_acceptance_result` (drops `estimated_sec=` from `improvement_pass_allowed`) | 93c7523a (R52) | S1 | `ouroboros/loop_acceptance_review.py` | applied to v7's body so v7's handle rewrites survive |
+| `_build_host_acceptance_evidence` (history/undispositioned/`budget_chars` passed into `build_task_acceptance_evidence`; `UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY` gone) | b1b2f2c5, 73fb6d1d | S1 | `ouroboros/loop_acceptance_review.py` | upstream body taken whole |
+| `_total_paid_acceptance_cycles` | 93c7523a | S1 | `ouroboros/loop_acceptance_review.py` | upstream's only change was `ctx: _TaskAcceptanceContext` → `ctx: Any`; see the annotation row below |
+| `_execute_task_acceptance_panel` (`triad_delivery_slots`, typed `ValueError` refusal, `_refused()`, `deadline_at=_owner_deadline_at(...)`, retrieving work order, route-aware floor-priced admission, panel/delivery/native-round telemetry) | 6a5c9b82, a3599ecd, 73fb6d1d, 6ff83c60, 93c7523a | S1 | `ouroboros/loop_acceptance_review.py` | full upstream body; uses `_loop()._extract_plain_text_from_content`, v7's existing idiom in that leaf |
+| **new** `terminalize_dangling_revision` | e10b3cf3 | S1 (homeless) | `ouroboros/loop_acceptance.py`, re-exported from `loop.py` | placed beside `_set_acceptance_decision` (decision writer); `loop_forced_finalization` calls it as `_loop().terminalize_dangling_revision(...)` |
+| **new** `_RETRIEVING_ACCESS_DISCLOSURE` | 6a5c9b82 | S1 (homeless) | `ouroboros/loop_acceptance_review.py`, re-exported from `loop.py` | placed immediately before its sole caller |
+| **new** `_retrieving_packet_projection` | 2ac3ffbe, 5a6c7724 | S1 (homeless) | `ouroboros/loop_acceptance_review.py`, re-exported from `loop.py` | `import dataclasses` added to the leaf for `dataclasses.replace` |
+| **new** `acceptance_retrieving_work_order` | 6a5c9b82 | S1 (homeless) | `ouroboros/loop_acceptance_review.py`, re-exported from `loop.py` | sole caller is `_execute_task_acceptance_panel` in the same leaf |
+| the other 20 top-level names of upstream's `acceptance_dialogue.py` (obligations, decision writers, quorum, dialogue history, paid identity, checklist, `_prior_acceptance_run`, `_refuse_identical_acceptance`, …) | — | S3 | `ouroboros/loop_acceptance.py` / `ouroboros/loop_acceptance_review.py` | unchanged upstream and already homed in v7; keeping upstream's file would have duplicated all 20 |
+| `ctx: Any` widening on `_build_host_acceptance_evidence`, `_total_paid_acceptance_cycles`, `_execute_task_acceptance_panel` | 93c7523a | S3 (deliberate deviation, non-semantic) | `ouroboros/loop_acceptance_review.py` | upstream widened only because its split moved them away from `_TaskAcceptanceContext`; in v7 the dataclass is in the same leaf, so the typed annotation is kept |
+
+### 1.5 R52 (upstream 93c7523a) — the host stops predicting review duration
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `_run_task_acceptance_review_once` + `_TaskAcceptanceContext` R52 shape (`review_launch_allowed(budget_snapshot)` single-arg, no `launch_decision`, no `launch_at_floor_payload`) | 93c7523a | S1 | `ouroboros/loop_acceptance_review.py` | upstream tip bodies replaced v7's older shape |
+| `acceptance_review_estimate_sec`, `launch_at_floor_payload`, `acceptance_native_rounds_estimate`, `DISCLOSURE_DISPATCHED_AT_FLOOR`, `launch_decision`, `wave_at_floor`, `acceptance_admission_projection`, `REASON_LAUNCHED_AT_FLOOR`, `acceptance_panel_delivery` | 93c7523a | S3 (retired by the same upstream commit) | — | tree-wide grep in `ouroboros/` returns zero hits for every one of the nine names |
+| `task_pacing` deprecation-alias writer (`append_jsonl`, `utc_now_iso` imports) | 93c7523a | S3 | — | the reader of that timing record was deleted upstream; v7's Q10=A retirement already removed the alias surface |
+| `project_task_acceptance_review_capacity` loses the estimate block (wallet + cancellation only) | 93c7523a, 4d35f521 | S1 (auto-merged) | `ouroboros/task_results.py` | this deletion is what makes the row above safe |
+
+### 1.6 `loop.py` — the facade and the barrel
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `run_llm_loop` (`+invalidate_task_cache_splits`, `tool_schemas=` on `_RoundLimitContext`, comment rewraps) | 5dc32a8a, b7a73355, d472167f | S1 | `ouroboros/loop.py` | landed byte-identical to `23ab428f` from the auto-merge; verified by diff, no edit needed |
+| `_setup_dynamic_tools` | 5dc32a8a | S1 | `ouroboros/loop.py` | byte-identical to upstream from the auto-merge |
+| `_provider_unavailable_result` (86→83 L) | d472167f, dcea27d6 | S1 | `ouroboros/loop.py` | byte-identical to upstream from the auto-merge |
+| `+invalidate_task_cache_splits` on the `usage_accounting` import | b7a73355 | S1 | `ouroboros/loop.py` | |
+| `seal_task_transcript` removed from `loop.py`, now owned by `context_fit` | 743597ee | **S2 → D-18(a)** | `ouroboros/context_fit.py`; `loop.py` re-exports | two destinations; v7's 45-line copy deleted, upstream's import is the only binding. `from ouroboros.loop import seal_task_transcript` and `_loop().seal_task_transcript(...)` both still resolve |
+| `_skill_names_touched_by_trace` removed from `loop.py`, now `skill_readiness.skill_names_touched_by_trace` | 0463c6bb, f8d4408c | **S2 → D-18(b)** | `ouroboros/skill_readiness.py`; `loop_nudges.py` aliases it | two destinations; v7's `loop_nudges` copy deleted. The `skill_readiness` implementation is a strict superset (adds lifecycle-tool identity keys and `skill_payload` selector keys); `write_file`/`edit_text` carry no selector key, so the existing `["alpha","beta","delta"]` assertion is unaffected |
+| `TERMINAL_ORIGIN_HOST_NOTICE` import | 60c10bf4 | S1 | `ouroboros/loop.py` (`# noqa: F401 -- historical import surface`) | the leaves now import it directly from `task_finalization` |
+| barrel additions: `terminalize_dangling_revision`, `_RETRIEVING_ACCESS_DISCLOSURE`, `_acceptance_delivery_slots`, `_retrieving_packet_projection`, `_skip_task_acceptance_for_launch_reason`, `acceptance_retrieving_work_order`, `_FORCED_BEST_EFFORT_TAIL`, `_prepare_forced_prompt` | e10b3cf3, 6a5c9b82, a3599ecd, f54a7cf6, f8d4408c | S1 | `ouroboros/loop.py` | all eight verified bound in `loop.py` |
+| `handle_finalize_now_entry` not bound in `loop.py` | — | S3 | `ouroboros/loop_round_limits.py` | pre-existing v7 relocation untouched by this delta; nothing imports it from `loop` |
+| dead alias `_call_llm_with_retry = call_llm_with_retry` | — | S3 | — | v7 dropped it; zero references tree-wide |
+
+### 1.7 The 36 upstream `loop.py` symbol deltas, one row per leaf home
+
+Verification method for this block: a positional AST rewriter that prefixes only `Name`-Load
+nodes outside annotations. It was proved before use — applied to the BASE body of all 134 v7
+leaf symbols that came from `loop.py`, it reproduces the v7 leaf byte-for-byte for 127; the 7
+that differ are v7 semantic/comment edits. Inverting `_loop().` back out of every transplanted
+body reproduces upstream byte-for-byte for 33 of 35 loop symbols and 4 of 4 new acceptance
+symbols; the two exceptions are the S2 rows at the end of this table.
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `_RoundLimitContext` (+4 fields) | d472167f, 5dc32a8a | S1 | `ouroboros/loop_round_limits.py` | handle-inversion diff = upstream |
+| `_TaskAcceptanceContext` (+2 fields) | 93c7523a | S1 | `ouroboros/loop_acceptance_review.py` | handle-inversion diff = upstream |
+| `_call_forced_model_once` (22→36 L, `initial_messages`/`admitted_request` + candidate predicate) | f54a7cf6, fb95e6f2, b54a2cdd | S1 | `ouroboros/loop_forced_finalization.py` | handle-inversion diff = upstream |
+| `_check_budget_limits` | 8bbdac50 | S1 | `ouroboros/loop_budget.py` | handle-inversion diff = upstream |
+| `_child_disposition_state` | 2421e7e5 | S1 | `ouroboros/loop_forced_finalization.py` | handle-inversion diff = upstream |
+| `_force_plan_decision` (docstring trim) | f8d4408c | S1 | `ouroboros/loop_nudges.py` | handle-inversion diff = upstream |
+| `_forced_delegation_note` | f54a7cf6 | S1 | `ouroboros/loop_nudges.py` | verified at `loop_nudges.py:404`; called from `loop_forced_finalization.py:497` as `_loop()._forced_delegation_note(...)`. (The lane report listed this symbol without a leaf; the home was resolved here.) |
+| `_forced_fallback_result` | f54a7cf6 | S1 | `ouroboros/loop_forced_finalization.py` | handle-inversion diff = upstream |
+| `_forced_orphan_note` | f54a7cf6 | S1 | `ouroboros/loop_forced_finalization.py` | handle-inversion diff = upstream |
+| `_handle_provider_unavailable` (−1 L) | d472167f | S1 | `ouroboros/loop_round_limits.py` | handle-inversion diff = upstream |
+| `_inject_round_checkpoints` (+1 L) | dc1487fb | S1 | `ouroboros/loop_nudges.py` | handle-inversion diff = upstream |
+| `_loop_tree_accounting` | d4fd933c | S1 | `ouroboros/loop_budget.py` | handle-inversion diff = upstream |
+| `_maybe_inject_finalization_nudges` (248→216 L, 25 diff hunks — the largest single delta in the organ) | 8bbdac50, d4fd933c, 18f78bcb | S1 | `ouroboros/loop_nudges.py` | differed from base only by 9 handle prefixes, so the upstream rewrite landed clean |
+| `_maybe_inject_self_check` | d4fd933c | S1 | `ouroboros/loop_nudges.py` | handle-inversion diff = upstream |
+| `_maybe_inject_cost_budget_milestone` | d4fd933c | S1 | `ouroboros/loop_nudges.py` | handle-inversion diff = upstream |
+| `_nanny_finalization_message` | b54a2cdd | S1 | `ouroboros/loop_nudges.py` | handle-inversion diff = upstream |
+| `_no_tool_final_answer` | 60c10bf4 | S1 | `ouroboros/loop_delivery.py` | handle-inversion diff = upstream |
+| `_rebind_context_fit_plan` (104→99 L) | b54a2cdd, 18f78bcb | S1 | `ouroboros/loop_model_call.py` | handle-inversion diff = upstream |
+| `_record_forced_acceptance_bypass` | 60c10bf4 | S1 | `ouroboros/loop_acceptance.py` | handle-inversion diff = upstream |
+| `_record_forced_finalization` | e10b3cf3 | S1 | `ouroboros/loop_forced_finalization.py` | handle-inversion diff = upstream; the inline dangling-revision write is now `terminalize_dangling_revision` |
+| `_reproject_actual_overflow_low` | b54a2cdd | S1 | `ouroboros/loop_model_call.py` | handle-inversion diff = upstream |
+| `_resolve_task_cost_ceiling` (22→10 L, delegates to `task_pacing.resolve_task_cost_ceiling`) | 8bbdac50 | S1 | `ouroboros/loop_budget.py` | handle-inversion diff = upstream |
+| `_run_forced_children_acceptance` | e10b3cf3 | S1 | `ouroboros/loop_forced_finalization.py` | handle-inversion diff = upstream |
+| `_run_main_reclaim` | b54a2cdd | S1 | `ouroboros/loop_model_call.py` | handle-inversion diff = upstream |
+| `_run_round_compaction` (+1 L) | d472167f | S1 | `ouroboros/loop_round_limits.py` | handle-inversion diff = upstream |
+| `_run_task_acceptance_review_once` (290→274 L) | 93c7523a, a3599ecd | S1 | `ouroboros/loop_acceptance_review.py` | handle-inversion diff = upstream |
+| `_soft_land_exhausted_ceiling` (35→52 L, priced-candidate path) | d4fd933c, 155ec7c5 | S1 | `ouroboros/loop_budget.py` | now reaches `_loop()._prepare_forced_prompt`; handle-inversion diff = upstream |
+| `_maybe_deadline_local_finalize` | f54a7cf6 | S1 | `ouroboros/loop_round_limits.py` | handle-inversion diff = upstream |
+| `_server_web_allowed_by_task` | d4fd933c | S1 | `ouroboros/loop_acceptance.py` | handle-inversion diff = upstream |
+| `_direct_context_fence_state` | a3599ecd | S1 | `ouroboros/loop_acceptance_review.py` | handle-inversion diff = upstream |
+| **new** `_prepare_forced_prompt` | f54a7cf6 | S1 (homeless) | `ouroboros/loop_forced_finalization.py` | placed beside the one forced model call it prices; 5 upstream tests patch it as `ouroboros.loop._prepare_forced_prompt`, which the barrel + handle preserve |
+| **new** `_FORCED_BEST_EFFORT_TAIL` | f8d4408c | S1 (homeless) | `ouroboros/loop_forced_finalization.py` | used by `_soft_land_exhausted_ceiling` through the handle |
+| **new** `_acceptance_delivery_slots` | a3599ecd | S1 (homeless) | `ouroboros/loop_acceptance_review.py` | sole caller lives in the same leaf |
+| **new** `_skip_task_acceptance_for_launch_reason` | a58d6afd, c6d78403 | S1 (homeless) | `ouroboros/loop_acceptance_review.py` | sole caller lives in the same leaf |
+| `_forced_final_answer` (122→131 L: `_prompt_prepared`/`_initial_messages`/`_admitted_request`, prompt prep moved out, first-attempt admitted candidate, `incomplete` no longer gated on `provider_terminal`, tool-asking replies degrade on every rail, unconditional `terminal_plan_review_open`/`terminal_origin`) | f54a7cf6, fb95e6f2, 60c10bf4 | **S2** | `ouroboros/loop_forced_finalization.py` | upstream's body taken whole, then v7's two edits re-applied: the `degraded` → `control_degraded` rename at 4 sites and the "Control resolution runs BEFORE the incomplete branch (#447/issue-449)" comment. Both intents present |
+| `_resolve_delivery_control` (shortened hold-gate comment) | 60c10bf4 | **S2** | `ouroboros/loop_delivery.py` | `git merge-file --diff3` merged cleanly: upstream's shortened comment plus v7's three explanatory comments; no marker, no behaviour line lost |
+| `_drain_incoming_messages` | — | S3 | `ouroboros/loop_round_limits.py` | unchanged upstream |
+| `_maybe_inject_nanny_economics_reminder` | — | S3 | `ouroboros/loop_nudges.py` | unchanged upstream |
+| `_swarm_handoff_attempt` | — | S3 | `ouroboros/loop_delivery.py` | unchanged upstream |
+
+### 1.8 Cross-leaf imports added while transplanting
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `messages_carry_native_images` | 743597ee | S1 | `ouroboros/loop_budget.py` | no cycle: `context_fit` reaches `loop_llm_call` only lazily inside a function |
+| `TERMINAL_ORIGIN_HOST_NOTICE`; `−ACCEPTANCE_FINALIZED_UNACCEPTED`/`−ACCEPTANCE_REVISION_REQUESTED` | 60c10bf4, e10b3cf3 | S1 | `ouroboros/loop_forced_finalization.py` | upstream replaced that inline write with `terminalize_dangling_revision` |
+| `TERMINAL_ORIGIN_HOST_NOTICE`, `invalidate_task_cache_splits` | 60c10bf4, b7a73355 | S1 | `ouroboros/loop_round_limits.py` | |
+| `invalidate_task_cache_splits` on the existing `usage_accounting` import | b7a73355 | S1 | `ouroboros/loop_model_call.py` | |
+| `import dataclasses`; `−resolve_effort` from the `config` import | 6a5c9b82, a3599ecd | S1 | `ouroboros/loop_acceptance_review.py` | `resolve_effort`'s only user was the `reviewer_slots` call upstream replaced |
+
+### 1.9 G1 tests
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `tests/test_context.py` conflict | 9d2fcdc0 | S3 | `tests/test_context.py` | resolved to v7's split shape; byte-identical to `18b9832e` |
+| new `test_installed_skills_section_qualifies_extension_liveness_process` | 9d2fcdc0 | S1 | `tests/test_context_memory.py` | appended verbatim beside the sibling family v7 moved there |
+| `tests/test_loop_misc.py` conflict | 4a7fa18b, a3599ecd, dc1487fb, d4fd933c | S3 | `tests/test_loop_misc.py` | resolved to v7's split shape; byte-identical to `18b9832e`; the 5 changed tests were redistributed (rows below) |
+| 4 × `reviewer_slots` → `triad_delivery_slots` | a3599ecd | S1 | `tests/test_loop_acceptance_gate.py` | v7's home for the three acceptance-gate tests |
+| new `test_skill_finalization_message_sees_real_skill_payload_selectors` | 0463c6bb | S1 | `tests/test_loop_skill_finalization.py` | added verbatim |
+| `assert seen["tools"] is None` → `is not None` + upstream's two-line comment | dc1487fb | S1 | `tests/test_run_llm_loop.py` | |
+| `LEAVES` declared sets for `loop_budget` and `loop_forced_finalization` | — | S2 | `tests/test_module_handle_extraction.py` | rows re-derived and re-implemented offline; every loop leaf passes. The `seal_task_transcript` pin needed no edit — `_module_bindings()` counts `ImportFrom` names, so the row already asserts the re-export |
+| 5 × `from ouroboros.acceptance_dialogue import …` → `ouroboros.loop_acceptance_review` | D-20 | S2 | `tests/test_acceptance_delivery.py` | |
+| 2 × `from ouroboros.acceptance_dialogue import terminalize_dangling_revision` → `ouroboros.loop_acceptance` | D-20 | S2 | `tests/test_v671_acceptance_convergence.py` | |
+| `from ouroboros import acceptance_dialogue, task_pacing` → `loop_acceptance_review, task_pacing`; `monkeypatch.setattr(acceptance_dialogue, "_build_host_acceptance_evidence", …)` retargeted | D-20 | S2 | `tests/test_acceptance_floor_admission.py` | the patch bites: both callers reach it as a bare local name in that leaf |
+| `tests/test_transcript_seal.py` | 743597ee | S1 (verify only) | `tests/test_transcript_seal.py` | already at upstream content; `from ouroboros.loop import seal_task_transcript` resolves through the D-18(a) re-export |
+| `tests/test_acceptance_packet_sizing.py` | b1b2f2c5 | S1 (no change) | `tests/test_acceptance_packet_sizing.py` | never imported `acceptance_dialogue`; its two string hits are dict keys |
+
+### 1.10 Monkeypatch reachability (the silent-green hazard)
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| the 34 names tests patch on `ouroboros.loop` | — | invariant, not a relocation | all 13 `ouroboros/loop_*.py` leaves | AST scan for bare `Name`-Load nodes with those ids across all 13 leaves: **0 hits**. Every one is reached through `_loop().` at every call site, so a patch on `ouroboros.loop` binds. Without this, a transplanted sibling call would make a test pass while patching nothing |
+
+---
+
+## 2. G2 — review family
+
+### 2.1 `tools/review.py` and `tools/review_multi_model.py`
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| upstream deletes the `emit_review_usage` import | 761cf1b9 | S3 | `ouroboros/tools/review.py` (kept, `# noqa: F401`) | v7's leaves read and patch it at `tools.review.emit_review_usage` — `review_multi_model` via `_rev()`, `preflight_review_run.py` via `_car()`; both handles resolve |
+| **new** `_owner_deadline_at(ctx)` | 6ff83c60 (R23) | S1 (mandatory add) | `ouroboros/tools/review.py` | three live importers reach it *from this module*: `tools/scope_review.py`, `loop_acceptance_review.py`, `tools/review_multi_model.py`; upstream's new `tests/test_delivery_retrieves.py` also imports it from here. Taking HEAD alone = two `ImportError`s |
+| the rest of upstream's `:330-589` block | — | S3 | `ouroboros/tools/review_multi_model.py` | the whole block is v7's leaf; keeping upstream's copy would duplicate `_query_model` |
+| `_query_model`: `retrieves = delivery_retrieves(slot_route, subagent_id)` replaces the inline `delegated or (bool(subagent_id) and route is API_CHAT)` | eb3a9b14 | **S2** | `ouroboros/tools/review_multi_model.py` | one predicate now owns delivery; upstream's own `tests/test_delivery_retrieves.py` exercises the wire-string route and the whitespace id |
+| `_query_model`: `deadline_at=_rev()._owner_deadline_at(ctx)` on `ReviewRequest` | 6ff83c60 (R23) | **S2** | `ouroboros/tools/review_multi_model.py` | upstream's two-line comment verbatim; handle idiom matches the neighbouring `_rev()._cfg` / `_rev().slot_id_for_row` |
+| `_multi_model_review_async`: `any_api_rows = any(not delivery_retrieves(route, row_actors[idx]) …)` | eb3a9b14 | **S2** | `ouroboros/tools/review_multi_model.py` | |
+| deletion of the per-result `emit_review_usage` block | 761cf1b9 | **S2** | `ouroboros/tools/review_multi_model.py` | the producer half had auto-merged into the substrate observer while this v7-only leaf still emitted a second row — one physical send, two `llm_usage` rows, straight into the budget rail. Verified live in the isolated env: 1 physical `chat()` → exactly 1 `llm_usage` row; a control run with 2 slots emitted exactly 2. The other two `emit_review_usage` sites (`review_synthesis.py`, `preflight_review_run.py`) wrap direct `LLMClient.chat` calls that never go through the substrate |
+| `_review_output_budget` | — | S3 | `ouroboros/tools/review_multi_model.py` | no upstream delta |
+| `_handle_task_acceptance_review` → `triad_delivery_slots` + typed refusals | a3599ecd | S1 (auto-merged) | `ouroboros/tools/review.py` | |
+
+### 2.2 `review_substrate.py` and its leaves
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `ReviewSlot.native_retrieval`: identity `is` → `.value` compare | 34fa7931 | **S2** | `ouroboros/review_records.py` | upstream's dataclass copies dropped (they would duplicate v7's); the delta moved into the leaf. Verified against upstream's `test_slot_properties_and_plan_review_facade_share_the_predicate` |
+| `ReviewSlot.retrieves` → `delivery_retrieves(self.route, self.subagent_id)` | eb3a9b14 | **S2** | `ouroboros/review_records.py` | same proof |
+| **new** field `ReviewRequest.slot_session_tasks: Dict[str, str]` | 6a5c9b82 | **S2** | `ouroboros/review_records.py` | closes a silent degradation: the writers (`loop_acceptance_review.py`) now reach the readers (`review_execution.py`, `review_native_episode.py`), which read it defensively via `getattr(...) or {}`. Un-relocated the per-slot work order collapses to the shared `session_task` with no error anywhere |
+| `_review_actor_projection`: typed `not_dispatched` transport branch | 32e4d847 | S1 | `ouroboros/review_projection.py` | absent from `18b9832e:review_projection.py` before the edit; the merged coordinator emits `operation_state="not_dispatched"` from three sites |
+| `compact_review_projection`: `not_dispatched` panel aggregate | 32e4d847 | S1 | `ouroboros/review_projection.py` | same |
+| `_transport_error_status`, `_public_review_reason`, `_response_ref_projection`, `_review_enforcement_impact`, `_review_panel_id`, `build_review_binding`, `_criteria_*`, `aggregate_outcome_tier`, `task_acceptance_is_clean`, `build_improvement_capsule` | — | S3 | `ouroboros/review_projection.py`, `ouroboros/review_verdict.py` | verified against `git diff a76961de 23ab428f` — no upstream delta on any of them |
+| `import json` in `review_substrate.py` | 32e4d847 | S3 (removed) | — | v7 used it only in the `free_refusal` `json.dumps` block that upstream deleted (replaced by `_error_actor(..., operation_state="not_dispatched")`); leaving it is `ruff F401` |
+| `ReviewCoordinator` budget scope → `resolve_total_budget_usd()` | 2ed94f78 | S1 (auto-merged) | `ouroboros/review_substrate.py` | |
+| `_error_actor(prompt_ref=…)` | 32e4d847 | S1 (auto-merged) | `ouroboros/review_substrate.py` | |
+| `_run_slot` `usage_observer` plumbing | 761cf1b9 | S1 (auto-merged) | `ouroboros/review_substrate.py` | this is the producer half whose consumer half is the `review_multi_model` row above |
+| `zero_physical_refusal(retrieving=)`, `acceptance_slot_fit` backstop, `_emit_usage(provider=…, model=resolved_model)`, the `delivery_retrieves`/`acceptance_slot_fit`/`triad_delivery_slots` re-exports | 60221fa7, b1b2f2c5, 73fb6d1d, a3599ecd | S1 (auto-merged) | `ouroboros/review_substrate.py` | verified present in the merged file |
+
+### 2.3 `review_evidence.py` → `review_evidence_sections.py`
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| **new** `ACCEPTANCE_PROMPT_OVERHEAD_CHARS` | b1b2f2c5, 73fb6d1d | S1 | `ouroboros/review_evidence_sections.py` | placed beside its sibling caps; body upstream-verbatim |
+| **new** `_ACCEPT_DENSE_CHARS_PER_TOKEN` | b1b2f2c5, 73fb6d1d | S1 | `ouroboros/review_evidence_sections.py` | |
+| **new** `class AcceptancePacketBudget(int)` | b1b2f2c5, 73fb6d1d | S1 | `ouroboros/review_evidence_sections.py` | |
+| **new** `acceptance_packet_budget_chars(slots)` | b1b2f2c5, 73fb6d1d | S1 | `ouroboros/review_evidence_sections.py` | needs no handle: `log` is already pinned to `"ouroboros.review_evidence"` in the leaf and the `tools.review_synthesis` import is call-time, so upstream's monkeypatch seam survives |
+| `_accept_effective_claims` → 3-tuple `(claims, source, open-wave exhibit)` + `none_open_plan_wave` disclosure | 021cbdb1 | S1 | `ouroboros/review_evidence_sections.py` | leaf had no rewrites, so upstream verbatim; caller `review_evidence.py` (auto-merged) already unpacks 3 and consumes `plan_exhibit`; `current_plan_review_wave` exists in `task_results.py` |
+| `_accept_artifact_manifest` (drops the redundant local `import hashlib`) | 09ac51b2 | S1 | `ouroboros/review_evidence_sections.py` | the leaf's `_ev().truncate_review_artifact` rewrite re-applied |
+| `_accept_enforce_budget(ev)` → `(ev, *, budget: int = 0)` plus the whole new shed ladder (predecessor-authority envelope first, `tool_trajectory_complete` flags, repo-diff preview rung, largest-sections overflow reason, unresolved-partial trajectory rows) | 73fb6d1d | **S2** | `ouroboros/review_evidence_sections.py` | both `truncate_review_artifact` sites carry `_ev().`; caller passes `budget=budget_chars`, so the sizing work is live, not inert. Smoke: `_accept_enforce_budget(ev, budget=20_000)` sheds and writes the omission note |
+| `_accept_receipt_exhibits`, `_accept_verification_summary`, `_accept_claim_support_refs`, `_accept_obligation_row`, `_accept_trajectory`, `_owner_content_projection`, `_accept_owner_directives`, `obligation_is_pending`, `task_acceptance_evidence_revision`, `_accept_redact_cap`, `_accept_task_contract`, `_accept_protected_set`, `_ACCEPT_RETRIEVAL_URLS_MAX` | — | S3 | `ouroboros/review_evidence_sections.py` | unchanged upstream; the leaf as-is is the winner. `_ACCEPT_RETRIEVAL_URLS_MAX` was scouted as new — it is in the base and already in the leaf |
+| facade re-exports of the four new packet-budget names | b1b2f2c5, 73fb6d1d | S1 | `ouroboros/review_evidence.py` | required by `loop.py`, `test_acceptance_packet_sizing.py`, `test_acceptance_fixround.py`, `test_v671_acceptance_convergence.py` |
+| upstream's new leaf `review_status_projection.py` (`build_review_projection`, `build_review_status_payload`, `_run_failure_reason`, 8 × `_review_status_*`) | 852ce967 | S1 (auto-merged `A`) | `ouroboros/review_status_projection.py` | kept as staged; ten facade re-exports remain in `review_evidence.py` |
+
+### 2.4 `reviewer_slot_config.py`
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| module docstring | a3599ecd, e2945da3 | **S2** | `ouroboros/reviewer_slot_config.py` | kept v7's ABI-10 paragraph, spliced upstream's `triad_delivery_slots`/R2 sentence, dropped upstream's MIGRATION paragraph (the code it describes is deleted in v7) and v7's D15 sentence (see §7) |
+| `ReviewerSlotConfig.deep_review` field | e2945da3 | S1 | `ouroboros/reviewer_slot_config.py` | mandatory: auto-merged `_parse_deep_review`, `parse_reviewer_slots`, `deep_review_slot` and `gateway/settings.py` all read it. Kept v7's `source: str  # "structured" \| "default"` line; upstream's "legacy model key" reworded to "deep-review model key" since v7 has no legacy read |
+| **new** `_delivery_slot` | a3599ecd | **S2** | `ouroboros/reviewer_slot_config.py` | upstream's body with v7's typed local-route predicate `resolved_review_model_target(row.target_id).provider_route == "local"` in place of `review_model_uses_local(row.target_id)` (ABI-4); v7's ABI-4 comment carried over |
+| **new** `triad_delivery_slots` | a3599ecd | **S2** | `ouroboros/reviewer_slot_config.py` | same substitution. One truthfulness edit inside upstream's docstring: "``slot_N`` from the one mint on legacy" → "owner-assigned on the structured config (ABI-10 retired the legacy comma-list read)" — the original sentence is false on this tree |
+| `structured_scope_review_slots` delegates to `_delivery_slot(effort_surface="scope_review")` | a3599ecd | S1 | `ouroboros/reviewer_slot_config.py` | exactly as upstream |
+| `reviewer_slots.__doc__` | a3599ecd | **S2** | `ouroboros/reviewer_slot_config.py` | kept v7's text, appended upstream's closing sentence, dropped upstream's `route_env_key` clause (the parameter does not exist in v7) and v7's D15 clause |
+| `commit_triad_delivery` body | a3599ecd | **S2** | `ouroboros/reviewer_slot_config.py` | HEAD alone was non-viable — the auto-merged preamble binds `slots`, not `rows` → 8 × `NameError`. Took upstream's slot-based projection, kept v7's fingerprint predicate expressed over `slots` (upstream's `config.source == "legacy"` can never be true; ABI-10 retired that source). Verified live: default panel → `legacy_skill_fingerprint=True`, `session_targets=["","",""]`; structured mixed panel → `False` |
+| `api_fallback_disclosure` deleted; `_ACCEPTANCE_API_PANEL_MEASURED` added | a3599ecd, daf37e99, fb8073b6 | **S3 / owner fork D-19** | `ouroboros/reviewer_slot_config.py` | see §7. Post-merge its three v7 collaborators were gone, `__all__` no longer exported it, and the auto-merged `test_the_retired_acceptance_api_pin_apparatus_is_gone` asserts the name absent |
+| `_parse_deep_review`, `parse_reviewer_slots`, `deep_review_slot`, `acceptance_delivery_disclosure`, `reviewer_slot_save_check(previous_raw=)`, `project_reviewer_slots_into_env`, `__all__` | a3599ecd, e2945da3, daf37e99 | S1 (auto-merged) | `ouroboros/reviewer_slot_config.py` | |
+
+### 2.5 `skill_review.py` → its four leaves
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `WASM_MAGIC` import | 4bd148a3 | S1 relocated | `ouroboros/skill_review_packs.py` | facade resolved to HEAD and is byte-identical to `18b9832e` |
+| `_SKILL_PACK_TOKEN_HEADROOM` comment reword | 4bd148a3 | S1 relocated | `ouroboros/skill_review_packs.py` | value identical |
+| `_LOADABLE_BINARY_EXTENSIONS` loses `".wasm"` + reworded comment | 1e406093, 4bd148a3 | S1 relocated (semantic) | `ouroboros/skill_review_packs.py` | |
+| `_read_skill_file` docstring + `if text is not None and not data.startswith(WASM_MAGIC):` | 4bd148a3 | S1 relocated (semantic) | `ouroboros/skill_review_packs.py` | closes a live split-brain: `skill_review_passes.py` auto-merged and dropped `(b"\x00asm", …)` from `_EXECUTABLE_MAGICS` while the compensating guard lived in the untouched leaf. Verified end-to-end in the isolated env: the canonical 8-byte module and an all-ASCII UTF-8-decodable module are both descriptor-ised, never inlined; an ELF renamed `core.wasm` still raises `_SkillBinaryPayload` |
+| `_build_skill_file_packs` `"non-UTF-8 file"` → `"binary file"` | 4bd148a3 | S1 relocated | `ouroboros/skill_review_packs.py` | |
+| `_SKILL_REVIEW_ITEMS` widget-sandbox (opaque-origin) comment | 382e754f | S1 relocated | `ouroboros/skill_review_prompt.py` | coherent with the auto-merged `docs/CHECKLISTS.md` items 7/8 |
+| `render_skill_review_block`: `"Claude advisory"` → `"Advisory pre-review"` ×3 | 01a9df8e | S1 relocated | `ouroboros/skill_review_output.py` | user-visible label |
+| `skill_review_passes.py` | 1e406093 | S1 (auto-merged) | `ouroboros/skill_review_passes.py` | byte-identical to upstream; not edited |
+
+### 2.6 plan review, advisory pre-review, native episode
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| removal of the `if cannot_verify:` early-return block | 68337105 | S1 (forced) | `ouroboros/tools/plan_review.py` | the HEAD side is structurally dead after the auto-merge: `_build_packet` already unpacks a 4-tuple with no `cannot_verify`, and the `_record_cannot_verify_attempt` / `_plan_reviewer_config_fingerprint` imports were auto-removed. Keeping HEAD = 3 × `NameError`; tree swept, zero remaining references |
+| `_SPEC_SCHEMA` prose; `_apply_disposition` closure notes | 8be9725e, 046c4572 | S1 (auto-merged) | `ouroboros/tools/plan_review.py` | |
+| import block: keep `ToolResult`/`_publish_tool_result`, drop `review_model_uses_local` | a3599ecd via 77b9df3e | **S2** | `ouroboros/tools/plan_review_runtime.py` | the only caller of `review_model_uses_local` was replaced by the auto-merged `triad_delivery_slots`; a naive union is `ruff F401` and CI-red |
+| `usage_attribution={"review_wave_id": …}` | 797055ad | S1 (auto-merged) | `ouroboros/tools/plan_review_runtime.py` | |
+| `_build_advisory_prompt` comment `~830KB governance bodies` → `governance bodies (hundreds of KB)` | 840167b4 | S1 relocated | `ouroboros/tools/preflight_review_prompt.py` | the whole-file upstream diff on `claude_advisory_review.py` is this one line; the facade resolved to HEAD, byte-identical to `18b9832e`. The `_mandatory_read_pointer` hunk header was a misleading diff anchor — that function is unchanged at `ouroboros/tools/claude_advisory_review.py:101` |
+| `_ADVISORY_EXTRACT_CONTRACT`, `_resolve_fallback_model`, `_llm_extract_advisory_items`, `advisory_review_route`, … | — | S3 | `ouroboros/tools/preflight_review_run.py` | zero upstream delta |
+| stale "SDK budget kill is replaced by the executor's config-owned round/transcript caps" comment | 60221fa7 | S1 | `ouroboros/tools/preflight_review_run.py` | rewritten to the episode's transcript bound derived from the reviewer's own window, with no round cap; grounded in the auto-merged `review_native_episode.review_native_transcript_bound` and in `OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS` now being a retired key |
+| `emit_review_usage` `+attribution` from `REVIEW_ATTRIBUTION_KEYS` | 761cf1b9 | S1 (auto-merged) | `ouroboros/tools/review_helpers.py` | landed in a live function; `REVIEW_ATTRIBUTION_KEYS` exists in `ouroboros/_usage_rows.py` |
+| `_call_scope_llm`: `delivery_retrieves` + `deadline_at=_owner_deadline_at(ctx)` | eb3a9b14, 6ff83c60 | S1 (auto-merged) | `ouroboros/tools/scope_review.py` | resolves only because of the `tools/review.py` addition above |
+
+### 2.7 G2 tests
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| 9 new usage-row tests (`test_one_llm_usage_row_per_physical_reviewer_call`, `…format_repair…`, `…failed_physical_reviewer_send…`, `…terminal_failed_reviewer_retry…`, `…terminal_budget_refusal…`, `…terminal_attempt_limit…`, `…internal_reviewer_transport_attempts…`, `…single_usage_row_carries_the_reviewer_attribution`, `…session_row_reports_its_own_route_provider_and_model`) | 761cf1b9, 2ed94f78, d48904a5, 18f78bcb | S1 | `tests/test_review_substrate_v2.py` | added verbatim after `test_review_usage_preserves_unknown_cost_as_null`; the file's own docstring already claims usage emission and they have no other v7 home. Zero duplicate defs |
+| the 6 prompt-golden tests and `_seam_prompt_cases` in the same upstream block | — | S3 | `tests/test_review_substrate_prompts.py` | unchanged upstream and already redistributed by v7 |
+| new `test_positive_custody_session_failure_emits_one_unknown_cost_usage_row` | d48904a5 | S1 | `tests/test_review_agent_session_route.py` | genuinely new, no v7 home |
+| `test_applied_access_is_the_receipt_alone_never_the_request_echoed_back` | — | S3 | `tests/test_review_session_delivery.py` | v7 relocated it; the copy there is byte-identical to base (no upstream delta), so keeping upstream's would duplicate it |
+| upstream's `:1276-2658` test block | — | S3 | `test_review_session_poller.py`, `test_review_session_scope_wiring.py`, `test_review_session_delivery.py` | base→upstream symbol diff proves none of them changed upstream |
+| `test_acceptance_rows_stay_api_even_when_triad_routes_delegate` → `test_acceptance_rows_follow_the_configured_triad_delivery` | a3599ecd, daf37e99 | S1, **adapted setup** | `tests/test_review_agent_session_route.py` | upstream configures the panel through the legacy comma-list + `TRIAD_REVIEW_ROUTES_ENV`, both retired by ABI-10. Setup rewritten to the structured SSOT; every upstream assertion kept, including the stale-route-env negative control. Verified live: rows come back `[('slot_1', AGENT_SESSION, 'codex', 'task acceptance', retrieves=True), ('slot_2', API_CHAT, …, False)]` |
+| `test_reviewer_slot_config.py` module docstring | a3599ecd, 2f61e9be | **S2** | `tests/test_reviewer_slot_config.py` | v7's ABI-10 half + upstream's R2/legacy-consumers half |
+| `test_all_delegated_triad_projects_no_api_model_and_acceptance_follows_the_rows` | a3599ecd | **S2** | `tests/test_reviewer_slot_config.py` | upstream's `SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"]` KeyErrors on v7 (retired key); kept v7's `OPENROUTER_REVIEW_DEFAULTS["triad"]` form and added upstream's `triad_delivery_slots` block, which is the half that actually pins R2 |
+| the two `_legacy_config` tests | a3599ecd | S3 | — | dropped, not ported: they target the comma-list migration read v7 deleted. Replacement coverage: `test_retired_phase5_route_envs_are_ignored` in the same file and `tests/test_settings_effort.py::test_review_models_default_in_config` |
+| `test_all_delegated_triad_writes_no_fallback_record_and_reaches_acceptance` | a3599ecd, daf37e99 | S1 | `tests/test_reviewer_slot_config.py` | taken verbatim, replacing v7's `test_all_delegated_commit_surface_discloses_the_api_fallback` |
+| `tests/test_skill_review.py` conflict | 1e406093, 4bd148a3 | S3 | `tests/test_skill_review.py` | resolved to HEAD, byte-identical to `18b9832e` |
+| `test_skill_review_blocks_executables_by_magic_not_filename`: docstring `(ELF/PE/Mach-O/WASM/.pyc)` → `(ELF/PE/Mach-O/.pyc)`, `"module.blob": b"\x00asm…"` sample removed | 1e406093 | S1 relocated (semantic) | `tests/test_skill_review_packs.py` | the sample pinned behaviour upstream deliberately retired |
+| new `test_skill_review_admits_wasm_as_content_hash_bound_descriptor`, `test_skill_review_routes_utf8_decodable_wasm_to_descriptor` | 1e406093, 4bd148a3 | S1 | `tests/test_skill_review_packs.py` | v7 moved all 17 sibling tests there; their imports resolve through `skill_review.py`'s re-exports |
+| `test_review_evidence_keeps_the_packet_assembler_and_its_patchable_seams` `__module__` pins | 852ce967 | **S2** | `tests/test_review_evidence_extraction.py` | after upstream's leaf split two of the six names are re-exports, so the pin was guaranteed red. The pin now states the truth: four names keep the `review_evidence` pin; `build_review_projection` / `build_review_status_payload` are pinned to `"ouroboros.review_status_projection"` **plus** `name in vars(review_evidence)` so the historical read is still guarded. `_MOVED_NAMES` extended with the four new section-leaf names |
+| 8 × `monkeypatch.setattr(rs, "reviewer_slots")` → `"triad_delivery_slots"` | a3599ecd | S1 | `tests/test_review_substrate_acceptance.py` | v7 redistributed the 8 acceptance tests out of `test_review_substrate_v2.py`; all 8 copies are byte-identical to base, so upstream's one uniform token change applies mechanically. Applied by the root operator on G2's request |
+
+### 2.8 auto-merged sites G2 checked and did not need to fix
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `reviewer_slot_save_check(previous_raw=…)` at its callers | daf37e99 | S1 (no patch) | `ouroboros/gateway/settings.py`, `ouroboros/subscription_install_presets.py` | the gateway caller is byte-identical to upstream and does pass `previous_raw=stored`; the presets caller does not, and neither does upstream's own copy (that call only validates a compiled preset). The scout's "R12 fires on every save" hazard was stale |
+| signature sweep: `task_acceptance_zero_physical_refusal(retrieving=)`, `acceptance_slot_fit(slot_input_caps=)`, `_error_actor(prompt_ref=)`, `emit_review_usage(provider=)`, `row_effort(default=)`, `delivery_retrieves(route, subagent_id)`, `_accept_enforce_budget(budget=)`, `_accept_effective_claims` 3-tuple, `reviewer_slot_save_check(previous_raw=)` | mixed | invariant check | organ-wide | every call site agrees with the merged signature — the "auto-merged caller + relocated callee" hazard class |
+
+---
+
+## 3. G3 — tools / extensions / registry
+
+### 3.1 `ouroboros/tools/registry.py` — protected (D-21)
+
+The merged file is byte-identical to `18b9832e:ouroboros/tools/registry.py` except for six
+lines (verified by `diff -u`: exactly 6 changed lines, 313 lines total vs 309). No function
+body, no `__all__`, no comment was touched. The three pure-upstream conflict regions were
+resolved to the v7 side — they were the pre-split bodies, and their substance landed in the
+unprotected leaves below.
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `+directory_destination_child_name` in the `shell_parse` import block | a7f7ce9a, 2a431b82, e4c7bdc0 | S1 (mandatory) | `ouroboros/tools/registry.py` line 31 | the symbol moved `shell_guards` → `shell_parse` upstream; without this the whole tool layer fails at import |
+| `−directory_destination_child_name` from the `shell_guards` import block | a7f7ce9a | S1 (mandatory) | `ouroboros/tools/registry.py` | merged `shell_guards.py` no longer defines it |
+| `+sequential_effective_cwds` | 2a431b82 | S1 | `ouroboros/tools/registry.py` line 34 | |
+| `+interpreter_inline_code` | e4c7bdc0 | S1 | `ouroboros/tools/registry.py` line 45 | |
+| `+writer_target_rows` (beside the retained `writer_target_tokens`) | a7f7ce9a, 2a431b82 | S1 | `ouroboros/tools/registry.py` line 55 | |
+| `+from ouroboros.tools.write_shape import _workspace_write_candidates  # noqa: F401` | a7f7ce9a, fcf0bc10, 872a9c1b | S1, **operator addition** | `ouroboros/tools/registry.py` | the sixth line, added by the root operator after the lane flagged it: upstream's `tests/test_workspace_write_shape.py` imports the name from the facade, and it is the only such name that did not resolve. Disclosed in §7 |
+
+### 3.2 `extension_loader.py` and the extension leaves
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `_iter_payload_files` import | afe1fc4f | S1 relocated | `ouroboros/extension_plugin_api.py` | added to the module-level `skill_loader` import where `_read_module_sources` now lives, not to the loader facade |
+| `_ExtensionRegistrations.module_sources` | afe1fc4f | S1 | `ouroboros/extension_registry_state.py` | field + comment verbatim |
+| `_request_server_reconcile_if_worker` → `_finalize_extension_reconcile` | 2f1e2c23, db9ad562 | **S2** | `ouroboros/extension_loader.py` | v7 had generalised the seam to bidirectional and moved the transport to `extension_reconcile_queue.announce_extension_state_change`; upstream added two orthogonal jobs (a `state["server_reconcile"]` receipt and `record_health_for_runtime_state` on every reconcile exit). The result is a thin loader function that calls the queue's announcer, stamps `state["process"]`, projects the announcement onto the receipt and records health — the `is_server_process()` direction branch stays in the queue module |
+| `_validate_runtime_ui_render` | b2bcd659 | S1 relocated, renamed public | `ouroboros/extension_ui_validation.py` as `validate_runtime_ui_render` (+`__all__`) | two importers (`extension_child_catalog.py`, `extension_plugin_api.py`) import it `as _validate_runtime_ui_render`; the single natural owner already holds `validate_ui_render`. This is the O3 row in §8 |
+| out-of-process module-source capture | afe1fc4f | **S2** | `ouroboros/extension_registry_state.py::_StagedRegistrations.module_sources` + `extension_child_catalog._stage_out_of_process_surfaces` + `extension_plugin_api._publish_registrations` | upstream wrote `bundle.module_sources.update(...)` directly inside the registration lock; in v7 that window is validate → SWAP → attach, and a direct `_extensions[…]` write would publish a partially-populated bundle (ABI-9 atomicity + generation-bound recovery). Staged instead and copied onto the bundle at the swap, so a refused publication leaves zero servable bytes — upstream's observable contract |
+| `_read_module_sources` | afe1fc4f | S1 relocated | `ouroboros/extension_plugin_api.py` | body verbatim; smoke returns the reviewed-payload walk including siblings |
+| `PluginAPIImpl.register_ui_tab` (`_validate_runtime_ui_render`, module-source capture, `−"ui_host_pending": True`) | afe1fc4f, b2bcd659 | **S2** | `ouroboros/extension_plugin_api.py` | the dead write is a silent survivor of v7's split: the auto-merge had already dropped `ui_tabs_pending` from `gateway/extensions.py` and the tests, so nothing read it. Capture stages rather than mutates |
+| `_extension_runtime_state` `+"process"` | 01a9df8e | S1 | `ouroboros/extension_liveness.py` | resolved via the new `_process_role()` (§7) |
+| `runtime_state_for_skill_name` if/else restructure, `process` on both branches | 01a9df8e | S1 | `ouroboros/extension_liveness.py` | reproduced exactly; a missing skill is still an observation and the receipt must name the observer |
+| `save_enabled(..., actor="load_error_revert")` | 01a9df8e | S1 | `ouroboros/extension_liveness.py` | `actor=` kwarg present in the merged `skill_loader.py` |
+| `reconcile_extension(health_stamp=…)` + 7 call sites → `_finalize_extension_reconcile` | 2f1e2c23, db9ad562 | S2 (mechanical) | `ouroboros/extension_loader.py` | upstream's compact one-line-per-4-params signature reflow (its own size gate) was NOT carried; v7's expanded signature kept and `health_stamp` added |
+| `reload_all`: `fresh_code_stamp()` + `record_health_for_runtime_state` batch; drop `hv_version`/`hv_sha`/`regressions` | 2f1e2c23 | **S2** | `ouroboros/extension_loader.py` | the mechanical merge had deleted v7's whole-set announcement `_announce_extension_state_change(drive_root, "", reason="reload_all")` together with the `regressions` block. That line has no upstream counterpart and is the only signal covering skills unloaded by the "gone" sweep — restored with its comment. Upstream's bookkeeping removal stands: its substance is inside `extension_health.record_health_for_runtime_state`, including the `extension_regression` event append |
+| drop `"ui_tabs_pending": []` from `snapshot()` | b2bcd659 | S1 (auto-merged) | `ouroboros/extension_loader.py` | |
+| `live_widget_projection`, `live_module_sources`, `__all__` additions | fa397986, afe1fc4f | S1 (auto-merged) | `ouroboros/extension_loader.py` | must be reachable as `extension_loader.<name>` for `gateway/widgets.py`, `gateway/extensions.py` and `tests/test_gateway_widgets.py` |
+| `announce_extension_state_change` return vocabulary `{"", "requested", "request_failed"}` | 2f1e2c23, db9ad562 | **S2, widened v7 seam** | `ouroboros/extension_reconcile_queue.py` | upstream's contract is pinned by the auto-merged `tests/test_skill_widget_surface.py` and `tests/test_extensions_api.py`; v7's seam could only return `""`/`published:<gen>`/`no_skill`/`requested`, so `request_failed` was unreachable and a swallowed exception was indistinguishable from "nothing to do". The blanket `try` was split into publish / request halves. Disclosed in §7 |
+| `_process_role()` | 01a9df8e | **S2, new v7 seam** | `ouroboros/extension_liveness.py` | upstream's receipt tests monkeypatch `extension_loader.is_server_process`; under the v7 split the state functions live in a leaf with no such binding. `_process_role()` resolves `is_server_process` at call time through `ouroboros.extension_loader` (the v7 leaf idiom). Disclosed in §7 |
+| `control_scheduling` `parent_cognitive_route` / `status_drive_root` reflows | 2f1e2c23 | S3 (shape only) | `ouroboros/extension_loader.py` | v7's shape kept, only the semantics taken — same de-reflow rule as `reconcile_extension` |
+
+### 3.3 `tools/core.py` → `tools/core_file_tools.py` (native read-receipt extent)
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `import bisect`, `Dict`, `Optional` header | d7f977b9, 8c7f0833 | S1 relocated | `ouroboros/tools/core_file_tools.py` | the mechanical merge had leaked `bisect`/`Optional` into the facade where nothing used them (both F401); reverted, so `tools/core.py` is byte-identical to `18b9832e` |
+| `_render_line_slice(extent=…)` with the `ends`/`line_ends` arithmetic | d7f977b9, 89b7dedf | S1 relocated | `ouroboros/tools/core_file_tools.py` | body verbatim |
+| `_repo_read(extent=…)` | d7f977b9, 24272e32 | S1 relocated | `ouroboros/tools/core_file_tools.py` | |
+| `_data_read(extent=…)` | d7f977b9, 24272e32 | S1 relocated | `ouroboros/tools/core_file_tools.py` | |
+| **new** `_stamp_read_view` | a6def41f | S1 relocated | `ouroboros/tools/core_file_tools.py` | placed beside `_annotate_reread`; deliberately NOT added to `core.py`'s re-export block — a new symbol with no historical importer |
+| `_read_file` entry reset + `opened`/`opened_root` derivation + three stamp wrappings | a6def41f, 24272e32 | S1 relocated | `ouroboros/tools/core_file_tools.py` | `ctx.last_read_view` needs no `ToolContext` field: the dataclass is unslotted |
+
+### 3.4 `tools/control.py` → the control leaves
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `schedule_subagent` BURST+ABSORB cash clause; `request_deep_self_review` reviewer-row text | 592e8be3 | S1 (auto-merged) | `ouroboros/tools/control.py` | the only upstream control content that stays in `control.py`. Verified live: `initial_tool_schemas` yields a description containing "BURST + ABSORB", "prefix write" and "burst buys latency and spacing buys cash" — the three assertions of upstream's new `test_burst_absorb_clause_states_the_prefix_write_cost` |
+| **new** `_schedule_parent_chat`; `_populate_subagent_event_extras` `is not None` | 68eab3ea | S1 relocated | `ouroboros/tools/control_scheduling.py` | |
+| `_schedule_task`: `_schedule_parent_chat`, `root_cost_ceiling_usd`, `chat_id=current_chat_id`, `requested_depth` | 68eab3ea, d48904a5, 558a5c65 | S1 relocated | `ouroboros/tools/control_scheduling.py` | |
+| `schedule_subagent_properties["requested_depth"]` schema property | 558a5c65 | S1 relocated | `ouroboros/tools/control_subagent_spec.py` | the `requested_depth` plumbing predates the split; only the schema property and `child_budget_for_schedule(requested_depth=…)` are new |
+| `_subtask_outcome_summary` `ledger_summary` `entry_count` authority | 6fdfdd75 | S1 relocated | `ouroboros/tools/control_task_results.py` | |
+| `_request_deep_self_review` → `deep_review_route` / `deep_review_unavailable_text` | 592e8be3 | S1 relocated | `ouroboros/tools/control_runtime.py` | both helpers present in the merged `deep_self_review.py` |
+
+### 3.5 `tools/shell.py` and the typed result envelope
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `from ...result_envelope import annotate, append_note` | 32628385 | S3 | — | `tools/result_envelope.py` is deleted in v7; resurrecting the import would reintroduce the untyped envelope path v7 removed |
+| `from ...verify import check_exit_masking` | 32628385 | S1 | `ouroboros/tools/shell.py` | module-level exactly as upstream; no cycle (`verify.py` imports `shell` only lazily inside a function) |
+| `_masked_green_disclosure` | 32628385 | **S2, re-expressed** | `ouroboros/tools/shell.py`, signature `(ctx, result, cmd)` | reads the same sensor and, when masked, republishes the already-published `ToolResult` via `_published_tool_result` / `_replace_tool_result(meta_updates=…)` / `_publish_tool_result`. Status, code and the trusted process facts (`exit_code`, `signal`) carry through untouched; the note TRAILS the payload so line 1 still belongs to the producer's typed marker; reasons ride `meta["exit_masking_reasons"]`. Applied at all three green `_publish_process_result` sites in `_run_shell` and at the `sh`/`bash` site in `_run_script`. Live smoke: masked → note present, first line unchanged, `meta={'exit_code': 0, 'exit_masking_reasons': ['\|\| true']}`; unmasked → no note, no key |
+| `_preserve_result_meta` | 32628385 | **S3, superseded** | — | `tools/tool_result.py::_wrap_run_script_process_result` performs the identical job: it rebuilds the exact three run_script text framings and republishes the inner typed base via `_replace_tool_result`, promoting `code` to `ARTIFACT_OUTPUT_UNDECLARED` when an audit note is present and the base was `ok`. Upstream's helper existed only to copy `result_meta` off the retired `ToolResultText`. `tools/tool_result.py` needed no edit. This is the O3 row in §8 |
+| two stranded `, cmd,` arguments inside v7's `text = ( … )` expressions | 32628385 | auto-merge defect, fixed | `ouroboros/tools/shell.py` | the merge had silently turned `text` into a tuple at both sites |
+| removal of the `timeout` alias property from both schemas | d0caa69b | S1 | `ouroboros/tools/shell.py::get_tools` | paired with the `tool_resolution` row below — land both or the alias silently disappears. Smoked live |
+
+### 3.6 shell-guard rows, per-segment write shape
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| **new** `_no_deliverables_decision` | a7f7ce9a, fcf0bc10, 872a9c1b | S1 relocated | `ouroboros/tools/write_shape.py` (landed in `registry_guards.py`, moved by the root operator — §6) | body verbatim |
+| **new** `_directory_change_argv` | a7f7ce9a, fcf0bc10 | S1 relocated | `ouroboros/tools/write_shape.py` (same move) | body verbatim |
+| **new** `_workspace_write_candidates` | a7f7ce9a, fcf0bc10, 872a9c1b | S1 relocated | `ouroboros/tools/write_shape.py` (same move) | body verbatim apart from two handle-prefixed `shell_argv_with_path_tokens` calls |
+| `_workspace_shell_write_block`: `write_target_argvs: list[list[str]]` → `target_rows: list`, per-row cwd via `sequential_effective_cwds`, write-vs-mention split, `is_write and not pro_workspace_passthrough` at all three outside-root gates, `candidate_cwd / candidate` for the relative branch | a7f7ce9a, 2a431b82, e4c7bdc0, a2af2123 | **S2** (semantics S1, shape not) | `ouroboros/tools/registry_guards.py` | upstream's semantics landed whole; the shape was rewritten to v7's `_registry()` call-time handle and v7's typed denial carriers (`_workspace_write_block_runtime_result` / `_workspace_write_block_outside_root_result`) kept instead of upstream's message functions. Behavioural smoke: `cd /tmp && echo hi > out.txt` yields the two expected rows and row cwds `['/base','/tmp']`; `cp ../data/settings.json ./x` treats the source as mention-only and `./x` as the write |
+| `_run_shell_safety_check`: `target_rows = _registry().writer_target_rows(raw_cmd)` as the one per-segment SSOT, derived `write_target_argvs`, `cd`/`pushd` rows filtered out of `explicit_write_targets`, `cp DIR/` derived children folded back into the rows, `writeish |= any(row[3] for row in target_rows)` | a7f7ce9a, 2a431b82 | **S2** | `ouroboros/tools/registry_guard_process.py` | same handle rewrite; v7's local `_interp_inline_code` alias dropped for the module-level `interpreter_inline_code` |
+| `_TOOL_ARG_ALIASES["*"]["timeout"] = "timeout_sec"`; `_prepare_public_builtin_args(rejected=…)`; `_format_tool_arg_error(*, rejected=())` | d0caa69b | S1 relocated | `ouroboros/tools/tool_resolution.py` | upstream's comment verbatim; the other caller (`registry_core.py`) uses the default and is unaffected |
+| `segment_write_shape()` call-time import of `_is_pure_read_inspection` | 2a431b82, fcf0bc10 | S1, **hard runtime break fixed** | `ouroboros/tools/write_shape.py` | upstream's `+72` lines auto-merged with no conflict but imported `ouroboros.tools.read_inspection`, a module v7 deleted — `ModuleNotFoundError` inside `shell_guards.writer_target_rows` on any write-shaped segment, taking down the whole run_command safety lane. Re-pointed to `ouroboros.tools.registry_guard_process`. (G3's report attributed this to `49e6359c`; that SHA is a v7-line commit — the upstream provenance is `2a431b82`/`fcf0bc10`, corrected here.) |
+
+### 3.7 delegation / integration / preflight
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `_patch_touched_paths(env=…)` | f7910f04 | S1 (auto-merged) | `ouroboros/tools/subagent_integration.py` | |
+| `_target_mismatch_verdict` dedup | b7f1bdb0 | S1 (auto-merged) | `ouroboros/tools/subagent_integration.py` (nested in `_handle_external_workspace_integration`) | verified at line 495 |
+| `integrate_delegated_patch` tool description | 9f692ddb | S1 (auto-merged) | `ouroboros/tools/subagent_integration.py::get_tools` | |
+| `_delegated_disposition_refusal` orphan text | 9f692ddb | S1 relocated | `ouroboros/tools/subagent_integration_delegated.py` | |
+| `_dispose_delegated(disposed_by=…)` | 9f692ddb | S1 relocated | `ouroboros/tools/subagent_integration_delegated.py` | `delegate_custody.record_patch_disposed(**payload)` accepts it |
+| `_integrate_delegated_patch`: `orphan_disposition_status` + `orphan_note` on all three exits, `_dispose(disposed_by=…)` | 9f692ddb, dffcc89a | S1 relocated | `ouroboros/tools/subagent_integration_delegated.py` | |
+| `_PAYLOAD_PRINCIPAL_PROFILES ← tool_access._TOP_LEVEL_PRINCIPAL_PROFILES` | f7910f04 | S1 (auto-merged) | `ouroboros/tools/delegate_integration.py` | |
+| `_payload_delegation_busy` terminal-owner filter | fcecf13c | S1 (auto-merged) | `ouroboros/tools/delegate_integration.py` | |
+| `_payload_mutation_authority` `holder_owner_task_id` | 0be2daed | S1 (auto-merged) | `ouroboros/tools/delegate_integration.py` | |
+| `integrate_payload_patch`: `GIT_CEILING_DIRECTORIES` no-repo env on both git calls, `INTEGRATE_APPLY_NO_OP` branch, `disposed_by`, reworded ambiguity text | f7910f04 | S1 relocated | `ouroboros/tools/delegate_payload_patch.py` | `_finalize_payload_apply` is in the same leaf |
+| `_run_check` validator loop: `**grammar` merged into v7's typed finding dict | 60a47952 | **S2** | `ouroboros/tools/skill_preflight.py` | both sides are additive to the same literal: v7's `pre_exec_failure` / `killed_by_host` / typed `skip_reason` kept, upstream's `**grammar` merged in |
+| `_CLASSIC_SCRIPT_VALIDATOR`, `_widget_entry_exists_finding`, `_validate_widget_render` returning `entry`, `module_entries`, `_PREFLIGHT_SCHEMA` description | 60a47952 | S1 (auto-merged) | `ouroboros/tools/skill_preflight.py` | |
+| `project_retirement_lock`, `_EMITTED_SESSION_USAGE`, `session_usage_once`, `observe_review_usage`, `observe_failed_review_send` | 09ac51b2, e0cf7910 | S1 (additive) | `ouroboros/delegate_custody_usage.py` | appended after v7's chain-aware `complete_custody_rows`, which is kept |
+
+### 3.8 G3 tests
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `test_runtime_state_for_skill_name_reports_missing_skill` `+assert state["process"]` | 01a9df8e | S1 | `tests/test_extension_reconcile.py` | v7's home for that test |
+| new `test_reload_all_reads_git_info_once_for_the_health_batch` | 2f1e2c23 | S1 | `tests/test_extension_reload_all.py` | uses the file's existing `_write_ext_skill` import from `tests/_extension_loader_shared.py` |
+| new `test_standalone_reconcile_reads_a_fresh_health_stamp_each_time` | db9ad562 | S1 | `tests/test_extension_reconcile.py` | `_write_ext_skill` added to that file's shared import |
+| writer-set scanner `_CORE` re-pointed `tools/core.py` → `tools/core_file_tools.py` | a6def41f | S1 | `tests/test_native_tool_round_executor.py` | verified by running the scanner's own AST logic: exactly three sites (`core_file_tools._read_file` reset, `core_file_tools._stamp_read_view` stamp, `review_native_episode._execute_inspection_call` clear); `_RESET` still matches exactly once |
+| `tests/test_extension_loader.py` conflict | afe1fc4f, 01a9df8e | S3 | `tests/test_extension_loader.py` | resolved to v7's split shape; still re-exports `_prepare_extension` for `tests/test_gateway_widgets.py` |
+| `tests/test_tool_capabilities.py` | 592e8be3 | S1 (no change needed) | `tests/test_tool_capabilities.py` | v7's file is a real split, not an emptied shell; the new burst test passes against the real schema |
+| `tests/test_gateway_widgets.py` ×2 tests calling the v7-deleted `_register_out_of_process_surfaces` | afe1fc4f | **S2** | `tests/test_gateway_widgets.py` | v7 replaced that entry point with `_publish_out_of_process_registration`, whose signature additionally requires `state_dir`, `settings_reader`, `granted_keys`, `dependency_site_dirs_enabled` and which reads `skill.manifest`. Re-expressed by the root operator through staged publication with a real reviewed skill rather than resurrecting the old entry point (which would be a second publication path beside the ABI-9 staged one) |
+| `_workspace_shell_write_block` signature pin | a7f7ce9a, 2a431b82 | S2 | `tests/test_registry_guard_process.py` | the pinned string re-stated as `target_rows: 'list'` (which replaced `write_target_argvs`), header comment updated |
+| `TestMaskedGreenDisclosure` ×4-5 assertions on `result.result_meta[...]` | 32628385 | **S2** | `tests/test_shell_run_shell.py` | that attribute belonged to the retired `result_envelope.ToolResultText`; re-expressed on typed publication (`_published_tool_result(ctx, None)` → `.status` / `.code` / `.meta`) by the root operator. `test_shell_and_verify_share_one_exit_masking_sensor` passes unchanged |
+| `tests/test_workspace_write_shape.py` ×21 call sites + textual `ToolResult` projection | a7f7ce9a, 2a431b82, fcf0bc10 | **S2** | `tests/test_workspace_write_shape.py` | adapted to v7's form by the root operator |
+
+---
+
+## 4. G4 — supervisor / server / startup / gateway
+
+### 4.1 `server.py`
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `_latest_project_task_result` (total mtime ordering, equal-mtime group read to its end across the 64-entry window, `_stamp`/`_order` helpers, `uncertain` gate on the pointer write-back) | 3b90af8d, 4cf13aa0, 5624c77f | S1 | `ouroboros/server_routing_context.py` | `git diff a76961de 23ab428f -- server.py` is 53+/20−, one function only. v7's copy was byte-identical to base, so upstream's patch applies with no mechanical rewrite. `tests/test_server_extraction.py` pins that owner |
+| the other 26 functions inside the same conflict hunk | — | S3 | `server_routing_context.py`, `server_owner_routing.py`, `server_liveness.py`, `server_maintenance.py`, `server_restart.py`, `server_process.py` | unchanged upstream; conflict resolved to HEAD, leaving `server.py` byte-identical to `18b9832e` (1642 lines). Completeness check: all 57 top-level `def`s of `23ab428f:server.py` exist somewhere in the merged tree |
+
+### 4.2 `supervisor/events.py` → the events leaves
+
+The facade resolved to HEAD and is byte-identical to `18b9832e` (351 lines); every upstream
+function delta went to its leaf. Proof for the whole block: each of the ten functions was
+extracted from `23ab428f:supervisor/events.py` and from the merged leaf and diffed — the only
+residual differences are v7's handle prefixes and v7's ABI-3 cost naming. All ten names stay
+re-exported by the facade, so the ~25 test modules that patch `supervisor.events.<name>` still
+bind. All 65 top-level `def`s of upstream's `events.py` exist in the merged tree.
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `_send_subagent_rejection` (lineage routed through `notification_chat_route`, hidden-partition toast dropped) | 68eab3ea | S1 | `supervisor/events_subagent_admission.py` | per-function diff vs upstream: **0 lines** |
+| `_handle_llm_usage` `+reasoning_effort_clamped` passthrough | f9e0d840 | S1 | `supervisor/events_budget.py` | per-function diff vs upstream: **0 lines** |
+| `_handle_typing_start` (`notification_chat_route`, `if chat_id is not None`) | 68eab3ea | S1 | `supervisor/events_chat_delivery.py` | per-function diff: 0 (comment only) |
+| `_maybe_notify_provider_death` (`notification_chat_route`, `is None`) | 68eab3ea | S1 | `supervisor/events_task_done.py` | residual = the handle prefix on `_PROVIDER_DEATH_NOTIFIED` |
+| `_finish_task_done_dispatch` (local `notification_chat_route` import hoisted to module level) | 68eab3ea | S1 | `supervisor/events_task_done.py` | residual = handle prefixes + v7's ABI-3 `cost_usd` → `accounted_upper_bound_usd` seed |
+| `_resolve_lifecycle_fault` (`row_chat_identity(..., default=HIDDEN_CHAT_ID)`) | 68eab3ea, 5147c851 | S1 | `supervisor/events_task_done.py` | residual = handle prefixes + ABI-3 `cost=` key |
+| `_handle_task_done` (`row_chat_identity(..., default=HIDDEN_CHAT_ID)`) | 68eab3ea, 5147c851 | S1 | `supervisor/events_task_done.py` | residual = handle prefixes + ABI-3 `eff_cost` key |
+| `_find_duplicate_task` (`resolve_total_budget_usd()` replaces the raw `TOTAL_BUDGET` float parse; `global_limit_usd=global_limit` with no `> 0` clamp) | 2ed94f78 | S1 | `supervisor/events_schedule_task.py` | per-function diff vs upstream: **0 lines**; the resolver returns `None` for "unconfigured" itself |
+| `_reject_schedule_task` (`if chat_id:` → `if chat_id is not None:`) | 68eab3ea | S1 | `supervisor/events_schedule_task.py` | residual = v7 ABI-3 `accounted_upper_bound_usd=0.0` (upstream's `cost_usd=0.0` is the retired alias) |
+| `_handle_schedule_task` (`coerce_chat_identity` with the "membership, not truthiness" comment; `"chat_id": chat_id` no longer `or None`; `root_cost_ceiling_usd` captured and put on both payloads; scheduled-toast routing via `notification_chat_route` with the hidden-partition suppression) | 68eab3ea, d48904a5 | S1 | `supervisor/events_schedule_task.py` | residual = `get_max_subagent_depth` / `_parent_delegation_budget` via `_events()`. The ceiling chain was verified end-to-end: producer `tools/control.py` → this leaf → `supervisor/task_dispatch.py`, pinned by `tests/test_tree_cost_ceiling.py`. Without the capture the field was silently dropped in transit |
+| `−reject_if_no_chat_target` import and call site | 68eab3ea | S1, **silent ImportError fixed** | `supervisor/events_schedule_task.py` | upstream deleted the function from `supervisor/task_admission.py` and the deletion auto-merged, leaving v7's leaf importing a name that no longer exists — `supervisor.events_schedule_task`, hence `supervisor.events`, hence the whole supervisor, would raise `ImportError` at import time. `ruff --select F` cannot see this (cross-module). Verified absent tree-wide |
+| `"chat_id": chat_id or None` → `"chat_id": chat_id`; `reject_if_no_chat_target` deletion | 68eab3ea | S1 (auto-merged) | `supervisor/task_admission.py` | no edit needed |
+
+### 4.3 `supervisor/queue.py` → `supervisor/queue_timeouts.py`
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `+coerce_chat_identity, notification_chat_route` on the `message_bus` import | 68eab3ea | S1 | `supervisor/queue.py` | kept in v7's noqa form: `coerce_chat_identity` is read only by the timeouts leaf through the `_queue()` handle, which is what makes the noqa comment true |
+| `_enforce_task_timeouts_locked` ×2 sites → `chat_id=_queue().coerce_chat_identity(task.get("chat_id"), int(owner_chat_id or 0))` | 68eab3ea | S1 | `supervisor/queue_timeouts.py` | the `_queue().` prefix is the leaf's established idiom (it already reads `get_task_idle_timeout_sec`, `FINALIZATION_GRACE_SEC` that way) |
+| `queue_deep_self_review_task` (`notification_chat_route` route, typed `role="system", system_type="deep_self_review_queued"` ack) | 68eab3ea | S1 (auto-merged) | `supervisor/queue.py` | verified byte-for-byte against `23ab428f` |
+| `_emit_timeout_deprecation_once` | — | **S3** | — | the record it writes declares `"remove_in": "7.0.0"`, upstream never touched it in this delta, and `tests/test_legacy_timeout_retirement.py` asserts `not hasattr(queue, "_emit_timeout_deprecation_once")` / `"_timeout_deprecation_emitted"`. Restoring it would resurrect a retired 7.0 ABI surface. 35 of 36 upstream `queue.py` defs exist in the merged tree; this is the one absentee |
+
+### 4.4 startup, config, providers
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `SETTINGS_DEFAULTS` `+DEEPSEEK_API_KEY`, `−OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS`, acceptance-floor comment | 60221fa7, 75c78ca2 | S1 relocated | `ouroboros/settings_defaults.py` | nothing may return to `config.py`: `tests/test_config_extraction.py` pins it ≤1000 lines and pins each symbol's leaf |
+| `RETIRED_SETTING_KEYS += "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS"` | 60221fa7 | S1 relocated | `ouroboros/settings_defaults.py` | appended in the plain-retirement bucket, not the ABI-10 sub-block; landed atomically with the review organ's getter removal |
+| `_exclusive_direct_remote_provider_env` `+deepseek`; `direct_provider_review_models_fallback` `+"deepseek"` | 75c78ca2 | S1 relocated | `ouroboros/review_model_routes.py` | |
+| `get_acceptance_review_est_sec` docstring | 60221fa7 | S1 relocated | `ouroboros/runtime_limits.py` | |
+| `get_finalization_grace_sec` drops the `load_settings()` fallback | — | S1 (auto-merged) | `ouroboros/config.py` | stayed in the facade |
+| `OPENROUTER_DEFAULTS` `main` 3.7-flash → **gemini-3.8-flash**, `deep_self_review` `sol-pro` → **`sol`** with upstream's pro-mode billing rationale; `OPENROUTER_REVIEW_DEFAULTS.triad[0]` → **gemini-3.8-flash** | d8300b30 | S1 relocated | `ouroboros/settings_defaults.py` | v7 moved both dicts out of `provider_models.py`, which re-imports them; `tests/test_config_extraction.py::_MOVED_OWNERS` names `settings_defaults` as the destination |
+| DeepSeek onboarding (`DEEPSEEK_BASE_URL`, `DEEPSEEK_REASONING_EFFORT_ALIASES`, `normalize_deepseek_reasoning_effort`, `deepseek::` in the prefix/env/credential tables, `DEEPSEEK_DIRECT_DEFAULTS`, `DIRECT_PROVIDER_DEFAULTS`, `DIRECT_PROVIDER_REVIEW_ROLES`, `_VISION_MODEL_PREFIXES`) | 75c78ca2, 080be086, f109af3f | S1 (auto-merged) | `ouroboros/provider_models.py` | live owner; landed verbatim |
+| `_exclusive_direct_remote_provider(settings)` deepseek branch | 75c78ca2 | S1 (auto-merged, **no edit needed**) | `ouroboros/server_runtime.py` | the scout predicted a missing mirror; both resolvers were printed side by side and agree — same disqualifiers, same five+deepseek direct list, same `len == 1` rule |
+| `plan_review_authority_core` projection; `resolve_total_budget_usd` in `check_budget`; the `state/skill_review_root_tasks.jsonl` threshold row and its `SKILL_REVIEW_ROOT_TASKS_WARN_BYTES` import | d4fd933c, 4a7fa18b, 6a6db620, 2ed94f78 | S1 (auto-merged) | `ouroboros/agent_startup_checks.py` | all cross-organ deps present; the import was moved to upstream's own placement in the list |
+| `hot_store_growth_notes` docstring: v7 "four", upstream "seven" | 4a7fa18b | **S2** | `ouroboros/agent_startup_checks.py` | neither side's number is right on the merged tree. The `_hot_store_thresholds()` rows were counted — consciousness_observations, usage_attempts, events, tools, supervisor, task_reflections, progress, scheduled_tasks, skill_review_root_tasks = **nine** `os.stat` calls; written as "nine" |
+| `_subject_too_large_blocked` (oversized-subject fail-closed refusal) | — | S1, adjacency only | `ouroboros/safety.py` (protected) | strictly additive in both directions: v7's `_safety_drive_root` and `_record_safety_usage` kept, upstream's `_render_subject_json` + `_subject_too_large_blocked` added |
+| `_SAFETY_SUBJECT_CHAR_BUDGET`, `_render_subject_json`, `_build_check_prompt(args_json=…)`, `_run_llm_check` pre-check, `DEEPSEEK_API_KEY` in `_REMOTE_PROVIDER_KEYS`/`_PROVIDER_KEY_ENV` | 75c78ca2 | S1 (auto-merged) | `ouroboros/safety.py` | verified alongside v7's own additions |
+
+### 4.5 gateway
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| **new** `_broadcast_task_named` | 1bd71856 | S1, adjacency | `ouroboros/gateway/tasks.py` | pure adjacency against v7's new `_task_identity_occupied` — both kept |
+| **new** `_admission_names` | 1bd71856 | S1 relocated | `ouroboros/project_naming.py` as `admission_names` | moved by the root operator to the title-derivation owner (§6); the O3 row in §8 |
+| `api_tasks_create` project-id guard restructure | — | **S2** | `ouroboros/gateway/tasks.py` | upstream's structure taken (it hoists `explicit_project_id_ok` into the one `project_facts` import upstream also uses for `resolve_project_id`); v7's fuller comment kept |
+| `ingress_chat_id` / `ProjectThreadConflict`; `chat_id`/`title`/`suggested_name` on the admission row; `title` in the top-level-only metadata guard; the `_broadcast_task_named` call site; `timeout_sec` pre-init removed | 1bd71856, 68eab3ea | S1 (auto-merged) | `ouroboros/gateway/tasks.py` | `supervisor/log_addressing.py` supplies both new names |
+| `_copy_task_summary_metadata` replays `outcome_phase` / `outcome_final` from the summary row | dcea27d6, ab0112a6 | **S2** | `ouroboros/gateway/history.py` | v7 had replaced the field loop with `carry_cost_meta(entry)` (ABI-3: cost pair converted, deprecated-wins). Hand-merged as `carry_cost_meta` **plus** an explicit copy of the two outcome keys — they are not cost fields and must not go through the cost converter |
+| anchored-lineage fixed point (`active_children` → `anchored_children`, `_represents`, `_alive`), `HIDDEN_CHAT_ID` in `_make_thread_filter`, `limit` → `n_human` default, budget limit via `resolve_total_budget_usd`, `outcome_phase(result, {})` in `_annotate_terminal_task_truth` | dcea27d6, ab0112a6, 2ed94f78 | S1 (auto-merged) | `ouroboros/gateway/history.py` | v7's `terminal_truth.update(carry_cost_meta(result))` and upstream's `"outcome_phase"/"outcome_final"` coexist in one dict literal |
+| `web/modules/api_types.js` +64 typedefs (history finality metadata, live-card frames) | ab0112a6, dcea27d6 | S1 (auto-merged) | `web/modules/api_types.js` | `GATEWAY_CONTRACT_VERSION` stays v7's; `node --test tests/*.test.js` → 938/938 pass |
+
+### 4.6 build carriers and benchmark launcher
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `VERSION`, `pyproject.toml` version, `web/package.json`, README badge, ARCHITECTURE header | — | S3 | in place | upstream touched no version carrier; v7 owns the number (`7.0.0-rc.8`). `release_sync.version_carrier_desyncs()` returns `[]` |
+| `pyproject.toml` `markers.integration` string | 75c78ca2 | **S2** | `pyproject.toml` | v7's two-lane sentence (CI provider-contract + the keyless `tests/system_e2e/` lane) kept, upstream's expanded key list (`+MINIMAX_API_KEY`, `DEEPSEEK_API_KEY`, `GIGACHAT_CREDENTIALS`) spliced into its parenthetical |
+| `_container_triad`, `triad_rows_not_executable_in_container`, `_host_settings`, `_effective_helper_models(settings=)`, `leaderboard_metadata(settings=)`, metadata render moved into `finalize_run_manifest` | — | **S2** | `devtools/benchmarks/terminal_bench/run_tb.py` | upstream's structure with v7's source for the legacy fallback: upstream keeps `SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"]`, a `KeyError` on v7 (ABI-10 retired the key), so `",".join(OPENROUTER_REVIEW_DEFAULTS["triad"])` is used. The failure would have surfaced only at manifest render — after admission, i.e. a burned run |
+| `_PROVIDER_ROUTE_ENV_KEYS` derived from `PROVIDER_CREDENTIAL_GROUPS`; `assert "scope_review" not in meta` | 75c78ca2 | **S2** | `tests/test_devtools_benchmarks.py` | upstream's registry-derived tuple taken (strictly better; picks up deepseek automatically) combined with v7's `OPENROUTER_REVIEW_DEFAULTS` loop |
+| `test_apply_runtime_provider_defaults_keeps_new_triad_on_openrouter` 3.7 → 3.8 | d8300b30 | **S2** | `tests/test_server_runtime.py` | only the `OUROBOROS_MODEL` line taken; upstream's `OUROBOROS_REVIEW_MODELS == …` assert is dead on v7, where the tail asserts the retired keys are absent |
+| `ouroboros/size_ratchet_manifest.py` (7 hunks) | — | **S2 (regenerate)** | `ouroboros/size_ratchet_manifest.py` | generated file; hand-merging it is meaningless. Regenerated by the root operator after all lanes landed (§6) |
+
+### 4.7 G4 tests
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `tests/test_headless_cli.py` conflict (2453-line upstream body) | — | S3 | `tests/test_headless_cli.py` | v7's 3-line autouse-fixture import from `tests/_headless_cli_shared.py` kept; result byte-identical to `18b9832e` (462 lines) |
+| `test_workspace_patch_preserves_lockfile_when_other_changes_are_junk` (`.gitignore` with `dist/`, `git add README.md .gitignore`, `untracked_excluded` 1 → **0**) | — | S1 | `tests/test_headless_workspace_patch.py` | v7's relocation target. Production side verified: `workspace_patch_rules._PATCH_EXCLUDE_RULES_VERSION = 3` and `workspace_patch_capture` enumerates untracked files with `git ls-files --others --exclude-standard`, so a git-ignored file never enters the capture universe. Both tests were red before this edit |
+| `test_workspace_patch_excludes_binary_junk_and_oversize` (`exclude_rules_version` 2 → **3**) | — | S1 | `tests/test_headless_workspace_patch.py` | same |
+| `test_gaia_events_serializer_carries_web_search_sources` | — | S3 | — | v7 deleted it with the events monolith; the pinned string now lives in `supervisor/events_budget.py` |
+
+---
+
+## 5. G5 — docs
+
+Method (owner decision D-02): both resident docs were replaced wholesale with upstream's bytes
+and the v7 payload re-applied as compact deltas. That is correct rather than hunk-merging
+because upstream rewrote ARCHITECTURE from 3,679 to 1,635 lines, so essentially all 23
+ARCHITECTURE conflicts were artifacts of that rewrite.
+
+Final numbers: `docs/ARCHITECTURE.md` 105,152 tokens (budget 113,989) / 1,720 lines (cap 2,000);
+`docs/DEVELOPMENT.md` 36,594 tokens (budget 41,192); residue counter CLEAN on both;
+80/80 positive string pins present, 14/14 negative pins absent; 0 conflict markers.
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| upstream's consolidated ARCHITECTURE (3,679 → 1,635 lines) as the base | — | S1 (base) | `docs/ARCHITECTURE.md` | `git show 23ab428f:docs/ARCHITECTURE.md` taken verbatim, then the v7 delta re-applied |
+| upstream's consolidated DEVELOPMENT (2,922 → 2,491 lines) as the base | — | S1 (base) | `docs/DEVELOPMENT.md` | same method |
+| §1 component map: 127 v7 modules absent from upstream's map | — | S2 | `docs/ARCHITECTURE.md` | recomputed against the live tree with the exact function the test uses (`scripts.domain_graph.tracked_population`): 508 non-`__init__` modules, 127 missing. Result 490 rows (+39 grouped, −8), +2,810 tokens against a ≤7,000 target |
+| 8 stale upstream map rows (`supervisor/chat_delivery_events.py`, `ouroboros/acceptance_dialogue.py`, `ouroboros/delivery_protocol.py`, `ouroboros/provider_catalogs.py`, `ouroboros/contracts/api_v1.py`, `ouroboros/tools/read_inspection.py`, `ouroboros/tools/result_envelope.py`, `ouroboros/tools/output_export_policy.py`) | — | S3 | `docs/ARCHITECTURE.md` | each named a module v7 deleted; each row was repurposed or dropped with the replacing module named on disk |
+| §4 endpoint table | — | S1 regenerated from code | `docs/ARCHITECTURE.md` | mirrored against `gateway.endpoint_index.HTTP_ENDPOINTS` + `gateway.files.file_browser_routes()` + `{GET /, WS /ws, STATIC /static/*}` + `create_host_service_app().routes`: public missing [] / stale [], host missing [] / stale [], no duplicates. Exactly one row removed (`POST /api/owner/scope-review-floor`, retired with `OUROBOROS_SCOPE_REVIEW_FLOOR`) |
+| §7 Default settings table | — | S1 regenerated from code | `docs/ARCHITECTURE.md` | mirrored against `config.SETTINGS_DEFAULTS` (140 keys): dupes [], missing [], undeclared [], mismatched defaults [], 152 rows. 6 retired rows removed; 3 added (`OUROBOROS_DIRECT_TURN_STOP_WAIT_SEC`, `OUROBOROS_ONBOARDING_SNAPSHOT_TIMEOUT_SEC`, `OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC`). Not 4: `OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS` is in `RETIRED_SETTING_KEYS`, not `SETTINGS_DEFAULTS`, so it must have no row |
+| §1 `server.py` row: the startup read seam | — | S2 | `docs/ARCHITECTURE.md` | required by `test_settings_docs_name_every_key_owner_and_what_startup_persists` (3 positive pins + 2 negatives); v7's `(D03)` label dropped per D-02 |
+| §1 `_usage_response.py` row | — | S2 | `docs/ARCHITECTURE.md` | required by `test_architecture_does_not_claim_usage_response_is_the_only_usage_reader` |
+| §1 `deep_self_review.py` row: "the compact manifest is the atlas default" | — | S2 | `docs/ARCHITECTURE.md` | required by `test_architecture_deep_review_has_no_compact_manifest_retry_rung` |
+| §1 Gateway Boundary v1: `contracts/api_v1.py` compatibility re-export gone; `gateway/contracts.py` is the one envelope owner | — | S2 | `docs/ARCHITECTURE.md` | v7's ABI-labelled narrative dropped |
+| §1 Data layout: `task_results/*.json` stamped `_schema_version: 1`, one line per file, closing pointer to `DATA_LAYOUT_INVENTORY.md` | — | S2 | `docs/ARCHITECTURE.md` | v7's `(ABI 7.0, Q8=B)` label dropped |
+| §5 Supervisor loop: "the **one** secondary settle site"; budget-exhausted queued task PAUSES; the direct-chat turn stop paragraph | — | S2 | `docs/ARCHITECTURE.md` | `fail_tasks` appears nowhere in the runtime (grep: only `scripts/rc_audit.py` and tests asserting its absence). Stop mechanism verified in `supervisor/worker_chat_lane.py` and `supervisor/cancel_publication.py` |
+| §6 Review stack, §6 Budget tracking, §2 Startup | a3599ecd, 2ed94f78 | S3 (nothing to add) | `docs/ARCHITECTURE.md` | upstream already carries them, including "Every triad row reaches the panel as configured (`reviewer_slot_config.triad_delivery_slots`)". v7's earlier "acceptance stays API-only" wording appears nowhere in either merged doc |
+| §7 new subsection "Reading and writing the settings document" | — | S2 compressed | `docs/ARCHITECTURE.md` | 83 → 48 lines / ~1,180 tok. Kept verbatim: the load-bearing ORDER argument, the five/three/two writer split with all five names, the `_owner_update_settings(transform, expected_digest)` contract, the pinned literal "Startup is a read, with one exception". Dropped the write-shape enumeration (its closed list lives in `tests/_shared/settings_writers.py`; copying it into prose is a second SSOT) |
+| §8 new subsection "System E2E suite" | — | S2 compressed | `docs/ARCHITECTURE.md` | 86 → 31 lines / ~700 tok. The per-scenario narratives were replaced by one truthful coverage sentence over all 25 rows of `tests/system_e2e/harness.py::SCENARIOS`, which the doc names as the authority |
+| §10 invariant 3 | — | S2 | `docs/ARCHITECTURE.md` | rewritten to name all six settings leaves, keeping the pinned literal prefix |
+| §11.1 `PluginAPI` 2.0 with manifest negotiation; §11.2 `task_results/*.json` carve-out | — | S2 | `docs/ARCHITECTURE.md` | `PLUGIN_API_VERSION = "2.0"`, `LEGACY_PLUGIN_API_GENERATION = "1.3"`, 16 public methods — verified |
+| §11.4 new subsection "Recent ABI Retirements" | — | S2 compressed | `docs/ARCHITECTURE.md` | 65 → 33 lines / ~830 tok. All four v7 pins hold (`**ABI 7.0**`, `5.25.0-rc.4`, `OUROBOROS_REVIEWER_SLOTS`, all 6 `RETIRED_COMMA_LIST_SETTING_KEYS`). Versions written bare, never parenthesised, which is what lets residue-zero and the §11.4 pin coexist. Added beyond v7: `OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS` with its replacement bound stated |
+| §6 the three gen/verify inventories paragraph; §12 `state/extension_generation.json`; §13 `model_experience` + `fix_hint` | 60221fa7, 2f1e2c23 | S2 | `docs/ARCHITECTURE.md` | each verified against the named constant or module |
+| header line `# Ouroboros v7.0.0-rc.8 — Architecture & Reference` | — | S3 (v7 carrier) | `docs/ARCHITECTURE.md` | matches `VERSION`; release-sync carrier |
+| DEVELOPMENT: domain-manifest pointer paragraph | — | S2 | `docs/DEVELOPMENT.md` | required by `test_the_domain_manifest_is_reachable_from_the_handbook`; names `ouroboros/domains.toml`, `docs/DOMAIN_MAP.md`, `scripts/check_domains.py --write` |
+| DEVELOPMENT: "Paying down a size cap" bullet | — | S2 | `docs/DEVELOPMENT.md` | the exact phrase is kept because CHECKLISTS item 31 cites it by name; the date and the numbered advisory label were reworded away |
+| DEVELOPMENT: contributor lane re-runs the target base's own review machinery from a detached worktree | — | S2 | `docs/DEVELOPMENT.md` | verified in `scripts/run_external_review.py` |
+| DEVELOPMENT: "Cancellation and effective status" correction | — | S3 (dropped here, applied elsewhere) | `docs/ARCHITECTURE.md` §5 | upstream deleted the sentence v7 was correcting from DEVELOPMENT and points at ARCHITECTURE §5, where the stale claim actually survived |
+| DEVELOPMENT: `wait_tasks` batch projection names `accounted_upper_bound_usd` first | — | S2 | `docs/DEVELOPMENT.md` | verified against `ouroboros/cost_projection.py` and `tools/control_task_results.py` |
+| DEVELOPMENT: `owner_write_guard` membership; timeout SSOT in `settings_defaults.py` + `runtime_limits.py`; byte-exact atomic writers; the `system_e2e` marker lane | — | S2 | `docs/DEVELOPMENT.md` | the timeout row is required: the merged test asserts `settings_defaults.py` appears in DEVELOPMENT (upstream had 0 occurrences) and that the old `config.py` phrasing does not |
+| DEVELOPMENT: `acceptance_dialogue.` module prefix removed from three sentences | D-20 | S2 | `docs/DEVELOPMENT.md` | `loop_acceptance._set_acceptance_decision` is verified; `acceptance_retrieving_work_order` and `terminalize_dangling_revision` are written without a module prefix (see §7's UNVERIFIED note, now resolved — both homes are recorded in §1.4) |
+| `docs/CHECKLISTS.md` item 5 `env_allowlist` (the one conflict hunk) | 75c78ca2 | **S2** | `docs/CHECKLISTS.md` | the two sides differed by exactly two tokens: upstream ADDS `DEEPSEEK_API_KEY`, v7 REMOVES `TELEGRAM_BOT_TOKEN`. Both intents kept and verified against the merged code constant `ouroboros/contracts/plugin_api.py::FORBIDDEN_SKILL_SETTINGS`, not against either diff — DEEPSEEK present, TELEGRAM absent. Verified in the merged file: 1 occurrence of `DEEPSEEK_API_KEY`, 0 of `TELEGRAM_BOT_TOKEN` |
+| `docs/CHECKLISTS.md` items 7 (`extension_namespace_discipline`) and 8 (`widget_module_safety`) | 382e754f | S1 (auto-merged) | `docs/CHECKLISTS.md` | upstream's rewritten launch-policy text with `WIDGET_START_MODES` / `__ouroWidgetOnDispose`, untouched. v7's item 31 `size_cap_paydown` and the `api_v1.py` note survive in non-conflicting hunks |
+| 7 campaign-bookkeeping files → `docs/archive/v7next/` | D-02 | archive move | `docs/archive/v7next/` | `C6_REVIEW_PACKET.md`, `DESIGN_RC_AUDIT_SCOPE.md`, `DESIGN_RESOLVED_MODEL_TARGET.md`, `DESIGN_TYPED_ORGAN.md`, `LEDGER_CORRECTIONS.md`, `MIGRATION_PROJECTION.md`, `WINWAVE_CLASS_REGISTRY.md`. Verified present in the archive directory |
+| `tests/test_legacy_timeout_retirement.py` skip-prefix `+"docs/archive/"` | D-02 | S2 (required) | `tests/test_legacy_timeout_retirement.py` | `LEDGER_CORRECTIONS.md` contains a retired timeout key and no longer matches the `docs/v7next/` prefix after the move. Verified on line 130 |
+| two upstream-base `D-nn` labels de-labelled | — | S2 | `docs/ARCHITECTURE.md` | `the durable D22 projection` → `the durable execution projection`; `the former D15 api pin` → `the earlier api-row-only pin`. Upstream's own `(owner R2, …)` / `(owner R52)` attributions were LEFT in place — they are upstream's bytes, the operative gate scores them 0, and stripping ~20 of them is an unrequested rewrite of the base D-02 says to take verbatim. Disclosed rather than decided silently |
+
+---
+
+## 6. Root operator, post-lane
+
+These are the relocations and repairs the root operator made after the five lanes finished:
+ratchet paydown, cross-lane requests, and test adaptations the lanes did not own.
+
+| upstream symbol or hunk | upstream commit(s) | class | v7 home (file) | proof / note |
+|---|---|---|---|---|
+| `_workspace_write_candidates` walker + 2 predicates (93 lines) | a7f7ce9a, fcf0bc10, 872a9c1b | S1 relocation (ratchet paydown) | `ouroboros/tools/write_shape.py` | `registry_guards.py` had reached 1652 lines (>1600 hard cap) purely from this absorption. `write_shape.py` is the per-segment write-shape owner, so the walker has a reason-to-change there independent of the cap. `registry_guards.py` now 1558; `registry.py` re-exports from the new owner |
+| `_no_deliverables_decision` | a7f7ce9a, fcf0bc10 | S1 relocation | `ouroboros/tools/write_shape.py` | same move; imported back by `registry_guards.py` |
+| `_directory_change_argv` | a7f7ce9a, fcf0bc10 | S1 relocation | `ouroboros/tools/write_shape.py` | same move |
+| `_lane_writer_targets(raw_cmd)` named out of `_run_shell_safety_check` | a7f7ce9a, 2a431b82 | S2 (function-size paydown) | `ouroboros/tools/registry_guard_process.py` | the function had grown to 310 lines. The extracted 50 lines are upstream's own "ONE per-segment writer-target SSOT for this lane" — a named contract, not a passthrough — and use the same handle idiom. `_run_shell_safety_check` now 269 lines; `_lane_writer_targets` 50 |
+| `_admission_names` → `admission_names` | 1bd71856 | S1 relocation (ratchet paydown) | `ouroboros/project_naming.py` | `gateway/tasks.py` had crossed 1600 by the growth of BOTH sides. `project_naming.py` is the title-derivation owner and the D11 → D17 direction was already resolved; `gateway/tasks.py` now 1593. Upstream's `tests/test_headless_task_title.py` re-pointed. This is the O3 row in §8 |
+| cost-breakdown endpoint family (compat buckets/groups + `/api/cost-breakdown`) | d4fd933c, dcea27d6, b7a73355 | S1 relocation (ratchet paydown) | `ouroboros/gateway/cost_breakdown.py` (new, 162 lines) | `gateway/history.py` had crossed 1600 by the growth of both sides; now 1465. `history.py` re-exports `make_cost_breakdown_endpoint` with a `# noqa: F401 — historical import path (router)` so `gateway/router.py` still resolves. Component-map row and `domains.toml` D11 entry added |
+| 12 one-line re-export statements → one explicit statement | — | S2 (ratchet paydown) | `ouroboros/outcomes.py` | `_outcome_tool_errors` is a leaf module; the twelve separate `from ouroboros._outcome_tool_errors import X as X` lines became one explicit statement. Not one name was removed. `outcomes.py` 1612 → 1590 |
+| `_REVIEW_SUBSTRATE_PATHS` literal compaction | — | S2 (ratchet paydown) | `scripts/run_external_review.py` | three entries per line; not one entry removed. 1606 → 1558 |
+| `api_tasks_create` project_id block | 1bd71856 | S1 (upstream verbatim at the cap) | `ouroboros/gateway/tasks.py` | 302 → **300** lines exactly at the function cap, using upstream's own one-line forms: the ingress gate expressed through a walrus, the comment preserved. Verified: 300 lines |
+| `_schedule_task` | 68eab3ea, d48904a5, 558a5c65 | S1 (upstream verbatim at the cap) | `ouroboros/tools/control_scheduling.py` | 303 → **300** lines using two upstream one-line forms the lane had not carried across. Verified: 300 lines |
+| `usage_accounting.py` dead `import os` | 2ed94f78 | S1 (auto-merge artifact) | `ouroboros/usage_accounting.py` | both `os.environ.get("TOTAL_BUDGET", "200")` reads were replaced by `resolve_total_budget_usd()`, leaving the import dead and `ruff --select F` red. Deleted on G1's and G2's request |
+| `tests/test_review_substrate_acceptance.py` 8 patch targets | a3599ecd | S1 | `tests/test_review_substrate_acceptance.py` | applied on G2's request (§2.7) |
+| `tests/test_persistence_inventory.py` + `docs/PERSISTENCE.md` retired-file row | a3599ecd | S2 | `tests/test_persistence_inventory.py`, `docs/PERSISTENCE.md` | the writer of `state/reviewer_slot_api_fallback.json` was deleted by the auto-merge, so a v7-only test and the persistence doc both lied. PERSISTENCE gained 2 rows for upstream's new durable plans and lost 1 retired row; the pinned scan population moved 283 → 285 |
+| `differential-golden` classification corpus | — | S1 (regenerated) | `tests/fixtures/legacy_tool_classification_0f715831.json` | upstream added two identifiers (`INTEGRATE_APPLY_NO_OP`, `SAFETY_SUBJECT_TOO_LARGE_BLOCKED`); the golden was regenerated by the standard recipe (the old tree at `0f715831` answering the new corpus) |
+| history finality test `_schema_version: 1` | dcea27d6, ab0112a6 | S2 | upstream's history finality test | v7's ABI 7.0 loader is strict (Q8=B), so the stamped row is required |
+| `tests/test_llm_extraction.py`: `_build_remote_candidate` in `_MIXIN_OWNERS`, recomputed member digest + provenance note | b7a73355 | S2 | `tests/test_llm_extraction.py` | applied on G1's request; the suite is red without it |
+| `tests/test_module_handle_extraction.py` row for `tools/review_multi_model.py` (`+_owner_deadline_at`, `−emit_review_usage`) | 6ff83c60, 761cf1b9 | S2 | `tests/test_module_handle_extraction.py` | applied on G1's request after the review organ settled |
+| `queue_timeouts` module-handle pin | 68eab3ea | S2 | `tests/test_module_handle_extraction.py` | follows the `_queue().coerce_chat_identity` reads |
+| `docs_sync` hot-store count seven → nine | 4a7fa18b | S2 | `tests/test_docs_sync.py` | follows the `hot_store_growth_notes` docstring correction (§4.4) |
+| `tests/test_review_prompt_caching.py` docstring `loop.seal_task_transcript` → `context_fit.seal_task_transcript` | 743597ee | S2 | `tests/test_review_prompt_caching.py` | cosmetic, follows D-18(a) |
+| `review_native_episode.py` writer-set prose path `tools/core.py` → `tools/core_file_tools.py` | a6def41f | S2 | `ouroboros/review_native_episode.py` | docstring only; the code was already correct |
+| `tests/test_gateway_widgets.py` ×2 | afe1fc4f | S2 | `tests/test_gateway_widgets.py` | re-expressed through staged publication with a real reviewed skill (§3.8) |
+| masked-green assertions ×4 | 32628385 | S2 | `tests/test_shell_run_shell.py` | re-expressed on typed publication (§3.8) |
+| transport-free contracts test | — | S2 | upstream's contracts test | re-pointed to `ouroboros/gateway/contracts.py`, v7's one envelope owner |
+| `ouroboros/domains.toml` + 4 module rows (D16, D11, D11, D06) and `--write` | — | manifest regeneration | `ouroboros/domains.toml` | the four new/relocated modules registered; see §7 for the D06 → D07 direction |
+| `docs/v7next/FROZEN_CONTRACTS_INVENTORY.md`, `DATA_LAYOUT_INVENTORY.md`, `FACADE_INVENTORY.md` | — | generated | `docs/v7next/` | regenerated after all lanes; the §11.1 table header was brought to the extractor's form (`Contract \| File \| Anchored by`) |
+| `ouroboros/size_ratchet_manifest.py` | — | generated | `ouroboros/size_ratchet_manifest.py` | regenerated. 16 band rationales, of which 5 are upstream's verbatim; the rest are v7's own. `acceptance_dialogue.py` and `provider_catalogs.py` rows are gone (verified absent from `BAND_PATHS`); `loop_forced_finalization.py` (1041 lines) carries a band rationale |
+
+---
+
+## 7. Owner forks and disclosures
+
+Everything in this section is a decision the owner may want to reverse. Each one was
+implemented provisionally in upstream's direction (or in the direction the plan recorded) and
+is flagged here rather than settled silently.
+
+### D-18 — three symbols with two destinations
+
+Upstream and v7 independently relocated the same three surfaces to different owners. One
+destination had to win for each; no duplicate definition survives, and every historical import
+path stays alive.
+
+| symbol | upstream destination | v7 destination | decided | how the other path stays alive |
+|---|---|---|---|---|
+| `seal_task_transcript` (upstream 743597ee) | `ouroboros/context_fit.py` | `ouroboros/loop.py` | **`context_fit`** | v7's 45-line copy deleted; `loop.py` re-exports, so `from ouroboros.loop import seal_task_transcript` and `_loop().seal_task_transcript(...)` both resolve |
+| `skill_names_touched_by_trace` (upstream 0463c6bb/f8d4408c) | `ouroboros/skill_readiness.py` | `ouroboros/loop_nudges.py` | **`skill_readiness`** | `loop_nudges.py` aliases it as `_skill_names_touched_by_trace`; `loop.py`'s barrel entry now resolves to the one `skill_readiness` object. No test patches the name |
+| `fetch_openrouter_pricing` / `fetch_cloudru_pricing` (upstream 1a525dbd) | new `ouroboros/provider_catalogs.py` | `ouroboros/llm_pricing.py` | **`llm_pricing`**; `provider_catalogs.py` **deleted** | `llm.py` re-exports both, as v7 already did. The bodies are identical apart from a module-level vs local logger; shipping both files would be two pricing SSOTs |
+
+`ouroboros/provider_catalogs.py` is verified absent from the worktree, from `BAND_PATHS` and
+from `BYTE_DEBT`.
+
+### D-19 — v7's D15 ("task acceptance stays API-only") retired in favour of upstream's later R2
+
+Upstream's R2 (`a3599ecd` / `daf37e99`, 2026-09-01) says task acceptance reads the configured
+triad rows through one builder. That is a *later* owner decision than v7's D15, so it was
+implemented and D15's apparatus removed. **This is an owner decision, not a merge mechanic.**
+
+Exact v7 surfaces removed:
+
+| surface | v7 location | what it did |
+|---|---|---|
+| `api_fallback_disclosure(config)` | `ouroboros/reviewer_slot_config.py` | returned `{"triad": OPENROUTER_REVIEW_DEFAULTS["triad"]}` when no triad row was api-deliverable, so API-pinned acceptance could substitute the shipped default models |
+| the D15 paragraph of the module docstring | `ouroboros/reviewer_slot_config.py` | "Task acceptance stays API-only by owner decision (D15)" |
+| the D15 clause in `reviewer_slots.__doc__` | `ouroboros/reviewer_slot_config.py` | the same claim on the model-list builder |
+| the D15 paragraph in the test module docstring | `tests/test_reviewer_slot_config.py` | "…runtime projection for the API-pinned surfaces (D15)" |
+| `test_all_delegated_commit_surface_discloses_the_api_fallback` | `tests/test_reviewer_slot_config.py` | pinned the fallback disclosure text and the durable `reviewer_slot_api_fallback.json` record |
+| `test_acceptance_rows_stay_api_even_when_triad_routes_delegate` | `tests/test_review_agent_session_route.py` | pinned "acceptance rows are always API_CHAT" |
+| the D15 comment in `test_all_delegated_triad_projects_no_api_model…` | `tests/test_reviewer_slot_config.py` | "The API-only task-acceptance surface falls back to shipped defaults" |
+
+Proof that keeping HEAD was not viable, independent of the decision: after the auto-merge,
+`api_fallback_disclosure`'s three collaborators (`_fallback_warning_text`,
+`reviewer_slot_api_fallback_warning`, `_record_api_fallback_substitution`) were gone, its only
+reference in the tree was its own `def`, `__all__` no longer exported it, and the auto-merged
+`test_the_retired_acceptance_api_pin_apparatus_is_gone` (`fb8073b6`) asserts the name absent.
+Restoring D15 would require un-doing four already-auto-merged production surfaces that call
+`triad_delivery_slots(role_hint="task acceptance")`.
+
+**Live behavioural consequence for an install:** a triad whose rows are all delegated
+(agent_session) or all native-retrieving now runs task acceptance *on those rows*, spending
+subscription minutes or native-episode API rounds per substantive task, instead of silently
+substituting three shipped default API models. The one-time R12 save-time disclosure
+(`acceptance_delivery_disclosure` + `_ACCEPTANCE_API_PANEL_MEASURED`) is what the owner now
+sees. Root-agent-called and `off`-mode acceptance stay packet-only — `tools/review.py` filters
+on `if not getattr(slot, "retrieves", False)`, upstream's own R2 carve-out.
+
+`api_fallback_disclosure` is verified absent from the tree.
+
+### D-20 — `ouroboros/acceptance_dialogue.py` stays deleted, with no shim
+
+Upstream grew the file from 853 to 1253 lines over 20 commits while v7 had split it into
+`loop_acceptance.py` and `loop_acceptance_review.py`. The file was left deleted: 20 of its 28
+top-level names were unchanged upstream and already had a v7 home (S3), 4 changed (S1,
+transplanted), and 4 were new and homeless (S1, placed — §1.4). No compatibility shim module
+was created; the seven upstream tests that imported from it were adapted to v7's leaves
+(§1.9). Verified: the file is absent, and there are zero references to the
+`ouroboros.acceptance_dialogue` module anywhere in the tree.
+
+### D-21 — `ouroboros/tools/registry.py` is protected: exactly six facade lines changed
+
+`diff -u` against `git show 18b9832e:ouroboros/tools/registry.py` reports exactly 6 changed
+lines (313 lines vs 309). No function body, no `__all__`, no comment was touched. The six:
+
+1. `+    directory_destination_child_name,  # noqa: F401 — historical facade surface` — added to the `from ouroboros.shell_parse import (…)` block
+2. `+    sequential_effective_cwds,  # noqa: F401 — historical facade surface` — same block
+3. `+    interpreter_inline_code,  # noqa: F401 — historical facade surface` — added to the `from ouroboros.tools.shell_guards import (…)` block
+4. `−    directory_destination_child_name,  # noqa: F401 — historical facade surface` — removed from the `shell_guards` block (the symbol moved to `shell_parse` upstream; the merged `shell_guards.py` no longer defines it)
+5. `+    writer_target_rows,  # noqa: F401 — historical facade surface` — added to the `shell_guards` block beside the retained `writer_target_tokens`
+6. `+from ouroboros.tools.write_shape import _workspace_write_candidates  # noqa: F401 — historical facade surface`
+
+Lines 1–5 are the lane's; line 4 combined with line 1 was the import-time break for the whole
+tool layer. **Line 6 is the root operator's addition and the disclosure**: D-21 enumerated
+exactly what may change in this protected file, and this line goes past that enumeration. It
+was added because upstream's auto-merged `tests/test_workspace_write_shape.py` does
+`from ouroboros.tools.registry import _workspace_write_candidates`, and after the ratchet
+relocation (§6) that was the only name any test imports from the facade that did not resolve.
+The alternative — re-pointing that one test line at the owning module — was available and was
+not taken. The owner may prefer it.
+
+### `_build_remote_candidate`'s mixin placement (G1)
+
+Upstream's new `_build_remote_candidate` (b7a73355) is one provider-aware candidate builder
+that serves both the direct-Anthropic send and `task_pacing`'s prospective wrap-up estimate.
+It was placed in `ouroboros/llm_anthropic.py::_AnthropicLaneMixin`, not on `LLMClient` itself.
+Reason: 90% of the body is Anthropic payload construction, upstream defines it immediately
+before `_chat_anthropic`, and `llm.py` cannot host it — 33 lines would push 732 → 765, over the
+750-line pin in `tests/test_llm_extraction.py`. Callers are `_chat_anthropic` and
+`task_pacing`, which calls `llm._build_remote_candidate(...)` on the instance and resolves
+through the MRO. **This is a lane judgement call, not a briefed decision**: it changes which
+mixin owns a cross-lane dispatcher. If the owner would rather have it as a parent member, the
+750-line pin has to move first.
+
+### `_process_role` via the loader facade, and `announce_extension_state_change` gaining `"request_failed"` (G3)
+
+Two widenings of v7 seams, both driven by upstream's receipt contract rather than by a merge
+mechanic:
+
+- **`extension_liveness._process_role()`** resolves `is_server_process` **at call time through
+  `ouroboros.extension_loader`** rather than binding `extension_companion.is_server_process` at
+  import. Upstream's receipt tests (`tests/test_skill_widget_surface.py`,
+  `tests/test_extensions_api.py`) monkeypatch `extension_loader.is_server_process` and assert
+  `state["process"]`; under the v7 split the state functions live in a leaf that had no such
+  binding. The rationale in the docstring is that the loader is the seam the whole organ
+  answers process identity at — its reconcile decides the announcement direction — and a
+  receipt naming a different process than its own announcement would be worse than no receipt.
+  The alternative is binding `extension_companion` directly and adapting the two upstream
+  tests.
+- **`extension_reconcile_queue.announce_extension_state_change` gained `"request_failed"`.**
+  Upstream's receipt vocabulary is exactly `{"", "requested", "request_failed"}`; v7's seam
+  could only return `""` / `"published:<gen>"` / `"no_skill"` / `"requested"`, so
+  `"request_failed"` was unreachable and a swallowed exception was indistinguishable from
+  "nothing to do". The single blanket `try` was split into publish and request halves and the
+  return vocabulary documented. No caller outside `extension_loader` reads the value (verified
+  by grep). Smoked: with `request_extension_reconcile` patched to raise, the announcer returns
+  `request_failed`.
+
+### The D06 → D07 direction banked in `ouroboros/domains.toml`
+
+Upstream `761cf1b9` ("Emit one llm_usage row per physical reviewer call") moved reviewer usage
+emission out of the review-execution domain into the custody-usage domain. In the merged tree
+that is a cross-domain edge: `ouroboros/review_execution.py` is **D06** and
+`ouroboros/delegate_custody_usage.py` is **D07** (both verified in `domains.toml`), and
+`review_execution.py` now calls `observe_review_usage(self.usage_observer, usage)`, whose
+definition lives in `delegate_custody_usage.py`. The direction is recorded in the manifest
+rather than being refactored away: the observer is installed by the substrate and fired by the
+executor, so the usage row has exactly one producer. This is the same commit whose consumer
+half required deleting the second emission in `tools/review_multi_model.py` (§2.1).
+
+### `ouroboros/agent_startup_checks.py` is 1503 lines — out of the band, under the cap
+
+`BAND_MODULE_MAX_LINES = 1500` and `MAX_MODULE_LINES = 1600` (`ouroboros/review.py`). At 1503
+lines the file leaves `BAND_PATHS` on regeneration (verified: it is no longer in `BAND_PATHS`,
+and it remains in the immutable `BAND_BASELINE_PATHS`). It stays under the 1600 hard cap, so no
+"new module debt above 1600 lines" error fires and leaving the band is not itself refused. The
++11 lines are **entirely upstream's auto-merged delta** — the `plan_review_authority_core`
+block (+4), the skill-review threshold row (+6) and the import (+1); the lane's own net
+contribution to this file is 0 lines. Disclosed because the rationale text this file used to
+carry asserted band membership that is no longer true. Its `FUNCTION_DEBT` row is still true:
+`verify_restart` is 505 lines (verified).
+
+### D-02 archive-scope correction — 8 test-bound docs stay, 7 bookkeeping files archived
+
+D-02 sends `ADOPTION_v7next.md` and `docs/v7next/*` to `docs/archive/v7next/`. Only 7 of those
+files are true campaign bookkeeping; **8 are load-bearing** and stayed in place:
+
+| stays | bound by |
+|---|---|
+| `docs/v7next/FROZEN_CONTRACTS_INVENTORY.md` | `ouroboros/code_intelligence_architecture.py` `FROZEN_INVENTORY_RELPATH` (a runtime constant), `tests/test_architecture_facts.py`, `scripts/regenerate_inventories.py` |
+| `docs/v7next/FACADE_INVENTORY.md` | `ouroboros/code_intelligence_architecture.py`, `tests/test_architecture_facts.py` |
+| `docs/v7next/DATA_LAYOUT_INVENTORY.md` | `scripts/regenerate_inventories.py`, `tests/test_generated_inventories.py` |
+| `docs/v7next/DOMAIN_QUOTIENT_REPORT.md` | `scripts/v7next_domain_report.py`, `tests/test_docs_sync.py`, DEVELOPMENT prose |
+| `docs/v7next/DESIGN_MODEL_VISIBLE_LOGGED.md` | `tests/test_docs_sync.py`, `tests/test_model_send_seal.py` |
+| `docs/v7next/DESIGN_USAGE_COMPACTION.md` | `tests/test_lockfile_helpers.py`, `tests/test_usage_compaction.py` |
+| `docs/v7next/ABI3_GATEWAY_ALIAS_INVENTORY.md` | `tests/test_gateway_abi3_removals.py` |
+| `ADOPTION_v7next.md` (repo root, not `docs/v7next/`) | `scripts/v7next_adoption.py` `MANIFEST = REPO_ROOT / "ADOPTION_v7next.md"`, `tests/test_v7next_adoption.py`, and the `allowed` set of `tests/test_legacy_timeout_retirement.py` |
+
+Archiving `ADOPTION_v7next.md` would be a code change across a script and two tests — outside a
+docs lane — so it was **not** decided silently. Either it stays at the root (current state) or
+the owner authorizes moving it together with those three call sites.
+
+Verified on disk: `docs/v7next/` holds exactly the 7 bound files listed above,
+`docs/archive/v7next/` holds exactly the 7 archived files, and `ADOPTION_v7next.md` is at the
+repo root.
+
+---
+
+## 8. O3 — upstream-added symbols absent from the merged tree
+
+The O3 oracle enumerates every top-level `def`/`class` added between `a76961de` and `23ab428f`
+and requires each to exist somewhere in the merged tree. It checked 176 symbols; 4 are absent.
+Each is S3 with proof — none is a lost upstream change. (O4: 0 conflict markers. O5: 158/158
+upstream test files present, 0 absent. O6: 13 net-removed upstream symbols, 0 surviving.)
+
+| absent symbol | upstream commit(s) | class | what replaced it | proof |
+|---|---|---|---|---|
+| `_deprecated_pacing_aliases` | a58d6afd, 4d35f521, de71a16a, 9117efc9 | **S3 — retired ABI** | nothing; the alias surface itself is gone | upstream rebuilt the deprecation machinery around `until_deadline` / `stall_rounds_threshold`; v7 deleted both aliases under the 7.0 ABI window (Q10=A), and `tests/test_abi5_q10_removals.py` covers the removal. Taking upstream's helper would re-introduce a retired 7.0 ABI surface. The sibling names it served survive: `_supplied_budget_profile`, `observe_budget_profile` and `resolve_budget_profile` all exist in `ouroboros/task_pacing.py`, so `delegate_supervision.py`'s call still resolves. Verified: no `def _deprecated_pacing_aliases` anywhere |
+| `_preserve_result_meta` | 32628385 | **S3 — superseded** | `ouroboros/tools/tool_result.py::_wrap_run_script_process_result` | that function performs the identical job: it rebuilds the exact three run_script text framings and republishes the inner typed base via `_replace_tool_result`, promoting `code` to `ARTIFACT_OUTPUT_UNDECLARED` when an audit note is present and the base was `ok`. Upstream's helper existed only to copy `result_meta` off the retired `ToolResultText` in `tools/result_envelope.py`, which v7 deleted; resurrecting it would reintroduce the untyped envelope path. `tools/tool_result.py` needed no edit. Verified: `_wrap_run_script_process_result` exists, `_preserve_result_meta` does not |
+| `_validate_runtime_ui_render` | b2bcd659 | **S3 — renamed public in its owner leaf** | `ouroboros/extension_ui_validation.py::validate_runtime_ui_render` | the private name had two importers (`extension_child_catalog.py`, `extension_plugin_api.py`), so it belongs in the single natural owner beside `validate_ui_render`, not in the loader facade. It is public there and in `__all__`; both importers import it `as _validate_runtime_ui_render`, so the historical local spelling is unchanged. Verified: `validate_runtime_ui_render` exists in `extension_ui_validation.py`; no `def _validate_runtime_ui_render` anywhere |
+| `_admission_names` | 1bd71856 | **S3 — renamed public in its owner module** | `ouroboros/project_naming.py::admission_names` | the helper derives a run's title and suggested name at admission; `project_naming.py` is the title-derivation owner and the D11 → D17 direction was already resolved. Moved there by the root operator to bring `gateway/tasks.py` back under 1600 lines (1614 → 1593); `gateway/tasks.py` imports it by the public name and calls it at the admission site; upstream's `tests/test_headless_task_title.py` was re-pointed. Verified: `def admission_names` in `project_naming.py`, imported and called in `gateway/tasks.py`; no `def _admission_names` anywhere |
+
+---
+
+## 9. How this ledger was verified
+
+Every path in the tables was checked to exist in the worktree, and every symbol was resolved
+by parsing the file's AST and looking for the name among its top-level definitions, class
+members, assignments and imported bindings. Four symbols did not resolve at top level and were
+each located by hand and recorded at their true site: `outcome_phase` (a function-local import
+in `post_task_synthesis.py`), `_forced_delegation_note` (`loop_nudges.py:404`, not the leaf the
+lane report implied), `_outcome_tool_errors` (a leaf *module*, `ouroboros/_outcome_tool_errors.py`,
+re-exported from `outcomes.py`) and `_target_mismatch_verdict` (nested inside
+`_handle_external_workspace_integration`). Every short SHA cited was resolved and confirmed to
+lie in `a76961de..23ab428f` (407 commits); one attribution in a lane report — `49e6359c` for
+`segment_write_shape` — is a v7-line commit and was corrected to `2a431b82` / `fcf0bc10` in §3.6.
+Line counts, function lengths, the six-line `registry.py` diff, band membership, the absence
+of the retired names and the docs directory layout were all read from the worktree.
+
+Nothing in this ledger is asserted from a lane report alone. Statements that could not be
+proved are marked **UNVERIFIED** in place; there are none remaining at the time of writing.

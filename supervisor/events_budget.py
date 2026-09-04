@@ -119,6 +119,10 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
     # Host-owned sealed-reasoning pin fact (issue #468): why same-model provider
     # failover was withheld on this call. Bounded {"sealed", "artifact"} dict.
     reasoning_pin = usage.get("reasoning_pin")
+    # Provider wire projection / clamp of the requested reasoning effort
+    # ({requested, applied, reason, model}); persisted so the owner can audit
+    # what tier the provider actually received.
+    effort_clamped = usage.get("reasoning_effort_clamped")
 
     usage_event = {
         "ts": evt.get("ts", utc_now_iso()),
@@ -150,6 +154,7 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
         **({"chat_id": evt["chat_id"]} if evt.get("chat_id") is not None else {}),
         **({"web_search_sources": web_search_sources} if isinstance(web_search_sources, list) and web_search_sources else {}),
         **({"reasoning_pin": reasoning_pin} if isinstance(reasoning_pin, dict) and reasoning_pin else {}),
+        **({"reasoning_effort_clamped": effort_clamped} if isinstance(effort_clamped, dict) and effort_clamped else {}),
     }
     _address_ctx(ctx, usage_event)
     try:

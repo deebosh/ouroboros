@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from ouroboros.context_layout import reference_doc_sections
+from ouroboros.delivery_protocol import extract_plain_text_from_content
 from ouroboros.utils import estimate_tokens
 
 log = logging.getLogger(__name__)
@@ -199,6 +200,98 @@ def _render_context_system_content(
     ]
 
 
+def seal_task_transcript(
+    messages: List[Dict[str, Any]],
+    keep_active: int = 5,
+    min_prefix_tokens: int = 2048,
+) -> None:
+    """Mark ONE stable message-side boundary for provider prompt caching.
+
+    Until enough tool results exist to seal a rolling boundary among them, the
+    boundary is the task message itself: without it everything after the two
+    SYSTEM markers -- the mutable context block and the task contract -- is
+    re-sent uncached every round, which is exactly the short-lived nanny and
+    leaf shape. The marker MIGRATES to the rolling tool seal in the same call
+    that first qualifies, because a request may declare at most four
+    breakpoints (tools, two system blocks and this one): leaving both would
+    make the rolling seal a fifth marker and silently drop it.
+    """
+    for msg in messages:
+        if msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            # Flatten the old sealed boundary before choosing a new one.
+            msg["content"] = extract_plain_text_from_content(content)
+    first_user = next((m for m in messages if m.get("role") == "user"), None)
+    if isinstance(first_user, dict) and isinstance(first_user.get("content"), list):
+        # Drop this function's own previous task-message marker, so exactly one
+        # message-side breakpoint survives whichever branch runs below.
+        for block in first_user["content"]:
+            if isinstance(block, dict):
+                block.pop("cache_control", None)
+
+    tool_indices = [
+        i for i, m in enumerate(messages)
+        if m.get("role") == "tool"
+    ]
+    if len(tool_indices) <= keep_active:
+        _mark_task_message(first_user)
+        return
+
+    seal_candidate_idx = tool_indices[-(keep_active + 1)]
+
+    prefix_text_len = sum(
+        len(extract_plain_text_from_content(m.get("content", "")))
+        for m in messages[: seal_candidate_idx + 1]
+    )
+    prefix_tokens = prefix_text_len // 4  # rough 4-chars-per-token estimate
+
+    if prefix_tokens < min_prefix_tokens:
+        # Not yet a worthwhile rolling boundary: the task message stays the anchor.
+        _mark_task_message(first_user)
+        return
+
+    candidate = messages[seal_candidate_idx]
+    plain_text = str(candidate.get("content", ""))
+    if not plain_text.strip():
+        # Anthropic 400s on cache_control attached to an empty text block; never seal
+        # an empty tool output as the cache anchor (turns the whole task unanswerable).
+        plain_text = "(no tool output)"
+    candidate["content"] = [
+        {
+            "type": "text",
+            "text": plain_text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+def _mark_task_message(message: Optional[Dict[str, Any]]) -> None:
+    """Anchor the prefix on the task message's last non-empty text block.
+
+    Anthropic rejects a marker on an empty text block, so a task message with
+    no text at all is left unmarked rather than padded: the same rule the
+    rolling tool seal enforces on empty tool output."""
+    if not isinstance(message, dict):
+        return
+    content = message.get("content")
+    if isinstance(content, str):
+        if not content.strip():
+            return
+        content = [{"type": "text", "text": content}]
+        message["content"] = content
+    if not isinstance(content, list):
+        return
+    for block in reversed(content):
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and str(block.get("text") or "").strip()
+        ):
+            block["cache_control"] = {"type": "ephemeral"}
+            return
+
+
 def tool_schema_tokens(tools: Optional[List[Dict[str, Any]]]) -> int:
     """chars/4 estimate of the TOOL-SCHEMA segment of a prompt.
 
@@ -227,6 +320,18 @@ def bounded_prompt_tokens_for_payload(prompt_payload: Dict[str, Any], fallback_c
     except Exception:
         pass
     return max(0, int(fallback_chars) // 4)
+
+
+def messages_carry_native_images(messages: Any) -> bool:
+    """Whether a message carries an image part the proxy bounds instead of pricing."""
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and str(part.get("type") or "") in {"image", "image_url"}
+            for part in content
+        ):
+            return True
+    return False
 
 
 def estimate_context_prompt_tokens(

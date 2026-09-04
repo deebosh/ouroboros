@@ -9,6 +9,7 @@ shares the same objects.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import pathlib
@@ -32,6 +33,11 @@ class _ExtensionRegistrations:
     companion_names: List[str] = field(default_factory=list)
     supervised_futures: List[Any] = field(default_factory=list)
     api_instances: List[Any] = field(default_factory=list)
+    # ``POSIX relative path -> text`` of every reviewed ``.js``/``.mjs`` file under
+    # the skill directory, read once at load when a ``kind: "module"`` widget
+    # registered; the module endpoint serves these bytes, never the mutable
+    # skill directory. Not part of snapshot().
+    module_sources: Dict[str, str] = field(default_factory=dict)
     content_hash: Optional[str] = None
     skill_dir: Optional[str] = None
     import_root: Optional[str] = None
@@ -115,6 +121,11 @@ class _StagedRegistrations:
     companion_names: List[str] = field(default_factory=list)
     supervised_tasks: List[_StagedSupervisedTask] = field(default_factory=list)
     companion_spawns: List[_StagedCompanionSpawn] = field(default_factory=list)
+    # Module-widget JavaScript captured during the window (a disk read taken
+    # OUTSIDE the lock, like every other staged value: purely computational).
+    # It reaches ``_ExtensionRegistrations.module_sources`` only at the swap, so
+    # a refused publication never leaves a half-populated bundle serving bytes.
+    module_sources: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -215,6 +226,44 @@ def live_extension_fingerprint() -> str:
         )
     payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def live_widget_projection(skill_name: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+    """Live UI tabs joined with their owner's revision, under ONE lock.
+
+    Each row is ``{"tab": <snapshot-shaped tab>, "revision": <owner content_hash>}``.
+    A single ``_lock`` acquisition, so a reload racing the read can never pair a
+    tab with another generation's revision. With ``skill_name`` the rows are that
+    skill's only and ``None`` means it has no live bundle; an empty list is a live
+    bundle declaring no tabs. Loader-side truth for GET /api/widgets, which must
+    not re-discover skills; module sources are read through
+    ``live_module_sources``. No skill directory here.
+    """
+    with _lock:
+        if skill_name is not None and skill_name not in _extensions:
+            return None
+        rows: List[Dict[str, Any]] = []
+        for key, value in sorted(_ui_tabs.items()):
+            owner = str(value.get("skill") or "")
+            if skill_name is not None and owner != skill_name:
+                continue
+            bundle = _extensions.get(owner)
+            rows.append({
+                "tab": dict(copy.deepcopy(value), key=key),
+                "revision": str(bundle.content_hash or "") if bundle is not None else "",
+            })
+        return rows
+
+
+def live_module_sources(skill_name: str) -> Optional[Dict[str, str]]:
+    """The reviewed ``.js``/``.mjs`` texts a live bundle captured at load, keyed by
+    POSIX path relative to the skill directory; ``None`` when the skill has no
+    live bundle (the module endpoint's 409), empty until a module tab registered.
+    One ``_lock`` read; the returned dict is a fresh key snapshot, not a byte copy.
+    """
+    with _lock:
+        bundle = _extensions.get(skill_name)
+        return None if bundle is None else dict(bundle.module_sources)
 
 
 def get_tool_with_generation(name: str) -> tuple[Optional[Dict[str, Any]], str]:

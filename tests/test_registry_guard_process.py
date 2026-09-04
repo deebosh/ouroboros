@@ -23,8 +23,8 @@ from ouroboros.tools.tool_result import LegacyTextResultAdapter, ToolResult
 #   (_SUBAGENT_SHELL_SECRET_MARKERS 17->18, _DENIED_READ_OPTIONS 11->12,
 #   _SKILL_OWNER_STATE_STEMS 12->14; 14->15 with the CPL4-C11 uninstall
 #   tombstone joining the owner-state allowlist);
-# - ``_workspace_shell_write_block`` gained the upstream ``write_target_argvs``
-#   parameter.
+# - ``_workspace_shell_write_block`` takes the upstream per-segment ``target_rows``
+#   (which replaced ``write_target_argvs``).
 _FUNCTION_SIGNATURES = {
     "_detect_runtime_mode_elevation": "(text_lower: 'str', *, writeish: 'bool' = True) -> 'bool'",
     "_subagent_shell_targets_secret": "(cmd_path_lower: 'str') -> 'bool'",
@@ -57,7 +57,7 @@ _REGISTRY_GUARD_SIGNATURES = {
     "_external_workspace_git_block": "(self, raw_cmd: 'Any', work_dir: 'pathlib.Path') -> 'ToolResult | None'",
     "_external_runtime_protected_paths": "(self, binding: 'Any' = None) -> 'tuple[list, list, list, list]'",
     "_external_shell_runtime_or_secret_block": "(self, raw_cmd: 'Any', cmd_path_lower: 'str', args: 'Dict[str, Any]', work_dir: 'Optional[pathlib.Path]' = None, binding: 'Any' = None) -> 'ToolResult | None'",
-    "_workspace_shell_write_block": "(self, args: 'Dict[str, Any]', raw_cmd: 'Any', cmd_path_lower: 'str', explicit_write_targets: 'list[str]', write_target_argvs: 'list[list[str]]', executable_path_tokens: 'set[str]', runtime_mode: 'str', acting_subagent: 'bool', binding: 'Any') -> 'ToolResult | None'",
+    "_workspace_shell_write_block": "(self, args: 'Dict[str, Any]', raw_cmd: 'Any', cmd_path_lower: 'str', explicit_write_targets: 'list[str]', target_rows: 'list', executable_path_tokens: 'set[str]', runtime_mode: 'str', acting_subagent: 'bool', binding: 'Any') -> 'ToolResult | None'",
     "_shell_git_and_runtime_block": "(self, raw_cmd: 'Any', args: 'Dict[str, Any]', cmd_path_lower: 'str', workspace_mode: 'bool', acting_self_worktree: 'bool', binding: 'Any') -> 'ToolResult | None'",
 }
 

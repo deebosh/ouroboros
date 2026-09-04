@@ -17,6 +17,8 @@ from ouroboros.config import MAX_ACTIVE_SUBAGENTS_HARD_CAP
 from ouroboros.tool_capabilities import ACTING_SUBAGENT_MODE, LOCAL_READONLY_SUBAGENT_MODE
 from ouroboros.contracts.task_constraint import VALID_WRITE_SURFACES
 from supervisor.events_chat_delivery import _bound_project_chat_id
+from supervisor.message_bus import notification_chat_route
+from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID
 
 log = logging.getLogger(__name__)
 
@@ -157,8 +159,12 @@ def _send_subagent_rejection(
 ) -> None:
     # Route through lineage so a subagent rejection notice lands in the root's
     # project thread, not the main chat (C4.4); fall back to the raw chat id.
-    chat_id = _bound_project_chat_id(ctx, tid, parent_id, root_task_id) or chat_id
-    if not chat_id:
+    # Membership, not truthiness: a hidden-partition child is still notified.
+    chat_id = notification_chat_route(
+        _bound_project_chat_id(ctx, tid, parent_id, root_task_id) or None, chat_id
+    )
+    # Same rule as the scheduled toast: a live progress notice needs a reader.
+    if chat_id is None or chat_id == HIDDEN_CHAT_ID:
         return
     ctx.send_with_budget(
         chat_id,

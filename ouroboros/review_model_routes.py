@@ -50,13 +50,14 @@ def _exclusive_direct_remote_provider_env() -> str:
     direct = [name for name, present in (
         ("openai", has_openai), ("anthropic", has_anthropic), ("minimax", has_minimax),
         ("cloudru", has_cloudru), ("gigachat", has_gigachat),
+        ("deepseek", bool(str(os.environ.get("DEEPSEEK_API_KEY", "") or "").strip())),
     ) if present]
     return direct[0] if len(direct) == 1 else ""
 
 
 def direct_provider_review_models_fallback(provider: str) -> list[str]:
     """Return the exact review-models list a direct-provider fallback emits."""
-    if provider not in ("openai", "anthropic", "minimax", "cloudru", "gigachat"):
+    if provider not in ("openai", "anthropic", "minimax", "cloudru", "gigachat", "deepseek"):
         return []
     main_model = str(
         os.environ.get("OUROBOROS_MODEL", SETTINGS_DEFAULTS["OUROBOROS_MODEL"]) or ""

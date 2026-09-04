@@ -127,7 +127,9 @@ def _delegated_disposition_refusal(status: str, entry: Any, rid: str,
     if status != custody.OWNED or entry is None:
         return (
             f"⚠️ INTEGRATE_DELEGATED_NOT_OWNED: run {rid!r} is {status} to this task. "
-            "Only the task that started a delegated run may integrate its patch."
+            "Only the task that started a delegated run may integrate its patch while that task "
+            "is LIVE; once the owner is terminal, a live TOP-LEVEL task whose active root (Git lane) "
+            "or fresh payload binding (payload lane) is the run's recorded target may dispose the orphan."
         )
     if not entry.execution_root:
         return (
@@ -202,7 +204,8 @@ def _unwritten_disposition_text(rid: str, target_root: str, disposition: str,
 
 
 def _dispose_delegated(drive: Any, entry: Any, snapshot_key: str, reason: str,
-                       disposition: str, cleanup: bool) -> tuple[bool, str]:
+                       disposition: str, cleanup: bool,
+                       disposed_by: str = "") -> tuple[bool, str]:
     """Record a delegated disposition durably; clean up ONLY if the row landed.
     Releasing snapshot/patch on an UNWRITTEN row loses the record that the patch
     was handled (a restart could apply it twice). Shared by the Git and payload
@@ -211,7 +214,8 @@ def _dispose_delegated(drive: Any, entry: Any, snapshot_key: str, reason: str,
     from ouroboros.subagent_worktrees import remove_execution_snapshot
 
     recorded = custody.record_patch_disposed(
-        drive, entry, disposition=disposition, reason=str(reason or ""))
+        drive, entry, disposition=disposition, reason=str(reason or ""),
+        disposed_by_task_id=str(disposed_by or ""))
     if not recorded:
         return False, ""
     note = ""
@@ -374,6 +378,7 @@ def _integrate_delegated_patch(
     flow, whose own guards re-verify the tree. A no-op when nothing is pending.
     """
     from ouroboros import delegate_custody as custody, delegate_source_coverage
+    from ouroboros.delegate_shared import orphan_disposition_status
 
     rid = str(run_id or "").strip()
     if not rid:
@@ -382,7 +387,8 @@ def _integrate_delegated_patch(
     if decision not in {"apply", "reject"}:
         return "⚠️ TOOL_ARG_ERROR (integrate_delegated_patch): decision must be 'apply' or 'reject'."
     drive = custody.custody_root(ctx)
-    status, entry = custody.lookup(drive, str(getattr(ctx, "task_id", "") or ""), rid)
+    status, entry, orphan_of = orphan_disposition_status(ctx, drive, rid)
+    orphan_note = f"(orphan of terminal task {orphan_of}) " if orphan_of else ""
     refusal = _delegated_disposition_refusal(status, entry, rid, acknowledge_ambiguous)
     if refusal:
         return refusal
@@ -413,12 +419,14 @@ def _integrate_delegated_patch(
 
         return integrate_payload_patch(
             ctx, drive=drive, entry=entry, rid=rid, decision=decision,
-            reason=reason, cap_dir=cap_dir, manifest=manifest, patch_path=patch_path)
+            reason=reason, cap_dir=cap_dir, manifest=manifest, patch_path=patch_path) + (f"\n{orphan_note.rstrip()}" if orphan_note else "")
     touched = [str(p) for p in (manifest.get("tracked_changed") or [])]
     touched += [str(p) for p in (manifest.get("untracked_included") or [])]
 
     def _dispose(disposition: str, cleanup: bool) -> tuple[bool, str]:
-        return _dispose_delegated(drive, entry, snapshot_key, reason, disposition, cleanup)
+        return _dispose_delegated(
+            drive, entry, snapshot_key, reason, disposition, cleanup,
+            disposed_by=str(getattr(ctx, "task_id", "") or ""))
 
     def _unwritten_disposition(disposition: str, applied: bool) -> str:
         return _unwritten_disposition_text(rid, str(entry.target_root), disposition, applied)
@@ -438,7 +446,7 @@ def _integrate_delegated_patch(
         if not recorded:
             return _unwritten_disposition("rejected", applied=False)
         return (
-            f"🚫 Rejected delegated run {rid}'s captured patch ({len(touched)} file(s) not "
+            f"{orphan_note}🚫 Rejected delegated run {rid}'s captured patch ({len(touched)} file(s) not "
             f"applied); its execution snapshot is released. Verdict: {verdict_path or '(unwritten)'}. "
             f"Reason: {reason or '(none)'}.{format_patch_exclusions(manifest)}{note}"
         )
@@ -635,7 +643,7 @@ def _integrate_delegated_patch(
     if protected:
         prot_note = f" Includes {len(protected)} protected path(s) (allowed: runtime_mode={runtime_mode})."
     return (
-        f"✅ Integrated delegated run {rid}'s patch into {target} ({len(touched)} file(s), staged).{prot_note}\n"
+        f"{orphan_note}✅ Integrated delegated run {rid}'s patch into {target} ({len(touched)} file(s), staged).{prot_note}\n"
         f"{diffstat}{format_patch_exclusions(manifest)}\n"
         f"Verdict: {verdict_path or '(unwritten)'}. Its execution snapshot is released.\n"
         "Changes are staged but NOT committed — review them yourself; you are the sole committer."

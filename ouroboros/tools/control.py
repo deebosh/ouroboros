@@ -267,7 +267,9 @@ def get_tools() -> List[ToolEntry]:
                 "BURST + ABSORB: when several children are INDEPENDENT, emit them in ONE batch (parallel "
                 "schedule_subagent calls in the same round) so they run concurrently, then absorb with "
                 "wait_tasks(any_terminal) — handling whichever finishes first — instead of scheduling and "
-                "blocking on them one at a time with serial wait_task calls. "
+                "blocking on them one at a time with serial wait_task calls — on cache-write-priced "
+                "routes each sibling launched before the first sibling's first response pays its own full "
+                "prefix write, so burst buys latency and spacing buys cash; your call. "
                 "INDEPENDENT VERIFIER: to check a finished deliverable without builder bias, spawn a "
                 "read-only child with memory_mode=empty whose objective carries ONLY the deliverable "
                 "location + the task's acceptance criteria (NOT your own probes/assumptions) and have it "
@@ -286,7 +288,7 @@ def get_tools() -> List[ToolEntry]:
         # cancel_task + peek_task + discard_child_result are registered by ouroboros/tools/join_ledger.py.
         ToolEntry("request_deep_self_review", {
             "name": "request_deep_self_review",
-            "description": "Request an Atlas-backed deep self-review of the entire Ouroboros project. Uses OUROBOROS_MODEL_DEEP_SELF_REVIEW with its matching provider key, full core memory whitelist, and manifest accounting for every tracked repo path against the Constitution. Results go to chat and memory.",
+            "description": "Request a deep self-review of the entire Ouroboros project against the Constitution, on the configured deep-review reviewer row (Settings → Agents → Review lanes; absent, the OUROBOROS_MODEL_DEEP_SELF_REVIEW model runs one packed Atlas review): a packed API model reads the Atlas plus the full core memory whitelist; a configured subagent or agent session reads the repository itself with read-only tools and receives the same memory whitelist inline byte-exact (memory is never receipt-checked). Results go to chat and memory.",
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string", "description": "Why you want a review (context for the reviewer)"},
             }, "required": ["reason"]},

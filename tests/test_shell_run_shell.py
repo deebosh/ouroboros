@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroboros.tools.shell import _resolve_effective_timeout, _run_shell
+from ouroboros.tools.shell import _resolve_effective_timeout, _run_script, _run_shell
 
 
 # ---------------------------------------------------------------------------
@@ -153,14 +153,25 @@ class TestPerCallTimeout:
         _run_shell(_ctx(tmp_path), ["echo", "hi"])
         assert calls[0]["kwargs"]["timeout"] == 600  # config SSOT default (was a buggy effective 360)
 
-    def test_schema_exposes_timeout_sec_and_timeout_alias(self):
+    def test_schema_exposes_timeout_sec_and_registry_owns_the_timeout_alias(self, tmp_path, fake_subprocess):
+        """The alias moved from two duplicated per-tool schema rows to the one
+        registry alias table: `timeout_sec` is the declared property, `timeout`
+        is not, and the raw spelling still reaches the subprocess."""
+        from ouroboros.tools.registry import ToolContext, ToolRegistry
         from ouroboros.tools.shell import get_tools
 
         entries = {e.name: e for e in get_tools()}
         for name in ("run_command", "run_script"):
             props = entries[name].schema["parameters"]["properties"]
             assert "timeout_sec" in props, f"{name} missing timeout_sec"
-            assert "timeout" in props, f"{name} missing timeout alias"
+            assert "timeout" not in props, f"{name} still declares the alias as a property"
+
+        calls = fake_subprocess(stdout="ok")
+        registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+        registry.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path))
+        result = registry.execute("run_command", {"cmd": ["echo", "hi"], "timeout": 7})
+        assert "TOOL_ARG_ERROR" not in result, result
+        assert calls[0]["kwargs"]["timeout"] == 7
 
 
 # ---------------------------------------------------------------------------
@@ -407,3 +418,93 @@ class TestGrepRegexHint:
         fake_subprocess()
         result = _run_shell(_ctx(tmp_path), argv)
         assert "SHELL_REGEX_HINT" not in result, reason
+
+
+# ---------------------------------------------------------------------------
+# SG-B (F17): a masked GREEN discloses the laundered exit code in the envelope
+# ---------------------------------------------------------------------------
+
+
+class TestMaskedGreenDisclosure:
+    """`run_command` reads the same exit-masking sensor as `verify_and_record`
+    and appends ONE advisory note to a green result. Result and trace only: no
+    status, code, exit_code, gate, retry or receipt change — the reasons ride the
+    published typed result's ``meta`` (``exit_masking_reasons``), read here the
+    way the registry reads it: through the per-invocation result sidecar."""
+
+    @staticmethod
+    def _published(ctx, call):
+        from ouroboros.tools.tool_result import (
+            _install_tool_result_sidecar, _published_tool_result, _restore_tool_result_sidecar,
+        )
+
+        sentinel = object()
+        token = _install_tool_result_sidecar(ctx, sentinel)
+        try:
+            text = call()
+            published = _published_tool_result(ctx, sentinel)
+        finally:
+            _restore_tool_result_sidecar(token)
+        assert published is not sentinel, "producer published no typed result"
+        assert published.text == text
+        return published
+
+    @pytest.mark.parametrize("text, reason", [
+        ("node t.js 2>&1 | tail -5", "pipeline_tail"),
+        ("make test || true", "|| true"),
+    ])
+    def test_masked_green_run_command_carries_advisory_note(
+        self, text, reason, tmp_path, fake_subprocess,
+    ):
+        fake_subprocess(stdout="ok", returncode=0)
+        ctx = _ctx(tmp_path)
+        published = self._published(ctx, lambda: _run_shell(ctx, ["sh", "-c", text]))
+        assert "EXIT_MASKING_NOTE" in published.text
+        assert reason in published.text
+        assert published.status == "ok"
+        assert published.meta["exit_code"] == 0
+        assert reason in published.meta["exit_masking_reasons"]
+
+    @pytest.mark.parametrize("cmd", [
+        ["sh", "-c", "pytest -q"],
+        ["sh", "-c", "true 2>/dev/null"],
+        ["sh", "-c", "make test && true"],
+        ["sh", "-c", "make test && exit 0"],
+        ["go", "test", "./..."],
+    ])
+    def test_unmasked_green_carries_no_note(self, cmd, tmp_path, fake_subprocess):
+        fake_subprocess(stdout="ok", returncode=0)
+        ctx = _ctx(tmp_path)
+        published = self._published(ctx, lambda: _run_shell(ctx, cmd))
+        assert "EXIT_MASKING_NOTE" not in published.text
+        assert "exit_masking_reasons" not in published.meta
+
+    def test_masked_green_run_script_body_preserves_advisory_metadata(
+        self, tmp_path, fake_subprocess,
+    ):
+        fake_subprocess(stdout="ok", returncode=0)
+        ctx = _ctx(tmp_path)
+        published = self._published(
+            ctx, lambda: _run_script(ctx, "make test || true", interpreter="sh"),
+        )
+        assert "EXIT_MASKING_NOTE" in published.text
+        assert "|| true" in published.text
+        assert published.status == "ok"
+        assert published.meta["exit_code"] == 0
+        assert "|| true" in published.meta["exit_masking_reasons"]
+
+    def test_masked_nonzero_exit_keeps_the_exit_error_envelope(self, tmp_path, fake_subprocess):
+        fake_subprocess(stdout="", stderr="boom", returncode=1)
+        ctx = _ctx(tmp_path)
+        published = self._published(ctx, lambda: _run_shell(ctx, ["sh", "-c", "make test || true"]))
+        assert "SHELL_EXIT_ERROR" in published.text
+        assert "EXIT_MASKING_NOTE" not in published.text
+        assert published.status != "ok"
+        assert published.meta["exit_code"] == 1
+        assert "exit_masking_reasons" not in published.meta
+
+    def test_shell_and_verify_share_one_exit_masking_sensor(self):
+        import ouroboros.tools.shell as shell_module
+        import ouroboros.tools.verify as verify_module
+
+        assert shell_module.check_exit_masking is verify_module._check_has_exit_masking

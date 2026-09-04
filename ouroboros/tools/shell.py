@@ -32,6 +32,7 @@ from ouroboros.runtime_mode_policy import (
 from ouroboros.tools.commit_gate import _invalidate_advisory
 from ouroboros.shell_parse import is_absolute_path_text, recover_stringified_argv  # noqa: F401
 from ouroboros.tools.tool_result import _publish_process_result, _wrap_run_script_process_result
+from ouroboros.tools.verify import check_exit_masking  # noqa: F401 -- ONE exit-masking sensor shared with verify_and_record (pinned here); its disclosure lives in shell_audit
 from ouroboros.tools.registry import (
     ToolContext,
     ToolEntry,
@@ -40,6 +41,7 @@ from ouroboros.tools import shell_audit as _shell_audit
 from ouroboros.tools.deliverables_shell import lexical_user_files_block_reason  # noqa: F401
 from ouroboros.tools.shell_audit import (
     _UNDECLARED_OUTPUTS_MARKER,
+    _masked_green_disclosure,
     _mentioned_user_file_outputs_without_declaration,
     _presence_allows_user_output,  # noqa: F401
     _allowed_output_roots,  # noqa: F401
@@ -465,7 +467,7 @@ def _run_shell(
                 + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n"
                 + _format_process_output(res.stdout or "", res.stderr or "")
             )
-            return _publish_process_result(ctx, "ARTIFACT_OUTPUT_UNDECLARED", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected)
+            return _masked_green_disclosure(ctx, _publish_process_result(ctx, "ARTIFACT_OUTPUT_UNDECLARED", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected), cmd)
         artifact_note, artifact_failed, artifact_registered = _register_process_outputs(
             ctx,
             outputs,
@@ -511,12 +513,12 @@ def _run_shell(
                 + f"{_format_process_output(res.stdout or '', res.stderr or '')}"
                 + artifact_note
             )
-            return _publish_process_result(ctx, "ARTIFACT_OUTPUT_ERROR", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected)
+            return _masked_green_disclosure(ctx, _publish_process_result(ctx, "ARTIFACT_OUTPUT_ERROR", text, exit_code=0, shell_regex_auto_corrected=regex_autocorrected), cmd)
         executor_note = ""
         if getattr(res, "backend_trace", None):
             executor_note = "\n\nEXECUTOR_TRACE:\n" + json.dumps(res.backend_trace, ensure_ascii=False, indent=2)
         text = autocorrect_note + f"{_describe_returncode(0, cwd=work_dir, binding=binding)}\n{_format_process_output(res.stdout or '', res.stderr or '')}{artifact_note}{audit_note}{scratch_note}{executor_note}"
-        return _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected)
+        return _masked_green_disclosure(ctx, _publish_process_result(ctx, "SHELL_REGEX_AUTO_CORRECTED" if regex_autocorrected else "OK", text, exit_code=0, artifact_registered=bool(artifact_registered and not artifact_failed), shell_regex_auto_corrected=regex_autocorrected), cmd)
     except subprocess.TimeoutExpired:
         _publish_unfinished_process_facts(ctx, _command_start_ts, timed_out=True)
         # Timeout-created scratch still needs its exclusion fingerprint.
@@ -666,6 +668,8 @@ def _run_script(
                 script_path.parent.parent.rmdir()
         except OSError:
             pass
+    if pathlib.PurePath(interp).name in {"sh", "bash"}:
+        result = _masked_green_disclosure(ctx, result, [interp, "-c", body])
     # POST-exec body audit: stat-confirmed user_files writes performed by the script
     # body itself. Runs on EVERY exit path (parity with _record_scratch_fingerprints):
     # a script that writes an undeclared deliverable and then FAILS (raise/SystemExit/
@@ -744,10 +748,6 @@ def get_tools() -> List[ToolEntry]:
 	                        "Clamped to the remaining task-deadline budget. Omit for the default (deadline-capped)."
 	                    ),
 	                },
-	                "timeout": {
-	                    "type": "integer",
-	                    "description": "Alias for timeout_sec (per-call timeout in seconds).",
-	                },
 	            }, "required": ["cmd"]},
         }, _run_shell, is_code_tool=True, timeout_sec=_RUN_SHELL_DEFAULT_TIMEOUT_SEC, mutates_worktree=True),
         ToolEntry("run_script", {
@@ -790,10 +790,6 @@ def get_tools() -> List[ToolEntry]:
 	                        "Optional per-call timeout in seconds for long scripts (alias: timeout). "
 	                        "Clamped to the remaining task-deadline budget. Omit for the default (deadline-capped)."
 	                    ),
-	                },
-	                "timeout": {
-	                    "type": "integer",
-	                    "description": "Alias for timeout_sec (per-call timeout in seconds).",
 	                },
 	            }, "required": ["script"]},
         }, _run_script, is_code_tool=True, timeout_sec=_RUN_SHELL_DEFAULT_TIMEOUT_SEC, mutates_worktree=True),

@@ -1529,6 +1529,39 @@ def test_recent_tasks_includes_outcome_contract_and_ledger(tmp_path):
     assert record["artifact_bundle"]["status"] == "ready_no_changes"
     assert record["verification_ledger"]["entry_count"] == 1
 
+    # A ledger above the inline threshold rides as a stub with NO entries: its
+    # own summary is the count authority, so the row must not report zero.
+    write_task_result(
+        tmp_path,
+        "recent2",
+        STATUS_COMPLETED,
+        result="done",
+        verification_ledger={
+            "schema_version": 1, "omitted_to_artifact": True,
+            "summary": {"entry_count": 9, "has_failures": True},
+        },
+    )
+    payload = json.loads(_handle_recent_tasks(SimpleNamespace(drive_root=tmp_path), limit=2))
+    stub_record = next(row for row in payload["tasks"] if row["task_id"] == "recent2")
+    assert stub_record["verification_ledger"]["entry_count"] == 9
+    assert stub_record["verification_ledger"]["summary"]["has_failures"] is True
+
+
+def test_subtask_outcome_summary_reports_a_stub_ledger_count(tmp_path):
+    """The same count authority on the parent-visible child summary: a stub
+    ledger used to report ``0 entries / no failures`` to its parent."""
+    from ouroboros.tools.control import _subtask_outcome_summary
+
+    summary = json.loads(_subtask_outcome_summary({
+        "status": "completed", "result": "done",
+        "verification_ledger": {
+            "schema_version": 1, "omitted_to_artifact": True,
+            "summary": {"entry_count": 9, "has_failures": True},
+        },
+    }))
+    assert summary["verification_ledger"]["entry_count"] == 9
+    assert summary["verification_ledger"]["summary"]["has_failures"] is True
+
 
 def test_effective_status_keeps_workspace_finalization_nonterminal_without_child_drive(tmp_path):
     from ouroboros.headless import ARTIFACT_STATUS_FINALIZING
@@ -2387,14 +2420,16 @@ def test_handle_schedule_task_uses_event_chat_id_without_owner(tmp_path, monkeyp
     )
 
     # B1 (v6.33.0): a headless subagent with no chat target is no longer
-    # rejected — it is enqueued and runs (the live "🗓️ Scheduled" notification is
-    # skipped because chat_id is 0). Restores headless/CLI multi-agent.
+    # rejected — it is enqueued and runs. The durable record now keeps its real
+    # address instead of recording the hidden partition as "no chat" (that is the
+    # truthiness class this sprint closed), while the LIVE toast is still skipped:
+    # a progress notice needs a reader, the hidden partition has none, and a
+    # headless run's progress log is read back as its benchmark trajectory.
     assert len(enqueued) == 2
     assert enqueued[1]["id"] == "headless2"
     scheduled2 = json.loads((tmp_path / "task_results" / "headless2.json").read_text(encoding="utf-8"))
     assert scheduled2["status"] == STATUS_SCHEDULED
-    # No chat notification was emitted for the chat-less subagent.
-    assert all(s[0] != 0 for s in sent)
+    assert scheduled2["chat_id"] == 0
     assert len(sent) == 1
 
 

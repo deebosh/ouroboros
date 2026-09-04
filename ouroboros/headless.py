@@ -827,10 +827,16 @@ def finalize_task_artifacts(parent_drive_root: pathlib.Path, task: Dict[str, Any
                         item["size"] = len(data)
                         item["sha256"] = sha256(data).hexdigest()
                         item["status"] = ARTIFACT_STATUS_READY
+                        stub = fields.get("verification_ledger")
+                        if isinstance(stub, dict) and stub.get("omitted_to_artifact") and isinstance(refreshed_artifact_ledger.get("summary"), dict):
+                            fields["verification_ledger"] = {**stub, "summary": dict(refreshed_artifact_ledger["summary"])}
                 except Exception:
                     log.debug("Failed to refresh verification ledger artifact for task %s", task_id, exc_info=True)
+            # The loop rewrote the ledger file in place, so the bundle computed
+            # before it no longer describes the bytes on disk.
+            fields["artifact_bundle"] = artifact_bundle_from_result(provisional)
         except Exception:
-            pass
+            log.warning("Artifact bundle/ledger refresh failed for task %s", task_id, exc_info=True)
         write_task_result(
             parent_drive_root,
             task_id,

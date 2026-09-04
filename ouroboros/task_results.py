@@ -86,7 +86,6 @@ def _root_task_acceptance_review_cap(
             "TASK_ACCEPTANCE_REVIEW_STATE_UNKNOWN: root cap authority is absent"
         )
 
-    from ouroboros import config
     from ouroboros.contracts.task_contract import (
         VALID_IMPROVEMENT_POLICIES,
         normalize_budget_profile,
@@ -116,13 +115,27 @@ def _root_task_acceptance_review_cap(
     if deadline_at.strip() and deadline is None:
         raise ValueError("TASK_ACCEPTANCE_REVIEW_STATE_UNKNOWN: root deadline is malformed")
     profile = normalize_budget_profile(raw_profile)
-    required_blocking = bool(
-        config.get_task_review_mode() == "required"
-        and config.get_review_enforcement() == "blocking"
-    )
     return effective_task_acceptance_review_cycles(
         profile,
-        required_blocking=required_blocking,
+        required_blocking=task_acceptance_required_blocking(),
+    )
+
+
+def task_acceptance_required_blocking() -> bool:
+    """The Required+Blocking acceptance lane, derived ONCE for every reader.
+
+    Byte-for-byte the real gate's predicate (``loop_acceptance``:
+    ``ctx.mode == "required" and get_review_enforcement() == "blocking"``) —
+    ``ctx.mode`` is ``config.get_task_review_mode()``, captured by
+    ``loop._run_task_acceptance_review_once`` at the acceptance launch, and
+    ``loop.get_review_enforcement`` IS ``config.get_review_enforcement``. The
+    cap reader and the capacity projection share this one derivation so no
+    second spelling can drift from the gate it projects."""
+    from ouroboros import config
+
+    return bool(
+        config.get_task_review_mode() == "required"
+        and config.get_review_enforcement() == "blocking"
     )
 
 
@@ -153,9 +166,17 @@ def project_task_acceptance_review_capacity(
     Descendants may observe but never initialize root authority. A missing or
     malformed canonical result is UNKNOWN for them; a live root may begin with
     the known empty state. The atomic claim remains dispatch authority.
+
+    WALLET AND CANCELLATION ONLY (owner R52). The TIME axis is not projected:
+    the launch rule (``task_pacing.review_launch_allowed``) is evaluated once,
+    at loop admission (owner R55; the paid claim inside the dispatch stamp
+    checks cancellation and the wallet only), and a descendant reading this
+    reads its own deadline window from the adjacent coordination ``time``
+    fact. So no budget profile, no snapshot and no duration prediction is read
+    here, and the answer cannot drift from the rule it used to imitate.
     """
 
-    from ouroboros import config, task_pacing
+    from ouroboros import config
 
     metadata = getattr(ctx, "task_metadata", {})
     metadata = metadata if isinstance(metadata, dict) else {}
@@ -237,18 +258,7 @@ def project_task_acceptance_review_capacity(
                 "state": "unknown",
                 "reason": f"cancellation_state_unknown:{type(exc).__name__}",
             }
-        budget = task_pacing.build_budget_snapshot(
-            ctx, profile=task_pacing.resolve_budget_profile(ctx),
-        )
-        launch_ok, launch_reason = task_pacing.review_launch_allowed(
-            budget,
-            estimated_sec=task_pacing.acceptance_review_estimate_sec(
-                ctx, passes_done=claimed,
-            ),
-        )
-        if not launch_ok:
-            projection.update({"state": "unavailable", "reason": launch_reason})
-        elif remaining == 0:
+        if remaining == 0:
             projection.update({
                 "state": "unavailable", "reason": "review_cycles_exhausted",
             })
@@ -1363,6 +1373,13 @@ def _compact_plan_review_wave(wave: Dict[str, Any]) -> Dict[str, Any]:
         "wave_artifact": copy.deepcopy(wave.get("wave_artifact") or {}),
         **({"reviewed_at": str(wave["reviewed_at"])} if wave.get("reviewed_at") else {}),
     }
+
+
+def plan_review_authority_core(state: Dict[str, Any], *, source_ref: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Project plan authority through the exact-wave companion."""
+    from ouroboros.tools.plan_review_artifacts import plan_review_authority_core as project
+
+    return project(state, source_ref=source_ref)
 
 
 _PLAN_REVIEW_TRUNCATION_MARKER = "…[truncated to fit the durable state]"

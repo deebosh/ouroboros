@@ -56,6 +56,7 @@ from ouroboros.subagents import (
     envelope_from_task,  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
     resolve_subagent_dispatch,  # noqa: F401 -- the agent module keeps its historical import surface for the dispatch leaf
 )
+from ouroboros.settings_setup_contract import resolve_total_budget_usd
 from ouroboros.subagent_messages import subagent_message_meta
 
 
@@ -489,6 +490,7 @@ class OuroborosAgent:
             "drive_root",
             "child_drive_root",
             "budget_drive_root",
+            "root_cost_ceiling_usd",
             "model_lane",
             "requested_model_lane",
             "effective_model_lane",
@@ -685,9 +687,9 @@ class OuroborosAgent:
 
             budget_root_text = str(task.get("budget_drive_root") or "").strip()
             budget_root = pathlib.Path(budget_root_text) if budget_root_text else self.env.drive_root
-            total_budget = float(os.environ.get("TOTAL_BUDGET", "1"))
+            total_budget = resolve_total_budget_usd()
             projection = usage_projection(budget_root, global_limit_usd=total_budget)
-            if total_budget > 0:
+            if total_budget is not None:
                 budget_remaining = max(0.0, total_budget - float(projection.get("accounted_usd") or 0.0))
         except Exception:
             budget_accounting_status = "unavailable"
@@ -733,10 +735,7 @@ class OuroborosAgent:
         root_task_id = str(task.get("root_task_id") or metadata.get("root_task_id") or task_id)
         parent_task_id = str(task.get("parent_task_id") or metadata.get("parent_task_id") or "")
         budget_root = task.get("budget_drive_root") or metadata.get("budget_drive_root") or self.env.drive_root
-        try:
-            global_limit = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-        except (TypeError, ValueError):
-            global_limit = 0.0
+        global_limit = resolve_total_budget_usd()
         try:
             root_limit = float(os.environ.get("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
         except (TypeError, ValueError):
@@ -748,8 +747,9 @@ class OuroborosAgent:
             parent_task_id=parent_task_id,
             category=str(task.get("type") or "task"),
             source="agent.task",
-            global_limit_usd=global_limit if global_limit > 0 else None,
+            global_limit_usd=global_limit,
             root_limit_usd=root_limit if root_limit > 0 else None,
+            root_cost_ceiling_usd=task.get("root_cost_ceiling_usd") or metadata.get("root_cost_ceiling_usd"),
         )
         with usage_scope(scope):
             return self._handle_task_scoped(task)
@@ -816,47 +816,42 @@ class OuroborosAgent:
             elif str(cap_info.get("executor_blocked_reason") or ""):
                 text, usage, llm_trace = _blocked_executor_terminal(cap_info, task)
             elif task_type_str == "deep_self_review":
-                # Deep self-review bypasses the tool loop.
+                # Deep self-review bypasses the tool loop: it runs on the
+                # configured deep-review ROW (the row decides the delivery).
                 try:
-                    from ouroboros.deep_self_review import run_deep_self_review, is_review_available
+                    from ouroboros.deep_self_review import run_deep_self_review
                     self._emit_progress("Starting deep self-review... This may take several minutes.")
-                    review_model = str(task.get("model") or "")
-                    if not review_model:
-                        avail, review_model = is_review_available()
-                        if not avail:
-                            review_model = ""
-                    if not review_model:
-                        text = (
-                            "❌ Deep self-review unavailable: configure "
-                            "OUROBOROS_MODEL_DEEP_SELF_REVIEW and the matching provider API key."
-                        )
-                        usage = {
-                            "execution_status": "infra_failed",
-                            "reason_code": "deep_self_review_unavailable",
-                        }
-                    else:
-                        text, usage = run_deep_self_review(
-                            repo_dir=self.env.repo_dir,
-                            drive_root=self.env.drive_root,
-                            llm=self.llm,
-                            emit_progress=self._emit_progress,
-                            event_queue=self._event_queue,
-                            model=review_model,
-                        )
+                    text, usage = run_deep_self_review(
+                        repo_dir=self.env.repo_dir,
+                        drive_root=self.env.drive_root,
+                        llm=self.llm,
+                        emit_progress=self._emit_progress,
+                        task_id=str(task.get("id") or ""),
+                        deadline_at=str((self._current_task_metadata or {}).get("deadline_at") or ""),
+                    )
                     if usage:
                         self._pending_events.append({
                             "type": "llm_usage",
                             "ts": utc_now_iso(),
                             "task_id": str(task.get("id") or ""),
-                            "model": review_model,
+                            "model": str(usage.get("resolved_model") or ""),
                             "usage": usage,
                             "category": "deep_self_review",
                         })
-                    try:
-                        review_path = pathlib.Path(self.env.drive_root) / "memory" / "deep_review.md"
-                        review_path.write_text(text, encoding="utf-8")
-                    except Exception as save_err:
-                        log.warning("Failed to save deep review to memory: %s", save_err)
+                    if str(usage.get("execution_status") or "") == "infra_failed":
+                        # The last report stays: an error is the task result plus a
+                        # typed event, never the durable memory of the review.
+                        append_jsonl(drive_logs / "events.jsonl", {
+                            "ts": utc_now_iso(), "type": "task_error",
+                            "task_id": task.get("id"), "error": text,
+                            "reason_code": str(usage.get("reason_code") or ""),
+                        })
+                    else:
+                        try:
+                            review_path = pathlib.Path(self.env.drive_root) / "memory" / "deep_review.md"
+                            review_path.write_text(text, encoding="utf-8")
+                        except Exception as save_err:
+                            log.warning("Failed to save deep review to memory: %s", save_err)
                     llm_trace = {"reasoning_notes": ["deep_self_review"], "tool_calls": []}
                 except BudgetExceeded:
                     raise

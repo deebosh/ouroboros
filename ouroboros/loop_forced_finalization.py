@@ -15,8 +15,8 @@ import time
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros.loop_llm_call import forced_response_is_incomplete, forced_response_parts
-from ouroboros.outcomes import ACCEPTANCE_FINALIZED_UNACCEPTED, ACCEPTANCE_REVISION_REQUESTED, REASON_DELIVERY_CONTROL_DEGRADED
-from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL
+from ouroboros.outcomes import REASON_DELIVERY_CONTROL_DEGRADED
+from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL
 from ouroboros.tool_policy import swarm_router_turn
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.usage_accounting import BudgetExceeded
@@ -88,11 +88,9 @@ def _direct_child_results(ctx: _RoundLimitContext) -> list[Dict[str, Any]]:
 def _child_disposition_state(child: Dict[str, Any]) -> str:
     """Return cancellation or the current task-tree exact-hash disposition."""
 
-    # Explicit cancellation is lifecycle authority and wins every completion
-    # race; late scratch results are not projected or recovered. Only a SETTLED
-    # ``cancelled`` counts as handled (GR2-8c): ``cancel_requested`` is intent,
-    # not outcome — treating it as done suppressed the handoff reminder, so
-    # such a child stays cancel-pending until custody settles.
+    # Explicit cancellation wins every completion race; late scratch results are
+    # not recovered. Only a SETTLED ``cancelled`` counts as handled (GR2-8c):
+    # ``cancel_requested`` is intent, so such a child stays cancel-pending.
     if (
         str(child.get("parent_decision") or "").strip().lower() == "cancelled"
         and str(child.get("status") or "").strip().lower() == "cancelled"
@@ -153,6 +151,7 @@ def _record_forced_finalization(
     # answer (`_forced_final_answer`) and the no-spend host-fallback fence
     # path (`_handle_budget_exceeded` -> `_forced_fallback_result`).
     _loop()._record_forced_acceptance_bypass(ctx, llm_trace, reason_code)
+    ctx.accumulated_usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_NOTICE)
     binding = dict(candidate.acceptance_binding or {}) if candidate is not None else {}
     tools = getattr(ctx, "tools", None)
     current_fingerprint = str(
@@ -212,13 +211,10 @@ def _forced_orphan_note(ctx: _RoundLimitContext, *, include_terminal: bool = Tru
             tid = str(c.get("task_id") or c.get("id") or "?")
             st = str(c.get("status") or "?").strip().lower()
             lifecycle = "running" if st not in FINAL_STATUSES else st
-            # W2: a child whose LATEST blackboard decision row no longer
-            # binds the current result was READ and decided — say that, not
-            # "unread"; only what the ledger PROVES: the row EXISTS, the
-            # binding did not. Scoped to children the projection left
-            # UNDECIDED: a carried disposition (deferred / integrated /
-            # irrelevant / discarded / cancelled) is no failed binding —
-            # "re-submit to close it" would be false there.
+            # W2: a child whose latest decision row no longer binds the current
+            # result was read and decided — say that, not "unread" (the row
+            # exists, the binding did not). Only for children left UNDECIDED:
+            # a carried disposition is no failed binding.
             claim = claimed.get(tid) if not _loop()._child_disposition_state(c) else None
             if claim is not None:
                 disposition, row_sha = claim
@@ -437,20 +433,9 @@ def _run_forced_children_acceptance(
             return
         tools_ctx._task_acceptance_reviewed = True
         _loop()._end_task_acceptance_fence(tools_ctx, outcome="terminal")
-        decision = llm_trace.get("acceptance_decision")
-        status = str(decision.get("status") or "") if isinstance(decision, dict) else ""
-        if status == ACCEPTANCE_REVISION_REQUESTED:
-            # A panel DID run and asked for an improvement pass; record the honest
-            # terminal state instead of leaving a dangling revision request.
-            _loop()._set_acceptance_decision(llm_trace, {
-                "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
-                "reason": "revision_unavailable_on_forced_rail",
-                "source": "forced_finalization",
-                "rationale": (
-                    "The acceptance panel requested an improvement pass, but the "
-                    "forced children_unabsorbed rail cannot take another model round."
-                ),
-            })
+        # This rail records its bypass BEFORE its panel, so the terminalisation
+        # belongs here rather than in the bypass recorder.
+        if _loop().terminalize_dangling_revision(llm_trace, rail="children_unabsorbed"):
             emit_progress(
                 "Task acceptance ran on the forced rail; the requested improvement "
                 "pass is unavailable, finalizing unaccepted."
@@ -495,6 +480,21 @@ def _enforce_swarm_actions(
     llm_trace["reasoning_notes"].append(reminder)
     emit_progress("Plan-review action required before final response.")
     return True
+
+
+_FORCED_BEST_EFFORT_TAIL = (
+    "Produce your best final answer now from the verified work so far; clearly "
+    "mark anything unverified or incomplete. An honest best-effort result is the "
+    "expected outcome here, not a failure."
+)
+
+
+def _prepare_forced_prompt(
+    ctx: _RoundLimitContext, prompt: str, llm_trace: Dict[str, Any],
+) -> str:
+    _loop()._finalize_forced_services(ctx, llm_trace)
+    tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+    return prompt + _loop()._forced_delegation_note(tools_ctx, llm_trace)
 
 
 def _finalize_forced_services(
@@ -592,13 +592,22 @@ def _drain_forced_owner_directives(
     return True
 
 
-def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
+def _call_forced_model_once(
+    ctx: _RoundLimitContext, *, initial_messages: Any = None, admitted_request: Any = None,
+) -> str:
     response_meta: Dict[str, Any] = {}
+    identity = (
+        "model", "provider", "candidate_raw_sha256", "candidate_raw_size_bytes",
+    )
+    candidate_predicate = (
+        lambda actual: all(getattr(actual, key, None) == getattr(admitted_request, key, None) for key in identity)
+        if admitted_request is not None else None
+    )
     final_msg, _final_cost = _loop().call_llm_with_retry(
         ctx.llm,
         ctx.messages,
         ctx.active_model,
-        None,
+        getattr(ctx, "tool_schemas", None),
         ctx.active_effort,
         ctx.max_retries,
         ctx.drive_logs,
@@ -611,6 +620,11 @@ def _call_forced_model_once(ctx: _RoundLimitContext) -> str:
         deadline_ts=ctx.deadline_ts,
         response_meta_out=response_meta,
         transport_reserve_sec=0.0,
+        allow_server_web_search=_loop()._server_web_allowed_by_task(
+            getattr(getattr(ctx, "tools", None), "_ctx", None)
+        ),
+        initial_messages=initial_messages,
+        candidate_predicate=candidate_predicate,
     )
     ctx.accumulated_usage["_forced_response_meta"] = response_meta
     return str((final_msg or {}).get("content") or "").strip()
@@ -709,8 +723,7 @@ def _forced_fallback_result(
     candidate_reason: str = "",
     provider_terminal: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Return a current or fallback candidate."""
-
+    """Compose fallback."""
     router_result = _loop()._forced_swarm_router_result(ctx, llm_trace, reason_code)
     if router_result is not None:
         return router_result
@@ -731,11 +744,10 @@ def _forced_fallback_result(
             candidate.model_text or candidate.full_text if provider_terminal else
             sanitize_tool_result_for_log(_loop()._compose_delivery_suffix(candidate.full_text, suffix))
         )
-        if provider_terminal:
-            ctx.accumulated_usage.update(
-                terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL,
-                terminal_plan_review_open=bool(plan_suffix),
-            )
+        ctx.accumulated_usage.update(
+            terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL,
+            terminal_plan_review_open=bool(plan_suffix),
+        )
         if composed != candidate.full_text:
             candidate = _publish_model_forced_candidate(
                 ctx, llm_trace, composed, reason_code,
@@ -900,11 +912,15 @@ def _forced_final_answer(
     reason_code: str,
     single_semantic_turn: bool = False,
     provider_terminal: bool = False,
+    _prompt_prepared: bool = False,
+    _initial_messages: Any = None,
+    _admitted_request: Any = None,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Forced rail."""
     live_trace = getattr(ctx, "llm_trace", None)
     llm_trace = live_trace if isinstance(live_trace, dict) else {}
-    _loop()._finalize_forced_services(ctx, llm_trace)
+    if not _prompt_prepared:
+        prompt = _loop()._prepare_forced_prompt(ctx, prompt, llm_trace)
     if ctx.deadline_ts is not None and time.time() >= float(ctx.deadline_ts):
         ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code)
         return _loop()._forced_fallback_result(
@@ -915,16 +931,18 @@ def _forced_final_answer(
     if router_result is not None:
         return router_result
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
-    prompt += _loop()._forced_delegation_note(tools_ctx, llm_trace)
     _loop()._append_or_merge_user_message(ctx.messages, prompt)
     extracted = ""
     response_meta: Dict[str, Any] = {}
     for attempt in range(1 if single_semantic_turn else 2):
         try:
             ctx.accumulated_usage.pop("_forced_response_meta", None)
-            extracted, response_meta = forced_response_parts(
-                _loop()._call_forced_model_once(ctx), ctx.accumulated_usage,
-            )
+            if attempt == 0 and _admitted_request is not None:
+                forced = _loop()._call_forced_model_once(
+                    ctx, initial_messages=_initial_messages, admitted_request=_admitted_request)
+            else:
+                forced = _loop()._call_forced_model_once(ctx)
+            extracted, response_meta = forced_response_parts(forced, ctx.accumulated_usage)
         except BudgetExceeded:
             _loop()._drain_forced_owner_directives(ctx, llm_trace)
             raise
@@ -961,7 +979,7 @@ def _forced_final_answer(
     # Control resolution runs BEFORE the incomplete branch: a retained candidate
     # recovered from a control body must not be discarded as a truncated draft,
     # and a stale-evidence retention keeps its own reason (#447/issue-449).
-    incomplete = provider_terminal and extracted and forced_response_is_incomplete(response_meta)
+    incomplete = bool(extracted) and forced_response_is_incomplete(response_meta)
     extracted, control_degraded, retained, replaced = _resolve_forced_delivery_control(
         tools_ctx, extracted,
     )
@@ -972,11 +990,15 @@ def _forced_final_answer(
             source="model_control_retained", candidate_reason=control_degraded,
             provider_terminal=provider_terminal,
         )
-    if incomplete and (current is not None or not replaced):
+    # A reply that still asks for a tool is a preamble on every rail, replace
+    # control or not; other incompleteness may still be resolved by a replace.
+    if incomplete and (
+        bool(response_meta.get("tool_call_count")) or current is not None or not replaced
+    ):
         return _loop()._forced_fallback_result(
             ctx, llm_trace, extracted or fallback_text, reason_code,
             source="forced_model_incomplete", candidate_reason=control_degraded,
-            provider_terminal=True,
+            provider_terminal=provider_terminal,
         )
     if extracted:
         ctx.accumulated_usage["_best_effort_extracted"] = True
@@ -984,13 +1006,11 @@ def _forced_final_answer(
             _loop()._force_plan_disclosure(tools_ctx, llm_trace, forced_reason=reason_code)
             if tools_ctx is not None else ""
         )
-        if provider_terminal:
-            ctx.accumulated_usage["terminal_plan_review_open"] = bool(plan_suffix)
+        ctx.accumulated_usage["terminal_plan_review_open"] = bool(plan_suffix)
         full_text = extracted if provider_terminal else _loop()._compose_delivery_suffix(
             extracted, plan_suffix + _loop()._forced_orphan_note(ctx),
         )
-        if provider_terminal:
-            ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
+        ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
         candidate = _publish_model_forced_candidate(
             ctx, llm_trace, full_text, reason_code,
             degraded_reason=control_degraded,

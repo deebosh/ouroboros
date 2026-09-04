@@ -127,7 +127,7 @@ def test_no_runtime_or_settings_surface_still_names_either_key():
     for pattern in ("*.py", "*.js", "*.json", "*.md", "*.html"):
         for path in REPO.rglob(pattern):
             rel = path.relative_to(REPO).as_posix()
-            if rel in allowed or rel.startswith(("venv", "node_modules", "docs/v7next/")):
+            if rel in allowed or rel.startswith(("venv", "node_modules", "docs/v7next/", "docs/archive/")):
                 continue
             try:
                 text = path.read_text(encoding="utf-8")

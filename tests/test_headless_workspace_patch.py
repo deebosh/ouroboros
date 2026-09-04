@@ -64,7 +64,12 @@ def test_workspace_patch_preserves_lockfile_when_other_changes_are_junk(tmp_path
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
     (repo / "README.md").write_text("base\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+    # Version 3: generated output is excluded because the PROJECT declares it,
+    # not because a host name rule guesses. Without the .gitignore the dist file
+    # would ride the patch and, being a real change beside the lockfile, would
+    # also stop the lockfile from reading as incidental.
+    (repo / ".gitignore").write_text("dist/\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md", ".gitignore"], cwd=repo, check=True, capture_output=True)
     subprocess.run(
         ["git", "-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-m", "init"],
         cwd=repo,
@@ -81,7 +86,9 @@ def test_workspace_patch_preserves_lockfile_when_other_changes_are_junk(tmp_path
     assert "package-lock.json" in patch
     assert "dist/out.txt" not in patch
     assert manifest["counts"]["untracked_included"] == 1
-    assert manifest["counts"]["untracked_excluded"] == 1
+    # A git-ignored file is outside the capture universe, so it is not listed
+    # as an exclusion either.
+    assert manifest["counts"]["untracked_excluded"] == 0
 
 
 def test_workspace_patch_excludes_binary_junk_and_oversize(tmp_path, monkeypatch):
@@ -112,7 +119,7 @@ def test_workspace_patch_excludes_binary_junk_and_oversize(tmp_path, monkeypatch
 
     artifacts, manifest = write_workspace_patch_artifacts(repo, tmp_path / "artifacts", task={})
 
-    assert manifest["exclude_rules_version"] == 2
+    assert manifest["exclude_rules_version"] == 3
     excluded = {item["path"]: item["reason"] for item in manifest["untracked_excluded"]}
     assert "binary file" in excluded.get("app", "")
     assert "binary file" in excluded.get("dump.rdb", "") or "junk artifact" in excluded.get("dump.rdb", "")

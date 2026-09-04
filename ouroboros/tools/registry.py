@@ -28,8 +28,10 @@ from ouroboros.tool_capabilities import (
     META_TOOL_NAMES,  # noqa: F401 — historical facade surface
 )
 from ouroboros.shell_parse import (
+    directory_destination_child_name,  # noqa: F401 — historical facade surface
     is_absolute_path_text,  # noqa: F401 — historical facade surface
     path_text_is_inside,  # noqa: F401 — historical facade surface
+    sequential_effective_cwds,  # noqa: F401 — historical facade surface
     shell_argv,  # noqa: F401 — historical facade surface
     shell_argv_with_path_tokens,  # noqa: F401 — historical facade surface
     shell_command_string,  # noqa: F401 — historical facade surface
@@ -40,6 +42,7 @@ from ouroboros.shell_parse import (
 from ouroboros.tools.shell_guards import (
     PROTECTED_RUNTIME_PATHS_LOWER,  # noqa: F401 — historical facade surface
     interpreter_family,  # noqa: F401 — historical facade surface
+    interpreter_inline_code,  # noqa: F401 — historical facade surface
     interpreter_write_shape,  # noqa: F401 — historical facade surface
     light_shell_repo_mutation,  # noqa: F401 — historical facade surface
     non_interpreter_write_shape,  # noqa: F401 — historical facade surface
@@ -48,8 +51,8 @@ from ouroboros.tools.shell_guards import (
     runtime_data_guard_targets,  # noqa: F401 — historical facade surface
     shell_writer_targets_protected,  # noqa: F401 — historical facade surface
     workspace_executor_state_write_block,  # noqa: F401 — historical facade surface
-    directory_destination_child_name,  # noqa: F401 — historical facade surface
     directory_destination_pairs,  # noqa: F401 — historical facade surface
+    writer_target_rows,  # noqa: F401 — historical facade surface
     writer_target_tokens,  # noqa: F401 — historical facade surface
 )
 from ouroboros.tools.deliverables_shell import (
@@ -136,6 +139,7 @@ from ouroboros.tools.tool_resolution import (  # noqa: F401 — re-exported move
     active_repo_dir_for,
     system_repo_dir_for,
 )
+from ouroboros.tools.write_shape import _workspace_write_candidates  # noqa: F401 — historical facade surface
 from ouroboros.tools.registry_guards import (  # noqa: F401 — re-exported moved surface
     _EPHEMERAL_ALLOWED_TOOLS,
     _GITHUB_TOKEN_TOOLS,

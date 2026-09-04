@@ -89,7 +89,7 @@ def test_review_models_default_in_config():
     assert "OUROBOROS_REVIEW_MODELS" not in SETTINGS_DEFAULTS
     assert "OUROBOROS_REVIEW_MODELS" in RETIRED_SETTING_KEYS
     assert list(OPENROUTER_REVIEW_DEFAULTS["triad"]) == [
-        "google/gemini-3.7-flash",
+        "google/gemini-3.8-flash",
         "openai/gpt-5.6-terra",
         "anthropic/claude-opus-5",
     ]
@@ -411,8 +411,7 @@ def test_apply_settings_to_env_includes_context_mode(monkeypatch, tmp_path):
     settings_path = tmp_path / "settings.json"
     settings_path.write_text(json.dumps({"OUROBOROS_CONTEXT_MODE": "low"}), encoding="utf-8")
     monkeypatch.setattr(cfg, "SETTINGS_PATH", settings_path, raising=True)
-    # apply_settings_to_env writes os.environ directly for ~122 keys: own the whole copy.
-    monkeypatch.setattr(os, "environ", dict(os.environ))
+    # apply_settings_to_env writes os.environ directly for ~122 keys: rely on the autouse conftest environ snapshot.
     os.environ["OUROBOROS_CONTEXT_MODE"] = "max"
 
     apply_settings_to_env({"OUROBOROS_CONTEXT_MODE": "low"})

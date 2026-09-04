@@ -255,6 +255,8 @@ SCHEDULED_TASKS_WARN_BYTES = 2_000_000
 # owner on each wake.  This is a warning, not a retention gate: acknowledged
 # and unacknowledged rows remain durable until a future owner-approved archive.
 BG_OBSERVATIONS_WARN_BYTES = 20_000_000
+# Compact root-task -> skill review index used by acceptance packet assembly.
+SKILL_REVIEW_ROOT_TASKS_WARN_BYTES = 20_000_000
 # ``chat_history`` can deliberately replay the archive chain, while ordinary
 # context reads only the unconsolidated generation suffix.  Warn before an
 # explicit full-history read becomes seconds-scale; this is observability, not
@@ -271,8 +273,10 @@ EVENTS_ARCHIVE_SCAN_WARN_BYTES = 100_000_000
 def estimate_message_chars(messages: Any) -> int:
     """Message chars with image blocks at the provider-billing proxy.
 
-    The bounded basis shared by the fit estimator, the density witness and
-    the compaction proxy — image base64 never counts as text here.
+    Serves the local-context compaction proxy (`llm.py`); the remote fit
+    estimator and the density witness measure on `context_fit`'s
+    `estimate_context_prompt_tokens` basis instead, which serializes message
+    dicts recursively. Image base64 never counts as text here.
     """
     total = 0
     for msg in messages:
@@ -287,4 +291,10 @@ def estimate_message_chars(messages: Any) -> int:
                 total += len(str(block.get("text", "")))
         else:
             total += len(str(content or ""))
+        # Reasoning kept on canonical assistant turns is replayed verbatim on
+        # the reasoning-echo lane (DeepSeek), so it is real wire prompt. A
+        # mixed transcript sent to a non-echo lane still carries the key here
+        # while the wire copy strips it — a conservative over-count, the safe
+        # direction for a compaction trigger.
+        total += len(str(msg.get("reasoning_content") or ""))
     return total

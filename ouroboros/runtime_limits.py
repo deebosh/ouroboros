@@ -94,7 +94,7 @@ def get_llm_transport_read_timeout_sec() -> float:
 
 
 def get_acceptance_review_est_sec() -> float:
-    """Estimated duration of one acceptance review/improvement pass (v6.54.4)."""
+    """The configurable acceptance admission floor, clamped to >=200 s by task_pacing."""
     return _clamped_number_setting("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", low=10.0, high=3600.0)
 
 

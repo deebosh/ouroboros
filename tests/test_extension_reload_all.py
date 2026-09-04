@@ -195,6 +195,35 @@ def test_reload_all_tears_down_stale_extensions(tmp_path):
     assert "staleish" not in extension_loader.snapshot()["extensions"]
 
 
+def test_reload_all_reads_git_info_once_for_the_health_batch(tmp_path, monkeypatch):
+    """One startup reconciliation batch must share one fresh code stamp."""
+    from ouroboros import extension_health, utils
+
+    repo_root = tmp_path / "skills"
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir()
+    for name in ("stamp_a", "stamp_b"):
+        _write_ext_skill(
+            repo_root,
+            name,
+            plugin_body="def register(api):\n    pass\n",
+            permissions=[],
+        )
+
+    calls = {"n": 0}
+
+    def get_git_info(_repo):
+        calls["n"] += 1
+        return "main", "feedface"
+
+    extension_health.code_stamp.cache_clear()
+    monkeypatch.setattr(utils, "get_git_info", get_git_info)
+
+    extension_loader.reload_all(drive_root, lambda: {}, repo_path=str(repo_root))
+
+    assert calls["n"] == 1
+
+
 def test_reload_all_continues_after_one_extension_exception(tmp_path, monkeypatch, caplog):
     """A reconcile bug in one extension must not block later extensions."""
     import logging

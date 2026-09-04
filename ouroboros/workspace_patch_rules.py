@@ -16,13 +16,15 @@ import pathlib
 import re
 from typing import Any, List
 
-# v6.35.0 (T7): bumped to 2 with binary + size + junk-artifact hygiene so the
-# real-usage workspace.patch (consumed by subagents / PR integration) never
-# carries a compiled `go build` binary, a Redis dump, or other untracked build
-# junk. Kept consistent with the bench capture_patch.sh JUNK_RE + numstat
-# binary detection. This is patch-transport hygiene only (artifact path/extension
-# + git's own binary verdict), never code/content inference (Bible P5).
-_PATCH_EXCLUDE_RULES_VERSION = 2
+# Version 3: generated output directories are no longer excluded by NAME. The
+# project's own `.gitignore` (honoured through `--exclude-standard`), the 5 MiB
+# per-file cap below, git's own binary verdict and the credential-name check
+# decide what a workspace.patch may carry; a project whose deliverable IS its
+# build output must not have it silently dropped. The benchmark capture script
+# owns its own any-depth rule and does not import this module. This is
+# patch-transport hygiene only (artifact path/extension + git's binary
+# verdict), never code/content inference (Bible P5).
+_PATCH_EXCLUDE_RULES_VERSION = 3
 _PATCH_MAX_UNTRACKED_FILE_BYTES = 5 * 1024 * 1024  # 5 MiB per untracked file
 _TOP_LEVEL_EXCLUDE_DIRS = {".ouroboros", ".venv", "venv", "env"}
 _ANY_SEGMENT_EXCLUDE_DIRS = {
@@ -37,11 +39,12 @@ _ANY_SEGMENT_EXCLUDE_DIRS = {
     "__pycache__",
     "node_modules",
 }
-# Junk file tails / build dirs the dir-sets above don't already cover; the same
-# JUNK_RE the bench capture_patch.sh uses (devtools/benchmarks/swe_bench_pro/).
+# Junk file tails and caches the dir-sets above don't already cover. Runtime
+# dumps, compiled bytecode and coverage output only; generated-output
+# directories are the project's own .gitignore decision, not a name rule here.
 _PATCH_JUNK_RE = re.compile(
     r"appendonlydir|\.rdb$|\.aof$|\.manifest$|\.log$|\.tmp$|\.pid$|\.sock$"
-    r"|\.pyc$|\.pyo$|^(dist|build)/|\.DS_Store|(^|/)\.coverage$"
+    r"|\.pyc$|\.pyo$|\.DS_Store|(^|/)\.coverage$"
     r"|coverage\.xml$|(^|/)htmlcov/"
 )
 _LOCKFILE_MANIFESTS = {

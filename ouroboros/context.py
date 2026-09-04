@@ -378,7 +378,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         log.debug("Failed to get git info for context", exc_info=True)
         git_branch, git_sha = "unknown", "unknown"
 
-    budget_info = _runtime_budget_info(env, task)
+    budget_info = _runtime_budget_info(env, task, ctx)
 
     try:
         from ouroboros.config import get_runtime_mode
@@ -1076,6 +1076,8 @@ def _build_installed_skills_section(env: Any, *, max_lines: int = 100) -> str:
             lines.append(f"  Tools: {', '.join(surfaces[:8])}")
         elif skill.get("runnable_via_skill_exec"):
             lines.append("  Tools: skill_exec")
+        if skill.get("type") == "extension" and not skill.get("live_loaded"):
+            lines.append(f"  Live ({_field(skill.get('process') or 'unknown', 20)}): no ({_field(skill.get('live_reason') or 'unknown', 60)})")
         count += 1
         if len(lines) >= max_lines:
             lines.append("- ... (truncated; call list_skills for the full catalogue)")

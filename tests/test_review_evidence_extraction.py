@@ -28,6 +28,10 @@ _MOVED_NAMES = (
     "_ACCEPT_TOTAL_BUDGET",
     "_ACCEPT_OBLIGATIONS_MAX",
     "_ACCEPT_RETRIEVAL_URLS_MAX",
+    "ACCEPTANCE_PROMPT_OVERHEAD_CHARS",
+    "_ACCEPT_DENSE_CHARS_PER_TOKEN",
+    "AcceptancePacketBudget",
+    "acceptance_packet_budget_chars",
     "obligation_is_pending",
     "_accept_obligation_row",
     "task_acceptance_evidence_revision",
@@ -68,16 +72,21 @@ def test_review_evidence_leaf_is_a_non_catalog_owner_without_backedges():
 def test_review_evidence_keeps_the_packet_assembler_and_its_patchable_seams():
     """Host-owned seams are documented to be readable — and patchable — at
     ``review_evidence.<name>``, so the packet assembler and the annotator stay
-    here with the review status/summary projections this module always owned."""
+    here. The commit-review status renderers no longer do: upstream 852ce967 cut
+    them into the ``review_status_projection`` leaf, so the pin follows their real
+    owner while the historical ``review_evidence.<name>`` read still resolves."""
     for name in (
         "build_task_acceptance_evidence",
         "annotate_criteria_evidence_resolution",
         "collect_review_evidence",
         "format_review_evidence_for_prompt",
-        "build_review_projection",
-        "build_review_status_payload",
     ):
         assert getattr(review_evidence, name).__module__ == "ouroboros.review_evidence", name
+    for name in ("build_review_projection", "build_review_status_payload"):
+        assert name in vars(review_evidence), name
+        assert getattr(review_evidence, name).__module__ == (
+            "ouroboros.review_status_projection"
+        ), name
     for name in (
         "collect_turn_diff",
         "acceptance_evidence_ref_vocabulary",

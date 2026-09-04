@@ -142,13 +142,20 @@ def emit_review_usage(
         # Task-tree attribution from the bound usage scope (the supervisor
         # additionally backfills delegation/lane fields from RUNNING).
         root_task_id = parent_task_id = ""
+        attribution = {}
         try:
+            from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
             from ouroboros.usage_accounting import current_usage_scope
 
             scope = current_usage_scope()
             if scope is not None:
                 root_task_id = str(scope.root_task_id or "")
                 parent_task_id = str(scope.parent_task_id or "")
+                # The same reviewer attribution the ledger row carries, so a
+                # single row per physical send is still traceable to its slot.
+                attribution = {
+                    key: str(getattr(scope, key, "") or "") for key in REVIEW_ATTRIBUTION_KEYS
+                }
         except Exception:
             pass
         event = {
@@ -174,6 +181,7 @@ def emit_review_usage(
             "category": "review",
             "accounting_authority": "physical_attempt_ledger",
             "ledger_attempt_ids": ledger_attempt_ids,
+            **{key: value for key, value in attribution.items() if value},
         }
         if session_id:
             event["session_id"] = session_id

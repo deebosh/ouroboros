@@ -20,7 +20,7 @@ from ouroboros.llm import LLMClient
 from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
 from ouroboros.observability import new_execution_id
 from ouroboros.tools.registry import ToolRegistry
-from ouroboros.usage_accounting import PhysicalAttemptContext, PhysicalAttemptPreconditionFailed
+from ouroboros.usage_accounting import PhysicalAttemptContext, PhysicalAttemptPreconditionFailed, invalidate_task_cache_splits
 
 
 log = logging.getLogger("ouroboros.loop")
@@ -208,12 +208,6 @@ def _rebind_context_fit_plan(
     preferred_mode: str,
     tool_schemas: List[Dict[str, Any]],
 ) -> Tuple[Any, str]:
-    """Recalibrate the captured immutable core for one new exact route.
-
-    Route switches reuse the plan's already-rendered Low/Max projections; only
-    exact-route evidence, calibration, and fit are rebound.  This avoids both a
-    stale initial-route retry plan and a second context-builder/intent corpus.
-    """
     if plan is None or not all(
         hasattr(plan, name) for name in ("max_projection", "low_projection", "core_sha256")
     ):
@@ -279,6 +273,7 @@ def _rebind_context_fit_plan(
     mode = initial_mode
     projected_prompt_tokens = rebound.projected_tokens_with_tools(mode, tool_schemas)
     messages[:] = rebound.reproject_transcript(messages, mode)
+    invalidate_task_cache_splits(getattr(tools._ctx, "task_id", ""))
     tools._ctx.context_fit_plan = rebound
     tools._ctx.messages = messages
     tools._ctx.active_context_mode = mode
@@ -470,6 +465,7 @@ def _run_main_reclaim(
     if usage:
         _loop()._account_compaction_usage(ctx.accumulated_usage, usage, ctx.event_queue, ctx.task_id)
     if receipt.status == "applied":
+        invalidate_task_cache_splits(ctx.task_id)
         ctx.messages[:] = rebuilt
         ctx.tools._ctx.messages = ctx.messages
         _loop().seal_task_transcript(ctx.messages)
@@ -506,6 +502,7 @@ def _reproject_actual_overflow_low(ctx: _RoundModelCallContext) -> None:
     if ctx.active_context_mode == "low" or ctx.context_fit_plan is None:
         return
     ctx.messages[:] = ctx.context_fit_plan.reproject_transcript(ctx.messages, "low")
+    invalidate_task_cache_splits(ctx.task_id)
     ctx.active_context_mode = "low"
     ctx.tools._ctx.messages = ctx.messages
     ctx.tools._ctx.active_context_mode = "low"

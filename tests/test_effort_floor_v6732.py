@@ -460,12 +460,18 @@ def test_usage_accounting_abort_discards_clamp_note(
         client._create_chat_completion_with_retries(lambda **kw: {"ok": True}, {"model": "m"}, target)
     assert client._pop_effort_clamp_disclosure() is None
 
-    assert client._clamp_effort_for_model("vendor/uae-test", "none") == "low"
-    with _pytest.raises(UsageAccountingError):
-        asyncio.run(client._create_chat_completion_with_retries_async(
-            lambda **kw: {"ok": True}, {"model": "m"}, target,
-        ))
-    assert client._pop_effort_clamp_disclosure() is None
+    # The note lives in a ContextVar (isolated per thread AND per asyncio
+    # task, like the reasoning pin), so stage it where chat_async does: inside
+    # the coroutine that runs the driver.
+    async def _stage_then_abort():
+        assert client._clamp_effort_for_model("vendor/uae-test", "none") == "low"
+        with _pytest.raises(UsageAccountingError):
+            await client._create_chat_completion_with_retries_async(
+                lambda **kw: {"ok": True}, {"model": "m"}, target,
+            )
+        assert client._pop_effort_clamp_disclosure() is None
+
+    asyncio.run(_stage_then_abort())
 
 
 def test_uae_on_floored_resend_discards_clamp_note(

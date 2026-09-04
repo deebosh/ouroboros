@@ -17,6 +17,7 @@ from ouroboros.skill_loader import SkillReviewState, save_enabled, save_review_s
 
 from tests._extension_loader_shared import (
     _prepare_extension,
+    _write_ext_skill,
 )
 from tests._extension_loader_shared import (  # noqa: F401  (autouse fixture applies on import)
     _clear_loader_state,
@@ -379,6 +380,37 @@ def test_runtime_state_for_skill_name_reports_missing_skill(tmp_path):
     assert state["desired_live"] is False
     assert state["live_loaded"] is False
     assert state["reason"] == "missing"
+    assert state["process"] in {"server", "worker"}
+
+
+def test_standalone_reconcile_reads_a_fresh_health_stamp_each_time(tmp_path, monkeypatch):
+    """The batch optimization must not reuse a stamp across separate reconciles."""
+    from ouroboros import extension_health, utils
+
+    repo_root = tmp_path / "skills"
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir()
+    _write_ext_skill(
+        repo_root,
+        "standalone_stamp",
+        plugin_body="def register(api):\n    pass\n",
+        permissions=[],
+    )
+    calls = {"n": 0}
+
+    def get_git_info(_repo):
+        calls["n"] += 1
+        return "main", f"stamp-{calls['n']}"
+
+    extension_health.code_stamp.cache_clear()
+    monkeypatch.setattr(utils, "get_git_info", get_git_info)
+
+    for _ in range(2):
+        extension_loader.reconcile_extension(
+            "standalone_stamp", drive_root, lambda: {}, repo_path=str(repo_root)
+        )
+
+    assert calls["n"] == 2
 
 
 def test_reconcile_reverts_enabled_on_load_error(tmp_path):

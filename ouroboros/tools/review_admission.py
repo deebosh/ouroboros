@@ -158,7 +158,7 @@ def triad_not_dispatched_records(
     restricts the records to the api rows (the Q28-A oversize drop); the
     default covers every row (the Q25-A admission block). ``slot`` keeps each
     seat's ORIGINAL 1-based position in the configured plan."""
-    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_execution import delivery_retrieves
 
     models = list(row_plan.get("models") or [])
     routes = list(row_plan.get("routes") or [])
@@ -167,10 +167,11 @@ def triad_not_dispatched_records(
     records = []
     for index, model in enumerate(models):
         if only_api and (
-            index >= len(routes) or routes[index] is not ReviewRouteKind.API_CHAT
-            # A configured-subagent api row retrieves; the packet drop is not
-            # its withholding and it keeps its live seat.
-            or (index < len(actors) and actors[index])
+            # A retrieving row (session, or configured-subagent api row) never
+            # received the packet; the packet drop is not its withholding and
+            # it keeps its live seat.
+            index >= len(routes)
+            or delivery_retrieves(routes[index], actors[index] if index < len(actors) else "")
         ):
             continue
         records.append({
@@ -197,7 +198,7 @@ def drop_api_rows(row_plan: dict) -> dict:
 
     Q28-A: an irreducible oversize packet drops the api subset when the session
     rows alone satisfy the quorum. The caller records the drop loudly."""
-    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_execution import delivery_retrieves
 
     routes = list(row_plan.get("routes") or [])
     actors = list(row_plan.get("subagent_ids") or [])
@@ -205,7 +206,7 @@ def drop_api_rows(row_plan: dict) -> dict:
     # received the oversized packet, so packet overflow is not its failure.
     keep = [
         i for i, r in enumerate(routes)
-        if r is not ReviewRouteKind.API_CHAT or (i < len(actors) and actors[i])
+        if delivery_retrieves(r, actors[i] if i < len(actors) else "")
     ]
     filtered = dict(row_plan)
     for key in ("models", "routes", "efforts", "session_targets",
@@ -251,11 +252,13 @@ def prepare_scope_review(
             status="error",
             block_message=f"⚠️ SCOPE_REVIEW_BLOCKED: invalid review roots: {exc}.",
         )
+    from ouroboros.review_execution import delivery_retrieves
+
     scope_model_id = scope_model or sr._get_scope_model()
     delegated = str(getattr(route, "value", route) or "") == "agent_session"
     # RETRIEVES class: a session row and a configured-subagent api row deliver
     # by retrieval — neither assembles the packet/atlas below.
-    retrieves = delegated or bool(subagent_id)
+    retrieves = delivery_retrieves(route, subagent_id)
 
     from ouroboros.tools.review_binary_context import StagedDiffUnavailable
     from ouroboros.tools.review_subject import managed_review_subject

@@ -239,15 +239,15 @@ def test_architecture_mentions_shared_log_grouping_and_direct_provider_review_fa
     assert "log_events.js" in arch
     assert "live task card" in arch
     assert "grouped task cards" in arch
-    # Direct-provider fallback covers official OpenAI, Anthropic, MiniMax, Cloud.ru,
-    # and GigaChat, while still excluding OpenRouter/OpenAI-compatible/mixed-provider configs.
+    # Direct-provider fallback covers official OpenAI, Anthropic, MiniMax, DeepSeek,
+    # Cloud.ru, and GigaChat, while still excluding OpenRouter/OpenAI-compatible/mixed-provider configs.
     # Keep the generalized name ("Direct-provider review fallback") and a
     # reference to the legacy "OpenAI-only review fallback" phrase for
     # discoverability, and pin the honest scope language so the doc cannot
     # silently re-expand to claim symmetric coverage it does not have yet.
     assert "Direct-provider review fallback" in arch
     assert "OpenAI-only review fallback" in arch  # legacy name still referenced for discoverability
-    assert "official OpenAI, Anthropic, MiniMax, Cloud.ru, and GigaChat" in arch
+    assert "official OpenAI, Anthropic, MiniMax, DeepSeek, Cloud.ru, and GigaChat" in arch
     assert "_exclusive_direct_remote_provider_env" in arch
     # v4.34.0: direct-provider fallback now documents the
     # `main_model.startswith(provider_prefix)` guard in get_review_models —
@@ -260,6 +260,28 @@ def test_architecture_mentions_shared_log_grouping_and_direct_provider_review_fa
     # resurrect its UI plumbing.
     assert "refreshClaudeCodeStatus" not in arch
     assert "claudeRuntimeHasError" not in arch
+
+
+def test_architecture_limits_finality_and_verdict_claims_to_actual_rows():
+    arch = _read("docs/ARCHITECTURE.md")
+
+    assert "The start row carries neither outcome finality nor a verdict" in arch
+    assert "The pre-finalization authored row carries the phase with `outcome_final=false`" in arch
+    assert "only terminal `task_summary` rows append the host verdict clause" in arch
+    assert "Both Main rows, the Project thread rows" not in arch
+
+
+def test_architecture_maps_cache_split_and_total_budget_authorities():
+    arch = _read("docs/ARCHITECTURE.md")
+
+    assert "_usage_cache_splits.py" in arch
+    assert "process-local" in next(
+        line for line in arch.splitlines() if "_usage_cache_splits.py" in line
+    )
+    settings_row = next(
+        line for line in arch.splitlines() if "settings_setup_contract.py" in line
+    )
+    assert "resolve_total_budget_usd" in settings_row
 
 
 def test_architecture_documents_skill_schedule_lifecycle_and_evolution_light_block():
@@ -275,6 +297,49 @@ def test_architecture_documents_skill_schedule_lifecycle_and_evolution_light_blo
     assert "MEMORY_ACTIONS_JSON" in arch
     assert "apply_memory_actions" in arch
     assert "never auto-written to `identity.md`" in arch
+
+
+def test_chat_id_addressing_docs_match_the_code_that_routes_it():
+    """The chat-0 doctrine is documented where implementers read it (P6).
+
+    ARCHITECTURE previously claimed history replay renders chat-0 frames in the
+    Main stream; the Main filter drops them, so a reader following the doc would
+    look for a CLI run's dialogue in a surface that never shows it. That claim
+    must never come back.
+    """
+    arch = _read("docs/ARCHITECTURE.md")
+    development = _read("docs/DEVELOPMENT.md")
+
+    assert "renders them in the Main stream" not in arch
+    assert "a `chat_id=0` history query coerces to Main" in arch
+    assert "HIDDEN_CHAT_ID" in arch
+    # The headless address is decided at admission, and both outcomes are stated.
+    assert "log_addressing.ingress_chat_id" in arch
+    assert "is refused with a typed 400 rather than honoured" in arch
+    assert "has exactly ONE destination" in arch
+    assert "the only address is `HIDDEN_CHAT_ID` (0)" in arch
+    assert "Registration alone does not qualify" in arch
+    assert "admitted into that project's thread" in arch
+    assert "stays in the hidden partition, silent in every chat" in arch
+    # Scoped is not bound, so the absent conversion button is documented intent.
+    assert "Project-SCOPED is not project-BOUND" in arch
+    # Naming is part of the same admission contract, and its two slots differ.
+    assert "The run is also NAMED at admission, without a model call" in arch
+    assert "`metadata.title` is refused with a" in arch
+    assert "never outranks a real name coined later" in arch
+    # A degraded delivery names its own cause. The doc must keep saying which
+    # code each rail actually produces — the forced rail keeps its own — rather
+    # than renaming one after the other.
+    assert "which is this" in arch and "forced rail's own code" in arch
+    assert "the ordinary repair path records `invalid_delivery_control_after_repair`" in arch
+    assert "falls back to `delivery_control_degraded` only for a" in arch
+    design = _read("docs/DESIGN.md")
+    assert "Where a card does show a cause, it says it in the owner's" in design
+    assert "the record keeps the machine code" in design
+    # The rule itself lives with the other anti-patterns, not only in a changelog.
+    assert "Anti-pattern: a chat id tested for truth" in development
+    assert "notification_chat_route" in development and "coerce_chat_identity" in development
+    assert "tests/test_chat_id_truthiness_guard.py" in development
 
 
 def test_consciousness_prompt_matches_scope_limited_contracts():
@@ -357,6 +422,11 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
     assert "state/consciousness_observations.jsonl" in architecture
     assert "Source-complete decision pipeline" in development
     assert "Context and growth matrix" in development
+    assert "state/skill_review_root_tasks.jsonl" in development
+    assert "state/skill_review_root_tasks.jsonl" in architecture
+    assert "SKILL_REVIEW_ROOT_TASKS_WARN_BYTES" in architecture
+    assert "nine hot stores" in architecture
+    assert "nine os.stat calls" in _read("ouroboros/agent_startup_checks.py")
     for item in (
         "source_completeness",
         "actor_readable_projection",
@@ -365,6 +435,15 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
         "display_identity_replay",
     ):
         assert item in checklists
+
+
+def test_architecture_names_all_window_surfaces_and_settlement_order():
+    architecture = _read("docs/ARCHITECTURE.md")
+    assert (
+        "on those four surfaces (triad, plan review, task acceptance, and deep self-review)"
+        in architecture
+    )
+    assert "SETTLED is published before registration retirement" in architecture
 
 
 def test_phase3_widget_authoring_docs_match_recursive_schema_v1():
@@ -403,6 +482,8 @@ def test_architecture_mirror_matches_the_split_axes_contracts():
 
     # swarm_efficiency reports the REQUEST: lanes_requested, never lanes_used.
     assert "lanes_requested" in arch
+    # A fanned-out root also reports the depth REQUEST beside those lanes.
+    assert "`requested_depth`" in arch
     assert "lanes_used" not in arch
     # Task-group compaction left with the degenerate lane fan-out (v6.87.28).
     assert "task-group compaction" not in arch
@@ -436,16 +517,27 @@ PROMPT_NON_TOOL_IDENTIFIERS = frozenset({
     "project_id", "project_name", "recommended_use", "review_rebuttal",
     # typed outcomes / statuses / runtime-context keys
     "needs_manual_target", "started_uncustodied", "owner_client",
-    # safety policy class names (ouroboros/safety.py TOOL_POLICY values)
-    "check_conditional",
+    # safety policy class names (ouroboros/safety.py TOOL_POLICY values) and
+    # owner-setting values named as policy
+    "check_conditional", "check", "off", "low",
+    # package managers / interpreters named as acquisition or process choices
+    "pip", "pip3", "uv", "brew", "apt", "python", "python3", "sudo", "grep", "env",
+    # git branches / remotes / skill buckets / write surfaces named as policy
+    "ouroboros", "main", "managed", "origin", "external", "genesis", "deliverables",
+    # fenced-block languages the owner chat renders natively
+    "mermaid", "chart",
+    # backlog item status value in CONSCIOUSNESS.md
+    "done",
 })
 
 
 def _prompt_backticked_identifiers(text: str) -> set:
+    """Backticked lowercase identifiers, single-word ones included (a renamed
+    single-word tool such as `escalate` must be caught too)."""
     found = set()
     for token in re.findall(r"`([^`]+)`", text):
         head = token.split("(", 1)[0]
-        if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", head):
+        if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", head):
             found.add(head)
     return found
 
@@ -482,9 +574,17 @@ def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
         | set(BackgroundConsciousness._BG_TOOL_WHITELIST)
         | PROMPT_NON_TOOL_IDENTIFIERS
     )
-    for rel in ("prompts/SYSTEM.md", "prompts/SAFETY.md", "prompts/CONSCIOUSNESS.md"):
+    # CONSCIOUSNESS.md runs on the background registry, which admits ONLY the
+    # whitelist (consciousness.py _tool_schemas/_execute_tool), so a public tool
+    # that is not whitelisted is a phantom there.
+    bg_universe = set(BackgroundConsciousness._BG_TOOL_WHITELIST) | PROMPT_NON_TOOL_IDENTIFIERS
+    for rel, allowed in (
+        ("prompts/SYSTEM.md", universe),
+        ("prompts/SAFETY.md", universe),
+        ("prompts/CONSCIOUSNESS.md", bg_universe),
+    ):
         text = (root / rel).read_text(encoding="utf-8")
-        unresolved = _prompt_backticked_identifiers(text) - universe
+        unresolved = _prompt_backticked_identifiers(text) - allowed
         assert not unresolved, (
             f"{rel} names identifiers that are neither registered tools nor "
             f"classified non-tool identifiers: {sorted(unresolved)}"
@@ -493,8 +593,193 @@ def test_prompt_tool_names_resolve_to_registered_tools(tmp_path):
     # tokens must resolve the same way (the runtime drift check in
     # context_health only catches names with known prefixes).
     bare = _prompt_bare_identifiers((root / "prompts" / "CONSCIOUSNESS.md").read_text(encoding="utf-8"))
-    unresolved_bare = bare - universe
+    unresolved_bare = bare - bg_universe
     assert not unresolved_bare, (
         f"prompts/CONSCIOUSNESS.md names bare identifiers that are neither registered tools "
         f"nor classified non-tool identifiers: {sorted(unresolved_bare)}"
     )
+
+
+# --- Documentation contract enforcement (DEVELOPMENT.md "Documentation contract") ---
+#
+# Three deterministic checks keep the two resident docs a present-tense map:
+#   1. residue: version stamps, decision codenames and "used to / previously"
+#      narrative may only SHRINK per `## ` section (baseline below, like the code
+#      size ratchet — a section that reaches zero may never grow again);
+#   2. the endpoint table mirrors the executable route registries;
+#   3. the settings table mirrors `config.SETTINGS_DEFAULTS` (env-only and retired
+#      rows are declared, not guessed).
+# Language-tagged code fences (```yaml, ```python …) are examples and are not
+# scanned; the plain ``` fence holding the §1 module tree IS scanned. The first
+# ARCHITECTURE line carries the release version by contract and is skipped, as
+# are DEVELOPMENT's "Mutable external-fact inventory" (dated provenance is the
+# rule there) and the "Documentation contract" section that quotes the markers.
+
+DOC_RESIDUE_PATTERNS = {
+    "version_stamp": r"\((?:v\d+\.\d+(?:\.\d+)?(?:-rc\.\d+)?)\)",
+    "version_narrative": r"\b(?:since|before|pre-)v\d+",
+    "narrative": r"\b(?:used to|previously|formerly|was deleted|replaces the earlier|gate[- ]round|round \d+)\b",
+    "codename_paren": r"\((?:GR|AR|BR|CR|D|Q|S|HQ|C|B)\d+[^)]{0,24}\)",
+    "codename_word": r"\bPoltergeist\b|\bphase [A-C]\d?\b|owner(?:-| )(?:decision|ratif)",
+}
+DOC_RESIDUE_SKIPPED_SUBSECTIONS = {
+    "docs/DEVELOPMENT.md": ("Mutable external-fact inventory", "Documentation contract"),
+}
+
+
+def doc_residue_counts(rel: str, text: str) -> dict:
+    """Per-`## ` section counts of residue markers (see DOC_RESIDUE_PATTERNS)."""
+    counts: dict = {}
+    section = "(preamble)"
+    fence_lang = None
+    skipping = False
+    skipped = DOC_RESIDUE_SKIPPED_SUBSECTIONS.get(rel, ())
+    for lineno, line in enumerate(text.split("\n"), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            fence_lang = (stripped[3:].strip() or "") if fence_lang is None else None
+            continue
+        if fence_lang:  # language-tagged example block
+            continue
+        if fence_lang is None and line.startswith("## "):
+            section, skipping = line.strip(), False
+        if fence_lang is None and line.startswith("### "):
+            skipping = any(name in line for name in skipped)
+        if skipping or (rel == "docs/ARCHITECTURE.md" and lineno == 1):
+            continue
+        for kind, pattern in DOC_RESIDUE_PATTERNS.items():
+            hits = len(re.findall(pattern, line))
+            if hits:
+                counts.setdefault(section, {k: 0 for k in DOC_RESIDUE_PATTERNS})[kind] += hits
+    return counts
+
+
+# Zero-residue ceilings recorded after the 07b53365 cleanup: an absent section or kind is a
+# zero ceiling, so both documents are held at zero everywhere. A section row exists only
+# while a re-baseline records a temporary non-zero ceiling, and such a row may only shrink;
+# an absent section stays at zero.
+DOC_RESIDUE_BASELINE = {
+    "docs/ARCHITECTURE.md": {},
+    "docs/DEVELOPMENT.md": {},
+}
+
+
+def test_resident_docs_residue_only_shrinks():
+    for rel, baseline in DOC_RESIDUE_BASELINE.items():
+        current = doc_residue_counts(rel, _read(rel))
+        for section, counts in current.items():
+            allowed = baseline.get(section, {})
+            for kind, hits in counts.items():
+                assert hits <= allowed.get(kind, 0), (
+                    f"{rel} {section!r}: {kind} residue grew to {hits} (baseline "
+                    f"{allowed.get(kind, 0)}); replace the node's description instead of "
+                    "appending history (DEVELOPMENT.md 'Documentation contract')"
+                )
+
+
+def _architecture_section(text: str, heading_prefix: str) -> str:
+    lines = text.split("\n")
+    start = next(i for i, l in enumerate(lines) if l.startswith(heading_prefix))
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def test_architecture_endpoint_table_mirrors_route_registries(tmp_path):
+    """Every mounted browser/CLI route and Host Service route has exactly one table
+    row in ARCHITECTURE §4, and no row names a route that is not mounted."""
+    from ouroboros.gateway.endpoint_index import HTTP_ENDPOINTS
+    from ouroboros.gateway import files as gateway_files
+
+    section = _architecture_section(_read("docs/ARCHITECTURE.md"), "## 4.")
+    rows = re.findall(r"^\| (GET|POST|PUT|PATCH|DELETE|ANY|WS|STATIC) \| `([^`]+)` \|", section, re.M)
+    host_prefix = "127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}"
+    documented_public = {f"{m} {p}" for m, p in rows if not p.startswith(host_prefix)}
+    documented_host = {f"{m} {p[len(host_prefix):]}" for m, p in rows if p.startswith(host_prefix)}
+
+    expected_public = set(HTTP_ENDPOINTS)
+    for route in gateway_files.file_browser_routes():
+        for method in sorted(getattr(route, "methods", None) or []):
+            if method in ("HEAD", "OPTIONS"):
+                continue
+            expected_public.add(f"{method} {route.path}")
+    # server-level surfaces that are not gateway routes but belong in the map
+    expected_public |= {"GET /", "WS /ws", "STATIC /static/*"}
+    # /api/extensions/{skill}/{rest:path} is mounted for every verb and documented once as ANY
+    expected_public = {e for e in expected_public if not e.endswith("/api/extensions/{skill}/{rest:path}")}
+    expected_public.add("ANY /api/extensions/{skill}/{rest:path}")
+
+    from starlette.routing import Route, WebSocketRoute
+
+    from ouroboros.gateway.host_service import create_host_service_app
+
+    expected_host = set()
+    for route in create_host_service_app(tmp_path).routes:
+        if isinstance(route, WebSocketRoute):
+            expected_host.add(f"WS {route.path}")
+        elif isinstance(route, Route):
+            if route.methods is None:
+                expected_host.add(f"ANY {route.path}")
+            else:
+                expected_host.update(
+                    f"{method} {route.path}"
+                    for method in route.methods
+                    if method not in {"HEAD", "OPTIONS"}
+                )
+        else:
+            raise AssertionError(f"Unhandled Host Service route type: {type(route).__name__}")
+
+    assert documented_public == expected_public, (
+        f"missing rows: {sorted(expected_public - documented_public)}; "
+        f"stale rows: {sorted(documented_public - expected_public)}"
+    )
+    assert documented_host == expected_host, (
+        f"missing host rows: {sorted(expected_host - documented_host)}; "
+        f"stale host rows: {sorted(documented_host - expected_host)}"
+    )
+    assert len(rows) == len(documented_public) + len(documented_host), "duplicate endpoint rows"
+
+
+# Rows the settings table documents on purpose although `config.SETTINGS_DEFAULTS`
+# has no such key: operator env-only levers (never a settings.json carrier) and the
+# retired alias whose migration the table still explains (pinned by test_review_cycles).
+SETTINGS_TABLE_ENV_ONLY_ROWS = frozenset({
+    "OUROBOROS_TRUST_NONLOCAL_BIND_WITHOUT_PASSWORD", "OUROBOROS_DISABLE_MANAGED_UPDATES",
+    "OUROBOROS_PRESENTATION", "OUROBOROS_USER_FILES_ROOT", "OUROBOROS_OBSERVABILITY_KEEP_RAW",
+    "OUROBOROS_OBSERVABILITY_RETENTION_DAYS", "OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC",
+    "OUROBOROS_REVIEW_MAX_TOKENS", "OUROBOROS_PREFLIGHT_TIMEOUT_SEC", "OUROBOROS_PREFLIGHT_SERIAL",
+    "OUROBOROS_BUNDLE_DIR",
+})
+SETTINGS_TABLE_RETIRED_ROWS = frozenset({"OUROBOROS_ACCEPTANCE_MAX_IMPROVEMENT_PASSES"})
+
+
+def _normalize_default_cell(cell: str) -> str:
+    value = cell.strip()
+    value = re.sub(r"^`(.*)`$", r"\1", value)
+    if value in ('""', "(empty)", "(unset)", "unset", ""):
+        return ""
+    value = re.sub(r'^"(.*)"$', r"\1", value)
+    return value.split()[0].lower() if value else ""
+
+
+def test_architecture_settings_table_mirrors_config_defaults():
+    """Every `config.SETTINGS_DEFAULTS` key has one row in ARCHITECTURE's Default
+    settings table with the shipped default; every other row is a declared env-only
+    lever or retired alias."""
+    from ouroboros import config
+
+    section = _architecture_section(_read("docs/ARCHITECTURE.md"), "## 7.")
+    table = section[section.index("### Default settings"):]
+    rows = re.findall(r"^\| ([A-Z][A-Z0-9_]+) \| ([^|]*?) \|", table, re.M)
+    keys = [k for k, _ in rows]
+    assert len(keys) == len(set(keys)), f"duplicate settings rows: {sorted(k for k in set(keys) if keys.count(k) > 1)}"
+    documented = set(keys)
+    expected = set(config.SETTINGS_DEFAULTS)
+    assert expected <= documented, f"settings missing from the table: {sorted(expected - documented)}"
+    undeclared = documented - expected - SETTINGS_TABLE_ENV_ONLY_ROWS - SETTINGS_TABLE_RETIRED_ROWS
+    assert not undeclared, f"table rows that are neither shipped defaults nor declared env-only/retired: {sorted(undeclared)}"
+    mismatched = [
+        (key, cell, str(config.SETTINGS_DEFAULTS[key]))
+        for key, cell in rows
+        if key in expected and _normalize_default_cell(cell) != str(config.SETTINGS_DEFAULTS[key]).lower()
+    ]
+    assert not mismatched, f"documented default differs from config.SETTINGS_DEFAULTS: {mismatched}"

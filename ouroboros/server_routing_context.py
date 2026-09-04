@@ -178,7 +178,15 @@ def _latest_project_task_result(ctx: Any, project_id: str) -> Optional[Dict[str,
     mtime scan, then — for pre-pointer projects only — a disclosed full scan
     of the store (the lazy self-heal for rows finalized before the pointer
     existed; with zero matching results nothing is written back, so it repeats
-    per lookup until a matching result exists). Only the ABSENT-pointer case
+    per lookup until a matching result exists). The order is TOTAL: newest
+    mtime first with the file name as the stable tie-break, and — because
+    results finalized within one clock tick share an mtime — the first match's
+    whole equal-mtime group is read to its end (across the 64-entry window,
+    which bounds the SEARCH, not the group) and the durable ``ts`` decides
+    inside it (``updated_at`` when ``ts`` is absent, the task id last). A file
+    whose stat or JSON could not be read is answered around best-effort for
+    the call but blocks the pointer write-back (it might be the newer result).
+    Only the ABSENT-pointer case
     writes the pointer back: a non-empty pointer that failed to resolve is
     usually a split-drive result in flight (finalization stamps the pointer
     before the canonical copy-back lands), so overwriting it from the scan
@@ -204,28 +212,53 @@ def _latest_project_task_result(ctx: Any, project_id: str) -> Optional[Dict[str,
             "falling back to the bounded scan", project_id, pointer,
         )
 
-    paths = list(task_results_dir(ctx.DRIVE_ROOT, create=False).glob("*.json"))
-    try:
-        paths.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-    except OSError:
-        paths.sort(key=lambda path: path.name, reverse=True)
+    def _stamp(path: Any) -> Optional[float]:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return None  # unreadable stat: ordered last, member of no tie group
+
+    def _order(item: Dict[str, Any]) -> tuple:
+        # Inside an equal-mtime group the DURABLE `ts` decides (`updated_at`
+        # stands in when `ts` is absent); the task id is the deterministic last
+        # resort for equal keys (a stable choice, not a semantic one).
+        return (str(item.get("ts") or item.get("updated_at") or ""), str(item.get("task_id") or item.get("id") or ""))
+
+    stamped = [(_stamp(path), path) for path in task_results_dir(ctx.DRIVE_ROOT, create=False).glob("*.json")]
+    # A file whose stat or JSON cannot be read might be this project's newer
+    # result: the scan still answers best-effort for THIS call, but such
+    # uncertainty must never be frozen into the durable pointer.
+    uncertain = any(mtime is None for mtime, _ in stamped)
+    # Newest first; unreadable last; the name keeps equal mtimes contiguous
+    # and the whole order deterministic.
+    stamped.sort(key=lambda item: (item[0] is None, -(item[0] or 0.0), item[1].name))
     row = None
-    for path in paths[:64]:
+    for index, (mtime, path) in enumerate(stamped):
+        if index == 64:
+            log.info(
+                "project last-task-result: %r missed the bounded scan; running the "
+                "full-store self-heal scan (%d files)", project_id, len(stamped),
+            )
         candidate = read_json_dict(path)
-        if candidate is not None and str(candidate.get("project_id") or "") == project_id:
-            row = candidate
-            break
-    if row is None and len(paths) > 64:
-        log.info(
-            "project last-task-result: %r missed the bounded scan; running the "
-            "full-store self-heal scan (%d files)", project_id, len(paths),
-        )
-        for path in paths[64:]:
-            candidate = read_json_dict(path)
-            if candidate is not None and str(candidate.get("project_id") or "") == project_id:
-                row = candidate
+        if candidate is None:
+            uncertain = True
+            continue
+        if str(candidate.get("project_id") or "") != project_id:
+            continue
+        row = candidate
+        # The match's whole equal-mtime group is read to its end — across the
+        # 64-entry window too, which bounds the SEARCH and never cuts a group
+        # whose order the mtime cannot settle.
+        for tied_mtime, tied in stamped[index + 1:]:
+            if mtime is None or tied_mtime != mtime:
                 break
-    if row is not None and not pointer:
+            other = read_json_dict(tied)
+            if other is None:
+                uncertain = True
+            elif str(other.get("project_id") or "") == project_id and _order(other) > _order(row):
+                row = other
+        break
+    if row is not None and not pointer and not uncertain:
         try:
             update_project(ctx.DRIVE_ROOT, project_id, last_task_result_id=str(
                 row.get("task_id") or row.get("id") or ""))

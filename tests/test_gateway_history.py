@@ -673,6 +673,67 @@ def test_chat_history_task_summary_row_passes_flat_cost_fields_through(tmp_path)
     assert "cost_usd" not in rec and "accounted_upper_bound_usd" not in rec
 
 
+def test_chat_history_replays_task_summary_finality_without_task_result(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text(
+        json.dumps({
+            "ts": "2026-09-03T00:00:00Z",
+            "direction": "system",
+            "type": "task_summary",
+            "task_id": "open-summary",
+            "chat_id": 1,
+            "text": "Narrative written before finalization.",
+            "outcome_phase": "warn",
+            "outcome_final": False,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    (logs / "progress.jsonl").write_text("", encoding="utf-8")
+
+    endpoint = make_chat_history_endpoint(tmp_path)
+    response = asyncio.run(endpoint(SimpleNamespace(query_params={"limit": "10"})))
+    payload = json.loads(response.body.decode("utf-8"))["messages"]
+
+    rec = next(item for item in payload if item.get("task_id") == "open-summary")
+    assert rec["outcome_phase"] == "warn"
+    assert rec["outcome_final"] is False
+    assert "task_terminal_status" not in rec
+
+
+def test_chat_history_settled_result_overrides_pre_final_summary_finality(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text(
+        json.dumps({
+            "ts": "2026-09-03T00:00:00Z",
+            "direction": "system",
+            "type": "task_summary",
+            "task_id": "settled-summary",
+            "chat_id": 1,
+            "text": "Narrative written before finalization.",
+            "outcome_phase": "working",
+            "outcome_final": False,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    (logs / "progress.jsonl").write_text("", encoding="utf-8")
+    results = tmp_path / "task_results"
+    results.mkdir()
+    (results / "settled-summary.json").write_text(
+        json.dumps({"_schema_version": 1, "task_id": "settled-summary", "status": "completed"}),
+        encoding="utf-8",
+    )
+
+    endpoint = make_chat_history_endpoint(tmp_path)
+    response = asyncio.run(endpoint(SimpleNamespace(query_params={"limit": "10"})))
+    payload = json.loads(response.body.decode("utf-8"))["messages"]
+
+    rec = next(item for item in payload if item.get("task_id") == "settled-summary")
+    assert rec["outcome_phase"] == "done"
+    assert rec["outcome_final"] is True
+
+
 def test_chat_history_attaches_terminal_cost_truth_from_task_result(tmp_path):
     """v6.82 P1: a terminal task_results/<id>.json carries the final cost truth;
     it is attached to the surviving progress anchor on replay. ABI-3

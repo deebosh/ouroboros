@@ -62,7 +62,6 @@ from ouroboros.tools.plan_review_runtime import (
     publish_rendered_wave as _publish_rendered_wave,
     plan_payload_roots as _plan_payload_roots,
     plan_review_slots as _plan_review_slots,
-    plan_reviewer_config_fingerprint as _plan_reviewer_config_fingerprint,
     plan_wave_replay_decision as _plan_wave_replay_decision,
     plan_wave_has_in_flight as _plan_wave_has_in_flight,
     plan_wave_progress_line as _plan_wave_progress_line,
@@ -78,7 +77,6 @@ from ouroboros.tools.plan_review_artifacts import (
     exact_wave as _exact_wave,
     in_flight_resume_inputs as _plan_in_flight_resume_inputs,
     persist_wave as _persist_plan_review_wave_artifact,
-    record_cannot_verify_attempt as _record_cannot_verify_attempt,
     record_exact_wave as _record_exact_wave,
     read_wave as _read_plan_review_wave_artifact,
 )
@@ -189,7 +187,10 @@ _SPEC_SCHEMA = {
             "type": "array", "items": {"type": "string"},
             "description": (
                 "What reviewers should LOOK AT: file paths, task:<id> of a prior task, URLs. "
-                "The host attaches files bounded (never fetching URLs) and names every omission."
+                "The host attaches files bounded (never fetching URLs) and names every omission. "
+                "An EXISTING path here that resolves under the Ouroboros system repository also "
+                "makes the plan constitutional (BIBLE + ARCHITECTURE go to reviewers); a path that "
+                "does not exist does not, and the skip is disclosed."
             ),
         },
     },
@@ -623,30 +624,9 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
         system_root=system_root, active_root=active_root, cycle_index=cycle_index,
         enforcement=enforcement, previous=previous,
     )
-    slots, slot_messages, session_threads, cannot_verify, continuation_restarted = _continuation_state(
+    slots, slot_messages, session_threads, continuation_restarted = _continuation_state(
         state_root, task_id, previous, slots, manifest, user_content=user_content,
     )
-    if cannot_verify:
-        try:
-            stored = _record_cannot_verify_attempt(
-                state_root, task_id, cycle_index=cycle_index, fingerprint=fingerprint,
-                previous=previous, spec=spec, plan_prose=request.plan, manifest=manifest,
-                manifest_hash=manifest_hash, constitutional=bool(constitutional),
-                constitutional_note=constitutional_note, slots=slots, enforcement=enforcement,
-                cap=cap, reason=cannot_verify,
-                reviewer_config_fingerprint=_plan_reviewer_config_fingerprint(slots),
-                reviewed_at=utc_now_iso(), system_prompt=system_prompt,
-                user_content=user_content, session_task=session_task,
-                need_evidence_seen=list(state.get("need_evidence_seen") or []),
-                page_size=plan_spec.MAX_FINDINGS_PER_SLOT,
-            )
-        except (OSError, ValueError) as exc:
-            return f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}"
-        _emit_plan_review_reference(ctx, task_id, state_root=state_root)
-        return _publish_rendered_wave(
-            ctx, stored, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
-            reminder=reminder,
-        )
     quorum = adaptive_quorum(len(slots))
     fanout = _plan_fanout_inputs(
         slots, resume=resume if resume_in_flight else None, replay_snapshot=replay_snapshot,
@@ -938,17 +918,20 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
     disposition_recorded_at = utc_now_iso()
     try:
         prior_ref = wave.get("wave_artifact") if isinstance(wave.get("wave_artifact"), dict) else {}
-        exact = _read_plan_review_wave_artifact(root, task_id, prior_ref)
+        closure_notes = [*closure["notes"], *([] if prior_ref else [
+            "exact_artifact_absent: v2 wave had no exact wave_artifact reference",
+        ])]
+        exact = _read_plan_review_wave_artifact(root, task_id, prior_ref) if prior_ref else dict(wave)
         exact.update({
             "dispositions": list(items), "closed": bool(closure["closed"]),
-            "closure_notes": list(closure["notes"]),
+            "closure_notes": closure_notes,
             "disposition_recorded_at": disposition_recorded_at,
             "supersedes_wave_artifact": prior_ref,
         })
         disposition_ref = _persist_plan_review_wave_artifact(root, task_id, exact)
         stored = record_plan_review_dispositions(
             root, task_id, fingerprint=fingerprint, dispositions=items,
-            closed=bool(closure["closed"]), closure_notes=list(closure["notes"]),
+            closed=bool(closure["closed"]), closure_notes=closure_notes,
             wave_artifact=disposition_ref, recorded_at=disposition_recorded_at,
         )
     except (OSError, TimeoutError, ValueError) as exc:

@@ -24,11 +24,12 @@ from ouroboros.outcomes import (
     EXECUTION_FAILED,
     EXECUTION_INFRA_FAILED,
     EXECUTION_OK,
+    BEST_EFFORT_REASON_CODES,
     apply_receipt_absent_flag,
     artifact_bundle_from_result,
     build_verification_ledger,
+    custody_debt_axes,
     derive_loop_outcome,
-    infra_failed_axes,
     maybe_write_verification_artifact,
     normalize_outcome_axes,
 )
@@ -385,14 +386,17 @@ def _apply_terminal_custody_outcome(
     unreconciled = existing.get("delegated_runs_unreconciled")
     if not isinstance(unreconciled, list) or not unreconciled:
         return loop_outcome
-    return {
+    overlaid = {
         **loop_outcome,
         "reason_code": "delegated_custody_unreconciled",
-        "outcome_axes": infra_failed_axes(
-            "delegated_custody_unreconciled",
-            review_trigger="delegate_terminal_reconciliation",
-        ),
+        "outcome_axes": custody_debt_axes(loop_outcome.get("outcome_axes")),
     }
+    # A task truncated by the rails keeps ITS reason on the one Reason line; the
+    # custody debt rides objective.warning(s) and the row's debt list instead.
+    rail = str(loop_outcome.get("reason_code") or "")
+    if rail in BEST_EFFORT_REASON_CODES:
+        overlaid["reason_code"] = rail
+    return overlaid
 
 def emit_task_results(
     env: Any, memory: Any, llm: Any,
@@ -781,12 +785,8 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
                 expected_output=str(task.get("expected_output") or ""),
                 receipts=task_verification_receipts(None, env.drive_root, task),
             )
-        outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
         loop_outcome = _apply_terminal_custody_outcome(env, task, loop_outcome)
-        if str(loop_outcome.get("reason_code") or "") == "delegated_custody_unreconciled":
-            outcome_axes = normalize_outcome_axes(
-                {"outcome_axes": loop_outcome["outcome_axes"]}
-            )
+        outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
         execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
         reason_code = str(loop_outcome.get("reason_code") or "")
         status = (

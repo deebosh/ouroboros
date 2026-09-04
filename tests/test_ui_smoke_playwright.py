@@ -1707,8 +1707,8 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                     " const g = document.querySelector('.chat-live-card.subagent[data-parent-task-id=\"child1\"]');"
                     " return !!p && !!c && c.closest('.chat-subagents') && c.parentElement.closest('.chat-live-card') === p"
                     " && !!g && g.closest('.chat-subagents') && g.parentElement.closest('.chat-live-card') === c"
-                    " && /researcher \\(child1\\)/.test(c.innerText)"
-                    " && /evidence-mapper \\(grandchi/.test(g.innerText); }",
+                    " && /researcher/.test(c.innerText)"
+                    " && /evidence-mapper/.test(g.innerText); }",
                     timeout=30_000,
                 )
                 parent = page.locator(".chat-live-card:not(.subagent)").first
@@ -1725,14 +1725,14 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 child_text = child.inner_text()
                 assert "Parent task started" in parent_text
                 assert "2 children" in parent_count.inner_text()
-                assert "researcher (child1)" in child_text
+                assert "researcher" in child_text and "(child1)" not in child_text
                 assert "1 child" in child_count.inner_text()
                 assert "child=child1" not in child_text
                 assert "role=researcher" not in child_text
                 assert "panel_child_review" not in child_text
                 assert "claude-fable-5" not in child_text
                 assert "verdict=DEGRADED" not in child_text
-                assert "evidence-mapper (grandchi" in grandchild.inner_text()
+                assert "evidence-mapper" in grandchild.inner_text()
                 assert child.get_attribute("data-task-id") == "child1"
                 assert page.locator(
                     '.chat-live-card[data-task-id="parent1"] > .chat-subagents > '
@@ -1816,7 +1816,7 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 assert replay_grandchild.get_attribute("data-finished") == "1"
                 assert replay_child.get_attribute("data-expanded") == "0"
                 assert replay_grandchild.get_attribute("data-expanded") == "0"
-                assert "researcher (child1)" in replay_child.inner_text()
+                assert "researcher" in replay_child.inner_text()
                 assert "child=child1" not in replay_child.inner_text()
                 assert "role=researcher" not in replay_child.inner_text()
                 assert page.locator(".chat-bubble").filter(
@@ -2884,7 +2884,8 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
     full page reload — and pins the three neighbouring states so the fix cannot silently break
     them: 0 (no delegation), a normal positive value, and empty (falls back, does not persist
     an invalid value). Screenshots are written for vision inspection; a saved screenshot is
-    not verification on its own (docs/DEVELOPMENT.md "Browser/mobile verification").
+    not verification on its own (docs/DEVELOPMENT.md "Responsive and accessible
+    behavior").
     """
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError

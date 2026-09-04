@@ -16,6 +16,8 @@ import os
 import pathlib
 from typing import Any, Dict, List, Optional
 
+from ouroboros.task_pacing import in_task_cost_ceiling_disclosure as _in_task_cost_ceiling
+
 log = logging.getLogger(__name__)
 
 
@@ -79,21 +81,22 @@ def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _runtime_budget_info(env: Any, task: Dict[str, Any]) -> Dict[str, Any]:
+def _runtime_budget_info(env: Any, task: Dict[str, Any], ctx: Any = None) -> Dict[str, Any]:
     """Start-of-task budget block: global projection + the STATIC per-task tree cap,
     written once at task start so the cached prefix stays byte-stable (DEVELOPMENT
     cache_friendliness item 22); live tree spend rides only the cache-breaking
     surfaces (checkpoint/pacing/milestones)."""
     try:
         from ouroboros.usage_accounting import usage_projection
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
 
-        total_usd = float(os.environ.get("TOTAL_BUDGET", "1"))
+        total_usd = resolve_total_budget_usd()
         budget_root = pathlib.Path(task.get("budget_drive_root") or env.drive_root)
         projection = usage_projection(budget_root, global_limit_usd=total_usd)
         spent_usd = float(projection.get("accounted_usd") or 0.0)
         budget_info = {
-            "status": "available", "total_usd": total_usd,
-            "spent_usd": spent_usd, "remaining_usd": total_usd - spent_usd,
+            "status": "available" if total_usd is not None else "no_global_limit", "total_usd": total_usd,
+            "spent_usd": spent_usd, "remaining_usd": None if total_usd is None else total_usd - spent_usd,
             "reserved_usd": float(projection.get("reserved_usd") or 0.0),
             "unresolved_upper_bound_usd": float(projection.get("unresolved_upper_bound_usd") or 0.0),
             "unknown_unmetered": int(projection.get("unknown_unmetered") or 0),
@@ -112,6 +115,8 @@ def _runtime_budget_info(env: Any, task: Dict[str, Any]) -> Dict[str, Any]:
             "by the physical-attempt ledger: dispatches are refused once the tree's accounted "
             "spend reaches it and the task is force-stopped. Budget checkpoints during the task report the live tree number."
         )
+    if ctx is not None:
+        budget_info["in_task_cost_ceiling"] = _in_task_cost_ceiling(ctx, budget_info.get("remaining_usd"))
     return budget_info
 
 

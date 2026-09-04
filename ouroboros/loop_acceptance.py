@@ -800,6 +800,36 @@ def _format_obligations_clause(open_obligations: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def terminalize_dangling_revision(llm_trace: Dict[str, Any], *, rail: str) -> bool:
+    """Close a dangling ``revision_requested`` when a forced rail fires.
+
+    A forced rail cannot take another model round, so a recorded revision
+    request would otherwise promise a pass that never comes. The prior reason is
+    named in the rationale because "the panel requested an improvement pass" is
+    false for the superseded-binding shape. Returns True when it terminalized.
+
+    No bypass reason is stamped: the panel really ran. ``accepted`` and
+    ``finalized_unaccepted`` decisions are never overwritten, and the
+    reason/status pair stays outside the blocked-terminal set, so the objective
+    remains best_effort.
+    """
+    decision = llm_trace.get("acceptance_decision")
+    decision = decision if isinstance(decision, dict) else {}
+    if str(decision.get("status") or "") != ACCEPTANCE_REVISION_REQUESTED:
+        return False
+    prior = str(decision.get("reason") or "") or ACCEPTANCE_REASON_UNSPECIFIED
+    _loop()._set_acceptance_decision(llm_trace, {
+        "status": ACCEPTANCE_FINALIZED_UNACCEPTED,
+        "reason": "revision_unavailable_on_forced_rail",
+        "source": "forced_finalization",
+        "rationale": (
+            f"The acceptance decision was {prior}; the forced {rail} rail cannot "
+            "take another model round."
+        ),
+    })
+    return True
+
+
 def _record_forced_acceptance_bypass(
     ctx: _RoundLimitContext,
     llm_trace: Dict[str, Any],
@@ -828,13 +858,14 @@ def _record_forced_acceptance_bypass(
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
     if tools_ctx is None:
         return
-    # A recorded host decision (panel ran, pacing skip, supersede) wins; the
-    # bypass record exists only for the no-host-verdict shape. "Host
-    # decision" = a canonical status — NOT the status-less agent-stance dict
-    # merged when task_acceptance_review defers to the host (that left the
-    # bypass unrecorded when owed); `_set_acceptance_decision` stamps.
+    # A recorded host decision (canonical status, NOT the status-less agent
+    # stance merged on a deferral) wins; the bypass record exists only for the
+    # no-host-verdict shape; `_set_acceptance_decision` stamps.
     decision = llm_trace.get("acceptance_decision")
     if isinstance(decision, dict) and str(decision.get("status") or "") in ACCEPTANCE_DECISION_STATUSES:
+        # A revision request is not a terminal host decision: this rail cannot
+        # take the pass it promised, so close it instead of leaving it dangling.
+        terminalize_dangling_revision(llm_trace, rail=str(reason_code or ""))
         return
     if getattr(tools_ctx, "_task_acceptance_reviewed", False):
         return

@@ -131,7 +131,7 @@ def test_improvement_pass_blocked_when_time_exhausted_mid_cycle(monkeypatch):
     monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "120")
     monkeypatch.setenv("OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC", "90")
     profile = normalize_budget_profile({"max_improvement_passes": 5})
-    ctx = _deadline_ctx(remaining_sec=150.0)  # spendable = 30 < est 90
+    ctx = _deadline_ctx(remaining_sec=150.0)  # spendable=30 <= floor=200
     snap = task_pacing.build_budget_snapshot(ctx)
     ok, reason = task_pacing.improvement_pass_allowed(snap, 0, profile)
     assert not ok and reason == "improvement_window_inside_reserve"
@@ -502,7 +502,7 @@ def _acceptance_harness(monkeypatch, tmp_path, review_result, *, enforcement="bl
 
     monkeypatch.setattr(loop_mod, "get_task_review_mode", lambda: "required")
     monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: enforcement)
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [object(), object(), object()])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [object(), object(), object()])
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: review_result)
     meta = {}
     if deadline_remaining is not None:
@@ -968,7 +968,7 @@ def test_agent_tool_payload_carries_dissent_noted(monkeypatch, tmp_path):
         ],
         parsed_findings=[], aggregate_signal="PASS",
     )
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **k: [object(), object(), object()])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **k: [object(), object(), object()])
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: result)
     monkeypatch.setattr(
         "ouroboros.review_evidence.build_task_acceptance_evidence",

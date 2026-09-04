@@ -22,8 +22,9 @@ from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_nega
 from ouroboros.loop_transport import TransportWaitEpisode, finalize_now_transport_terminal as _finalize_now_transport_terminal
 from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
 from ouroboros.pricing import estimate_cost_optional
-from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
+from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.usage_accounting import invalidate_task_cache_splits
 from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN, _narrow_round_deadline, _owner_stop_control_is_current, _owner_stop_window_elapsed, handle_finalize_now_entry  # noqa: F401 -- _owner_stop_control_is_current stays a facade surface
 
 from typing import TYPE_CHECKING
@@ -197,6 +198,7 @@ def _run_round_compaction(
             f"⚠️ Context compaction kept the transcript unchanged ({receipt.status})."
         )
     if receipt.status == "applied":
+        invalidate_task_cache_splits(ctx.task_id)
         prune_reclaim_trace_refs(ctx.tools._ctx, rebuilt)
     return rebuilt, usage
 
@@ -231,6 +233,10 @@ class _RoundLimitContext:
     incoming_messages: Optional[queue.Queue] = None
     owner_msg_seen: Optional[set] = None
     forced_service_evidence_fingerprint: str = ""
+    # The round's exact tool envelope, so a forced wrap-up call keeps the same
+    # provider prefix as the working round instead of rebuilding it tool-less.
+    # LAST field: existing positional construction (tests included) stays valid.
+    tool_schemas: Optional[List[Dict[str, Any]]] = None
 
 
 def _account_compaction_usage(
@@ -363,17 +369,16 @@ def _handle_provider_unavailable(
     ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
     wait_cause: str = "", waited: bool = False, wait_eligible: bool = True,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
-    """Provider-death rail wrapper: every arm carries a terminal provenance;
-    ``setdefault`` keeps explicit stamps authoritative. Not every exit is a
-    provider death: the deadline grace arm can return a MODEL-AUTHORED final
-    (``deadline_local``) and a scheduled swarm handoff pops its reason code —
-    both keep their legacy shape."""
+    """Provider-death rail wrapper: every arm carries terminal provenance.
+    The forced-finalization sink stamps ``host_notice``; retained/generated
+    model candidates stamp ``model_final``."""
     text, usage, llm_trace = _loop()._provider_unavailable_result(
         ctx, error_kind=error_kind, wait_cause=wait_cause, waited=waited,
         wait_eligible=wait_eligible,
     )
-    if str(usage.get("reason_code") or "") not in ("", "deadline_local"):
-        usage.setdefault("terminal_origin", TERMINAL_ORIGIN_HOST_SALVAGE)
+    if str(usage.get("reason_code") or "") not in ("", "deadline_local") and usage.get(
+            "terminal_origin") in (None, TERMINAL_ORIGIN_HOST_NOTICE):
+        usage["terminal_origin"] = TERMINAL_ORIGIN_HOST_SALVAGE
     return text, usage, llm_trace
 
 

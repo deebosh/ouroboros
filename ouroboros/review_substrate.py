@@ -8,7 +8,6 @@ reviewer slots.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, replace
 import logging
 import os
@@ -37,6 +36,7 @@ from ouroboros.review_execution import (  # noqa: F401  (compat re-exports)
     ReviewRouteKind,
     ReviewRouteUnavailable,
     ReviewSlotExecutor,
+    delivery_retrieves,
     _execute_slot_attempt,
     _messages_char_count,
     _render_prompt,
@@ -124,6 +124,7 @@ from ouroboros.outcomes import OUTCOME_TIER_BEST_EFFORT, OUTCOME_TIER_BLOCKED, O
 
 # Historical dispatch names remain re-exported for existing consumers.
 from ouroboros.review_dispatch import (  # noqa: E402,F401 — re-exports
+    acceptance_slot_fit,
     PLAN_SLOT_ID_PREFIX,
     ReviewPaidStamp,
     SCOPE_SLOT_ID_PREFIX,
@@ -134,9 +135,8 @@ from ouroboros.review_dispatch import (  # noqa: E402,F401 — re-exports
 )
 
 
-# reviewer_slots() lives in reviewer_slot_config (altitude, P7); re-exported
-# because acceptance surfaces and tests import it from here.
-from ouroboros.reviewer_slot_config import reviewer_slots  # noqa: F401,E402
+# reviewer_slots()/triad_delivery_slots() live in reviewer_slot_config (altitude, P7); re-exported for callers here.
+from ouroboros.reviewer_slot_config import reviewer_slots, triad_delivery_slots  # noqa: F401,E402
 
 
 def scope_reviewer_slots(
@@ -258,9 +258,9 @@ class ReviewCoordinator:
             global_limit = base_scope.global_limit_usd
         else:
             try:
-                configured_global_limit = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-                global_limit = configured_global_limit if configured_global_limit > 0 else None
-            except (TypeError, ValueError):
+                from ouroboros.settings_setup_contract import resolve_total_budget_usd
+                global_limit = resolve_total_budget_usd()
+            except Exception:
                 global_limit = None
         if base_scope.root_limit_usd is not None:
             root_limit = base_scope.root_limit_usd
@@ -395,6 +395,7 @@ class ReviewCoordinator:
         *,
         operation_id: str = "",
         operation_state: str = "settled",
+        prompt_ref: Dict[str, Any] | None = None,
     ) -> ReviewActorRecord:
         actor_status = "not_dispatched" if operation_state == "not_dispatched" else "error"
         call_id = new_call_id(f"review_{request.surface}_{slot.slot_id}_error")
@@ -409,19 +410,20 @@ class ReviewCoordinator:
             prompt_projection = _review_route_executor(assignment, llm=self.llm).prompt_payload()
         except Exception:
             prompt_projection = {}
-        prompt_ref: Dict[str, Any] = {}
         response_ref: Dict[str, Any] = {}
-        try:
-            prompt_ref = persist_call(
-                self.drive_root,
-                task_id=request.task_id or "review",
-                call_id=f"{call_id}_prompt",
-                call_type=f"{base_call_type}_prompt",
-                payload={"request": asdict(request), "slot": asdict(slot), **prompt_projection},
-                manifest={"surface": request.surface, "slot_id": slot.slot_id, "model": slot.model, "synthetic": True},
-            )
-        except Exception:
+        if prompt_ref is None:
             prompt_ref = {}
+            try:
+                prompt_ref = persist_call(
+                    self.drive_root,
+                    task_id=request.task_id or "review",
+                    call_id=f"{call_id}_prompt",
+                    call_type=f"{base_call_type}_prompt",
+                    payload={"request": asdict(request), "slot": asdict(slot), **prompt_projection},
+                    manifest={"surface": request.surface, "slot_id": slot.slot_id, "model": slot.model, "synthetic": True},
+                )
+            except Exception:
+                prompt_ref = {}
         try:
             response_ref = persist_call(
                 self.drive_root,
@@ -463,6 +465,7 @@ class ReviewCoordinator:
             dispatch_stamp=self._review_paid_stamp,
         )
         executor = _review_route_executor(assignment, llm=self.llm)
+        executor.usage_observer = lambda usage: self._emit_usage(request, slot, usage, prompt_chars=executor.prompt_chars())
         executor._logical_deadline_monotonic = logical_deadline_monotonic
         # The physical session and the logical waiter must share this exact
         # mutable cell.  A fresh cell is normally empty, so ``state or {}``
@@ -489,40 +492,30 @@ class ReviewCoordinator:
         except Exception:
             prompt_ref = {}
         free_refusal = (
-            task_acceptance_zero_physical_refusal(request.evidence)
+            task_acceptance_zero_physical_refusal(request.evidence, retrieving=bool(slot.retrieves))
             if request.surface == "task_acceptance"
             else {}
         )
         if free_refusal:
-            raw_text = json.dumps({
-                "verdict": "DEGRADED",
-                "findings": [],
-                "summary": free_refusal["summary"],
-            })
-            try:
-                response_ref = persist_call(
-                    self.drive_root,
-                    task_id=request.task_id or "review",
-                    call_id=f"{call_id}_response",
-                    call_type=f"{base_call_type}_response",
-                    payload={"message": {"content": raw_text}, "usage": {}},
-                    manifest={
-                        "surface": request.surface, "slot_id": slot.slot_id,
-                        "model": slot.model, "status": free_refusal["status"],
-                        "physical_attempts": 0,
-                    },
-                )
-            except Exception:
-                response_ref = {}
-            return ReviewActorRecord(
-                slot_id=slot.slot_id,
-                model=slot.model,
-                status="ok",
-                raw_text=raw_text,
-                prompt_ref=prompt_ref,
-                response_ref=response_ref,
-                duration_sec=round(time.time() - start, 3),
+            # Nothing was sent, so the row must not wear a verdict: it is a
+            # typed $0 ``not_dispatched`` actor whose refusal token rides into
+            # ``error`` so the aggregate names the real blocker.
+            return self._error_actor(
+                request, slot, f"{free_refusal['status']}: {free_refusal['summary']}",
+                operation_id=call_id, operation_state="not_dispatched", prompt_ref=prompt_ref,
             )
+        # Backstop for the quorum-sized packet ceiling: a narrower slot in the
+        # same panel can still be handed more than it holds, and refusing it
+        # costs nothing while the rest of the panel reviews.
+        if request.surface == "task_acceptance" and not slot.retrieves:
+            cap, estimated = acceptance_slot_fit(slot, executor, slot_input_caps=request.policy.get("slot_input_caps"))
+            if cap and estimated > cap:
+                return self._error_actor(
+                    request, slot,
+                    f"preflight_oversize: assembled acceptance prompt ~{estimated:,} tokens "
+                    f"exceeds this slot's calibrated input cap {cap:,}",
+                    operation_id=call_id, operation_state="not_dispatched", prompt_ref=prompt_ref,
+                )
         owner_deadline = str(getattr(request, "deadline_at", "") or "")
         from ouroboros.config import get_finalization_grace_sec
         from ouroboros.deadline_utils import owner_deadline_exhausted
@@ -546,15 +539,16 @@ class ReviewCoordinator:
                 "Owner deadline exhausted before physical review dispatch",
                 operation_id=call_id,
                 operation_state="not_dispatched",
+                prompt_ref=prompt_ref,
             )
         try:
             p3_actor = request.surface in {"multi_model_review", "scope_review"}
             acceptance_actor = request.surface == "task_acceptance"
             actor_attempts = 2 if (p3_actor or acceptance_actor) else 1
             # Acceptance and P3 share one two-send rail: transport/empty retry
-            # or same-route format repair; a native tool-round slot instead
-            # gets its episode's own config-owned send cap (its second actor
-            # attempt repairs format locally, spending no send).
+            # or same-route format repair for PACKET rows; a retrieving row
+            # (native episode, agent session) carries no send count — its
+            # executor canonicalizes its own answer, so no repair resend below.
             from ouroboros.review_native_episode import native_or_packet_attempt_rail
 
             attempt_rail = native_or_packet_attempt_rail(
@@ -626,7 +620,7 @@ class ReviewCoordinator:
                     _last_msg, _last_usage, _last_text, _has_prior = msg, usage, raw_text, True
                     if raw_text.strip():
                         if (
-                            acceptance_actor
+                            acceptance_actor and not slot.retrieves
                             and actor_attempt + 1 < actor_attempts
                             and parse_review_findings(raw_text)[0] is None
                         ):
@@ -661,7 +655,6 @@ class ReviewCoordinator:
                         break
                     if actor_attempt + 1 >= actor_attempts:
                         break
-            self._emit_usage(request, slot, usage, prompt_chars=executor.prompt_chars())
             try:
                 response_ref = persist_call(
                     self.drive_root,
@@ -736,8 +729,8 @@ class ReviewCoordinator:
 
             emit_review_usage(
                 self.usage_ctx,
-                model=slot.model,
-                usage=usage,
+                model=str(usage.get("resolved_model") or slot.model),
+                provider=str(usage.get("provider") or ""), usage=usage,
                 source=f"review_substrate:{request.surface}",
                 prompt_chars=prompt_chars,
                 extra={"surface": request.surface, "slot_id": slot.slot_id},

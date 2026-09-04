@@ -70,16 +70,20 @@ from ouroboros.extension_surface_names import (
     extension_surface_name,
 )
 from ouroboros.extension_ui_validation import (
+    read_module_sources,
     _assert_ws_message_type,
+    validate_runtime_ui_render as _validate_runtime_ui_render,
     validate_settings_schema as _validate_settings_schema,
-    validate_ui_render as _validate_ui_render,
 )
 from ouroboros.gateway.host_service import AUTH_TOKEN_FILENAME
 from ouroboros.node_runtime import (
     skill_node_argv,
 )
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
-from ouroboros.skill_loader import compute_content_hash, requested_core_setting_keys
+from ouroboros.skill_loader import (
+    compute_content_hash,
+    requested_core_setting_keys,
+)
 from ouroboros.skill_token import SkillToken
 from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
 
@@ -407,8 +411,15 @@ class PluginAPIImpl:
         self._require("widget")
         clean_tab = _assert_tool_name(tab_id)  # same syntax rules
         key = f"{self._skill}:{clean_tab}"
-        validated_render = _validate_ui_render({} if render is None else render)
+        validated_render = _validate_runtime_ui_render({} if render is None else render)
         span = _widget_span_from_render(validated_render)
+        # A module widget's reviewed JavaScript (its entry plus every sibling
+        # .js/.mjs) is captured here (disk read, outside the lock) so the module
+        # endpoint serves the loaded bundle's bytes, not the disk.
+        module_sources = (
+            read_module_sources(self._skill_dir, str(validated_render.get("entry") or ""))
+            if str(validated_render.get("kind") or "") == "module" else None
+        )
         with _lock:
             self._stage_surface_locked(_ui_tabs, self._staged.ui_tabs, key, {
                 "skill": self._skill,
@@ -420,8 +431,12 @@ class PluginAPIImpl:
                 "span": span,
                 "grid_span": span,
                 **_widget_geometry_from_render(validated_render),
-                "ui_host_pending": True,
             }, "ui tab")
+            if module_sources is not None:
+                # Staged, never written onto the live bundle here: the swap in
+                # ``_publish_registrations`` is the only place sources become
+                # servable (ABI-9 atomicity).
+                self._staged.module_sources.update(module_sources)
 
     def register_settings_section(
         self,
@@ -791,6 +806,7 @@ class PluginAPIImpl:
                         value["plugin_api_generation"] = self._plugin_api_generation
                     live[key] = value
                     bundle_keys.append(key)
+            bundle.module_sources.update(staged.module_sources)
             bundle.unload_callbacks.extend(staged.unload_callbacks)
             # Recorded on the bundle BEFORE the attach below so a mid-attach
             # failure's unload reaps every effect (unsubscribing a

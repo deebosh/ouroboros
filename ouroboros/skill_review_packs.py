@@ -17,6 +17,7 @@ import pathlib
 from typing import Any, Dict, List, Optional
 
 from ouroboros.skill_review_passes import (
+    WASM_MAGIC,
     SkillBinaryPayload as _SkillBinaryPayload,
     binary_file_descriptor,
     executable_magic_kind,
@@ -25,12 +26,11 @@ from ouroboros.tools.review_helpers import REVIEW_PROMPT_TOKEN_BUDGET
 from ouroboros.utils import estimate_tokens
 
 
-# The reviewable skill payload is bound by ONE pack-level token budget (reusing the
-# review stack's SSOT REVIEW_PROMPT_TOKEN_BUDGET) instead of arbitrary per-file /
-# file-count BYTE caps: a 76 KB data file or a 41-file skill is fully reviewable when
-# the whole pack fits a 1M-context reviewer. Loadable executables / unreadable files
-# are still refused (safety, not size). Headroom reserves the rest of the reviewer
-# prompt (governance docs + checklist + framing) so the SKILL pack alone is bounded.
+# The reviewable skill payload is bound by ONE pack-level token budget (the review
+# stack's SSOT REVIEW_PROMPT_TOKEN_BUDGET), not per-file / file-count BYTE caps: a 76 KB
+# data file or a 41-file skill is fully reviewable when the whole pack fits a 1M-context
+# reviewer. Loadable executables / unreadable files are still refused (safety, not size).
+# Headroom reserves the rest of the reviewer prompt (governance docs + checklist + framing).
 
 _SKILL_PACK_TOKEN_HEADROOM = 120_000
 
@@ -41,13 +41,12 @@ def _skill_pack_token_budget() -> int:
     return max(1, REVIEW_PROMPT_TOKEN_BUDGET - _SKILL_PACK_TOKEN_HEADROOM)
 
 
-# Lexical download filter retained ONLY for the marketplace fetcher's coarse
-# pre-gate (ouroboros/marketplace/fetcher.py). Skill REVIEW itself judges file
-# CONTENT — loader magic bytes, see ``skill_review_passes.executable_magic_kind``
-# — never filenames (X4/В21): a renamed ELF is still blocked, while a text file
-# with a scary extension stays reviewable.
+# Lexical download filter retained ONLY for the marketplace fetcher's coarse pre-gate
+# (ouroboros/marketplace/fetcher.py). Skill REVIEW itself judges file CONTENT — loader
+# magic bytes, see ``skill_review_passes.executable_magic_kind`` — never filenames
+# (X4/В21): a renamed ELF is still blocked; a text file with a scary extension stays reviewable.
 _LOADABLE_BINARY_EXTENSIONS = frozenset(
-    {".so", ".dylib", ".dll", ".pyc", ".pyo", ".node", ".wasm", ".exe", ".bin"}
+    {".so", ".dylib", ".dll", ".pyc", ".pyo", ".node", ".exe", ".bin"}
 )
 
 
@@ -85,7 +84,8 @@ def _read_skill_file(
 ) -> tuple[Optional[str], bytes, Optional[Dict[str, Any]]]:
     """Read one skill file: ``(text, sha256_digest, descriptor)`` — exactly one set.
     Loadable executables (CONTENT magic bytes, never filename) hard-block review;
-    other non-UTF-8 files yield a typed descriptor instead of raw bytes."""
+    WebAssembly (``WASM_MAGIC``, even when its bytes decode as UTF-8) and other
+    non-UTF-8 files yield a typed descriptor instead of raw bytes."""
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -100,7 +100,7 @@ def _read_skill_file(
     if kind:
         raise _SkillBinaryPayload(rel, len(data), kind)
     digest = hashlib.sha256(data).digest()
-    if text is not None:
+    if text is not None and not data.startswith(WASM_MAGIC):
         return text, digest, None
     return None, digest, binary_file_descriptor(rel, data, filename=path.name)
 
@@ -147,7 +147,7 @@ def _build_skill_file_packs(
         file_digests.append((rel, file_digest))
         if descriptor is not None:  # typed descriptor, never raw non-UTF-8 bytes
             body = json.dumps(descriptor, indent=2, sort_keys=True)
-            rel_head = f"{rel} (non-UTF-8 file — descriptor only, content not inlined)"
+            rel_head = f"{rel} (binary file — descriptor only, content not inlined)"
             block = f"### {rel_head}\n\n```json\n{body}\n```"
         else:
             block = f"### {rel}\n\n```\n{body}\n```"

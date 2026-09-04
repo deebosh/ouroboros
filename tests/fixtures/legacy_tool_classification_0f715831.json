@@ -1043,6 +1043,14 @@
    "is_error": true,
    "status": "integration_blocked"
   },
+  "ident:INTEGRATE_APPLY_NO_OP:named": {
+   "is_error": true,
+   "status": "integration_blocked"
+  },
+  "ident:INTEGRATE_APPLY_NO_OP:plain": {
+   "is_error": true,
+   "status": "integration_blocked"
+  },
   "ident:INTEGRATE_CONFLICT:named": {
    "is_error": true,
    "status": "integration_blocked"
@@ -1984,6 +1992,14 @@
    "status": "blocked"
   },
   "ident:SAFETY_MODE_SELF_LOWERING_BLOCKED:plain": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "ident:SAFETY_SUBJECT_TOO_LARGE_BLOCKED:named": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "ident:SAFETY_SUBJECT_TOO_LARGE_BLOCKED:plain": {
    "is_error": true,
    "status": "blocked"
   },

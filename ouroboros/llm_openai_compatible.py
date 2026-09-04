@@ -17,11 +17,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ouroboros.llm_attempt import supports_message_cache_control
 from ouroboros.llm_capability_policy import (
+    _EFFORT_CLAMP_CVAR,
     _OPTIONAL_DROPPABLE_PARAMS,
     normalize_reasoning_effort,
 )
 from ouroboros.reasoning_artifacts import transcript_has_sealed_reasoning
 from ouroboros.llm_routing import _resolve_or_provider
+from ouroboros.provider_models import normalize_deepseek_reasoning_effort
 from ouroboros.request_wire_recovery import (
     finalize_wire_response,
     note_provider_metadata_drop_fields,
@@ -107,7 +109,20 @@ class _OpenAICompatibleLaneMixin:
         # normalized vision prefix, and blinded every direct-provider install —
         # same identity contract as the browser-screenshot call site (E1).
         from ouroboros.provider_models import supports_vision
-        if not supports_vision(str(target.get("usage_model") or resolved_model)):
+        # Judge vision on EITHER identity: direct lanes strip the
+        # ``provider::`` prefix from ``resolved_model``, so the bare id never
+        # matched the slash-form vision prefixes and provider-namespaced direct
+        # routes (openai::/deepseek::/...) were treated blind regardless of
+        # real capability — ``usage_model`` carries their qualified spelling.
+        # The BARE id stays in the judgment too, because the openai-compatible
+        # lane's qualifier (``openai-compatible/<id>``) can never match while
+        # a vendor-form bare id (``qwen/qwen2.5-vl-…``) legitimately does —
+        # judging only the qualified name would flip that lane blind. On
+        # OpenRouter both spellings are the same string.
+        if not (
+            supports_vision(str(target.get("usage_model") or resolved_model))
+            or supports_vision(resolved_model)
+        ):
             messages = self._replace_image_blocks_with_placeholder(messages)
         # Official direct OpenAI Chat uses the current completion-token carrier:
         # provider-wide; model names are not capability authority across routes.
@@ -123,8 +138,22 @@ class _OpenAICompatibleLaneMixin:
                     messages,
                     allow_message_cache_control=False,
                     flatten_tool_content_blocks=True,
-                )
+                    # DeepSeek accepts content arrays only on user turns.
+                    flatten_non_user_content_blocks=provider == "deepseek",
+                ),
+                keep_reasoning_content=bool(target.get("requires_reasoning_echo")),
             )
+            if target.get("requires_reasoning_echo"):
+                # A reasoning-echo route (DeepSeek) REQUIRES every assistant
+                # turn's ``reasoning_content`` on tool-bearing requests (v4-pro
+                # 400s otherwise; probed 2026-09-01). Foreign or non-string
+                # values become the explicit empty string the gate accepts —
+                # the honest value for reasoning that does not exist. Harmless
+                # without tools (the API ignores the field).
+                for _msg in clean_messages:
+                    if isinstance(_msg, dict) and _msg.get("role") == "assistant":
+                        if not isinstance(_msg.get("reasoning_content"), str):
+                            _msg["reasoning_content"] = ""
             kwargs: Dict[str, Any] = {
                 "model": resolved_model,
                 "messages": clean_messages,
@@ -141,11 +170,33 @@ class _OpenAICompatibleLaneMixin:
                     kwargs["prompt_cache_key"] = cache_identity
             requested_effort = normalize_reasoning_effort(reasoning_effort)
             if direct_openai:
-                # Direct-OpenAI route honors the configured OUROBOROS_EFFORT_*
-                # lanes instead of silently dropping them (OpenRouter parity).
-                # Exact-route request-wire evidence, not legacy model-global
-                # rows, owns any provider-required adaptation after this build.
+                # Effort-carrying routes honor the OUROBOROS_EFFORT_* lanes
+                # instead of dropping them like generic compatible lanes.
+                # Keyed on the PROVIDER id, not a target capability field, so
+                # a hand-built target (fixtures, probes) cannot silently drop
+                # the carriage; request-wire recovery adapts on a provider 400.
                 kwargs["reasoning_effort"] = requested_effort
+            elif provider == "deepseek":
+                # Same carriage, projected onto DeepSeek's wire dialect
+                # (low/high/max; thinking is switched off by a toggle, not an
+                # effort value). Thinking mode accepts only tool_choice
+                # auto/none (probed 2026-09-03: required and named 400 on both
+                # v4 models), so a forced tool call is served with thinking
+                # disabled. Any tier change is disclosed on usage as
+                # ``reasoning_effort_clamped``.
+                forced_tool = bool(prepared_tools) and tool_choice not in (None, "", "auto", "none")
+                applied = "none" if forced_tool else normalize_deepseek_reasoning_effort(requested_effort)
+                if applied == "none":
+                    kwargs.setdefault("extra_body", {})["thinking"] = {"type": "disabled"}
+                else:
+                    kwargs["reasoning_effort"] = applied
+                _EFFORT_CLAMP_CVAR.set(None)  # never inherit a stale note
+                if applied != requested_effort:
+                    _EFFORT_CLAMP_CVAR.set({
+                        "requested": requested_effort, "applied": applied,
+                        "reason": "provider_forced_tool_choice" if forced_tool else "provider_wire_mapping",
+                        "model": resolved_model,
+                    })
             if temperature is not None:
                 kwargs["temperature"] = temperature
             if response_format:
@@ -162,6 +213,24 @@ class _OpenAICompatibleLaneMixin:
                     _eb["cache"] = {"no-cache": True}
             return kwargs
 
+        if any(isinstance(m, dict) and "reasoning_content" in m for m in messages):
+            # ``reasoning_content`` in canonical history is direct-DeepSeek
+            # custody (the inbound normalizer pops it from every other lane's
+            # responses, OpenRouter included). OR upstreams of other families
+            # reject the echoed field, and leaving it here would also trip the
+            # replay-artifact pin below (allow_fallbacks=False), silently
+            # killing same-model failover for a mixed transcript. Dropping it
+            # from the OR physical copy restores the exact pre-DeepSeek OR
+            # wire; the canonical transcript is untouched. Keyed on key
+            # PRESENCE, not truthiness: an empty-string echo (a legal kept
+            # value) must not ride the OR wire either.
+            messages = [
+                (
+                    {k: v for k, v in m.items() if k != "reasoning_content"}
+                    if isinstance(m, dict) else m
+                )
+                for m in messages
+            ]
         effort = normalize_reasoning_effort(reasoning_effort)
         raw_return_reasoning = os.environ.get("OUROBOROS_RETURN_REASONING")
         return_reasoning = (
@@ -289,6 +358,7 @@ class _OpenAICompatibleLaneMixin:
             usage.pop("response_finish_reason", None)
             usage.pop("response_provider", None)
             usage.pop("reasoning_pin", None)
+            usage.pop("reasoning_effort_clamped", None)
             usage.pop("provider_error", None)
         # An HTTP-200 that carried a provider body-error (OpenRouter passes
         # 429/5xx through the body) reaches here only when a same-model reroute
@@ -357,12 +427,33 @@ class _OpenAICompatibleLaneMixin:
         # their OWN echoed ``reasoning_content`` with a 400 ``Extra inputs are not
         # permitted`` on the very next same-model turn. Drop it here so it never enters
         # the canonical transcript; the outbound scrubber is the second layer.
-        msg.pop("reasoning_content", None)
+        # DeepSeek is the inverse class: its documented tool contract REQUIRES the
+        # previous turns' ``reasoning_content`` back on every tools-bearing request
+        # (v4-pro enforces with a 400), so that lane KEEPS the field on the canonical
+        # assistant message — the same-family-continuity treatment ``reasoning_details``
+        # already gets. Cross-family sends strip it (sanitize_reasoning_on_model_switch
+        # + the outbound scrubber), and the deepseek outbound build replays it.
+        if str(target.get("provider") or "") != "deepseek":
+            msg.pop("reasoning_content", None)
+        elif not isinstance(msg.get("reasoning_content", ""), str):
+            # The SDK surfaces server extras verbatim (same hazard the
+            # refusal/annotations pops above guard): a null here would live on
+            # the canonical assistant turn forever and the direct lane has no
+            # message-level 400 recovery. Only strings enter the transcript.
+            msg.pop("reasoning_content", None)
 
         if not usage.get("cached_tokens"):
             prompt_details = usage.get("prompt_tokens_details") or {}
             if isinstance(prompt_details, dict) and prompt_details.get("cached_tokens"):
                 usage["cached_tokens"] = int(prompt_details["cached_tokens"])
+        if not usage.get("cached_tokens") and usage.get("prompt_cache_hit_tokens"):
+            # DeepSeek mirrors its automatic-cache split as top-level
+            # prompt_cache_hit/miss_tokens beside the details block; the
+            # details block wins when present, this is the fallback.
+            try:
+                usage["cached_tokens"] = int(usage["prompt_cache_hit_tokens"])
+            except (TypeError, ValueError):
+                pass
         # LM Studio MLX exposes prefix-cache hits only in stderr/logs, not
         # OpenAI-compatible usage; cached_tokens=0 is therefore expected.
 

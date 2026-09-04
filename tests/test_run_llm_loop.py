@@ -279,7 +279,9 @@ def test_run_llm_loop_finalize_now_control_forces_best_effort_answer(tmp_path, m
     assert usage["reason_code"] == "finalization_grace"
     assert usage["execution_status"] == "failed"  # lifted to best_effort by the outcome gate
     assert usage["_best_effort_extracted"] is True  # typed fact: real model answer
-    assert seen["tools"] is None  # tool-less final extraction
+    # The forced turn keeps the round's tool envelope so the provider prefix
+    # stays a cache hit; "tool-less" is an instruction in text, not an empty envelope.
+    assert seen["tools"] is not None
     joined = json.dumps(seen["messages"], ensure_ascii=False)
     assert "[FINALIZE_NOW]" in joined
 

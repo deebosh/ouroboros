@@ -895,18 +895,29 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
     from ouroboros.reviewer_slot_config import (
         SCOPE_SLOT_LIMIT,
         TRIAD_SLOT_LIMIT,
+        deep_review_slot,
         load_reviewer_slot_config,
         reviewer_slot_last_executions,
+        synthesized_deep_review_slot,
     )
 
     payload: Dict[str, Any] = {
-        "limits": {"triad": TRIAD_SLOT_LIMIT, "scope": SCOPE_SLOT_LIMIT, "advisory": 1},
+        "limits": {"triad": TRIAD_SLOT_LIMIT, "scope": SCOPE_SLOT_LIMIT, "advisory": 1, "deep_review": 1},
         "last_executions": reviewer_slot_last_executions(),
     }
     try:
         config = load_reviewer_slot_config()
     except ValueError as exc:
         payload["config_error"] = str(exc)
+        # The deep-review singleton stays visible beside the error as a
+        # legacy-derived REPAIR PLACEHOLDER — the row synthesized from the model
+        # key, labeled `synthesized_from` — NOT the effective runtime row: with
+        # the structured value unparseable no row is effective at all
+        # (`deep_review_slot()` raises) until the setting is repaired; the
+        # placeholder only gives the repair save a real row to start from.
+        synthesized = synthesized_deep_review_slot()
+        payload["deep_review"] = {"route": {"kind": synthesized.kind, "target_id": synthesized.target_id},
+                                  "effort": "", "synthesized_from": "OUROBOROS_MODEL_DEEP_SELF_REVIEW"}
         return JSONResponse(payload)
     # The stored form must round-trip: an actor row comes back as its
     # subagent_id REFERENCE (with the resolved route only as read-only
@@ -927,6 +938,12 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
     payload["source"] = config.source
     payload["triad"] = [_row(r) for r in config.triad]
     payload["scope"] = [_row(r) for r in config.scope]
+    # The deep self-review singleton: the saved row, or the packed api row
+    # synthesized from the legacy model key — disclosed as such so the editor
+    # can say the row is not saved yet (saving materializes the migration).
+    payload["deep_review"] = {k: v for k, v in _row(deep_review_slot(config)).items() if k != "slot_id"}
+    if config.deep_review is None:
+        payload["deep_review"]["synthesized_from"] = "OUROBOROS_MODEL_DEEP_SELF_REVIEW"
     advisory_route = {"kind": config.advisory.kind, "target_id": config.advisory.target_id}
     if config.advisory.profile_id:
         advisory_route["profile_id"] = config.advisory.profile_id
@@ -1123,26 +1140,31 @@ def _check_reviewer_slots_against_incoming_roster(body: dict) -> str:
     roster-only save re-validates the STORED slots so a still-referenced
     actor cannot be removed out from under them. An EXPLICITLY cleared slots
     value ('' present in the body) is a clear, not a fallback to the stored
-    value — presence and emptiness are tracked separately. Returns the D4
-    fallback warning ('' when none); raises ValueError on malformed."""
+    value — presence and emptiness are tracked separately. Returns the
+    save-time disclosure ('' when none: the one-time R12 notice when this save
+    first gives the triad a retrieving row); raises ValueError on malformed."""
     subagents_key = "OUROBOROS_SUBAGENTS"
     slots_key = "OUROBOROS_REVIEWER_SLOTS"
     roster_changed = subagents_key in body
+    stored = str((load_settings() or {}).get(slots_key) or "").strip()
     if slots_key in body:
         slots_to_check = str(body.get(slots_key) or "").strip()
         if not slots_to_check:
             return ""  # explicit clear: nothing to validate
     elif roster_changed:
-        slots_to_check = str((load_settings() or {}).get(slots_key) or "").strip()
+        slots_to_check = stored
         if not slots_to_check:
             return ""
     else:
         return ""
     from ouroboros.reviewer_slot_config import reviewer_slot_save_check
 
+    # The stored value decides whether this save first introduces a retrieving
+    # triad row (the one-time R12 disclosure); a roster-only save keeps it.
     return reviewer_slot_save_check(
         slots_to_check,
         subagents_raw=(str(body.get(subagents_key) or "") if roster_changed else None),
+        previous_raw=stored,
     )
 
 
@@ -1203,10 +1225,10 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
                 return unsaved_error(str(exc), 400)
             body = dict(body)
             body[subagents_key] = canonical_subagents
-        # Reviewer-slot SSOT (6.1): 400 on malformed; D4 fallback disclosed;
+        # Reviewer-slot SSOT (6.1): 400 on malformed; save-time disclosure returned;
         # validated against the roster THIS save produces (S4 — see helper).
         try:
-            _reviewer_fallback_warning = _check_reviewer_slots_against_incoming_roster(body)
+            _reviewer_slots_warning = _check_reviewer_slots_against_incoming_roster(body)
         except ValueError as exc:
             return unsaved_error(str(exc), 400)
         parsed_budget: dict[str, float] = {}
@@ -1331,8 +1353,8 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
 
         # Tolerate stubbed side effects returning None (test harnesses).
         warnings = list(side_effect_warnings or [])
-        if _reviewer_fallback_warning:
-            warnings.append(_reviewer_fallback_warning)
+        if _reviewer_slots_warning:
+            warnings.append(_reviewer_slots_warning)
         if provider_defaults_changed:
             change_kind = classify_runtime_provider_change(old_effective_settings, current)
             if change_kind == "direct_normalize":

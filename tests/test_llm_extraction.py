@@ -110,7 +110,7 @@ _MIXIN_OWNERS = {
     ),
     (llm_anthropic, "_AnthropicLaneMixin"): (
         "_anthropic_blocks_from_content _anthropic_image_block _build_anthropic_messages "
-        "_build_anthropic_tool_choice _cache_write_split _chat_anthropic "
+        "_build_anthropic_tool_choice _build_remote_candidate _cache_write_split _chat_anthropic "
         "_coalesce_anthropic_message _normalize_anthropic_response "
         "_sanitize_anthropic_tool_result_content _stringify_anthropic_content"
     ),
@@ -209,7 +209,7 @@ def test_llm_client_member_inventory_is_unchanged():
     composed = sorted(moved | _PARENT_MEMBERS)
     assert hashlib.sha256(
         json.dumps(composed, separators=(",", ":")).encode()
-    ).hexdigest() == "b94b8df2ee22094d90ba7c8f63942ad12210bcba107c245387c5fe2a11018194"
+    ).hexdigest() == "034c5d6b3032e217705e5596276b671b65e55fdae0d63c2874f5e7d8f2959829"
     for name in composed:
         assert hasattr(LLMClient, name), name
 

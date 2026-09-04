@@ -40,6 +40,7 @@ from ouroboros.llm_attempt import (
     _canonical_candidate_bytes,  # noqa: F401
     _execute_candidate,
     _execute_candidate_async,  # noqa: F401
+    _finalized_physical_candidate,  # noqa: F401
     _is_provider_policy_refusal,  # noqa: F401
     _is_structured_context_overflow_body,  # noqa: F401
     _is_structured_context_overflow_exception,  # noqa: F401
@@ -95,9 +96,11 @@ from ouroboros.llm_routing import (
 )
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
 from ouroboros.provider_models import (  # noqa: F401  (prior import surface)
+    DEEPSEEK_BASE_URL,
     OPENROUTER_DEFAULTS,
     PROVIDER_PREFIXES,
     normalize_anthropic_model_id,
+    normalize_deepseek_reasoning_effort,
     normalize_model_identity,
     resolve_minimax_base_url,
 )

@@ -1,6 +1,8 @@
 // Pure chat-activity helpers shared by chat.js and dependency-free node tests:
 // live-card presentation projections (moved verbatim from chat.js) plus the
 // in-flight direct/ephemeral turn status reducer and snapshot hydration.
+import { compactModel } from './log_events.js';
+import { joinMarkdownHeadings } from './utils.js';
 import { REUSABLE_TASK_IDS } from './task_control_menu.js';
 import {
     accountedUpperBound,
@@ -229,8 +231,63 @@ export function liveLineRowToggleKey(target, selection = null) {
     const line = target?.closest?.('.chat-live-line.expandable');
     if (!line) return '';
     if (target.closest('button, a, input, textarea, select, label, summary, [contenteditable="true"]')) return '';
-    if (selection && !selection.isCollapsed && line.contains(selection.anchorNode)) return '';
+    if (selectionInside(line, selection)) return '';
     return (line.dataset && line.dataset.liveLineKey) || '';
+}
+
+/**
+ * Two children of one parent whose compact headlines would read the same are
+ * twins: the card then keeps the short task id to tell them apart. The key is
+ * the DISPLAYED identity — the role (or its `Subagent` fallback) and the
+ * compact model name — so equivalent spellings (`openai/gpt-5.6-sol`,
+ * `openai::gpt-5.6-sol`, `gpt-5.6-sol`) collide exactly when the headlines do.
+ */
+export function subagentIdentityKey({ parentId = '', role = '', model = '' } = {}) {
+    return `${parentId}\u0000${subagentIdentityTitle({ role, model })}`;
+}
+
+/** The child card's title: `role · model` (`Subagent · model` without a role), never an activity label. */
+export function subagentIdentityTitle({ role = '', model = '' } = {}) {
+    const name = String(role || '').trim() || 'Subagent';
+    const short = compactModel(model);
+    return short ? `${name} · ${short}` : name;
+}
+
+export function subagentTwin(children, childId) {
+    const own = children.get(childId);
+    if (!own) return false;
+    const key = subagentIdentityKey(own);
+    let n = 0;
+    for (const c of children.values()) if (subagentIdentityKey(c) === key) n += 1;
+    return n > 1;
+}
+
+/**
+ * A non-collapsed text selection anchored inside `el`: the reader is copying,
+ * not clicking, so a click-to-toggle surface must not fire (DESIGN.md §5).
+ */
+export function selectionInside(el, selection = globalThis.getSelection?.()) {
+    return Boolean(selection && !selection.isCollapsed && el?.contains?.(selection.anchorNode));
+}
+
+/**
+ * A click-to-toggle surface whose content stays selectable (DESIGN.md §5): a
+ * pointer click whose drag left a selection inside it does nothing, and Enter /
+ * Space activate it like a native button. The surface is a `div[role=button]`
+ * because WebKit never lets text inside a real <button> be selected.
+ */
+export function bindContentButton(el, onActivate) {
+    if (!el) return;
+    el.addEventListener('click', (event) => {
+        if (event.detail && selectionInside(el)) return;
+        onActivate(event);
+    });
+    el.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            el.click();
+        }
+    });
 }
 
 /** Convert a raw source timestamp to sortable epoch milliseconds. */
@@ -404,7 +461,7 @@ export function clearStickyCardState(record) {
  * subagent cards. Root cards show the latest activity headline ONLY when a
  * coined name occupies the title — an unnamed card's title already shows the
  * activity, so the line is suppressed to avoid duplication. Subagent titles
- * keep the role·model·id identity, so their routed progress body always feeds
+ * keep the role · model identity (the id only for twins), so their routed progress body always feeds
  * the line. A frame without new activity keeps `previous`, so finishing a card
  * never blanks its last activity. Geometry is owned by the two-line CSS clamp;
  * this character ceiling is only a defensive DOM/accessibility bound.
@@ -418,19 +475,20 @@ export const COLLAPSED_ACTIVITY_MAX = 240;
  * strikethrough, headings, bullets, links, table pipes. It strips line by line
  * without the renderer's block context, so a stray pipe row or list marker the
  * timeline would show literally is dropped here too: over-stripping is the
- * accepted side of that trade, a leaked marker is not. A headline that is
- * nothing but markers keeps its source text: an empty projection would flip
- * the reserved activity band's `:empty` rules.
+ * accepted side of that trade, a leaked marker is not. Headings follow the
+ * renderer's own rule (`joinMarkdownHeadings`: markers off, ` — ` before the
+ * text under a real heading). A headline that is nothing but markers keeps its
+ * source text: an empty projection would flip the reserved activity band's
+ * `:empty` rules.
  */
 export function plainActivityText(text = '') {
     const source = String(text || '');
-    const plain = source
+    const plain = joinMarkdownHeadings(source)
         .replace(/```\w*\n([\s\S]*?)```/g, '$1')
-        .replace(/`([^`]+)`/g, '$1')
+        .replace(/(``|`)(.+?)\1/g, '$2')
         .replace(/\*\*(.+?)\*\*/g, '$1')
         .replace(/\*(.+?)\*/g, '$1')
         .replace(/~~(.+?)~~/g, '$1')
-        .replace(/^#{1,3} (.+)$/gm, '$1')
         .replace(/^- (.+)$/gm, '$1')
         .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
         .replace(/^\|(.+)\|$/gm, (_, row) => row.split('|').map((cell) => cell.trim()).join(' '))

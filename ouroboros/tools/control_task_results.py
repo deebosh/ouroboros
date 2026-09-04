@@ -100,10 +100,13 @@ def _subtask_outcome_summary(data: Dict[str, Any], receipts: list | None = None)
     if isinstance(data.get("artifact_bundle"), dict):
         summary["artifact_bundle"] = data.get("artifact_bundle")
     if ledger:
+        # An omitted-to-artifact stub carries no entries; its summary is the
+        # count authority, and for a full ledger the two always agree.
+        ledger_summary = ledger.get("summary") if isinstance(ledger.get("summary"), dict) else {}
         summary["verification_ledger"] = {
             "schema_version": ledger.get("schema_version"),
-            "summary": ledger.get("summary") if isinstance(ledger.get("summary"), dict) else {},
-            "entry_count": len(ledger.get("entries") or []) if isinstance(ledger.get("entries"), list) else 0,
+            "summary": ledger_summary,
+            "entry_count": ledger_summary.get("entry_count", len(ledger.get("entries") or []) if isinstance(ledger.get("entries"), list) else 0),
         }
     if receipts:
         # W2: bounded per-receipt rows for the FULL single-child handoff ONLY

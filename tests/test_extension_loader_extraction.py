@@ -44,6 +44,11 @@ _MOVED_OWNERS = {
     "_unloading": extension_registry_state,
     "_ws_handlers": extension_registry_state,
     "extension_generation_digest": extension_registry_state,
+    # Upstream ``fa397986`` / ``afe1fc4f`` added these two one-lock reads to the
+    # loader; they read only ``_ui_tabs``/``_extensions``, so they are owned here
+    # and the loader re-exports the very same objects for its gateway callers.
+    "live_module_sources": extension_registry_state,
+    "live_widget_projection": extension_registry_state,
     "_EXTENSION_NAME_PREFIX": extension_surface_names,
     "_EXTENSION_NAME_RE": extension_surface_names,
     "_EXTENSION_SHORT_MAX": extension_surface_names,
@@ -90,8 +95,16 @@ _MOVED_OWNERS = {
 # the read-only snapshots the host and the tool registry consume. (Fix-round-4:
 # ``_stage_out_of_process_surfaces`` moved to the child-catalog leaf it
 # composes; the loader re-exports it.)
+# Merge with upstream ``23ab428f``: ``_finalize_extension_reconcile`` is the one
+# arrival — upstream ``01a9df8e`` added the reconcile receipt as
+# ``_request_server_reconcile_if_worker`` and ``2f1e2c23`` folded the durable
+# health record into that same exit, so it closes the lifecycle the loader owns.
+# The widget projections upstream added beside it (``live_widget_projection``
+# ``fa397986``, ``live_module_sources`` ``afe1fc4f``) are NOT here: they are
+# one-lock reads over ``_ui_tabs``/``_extensions`` and live in the leaf that
+# owns those registries, re-exported by the facade for their gateway callers.
 _STAYED = (
-    "__all__", "_publish_out_of_process_registration",
+    "__all__", "_finalize_extension_reconcile", "_publish_out_of_process_registration",
     "_run_unload_callback", "_unload_extension_locked",
     "ensure_companions_running", "get_tool", "list_companion_names", "list_routes",
     "list_ws_handlers", "load_extension", "log", "reconcile_extension", "reload_all",
@@ -147,10 +160,17 @@ def test_the_loader_kept_only_the_extension_lifecycle():
 
 
 def test_the_public_loader_surface_is_unchanged():
+    # Merge with upstream ``23ab428f``: the two widget reads are the only names
+    # the extraction did not already publish — ``live_widget_projection``
+    # (``fa397986``) and ``live_module_sources`` (``afe1fc4f``), which the
+    # gateway reaches as ``extension_loader.<name>``. Their bodies live in
+    # ``extension_registry_state``; the facade re-export is what this pins.
     assert extension_loader.__all__ == [
         "PluginAPIImpl", "is_extension_live", "load_extension", "reconcile_extension",
         "ensure_companions_running", "unload_extension", "reload_all",
-        "runtime_state_for_skill_name", "snapshot", "get_tool", "list_ws_handlers",
+        "runtime_state_for_skill_name", "snapshot",
+        "live_widget_projection", "live_module_sources",
+        "get_tool", "list_ws_handlers",
         "list_routes", "list_companion_names", "current_execution_mode",
     ]
     for name in extension_loader.__all__:

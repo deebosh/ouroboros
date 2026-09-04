@@ -435,6 +435,11 @@ def test_nested_deliverables_keeps_target_policy_before_workspace_root(
         ["cp", "--sparse", str(hidden_source), str(deliverables)],
         ["cp", "--context", str(hidden_source), str(deliverables)],
         ["mv", str(hidden_source), str(deliverables)],
+        # Regression pin: the destination is refused by the per-candidate
+        # Deliverables decision either way, and the per-segment writer-target
+        # view now also shows the cp segment itself to the direct-target check
+        # (a leading `cd` used to hide it behind argv[0]).
+        ["sh", "-c", f"cd . && cp {hidden_source} {deliverables / '.env'}"],
     ):
         blocked = _shell_guard_text(reg,
             {"cmd": command, "cwd": str(workspace)}, "advanced",

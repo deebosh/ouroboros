@@ -576,8 +576,8 @@ def capture_stranded_patch(drive_root: Any, run: _RunCustody) -> Dict[str, Any]:
 # The profiles allowed to hold this authority. Mirrors the top-level principal
 # set of the tool-access policy: child/acting/repair/ephemeral contexts keep
 # their current gates and never acquire delegated payload mutation.
-_PAYLOAD_PRINCIPAL_PROFILES = frozenset({
-    "workspace_task", "external_workspace_task", "self_modification"})
+from ouroboros.tool_access import (
+    _TOP_LEVEL_PRINCIPAL_PROFILES as _PAYLOAD_PRINCIPAL_PROFILES)
 
 
 def payload_content_hash(payload_root: Any) -> str:
@@ -598,17 +598,27 @@ def _payload_delegation_busy(drive: pathlib.Path, target: pathlib.Path) -> str:
     snapshot — two separate log reads let the holder's REQUESTED→STARTED
     transition land between them and a second start slipped the claim lock;
     against one snapshot the holder is in exactly one state, never missed.
+
+    An obligation is held by the payload, not by the task that created it: a
+    holder whose OWNER TASK is terminal cannot race the CAS baseline (its
+    snapshot is frozen; the apply-time whole-payload CAS is the real race
+    guard), so it stops locking the payload. Unprovable terminality keeps the
+    lock, and the cheap authority/target filters short-circuit first.
     """
+    from ouroboros.delegate_terminal import _task_is_terminal
+
     resolved = _resolved(target)
     rows = list(custody._iter_rows(custody.event_log_path(drive)))
     for run in custody.replay(drive, rows=rows).values():
         if (run.authority_source == "skill_payload"
                 and _resolved(run.target_root) == resolved
-                and not (run.settled and run.patch_disposed)):
+                and not (run.settled and run.patch_disposed)
+                and not _task_is_terminal(drive, run.task_id)):
             return run.run_id or run.invocation_id
     for record in custody.pending_invocations(drive, rows=rows):
         if (str(record.get("authority_source") or "") == "skill_payload"
-                and _resolved(record.get("target_root")) == resolved):
+                and _resolved(record.get("target_root")) == resolved
+                and not _task_is_terminal(drive, str(record.get("task_id") or ""))):
             return str(record.get("invocation_id") or "")
     return ""
 
@@ -735,13 +745,22 @@ def _payload_mutation_authority(
             bucket=b, skill_name=s)
     busy = _payload_delegation_busy(drive, target)
     if busy:
+        # Name the HOLDER'S OWNER, not a call the refused caller cannot make:
+        # delegate_wait and integrate_delegated_patch both refuse a non-owner.
+        # A PENDING (START_REQUESTED-only) holder has no replayed run row.
+        holder_owner = str(
+            getattr(custody.lookup(drive, "", busy)[1], "task_id", "") or "") or next(
+            (str(r.get("task_id") or "") for r in custody.pending_invocations(drive)
+             if str(r.get("invocation_id") or "") == busy), "")
         return None, None, _fail(
             "delegate_start", "payload_delegation_busy",
-            "Another delegated run already holds this exact payload open (its "
-            "custody is not yet settled AND disposed). Finish that run — "
-            "delegate_wait it and integrate_delegated_patch its capture — before "
-            "starting another delegation against the same skill.",
-            holder=busy, target_root=str(target))
+            "Another delegated run holds this exact payload open: its custody is "
+            "not yet settled AND disposed, and its owner task is still live (or its "
+            "terminality cannot be proven from task results). Wait for that task to "
+            "finish, or pick another skill: a non-owner can neither delegate_wait "
+            "that run nor integrate its capture.",
+            holder=busy, holder_owner_task_id=holder_owner,
+            target_root=str(target))
     record = {
         "target_root": str(target),
         "source": "skill_payload",

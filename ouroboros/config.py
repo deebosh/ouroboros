@@ -940,16 +940,15 @@ def get_mcp_tool_timeout_sec() -> int:
     return parsed if parsed > 0 else int(SETTINGS_DEFAULTS["MCP_TOOL_TIMEOUT_SEC"])
 
 
-
 def get_finalization_grace_sec(settings: Optional[dict] = None) -> int:
+    """Grace window in seconds: env, else the ``settings`` argument, else the
+    shipped default — the ``_clamped_number_setting`` shape. Deliberately NO
+    ``load_settings()`` fallback: a READ must never persist settings, and that
+    call runs the context-mode compatibility migration, which can WRITE a
+    normalized file under read-only observers (``task_pacing._reserve_sec``)."""
     raw = os.environ.get("OUROBOROS_FINALIZATION_GRACE_SEC")
     if raw is None and isinstance(settings, dict):
         raw = settings.get("OUROBOROS_FINALIZATION_GRACE_SEC")
-    if raw is None:
-        try:
-            raw = load_settings().get("OUROBOROS_FINALIZATION_GRACE_SEC")
-        except Exception:
-            raw = None
     try:
         parsed = int(raw)
     except (TypeError, ValueError):

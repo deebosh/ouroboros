@@ -679,3 +679,20 @@ def test_discovery_path_consistent_with_policy():
             assert name in output, (
                 f"tool_policy says '{name}' is non-core but discovery doesn't show it"
             )
+
+
+def test_burst_absorb_clause_states_the_prefix_write_cost():
+    """The burst affordance names its cash side, not only its latency win."""
+    from ouroboros.tools.registry import ToolRegistry
+    from ouroboros.tool_policy import initial_tool_schemas
+    import pathlib, tempfile
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    registry = ToolRegistry(repo_dir=tmp, drive_root=tmp)
+    schema = next(
+        s for s in initial_tool_schemas(registry)
+        if s["function"]["name"] == "schedule_subagent"
+    )
+    description = schema["function"]["description"]
+    assert "BURST + ABSORB" in description
+    assert "prefix write" in description
+    assert "burst buys latency and spacing buys cash" in description

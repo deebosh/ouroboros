@@ -378,7 +378,7 @@ def test_acceptance_panel_skips_with_typed_reason_and_zero_reviewer_calls(tmp_pa
     monkeypatch.setattr(loop_mod, "get_task_review_mode", lambda: "required")
     reviewer_calls = []
     monkeypatch.setattr(
-        rs, "reviewer_slots",
+        rs, "triad_delivery_slots",
         lambda **kw: reviewer_calls.append(kw) or [object()],
     )
     oh.record_requested(tmp_path, "t-acc", request_id="rq", attempt=1)

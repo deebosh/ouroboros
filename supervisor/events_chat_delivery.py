@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 # stamped last_progress_at, the next 0.5s tick read the task as resumed, and the
 # episode it had just opened was withdrawn before the worker could ever drain it.
 from supervisor.log_addressing import bound_project_chat_id as _bound_project_chat_id
+from supervisor.message_bus import notification_chat_route
 from ouroboros.subagent_messages import subagent_message_meta
 
 
@@ -35,7 +36,9 @@ HOST_NARRATION = "host_narration"
 
 def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
     try:
-        chat_id = int(evt.get("chat_id") or 0)
+        # Membership, not truthiness: absence skips the indicator, an explicit
+        # id — the hidden partition included — is a destination.
+        chat_id = notification_chat_route(evt.get("chat_id"))
         task_id = str(evt.get("task_id") or "")
         phase = str(evt.get("phase") or "thinking")
         client_msg_id = ""
@@ -77,7 +80,7 @@ def _handle_typing_start(evt: Dict[str, Any], ctx: Any) -> None:
                         kind = "managed_task"
             except Exception:
                 log.debug("managed typing kind resolution failed for %s", task_id, exc_info=True)
-        if chat_id:
+        if chat_id is not None:
             ctx.bridge.send_chat_action(
                 chat_id,
                 "typing",

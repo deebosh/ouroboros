@@ -47,6 +47,10 @@ def test_ui_smoke_final_only_child_stays_inside_child_card(direct_server_with_da
                 child.wait_for(state="visible", timeout=30_000)
                 assert child.get_attribute("data-parent-task-id") == "parent-final-only"
                 assert child.get_attribute("data-finished") == "1"
+                # The final text lives INSIDE the child card: in its (collapsed-hidden)
+                # activity node, and on screen once the child is expanded.
+                assert sentinel in child.locator(":scope > [data-live-summary-button] [data-live-activity]").text_content()
+                child.locator(":scope > [data-live-summary-button]").click()
                 assert sentinel in child.inner_text()
                 assert child.locator("xpath=ancestor::*[@data-subagents-for='parent-final-only']").count() == 1
                 assert page.locator(".chat-bubble", has_text=sentinel).count() == 0

@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
 from ouroboros.provider_models import (
+    DEEPSEEK_BASE_URL,
     PROVIDER_PREFIXES,
     normalize_anthropic_model_id,
     normalize_model_identity,
@@ -149,6 +150,8 @@ class _ProviderRoutingMixin:
             return f"gigachat/{resolved_model}"
         if provider == "minimax":
             return f"minimax/{resolved_model}"
+        if provider == "deepseek":
+            return f"deepseek/{resolved_model}"
         return f"openai-compatible/{resolved_model}"
 
     def _resolve_remote_target(
@@ -200,6 +203,26 @@ class _ProviderRoutingMixin:
                 "api_key": configured("MINIMAX_API_KEY", ""),
                 "base_url": resolve_minimax_base_url(configured("MINIMAX_REGION", "")),
                 "default_headers": {},
+                "supports_openrouter_extensions": False,
+                "supports_generation_cost": False,
+            }
+
+        if provider == "deepseek":
+            return {
+                "provider": provider,
+                "resolved_model": resolved_model,
+                "usage_model": usage_model,
+                "api_key": configured("DEEPSEEK_API_KEY", ""),
+                # One official endpoint; no owner-configurable base URL
+                # (proxy/mirror setups belong to the openai-compatible slot).
+                "base_url": DEEPSEEK_BASE_URL,
+                "default_headers": {},
+                # v4 thinks by default and carries reasoning_effort; the
+                # canonical scale is projected onto its low/high/max enum in
+                # _build_remote_kwargs. Tool-bearing requests MUST replay every
+                # previous assistant turn's reasoning_content (v4-pro enforces
+                # with a 400; "" is accepted for foreign turns — probed 2026-09-01).
+                "requires_reasoning_echo": True,
                 "supports_openrouter_extensions": False,
                 "supports_generation_cost": False,
             }

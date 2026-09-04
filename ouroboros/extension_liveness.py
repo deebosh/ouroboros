@@ -106,7 +106,21 @@ def _extension_runtime_state(
         "loaded_present": loaded_present,
         "loaded_matches_current": live_loaded,
         "reason": reason,
+        "process": _process_role(),
     }
+
+
+def _process_role() -> str:
+    """Which process observed this state: ``"server"`` or ``"worker"``.
+
+    Read at call time from ``extension_companion``, which OWNS the answer, so a
+    leaf that only projects liveness never has to import the loader it serves.
+    The loader stamps the same key on its own reconcile receipts from the same
+    owner, so the two can never disagree about who observed a state.
+    """
+    from ouroboros.extension_companion import is_server_process
+
+    return "server" if is_server_process() else "worker"
 
 
 def _deps_block_reason(drive_root: pathlib.Path, skill: LoadedSkill) -> str:
@@ -178,7 +192,7 @@ def runtime_state_for_skill_name(
     if skill is None:
         with _lock:
             live_loaded = skill_name in _extensions
-        return {
+        state = {
             "skill": skill_name,
             "type": "extension",
             "runtime_mode": "",
@@ -192,17 +206,25 @@ def runtime_state_for_skill_name(
             "loaded_matches_current": False,
             "reason": "missing",
         }
-    state = _apply_deps_block(
-        _extension_runtime_state(
+    else:
+        state = _apply_durable_extension_health(
+            _apply_deps_block(
+                _extension_runtime_state(
+                    skill,
+                    drive_root=pathlib.Path(drive_root),
+                    skills=peers,
+                    repo_path=resolved_repo_path,
+                ),
+                pathlib.Path(drive_root),
+                skill,
+            ),
+            pathlib.Path(drive_root),
             skill,
-            drive_root=pathlib.Path(drive_root),
-            skills=peers,
-            repo_path=resolved_repo_path,
-        ),
-        pathlib.Path(drive_root),
-        skill,
-    )
-    return _apply_durable_extension_health(state, pathlib.Path(drive_root), skill)
+        )
+    # Stamped on BOTH branches: a missing skill is still an observation, and the
+    # receipt must say which process made it.
+    state["process"] = _process_role()
+    return state
 
 
 def runtime_state_for_loaded_skill(
@@ -247,7 +269,7 @@ def _revert_enabled_after_load_error(
     try:
         from ouroboros.skill_loader import save_enabled
 
-        save_enabled(pathlib.Path(drive_root), skill_name, False)
+        save_enabled(pathlib.Path(drive_root), skill_name, False, actor="load_error_revert")
         state["reverted_enabled"] = True
     except Exception:
         log.debug("Failed to revert enabled for %s after load error", skill_name, exc_info=True)

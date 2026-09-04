@@ -317,6 +317,7 @@ def probe_provider_readiness(
 
         if provider in {
             "openrouter", "openai", "openai-compatible", "minimax", "cloudru",
+            "deepseek",
         }:
             remote_client = client._new_remote_client(target)
 

@@ -9,6 +9,7 @@ success, while typed runtime evidence may conservatively degrade an otherwise
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import pathlib
@@ -19,40 +20,18 @@ from ouroboros import _outcome_receipts
 # Tool-call trace vocabulary + execution-axis classifier (leaf module). Re-exported
 # here so `from ouroboros.outcomes import _classify_tool_errors/_POLICY_DENIAL_STATUSES/...`
 # keeps resolving for every historical import site.
-from ouroboros._outcome_tool_errors import (
+from ouroboros._outcome_tool_errors import (  # explicit re-exports, one statement
     _BLOCKING_TOOL_STATUSES as _BLOCKING_TOOL_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _classify_tool_errors as _classify_tool_errors,
-)
-from ouroboros._outcome_tool_errors import (
     _COSMETIC_TOOL_NAMES as _COSMETIC_TOOL_NAMES,
-)
-from ouroboros._outcome_tool_errors import (
     _is_ignored_readonly_block as _is_ignored_readonly_block,
-)
-from ouroboros._outcome_tool_errors import (
     _NON_BLOCKING_READONLY_BLOCK_STATUSES as _NON_BLOCKING_READONLY_BLOCK_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _NON_BLOCKING_RECOVERABLE_STATUSES as _NON_BLOCKING_RECOVERABLE_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _OK_TOOL_STATUSES as _OK_TOOL_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _POLICY_DENIAL_STATUSES as _POLICY_DENIAL_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _RECOVERY_TOOL_NAMES as _RECOVERY_TOOL_NAMES,
-)
-from ouroboros._outcome_tool_errors import (
     _ROOT_WRITE_TOOLS as _ROOT_WRITE_TOOLS,
-)
-from ouroboros._outcome_tool_errors import (
     _unresolved_tool_errors as _unresolved_tool_errors,
-)
-from ouroboros._outcome_tool_errors import (
     _user_file_basenames as _user_file_basenames,
 )
 from ouroboros.headless import (
@@ -148,6 +127,7 @@ REASON_PROVIDER_FAILURE = "provider_failure"
 REASON_TASK_EXCEPTION = "task_exception"
 REASON_DEEP_SELF_REVIEW_UNAVAILABLE = "deep_self_review_unavailable"
 REASON_DEEP_SELF_REVIEW_ERROR = "deep_self_review_error"
+REASON_DEEP_SELF_REVIEW_PACK_UNFIT = "deep_self_review_pack_unfit"
 REASON_TOOL_FAILURE = "tool_failure"
 REASON_DELIVERY_CONTROL_DEGRADED = "delivery_control_degraded"
 REASON_CHILD_RESULTS_DEFERRED = "child_results_deferred"
@@ -495,6 +475,27 @@ def infra_failed_axes(reason_code: str, *, lifecycle: str = "failed", review_tri
         reason_code=reason_code,
         review_trigger=review_trigger,
     )
+
+
+# An undisposed own delegated patch is a DEBT, not a failure: the task's own
+# derived verdicts (execution, review, objective, artifacts) are what it earned
+# and must survive, so the custody fact is ADDED as an objective warning rather
+# than replacing the axes with an infrastructure terminal.
+WARN_DELEGATED_CUSTODY_UNRECONCILED = "delegated_custody_unreconciled"
+
+
+def custody_debt_axes(axes: Any) -> Dict[str, Any]:
+    """Add the custody-debt warning to derived axes without rewriting them.
+
+    Idempotent: the overlay is applied again when the result row is stored, and
+    ``_merge_objective_warning`` already dedups. Nothing is copied onto the
+    execution axis — the debt list itself lives on the row as
+    ``delegated_runs_unreconciled`` plus the reconciliation envelope."""
+    out = copy.deepcopy(axes) if isinstance(axes, dict) and axes else {}
+    objective = out.setdefault(
+        "objective", {"status": OBJECTIVE_NOT_EVALUATED, "source": "none"})
+    _merge_objective_warning(objective, WARN_DELEGATED_CUSTODY_UNRECONCILED)
+    return out
 
 # Tools/roots whose successful use means the turn produced reviewable work.
 # Root-aware write tools: these take a `root` arg, so the scratch-exclusion rule
@@ -921,6 +922,7 @@ _INFRA_TEXT_PREFIXES = (
     ("❌ Deep self-review unavailable:", "runtime", REASON_DEEP_SELF_REVIEW_UNAVAILABLE),
     ("⚠️ Deep self-review error:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
     ("❌ Deep self-review failed:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
+    ("❌ Deep self-review pack unfit:", "runtime", REASON_DEEP_SELF_REVIEW_PACK_UNFIT),
 )
 
 
@@ -1092,7 +1094,7 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         failure = {"kind": _infra[1], "reason_code": reason_code}
     elif delivery_candidate.get("degraded") and not deferred_child_suffix:
         execution_status = EXECUTION_DEGRADED
-        reason_code = usage_reason or REASON_DELIVERY_CONTROL_DEGRADED
+        reason_code = usage_reason or str(delivery_candidate.get("degraded_reason") or "") or REASON_DELIVERY_CONTROL_DEGRADED
         failure = {"kind": "finalization_control", "reason_code": reason_code}
     elif deferred_child_count:
         execution_status = EXECUTION_DEGRADED
@@ -1265,7 +1267,7 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         # is not "missing" one; marker-free tasks (no answer_protocol) simply read True,
         # which downstream consumers must interpret via the contract, not as a failure.
         "final_answer_missing_sentinel": not final_answer_payload,
-        "failure": headline_failure,
+        "failure": headline_failure, "degraded": bool(delivery_candidate.get("degraded")), "degraded_reason": str(delivery_candidate.get("degraded_reason") or ""),
         "recoveries": recovered_tool_errors[:20],
         "usage": _loop_usage_snapshot(usage, resource_limit),
         "trace_refs": collect_trace_refs(usage, llm_trace),
@@ -1374,6 +1376,11 @@ def refresh_verification_ledger_artifacts(
     """Return ``ledger`` with artifact status synchronized after finalization."""
 
     if not isinstance(ledger, dict):
+        return ledger
+    # An omitted-to-artifact stub is a PROJECTION of the artifact file, not a
+    # source: it carries no entries, so rebuilding from it would mint "0
+    # entries / no failures / execution ok" over the real ledger's summary.
+    if ledger.get("omitted_to_artifact"):
         return ledger
     entries = [
         item for item in (ledger.get("entries") or [])

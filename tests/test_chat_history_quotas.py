@@ -2,8 +2,8 @@
 
 A progress/telemetry burst must never evict the user's real conversation. Subagent
 lineage is kept on top of the progress quota so a flood can't drop a RECENT child's
-lifecycle events — but only WITHIN the recent telemetry window, so a long-finished
-swarm does not re-materialise as a stuck "Working" parent card on reload.
+lifecycle events; older lineage survives while its parent is represented in the
+window or still alive (#496), so an ABSENT swarm never re-mints a parent card.
 """
 
 from __future__ import annotations
@@ -350,8 +350,8 @@ def test_recent_lineage_survives_progress_flood(tmp_path):
 
 
 def test_old_lineage_does_not_resurrect_finished_swarm(tmp_path):
-    """Lineage OLDER than the retained telemetry window is dropped, so a
-    long-finished swarm does not re-materialise as a stuck parent card."""
+    """Lineage OLDER than the window whose parent is ABSENT from it (and not
+    alive) is dropped, so a finished swarm never re-mints a stuck parent card."""
     logs = tmp_path / "logs"
     logs.mkdir()
     (logs / "chat.jsonl").write_text("", encoding="utf-8")
@@ -361,7 +361,7 @@ def test_old_lineage_does_not_resurrect_finished_swarm(tmp_path):
         lines.append(_lineage_row(f"2026-06-01T00:00:0{i}Z", "oldchild", ev))
     # RECENT telemetry flood
     for i in range(50):
-        lines.append(json.dumps({"ts": f"2026-06-05T02:00:{i:02d}Z", "content": f"noise-{i}", "task_id": "root"}))
+        lines.append(json.dumps({"ts": f"2026-06-05T02:00:{i:02d}Z", "content": f"noise-{i}", "task_id": "other"}))
     (logs / "progress.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     msgs = _run(tmp_path, {"n_progress": "5"})
@@ -803,8 +803,8 @@ def test_active_silent_child_lineage_survives_recency_floor(tmp_path, monkeypatc
 
 
 def test_terminal_silent_child_older_than_floor_stays_dropped(tmp_path):
-    """Anti-zombie preserved: a child with a TERMINAL task result whose lineage
-    rows are older than the recency floor is still dropped entirely."""
+    """Anti-zombie preserved: a child with a TERMINAL task result, lineage older
+    than the floor and a parent ABSENT from the window, is still dropped."""
     logs = tmp_path / "logs"
     logs.mkdir()
     (logs / "chat.jsonl").write_text("", encoding="utf-8")
@@ -813,7 +813,7 @@ def test_terminal_silent_child_older_than_floor_stays_dropped(tmp_path):
         lines.append(_lineage_row(f"2026-06-05T00:00:0{i}Z", "donechild", ev))
     for i in range(50):
         lines.append(json.dumps({
-            "ts": f"2026-06-05T02:00:{i:02d}Z", "content": f"noise-{i}", "task_id": "root",
+            "ts": f"2026-06-05T02:00:{i:02d}Z", "content": f"noise-{i}", "task_id": "other",
         }))
     (logs / "progress.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
     results = tmp_path / "task_results"
@@ -977,3 +977,24 @@ def test_recent_child_final_keeps_lineage_fields(tmp_path):
     row = next(m for m in _run(tmp_path, {}) if m.get("task_id") == "child2")
     assert row["delegation_role"] == "subagent"
     assert row["parent_task_id"] == "root"
+
+
+def test_legacy_limit_governs_human_quota_when_n_human_absent(tmp_path):
+    """The legacy `limit` parameter is the n_human DEFAULT, so shipped CLIs that
+    always sent it stop getting a placebo; non-positive = absent; explicit n_human wins."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    chat_lines = [
+        json.dumps({"ts": f"2026-06-05T00:00:0{i}Z",
+                    "direction": "in" if i % 2 == 0 else "out", "text": f"human-{i}"})
+        for i in range(5)
+    ]
+    (logs / "chat.jsonl").write_text("\n".join(chat_lines) + "\n", encoding="utf-8")
+
+    legacy_only = _run(tmp_path, {"limit": "2"})
+    assert [m["text"] for m in legacy_only] == ["human-3", "human-4"]
+
+    explicit_wins = _run(tmp_path, {"limit": "2", "n_human": "3"})
+    assert [m["text"] for m in explicit_wins] == ["human-2", "human-3", "human-4"]
+    for non_positive in ({"limit": "0"}, {"limit": "-5"}):   # never an empty conversation
+        assert _run(tmp_path, non_positive) == _run(tmp_path, {})

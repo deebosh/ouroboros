@@ -89,14 +89,14 @@ def render_skill_review_block(
         advisory_session = str(advisory_result.get("session_id") or "")
         pieces = [p for p in (advisory_status, advisory_model, advisory_session) if p]
         lines.append(
-            "Claude advisory: "
+            "Advisory pre-review: "
             + (", ".join(pieces) if pieces else "recorded")
         )
         if advisory_result.get("error"):
-            lines.append(f"Claude advisory warning: {advisory_result.get('error')}")
+            lines.append(f"Advisory pre-review warning: {advisory_result.get('error')}")
         if advisory_result.get("contract_warning"):
             lines.append(
-                f"Claude advisory contract warning: {advisory_result.get('contract_warning')}"
+                f"Advisory pre-review contract warning: {advisory_result.get('contract_warning')}"
             )
     if error:
         lines.append(f"Error: {error}")

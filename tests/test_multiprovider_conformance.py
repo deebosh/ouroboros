@@ -166,6 +166,8 @@ PROVIDER_DRIVERS: Dict[str, ProviderDriver] = {
         {"CLOUDRU_FOUNDATION_MODELS_API_KEY": "cloudru-conformance-key"}),
     "minimax": _openai_family(
         "minimax", "minimax::model-x", {"MINIMAX_API_KEY": "minimax-conformance-key"}),
+    "deepseek": _openai_family(
+        "deepseek", "deepseek::model-x", {"DEEPSEEK_API_KEY": "deepseek-conformance-key"}),
     "anthropic": ProviderDriver(
         "anthropic", model="anthropic::claude-x",
         env={"ANTHROPIC_API_KEY": "anthropic-conformance-key"},

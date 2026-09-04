@@ -12,10 +12,11 @@ family-wide application of the v6.80.0 scope-floor read-carve contract.
 
 from __future__ import annotations
 
+import pathlib
 import re
 from typing import Any, Callable, List, Optional
 
-from ouroboros.shell_parse import shell_argv, shell_argv_with_inline
+from ouroboros.shell_parse import shell_argv, shell_argv_with_inline, shell_argv_with_path_tokens
 
 SHELL_WRITE_INDICATORS = (
     "rm ", "rm\t", ">", "sed -i", "tee ", "truncate",
@@ -134,6 +135,78 @@ _MIDTOKEN_REDIRECT_RE = re.compile(r"(?<![<>=&|'\"-])>{1,2}(?![>=&])")
 # writers (cp/mv/rm/mkdir/touch/chmod/...) keep the membership floor, and the
 # interpreter members (ruby/perl) take interpreter_write_shape instead.
 PURE_FILTER_WRITER_COMMANDS = frozenset({"gunzip", "gzip", "sed", "sort", "tar", "uniq"})
+
+_NODE_FS_PREFIX = r'''(?:fs(?:\.promises)?\.|require\(['"]fs['"]\)(?:\.promises)?\.)'''
+_NODE_LITERAL_WRITE_RE = re.compile(
+    rf'''(?is){_NODE_FS_PREFIX}'''
+    r'''(?:writeFile(?:Sync)?|appendFile(?:Sync)?|createWriteStream|mkdir(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|unlink(?:Sync)?)\s*\(\s*(['"])(.*?)\1'''
+)
+_NODE_LITERAL_DESTINATION_RE = re.compile(
+    rf'''(?is){_NODE_FS_PREFIX}(?:rename(?:Sync)?|copyFile(?:Sync)?)'''
+    r'''\s*\(\s*[^,()]*,\s*(['"])(.*?)\1'''
+)
+_NODE_WRITE_CALL_RE = re.compile(
+    rf'''(?is){_NODE_FS_PREFIX}(?:writeFile(?:Sync)?|appendFile(?:Sync)?|createWriteStream|'''
+    r'''mkdir(?:Sync)?|rm(?:Sync)?|rmdir(?:Sync)?|unlink(?:Sync)?|rename(?:Sync)?|copyFile(?:Sync)?)\s*\('''
+)
+_NODE_OPAQUE_EXEC_RE = re.compile(
+    r'''(?is)(?:child_process\.|require\(['"]child_process['"]\)\.)'''
+    r'''(?:exec|spawn|execSync|spawnSync)\s*\('''
+)
+_RUBY_LITERAL_WRITE_RE = re.compile(
+    r'''(?is)(?:File\.(?:write|delete)|FileUtils\.(?:touch|mkdir|mkdir_p|makedirs|'''
+    r'''rm|rm_r|rm_rf|remove|remove_dir|rmdir|remove_entry|remove_entry_secure)|'''
+    r'''File\.(?:open|new)(?=\s*\([^)]*,\s*['"][^'"]*[wax+])'''
+    r''')\s*\(\s*(['"])(.*?)\1'''
+)
+_RUBY_FILEUTILS_COPY_RE = re.compile(
+    r'''(?is)(?:File\.rename|FileUtils\.(?:copy|cp|cp_r|mv|move|install))'''
+    r'''\s*\(\s*[^,()]*,\s*(['"])(.*?)\1'''
+)
+_RUBY_WRITE_CALL_RE = re.compile(
+    r'''(?is)(?:File\.(?:write|delete|rename)|FileUtils\.[A-Za-z_]+)\s*\('''
+)
+_RUBY_MULTI_TARGET_TAIL_RE = re.compile(
+    r'''(?is)(?:File\.delete|FileUtils\.(?:touch|mkdir|mkdir_p|makedirs|rm|rm_r|rm_rf|'''
+    r'''remove|remove_dir|rmdir|remove_entry|remove_entry_secure))\s*\(\s*(['"])(.*?)\1\s*,'''
+)
+
+
+def script_literal_write_targets_and_unknown(family: str, body: str) -> tuple[list[str], bool]:
+    """Literal non-Python script targets plus execution/argument uncertainty."""
+    if family == "node":
+        targets = [match.group(2) for match in _NODE_LITERAL_WRITE_RE.finditer(body)]
+        destinations = list(_NODE_LITERAL_DESTINATION_RE.finditer(body))
+        targets.extend(match.group(2) for match in destinations)
+        resolved = len(_NODE_LITERAL_WRITE_RE.findall(body)) + len(destinations)
+        unknown = bool(_NODE_OPAQUE_EXEC_RE.search(body)) or len(_NODE_WRITE_CALL_RE.findall(body)) != resolved
+        return list(dict.fromkeys(targets)), unknown
+    if family == "ruby":
+        targets = [match.group(2) for match in _RUBY_LITERAL_WRITE_RE.finditer(body)]
+        copies = list(_RUBY_FILEUTILS_COPY_RE.finditer(body))
+        targets.extend(match.group(2) for match in copies)
+        resolved = len(_RUBY_LITERAL_WRITE_RE.findall(body)) + len(copies)
+        ambiguous = (
+            len(_RUBY_WRITE_CALL_RE.findall(body)) != resolved
+            or bool(_RUBY_MULTI_TARGET_TAIL_RE.search(body))
+        )
+        return list(dict.fromkeys(targets)), ambiguous
+    return [], False
+
+
+def segment_write_shape(argv: List[str]) -> bool:
+    """Write shape for one already-tokenized command row."""
+    from ouroboros.tools.registry_guard_process import _is_pure_read_inspection
+    from ouroboros.tools.shell_guards import interpreter_family
+
+    if not argv:
+        return False
+    executable = str(argv[0]).replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    if interpreter_family(executable):
+        return bool(interpreter_write_shape(argv))
+    return bool(non_interpreter_write_shape(
+        argv, argv, executable, is_pure_read=_is_pure_read_inspection,
+    ))
 
 
 def _shell_write_indicator_scan(
@@ -303,3 +376,100 @@ def non_interpreter_write_shape(
             text_lower = str(raw_cmd).lower()
         return not is_pure_read(text_lower)
     return False
+
+
+# --- Workspace write candidates: the per-segment write/mention walk over writer-target rows ---
+
+def _no_deliverables_decision(_path: Any) -> None:
+    """Deliverables policy is a TARGET policy: a mention takes no decision."""
+    return None
+
+
+def _directory_change_argv(argv: list) -> bool:
+    return bool(argv) and pathlib.PurePath(
+        str(argv[0])
+    ).name.lower().removesuffix(".exe") in {"cd", "pushd"}
+
+
+def _workspace_write_candidates(
+    target_rows: list, explicit_write_targets: list[str], raw_cmd: Any,
+) -> list[tuple[str, bool, int]]:
+    """Write/mention candidates for the workspace write guard, per segment.
+
+    A segment's parsed TARGETS are write candidates; every other token it carries
+    stays a MENTION-only candidate. Protected-runtime-root refusals keep running
+    for every candidate, so a path a writer merely READS (`cp ../data/settings.json
+    ./x`) still refuses, while the Deliverables decision and the outside-root
+    refusal apply to real write targets only.
+    """
+    candidates: list[tuple[str, bool, int]] = []
+    index_by_token: dict[tuple[str, int], int] = {}
+
+    def _add(token: Any, is_write: bool, row_index: int) -> None:
+        token_text = str(token)
+        if not token_text.strip():
+            return
+        position = index_by_token.get((token_text, row_index))
+        if position is not None:
+            if is_write and not candidates[position][1]:
+                candidates[position] = (token_text, True, row_index)
+            return
+        index_by_token[(token_text, row_index)] = len(candidates)
+        candidates.append((token_text, is_write, row_index))
+
+    for row_index, (segment_argv, targets, inline_code, unprovable) in enumerate(target_rows):
+        if _directory_change_argv(segment_argv):
+            # A directory change is not itself a write. Its operand becomes a
+            # write candidate only when a later segment has a parsed or
+            # fail-closed write channel, because that later relative write is
+            # evaluated from the changed directory.
+            later_write = any(
+                later_unprovable
+                or (later_targets and not _directory_change_argv(later_argv))
+                for later_argv, later_targets, _later_inline, later_unprovable
+                in target_rows[row_index + 1:]
+            )
+            targets = targets if later_write else []
+        # Inline-code targets are already extracted paths; an argv-shaped
+        # segment's targets still need the embedded-path pass (sed's in-script
+        # `w FILE` hides the path inside the script operand).
+        if targets and not inline_code:
+            write_tokens = [str(token) for token in shell_argv_with_path_tokens(list(targets))]
+        else:
+            write_tokens = [str(token) for token in targets]
+        if unprovable:
+            # Uncertainty widens only this row and its attached program bodies.
+            write_tokens.extend(str(token) for token in segment_argv[1:])
+            write_tokens.extend(
+                str(token) for token in shell_argv_with_path_tokens(list(segment_argv[1:]))
+            )
+            for body in inline_code:
+                write_tokens.extend(
+                    str(token) for token in shell_argv_with_path_tokens(str(body))
+                )
+        write_set = set(write_tokens)
+        for token in segment_argv:
+            _add(token, str(token) in write_set, row_index)
+        for token in write_tokens:
+            _add(token, True, row_index)
+    associated_writes = {text for text, is_write, _row in candidates if is_write}
+    for token in explicit_write_targets:
+        if str(token) not in associated_writes:
+            _add(token, True, -1)
+    # The MENTION lane keeps the full harvest of the raw command text: an embedded
+    # Windows drive/UNC spelling does not survive POSIX tokenization, so the
+    # per-segment argv alone would stop the protected-root and outside-root scans
+    # from ever seeing it. Such a harvested token is the SAME target in its
+    # unmangled spelling when removing the separators the tokenizer swallowed
+    # makes the two texts identical, so it keeps the write policy.
+    collapsed_writes = {
+        text.replace("\\", "")
+        for text, is_write, _row_index in candidates
+        if is_write and text.replace("\\", "")
+    }
+    associated_tokens = {text for text, _is_write, row in candidates if row >= 0}
+    for token in shell_argv_with_path_tokens(raw_cmd):
+        if str(token) in associated_tokens:
+            continue
+        _add(token, str(token).replace("\\", "") in collapsed_writes, -1)
+    return candidates

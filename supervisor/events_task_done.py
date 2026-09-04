@@ -25,6 +25,8 @@ from ouroboros.task_results import (
     write_task_result,
 )
 from ouroboros.utils import append_jsonl, truncate_for_log, utc_now_iso
+from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID
+from supervisor.message_bus import notification_chat_route, row_chat_identity
 
 
 def _events():
@@ -178,8 +180,10 @@ def _maybe_notify_provider_death(
         and str(task_done_event.get("status") or "") == STATUS_FAILED
     ):
         return
-    notify_chat = int(task_done_event.get("chat_id") or 0)
-    if not notify_chat:
+    # Membership, not truthiness: an outage notice for a hidden-partition root
+    # used to be dropped here, so the incident left no owner-visible trace at all.
+    notify_chat = notification_chat_route(task_done_event.get("chat_id"))
+    if notify_chat is None:
         return
     try:
         # Promise only what works: the resume endpoint serves budget-paused
@@ -240,7 +244,6 @@ def _finish_task_done_dispatch(
             or load_task_result(ctx.DRIVE_ROOT, str(task_id or ""))
             or {}
         )
-        from supervisor.message_bus import notification_chat_route
         from supervisor.subagent_task_truth import enrich_task_done_event
 
         _envelope = enrich_task_done_event(task_done_event, effective_result)
@@ -540,11 +543,12 @@ def _resolve_lifecycle_fault(
         "type": "task_done",
         "task_id": task_id,
         "task_type": task_type,
-        "chat_id": int(
+        "chat_id": row_chat_identity(
             _events()._bound_project_chat_id(
                 ctx, task_id, task_row.get("parent_task_id"), task_row.get("root_task_id")
-            )
-            or evt.get("chat_id") or task_row.get("chat_id") or stored.get("chat_id") or 0
+            ) or None,
+            evt.get("chat_id"), task_row.get("chat_id"), stored.get("chat_id"),
+            default=HIDDEN_CHAT_ID,
         ),
         "status": status,
         "reason_code": str(stored.get("reason_code") or "task_done_lifecycle_fault"),
@@ -803,15 +807,15 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         "type": "task_done",
         "task_id": task_id,
         "task_type": task_type,
-        "chat_id": int(
+        "chat_id": row_chat_identity(
             _events()._bound_project_chat_id(
                 ctx, task_id,
                 (final_task_result.get("parent_task_id") if isinstance(final_task_result, dict) else "") or evt.get("parent_task_id"),
                 (final_task_result.get("root_task_id") if isinstance(final_task_result, dict) else "") or evt.get("root_task_id"),
-            )
-            or evt.get("chat_id")
-            or (final_task_result.get("chat_id") if isinstance(final_task_result, dict) else 0)
-            or 0
+            ) or None,
+            evt.get("chat_id"),
+            (final_task_result.get("chat_id") if isinstance(final_task_result, dict) else None),
+            default=HIDDEN_CHAT_ID,
         ),
         "status": str(final_task_result.get("status") or evt.get("status") or ""),
         "outcome_axes": outcome_axes,

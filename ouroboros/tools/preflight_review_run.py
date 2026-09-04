@@ -488,9 +488,11 @@ def _run_claude_advisory(
         else:
             # The native inspection episode (the retired Claude-SDK
             # transport's successor): same prompt, same repo root, same result
-            # structure. The SDK budget kill is replaced by the executor's
-            # config-owned round/transcript caps; every provider call rides
-            # the ordinary usage ledger under category=advisory_review.
+            # structure. The SDK budget kill is replaced by the episode's
+            # transcript bound derived from THIS reviewer's own window
+            # (``review_native_episode.review_native_transcript_bound``) — no
+            # round cap; every provider call rides the ordinary usage ledger
+            # under category=advisory_review.
             scope_effort = _slot.effort or "low"
             if _car().owner_deadline_exhausted_for_context(ctx, reserve_sec=_car().get_finalization_grace_sec()):
                 raise TimeoutError("owner deadline leaves no dispatch window for advisory review")

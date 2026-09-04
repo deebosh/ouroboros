@@ -148,15 +148,14 @@ def _promote_to_stable(ctx: ToolContext, reason: str) -> str:
 
 
 def _request_deep_self_review(ctx: ToolContext, reason: str) -> str:
-    from ouroboros.deep_self_review import is_review_available
-    available, model = is_review_available()
-    if not available:
-        return (
-            "❌ Deep self-review unavailable: configure OUROBOROS_MODEL_DEEP_SELF_REVIEW "
-            "and the matching provider API key."
-        )
-    ctx.pending_events.append({"type": "deep_self_review_request", "reason": reason, "model": model, "ts": utc_now_iso()})
-    return f"Deep self-review requested (model: {model}). It will be queued and executed asynchronously."
+    # Availability follows the configured deep-review ROW (packed api model,
+    # native inspection episode, or delegated session), not the model key alone.
+    from ouroboros.deep_self_review import deep_review_route, deep_review_unavailable_text
+    unavailable, identity = deep_review_route()
+    if unavailable:
+        return deep_review_unavailable_text(unavailable)
+    ctx.pending_events.append({"type": "deep_self_review_request", "reason": reason, "model": identity, "ts": utc_now_iso()})
+    return f"Deep self-review requested (reviewer: {identity}). It will be queued and executed asynchronously."
 
 
 def _chat_history(

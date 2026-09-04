@@ -1531,3 +1531,22 @@ def test_select_subagent_constraint_read_only_token_is_readonly():
         constraint = _select_subagent_constraint(surface, "", False, [], "")
         assert isinstance(constraint, dict), surface
         assert constraint == baseline, surface
+
+
+def test_schedule_subagent_publishes_the_depth_request_and_the_handler_accepts_it():
+    """A nanny chain could describe its intended nesting only in prose: the tool
+    refused ``requested_depth`` by name, so the root's own depth summary could
+    never say what had been asked for."""
+    from ouroboros.tools import control
+
+    props = control.schedule_subagent_properties()
+    row = props["requested_depth"]
+    assert row["type"] == "integer"
+    assert row["default"] == 0
+    # Absolute from the root, and telemetry rather than a cap: both semantics
+    # have to be readable by the model that fills the field in.
+    assert "ABSOLUTELY FROM THE ROOT" in row["description"]
+    assert "never widens or narrows" in row["description"]
+    # The handler's closed keyword set DERIVES from the same schema.
+    assert "requested_depth" in control.schedule_subagent_param_names()
+    assert "requested_depth" not in control.HIDDEN_LEGACY_SCHEDULE_PARAMS

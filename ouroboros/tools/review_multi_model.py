@@ -135,15 +135,13 @@ async def _query_model(
     async with semaphore:
         slot = None
         try:
-            from ouroboros.review_execution import ReviewRouteKind
+            from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
             from ouroboros.review_substrate import ReviewRequest, ReviewSlot, run_review_request
             slot_route = route if route is not None else ReviewRouteKind.API_CHAT
             delegated = slot_route is ReviewRouteKind.AGENT_SESSION
             # RETRIEVES class (session row OR configured-subagent api row): the
             # compact session task replaces the assembled pack for both.
-            retrieves = delegated or (
-                bool(subagent_id) and slot_route is ReviewRouteKind.API_CHAT
-            )
+            retrieves = delivery_retrieves(slot_route, subagent_id)
             _out_budget = _review_output_budget()
             request = ReviewRequest(
                 surface=surface,
@@ -162,6 +160,9 @@ async def _query_model(
                 task_attempt=getattr(ctx, "task_attempt", None) if ctx is not None else None,
                 retry_key=str(retry_key or ""),
                 reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
+                # The owner deadline is a bound of every retrieving episode; it
+                # reaches the row here exactly as the advisory passes it.
+                deadline_at=_rev()._owner_deadline_at(ctx),
             )
             slot = ReviewSlot(
                 slot_id=slot_id,
@@ -228,7 +229,7 @@ async def _multi_model_review_async(content: str, prompt: str,
                                      session_policy: dict = None,
                                      usage_attribution: dict = None,
                                      retry_key: str = ""):
-    from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
 
     row_routes = list(routes or []) + [ReviewRouteKind.API_CHAT] * max(0, len(models) - len(routes or []))
     # Per-row strength/target/identity vectors (6.1). Absent tails keep the
@@ -246,7 +247,7 @@ async def _multi_model_review_async(content: str, prompt: str,
     # api-route row bound to a configured subagent retrieves with its own
     # tools and must never trigger (or be counted into) the assembled pack.
     any_api_rows = any(
-        route is ReviewRouteKind.API_CHAT and not row_actors[idx]
+        not delivery_retrieves(route, row_actors[idx])
         for idx, route in enumerate(row_routes[:len(models)])
     )
     if not content:
@@ -310,20 +311,6 @@ async def _multi_model_review_async(content: str, prompt: str,
     review_results = []
     for model, result, headers_dict in results:
         review_result = _rev()._parse_model_response(model, result, headers_dict)
-        _rev().emit_review_usage(
-            ctx,
-            model=review_result.get("model", ""),
-            provider=review_result.get("provider", "openrouter"),
-            usage={
-                "prompt_tokens": review_result.get("tokens_in", 0),
-                "completion_tokens": review_result.get("tokens_out", 0),
-                "cached_tokens": review_result.get("cached_tokens", 0),
-                "cache_write_tokens": review_result.get("cache_write_tokens", 0),
-                "prompt_cache_ttl": review_result.get("prompt_cache_ttl", ""),
-                "cost": review_result.get("cost_estimate"),
-            },
-            source="review",
-        )
         review_results.append(review_result)
 
     return {

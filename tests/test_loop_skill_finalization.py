@@ -63,6 +63,21 @@ def test_skill_finalization_message_blocks_unreviewed_self_authored_skill(tmp_pa
     assert "SKILL_NOT_FINALIZED" in message
     assert "alpha" in message
 
+def test_skill_finalization_message_sees_real_skill_payload_selectors(tmp_path):
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir()
+    _write_self_authored_skill(drive_root)
+
+    for tool, selector in (
+        ("run_command", {"cmd": ["true"], "cwd": "skill_payload"}),
+        ("run_script", {"script": "pass", "cwd": "skill_payload/scripts"}),
+        ("delegate_start", {"prompt": "repair", "root": "skill_payload"}),
+    ):
+        trace = {"tool_calls": [{"tool": tool, "args": {
+            **selector, "bucket": "external", "skill_name": "alpha",
+        }}]}
+        assert "alpha" in _skill_finalization_message(drive_root, trace)
+
 def test_skill_finalization_message_allows_ready_self_authored_skill(tmp_path):
     drive_root = tmp_path / "drive"
     drive_root.mkdir()

@@ -55,6 +55,22 @@ _VALIDATORS: Dict[str, Tuple[List[str], str]] = {
     ".bash": (["bash", "-n", "{path}"], "bash"),
 }
 
+# A declared module-widget entry is injected as a CLASSIC inline <script>, so the
+# grammar that matters is the Script goal, not the module goal. `node --check`
+# accepts top-level import/export in a .js file; `new vm.Script(...)` rejects it
+# exactly as the browser will, and it is suffix-independent.
+_CLASSIC_SCRIPT_VALIDATOR: Tuple[List[str], str] = (
+    [
+        "node",
+        "-e",
+        "const fs=require('fs'),vm=require('vm');"
+        "new vm.Script(fs.readFileSync(process.argv[1],'utf8'),{filename:process.argv[1]})",
+        "--",
+        "{path}",
+    ],
+    "node",
+)
+
 
 def _resolve_runtime(runtime: str) -> Tuple[Optional[str], str]:
     """Resolve a validator runtime: ``(path, "")`` or ``(None, reason)``."""
@@ -180,17 +196,19 @@ def _validate_widget_render(
 ) -> Dict[str, Any]:
     """Validate one statically resolved UI declaration without importing plugin code."""
     try:
-        if settings:
-            validate_settings_schema(render)
-        else:
-            validate_ui_render(render)
-        return {
+        clean = validate_settings_schema(render) if settings else validate_ui_render(render)
+        row = {
             "item": "widget_schema",
             "source": source,
             "ok": True,
             "verified": True,
             "detail": "ok",
         }
+        if clean.get("kind") == "module":
+            # The normalized entry is what the frame will fetch; carry it so the
+            # caller can check the declared file actually exists on disk.
+            row["entry"] = clean["entry"]
+        return row
     except ExtensionRegistrationError as exc:
         return {
             "item": "widget_schema",
@@ -472,11 +490,40 @@ def _registered_ui_schema_findings(plugin_path: pathlib.Path, *, source_name: st
     return findings
 
 
+def _widget_entry_exists_finding(
+    skill_dir: pathlib.Path,
+    row: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Check that a module widget's declared render.entry file is really there."""
+    entry = str(row.get("entry") or "").strip()
+    if not entry:
+        return None
+    try:
+        target = (skill_dir / entry).resolve()
+        target.relative_to(skill_dir.resolve())
+        ok = target.is_file()
+    except ValueError:
+        ok = False
+    return {
+        "item": "widget_entry_exists",
+        "source": str(row.get("source") or ""),
+        "ok": ok,
+        "verified": True,
+        "detail": entry if ok else f"missing or escaping module widget entry: {entry}",
+    }
+
+
 def _widget_schema_findings(skill_dir: pathlib.Path, manifest: Optional[SkillManifest]) -> List[Dict[str, Any]]:
     findings: List[Dict[str, Any]] = []
     if manifest is not None and isinstance(manifest.ui_tab, dict):
         render = manifest.ui_tab.get("render")
-        findings.append(_validate_widget_render(render, source="manifest.ui_tab.render"))
+        schema_row = _validate_widget_render(render, source="manifest.ui_tab.render")
+        findings.append(schema_row)
+        # Generated before the containment early return below: an escaping
+        # plugin path must not silently drop the manifest entry check.
+        entry_row = _widget_entry_exists_finding(skill_dir, schema_row)
+        if entry_row is not None:
+            findings.append(entry_row)
     entry_name = str(manifest.entry or "plugin.py") if manifest is not None else "plugin.py"
     plugin = (skill_dir / entry_name).resolve()
     try:
@@ -484,9 +531,11 @@ def _widget_schema_findings(skill_dir: pathlib.Path, manifest: Optional[SkillMan
     except ValueError:
         return findings
     if plugin.is_file():
-        findings.extend(
-            _registered_ui_schema_findings(plugin, source_name=relative_plugin.as_posix())
-        )
+        for schema_row in _registered_ui_schema_findings(plugin, source_name=relative_plugin.as_posix()):
+            findings.append(schema_row)
+            entry_row = _widget_entry_exists_finding(skill_dir, schema_row)
+            if entry_row is not None:
+                findings.append(entry_row)
     return findings
 
 
@@ -707,6 +756,13 @@ def _handle_skill_preflight(
             })
             widget_findings.extend(_widget_schema_findings(skill_dir, None))
 
+    # Declared module-widget entries are parsed with classic-script grammar below.
+    module_entries = {
+        (skill_dir / str(f.get("detail") or "")).resolve()
+        for f in widget_findings
+        if f.get("item") == "widget_entry_exists" and f.get("ok")
+    }
+
     # paths scopes recent edits; otherwise walk the reviewable payload surface.
     files_to_check: List[pathlib.Path] = []
     path_findings: List[Dict[str, Any]] = []
@@ -763,10 +819,12 @@ def _handle_skill_preflight(
                 "stdout": result["stdout"][:2000],
             })
             continue
-        validator = _VALIDATORS.get(suffix)
+        classic_script = path in module_entries
+        validator = _CLASSIC_SCRIPT_VALIDATOR if classic_script else _VALIDATORS.get(suffix)
         if validator is None:
             continue
         argv_template, runtime = validator
+        grammar = {"grammar": "classic_script"} if classic_script else {}
         runtime_path, runtime_reason = _resolve_runtime(runtime)
         rel_path = str(path.relative_to(skill_dir))
         if runtime_path is None:
@@ -784,6 +842,7 @@ def _handle_skill_preflight(
                     f"{runtime} not usable{reason_note} — syntax not verified; "
                     "relying on tri-model review"
                 ),
+                **grammar,
             })
             continue
         cmd = [runtime_path] + [str(path) if part == "{path}" else part for part in argv_template[1:]]
@@ -820,6 +879,7 @@ def _handle_skill_preflight(
                 "returncode": rc,
                 "timeout": timed_out,
                 "stderr": result["stderr"][:2000],
+                **grammar,
             }
             if pre_exec:
                 finding["pre_exec_failure"] = pre_exec
@@ -836,6 +896,7 @@ def _handle_skill_preflight(
             "timeout": timed_out,
             "stderr": result["stderr"][:2000],
             "stdout": result["stdout"][:2000],
+            **grammar,
         })
 
     # ok iff every contract check passes and every file that was ACTUALLY
@@ -907,9 +968,9 @@ _PREFLIGHT_SCHEMA = {
     "name": "skill_preflight",
     "description": (
         "Read-only payload syntax/contract validator for one skill. Runs Python "
-        "compile() (no __pycache__), node --check, and bash -n on every reviewable file "
-        "(or just the ones in `paths` if provided), plus a manifest "
-        "parse and static widget render-schema validation. Cheap and offline (no LLM, no review.json mutation, "
+        "compile() (no __pycache__), bash -n, and node syntax checks (a declared module-widget "
+        "entry gets classic-script grammar) on every reviewable file, or just `paths`, plus a manifest "
+        "parse, module-widget entry existence, and static render-schema validation. Cheap and offline (no LLM, no review.json mutation, "
         "no review status change). Heal-mode agents use this before "
         "calling skill_review so silly syntax errors are caught "
         "without spending tri-model review tokens. Argv-only "

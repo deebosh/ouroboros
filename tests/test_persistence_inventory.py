@@ -524,7 +524,11 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # ``state/skills/*/uninstalled.json`` merged it with the spelling the scan
 # already resolved; the three ``__extension_imports`` spellings moved plane
 # without changing count.
-EXPECTED_SCAN_PATHS = 283
+# 283 -> 285: absorbing upstream added two durable planes — the skill-review
+# root-task projection with its gaps ledger (``state/skill_review_root_tasks*``)
+# and the per-project retirement locks (``state/delegate_project_retirements/``)
+# — while the retired acceptance api-fallback record left the population.
+EXPECTED_SCAN_PATHS = 285
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -824,19 +828,34 @@ def test_unresolved_wildcard_never_certifies_an_exact_row():
     assert _covers("task_results/*", "task_results/*.json")
 
 
-def test_parent_of_a_helper_returned_path_is_a_named_root():
+def test_parent_of_a_helper_returned_path_is_a_named_root(tmp_path):
     """``<helper>().parent / "name"`` is a NAMED plane, not an unrooted leaf.
 
-    ``reviewer_slot_config._record_api_fallback_substitution`` writes
-    ``_last_execution_path().parent / "reviewer_slot_api_fallback.json"``. The
-    parent of a path the scan already resolved is a fact the source states, so
-    the file must enter the population under its own name — while the base
-    stayed unresolved, this live durable disclosure record was invisible to the
-    forward check and held no inventory row.
+    The parent of a path the scan already resolved is a fact the source states,
+    so a sibling written through it must enter the population under its own
+    name. The live writer that first exposed this (the acceptance api-fallback
+    record beside ``state/reviewer_slot_last_execution.json``) was retired with
+    the acceptance-rows decision, so the mechanism is pinned on a synthetic
+    module shaped exactly like that writer — while the base stayed unresolved,
+    such a durable record was invisible to the forward check and held no
+    inventory row.
     """
-    paths = scan_data_paths()
-    assert "state/reviewer_slot_api_fallback.json" in paths
-
+    module = tmp_path / "ouroboros" / "synthetic_writer.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "import pathlib\n"
+        "\n"
+        "def _last_execution_path(drive_root):\n"
+        '    return pathlib.Path(drive_root) / "state" / "reviewer_slot_last_execution.json"\n'
+        "\n"
+        "def record_sibling(drive_root, payload):\n"
+        '    path = _last_execution_path(drive_root).parent / "sibling_disclosure.json"\n'
+        '    path.write_text(payload, encoding="utf-8")\n',
+        encoding="utf-8",
+    )
+    paths = scan_data_paths(tmp_path)
+    assert "state/reviewer_slot_last_execution.json" in paths
+    assert "state/sibling_disclosure.json" in paths
 
 def test_no_parameter_rooted_spelling_lands_at_the_data_ROOT():
     """A path whose root came in as a parameter must not read as top-level.

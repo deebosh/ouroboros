@@ -745,10 +745,9 @@ def _resolve_delivery_control(
             tools._ctx._delivery_control_required = True
         elif candidate.finalization_control in _DELIVERY_HOLD_CONTROLS:
             # Bounded action gates (skill lifecycle, child absorption): a tool
-            # action or a reconsidered full prose answer may proceed; a typed
-            # keep cannot acknowledge the gate and no JSON prompt rides the
-            # action round. A typed control attempt escalates to the ONE
-            # replace-required literal for BOTH holds (plan-rejected widening).
+            # action or a reconsidered full prose answer may proceed; a typed keep
+            # cannot acknowledge the gate; a typed control attempt escalates to
+            # the ONE replace-required literal for BOTH holds.
             if not is_control_intent:
                 return "fresh", _loop()._extract_plain_text_from_content(content)
             candidate.finalization_control = "skill_revision_required"
@@ -923,10 +922,9 @@ def _no_tool_final_answer(
             _loop()._arm_delivery_control(tools, limit_ctx, llm_trace)
         return None
 
-    # Declared service outputs and teardown failures are acceptance evidence,
-    # not postscript cleanup: finalize them before the host panel and, when
-    # that changes evidence, require one complete replacement answer bound to
-    # the new revision. The finally-path reuses the same idempotent helper.
+    # Declared service outputs and teardown failures are acceptance evidence:
+    # finalize them before the host panel and, when that changes evidence,
+    # require one replacement answer bound to the new revision (idempotent helper).
     service_exit_ctx = _loop()._LoopExitContext(
         tools=tools,
         drive_root=limit_ctx.drive_root,
@@ -985,10 +983,12 @@ def _no_tool_final_answer(
             _loop()._publish_delivery_candidate(tools, candidate, llm_trace)
         content = candidate.full_text
 
+    _rails_ceiling = getattr(tools._ctx, "_cost_ceiling", None)
     tools._ctx._acceptance_loop_rails = {
         "round_idx": limit_ctx.round_idx,
         "max_rounds": limit_ctx.max_rounds,
         "task_cost_usd": limit_ctx.accumulated_usage.get("cost"),
+        "cost_ceiling_usd": getattr(_rails_ceiling, "ceiling_usd", None),
     }
     # v6.78.0 (owner Q20/Q22): mirror the host-attested native-retrieval
     # fact into the trace so `build_task_acceptance_evidence` can show the
@@ -1007,12 +1007,10 @@ def _no_tool_final_answer(
         messages=messages,
         emit_progress=emit_progress,
     ):
-        # v6.71.1: an acceptance improvement pass is an ORDINARY substantive
-        # answer round — do NOT arm delivery-control: layering "return
-        # exactly one JSON object" on OPEN OBLIGATIONS plus the self-check
-        # froze the model into resubmitting the same answer. The next
-        # free-form answer re-enters the acceptance panel (blocking not
-        # weakened); other lanes still arm where JSON keep/replace is needed.
+        # v6.71.1: an acceptance improvement pass is an ORDINARY answer round —
+        # do NOT arm delivery-control (a JSON-only demand on open obligations
+        # froze the model into resubmitting); the next free-form answer
+        # re-enters the acceptance panel, other lanes still arm.
         return None
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
     if isinstance(candidate, _loop().DeliveryCandidate):

@@ -80,9 +80,14 @@ def _review_actor_projection(actor: Any, surface: str) -> Dict[str, Any]:
     error = str(row.get("error") or "")
     transport = str(row.get("transport_status") or "")
     if not transport:
+        not_dispatched = (
+            str(row.get("status") or "") == "not_dispatched"
+            or str(row.get("operation_state") or "") == "not_dispatched"
+        )
         transport = (
-            "success" if str(row.get("status") or "") in {"ok", "empty"}
-            else _transport_error_status(error)
+            "not_dispatched" if not_dispatched
+            else ("success" if str(row.get("status") or "") in {"ok", "empty"}
+                  else _transport_error_status(error))
         )
     criteria = parsed.get("criteria_used") if isinstance(parsed, dict) else []
     criteria = criteria if isinstance(criteria, list) else []
@@ -259,8 +264,9 @@ def compact_review_projection(review_runs: Any) -> Dict[str, Any]:
         transport = (
             "success" if transport_statuses and all(s == "success" for s in transport_statuses)
             else ("partial" if "success" in transport_statuses else (
-                "timeout" if transport_statuses and all(s == "timeout" for s in transport_statuses)
-                else "provider_transport_error"
+                "not_dispatched" if transport_statuses and all(s == "not_dispatched" for s in transport_statuses)
+                else ("timeout" if transport_statuses and all(s == "timeout" for s in transport_statuses)
+                      else "provider_transport_error")
             ))
         )
         reasons = raw_run.get("degraded_reasons") if isinstance(raw_run.get("degraded_reasons"), list) else []

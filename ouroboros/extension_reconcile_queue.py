@@ -98,6 +98,12 @@ def announce_extension_state_change(
     An empty ``skill_name`` announces the WHOLE live set (the end of a
     ``reload_all``): the server publishes it, and the worker direction has
     nothing to ask for, since a reconcile request names one skill.
+
+    The returned string is a RECEIPT, not a status the caller must act on:
+    ``published:<generation>`` (server direction), ``requested`` /
+    ``request_failed`` (worker direction — the two outcomes a reconcile receipt
+    reports to the agent and the durable health vector), ``no_skill``, or ``""``
+    when there was nothing to announce.
     """
     if drive_root is None:
         return ""
@@ -106,13 +112,17 @@ def announce_extension_state_change(
     try:
         if is_server_process():
             return f"published:{publish_extension_generation(drive_root)}"
-        if not str(skill_name or "").strip():
-            return "no_skill"
+    except Exception:
+        log.debug("extension generation publication failed", exc_info=True)
+        return ""
+    if not str(skill_name or "").strip():
+        return "no_skill"
+    try:
         request_extension_reconcile(drive_root, skill_name, reason=reason, source="worker")
         return "requested"
     except Exception:
-        log.debug("extension state-change announcement failed for %s", skill_name, exc_info=True)
-        return ""
+        log.debug("Failed to request server extension reconcile for %s", skill_name, exc_info=True)
+        return "request_failed"
 
 
 def adopt_published_extension_generation(

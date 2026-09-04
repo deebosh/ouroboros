@@ -18,7 +18,7 @@ from ouroboros.contracts.skill_manifest import SkillManifest, SkillManifestError
 from ouroboros.contracts.plugin_api import FORBIDDEN_SKILL_SETTINGS
 from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.skill_review_status import STATUS_BLOCKERS, STATUS_CLEAN, STATUS_PENDING, STATUS_WARNINGS, VALID_SKILL_REVIEW_STATUSES, aggregate_skill_review_status, normalize_skill_review_status, skill_review_gate
-from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
+from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -506,7 +506,21 @@ def load_enabled(drive_root: pathlib.Path, name: str) -> bool:
     return enabled if isinstance(enabled, bool) else False
 
 
-def save_enabled(drive_root: pathlib.Path, name: str, enabled: bool) -> None:
+def save_enabled(
+    drive_root: pathlib.Path,
+    name: str,
+    enabled: bool,
+    *,
+    actor: str = "",
+    reason: str = "",
+) -> None:
+    """Persist enablement and best-effort append one typed disclosure row.
+
+    ``actor`` is a data label, never a gate: no branch reads it, and an
+    unlabelled writer records an empty actor rather than nothing at all. An
+    append failure is logged and never blocks the enablement change.
+    """
+    previous = load_enabled(drive_root, name)
     atomic_write_json(
         skill_state_dir(drive_root, name) / "enabled.json",
         with_schema_version(
@@ -517,6 +531,18 @@ def save_enabled(drive_root: pathlib.Path, name: str, enabled: bool) -> None:
             SKILL_OWNER_STATE_SCHEMA_VERSION,
         ),
     )
+    try:
+        append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
+            "ts": utc_now_iso(),
+            "type": "skill_enabled_changed",
+            "skill": name,
+            "enabled": bool(enabled),
+            "previous": bool(previous),
+            "actor": str(actor or ""),
+            "reason": str(reason or ""),
+        })
+    except Exception:
+        log.debug("Failed to append skill_enabled_changed for %s", name, exc_info=True)
 
 
 def load_review_state(
@@ -1439,11 +1465,12 @@ def list_available_for_execution(
     return out
 
 
-# Status helpers consumed by /api/state and the Skills UI
+# Status helpers consumed by the model-facing catalogue: the per-turn Installed
+# Skills section (context.py) and the list_skills tool.
 
 
 def summarize_skills(drive_root: pathlib.Path) -> Dict[str, Any]:
-    """Return a compact catalogue summary for the Skills UI / /api/state."""
+    """Return a compact catalogue summary for the model-facing skill catalogue."""
     skills = discover_skills(drive_root)
     tool_surfaces_by_skill: Dict[str, List[Dict[str, str]]] = {}
     try:
@@ -1519,6 +1546,27 @@ def summarize_skills(drive_root: pathlib.Path) -> Dict[str, Any]:
             # and fails only at execution time.
             "manual_dependencies": list(getattr(readiness, "manual_dependencies", []) or []),
         })
+        # Extension liveness is a different fact from script executability: the
+        # same producer /api/extensions reads, so the catalogue and the HTTP
+        # surface cannot disagree. `skills=` is mandatory — without it the state
+        # helper re-walks the whole skills tree once per row.
+        live: Dict[str, Any] = {}
+        if s.manifest.is_extension() and not s.identity_collision:
+            try:
+                from ouroboros.extension_loader import runtime_state_for_loaded_skill
+
+                live = runtime_state_for_loaded_skill(s, drive_root, skills=skills)
+            except Exception:
+                log.debug("extension liveness projection failed for %s", s.name, exc_info=True)
+                live = {}
+        rows[-1].update({
+            "desired_live": bool(live.get("desired_live")),
+            "live_loaded": bool(live.get("live_loaded")),
+            "live_reason": str(live.get("reason") or "not_extension"),
+            "process": str(live.get("process") or ""),
+        })
+        if live.get("load_error"):
+            rows[-1]["load_error"] = str(live.get("load_error"))
     return {
         "count": len(skills),
         "runtime_mode": get_runtime_mode(),

@@ -41,7 +41,7 @@ def test_prepare_onboarding_settings_requires_runnable_config():
     prepared, error = prepare_onboarding_settings(_base_payload(), {})
 
     assert prepared == {}
-    assert "Configure OpenRouter, OpenAI, OpenAI-compatible, Cloud.ru, MiniMax, Anthropic, or a local model" in error
+    assert "Configure OpenRouter, OpenAI, OpenAI-compatible, Cloud.ru, MiniMax, DeepSeek, Anthropic, or a local model" in error
 
 
 def test_prepare_onboarding_settings_accepts_openai_only_setup():
@@ -138,6 +138,38 @@ def test_prepare_onboarding_settings_accepts_minimax_only_setup():
     assert prepared["MINIMAX_REGION"] == "cn_zh"
     assert prepared["OUROBOROS_MODEL"] == "minimax::MiniMax-M3"
     assert prepared["OUROBOROS_MODEL_LIGHT"] == "minimax::MiniMax-M2.7"
+
+
+def test_prepare_onboarding_settings_rejects_non_string_credentials():
+    # A JSON object/array/number in a credential slot is a malformed API post:
+    # str()-ing it used to persist "{'nested': ...}" as a working key with no
+    # error. The validator now refuses with an honest message instead.
+    for bad in ({"nested": "abcdefghij"}, ["sk-x"], 123, True):
+        payload = _base_payload()
+        payload.update({
+            "DEEPSEEK_API_KEY": bad,
+            "OUROBOROS_MODEL": "deepseek::deepseek-v4-pro",
+        })
+        prepared, error = prepare_onboarding_settings(payload, {})
+        assert prepared == {}
+        assert error == "DeepSeek API Key must be a text value."
+
+
+def test_prepare_onboarding_settings_accepts_deepseek_only_setup():
+    payload = _base_payload()
+    payload.update({
+        "DEEPSEEK_API_KEY": "sk-deepseek-key-1234567890",
+        "OUROBOROS_MODEL": "deepseek::deepseek-v4-pro",
+        "OUROBOROS_MODEL_LIGHT": "deepseek::deepseek-v4-flash",
+        "OUROBOROS_MODEL_FALLBACKS": "deepseek::deepseek-v4-flash",
+    })
+
+    prepared, error = prepare_onboarding_settings(payload, {})
+
+    assert error is None
+    assert prepared["DEEPSEEK_API_KEY"] == "sk-deepseek-key-1234567890"
+    assert prepared["OUROBOROS_MODEL"] == "deepseek::deepseek-v4-pro"
+    assert prepared["OUROBOROS_MODEL_LIGHT"] == "deepseek::deepseek-v4-flash"
 
 
 def test_prepare_onboarding_settings_rejects_unknown_minimax_region():
@@ -300,7 +332,7 @@ def test_prepare_onboarding_settings_rejects_openai_compatible_key_without_base_
     prepared, error = prepare_onboarding_settings(payload, {})
 
     assert prepared == {}
-    assert "Configure OpenRouter, OpenAI, OpenAI-compatible, Cloud.ru, MiniMax, Anthropic, or a local model" in error
+    assert "Configure OpenRouter, OpenAI, OpenAI-compatible, Cloud.ru, MiniMax, DeepSeek, Anthropic, or a local model" in error
 
 
 def test_onboarding_frontend_uses_base_url_first_compatible_validation():
@@ -425,8 +457,10 @@ def test_agents_step_ladder_states_the_startup_gate_honestly():
     assert "keeps using the API key or local model" in source
     assert "a plan cannot run it" in source
     assert "not free" in source
-    assert "Task acceptance stays on the API" in source
-    assert "plan and skill review follow each configured triad row" in source
+    assert "Task acceptance stays on the API" not in source
+    assert "commit, plan, skill review and task acceptance each follow their configured" in source
+    assert "acceptance panel on the subscription" in source
+    assert "about 12 s" in source and "$0.07 per model row per task" in source  # R12 numbers, not adjectives
     assert "all reviewers" not in source.lower()
     # D-10 vocabulary in the new owner-facing surface.
     assert "coding agent" not in source.lower()
@@ -580,6 +614,7 @@ def test_setup_contract_groups_rarely_used_providers():
         "CLOUDRU_FOUNDATION_MODELS_API_KEY": "more",
         "MINIMAX_API_KEY": "more",
         "MINIMAX_REGION": "more",
+        "DEEPSEEK_API_KEY": "more",
         "ANTHROPIC_API_KEY": "primary",
         "OPENAI_COMPATIBLE_BASE_URL": "more",
         "OPENAI_COMPATIBLE_API_KEY": "more",
@@ -621,6 +656,8 @@ def test_setup_contract_has_no_secret_values():
     assert "anthropic::claude-sonnet-5" in suggestions
     assert "minimax::MiniMax-M3" in suggestions
     assert "minimax::MiniMax-M2.7" in suggestions
+    assert "deepseek::deepseek-v4-pro" in suggestions
+    assert "deepseek::deepseek-v4-flash" in suggestions
     assert empty_bootstrap["initialState"]["totalBudget"] == 200.0
     assert empty_bootstrap["initialState"]["perTaskCostUsd"] == 50.0
     assert budget_fields["TOTAL_BUDGET"]["default"] == 200.0
@@ -632,6 +669,12 @@ def test_setup_contract_has_no_secret_values():
     assert initial["providerProfile"] == "minimax"
     assert initial["mainModel"] == "minimax::MiniMax-M3"
     assert initial["lightModel"] == "minimax::MiniMax-M2.7"
+
+    deepseek_bootstrap = build_setup_bootstrap({"DEEPSEEK_API_KEY": "ds-hidden-value"}, "web")
+    deepseek_initial = deepseek_bootstrap["initialState"]
+    assert deepseek_initial["providerProfile"] == "deepseek"
+    assert deepseek_initial["mainModel"] == "deepseek::deepseek-v4-pro"
+    assert deepseek_initial["lightModel"] == "deepseek::deepseek-v4-flash"
 
 
 # --- The served page must not hand back a stored credential -----------------
@@ -645,6 +688,7 @@ _SECRET_CANARIES = {
     "OPENAI_COMPATIBLE_API_KEY": "compat-SECRETCANARY125",
     "CLOUDRU_FOUNDATION_MODELS_API_KEY": "cloudru-SECRETCANARY126",
     "MINIMAX_API_KEY": "minimax-SECRETCANARY127",
+    "DEEPSEEK_API_KEY": "sk-ds-SECRETCANARY133",
     "ANTHROPIC_API_KEY": "sk-ant-SECRETCANARY128",
     "GIGACHAT_CREDENTIALS": "giga-SECRETCANARY129",
     "GIGACHAT_PASSWORD": "gigapw-SECRETCANARY130",

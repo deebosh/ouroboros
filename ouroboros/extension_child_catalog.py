@@ -20,8 +20,8 @@ from ouroboros.extension_surface_names import (
     extension_name_prefix,
 )
 from ouroboros.extension_ui_validation import (
+    validate_runtime_ui_render as _validate_runtime_ui_render,
     validate_settings_schema as _validate_settings_schema,
-    validate_ui_render as _validate_ui_render,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - annotation-only imports
@@ -47,12 +47,25 @@ def _stage_out_of_process_surfaces(
     transaction; a bad catalog publishes NOTHING rather than a prefix.
     """
 
+    from ouroboros.extension_ui_validation import read_module_sources
+
     def _proxy(item: Dict[str, Any]) -> Dict[str, Any]:
         item["handler"] = _out_of_process_handler_proxy
         item["skill"] = skill.name
         item["out_of_process"] = True
         item["skills_repo_path"] = str(skill.skill_dir.parent)
         return item
+
+    # Module widget sources are disk reads: capture them before the lock and
+    # stage them inside it, exactly like the in-process register_ui_tab path.
+    # The child's validator already normalized each declared entry.
+    entries = sorted({
+        str(item["render"].get("entry") or "")
+        for item in (catalog.get("ui_tabs") or [])
+        if isinstance(item, dict) and isinstance(item.get("render"), dict)
+        and str(item["render"].get("kind") or "") == "module"
+    } - {""})
+    module_sources = read_module_sources(skill.skill_dir, *entries) if entries else {}
 
     # Per-kind: the descriptor validator, and the descriptor field carrying the
     # registry key (None = the child's own "key" field, for the UI kinds, which
@@ -79,6 +92,7 @@ def _stage_out_of_process_surfaces(
                 api._stage_surface_locked(
                     live, staged, key, _proxy(item) if key_field else item, label,
                 )
+        api._staged.module_sources.update(module_sources)
 
 
 def _validate_child_catalog_namespace(skill_name: str, surface_kind: str, value: str) -> None:
@@ -136,7 +150,7 @@ def _validate_child_ui_descriptor(skill_name: str, item: Dict[str, Any]) -> Dict
     _validate_child_catalog_namespace(skill_name, "ui tab", key)
     if not isinstance(item.get("render", {}), dict):
         raise ExtensionRegistrationError(f"out-of-process ui tab {key!r} render must be an object")
-    render = _validate_ui_render(dict(item.get("render") or {}))
+    render = _validate_runtime_ui_render(dict(item.get("render") or {}))
     item["render"] = render
     span = _widget_span_from_render(render)
     item["span"] = span

@@ -356,7 +356,7 @@ def test_explicit_settings_mapping_is_authoritative(monkeypatch, model, settings
             "CLAUDE_CODE_MODEL": "claude-name-only",
         }, "anthropic::light"),
         ("cloudru", {}, "cloudru::zai-org/GLM-4.7"),
-        ("openrouter", {"CLAUDE_AGENT_SDK_MODEL": "opus"}, "google/gemini-3.7-flash"),
+        ("openrouter", {"CLAUDE_AGENT_SDK_MODEL": "opus"}, "google/gemini-3.8-flash"),
         ("openai-compatible", {
             "OUROBOROS_MODEL_FALLBACKS": "openai::other,openai-compatible::chosen",
         }, "openai-compatible::chosen"),
@@ -385,7 +385,7 @@ def test_catalog_is_used_only_for_compatible_discovery(monkeypatch):
         "openrouter", {"OPENROUTER_API_KEY": "key"},
     ) == {"ok": True}
     assert discoveries == []
-    assert probes == ["google/gemini-3.7-flash"]
+    assert probes == ["google/gemini-3.8-flash"]
     assert provider_api._run_provider_test_with_settings("openai-compatible", {
         "OPENAI_COMPATIBLE_BASE_URL": "https://compat.example/v1",
     }) == {"ok": True}
@@ -699,7 +699,7 @@ def test_response_log_and_accounting_expose_only_controlled_error(
 def test_provider_test_registry_is_derived_from_provider_defaults():
     assert provider_api._PROVIDER_TEST_KNOWN_IDS == {
         "openrouter", "openai", "anthropic", "cloudru", "gigachat", "minimax",
-        "openai-compatible",
+        "deepseek", "openai-compatible",
     }
     assert provider_api._PROVIDER_TEST_OVERRIDE_KEYS == provider_api.ALL_PROVIDER_CREDENTIAL_KEYS
 

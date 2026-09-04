@@ -793,7 +793,7 @@ def test_deadline_reserve_writer_and_reader_move_together(monkeypatch, tmp_path)
 
     monkeypatch.setattr(loop_mod, "get_task_review_mode", lambda: "required")
     monkeypatch.setattr(loop_mod, "get_review_enforcement", lambda: "blocking")
-    monkeypatch.setattr(rs, "reviewer_slots", lambda **_k: [object()])
+    monkeypatch.setattr(rs, "triad_delivery_slots", lambda **_k: [object()])
     monkeypatch.setenv("OUROBOROS_FINALIZATION_GRACE_SEC", "120")
     now = datetime.now(timezone.utc)
     ctx = SimpleNamespace(

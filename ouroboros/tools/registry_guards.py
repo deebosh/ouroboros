@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from ouroboros.artifacts import task_artifact_dir_path, task_id_for_artifacts
 from ouroboros.tools.tool_result import ToolResult
+from ouroboros.tools.write_shape import _no_deliverables_decision, _workspace_write_candidates
 
 if TYPE_CHECKING:  # annotation-only imports (inert at runtime)
     from ouroboros.contracts.task_constraint import TaskConstraint
@@ -1115,7 +1116,7 @@ def _workspace_shell_write_block(
     raw_cmd: Any,
     cmd_path_lower: str,
     explicit_write_targets: list[str],
-    write_target_argvs: list[list[str]],
+    target_rows: list,
     executable_path_tokens: set[str],
     runtime_mode: str,
     acting_subagent: bool,
@@ -1228,7 +1229,7 @@ def _workspace_shell_write_block(
     if direct_target_block := _registry().direct_deliverable_target_block(
         self._ctx,
         work_dir,
-        write_target_argvs,
+        [list(row[0]) for row in target_rows],
         deliverables_root_physical,
         _deliverables_target_decision,
     ):
@@ -1275,15 +1276,18 @@ def _workspace_shell_write_block(
             for text in allowed_texts
         ):
             return _workspace_write_block_runtime_result(root_path)
-    path_tokens = list(_registry().shell_argv_with_path_tokens(raw_cmd))
-    path_tokens.extend(
-        token
-        for token in explicit_write_targets
-        if token and token not in path_tokens
-    )
-    for token in path_tokens:
-        token_text = str(token)
-        if token_text in executable_path_tokens and token_text not in explicit_write_targets:
+    # Deliverables is a TARGET policy: a merely mentioned path takes no
+    # Deliverables decision, while every candidate keeps the
+    # protected-runtime-root scans below.
+    row_cwds = _registry().sequential_effective_cwds(target_rows, work_dir)
+    for token_text, is_write, row_index in _workspace_write_candidates(
+        target_rows, explicit_write_targets, raw_cmd,
+    ):
+        candidate_cwd = row_cwds[row_index] if 0 <= row_index < len(row_cwds) else work_dir
+        decide_deliverables = (
+            _deliverables_target_decision if is_write else _no_deliverables_decision
+        )
+        if token_text in executable_path_tokens and not is_write:
             continue
         candidates = [token_text] if _registry().is_absolute_path_text(token_text) else []
         if token_text.startswith(("./", "../")):
@@ -1306,7 +1310,7 @@ def _workspace_shell_write_block(
                 mapped_executor_lexical = _executor_backend_candidate_path(self._ctx, candidate)
                 if mapped_executor_lexical is not None:
                     mapped_executor = mapped_executor_lexical.resolve(strict=False)
-                    deliverables_decision = _deliverables_target_decision(mapped_executor_lexical)
+                    deliverables_decision = decide_deliverables(mapped_executor_lexical)
                     if deliverables_decision is not None:
                         if deliverables_decision:
                             continue
@@ -1346,7 +1350,7 @@ def _workspace_shell_write_block(
                     # Keep the pre-resolution spelling so a symlink child
                     # cannot resolve into another allowed root and bypass
                     # the Deliverables policy.
-                    deliverables_decision = _deliverables_target_decision(pathlib.Path(candidate))
+                    deliverables_decision = decide_deliverables(pathlib.Path(candidate))
                     if deliverables_decision is not None:
                         if deliverables_decision:
                             continue
@@ -1361,10 +1365,10 @@ def _workspace_shell_write_block(
                             return _workspace_write_block_runtime_result(resolved)
                         except Exception:
                             pass
-                    if not pro_workspace_passthrough:
+                    if is_write and not pro_workspace_passthrough:
                         return _workspace_write_block_outside_root_result(resolved, work_dir)
                     continue
-                deliverables_decision = _deliverables_target_decision(pathlib.Path(candidate))
+                deliverables_decision = decide_deliverables(pathlib.Path(candidate))
                 if deliverables_decision is not None:
                     if deliverables_decision:
                         continue
@@ -1376,15 +1380,15 @@ def _workspace_shell_write_block(
                 for protected_path in protected_paths:
                     if _registry().path_text_is_inside(candidate, protected_path):
                         return _workspace_write_block_runtime_result(candidate)
-                if not pro_workspace_passthrough:
+                if is_write and not pro_workspace_passthrough:
                     return _workspace_write_block_outside_root_result(candidate, work_dir)
                 continue
-            resolved = (work_dir / pathlib.Path(candidate)).resolve(strict=False)
+            resolved = (candidate_cwd / pathlib.Path(candidate)).resolve(strict=False)
             # The lexical relative spelling is authoritative for detecting
             # a Deliverables-origin target; the helper then canonicalizes
             # it and rejects symlink escapes.
-            deliverables_decision = _deliverables_target_decision(
-                work_dir / pathlib.Path(candidate)
+            deliverables_decision = decide_deliverables(
+                candidate_cwd / pathlib.Path(candidate)
             )
             if deliverables_decision is not None:
                 if deliverables_decision:
@@ -1400,7 +1404,7 @@ def _workspace_shell_write_block(
                     return _workspace_write_block_runtime_result(resolved)
                 except Exception:
                     pass
-            if not pro_workspace_passthrough:
+            if is_write and not pro_workspace_passthrough:
                 return _workspace_write_block_outside_root_result(resolved, work_dir)
     return None
 

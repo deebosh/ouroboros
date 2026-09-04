@@ -8,7 +8,7 @@ import {
     projectCollapsedActivity,
 } from '../modules/chat.js';
 import { summarizeChatLiveEvent } from '../modules/log_events.js';
-import { plainActivityText } from '../modules/chat_activity.js';
+import { bindContentButton, plainActivityText, selectionInside, subagentIdentityTitle, subagentTwin } from '../modules/chat_activity.js';
 
 test('named root card shows the latest activity headline under the coined title', () => {
     assert.equal(projectCollapsedActivity({
@@ -139,7 +139,18 @@ test('subagent projection keeps identity, compact facts and complete disclosure'
         write_surface: 'workspace',
         status: 'running',
     });
-    assert.match(summary.headline, /researcher · claude-fable-5 \(child123\) — Working/);
+    // Identity only: the status lives in the chip and the id shows only for twins.
+    assert.equal(summary.headline, 'researcher · claude-fable-5');
+    // A roleless child is `Subagent · model`: the id is a render-time twin tag, never identity.
+    assert.equal(summarizeChatLiveEvent({
+        type: 'send_message', is_progress: true, delegation_role: 'subagent',
+        subagent_task_id: 'child987654', parent_task_id: 'parent1', model: 'openai/gpt-5.6-sol',
+        subagent_event: 'running', content: 'x', status: 'running',
+    }).headline, 'Subagent · gpt-5.6-sol');
+    // chat.js writes the child title from the lineage map; it must read like the reducer's headline.
+    assert.equal(subagentIdentityTitle({ role: 'researcher', model: 'anthropic/claude-fable-5' }), 'researcher · claude-fable-5');
+    assert.equal(subagentIdentityTitle({ role: '', model: 'openai::gpt-5.6-sol' }), 'Subagent · gpt-5.6-sol');
+    assert.equal(subagentIdentityTitle({ role: 'planner', model: '' }), 'planner');
     assert.ok(summary.activityPreview.length <= COLLAPSED_ACTIVITY_MAX);
     assert.match(summary.fullBody, /UNIQUE_CHILD_TAIL$/);
     assert.deepEqual(summary.meta, ['write=workspace', 'status=running']);
@@ -152,8 +163,60 @@ test('the collapsed activity line is plain text: the renderer\'s markdown invent
     // preferred to a leaked marker).
     assert.equal(plainActivityText('**Planning a network update** I need `git fetch`'),
         'Planning a network update I need git fetch');
-    assert.equal(plainActivityText('### Title\n- one\n- two [link](http://x)'), 'Title\none\ntwo link');
+    // A heading keeps ' — ' before the text under it (any number of blank lines);
+    // a heading with nothing under it is just its text.
+    assert.equal(plainActivityText('### Title\n- one\n- two [link](http://x)'), 'Title —\none\ntwo link');
+    assert.equal(plainActivityText('## summary\n\nCursor Grok confirmed'), 'summary —\n\nCursor Grok confirmed');
+    assert.equal(plainActivityText('## Only'), 'Only');
+    assert.equal(plainActivityText('## Trailing   \nnext'), 'Trailing —\nnext');
+    // Continuation may be indented, come after whitespace-only lines, or use CRLF.
+    assert.equal(plainActivityText('## summary\r\ncontinued'), 'summary —\ncontinued');
+    assert.equal(plainActivityText('## summary\n   continued'), 'summary —\n   continued');
+    assert.equal(plainActivityText('## A\n   \nB'), 'A —\n\nB');
+    // A marker-led line the renderer treats as prose (over MARKDOWN_HEADING_MAX_CHARS)
+    // loses its markers but gets no separator.
+    const prose = 'x'.repeat(85);
+    assert.equal(plainActivityText(`## ${prose}\nnext`), `${prose}\nnext`);
+    // A `#` line inside a fence is code: no separator, and its markers stay.
+    assert.equal(plainActivityText('```md\n## not a heading\n```'), '## not a heading');
+    assert.equal(plainActivityText('```sh\n# comment\nls -la\n```\nafter'), '# comment\nls -la\n\nafter');
+    // A heading that already ends in a dash or colon gets no second separator.
+    assert.equal(plainActivityText('## summary —\nnext'), 'summary —\nnext');
+    assert.equal(plainActivityText('## Steps:\nnext'), 'Steps:\nnext');
+    assert.equal(plainActivityText('## **Steps:**\nnext'), 'Steps:\nnext');
+    const styled = summarizeChatLiveEvent({ is_progress: true, content: '## **Steps:**\nnext', task_id: 'p3', chat_id: 1 });
+    assert.equal(boundActivityPreview(styled.headline), 'Steps: next');
+    // Typed shell text is not markdown: a `# comment` in a failed command's compact
+    // diagnostic keeps its `#` and gets no separator.
+    const failed = summarizeChatLiveEvent({ type: 'tool_call_finished', is_error: true, status: 'non_zero_exit', exit_code: 1,
+        args: { cmd: '# explain\nfalse' }, task_id: 'p4', chat_id: 1 });
+    assert.ok(failed.body.includes('Command: # explain false'), failed.body);
+    assert.ok(!failed.body.includes(' —'), failed.body);
+    // Linear on hostile whitespace: a 40k-space run inside a marker line.
+    const started = Date.now();
+    plainActivityText(`# a${' '.repeat(40000)}b\nnext`);
+    assert.ok(Date.now() - started < 500, 'heading projection must stay linear');
+    assert.equal(boundActivityPreview('## summary\n\nCursor Grok confirmed the skew'), 'summary — Cursor Grok confirmed the skew');
+    // The live preview path: the reducer collapses newlines in describeText, so the
+    // heading rule must have run before that — a non-leading heading keeps no marker.
+    const live = summarizeChatLiveEvent({ is_progress: true, content: 'text\n## Second\nbeta', task_id: 'p1', chat_id: 1 });
+    assert.equal(live.headline, 'text Second — beta');
+    assert.equal(boundActivityPreview(live.headline), 'text Second — beta');
+    // A fenced `##` line — with text inside and after the fence — stays code on the
+    // live path too: markers kept, no separator (the fence itself collapses to the
+    // renderer's code-span remnant, which is not this rule's contract).
+    // A heading right before an UNCLOSED opener is followed by text (the opener is text).
+    const before = summarizeChatLiveEvent({ is_progress: true, content: '## Title\n```md\nmore', task_id: 'p5', chat_id: 1 });
+    assert.equal(boundActivityPreview(before.headline), 'Title — `md more');
+    for (const content of ['```md\n## code\n```\nafter', '```md\n## not a heading\nnext\n```', '   ```md\n## code\n```\nafter', '  ```md\n## code\n  ```\nafter', 'prefix ```md\n## code\n```\nafter']) {
+        const fenced = summarizeChatLiveEvent({ is_progress: true, content, task_id: 'p2', chat_id: 1 });
+        for (const text of [fenced.headline, boundActivityPreview(fenced.headline), plainActivityText(content)]) {
+            assert.ok(text.includes('## code') || text.includes('## not a heading'), text);
+            assert.ok(!text.includes(' —'), text);
+        }
+    }
     assert.equal(plainActivityText('~~old~~ *new*'), 'old new');
+    assert.equal(plainActivityText('#### Deep\n``x → y`` tail'), 'Deep —\nx → y tail');
     assert.equal(plainActivityText('```js\nlet a = 1;\n```'), 'let a = 1;');
     assert.equal(boundActivityPreview('| a | b |\n|---|---|\n| 1 | 2 |'), 'a b 1 2');
     // Markers-only text keeps its source: an empty projection would flip the
@@ -165,4 +228,63 @@ test('the collapsed activity line is plain text: the renderer\'s markdown invent
     assert.equal(plainActivityText(''), '');
     // Composition: the bound preview is built on the plain projection.
     assert.equal(boundActivityPreview('  **Reading**\n  the   ledger  '), 'Reading the ledger');
+});
+
+test('twins are two children of one parent with the same role and model', () => {
+    const children = new Map([
+        ['a', { parentId: 'p', role: 'scout', model: 'gemini-3.6-flash' }],
+        ['b', { parentId: 'p', role: 'scout', model: 'gemini-3.6-flash' }],
+        ['c', { parentId: 'p', role: 'reviewer', model: 'gemini-3.6-flash' }],
+        ['d', { parentId: 'q', role: 'scout', model: 'gemini-3.6-flash' }],
+    ]);
+    assert.equal(subagentTwin(children, 'a'), true);
+    assert.equal(subagentTwin(children, 'b'), true);
+    assert.equal(subagentTwin(children, 'c'), false);
+    assert.equal(subagentTwin(children, 'd'), false);
+    assert.equal(subagentTwin(children, 'missing'), false);
+    // The collision key is the DISPLAYED identity: equivalent model spellings and the
+    // roleless fallback collide exactly when the headlines read the same.
+    const spelled = new Map([
+        ['e', { parentId: 'p', role: 'scout', model: 'openai/gpt-5.6-sol' }],
+        ['f', { parentId: 'p', role: 'scout', model: 'openai::gpt-5.6-sol' }],
+        ['g', { parentId: 'p', role: '', model: 'gpt-5.6-sol' }],
+        ['h', { parentId: 'p', role: 'Subagent', model: 'gpt-5.6-sol' }],
+    ]);
+    assert.equal(subagentTwin(spelled, 'e'), true);
+    assert.equal(subagentTwin(spelled, 'f'), true);
+    assert.equal(subagentTwin(spelled, 'g'), true);
+    assert.equal(subagentTwin(spelled, 'h'), true);
+});
+
+test('a selection inside the surface means the reader is copying, not clicking', () => {
+    const inside = {}; const outside = {};
+    const el = { contains: (node) => node === inside };
+    assert.equal(selectionInside(el, { isCollapsed: false, anchorNode: inside }), true);
+    assert.equal(selectionInside(el, { isCollapsed: true, anchorNode: inside }), false);
+    assert.equal(selectionInside(el, { isCollapsed: false, anchorNode: outside }), false);
+    assert.equal(selectionInside(el, null), false);
+});
+
+test('a content button toggles on click and keyboard, but not on a selecting drag', () => {
+    const handlers = {}; let clicks = 0; let activated = 0;
+    const inside = {};
+    const el = {
+        addEventListener: (type, fn) => { handlers[type] = fn; },
+        click: () => { clicks += 1; handlers.click({ detail: 0 }); },
+        contains: (node) => node === inside,
+    };
+    bindContentButton(el, () => { activated += 1; });
+    const saved = globalThis.getSelection;
+    globalThis.getSelection = () => ({ isCollapsed: false, anchorNode: inside });
+    handlers.click({ detail: 1 });
+    assert.equal(activated, 0, 'a pointer click after a selecting drag is a copy, not a toggle');
+    globalThis.getSelection = () => ({ isCollapsed: true, anchorNode: inside });
+    handlers.click({ detail: 1 });
+    assert.equal(activated, 1);
+    let prevented = 0;
+    handlers.keydown({ key: 'Enter', preventDefault: () => { prevented += 1; } });
+    handlers.keydown({ key: ' ', preventDefault: () => { prevented += 1; } });
+    handlers.keydown({ key: 'a', preventDefault: () => { prevented += 1; } });
+    assert.deepEqual([clicks, activated, prevented], [2, 3, 2]);
+    globalThis.getSelection = saved;
 });

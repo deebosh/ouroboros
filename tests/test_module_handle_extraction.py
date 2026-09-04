@@ -94,7 +94,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_ensure_reaper_started", "_has_live_descendant", "_has_pending_descendant",
         "_is_descendant_of", "_queue_lock", "_reap_queue",
         "_request_finalization_grace", "_subtree_progressing", "_task_deadline_ts",
-        "_task_drive_for_task", "get_per_call_timeout_ceiling_sec",
+        "_task_drive_for_task", "coerce_chat_identity", "get_per_call_timeout_ceiling_sec",
         "get_task_abs_ceiling_sec", "get_task_idle_timeout_sec", "load_state",
         "persist_queue_snapshot",
     })),
@@ -285,18 +285,25 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_task_acceptance_owner_generation_changed", "_task_acceptance_subtree_snapshot",
         "get_review_enforcement", "get_task_review_mode",
     })),
+    # The P6 wrap-up rail (upstream d4fd933c/8bbdac50) prices the forced prompt
+    # here, so the budget leaf now reads the forced-finalization prompt tail,
+    # its preparer and the server-web predicate through the handle too.
     "ouroboros/loop_budget.py": ("ouroboros/loop.py", "_loop", frozenset({
         "DeliveryCandidate", "_CHILD_ABSORPTION_HOLD_CONTROL",
-        "_DELIVERY_HOLD_CONTROLS", "_SKILL_ACTION_HOLD_CONTROL",
-        "_TREE_ACCOUNTING_MAX_STALE_SEC", "_arm_delivery_control",
+        "_DELIVERY_HOLD_CONTROLS", "_FORCED_BEST_EFFORT_TAIL",
+        "_SKILL_ACTION_HOLD_CONTROL",
+        "_TREE_ACCOUNTING_MAX_STALE_SEC", "_append_or_merge_user_message",
+        "_arm_delivery_control",
         "_compose_delivery_suffix", "_current_delivery_candidate",
         "_delivery_evidence_state", "_emit_checkpoint_event",
         "_finalize_forced_services", "_finalize_task_services",
         "_force_plan_disclosure", "_forced_fallback_result",
         "_forced_final_answer", "_forced_swarm_router_result",
         "_hold_delivery_for_skill_action", "_live_delivery_candidate",
-        "_loop_tree_accounting", "_publish_delivery_candidate",
-        "_record_forced_finalization", "_undispositioned_children",
+        "_loop_tree_accounting", "_prepare_forced_prompt",
+        "_publish_delivery_candidate",
+        "_record_forced_finalization", "_server_web_allowed_by_task",
+        "_undispositioned_children",
     })),
     "ouroboros/loop_delivery.py": ("ouroboros/loop.py", "_loop", frozenset({
         "DeliveryCandidate", "_LoopExitContext",
@@ -335,11 +342,17 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_live_delivery_candidate", "_load_direct_child_results",
         "_merge_finalization_trace", "_resolve_forced_delivery_control_body",
         "_project_child_result_dispositions", "_publish_delivery_candidate",
+        "_prepare_forced_prompt",
         "_record_forced_acceptance_bypass", "_record_forced_finalization",
         "_replace_delivery_candidate", "_run_task_acceptance_review_once",
-        "_service_finalization_evidence", "_set_acceptance_decision",
+        "_server_web_allowed_by_task",
+        "_service_finalization_evidence",
         "_supersede_task_acceptance_for_owner_followup",
         "_swarm_handoff_attempt", "call_llm_with_retry",
+        # Upstream e10b3cf3 replaced this leaf's inline dangling-revision write
+        # with the acceptance leaf's `terminalize_dangling_revision`, so the raw
+        # decision writer is no longer read here.
+        "terminalize_dangling_revision",
     })),
     "ouroboros/loop_messages.py": ("ouroboros/loop.py", "_loop", frozenset({
         "_record_owner_directive",
@@ -400,7 +413,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     "ouroboros/tools/review_multi_model.py": ("ouroboros/tools/review.py", "_rev", frozenset({
         "LLMClient", "REVIEW_JSON_ARRAY_CONTRACT", "TYPED_FAILURE_FACT_KEYS", "_REPO_ROOT",
         "_cfg", "_parse_model_response", "_review_operation_fields",
-        "_review_query_error_payload", "emit_review_usage", "load_governance_doc",
+        "_owner_deadline_at", "_review_query_error_payload", "load_governance_doc",
         "review_drive_root", "slot_id_for_row", "truncate_review_artifact",
     })),
     "ouroboros/tools/review_prompt_text.py": ("ouroboros/tools/review_helpers.py", "_rh", frozenset({

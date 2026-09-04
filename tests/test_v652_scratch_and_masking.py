@@ -191,14 +191,38 @@ def test_run_script_success_keeps_payload_alongside_undeclared_nudge(tmp_path, m
     nudge must APPEND (as the error path and run_command already do)."""
     registry, _repo, _data, desktop = _reg(tmp_path, monkeypatch)
     target = desktop / "undeclared_deliverable.txt"
-    result = registry.execute(
+    published = registry.execute_result(
         "run_script",
         {"script": f"open({str(target)!r}, 'w').write('deliverable')\nprint('THE ANSWER IS 42')",
          "interpreter": "python3", "cwd": str(desktop)},
     )
+    result = published.text
     assert "ARTIFACT_OUTPUT_UNDECLARED" in result, result  # the nudge still fires
     assert "THE ANSWER IS 42" in result, result            # ...without eating stdout
     assert "exit_code=0" in result, result                 # ...or the exit description
+    # v7 typed publication (the retired text-envelope `result_meta` and the
+    # retired loop classifier pair are gone): the nudge is the typed
+    # policy-denial code on the SAME published result, blocked, not ok.
+    assert published.code == "ARTIFACT_OUTPUT_UNDECLARED"
+    assert published.status == "blocked"
+    assert published.meta["exit_code"] == 0
+
+
+def test_undeclared_output_audit_detects_clobber_redirect(tmp_path, monkeypatch):
+    from ouroboros.tools.shell_audit import _mentioned_user_file_outputs_without_declaration
+
+    registry, _repo, _data, desktop = _reg(tmp_path, monkeypatch)
+    existing = desktop / "existing"
+    existing.mkdir()
+    target = desktop / "clobber-redirect.txt"
+    target.write_text("")
+    mentioned = _mentioned_user_file_outputs_without_declaration(
+        registry._ctx,
+        ["mkdir", "-p", str(existing), ">|", str(target)],
+        None,
+        cwd=desktop,
+    )
+    assert str(target) in mentioned
 
 
 def test_run_script_body_audit_runs_on_failure_path(tmp_path, monkeypatch):
@@ -349,7 +373,12 @@ def test_check_has_exit_masking_detection():
 
     assert _check_has_exit_masking(["sh", "-c", "node t.js -f 2>&1 | tail -5"])[0] is True
     assert _check_has_exit_masking(["bash", "-c", "make test || true"])[0] is True
-    assert _check_has_exit_masking(["sh", "-c", "run.sh 2>/dev/null"])[0] is True
+    assert _check_has_exit_masking(["sh", "-c", "run.sh 2>/dev/null"])[0] is False
+    assert _check_has_exit_masking(["sh", "-c", "make test ; true"])[0] is True
+    assert _check_has_exit_masking(["sh", "-c", "make test && true"])[0] is False
+    assert _check_has_exit_masking(["sh", "-c", "make test ; exit 0"])[0] is True
+    assert _check_has_exit_masking(["sh", "-c", "make test && exit 0"])[0] is False
+    assert _check_has_exit_masking(["sh", "-c", "make test || exit 0"])[0] is True
     assert _check_has_exit_masking(["sh", "-c", "pytest -q"])[0] is False
     assert _check_has_exit_masking(["go", "test", "./..."])[0] is False  # list argv, no shell
     # a QUOTED `| tail` literal (e.g. a grep pattern) must NOT be flagged (shlex token scan)

@@ -155,7 +155,10 @@ D20 = "Presence"
 "ouroboros/gateway/claudexor_quota.py" = "D11"
 "ouroboros/gateway/contracts.py" = "D11"
 "ouroboros/gateway/control.py" = "D11"
+"ouroboros/gateway/cost_breakdown.py" = "D11"
 "ouroboros/gateway/extensions.py" = "D11"
+"ouroboros/gateway/widgets.py" = "D11"
+"ouroboros/gateway/extension_receipts.py" = "D11"
 "ouroboros/gateway/files.py" = "D11"
 "ouroboros/gateway/history.py" = "D11"
 "ouroboros/gateway/host_service.py" = "D11"
@@ -298,6 +301,7 @@ D20 = "Presence"
 "ouroboros/review_native_episode.py" = "D06"
 "ouroboros/review_owner_custody.py" = "D06"
 "ouroboros/review_projection.py" = "D06"
+"ouroboros/review_status_projection.py" = "D06"
 "ouroboros/review_records.py" = "D06"
 "ouroboros/review_session_custody.py" = "D06"
 "ouroboros/review_session_usage.py" = "D06"
@@ -396,6 +400,7 @@ D20 = "Presence"
 "ouroboros/tools/core.py" = "D05"
 "ouroboros/tools/core_artifacts.py" = "D05"
 "ouroboros/tools/core_file_tools.py" = "D05"
+"ouroboros/tools/core_secret_paths.py" = "D05"
 "ouroboros/tools/delegate.py" = "D07"
 "ouroboros/tools/delegate_terminal_evidence.py" = "D07"
 "ouroboros/tools/delegate_integration.py" = "D07"
@@ -481,6 +486,7 @@ D20 = "Presence"
 "ouroboros/triad_review.py" = "D06"
 "ouroboros/update_channels.py" = "D12"
 "ouroboros/usage_accounting.py" = "D16"
+"ouroboros/_usage_cache_splits.py" = "D16"
 "ouroboros/usage_compaction.py" = "D16"
 "ouroboros/usage_legacy_import.py" = "D16"
 "ouroboros/usage_ledger.py" = "D16"
@@ -639,6 +645,7 @@ allowed = [
   "D06->D02",
   "D06->D03",
   "D06->D04",
+  "D06->D07",
   "D06->D10",
   "D06->D12",
   "D06->D13",
@@ -786,7 +793,6 @@ lazy_only = [
   "D05->D09",
   "D05->D14",
   "D06->D05",
-  "D06->D07",
   "D06->D08",
   "D06->D09",
   "D06->D15",
@@ -838,6 +844,7 @@ lazy_only = [
   "D17->D02",
   "D17->D03",
   "D17->D05",
+  "D17->D06",
   "D17->D07",
   "D17->D09",
   "D17->D12",

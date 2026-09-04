@@ -430,6 +430,247 @@ def test_review_usage_preserves_unknown_cost_as_null():
     assert event["usage"]["cost_known"] is False
 
 
+def test_one_llm_usage_row_per_physical_reviewer_call(tmp_path):
+    """A wave of N reviewer slots emits exactly N rows, each naming its slot."""
+
+    class Ctx:
+        task_id = "task-wave"
+        pending_events = []
+
+    ctx = Ctx()
+    run_review_request(
+        ReviewRequest(surface="multi_model_review", goal="review claim", task_id="task-wave"),
+        slots=[
+            ReviewSlot(slot_id="slot_a", model="same/model"),
+            ReviewSlot(slot_id="slot_b", model="same/model"),
+            ReviewSlot(slot_id="slot_c", model="same/model"),
+        ],
+        drive_root=tmp_path,
+        llm=FakeLLM(),
+        usage_ctx=ctx,
+    )
+
+    usage_events = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(usage_events) == 3
+    assert {event["slot_id"] for event in usage_events} == {"slot_a", "slot_b", "slot_c"}
+    assert {event["source"] for event in usage_events} == {"review_substrate:multi_model_review"}
+
+
+def test_format_repair_emits_one_usage_row_per_send_without_aggregate(tmp_path):
+    class RepairLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {"content": "malformed"}, {"prompt_tokens": 3, "ledger_attempt_ids": ["a1"]}
+            return {"content": "[]"}, {"prompt_tokens": 4, "ledger_attempt_ids": ["a2"]}
+
+    ctx = SimpleNamespace(task_id="repair-usage", event_queue=None, pending_events=[])
+    llm = RepairLLM()
+    run_review_request(
+        ReviewRequest(surface="task_acceptance", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=llm, usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert llm.calls == 2
+    assert [row["ledger_attempt_ids"] for row in rows] == [["a1"], ["a2"]]
+
+
+def test_failed_physical_reviewer_send_still_emits_its_usage_row(tmp_path):
+    from ouroboros.usage_accounting import PhysicalAttemptCapture
+
+    class FailedLLM:
+        def chat(self, **_kwargs):
+            error = RuntimeError("provider failed after dispatch")
+            error.physical_attempt_capture = PhysicalAttemptCapture(
+                attempt_id="failed-a1", model="same/model", provider="openrouter",
+                state="unresolved", candidate_measurement_kind="opaque",
+            )
+            raise error
+
+    ctx = SimpleNamespace(task_id="failed-usage", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="plan_review", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=FailedLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(rows) == 1
+    assert rows[0]["ledger_attempt_ids"] == ["failed-a1"]
+
+
+def test_terminal_failed_reviewer_retry_emits_one_row_per_dispatched_attempt(tmp_path):
+    from ouroboros.usage_accounting import (
+        AttemptRequest, capture_attempt_ids, execute_physical_attempt,
+    )
+
+    class FailedRetryLLM:
+        def chat(self, **_kwargs):
+            with capture_attempt_ids():
+                for attempt in range(2):
+                    try:
+                        execute_physical_attempt(AttemptRequest(
+                            model="same/model", provider="openrouter",
+                            reservation_usd=0.0,
+                        ), lambda: (_ for _ in ()).throw(RuntimeError(f"failed-{attempt}")))
+                    except RuntimeError:
+                        if attempt:
+                            raise
+
+    ctx = SimpleNamespace(task_id="failed-retry-usage", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="plan_review", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=FailedRetryLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(rows) == 2
+    assert all(len(row["ledger_attempt_ids"]) == 1 for row in rows)
+    assert rows[0]["ledger_attempt_ids"] != rows[1]["ledger_attempt_ids"]
+
+
+def test_terminal_budget_refusal_keeps_prior_dispatched_retry_usage(tmp_path):
+    from ouroboros.usage_accounting import (
+        AttemptRequest, capture_attempt_ids, execute_physical_attempt,
+    )
+
+    class BudgetStopsRetryLLM:
+        def chat(self, **_kwargs):
+            request = AttemptRequest(
+                model="same/model", provider="openrouter",
+                reservation_usd=1.0, global_limit_usd=1.0,
+            )
+            with capture_attempt_ids():
+                try:
+                    execute_physical_attempt(
+                        request, lambda: (_ for _ in ()).throw(RuntimeError("dispatched")),
+                    )
+                except RuntimeError:
+                    pass
+                execute_physical_attempt(request, lambda: None)
+
+    ctx = SimpleNamespace(task_id="budget-refusal-usage", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="task_acceptance", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=BudgetStopsRetryLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(rows) == 1
+    assert len(rows[0]["ledger_attempt_ids"]) == 1
+
+
+def test_terminal_attempt_limit_keeps_prior_send_but_excludes_released_hold(tmp_path):
+    from ouroboros.usage_accounting import (
+        AttemptRequest, capture_attempt_ids, execute_physical_attempt,
+        physical_attempt_limit,
+    )
+
+    class RailStopsRetryLLM:
+        def chat(self, **_kwargs):
+            request = AttemptRequest(
+                model="same/model", provider="openrouter", reservation_usd=0.0,
+            )
+            with capture_attempt_ids(), physical_attempt_limit(1):
+                try:
+                    execute_physical_attempt(
+                        request, lambda: (_ for _ in ()).throw(RuntimeError("dispatched")),
+                    )
+                except RuntimeError:
+                    pass
+                execute_physical_attempt(request, lambda: None)
+
+    ctx = SimpleNamespace(task_id="rail-refusal-usage", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="task_acceptance", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=RailStopsRetryLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(rows) == 1
+    assert len(rows[0]["ledger_attempt_ids"]) == 1
+
+
+def test_internal_reviewer_transport_attempts_each_get_one_usage_row(tmp_path):
+    class RetriedLLM:
+        def chat(self, **_kwargs):
+            return {"content": "[]"}, {
+                "prompt_tokens": 4, "ledger_attempt_ids": ["wire-a1", "wire-a2"],
+            }
+
+    ctx = SimpleNamespace(task_id="wire-retry", event_queue=None, pending_events=[])
+    run_review_request(
+        ReviewRequest(surface="plan_review", goal="review", task_id=ctx.task_id),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path, llm=RetriedLLM(), usage_ctx=ctx,
+    )
+
+    rows = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert [row["ledger_attempt_ids"] for row in rows] == [["wire-a1"], ["wire-a2"]]
+    assert [row["usage"]["prompt_tokens"] for row in rows] == [0, 4]
+
+
+def test_the_single_usage_row_carries_the_reviewer_attribution(tmp_path):
+    """The surviving row is traceable to its wave and slot, not just its task.
+
+    The substrate is the only emitter of a reviewer row, so this row is the
+    whole projection of that reviewer call: it has to carry the same
+    attribution the ledger row does.
+    """
+
+    class Ctx:
+        task_id = "task-attr"
+        pending_events = []
+
+    ctx = Ctx()
+    run_review_request(
+        ReviewRequest(
+            surface="multi_model_review", goal="review claim", task_id="task-attr",
+            usage_attribution={"review_wave_id": "wave-77", "review_skill": "commit_triad"},
+        ),
+        slots=[ReviewSlot(slot_id="slot_a", model="same/model")],
+        drive_root=tmp_path,
+        llm=FakeLLM(),
+        usage_ctx=ctx,
+    )
+
+    usage_events = [event for event in ctx.pending_events if event.get("type") == "llm_usage"]
+    assert len(usage_events) == 1
+    row = usage_events[0]
+    assert row["review_wave_id"] == "wave-77"
+    assert row["review_slot_id"] == "slot_a"
+    assert row["review_skill"] == "commit_triad"
+
+
+def test_session_row_reports_its_own_route_provider_and_model(tmp_path):
+    """A delegated session's own facts outrank an inferred provider."""
+    from ouroboros.tools.review_helpers import emit_review_usage
+
+    ctx = SimpleNamespace(task_id="session-review", pending_events=[])
+    emit_review_usage(
+        ctx,
+        model="slot/requested-model",
+        provider="claudexor",
+        usage={"prompt_tokens": 10, "completion_tokens": 2, "resolved_model": "gpt-5.6-sol"},
+        source="review_substrate:multi_model_review",
+    )
+    api_ctx = SimpleNamespace(task_id="api-review", pending_events=[])
+    emit_review_usage(
+        api_ctx, model="anthropic/claude-test", usage={"prompt_tokens": 10}, source="test",
+    )
+
+    assert ctx.pending_events[0]["provider"] == "claudexor"
+    assert api_ctx.pending_events[0]["provider"] == "openrouter"  # inferred, as before
+
+
 def test_review_substrate_parses_fenced_json_array_findings(tmp_path):
     result = run_review_request(
         ReviewRequest(surface="scope", goal="review diff", task_id="task-json-array"),

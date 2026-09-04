@@ -20,6 +20,7 @@ from ouroboros.tools.tool_result import (
     ToolResult,
     _replace_tool_result,
 )
+from ouroboros.tools.write_shape import _directory_change_argv
 
 from typing import TYPE_CHECKING
 
@@ -423,6 +424,58 @@ def _git_ref_snapshot(repo_dir: pathlib.Path) -> Optional[Dict[str, str]]:
         return None
 
 
+def _lane_writer_targets(raw_cmd: Any) -> tuple[list, list, list[str], set[str]]:
+    """The run_command lane's per-segment writer-target facts, derived ONCE from
+    the raw command: ``(target_rows, write_target_argvs, explicit_write_targets,
+    executable_path_tokens)``. Every guard below consumes these rows rather than
+    re-tokenizing the command (the inline body stays a STRING so its own operator
+    grammar survives — re-tokenizing it with plain shlex once glued ``2>/dev/null;``
+    onto the following command and forged the path ``/dev/null;``)."""
+    # ONE per-segment writer-target SSOT for this lane. The inline body is
+    # carried as a STRING so its own operator grammar survives; re-tokenizing
+    # it with plain shlex glued `2>/dev/null;` onto the following command and
+    # forged the path `/dev/null;` out of a redirection.
+    target_rows = _registry().writer_target_rows(raw_cmd)
+    write_target_argvs = [list(row[0]) for row in target_rows]
+    explicit_write_targets = list(dict.fromkeys(
+        str(token)
+        for row in target_rows
+        for token in row[1]
+        if not _directory_change_argv(row[0])
+        if str(token or "").strip()
+    ))
+    # ``cp source Deliverables/`` (and the equivalent mv/ln form) writes a
+    # child named after the source, while the ordinary writer-target parser
+    # only sees the directory operand. Add those argv-visible child names to
+    # the same target-first policy without attempting to parse inline code,
+    # archive formats, or other deferred Q3 syntax.
+    for row_index, target_argv in enumerate(write_target_argvs):
+        for command, destination, source in _registry().directory_destination_pairs(target_argv):
+            source_name = _registry().directory_destination_child_name(command, target_argv, source)
+            if source_name in {"", ".", ".."}:
+                continue
+            derived = destination.rstrip("/\\") + "/" + source_name
+            row_argv, row_targets, row_inline, row_unprovable = target_rows[row_index]
+            target_rows[row_index] = (
+                row_argv, [*row_targets, derived], row_inline, row_unprovable,
+            )
+    # A located -e/-E/-c inline CODE BODY is not a write target: the
+    # generic fallback reported every non-flag operand of a writer command
+    # (ruby/perl) - code string included - making every one-liner
+    # write-shaped. The light fence and protected lane keep the unfiltered
+    # SSOT (pinned XG-7B3.1); only THIS lane drops the bodies. FILE
+    # operands stay write-suspect (`perl -pi -e s/a/b/ file` rewrites
+    # `file`); literal in-code targets still arrive via inline extraction.
+    inline_code_bodies: set = set()
+    for target_argv in write_target_argvs:
+        inline_code_bodies.update(_registry().interpreter_inline_code([str(t) for t in target_argv]))
+    if inline_code_bodies:
+        explicit_write_targets = [t for t in explicit_write_targets if t not in inline_code_bodies]
+    explicit_write_targets = list(dict.fromkeys(explicit_write_targets))
+    executable_path_tokens = {str(target_argv[0]) for target_argv in write_target_argvs if target_argv}
+    return target_rows, write_target_argvs, explicit_write_targets, executable_path_tokens
+
+
 def _run_shell_safety_check(
     self, args: Dict[str, Any], runtime_mode: str, binding: Any = None,
 ) -> ToolResult | None:
@@ -483,44 +536,13 @@ def _run_shell_safety_check(
         )
     argv_for_write = argv
     argv_executable = pathlib.PurePath(argv_for_write[0]).name.lower().removesuffix(".exe") if argv_for_write else ""
-    write_target_argvs = [argv_for_write] if argv_for_write else []
     inline_argv: list = []
     if argv_executable in {"sh", "bash", "zsh"}:
         inline_cmd = next((str(argv_for_write[idx + 1] or "") for idx, token in enumerate(argv_for_write[1:], start=1) if str(token or "") in {"-c", "--command"} and idx + 1 < len(argv_for_write)), "")
         if not inline_cmd:
             inline_cmd = _registry().shell_command_string(argv_for_write)
         inline_argv = _registry().strip_leading_env_assignments(_registry().unwrap_env_argv(_registry().shell_argv(inline_cmd)))
-        if inline_argv:
-            write_target_argvs.append(inline_argv)
-    explicit_write_targets = list(dict.fromkeys(str(token) for target_argv in write_target_argvs for token in _registry().writer_target_tokens(target_argv) if str(token or "").strip()))
-    # ``cp source Deliverables/`` (and the equivalent mv/ln form) writes a
-    # child named after the source, while the ordinary writer-target parser
-    # only sees the directory operand. Add those argv-visible child names to
-    # the same target-first policy without attempting to parse inline code,
-    # archive formats, or other deferred Q3 syntax.
-    for target_argv in write_target_argvs:
-        for command, destination, source in _registry().directory_destination_pairs(target_argv):
-            source_name = _registry().directory_destination_child_name(command, target_argv, source)
-            if source_name in {"", ".", ".."}:
-                continue
-            explicit_write_targets.append(
-                destination.rstrip("/\\") + "/" + source_name
-            )
-    # A located -e/-E/-c inline CODE BODY is not a write target: the
-    # generic fallback reported every non-flag operand of a writer command
-    # (ruby/perl) - code string included - making every one-liner
-    # write-shaped. The light fence and protected lane keep the unfiltered
-    # SSOT (pinned XG-7B3.1); only THIS lane drops the bodies. FILE
-    # operands stay write-suspect (`perl -pi -e s/a/b/ file` rewrites
-    # `file`); literal in-code targets still arrive via inline extraction.
-    from ouroboros.tools.shell_guards import interpreter_inline_code as _interp_inline_code
-    inline_code_bodies: set = set()
-    for target_argv in write_target_argvs:
-        inline_code_bodies.update(_interp_inline_code([str(t) for t in target_argv]))
-    if inline_code_bodies:
-        explicit_write_targets = [t for t in explicit_write_targets if t not in inline_code_bodies]
-    explicit_write_targets = list(dict.fromkeys(explicit_write_targets))
-    executable_path_tokens = {str(target_argv[0]) for target_argv in write_target_argvs if target_argv}
+    target_rows, write_target_argvs, explicit_write_targets, executable_path_tokens = _lane_writer_targets(raw_cmd)
     # Writer-command membership canonicalizes versioned interpreter spellings to
     # their family (`ruby3.2` is `ruby`), so a versioned basename is exactly as
     # write-suspect as the unversioned one (XG-2R.2).
@@ -547,7 +569,11 @@ def _run_shell_safety_check(
             raw_cmd, argv_for_write, argv_executable, is_pure_read=_is_pure_read_inspection,
         )
     )
-    writeish = coarse_write_shape or bool(explicit_write_targets)
+    writeish = (
+        coarse_write_shape
+        or bool(explicit_write_targets)
+        or any(row[3] for row in target_rows)
+    )
     work_dir = registry_guards._resolved_shell_cwd(self, args, binding)
     if isinstance(work_dir, ToolResult):
         return work_dir
@@ -584,7 +610,7 @@ def _run_shell_safety_check(
             raw_cmd,
             cmd_path_lower,
             explicit_write_targets,
-            write_target_argvs,
+            target_rows,
             executable_path_tokens,
             runtime_mode,
             acting_subagent,

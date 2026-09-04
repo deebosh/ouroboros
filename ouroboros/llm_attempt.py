@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from ouroboros.anthropic_native_custody import is_replayed_native_content
 from ouroboros.context_budget import CONTEXT_OVERFLOW_CODES
+from ouroboros.request_wire_recovery import prepare_wire_payload_for_send
 from ouroboros.transport_custody import is_loopback_base_url
 from ouroboros.usage_accounting import (
     AttemptRequest,
@@ -231,6 +232,14 @@ def _physical_candidate(payload: Dict[str, Any]) -> Dict[str, Any]:
     return candidate
 
 
+def _finalized_physical_candidate(
+    target: Dict[str, Any], payload: Dict[str, Any], api_surface: str,
+) -> Dict[str, Any]:
+    return prepare_wire_payload_for_send(
+        target, _physical_candidate(payload), api_surface=api_surface,
+    )
+
+
 def _candidate_before_dispatch(candidate: Dict[str, Any], request: AttemptRequest):
     """Close over one final candidate without putting it in accounting rows."""
     predicate = current_physical_attempt_predicate()
@@ -339,7 +348,7 @@ class _PayloadCachePolicyMixin:
         Descends one level INTO a block's own ``content`` list: a direct-Anthropic
         ``tool_result`` block nests its blocks (``_anthropic_messages`` builds it from a
         ``role="tool"`` message whose content is a list), so the sealed transcript anchor
-        (``loop.seal_task_transcript``) sits at ``messages[i].content[j].content[k]``.
+        (``context_fit.seal_task_transcript``) sits at ``messages[i].content[j].content[k]``.
         Missing it undercounts the cap and leaves that anchor out of TTL ordering exactly
         on the lane whose provider enforces both. ``tool_result`` is the only nested-content
         shape, and the descent is route-independent because no other payload nests."""

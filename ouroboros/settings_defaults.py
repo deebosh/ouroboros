@@ -23,18 +23,22 @@ SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC = 90
 # provider profiles gives onboarding, runtime defaults, and tests one vocabulary
 # instead of repeating model ids across those surfaces.
 OPENROUTER_DEFAULTS = {
-    "main": "google/gemini-3.7-flash",
+    "main": "google/gemini-3.8-flash",
     "heavy": "",
     "light": "openai/gpt-5.6-luna",
     "vision": "",
     "consciousness": "",
     "fallback": "openai/gpt-5.6-luna",
-    "deep_self_review": "openai/gpt-5.6-sol-pro",
+    # Plain Sol, not the `-pro` routing slug: a pro-mode call bills the prompt
+    # three to four times over (parallel test-time compute), so the density
+    # witness it records can never admit a repository-sized pack, and every
+    # packed review costs that multiple. Same id the direct-OpenAI slot ships.
+    "deep_self_review": "openai/gpt-5.6-sol",
 }
 
 OPENROUTER_REVIEW_DEFAULTS = {
     "triad": (
-        "google/gemini-3.7-flash",
+        "google/gemini-3.8-flash",
         "openai/gpt-5.6-terra",
         "anthropic/claude-opus-5",
     ),
@@ -64,6 +68,7 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "ANTHROPIC_API_KEY": "",
     "MINIMAX_API_KEY": "",
     "MINIMAX_REGION": "",
+    "DEEPSEEK_API_KEY": "",
     "OUROBOROS_NETWORK_PASSWORD": "",
     "OUROBOROS_SERVER_HOST": "127.0.0.1",
     "OUROBOROS_HOST_SERVICE_PORT": 8767,
@@ -199,9 +204,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_ONBOARDING_COMPLETED_AT": "",
     # Pre-commit review enforcement: advisory | blocking
     "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
-    # Native tool-round reviewer episode caps (review_native_episode.py owns
-    # the getters); both fail CLOSED — typed refusal, never compaction/resume.
-    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS": "16",
+    # Native tool-round reviewer episode transcript CEILING (chars); the effective
+    # bound is derived from the reviewer window (review_native_episode.py). No round cap.
     "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS": "900000",
     # Auto-grant reviewed-skill requests by default; grants stay bound to the
     # reviewed content hash and editing a skill still invalidates them.
@@ -258,8 +262,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # wait ceiling is min(configured ceiling, remaining/4); below this floor plan_task SKIPS
     # with a typed reason + telemetry rather than eat the tail of the budget.
     "OUROBOROS_PLAN_TASK_DEADLINE_MIN_SEC": 300,
-    # Acceptance-review budget layer (task_pacing SSOT). The first final review
-    # reserves at least 200s; later passes use max(this floor, 1.5×timing EWMA).
+    # Acceptance-review budget layer (task_pacing SSOT): the configurable
+    # acceptance admission floor, clamped to >=200 s by task_pacing.
     "OUROBOROS_ACCEPTANCE_REVIEW_EST_SEC": 200,
     # Shared paid-review-cycle cap (SSOT + per-gate meaning: ouroboros/review_cycles.py):
     # STRING "N"|"unlimited": plan review, acceptance (passes = cycles - 1), commit gate and skill review (paid cycles per root task / manual snapshot); identical material is never re-reviewed for pay on any gate.
@@ -356,6 +360,7 @@ RETIRED_SETTING_KEYS: tuple[str, ...] = (
     # window deletes it rather than carrying the ghost another minor.
     "OUROBOROS_SOFT_TIMEOUT_SEC",
     "OUROBOROS_HARD_TIMEOUT_SEC",
+    "OUROBOROS_REVIEW_NATIVE_MAX_ROUNDS",  # a ceiling on rounds; bounds are transcript/deadline/ledger
 )
 
 

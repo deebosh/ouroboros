@@ -56,6 +56,22 @@ def test_private_binding_argument_is_rejected_at_public_boundary(tmp_path):
     assert "_resolved_binding" not in result
 
 
+def test_public_unknown_argument_is_named_in_the_refusal(tmp_path):
+    """A refusal that does not name the offending key leaves the caller guessing.
+    A PUBLIC unknown key is named; a private dispatch carrier still is not."""
+    repo = tmp_path / "repo"
+    data = tmp_path / "data"
+    repo.mkdir()
+    data.mkdir()
+    registry = ToolRegistry(repo_dir=repo, drive_root=data)
+
+    read_result = registry.execute("read_file", {"path": "README.md", "description": "x"})
+    assert "unsupported argument(s): description" in read_result, read_result
+
+    list_result = registry.execute("list_files", {"dir": "."})
+    assert "unsupported argument(s): dir" in list_result, list_result
+
+
 def _skill(root: pathlib.Path, location: str, name: str) -> pathlib.Path:
     skill_dir = root / "skills" / location / name
     skill_dir.mkdir(parents=True)

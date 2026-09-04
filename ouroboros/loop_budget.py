@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from ouroboros import task_pacing
 from ouroboros.loop_transport import TransportWaitEpisode, end_episode_budget as _end_episode_budget
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.context_fit import messages_carry_native_images
 from ouroboros.usage_accounting import BudgetExceeded
 
 
@@ -49,18 +50,6 @@ def _check_budget_limits(
     budget_remaining_usd: Optional[float],
     cost_ceiling: Optional["task_pacing.CostCeiling"] = None,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """Return a final-response tuple when budget limits require stopping.
-
-    ``cost_ceiling`` is the typed in-task stop resolved ONCE at loop start
-    (``task_pacing.resolve_cost_ceiling``). Only an ``active`` ceiling stops
-    here; ``exhausted_soft_land`` fires at the round top. The deciding spend
-    is the root subtree's ledger-accounted number when a root cap exists (the
-    fence counts the TREE, not own calls); own cost is the DISCLOSED fallback
-    and diagnostic. Unknown spend never becomes $0. The axes are INDEPENDENT
-    (v6.91): ``budget_remaining_usd`` None only means no finite GLOBAL budget
-    (TOTAL_BUDGET unset — the GAIA-shaped run) and must not silence a live
-    per-task ROOT CAP; with neither, the ceiling resolves ``disabled`` and
-    the whole cost axis stays silent, as before."""
     accumulated_usage = ctx.accumulated_usage
     raw_task_cost = accumulated_usage.get("cost")
     task_cost = float(raw_task_cost) if raw_task_cost is not None else None
@@ -79,9 +68,6 @@ def _check_budget_limits(
                 _loop()._force_plan_disclosure(tool_ctx, trace, forced_reason="budget_exhausted")
                 if tool_ctx is not None else ""
             )
-            # A forced sink like every other: a queued/headless root still
-            # OWED a panel; returning without the record left `not_eligible /
-            # run_count=0` — as if no panel was owed. Pure ledger write.
             _loop()._record_forced_finalization(
                 ctx,
                 trace,
@@ -100,11 +86,6 @@ def _check_budget_limits(
             fallback_text=finish_reason,
             reason_code="budget_exhausted",
         )
-    # The pre-v6.91 per-task soft "[COST NOTE]" is gone: since v6.64.0 the
-    # same settings key hard-fences the whole TREE at the ledger, so an
-    # own-cost note keyed to it could never fire before the fence (proven
-    # live: silent through two tree deaths); v6.56.0 milestones are the nudge.
-
     if cost_ceiling is None or cost_ceiling.state != task_pacing.COST_CEILING_ACTIVE:
         return None
     tree_info = _loop()._loop_tree_accounting(refresh=True, max_age_sec=_loop()._TREE_ACCOUNTING_MAX_STALE_SEC)
@@ -115,6 +96,67 @@ def _check_budget_limits(
         root_cap_usd=cost_ceiling.root_cap_usd,
     )
     ceiling_usd = cost_ceiling.ceiling_usd
+    prompt_estimate = int(accumulated_usage.get("_context_prompt_estimate") or 0)
+    wrapup_fits = None
+    if cost_ceiling.root_cap_usd is not None and deciding is not None and prompt_estimate > 0:
+        finish_reason = task_pacing.wrapup_last_fit_text(deciding, cost_ceiling)
+        forced_prompt = f"[BUDGET LIMIT] {finish_reason} {_loop()._FORCED_BEST_EFFORT_TAIL}"
+        request_args = dict(model=ctx.active_model, prompt_tokens=prompt_estimate,
+                            use_local=ctx.active_use_local)
+        wrapup_args = dict(
+            **request_args, root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding,
+        )
+        wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
+        two_fit = task_pacing.wrapup_reservation_fits(**wrapup_args, reservation_count=2) if wrapup_fits is True else None
+        server_web = _loop()._server_web_allowed_by_task(getattr(getattr(ctx, "tools", None), "_ctx", None))
+        if wrapup_fits is False or two_fit is False or (
+            wrapup_fits is True and messages_carry_native_images(ctx.messages)
+        ):
+            # Pre-screen only: every proxy stop, and every image prompt the proxy
+            # understates, is priced exactly on a COPY of the transcript (no
+            # service finalization) before anything destructive happens.
+            probe_messages = [dict(message) for message in ctx.messages]
+            _loop()._append_or_merge_user_message(probe_messages, forced_prompt)
+            probe = task_pacing.prospective_wrapup_attempt_request(
+                llm=ctx.llm, messages=probe_messages, model=ctx.active_model,
+                reasoning_effort=ctx.active_effort, tools=ctx.tool_schemas,
+                allow_server_web_search=server_web, prompt_tokens=prompt_estimate,
+            )
+            wrapup_args = dict(request=probe, root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding)
+            wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
+            two_fit = task_pacing.wrapup_reservation_fits(**wrapup_args, reservation_count=2) if wrapup_fits is True else None
+        if wrapup_fits is False or two_fit is False:
+            # The exact probe confirmed a stop: finalize services and prepare the
+            # candidate that will be dispatched (forced augmentations included).
+            trace = ctx.llm_trace if isinstance(ctx.llm_trace, dict) else {}
+            priced_prompt = _loop()._prepare_forced_prompt(ctx, forced_prompt, trace)
+            prospective_messages = [dict(message) for message in ctx.messages]
+            _loop()._append_or_merge_user_message(prospective_messages, priced_prompt)
+            wrapup_request, send_messages = task_pacing.prepared_wrapup_candidate(
+                ctx, prospective_messages, allow_server_web_search=server_web,
+            )
+            wrapup_args = dict(
+                request=wrapup_request, root_cap_usd=cost_ceiling.root_cap_usd,
+                deciding_usd=deciding,
+            )
+            wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
+            if wrapup_fits is False:
+                accumulated_usage["cost_stop_spend_basis"] = spend_basis
+                accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
+                return _loop()._forced_fallback_result(
+                    ctx, trace, task_pacing.wrapup_unaffordable_text(deciding, cost_ceiling),
+                    "budget_exhausted", source="budget_wrapup_unaffordable",
+                )
+            if wrapup_fits is True and task_pacing.wrapup_reservation_fits(
+                **wrapup_args, reservation_count=2,
+            ) is False:
+                accumulated_usage["cost_stop_spend_basis"] = spend_basis
+                accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
+                return _loop()._forced_final_answer(
+                    ctx, prompt=priced_prompt, _prompt_prepared=True,
+                    fallback_text=finish_reason, reason_code="budget_exhausted",
+                    _initial_messages=send_messages, _admitted_request=wrapup_request,
+                )
     if deciding is not None and ceiling_usd is not None and deciding > ceiling_usd:
         if spend_basis == task_pacing.SPEND_BASIS_TREE:
             spent_text = (
@@ -124,8 +166,6 @@ def _check_budget_limits(
                 else f"Task tree spent ${deciding:.3f} (ledger-accounted incl. in-flight holds)"
             )
         elif spend_basis == task_pacing.SPEND_BASIS_OWN_TREE_UNKNOWN:
-            # Stopping on a disclosed lower bound beats not stopping at all, but
-            # the substitution is stated, never silent (BIBLE P1).
             spent_text = (
                 f"Task spent ${deciding:.3f} on its OWN calls (the tree-accounted total "
                 "is unavailable right now, so subagent spend is not included — this is a "
@@ -141,47 +181,26 @@ def _check_budget_limits(
             f"{spent_text}, over the in-task cost ceiling ${ceiling_usd:.2f}{cap_text}. "
             "Budget exhausted."
         )
-        # The basis rides the usage record too, so a later reader can tell a
-        # tree-decided stop from an own-cost stand-in without parsing prose.
         accumulated_usage["cost_stop_spend_basis"] = spend_basis
         return _loop()._forced_final_answer(
             ctx,
-            prompt=(
-                f"[BUDGET LIMIT] {finish_reason} Produce your best final answer now from "
-                "the verified work so far; clearly mark anything unverified or incomplete. "
-                "An honest best-effort result is the expected outcome here, not a failure."
-            ),
+            prompt=f"[BUDGET LIMIT] {finish_reason} {_loop()._FORCED_BEST_EFFORT_TAIL}",
             fallback_text=finish_reason,
             reason_code="budget_exhausted",
         )
-    # The old round-gated "[INFO] ... Wrap up if possible" nudge is replaced by
-    # the latched cost milestones in task_pacing (transport: _inject_round_checkpoints).
-
     return None
 
 
 def _resolve_task_cost_ceiling(
     ctx: Any, budget_remaining_usd: Optional[float],
 ) -> "task_pacing.CostCeiling":
-    """The typed in-task cost stop, resolved ONCE at loop start.
-
-    The root cap comes from the bound usage scope — the SAME
-    ``OUROBOROS_PER_TASK_COST_USD``-derived value the ledger fence enforces
-    (agent.py wires it as ``UsageScope.root_limit_usd``), so the graceful stop
-    and the fence can never disagree about the cap."""
-    root_cap = None
-    try:
-        from ouroboros.usage_accounting import current_usage_scope
-
-        scope = current_usage_scope()
-        root_cap = getattr(scope, "root_limit_usd", None) if scope is not None else None
-    except Exception:
-        log.debug("Usage scope unavailable for cost ceiling resolution", exc_info=True)
-    return task_pacing.resolve_cost_ceiling(
-        budget_remaining_usd,
-        task_pacing.resolve_budget_profile(ctx),
-        root_cap_usd=root_cap,
-    )
+    """Return and retain the task's once-resolved cost stop."""
+    disclosed = getattr(ctx, "_cost_ceiling", None)
+    if isinstance(disclosed, task_pacing.CostCeiling):
+        return disclosed
+    resolved = task_pacing.resolve_task_cost_ceiling(ctx, budget_remaining_usd)
+    setattr(ctx, "_cost_ceiling", resolved)
+    return resolved
 
 
 _TREE_ACCOUNTING_MAX_STALE_SEC = 120.0
@@ -190,16 +209,7 @@ _TREE_ACCOUNTING_MAX_STALE_SEC = 120.0
 def _loop_tree_accounting(
     *, refresh: bool, max_age_sec: float = 30.0,
 ) -> Optional[Dict[str, Any]]:
-    """The root subtree's accounted spend for the CURRENT task's tree (nullable).
-
-    Reads the reserve-time scope telemetry for free; ``refresh=True`` may do
-    one real ledger projection read when the stash is older than
-    ``max_age_sec``. Callers: loop start / 600s pacing note / 15-round
-    checkpoint (cache-breaking, small max_age), plus the two DECIDING
-    surfaces (ceiling check + milestone note) on the wider
-    ``_TREE_ACCOUNTING_MAX_STALE_SEC`` bound — free while rounds are shorter
-    (every dispatch refreshes the stash); never per-round unconditionally
-    (e4a87344). Only under a root cap; None otherwise (unknown ≠ $0)."""
+    """Return nullable, bounded-stale spend for the current task's root tree."""
     try:
         from ouroboros.usage_accounting import (
             current_usage_scope,
@@ -208,7 +218,7 @@ def _loop_tree_accounting(
         )
 
         scope = current_usage_scope()
-        if scope is None or not scope.root_task_id or scope.root_limit_usd is None:
+        if scope is None or not scope.root_task_id:
             return None
         if refresh:
             return refresh_root_accounting(scope.drive_root, scope.root_task_id, max_age_sec=max_age_sec)
@@ -223,11 +233,9 @@ def _soft_land_exhausted_ceiling(
     cost_ceiling: "task_pacing.CostCeiling",
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     """Typed soft landing (v6.91): a root cap at or below the planning margin
-    leaves no working room — enter the existing graceful best-effort wrap-up
-    BEFORE spending a work round; never run uncapped (the pre-typed shape
-    resolved this to the same None as "unlimited"). The ledger fence stays the
-    untouched backstop. Returns the forced-final tuple, or None when the
-    ceiling is not in the ``exhausted_soft_land`` state."""
+    wraps up BEFORE a work round through the same priced candidate as the
+    last-fit rail; an unaffordable wrap-up ends as budget_wrapup_unaffordable
+    instead of a fence pause. None when the ceiling is not exhausted."""
     if cost_ceiling.state != task_pacing.COST_CEILING_EXHAUSTED_SOFT_LAND:
         return None
     cap_text = (
@@ -242,16 +250,35 @@ def _soft_land_exhausted_ceiling(
         f"Per-task tree cap {cap_text} leaves no working room above the "
         f"wrap-up planning margin ({margin_text}). Budget exhausted."
     )
+    trace = limit_ctx.llm_trace if isinstance(limit_ctx.llm_trace, dict) else {}
+    priced_prompt = _loop()._prepare_forced_prompt(
+        limit_ctx, f"[BUDGET LIMIT] {soft_land_reason} {_loop()._FORCED_BEST_EFFORT_TAIL}", trace,
+    )
+    prospective = [dict(message) for message in limit_ctx.messages]
+    _loop()._append_or_merge_user_message(prospective, priced_prompt)
+    request, send_messages = task_pacing.prepared_wrapup_candidate(
+        limit_ctx, prospective, allow_server_web_search=_loop()._server_web_allowed_by_task(
+            getattr(getattr(limit_ctx, "tools", None), "_ctx", None)),
+    )
+    tree_info = _loop()._loop_tree_accounting(refresh=True, max_age_sec=0.0)
+    deciding, spend_basis = task_pacing.resolve_deciding_spend(
+        tree_cost_usd=tree_info.get("accounted_usd") if isinstance(tree_info, dict) else None,
+        task_cost_usd=float(limit_ctx.accumulated_usage.get("cost") or 0.0),
+        root_cap_usd=cost_ceiling.root_cap_usd,
+    )
+    limit_ctx.accumulated_usage["cost_stop_spend_basis"] = spend_basis
+    if task_pacing.wrapup_reservation_fits(
+        request=request, root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding or 0.0,
+    ) is False:
+        limit_ctx.accumulated_usage["cost_stop_rail"] = "wrapup_reservation_last_fit"
+        return _loop()._forced_fallback_result(
+            limit_ctx, trace, soft_land_reason, "budget_exhausted",
+            source="budget_wrapup_unaffordable",
+        )
     return _loop()._forced_final_answer(
-        limit_ctx,
-        prompt=(
-            f"[BUDGET LIMIT] {soft_land_reason} Produce your best final answer "
-            "NOW from the verified work so far; clearly mark anything unverified "
-            "or incomplete. An honest best-effort result is the expected outcome "
-            "here, not a failure."
-        ),
-        fallback_text=soft_land_reason,
-        reason_code="budget_exhausted",
+        limit_ctx, prompt=priced_prompt, _prompt_prepared=True,
+        fallback_text=soft_land_reason, reason_code="budget_exhausted",
+        _initial_messages=send_messages, _admitted_request=request,
     )
 
 

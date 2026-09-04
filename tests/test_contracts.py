@@ -1423,7 +1423,6 @@ def test_state_response_context_mode_auto_low_crosses_the_wire(tmp_path, monkeyp
 
     from ouroboros.gateway.contracts import StateResponse
 
-    monkeypatch.setattr(os, "environ", dict(os.environ))  # api_state reads mode state from env
     for key in ("OUROBOROS_CONTEXT_MODE", "OUROBOROS_CONTEXT_MODE_AUTO_LOW"):
         os.environ.pop(key, None)
 

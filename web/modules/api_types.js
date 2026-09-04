@@ -558,6 +558,12 @@
  * @property {boolean=} project_mirror
  */
 
+/** Additive /api/chat/history terminality projection.
+ * @typedef {Object} TaskOutcomeHistoryFields
+ * @property {"working"|"done"|"warn"|"error"|"cancelled"=} outcome_phase  // canonical display phase; "working" is not terminal
+ * @property {boolean=} outcome_final  // true only after the canonical task outcome settles; false marks a pre-finalization narrative
+ */
+
 /**
  * Additive /api/chat/history row fields on `system_type: "skill_review"` rows:
  * the exact-job reference the producer already writes into chat.jsonl. A row
@@ -709,6 +715,52 @@
  * @property {?{slug: string, version: string, content_hash: string, repository: string, pr_number: number, pr_url: string, published_at: string}=} published
  * @property {boolean=} published_malformed
  * @property {boolean=} identity_collision
+ * @property {string=} process
+ * @property {string=} server_reconcile
+ */
+
+/**
+ * @typedef {Object} SkillToggleResponse
+ * @property {string} skill
+ * @property {boolean} enabled
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
+ * @property {string=} process
+ * @property {string=} server_reconcile
+ */
+
+/**
+ * @typedef {Object} SkillReconcileResponse
+ * @property {string} skill
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
+ * @property {boolean} live_loaded
+ * @property {?string} load_error
+ * @property {string=} process
+ * @property {string=} server_reconcile
+ */
+
+/**
+ * One Widgets card from `GET /api/widgets` (`gateway/widgets.py::WidgetTab`).
+ * `revision` is the owning skill's live payload content hash — a change
+ * signature for the page, not an ETag or cache token. Frame geometry stays
+ * inside `render`.
+ * @typedef {Object} WidgetTab
+ * @property {string} key
+ * @property {string} skill
+ * @property {string} tab_id
+ * @property {string} title
+ * @property {string} icon
+ * @property {string} ws_prefix
+ * @property {Object} render
+ * @property {number} span
+ * @property {number} grid_span
+ * @property {string} revision
+ */
+
+/**
+ * @typedef {Object} WidgetsResponse
+ * @property {WidgetTab[]} ui_tabs
  */
 
 /**
@@ -756,6 +808,16 @@
  */
 
 /**
+ * @typedef {Object} SkillReviewResponse
+ * @property {string} skill
+ * @property {string} status
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
+ * @property {string=} extension_process
+ * @property {string=} extension_server_reconcile
+ */
+
+/**
  * @typedef {Object} SkillGrantResponse
  * @property {boolean} ok
  * @property {string} skill
@@ -796,6 +858,7 @@
  * @property {string} description
  * @property {string=} task_id
  * @property {string=} type
+ * @property {string=} title Owner-facing run name; omitted, admission derives one from the description's first line.
  * @property {number=} chat_id
  * @property {number=} depth
  * @property {string=} session_id
@@ -1108,6 +1171,7 @@
 /**
  * @typedef {Object} UiPreferencesResponse
  * @property {string[]} widget_order
+ * @property {Object.<string,'auto'|'manual'|'retain'>} widget_start_mode  // owner per-card launch-policy override, keyed "<skill>:<tab_id>"
  * @property {boolean} nested_subagents_expanded
  * @property {number} sidebar_width  // px; 0 = CSS default (v6.33.0)
  * @property {number} project_panel_width  // px; 0 = CSS default

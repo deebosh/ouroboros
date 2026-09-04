@@ -58,6 +58,27 @@ def test_llm_usage_writes_cached_tokens_and_cache_write_tokens(tmp_path):
     assert ctx.last_usage["prompt_cache_ttl"] == "default"
 
 
+def test_llm_usage_persists_reasoning_effort_projection(tmp_path):
+    from supervisor import events as ev_module
+
+    (tmp_path / "logs").mkdir()
+
+    class FakeCtx:
+        DRIVE_ROOT = tmp_path
+
+        def update_budget_from_usage(self, usage):
+            self.last_usage = usage
+
+    note = {"requested": "medium", "applied": "high",
+            "reason": "provider_wire_mapping", "model": "deepseek-v4-flash"}
+    ev_module._handle_llm_usage(
+        {"type": "llm_usage", "task_id": "t", "usage": {"prompt_tokens": 3, "reasoning_effort_clamped": note}},
+        FakeCtx(),
+    )
+    written = json.loads((tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8"))
+    assert written["reasoning_effort_clamped"] == note
+
+
 def test_llm_usage_preserves_unknown_cost_as_null(tmp_path):
     from supervisor import events as ev_module
 

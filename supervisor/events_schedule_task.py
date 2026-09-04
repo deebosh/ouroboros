@@ -36,7 +36,8 @@ from supervisor.events_subagent_admission import _resolve_subagent_constraint
 from supervisor.events_subagent_admission import _subagent_cap_blocks
 from supervisor.events_subagent_admission import _subagent_scheduled_meta
 from supervisor.log_addressing import bound_project_chat_id as _bound_project_chat_id
-from supervisor.task_admission import reject_if_no_chat_target as _reject_if_no_chat_target
+from supervisor.message_bus import coerce_chat_identity, notification_chat_route
+from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID
 from supervisor.task_dispatch import build_scheduled_task_payload as _build_scheduled_task_payload
 import uuid
 
@@ -262,10 +263,8 @@ def _find_duplicate_task(
             source="task_duplicate_check",
         )
     else:
-        try:
-            global_limit = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-        except (TypeError, ValueError):
-            global_limit = 0.0
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+        global_limit = resolve_total_budget_usd()
         try:
             root_limit = float(os.environ.get("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
         except (TypeError, ValueError):
@@ -277,7 +276,7 @@ def _find_duplicate_task(
             parent_task_id=prospective_parent_id,
             category="planning",
             source="task_duplicate_check",
-            global_limit_usd=global_limit if global_limit > 0 else None,
+            global_limit_usd=global_limit,
             root_limit_usd=root_limit if root_limit > 0 else None,
         )
 
@@ -369,7 +368,7 @@ def _reject_schedule_task(
             log.warning("Failed to persist schedule rejection for %s", tid, exc_info=True)
     # A torn-down notification bus must not escape into the supervisor loop.
     try:
-        if chat_id:
+        if chat_id is not None:
             if delegation_role == "subagent":
                 _send_subagent_rejection(
                     ctx,
@@ -391,14 +390,12 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
     st = ctx.load_state()
     owner_chat_id = st.get("owner_chat_id")
     try:
-        event_chat_id = int(evt.get("chat_id") or 0)
-    except (TypeError, ValueError):
-        event_chat_id = 0
-    try:
         owner_chat_int = int(owner_chat_id or 0)
     except (TypeError, ValueError):
         owner_chat_int = 0
-    chat_id = event_chat_id or owner_chat_int
+    # Membership, not truthiness (C4): an explicit 0 is the hidden partition the
+    # producer stamped; only a MISSING id is absence and falls to the owner chat.
+    chat_id = coerce_chat_identity(evt.get("chat_id"), owner_chat_int)
     tid = str(evt.get("task_id") or uuid.uuid4().hex[:8])
     desc = str(evt.get("objective") or evt.get("description") or "").strip()
     expected_output = str(evt.get("expected_output") or "").strip()
@@ -441,6 +438,7 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
     drive_root = str(evt.get("drive_root") or "").strip()
     child_drive_root = str(evt.get("child_drive_root") or drive_root).strip()
     budget_drive_root = str(evt.get("budget_drive_root") or "").strip()
+    root_cost_ceiling_usd = evt.get("root_cost_ceiling_usd")
     # Forward parent-requested intent; dispatch resolves it once.
     requested_model_lane = str(evt.get("requested_model_lane") or evt.get("model_lane") or "auto").strip() or "auto"
     parent_model_lane = str(evt.get("parent_model_lane") or "").strip()
@@ -504,11 +502,12 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
         "allowed_resources": allowed_resources,
         "task_contract": task_contract,
         "depth_provenance": depth_provenance,
-        "chat_id": chat_id or None,
+        "chat_id": chat_id,
         "memory_mode": memory_mode,
         "drive_root": drive_root,
         "child_drive_root": child_drive_root,
         "budget_drive_root": budget_drive_root,
+        "root_cost_ceiling_usd": root_cost_ceiling_usd,
         "task_constraint": task_constraint,
         "required_capabilities": required_capabilities,
         "model_lane": requested_model_lane,
@@ -662,12 +661,6 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
         )
         return
 
-    if _reject_if_no_chat_target(
-        ctx, desc=desc, chat_id=chat_id, delegation_role=delegation_role, tid=tid,
-        role=role, parent_id=parent_id, root_task_id=root_task_id, result_fields=result_fields,
-    ):
-        return
-
     # Fail fast when the worker pool is disabled (e.g. after a crash storm put
     # the supervisor in direct-chat mode). Without this, the task is written as
     # 'scheduled' and enqueued but nothing can ever run it — a permanent "ghost"
@@ -784,6 +777,7 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
             "drive_root": drive_root,
             "child_drive_root": child_drive_root,
             "budget_drive_root": budget_drive_root,
+            "root_cost_ceiling_usd": root_cost_ceiling_usd,
             "task_constraint": task_constraint,
             "workspace_root": workspace_root,
             "workspace_mode": workspace_mode,
@@ -916,10 +910,17 @@ def _handle_schedule_task(evt: Dict[str, Any], ctx: Any) -> None:
             suffix = (
                 f" (queued behind active subagent cap {max_active}; it will start when a slot frees)"
             )
-        # A subagent's scheduled notice routes to its root project thread by lineage (C4.4); else its own chat; a headless subagent (chat_id=0, no bound root) still skips.
-        _notice_chat = (_bound_project_chat_id(ctx, tid, parent_id, root_task_id)
-                        if delegation_role == "subagent" else 0) or chat_id
-        if _notice_chat:
+        # A subagent's scheduled notice routes to its root project thread by lineage (C4.4); else its own chat, the hidden partition included (membership, not truthiness).
+        _notice_chat = notification_chat_route(
+            (_bound_project_chat_id(ctx, tid, parent_id, root_task_id) or None)
+            if delegation_role == "subagent" else None,
+            chat_id,
+        )
+        # A LIVE toast needs a chat a human reads. The hidden partition has none,
+        # and a headless run's progress log is a benchmark trajectory input, so a
+        # host toast there would be published as the agent's own narration. The
+        # durable record still keeps the true address (row_chat_identity).
+        if _notice_chat is not None and _notice_chat != HIDDEN_CHAT_ID:
             ctx.send_with_budget(
                 _notice_chat,
                 f"🗓️ Scheduled subagent {tid} ({role}): {desc}{suffix}" if delegation_role == "subagent" else f"🗓️ Scheduled task {tid}: {desc}",

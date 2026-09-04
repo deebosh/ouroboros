@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from ouroboros.review_execution import ReviewRouteKind
+from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
 
 
 @dataclass(frozen=True)
@@ -43,12 +43,12 @@ class ReviewSlot:
     @property
     def native_retrieval(self) -> bool:
         # An api-route actor row: bounded native tool rounds, never the packet.
-        return bool(self.subagent_id) and self.route is ReviewRouteKind.API_CHAT
+        return bool(str(self.subagent_id or "").strip()) and str(getattr(self.route, "value", self.route) or "") == ReviewRouteKind.API_CHAT.value
 
     @property
     def retrieves(self) -> bool:
         # DELIVERY class for admission/fit/authority; transport tests the route.
-        return self.route is ReviewRouteKind.AGENT_SESSION or self.native_retrieval
+        return delivery_retrieves(self.route, self.subagent_id)
 
 
 @dataclass
@@ -68,10 +68,11 @@ class ReviewRequest:
     max_tokens: int | None = None
     temperature: float | None = None
     no_proxy: bool = False
-    # Session route owns a compact task and repository root; API ignores both.
-    # It is the same criteria without the pack because the agent retrieves it.
+    # RETRIEVING deliveries own a compact task and repository root: the session
+    # route AND native API-route rows (`session_root`, `slot_session_tasks`).
     session_root: str = ""
     session_task: str = ""
+    slot_session_tasks: Dict[str, str] = field(default_factory=dict)  # per-slot work order over session_task
     session_threads: Dict[str, str] = field(default_factory=dict)
     usage_attribution: Dict[str, str] = field(default_factory=dict)
     deadline_at: str = ""

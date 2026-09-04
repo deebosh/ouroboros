@@ -48,16 +48,11 @@ PROFILE_TARGETS = {
         "openai/gpt-5.5",
 }
 
-_PROVIDER_ROUTE_ENV_KEYS = (
-    "OPENROUTER_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_BASE_URL",
-    "OPENAI_COMPATIBLE_BASE_URL",
-    "CLOUDRU_FOUNDATION_MODELS_API_KEY",
-    "GIGACHAT_CREDENTIALS",
-    "GIGACHAT_USER",
-    "GIGACHAT_PASSWORD",
+# Registry-derived so a newly registered provider can never leak ambient routing.
+from ouroboros.provider_models import PROVIDER_CREDENTIAL_GROUPS as _CRED_GROUPS
+
+_PROVIDER_ROUTE_ENV_KEYS = tuple(
+    key for group in _CRED_GROUPS.values() for key in group
 )
 
 
@@ -251,6 +246,25 @@ def test_runtime_actor_snapshot_refuses_foreign_or_session_reviewer_rows(
     settings[REVIEWER_SLOTS_ENV] = json.dumps(payload)
     snapshot = runtime_actor_snapshot(settings, expected_model=model)
     assert any(needle in item for item in snapshot["mismatches"])
+
+
+def test_runtime_actor_snapshot_refuses_a_retrieving_row_even_on_the_measured_model(monkeypatch):
+    """A configured-subagent api row on the measured model RETRIEVES the subject
+    (native tool rounds): a different delivery class from the packet panel every
+    published number was produced with, so provenance must refuse it too."""
+    from devtools.benchmarks.common.model_slots import BENCHMARK_SUBAGENT_ID
+
+    model = "openai/gpt-5.5"
+    settings = _fixed_actor_settings(model)
+    monkeypatch.setenv("OUROBOROS_SUBAGENTS", settings["OUROBOROS_SUBAGENTS"])
+    payload = json.loads(settings[REVIEWER_SLOTS_ENV])
+    payload["triad"][0] = {"slot_id": "native-t", "subagent_id": BENCHMARK_SUBAGENT_ID}
+    settings[REVIEWER_SLOTS_ENV] = json.dumps(payload)
+    snapshot = runtime_actor_snapshot(settings, expected_model=model)
+    assert any(
+        "native-t" in item and "native_tool_rounds" in item and "packet delivery" in item
+        for item in snapshot["mismatches"]
+    )
 
 
 def test_runtime_actor_snapshot_refuses_enabled_foreign_advisory():

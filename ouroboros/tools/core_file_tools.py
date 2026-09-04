@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import os
 import pathlib
-from typing import Any, List
+from typing import Any, Dict, List, Optional
 
 from ouroboros.contracts.skill_payload_policy import (
     SKILL_OWNER_STATE_FILENAMES,
@@ -17,7 +18,7 @@ from ouroboros.contracts.task_constraint import normalize_task_constraint, resol
 from ouroboros.project_facts import filter_out_project_store as _filter_out_project_store
 from ouroboros.project_facts import project_store_access_block as _project_store_access_block
 from ouroboros.protected_artifacts import block_reason_for_path
-from ouroboros.credential_shapes import (
+from ouroboros.credential_shapes import (  # noqa: F401 — historical facade surface (tools/core re-exports)
     CREDENTIAL_FILE_SUFFIXES,
     CREDENTIAL_NAME_RE,
     SUBAGENT_CREDENTIAL_FILE_NAMES as _SUBAGENT_SECRET_FILE_NAMES,
@@ -33,6 +34,14 @@ from ouroboros.tool_access import (
     user_files_path_block_reason,
 )
 from ouroboros.tools.registry import ToolContext, active_repo_dir_for
+from ouroboros.tools.core_secret_paths import (  # noqa: F401 — re-exported moved surface (core facade identity)
+    is_restricted_subagent_profile,
+    _is_subagent_secret_data_path,
+    _is_subagent_secret_repo_path,
+    _is_subagent_secret_repo_target,
+    _filter_subagent_secret_repo_listing,
+    _filter_subagent_secret_listing,
+)
 from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 from ouroboros.utils import read_text, safe_relpath
 
@@ -65,8 +74,25 @@ def _direct_resource_binding(
 
 
 def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_line: int = 1,
-                       start_char: int = 0) -> str:
+                       start_char: int = 0, extent: Optional[Dict[str, Any]] = None) -> str:
     """Return a line-ranged file view with the shared read-tool header.
+
+    ``extent`` (when a dict is passed) receives the DELIVERED window as FACTS,
+    stamped AFTER the ``start_char`` cut: ``first_line`` (the first COMPLETE line
+    in the body — a cursor that skips whole lines advances it, and a cursor that
+    lands mid-line makes that line partial, so it is not counted), ``end_line``,
+    ``total_lines``, ``body_start`` (where the body begins in the returned text,
+    right after the one header line), ``body_chars``, ``partial_head`` (the body
+    opens with a partial line), ``line_ends`` (the end offsets, within the body,
+    of its COMPLETE lines — the partial head excluded — on the very line
+    definition the renderer cut by, so a consumer that cuts the body further
+    counts complete lines from them and never recounts newlines), plus the
+    requested ``start_line``/``start_char``.
+    An empty delivery (cursor at or past the window's end, or a start past EOF)
+    is an EMPTY range (``end_line < first_line``), never an inverted claim. A
+    consumer that must know what a read delivered (the native review episode's
+    host-observed receipts) gets it from this arithmetic, never by parsing the
+    header text back.
 
     ``start_char`` is a SUB-LINE cursor: it skips that many characters of the selected
     window's body before rendering. It exists because delivery is char-bounded (the
@@ -81,14 +107,35 @@ def _render_line_slice(path: str, content: str, max_lines: int = 2000, start_lin
     total = len(lines)
     start = max(1, min(start_raw, total + 1))
     end = min(start + max_raw - 1, total)
-    result = "".join(lines[start - 1:end])
+    window_lines = lines[start - 1:end]
+    window = "".join(window_lines)
+    # ONE line-boundary definition — the `splitlines` lines above (U+2028 and
+    # U+2029 are line ends too; CR/CRLF never reach this renderer from
+    # `read_file`, whose `read_text` opens with universal newlines and so
+    # delivers LF) — serves the rendering, the cursor arithmetic AND the
+    # consumer's bound-cut arithmetic: the end offset of every window line, in
+    # window chars.
+    ends: List[int] = []
+    for line in window_lines:
+        ends.append((ends[-1] if ends else 0) + len(line))
     offset = _coerce_start_char(start_char)
     if offset:
-        result = result[offset:]
+        body = window[offset:]
         header = f"# {path} — lines {start}\u2013{end} of {total} (from char {offset} of this window)\n"
+        whole = bisect.bisect_right(ends, offset)  # lines ending at or before the cursor: skipped whole
+        partial_head = bool(body) and not (whole and ends[whole - 1] == offset)  # landed mid-line: that line is partial
+        first_line = start + whole + (1 if partial_head else 0)
+        line_ends = tuple(e - offset for e in ends[whole + (1 if partial_head else 0):])
     else:
-        header = f"# {path} — lines {start}\u2013{end} of {total}\n"
-    return header + result
+        body, header, partial_head, first_line = window, f"# {path} — lines {start}\u2013{end} of {total}\n", False, start
+        line_ends = tuple(ends)
+    if not body:
+        first_line, line_ends = end + 1, ()  # nothing complete was delivered: an EMPTY range, never an inverted one
+    if extent is not None:
+        extent.update({"start_line": start, "end_line": end, "total_lines": total, "start_char": offset,
+                       "first_line": first_line, "body_start": len(header), "body_chars": len(body),
+                       "partial_head": partial_head, "line_ends": line_ends})
+    return header + body
 
 
 def _coerce_start_char(start_char: Any = 0) -> int:
@@ -190,147 +237,6 @@ def _list_user_files_dir(ctx: ToolContext, root: pathlib.Path, target: pathlib.P
 
 
 
-def is_restricted_subagent_profile(ctx: ToolContext) -> bool:
-    # Fail-closed SSOT for subagent READ restrictions (secret/control denials):
-    # read-only subagents, acting subagents, and delegated subagents with a
-    # missing/invalid constraint are ALL barred from reading owner secrets/control
-    # state. Acting children may WRITE their isolated surface but never read owner
-    # secrets; the resource WRITE distinction lives in _local_readonly_resource_block.
-    from ouroboros.tool_access import active_tool_profile
-    return active_tool_profile(ctx) in ("local_readonly_subagent", "acting_subagent")
-
-
-def _is_subagent_secret_data_path(norm: str) -> bool:
-    text = str(norm or "").replace("\\", "/").strip()
-    while text.startswith("./"):
-        text = text[2:]
-    if not text:
-        return False
-    parts = [part.lower() for part in text.split("/") if part and part != "."]
-    if not parts:
-        return False
-    if any(part in {"auth", "credentials", "secrets", "tokens"} for part in parts):
-        return True
-    name = parts[-1]
-    normalized_names = {name, name.lstrip(".")}
-    if name.lstrip(".") == "settings.tmp":
-        normalized_names.add("settings.json")
-    for protected_name in (_SUBAGENT_SECRET_FILE_NAMES | _SKILL_OWNER_STATE_FILENAMES):
-        bare = name.lstrip(".")
-        if bare.startswith(f"{protected_name}.tmp") or bare.startswith(f"{protected_name}.lock"):
-            normalized_names.add(protected_name)
-    if normalized_names & (_SUBAGENT_SECRET_FILE_NAMES | _SKILL_OWNER_STATE_FILENAMES):
-        return True
-    if name.startswith(".env") or name.endswith(".env") or ".env." in name:
-        return True
-    if name.endswith(CREDENTIAL_FILE_SUFFIXES):
-        return True
-    return bool(CREDENTIAL_NAME_RE.search(name))
-
-
-def _is_subagent_secret_repo_path(norm: str) -> bool:
-    text = str(norm or "").replace("\\", "/").strip()
-    while text.startswith("./"):
-        text = text[2:]
-    parts = [part.lower() for part in text.split("/") if part and part != "."]
-    if ".git" in parts or any(part in {"auth", "credentials", "secrets", "tokens"} for part in parts):
-        return True
-    if not parts:
-        return False
-    name = parts[-1]
-    if name in _SUBAGENT_SECRET_FILE_NAMES or name == "settings.tmp":
-        return True
-    if name.startswith(".env") or name.endswith(".env") or ".env." in name:
-        return True
-    if name.endswith(CREDENTIAL_FILE_SUFFIXES):
-        return True
-    if CREDENTIAL_NAME_RE.search(name):
-        suffix = pathlib.PurePosixPath(name).suffix.lower()
-        return suffix in {"", ".json", ".env", ".key", ".pem", ".p12", ".pfx", ".toml", ".yaml", ".yml", ".ini", ".cfg", ".conf"}
-    return False
-
-
-def _is_subagent_secret_repo_target(target: pathlib.Path, repo_root: pathlib.Path) -> bool:
-    root = pathlib.Path(repo_root).resolve(strict=False)
-    try:
-        rel = str(pathlib.Path(target).resolve(strict=False).relative_to(root)).replace(os.sep, "/")
-    except (OSError, ValueError):
-        rel = str(target).replace(os.sep, "/")
-    if _is_subagent_secret_repo_path(rel):
-        return True
-    secret_candidates = [
-        root / ".git" / "credentials",
-        root / ".git" / "config",
-    ]
-    try:
-        secret_candidates.extend(
-            candidate
-            for candidate in root.iterdir()
-            if candidate.is_file() and _is_subagent_secret_repo_path(candidate.name)
-        )
-    except OSError:
-        pass
-    return any(
-        candidate.is_file()
-        and target.exists()
-        and target.samefile(candidate)
-        for candidate in secret_candidates
-    )
-
-
-def _filter_subagent_secret_repo_listing(items: List[str], repo_root: pathlib.Path) -> List[str]:
-    filtered: List[str] = []
-    redacted = 0
-    root = pathlib.Path(repo_root).resolve(strict=False)
-    for item in items:
-        marker = item.rstrip("/")
-        if marker.startswith("⚠️") or marker.startswith("...("):
-            filtered.append(item)
-            continue
-        if _is_subagent_secret_repo_path(marker) or _is_subagent_secret_repo_target(root / marker, root):
-            redacted += 1
-            continue
-        filtered.append(item)
-    if redacted:
-        filtered.append(f"⚠️ {redacted} secret/control entr{'y' if redacted == 1 else 'ies'} hidden from this subagent.")
-    return filtered
-
-
-def _filter_subagent_secret_listing(items: List[str], data_root: pathlib.Path) -> List[str]:
-    filtered: List[str] = []
-    redacted = 0
-    root = pathlib.Path(data_root).resolve(strict=False)
-    for item in items:
-        marker = item.rstrip("/")
-        if marker.startswith("⚠️") or marker.startswith("...("):
-            filtered.append(item)
-            continue
-        target = root / marker
-        try:
-            resolved_rel = str(pathlib.Path(target).resolve(strict=False).relative_to(root)).replace(os.sep, "/")
-        except (OSError, ValueError):
-            resolved_rel = marker
-        if (
-            _is_subagent_secret_data_path(marker)
-            or _is_subagent_secret_data_path(resolved_rel)
-            or _is_skill_owner_state_target(target, root)
-            or is_skill_owner_state_alias(target, root)
-            or any(
-                candidate.is_file()
-                and _is_subagent_secret_data_path(candidate.name)
-                and target.exists()
-                and target.samefile(candidate)
-                for candidate in root.iterdir()
-            )
-        ):
-            redacted += 1
-            continue
-        filtered.append(item)
-    if redacted:
-        filtered.append(f"⚠️ {redacted} secret/control entr{'y' if redacted == 1 else 'ies'} hidden from this subagent.")
-    return filtered
-
-
 _MEMORY_AT_DRIVE_MEMORY = frozenset({
     "identity.md", "scratchpad.md", "dialogue_summary.md",
     "dialogue_blocks.json", "registry.md", "deep_review.md",
@@ -346,6 +252,7 @@ def _repo_read(
     start_char: int = 0,
     display_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
+    extent: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Read a repo file; root-level memory names return a runtime_data read hint."""
     target = _resolved_binding.target_path if _resolved_binding is not None else ctx.repo_path(path)
@@ -385,7 +292,7 @@ def _repo_read(
             text=f"⚠️ NOT_FOUND: file does not exist: {target}",
         ))
     return _render_line_slice(display_path or path, content, max_lines=max_lines, start_line=start_line,
-                              start_char=start_char)
+                              start_char=start_char, extent=extent)
 
 
 def _repo_list(
@@ -433,6 +340,7 @@ def _data_read(
     start_char: int = 0,
     display_path: str | None = None,
     _resolved_binding: ResolvedResourceBinding | None = None,
+    extent: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Read a drive text file; duplicate drive_root prefixes are stripped."""
     task_constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
@@ -507,9 +415,9 @@ def _data_read(
             if display_path is None:
                 return content
             full_line_count = max(1, len(content.splitlines()))
-            return _render_line_slice(display_path, content, max_lines=full_line_count, start_line=1)
+            return _render_line_slice(display_path, content, max_lines=full_line_count, start_line=1, extent=extent)
         return _render_line_slice(display_path or norm, content, max_lines=max_raw, start_line=start_raw,
-                                  start_char=start_char)
+                                  start_char=start_char, extent=extent)
     except FileNotFoundError:
         if norm.replace("\\", "/").startswith("memory/"):
             explanation = (
@@ -712,6 +620,26 @@ def _annotate_reread(ctx: ToolContext, target: Any, start_line: int, max_lines: 
     return result
 
 
+def _stamp_read_view(ctx: ToolContext, target: Any, opened: str, opened_root: str,
+                     extent: Dict[str, Any], rendered: str) -> str:
+    """Record on the context what THIS read delivered (``ctx.last_read_view``:
+    the resolved ``target``, ``opened_path`` — the root-relative path the reader
+    ACTUALLY opened, i.e. the binding's target under its root, not the model's
+    spelling (the registry normalizes absolute in-repo, whitespace-padded and
+    redundant-root spellings before the handler runs) — ``opened_root``, the
+    NORMALIZED root the binding actually used (a padded ``" system_repo "`` is
+    read as ``system_repo``), and the renderer's window facts). Same
+    per-context bookkeeping class as ``_annotate_reread``; consumed by the
+    native review episode's receipts. The stamp's binding to ONE call is
+    structural: ``_read_file`` resets it on entry and the episode clears it
+    before every dispatch (these are the ONLY writers — a static test pins the
+    writer set). Disclosure only — never gates or alters the read."""
+    if extent:
+        ctx.last_read_view = {"target": str(target), "opened_path": str(opened),
+                              "opened_root": str(opened_root), **extent}
+    return rendered
+
+
 def _read_file(
     ctx: ToolContext,
     path: str,
@@ -723,6 +651,10 @@ def _read_file(
     skill_name: str = "",
     _resolved_binding: ResolvedResourceBinding | None = None,
 ) -> str:
+    # Reset first: a blocked or missing read must never inherit the previous
+    # read's extent (the renderer fills `extent` only when it rendered).
+    ctx.last_read_view = None
+    extent: Dict[str, Any] = {}
     normalized, block = _access_or_block(ctx, root, "read")
     if block:
         return block
@@ -744,6 +676,11 @@ def _read_file(
             text=f"⚠️ READ_FILE_ERROR: {type(exc).__name__}: {exc}",
         ))
     target = binding.target_path
+    try:
+        opened = target.relative_to(binding.base_path).as_posix()  # what is read, relative to its root
+    except ValueError:
+        opened = str(target)
+    opened_root = str(binding.root)  # the NORMALIZED root the binding used, not the model's spelling
     protected_block = block_reason_for_path(ctx, target, "read_bytes", binding)
     if protected_block:
         return protected_block
@@ -764,7 +701,7 @@ def _read_file(
             if binding.source == "project_room"
             else _root_display_path(normalized, path)
         )
-        return _annotate_reread(ctx, target, start_line, max_lines, _repo_read(
+        return _stamp_read_view(ctx, target, opened, opened_root, extent, _annotate_reread(ctx, target, start_line, max_lines, _repo_read(
             ctx,
             path,
             max_lines=max_lines,
@@ -772,9 +709,10 @@ def _read_file(
             start_char=start_char,
             display_path=display_path,
             _resolved_binding=binding,
-        ), start_char=start_char)
+            extent=extent,
+        ), start_char=start_char))
     if normalized == "runtime_data":
-        return _annotate_reread(ctx, target, start_line, max_lines, _data_read(
+        return _stamp_read_view(ctx, target, opened, opened_root, extent, _annotate_reread(ctx, target, start_line, max_lines, _data_read(
             ctx,
             path,
             max_lines=max_lines,
@@ -782,7 +720,8 @@ def _read_file(
             start_char=start_char,
             display_path=_root_display_path(normalized, path),
             _resolved_binding=binding,
-        ), start_char=start_char)
+            extent=extent,
+        ), start_char=start_char))
     block_msg = _local_readonly_resource_block(
         ctx, normalized, target, binding.base_path, action="READ_FILE"
     )
@@ -793,7 +732,8 @@ def _read_file(
     try:
         content = read_text(target)
         rendered = _render_line_slice(_root_display_path(normalized, path), content,
-                                      max_lines=max_lines, start_line=start_line, start_char=start_char)
+                                      max_lines=max_lines, start_line=start_line, start_char=start_char,
+                                      extent=extent)
         if normalized == "user_files":
             # Egress seam for owner-home reads (#447 X1/В23): the file may be
             # read, but raw credential bytes never enter model context/history —
@@ -820,7 +760,8 @@ def _read_file(
                                                start_char=start_char, rendered=rendered)
             except Exception:
                 log.warning("staged-output coverage acknowledgement hook failed", exc_info=True)
-        return _annotate_reread(ctx, target, start_line, max_lines, rendered, start_char=start_char)
+        return _stamp_read_view(ctx, target, opened, opened_root, extent,
+                                _annotate_reread(ctx, target, start_line, max_lines, rendered, start_char=start_char))
     except FileNotFoundError:
         return _publish_tool_result(ctx, ToolResult(
             status="ok",

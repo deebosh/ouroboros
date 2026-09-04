@@ -31,9 +31,11 @@ from ouroboros.usage_accounting import (
     BudgetExceeded,
     PhysicalAttemptContext,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     PhysicalAttemptPreconditionFailed,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
+    invalidate_task_cache_splits,
     last_physical_attempt_capture,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 )
-from ouroboros.task_finalization import (
+from ouroboros.task_finalization import (  # noqa: F401 -- historical import surface for the L-B leaves
+    TERMINAL_ORIGIN_HOST_NOTICE,
     TERMINAL_ORIGIN_HOST_SALVAGE,
     TERMINAL_ORIGIN_MODEL_FINAL,
 )
@@ -103,59 +105,16 @@ def _handle_text_response(
 # becomes a typed obligation.
 
 
+# D18a: `context_fit` owns the transcript seal; re-exported here because the
+# historical `from ouroboros.loop import seal_task_transcript` import surface
+# and `_loop().seal_task_transcript(...)` in loop_model_call.py address it here.
+from ouroboros.context_fit import messages_carry_native_images, seal_task_transcript  # noqa: F401
 from ouroboros.nanny_pacing import (
     _nanny_burn_phrase,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     _nanny_metered_since_delegate_activity,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     _nanny_reminder_due,  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
     _note_nanny_delegate_activity,
 )
-
-
-def seal_task_transcript(
-    messages: List[Dict[str, Any]],
-    keep_active: int = 5,
-    min_prefix_tokens: int = 2048,
-) -> None:
-    """Mark one stable old tool-result boundary for provider prompt caching."""
-    for msg in messages:
-        if msg.get("role") != "tool":
-            continue
-        content = msg.get("content")
-        if isinstance(content, list):
-            # Flatten the old sealed boundary before choosing a new one.
-            msg["content"] = _extract_plain_text_from_content(content)
-
-    tool_indices = [
-        i for i, m in enumerate(messages)
-        if m.get("role") == "tool"
-    ]
-    if len(tool_indices) <= keep_active:
-        return
-
-    seal_candidate_idx = tool_indices[-(keep_active + 1)]
-
-    prefix_text_len = sum(
-        len(_extract_plain_text_from_content(m.get("content", "")))
-        for m in messages[: seal_candidate_idx + 1]
-    )
-    prefix_tokens = prefix_text_len // 4  # rough 4-chars-per-token estimate
-
-    if prefix_tokens < min_prefix_tokens:
-        return
-
-    candidate = messages[seal_candidate_idx]
-    plain_text = str(candidate.get("content", ""))
-    if not plain_text.strip():
-        # Anthropic 400s on cache_control attached to an empty text block; never seal
-        # an empty tool output as the cache anchor (turns the whole task unanswerable).
-        plain_text = "(no tool output)"
-    candidate["content"] = [
-        {
-            "type": "text",
-            "text": plain_text,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
 
 
 def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
@@ -199,14 +158,14 @@ def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
             schema = tools_registry.get_schema_by_name(name)
             if schema and name not in active_tool_names:
                 tool_schemas.append(schema)
+                invalidate_task_cache_splits(getattr(ctx, "task_id", ""))
                 enabled_extra.add(name)
                 active_tool_names.add(name)
                 enabled.append(f"{name} (registered late)")
             elif name in active_tool_names:
                 enabled.append(f"{name} (already active)")
             else:
-                # F3 (2026-08-10 saga): a policy-filtered tool is not "Not found" —
-                # answer with the typed reason so the agent stops guessing names.
+                # A policy-filtered tool is distinct from an unknown name.
                 reason = (
                     tools_registry.policy_hidden_reason(name)
                     if hasattr(tools_registry, "policy_hidden_reason") else None
@@ -303,9 +262,7 @@ def _provider_unavailable_result(
         )
         return text, usage, llm_trace
     if is_transport_wait:
-        # No-resend terminal: salvage, no forced-final call over a dead
-        # egress. Stamp BEFORE the composer (owner-stop pattern): a SCHEDULED
-        # swarm handoff clears it; guard mirrors the sibling below.
+        # No-resend terminal over dead egress.
         live_trace = getattr(ctx, "llm_trace", None)
         llm_trace = live_trace if isinstance(live_trace, dict) else {}
         ctx.accumulated_usage["execution_status"] = RESULT_INFRA_FAILED
@@ -317,7 +274,6 @@ def _provider_unavailable_result(
         if str(usage.get("reason_code") or "") == "provider_unavailable":
             usage["execution_status"] = RESULT_INFRA_FAILED
         return text, usage, llm_trace
-    # No-call shapes; see provider_no_call_source
     no_call, wall = provider_no_call_source(ctx.accumulated_usage, is_deadline_exhausted)
     if no_call:
         if wall:
@@ -423,6 +379,7 @@ def run_llm_loop(
     llm_trace: Dict[str, Any] = {"reasoning_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {"_task_attempt": getattr(ctx, "task_attempt", None)}
     tools._ctx._accumulated_usage = ctx._accumulated_usage = accumulated_usage
+    invalidate_task_cache_splits(task_id or getattr(ctx, "task_id", ""))  # rebuilt attempt = new prefix
     max_retries = 3
     cost_ceiling = _resolve_task_cost_ceiling(ctx, budget_remaining_usd)
     if cost_ceiling.root_cap_usd is not None:
@@ -469,11 +426,9 @@ def run_llm_loop(
                     tool_schemas=tool_schemas,
                 )
             if active_model != _prev_active_model:
-                # A cross-FAMILY switch_model / per-task override: strip the
-                # prior family's provider-private reasoning blocks from the
-                # history so the new family does not 400 on a signature it
-                # cannot validate (safe — loses only reasoning continuity).
-                # Same family is a no-op.
+                # Cross-FAMILY switch_model / per-task override: strip the prior
+                # family's provider-private reasoning blocks so the new family
+                # does not 400 on a foreign signature (same family = no-op).
                 _sanitized = LLMClient.sanitize_reasoning_on_model_switch(messages, _prev_active_model, active_model)
                 if _sanitized is not messages:
                     messages[:] = _sanitized
@@ -483,16 +438,17 @@ def run_llm_loop(
             ctx.active_use_local = active_use_local
 
             # One forced-wrap-up context per round: consumed by the round-limit
-            # path and the supervisor finalize_now control path below.
+            # path and supervisor finalize_now control path below.
             limit_ctx = _RoundLimitContext(
                 messages, llm, active_model, active_effort, max_retries, drive_logs,
                 task_id, round_idx, event_queue, accumulated_usage, task_type,
                 active_use_local, MAX_ROUNDS, drive_root=drive_root, llm_trace=llm_trace,
-                incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen)
+                incoming_messages=incoming_messages, owner_msg_seen=_owner_msg_seen, tool_schemas=tool_schemas)
             _finalize_limit_ctx(limit_ctx, tools, llm_trace)
             if round_idx > MAX_ROUNDS:
                 # Live hold: a paid [ROUND_LIMIT] dial would be a resend (no wake receipt) — no-call unknown terminal.
-                if _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="round_limit") == "active":
+                if _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id,
+                    detail="round_limit") == "active":
                     accumulated_usage["_last_llm_error_kind"] = "provider_outcome_unknown"
                     text, accumulated_usage, forced_trace = _handle_provider_unavailable(limit_ctx, error_kind="provider_outcome_unknown")
                 else:
@@ -725,6 +681,7 @@ from ouroboros.loop_acceptance import (  # noqa: E402, F401 -- intentional publi
     _dispose_obligations_on_clean_pass,
     _format_obligations_clause,
     _record_forced_acceptance_bypass,
+    terminalize_dangling_revision,
 )
 from ouroboros.loop_acceptance_review import (  # noqa: E402, F401 -- intentional public re-exports
     _ACCEPTANCE_REVIEW_CHECKLIST,
@@ -745,6 +702,11 @@ from ouroboros.loop_acceptance_review import (  # noqa: E402, F401 -- intentiona
     _refuse_identical_acceptance,
     _run_task_acceptance_review_once,
     _total_paid_acceptance_cycles,
+    _RETRIEVING_ACCESS_DISCLOSURE,
+    _acceptance_delivery_slots,
+    _retrieving_packet_projection,
+    _skip_task_acceptance_for_launch_reason,
+    acceptance_retrieving_work_order,
     acceptance_dialogue_history,
     acceptance_paid_identity,
     bind_acceptance_paid_identity,
@@ -872,4 +834,6 @@ from ouroboros.loop_forced_finalization import (  # noqa: E402, F401 -- intentio
     _forced_swarm_router_result,
     _resolve_forced_delivery_control,
     _forced_final_answer,
+    _FORCED_BEST_EFFORT_TAIL,
+    _prepare_forced_prompt,
 )

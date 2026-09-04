@@ -23,10 +23,10 @@ from ouroboros.llm_attempt import (
     _candidate_before_dispatch,
     _execute_candidate,
     _execute_candidate_async,
+    _finalized_physical_candidate,
     _is_provider_policy_refusal,
     _is_structured_context_overflow_body,
     _is_structured_context_overflow_exception,
-    _physical_candidate,
 )
 from ouroboros.reasoning_artifacts import (
     pop_reasoning_pin_note,
@@ -36,7 +36,6 @@ from ouroboros.request_wire_recovery import (
     note_wire_send_failed,
     note_wire_send_succeeded,
     plan_next_wire_retry,
-    prepare_wire_payload_for_send,
     request_wire_scoped,
 )
 from ouroboros.usage_accounting import UsageAccountingError, last_physical_attempt_capture
@@ -354,10 +353,7 @@ class _RecoveryLadderMixin:
         pop_reasoning_pin_note()
 
         def _send(candidate: Dict[str, Any]) -> Any:
-            candidate = _physical_candidate(candidate)
-            candidate = prepare_wire_payload_for_send(
-                target, candidate, api_surface="chat.completions",
-            )
+            candidate = _finalized_physical_candidate(target, candidate, "chat.completions")
             request = _attempt_request(target, candidate)
             try:
                 result = _execute_candidate(
@@ -502,10 +498,7 @@ class _RecoveryLadderMixin:
         pop_reasoning_pin_note()
 
         async def _send(candidate: Dict[str, Any]) -> Any:
-            candidate = _physical_candidate(candidate)
-            candidate = prepare_wire_payload_for_send(
-                target, candidate, api_surface="chat.completions",
-            )
+            candidate = _finalized_physical_candidate(target, candidate, "chat.completions")
             request = _attempt_request(target, candidate)
             try:
                 result = await _execute_candidate_async(

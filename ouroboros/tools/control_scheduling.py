@@ -408,13 +408,29 @@ def _select_subagent_constraint(write_surface, write_root, protected_paths_grant
     )
 
 
+def _schedule_parent_chat(ctx: Any) -> Any:
+    """The scheduling parent's own chat, or None when it genuinely has none.
+
+    Coercing a missing chat to 0 here would hand the consumer an explicit
+    hidden-partition address the parent never had, and the consumer's fallback
+    (owner chat) is the honest answer for a task with no address at all.
+    """
+    from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID
+    from supervisor.message_bus import coerce_chat_identity
+
+    value = getattr(ctx, "current_chat_id", None)
+    return None if value is None else coerce_chat_identity(value, HIDDEN_CHAT_ID)
+
+
 def _populate_subagent_event_extras(
     evt: Dict[str, Any], *, current_chat_id: Any, child_drive: Any, workspace_root: str,
     workspace_mode: str, executor_ref: Any, context: str, parent_task_id: str,
 ) -> None:
     """Add the optional fields of a schedule_subagent event in place (extracted from
     _schedule_task to keep it under the method gate; pure field assignment)."""
-    if current_chat_id:
+    # Membership, not truthiness (C4): 0 is the hidden partition — a real
+    # address the consumer must not re-route — so only absence stays absent.
+    if current_chat_id is not None:
         evt["chat_id"] = current_chat_id
     if child_drive is not None:
         evt["drive_root"] = str(child_drive)
@@ -639,12 +655,11 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     parent_task_id = str(current_task_id or metadata.get("parent_task_id") or "").strip()
     root_task_id_seed = str(metadata.get("root_task_id") or current_task_id or "").strip()
     session_id = str(metadata.get("session_id") or "")
-    try:
-        current_chat_id = int(getattr(ctx, "current_chat_id", None) or 0)
-    except (TypeError, ValueError):
-        current_chat_id = 0
+    # Absence stays absence: this stamps the child's address, and 0 is a real
+    # destination now rather than a synonym for "unset".
+    current_chat_id = _schedule_parent_chat(ctx)
     budget_drive_root = str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root)
-    status_drive_root = Path(budget_drive_root)
+    status_drive_root, root_cost_ceiling_usd = Path(budget_drive_root), getattr(getattr(ctx, "_cost_ceiling", None), "ceiling_usd", None)
     if refusal := schedule_delegation_refusal(parent_contract, status_drive_root, parent_task_id):
         return refusal
     workspace_root = str(getattr(ctx, "workspace_root", "") or metadata.get("workspace_root") or "").strip()
@@ -706,9 +721,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     parent_cognitive_route = {
         "model": str(getattr(ctx, "active_model", "") or metadata.get("model") or ""),
         "effort": str(getattr(ctx, "active_effort", "") or metadata.get("reasoning_effort") or ""),
-        "use_local_model": bool(
-            getattr(ctx, "active_use_local", metadata.get("use_local_model", False))
-        ),
+        "use_local_model": bool(getattr(ctx, "active_use_local", metadata.get("use_local_model", False))),
     }
     child_drive, _drive_err = _prepare_child_drive(
         tid, status_drive_root, memory_mode, parent_project_id)
@@ -729,6 +742,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         may_mutate=may_mutate, may_fan_out=params.get("may_fan_out", True),
         max_children=params.get("max_children", 0),
         intent_note=params.get("delegation_intent", ""),
+        requested_depth=params.get("requested_depth", 0),
     )
 
     child_contract = _build_child_subagent_contract({
@@ -778,6 +792,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "memory_mode": memory_mode,
         "project_id": parent_project_id,
         "budget_drive_root": budget_drive_root,
+        "root_cost_ceiling_usd": root_cost_ceiling_usd,
         "task_constraint": task_constraint,
         "write_surface": requested_surface,
         "task_contract": child_contract,
@@ -814,11 +829,12 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
             allowed_resources=allowed_resources,
             task_contract=child_contract,
             required_capabilities=required_caps,
-            chat_id=current_chat_id or None,
+            chat_id=current_chat_id,
             memory_mode=memory_mode,
             drive_root=str(child_drive) if child_drive is not None else "",
             child_drive_root=str(child_drive) if child_drive is not None else "",
             budget_drive_root=budget_drive_root,
+            root_cost_ceiling_usd=root_cost_ceiling_usd,
             task_constraint=task_constraint,
             **intent_fields,
             subagent_envelope=envelope,

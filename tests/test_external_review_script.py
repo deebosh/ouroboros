@@ -48,6 +48,7 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
         "ouroboros/claudexor_daemon.py",
         "ouroboros/deadline_utils.py",
         "ouroboros/delegate_custody.py",
+        "ouroboros/delegate_custody_usage.py",
         "ouroboros/delegate_output.py",
         "ouroboros/gateways/claudexor.py",
         "ouroboros/outcomes.py",
@@ -59,6 +60,8 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
         # a PR editing the route/executor seam there must still trip a trusted
         # rerun, exactly as one editing review_substrate.py does (XG-5R4.1).
         "ouroboros/review_execution.py",
+        "ouroboros/review_actor_aggregation.py",
+        "ouroboros/review_dispatch.py",
         "ouroboros/review_slot_cancel.py",
         "ouroboros/review_evidence.py",
         "ouroboros/reviewer_slot_config.py",
@@ -76,6 +79,9 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
         "ouroboros/tools/scope_review_session.py",
         "ouroboros/tools/scope_window.py",
         "ouroboros/subagents.py",
+        "ouroboros/review_native_episode.py",
+        "ouroboros/review_verdict_extraction.py",
+        "ouroboros/review_execution_projection.py",
         "scripts/contributor_review_evidence.py",
     }.issubset(_REVIEW_SUBSTRATE_PATHS)
 
@@ -323,8 +329,10 @@ def _forwarded_options(argv: list[str]) -> dict[str, str]:
         "scripts/run_external_review.py",
         # A review-machinery module ABSENT from the evidence hand-list still
         # executes from the base — the invariant needs no list membership
-        # (the class the retired-then-rotten classifier used to miss).
-        "ouroboros/review_native_episode.py",
+        # (the class the retired-then-rotten classifier used to miss). Upstream
+        # later listed review_native_episode.py, so the probe moved to a review
+        # leaf the hand-list still omits.
+        "ouroboros/review_status_projection.py",
     ],
 )
 def test_contributor_review_always_runs_on_the_trusted_base(
@@ -338,7 +346,7 @@ def test_contributor_review_always_runs_on_the_trusted_base(
     code is the review's exit code. The base script really runs here: it reports
     the tree it was loaded from.
     """
-    if changed_path == "ouroboros/review_native_episode.py":
+    if changed_path == "ouroboros/review_status_projection.py":
         assert changed_path not in _REVIEW_SUBSTRATE_PATHS
     repo = _init_contributor_repo(tmp_path, monkeypatch)
     probe = _probe_path(monkeypatch, tmp_path)
@@ -988,6 +996,24 @@ def test_contributor_receipts_bind_session_and_api_execution(tmp_path):
         }]},
     )
 
+    unbound_receipts, unbound_mismatches, _ = _contributor_execution_receipts(
+        ctx, config, tmp_path
+    )
+    assert "session_custody_settlement_absent:triad:t1:run-1" in unbound_mismatches
+    assert unbound_receipts[0]["observed"]["settlement"] is None
+    assert unbound_receipts[1]["observed"]["route_kind"] == "api_chat"
+
+    from ouroboros import delegate_custody as custody
+
+    custody.record_started(tmp_path, custody.RunCustody(
+        run_id="run-1", task_id="review", project_id="review-project",
+        project_owned=True, ledger_root=str(tmp_path),
+    ))
+    custody.emit(tmp_path, custody.LEDGER_RECORDED, {"run_id": "run-1"})
+    custody.emit(tmp_path, custody.SETTLED, {"run_id": "run-1"})
+    custody.emit(tmp_path, custody.PROJECT_RETIRED, {"run_id": "run-1"})
+    custody._CUSTODY.clear()
+
     receipts, mismatches, transcripts = _contributor_execution_receipts(
         ctx, config, tmp_path
     )
@@ -1000,7 +1026,8 @@ def test_contributor_receipts_bind_session_and_api_execution(tmp_path):
         "delegated_run_id": "run-1", "custody_durable": True,
         "settlement": {
             "settled": True, "ledger_recorded": True,
-            "project_retired": True,
+            "project_retired": True, "project_persistent": False,
+            "bound_at": "panel_complete_custody_replay",
         },
         "output_conformance": "passed", "verdict_method": "schema",
     }
@@ -1123,9 +1150,18 @@ def test_contributor_receipts_require_settlement_but_keep_advisory_delta(tmp_pat
         _last_scope_raw_result={},
     )
 
+    from ouroboros import delegate_custody as custody
+
+    custody.record_started(tmp_path, custody.RunCustody(
+        run_id="run-1", task_id="review", project_id="review-project",
+        project_owned=True, ledger_root=str(tmp_path),
+    ))
+    custody.emit(tmp_path, custody.PROJECT_RETIRED, {"run_id": "run-1"})
+    custody._CUSTODY.clear()
+
     _, mismatches, _ = _contributor_execution_receipts(ctx, config, tmp_path)
 
-    assert "session_settlement_unproven:triad:t1:ledger_recorded" in mismatches
+    assert "session_settlement_unproven:triad:t1:settled,ledger_recorded" in mismatches
     assert not any(item.startswith("capability_delta:") for item in mismatches)
 
 

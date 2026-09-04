@@ -263,7 +263,7 @@ def _enforce_task_timeouts_locked(
             # the drive resolution (which may read the result record) stays off the no-episode path.
             if meta.get("finalization_requested_at") and _resolve_grace_episode_for_spared_task(
                 _queue()._task_drive_for_task(task, str(task_id)), str(task_id), meta,
-                chat_id=int(task.get("chat_id") or owner_chat_id or 0),
+                chat_id=_queue().coerce_chat_identity(task.get("chat_id"), int(owner_chat_id or 0)),
                 own_progress=own_progress, now=now,
             ):
                 _queue().RUNNING[task_id] = meta
@@ -284,7 +284,7 @@ def _enforce_task_timeouts_locked(
             # can never name different episodes.
             meta["finalization_control_msg_id"] = _queue()._request_finalization_grace(
                 _queue()._task_drive_for_task(task, str(task_id)), str(task_id), terminal_reason,
-                chat_id=int(task.get("chat_id") or owner_chat_id or 0),
+                chat_id=_queue().coerce_chat_identity(task.get("chat_id"), int(owner_chat_id or 0)),
                 stamp=int(now),
             )
             _queue().RUNNING[task_id] = meta

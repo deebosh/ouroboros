@@ -17,6 +17,7 @@ from ouroboros.observability import redact_projection
 from ouroboros.provider_models import (
     ALL_PROVIDER_CREDENTIAL_KEYS,
     ACTIVE_MODEL_SETTING_KEYS,
+    DEEPSEEK_BASE_URL,
     DIRECT_PROVIDER_DEFAULTS,
     MINIMAX_REGION_ENDPOINTS,
     OPENROUTER_DEFAULTS,
@@ -251,6 +252,21 @@ def _provider_specs(
                 "MiniMax",
                 minimax_api_key,
                 minimax_base_url,
+            ),
+        ))
+
+    deepseek_api_key = str(settings.get("DEEPSEEK_API_KEY", "") or "").strip()
+    if deepseek_api_key:
+        # DeepSeek serves an OpenAI-compatible GET /models on its one official
+        # host, so the catalog is fetched live like the other remote providers.
+        specs.append((
+            "deepseek",
+            lambda client: _fetch_openai_compatible_model_catalog(
+                client,
+                "deepseek",
+                "DeepSeek",
+                deepseek_api_key,
+                DEEPSEEK_BASE_URL,
             ),
         ))
 

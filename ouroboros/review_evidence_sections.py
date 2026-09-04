@@ -115,10 +115,72 @@ _ACCEPT_ARTIFACT_PREVIEW_MAX_BYTES = 4096  # only preview artifacts smaller than
 _ACCEPT_TOTAL_BUDGET = 240_000         # whole-packet char ceiling; degrade trajectory tail first
 
 
+ACCEPTANCE_PROMPT_OVERHEAD_CHARS = 20_000  # instructions/criteria/scaffolding around the packet
+
+
+# Acceptance packets are JSON- and code-dense, so the usual 4-chars-per-token
+# rule of thumb overstates what fits. A calibrated token cap is converted at the
+# dense ratio; overstating it would turn a disclosed shed into a PAID 400.
+_ACCEPT_DENSE_CHARS_PER_TOKEN = 3.3
+
+
 _ACCEPT_OBLIGATIONS_MAX = 40           # obligation-catalog row cap (open-first, then most-recent)
 
 
 _ACCEPT_RETRIEVAL_URLS_MAX = 20        # native-retrieval URLs carried inline (+ disclosed omitted count)
+
+
+class AcceptancePacketBudget(int):
+    """An integer packet ceiling carrying the caps calibrated with it."""
+
+    def __new__(cls, chars: int, slot_input_caps: Dict[str, int] | None = None):
+        value = super().__new__(cls, chars)
+        value.slot_input_caps = dict(slot_input_caps or {})
+        return value
+
+
+def acceptance_packet_budget_chars(slots: Any) -> AcceptancePacketBudget:
+    """Whole-packet char ceiling for THIS task's acceptance panel.
+
+    The packet is one shared prompt fanned across the configured reviewer slots,
+    so its ceiling is the same quorum-aware assembly budget the triad and plan
+    review already use: the quorum-th largest calibrated input cap over the API
+    slots (a retrieving slot brings its own tools and is not sized against this
+    pack). The calibrated cap already subtracts the output reserve and the
+    tokenizer margin, and the conversion to characters uses the dense ratio a
+    JSON/code packet really tokenizes at, minus the prompt scaffolding around
+    the packet.
+
+    The historical floor applies only when calibration is absent or unusable;
+    a positive narrow-route calibration must be honoured so shedding can fit it.
+    """
+    from ouroboros.tools.review_synthesis import (
+        per_slot_input_token_limits,
+        quorum_input_token_limit,
+    )
+
+    rows = [s for s in (slots or []) if not getattr(s, "retrieves", False)]
+    models = [str(getattr(s, "model", "") or "") for s in rows]
+    models = [m for m in models if m]
+    if not models:
+        return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET)
+    output_reserve = max(
+        [int(getattr(s, "max_tokens", 0) or 0) for s in rows] or [0]
+    ) or 16_384
+    try:
+        limits = per_slot_input_token_limits(
+            models, output_reserve=output_reserve, tokenizer_margin=50_000,
+        )
+        tokens = int(quorum_input_token_limit(models, limits))
+    except Exception:
+        log.debug("acceptance packet budget calibration failed; using the floor", exc_info=True)
+        return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET)
+    if tokens <= 0:
+        return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET, limits)
+    chars = int(tokens * _ACCEPT_DENSE_CHARS_PER_TOKEN) - ACCEPTANCE_PROMPT_OVERHEAD_CHARS
+    if chars <= 0:
+        return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET, limits)
+    return AcceptancePacketBudget(chars, limits)
 
 
 def obligation_is_pending(row: Any) -> bool:
@@ -421,29 +483,58 @@ def _accept_receipt_exhibits(receipts: list) -> list:
 
 def _accept_effective_claims(
     ctx: Any, contract: Dict[str, Any], drive_root: Any, task_id: str,
-) -> tuple[list, str]:
-    """Effective claims + provenance for the packet, via the ONE pure seam
-    (contracts.task_contract.effective_acceptance_claims): ingress-contract claims
-    first, the CLOSED plan wave's frozen claims only when ingress is empty. The
-    plan-state lookup mirrors plan_task's own state location (budget_drive_root
-    first) and is FAIL-SOFT — a claims lookup must never break packet building."""
+) -> tuple[list, str, Dict[str, Any]]:
+    """Effective claims + provenance + an open-wave exhibit for the packet.
+
+    Claims come from the ONE pure seam
+    (contracts.task_contract.effective_acceptance_claims): ingress-contract
+    claims first, the CLOSED plan wave's frozen claims only when ingress is
+    empty. The plan-state lookup mirrors plan_task's own state location
+    (budget_drive_root first) and is FAIL-SOFT — a claims lookup must never
+    break packet building.
+
+    A reviewed-and-frozen but never-closed wave binds NOTHING, and until now it
+    was indistinguishable in the packet from a task that never had claims. It is
+    disclosed instead: the claims ride as a non-binding exhibit and the source
+    reads ``none_open_plan_wave``. The exhibit sits in
+    ``DECLARED_INTENT_SECTIONS``, so citing it can never resolve a criterion."""
     from ouroboros.contracts.task_contract import effective_acceptance_claims
 
     claims, source = effective_acceptance_claims(contract)
     if claims:
-        return claims, source
+        return claims, source, {}
     root = getattr(ctx, "budget_drive_root", None) or drive_root
     if not root or not str(task_id or ""):
-        return [], ""
+        return [], "", {}
     try:
-        from ouroboros.task_results import closed_plan_review_wave, load_plan_review_state
-
-        wave = closed_plan_review_wave(
-            load_plan_review_state(pathlib.Path(str(root)), str(task_id))
+        from ouroboros.task_results import (
+            closed_plan_review_wave,
+            current_plan_review_wave,
+            load_plan_review_state,
         )
+
+        state = load_plan_review_state(pathlib.Path(str(root)), str(task_id))
+        wave = closed_plan_review_wave(state)
     except Exception:
-        return [], ""
-    return effective_acceptance_claims(contract, wave)
+        return [], "", {}
+    frozen, frozen_source = effective_acceptance_claims(contract, wave)
+    if frozen:
+        return frozen, frozen_source, {}
+    open_wave = current_plan_review_wave(state)
+    if not isinstance(open_wave, dict) or open_wave.get("closed"):
+        return [], frozen_source, {}
+    open_claims, _ = effective_acceptance_claims(contract, open_wave)
+    if not open_claims:
+        return [], frozen_source, {}
+    return [], "none_open_plan_wave", {
+        "binding": "not bound: wave open",
+        "cycle_index": open_wave.get("cycle_index"),
+        "aggregate": str(open_wave.get("aggregate") or ""),
+        "acceptance_claims": [
+            {key: _accept_redact_cap(value, 600) for key, value in row.items()}
+            for row in open_claims if isinstance(row, dict)
+        ],
+    }
 
 
 def _accept_claim_support_refs(contract: Dict[str, Any], receipts: list) -> list[Dict[str, Any]]:
@@ -565,8 +656,6 @@ def _accept_trajectory(tool_calls: list, drive_root: Any = None, task_id: str = 
 
 def _accept_artifact_manifest(drive_root: Any, task_id: str, protected: set) -> list:
     """Return a leak-safe manifest; protected, large and binary artifacts stay manifest-only."""
-    import hashlib
-
     from ouroboros.task_results import validate_task_id
 
     out: list = []
@@ -619,7 +708,8 @@ def _accept_artifact_manifest(drive_root: Any, task_id: str, protected: set) -> 
     return out
 
 
-def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
+def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, Any]:
+    budget = int(budget or 0) or _ACCEPT_TOTAL_BUDGET
     def _finish() -> Dict[str, Any]:
         for row in ev.get("tool_trajectory") or []:
             if isinstance(row, dict):
@@ -639,46 +729,74 @@ def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
 
     omissions: List[Dict[str, Any]] = list(ev.get("omissions_manifest") or [])
     ev["omissions_manifest"] = omissions
-    if _size() <= _ACCEPT_TOTAL_BUDGET:
-        return _finish()
-    # Disclosed ladder: trajectory tail, then artifact previews, always with a note.
+    # Disclosed ladder: predecessor envelope, trajectory tail, then artifact
+    # previews, agent-supplied evidence, and last of all a diff preview — always
+    # with a note. The predecessor envelope sheds FIRST because it is the largest
+    # section the reviewer does not need verbatim: the previous task's own
+    # authority is a durable record, and the reviewer judges THIS task.
     notes: List[str] = []
+    contract = ev.get("task_contract")
+    if _size() > budget and isinstance(contract, dict) and contract.get("predecessor_authority"):
+        envelope = contract.get("predecessor_authority")
+        try:
+            omitted_chars = len(json.dumps(envelope, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            omitted_chars = 0
+        previous_task_id = ""
+        if isinstance(envelope, dict):
+            source = envelope.get("source") if isinstance(envelope.get("source"), dict) else {}
+            previous_task_id = str(
+                envelope.get("previous_task_id") or envelope.get("task_id")
+                or source.get("task_id") or "",
+            )
+        contract = {**contract, "predecessor_authority": {
+            "kind": "predecessor_authority_omitted_for_budget",
+            "previous_task_id": previous_task_id,
+            "omitted_chars": omitted_chars,
+        }}
+        ev["task_contract"] = contract
+        notes.append(f"omitted the predecessor authority envelope ({omitted_chars} chars)")
+        omissions.append({
+            "section": "task_contract.predecessor_authority",
+            "omitted": omitted_chars,
+            "reason": "evidence_budget",
+        })
     traj = ev.get("tool_trajectory")
-    if isinstance(traj, list) and len(traj) > 20:
+    if _size() > budget and isinstance(traj, list) and len(traj) > 20:
         dropped = len(traj) - 20
         ev["tool_trajectory"] = traj[-20:]
         ev["tool_trajectory_omitted_leading"] = int(ev.get("tool_trajectory_omitted_leading", 0) or 0) + dropped
+        ev["tool_trajectory_complete"] = False
         notes.append(f"kept the most-recent 20 tool calls (dropped {dropped} earlier)")
         omissions.append({"section": "tool_trajectory", "omitted": dropped, "reason": "evidence_budget"})
     # Re-cap trajectory results before lower-priority evidence sections.
     traj = ev.get("tool_trajectory")
-    if _size() > _ACCEPT_TOTAL_BUDGET and isinstance(traj, list) and traj:
+    if _size() > budget and isinstance(traj, list) and traj:
         non_traj = _size() - sum(len(str(c.get("result") or "")) for c in traj if isinstance(c, dict))
         # Keep conservative headroom for markers and JSON escaping.
-        share = max(700, (_ACCEPT_TOTAL_BUDGET - non_traj) // max(1, len(traj)) - 400)
+        share = max(700, (budget - non_traj) // max(1, len(traj)) - 400)
         recapped = 0
         for c in traj:
             if isinstance(c, dict) and len(str(c.get("result") or "")) > share:
                 _cap_result(c, share)
-                if "result_complete" in c:
-                    c["result_complete"] = False
+                c["result_complete"] = False
                 recapped += 1
         if recapped:
+            ev["tool_trajectory_complete"] = False
             notes.append(f"re-capped {recapped} trajectory results to ~{share} chars each for budget")
             omissions.append({"section": "tool_trajectory_results", "omitted": recapped, "reason": "evidence_budget"})
         # Escape-proof backstop: shed to the 700-char floor if needed.
-        if _size() > _ACCEPT_TOTAL_BUDGET and share > 700:
+        if _size() > budget and share > 700:
             floored = 0
             for c in traj:
                 if isinstance(c, dict) and len(str(c.get("result") or "")) > 700:
                     _cap_result(c, 700)
-                    if "result_complete" in c:
-                        c["result_complete"] = False
+                    c["result_complete"] = False
                     floored += 1
             if floored:
                 notes.append(f"floored {floored} trajectory results to 700 chars for budget")
                 omissions.append({"section": "tool_trajectory_results", "omitted": floored, "reason": "evidence_budget_floor"})
-    if _size() > _ACCEPT_TOTAL_BUDGET and isinstance(ev.get("artifacts"), list):
+    if _size() > budget and isinstance(ev.get("artifacts"), list):
         stripped = 0
         for a in ev["artifacts"]:
             if isinstance(a, dict) and a.get("preview") not in (None, "", "(protected artifact — manifest only)"):
@@ -688,25 +806,62 @@ def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
             notes.append(f"stripped {stripped} artifact previews to manifest-only")
             omissions.append({"section": "artifact_previews", "omitted": stripped, "reason": "evidence_budget"})
     # Collapse oversized agent-supplied evidence only after trajectory/artifact reductions.
-    if _size() > _ACCEPT_TOTAL_BUDGET and isinstance(ev.get("agent_supplied"), dict) and ev["agent_supplied"]:
+    if _size() > budget and isinstance(ev.get("agent_supplied"), dict) and ev["agent_supplied"]:
         ev["agent_supplied"] = {"__truncated__": _ev().truncate_review_artifact(
             json.dumps(ev["agent_supplied"], ensure_ascii=False, default=str), limit=20000)}
         notes.append("collapsed oversized agent-supplied evidence to a truncated projection")
         omissions.append({"section": "agent_supplied", "reason": "evidence_budget"})
+    # Last rung before abstention: the diff, and only when its exact bytes stay
+    # resolvable through the durable source ref the packet already carries. A
+    # bounded diff with a live source ref is an OMISSION, not an unresolved
+    # partial — the reviewer is told what was cut and where the rest lives.
+    if _size() > budget and ev.get("repo_diff_source_ref") and ev.get("repo_diff"):
+        full_diff = str(ev.get("repo_diff") or "")
+        preview = _ev().truncate_review_artifact(full_diff, limit=20000)
+        if len(preview) < len(full_diff):
+            ev["repo_diff"] = preview
+            ev["repo_diff_complete"] = False
+            notes.append(f"previewed the repo diff at 20000 of {len(full_diff)} chars")
+            omissions.append({
+                "section": "repo_diff",
+                "omitted": len(full_diff) - len(preview),
+                "reason": "evidence_budget",
+                "source_ref": ev.get("repo_diff_source_ref") or {},
+            })
     # Immutable owner requirements overflow only into a typed DEGRADED abstention.
-    if _size() > _ACCEPT_TOTAL_BUDGET:
+    if _size() > budget:
+        largest = []
+        for key, value in ev.items():
+            if str(key).startswith("__"):
+                continue
+            try:
+                largest.append((len(json.dumps(value, ensure_ascii=False, default=str)), str(key)))
+            except (TypeError, ValueError):
+                continue
+        largest.sort(reverse=True)
+        top = ", ".join(f"{name}={size}" for size, name in largest[:3])
         ev["__immutable_core_overflow__"] = {
             "packet_chars": _size(),
-            "budget_chars": _ACCEPT_TOTAL_BUDGET,
-            "reason": "immutable owner requirements cannot be truncated",
+            "budget_chars": budget,
+            "reason": (
+                "packet exceeds budget after every disclosed shed; largest sections: " + top
+                if top else "immutable owner requirements cannot be truncated"
+            ),
         }
         notes.append(f"immutable core remains ~{_size() // 1000}k; reviewer must abstain as DEGRADED")
+    trajectory_source_ref = ev.get("tool_trajectory_source_ref") or {}
     unresolved_partials = [{
         "tool": str(row.get("tool") or ""),
-        "status": "not_materialized_for_reviewer",
-        "source_ref": row.get("result_source_ref") or {},
+        "status": ("not_materialized_for_reviewer"
+                   if row.get("result_source_ref") or trajectory_source_ref else "source_unavailable"),
+        "source_ref": row.get("result_source_ref") or trajectory_source_ref,
     } for row in (ev.get("tool_trajectory") or [])
         if isinstance(row, dict) and row.get("result_complete") is False]
+    if int(ev.get("tool_trajectory_omitted_leading", 0) or 0) > 0:
+        unresolved_partials.append({
+            "tool": "tool_trajectory", "status": ("not_materialized_for_reviewer"
+                if trajectory_source_ref else "source_unavailable"), "source_ref": trajectory_source_ref,
+        })
     if unresolved_partials:
         existing = ev.get("__unresolved_partial_artifacts__")
         ev["__unresolved_partial_artifacts__"] = [
@@ -715,7 +870,7 @@ def _accept_enforce_budget(ev: Dict[str, Any]) -> Dict[str, Any]:
         ]
     if notes:
         ev["__budget_note__"] = (
-            f"⚠️ OMISSION NOTE: evidence exceeded {_ACCEPT_TOTAL_BUDGET} chars; "
+            f"⚠️ OMISSION NOTE: evidence exceeded {budget} chars; "
             + "; ".join(notes) + ". Full content is durable off-axis."
         )
     return _finish()

@@ -647,14 +647,16 @@ def _poll_port_file(timeout: float = 30.0) -> int:
     return _read_port_file()
 
 
-def _kill_orphaned_children(port: int) -> None:
+def _kill_orphaned_children(port: int, reason: str = "window_close") -> None:
     """Final safety net: kill processes still on runtime ports.
 
     Module-level so both the window-close handler (_on_closing, main thread) and
     the panic-stop branch (agent_lifecycle_loop, supervisor thread) tear down the
-    exact same way.
+    exact same way. ``reason`` names the actual trigger, journalled HERE because
+    stop_agent() usually consumed the recorded-process row already.
     """
-    _cleanup_recorded_server_process("window_close")
+    log.info("Tearing down runtime orphans (%s)", reason)
+    _cleanup_recorded_server_process(reason)
     _kill_stale_runtime_ports(port)
     _kill_stale_on_port(8766)
     try:
@@ -744,7 +746,7 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
             # supervisor thread cannot end the main-thread Cocoa webview loop on
             # macOS (it leaves a black frozen window), so exit with parity to the
             # window-close path: kill orphans, release the pid lock, os._exit(0).
-            _kill_orphaned_children(port)
+            _kill_orphaned_children(port, reason="panic_stop")
             release_pid_lock()
             os._exit(0)
 
@@ -1114,13 +1116,13 @@ def _run_headless_main(url: str, port: int, lifecycle_thread: threading.Thread) 
                 "(crash fuse); shutting down."
             )
             break
+    requested_shutdown = _shutdown_event.is_set()
     stop_agent()
-    _kill_orphaned_children(port)
+    _kill_orphaned_children(port, reason="headless_shutdown" if requested_shutdown else "crash_fuse")
     # NO explicit release_pid_lock(): sys.exit runs the atexit-registered
     # release, and a second release would unconditionally unlink a lock a
     # NEWER launcher may own (explicit calls stay only on os._exit paths).
-    # Event set == requested shutdown; otherwise crash fuse → exit nonzero.
-    sys.exit(0 if _shutdown_event.is_set() else 1)
+    sys.exit(0 if requested_shutdown else 1)
 
 
 def main():
@@ -1326,7 +1328,7 @@ def main():
         # (an aborted wait is a requested shutdown, not a startup failure).
         log.info("Shutdown requested during headless startup; tearing down.")
         stop_agent()
-        _kill_orphaned_children(actual_port)
+        _kill_orphaned_children(actual_port, reason="startup_abort")
         # atexit owns release_pid_lock on sys.exit (a second release would
         # unlink a newer launcher's lock).
         sys.exit(0)
@@ -1337,7 +1339,7 @@ def main():
         stop_agent()
         lifecycle_thread.join(timeout=5)
         if _headless:
-            _kill_orphaned_children(actual_port)
+            _kill_orphaned_children(actual_port, reason="startup_failure")
             print(
                 "Ouroboros failed to start: the local agent server did not "
                 "become ready.\n"

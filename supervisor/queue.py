@@ -18,7 +18,11 @@ from supervisor.state import (
     budget_remaining, EVOLUTION_BUDGET_RESERVE,
     reconstruct_task_cost as reconstruct_task_cost,
 )
-from supervisor.message_bus import send_with_budget
+from supervisor.message_bus import (
+    coerce_chat_identity,  # noqa: F401 -- queue_timeouts leaf reads it via the _queue() handle
+    notification_chat_route,
+    send_with_budget,
+)
 from ouroboros.config import (
     DATA_DIR,
     FINALIZATION_GRACE_DEFAULT_SEC,
@@ -374,8 +378,10 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
     ``/review``) so the queued ack and the task results return to the requester
     instead of always defaulting to the web owner's ``owner_chat_id``.
     """
-    target_chat_id = chat_id if chat_id else load_state().get("owner_chat_id")
-    if not target_chat_id:
+    # Membership, not truthiness: a review asked for from the hidden partition
+    # is answered there, not silently re-routed to the owner's main chat.
+    target_chat_id = notification_chat_route(chat_id, load_state().get("owner_chat_id"))
+    if target_chat_id is None:
         return None
     if (not force) and queue_has_task_type("deep_self_review"):
         return None
@@ -388,7 +394,9 @@ def queue_deep_self_review_task(reason: str, model: str = "", force: bool = Fals
         "model": model,
     })
     persist_queue_snapshot(reason="deep_self_review_enqueued")
-    send_with_budget(int(target_chat_id), f"🔎 Deep self-review queued: {tid} ({reason})")
+    # Typed SYSTEM row: an acknowledgement is never a task's answer, and the bench
+    # trajectory reader takes the last UNTYPED outbound row as one.
+    send_with_budget(int(target_chat_id), f"🔎 Deep self-review queued: {tid} ({reason})", role="system", system_type="deep_self_review_queued")
     return tid
 
 
