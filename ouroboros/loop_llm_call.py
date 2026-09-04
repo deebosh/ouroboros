@@ -8,6 +8,7 @@ Extracted from loop.py to keep the main loop orchestrator focused.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import pathlib
@@ -390,10 +391,7 @@ def _deadline_not_dispatched(
     # production round dispatcher supplies the finalization reserve explicitly;
     # direct callers such as retry diagnostics can still exercise a first
     # admitted attempt and let the retry backoff gate stop the next one.
-    admission_reserve = 0.0 if reserve_sec is None else reserve_sec
-    if not owner_deadline_exhausted(
-        deadline_ts=deadline_ts, reserve_sec=admission_reserve,
-    ):
+    if not owner_deadline_exhausted(deadline_ts=deadline_ts, reserve_sec=0.0 if reserve_sec is None else reserve_sec):
         return False
     if llm_call_id:
         _emit_llm_operation(
@@ -405,12 +403,9 @@ def _deadline_not_dispatched(
     # not become `deadline_exhausted` — that would re-open the forced-final rail (a
     # paid resend) over a possibly live request; a repeat this invocation granted
     # but never sent is un-counted so the terminal hint names only real repeats.
-    record = accumulated_usage.get(TRANSPORT_DEATHS_KEY)
-    if isinstance(record, dict) and record.get("round_id") == round_id:
+    if _transport_death_repeats(accumulated_usage, round_id):
         if accumulated_usage.get("_last_llm_retry_same_request") and accumulated_usage.get("_last_llm_error_kind") == "provider_outcome_unknown":
-            record["count"] -= 1
-        if record.get("count", 0) <= 0:
-            accumulated_usage.pop(TRANSPORT_DEATHS_KEY, None)
+            _uncount_transport_death(accumulated_usage)
         accumulated_usage["_last_llm_retry_same_request"] = False
     else:
         accumulated_usage.update(
@@ -903,6 +898,14 @@ def _normalize_usage_cost(
     return cost, display_model, provider, cost_estimated
 
 
+def _uncount_transport_death(accumulated_usage: Dict[str, Any]) -> None:
+    """A granted repeat that never left the host is no repeat: take it back off the round record."""
+    record = accumulated_usage.get(TRANSPORT_DEATHS_KEY) or {}
+    record["count"] = int(record.get("count") or 0) - 1
+    if record["count"] <= 0:
+        accumulated_usage.pop(TRANSPORT_DEATHS_KEY, None)
+
+
 def _transport_death_repeats(accumulated_usage: Dict[str, Any], round_id: str) -> int:
     """Paid repeats already spent on THIS round's transport deaths; a record from
     another round is dropped (and a usable response pops it) so neither the
@@ -1033,6 +1036,8 @@ def _stop_after_llm_error(ctx: _LlmErrorContext) -> bool:
     if backoff is not None:
         if _sleep_within_deadline(backoff, ctx.deadline_ts):
             return False
+        if error_kind == "provider_outcome_unknown":
+            _uncount_transport_death(accumulated_usage)  # the granted repeat never left the host
         _emit_retry_deadline_exhausted(
             ctx.drive_logs, task_id=ctx.task_id, execution_id=ctx.execution_id,
             round_id=ctx.round_id, round_idx=ctx.round_idx, attempt=ctx.attempt,
@@ -1190,13 +1195,12 @@ def _send_main_candidate(
     physical_context: Optional[PhysicalAttemptContext],
     candidate_predicate: Optional[Callable[[Any], Any]],
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    with model_concurrency.model_call_slot(model, use_local, deadline_ts):
-        if physical_context is None:
-            return llm.chat(**kwargs)
-        with bind_physical_attempt_context(
-            physical_context, candidate_predicate=candidate_predicate,
-        ):
-            return llm.chat(**kwargs)
+    binding = (
+        contextlib.nullcontext() if physical_context is None
+        else bind_physical_attempt_context(physical_context, candidate_predicate=candidate_predicate)
+    )
+    with model_concurrency.model_call_slot(model, use_local, deadline_ts), binding:
+        return llm.chat(**kwargs)
 
 
 def _take_custom_receipts(
@@ -1212,11 +1216,6 @@ def _take_custom_receipts(
     accumulated_usage.pop(CUSTOM_RECEIPTS_USAGE_KEY, None)
     if receipts:
         accumulated_usage[CUSTOM_RECEIPTS_USAGE_KEY] = receipts
-
-
-def _clear_custom_receipts(accumulated_usage: Dict[str, Any]) -> None:
-    from ouroboros.openai_chat_dispatch import CUSTOM_RECEIPTS_USAGE_KEY
-    accumulated_usage.pop(CUSTOM_RECEIPTS_USAGE_KEY, None)
 
 
 def _emit_main_llm_call_state(
@@ -1241,12 +1240,13 @@ def _handle_main_llm_call_exception(
     error: Exception, ctx: _LlmErrorContext, call_identity: Tuple[Any, ...],
 ) -> bool:
     """Close the exact call and decide whether the attempt loop must stop."""
+    from ouroboros.openai_chat_dispatch import CUSTOM_RECEIPTS_USAGE_KEY
     _emit_main_llm_call_state(ctx.event_queue, call_identity, "failed")
     _emit_llm_operation(
         ctx.event_queue, ctx.task_id, ctx.llm_call_id, "failed", ctx.task_attempt,
         ctx.execution_id, ctx.round_id,
     )
-    _clear_custom_receipts(ctx.accumulated_usage)
+    ctx.accumulated_usage.pop(CUSTOM_RECEIPTS_USAGE_KEY, None)
     return _record_llm_call_error(error, ctx) or _stop_after_llm_error(ctx)
 
 

@@ -266,7 +266,8 @@ def test_deadline_window_refuses_the_repeat_before_it_is_promised(tmp_path, no_s
 def test_backoff_sleep_refusal_race_stops_without_a_resend(tmp_path, monkeypatch):
     """Residual race (the sleep gate refusing after the grant, e.g. a laptop
     that slept between the two checks): the loop stops on the durable
-    deadline-exhausted event, keeps the unknown kind and never resends."""
+    deadline-exhausted event, keeps the unknown kind, never resends, and takes
+    the never-sent repeat back off the round record so the hint stays true."""
     monkeypatch.setattr(call_mod, "_sleep_within_deadline", lambda _sec, _dl: False)
     llm = _ScriptedLLM(_death, _death)
     usage = {}
@@ -278,6 +279,25 @@ def test_backoff_sleep_refusal_race_stops_without_a_resend(tmp_path, monkeypatch
     assert [row["error_kind"] for row in deadline_rows] == ["provider_outcome_unknown"]
     assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
     assert RETRY_WALL_EXHAUSTED_KEY not in usage
+    assert provider_no_call_source(usage, False) == ("provider_outcome_unknown_no_resend", False)
+    assert TRANSPORT_DEATHS_KEY not in usage
+    assert "were repeated" not in loop_transport.provider_recovery_hint(usage)
+
+
+def test_sleep_refusal_after_the_second_grant_keeps_only_the_real_repeat(tmp_path, monkeypatch):
+    """Attempt 1 was really repeated (attempt 2 died too); the second grant is
+    refused by the sleep gate: the record keeps exactly one real repeat."""
+    gates = iter([True, False])
+    monkeypatch.setattr(call_mod, "_sleep_within_deadline", lambda _sec, _dl: next(gates))
+    llm = _ScriptedLLM(_death, _death, _death)
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage)
+
+    assert msg is None
+    assert llm.calls == 2
+    assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
+    hint = loop_transport.provider_recovery_hint(usage)
+    assert "1 earlier physical attempt(s) of the last dispatched round" in hint
     assert provider_no_call_source(usage, False) == ("provider_outcome_unknown_no_resend", False)
 
 
@@ -361,6 +381,7 @@ def test_requests_lane_death_repeats_on_the_same_rail(tmp_path, no_sleep):
     assert llm.calls == 2
     api_errors = _events(tmp_path, "llm_api_error")
     assert [(row["error_kind"], row["retry_same_request"]) for row in api_errors] == [("provider_outcome_unknown", True)]
+    assert api_errors[0]["transport_cause_type"] == "RemoteDisconnected"
 
 
 # ------------------------------------------------------- round-keyed counter
@@ -684,3 +705,20 @@ def test_stop_path_without_a_record_stops_instead_of_crashing(tmp_path):
     )
     assert call_mod._stop_after_llm_error(ctx) is True
     assert RETRY_WALL_EXHAUSTED_KEY not in ctx.accumulated_usage
+
+
+def test_native_subagent_child_primary_dispatch_opts_in(tmp_path, monkeypatch, no_sleep):
+    """A native API subagent child runs the ordinary run_llm_loop: its rounds are
+    primary rounds of its own loop and get the bounded transport-death rail."""
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    llm = _ScriptedLLM(_death, _death)
+    kwargs = _loop_kwargs(tmp_path, llm, [])
+    kwargs["tools"]._ctx.task_metadata = {"delegation_role": "subagent", "parent_task_id": "t-parent"}
+    result, usage, _trace = run_llm_loop(**kwargs)
+
+    assert result == "done"
+    assert llm.calls == 3
+    assert usage.get("reason_code") is None
+    assert TRANSPORT_DEATHS_KEY not in usage
