@@ -304,20 +304,30 @@ def _check_budget_limits(
             **request_args, root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding,
         )
         wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
-        # The proxy decides only the cheap positive; the priced candidate decides
-        # a proxy stop and every prompt the proxy can understate (native images).
-        if wrapup_fits is False or (wrapup_fits is True and (
-            task_pacing.wrapup_reservation_fits(**wrapup_args, reservation_count=2) is False
-            or messages_carry_native_images(ctx.messages)
-        )):
+        two_fit = task_pacing.wrapup_reservation_fits(**wrapup_args, reservation_count=2) if wrapup_fits is True else None
+        server_web = _server_web_allowed_by_task(getattr(getattr(ctx, "tools", None), "_ctx", None))
+        if wrapup_fits is True and two_fit is not False and messages_carry_native_images(ctx.messages):
+            # The proxy understates images: price the raw bytes without touching
+            # the task (no finalization) before destructive prep.
+            probe_messages = [dict(message) for message in ctx.messages]
+            _append_or_merge_user_message(probe_messages, forced_prompt)
+            probe = task_pacing.prospective_wrapup_attempt_request(
+                llm=ctx.llm, messages=probe_messages, model=ctx.active_model,
+                reasoning_effort=ctx.active_effort, tools=ctx.tool_schemas,
+                allow_server_web_search=server_web, prompt_tokens=prompt_estimate,
+            )
+            wrapup_args = dict(request=probe, root_cap_usd=cost_ceiling.root_cap_usd, deciding_usd=deciding)
+            wrapup_fits = task_pacing.wrapup_reservation_fits(**wrapup_args)
+            two_fit = task_pacing.wrapup_reservation_fits(**wrapup_args, reservation_count=2) if wrapup_fits is True else None
+        if wrapup_fits is False or two_fit is False:
+            # Only at a real stop decision: finalize services, prepare the exact
+            # candidate that will be dispatched.
             trace = ctx.llm_trace if isinstance(ctx.llm_trace, dict) else {}
             priced_prompt = _prepare_forced_prompt(ctx, forced_prompt, trace)
             prospective_messages = [dict(message) for message in ctx.messages]
             _append_or_merge_user_message(prospective_messages, priced_prompt)
             wrapup_request, send_messages = task_pacing.prepared_wrapup_candidate(
-                ctx, prospective_messages,
-                allow_server_web_search=_server_web_allowed_by_task(
-                    getattr(getattr(ctx, "tools", None), "_ctx", None)),
+                ctx, prospective_messages, allow_server_web_search=server_web,
             )
             wrapup_args = dict(
                 request=wrapup_request, root_cap_usd=cost_ceiling.root_cap_usd,
@@ -1320,10 +1330,8 @@ def _execute_task_acceptance_panel(ctx: _TaskAcceptanceContext) -> Any:
             degraded_reasons=["no_review_slots"],
         )
     # Budget admission for the whole acceptance wave (v6.69.0): a wave that
-    # cannot fit the remaining root budget is declined up front as a terminal
-    # DEGRADED (no-quorum semantics) instead of dying mid-wave. The estimate
-    # renders the REAL per-slot message pair; the rare second physical
-    # attempt is not multiplied in — fail-open coarse filter, no reservation.
+    # cannot fit the remaining root budget is declined up front as terminal
+    # DEGRADED; fail-open coarse filter over the real per-slot pair, no reservation.
     from ouroboros.tools.review_helpers import review_wave_budget_gate
 
     try:
@@ -2899,11 +2907,9 @@ def _direct_child_results(ctx: _RoundLimitContext) -> list[Dict[str, Any]]:
 def _child_disposition_state(child: Dict[str, Any]) -> str:
     """Return cancellation or the current task-tree exact-hash disposition."""
 
-    # Explicit cancellation is lifecycle authority and wins every completion
-    # race; late scratch results are not projected or recovered. Only a SETTLED
-    # ``cancelled`` counts as handled (GR2-8c): ``cancel_requested`` is intent,
-    # not outcome — treating it as done suppressed the handoff reminder, so
-    # such a child stays cancel-pending until custody settles.
+    # Explicit cancellation wins every completion race; late scratch results are
+    # not recovered. Only a SETTLED ``cancelled`` counts as handled (GR2-8c):
+    # ``cancel_requested`` is intent, so such a child stays cancel-pending.
     if (
         str(child.get("parent_decision") or "").strip().lower() == "cancelled"
         and str(child.get("status") or "").strip().lower() == "cancelled"
@@ -3322,11 +3328,9 @@ def _record_forced_acceptance_bypass(
     tools_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
     if tools_ctx is None:
         return
-    # A recorded host decision (panel ran, pacing skip, supersede) wins; the
-    # bypass record exists only for the no-host-verdict shape. "Host
-    # decision" = a canonical status — NOT the status-less agent-stance dict
-    # merged when task_acceptance_review defers to the host (that left the
-    # bypass unrecorded when owed); `_set_acceptance_decision` stamps.
+    # A recorded host decision (canonical status, NOT the status-less agent
+    # stance merged on a deferral) wins; the bypass record exists only for the
+    # no-host-verdict shape; `_set_acceptance_decision` stamps.
     decision = llm_trace.get("acceptance_decision")
     if isinstance(decision, dict) and str(decision.get("status") or "") in ACCEPTANCE_DECISION_STATUSES:
         return
@@ -5025,11 +5029,9 @@ def _nanny_finalization_message(
     except Exception:
         log.debug("nanny nudge: custody evidence read failed", exc_info=True)
     if evidence.get("delegated_runs_succeeded"):
-        # The route WAS used and worked — but "used once" is no permanent
-        # license: the poltergeist children each ran ONE successful $0 run then
-        # co-built for tens of opus rounds while this early return kept the
-        # nudge silent. Silence is proportional to the measured burn since the
-        # last delegated-run activity.
+        # "Used once" is no permanent license (the poltergeist children ran one
+        # $0 run, then co-built for tens of opus rounds behind this early
+        # return): silence is proportional to the burn since the last delegated run.
         rounds, cost = _nanny_metered_since_delegate_activity(tools._ctx)
         from ouroboros.task_pacing import NANNY_REMINDER_ROUNDS, NANNY_REMINDER_USD
 
@@ -5059,11 +5061,9 @@ def _nanny_finalization_message(
     failure_states = [str(s) for s in (evidence.get("delegated_run_failure_states") or [])]
     pending = max(0, started - settled)
     if pending:
-        # PENDING ≠ FAILED (sol review, b49f8192): a STARTED row without
-        # settlement may still be executing — calling it failed invites a
-        # duplicate, and finalizing over it orphans the result. Outranks the
-        # failed message: with a run in flight, "retry" is wrong even when an
-        # earlier sibling died (still a fact below).
+        # PENDING ≠ FAILED (b49f8192): a STARTED row without settlement may
+        # still be executing — "failed" invites a duplicate, finalizing orphans
+        # the result; outranks the failed message even if a sibling died.
         failed_note = (
             f" {len(failure_states)} earlier run(s) already ended: {', '.join(failure_states)}."
             if failure_states else ""
@@ -5197,11 +5197,9 @@ def _maybe_inject_finalization_nudges(
             llm_trace["reasoning_notes"].append("Red-verification nudge injected before final response.")
             return True
     if not getattr(tools._ctx, "_verify_masked_nudged", False):
-        # Exit-masking one-shot ADVISORY nudge (v6.52.2): a PASSING verify
-        # check can LAUNDER the real exit code (`| tail`/`|| true` — the
-        # false-green tutanota hit). Distinct from the red nudge; after it.
-        # Binary latch; advisory; forced paths bypass it. Flag-driven on
-        # typed receipt sensor, never content (P5).
+        # Exit-masking one-shot ADVISORY nudge (v6.52.2): a passing verify can
+        # launder the exit code (`| tail`/`|| true`). After the red nudge; binary
+        # latch; forced paths bypass; typed receipt sensor, never content (P5).
         _masked_receipt = latest_unreconciled_masked_verification(
             drive_root, task_id, receipts=receipt_rows,
         )
@@ -6139,11 +6137,9 @@ def run_llm_loop(
                     tool_schemas=tool_schemas,
                 )
             if active_model != _prev_active_model:
-                # A cross-FAMILY switch_model / per-task override: strip the
-                # prior family's provider-private reasoning blocks from the
-                # history so the new family does not 400 on a signature it
-                # cannot validate (safe — loses only reasoning continuity).
-                # Same family is a no-op.
+                # Cross-FAMILY switch_model / per-task override: strip the prior
+                # family's provider-private reasoning blocks so the new family
+                # does not 400 on a foreign signature (same family = no-op).
                 _sanitized = LLMClient.sanitize_reasoning_on_model_switch(messages, _prev_active_model, active_model)
                 if _sanitized is not messages:
                     messages[:] = _sanitized
