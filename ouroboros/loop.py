@@ -2519,11 +2519,12 @@ def _provider_unavailable_result(
     mutable ``_last_llm_error_kind``); ``waited_sec``/``interactive`` keep the
     terminal text honest for zero-wait and such turns."""
     kind = str(error_kind or "")
-    # A round record (a granted transport-death repeat, no usable response since) leaves an attempt
-    # unresolved: the unknown rail outranks the overflow salvage and the wait terminal's source.
+    # Terminal precedence is decided here alone (the text helper takes both flags as given): a
+    # round record (a granted transport-death repeat, no usable response since) leaves an attempt
+    # unresolved and outranks the wait terminal, which in turn outranks the overflow salvage.
     record = isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict)
-    is_context_overflow = kind == "context_overflow" and not record
     is_transport_wait = wait_cause == "transport_unavailable"
+    is_context_overflow = kind == "context_overflow" and not (record or is_transport_wait)
     is_deadline_exhausted = kind == "deadline_exhausted" or str(ctx.accumulated_usage.get("_last_llm_error_kind") or "") == "deadline_exhausted"
     llm_trace = getattr(ctx, "llm_trace", None)
     llm_trace = llm_trace if isinstance(llm_trace, dict) else {}
@@ -2557,8 +2558,6 @@ def _provider_unavailable_result(
         return text, usage, llm_trace
     if is_transport_wait:
         # No-resend terminal over dead egress.
-        live_trace = getattr(ctx, "llm_trace", None)
-        llm_trace = live_trace if isinstance(live_trace, dict) else {}
         ctx.accumulated_usage.update(execution_status=RESULT_INFRA_FAILED, reason_code="provider_unavailable")
         text, usage, llm_trace = _forced_fallback_result(
             ctx, llm_trace, fallback, reason_code="provider_unavailable",

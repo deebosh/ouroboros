@@ -526,6 +526,10 @@ def provider_terminal_fallback_text(
 ) -> str:
     """Owner-facing terminal text when provider death left nothing to salvage.
 
+    ``is_context_overflow`` and ``is_transport_wait`` are the caller's resolved
+    verdict, never re-derived here: ``_provider_unavailable_result`` decides the
+    terminal precedence (a round record, then the latched wait cause, then the
+    overflow salvage) and passes at most one of the two flags true.
     ``interactive`` is the episode's wait-class fact — a direct-chat, Presence, or
     ephemeral decision turn is "this turn", never "the task" — and ``waited_sec`` its wait
     fact (0.0 when the binding window was already spent before the first wait

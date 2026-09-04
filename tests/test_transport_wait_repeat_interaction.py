@@ -12,7 +12,11 @@ wait terminal:
 - an episode exhausted on a round that still holds a repeat record ends on the
   record's source, worded as both the wait and the unresolved attempt — and that
   wording names the class the repeat was RELEASED with, never the later refusal
-  that closed the window.
+  that closed the window;
+- the terminal precedence is decided once, at the provider-death rail: a round
+  record outranks the latched wait cause, which outranks the overflow salvage —
+  so the ``context_overflow`` a failed local-only pass leaves in the mutable kind
+  never turns a waited-out outage into the overflow terminal.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from tests.test_transport_death_retry import (
     _events,
     _loop_kwargs,
     _no_chain,
+    _overflow_failure,
     _released_connect,
 )
 
@@ -211,3 +216,139 @@ def test_fallback_chain_fence_holds_inside_a_wait_episode_too(monkeypatch):
     assert episode.local_pass_used is True
     assert loop_transport.fallback_chain_allowed(routable, "transport_unavailable", episode) is False  # once per episode
     assert loop_transport.fallback_chain_allowed(routable, "provider_outcome_unknown", None) is False
+
+
+def _overflowing_local_pass(spend_window):
+    """The episode's one local-only chain pass, failing with a context overflow
+    exactly as ``call_llm_with_retry`` stamps it, and slow enough that the wait
+    window is already spent when the round gate reads it (``spend_window``)."""
+    chain_calls = {"n": 0}
+
+    def failing_chain(**kwargs):
+        chain_calls["n"] += 1
+        assert kwargs["active_use_local"] is False  # the primary route that failed pre-dispatch
+        assert kwargs["accumulated_usage"]["_last_llm_error_kind"] == "transport_unavailable"
+        kwargs["accumulated_usage"].update(
+            _last_llm_error_kind="context_overflow", execution_status="infra_failed", reason_code="llm_api_error",
+        )
+        spend_window()
+        return (
+            None, kwargs["active_model"], kwargs["active_use_local"],
+            kwargs["context_fit_plan"], kwargs["active_context_mode"],
+        )
+
+    return failing_chain, chain_calls
+
+
+@pytest.mark.parametrize("turn", ["managed", "is_direct_chat", "is_ephemeral_turn"])
+def test_latched_wait_cause_outranks_the_overflow_a_failed_local_pass_left(tmp_path, monkeypatch, turn):
+    """outage latched → the episode's one local-only pass fails with a context
+    overflow → the binding window (a managed task's deadline, an interactive
+    turn's idle bound) is spent before any redial: the round now holds BOTH
+    facts (``wait_cause == "transport_unavailable"`` and the pass's
+    ``context_overflow`` in the mutable kind), and the latched wait cause wins —
+    durable source ``transport_unavailable_no_resend``, the wait terminal's
+    ``provider_unavailable``/``infra_failed`` stamps, the outage wording and no
+    forced-final dial — never the overflow salvage's source, ``llm_api_error``
+    or window wording."""
+    clock = _FakeClock(monkeypatch)
+    monkeypatch.setattr(loop_transport, "get_task_idle_timeout_sec", lambda: 60)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "local/candidate")
+    monkeypatch.setenv("USE_LOCAL_FALLBACK", "1")
+    llm = _ScriptedLLM(_released_connect)  # a redial would recover, so none may happen
+    notes = []
+    kwargs = _loop_kwargs(tmp_path, llm, notes)
+    metadata = {}
+    if turn == "managed":
+        from ouroboros.config import get_finalization_grace_sec
+
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=get_finalization_grace_sec() + 8)
+        metadata["deadline_at"] = deadline.isoformat()
+        kwargs["tools"]._ctx.task_metadata = metadata
+    else:
+        setattr(kwargs["tools"]._ctx, turn, True)
+
+    def _slow_local_inference():
+        clock.now += 61.0  # past the interactive idle bound
+        if metadata:
+            metadata["deadline_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+
+    failing_chain, chain_calls = _overflowing_local_pass(_slow_local_inference)
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", failing_chain)
+    result, usage, trace = run_llm_loop(**kwargs)
+
+    assert llm.calls == 1 and chain_calls["n"] == 1  # the primary send and the local pass; no redial, no forced dial
+    assert clock.sleeps == []  # the window was spent inside the pass, so the episode never slept
+    assert usage["_last_llm_error_kind"] == "context_overflow"  # the pass's overwrite is still the sticky kind
+    assert usage["execution_status"] == "infra_failed"
+    assert usage["reason_code"] == "provider_unavailable"
+    assert trace["forced_finalization"]["source"] == "transport_unavailable_no_resend"
+    assert TRANSPORT_DEATHS_KEY not in usage
+    ended = [row["detail"] for row in _events(tmp_path, "network_wait") if row["phase"] == "ended"]
+    assert ended == ["deadline_exhausted" if turn == "managed" else "interactive_wait_window_exhausted"]
+    base = loop_transport.provider_terminal_fallback_text(
+        {}, is_context_overflow=False, is_transport_wait=True, waited_sec=0.0,
+        interactive=turn != "managed", is_deadline_exhausted=False,
+    )
+    assert result == base  # byte-identical zero-wait outage wording
+    assert "Could not establish a provider connection" in result
+    assert "context exceeded" not in result
+
+
+def test_context_overflow_with_no_episode_keeps_the_overflow_salvage(tmp_path, monkeypatch):
+    """Control for the precedence: a primary dispatch rejected as a context
+    overflow with NO wait episode never walks the chain (a local fallback being
+    configured changes nothing) and keeps the overflow terminal unchanged —
+    source ``context_overflow_local_salvage``, ``llm_api_error``, the window
+    wording."""
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "local/candidate")
+    monkeypatch.setenv("USE_LOCAL_FALLBACK", "1")
+    llm = _ScriptedLLM(_overflow_failure)
+    notes = []
+    result, usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, llm, notes))
+
+    assert llm.calls == 1
+    assert _events(tmp_path, "network_wait") == []
+    assert usage["_last_llm_error_kind"] == "context_overflow"
+    assert usage["execution_status"] == "infra_failed"
+    assert usage["reason_code"] == "llm_api_error"
+    assert trace["forced_finalization"]["source"] == "context_overflow_local_salvage"
+    assert result == loop_transport.provider_terminal_fallback_text(
+        {}, is_context_overflow=True, is_transport_wait=False, waited_sec=0.0, is_deadline_exhausted=False,
+    )
+    assert "context exceeded the selected model window" in result
+
+
+def test_round_record_outranks_a_wait_cause_that_holds_an_overflow_kind(tmp_path):
+    """The rail with all three facts at once: a round record, a latched wait
+    cause and an overflow kind. The round loop cannot produce this triple today
+    — a record blocks the episode's local-only pass (pinned above), and an
+    overflow on a redial or a repeat ends the episode as proof the transport is
+    passable — so the fence on top of the precedence is pinned at the rail
+    itself: the record's source, the wait terminal's stamps, and text saying
+    both the wait and the unresolved attempt, never the overflow salvage."""
+    accumulated = {
+        TRANSPORT_DEATHS_KEY: {"round_id": "r", "count": 1, "backoff_sec": 4.0},
+        "_last_llm_error_kind": "context_overflow",
+        "execution_status": "infra_failed", "reason_code": "llm_api_error",
+    }
+    ctx = loop_mod._RoundLimitContext(
+        messages=[{"role": "user", "content": "go"}], llm=SimpleNamespace(), active_model="test-model",
+        active_effort="low", max_retries=3, drive_logs=tmp_path, task_id="t-death", round_idx=1,
+        event_queue=None, accumulated_usage=accumulated, task_type="task", active_use_local=False,
+        max_rounds=200, drive_root=tmp_path,
+    )
+    text, usage, trace = loop_mod._handle_provider_unavailable(
+        ctx, error_kind="context_overflow", wait_cause="transport_unavailable", waited_sec=610.0,
+    )
+
+    assert trace["forced_finalization"]["source"] == "provider_outcome_unknown_no_resend"
+    assert usage["execution_status"] == "infra_failed"
+    assert usage["reason_code"] == "provider_unavailable"
+    assert "the task waited and redialed" in text
+    assert "1 earlier physical attempt(s) of the last dispatched round" in text
+    assert "the repeat failed as transport_unavailable" in text
+    assert "context exceeded" not in text
