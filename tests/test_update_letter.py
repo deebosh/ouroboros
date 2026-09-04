@@ -549,12 +549,29 @@ def test_panel_projection_proves_a_consumed_target_with_git(tmp_path):
         {"current_sha": merged, "latest_sha": ""}, drive_root=drive, git=lambda argv: (1, "", ""),
     )
     assert stranger["relation"] == "other"
-    # A letter about the target still ON OFFER is pending by definition: no git is asked.
+    # A letter about the update this check is still OFFERING is pending by definition:
+    # no git is asked.
     offered = ul.project_letter_for_panel(
         {"current_sha": "a" * 40, "latest_sha": target, "available": True}, drive_root=drive,
         git=lambda argv: (_ for _ in ()).throw(AssertionError("nothing to prove while the update is offered")),
     )
     assert offered["relation"] == "pending"
+    # …but a FETCHING check names `latest_sha` for a target it has just CONSUMED too. The
+    # owner clicks Check right after a divergent merge apply: HEAD is the merge commit, the
+    # check reports that same target with nothing incoming, and the letter is applied.
+    just_applied = ul.project_letter_for_panel(
+        {"current_sha": merged, "latest_sha": target, "available": False, "behind": 0},
+        drive_root=drive, git=ancestor,
+    )
+    assert just_applied["relation"] == "applied", "the panel must not disagree with the Runtime fact"
+    # …and the same instant on the Runtime side says exactly the same thing.
+    ul.record_path(drive).write_text(json.dumps(_record(checked_head_sha=merged)))
+    cache = {"managed_update_cache": {"latest_sha": target, "available": False, "behind": 0,
+                                      "checked_at": "t", "update_channel": "stable"}}
+    assert ul.official_update_projection(
+        merged, drive_root=drive, state=cache,
+    )["letter"]["relation"] == "applied"
+    ul.record_path(drive).write_text(json.dumps(_record()))
     # …but an applied OLD target under a NEWER available one is still proven and relabelled.
     newer = ul.project_letter_for_panel(
         {"current_sha": merged, "latest_sha": "c" * 40, "available": True}, drive_root=drive, git=ancestor,

@@ -610,11 +610,13 @@ def project_letter_for_panel(
     shown = shown_letter(record)[0] if record else {}
     target = str((shown.get("key") or {}).get("target_sha") or "")
     consumed = False
-    # Ancestry is asked only where it can change the answer: a letter about the target
-    # still ON OFFER is pending by definition, and HEAD == target needs no git. Everything
-    # else — including an applied older target under a newer available one — is asked.
-    offered = str(status.get("latest_sha") or "")
-    if record and head and target and head != target and target != offered:
+    # Ancestry is asked wherever it can change the answer. The ONE case that needs no git
+    # is a letter about the update this very check is still OFFERING: that is pending by
+    # definition (and HEAD == target needs no git either). Naming the target alone is not
+    # enough — a fetching check reports `latest_sha` for a target it has just consumed as
+    # well — so the skip turns on the offer itself.
+    still_offered = bool(status.get("available")) and target == str(status.get("latest_sha") or "")
+    if record and head and target and head != target and not still_offered:
         try:
             consumed = (git or _default_git())(
                 ["git", "merge-base", "--is-ancestor", target, head]
