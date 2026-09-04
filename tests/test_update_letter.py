@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 
 import pytest
 
@@ -300,13 +302,55 @@ def test_refresh_writes_record_and_keeps_last_good_on_failure(tmp_path, monkeypa
 
 
 def test_refresh_is_single_flight(tmp_path, monkeypatch):
+    # A held lock is waited for (bounded by the letter timeout), never bypassed by a
+    # second physical write; past the bound the current record is returned as it is.
     drive = tmp_path / "data"
     monkeypatch.setattr(ul, "collect_range_material", lambda *a, **k: (_ for _ in ()).throw(AssertionError("busy")))
+    monkeypatch.setattr(ul, "_letter_timeout_sec", lambda: 0.2)
     assert ul._REFRESH_LOCK.acquire(blocking=False)
     try:
         assert ul.refresh_after_check(_status(), drive_root=drive) is None
     finally:
         ul._REFRESH_LOCK.release()
+
+
+def test_refresh_waits_for_and_shares_the_in_flight_letter(tmp_path, monkeypatch):
+    # Two fetching checks for the same key (two dashboards clicking Check): the second
+    # returns the letter the first just wrote instead of paying for a second one.
+    drive = tmp_path / "data"
+    (drive / "state").mkdir(parents=True)
+    monkeypatch.setattr(ul, "collect_range_material",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("the waiter must share, not rewrite")))
+    monkeypatch.setattr(ul, "_letter_timeout_sec", lambda: 5.0)
+    status = _status()
+    key = ul._key_from_status(status)
+    assert ul._REFRESH_LOCK.acquire(blocking=False)
+
+    def writer():
+        time.sleep(0.2)
+        record = _record(key=key)
+        ul.atomic_write_json(ul.record_path(drive), record)
+        ul._note_written(key, record)
+        ul._REFRESH_LOCK.release()
+
+    threading.Thread(target=writer, daemon=True).start()
+    record = ul.refresh_after_check(status, drive_root=drive)
+    assert record["text"] == "letter" and record["key"] == key and not ul._REFRESH_LOCK.locked()
+
+
+def test_mark_checked_records_the_official_target_version(tmp_path, monkeypatch):
+    # An up-to-date check (latest == HEAD, no letter) still names the official target's
+    # version, so the Runtime fact can say which version "up to date" means.
+    drive = tmp_path / "data"
+    monkeypatch.setattr(ul, "_default_git",
+                        lambda: (lambda argv: (0, "6.114.0\n", "") if argv[:2] == ["git", "show"] else (1, "", "")))
+    record = ul.refresh_after_check(_status(available=False, latest_sha="a" * 40, behind=0), drive_root=drive)
+    assert record["state"] == "none" and record["target_version"] == "6.114.0"
+    assert record["key"]["target_sha"] == "a" * 40 and record["checked_head_sha"] == "a" * 40
+    cache = {"managed_update_cache": {"latest_sha": "a" * 40, "available": False, "behind": 0, "checked_at": "t"}}
+    fact = ul.official_update_projection("a" * 40, drive_root=drive, state=cache)
+    assert fact["status"] == "up_to_date" and fact["target"] == {"version": "6.114.0", "sha": "a" * 40}
+    assert fact["letter"] is None
 
 
 def test_refresh_never_raises(tmp_path, monkeypatch):
@@ -339,6 +383,29 @@ def _record(**over):
 def test_project_letter_relations(head, latest, relation):
     view = ul.project_letter(_record(), head_sha=head, latest_sha=latest)
     assert view["relation"] == relation and view["state"] == "ready" and view["text"] == "letter"
+
+
+def test_project_letter_consumed_target_reads_applied_after_a_merge_apply():
+    # A divergent install applies the official target as a synthetic merge commit
+    # (supervisor/update_merge.py): HEAD never equals the target, but the check that
+    # follows reports zero behind for that target — the applied fact.
+    merged = "e" * 40
+    assert ul.project_letter(_record(), head_sha=merged, latest_sha="b" * 40, consumed=True)["relation"] == "applied"
+    # The same zero-behind fact for a DIFFERENT official target says nothing about this letter.
+    assert ul.project_letter(_record(), head_sha=merged, latest_sha="c" * 40, consumed=True)["relation"] == "other"
+    # Without the fact a moved HEAD stays "other" (no git on the hot path).
+    assert ul.project_letter(_record(), head_sha=merged, latest_sha="b" * 40)["relation"] == "other"
+
+
+def test_official_update_projection_applied_after_divergent_merge(tmp_path):
+    drive = tmp_path / "data"
+    (drive / "state").mkdir(parents=True)
+    ul.record_path(drive).write_text(json.dumps(_record(checked_head_sha="e" * 40)))
+    cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": False, "behind": 0, "ahead": 2,
+                                      "checked_at": "t1", "update_channel": "stable"}}
+    fact = ul.official_update_projection("e" * 40, drive_root=drive, state=cache)
+    assert fact["status"] == "up_to_date" and fact["letter"]["relation"] == "applied"
+    assert fact["target"] == {"version": "6.114.0", "sha": "b" * 40}
 
 
 def test_project_letter_failed_with_last_good_shows_previous_text_and_provenance():

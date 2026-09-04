@@ -959,9 +959,8 @@ def get_safety_mode() -> str:
 
 
 def _clamped_number_setting(key: str, *, low, high=float("inf"), cast=float):
-    """Env-or-default numeric setting clamped to [low, high]; a typo falls back to the
-    shipped default. SSOT for the clamped scalar getters below — the seven of them were
-    byte-identical except for key, caster and bounds (P7 DRY)."""
+    """Env-or-default numeric setting clamped to [low, high]; a typo falls back to the shipped
+    default. SSOT for the clamped scalar getters below (P7 DRY)."""
     try:
         value = cast(os.environ.get(key, "") or SETTINGS_DEFAULTS[key])
     except (TypeError, ValueError):
@@ -979,15 +978,19 @@ def get_safety_call_timeout_sec() -> float:
     return _clamped_number_setting("OUROBOROS_SAFETY_CALL_TIMEOUT_SEC", low=5.0, high=600.0)
 
 
+def get_update_letter_timeout_sec() -> float:
+    """Transport ceiling of the update-letter LIGHT one-shot (`update_letter.py`)."""
+    return _clamped_number_setting("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", low=10.0, high=600.0)
+
+
 def get_websearch_timeout_sec() -> float:
     """Per-attempt transport timeout for provider-backed web_search calls."""
     return _clamped_number_setting("OUROBOROS_WEBSEARCH_TIMEOUT_SEC", low=30.0, high=3600.0)
 
 
 def get_llm_transport_read_timeout_sec() -> float:
-    """Default httpx read/write timeout for no_proxy LLM clients (v6.54.3, D).
-
-    The DEAD-SOCKET bound, not a latency target; explicit per-call timeouts win."""
+    """Default httpx read/write timeout for no_proxy LLM clients: the DEAD-SOCKET bound, not a
+    latency target; explicit per-call timeouts win (v6.54.3, D)."""
     return _clamped_number_setting("OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC", low=60.0, high=7200.0)
 
 
@@ -1007,23 +1010,19 @@ def get_plan_task_deadline_min_sec() -> float:
 
 
 def get_context_mode() -> str:
-    """The EFFECTIVE working-context mode (low | max) used by context sizing.
-
-    Owner selection or an explicitly forwarded benchmark/operator value.  The P3 scope
-    gate reads get_owner_context_mode instead so a bare env Low cannot author owner intent.
-    No boot-pin: hot-applies on the next task. The key is dropped from the
-    agent-reachable /api/settings POST (P1)."""
+    """The EFFECTIVE working-context mode (low | max) used by context sizing: owner selection or
+    an explicitly forwarded benchmark/operator value. The P3 scope gate reads
+    get_owner_context_mode instead so a bare env Low cannot author owner intent. No boot-pin:
+    hot-applies on the next task; the key is dropped from the agent-reachable /api/settings POST (P1)."""
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_CONTEXT_MODE"])
     return normalize_context_mode(os.environ.get("OUROBOROS_CONTEXT_MODE", default_val) or default_val)
 
 
 def get_owner_context_mode() -> str:
-    """The OWNER-SELECTED context mode during the auto-Low compatibility window.
-
-    Persistent auto-Low is retired, but a bare forwarded env ``low`` still lacks owner
-    provenance and therefore keeps P3 at Max.  Only explicit ``low`` + tombstone ``false``
-    means owner Low.  Raw persisted legacy ambiguity is normalized before environment
-    projection, so this distinction is needed only for env-only benchmark/operator runs."""
+    """The OWNER-SELECTED context mode during the auto-Low compatibility window: persistent
+    auto-Low is retired, but a bare forwarded env ``low`` still lacks owner provenance and keeps
+    P3 at Max; only explicit ``low`` + tombstone ``false`` means owner Low. Raw persisted legacy
+    ambiguity is normalized before env projection, so this matters only for env-only runs."""
     if get_context_mode() != "low":
         return "max"
     return "low" if owner_declared_low(os.environ.get("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "")) else "max"

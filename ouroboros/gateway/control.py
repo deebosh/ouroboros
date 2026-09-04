@@ -61,6 +61,7 @@ def _managed_update_payload(*, fetch: bool, include_tags: bool) -> dict[str, Any
             _letter.read_record(),
             head_sha=str(status.get("current_sha") or ""),
             latest_sha=str(status.get("latest_sha") or ""),
+            consumed=status.get("behind") == 0,
         )
     except Exception:
         log.debug("update letter projection failed", exc_info=True)

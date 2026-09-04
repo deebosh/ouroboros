@@ -18,8 +18,9 @@ Storage is one file, ``data/state/update_letter.json``, with one writer —
 the Updates panel's "Check for updates" button) — and one reader shape, ``project_letter``,
 shared by the Updates panel payload and the agent's Runtime context
 (``official_update_projection``). The projection compares recorded SHAs with the live HEAD by
-equality only (no git on the hot context path); a HEAD that descends from the target reads
-as ``other``, a disclosed residual the panel, which has git, does not share.
+equality plus the check's own zero-behind fact (no git on the hot context path): a divergent
+install consumes an official target through a merge commit (``supervisor/update_merge.py``), so
+``applied`` cannot mean HEAD == target; a HEAD that merely moved elsewhere reads as ``other``.
 """
 
 from __future__ import annotations
@@ -49,6 +50,10 @@ DEFAULT_MAX_ROWS = 60
 _ROW_RE = re.compile(r"^\+\|\s*(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)\s*\|")
 _UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 _REFRESH_LOCK = threading.Lock()
+# Bumped by every letter write under the lock, so a refresh that waited for the lock can
+# tell "the writer just produced my key" (share it) from "an older record" (write anew).
+_WRITE_SEQ = 0
+_LAST_WRITTEN: Tuple[Dict[str, str], Optional[Dict[str, Any]]] = ({}, None)
 
 GitCapture = Callable[[List[str]], Tuple[int, str, str]]
 
@@ -159,9 +164,13 @@ def collect_range_material(
     material["omitted_older_rows"] = max(0, len(releases) - max_rows)
     material["releases"] = releases[:max_rows]
     for label, sha in (("base", base_sha), ("target", target_sha)):
-        rc, out, _err = capture(["git", "show", f"{sha}:VERSION"])
-        material["versions"][label] = out.strip() if rc == 0 else ""
+        material["versions"][label] = _version_at(capture, sha)
     return material
+
+
+def _version_at(capture: GitCapture, sha: str) -> str:
+    rc, out, _err = capture(["git", "show", f"{sha}:VERSION"])
+    return out.strip() if rc == 0 else ""
 
 
 def material_text(material: Dict[str, Any]) -> str:
@@ -242,14 +251,10 @@ def _context_messages(env: Any, memory: Any, task: Dict[str, Any]) -> List[Dict[
 
 
 def _letter_timeout_sec() -> float:
-    """Transport ceiling for the LIGHT call; the config default IS the SSOT value."""
-    from ouroboros.config import SETTINGS_DEFAULTS
+    """Transport ceiling for the LIGHT call (config.py SSOT, clamped getter)."""
+    from ouroboros.config import get_update_letter_timeout_sec
 
-    default = SETTINGS_DEFAULTS["OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC"]
-    try:
-        return float(os.environ.get("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", default))
-    except (TypeError, ValueError):
-        return float(default)
+    return get_update_letter_timeout_sec()
 
 
 def _chat(client: Any, *, drive_root: pathlib.Path, **kwargs: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -404,8 +409,8 @@ def refresh_after_check(
     not, so the Runtime fact can tell "checked and current" from "moved since". No
     available update leaves any stored letter as it is (an applied update keeps its
     letter — that is the "what changed in this version" text). ``check_ok`` other than
-    True writes nothing. A second concurrent refresh is a no-op returning the current
-    record.
+    True writes nothing. A concurrent refresh waits for the in-flight one (bounded by the
+    letter timeout) and shares its result for the same key instead of paying twice.
     """
     try:
         current = read_record(drive_root)
@@ -416,9 +421,15 @@ def refresh_after_check(
             return current
         if not status.get("available") or not key["target_sha"]:
             return _mark_checked(current, key, drive_root)
-        if not _REFRESH_LOCK.acquire(blocking=False):
-            return current
+        seen = _WRITE_SEQ
+        if not _REFRESH_LOCK.acquire(timeout=_letter_timeout_sec()):
+            return read_record(drive_root)
         try:
+            # The writer that held the lock may have produced this very letter: share it
+            # (one physical attempt for concurrent checks of the same key).
+            if _WRITE_SEQ > seen and _LAST_WRITTEN[0] == key:
+                return _LAST_WRITTEN[1]
+            current = read_record(drive_root)
             material = collect_range_material(key["base_sha"], key["target_sha"])
             if not material.get("commits") and not material.get("releases"):
                 return _mark_checked(current, key, drive_root)
@@ -429,6 +440,7 @@ def refresh_after_check(
                 previous_good = current if current.get("state") == "ready" else current.get("last_good")
                 record["last_good"] = previous_good or None
             atomic_write_json(record_path(drive_root), record)
+            _note_written(key, record)
             return record
         finally:
             _REFRESH_LOCK.release()
@@ -437,10 +449,21 @@ def refresh_after_check(
         return read_record(drive_root)
 
 
+def _note_written(key: Dict[str, str], record: Dict[str, Any]) -> None:
+    global _WRITE_SEQ, _LAST_WRITTEN
+    _LAST_WRITTEN = (dict(key), record)
+    _WRITE_SEQ += 1
+
+
 def _mark_checked(current: Optional[Dict[str, Any]], key: Dict[str, str],
-                  drive_root: Optional[pathlib.Path]) -> Dict[str, Any]:
-    """Record the checked HEAD without touching any letter (a letterless record has ``state: none``)."""
-    record = dict(current) if current else {"schema": 1, "key": key, "state": "none", "text": "", "last_good": None}
+                  drive_root: Optional[pathlib.Path], *, git: Optional[GitCapture] = None) -> Dict[str, Any]:
+    """Record the checked HEAD without touching any letter. A letterless record (``state: none``)
+    follows the check it describes — its key and the official target's VERSION — so the Runtime
+    fact can name the version an up-to-date install is current with."""
+    record = dict(current) if current else {"schema": 1, "state": "none", "text": "", "last_good": None}
+    if record.get("state") == "none":
+        record["key"] = key
+        record["target_version"] = _version_at(git or _default_git(), key["target_sha"] or key["base_sha"])
     record["checked_head_sha"] = key["base_sha"]
     atomic_write_json(record_path(drive_root), record)
     return record
@@ -455,8 +478,15 @@ def project_letter(
     *,
     head_sha: str,
     latest_sha: str,
+    consumed: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """Relate the stored letter to the live HEAD and official target by SHA equality."""
+    """Relate the stored letter to the live HEAD and official target.
+
+    ``consumed`` is the caller's zero-behind fact for ``latest_sha`` (the check reported
+    nothing incoming): a divergent install applies an official target as a merge commit, so
+    HEAD never equals the target it consumed, and that fact — not SHA equality — is what
+    makes such a letter ``applied``.
+    """
     if not record or record.get("state") == "none":
         return None
     text = str(record.get("text") or "")
@@ -472,6 +502,8 @@ def project_letter(
     base, target = str(key.get("base_sha") or ""), str(key.get("target_sha") or "")
     head, latest = str(head_sha or ""), str(latest_sha or "")
     if head and head == target:
+        relation = "applied"
+    elif consumed and target and target == latest and head and head != base:
         relation = "applied"
     elif head and head == base and latest == target:
         relation = "pending"
@@ -522,7 +554,7 @@ def official_update_projection(
         cache = cache if isinstance(cache, dict) else {}
         record = read_record(drive_root)
         latest = str(cache.get("latest_sha") or "")
-        letter = project_letter(record, head_sha=head, latest_sha=latest)
+        letter = project_letter(record, head_sha=head, latest_sha=latest, consumed=cache.get("behind") == 0)
         checked_head = str((record or {}).get("checked_head_sha") or "")
         record_key = (record or {}).get("key") if isinstance((record or {}).get("key"), dict) else {}
         if not cache:
