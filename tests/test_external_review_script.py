@@ -45,6 +45,7 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
         "ouroboros/claudexor_daemon.py",
         "ouroboros/deadline_utils.py",
         "ouroboros/delegate_custody.py",
+        "ouroboros/delegate_custody_usage.py",
         "ouroboros/delegate_output.py",
         "ouroboros/gateways/claudexor.py",
         "ouroboros/outcomes.py",
@@ -56,6 +57,8 @@ def test_contributor_trust_boundary_covers_functional_review_dependencies():
         # a PR editing the route/executor seam there must still trip a trusted
         # rerun, exactly as one editing review_substrate.py does (XG-5R4.1).
         "ouroboros/review_execution.py",
+        "ouroboros/review_actor_aggregation.py",
+        "ouroboros/review_dispatch.py",
         "ouroboros/review_slot_cancel.py",
         "ouroboros/review_evidence.py",
         "ouroboros/reviewer_slot_config.py",

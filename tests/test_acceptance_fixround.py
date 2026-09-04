@@ -152,14 +152,77 @@ def test_leading_trajectory_omission_from_packet_producer_cannot_resolve_clean(t
         if row["tool"] == "tool_trajectory"
     )
     assert partial["status"] == "not_materialized_for_reviewer"
-    assert partial["source_ref"] == {
-        "kind": "task_result", "task_id": "task-traj", "reader": "get_task_result",
-        "field": "llm_trace.tool_calls",
-    }
+    assert partial["source_ref"] == packet["tool_trajectory_source_ref"]
+    assert partial["source_ref"]["root"] == "artifact_store"
+    assert partial["source_ref"]["reader"] == "read_file"
     assert task_acceptance_zero_physical_refusal(packet) == {}
     assert acceptance_evidence_ref_vocabulary(packet)["tool_trajectory"] == "partial"
     result = SimpleNamespace(aggregate_signal="PASS", degraded=False, actors=[actor])
     assert task_acceptance_is_clean(result) is False
+
+
+def test_omitted_trajectory_corpus_round_trips_through_artifact_reader(tmp_path, monkeypatch):
+    from ouroboros import artifacts
+    from ouroboros.review_evidence import _ACCEPT_TRAJECTORY_MAX_CALLS, build_task_acceptance_evidence
+    from ouroboros.tools.core import _read_file
+    from ouroboros.tools.registry import ToolContext
+
+    calls = [
+        {"tool": "read_file", "status": "ok", "args": {"path": f"file-{index}"}, "result": str(index)}
+        for index in range(_ACCEPT_TRAJECTORY_MAX_CALLS + 1)
+    ]
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="trajectory-corpus")
+    packet = build_task_acceptance_evidence(
+        ctx, drive_root=tmp_path, task_id=ctx.task_id, llm_trace={"tool_calls": calls},
+    )
+
+    ref = packet["tool_trajectory_source_ref"]
+    assert ref["root"] == "artifact_store"
+    assert ref["artifact_ref"].startswith(f"artifact_store:{ref['path']}#chars=0-")
+    rendered = _read_file(ctx, root=ref["root"], path=ref["path"])
+    recovered = json.loads(rendered.split("\n", 1)[1])
+    assert recovered == calls
+    partial = next(
+        row for row in packet["__unresolved_partial_artifacts__"]
+        if row["tool"] == "tool_trajectory"
+    )
+    assert partial["status"] == "not_materialized_for_reviewer"
+    assert partial["source_ref"] == ref
+
+    recapped = build_task_acceptance_evidence(
+        ctx, drive_root=tmp_path, task_id=ctx.task_id,
+        llm_trace={"tool_calls": [
+            {"tool": "run_command", "status": "ok", "result": str(index) * 10_000}
+            for index in range(2)
+        ]},
+        budget_chars=5_000,
+    )
+    assert all(row["result_complete"] is False for row in recapped["tool_trajectory"])
+    assert {
+        row["status"] for row in recapped["__unresolved_partial_artifacts__"]
+        if row["tool"] == "run_command"
+    } == {"not_materialized_for_reviewer"}
+    assert recapped["tool_trajectory_source_ref"]["root"] == "artifact_store"
+
+    monkeypatch.setattr(
+        artifacts, "store_actor_source_bytes",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("artifact store unavailable")),
+    )
+    unavailable_root = tmp_path / "unavailable"
+    unavailable_ctx = ToolContext(
+        repo_dir=tmp_path, drive_root=unavailable_root, task_id="trajectory-unavailable",
+    )
+    unavailable = build_task_acceptance_evidence(
+        unavailable_ctx, drive_root=unavailable_root, task_id=unavailable_ctx.task_id,
+        llm_trace={"tool_calls": calls},
+    )
+    missing = next(
+        row for row in unavailable["__unresolved_partial_artifacts__"]
+        if row["tool"] == "tool_trajectory"
+    )
+    assert "tool_trajectory_source_ref" not in unavailable
+    assert missing["status"] == "source_unavailable"
+    assert missing["source_ref"] == {}
 
 
 def test_budget_recapped_trajectory_from_producer_cannot_resolve_clean():
@@ -311,6 +374,45 @@ def test_terminal_skill_review_updates_the_root_task_projection(tmp_path):
         "skill": "projected-skill",
         "job_id": "job-1",
     }]
+
+
+def test_projection_failure_is_durable_in_coverage_and_runner_receipt(monkeypatch, tmp_path):
+    from ouroboros import skill_review_history
+    from ouroboros.skill_readiness import _skill_names_from_review_history
+    from ouroboros.skill_review_runner import _append_terminal_history
+
+    monkeypatch.setattr(
+        skill_review_history, "_append_root_task_projection_once", lambda *_a, **_k: False,
+    )
+    assert not _append_terminal_history(
+        tmp_path,
+        "gap-skill",
+        {"job_id": "job-gap", "root_task_id": "root-gap"},
+        status="pass",
+        terminal_reason="review_complete",
+        ts="2026-09-04T00:00:00+00:00",
+    )
+
+    gap_path = tmp_path / "state" / "skill_review_root_tasks.gaps.jsonl"
+    gap = json.loads(gap_path.read_text(encoding="utf-8").splitlines()[0])
+    assert gap == {
+        "ts": "2026-09-04T00:00:00+00:00",
+        "root_task_id": "root-gap",
+        "skill": "gap-skill",
+        "job_id": "job-gap",
+        "reason": "root_task_projection_append_failed",
+    }
+    history = _skill_names_from_review_history(tmp_path, "root-gap")
+    assert history["names"] == []
+    assert history["coverage"]["complete"] is False
+    assert "root_task_projection_append_failed" in history["coverage"]["gap_reasons"]
+
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    receipt = next(row for row in events if row.get("type") == "skill_review_history_append_failed")
+    assert "root-task projection" in receipt["reason"]
 
 
 def test_skill_review_projection_retry_finds_identity_before_bounded_tail(tmp_path):

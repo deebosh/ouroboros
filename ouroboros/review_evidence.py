@@ -1012,8 +1012,6 @@ def _accept_owner_directives(ctx: Any, drive_root: Any, task_id: str) -> List[Di
     return rows
 
 
-
-
 def build_task_acceptance_evidence(
     ctx: Any,
     *,
@@ -1182,11 +1180,9 @@ def build_task_acceptance_evidence(
         if traj or omitted:
             ev["tool_trajectory"] = traj
             prov["tool_trajectory"] = "tool_result"
-            if drive_root is not None and task_id:
-                ev["tool_trajectory_source_ref"] = {
-                    "kind": "task_result", "task_id": task_id, "reader": "get_task_result",
-                    "field": "llm_trace.tool_calls",
-                }
+            from ouroboros.artifacts import persist_tool_trajectory_source
+            if source_ref := persist_tool_trajectory_source(drive_root, task_id, llm_trace.get("tool_calls")):
+                ev["tool_trajectory_source_ref"] = source_ref
             if omitted:
                 ev["tool_trajectory_omitted_leading"] = omitted
                 ev["tool_trajectory_complete"] = False

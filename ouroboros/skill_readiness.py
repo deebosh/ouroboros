@@ -150,11 +150,13 @@ def _skill_names_from_review_history(
 ) -> Dict[str, Any]:
     """Skills named by the compact root-task projection, never full histories."""
     from ouroboros.skill_review_history import (
-        ROOT_TASK_PROJECTION_RELATIVE_PATH, root_task_projection_path,
+        ROOT_TASK_PROJECTION_GAPS_RELATIVE_PATH, ROOT_TASK_PROJECTION_RELATIVE_PATH,
+        root_task_projection_gaps_path, root_task_projection_path,
     )
     from ouroboros.utils import iter_jsonl_objects
 
     path = root_task_projection_path(drive_root)
+    gap_path = root_task_projection_gaps_path(drive_root)
     source_ref = {
         "kind": "canonical_jsonl", "path": ROOT_TASK_PROJECTION_RELATIVE_PATH,
         "reader": "read_file",
@@ -180,25 +182,51 @@ def _skill_names_from_review_history(
         gaps.add("projection_unreadable")
     if byte_truncated:
         gaps.add("tail_bytes_truncated")
-    coverage = {
-        "rows_scanned": len(rows),
-        "truncated": bool(byte_truncated or "max_entries_truncated" in gaps),
-        "complete": not gaps,
-        "gap_reasons": sorted(gaps),
-        "source_ref": source_ref,
-    }
-    if not root_task_id:
-        return {"names": names, "coverage": coverage}
+    try:
+        gap_byte_truncated = gap_path.stat().st_size > _ROOT_TASK_PROJECTION_MAX_BYTES
+    except FileNotFoundError:
+        gap_byte_truncated = False
+    except OSError:
+        gap_byte_truncated = False
+        gaps.add("projection_gap_log_unreadable")
+    try:
+        gap_rows = list(iter_jsonl_objects(
+            gap_path,
+            max_entries=_ROOT_TASK_PROJECTION_MAX_RECORDS,
+            tail_bytes=_ROOT_TASK_PROJECTION_MAX_BYTES,
+            gap_reasons=gaps,
+        ))
+    except OSError:
+        gap_rows = []
+        gaps.add("projection_gap_log_unreadable")
+    if gap_byte_truncated:
+        gaps.add("projection_gap_tail_bytes_truncated")
     cutoff = str(task_started_at or "").replace("Z", "+00:00")
-    for row in reversed(rows):
-        row_ts = str(row.get("ts") or "").replace("Z", "+00:00")
-        if cutoff and row_ts and row_ts < cutoff:
-            break
-        if not isinstance(row, dict) or str(row.get("root_task_id") or "") != root_task_id:
-            continue
-        name = str(row.get("skill") or "").strip()
-        if name and name not in names:
-            names.append(name)
+    if root_task_id:
+        for row in reversed(rows):
+            row_ts = str(row.get("ts") or "").replace("Z", "+00:00")
+            if cutoff and row_ts and row_ts < cutoff:
+                break
+            if not isinstance(row, dict) or str(row.get("root_task_id") or "") != root_task_id:
+                continue
+            name = str(row.get("skill") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        for row in reversed(gap_rows):
+            row_ts = str(row.get("ts") or "").replace("Z", "+00:00")
+            if cutoff and row_ts and row_ts < cutoff:
+                break
+            if isinstance(row, dict) and str(row.get("root_task_id") or "") == root_task_id:
+                gaps.add(str(row.get("reason") or "root_task_projection_gap"))
+    coverage = {
+        "rows_scanned": len(rows), "gap_rows_scanned": len(gap_rows),
+        "truncated": bool(byte_truncated or gap_byte_truncated or "max_entries_truncated" in gaps),
+        "complete": not gaps, "gap_reasons": sorted(gaps), "source_ref": source_ref,
+        "gap_source_ref": {
+            "kind": "canonical_jsonl", "path": ROOT_TASK_PROJECTION_GAPS_RELATIVE_PATH,
+            "reader": "read_file",
+        },
+    }
     return {"names": names, "coverage": coverage}
 
 

@@ -21,6 +21,7 @@ _MARKER_FACT_KEYS = (
     "group_id", "content_hash", "root_task_id",
 )
 ROOT_TASK_PROJECTION_RELATIVE_PATH = "state/skill_review_root_tasks.jsonl"
+ROOT_TASK_PROJECTION_GAPS_RELATIVE_PATH = "state/skill_review_root_tasks.gaps.jsonl"
 
 
 def _redact_history_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -36,6 +37,30 @@ def review_history_path(drive_root: pathlib.Path, skill_name: str) -> pathlib.Pa
 
 def root_task_projection_path(drive_root: pathlib.Path) -> pathlib.Path:
     return drive_root / ROOT_TASK_PROJECTION_RELATIVE_PATH
+
+
+def root_task_projection_gaps_path(drive_root: pathlib.Path) -> pathlib.Path:
+    return drive_root / ROOT_TASK_PROJECTION_GAPS_RELATIVE_PATH
+
+
+def _record_root_task_projection_gap(
+    drive_root: pathlib.Path, skill_name: str, payload: Dict[str, Any],
+) -> None:
+    """Durably disclose a terminal row missing from the root-task projection."""
+    root_task_id = str(payload.get("root_task_id") or "")
+    job_id = str(payload.get("job_id") or payload.get("wave_id") or "")
+    if not root_task_id or not job_id:
+        return
+    row = {
+        "ts": str(payload.get("ts") or ""), "root_task_id": root_task_id,
+        "skill": skill_name, "job_id": job_id,
+        "reason": "root_task_projection_append_failed",
+    }
+    if not append_jsonl(root_task_projection_gaps_path(drive_root), row):
+        _emit_history_event(drive_root, {
+            "type": "skill_review_root_task_projection_gap_append_failed",
+            **row,
+        })
 
 
 def legacy_dispatch_marker_path(drive_root: pathlib.Path, skill_name: str) -> pathlib.Path:
@@ -567,6 +592,8 @@ def append_history_once(
                     clear_dispatch_marker(drive_root, skill_name, wave_id=job_id)
                 if not _append_root_task_projection_once(drive_root, skill_name, existing):
                     log.warning("skill review root-task projection did not land for %s", skill_name)
+                    _record_root_task_projection_gap(drive_root, skill_name, existing)
+                    return False
                 return True
             payload = _merge_marker_facts(payload, marker)
             safe_payload = _redact_history_payload(payload)
@@ -586,6 +613,8 @@ def append_history_once(
                 )
             if not _append_root_task_projection_once(drive_root, skill_name, safe_payload):
                 log.warning("skill review root-task projection did not land for %s", skill_name)
+                _record_root_task_projection_gap(drive_root, skill_name, safe_payload)
+                return False
             return True
         except OSError:
             log.warning("skill review terminal history append failed for %s", skill_name, exc_info=True)

@@ -648,6 +648,31 @@ def persist_exact_text_source(
         }
 
 
+def persist_tool_trajectory_source(
+    drive_root: Union[pathlib.Path, str], task_id: str, tool_calls: Any,
+) -> Dict[str, Any]:
+    """Persist the complete redacted tool-call corpus behind acceptance views."""
+    try:
+        from ouroboros.observability import redact_projection
+
+        calls = [dict(call) for call in (tool_calls or []) if isinstance(call, dict)]
+        projected = redact_projection(calls).value
+        data = json.dumps(projected, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+        stored_ref = store_actor_source_bytes(
+            drive_root, task_id, category="tool_results",
+            source_id="acceptance_tool_trajectory", data=data, extension="json",
+        )
+        path = str(stored_ref["path"])
+        return {
+            "kind": "task_source", "root": "artifact_store", "path": path,
+            "reader": "read_file",
+            "artifact_ref": f"artifact_store:{path}#chars=0-{len(data.decode('utf-8'))}",
+        }
+    except Exception:
+        log.warning("acceptance tool trajectory source persistence failed", exc_info=True)
+        return {}
+
+
 def collect_exact_repo_diff(repo: Any, *, include_recent_commit: bool = False) -> str:
     """Collect the unbounded, hook-disabled repository diff for one review."""
     if not repo:
