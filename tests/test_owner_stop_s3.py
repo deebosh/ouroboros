@@ -1365,3 +1365,44 @@ def test_expired_control_at_consume_never_starts_a_paid_summary(tmp_path, monkey
     assert usage["reason_code"] == REASON_OWNER_REQUESTED_FINALIZATION
     assert usage["execution_status"] == "failed"
     assert "no final answer could be produced" in text
+
+
+def test_stopped_direct_turn_ends_with_zero_calls_and_the_retained_candidate(tmp_path, monkeypatch):
+    """"Stop now" on an in-process direct-chat turn (custody's control carries
+    REASON_OWNER_STOPPED_DIRECT_TURN): the turn ends at its round boundary with
+    the delivery candidate it already holds and NO further model call — the
+    honest twin of killing a pooled worker, never the graceful rail's paid
+    final turn."""
+    from tests.test_delivery_forced_finalization import _forced_test_context
+    from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN
+
+    loop, registry, ctx, trace = _forced_test_context(tmp_path)
+    loop._replace_delivery_candidate(
+        registry, ctx, trace, "Retained partial answer.", control="candidate",
+    )
+    calls = []
+    monkeypatch.setattr(
+        loop, "call_llm_with_retry",
+        lambda *a, **k: calls.append(1) or ({"role": "assistant", "content": "fresh"}, 0.0),
+    )
+    text, usage, _returned = loop._handle_forced_finalization(ctx, REASON_OWNER_STOPPED_DIRECT_TURN)
+    assert calls == []
+    assert usage["reason_code"] == REASON_OWNER_REQUESTED_FINALIZATION
+    assert usage["execution_status"] == "failed"
+    assert "Retained partial answer." in text
+
+
+def test_stopped_direct_turn_without_a_candidate_ends_with_the_typed_fallback(tmp_path, monkeypatch):
+    from tests.test_delivery_forced_finalization import _forced_test_context
+    from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN
+
+    loop, _registry, ctx, _trace = _forced_test_context(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        loop, "call_llm_with_retry",
+        lambda *a, **k: calls.append(1) or ({"role": "assistant", "content": "fresh"}, 0.0),
+    )
+    text, usage, _returned = loop._handle_forced_finalization(ctx, REASON_OWNER_STOPPED_DIRECT_TURN)
+    assert calls == []
+    assert usage["reason_code"] == REASON_OWNER_REQUESTED_FINALIZATION
+    assert "owner stopped this chat turn" in text

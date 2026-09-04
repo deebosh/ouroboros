@@ -134,6 +134,10 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # side effects must surface as a typed "settings busy" answer to the next
     # writer (the onboarding save among them), never as an endless wait.
     "OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC": 30,
+    # Custody's bounded wait for an in-process direct-chat turn to reach its
+    # next round boundary after the owner's stop control was written; the
+    # same custody pass runs on the supervisor sweep, so this stays short.
+    "OUROBOROS_DIRECT_TURN_STOP_WAIT_SEC": 2,
     # Activity-based liveness (the flat wall-clock pair it replaced is RETIRED below):
     # idle window = no real progress AND no progressing subtree; abs ceiling = the
     # unconditional per-task backstop (budget/cost stays a separate hard axis).

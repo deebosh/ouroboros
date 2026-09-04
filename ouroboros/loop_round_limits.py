@@ -24,7 +24,7 @@ from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
 from ouroboros.pricing import estimate_cost_optional
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.tools.registry import ToolRegistry
-from supervisor.owner_stop import _narrow_round_deadline, _owner_stop_control_is_current, _owner_stop_window_elapsed, handle_finalize_now_entry  # noqa: F401 -- _owner_stop_control_is_current stays a facade surface
+from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN, _narrow_round_deadline, _owner_stop_control_is_current, _owner_stop_window_elapsed, handle_finalize_now_entry  # noqa: F401 -- _owner_stop_control_is_current stays a facade surface
 
 from typing import TYPE_CHECKING
 
@@ -277,6 +277,8 @@ def _handle_forced_finalization(ctx: _RoundLimitContext, reason: str) -> Tuple[s
     reason_lines = str(reason or "").splitlines()
     if reason_lines and reason_lines[0].strip() == REASON_OWNER_REQUESTED_FINALIZATION:
         return _handle_owner_stop_finalization(ctx, str(reason))
+    if reason_lines and reason_lines[0].strip() == REASON_OWNER_STOPPED_DIRECT_TURN:
+        return _handle_direct_turn_hard_stop(ctx)
     fallback = f"⚠️ Task reached {reason or 'deadline'}; finalization grace produced no answer."
     prompt = (
         f"[FINALIZE_NOW] The supervisor opened a finalization grace window (reason: {reason or 'deadline'}). "
@@ -285,6 +287,35 @@ def _handle_forced_finalization(ctx: _RoundLimitContext, reason: str) -> Tuple[s
         "result is the expected outcome here, not a failure."
     )
     return _loop()._forced_final_answer(ctx, prompt=prompt, fallback_text=fallback, reason_code="finalization_grace")
+
+
+def _handle_direct_turn_hard_stop(
+    ctx: _RoundLimitContext,
+) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """"Stop now" on an in-process direct-chat turn: ZERO further model calls.
+
+    A pooled task's immediate stop kills its worker; the direct turn has no
+    process of its own, so custody writes this control and the turn ends at
+    its next round boundary with whatever delivery candidate it already
+    holds, else the typed fallback — never a paid final turn (that is the
+    graceful "Wrap up" contract, ``_handle_owner_stop_finalization``)."""
+    live_trace = getattr(ctx, "llm_trace", None)
+    llm_trace = live_trace if isinstance(live_trace, dict) else {}
+    _loop()._finalize_forced_services(ctx, llm_trace)
+    ctx.accumulated_usage["execution_status"] = "failed"
+    ctx.accumulated_usage["reason_code"] = REASON_OWNER_REQUESTED_FINALIZATION
+    candidate = _loop()._current_delivery_candidate(ctx, llm_trace)
+    if candidate is not None:
+        return _loop()._forced_fallback_result(
+            ctx, llm_trace, candidate.full_text, REASON_OWNER_REQUESTED_FINALIZATION,
+            retained_source="owner_stop_retained_candidate",
+        )
+    return _loop()._forced_fallback_result(
+        ctx, llm_trace,
+        "⏹ The owner stopped this chat turn; no further work was done.",
+        REASON_OWNER_REQUESTED_FINALIZATION,
+        source="owner_stopped_direct_turn",
+    )
 
 
 def _handle_owner_stop_finalization(

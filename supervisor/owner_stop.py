@@ -318,10 +318,18 @@ def orchestrate_graceful_stop(q: Any, task_id: str, intent: Dict[str, Any], *, n
             q.RUNNING.get(physical_task_id)
             if isinstance(q.RUNNING, dict) else None
         )
-        if not isinstance(running_meta, dict):
+    if not isinstance(running_meta, dict):
+        # The in-process direct-chat turn has no RUNNING row but drains the
+        # same owner mailbox on the canonical drive: arm its episode from the
+        # queue-shaped record the chat agent exposes.
+        from supervisor import workers
+
+        turn = workers.direct_chat_turn(physical_task_id)
+        if turn is None:
             # PENDING (never started -> zero turns) or gone (miss lane): feed
             # custody. The sweep's generic path settles both shapes.
             return False
+        running_meta = {"task": turn, "started_at": float(turn.get("_started_at") or now)}
     if not descendants_settled:
         # The cascade root never receives its paid final turn while a child is
         # still live.  Keep the owner-stop intent open and retry the bounded
@@ -401,6 +409,13 @@ def _settle_descendants_hard(
 def owner_stop_control_id(intent: Dict[str, Any]) -> str:
     """Deterministic episode/control identity from the durable stop request."""
     return f"ownerstop:{str(intent.get('request_id') or '')}"
+
+
+# The finalize control custody writes for a STOPPED in-process direct-chat turn
+# (immediate policy). The loop's forced-finalization branch recognizes it and
+# ends the turn WITHOUT a further model call: a retained delivery candidate or
+# the typed fallback text — the honest twin of killing a worker.
+REASON_OWNER_STOPPED_DIRECT_TURN = "owner_stopped_direct_chat_turn"
 
 
 def _mark_owner_stop_control_drained(
@@ -598,13 +613,22 @@ def _arm_owner_stop_episode(
     from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
 
     control_id = owner_stop_control_id(intent)
+    direct_turn: Optional[Dict[str, Any]] = None
     with q._queue_lock:
         meta = q.RUNNING.get(task_id)
         if not isinstance(meta, dict):
-            return False
-        if str(meta.get("finalization_control_msg_id") or "") == control_id:
-            return True  # already armed; the mailbox drain dedupes by msg_id
+            # The in-process direct-chat turn: the caller synthesized
+            # ``running_meta`` from the chat agent's record; its armed-control
+            # latch lives on that record (``workers.stamp_direct_chat_turn``).
+            candidate = running_meta.get("task") if isinstance(running_meta, dict) else None
+            if not (isinstance(candidate, dict) and candidate.get("_is_direct_chat")):
+                return False
+            direct_turn = candidate
+            meta = running_meta
         task = meta.get("task") if isinstance(meta.get("task"), dict) else {}
+        latch = meta if direct_turn is None else task
+        if str(latch.get("finalization_control_msg_id") or "") == control_id:
+            return True  # already armed; the mailbox drain dedupes by msg_id
         chat_id = int(task.get("chat_id") or 0)
         task_drive = q._task_drive_for_task(task, task_id)
     control_text = REASON_OWNER_REQUESTED_FINALIZATION
@@ -629,6 +653,15 @@ def _arm_owner_stop_episode(
         # episode) and let the next sweep tick retry the same deterministic id.
         _forensic(q, task_id, "owner_stop_arm_failed", intent)
         return True
+    if direct_turn is not None:
+        from supervisor import workers
+
+        workers.stamp_direct_chat_turn(
+            task_id,
+            finalization_requested_at=_requested_ts(intent) or now,
+            finalization_reason=REASON_OWNER_REQUESTED_FINALIZATION,
+            finalization_control_msg_id=written,
+        )
     with q._queue_lock:
         meta = q.RUNNING.get(task_id)
         if isinstance(meta, dict):

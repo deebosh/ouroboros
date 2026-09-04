@@ -657,6 +657,12 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
                     captured_worker.reaping = True
                     break
 
+    if not settled and captured_pending is None and captured_worker is None:
+        turn = workers.direct_chat_turn(task_id)
+        if turn is not None:
+            from supervisor.cancel_publication import _finish_captured_chat_turn
+
+            return _finish_captured_chat_turn(q, task_id, turn, intent=intent)
     if settled and captured_worker is None and not captured_was_reaping:
         # A slot stranded at ``reaping`` by a custody attempt that crashed is
         # recovered HERE too: the task settled on its own afterwards, so nothing
@@ -1414,7 +1420,6 @@ def sweep_cancel_intents(*, now: Optional[float] = None) -> Dict[str, str]:
             log.warning("cancel-intent sweep custody failed for %s", task_id, exc_info=True)
             outcomes[task_id] = CANCEL_FAILED
     return outcomes
-
 
 
 def _cancel_subtree_sweep(

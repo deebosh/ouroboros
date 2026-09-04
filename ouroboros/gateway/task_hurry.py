@@ -67,6 +67,12 @@ def _admit_hurry_locked(task_id: str) -> Tuple[Optional[Dict[str, Any]], str, in
                 except (TypeError, ValueError):
                     attempt = 1
         if task is None:
+            # The in-process direct-chat turn drains the same owner mailbox a
+            # pooled task does, so a typed hurry reaches it the same way.
+            from supervisor.workers import direct_chat_turn
+
+            task = direct_chat_turn(task_id)
+        if task is None:
             return None, "task_not_live", attempt
         lineage = resolve_task_lineage(
             task_id,

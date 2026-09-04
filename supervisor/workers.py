@@ -333,6 +333,69 @@ def chat_turn_liveness():
     return (True, getattr(agent, "_current_task_id", None), getattr(agent, "_last_activity_ts", None))
 
 
+def direct_chat_turn(task_id: str = "") -> Optional[Dict[str, Any]]:
+    """The in-process direct-chat turn as a queue-shaped task record, or None.
+
+    The ownership predicate (``task_has_live_ownership``), the owner-control
+    ingresses (cancel, hurry, decisions) and the graceful-stop episode resolve
+    a live direct turn through THIS one reader, so the durable running mirror
+    and the owner controls can never disagree about it again: a turn the
+    task list shows as running is addressable, and a turn that is not
+    addressable is not shown as live (the class the rc.7 QA regress hit —
+    ``running`` + cancel 404 + spend still growing). Read WITHOUT the
+    chat-agent lock, like ``chat_turn_liveness``: a wedged turn holds that
+    lock for its whole duration. ``task_id`` narrows the answer to that turn;
+    empty answers whichever direct turn is live. An ephemeral decision turn
+    (not ``_accepting_owner_messages``) is transport control, never an
+    owner-addressable task, and writes no durable running row either.
+    """
+    agent = _chat_agent
+    if agent is None or not getattr(agent, "_busy", False):
+        return None
+    current = str(getattr(agent, "_current_task_id", "") or "")
+    if not current or (task_id and current != str(task_id)):
+        return None
+    if not getattr(agent, "_accepting_owner_messages", False):
+        return None
+    metadata = getattr(agent, "_current_task_metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    text = str(getattr(agent, "_current_task_text", "") or "")
+    record = {
+        "id": current,
+        "type": "task",
+        "chat_id": int(getattr(agent, "_current_chat_id", 0) or 0),
+        "project_id": str(metadata.get("project_id") or ""),
+        "title": str(metadata.get("title") or ""),
+        "suggested_name": str(metadata.get("suggested_name") or ""),
+        "objective": text,
+        "text": text,
+        "metadata": dict(metadata),
+        "_is_direct_chat": True,
+        "_started_at": float(getattr(agent, "_task_started_ts", 0.0) or 0.0),
+    }
+    stamps = getattr(agent, "_direct_turn_stamps", None)
+    if isinstance(stamps, dict) and str(stamps.get("_task_id") or "") == current:
+        record.update({key: value for key, value in stamps.items() if key != "_task_id"})
+    return record
+
+
+def stamp_direct_chat_turn(task_id: str, **fields: Any) -> bool:
+    """Record owner-control state on the live direct turn — the direct-chat
+    twin of the latch a pooled task keeps on its RUNNING row (for example the
+    armed owner-stop control id, so a sweep tick re-arms idempotently instead
+    of re-toasting). Stamps belong to ONE turn id and vanish with it. Returns
+    False when that turn is not live (nothing to stamp)."""
+    agent = _chat_agent
+    if agent is None or direct_chat_turn(task_id) is None:
+        return False
+    stamps = getattr(agent, "_direct_turn_stamps", None)
+    if not isinstance(stamps, dict) or str(stamps.get("_task_id") or "") != str(task_id):
+        stamps = {"_task_id": str(task_id)}
+        agent._direct_turn_stamps = stamps
+    stamps.update(fields)
+    return True
+
+
 def _stage_promoted_initial_attachments(
     evt: dict, task: dict, tid: str, *, inherited_manifest: Any = None,
 ) -> tuple[list[dict], Optional[dict]]:

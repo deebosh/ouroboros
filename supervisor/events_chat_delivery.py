@@ -177,6 +177,16 @@ def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
                         progress_meta["cancelable"] = True
                 except Exception:
                     log.debug("cancelable lineage resolution failed for %s", task_id, exc_info=True)
+            if is_progress and not isinstance(_m, dict):
+                # The in-process direct-chat turn has no RUNNING row; it is a
+                # root by construction and owner-addressable through the same
+                # ownership seam the cancel ingress uses (workers.direct_chat_turn),
+                # so its live card carries the same host-attested marker.
+                from supervisor import workers
+
+                if workers.direct_chat_turn(task_id) is not None:
+                    progress_meta = dict(progress_meta or {})
+                    progress_meta["cancelable"] = True
         if task_id and not is_progress and not task_row and not subagent_message_meta(progress_meta, task_id=task_id):
             try:
                 from ouroboros.task_status import load_effective_task_result

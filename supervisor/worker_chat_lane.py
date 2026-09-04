@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import json
+import pathlib
 import sys
 import time
 import uuid
@@ -454,3 +455,43 @@ def auto_resume_after_restart() -> None:
             "type": "auto_resume_error",
             "error": repr(e),
         })
+
+
+def stop_direct_chat_turn(task_id: str, turn: Dict[str, Any]) -> bool:
+    """Stop the in-process direct-chat turn COOPERATIVELY; True once it ended.
+
+    There is no worker process to kill: the turn runs on the long-lived chat
+    agent inside the supervisor. The lane writes the typed ``finalize_now``
+    control (``REASON_OWNER_STOPPED_DIRECT_TURN``) to the canonical drive's
+    owner mailbox — the one the turn's loop drains at every round boundary,
+    where it ends the turn with ZERO further model calls — then waits the
+    short config-owned bound for the turn to reach that boundary (the same
+    custody pass runs on the supervisor sweep, so the wait stays short). The
+    control is written ONCE per turn: the turn's stamp is the latch, as the
+    RUNNING row is for a pooled task, so a retry neither duplicates the
+    control nor re-toasts the owner.
+    """
+    from supervisor import queue as q
+    from supervisor import workers
+    from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN
+    from supervisor.task_reaper import request_finalization_grace
+    from ouroboros.config import get_direct_turn_stop_wait_sec
+
+    if not turn.get("stop_control_msg_id"):
+        # The canonical drive: a direct turn runs on the main data root, and
+        # its loop drains that root's owner mailbox (the same root custody
+        # settles the intent on).
+        written = request_finalization_grace(
+            pathlib.Path(q.DRIVE_ROOT), task_id, REASON_OWNER_STOPPED_DIRECT_TURN,
+            chat_id=int(turn.get("chat_id") or 0), stamp=int(time.time()),
+            toast_text=(
+                f"⏹ The owner stopped chat turn {task_id}; it ends at its next "
+                "step without further work."
+            ),
+        )
+        if written:
+            workers.stamp_direct_chat_turn(task_id, stop_control_msg_id=written)
+    deadline = time.monotonic() + float(get_direct_turn_stop_wait_sec())
+    while workers.direct_chat_turn(task_id) is not None and time.monotonic() < deadline:
+        time.sleep(0.1)
+    return workers.direct_chat_turn(task_id) is None

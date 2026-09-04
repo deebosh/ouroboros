@@ -869,6 +869,12 @@ def task_has_live_ownership(task_id: str) -> bool:
             worker.busy_task_id == task_id for worker in workers.WORKERS.values()
         ):
             return True
+        # The in-process direct-chat turn is live PHYSICAL ownership too: it
+        # spends on the owner's behalf from inside the supervisor process and
+        # writes an ordinary durable running row, so it must be as
+        # addressable as a pooled worker (custody stops it cooperatively).
+        if workers.direct_chat_turn(task_id) is not None:
+            return True
         try:
             retry_target, _retry_settled_status = _live_retry_target_locked(q, task_id)
         except Exception:

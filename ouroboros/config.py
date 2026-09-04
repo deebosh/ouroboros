@@ -953,6 +953,11 @@ def get_settings_document_lock_timeout_sec() -> int:
     return _clamped_number_setting("OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC", low=1, high=300, cast=int)
 
 
+def get_direct_turn_stop_wait_sec() -> float:
+    """How long custody waits for a stopped direct-chat turn to reach its next round boundary."""
+    return _clamped_number_setting("OUROBOROS_DIRECT_TURN_STOP_WAIT_SEC", low=0, high=10, cast=float)
+
+
 def get_finalization_grace_sec(settings: Optional[dict] = None) -> int:
     raw = os.environ.get("OUROBOROS_FINALIZATION_GRACE_SEC")
     if raw is None and isinstance(settings, dict):
