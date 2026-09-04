@@ -32,6 +32,8 @@ the owner believes is live, and would only fail later, inside a real review.
 from __future__ import annotations
 
 import asyncio
+import threading
+import concurrent.futures
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -448,6 +450,32 @@ def _read_harness_snapshot() -> Dict[str, Any]:
     return _status_payload(True)
 
 
+# The snapshot read runs on its OWN single worker, and one read is shared by
+# every completion attempt while it is in flight: a read that outlived its
+# bound (issue #464's wedged owned-daemon initialization) is abandoned by the
+# awaiting request but not by the executor — a retry JOINS it instead of
+# starting another blocked thread. Without this, every timed-out completion
+# would consume one worker of the loop's shared default executor for good,
+# and once that pool was exhausted every other ``to_thread`` endpoint would
+# queue behind the wedge.
+_snapshot_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="onboarding-snapshot",
+)
+_snapshot_inflight: Optional["concurrent.futures.Future[Dict[str, Any]]"] = None
+_snapshot_lock = threading.Lock()
+
+
+def _snapshot_read_future() -> "concurrent.futures.Future[Dict[str, Any]]":
+    """The in-flight snapshot read, started if none is running."""
+    global _snapshot_inflight
+    with _snapshot_lock:
+        future = _snapshot_inflight
+        if future is None or future.done():
+            future = _snapshot_executor.submit(_read_harness_snapshot)
+            _snapshot_inflight = future
+        return future
+
+
 async def resolve_install_preset(
     settings: Optional[Dict[str, Any]] = None,
     *,
@@ -464,7 +492,7 @@ async def resolve_install_preset(
         timeout_sec = get_onboarding_snapshot_timeout_sec()
         try:
             snapshot = await asyncio.wait_for(
-                asyncio.to_thread(_read_harness_snapshot), timeout=timeout_sec,
+                asyncio.wrap_future(_snapshot_read_future()), timeout=timeout_sec,
             )
         except asyncio.TimeoutError:
             # A wedged owned-daemon initialization (a lock held by an earlier

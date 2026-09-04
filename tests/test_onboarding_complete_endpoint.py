@@ -271,6 +271,7 @@ def test_snapshot_read_that_never_answers_is_a_typed_timeout_not_a_hang(onboardi
     import ouroboros.gateway.onboarding as gw_onboarding
 
     monkeypatch.setattr(config, "get_onboarding_snapshot_timeout_sec", lambda: 1)
+    monkeypatch.setattr(gw_onboarding, "_snapshot_inflight", None)
     release = threading.Event()
 
     def _wedged_read():
@@ -328,6 +329,47 @@ def test_settings_document_held_past_its_bound_is_a_typed_busy_not_a_hang(onboar
     assert not onboarding.settings_path.exists()
     assert onboarding.calls["supervisor"] == 0
     del threading
+
+
+def test_retries_join_the_wedged_snapshot_read_instead_of_leaking_a_thread_each(onboarding, monkeypatch):
+    """Adversarial finding: ``wait_for`` abandons the awaiting request, not the
+    worker. On the loop's shared default executor every timed-out completion
+    would consume one worker for good and, once exhausted, every other
+    ``to_thread`` endpoint would queue behind the wedge. The read runs on its
+    own single worker and retries JOIN the in-flight read: N attempts, ONE
+    blocked thread, each answering the typed timeout within its bound."""
+    import threading
+    import time
+
+    import ouroboros.config as config
+    import ouroboros.gateway.onboarding as gw_onboarding
+
+    monkeypatch.setattr(config, "get_onboarding_snapshot_timeout_sec", lambda: 1)
+    monkeypatch.setattr(gw_onboarding, "_snapshot_inflight", None)
+    release = threading.Event()
+    started = []
+
+    def _wedged_read():
+        started.append(time.monotonic())
+        release.wait(30)
+        return {"daemon": {"state": "running"}, "harnesses": [], "profiles": {}}
+
+    monkeypatch.setattr(gw_onboarding, "_read_harness_snapshot", _wedged_read)
+    try:
+        answers = []
+        for _ in range(3):
+            t0 = time.monotonic()
+            response = onboarding.client.post(
+                "/api/onboarding/complete",
+                json={**WIZARD_PAYLOAD, "subscriptionsConnected": True},
+            )
+            answers.append((response.status_code, response.json()["code"], time.monotonic() - t0))
+    finally:
+        release.set()
+    assert [a[:2] for a in answers] == [(503, "daemon_timeout")] * 3
+    assert all(elapsed < 10 for _, _, elapsed in answers)
+    assert len(started) == 1, "each retry must join the one in-flight read, not start another blocked thread"
+    assert not onboarding.settings_path.exists()
 
 
 def test_unresolvable_model_refuses_before_any_write(onboarding):

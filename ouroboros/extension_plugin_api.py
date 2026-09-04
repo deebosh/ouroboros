@@ -830,7 +830,8 @@ class PluginAPIImpl:
                     future = self._start_supervised_task(spec)
                     if future is not None:
                         bundle.supervised_futures.append(future)
-                if companion_spawns and get_global_supervisor() is None:
+                companion_supervisor = get_global_supervisor() if companion_spawns else None
+                if companion_spawns and companion_supervisor is None:
                     raise ExtensionRegistrationError("companion supervisor is not initialized")
             except Exception:
                 # Disclosure: the snapshot IS published; the raise routes the
@@ -850,7 +851,7 @@ class PluginAPIImpl:
         # same dispose+unload path as a mid-attach failure.
         for spawn in companion_spawns:
             try:
-                get_global_supervisor().start(spawn.descriptor)
+                companion_supervisor.start(spawn.descriptor)
             except Exception:
                 log.warning("extension %s companion %s failed to start; disposed through "
                             "the standard unload path", self._skill, spawn.descriptor.name, exc_info=True)

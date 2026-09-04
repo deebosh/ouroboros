@@ -175,6 +175,8 @@ def owner_write_guard(endpoint: Callable) -> Callable:
             return await endpoint(request)
         except SettingsLockUnavailable as exc:
             return unsaved_error(str(exc), 503, code="settings_locked")
+        except SettingsDocumentBusy as exc:
+            return unsaved_error(str(exc), 503, code="settings_busy")
         except SettingsPreconditionFailed as exc:
             return unsaved_error(str(exc), 409, code="settings_precondition_failed")
 
