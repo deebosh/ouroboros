@@ -70,20 +70,23 @@ function inertDocument() {
     return doc;
 }
 
-test('importing the onboarding wizard renders without throwing', async () => {
-    const prior = {
-        document: globalThis.document, window: globalThis.window, navigator: globalThis.navigator,
-        localStorage: globalThis.localStorage, location: globalThis.location, fetch: globalThis.fetch,
-        requestAnimationFrame: globalThis.requestAnimationFrame,
-    };
+// One import per step: the wizard renders `stepOrder[0]` at boot, so the
+// bootstrap is rotated to put each step first (cache-busting query on the
+// import URL — an ES module is evaluated once per URL) and every step's
+// renderer executes, the summary/save re-render included — the surface
+// #557/#607 actually broke on.
+for (const [index, step] of BOOTSTRAP.stepOrder.entries()) {
+test(`importing the onboarding wizard renders the '${step}' step without throwing`, async () => {
+    const rotated = { ...BOOTSTRAP, stepOrder: [...BOOTSTRAP.stepOrder.slice(index), ...BOOTSTRAP.stepOrder.slice(0, index)] };
     const doc = inertDocument();
     const win = new Proxy({
         document: doc,
         location: { origin: 'http://127.0.0.1:8765', href: 'http://127.0.0.1:8765/onboarding', search: '', hash: '', pathname: '/onboarding' },
         navigator: { userAgent: 'node', platform: 'node', clipboard: { writeText: async () => {} } },
         localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-        __OURO_ONBOARDING_BOOTSTRAP__: BOOTSTRAP,
-        addEventListener() {}, removeEventListener() {}, setTimeout, clearTimeout, setInterval, clearInterval,
+        __OURO_ONBOARDING_BOOTSTRAP__: rotated,
+        addEventListener() {}, removeEventListener() {},
+        setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
         requestAnimationFrame: (fn) => setTimeout(fn, 0), getComputedStyle: () => ({}),
         matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
         fetch: async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' }),
@@ -92,18 +95,36 @@ test('importing the onboarding wizard renders without throwing', async () => {
         get(obj, prop) { return prop in obj ? obj[prop] : undefined; },
         set(obj, prop, value) { obj[prop] = value; return true; },
     });
-    globalThis.document = doc;
-    globalThis.window = win;
-    globalThis.navigator = win.navigator;
-    globalThis.localStorage = win.localStorage;
-    globalThis.location = win.location;
-    globalThis.fetch = win.fetch;
-    globalThis.requestAnimationFrame = win.requestAnimationFrame;
+    // Node 22+ exposes some Web IDL globals (`navigator`) as getter-only
+    // properties: a plain assignment throws before the wizard is imported.
+    // Install every stand-in through defineProperty and restore the exact
+    // prior descriptor afterwards, so the smoke runs the same on every Node
+    // CI pins.
+    const installed = {};
+    const install = (name, value) => {
+        installed[name] = Object.getOwnPropertyDescriptor(globalThis, name);
+        Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    };
+    install('document', doc);
+    install('window', win);
+    install('navigator', win.navigator);
+    install('localStorage', win.localStorage);
+    install('location', win.location);
+    install('fetch', win.fetch);
+    install('requestAnimationFrame', win.requestAnimationFrame);
+    install('setTimeout', win.setTimeout);
+    install('setInterval', win.setInterval);
+    install('clearTimeout', win.clearTimeout);
+    install('clearInterval', win.clearInterval);
     try {
         // A ReferenceError here is the exact failure that shipped in 6.113.3–6.114.0.
-        await import('../modules/onboarding_wizard.js');
+        await import(`../modules/onboarding_wizard.js?step=${index}`);
     } finally {
-        Object.assign(globalThis, prior);
+        for (const [name, descriptor] of Object.entries(installed)) {
+            if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+            else delete globalThis[name];
+        }
     }
     assert.ok(true);
 });
+}

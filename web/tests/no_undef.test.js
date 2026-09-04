@@ -19,6 +19,15 @@
 // object keys, labels and export specifiers are not references. Anything
 // else that is read and declared nowhere on the scope chain must be a known
 // browser/ECMAScript global or one of the vendored runtime globals below.
+// `typeof name` is exempt (it never throws), matching ESLint's no-undef.
+//
+// Scope of the gate: `web/app.js` and `web/modules/*.js` — the ES modules the
+// page loads; inline <script> blocks in served HTML are outside it. The walker
+// was validated during development against ESLint no-undef (browser+es2021
+// globals) over the module set and a corpus of ES2022 forms; the self-checks
+// below are the in-tree proof it cannot rot into a no-op. The second test pins
+// import LINKAGE: a stale named import is a load-time SyntaxError that kills
+// the whole page, strictly worse than the dead-call class.
 
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -62,10 +71,10 @@ const KNOWN_GLOBALS = new Set([
     'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'localStorage', 'sessionStorage',
     'indexedDB', 'crypto', 'Image', 'Audio', 'Notification', 'MediaSource', 'MediaRecorder',
     'ImageData', 'OffscreenCanvas', 'Path2D', 'DOMRect', 'DOMException', 'getComputedStyle',
-    'matchMedia', 'scrollTo', 'scrollBy', 'open', 'close', 'focus', 'blur', 'print', 'atob', 'btoa',
+    'matchMedia', 'atob', 'btoa',
     'CSS', 'ClipboardItem', 'Worker', 'SharedWorker', 'BroadcastChannel', 'MessageChannel',
     'ReadableStream', 'WritableStream', 'TransformStream', 'CompressionStream',
-    'DecompressionStream', 'reportError', 'self', 'parent', 'top', 'frames', 'name', 'origin',
+    'DecompressionStream', 'reportError',
     'devicePixelRatio', 'innerWidth', 'innerHeight', 'outerWidth', 'outerHeight', 'scrollX',
     'scrollY', 'pageXOffset', 'pageYOffset', 'visualViewport', 'speechSynthesis',
     'SpeechSynthesisUtterance', 'AudioContext', 'webkitAudioContext', 'HTMLMediaElement',
@@ -201,7 +210,9 @@ function walk(node, scope, report, parent, key) {
         case 'ArrowFunctionExpression': {
             const inner = new Scope(scope, true);
             if (node.type === 'FunctionExpression' && node.id) inner.names.add(node.id.name);
-            inner.names.add('arguments');
+            // `arguments` binds in ordinary functions only; an arrow reads its
+            // enclosing function's (a module-level arrow: ReferenceError).
+            if (node.type !== 'ArrowFunctionExpression') inner.names.add('arguments');
             for (const param of node.params) {
                 for (const n of patternNames(param, [])) inner.names.add(n);
             }
@@ -307,6 +318,12 @@ function walk(node, scope, report, parent, key) {
         case 'EmptyStatement':
         case 'DebuggerStatement':
             return;
+        case 'UnaryExpression':
+            // `typeof name` never throws on an undeclared name (ESLint no-undef
+            // exempts it too): a feature-detect must not turn the gate red.
+            if (node.operator === 'typeof' && node.argument.type === 'Identifier') return;
+            walk(node.argument, scope, report, node, 'argument');
+            return;
         case 'Identifier':
             reference(node, scope, report);
             return;
@@ -314,9 +331,12 @@ function walk(node, scope, report, parent, key) {
         case 'ObjectPattern':
         case 'ArrayPattern':
         case 'RestElement':
-            // A pattern in an assignment position ( [a, b] = ... ) references its targets.
+            // A pattern in an assignment position ( [a, b] = ... ) references its
+            // identifier targets; a member target (`({ a: obj.x } = o)`) is an
+            // ordinary expression and is walked as one.
             for (const n of patternNames(node, [])) reference({ name: n, loc: node.loc }, scope, report);
             walkPatternDefaults(node, scope, report);
+            walkAssignmentTargets(node, scope, report);
             return;
         default:
             break;
@@ -329,6 +349,22 @@ function walk(node, scope, report, parent, key) {
         } else if (child && typeof child.type === 'string') {
             walk(child, scope, report, node, childKey);
         }
+    }
+}
+
+// Non-identifier targets of a destructuring ASSIGNMENT (`[o.x] = arr`,
+// `({ k: o.y } = obj)`) are expressions: their object part is a reference.
+function walkAssignmentTargets(pattern, scope, report) {
+    if (!pattern) return;
+    switch (pattern.type) {
+        case 'AssignmentPattern': walkAssignmentTargets(pattern.left, scope, report); break;
+        case 'ObjectPattern':
+            for (const prop of pattern.properties) walkAssignmentTargets(prop.type === 'RestElement' ? prop.argument : prop.value, scope, report);
+            break;
+        case 'ArrayPattern': for (const element of pattern.elements) walkAssignmentTargets(element, scope, report); break;
+        case 'RestElement': walkAssignmentTargets(pattern.argument, scope, report); break;
+        case 'Identifier': break;
+        default: walk(pattern, scope, report, null, null); break;
     }
 }
 
@@ -388,6 +424,23 @@ test('the checker itself catches an undeclared call (so it cannot rot into a no-
     assert.deepEqual(findings, ['probe.js: renderGone (line 4)']);
 });
 
+test('arrows do not bind `arguments`, member targets of a destructuring assignment are walked, and `typeof` is exempt', () => {
+    const findings = undeclaredReferences(`
+        export const f = () => arguments;
+        function g() { return () => arguments; }
+        const o = {};
+        ({ a: missingNested.x } = o);
+        [missingArr.y] = [1];
+        if (typeof maybeGlobal !== 'undefined') { g(); }
+        export { o };
+    `, 'forms2.js');
+    assert.deepEqual(findings, [
+        'forms2.js: arguments (line 2)',
+        'forms2.js: missingNested (line 5)',
+        'forms2.js: missingArr (line 6)',
+    ]);
+});
+
 test('a function declared inside a block is not visible outside it (strict-mode modules)', () => {
     const findings = undeclaredReferences(`
         if (true) { function onlyHere() {} onlyHere(); }
@@ -438,4 +491,62 @@ test('every browser module references only names it declares, imports, or the pl
         'Undeclared identifier(s) in web modules — a call to a deleted/renamed function '
         + 'throws ReferenceError at runtime on the path that reaches it:\n' + findings.join('\n'),
     );
+});
+
+// --- import linkage --------------------------------------------------------------
+
+function moduleExports(ast) {
+    const names = new Set();
+    for (const node of ast.body) {
+        if (node.type === 'ExportNamedDeclaration') {
+            if (node.declaration) {
+                const decl = node.declaration;
+                if (decl.type === 'VariableDeclaration') for (const d of decl.declarations) for (const n of patternNames(d.id, [])) names.add(n);
+                else if (decl.id) names.add(decl.id.name);
+            }
+            for (const spec of node.specifiers) names.add(spec.exported.type === 'Identifier' ? spec.exported.name : spec.exported.value);
+        } else if (node.type === 'ExportDefaultDeclaration') {
+            names.add('default');
+        } else if (node.type === 'ExportAllDeclaration' && node.exported) {
+            names.add(node.exported.type === 'Identifier' ? node.exported.name : node.exported.value);
+        }
+    }
+    return names;
+}
+
+test('every relative named import and re-export resolves to an export of its target module', () => {
+    const parsed = new Map();
+    const parse = (file) => {
+        if (!parsed.has(file)) {
+            parsed.set(file, acorn.parse(readFileSync(file, 'utf8'), { ecmaVersion: 2024, sourceType: 'module', locations: true }));
+        }
+        return parsed.get(file);
+    };
+    const findings = [];
+    for (const file of moduleFiles()) {
+        const ast = parse(file);
+        for (const node of ast.body) {
+            const source = node.source && node.source.value;
+            if (!source || !source.startsWith('.')) continue;
+            const target = join(dirname(file), source);
+            let targetExports;
+            try { targetExports = moduleExports(parse(target)); } catch (err) {
+                findings.push(`${file.slice(WEB_DIR.length + 1)}: cannot resolve '${source}' (${err.message})`);
+                continue;
+            }
+            const wanted = [];
+            if (node.type === 'ImportDeclaration') {
+                for (const spec of node.specifiers) {
+                    if (spec.type === 'ImportSpecifier') wanted.push(spec.imported.type === 'Identifier' ? spec.imported.name : spec.imported.value);
+                    if (spec.type === 'ImportDefaultSpecifier') wanted.push('default');
+                }
+            } else if (node.type === 'ExportNamedDeclaration') {
+                for (const spec of node.specifiers) wanted.push(spec.local.type === 'Identifier' ? spec.local.name : spec.local.value);
+            }
+            for (const name of wanted) {
+                if (!targetExports.has(name)) findings.push(`${file.slice(WEB_DIR.length + 1)}: '${name}' is not exported by '${source}' (line ${node.loc.start.line})`);
+            }
+        }
+    }
+    assert.deepEqual(findings, [], 'Stale import(s) — a load-time SyntaxError that kills the whole page:\n' + findings.join('\n'));
 });
