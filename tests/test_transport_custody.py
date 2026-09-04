@@ -113,39 +113,21 @@ def test_requests_proxy_error_with_connect_timeout_evidence_proves_pre_dispatch(
     assert is_pre_dispatch_transport_failure(wrapped)
 
 
-def test_requests_proxy_error_of_any_shape_is_pre_dispatch_never_a_death(data_root):
-    """urllib3 wraps a failure as ProxyError only while the connection has not
-    reached the proxy (``not conn.has_connected_to_proxy``); once the tunnel is
-    up a failure becomes ProtocolError instead. So a ProxyError of ANY shape —
-    a proxy that only speaks HTTP, or the tunnel dying with RemoteDisconnected —
-    means the provider request never left: released custody, and never a paid
-    repeat, even when the nested error is a typed death."""
-    import http.client
-
+def test_requests_proxy_error_without_connect_evidence_stays_untyped(data_root):
+    """A proxy failure that is NOT connect-time (a proxy HTTP response, a
+    post-dispatch read failure) must never release custody."""
     import requests
     import urllib3
-    from ouroboros.transport_custody import is_pre_dispatch_transport_failure, is_retryable_transport_death
+    from ouroboros.transport_custody import is_pre_dispatch_transport_failure
 
-    http_only = urllib3.exceptions.ProxyError(
+    proxy = urllib3.exceptions.ProxyError(
         "Your proxy appears to only use HTTP and not HTTPS",
         urllib3.exceptions.HTTPError("bad proxy response"),
     )
-    tunnel_died = urllib3.exceptions.ProxyError(
-        "Unable to connect to proxy",
-        http.client.RemoteDisconnected("Remote end closed connection without response"),
+    wrapped = requests.exceptions.ProxyError(
+        urllib3.exceptions.MaxRetryError(None, "/messages", reason=proxy)
     )
-    for reason in (http_only, tunnel_died):
-        wrapped = requests.exceptions.ProxyError(
-            urllib3.exceptions.MaxRetryError(None, "/messages", reason=reason)
-        )
-        wrapped.physical_attempt_capture = _unresolved_capture(provider="anthropic")
-        assert is_pre_dispatch_transport_failure(wrapped) is True
-        assert is_retryable_transport_death(wrapped) is False
-    # A bare requests ProxyError (no MaxRetryError envelope) is the same fact.
-    bare = requests.exceptions.ProxyError("proxy refused the CONNECT")
-    bare.physical_attempt_capture = _unresolved_capture(provider="anthropic")
-    assert is_pre_dispatch_transport_failure(bare) is True
-    assert is_retryable_transport_death(bare) is False
+    assert not is_pre_dispatch_transport_failure(wrapped)
 
 
 @pytest.mark.parametrize("url,expected", [
@@ -414,3 +396,38 @@ def test_requests_read_timeout_and_connect_shapes_are_not_transport_deaths():
     )
     refused.physical_attempt_capture = capture
     assert is_retryable_transport_death(refused) is False
+
+
+def test_requests_proxy_tunnel_death_is_neither_pre_dispatch_nor_a_death():
+    """The tunnel to the proxy died (RemoteDisconnected nested in a urllib3
+    ProxyError): not the base pre-dispatch class (no connect-time evidence —
+    a proxy that ANSWERS is not an outage to wait out), and never a paid
+    repeat either — the round keeps the base unknown no-resend terminal. With
+    connect-time evidence the base pre-dispatch contract still holds, and a
+    proxy failure is still not a death."""
+    import http.client
+
+    import requests
+    import urllib3
+    from ouroboros.transport_custody import is_pre_dispatch_transport_failure, is_retryable_transport_death
+
+    tunnel_died = requests.exceptions.ProxyError(urllib3.exceptions.MaxRetryError(
+        None, "/messages", reason=urllib3.exceptions.ProxyError(
+            "Unable to connect to proxy", http.client.RemoteDisconnected("Remote end closed connection without response"),
+        ),
+    ))
+    tunnel_died.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+    assert is_pre_dispatch_transport_failure(tunnel_died) is False
+    assert is_retryable_transport_death(tunnel_died) is False
+    refused = requests.exceptions.ProxyError(urllib3.exceptions.MaxRetryError(
+        None, "/messages", reason=urllib3.exceptions.ProxyError(
+            "Cannot connect to proxy.", urllib3.exceptions.NewConnectionError(None, "connection refused"),
+        ),
+    ))
+    refused.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+    assert is_pre_dispatch_transport_failure(refused) is True
+    assert is_retryable_transport_death(refused) is False
+    bare = requests.exceptions.ProxyError("proxy refused the CONNECT")
+    bare.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+    assert is_pre_dispatch_transport_failure(bare) is False
+    assert is_retryable_transport_death(bare) is False

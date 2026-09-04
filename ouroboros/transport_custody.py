@@ -66,22 +66,28 @@ def is_pre_dispatch_transport_failure(exc: BaseException) -> bool:
         import requests
         import urllib3
 
-        if isinstance(exc, (requests.exceptions.ConnectTimeout, requests.exceptions.ProxyError)):
+        if isinstance(exc, requests.exceptions.ConnectTimeout):
             return True
         if not isinstance(exc, requests.exceptions.ConnectionError):
             return False
-        # Both the direct and the proxied connect failure arrive as MaxRetryError
-        # args. urllib3 wraps a failure as ProxyError only while the connection
-        # has NOT reached the proxy (``not conn.has_connected_to_proxy`` in
-        # connectionpool ``_make_request``/``urlopen``; a failure after the
-        # tunnel is up becomes ProtocolError instead), so a ProxyError of any
-        # shape means the provider request never left — pre-dispatch by
-        # construction, like requests' own ProxyError above.
+        # requests.exceptions.ProxyError subclasses ConnectionError; both the
+        # direct and the proxied connect failure arrive as MaxRetryError args.
         for value in getattr(exc, "args", ()):
             if isinstance(value, urllib3.exceptions.MaxRetryError):
                 reason = getattr(value, "reason", None)
-                if isinstance(reason, (urllib3.exceptions.ConnectTimeoutError, urllib3.exceptions.ProxyError)):
+                if isinstance(reason, urllib3.exceptions.ConnectTimeoutError):
                     return True
+                if isinstance(reason, urllib3.exceptions.ProxyError):
+                    # An unreachable proxy is a pre-dispatch fact only with
+                    # nested connect-time evidence (NewConnectionError is a
+                    # ConnectTimeoutError subclass); a proxy HTTP response or
+                    # a post-dispatch read failure never matches.
+                    nested = getattr(reason, "original_error", None)
+                    if isinstance(nested, (
+                        urllib3.exceptions.ConnectTimeoutError,
+                        urllib3.exceptions.NewConnectionError,
+                    )):
+                        return True
     except Exception:  # pragma: no cover - optional transport dependency
         pass
     return False
@@ -113,7 +119,10 @@ def _requests_protocol_death(exc: BaseException) -> Any:
     ``RemoteDisconnected``) as the ``ConnectionError``'s first argument, and
     urllib3 keeps a wrapped failure as ``reason`` on ``MaxRetryError`` — none of
     it is on ``__cause__``. The deepest match wins so the durable cause type is
-    the most specific fact (``RemoteDisconnected`` over ``ProtocolError``).
+    the most specific fact (``RemoteDisconnected`` over ``ProtocolError``). A
+    proxy-tunnel failure (a requests or urllib3 ``ProxyError`` anywhere on the
+    walk) is never a death, whatever it wraps: the tunnel, not the provider
+    request, is what died, and that class keeps the base no-resend terminal.
     """
     try:
         import http.client
@@ -122,13 +131,15 @@ def _requests_protocol_death(exc: BaseException) -> Any:
     except Exception:  # pragma: no cover - optional transport dependency
         return None
     if not isinstance(exc, requests.exceptions.ConnectionError) or isinstance(
-        exc, requests.exceptions.Timeout,
+        exc, (requests.exceptions.Timeout, requests.exceptions.ProxyError),
     ):
         return None
     found = None
     pending = list(getattr(exc, "args", ()))
     while pending:
         value = pending.pop(0)
+        if isinstance(value, (urllib3.exceptions.ProxyError, requests.exceptions.ProxyError)):
+            return None
         if isinstance(value, (urllib3.exceptions.ProtocolError, http.client.RemoteDisconnected)):
             found = value
         if isinstance(value, BaseException):

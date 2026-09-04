@@ -782,15 +782,22 @@ def test_refused_free_redial_keeps_the_base_deadline_stamps(tmp_path, no_sleep):
     assert provider_no_call_source(usage, True) == ("provider_outcome_unknown_no_resend", False)
 
 
-def test_proxy_tunnel_failure_is_released_and_never_repeated(data_root, tmp_path, no_sleep):
-    """Through the REAL ledger: a requests ProxyError whose nested error is a
-    typed death (the tunnel to the proxy died) never carried a provider
-    request — custody is released ($0), the classification is the free
-    transport class, and the paid repeat rail is never entered."""
+def test_proxy_tunnel_failure_keeps_the_base_unknown_terminal(data_root, tmp_path, monkeypatch, no_sleep):
+    """Through the REAL ledger and the round gate: a requests ProxyError whose
+    nested error is a typed death (the tunnel to the proxy died) is neither the
+    free pre-dispatch class nor a paid repeat — custody stays unresolved, the
+    kind is `provider_outcome_unknown`, one attempt, no repeat, no episode."""
     import http.client
 
     import requests
     import urllib3
+
+    def proxy_tunnel_death():
+        return requests.exceptions.ProxyError(urllib3.exceptions.MaxRetryError(
+            None, "/messages", reason=urllib3.exceptions.ProxyError(
+                "Unable to connect to proxy", http.client.RemoteDisconnected("closed without response"),
+            ),
+        ))
 
     class _ProxyTunnelLLM:
         calls = 0
@@ -802,11 +809,7 @@ def test_proxy_tunnel_failure_is_released_and_never_repeated(data_root, tmp_path
             self.calls += 1
 
             def send():
-                raise requests.exceptions.ProxyError(urllib3.exceptions.MaxRetryError(
-                    None, "/messages", reason=urllib3.exceptions.ProxyError(
-                        "Unable to connect to proxy", http.client.RemoteDisconnected("closed without response"),
-                    ),
-                ))
+                raise proxy_tunnel_death()
 
             request = ua.AttemptRequest(
                 model="test-model", provider="anthropic", reservation_usd=1.0,
@@ -820,9 +823,27 @@ def test_proxy_tunnel_failure_is_released_and_never_repeated(data_root, tmp_path
     msg, _cost = _primary_call(llm, tmp_path, usage)
 
     assert msg is None
-    assert llm.calls == 1  # the free class: one attempt per invocation, the wait episode owns redials
-    assert [row["state"] for row in _ledger(data_root)] == ["reserved", "dispatched", "released"]
-    assert ua.usage_projection(data_root)["unresolved_upper_bound_usd"] == 0.0
-    assert usage["_last_llm_error_kind"] == "transport_unavailable"
+    assert llm.calls == 1
+    assert [row["state"] for row in _ledger(data_root)] == ["reserved", "dispatched", "unresolved"]
+    assert ua.usage_projection(data_root)["unresolved_upper_bound_usd"] == 1.0
+    assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+    assert usage["_last_llm_retry_same_request"] is False
     assert TRANSPORT_DEATHS_KEY not in usage
     assert no_sleep == []
+    assert provider_no_call_source(usage, False) == ("provider_outcome_unknown_no_resend", False)
+
+    # And through run_llm_loop: no wait episode, the base unknown no-resend terminal, no forced dial.
+    monkeypatch.setattr(loop_mod, "_run_cross_model_fallback_chain", _no_chain)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+
+    def scripted():
+        exc = proxy_tunnel_death()
+        exc.physical_attempt_capture = _capture(provider="anthropic")
+        return exc
+
+    loop_llm = _ScriptedLLM(scripted, scripted)
+    _result, loop_usage, trace = run_llm_loop(**_loop_kwargs(tmp_path, loop_llm, []))
+    assert loop_llm.calls == 1
+    assert _events(tmp_path, "network_wait") == []
+    assert trace.get("forced_finalization", {}).get("source") == "provider_outcome_unknown_no_resend"
