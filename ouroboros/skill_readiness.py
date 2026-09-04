@@ -98,6 +98,7 @@ def skill_names_touched_by_trace(llm_trace: Dict[str, Any]) -> List[str]:
 def acceptance_skill_lifecycle(
     drive_root: Any, llm_trace: Dict[str, Any], root_task_id: str = "",
     task_started_at: str = "",
+    history_coverage: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Per-skill lifecycle facts for the acceptance packet — VISIBILITY ONLY.
 
@@ -111,9 +112,12 @@ def acceptance_skill_lifecycle(
     if root is None:
         return []
     names = list(skill_names_touched_by_trace(llm_trace or {}))
-    for name in _skill_names_from_review_history(
+    history = _skill_names_from_review_history(
         root, str(root_task_id or ""), task_started_at=task_started_at,
-    ):
+    )
+    if history_coverage is not None:
+        history_coverage.update(history["coverage"])
+    for name in history["names"]:
         if name not in names:
             names.append(name)
     if not names:
@@ -143,23 +147,48 @@ def acceptance_skill_lifecycle(
 
 def _skill_names_from_review_history(
     drive_root: pathlib.Path, root_task_id: str, *, task_started_at: str = "",
-) -> List[str]:
+) -> Dict[str, Any]:
     """Skills named by the compact root-task projection, never full histories."""
-    if not root_task_id:
-        return []
-    from ouroboros.skill_review_history import root_task_projection_path
+    from ouroboros.skill_review_history import (
+        ROOT_TASK_PROJECTION_RELATIVE_PATH, root_task_projection_path,
+    )
     from ouroboros.utils import iter_jsonl_objects
 
     path = root_task_projection_path(drive_root)
+    source_ref = {
+        "kind": "canonical_jsonl", "path": ROOT_TASK_PROJECTION_RELATIVE_PATH,
+        "reader": "read_file",
+    }
+    gaps: set[str] = set()
+    try:
+        byte_truncated = path.stat().st_size > _ROOT_TASK_PROJECTION_MAX_BYTES
+    except FileNotFoundError:
+        byte_truncated = False
+    except OSError:
+        byte_truncated = False
+        gaps.add("projection_unreadable")
     names: List[str] = []
     try:
         rows = list(iter_jsonl_objects(
             path,
             max_entries=_ROOT_TASK_PROJECTION_MAX_RECORDS,
             tail_bytes=_ROOT_TASK_PROJECTION_MAX_BYTES,
+            gap_reasons=gaps,
         ))
     except OSError:
-        return []
+        rows = []
+        gaps.add("projection_unreadable")
+    if byte_truncated:
+        gaps.add("tail_bytes_truncated")
+    coverage = {
+        "rows_scanned": len(rows),
+        "truncated": bool(byte_truncated or "max_entries_truncated" in gaps),
+        "complete": not gaps,
+        "gap_reasons": sorted(gaps),
+        "source_ref": source_ref,
+    }
+    if not root_task_id:
+        return {"names": names, "coverage": coverage}
     cutoff = str(task_started_at or "").replace("Z", "+00:00")
     for row in reversed(rows):
         row_ts = str(row.get("ts") or "").replace("Z", "+00:00")
@@ -170,7 +199,7 @@ def _skill_names_from_review_history(
         name = str(row.get("skill") or "").strip()
         if name and name not in names:
             names.append(name)
-    return names
+    return {"names": names, "coverage": coverage}
 
 
 def skill_readiness_for_execution(

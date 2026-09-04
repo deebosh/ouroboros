@@ -786,8 +786,6 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
 
     omissions: List[Dict[str, Any]] = list(ev.get("omissions_manifest") or [])
     ev["omissions_manifest"] = omissions
-    if _size() <= budget:
-        return _finish()
     # Disclosed ladder: predecessor envelope, trajectory tail, then artifact
     # previews, agent-supplied evidence, and last of all a diff preview — always
     # with a note. The predecessor envelope sheds FIRST because it is the largest
@@ -795,7 +793,7 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
     # authority is a durable record, and the reviewer judges THIS task.
     notes: List[str] = []
     contract = ev.get("task_contract")
-    if isinstance(contract, dict) and contract.get("predecessor_authority"):
+    if _size() > budget and isinstance(contract, dict) and contract.get("predecessor_authority"):
         envelope = contract.get("predecessor_authority")
         try:
             omitted_chars = len(json.dumps(envelope, ensure_ascii=False, default=str))
@@ -908,16 +906,18 @@ def _accept_enforce_budget(ev: Dict[str, Any], *, budget: int = 0) -> Dict[str, 
             ),
         }
         notes.append(f"immutable core remains ~{_size() // 1000}k; reviewer must abstain as DEGRADED")
+    trajectory_source_ref = ev.get("tool_trajectory_source_ref") or {}
     unresolved_partials = [{
         "tool": str(row.get("tool") or ""),
         "status": ("not_materialized_for_reviewer"
-                   if row.get("result_source_ref") else "source_unavailable"),
-        "source_ref": row.get("result_source_ref") or {},
+                   if row.get("result_source_ref") or trajectory_source_ref else "source_unavailable"),
+        "source_ref": row.get("result_source_ref") or trajectory_source_ref,
     } for row in (ev.get("tool_trajectory") or [])
         if isinstance(row, dict) and row.get("result_complete") is False]
     if int(ev.get("tool_trajectory_omitted_leading", 0) or 0) > 0:
         unresolved_partials.append({
-            "tool": "tool_trajectory", "status": "source_unavailable", "source_ref": {},
+            "tool": "tool_trajectory", "status": ("not_materialized_for_reviewer"
+                if trajectory_source_ref else "source_unavailable"), "source_ref": trajectory_source_ref,
         })
     if unresolved_partials:
         existing = ev.get("__unresolved_partial_artifacts__")
@@ -1025,6 +1025,8 @@ def build_task_acceptance_evidence(
     include_recent_commit: bool = False,
     canonical_subject: str = "",
     subtree_statuses: List[Dict[str, Any]] | None = None,
+    undispositioned_children: List[Dict[str, Any]] | None = None,
+    acceptance_dialogue_history: List[Dict[str, Any]] | None = None,
     budget_chars: int = 0,
 ) -> Dict[str, Any]:
     """Process-aware task-acceptance evidence packet (v6.51.0 idea-2). Typed sections with
@@ -1139,12 +1141,18 @@ def build_task_acceptance_evidence(
         from ouroboros.skill_readiness import acceptance_skill_lifecycle
 
         lifecycle_root = getattr(ctx, "budget_drive_root", None) or drive_root
+        skill_history_coverage: Dict[str, Any] = {}
         if lifecycle := acceptance_skill_lifecycle(
             lifecycle_root, llm_trace or {}, root_task_id,
             task_started_at=str(meta.get("started_at") or meta.get("created_at") or ""),
+            history_coverage=skill_history_coverage,
         ):
             ev["skill_lifecycle"] = redact_projection(lifecycle).value
             prov["skill_lifecycle"] = "host_attested"
+        if skill_history_coverage:
+            ev["skill_lifecycle_history_coverage"] = skill_history_coverage
+            prov["skill_lifecycle_history_coverage"] = "host_attested"
+            ev["skill_lifecycle_complete"] = bool(skill_history_coverage.get("complete"))
     repo_diff = collect_turn_diff(ctx, include_recent_commit=include_recent_commit)
     diff_meta: Dict[str, Any] = {}
     if "OMISSION NOTE: truncated at " in str(repo_diff or "") or "... (truncated from " in str(repo_diff or ""):
@@ -1174,6 +1182,11 @@ def build_task_acceptance_evidence(
         if traj or omitted:
             ev["tool_trajectory"] = traj
             prov["tool_trajectory"] = "tool_result"
+            if drive_root is not None and task_id:
+                ev["tool_trajectory_source_ref"] = {
+                    "kind": "task_result", "task_id": task_id, "reader": "get_task_result",
+                    "field": "llm_trace.tool_calls",
+                }
             if omitted:
                 ev["tool_trajectory_omitted_leading"] = omitted
                 ev["tool_trajectory_complete"] = False
@@ -1258,6 +1271,10 @@ def build_task_acceptance_evidence(
             prov["artifacts"] = "artifact"
             if any(isinstance(row, dict) and row.get("name") == "…" for row in arts):
                 partial_sources.append({"tool": "artifact_manifest", "status": "source_unavailable", "reason": "artifact_manifest_truncated_without_exact_range", "source_ref": {}})
+    if ev.get("skill_lifecycle_complete") is False:
+        coverage = ev.get("skill_lifecycle_history_coverage") or {}
+        partial_sources.append({"tool": "skill_lifecycle", "status": "not_materialized_for_reviewer",
+                                "reason": "bounded_history_projection", "source_ref": coverage.get("source_ref") or {}})
     if partial_sources:
         ev["__unresolved_partial_artifacts__"] = partial_sources
     # Set task_type BEFORE budget enforcement so the whole packet stays deterministically
@@ -1265,6 +1282,10 @@ def build_task_acceptance_evidence(
     if str(task_type).strip():
         ev["task_type"] = str(task_type)
         prov["task_type"] = "host_attested"
+    if isinstance(undispositioned_children, list) and undispositioned_children:
+        ev["undispositioned_children"] = undispositioned_children
+    if isinstance(acceptance_dialogue_history, list) and acceptance_dialogue_history:
+        ev[UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY] = acceptance_dialogue_history
     ev["__provenance__"] = prov
     return _accept_enforce_budget(ev, budget=budget_chars)
 

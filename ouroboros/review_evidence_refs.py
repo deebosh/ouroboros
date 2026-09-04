@@ -168,6 +168,8 @@ def acceptance_evidence_ref_vocabulary(evidence: Any) -> Dict[str, str]:
             basis = PARTIAL_SECTION
         elif name == "repo_diff" and ev.get("repo_diff_complete") is False:
             basis = PARTIAL_SECTION
+        elif name == "skill_lifecycle" and ev.get("skill_lifecycle_complete") is False:
+            basis = PARTIAL_SECTION
         elif name in DECLARED_INTENT_SECTIONS:
             basis = DECLARED_INTENT_SECTION
         elif tag in HOST_ATTESTED_SECTION_PROVENANCE:

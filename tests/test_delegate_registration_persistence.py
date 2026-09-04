@@ -19,6 +19,36 @@ class _Gateway:
         pass
 
 
+class _ProcessGateway:
+    def __init__(self, removals):
+        self.removals = removals
+
+    def remove_project(self, pid):
+        self.removals.put(pid)
+
+
+def _settle_shared_project_process(root, run_id, removals, replay_barrier):
+    from pathlib import Path
+    from ouroboros import delegate_custody as dc
+    from ouroboros import delegate_custody_usage as usage
+
+    original = usage.complete_custody_rows
+
+    def synchronized_replay(*args, **kwargs):
+        try:
+            replay_barrier.wait(timeout=0.5)
+        except Exception:
+            pass
+        return original(*args, **kwargs)
+
+    usage.complete_custody_rows = synchronized_replay
+    row = dc.replay(Path(root))[run_id]
+    dc.settle_run(
+        Path(root), _ProcessGateway(removals), row,
+        {"summary": {"state": "succeeded"}},
+    )
+
+
 def test_persistent_registration_predicate():
     # Stable execution workspace + the user's own tree => durable identity.
     assert persistent_registration("/home/user/project", "workspace_write") is True
@@ -313,3 +343,43 @@ def test_concurrent_live_settlements_publish_before_last_sibling_retirement(
     assert all(not thread.is_alive() for thread in threads)
     assert len(results) == 2 and all(result["settled"] for result in results)
     assert gateway.removals == ["project-live-race"]
+
+
+def test_cross_process_settlements_retire_shared_project_once(tmp_path):
+    import multiprocessing
+    import queue
+
+    dc = custody
+    dc._CUSTODY.clear()
+    for run_id, task_id in (("run-proc-a", "task-proc-a"), ("run-proc-b", "task-proc-b")):
+        dc.record_started(tmp_path, dc.RunCustody(
+            run_id=run_id, task_id=task_id, route_id="r", model="m",
+            project_id="project-process-race", project_owned=True,
+            ledger_root=str(tmp_path), ledger_recorded=True,
+        ))
+    process_ctx = multiprocessing.get_context("spawn")
+    removals = process_ctx.Queue()
+    replay_barrier = process_ctx.Barrier(2)
+    processes = [
+        process_ctx.Process(
+            target=_settle_shared_project_process,
+            args=(str(tmp_path), run_id, removals, replay_barrier),
+        )
+        for run_id in ("run-proc-a", "run-proc-b")
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+    assert [process.exitcode for process in processes] == [0, 0]
+    assert removals.get(timeout=1) == "project-process-race"
+    try:
+        duplicate_removal = removals.get(timeout=0.2)
+    except queue.Empty:
+        duplicate_removal = None
+    assert duplicate_removal is None
+    retired = [
+        row for row in dc._iter_rows(dc.event_log_path(tmp_path))
+        if row.get("type") == dc.PROJECT_RETIRED
+    ]
+    assert len(retired) == 1

@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import pathlib, threading
+import pathlib
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -31,11 +31,11 @@ from ouroboros._usage_rows import REVIEW_ATTRIBUTION_KEYS
 from ouroboros.delegate_custody_usage import (
     disclosed_spend,
     disclosed_tokens,
+    project_retirement_lock,
     summary_of,
 )
 from ouroboros.utils import append_jsonl, utc_now_iso
 log = logging.getLogger(__name__)
-_PROJECT_RETIRE_LOCKS = tuple(threading.Lock() for _ in range(64))
 # The harness's own terminal vocabulary — one definition for the tool, the settler and
 # the reconciler (a second copy is how a "cancelled" run stayed live on one branch).
 TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
@@ -782,8 +782,7 @@ def is_terminal(detail: Dict[str, Any]) -> bool:
 
 def retire_project(drive_root: Any, gateway: Any, custody: RunCustody) -> None:
     """Serialize the replay-to-retirement decision for one shared project."""
-    lock = _PROJECT_RETIRE_LOCKS[hash(custody.project_id) % len(_PROJECT_RETIRE_LOCKS)]
-    with lock:
+    with project_retirement_lock(drive_root, custody.project_id):
         _retire_project_locked(drive_root, gateway, custody)
 
 
@@ -926,8 +925,7 @@ def settle_run(drive_root: Any, gateway: Any, custody: RunCustody, detail: Dict[
     if not custody.ledger_recorded:
         retire_project(drive_root, gateway, custody)
     else:
-        lock = _PROJECT_RETIRE_LOCKS[hash(custody.project_id) % len(_PROJECT_RETIRE_LOCKS)]
-        with lock:
+        with project_retirement_lock(drive_root, custody.project_id):
             custody.settled = emit(drive_root, SETTLED, {
                 "run_id": custody.run_id,
                 "task_id": custody.task_id,

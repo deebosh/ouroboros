@@ -15,6 +15,7 @@ from ouroboros.review_evidence import build_task_acceptance_evidence
 from ouroboros.review_evidence_refs import acceptance_evidence_ref_vocabulary
 from ouroboros.skill_loader import find_skill
 from ouroboros.skill_readiness import (
+    _skill_names_from_review_history,
     acceptance_skill_lifecycle,
     skill_names_touched_by_trace,
     skill_readiness_for_execution,
@@ -210,3 +211,49 @@ def test_no_touched_skill_adds_no_section(tmp_path):
     assert "skill_lifecycle" not in packet
     assert acceptance_skill_lifecycle(drive_root, {"tool_calls": []}, "") == []
     assert acceptance_skill_lifecycle(None, {"tool_calls": []}, "") == []
+
+
+def test_bounded_history_projection_discloses_both_omission_limits(tmp_path):
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir()
+    _write_skill(drive_root, "visible")
+    projection = drive_root / "state" / "skill_review_root_tasks.jsonl"
+    projection.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        json.dumps({
+            "root_task_id": "other", "skill": f"skill-{index}",
+            "padding": "x" * 1500,
+        })
+        for index in range(800)
+    ]
+    rows.append(json.dumps({"root_task_id": "root-1", "skill": "visible"}))
+    projection.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    history = _skill_names_from_review_history(drive_root, "root-1")
+    assert history["names"] == ["visible"]
+    assert history["coverage"]["rows_scanned"] <= 512
+    assert history["coverage"]["truncated"] is True
+    assert set(history["coverage"]["gap_reasons"]) >= {
+        "tail_bytes_truncated", "max_entries_truncated",
+    }
+    assert history["coverage"]["source_ref"] == {
+        "kind": "canonical_jsonl",
+        "path": "state/skill_review_root_tasks.jsonl",
+        "reader": "read_file",
+    }
+
+    ctx = _ctx(drive_root, tmp_path, "task-bounded-history")
+    packet = build_task_acceptance_evidence(
+        ctx, llm_trace={"tool_calls": [{
+            "tool": "skill_review", "args": {"skill": "visible"},
+        }]}, drive_root=drive_root, task_id="task-bounded-history",
+    )
+    assert packet["skill_lifecycle_history_coverage"]["truncated"] is True
+    assert packet["skill_lifecycle_complete"] is False
+    assert acceptance_evidence_ref_vocabulary(packet)["skill_lifecycle"] == "partial"
+    partial = next(
+        row for row in packet["__unresolved_partial_artifacts__"]
+        if row["tool"] == "skill_lifecycle"
+    )
+    assert partial["status"] == "not_materialized_for_reviewer"
+    assert partial["source_ref"] == history["coverage"]["source_ref"]

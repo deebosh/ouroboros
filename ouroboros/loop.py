@@ -1194,10 +1194,7 @@ def _latest_agent_acceptance_evidence(llm_trace: Dict[str, Any]) -> Dict[str, An
 
 def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, Any]:
     """Build the one bounded host packet shared by binding and reviewer input."""
-    from ouroboros.review_evidence import (
-        UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY,
-        build_task_acceptance_evidence,
-    )
+    from ouroboros.review_evidence import build_task_acceptance_evidence
 
     committed_this_turn = any(
         isinstance(call, dict)
@@ -1215,21 +1212,11 @@ def _build_host_acceptance_evidence(ctx: _TaskAcceptanceContext) -> Dict[str, An
         include_recent_commit=committed_this_turn,
         canonical_subject=str(ctx.content or ""),
         subtree_statuses=ctx.subtree_statuses,
+        undispositioned_children=getattr(
+            ctx.tools._ctx, "_forced_undispositioned_children", None),
+        acceptance_dialogue_history=acceptance_dialogue_history(ctx.llm_trace),
         budget_chars=ctx.packet_budget_chars,
     )
-    # Owner Q2A: the forced children_unabsorbed rail stashes the process debt
-    # (undispositioned children) so the panel sees it; part of the binding hash.
-    undecided = getattr(ctx.tools._ctx, "_forced_undispositioned_children", None)
-    if isinstance(undecided, list) and undecided:
-        evidence["undispositioned_children"] = undecided
-    # The dialogue so far, so this panel adjudicates knowing what the previous
-    # ones judged instead of re-raising blind. Bounded here rather than by the
-    # packet budget because it is attached AFTER the builder's budget pass — and
-    # it is the one key `task_acceptance_evidence_revision` excludes, so growing
-    # history can never mint a fresh revision (and thus a fresh paid binding).
-    history = acceptance_dialogue_history(ctx.llm_trace)
-    if history:
-        evidence[UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY] = history
     return evidence
 
 

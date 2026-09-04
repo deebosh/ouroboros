@@ -119,6 +119,7 @@ def test_budget_truncated_repo_diff_cannot_resolve_clean_acceptance():
 
 
 def test_leading_trajectory_omission_from_packet_producer_cannot_resolve_clean(tmp_path):
+    from ouroboros.review_dispatch import task_acceptance_zero_physical_refusal
     from ouroboros.review_evidence import (
         _ACCEPT_TRAJECTORY_MAX_CALLS,
         annotate_criteria_evidence_resolution,
@@ -146,6 +147,16 @@ def test_leading_trajectory_omission_from_packet_producer_cannot_resolve_clean(t
     annotate_criteria_evidence_resolution([actor], packet)
 
     assert packet["tool_trajectory_omitted_leading"] == 1
+    partial = next(
+        row for row in packet["__unresolved_partial_artifacts__"]
+        if row["tool"] == "tool_trajectory"
+    )
+    assert partial["status"] == "not_materialized_for_reviewer"
+    assert partial["source_ref"] == {
+        "kind": "task_result", "task_id": "task-traj", "reader": "get_task_result",
+        "field": "llm_trace.tool_calls",
+    }
+    assert task_acceptance_zero_physical_refusal(packet) == {}
     assert acceptance_evidence_ref_vocabulary(packet)["tool_trajectory"] == "partial"
     result = SimpleNamespace(aggregate_signal="PASS", degraded=False, actors=[actor])
     assert task_acceptance_is_clean(result) is False
@@ -264,7 +275,9 @@ def test_skill_history_root_task_projection_avoids_whole_history_reads(monkeypat
         return original_iter(path, *args, **kwargs)
 
     monkeypatch.setattr(utils, "iter_jsonl_objects", _bounded_iter)
-    assert _skill_names_from_review_history(tmp_path, "root-wanted") == ["large-skill"]
+    history = _skill_names_from_review_history(tmp_path, "root-wanted")
+    assert history["names"] == ["large-skill"]
+    assert history["coverage"]["complete"] is True
     assert len(bounded_projection_reads) == 1
 
 

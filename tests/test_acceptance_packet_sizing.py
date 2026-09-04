@@ -133,6 +133,50 @@ def test_positive_narrow_calibration_sheds_packet_until_acceptance_dispatches(
     assert acceptance_packet_budget_chars([slot]) == _ACCEPT_TOTAL_BUDGET
 
 
+def test_late_host_fields_are_inside_the_single_packet_budget(tmp_path):
+    from ouroboros import loop
+    from ouroboros.tools.registry import ToolRegistry
+
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    registry._ctx.task_id = "task-sizing"
+    registry._ctx.task_contract = {}
+    registry._ctx.task_metadata = {}
+    registry._ctx._forced_undispositioned_children = [{
+        "task_id": "child", "evidence": "d" * 12_000,
+    }]
+    trace = {
+        "tool_calls": [],
+        "acceptance_evidence_calls": [{
+            "status": "deferred_to_host_acceptance",
+            "authoritative": False,
+            "agent_supplied": {"padding": "x" * 100_000},
+        }],
+        "review_runs": [{
+            "authority": "host_root", "aggregate_signal": "PASS",
+            "dialogue": {"status": "closed", "votes": {"pass": [1]}},
+        }],
+    }
+    roomy = loop._TaskAcceptanceContext(
+        tools=registry, content="done", task_id="task-sizing", task_type="",
+        llm_trace=trace, drive_root=tmp_path, messages=[], emit_progress=lambda *_: None,
+        mode="auto", subtree_statuses=[], budget_profile=None, passes_done=0,
+        packet_budget_chars=1_000_000,
+    )
+    base = loop._build_host_acceptance_evidence(roomy)
+    ceiling = len(json.dumps({
+        key: value for key, value in base.items()
+        if key not in {"undispositioned_children", "acceptance_dialogue_history"}
+    })) + 100
+    packet = loop._build_host_acceptance_evidence(
+        loop.replace(roomy, packet_budget_chars=ceiling),
+    )
+
+    assert "undispositioned_children" in packet
+    assert "acceptance_dialogue_history" in packet
+    assert "__truncated__" in packet["agent_supplied"]
+    assert len(json.dumps(packet, ensure_ascii=False, default=str)) <= ceiling
+
+
 # ── the typed zero-physical row ──────────────────────────────────────────────
 
 def test_a_refused_panel_projects_not_dispatched_on_rows_and_panel(tmp_path):
