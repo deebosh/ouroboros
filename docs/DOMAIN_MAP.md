@@ -19,7 +19,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D09 | Cancellation, owner control & process custody | 12 | 0 |
 | D10 | Git, update & release machinery | 28 | 0 |
 | D11 | Gateway, server & Web UI | 49 | 0 |
-| D12 | Settings & configuration | 14 | 0 |
+| D12 | Settings & configuration | 15 | 0 |
 | D13 | Safety, guards & runtime mode | 9 | 0 |
 | D14 | Skills & extensions | 52 | 0 |
 | D15 | Memory, knowledge, consciousness & self-evolution | 17 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 11 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 9 | 0 |
-| **total** | | **515** | **0** |
+| **total** | | **516** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **93**
+- lazy-only cross-domain pairs: **95**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -120,6 +120,8 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D12->D05
   - D12->D06
   - D12->D10
+  - D12->D15
+  - D12->D16
   - D12->D17
   - D13->D05
   - D13->D06
@@ -580,6 +582,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/settings_setup_contract.py`
 - `ouroboros/subscription_install_presets.py`
 - `ouroboros/update_channels.py`
+- `ouroboros/update_letter.py`
 
 ### D13 — Safety, guards & runtime mode
 
