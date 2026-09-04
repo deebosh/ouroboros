@@ -44,7 +44,7 @@ class ProviderCanary:
 
 _OPENROUTER_CANARIES = (
     ProviderCanary(
-        "openrouter_gemini", "google/gemini-3.7-flash", "openrouter",
+        "openrouter_gemini", "google/gemini-3.8-flash", "openrouter",
         "OPENROUTER_API_KEY", True, "medium",
     ),
     ProviderCanary(

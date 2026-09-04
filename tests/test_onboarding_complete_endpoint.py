@@ -208,9 +208,9 @@ def test_antigravity_install_succeeds_without_inventing_reviewer_seats(onboardin
         "harnesses": [{
             "id": "agy", "status": "ok", "enabled": True,
             "models": [
-                {"id": "gemini-3.7-flash-low"},
-                {"id": "gemini-3.7-flash-medium"},
-                {"id": "gemini-3.7-flash-high"},
+                {"id": "gemini-3.8-flash-low"},
+                {"id": "gemini-3.8-flash-medium"},
+                {"id": "gemini-3.8-flash-high"},
             ],
         }],
         "profiles": {
@@ -229,7 +229,7 @@ def test_antigravity_install_succeeds_without_inventing_reviewer_seats(onboardin
     items = json.loads(saved[SUBAGENTS_SETTING])["items"]
     assert items[0]["route"] == {
         "kind": "agent_session",
-        "target_id": "agy=gemini-3.7-flash-high",
+        "target_id": "agy=gemini-3.8-flash-high",
         "credential_profile_id": "",
     }
     assert saved["OUROBOROS_REVIEWER_SLOTS"] == ""
@@ -1377,7 +1377,7 @@ def test_a_connected_agy_account_composes_with_core_reviewers(onboarding):
              "models": [{"id": "claude-opus-5"}, {"id": "claude-sonnet-5"},
                         {"id": "claude-fable-5"}, {"id": "claude-opus-4-6"}]},
             {"id": "agy", "status": "unavailable", "enabled": True,
-             "models": [{"id": "gemini-3.7-flash-high"}, {"id": "gemini-3.1-pro-high"}]},
+             "models": [{"id": "gemini-3.8-flash-high"}, {"id": "gemini-3.1-pro-high"}]},
         ],
         "profiles": {
             # next_up kind="none": the engine returns none whenever the
@@ -1405,7 +1405,7 @@ def test_a_connected_agy_account_composes_with_core_reviewers(onboarding):
         row["route"]["target_id"]
         for row in json.loads(saved[SUBAGENTS_SETTING])["items"]
     ]
-    assert "agy=gemini-3.7-flash-high" in actor_targets
+    assert "agy=gemini-3.8-flash-high" in actor_targets
     reviewer = json.loads(saved["OUROBOROS_REVIEWER_SLOTS"])
     roster = {
         row["subagent_id"]: row["route"]["target_id"]

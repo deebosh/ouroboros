@@ -171,7 +171,7 @@ def test_provider_alarm_output_sanitizes_token_shaped_evidence(capsys):
 def test_exact_provider_canary_matrix_logical_turns_and_attempt_bound():
     matrix = provider_canary_matrix()
     assert [(row.canary_id, row.model) for row in matrix] == [
-        ("openrouter_gemini", "google/gemini-3.7-flash"),
+        ("openrouter_gemini", "google/gemini-3.8-flash"),
         ("openrouter_opus", "anthropic/claude-opus-5"),
         ("openrouter_gpt", "openai/gpt-5.6-luna"),
         ("openrouter_grok", "x-ai/grok-4.6"),

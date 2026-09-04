@@ -424,11 +424,11 @@ def test_apply_runtime_provider_defaults_keeps_new_triad_on_openrouter():
 
     assert not changed
     assert changed_keys == []
-    assert normalized["OUROBOROS_MODEL"] == "google/gemini-3.7-flash"
+    assert normalized["OUROBOROS_MODEL"] == "google/gemini-3.8-flash"
     assert normalized["OUROBOROS_MODEL_LIGHT"] == "openai/gpt-5.6-luna"
     assert normalized["OUROBOROS_MODEL_FALLBACKS"] == "openai/gpt-5.6-luna"
     assert normalized["OUROBOROS_REVIEW_MODELS"] == (
-        "google/gemini-3.7-flash,openai/gpt-5.6-terra,anthropic/claude-opus-5"
+        "google/gemini-3.8-flash,openai/gpt-5.6-terra,anthropic/claude-opus-5"
     )
     assert normalized["OUROBOROS_SCOPE_REVIEW_MODEL"] == "openai/gpt-5.6-terra"
     assert normalized["OUROBOROS_SCOPE_REVIEW_MODELS"] == "openai/gpt-5.6-terra"
