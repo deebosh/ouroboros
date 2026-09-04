@@ -603,11 +603,15 @@ def provider_recovery_hint(accumulated_usage: Dict[str, Any]) -> str:
         # deaths (the record is round-keyed and cleared only by a usable response):
         # name them, and the class the repeat failed with, so the terminal never
         # reads as "sent once" and never promises a retry the fence forbids. That
-        # class lives on the record, stamped by the repeat's own failure: the sticky
-        # kind may by now belong to a later free redial of the round, or to a refusal,
-        # and would misname the paid attempt. A record without the stamp (its granted
-        # repeat never left the host) falls back to the sticky kind, which the refusal
-        # paths keep as the unknown class.
+        # class lives on the record, stamped by the repeat's own failure once that
+        # failure is classified as an exception: the sticky kind may by now belong to
+        # a later free redial of the round, or to a refusal, and would misname the
+        # paid attempt. A record without the stamp falls back to the sticky kind, and
+        # on those paths the sticky kind IS the repeat's own outcome: a repeat that
+        # returned an empty response left the host and stamps no exception class, so
+        # the sticky kind is that response's own class (provider_incomplete_response,
+        # rate_limit, provider_body_error, ...); a repeat refused before it was sent
+        # (admission, sleep gate, budget) is un-counted and keeps the unknown class.
         failed_as = str(deaths.get("error_kind") or kind)
         last = (
             " the dispatched request has no terminal provider outcome;"
