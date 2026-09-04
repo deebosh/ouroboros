@@ -113,27 +113,51 @@ def test_requests_proxy_error_with_connect_timeout_evidence_proves_pre_dispatch(
     assert is_pre_dispatch_transport_failure(wrapped)
 
 
-def test_requests_proxy_error_without_connect_evidence_stays_untyped(data_root):
-    """A proxy failure that is NOT connect-time (a proxy HTTP response, a
-    post-dispatch read failure) must never release custody."""
+def test_requests_proxy_error_of_any_shape_is_pre_dispatch_never_a_death(data_root):
+    """urllib3 wraps a failure as ProxyError only while the connection has not
+    reached the proxy (``not conn.has_connected_to_proxy``); once the tunnel is
+    up a failure becomes ProtocolError instead. So a ProxyError of ANY shape —
+    a proxy that only speaks HTTP, or the tunnel dying with RemoteDisconnected —
+    means the provider request never left: released custody, and never a paid
+    repeat, even when the nested error is a typed death."""
+    import http.client
+
     import requests
     import urllib3
-    from ouroboros.transport_custody import is_pre_dispatch_transport_failure
+    from ouroboros.transport_custody import is_pre_dispatch_transport_failure, is_retryable_transport_death
 
-    proxy = urllib3.exceptions.ProxyError(
+    http_only = urllib3.exceptions.ProxyError(
         "Your proxy appears to only use HTTP and not HTTPS",
         urllib3.exceptions.HTTPError("bad proxy response"),
     )
-    wrapped = requests.exceptions.ProxyError(
-        urllib3.exceptions.MaxRetryError(None, "/messages", reason=proxy)
+    tunnel_died = urllib3.exceptions.ProxyError(
+        "Unable to connect to proxy",
+        http.client.RemoteDisconnected("Remote end closed connection without response"),
     )
-    assert not is_pre_dispatch_transport_failure(wrapped)
+    for reason in (http_only, tunnel_died):
+        wrapped = requests.exceptions.ProxyError(
+            urllib3.exceptions.MaxRetryError(None, "/messages", reason=reason)
+        )
+        wrapped.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+        assert is_pre_dispatch_transport_failure(wrapped) is True
+        assert is_retryable_transport_death(wrapped) is False
+    # A bare requests ProxyError (no MaxRetryError envelope) is the same fact.
+    bare = requests.exceptions.ProxyError("proxy refused the CONNECT")
+    bare.physical_attempt_capture = _unresolved_capture(provider="anthropic")
+    assert is_pre_dispatch_transport_failure(bare) is True
+    assert is_retryable_transport_death(bare) is False
 
 
 @pytest.mark.parametrize("url,expected", [
     ("http://localhost:11434/v1", True),
     ("http://127.0.0.1:1234/v1", True),
     ("http://[::1]:8000/v1", True),
+    ("http://127.0.0.2:11434/v1", True),  # the whole 127.0.0.0/8 range is this host
+    ("http://127.255.255.254:1/v1", True),
+    ("http://[::ffff:127.0.0.1]:8000/v1", True),  # IPv4-mapped IPv6 loopback
+    ("http://10.0.0.5:8000/v1", False),
+    ("http://example.com/v1", False),
+    ("http://localhost.example/v1", False),  # a name is loopback only when it IS localhost
     ("https://openrouter.ai/api/v1", False),
     ("https://api.anthropic.com/v1", False),
     ("", False),
@@ -248,6 +272,17 @@ def test_timeouts_and_pre_dispatch_failures_are_not_transport_deaths(cause_cls):
     assert is_retryable_transport_death(exc) is False
 
 
+def test_httpx_proxy_error_is_pre_dispatch_never_a_death():
+    """A tunnel/CONNECT failure is the free released class even when it rides a
+    dispatched-looking capture: the pre-dispatch predicate is evaluated first,
+    so the two predicates can never both be true."""
+    from ouroboros.transport_custody import is_pre_dispatch_transport_failure, is_retryable_transport_death
+
+    exc = _sdk_wrapped(httpx.ProxyError("CONNECT tunnel failed"), _unresolved_capture())
+    assert is_pre_dispatch_transport_failure(exc) is True
+    assert is_retryable_transport_death(exc) is False
+
+
 def test_provider_status_error_is_not_a_transport_death():
     from ouroboros.transport_custody import is_retryable_transport_death
 
@@ -297,7 +332,7 @@ def test_requests_protocol_error_with_remote_disconnected_is_a_transport_death()
 
     import requests
     import urllib3
-    from ouroboros.transport_custody import is_retryable_transport_death
+    from ouroboros.transport_custody import is_pre_dispatch_transport_failure, is_retryable_transport_death
 
     disconnected = http.client.RemoteDisconnected("Remote end closed connection without response")
     exc = requests.exceptions.ConnectionError(
@@ -305,6 +340,7 @@ def test_requests_protocol_error_with_remote_disconnected_is_a_transport_death()
     )
     exc.physical_attempt_capture = _unresolved_capture(provider="anthropic")
     assert is_retryable_transport_death(exc) is True
+    assert is_pre_dispatch_transport_failure(exc) is False  # the two predicates are exclusive
     # The same fact through an explicit wrapper (the recovery ladder re-raises with a cause).
     assert is_retryable_transport_death(_sdk_wrapped(exc, _unresolved_capture(provider="anthropic"))) is True
     # urllib3 may hand the same fact over as MaxRetryError(reason=ProtocolError).

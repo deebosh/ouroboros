@@ -780,3 +780,49 @@ def test_refused_free_redial_keeps_the_base_deadline_stamps(tmp_path, no_sleep):
     assert usage["reason_code"] == "deadline_exhausted"
     assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
     assert provider_no_call_source(usage, True) == ("provider_outcome_unknown_no_resend", False)
+
+
+def test_proxy_tunnel_failure_is_released_and_never_repeated(data_root, tmp_path, no_sleep):
+    """Through the REAL ledger: a requests ProxyError whose nested error is a
+    typed death (the tunnel to the proxy died) never carried a provider
+    request — custody is released ($0), the classification is the free
+    transport class, and the paid repeat rail is never entered."""
+    import http.client
+
+    import requests
+    import urllib3
+
+    class _ProxyTunnelLLM:
+        calls = 0
+
+        def default_model(self):
+            return "test-model"
+
+        def chat(self, **_kwargs):
+            self.calls += 1
+
+            def send():
+                raise requests.exceptions.ProxyError(urllib3.exceptions.MaxRetryError(
+                    None, "/messages", reason=urllib3.exceptions.ProxyError(
+                        "Unable to connect to proxy", http.client.RemoteDisconnected("closed without response"),
+                    ),
+                ))
+
+            request = ua.AttemptRequest(
+                model="test-model", provider="anthropic", reservation_usd=1.0,
+                drive_root=data_root, task_id="t-proxy", root_task_id="t-proxy", source="test.proxy",
+            )
+            ua.execute_physical_attempt(request, send)
+            return OK_RESPONSE
+
+    llm = _ProxyTunnelLLM()
+    usage = {}
+    msg, _cost = _primary_call(llm, tmp_path, usage)
+
+    assert msg is None
+    assert llm.calls == 1  # the free class: one attempt per invocation, the wait episode owns redials
+    assert [row["state"] for row in _ledger(data_root)] == ["reserved", "dispatched", "released"]
+    assert ua.usage_projection(data_root)["unresolved_upper_bound_usd"] == 0.0
+    assert usage["_last_llm_error_kind"] == "transport_unavailable"
+    assert TRANSPORT_DEATHS_KEY not in usage
+    assert no_sleep == []
