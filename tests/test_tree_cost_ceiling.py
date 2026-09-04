@@ -474,6 +474,19 @@ class TestCacheSplitOwnership:
         with usage_accounting.usage_scope(review):
             assert splits.last_task_cache_split("shared", "anthropic/claude-test") is None
 
+    def test_review_surfaces_with_the_same_slot_do_not_share_a_split(self, tmp_path):
+        from ouroboros import _usage_cache_splits as splits
+
+        splits.reset_task_cache_splits()
+        triad = self._scope(tmp_path, category="multi_model_review", review_slot_id="slot_1")
+        acceptance = self._scope(tmp_path, category="task_acceptance", review_slot_id="slot_1")
+        with usage_accounting.usage_scope(triad):
+            splits.stash_task_cache_split("shared", "anthropic/claude-test", 70_000, ttl_seconds=300.0)
+        with usage_accounting.usage_scope(acceptance):
+            assert splits.last_task_cache_split("shared", "anthropic/claude-test") is None
+        with usage_accounting.usage_scope(triad):
+            assert splits.last_task_cache_split("shared", "anthropic/claude-test") == 70_000
+
     def test_a_rebuilt_attempt_starts_from_a_cold_split(self, tmp_path, monkeypatch):
         import queue as queue_module
 
