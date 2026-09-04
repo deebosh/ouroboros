@@ -538,12 +538,21 @@ def test_refresh_waits_for_and_shares_the_in_flight_letter(tmp_path, monkeypatch
         time.sleep(0.2)
         record = _record(key=key)
         ul.atomic_write_json(ul.record_path(drive), record)
-        ul._note_written(key, record)
+        ul._note_written(key, drive, record)
         ul._REFRESH_LOCK.release()
 
     threading.Thread(target=writer, daemon=True).start()
     record = ul.refresh_after_check(status, drive_root=drive)
     assert record["text"] == "letter" and record["key"] == key and not ul._REFRESH_LOCK.locked()
+
+    # The share is per DATA ROOT too: the same key against another root is not the same letter.
+    other = tmp_path / "other"
+    (other / "state").mkdir(parents=True)
+    monkeypatch.setattr(ul, "collect_range_material", lambda *a, **k: _material())
+    monkeypatch.setattr(ul, "write_letter", lambda *a, **k: _record(key=key, text="the other root's letter"))
+    assert ul._REFRESH_LOCK.acquire(blocking=False)
+    threading.Thread(target=lambda: (time.sleep(0.2), ul._REFRESH_LOCK.release()), daemon=True).start()
+    assert ul.refresh_after_check(status, drive_root=other)["text"] == "the other root's letter"
 
 
 def test_mark_checked_records_the_official_target_version(tmp_path, monkeypatch):
@@ -778,6 +787,18 @@ def test_official_update_projection_states(tmp_path):
     superseded = ul.official_update_projection(head, drive_root=drive, state=newer)
     assert superseded["target"] == {"version": "", "sha": "c" * 40}
     assert superseded["letter"]["relation"] == "superseded"
+
+
+def test_official_update_projection_unresolved_head_is_unknown_not_moved(tmp_path):
+    # context.py hands the projection its "unknown" sentinel when git could not be read;
+    # comparing that with real SHAs would claim the body moved when nothing did.
+    drive = tmp_path / "data"
+    (drive / "state").mkdir(parents=True)
+    ul.record_path(drive).write_text(json.dumps(_record()))
+    cache = {"managed_update_cache": {"latest_sha": "b" * 40, "available": True, "behind": 3, "checked_at": "t"}}
+    for head in ("unknown", ""):
+        fact = ul.official_update_projection(head, drive_root=drive, state=cache)
+        assert fact == {"status": "unknown", "error": "head_unresolved"}, head
 
 
 def test_official_update_projection_never_raises(tmp_path):

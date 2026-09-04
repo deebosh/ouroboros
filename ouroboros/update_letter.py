@@ -76,7 +76,7 @@ _REFRESH_LOCK = threading.Lock()
 # Bumped by every letter write under the lock, so a refresh that waited for the lock can
 # tell "the writer just produced my key" (share it) from "an older record" (write anew).
 _WRITE_SEQ = 0
-_LAST_WRITTEN: Tuple[Dict[str, str], Optional[Dict[str, Any]]] = ({}, None)
+_LAST_WRITTEN: Tuple[Dict[str, str], str, Optional[Dict[str, Any]]] = ({}, "", None)
 
 GitCapture = Callable[[List[str]], Tuple[int, str, str]]
 
@@ -315,7 +315,7 @@ def _context_messages(env: Any, memory: Any, task: Dict[str, Any]) -> List[Dict[
 
 
 def _letter_timeout_sec() -> float:
-    """Transport ceiling for the LIGHT call (config.py SSOT, clamped getter)."""
+    """The whole one-shot's ceiling — slot wait and provider call share it (config.py SSOT)."""
     from ouroboros.config import get_update_letter_timeout_sec
 
     return get_update_letter_timeout_sec()
@@ -515,8 +515,8 @@ def refresh_after_check(
         try:
             # The writer that held the lock may have produced this very letter: share it
             # (one physical attempt for concurrent checks of the same key).
-            if _WRITE_SEQ > seen and _LAST_WRITTEN[0] == key:
-                return _LAST_WRITTEN[1]
+            if _WRITE_SEQ > seen and _LAST_WRITTEN[:2] == (key, _root_id(drive_root)):
+                return _LAST_WRITTEN[2]
             current = read_record(drive_root)
             if no_update:
                 return _mark_checked(current, key, drive_root)
@@ -539,7 +539,7 @@ def refresh_after_check(
                 previous_good = current if current.get("state") == "ready" else current.get("last_good")
                 record["last_good"] = previous_good or None
             atomic_write_json(record_path(drive_root), record)
-            _note_written(key, record)
+            _note_written(key, drive_root, record)
             return record
         finally:
             _REFRESH_LOCK.release()
@@ -548,9 +548,15 @@ def refresh_after_check(
         return read_record(drive_root)
 
 
-def _note_written(key: Dict[str, str], record: Dict[str, Any]) -> None:
+def _root_id(drive_root: Optional[pathlib.Path]) -> str:
+    return str(record_path(drive_root).parent.parent)
+
+
+def _note_written(key: Dict[str, str], drive_root: Optional[pathlib.Path], record: Dict[str, Any]) -> None:
+    """The share is per range key AND per data root: one process, two roots, one key must
+    not hand the second root the first root's record."""
     global _WRITE_SEQ, _LAST_WRITTEN
-    _LAST_WRITTEN = (dict(key), record)
+    _LAST_WRITTEN = (dict(key), _root_id(drive_root), record)
     _WRITE_SEQ += 1
 
 
@@ -697,6 +703,10 @@ def official_update_projection(
         from ouroboros.config import DATA_DIR
 
         head = str(head_sha or "")
+        if not head or head == "unknown":
+            # context.py's own sentinel for a git it could not read. Comparing it with real
+            # SHAs would report "moved since check" about a body that has not moved at all.
+            return {"status": "unknown", "error": "head_unresolved"}
         if state is None:
             # Lock-free read, like the neighbouring drive-state section: this runs on
             # every task round and consciousness cycle, never under the state lock.
