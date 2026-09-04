@@ -516,6 +516,88 @@ class TestCacheSplitOwnership:
         assert seen["split_at_first_send"] is None
 
 
+class TestGlobalOnlyTreeAccounting:
+    def test_tree_spend_is_read_without_a_root_cap(self, monkeypatch, tmp_path):
+        import ouroboros.loop as loop_module
+
+        monkeypatch.setattr(
+            usage_accounting, "refresh_root_accounting",
+            lambda drive_root, root_task_id, max_age_sec: {"accounted_usd": 7.5, "root": root_task_id},
+        )
+        with usage_accounting.usage_scope(usage_accounting.UsageScope(
+            drive_root=tmp_path, task_id="child", root_task_id="root1", global_limit_usd=100.0,
+        )):
+            info = loop_module._loop_tree_accounting(refresh=True, max_age_sec=0.0)
+        assert info == {"accounted_usd": 7.5, "root": "root1"}
+
+
+class TestExhaustedCeilingSoftLanding:
+    def _exhausted(self):
+        return task_pacing.resolve_cost_ceiling(100.0, normalize_budget_profile(None), root_cap_usd=0.5)
+
+    def _arm(self, monkeypatch, fits):
+        ctx = _ctx()
+        request = object()
+        monkeypatch.setattr("ouroboros.loop._prepare_forced_prompt", lambda _c, prompt, _t: prompt)
+        monkeypatch.setattr(
+            task_pacing, "prepared_wrapup_candidate",
+            lambda ctx_, messages, **_k: (request, messages),
+        )
+        monkeypatch.setattr(task_pacing, "wrapup_reservation_fits", lambda **_k: fits)
+        monkeypatch.setattr("ouroboros.loop._loop_tree_accounting", lambda **_k: None)
+        return ctx, request
+
+    def test_an_unaffordable_wrapup_ends_as_unaffordable_not_a_fence_pause(self, monkeypatch):
+        import ouroboros.loop as loop_module
+
+        ctx, _request = self._arm(monkeypatch, False)
+        seen = {}
+        monkeypatch.setattr(
+            "ouroboros.loop._forced_fallback_result",
+            lambda ctx_, _t, text, reason, **kw: (seen.update(kw, text=text, reason=reason) or ("x", ctx_.accumulated_usage, {})),
+        )
+        assert loop_module._soft_land_exhausted_ceiling(ctx, self._exhausted()) is not None
+        assert seen["source"] == "budget_wrapup_unaffordable"
+        assert "no working room" in seen["text"]
+        assert ctx.accumulated_usage["cost_stop_rail"] == "wrapup_reservation_last_fit"
+
+    def test_an_affordable_wrapup_dispatches_the_admitted_candidate(self, monkeypatch):
+        import ouroboros.loop as loop_module
+
+        ctx, request = self._arm(monkeypatch, True)
+        monkeypatch.setattr(
+            "ouroboros.loop._forced_final_answer",
+            lambda ctx_, **kwargs: ("wrapped", ctx_.accumulated_usage, {"kwargs": kwargs}),
+        )
+        result = loop_module._soft_land_exhausted_ceiling(ctx, self._exhausted())
+        assert result[2]["kwargs"]["_admitted_request"] is request
+        assert result[2]["kwargs"]["_prompt_prepared"] is True
+        assert "[BUDGET LIMIT]" in result[2]["kwargs"]["prompt"]
+        assert "cost_stop_rail" not in ctx.accumulated_usage
+
+
+class TestForcedIncompletenessIsAuthoritative:
+    def test_replace_control_beside_a_tool_call_still_degrades(self, tmp_path, monkeypatch):
+        import json as json_module
+
+        from tests.test_delivery_forced_finalization import _forced_test_context
+
+        loop, _registry, limit_ctx, _trace = _forced_test_context(tmp_path)
+        limit_ctx.tool_schemas = [{"type": "function", "function": {"name": "read_file"}}]
+        body = json_module.dumps({"delivery_control": "replace", "full_answer": "replaced preamble"})
+        monkeypatch.setattr(
+            loop, "call_llm_with_retry",
+            lambda *_a, **kw: (
+                kw["response_meta_out"].update(tool_call_count=1, finish_reason="tool_calls") or
+                {"role": "assistant", "content": body,
+                 "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+                0.0,
+            ),
+        )
+        _text, _usage, trace = loop._handle_round_limit(limit_ctx)
+        assert trace.get("forced_finalization", {}).get("source") == "forced_model_incomplete"
+
+
 class TestForcedCandidatePredicate:
     """The admitted wrap-up candidate is checked at the physical send, Main metadata or not."""
 
