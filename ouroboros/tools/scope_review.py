@@ -867,6 +867,7 @@ from ouroboros.tools.scope_review_pack import (  # noqa: E402, F401 -- intention
     _build_review_history_section,
     _build_scope_history_section,
     _build_scope_prompt,
+    _carrier_span_only_paths,
     _classify_deleted_for_inline,
     _current_scope_context_manifest,
     _degradable_diff_only_paths,

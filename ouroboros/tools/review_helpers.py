@@ -746,6 +746,7 @@ from ouroboros.tools.review_prompt_text import (  # noqa: E402, F401 -- intentio
 
 from ouroboros.tools.review_file_pack import (  # noqa: E402, F401 -- intentional public re-exports
     BINARY_EXTENSIONS,
+    CARRIER_CUT_REASON,
     _BINARY_SNIFF_BYTES,
     _FILE_SIZE_LIMIT,
     _FULL_REPO_BINARY_EXTENSIONS,
@@ -765,10 +766,12 @@ from ouroboros.tools.review_file_pack import (  # noqa: E402, F401 -- intentiona
     iter_repo_pack_entries,
     list_changed_paths_from_git_status,
     list_git_tracked_paths,
+    pack_exclusion_note,
     parse_changed_paths_from_porcelain,
     parse_changed_paths_from_porcelain_z,
     parse_git_name_status,
     paths_from_name_status,
     paths_from_porcelain_line,
+    span_only_release_carriers,
     triad_pack_exclusions,
 )

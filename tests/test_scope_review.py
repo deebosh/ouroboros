@@ -3939,3 +3939,56 @@ def _uv_lock_text(version):
         f'version = "{version}"\nsource = {{ editable = "." }}\n\n'
         '[[package]]\nname = "httpx"\nversion = "0.27.0"\n'
     )
+
+
+def test_scope_pack_applies_the_carrier_cut_over_its_own_staged_pair(tmp_path, monkeypatch):
+    """Owner decision (F3 Q4 = A): the scope pack cuts span-only release carriers
+    over the HEAD→index pair it reviews — no snapshot, named in the dedup note, a
+    typed `already_included` row with the by-design reason in the durable
+    manifest, the ladder's first entry — while the canonical docs (the governance
+    prefix) and a carrier edited outside its span keep every byte. A managed
+    subject and an artifact the atlas owes in full are never cut."""
+    from ouroboros.tools import scope_review as sr
+    from ouroboros.tools import scope_review_pack as pack
+
+    def _lock(v):  # an unchanged tail marker far outside every -U3 hunk
+        return _uv_lock_text(v) + "".join(
+            f'\n[[package]]\nname = "filler{i}"\nversion = "1.0.0"\n' for i in range(6)
+        ) + '\n[[package]]\nname = "UNCHANGED_LOCK_TAIL_MARKER"\nversion = "9.9.9"\n'
+
+    repo = TestTriadPackExclusions._carrier_repo(tmp_path)
+    (repo / "docs" / "CHECKLISTS.md").write_text(
+        "## Intent / Scope Review Checklist\n\nplaceholder\n", encoding="utf-8")
+    (repo / "uv.lock").write_text(_lock("1.0.0"), encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-qm", "lock"], cwd=str(repo), check=True)
+    (repo / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+    (repo / "uv.lock").write_text(_lock("1.0.1"), encoding="utf-8")
+    (repo / "pyproject.toml").write_text(  # version bump PLUS an edit outside its span
+        '[project]\nname = "ouroboros"\nversion = "1.0.1"\ndependencies = ["httpx"]\n', encoding="utf-8")
+    (repo / "docs" / "ARCHITECTURE.md").write_text(
+        "# Ouroboros v1.0.1 — Architecture\n\nArchitecture body.\n", encoding="utf-8")
+    (repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+
+    prompt, status = sr._build_scope_prompt(repo, "release: 1.0.1")
+
+    assert status is None and prompt
+    dedup = prompt.split("## CURRENT FILE CONTEXT DEDUPLICATION NOTE", 1)[1].split("\n\n", 1)[0]
+    assert "- uv.lock" in dedup and "- VERSION" in dedup and "VERSION_CARRIER_SPANS" in dedup
+    assert "- docs/ARCHITECTURE.md" in dedup and "pyproject.toml" not in dedup
+    assert "UNCHANGED_LOCK_TAIL_MARKER" not in prompt  # no snapshot anywhere in the pack
+    assert 'version = "1.0.1"' in prompt  # …while the staged diff carries the change
+    assert "httpx" in prompt and "Architecture body." in prompt  # kept: outside-span carrier; prefix copy
+    manifest = sr._current_scope_context_manifest()
+    rows = {r["path"]: r for r in manifest["coverage"]}
+    assert rows["uv.lock"]["disposition"] == "already_included"
+    assert "omitted by design" in rows["uv.lock"]["reason"] and "VERSION_CARRIER_SPANS" in rows["uv.lock"]["reason"]
+    assert rows["pyproject.toml"]["reason"] == "included in fixed prompt context"
+    steps = manifest["ladder_steps"]
+    assert steps[0]["step"] == "carrier_span_only_omitted" and sorted(steps[0]["paths"]) == ["VERSION", "uv.lock"]
+    assert steps[1]["step"] == "compact_atlas" and "TOUCHED FILE BUDGET DEGRADATION NOTE" not in prompt
+    # The seam's two refusals: a managed subject, and an artifact owed in full.
+    assert pack._carrier_span_only_paths(repo, ["VERSION", "uv.lock", "app.py"], object()) == []
+    monkeypatch.setattr(sr, "atlas_required_beyond_diff", lambda rel: rel == "uv.lock")
+    assert pack._carrier_span_only_paths(repo, ["VERSION", "uv.lock", "app.py"], None) == ["VERSION"]

@@ -58,6 +58,7 @@ _MOVED_OWNERS = {
     "single_line": review_prompt_text,
     "strip_obligation_suffix": review_prompt_text,
     "BINARY_EXTENSIONS": review_file_pack,
+    "CARRIER_CUT_REASON": review_file_pack,
     "_BINARY_SNIFF_BYTES": review_file_pack,
     "_FILE_SIZE_LIMIT": review_file_pack,
     "_FULL_REPO_BINARY_EXTENSIONS": review_file_pack,
@@ -82,6 +83,8 @@ _MOVED_OWNERS = {
     "parse_git_name_status": review_file_pack,
     "paths_from_name_status": review_file_pack,
     "paths_from_porcelain_line": review_file_pack,
+    "pack_exclusion_note": review_file_pack,
+    "span_only_release_carriers": review_file_pack,
 }
 
 _PARENT_OWNED = (

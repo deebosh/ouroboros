@@ -21,6 +21,7 @@ Offline fixtures throughout: the window resolver and the transports are faked.
 
 import copy
 import json
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -663,3 +664,92 @@ def test_declared_mandatory_reading_lifts_the_bound_past_the_ceiling_up_to_the_w
         "native_mandatory_read_chars": need,
         "native_mandatory_read_disclosure": "native_mandatory_read_exceeds_bound"}
     assert native_episode.native_mandatory_read_facts(SimpleNamespace(policy={}), big) == {}
+
+# 5. the shared span-only release-carrier cut on the advisory's live-tree pair
+#    (owner decision, F3 Q4 = A: the triad's cut with the same disclosure)
+# ---------------------------------------------------------------------------
+
+
+_UV_LOCK = (
+    'version = 1\n\n[[package]]\nname = "ouroboros"\nversion = "{v}"\n'
+    'source = {{ editable = "." }}\n\n[[package]]\nname = "httpx"\nversion = "0.27.0"\n'
+)
+
+
+def _git(repo, *args):
+    return subprocess.run(
+        ["git", *args], cwd=str(repo), check=True, capture_output=True, text=True).stdout
+
+
+def _carrier_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    (repo / "uv.lock").write_text(_UV_LOCK.format(v="1.0.0"), encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "ouroboros"\nversion = "1.0.0"\n', encoding="utf-8")
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    return repo
+
+
+def test_advisory_pack_cuts_span_only_carriers_on_the_live_tree_pair(tmp_path):
+    """The advisory reviews the LIVE tree, so its pair is HEAD vs the working
+    tree the pack reads — staged or not. A span-only carrier is withheld once
+    (the builder's marker, the omitted list, the shared PACK EXCLUSION NOTE); a
+    carrier edited outside its span keeps its text; the governance pointers
+    (the prefix) are untouched and the note precedes the diff."""
+    repo = _carrier_repo(tmp_path)
+    (repo / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+    (repo / "uv.lock").write_text(_UV_LOCK.format(v="1.0.1"), encoding="utf-8")
+    _git(repo, "add", "VERSION", "uv.lock")  # staged, span-only
+    (repo / "pyproject.toml").write_text(  # UNSTAGED, and outside its span
+        '[project]\nname = "ouroboros"\nversion = "1.0.1"\ndependencies = ["httpx"]\n',
+        encoding="utf-8")
+    (repo / "app.py").write_text("x = 2\n", encoding="utf-8")
+    porcelain = _git(repo, "status", "--porcelain")
+
+    resolved, pack, omitted = advisory.build_advisory_changed_context(
+        repo, changed_files_text=porcelain)
+
+    assert set(resolved) == {"VERSION", "uv.lock", "pyproject.toml", "app.py"}
+    assert set(omitted) == {"VERSION", "uv.lock"}
+    assert "editable" not in pack and "x = 2" in pack and "httpx" in pack
+    assert pack.count("### uv.lock") == 1 and pack.count("PACK EXCLUSION NOTE") == 1
+    assert "VERSION_CARRIER_SPANS" in pack and "version_carrier_desyncs" in pack
+    assert "byte-identical" not in pack  # no prefix-dedup class on the pointer route
+    prompt = advisory._build_advisory_prompt(
+        repo, "release: 1.0.1",
+        prompt_context={"diff": "DIFF-SENTINEL", "changed_files": porcelain,
+                        "touched_pack": pack, "omitted_paths": omitted},
+        governance_by_retrieval=True,
+    )
+    assert "MANDATORY FULL READ" in prompt
+    assert prompt.index("PACK EXCLUSION NOTE") < prompt.index("## Staged diff")
+    assert "omission notes for 2 path(s): VERSION, uv.lock" in prompt
+
+
+def test_advisory_pack_keeps_a_carrier_whose_worktree_edit_leaves_its_span(tmp_path):
+    """The live-tree pair is the truth: a carrier staged span-only but then
+    edited outside its span in the working tree keeps its full text; without
+    VERSION in the change the release-bump mechanism is not engaged at all."""
+    repo = _carrier_repo(tmp_path)
+    (repo / "VERSION").write_text("1.0.1\n", encoding="utf-8")
+    (repo / "uv.lock").write_text(_UV_LOCK.format(v="1.0.1"), encoding="utf-8")
+    _git(repo, "add", "-A")
+    (repo / "uv.lock").write_text(
+        _UV_LOCK.format(v="1.0.1").replace("0.27.0", "0.28.0"), encoding="utf-8")
+
+    _, pack, omitted = advisory.build_advisory_changed_context(
+        repo, changed_files_text=_git(repo, "status", "--porcelain"))
+    assert omitted == ["VERSION"] and "0.28.0" in pack
+
+    _git(repo, "reset", "-q", "HEAD", "VERSION")
+    (repo / "VERSION").write_text("1.0.0\n", encoding="utf-8")
+    _, pack, omitted = advisory.build_advisory_changed_context(
+        repo, changed_files_text=_git(repo, "status", "--porcelain"))
+    assert omitted == [] and "PACK EXCLUSION NOTE" not in pack and "0.28.0" in pack

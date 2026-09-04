@@ -53,6 +53,7 @@ _MOVED_OWNERS = {
     "_build_review_history_section": scope_review_pack,
     "_build_scope_history_section": scope_review_pack,
     "_build_scope_prompt": scope_review_pack,
+    "_carrier_span_only_paths": scope_review_pack,
     "_classify_deleted_for_inline": scope_review_pack,
     "_current_scope_context_manifest": scope_review_pack,
     "_degradable_diff_only_paths": scope_review_pack,

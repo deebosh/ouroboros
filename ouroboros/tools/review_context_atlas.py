@@ -201,6 +201,11 @@ class ReviewContextAtlasRequest:
     # manifest that calls a dropped snapshot "included in fixed prompt context" is
     # a false disclosure (P1), not a smaller one.
     diff_only_included: frozenset[str] = field(default_factory=frozenset)
+    # Per-path reason for a ``diff_only_included`` row omitted BY DESIGN rather
+    # than by budget (the scope pack's span-only release carriers); a path
+    # without an entry keeps the budget reason. Same disposition, same
+    # selection, truthful row (P1).
+    diff_only_reasons: Mapping[str, str] = field(default_factory=dict)
     tracked_paths: tuple[str, ...] = ()
     fixed_prompt_tokens: int = 0
     target_total_tokens: int = DEFAULT_ATLAS_TARGET_TOTAL_TOKENS
@@ -331,6 +336,7 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
             already_included,
             req.include_tests,
             diff_only_included=diff_only_included,
+            diff_only_reasons=req.diff_only_reasons,
             inventory_fact=inventory_by_path.get(rel),
         )
         for rel in tracked_paths
@@ -536,6 +542,7 @@ def _build_file_facts(
     already_included: frozenset[str],
     include_tests: bool,
     diff_only_included: frozenset[str] = frozenset(),
+    diff_only_reasons: Mapping[str, str] | None = None,
     inventory_fact: Any = None,
 ) -> _FileFacts:
     facts = _FileFacts(rel_path=rel, language=pathlib.PurePosixPath(rel).suffix.lstrip("."))
@@ -563,7 +570,8 @@ def _build_file_facts(
         # The caller owns which snapshots actually survived in the fixed prompt;
         # the row must not claim more than it was told (P1).
         facts.reason = (
-            "changes included in the fixed staged diff; full snapshot omitted "
+            (diff_only_reasons or {}).get(rel)
+            or "changes included in the fixed staged diff; full snapshot omitted "
             "to fit the reviewer input budget"
             if rel in diff_only_included
             else "included in fixed prompt context"

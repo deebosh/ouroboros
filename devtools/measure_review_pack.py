@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Measure the commit-triad packet for one staged change — offline, $0.
+"""Measure the review packs for one staged change — offline, $0.
 
 Reports, for the checkout at ``--repo`` (its INDEX is the reviewed change; EVERY
 governance corpus — BIBLE.md, the checklist section + archive, DEVELOPMENT.md,
 DESIGN.md, ARCHITECTURE.md — is read from that one checkout):
 
-* the touched-file pack BEFORE and AFTER the disclosed pack exclusions
+* the triad touched-file pack BEFORE and AFTER the disclosed pack exclusions
   (``review_file_pack.triad_pack_exclusions``: span-only release carriers on a
   VERSION-staged commit, governance docs byte-identical to the inlined prefix);
+* the scope pack's touched section and the advisory changed-context pack
+  BEFORE and AFTER the same span-only release-carrier cut over the pair each
+  one reviews (scope: HEAD→index; advisory: HEAD→working tree);
 * the byte-stable governance prefix the triad prepends (checklist section +
   archive, DEVELOPMENT.md, DESIGN.md, ARCHITECTURE.md) and the constitutional
   head (preamble + BIBLE.md) each api row receives per round, part by part;
@@ -252,6 +255,24 @@ def measure(repo: pathlib.Path) -> dict:
     for rel in paths:
         one, _ = build_touched_file_pack(repo, [rel])
         per_file[rel] = {**_measure(one, enc), "excluded": rel in excluded}
+    # The scope pack (its own HEAD→index pair) and the advisory pack (its
+    # HEAD→working tree pair) before/after the same carrier cut. For the
+    # measured checkout the index IS the working tree, so the pairs coincide.
+    from ouroboros.tools import scope_review_pack as _sp
+    from ouroboros.tools.review_file_pack import build_advisory_changed_context
+
+    ctx_paths = [p for p in paths if not _sp._should_skip_current_touched_context(p)]
+    skipped = [p for p in paths if _sp._should_skip_current_touched_context(p)]
+    carriers = _sp._carrier_span_only_paths(repo, ctx_paths, None)
+    scope_before = _sp._render_touched_section(repo, ctx_paths, [], skipped, [])[0]
+    scope_after = _sp._render_touched_section(
+        repo, [p for p in ctx_paths if p not in carriers], [], skipped, [], carrier_span_only=carriers)[0]
+    porcelain = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(repo), check=True, capture_output=True, text=True).stdout
+    advisory_paths = [p for p in paths if p != "docs/ARCHITECTURE.md"]  # the run's exclude_paths
+    advisory_before, _ = build_touched_file_pack(repo, advisory_paths)
+    _, advisory_after, _ = build_advisory_changed_context(
+        repo, changed_files_text=porcelain, exclude_paths={"docs/ARCHITECTURE.md"})
     models = list(commit_triad_delivery()["models"])
     limit, slots = _quorum_limit(models)
     zero_parts = _zero_diff_message(repo, prefix, paths)
@@ -267,6 +288,13 @@ def measure(repo: pathlib.Path) -> dict:
             "excluded_paths": sorted(excluded),
             "exclusion_note": note,
             "per_file": per_file,
+        },
+        "scope_touched": {
+            "before": _measure(scope_before, enc), "after": _measure(scope_after, enc),
+            "carrier_span_only": list(carriers),
+        },
+        "advisory_touched": {
+            "before": _measure(advisory_before, enc), "after": _measure(advisory_after, enc),
         },
         "governance_prefix": {
             "stable_prefix_total": _measure(prefix["stable_prefix"], enc),
@@ -318,6 +346,12 @@ def main(argv: list[str] | None = None) -> int:
     for rel, m in sorted(pack["per_file"].items(), key=lambda kv: -(kv[1]["o200k"] or kv[1]["chars"])):
         flag = "CUT " if m["excluded"] else "keep"
         print(f"  {flag} {rel:40} {m['chars']:>10,} chars {m['o200k']!s:>9} o200k")
+    for name in ("scope_touched", "advisory_touched"):
+        for arm in ("before", "after"):
+            m = report[name][arm]
+            print(f"{name.replace('_touched', ' touched'):17} {arm:6}: {m['chars']:>10,} chars  "
+                  f"{m['chars_div_4']:>9,} chars/4  {m['o200k']!s:>9} o200k")
+    print(f"scope carrier_span_only: {report['scope_touched']['carrier_span_only']}")
     print(f"governance corpus (one checkout: {report['repo']}), per api row, per round:")
     for name, m in report["governance_prefix"]["parts"].items():
         print(f"  {name:42} {m['chars']:>10,} chars {m['o200k']!s:>9} o200k")
