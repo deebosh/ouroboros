@@ -34,7 +34,6 @@ from ouroboros.provider_models import provider_for_model
 from ouroboros.transport_custody import attempt_custody_event_fields, is_pre_dispatch_transport_failure, is_retryable_transport_death
 from ouroboros._usage_response import provider_cost_value as _provider_cost_value
 from ouroboros.usage_accounting import (
-    BudgetExceeded,
     PhysicalAttemptContext,
     UsageAccountingError,
     bind_physical_attempt_context,
@@ -1574,9 +1573,7 @@ def call_llm_with_retry(
             _emit_llm_operation(event_queue, task_id, llm_call_id, "finished", task_attempt, execution_id, round_id)
             _emit_main_llm_call_state(event_queue, call_identity, "finished")
             return msg, cost
-        except UsageAccountingError as e:
-            if isinstance(e, BudgetExceeded) and accumulated_usage.get("_last_llm_retry_same_request"):
-                _uncount_transport_death(accumulated_usage)  # the granted repeat never left the host
+        except UsageAccountingError:
             _emit_llm_operation(event_queue, task_id, llm_call_id, "failed", task_attempt, execution_id, round_id)
             _emit_main_llm_call_state(event_queue, call_identity, "failed")
             raise  # Monetary/ledger rails are not provider failures.
