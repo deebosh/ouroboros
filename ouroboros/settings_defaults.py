@@ -130,6 +130,10 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # wedged owned-daemon initialization surfaces as a typed preset failure, not a
     # wizard stuck on "Saving..." (issue #464).
     "OUROBOROS_ONBOARDING_SNAPSHOT_TIMEOUT_SEC": 45,
+    # In-process settings-document lock: a writer wedged inside its hot-reload
+    # side effects must surface as a typed "settings busy" answer to the next
+    # writer (the onboarding save among them), never as an endless wait.
+    "OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC": 30,
     # Activity-based liveness (the flat wall-clock pair it replaced is RETIRED below):
     # idle window = no real progress AND no progressing subtree; abs ceiling = the
     # unconditional per-task backstop (budget/cost stays a separate hard axis).

@@ -948,6 +948,11 @@ def get_onboarding_snapshot_timeout_sec() -> int:
     return _clamped_number_setting("OUROBOROS_ONBOARDING_SNAPSHOT_TIMEOUT_SEC", low=1, high=300, cast=int)
 
 
+def get_settings_document_lock_timeout_sec() -> int:
+    """Bound of the in-process settings-document lock (one read-merge-write plus its effects)."""
+    return _clamped_number_setting("OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC", low=1, high=300, cast=int)
+
+
 def get_finalization_grace_sec(settings: Optional[dict] = None) -> int:
     raw = os.environ.get("OUROBOROS_FINALIZATION_GRACE_SEC")
     if raw is None and isinstance(settings, dict):

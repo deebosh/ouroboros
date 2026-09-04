@@ -57,6 +57,7 @@ from ouroboros.gateway.owner_settings import (
     _owner_write_settings,
     post_commit_failure_response,
     settings_document_digest,
+    SettingsDocumentBusy,
     settings_document_mutation,
     unsaved_error,
 )
@@ -866,6 +867,12 @@ async def api_onboarding_complete(request: Request) -> JSONResponse:
             return post_commit_failure_response(exc, boundary)
         if isinstance(exc, SettingsPreconditionFailed):
             return unsaved_error(str(exc), 409, code="onboarding_state_changed")
+        if isinstance(exc, SettingsDocumentBusy):
+            # The in-process document lock stayed held past its bound (a
+            # writer wedged in its hot-reload effects): nothing was written,
+            # the wizard stays open, and the owner retries — never "Saving..."
+            # forever (issue #464's second half).
+            return unsaved_error(str(exc), 503, code="settings_busy")
         if isinstance(exc, SettingsLockUnavailable):
             # NO `can_skip`. That flag means "there is a different button that
             # WILL work", and the skip is the same request to the same endpoint,

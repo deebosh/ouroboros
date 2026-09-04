@@ -72,11 +72,30 @@ _CONTEXT_MODE_KEYS = ("OUROBOROS_CONTEXT_MODE", "OUROBOROS_CONTEXT_MODE_AUTO_LOW
 _settings_document_lock = threading.Lock()
 
 
+class SettingsDocumentBusy(TimeoutError):
+    """The in-process settings-document lock was not acquired within its bound.
+
+    A writer wedged inside its hot-reload side effects would otherwise hold
+    every later writer forever — the onboarding save among them ("Saving..."
+    with nothing ever written). Typed so the endpoints answer it honestly.
+    """
+
+
 @contextlib.contextmanager
 def settings_document_mutation():
-    """Hold the in-process document lock across one read-merge-write."""
-    with _settings_document_lock:
+    """Hold the in-process document lock across one read-merge-write (bounded)."""
+    from ouroboros.config import get_settings_document_lock_timeout_sec
+
+    timeout_sec = get_settings_document_lock_timeout_sec()
+    if not _settings_document_lock.acquire(timeout=timeout_sec):
+        raise SettingsDocumentBusy(
+            f"another settings write is still in progress after {timeout_sec}s; "
+            "nothing was written — try again"
+        )
+    try:
         yield
+    finally:
+        _settings_document_lock.release()
 
 
 class SettingsPreconditionFailed(RuntimeError):

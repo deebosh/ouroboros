@@ -127,14 +127,17 @@ function patternNames(pattern, out) {
     return out;
 }
 
-// Hoisting pass: `var` declarations and function declarations bind in the
-// nearest FUNCTION scope; `let`/`const`/`class` bind in the block they appear in.
+// Hoisting pass: `var` declarations bind in the nearest FUNCTION scope;
+// `let`/`const`/`class` bind in the block they appear in. A function
+// declaration binds in the scope of the statement list it appears in — the
+// function body or the module for a top-level one, the BLOCK for a nested one
+// (modules are strict code: `{ function f() {} } f()` is a ReferenceError).
 function hoistDeclarations(body, scope) {
     for (const stmt of body) {
         if (!stmt) continue;
         switch (stmt.type) {
             case 'FunctionDeclaration':
-                if (stmt.id) scope.functionScope().names.add(stmt.id.name);
+                if (stmt.id) scope.names.add(stmt.id.name);
                 break;
             case 'ClassDeclaration':
                 if (stmt.id) scope.names.add(stmt.id.name);
@@ -165,7 +168,6 @@ function hoistVarsDeep(node, scope) {
     if (node.type === 'VariableDeclaration' && node.kind === 'var') {
         for (const decl of node.declarations) for (const n of patternNames(decl.id, [])) scope.functionScope().names.add(n);
     }
-    if (node.type === 'FunctionDeclaration' && node.id) scope.functionScope().names.add(node.id.name);
     for (const key of Object.keys(node)) {
         if (key === 'type' || key === 'loc' || key === 'range') continue;
         const child = node[key];
@@ -384,6 +386,16 @@ test('the checker itself catches an undeclared call (so it cannot rot into a no-
         export { render };
     `, 'probe.js');
     assert.deepEqual(findings, ['probe.js: renderGone (line 4)']);
+});
+
+test('a function declared inside a block is not visible outside it (strict-mode modules)', () => {
+    const findings = undeclaredReferences(`
+        if (true) { function onlyHere() {} onlyHere(); }
+        onlyHere();
+        function top() { { function inner() {} inner(); } return inner; }
+        export { top };
+    `, 'blocks.js');
+    assert.deepEqual(findings, ['blocks.js: onlyHere (line 3)', 'blocks.js: inner (line 4)']);
 });
 
 test('the checker accepts every declaration form it must understand', () => {

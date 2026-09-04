@@ -115,6 +115,7 @@ BAND_PATHS = {
     "ouroboros/artifacts.py": "Exact task-source persistence and repository-diff materialization now share the actor-readable artifact seam for acceptance evidence.",
     "ouroboros/cancel_intents.py": "Entered the band from 929 lines: reciprocal timeout-retry lineage validation and physical-leaf/logical-root aliasing stay with the durable cancel-intent mutation authority so Stop-now hardens the same request across retry races.",
     "ouroboros/capability_evidence.py": "Grew INTO the band by the #284 fix: a fresh exact-model density witness may honestly undercut the cold floor \u2014 evidence logic belongs beside the witness store it reads.",
+    "ouroboros/config.py": "Entered the band at 1015 from exactly 1000: the three onboarding/stop bounds (snapshot read, settings-document lock, direct-turn stop wait) land here by the config-SSOT rule as one-line clamped getters; no new surface.",
     "ouroboros/consciousness.py": "Durable Background Consciousness observation inbox and bounded truthful replay",
     "ouroboros/context.py": "Entered the band from the 1501-1600 zone (1590 lines) by the v7 D03 extraction of the runtime-section fact builders into ouroboros/context_runtime_facts.py; shrink-only residue of the split, not new growth.",
     "ouroboros/delegate_custody.py": "D07 DEL1 split brought the custody monolith DOWN from the 1600 hard cap into the band (1600->1305); reconcile family extracted to delegate_custody_reconcile.py, shrink-only direction",

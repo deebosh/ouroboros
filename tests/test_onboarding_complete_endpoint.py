@@ -297,6 +297,39 @@ def test_snapshot_read_that_never_answers_is_a_typed_timeout_not_a_hang(onboardi
     assert onboarding.calls["supervisor"] == 0
 
 
+def test_settings_document_held_past_its_bound_is_a_typed_busy_not_a_hang(onboarding, monkeypatch):
+    """The second half of issue #464: a writer wedged inside the in-process
+    settings-document lock must not hold the onboarding save forever. The
+    lock acquisition is bounded by the config SSOT and answers 503
+    ``settings_busy`` with nothing written."""
+    import threading
+    import time
+
+    import ouroboros.config as config
+    import ouroboros.gateway.owner_settings as owner_settings
+
+    monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 1)
+    acquired = owner_settings._settings_document_lock.acquire(timeout=5)
+    assert acquired
+    started = time.monotonic()
+    try:
+        response = onboarding.client.post(
+            "/api/onboarding/complete",
+            json={**WIZARD_PAYLOAD, "subscriptionsConnected": False},
+        )
+    finally:
+        owner_settings._settings_document_lock.release()
+    elapsed = time.monotonic() - started
+    assert elapsed < 10, f"completion blocked for {elapsed:.1f}s instead of timing out"
+    assert response.status_code == 503, response.text
+    body = response.json()
+    assert body["code"] == "settings_busy"
+    assert body["saved"] is False
+    assert not onboarding.settings_path.exists()
+    assert onboarding.calls["supervisor"] == 0
+    del threading
+
+
 def test_unresolvable_model_refuses_before_any_write(onboarding):
     onboarding.calls["snapshot_payload"] = {
         "daemon": {"state": "running"},
