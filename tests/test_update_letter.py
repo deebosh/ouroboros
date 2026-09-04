@@ -962,9 +962,15 @@ def test_write_letter_treats_an_http_200_body_error_as_the_provider_s_verdict(le
     # Output/body-size rejections take precedence: shrinking the prompt cannot fix them.
     ({"code": 400, "type": "invalid_request_error", "kind": "provider_error",
       "message": "max_tokens 65536 exceeds maximum context length 32768"}, "provider_unavailable"),
-    # A rate limit that happens to mention the context window is still a rate limit.
+    # A rate limit that happens to mention the context window is still a rate limit —
+    # by the transport's structured kind, whichever code shape it came with.
     ({"code": 429, "kind": "rate_limit",
       "message": "rate limit exceeded for this context window tier"}, "provider_unavailable"),
+    ({"code": "rate_limit_exceeded", "kind": "provider_transient",
+      "message": "rate limit exceeded for the context window tier"}, "provider_unavailable"),
+    # A token count containing "429" is not a rate limit: no text guard re-reads it as one.
+    ({"code": 400, "type": "invalid_request_error", "kind": "provider_error",
+      "message": "prompt is too long: 429000 tokens > 128000 maximum"}, "context_overflow"),
     ({"code": 502, "kind": "provider_transient", "message": "upstream unavailable"}, "provider_unavailable"),
     # A structured transient verdict wins over overflow-shaped wording: an outage, not an overflow.
     ({"code": 503, "kind": "provider_transient",

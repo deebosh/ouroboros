@@ -375,18 +375,18 @@ def _body_error_kind(body_err: Any) -> str:
     if not isinstance(body_err, dict):
         return ""
     from ouroboros.context_budget import CONTEXT_OVERFLOW_CODES, context_overflow_message
-    from ouroboros.loop_llm_call import is_rate_limit_text
 
     codes = (str(body_err.get(key) or "").strip().lower() for key in ("code", "type"))
     if any(code in CONTEXT_OVERFLOW_CODES for code in codes):
         return "context_overflow"
-    # A structured transient verdict (429 / 5xx kinds) wins over the message shape, as it
-    # does in the Main classifier: "context window shard unavailable" is an outage.
-    message = str(body_err.get("message") or "")
-    if str(body_err.get("kind") or "") not in ("rate_limit", "provider_transient") \
-            and not is_rate_limit_text(message) and context_overflow_message(message):
-        return "context_overflow"
-    return "provider_unavailable"
+    # The transport's structured verdict is the ONLY transient guard: llm.py types a body
+    # error rate_limit (code 429) or provider_transient (5xx, or rate-limit / overload
+    # wording) before it reaches here, so it wins over the message shape — "context window
+    # shard unavailable" is an outage. A text guard here would re-read "429" inside a
+    # token count ("prompt is too long: 429000 tokens") as a rate limit.
+    if str(body_err.get("kind") or "") in ("rate_limit", "provider_transient"):
+        return "provider_unavailable"
+    return "context_overflow" if context_overflow_message(body_err.get("message")) else "provider_unavailable"
 
 
 def _classify(exc: Exception) -> Tuple[str, str]:
