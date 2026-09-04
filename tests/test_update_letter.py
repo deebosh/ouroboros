@@ -381,6 +381,24 @@ def test_write_letter_reports_a_ceiling_spent_on_the_slot_as_a_timeout(letter_en
     assert "waiting for a model slot" in record["error_text"]
 
 
+def test_write_letter_reads_the_global_budget_from_its_one_resolver(letter_env, monkeypatch):
+    # An absent TOTAL_BUDGET is the product default, a non-positive value is the owner's
+    # "no limit": both answers belong to settings_setup_contract.resolve_total_budget_usd,
+    # the resolver every other reader uses — never an inline env read with its own fallback.
+    monkeypatch.setattr("ouroboros.settings_setup_contract.resolve_total_budget_usd", lambda: 123.5)
+    seen = {}
+
+    class Scope:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    import ouroboros.usage_accounting as ua
+    monkeypatch.setattr(ua, "UsageScope", Scope)
+    monkeypatch.setattr(ul, "_chat", lambda *a, **k: ({"content": "A paragraph."}, {"ledger_attempt_ids": ["att"]}))
+    record = ul.write_letter(_status(), _material(), drive_root=letter_env["drive"])
+    assert record["state"] == "ready" and seen["global_limit_usd"] == 123.5
+
+
 def test_write_letter_without_light_credentials_fails_typed_and_never_calls(letter_env, monkeypatch):
     monkeypatch.setattr("ouroboros.provider_models.model_has_credentials", lambda model: False)
     monkeypatch.setattr(ul, "_chat", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call")))

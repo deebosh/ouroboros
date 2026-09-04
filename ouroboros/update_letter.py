@@ -406,6 +406,7 @@ def write_letter(
         from ouroboros.agent import Env
         from ouroboros.llm import LLMClient
         from ouroboros.memory import Memory
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
         from ouroboros.usage_accounting import UsageScope, usage_scope
 
         env = Env(repo_dir=repo_root, drive_root=data_root)
@@ -416,14 +417,13 @@ def write_letter(
             "text": _request_text(status, material, target_version),
         }
         messages = _context_messages(env, memory, task)
-        try:
-            global_limit = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-        except (TypeError, ValueError):
-            global_limit = 0.0
+        # The global money limit comes from its ONE resolver (an absent key is the product
+        # default, a non-positive value is the owner's "no limit"), exactly as the naming
+        # one-shot reads it — every reader that invented its own fallback disagreed.
         scope = UsageScope(
             drive_root=data_root, task_id=SYSTEM_TASK_ID, root_task_id=SYSTEM_TASK_ID,
             category=USAGE_CATEGORY, source=USAGE_CATEGORY,
-            global_limit_usd=global_limit if global_limit > 0 else None,
+            global_limit_usd=resolve_total_budget_usd(),
         )
         client = llm_client or LLMClient()
         # ONE absolute ceiling for the whole one-shot. The slot wait spends the same budget

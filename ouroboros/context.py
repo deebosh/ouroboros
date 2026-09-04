@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import get_context_mode
-from ouroboros.update_letter import official_update_projection  # contract: never raises
 from ouroboros.context_budget import (
     LARGE_CONTEXT_SECTION_CHARS,
     MAX_RECENT_CHAT_TAIL,
@@ -54,6 +53,7 @@ from ouroboros.context_layout import architecture_context_section
 from ouroboros.contracts.task_contract import normalize_bool
 from ouroboros.memory import Memory
 from ouroboros.task_pacing import in_task_cost_ceiling_disclosure as _in_task_cost_ceiling
+from ouroboros.update_letter import official_update_projection  # contract: never raises
 from ouroboros.utils import (
     get_git_info,
     read_json_dict,
