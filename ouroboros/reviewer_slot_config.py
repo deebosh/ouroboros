@@ -561,6 +561,21 @@ def parse_reviewer_slots(raw: str) -> ReviewerSlotConfig:
     )
 
 
+
+def authored_reviewer_slots_active(raw: str) -> bool:
+    """True only when the owner's structured setting is present AND the strict parser
+    accepts it — that is the panel that actually runs. Malformed authored text is rejected
+    at read time and the shipped default serves instead, so "authored" alone would let a
+    notice claim a panel that never ran."""
+    text = str(raw or "").strip()
+    if not text:
+        return False
+    try:
+        parse_reviewer_slots(text)
+    except ValueError:
+        return False
+    return True
+
 # ---------------------------------------------------------------------------
 # Shipped default panel (ABI 7.0: served when no structured value is saved).
 # ---------------------------------------------------------------------------

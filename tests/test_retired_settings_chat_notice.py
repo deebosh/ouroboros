@@ -129,6 +129,25 @@ def test_nothing_is_sent_or_marked_before_an_owner_chat_is_bound(boot_state, sen
     assert [row[0] for row in sent] == [7]
 
 
+# A structured panel the strict parser ACCEPTS (slot ids, typed routes, both groups).
+AUTHORED_SLOTS = (
+    '{"triad": [{"slot_id": "t1", "route": {"kind": "api_chat", "target_id": "x/y"}}], '
+    '"scope": [{"slot_id": "s1", "route": {"kind": "api_chat", "target_id": "x/y"}}]}'
+)
+
+
+def test_a_malformed_reviewer_slots_setting_is_not_named_as_the_active_panel(boot_state, sent):
+    """Non-empty is not authored: text the strict parser rejects never runs, so the notice
+    must say the shipped default panel is active (the codex M3 finding)."""
+    import ouroboros.config as cfg
+    from ouroboros import server_maintenance
+
+    _bind_owner(1)
+    doc = dict(RETIRED_DOC, OUROBOROS_REVIEWER_SLOTS='{"triad": [{"model": "x/y"}]}')
+    loaded = cfg.normalize_settings_raw(doc)
+    server_maintenance._startup_retired_settings_notice(loaded)
+    assert len(sent) == 1 and "SHIPPED default" in sent[0][1] and "OUROBOROS_REVIEWER_SLOTS" in sent[0][1]
+
 def test_an_authored_reviewer_slots_setting_is_named_as_the_active_panel(boot_state, sent, caplog):
     """The notice names what runs NOW: an owner who already authored the structured
     setting is not told they are on the shipped default panel — in the chat, and in the
@@ -136,7 +155,7 @@ def test_an_authored_reviewer_slots_setting_is_named_as_the_active_panel(boot_st
     import logging
 
     _bind_owner(1)
-    doc = dict(RETIRED_DOC, OUROBOROS_REVIEWER_SLOTS='{"triad": [{"model": "x/y"}]}')
+    doc = dict(RETIRED_DOC, OUROBOROS_REVIEWER_SLOTS=AUTHORED_SLOTS)
     with caplog.at_level(logging.WARNING, logger="ouroboros.config"):
         loaded = cfg.normalize_settings_raw(doc)
     server_maintenance._startup_retired_settings_notice(loaded)

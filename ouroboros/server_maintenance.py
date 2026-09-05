@@ -148,6 +148,7 @@ def _startup_retired_settings_notice(settings: dict) -> None:
     """
     try:
         from ouroboros.config import retired_key_sets_seen
+        from ouroboros.reviewer_slot_config import authored_reviewer_slots_active
         from ouroboros.settings_defaults import retired_setting_keys_notice
         from supervisor.message_bus import send_with_budget
         from supervisor.state import load_state, update_state
@@ -158,7 +159,8 @@ def _startup_retired_settings_notice(settings: dict) -> None:
             return
         notified = state.get("retired_settings_notified")
         notified = notified if isinstance(notified, dict) else {}
-        slots_authored = bool(str((settings or {}).get("OUROBOROS_REVIEWER_SLOTS") or "").strip())
+        slots_authored = authored_reviewer_slots_active(
+            str((settings or {}).get("OUROBOROS_REVIEWER_SLOTS") or ""))
         for dropped in retired_key_sets_seen():
             marker = ",".join(dropped)
             if marker in notified:
