@@ -601,7 +601,9 @@ _DETACHED_THREAD_NAME_PREFIXES = (
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_runtest_setup(item):
-    item.stash[_THREADS_BEFORE_ITEM] = {t.ident for t in threading.enumerate()}
+    # Thread OBJECTS, not idents: CPython recycles an ident once a baseline thread exits, so a
+    # thread leaked during the test could inherit a baseline ident and evade the guard.
+    item.stash[_THREADS_BEFORE_ITEM] = set(threading.enumerate())
     yield
 
 
@@ -612,7 +614,7 @@ def _fail_if_a_thread_leaked(item):
     deadline = time.monotonic() + _THREAD_LEAK_GRACE_SEC
     leaked = []
     for thread in threading.enumerate():
-        if thread.ident in before or thread is threading.current_thread():
+        if thread in before or thread is threading.current_thread():
             continue
         if thread.name.startswith(_DETACHED_THREAD_NAME_PREFIXES):
             continue
