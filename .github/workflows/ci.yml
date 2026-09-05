@@ -594,29 +594,26 @@ jobs:
   #
   # Run size — the stand's own admission arithmetic, computed from the code at
   # this base (devtools/e2e_live/run_live_lanes.py `RunBudget.reservation`):
-  #   reservation(attempt) = max(0.01, HARD_STOP_INVERSE x per_task_usd x root_tasks)
-  #   HARD_STOP_INVERSE    = 100 / task_pacing._DEFAULT_COST_HARD_STOP_PCT = 100 / 50 = 2
-  #   root_tasks           = 1 for SM1 and SW1, 2 for SK1 (scenarios.py)
+  #   reservation(attempt) = max(0.01, per_task_usd x (root_tasks + 1 if --self-mod else root_tasks))
+  #   root_tasks           = 1 for SM1 and SW1, 2 for SK1 (scenarios.py); --self-mod
+  #                          adds one root for the evolution cycle (rc.14: up to two
+  #                          cycles per lane, all under the same lane fence)
   # and an attempt is admitted only while spent + reserved(in flight) +
   # reservation <= --total-budget; one that can never fit is recorded not_run
   # and fails the verdict. Worst case (every attempt spends its whole
-  # reservation) the full operator set SM1,SW1,SK1 x3 needs 2 x per_task x
-  # (1 + 1 + 2) x 3 = 24 x per_task, and the product's default per-task cap
-  # (settings_defaults OUROBOROS_PER_TASK_COST_USD = 50) makes a SINGLE SM1
-  # attempt reserve 2 x 50 x 1 = $100 > $30: nothing would be admissible.
-  # So the fence is --per-task-usd 15 = 30 / HARD_STOP_INVERSE, the largest
-  # value under which one single-root attempt fits: SM1 x1 reserves exactly
-  # 2 x 15 x 1 = $30 = the cap. A second attempt of any scenario (SW1 $30,
-  # SK1 2 x 15 x 2 = $60) cannot fit by that rule, hence ONE lane, ONE
-  # attempt, SM1 only — the largest feasible subset, named in the job title.
-  # A reservation-rule change is landing in a parallel lane: per_task x
-  # (root_tasks + the self-mod evolution root), without the 2x factor. Under
-  # it SM1 with --self-mod reserves 15 x (1 + 1) = $30 = the cap, SW1 the
-  # same and SK1 15 x (2 + 1) = $45, so the feasible set under $30 at $15 is
-  # STILL SM1 x1 — keep it; only the derivation moves (and the feasibility
-  # test's formula, which follows the code). Only if the factor ever dropped
-  # WITHOUT the self-mod root would SM1 + SW1 (15 + 15 = 30) become feasible
-  # together: revisit --scenarios then, keep the arithmetic here.
+  # reservation) the full operator set SM1,SW1,SK1 x3 with --self-mod needs
+  # per_task x (2 + 2 + 3) x 3 = 21 x per_task, and the product's default
+  # per-task cap (settings_defaults OUROBOROS_PER_TASK_COST_USD = 50) makes a
+  # SINGLE SM1 attempt reserve 50 x (1 + 1) = $100 > $30: nothing would be
+  # admissible. So the fence is --per-task-usd 15 = 30 / 2, the largest value
+  # under which one single-root self-mod attempt fits: SM1 x1 reserves exactly
+  # 15 x (1 + 1) = $30 = the cap (the full set: 21 x 15 = $315). A second
+  # attempt of any scenario (SW1 $30, SK1 15 x (2 + 1) = $45) cannot fit by
+  # that rule, hence ONE lane, ONE attempt, SM1 only — the largest feasible
+  # subset, named in the job title. Only if the self-mod root ever left the
+  # rule would SM1 + SW1 (15 + 15 = 30) become feasible together: revisit
+  # --scenarios then, keep the arithmetic here (the feasibility test and the
+  # summary-header pin re-derive it from the code and trip on a rule change).
   # --min-credit-usd defaults to --total-budget: the key needs >= $30 headroom
   # (min of key limit remaining and account credits) or the stand refuses
   # with a typed credit_preflight refusal in run_manifest.json.
@@ -699,7 +696,8 @@ jobs:
           import json, os, pathlib
           manifest = pathlib.Path(os.environ["RUNNER_TEMP"]) / "e2e_live" / "run_manifest.json"
           lines = ["## e2e-live: SM1 x1 — the largest subset feasible under the $30 cap "
-                   "(reservation = 2 x per-task $15 x 1 root = $30; the full SM1/SW1/SK1 x3 set needs $360)"]
+                   "(per-task $15 x (roots + the self-mod evolution root): SM1 x1 = $30; "
+                   "the full SM1/SW1/SK1 x3 set needs $315)"]
           try:
               if not manifest.exists():
                   lines.append("no run_manifest.json: the stand never reached admission (see the step log)")
@@ -710,6 +708,16 @@ jobs:
                   lines.append(f"outcome: {extra.get('outcome')} (exit {extra.get('exit_code')}); "
                                f"seed {extra.get('seed_describe') or extra.get('seed_head') or seed.get('resolved_sha') or extra.get('seed_ref')}; "
                                f"model {extra.get('effective_model') or 'not applied'}")
+                  # The run's OWN reservations come from the manifest's budget_preflight
+                  # (the stand's ledger at admission), never from arithmetic kept in text.
+                  preflight = extra.get("budget_preflight")
+                  if isinstance(preflight, dict) and isinstance(preflight.get("scenarios"), list):
+                      lines.append("reservations: " + "; ".join(
+                          f"{row.get('scenario')} ${float(row.get('reservation_usd') or 0):.2f} x {row.get('attempts')} "
+                          f"({row.get('root_tasks')} root{' + evolution' if preflight.get('self_mod') else ''})"
+                          for row in preflight["scenarios"] if isinstance(row, dict))
+                          + f"; worst case ${float(preflight.get('worst_case_usd') or 0):.2f} of cap "
+                            f"${float(preflight.get('cap_usd') or 0):.2f} at per-task ${float(preflight.get('per_task_usd') or 0):.2f}")
                   for key in ("refusal", "error", "credit_preflight", "stop_reason"):
                       if extra.get(key):
                           lines.append(f"{key}: {json.dumps(extra[key], ensure_ascii=False, default=str)}")

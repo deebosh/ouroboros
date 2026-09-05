@@ -192,6 +192,24 @@ def test_the_run_size_is_feasible_under_the_cap_by_the_worst_case_reservation_ru
     assert "SM1" in _job()["name"] and "feasible" in _job()["name"]
 
 
+def test_the_summary_header_and_the_job_comment_state_the_current_reservation_arithmetic():
+    """rc.15 review MINOR 4: the summary header carried the retired 2x rule ($360
+    for the full set). Its numbers are re-derived here from the stand's own ledger
+    (per-task x (roots + the self-mod evolution root)), so a rule change trips
+    this pin instead of leaving stale arithmetic in the nightly report; the run's
+    OWN reservations are rendered from the manifest's budget_preflight."""
+    args = _stand_args()
+    budget = RunBudget(TOTAL_BUDGET_USD, float(args["--per-task-usd"]), self_mod=args["--self-mod"] is None)
+    chosen = budget.reservation(SCENARIOS["SM1"].root_tasks)
+    full_set = sum(budget.reservation(SCENARIOS[sid].root_tasks) for sid in ("SM1", "SW1", "SK1")) * 3
+    run = _summary_step()["run"]
+    assert f"SM1 x1 = ${chosen:.0f}" in run and f"x3 set needs ${full_set:.0f}" in run, run
+    assert "budget_preflight" in run, run
+    ci = CI_PATH.read_text(encoding="utf-8")
+    for retired in ("HARD_STOP_INVERSE", "$360", "2 x per"):
+        assert retired not in ci, retired
+
+
 def test_artifacts_upload_even_on_failure_and_never_a_lane_settings_file():
     steps = _job()["steps"]
     upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@"))
@@ -250,6 +268,7 @@ def test_the_summary_step_renders_every_manifest_shape_and_never_fails(tmp_path)
     assert rc == 0, err
     assert "outcome: refused (exit 3)" in text and "insufficient_remaining" in text, text
     assert "no verdicts" in text and "SM1" in text, text
+    assert "reservations:" not in text, text     # no budget_preflight in this manifest: no reservation line
 
     crashed = {"extra": {"outcome": "crashed", "exit_code": 1, "scenarios": ["SM1"],
                          "error": {"type": "RuntimeError", "message": "lane server never became ready"}},
@@ -264,12 +283,19 @@ def test_the_summary_step_renders_every_manifest_shape_and_never_fails(tmp_path)
                            "scenarios": {"SM1": {"attempts": 1, "passed": 1, "infra_errors": 0, "not_run": 0,
                                                  "verdict": "pass"}},
                            "budget": {"spent_usd": 12.345, "cap_usd": 30.0, "refusals": []},
+                           "budget_preflight": {"cap_usd": 30.0, "per_task_usd": 15.0, "self_mod": True,
+                                                "scenarios": [{"scenario": "SM1", "root_tasks": 1, "reservation_usd": 30.0,
+                                                               "attempts": 1, "worst_case_usd": 30.0, "unreachable": False}],
+                                                "worst_case_usd": 30.0, "lanes": 1, "round_worst_case_usd": 30.0,
+                                                "unreachable": []},
                            "self_mod": {"lanes": 1, "absorb_unconfirmed": []}}}
     rc, text, err = _run_summary(tmp_path / "completed", completed)
     assert rc == 0, err
     assert "outcome: completed (exit 0)" in text and "seed v7.0.0-rc.14-3-gabc" in text, text
     assert 'SM1: {"attempts": 1' in text and '"verdict": "pass"' in text, text
     assert "budget: spent $12.35 of cap $30.00; refusals 0" in text and "self_mod:" in text, text
+    # The run's own reservations are rendered from the manifest's budget_preflight.
+    assert "reservations: SM1 $30.00 x 1 (1 root + evolution); worst case $30.00 of cap $30.00 at per-task $15.00" in text, text
     assert "no verdicts" not in text
 
     rc, text, err = _run_summary(tmp_path / "absent", None)
