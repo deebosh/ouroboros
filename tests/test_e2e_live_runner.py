@@ -622,8 +622,11 @@ def test_sk1_plugin_relays_one_bounded_line_into_the_owner_chat(monkeypatch):
             "text": scenarios.SK1_ECHO_EXPECTED, "chat_id": scenarios.SK1_OWNER_CHAT_ID,
             "sender_label": scenarios.SK1_SKILL}}]
         long = echo(None, message="x" * (scenarios.SK1_ECHO_MAX_CHARS + 50))
-        assert long == hits[-1]["body"]["text"] == "echo: " + "x" * scenarios.SK1_ECHO_MAX_CHARS
-        assert len(hits) == 2   # exactly one line per call, no retry
+        assert long == hits[-1]["body"]["text"] == ("echo: " + "x" * scenarios.SK1_ECHO_MAX_CHARS)[:scenarios.SK1_ECHO_MAX_CHARS]
+        assert len(long) == scenarios.SK1_ECHO_MAX_CHARS   # the cap bounds the FINAL text, prefix included
+        multi = echo(None, message="first\r\nsecond\nthird")
+        assert multi == hits[-1]["body"]["text"] == "echo: first second third"   # ONE line: breaks collapse
+        assert len(hits) == 3   # exactly one line per call, no retry
     finally:
         sink.shutdown()
     refusing = _inject_sink(403, [])
