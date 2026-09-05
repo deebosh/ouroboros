@@ -189,7 +189,18 @@ def _scope_not_dispatched_result(slot, reason: str = ""):
     )
 
 
-def _await_scope_reservation(ctx, scope_future, seats, started_monotonic: float) -> None:
+def _reservation_ids_now() -> frozenset:
+    """Attempt ids of the reservations the root telemetry holds right now (the
+    baseline a scope-first hold compares against; empty outside a usage scope)."""
+    from ouroboros.usage_accounting import current_usage_scope, last_root_accounting
+
+    root = str(getattr(current_usage_scope(), "root_task_id", "") or "")
+    rows = (last_root_accounting(root) or {}).get("reservations") if root else None
+    return frozenset(str(r.get("attempt_id") or "") for r in (rows or []))
+
+
+def _await_scope_reservation(ctx, scope_future, seats, started_monotonic: float,
+                            known_ids: frozenset = frozenset()) -> None:
     """Hold the triad until a scope seat's OWN reservation is on the ledger
     (owner decision 2026-09-05: scope reserves FIRST): the identity (usage
     category + review slot) of a row ``reserve_attempt`` APPENDED for this root
@@ -201,7 +212,11 @@ def _await_scope_reservation(ctx, scope_future, seats, started_monotonic: float)
     reservation is a typed ``review_scope_lead_unobserved`` event, never a
     silent fall-through. The reservation must be THIS task's (``ctx.task_id``,
     the id the substrate stamps on the row): a sibling task's scope seat under
-    the same root never releases it. No paid scope seat or no root = no wait."""
+    the same root never releases it. ``known_ids`` are the reservation attempt
+    ids already on the root telemetry when the wave started: only a row NOT in
+    it is this wave's (an identity check, not a clock comparison — Windows'
+    monotonic tick is ~15.6 ms, so "reserved after the start" is not decidable
+    by time). No paid scope seat or no root = no wait."""
     scope_slots = {seat["slot_id"] for seat in seats if seat["surface"] == "scope_review"}
     if scope_future is None or not scope_slots:
         return
@@ -222,7 +237,7 @@ def _await_scope_reservation(ctx, scope_future, seats, started_monotonic: float)
             if (str(row.get("category") or "") == category
                     and str(row.get("review_slot_id") or "") in scope_slots
                     and str(row.get("task_id") or "") == task_id
-                    and now - float(row.get("age_sec") or 0.0) >= started_monotonic):
+                    and str(row.get("attempt_id") or "") not in known_ids):
                 return
         scope_done = bool(scope_future.done())
         if scope_done or now >= deadline:
@@ -787,6 +802,7 @@ def run_parallel_review(
                     # reservation is on the ledger, so a fitting wave can never
                     # leave scope unfunded while non-blocking seats hold the money.
                     wave_started = time.monotonic()
+                    wave_known = _reservation_ids_now()   # identities on the root telemetry BEFORE any seat of this wave
                     # Both seats run under a COPY of the admitting context
                     # (contextvars.copy_context, the loop_tool_execution and
                     # plan_review precedent): the usage scope the wave was
@@ -803,7 +819,7 @@ def run_parallel_review(
                         if scope_rows else None
                     )
                     if not triad_exited:
-                        _await_scope_reservation(ctx, scope_fut, seats, wave_started)
+                        _await_scope_reservation(ctx, scope_fut, seats, wave_started, known_ids=wave_known)
                     triad_fut = (
                         None if triad_exited
                         else pool.submit(contextvars.copy_context().run, _dispatch_unified_review,

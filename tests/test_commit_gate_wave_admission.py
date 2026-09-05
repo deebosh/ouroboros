@@ -478,6 +478,10 @@ def test_current_root_fence_governs_admission_over_the_ledgers_historical_minimu
     assert (unfenced["limit_usd"], unfenced["remaining_usd"], unfenced["fits"]) == (8.0, 5.0, True)
 
 
+def _reservation_ids() -> frozenset:
+    return frozenset(r["attempt_id"] for r in (ua.last_root_accounting(ROOT) or {}).get("reservations") or [])
+
+
 def test_scope_first_hold_observes_only_the_scope_seats_own_reservation(gate, tmp_path, monkeypatch):
     """Finding 4: the hold releases on the scope seat's OWN appended reservation
     (category + slot identity after the wave started) — a refresh, a
@@ -499,6 +503,7 @@ def test_scope_first_hold_observes_only_the_scope_seats_own_reservation(gate, tm
         earlier = ua.reserve_attempt(ua.AttemptRequest(model="triad/a", provider="test", source="main"))
         ua.mark_dispatched(earlier)
     started = time.monotonic()
+    known = _reservation_ids()   # the wave's baseline: everything reserved before it
     # Non-scope root telemetry updates after the wave started: none may release the hold.
     ua.refresh_root_accounting(gate, ROOT)
     with ua.usage_scope(base):
@@ -512,7 +517,7 @@ def test_scope_first_hold_observes_only_the_scope_seats_own_reservation(gate, tm
                    for r in ua.last_root_accounting(ROOT)["reservations"])
     with ua.usage_scope(base):
         ctx = _ctx(gate, tmp_path)
-        parallel_review._await_scope_reservation(ctx, never_done, seats, started)
+        parallel_review._await_scope_reservation(ctx, never_done, seats, started, known_ids=known)
     assert time.monotonic() - started >= 0.3
     events = [e for e in ctx.pending_events if e.get("type") == "review_scope_lead_unobserved"]
     assert len(events) == 1 and events[0]["scope_slot_ids"] == ["scope_slot_1"]
@@ -520,20 +525,24 @@ def test_scope_first_hold_observes_only_the_scope_seats_own_reservation(gate, tm
 
     # The scope seat's own reservation, appended after the start, releases at once.
     started = time.monotonic()
+    known = _reservation_ids()
     with ua.usage_scope(scope_seat):
         own = ua.reserve_attempt(ua.AttemptRequest(model=SCOPE_MODEL, provider="test"))
     identities = ua.last_root_accounting(ROOT)["reservations"]
     assert any(r["attempt_id"] == own.attempt_id and r["review_slot_id"] == "scope_slot_1" for r in identities)
     with ua.usage_scope(base):
         ctx = _ctx(gate, tmp_path)
-        parallel_review._await_scope_reservation(ctx, never_done, seats, started)
+        parallel_review._await_scope_reservation(ctx, never_done, seats, started, known_ids=known)
     assert time.monotonic() - started < 0.25 and ctx.pending_events == []
 
-    # A scope seat that finished without ever reserving (e.g. refused) ends the hold typed.
+    # A scope seat that finished without ever reserving (e.g. refused) ends the hold typed;
+    # the earlier own reservation is in this wave's baseline, so it cannot release it —
+    # an identity check, not a clock one (Windows' monotonic tick would merge the two).
     started = time.monotonic()
+    known = _reservation_ids()
     with ua.usage_scope(base):
         ctx = _ctx(gate, tmp_path)
-        parallel_review._await_scope_reservation(ctx, SimpleNamespace(done=lambda: True), seats, started)
+        parallel_review._await_scope_reservation(ctx, SimpleNamespace(done=lambda: True), seats, started, known_ids=known)
     events = [e for e in ctx.pending_events if e.get("type") == "review_scope_lead_unobserved"]
     assert len(events) == 1 and events[0]["scope_seat_done"] is True
 
