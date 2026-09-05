@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 from starlette.applications import Starlette
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
@@ -179,3 +180,44 @@ def test_a_writer_body_raising_timeout_error_is_not_a_wedged_episode(monkeypatch
         loop.run_until_complete(loop.shutdown_default_executor())
     finally:
         loop.close()
+
+
+def test_a_body_finishing_in_the_tick_the_timer_fires_is_answered_not_lost(monkeypatch):
+    """``wait_for`` abandons the shield one loop tick before it reads it: it cancels the
+    shield's OUTER future, then awaits once more and raises the wait's own timeout. A body
+    whose result lands in that tick has FINISHED, so the seam hands its response back — it
+    must not re-raise the wait's TimeoutError as an untyped 500 over a landed save (the astra
+    M4 finding on the codex M3 fix). The tick is reproduced deterministically: the episode is
+    a bare future that resolves inside the outer future's cancellation callback."""
+    import asyncio
+
+    import ouroboros.config as config
+    from ouroboros.gateway.settings import _run_settings_writer
+
+    monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 0.05)
+    loop = asyncio.new_event_loop()
+    landed = JSONResponse({"saved": True})
+    real_shield = asyncio.shield
+
+    def episode_as_a_future(_fn, *_args):
+        return loop.create_future()   # ``ensure_future`` returns it as-is: it IS the episode
+
+    def shield_whose_abandonment_lands_the_body(inner):
+        outer = real_shield(inner)
+
+        def land(done_outer):
+            if done_outer.cancelled() and not inner.done():
+                inner.set_result(landed)   # same tick as the cancel, before wait_for resumes
+
+        outer.add_done_callback(land)
+        return outer
+
+    monkeypatch.setattr(asyncio, "to_thread", episode_as_a_future)
+    monkeypatch.setattr(asyncio, "shield", shield_whose_abandonment_lands_the_body)
+    try:
+        response = loop.run_until_complete(
+            _run_settings_writer(lambda _request, _body: None, SimpleNamespace(), {})
+        )
+    finally:
+        loop.close()
+    assert response is landed

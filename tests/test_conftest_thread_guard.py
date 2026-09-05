@@ -51,20 +51,37 @@ def test_a_thread_that_finishes_within_the_grace_is_not_a_leak(monkeypatch):
     quick.join(2)
 
 
-def test_a_baseline_thread_is_held_by_object_not_by_ident():
-    """A baseline thread that already exited is still in the snapshot by identity; a NEW
-    thread can never be mistaken for it even if the OS hands out the same ident."""
-    done = threading.Event()
-    old = threading.Thread(target=done.set, name="probe-old", daemon=True)
+def test_a_baseline_thread_is_held_by_object_not_by_ident(monkeypatch):
+    """Through the REAL hooks: the setup hookwrapper snapshots the baseline while a baseline
+    thread is alive; that thread exits; a new thread is started and its ident is recycled to
+    the exited one (``Thread.ident`` is a property over ``_ident``); the leak checker must
+    still name the new thread — a baseline held by ident would have let it pass."""
+    monkeypatch.setattr(conftest, "_THREAD_LEAK_GRACE_SEC", 0.2)
+    exit_old = threading.Event()
+    old = threading.Thread(target=exit_old.wait, name="probe-old", daemon=True)
     old.start()
-    old.join(2)
-    baseline = set(threading.enumerate()) | {old}
+    item = SimpleNamespace(nodeid="tests/x.py::recycled", stash=pytest.Stash())
+    snapshot = conftest.pytest_runtest_setup(item)   # the hookwrapper: snapshot, then yield
+    next(snapshot)
+    with pytest.raises(StopIteration):
+        next(snapshot)
+    baseline = item.stash[conftest._THREADS_BEFORE_ITEM]
     assert old in baseline and old.ident is not None
+    exit_old.set()
+    old.join(2)
+    assert not old.is_alive()
     release = threading.Event()
     new = threading.Thread(target=release.wait, name="probe-new", daemon=True)
     new.start()
+    real_ident = new.ident
     try:
-        assert new not in baseline   # object identity, whatever ident the OS reused
+        new._ident = old.ident   # what the OS may hand out once the old thread is gone
+        assert new.ident in {thread.ident for thread in baseline}   # an ident set would skip it
+        with pytest.raises(pytest.fail.Exception, match="tests/x.py::recycled leaked 1 thread.*probe-new"):
+            conftest._fail_if_a_thread_leaked(item)
+        assert ("tests/x.py::recycled", ["probe-new"]) in conftest._THREAD_LEAKS
     finally:
+        new._ident = real_ident
         release.set()
         new.join(2)
+        conftest._THREAD_LEAKS[:] = [row for row in conftest._THREAD_LEAKS if row[0] != "tests/x.py::recycled"]

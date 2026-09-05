@@ -408,7 +408,10 @@ async def _run_settings_writer(fn: Any, request: Request, body: Any) -> JSONResp
         return unsaved_error(str(exc), 503, code="settings_busy")
     except (asyncio.TimeoutError, TimeoutError):
         if episode.done():
-            raise   # the writer body itself raised: an ordinary failure, not a wedged episode
+            # The body FINISHED: it raised (re-raised here as an ordinary failure), or its
+            # result landed in the tick the timer fired — ``wait_for`` abandons the shield one
+            # tick before reading it — and a finished save is answered, not thrown away.
+            return episode.result()
         log.warning(
             "Settings writer %s did not answer within %ss; its thread keeps running",
             getattr(fn, "__name__", fn), 2 * bound_sec,
