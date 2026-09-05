@@ -532,8 +532,9 @@ def test_scope_first_hold_observes_only_the_scope_seats_own_reservation(gate, tm
     assert any(r["attempt_id"] == own.attempt_id and r["review_slot_id"] == "scope_slot_1" for r in identities)
     with ua.usage_scope(base):
         ctx = _ctx(gate, tmp_path)
+        hold_started = time.monotonic()   # the pin times the HOLD, not the ledger append before it
         parallel_review._await_scope_reservation(ctx, never_done, seats, started, known_ids=known)
-    assert time.monotonic() - started < 0.25 and ctx.pending_events == []
+    assert time.monotonic() - hold_started < 0.25 and ctx.pending_events == []
 
     # A scope seat that finished without ever reserving (e.g. refused) ends the hold typed;
     # the earlier own reservation is in this wave's baseline, so it cannot release it —
@@ -629,8 +630,9 @@ def test_scope_first_hold_ignores_a_sibling_tasks_same_named_scope_slot(gate, tm
         ua.reserve_attempt(ua.AttemptRequest(model=SCOPE_MODEL, provider="test"))
     with ua.usage_scope(base):
         ctx = _ctx(gate, tmp_path)
+        hold_started = time.monotonic()   # the pin times the HOLD, not the ledger append before it
         parallel_review._await_scope_reservation(ctx, never_done, seats, started)
-    assert time.monotonic() - started < 0.25 and ctx.pending_events == []
+    assert time.monotonic() - hold_started < 0.25 and ctx.pending_events == []
 
 
 def test_admission_that_raises_fails_open_loudly_and_typed(gate, tmp_path, monkeypatch, caplog):
