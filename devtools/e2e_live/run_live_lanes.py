@@ -118,7 +118,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--profile", choices=("full", "wiring"), default="full",
                     help="full = the scenario's own enforcement; wiring = advisory review, the cheap smoke")
     ap.add_argument("--self-mod", action="store_true",
-                    help="post-task evolution with a real re-exec restart (D-11); a CONFIRMED absorb is then a required check")
+                    help="post-task evolution with a real re-exec restart (D-11); a CONFIRMED absorb is then a required "
+                         "check of every lane whose scenario expects one (SM1: it lands the commit to absorb)")
     ap.add_argument("--model", default="", help="pin OUROBOROS_MODEL (paid runs only)")
     ap.add_argument("--key-env", default=DEFAULT_KEY_ENV, help="NAME of the env var carrying the OpenRouter key")
     ap.add_argument("--min-credit-usd", type=float, default=None, help="refuse below this headroom (default: --total-budget)")
@@ -142,8 +143,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("--attempts must be >= 1 and 1 <= --pass-of <= --attempts")
     if args.stub and args.model:
         ap.error("--model cannot be combined with --stub (the stub IS the model)")
-    if args.min_credit_usd is None:
-        args.min_credit_usd = float(args.total_budget)
+    args.min_credit_usd = float(args.total_budget if args.min_credit_usd is None else args.min_credit_usd)
     args.preflight_test_workers = max(PREFLIGHT_WORKERS_FLOOR, PREFLIGHT_WORKER_BUDGET // args.lanes)
     for name, value in (("--total-budget", args.total_budget), ("--per-task-usd", args.per_task_usd),
                         ("--min-credit-usd", args.min_credit_usd), ("--watch-interval", args.watch_interval)):
@@ -179,9 +179,8 @@ def effective_settings(args: argparse.Namespace, key: str) -> dict:
         "TOTAL_BUDGET": float(args.total_budget),
         "OUROBOROS_PER_TASK_COST_USD": float(args.per_task_usd),
         "OUROBOROS_POST_TASK_EVOLUTION": "true" if args.self_mod else "false",
+        **({"OUROBOROS_POST_TASK_EVOLUTION_CADENCE": "every_n:1"} if args.self_mod else {}),
     }
-    if args.self_mod:
-        overrides["OUROBOROS_POST_TASK_EVOLUTION_CADENCE"] = "every_n:1"
     if args.model:
         overrides["OUROBOROS_MODEL"] = str(args.model)
     if key:
@@ -571,8 +570,7 @@ class Stagger:
 
     def wait_turn(self) -> None:
         with self._lock:
-            delay = max(0.0, self._last + self.seconds - time.monotonic())
-            time.sleep(delay)
+            time.sleep(max(0.0, self._last + self.seconds - time.monotonic()))
             self._last = time.monotonic()
 
 
@@ -590,7 +588,8 @@ def _lane_row(job: tuple[str, int], args: argparse.Namespace) -> dict:
             "title": SCENARIOS[sid].title, "status": "infra_error", "stub": bool(args.stub), "profile": args.profile,
             "self_mod": bool(args.self_mod), "preflight_test_workers": int(args.preflight_test_workers),
             "started_at": now_iso(), "checks": {}, "facts": {}, "error": "",
-            "screenshots": [], "ui": {"available": False, "reason": ""}, "self_mod_absorb": None, "budget": {}}
+            "screenshots": [], "ui": {"available": False, "reason": ""}, "budget": {},
+            "self_mod_absorb": {"expected": bool(args.self_mod) and SCENARIOS[sid].expects_absorb}}
 
 
 def _proc_cmdline(pid: int) -> str:
@@ -611,8 +610,7 @@ def _apply_orphan_scan(row: dict, survivors: list | None) -> None:
         row["no_orphans_after_stop"] = None
         row["orphan_scan"] = "unavailable:no_procfs"
         return
-    gone = not survivors
-    row["no_orphans_after_stop"] = gone
+    row["no_orphans_after_stop"] = gone = not survivors
     if not gone:
         row["orphans"] = [{"pid": int(pid), "cmdline": _proc_cmdline(int(pid))} for pid in survivors[:20]]
         if len(survivors) > 20:
@@ -678,7 +676,9 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         states[job] = (msg[:60], time.time())
 
     server = stub = ctx = None
-    absorb: dict | None = None
+    # The absorb wait and check follow ``Scenario.expects_absorb`` (rc.15 SK1_a1: a lane that commits nothing
+    # waited --task-timeout for a promotion that could not happen, then failed the check by construction).
+    absorb, absorbing = None, row["self_mod_absorb"]["expected"]
     from tests.system_e2e import harness  # durable readers + /proc oracles (runtime-only import)
     try:
         log("cloning seed")
@@ -727,7 +727,7 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
 
         def restart() -> IsolatedServer:
             nonlocal server, absorb
-            if args.self_mod:
+            if absorbing:
                 absorb = wait_absorb()
                 if not absorb["healthy"]:
                     raise RuntimeError("server unhealthy after the self-mod restart")
@@ -748,7 +748,7 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
             row["ui"] = {"available": probe is not None, "reason": reason}
         # The absorb snapshot is taken BEFORE the task (at restart time it would already see the task's own
         # commit and the evolve cycle it triggered).
-        pre_mod = self_mod_snapshot(server, clone, data_root) if args.self_mod else {}
+        pre_mod = self_mod_snapshot(server, clone, data_root) if absorbing else {}
         ctx = LaneContext(server=server, clone=clone, data_root=data_root, oracle=oracle, harness=harness,
                           ui_resolver=resolve_ui_client if scenario.needs_ui else None,
                           ui_reason=row["ui"]["reason"], shots=shots, log=log,
@@ -758,10 +758,10 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         server = ctx.server
         row["checks"].update(ctx.checks)
         row.update({"facts": ctx.facts, "screenshots": ctx.screenshots})
-        if args.self_mod:
-            if absorb is None:  # a scenario that never restarts still owes the post-task absorb
+        if absorbing:
+            if absorb is None:  # an absorbing scenario that never restarts still owes the post-task absorb
                 absorb = wait_absorb()
-            row["self_mod_absorb"] = absorb
+            row["self_mod_absorb"].update(absorb)
             row["checks"]["self_mod_absorb_confirmed"] = bool(absorb["confirmed"])
             row["facts"]["self_mod_absorb_reason"] = absorb["reason"]
         seed_desc = repo_provenance(seed)
@@ -970,10 +970,13 @@ def main(argv: list[str] | None = None) -> int:
                              "verdict": "pass" if passed >= args.pass_of else "fail"}
         ok = all(v["verdict"] == "pass" for v in verdicts.values())
         if args.self_mod:
-            # Run-level gate: EVERY self-mod lane that ran must carry a CONFIRMED absorb.
+            # Run-level gate: EVERY absorbing lane (``Scenario.expects_absorb``) that ran must carry a CONFIRMED absorb.
             unconfirmed = sorted(f"{r['scenario']}_a{r['attempt']}" for r in rows
-                                 if r["status"] != "not_run" and not (r.get("self_mod_absorb") or {}).get("confirmed"))
+                                 if r["status"] != "not_run" and SCENARIOS[r["scenario"]].expects_absorb
+                                 and not (r.get("self_mod_absorb") or {}).get("confirmed"))
             final["self_mod"] = {"lanes": sum(1 for r in rows if r["status"] != "not_run"),
+                                 "absorb_expected": sum(1 for r in rows if r["status"] != "not_run"
+                                                        and SCENARIOS[r["scenario"]].expects_absorb),
                                  "absorb_unconfirmed": unconfirmed}
             ok = ok and not unconfirmed
         for r in rows:

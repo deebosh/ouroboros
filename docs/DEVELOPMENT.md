@@ -1366,10 +1366,18 @@ server and resolves `-n auto` to the host CPU count, so the stand sets
 `preflight_runner._preflight_env` still scrubs it from the candidate suite) and
 records the applied value as `extra.preflight_test_workers` in the manifest and
 `preflight_test_workers` in every lane row. `--self-mod` enables post-task evolution with the real
-re-exec restart and REQUIRES a confirmed absorb per lane: a pre-task snapshot
+re-exec restart and REQUIRES a confirmed absorb per lane whose scenario
+`expects_absorb` (SM1, the one that lands a commit): a pre-task snapshot
 (clone HEAD, served sha, uptime, absorbed-cycle counter) and, afterwards, the
 counter advanced, the served sha moved, the uptime reset and the server ready;
 anything less is a typed `self_mod_absorb_confirmed=false` and the run fails.
+SW1/SK1 commit nothing, so under `--self-mod` they stop their server right after
+the scenario with `self_mod_absorb: {"expected": false}` and no absorb check
+(evolution stays on in their settings; the stand just does not wait for it) —
+the rc.15 paid stand (2026-09-05) had SK1_a1 pass twelve of its thirteen lifecycle
+checks (the thirteenth was a real reviewer finding on the model-authored plugin),
+then wait about 27 minutes for a promotion nothing had committed before the
+evolution cycle ended and the wait returned no_promotion.
 Per lane: `lanes/<id>_a<n>/result.json` (checks, digests including the settings
 sha256 and its secret-free config digest, seed `git describe`, pre/post HEAD and
 the exact diff digest, grants by fingerprint, the lane's spend, runtime terminal

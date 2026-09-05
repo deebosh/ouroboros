@@ -849,6 +849,10 @@ class Scenario:
     # ``per_task_usd x root_tasks`` per attempt (the runtime fences each root task TREE at
     # OUROBOROS_PER_TASK_COST_USD, so SW1's scouts spend under their one root's ceiling).
     root_tasks: int = 1
+    # True only for a scenario that LANDS a commit the post-task evolution must absorb and the re-exec
+    # restart must serve (SM1): under ``--self-mod`` the runner waits for that absorb and checks it. A
+    # scenario that commits nothing (SW1, SK1) has no absorb to wait for or to confirm.
+    expects_absorb: bool = False
 
     def overrides(self, model: str) -> dict:
         out = dict(self.settings_overrides)
@@ -861,7 +865,7 @@ SCENARIOS: dict[str, Scenario] = {
     "SM1": Scenario(
         "SM1", "Brand accent change lands as a reviewed release through commit_reviewed (advanced, blocking)",
         sm1_prompt(), {"OUROBOROS_RUNTIME_MODE": "advanced", "OUROBOROS_REVIEW_ENFORCEMENT": "blocking"},
-        True, run_sm1, sm1_stub_script),
+        True, run_sm1, sm1_stub_script, expects_absorb=True),
     "SW1": Scenario(
         "SW1", "Swarm: force_plan + roster, two children, fanout receipt, cost rollup, no orphans",
         SW1_OBJECTIVE, {"OUROBOROS_MAX_WORKERS": 4, "OUROBOROS_MAX_SUBAGENT_DEPTH": 1},

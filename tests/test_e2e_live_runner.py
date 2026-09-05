@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import urllib.error
 import urllib.request
 
@@ -112,6 +113,8 @@ def test_scenario_table_shape():
     # The budget reservation unit: SK1 mints two root tasks (author + dispatch), the others one
     # (SW1's scouts spend under their single root's ceiling).
     assert {sid: row.root_tasks for sid, row in scenarios.SCENARIOS.items()} == {"SM1": 1, "SW1": 1, "SK1": 2}
+    # Only SM1 lands a commit the post-task evolution absorbs: the --self-mod wait and check follow this flag.
+    assert {sid: row.expects_absorb for sid, row in scenarios.SCENARIOS.items()} == {"SM1": True, "SW1": False, "SK1": False}
     # Stub scripts are role-keyed queues; SW1 needs every role the swarm wire interleaves.
     sw1 = scenarios.SCENARIOS["SW1"].stub_script(REPO_ROOT)
     assert set(sw1) == {"router", "agent", "child", "probe"}
@@ -132,19 +135,13 @@ def test_lane_count_and_stagger_bounds(monkeypatch):
     _short_tmp(monkeypatch)
     assert run_live_lanes.parse_args(["--stub"]).lanes == 4
     assert run_live_lanes.parse_args(["--stub", "--lanes", "6"]).lanes == 6
-    with pytest.raises(SystemExit):
-        run_live_lanes.parse_args(["--stub", "--lanes", "7"])
-    with pytest.raises(SystemExit):
-        run_live_lanes.parse_args(["--stub", "--lanes", "0"])
     assert run_live_lanes.parse_args(["--stub", "--stagger", "10"]).stagger == 3.0
     assert run_live_lanes.parse_args(["--stub", "--stagger", "0.1"]).stagger == 2.0
     assert run_live_lanes.parse_args(["--stub", "--stagger", "2.4"]).stagger == 2.4
-    with pytest.raises(SystemExit):
-        run_live_lanes.parse_args(["--stub", "--model", "x/y"])
-    with pytest.raises(SystemExit):
-        run_live_lanes.parse_args(["--stub", "--scenarios", "SM1,NOPE"])
-    with pytest.raises(SystemExit):
-        run_live_lanes.parse_args(["--stub", "--attempts", "2", "--pass-of", "3"])
+    for argv in (["--lanes", "7"], ["--lanes", "0"], ["--model", "x/y"],   # --model: the stub IS the model
+                 ["--scenarios", "SM1,NOPE"], ["--attempts", "2", "--pass-of", "3"]):
+        with pytest.raises(SystemExit):
+            run_live_lanes.parse_args(["--stub", *argv])
     args = run_live_lanes.parse_args(["--total-budget", "30"])
     assert args.min_credit_usd == 30.0 and args.key_env == run_live_lanes.DEFAULT_KEY_ENV
     assert args.seed == "HEAD" and args.source_repo == ""
@@ -652,19 +649,6 @@ def test_watcher_tick_never_waits_on_the_key_probe(capsys):
 # Self-modification: a confirmed absorb, never an assumed one
 # --------------------------------------------------------------------------- #
 
-class _AbsorbServer:
-    base_url = "http://127.0.0.1:1"
-
-    def __init__(self, wait: dict, healthy: bool = True) -> None:
-        self._wait, self._healthy = wait, healthy
-
-    def wait_for_absorb(self, prev_sha, prev_absorbed, timeout=0):
-        return dict(self._wait)
-
-    def wait_for_health(self, timeout=0):
-        return self._healthy
-
-
 def _campaign(data_root: pathlib.Path, cycles: int, tx: dict | None = None) -> None:
     (data_root / "state").mkdir(parents=True, exist_ok=True)
     (data_root / "state" / "evolution_campaign.json").write_text(json.dumps(
@@ -672,19 +656,17 @@ def _campaign(data_root: pathlib.Path, cycles: int, tx: dict | None = None) -> N
 
 
 def test_confirm_absorb_requires_positive_evidence(tmp_path, monkeypatch):
-    clone = tmp_path / "clone"
-    clone.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=str(clone), check=True)
+    clone = _git_seed(tmp_path)
     (clone / "f").write_text("1\n", encoding="utf-8")
     first = _commit(clone, "one")
     data_root = tmp_path / "data"
     _campaign(data_root, 0)
     state = {"sha": first[:8], "uptime": 100}
     monkeypatch.setattr(run_live_lanes, "_api", lambda base, method, path, payload=None, timeout=0: dict(state))
-    pre = run_live_lanes.self_mod_snapshot(_AbsorbServer({}), clone, data_root)
+    pre = run_live_lanes.self_mod_snapshot(_FakeServer(), clone, data_root)
     assert pre["head"] == first and pre["sha"] == first[:8] and pre["cycles"] == 0 and pre["state_read"]
     # No promotion: the runtime declined, and a liveness check alone would have said PASS.
-    out = run_live_lanes.confirm_absorb(_AbsorbServer({"absorbed": False, "reason": "no_promotion"}), clone,
+    out = run_live_lanes.confirm_absorb(_FakeServer(absorb={"absorbed": False, "reason": "no_promotion"}), clone,
                                         data_root, pre, timeout=1, ready_timeout=1)
     assert out["confirmed"] is False and out["reason"] == "no_promotion" and out["head_moved"] is False
     # The wait said absorbed and the counter advanced, but the served uptime never reset: not restarted.
@@ -693,18 +675,18 @@ def test_confirm_absorb_requires_positive_evidence(tmp_path, monkeypatch):
     _campaign(data_root, 1, {"commit_sha": second, "cycle_outcome": "absorbed", "restart_verified": True,
                              "verified_by": "boot_reconciliation"})
     state.update({"sha": second[:8], "uptime": 100})
-    out = run_live_lanes.confirm_absorb(_AbsorbServer({"absorbed": True, "reason": "absorbed"}), clone,
+    out = run_live_lanes.confirm_absorb(_FakeServer(absorb={"absorbed": True, "reason": "absorbed"}), clone,
                                         data_root, pre, timeout=1, ready_timeout=1)
     assert out["confirmed"] is False and out["reason"] == "not_restarted" and out["head_moved"] is True
     assert out["transaction"] == {"commit_sha": second, "cycle_outcome": "absorbed", "restart_verified": True,
                                   "verified_by": "boot_reconciliation"}
     # Every fact present: counter advanced, sha moved, uptime reset, healthy, serving the clone HEAD.
     state["uptime"] = 0
-    out = run_live_lanes.confirm_absorb(_AbsorbServer({"absorbed": True, "reason": "absorbed"}), clone,
+    out = run_live_lanes.confirm_absorb(_FakeServer(absorb={"absorbed": True, "reason": "absorbed"}), clone,
                                         data_root, pre, timeout=1, ready_timeout=1)
     assert out["confirmed"] is True and out["reason"] == "absorbed" and out["serving_head"] is True
     assert out["post"]["cycles"] == 1 and out["post"]["head"] == second
-    unhealthy = run_live_lanes.confirm_absorb(_AbsorbServer({"absorbed": True, "reason": "absorbed"}, healthy=False),
+    unhealthy = run_live_lanes.confirm_absorb(_FakeServer(absorb={"absorbed": True, "reason": "absorbed"}, healthy=False),
                                               clone, data_root, pre, timeout=1, ready_timeout=1)
     assert unhealthy["confirmed"] is False and unhealthy["reason"] == "unhealthy"
 
@@ -713,17 +695,23 @@ def test_confirm_absorb_requires_positive_evidence(tmp_path, monkeypatch):
 # Scenario contracts: per-task check keys, the dispatch verdict, typed refusal facts, SM1 parity
 # --------------------------------------------------------------------------- #
 
-class _FakeServer:
+class _FakeServer:   # the scenario-facing surface (wait_task/cancel_task) and the one confirm_absorb reads
     base_url = "http://127.0.0.1:1"
 
-    def __init__(self, status: str = "completed") -> None:
-        self.status = status
+    def __init__(self, status: str = "completed", *, absorb: dict | None = None, healthy: bool = True) -> None:
+        self.status, self.absorb, self.healthy = status, dict(absorb or {}), healthy
 
     def wait_task(self, task_id, timeout=0):
         return {"status": self.status, "reason_code": "final_message" if self.status == "completed" else "deadline_local"}
 
     def cancel_task(self, task_id):
         return {}
+
+    def wait_for_absorb(self, prev_sha, prev_absorbed, timeout=0):
+        return dict(self.absorb)
+
+    def wait_for_health(self, timeout=0):
+        return self.healthy
 
 
 class _FakeHarness:
@@ -768,12 +756,10 @@ class _FakeUI:
         self.calls.append(("computed_property", selector, prop))
         return "#123456"
 
-    def send_chat(self, text, *, swarm=False): ...
+    send_chat = rebind = lambda self, *a, **k: None
 
     def screenshot(self, path):
         self.calls.append(("screenshot", str(path)))
-
-    def rebind(self, base_url): ...
 
     def close(self):
         self.calls.append(("close", self.base_url))
@@ -842,35 +828,41 @@ def test_closed_target_degrades_the_ui_checks_typed_and_keeps_every_other_check(
     assert [c[0] for c in calls] == ["open", "goto", "close"]   # closed on the failure, later calls no-ops
 
 
+class _NoopServer:
+    base_url, attestation = "http://127.0.0.1:1", {}
+    __init__ = start = stop = lambda self, *a, **k: None
+
+
+def _attempt_row(tmp_path, monkeypatch, sid: str, acceptance=lambda ctx: ctx.check("scenario_ok", True), *,
+                 flags: str = "") -> dict:
+    """One ``run_attempt`` of ``sid`` under ``<tmp_path>/<sid>``: a fresh git seed, the real template, the no-op
+    server, ``acceptance`` in the scenario's place (default: one passing check); ``<sid>/out`` keeps the artifacts."""
+    _short_tmp(monkeypatch)
+    monkeypatch.setattr(run_live_lanes, "IsolatedServer", _NoopServer)
+    monkeypatch.setitem(run_live_lanes.SCENARIOS, sid, dataclasses.replace(scenarios.SCENARIOS[sid], acceptance=acceptance))
+    root = tmp_path / sid
+    root.mkdir()
+    seed = _git_seed(root)
+    args = run_live_lanes.parse_args(["--out", str(root / "out"), "--watch-interval", "600", *flags.split()])
+    return run_live_lanes.run_attempt((sid, 1), args, root / "out", run_live_lanes.effective_settings(args, ""),
+                                      run_live_lanes.Stagger(0.0), {}, seed,
+                                      run_live_lanes.RunBudget(100.0, 8.0, reader=lambda root: (0.0, 0)),
+                                      dispatch_index=0, key="", seed_sha=repo_provenance(seed)["head"])
+
+
 def test_lane_with_a_dead_browser_target_is_checks_failed_not_infra_error(tmp_path, monkeypatch):
     """The rc.14 incident at lane level: the probe at lane start opens and closes, the client the
     scenario uses opens after the restart, its ``goto`` meets a closed target — the lane row is
     ``fail/checks_failed`` with the UI check typed, the task-side checks kept, no ``refusal``."""
-    _short_tmp(monkeypatch)
     calls: list = []
-
-    class Server:
-        base_url, attestation = "http://127.0.0.1:1", {}
-
-        def __init__(self, *a, **k): ...
-        def start(self, ready_timeout=0): ...
-        def stop(self): ...
 
     def acceptance(ctx):
         ctx.check("commit_landed", True)
         _sm1_ui_tail(ctx)
 
-    monkeypatch.setattr(run_live_lanes, "IsolatedServer", Server)
     monkeypatch.setattr(run_live_lanes, "resolve_ui_client",
                         _ui_resolver(calls, TargetClosedError("Target page, context or browser has been closed")))
-    monkeypatch.setitem(run_live_lanes.SCENARIOS, "SM1",
-                        dataclasses.replace(scenarios.SCENARIOS["SM1"], acceptance=acceptance))
-    args = run_live_lanes.parse_args(["--out", str(tmp_path / "out"), "--watch-interval", "600"])
-    seed = _git_seed(tmp_path)
-    row = run_live_lanes.run_attempt(("SM1", 1), args, tmp_path / "out", {"OUROBOROS_MODEL": "m"},
-                                     run_live_lanes.Stagger(0.0), {}, seed,
-                                     run_live_lanes.RunBudget(100.0, 8.0, reader=lambda root: (0.0, 0)),
-                                     dispatch_index=0, key="", seed_sha=repo_provenance(seed)["head"])
+    row = _attempt_row(tmp_path, monkeypatch, "SM1", acceptance)
     assert row["status"] == "fail" and row["reason_code"] == "checks_failed" and row["error"] == ""
     assert "refusal" not in row
     assert row["checks"]["commit_landed"] is True and row["checks"]["ui_computed_style"] is False
@@ -878,8 +870,29 @@ def test_lane_with_a_dead_browser_target_is_checks_failed_not_infra_error(tmp_pa
     assert row["ui"] == {"available": False, "reason": "ui_unavailable:TargetClosedError"}
     # lane start: availability probe opened and closed; use: opened after the restart, dead, closed
     assert [c[0] for c in calls] == ["open", "close", "open", "goto", "close"]
-    stored = json.loads((tmp_path / "out" / "lanes" / "SM1_a1" / "result.json").read_text(encoding="utf-8"))
+    stored = json.loads((tmp_path / "SM1" / "out" / "lanes" / "SM1_a1" / "result.json").read_text(encoding="utf-8"))
     assert stored["status"] == "fail" and stored["facts"]["ui_reason"] == "ui_unavailable:TargetClosedError"
+
+
+def test_absorb_wait_and_check_follow_the_scenarios_expects_absorb(tmp_path, monkeypatch):
+    """The rc.15 paid stand (2026-09-05, SK1_a1): every ``--self-mod`` lane waited ``--task-timeout`` for an absorb
+    only SM1's commit could trigger, then failed ``self_mod_absorb_confirmed`` by construction. Now SM1 waits and
+    carries the check; SW1/SK1 stop right after the scenario with ``{"expected": False}``, no check, and post-task
+    evolution still ON in their settings (the campaign may run during the scenario; the stand does not wait)."""
+    waits: list = []
+    monkeypatch.setattr(run_live_lanes, "resolve_ui_client", lambda base_url: (None, "ui_unavailable:test"))
+    monkeypatch.setattr(run_live_lanes, "self_mod_snapshot", lambda server, clone, data_root: {"pre": True})
+    monkeypatch.setattr(run_live_lanes, "confirm_absorb", lambda server, clone, data_root, pre, **kw: (
+        waits.append(pre) or {"confirmed": False, "reason": "no_promotion", "healthy": True}))
+    sm1 = _attempt_row(tmp_path, monkeypatch, "SM1", flags="--self-mod")
+    assert waits == [{"pre": True}] and sm1["status"] == "fail" and sm1["checks"]["self_mod_absorb_confirmed"] is False
+    assert sm1["self_mod_absorb"] == {"expected": True, "confirmed": False, "reason": "no_promotion", "healthy": True}
+    for sid in ("SW1", "SK1"):
+        row = _attempt_row(tmp_path, monkeypatch, sid, flags="--self-mod")
+        assert row["status"] == "pass" and "self_mod_absorb_confirmed" not in row["checks"], row["checks"]
+        assert row["self_mod_absorb"] == {"expected": False} and row["self_mod"] is True and waits == [{"pre": True}]
+        applied = json.loads((tmp_path / sid / "out" / "lanes" / f"{sid}_a1" / "data" / "settings.json").read_text())
+        assert applied["OUROBOROS_POST_TASK_EVOLUTION"] == "true"
 
 
 def test_wait_task_namespaces_checks_per_task_and_check_refuses_overwrites():
@@ -959,26 +972,17 @@ def test_sk1_fixture_declares_exactly_the_permissions_its_plugin_exercises():
     assert "no host or network access" not in body
 
 
-class _FakeSkillToken:
-    def __init__(self, value: str) -> None:
-        self._value = value
-
-    def use_in_request(self) -> str:
-        return self._value
-
-
 class _FakeExtensionApi:
-    """Only the two PluginAPI members the probe plugin touches."""
+    """Only the two PluginAPI members the probe plugin touches (the token object: ``use_in_request`` alone)."""
 
     def __init__(self, token: str) -> None:
-        self.token = token
-        self.tools = {}
+        self.token, self.tools = token, {}
 
     def register_tool(self, name, handler, *, description, schema, timeout_sec=60):
         self.tools[name] = handler
 
     def get_skill_token(self):
-        return _FakeSkillToken(self.token)
+        return types.SimpleNamespace(use_in_request=lambda: self.token)
 
 
 def _inject_sink(status: int, hits: list):
@@ -1357,17 +1361,18 @@ def test_run_wide_cap_refuses_per_attempt_and_records_not_run_rows(tmp_path, mon
         ("SK1_a2", "not_run", "budget_cap"), ("SW1_a2", "not_run", "budget_cap")]
 
 
-def test_self_mod_run_level_gate_fails_every_unconfirmed_lane(tmp_path, monkeypatch):
+def test_self_mod_run_level_gate_fails_every_unconfirmed_absorbing_lane(tmp_path, monkeypatch):
+    """The gate follows ``expects_absorb``: an unconfirmed SM1 fails the run; SW1 (no absorb to confirm) is never listed."""
     def lane(job, *a, **k):
         row = _fake_lane(job, *a, **k)
-        row["self_mod_absorb"] = {"confirmed": job == ("SM1", 1), "reason": "absorbed" if job == ("SM1", 1) else "no_promotion"}
+        row["self_mod_absorb"] = {"expected": True, "confirmed": False} if job[0] == "SM1" else {"expected": False}
         return row
 
     _out, manifest = _fake_run(tmp_path, monkeypatch, ["--self-mod", "--scenarios", "SM1,SW1", "--lanes", "1"],
                                lane=lane, expect_rc=1)
-    assert manifest["extra"]["self_mod"] == {"lanes": 2, "absorb_unconfirmed": ["SW1_a1"]}
+    assert manifest["extra"]["self_mod"] == {"lanes": 2, "absorb_expected": 1, "absorb_unconfirmed": ["SM1_a1"]}
     assert manifest["extra"]["outcome"] == "failed" and manifest["extra"]["exit_code"] == 1
-    assert manifest["extra"]["scenarios"]["SW1"]["verdict"] == "pass"   # the lane verdict alone would have passed
+    assert manifest["extra"]["scenarios"]["SM1"]["verdict"] == "pass"   # the lane verdict alone would have passed
 
 
 def test_lane_infra_failure_is_a_typed_refusal_in_both_artifacts(tmp_path, monkeypatch):
@@ -1422,12 +1427,7 @@ def test_ui_client_prefers_the_suite_interface_when_it_has_this_surface(monkeypa
             self.opened = True
             return self
 
-        def goto(self, path="/"): ...
-        def computed_property(self, selector, prop): ...
-        def send_chat(self, text, *, swarm=False): ...
-        def screenshot(self, path): ...
-        def rebind(self, base_url): ...
-        def close(self): ...
+        goto = computed_property = send_chat = screenshot = rebind = close = lambda self, *a, **k: None
 
     fake = type(sys)("tests.system_e2e.interfaces")
     fake.PlaywrightUIClient = Landed
