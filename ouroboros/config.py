@@ -174,7 +174,7 @@ TCP_KEEPALIVE_PROBE_COUNT = 5
 WORKER_SPAWN_GRACE_SEC = 90.0
 # Readiness window for ONE spawned/respawned slot: unassignable until the child's own `worker_ready` row lands; alive
 # but silent past this = torn down and replaced. Sized to the spawn grace (the pool's existing init budget): a warm
-# fork boots in ~3s, a cold 4-vCPU CI runner well under 60s (its 21-scenario mock lane runs in ~80s), and the E2E
+# forkserver child boots in ~3-4s (G13 mock lane: 3.5-4.9s startup, 2.5-3.2s respawn), a cold 4-vCPU CI runner well under 60s (its 21-scenario mock lane runs in ~80s), and the E2E
 # scenarios wait 240s per task, so a wedged child is a fast, named failure. A contract distinct from process liveness
 # (`proc.is_alive`, worker_health.py) and from the task idle rail (queue_timeouts.py): a deadlocked child is alive.
 WORKER_READY_WINDOW_SEC = 90.0

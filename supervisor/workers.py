@@ -38,18 +38,18 @@ _CTX = None
 _LAST_SPAWN_TIME: float = 0.0  # grace period: don't count dead workers right after spawn
 _SPAWN_GRACE_SEC: float = WORKER_SPAWN_GRACE_SEC  # config SSOT; leaves read it through _pool()
 
-# macOS + Windows default to spawn; Linux keeps fork.
-#
-# fork() from the long-lived, multi-threaded supervisor is unsafe on macOS: the
-# child inherits dead Mach ports, and the first network call that resolves
-# system proxies (SCDynamicStoreCopyProxies via _scproxy / httpx / requests)
-# SIGSEGVs on the child side of fork pre-exec. macOS therefore uses spawn, like
-# Windows. Linux proxy lookup reads env only (no Mach/GCD), so fork stays the
-# default there for fast worker startup. ``worker_main`` is a module-level
-# target (picklable) and re-derives all state from argv, so spawn is safe; the
-# PyInstaller bootloader provides multiprocessing.freeze_support() for frozen
-# builds. Override with OUROBOROS_WORKER_START_METHOD when diagnosing.
-_DEFAULT_WORKER_START_METHOD = "fork" if sys.platform.startswith("linux") else "spawn"
+# Defaults: spawn on macOS + Windows, forkserver on Linux (G13); the env key
+# OUROBOROS_WORKER_START_METHOD overrides either. fork() from the long-lived,
+# multi-threaded supervisor is unsafe on every OS: a child forked while another
+# server thread holds a per-module import lock keeps that lock with no thread
+# left to release it and wedges on its first import of that module (the
+# deadlock colab_bootstrap.py names; macOS adds dead Mach ports and a _scproxy
+# SIGSEGV pre-exec). forkserver forks every worker from ONE bare single-threaded
+# server process, so no lock is inherited, and a warm child still confirms in
+# seconds (mock lane, fork -> forkserver: startup 2.4-3.3 -> 3.5-4.9s, respawn
+# 2.3 -> 2.5-3.2s; window 90s). worker_main is module-level and re-derives state
+# from argv, so spawn/forkserver (and PyInstaller's frozen re-exec hook) are safe.
+_DEFAULT_WORKER_START_METHOD = "forkserver" if sys.platform.startswith("linux") else "spawn"
 _WORKER_START_METHOD = str(os.environ.get("OUROBOROS_WORKER_START_METHOD", _DEFAULT_WORKER_START_METHOD) or _DEFAULT_WORKER_START_METHOD).strip().lower()
 if _WORKER_START_METHOD not in {"fork", "spawn", "forkserver"}:
     _WORKER_START_METHOD = _DEFAULT_WORKER_START_METHOD
