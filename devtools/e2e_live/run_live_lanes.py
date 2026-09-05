@@ -17,7 +17,11 @@ DEFAULTS (D-09) with the budget knobs as settings keys (never env), and the lane
 fit next to the settled spend is refused (a ``not_run`` row, PER attempt — no run-wide halt); one that
 fits the cap but not the reservations in flight WAITS for a lane to settle and asks again; every
 lane's TOTAL_BUDGET is its OWN reservation — an immutable ceiling disjoint from every other lane's,
-so the settled spend plus the ceilings in flight never exceed the cap.
+so the settled spend plus the ceilings in flight never exceed the cap. The reservation is
+``HARD_STOP_INVERSE x --per-task-usd x root tasks`` (``RESERVATION_RULE``): the product stops a task
+at ``cost_hard_stop_pct`` (default 50%) of the GLOBAL remaining, which in a lane IS the lane budget,
+so a 1x reservation halved every root task's in-task ceiling, and ``--self-mod`` adds the post-task
+evolution cycle as a second root task under the same per-task fence.
 The run-root template is redacted (the key value lives only in each lane's 0600 settings file
 and is disclosed by fingerprint). The manifest names the model from the APPLIED settings file,
 not argv. Every lane leaves ``lanes/<id>_a<n>/result.json`` (checks, digests, grants by
@@ -70,6 +74,7 @@ from devtools.e2e_live import stub_lane
 from devtools.e2e_live.scenarios import SCENARIOS, LaneContext, diff_sha256, head_sha, now_iso
 from devtools.e2e_live.ui_probe import resolve_ui_client
 from ouroboros.provider_models import ALL_PROVIDER_CREDENTIAL_KEYS, declared_model_settings
+from ouroboros.task_pacing import _DEFAULT_COST_HARD_STOP_PCT
 
 MAX_LANES = 6
 STAGGER_BOUNDS = (2.0, 3.0)
@@ -95,8 +100,21 @@ PROCFS_AVAILABLE = os.path.isdir("/proc")   # the orphan scan reads /proc enviro
 # A lane's TOTAL_BUDGET must stay POSITIVE: the runtime reads a non-positive value as "no finite
 # global budget" (``settings_setup_contract.resolve_total_budget_usd``), the opposite of a cap.
 LANE_BUDGET_FLOOR_USD = 0.01
-RESERVATION_RULE = ("per_task_usd x root_tasks (children spend under their root task's ceiling); "
-                    "the lane's TOTAL_BUDGET is that reservation, so settled spend + in-flight ceilings <= cap")
+# The reservation unit is per_task_usd x the INVERSE of the product's default in-task hard stop
+# (``task_pacing.resolve_cost_ceiling``: min(cost_hard_stop_pct of the GLOBAL remaining at task
+# start, root cap - planning margin)). In a lane the global remaining IS its TOTAL_BUDGET = its
+# reservation, so a 1x reservation collapsed every root task's ceiling to 50% of the per-task cap
+# (rc.14 paid run: SM1_a3 'budget_exhausted' at $10.21 under a $20 cap, two review rounds); on a
+# real install the global budget is far larger and the root-cap axis binds. Second, --self-mod
+# runs the post-task evolution cycle as ANOTHER root task under the same per-task fence (SM1_a3:
+# task $10.2 + cycle ~$8 of a $20 reservation). Imported, not copied: the factor follows the product.
+HARD_STOP_INVERSE = 100.0 / _DEFAULT_COST_HARD_STOP_PCT
+RESERVATION_RULE = (f"max({LANE_BUDGET_FLOOR_USD:g}, {HARD_STOP_INVERSE:g} x per_task_usd x root_tasks) — the factor "
+                    f"is 100 / the product's default cost_hard_stop_pct ({_DEFAULT_COST_HARD_STOP_PCT}%): in a lane the "
+                    "global remaining IS the lane budget, so a 1x reservation would halve every root task's in-task "
+                    "ceiling, and --self-mod runs the post-task evolution cycle as a second root task under the same "
+                    "per-task fence. The lane's TOTAL_BUDGET is that reservation (children spend under their root "
+                    "task's ceiling), so settled spend + in-flight ceilings <= cap")
 
 
 def _log(msg: str) -> None:
@@ -113,7 +131,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--total-budget", type=float, default=100.0,
                     help="RUN-WIDE USD cap shared by every lane (each lane's TOTAL_BUDGET is its own reservation)")
     ap.add_argument("--per-task-usd", type=float, default=8.0,
-                    help="OUROBOROS_PER_TASK_COST_USD in the lane settings; also the per-root-task reservation unit")
+                    help="OUROBOROS_PER_TASK_COST_USD in the lane settings; each root task reserves "
+                         f"{HARD_STOP_INVERSE:g} x this (100 / the product's default cost_hard_stop_pct: in a lane "
+                         "the global remaining IS the lane budget; --self-mod adds the evolution cycle as a root task)")
     ap.add_argument("--task-timeout", type=int, default=1500)
     ap.add_argument("--ready-timeout", type=int, default=300)
     ap.add_argument("--profile", choices=("full", "wiring"), default="full",
@@ -259,10 +279,15 @@ class RunBudget:
     """The RUN-WIDE ledger behind ``--total-budget`` (the first paid run copied the whole cap
     into every lane: nine attempts, nine $100 ceilings, no run cap at all).
 
-    Reservation rule, per attempt: ``per_task_usd x root_tasks`` — the runtime fences each
-    ROOT task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their root's
-    ceiling, so SW1 (one root, two scouts) reserves for one root and SK1 (author + dispatch)
-    for two. Admission asks two questions, PER attempt: ``spent + reservation > cap`` — it can
+    Reservation rule, per attempt: ``HARD_STOP_INVERSE x per_task_usd x root_tasks`` — the runtime
+    fences each ROOT task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their
+    root's ceiling, so SW1 (one root, two scouts) reserves for one root and SK1 (author + dispatch)
+    for two. The factor is the inverse of the product's default ``cost_hard_stop_pct``: the in-task
+    ceiling is min(that pct of the GLOBAL remaining at task start, per-task cap - planning margin),
+    and in a lane the global remaining IS the lane budget, so a 1x reservation halved every root
+    task's ceiling (rc.14: SM1_a3 'budget_exhausted' at $10.21 of a $20 cap); with ``--self-mod``
+    the post-task evolution cycle is a second root task under the same per-task fence (SM1_a3:
+    $10.2 + ~$8 of $20). Admission asks two questions, PER attempt: ``spent + reservation > cap`` — it can
     NEVER fit, refused and recorded ``not_run`` (a later attempt with a smaller reservation is
     asked on its own; nothing halts the run); otherwise ``spent + reserved(in flight) +
     reservation > cap`` — it cannot fit YET, so it waits on the ledger and re-asks after every
@@ -290,10 +315,10 @@ class RunBudget:
         self.not_run: list[str] = []
 
     def reservation(self, root_tasks: int) -> float:
-        """The ONE effective ceiling of an attempt: ``per_task_usd x root_tasks``, floored at
-        ``LANE_BUDGET_FLOOR_USD`` and never rounded upward — admission, the stored reservation,
-        the lane's TOTAL_BUDGET and the reports all carry this same number."""
-        return max(LANE_BUDGET_FLOOR_USD, self.per_task * max(1, int(root_tasks or 1)))
+        """The ONE effective ceiling of an attempt: ``HARD_STOP_INVERSE x per_task_usd x root_tasks``,
+        floored at ``LANE_BUDGET_FLOOR_USD`` and never rounded upward — admission, the stored
+        reservation, the lane's TOTAL_BUDGET and the reports all carry this same number."""
+        return max(LANE_BUDGET_FLOOR_USD, HARD_STOP_INVERSE * self.per_task * max(1, int(root_tasks or 1)))
 
     def _spent_locked(self) -> tuple[float, int]:
         spent, unknown = 0.0, 0

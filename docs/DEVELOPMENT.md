@@ -1277,8 +1277,14 @@ only in each lane's 0600 settings file, disclosed by fingerprint as the runtime
 grant); the preflight takes `min(key limit remaining, account credits)` and
 refuses below `--min-credit-usd`. `--total-budget` (default 100) is the RUN-WIDE
 cap: a ledger sums the lanes' durable `llm_usage` costs, reserves
-`--per-task-usd × root tasks` per attempt (SM1 and SW1 one root — scouts spend
-under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two), admits an
+`max(0.01, HARD_STOP_INVERSE × --per-task-usd × root tasks)` per attempt (SM1 and SW1 one root — scouts spend
+under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two; the factor is
+100 / the product's default `cost_hard_stop_pct`, imported from `task_pacing`, 2 today:
+the in-task ceiling is min(that pct of the GLOBAL remaining at task start, per-task cap −
+planning margin) and in a lane the global remaining IS the lane budget, so a 1× reservation
+halved every root task's ceiling — rc.14 paid run, SM1_a3 `budget_exhausted` at $10.21 of a
+$20 cap; and `--self-mod` runs the post-task evolution cycle as a second root task under the
+same per-task fence, $10.2 + ~$8 of that $20), admits an
 attempt only while `spent + reserved(in flight) + reservation ≤ cap` — an attempt that
 cannot fit YET (blocked only by reservations in flight) waits for a settle and asks again,
 one that can NEVER fit (`spent + reservation > cap`) is refused and recorded `not_run` with
@@ -1286,8 +1292,8 @@ one that can NEVER fit (`spent + reservation > cap`) is refused and recorded `no
 is asked on its own; the manifest carries `refusals` and `first_refused`), and writes each lane's TOTAL_BUDGET as its OWN reservation — an
 immutable ceiling disjoint from every other lane's, so the settled spend plus the ceilings
 in flight never exceed the cap; the manifest records the cap, the spend, the reservation rule
-and the stop reason. `--per-task-usd` (default 8) is the runtime's per-root-task
-fence: with the tree's default review panel a blocking triad that includes
+and the stop reason. `--per-task-usd` (default 8; each root task reserves 2× it) is the
+runtime's per-root-task fence: with the tree's default review panel a blocking triad that includes
 claude-opus-5 plus the scope review exceeded $8 on SM1 in the first paid run
 (lanes spent $2–6 and still hit the fence, which counts reserved upper bounds),
 so size it to the review panel (16–20 for a blocking SM1) and let the run-wide
