@@ -618,12 +618,18 @@ def review_wave_admission(
     remaining_usd_override: float | None = None,
     task_id: str = "",
     root_limit_usd: float | None = None,
+    global_limit_usd: float | None = None,
     categories: str | Sequence[str] = "",
     slot_ids: str | Sequence[str] = "",
 ) -> Dict[str, Any]:
     """Read-only all-slot admission using the normal reservation math; fail open.
     ``remaining_usd_override`` serves callers outside any task usage scope (the
     managed-update admission gate): compared against instead of the projection.
+    Otherwise the wave is admitted against EVERY fence ``reserve_attempt``
+    enforces: the global ``TOTAL_BUDGET`` remainder (``global_limit_usd``,
+    resolved like the ledger's own global fence — None reads the setting, a
+    non-positive setting leaves the axis unbounded) and the root remainder;
+    ``remaining_usd`` is the tighter one and ``binding_axis`` names it.
 
     ``prompt_chars``/``max_completion_tokens``/``categories``/``slot_ids``
     accept one value for every slot or one value PER slot (aligned with
@@ -651,6 +657,8 @@ def review_wave_admission(
         "accounted_usd": None,
         "reserved_usd": None,
         "slot_bounds": [],
+        **{key: None for key in ("global_limit_usd", "global_accounted_usd", "global_remaining_usd",
+                                 "global_reserved_usd", "binding_axis")},
     }
     root_task_id = str(root_task_id or "").strip()
     if not root_task_id or not models:
@@ -661,23 +669,30 @@ def review_wave_admission(
         if remaining_usd_override is not None:
             remaining = float(remaining_usd_override)
         else:
+            # Every OPEN hold counts as reserved-by-others: a reserved row and a
+            # dispatched (in-flight) row both bind their upper bound on the fence.
+            holds = lambda p: round(float(_number(p.get("reserved_usd")) or 0.0)  # noqa: E731
+                                    + float(_number(p.get("unresolved_upper_bound_usd")) or 0.0), 6)
             projection = usage_projection(drive_root, root_task_id=root_task_id)
             limit = (
                 max(0.0, float(root_limit_usd)) if root_limit_usd is not None
                 else _number(projection.get("limit_usd"))
             )
             accounted = _number(projection.get("accounted_usd"))
-            if limit is None or accounted is None:
+            if limit is not None and accounted is not None:
+                remaining = round(max(0.0, limit - accounted), 6)
+                result.update(limit_usd=limit, accounted_usd=accounted, reserved_usd=holds(projection),
+                              binding_axis="root")
+            # The global axis reserve_attempt checks FIRST (all roots' rows, open holds included).
+            gp = usage_projection(drive_root, global_limit_usd=global_limit_usd, include_roots=False)
+            result.update(global_limit_usd=_number(gp.get("limit_usd")),
+                          global_accounted_usd=_number(gp.get("accounted_usd")),
+                          global_remaining_usd=_number(gp.get("remaining_known_usd")), global_reserved_usd=holds(gp))
+            global_remaining = result["global_remaining_usd"]
+            if global_remaining is not None and (result["binding_axis"] is None or global_remaining < remaining):
+                remaining, result["binding_axis"] = global_remaining, "global"
+            if result["binding_axis"] is None:
                 return result
-            remaining = round(max(0.0, limit - accounted), 6)
-            result["limit_usd"] = limit
-            result["accounted_usd"] = accounted
-            # Every OPEN hold counts as reserved-by-others: a reserved row and a
-            # dispatched (in-flight) row both bind their upper bound on the fence.
-            result["reserved_usd"] = round(
-                float(_number(projection.get("reserved_usd")) or 0.0)
-                + float(_number(projection.get("unresolved_upper_bound_usd")) or 0.0), 6,
-            )
         result["remaining_usd"] = remaining
         chars = _per_slot(prompt_chars, len(models))
         outputs = _per_slot(max_completion_tokens, len(models))

@@ -2,11 +2,14 @@
 
 The scope reviewer — the only constitutionally blocking seat — reserves its
 budget FIRST, and the commit-gate wave (scope seats + triad seats) is admitted
-all-or-nothing against the task's root fence BEFORE any paid seat is
-dispatched. A wave that does not fit is a typed $0 pre-dispatch refusal naming
-the shortfall, never a half-dispatched panel (the 4 September paid run: two
-triad seats held the money, the third seat and the scope seat were refused
-mid-wave, and the commit blocked with ~$5 of the $8 fence never spent).
+all-or-nothing against every fence the ledger enforces at reservation — the
+global TOTAL_BUDGET remainder and the task's root fence (the earlier wording
+"against the task's current root fence" omitted the global axis; rc.14 audit
+point 2) — BEFORE any paid seat is dispatched. A wave that does not fit is a
+typed $0 pre-dispatch refusal naming the binding axis and the shortfall, never
+a half-dispatched panel (the 4 September paid run: two triad seats held the
+money, the third seat and the scope seat were refused mid-wave, and the commit
+blocked with ~$5 of the $8 fence never spent).
 """
 
 from __future__ import annotations
@@ -160,6 +163,9 @@ def test_fence_that_fits_only_the_triad_refuses_the_wave_at_zero_dollars(gate, t
     assert "per-task budget fence $4.000000" in review_err
     assert "accounted=$0.000000 (of which $0.000000 is reserved by other in-flight attempts)" in review_err
     assert "remaining=$4.000000, shortfall=$1.000000" in review_err
+    # The root axis binds; the global axis is disclosed beside it with its own remainder.
+    assert "the global budget $100.000000 alone would leave $100.000000" in review_err
+    assert "raise the per-task budget (OUROBOROS_PER_TASK_COST_USD)" in review_err
     # Every seat is named with its own bound, scope first.
     assert review_err.index("scope_review:scope_slot_1 scope/model $3.000000") < review_err.index(
         "multi_model_review:slot_1 triad/a $1.000000")
@@ -175,6 +181,77 @@ def test_fence_that_fits_only_the_triad_refuses_the_wave_at_zero_dollars(gate, t
     assert events[0]["seats"] == ["scope_review:scope_slot_1", "multi_model_review:slot_1",
                                   "multi_model_review:slot_2"]
     assert events[0]["slot_bounds"] == [3.0, 1.0, 1.0]
+    assert events[0]["binding_axis"] == "root" and events[0]["remaining_usd"] == 4.0
+    assert (events[0]["global_limit_usd"], events[0]["global_remaining_usd"]) == (100.0, 100.0)
+
+
+def test_global_budget_that_does_not_fit_refuses_the_wave_before_any_seat_reserves(gate, tmp_path, monkeypatch):
+    """rc.14 audit point 2 (verified repro): root fence $10 fits the $5 wave, the
+    global TOTAL_BUDGET $100 has $4 left after $96 settled under ANOTHER root.
+    Before the fix admission read only the root axis, two seats reserved and
+    paid, and the ledger's global check — the FIRST one ``reserve_attempt``
+    runs — refused the third mid-wave. Now the wave is refused before any seat
+    reserves, and the refusal names the global axis and its own knob, never the
+    per-task fence the wave would have fit."""
+    with ua.usage_scope(ua.UsageScope(drive_root=gate, task_id="other-root", root_task_id="other-root")):
+        other = ua.reserve_attempt(ua.AttemptRequest(model="triad/a", provider="test", source="main"))
+        ua.mark_dispatched(other)
+        ua.settle_attempt(other, {"prompt_tokens": 1, "completion_tokens": 1}, cost_usd=96.0, cost_final=True)
+    llm = LedgerLLM()
+    ctx, (review_err, scope_result, block_reason, _adv) = _run(gate, tmp_path, monkeypatch, llm, fence=10.0)
+
+    assert llm.calls == [] and len(_ledger(gate)) == 3  # the other root's attempt only
+    assert review_err and "commit-gate review wave declined before dispatch ($0 spent)" in review_err
+    assert "reservation upper bound $5.000000" in review_err
+    assert "does not fit the global budget TOTAL_BUDGET $100.000000: accounted=$96.000000 across every task" in review_err
+    assert "(of which $0.000000 is reserved by other in-flight attempts)" in review_err
+    assert "remaining=$4.000000, shortfall=$1.000000" in review_err
+    assert "the per-task budget fence $10.000000 alone would leave $10.000000" in review_err
+    assert "raise TOTAL_BUDGET" in review_err and "OUROBOROS_PER_TASK_COST_USD" not in review_err
+    assert block_reason == "review_wave_budget_insufficient"
+    assert [r["status"] for r in ctx._last_triad_raw_results] == ["not_dispatched", "not_dispatched"]
+    assert scope_result.blocked is True and scope_result.status == "not_dispatched"
+    events = [e for e in ctx.pending_events if e.get("type") == "review_wave_budget_insufficient"]
+    assert len(events) == 1 and events[0]["binding_axis"] == "global"
+    assert (events[0]["remaining_usd"], events[0]["global_remaining_usd"]) == (4.0, 4.0)
+    assert (events[0]["global_limit_usd"], events[0]["global_accounted_usd"]) == (100.0, 96.0)
+    assert (events[0]["limit_usd"], events[0]["accounted_usd"]) == (10.0, 0.0)
+
+
+def test_review_wave_admission_binds_on_the_tighter_of_root_and_global_axes(gate, monkeypatch):
+    """Direct pins of the two-axis contract: root and global remainders are
+    read the way ``reserve_attempt`` will enforce them, the tighter one binds
+    and is named, a non-positive TOTAL_BUDGET leaves the global axis unbounded,
+    a caller with no root fence and no root rows is still bound by the global
+    axis, and an internal exception keeps the fail-open skeleton."""
+    wave = dict(root_task_id=ROOT, models=[SCOPE_MODEL, *TRIAD_MODELS], prompt_chars=10, task_id=ROOT)
+
+    root_bound = ua.review_wave_admission(gate, root_limit_usd=4.0, global_limit_usd=10.0, **wave)
+    assert (root_bound["fits"], root_bound["binding_axis"], root_bound["estimated_wave_usd"]) == (False, "root", 5.0)
+    assert (root_bound["remaining_usd"], root_bound["global_remaining_usd"]) == (4.0, 10.0)
+    global_bound = ua.review_wave_admission(gate, root_limit_usd=10.0, global_limit_usd=4.0, **wave)
+    assert (global_bound["fits"], global_bound["binding_axis"]) == (False, "global")
+    assert (global_bound["remaining_usd"], global_bound["limit_usd"], global_bound["global_limit_usd"]) == (
+        4.0, 10.0, 4.0)
+    assert (global_bound["global_accounted_usd"], global_bound["global_reserved_usd"]) == (0.0, 0.0)
+    admitted = ua.review_wave_admission(gate, root_limit_usd=10.0, global_limit_usd=10.0, **wave)
+    assert admitted["fits"] is True and admitted["remaining_usd"] == 10.0
+
+    monkeypatch.setenv("TOTAL_BUDGET", "0")  # no finite global budget: the root axis alone
+    root_only = ua.review_wave_admission(gate, root_limit_usd=4.0, **wave)
+    assert (root_only["fits"], root_only["binding_axis"], root_only["remaining_usd"]) == (False, "root", 4.0)
+    assert (root_only["global_limit_usd"], root_only["global_remaining_usd"]) == (None, None)
+    unfenced_unbounded = ua.review_wave_admission(gate, **wave)  # no fence, no rows, no global budget
+    assert unfenced_unbounded["fits"] is True and unfenced_unbounded["binding_axis"] is None
+    monkeypatch.setenv("TOTAL_BUDGET", "4")
+    unfenced = ua.review_wave_admission(gate, **wave)  # no root fence: the global axis still binds
+    assert (unfenced["fits"], unfenced["binding_axis"], unfenced["limit_usd"]) == (False, "global", None)
+    assert (unfenced["remaining_usd"], unfenced["global_limit_usd"]) == (4.0, 4.0)
+
+    monkeypatch.setattr(ua, "usage_projection", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("ledger")))
+    skeleton = ua.review_wave_admission(gate, root_limit_usd=4.0, global_limit_usd=4.0, **wave)
+    assert skeleton["fits"] is True and skeleton["estimated_wave_usd"] is None
+    assert skeleton["binding_axis"] is None and skeleton["global_remaining_usd"] is None
 
 
 def test_refusal_names_money_held_by_other_in_flight_attempts(gate, tmp_path, monkeypatch):

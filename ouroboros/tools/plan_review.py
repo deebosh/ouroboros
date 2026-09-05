@@ -87,7 +87,7 @@ from ouroboros.tools.plan_review_references import (
     _record_raw_plan_request_with_reference,
 )
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.tools.review_helpers import review_wave_budget_gate
+from ouroboros.tools.review_helpers import review_wave_binding_fence, review_wave_budget_gate
 from ouroboros.tools.review_synthesis import (
     PLAN_REVIEW_CONTROL_PREFIX,
 )
@@ -657,12 +657,13 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
         prompt_chars=len(system_prompt) + len(user_content), max_completion_tokens=_PLAN_REVIEW_MAX_TOKENS,
     )
     if admission is not None:
+        fence, remedy = review_wave_binding_fence(admission)
         return _plan_unavailable(
             ctx,
             "⚠️ PLAN_REVIEW_SKIPPED_BUDGET: the reviewer wave was declined before dispatch — "
-            f"estimated cost ~${admission.get('estimated_wave_usd')} exceeds the remaining root "
-            f"budget ${admission.get('remaining_usd')} (limit ${admission.get('limit_usd')}). "
-            "No reviewer was called. Shrink the evidence, split the plan, or raise the per-task budget.",
+            f"estimated cost ~${admission.get('estimated_wave_usd')} exceeds the remaining budget "
+            f"${admission.get('remaining_usd')} ({fence}). No reviewer was called. Shrink the evidence, "
+            f"split the plan, or {remedy}.",
             "review_budget_unavailable")
     ctx.emit_progress_fn(
         f"📐 plan_task: cycle {cycle_index}{'' if cap is None else f'/{cap}'} — running "

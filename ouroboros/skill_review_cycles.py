@@ -603,8 +603,9 @@ def review_wave_budget_block(
     models: List[str],
 ) -> Optional[str]:
     """Return a human-readable refusal when the review wave cannot fit the
-    remaining root budget, else None. Read-only; emits one typed event."""
-    from ouroboros.tools.review_helpers import review_wave_budget_gate
+    remaining budget (global or root axis, the binding one named), else None.
+    Read-only; emits one typed event."""
+    from ouroboros.tools.review_helpers import review_wave_binding_fence, review_wave_budget_gate
 
     # Estimate the WHOLE wave: a chunked oversized skill runs one full
     # reviewer pass PER pack (run_skill_review_passes), and every pass re-sends
@@ -634,12 +635,12 @@ def review_wave_budget_block(
     )
     if admission is None:
         return None
+    fence, remedy = review_wave_binding_fence(admission)
     return (
         "review wave declined before dispatch: estimated reviewer-wave cost "
-        f"~${admission.get('estimated_wave_usd')} exceeds the remaining root budget "
-        f"${admission.get('remaining_usd')} (limit ${admission.get('limit_usd')}). "
-        "No reviewer was called; the skill stays pending. Raise the per-task "
-        "budget or re-run the review in a fresh task."
+        f"~${admission.get('estimated_wave_usd')} exceeds the remaining budget "
+        f"${admission.get('remaining_usd')} ({fence}). No reviewer was called; the skill "
+        f"stays pending. Wait for in-flight attempts to settle, {remedy}, or re-run the review in a fresh task."
     )
 
 

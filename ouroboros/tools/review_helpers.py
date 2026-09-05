@@ -254,10 +254,13 @@ def review_wave_budget_gate(
     priced with its own pack size and output reservation — ``prompt_chars`` /
     ``max_completion_tokens`` take one value per slot, and ``categories`` /
     ``slot_ids`` name the usage scope each seat will SEND under, so its bound
-    reads the seat's own observed cache split rather than the caller's). A
-    wave that fits is dispatched whole; one that does not is refused BEFORE
-    any seat spends, never half-dispatched. Fail-open on any error/unknown,
-    mirroring ``review_wave_admission``."""
+    reads the seat's own observed cache split rather than the caller's), against
+    every fence ``reserve_attempt`` enforces — the global TOTAL_BUDGET remainder
+    (the scope's ``global_limit_usd``) and the task's root fence — the event naming
+    the binding axis with both remainders. A wave that fits at admission time is
+    dispatched whole; one that does not is refused BEFORE any seat spends (a read-only
+    pre-check without a wave-level hold: the per-seat reservation stays the
+    enforcement). Fail-open on any error/unknown."""
     try:
         from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
 
@@ -272,6 +275,7 @@ def review_wave_budget_gate(
             max_completion_tokens=max_completion_tokens,
             task_id=str(scope.task_id or ""),
             root_limit_usd=scope.root_limit_usd,
+            global_limit_usd=scope.global_limit_usd,
             categories=categories,
             slot_ids=slot_ids,
         )
@@ -285,6 +289,8 @@ def review_wave_budget_gate(
             "limit_usd": admission.get("limit_usd"),
             "accounted_usd": admission.get("accounted_usd"),
             "reserved_usd": admission.get("reserved_usd"),
+            **{key: admission.get(key) for key in (
+                "binding_axis", "global_limit_usd", "global_accounted_usd", "global_reserved_usd", "global_remaining_usd")},
             "slots": admission.get("slots"),
             "slot_bounds": admission.get("slot_bounds"),
             "unpriced_slots": unpriced,
@@ -308,6 +314,17 @@ def review_wave_budget_gate(
     except Exception:
         logger.debug("review wave budget gate failed open", exc_info=True)
         return None
+
+
+def review_wave_binding_fence(admission: dict) -> tuple[str, str]:
+    """(fence, remedy) of a refused wave: the binding axis (global TOTAL_BUDGET or
+    per-task root fence) and ITS knob — never a fence the wave would have fit."""
+    usd = lambda key: "unknown" if admission.get(key) is None else f"${float(admission[key]):.6f}"  # noqa: E731
+    if admission.get("binding_axis") == "global":
+        return (f"global budget TOTAL_BUDGET {usd('global_limit_usd')}, accounted {usd('global_accounted_usd')} "
+                "across every task", "raise TOTAL_BUDGET")
+    return f"per-task budget fence {usd('limit_usd')}, accounted {usd('accounted_usd')}", (
+        "raise the per-task budget (OUROBOROS_PER_TASK_COST_USD)")
 
 
 def cached_prompt_blocks(stable_text: str, dynamic_text: str = "", *, ttl: str | None = None) -> list:
