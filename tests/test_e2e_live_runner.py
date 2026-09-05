@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -469,6 +470,130 @@ def test_dispatch_verdict_requires_ok_status_and_the_exact_echo():
     assert scenarios.dispatch_verdict([], scenarios.SK1_ECHO_EXPECTED)["row_present"] is False
     assert scenarios.SK1_ECHO_EXPECTED == f"echo: {scenarios.SK1_ECHO_MESSAGE}"
     assert scenarios.SCENARIOS["SK1"].stub_script(REPO_ROOT)["agent"][4]["arguments"]["message"] == scenarios.SK1_ECHO_MESSAGE
+    # The relayed line opens one owner-chat turn on the stub wire: a second closing final absorbs it.
+    assert [list(s)[0] for s in scenarios.SCENARIOS["SK1"].stub_script(REPO_ROOT)["agent"]] == [
+        "tool", "tool", "tool", "final", "tool", "final", "final"]
+
+
+def test_sk1_fixture_declares_exactly_the_permissions_its_plugin_exercises():
+    """The SK1 manifest is honest by construction: every declared permission maps to source the
+    plugin actually runs, the ONLY owner-granted one (``inject_chat``) is what the stand grants,
+    and the prose states that narrow purpose. The first paid run declared ``inject_chat`` over an
+    echo-only plugin and the skill review refused it 3/3 on ``permissions_honesty`` +
+    ``inject_chat_minimization`` — a fixture defect, so this pins the fixture, not the reviewer."""
+    import ast
+
+    from ouroboros.contracts.skill_manifest import parse_skill_manifest_text
+    from ouroboros.skill_loader import requested_skill_permissions
+
+    manifest = parse_skill_manifest_text(scenarios.SK1_SKILL_MD)
+    assert manifest.name == scenarios.SK1_SKILL and manifest.type == "extension" and manifest.entry == "plugin.py"
+    exercised_by = {   # permission -> the source that performs it
+        "tool": "api.register_tool(",
+        "inject_chat": "/chat/inject",
+        "net": "urllib.request",
+    }
+    assert set(manifest.permissions) == set(exercised_by)
+    for permission, marker in exercised_by.items():
+        assert marker in scenarios.SK1_PLUGIN, (permission, marker)
+    assert requested_skill_permissions(list(manifest.permissions)) == scenarios.SK1_GRANTS == ["inject_chat"]
+    # Host-token discipline (checklist item 12): the token is revealed at the request site only.
+    assert scenarios.SK1_PLUGIN.count("get_skill_token().use_in_request()") == 1
+    assert "print(" not in scenarios.SK1_PLUGIN and "log(" not in scenarios.SK1_PLUGIN
+    # Owner binding: the destination is a module constant, never a tool argument.
+    assert f"OWNER_CHAT_ID = {scenarios.SK1_OWNER_CHAT_ID}" in scenarios.SK1_PLUGIN and scenarios.SK1_OWNER_CHAT_ID == 1
+    assert "'chat_id': OWNER_CHAT_ID" in scenarios.SK1_PLUGIN
+    tree = ast.parse(scenarios.SK1_PLUGIN)
+    register_call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                         and isinstance(n.func, ast.Attribute) and n.func.attr == "register_tool")
+    schema = ast.literal_eval(next(k.value for k in register_call.keywords if k.arg == "schema"))
+    assert set(schema["properties"]) == {"message"}
+    # The prose names the purpose and no longer denies what the code does.
+    body = scenarios.SK1_SKILL_MD.split("---", 2)[2]
+    assert "/chat/inject" in body and f"chat_id {scenarios.SK1_OWNER_CHAT_ID}" in body and "127.0.0.1" in body
+    assert "no host or network access" not in body
+
+
+class _FakeSkillToken:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def use_in_request(self) -> str:
+        return self._value
+
+
+class _FakeExtensionApi:
+    """Only the two PluginAPI members the probe plugin touches."""
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+        self.tools = {}
+
+    def register_tool(self, name, handler, *, description, schema, timeout_sec=60):
+        self.tools[name] = handler
+
+    def get_skill_token(self):
+        return _FakeSkillToken(self.token)
+
+
+def _inject_sink(status: int, hits: list):
+    """A loopback HTTP server standing in for the Host Service ``/chat/inject`` route."""
+    import http.server
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            hits.append({"path": self.path, "token": self.headers.get("X-Skill-Token"),
+                         "body": json.loads(body.decode("utf-8"))})
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+
+        def log_message(self, *_args):  # keep pytest output clean
+            return
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_sk1_plugin_relays_one_bounded_line_into_the_owner_chat(monkeypatch):
+    """The plugin text the model is told to write, executed: one POST to the loopback
+    ``/chat/inject`` per call, owner chat pinned, the skill token only in the header, the text
+    bounded, the same text returned — and a Host Service refusal surfaces as a tool error."""
+    hits: list = []
+    sink = _inject_sink(202, hits)
+    try:
+        monkeypatch.setenv("HOST_SERVICE_URL", f"http://127.0.0.1:{sink.server_port}")
+        namespace: dict = {}
+        exec(compile(scenarios.SK1_PLUGIN, "plugin.py", "exec"), namespace)  # noqa: S102 - the fixture under test
+        api = _FakeExtensionApi("tok-e2e")
+        namespace["register"](api)
+        echo = api.tools["echo"]
+        assert echo(None, message=scenarios.SK1_ECHO_MESSAGE) == scenarios.SK1_ECHO_EXPECTED
+        assert hits == [{"path": "/chat/inject", "token": "tok-e2e", "body": {
+            "text": scenarios.SK1_ECHO_EXPECTED, "chat_id": scenarios.SK1_OWNER_CHAT_ID,
+            "sender_label": scenarios.SK1_SKILL}}]
+        long = echo(None, message="x" * (scenarios.SK1_ECHO_MAX_CHARS + 50))
+        assert long == hits[-1]["body"]["text"] == "echo: " + "x" * scenarios.SK1_ECHO_MAX_CHARS
+        assert len(hits) == 2   # exactly one line per call, no retry
+    finally:
+        sink.shutdown()
+    refusing = _inject_sink(403, [])
+    try:
+        monkeypatch.setenv("HOST_SERVICE_URL", f"http://127.0.0.1:{refusing.server_port}")
+        with pytest.raises(urllib.error.HTTPError):
+            echo(None, message="denied")
+    finally:
+        refusing.shutdown()
+    # The acceptance reads the HOST's attribution of that line, never the plugin's claim.
+    rows = [{"direction": "in", "chat_id": 1, "source": f"skill:{scenarios.SK1_SKILL}", "text": scenarios.SK1_ECHO_EXPECTED},
+            {"direction": "out", "chat_id": 1, "source": f"skill:{scenarios.SK1_SKILL}", "text": scenarios.SK1_ECHO_EXPECTED},
+            {"direction": "in", "chat_id": 1, "source": "web", "text": scenarios.SK1_ECHO_EXPECTED},
+            {"direction": "in", "chat_id": 2, "source": f"skill:{scenarios.SK1_SKILL}", "text": scenarios.SK1_ECHO_EXPECTED},
+            {"direction": "in", "chat_id": 1, "source": f"skill:{scenarios.SK1_SKILL}", "text": "echo: other"}]
+    assert scenarios.owner_chat_relay_rows(rows, scenarios.SK1_SKILL, scenarios.SK1_ECHO_EXPECTED) == rows[:1]
 
 
 def test_commit_refusal_facts_name_every_typed_refusal():

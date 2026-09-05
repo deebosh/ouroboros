@@ -47,6 +47,16 @@ SW1_OBJECTIVE = (
 SW1_ROSTER_ID = "scout"
 
 SK1_SKILL = "e2e_live_probe"
+# The web owner's Main chat. The plugin below hard-binds every relayed line to it: the chat is
+# never chosen by the caller, so the grant covers exactly one owner-facing destination.
+SK1_OWNER_CHAT_ID = 1
+SK1_ECHO_MAX_CHARS = 200
+# The fixture is HONEST: every declared permission is exercised by ``SK1_PLUGIN`` and the prose
+# names the narrow purpose of the privileged one. The first paid run declared ``inject_chat``
+# over a plugin that never performed it (and prose denying host access), and the skill review
+# refused it 3/3 on exactly ``permissions_honesty`` + ``inject_chat_minimization`` — the
+# reviewers were right. ``tool`` = ``register_tool``; ``net`` = the ONE loopback HTTP request
+# per call to the Host Service; ``inject_chat`` = that request's route.
 SK1_SKILL_MD = f"""---
 name: {SK1_SKILL}
 description: Loopback probe extension authored by the live E2E stand SK1 scenario.
@@ -54,28 +64,62 @@ version: 0.1.0
 type: extension
 entry: plugin.py
 plugin_api: "2.0"
-permissions: ["tool", "inject_chat"]
+permissions: ["tool", "inject_chat", "net"]
 model_experience:
-  what_model_sees: 'E2E_LIVE_SK1 adds a loopback probe echo tool to the toolbox'
+  what_model_sees: 'E2E_LIVE_SK1 adds a loopback probe echo tool that relays its reply into the owner chat'
   token_effect: 'one catalogue line'
 ---
-Probe extension body: one echo tool, no host or network access.
+Probe extension body: one `echo` tool. Each explicit call relays its own reply, `echo: <message>`,
+as ONE bounded line (at most {SK1_ECHO_MAX_CHARS} characters) into the owner's own Main chat
+through the loopback Host Service `/chat/inject` route, authenticated with this skill's token
+(`get_skill_token().use_in_request()` at the request site only, never logged) and attributed by
+the host as `skill:{SK1_SKILL}`. That is the whole purpose of `inject_chat`: a user-facing echo
+the owner can see in their chat. The destination is fixed to the web owner's chat
+(chat_id {SK1_OWNER_CHAT_ID}) and is never chosen by the caller; the sender is left unidentified
+(no owner impersonation); there is no inbound listener, no polling, no retry, no broadcast, and
+no host contacted other than 127.0.0.1. `net` covers exactly that one loopback request per call.
 """
 SK1_PLUGIN = (
-    "def _echo(ctx, message='hi'):\n"
-    "    return f'echo: {message}'\n"
+    "import json\n"
+    "import os\n"
+    "import urllib.request\n"
+    "\n"
+    f"OWNER_CHAT_ID = {SK1_OWNER_CHAT_ID}   # the web owner's Main chat; never a caller-chosen chat\n"
+    f"MAX_CHARS = {SK1_ECHO_MAX_CHARS}\n"
+    "\n"
     "\n"
     "def register(api):\n"
+    "    def _echo(ctx, message='hi'):\n"
+    "        # One bounded line into the owner's own chat per explicit call, then the same\n"
+    "        # text back to the caller. Loopback Host Service only; proxies from the\n"
+    "        # environment are ignored so the request can never leave this host.\n"
+    "        text = 'echo: ' + str(message)[:MAX_CHARS]\n"
+    "        base = os.environ.get('HOST_SERVICE_URL') or (\n"
+    "            'http://127.0.0.1:' + os.environ.get('OUROBOROS_HOST_SERVICE_PORT', '8767'))\n"
+    "        request = urllib.request.Request(\n"
+    "            base + '/chat/inject', method='POST',\n"
+    f"            data=json.dumps({{'text': text, 'chat_id': OWNER_CHAT_ID, 'sender_label': '{SK1_SKILL}'}}).encode('utf-8'),\n"
+    "            headers={'Content-Type': 'application/json',\n"
+    "                     'X-Skill-Token': api.get_skill_token().use_in_request()},\n"
+    "        )\n"
+    "        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))\n"
+    "        with opener.open(request, timeout=10) as response:\n"
+    "            if response.status != 202:\n"
+    "                raise RuntimeError(f'Host Service inject refused: HTTP {response.status}')\n"
+    "        return text\n"
+    "\n"
     "    api.register_tool(\n"
-    "        'echo', _echo, description='echo probe',\n"
+    "        'echo', _echo, description='echo probe: relays the reply into the owner chat',\n"
     "        schema={'type': 'object', 'properties': {'message': {'type': 'string'}}},\n"
     "    )\n"
 )
-# The ONLY privileged grant the stand ever issues: the manifest above requests exactly it,
-# so "no host/network grant" holds by construction of the grant call, not by a denylist.
+# The ONLY privileged (owner-granted) permission the stand ever issues: the manifest above
+# requests exactly it and the plugin performs exactly it, so "no other host grant" holds by
+# construction of the grant call, not by a denylist (``tool``/``net`` are manifest declarations
+# the loader enforces, not owner grants — ``skill_loader.requested_skill_permissions``).
 SK1_GRANTS = ["inject_chat"]
 SK1_ECHO_MESSAGE = "ping-e2e-live"
-SK1_ECHO_EXPECTED = f"echo: {SK1_ECHO_MESSAGE}"   # exactly what ``_echo`` in SK1_PLUGIN returns
+SK1_ECHO_EXPECTED = f"echo: {SK1_ECHO_MESSAGE}"   # exactly what ``_echo`` in SK1_PLUGIN returns AND relays
 
 
 def _git(args: list[str], cwd: pathlib.Path) -> str:
@@ -154,6 +198,15 @@ def dispatch_verdict(rows: list, expected_text: str) -> dict:
             "generation": digest, "generation_ok": bool(re.fullmatch(r"[0-9a-f]{8,64}", digest)),
             "physical_dispatch": meta.get("physical_dispatch") is True,
             "echo_ok": str(last.get("result_preview") or "").strip() == expected_text}
+
+
+def owner_chat_relay_rows(chat_rows: list, skill: str, text: str) -> list:
+    """The durable ``chat.jsonl`` rows proving the probe's relay reached the owner's chat: inbound
+    rows the HOST stamped ``source=skill:<name>`` (attribution by the host, never by the plugin),
+    filed under the owner's chat, carrying exactly the echo text."""
+    return [row for row in chat_rows
+            if str(row.get("direction") or "") == "in" and str(row.get("source") or "") == f"skill:{skill}"
+            and int(row.get("chat_id") or 0) == SK1_OWNER_CHAT_ID and str(row.get("text") or "").strip() == text]
 
 
 class DuplicateCheckKey(RuntimeError):
@@ -526,6 +579,15 @@ def run_sk1(ctx: LaneContext) -> None:
     ctx.check("dispatch_physical_call_ok_with_echo", verdict["status"] == "ok" and verdict["echo_ok"],
               dispatch_status=verdict["status"], dispatch_echo_ok=verdict["echo_ok"],
               dispatch_physical=verdict["physical_dispatch"])
+    # The granted permission was EXERCISED: every successful echo call put exactly one host-
+    # attributed line into the owner's chat (the inbound row lands asynchronously, after the
+    # Host Service's 202, so this waits on the durable chat log instead of reading it once).
+    ok_calls = sum(1 for r in rows if str(r.get("status") or "") == "ok")
+    relayed = ctx.h.wait_until(
+        lambda: owner_chat_relay_rows(ctx.oracle._jsonl("logs/chat.jsonl"), SK1_SKILL, SK1_ECHO_EXPECTED) or None,
+        90) or []
+    ctx.check("dispatch_relayed_one_line_per_call_into_owner_chat", bool(relayed) and len(relayed) == ok_calls,
+              owner_chat_relay_rows=len(relayed), dispatch_ok_calls=ok_calls)
     ctx.check_paid_tokens([author_id, dispatch_id])
     _api_status(ctx.server.base_url, "POST", f"/api/skills/{SK1_SKILL}/toggle", {"enabled": False}, timeout=300)
     deleted = _api_status(ctx.server.base_url, "POST", f"/api/skills/{SK1_SKILL}/delete", {}, timeout=120)
@@ -544,6 +606,9 @@ def sk1_stub_script(_clone: pathlib.Path) -> dict:
         {"final": "SK1_AUTHORED: payload written and preflighted."},
         {"tool": extension_surface_name(SK1_SKILL, "echo"), "arguments": {"message": SK1_ECHO_MESSAGE}},
         {"final": "SK1_DISPATCH_DONE: echo absorbed."},
+        # The relayed line opens ONE owner-chat turn on the same wire (tool-bearing, so it routes
+        # as ``agent``); it and the dispatch task's closing round each take one of these finals.
+        {"final": "SK1_OWNER_CHAT_LINE_SEEN: the probe relayed its echo; nothing to do."},
     ]}
 
 
