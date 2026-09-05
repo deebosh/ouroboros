@@ -11,23 +11,29 @@
 // on every path, offline, in the same `node --test` lane CI and the hermetic
 // commit gate already run — no network, no npm, no configuration to drift.
 //
+// Guarantee: over `web/app.js` and `web/modules/*.js` — the ES modules the
+// page loads — every identifier READ at runtime resolves on the ES2022 scope
+// chain or is one of the listed globals below. Not covered, by construction:
+// inline <script> blocks in served HTML; anything reached only through a
+// string (`eval`, `window[name]`, dynamic `import()` specifiers); `typeof name`
+// (exempt by design — it never throws, matching ESLint's no-undef); and
+// property names, which are not references.
+//
 // Scope model (ES2022, deliberately conservative): a name is DECLARED when it
 // is a module-level import, a `var`/`let`/`const`/`function`/`class` binding,
 // a function or catch parameter, or a class/named-function expression's own
 // name. `var` and function declarations hoist to the enclosing function
 // scope; everything else is block-scoped. Non-computed member properties,
-// object keys, labels and export specifiers are not references. Anything
-// else that is read and declared nowhere on the scope chain must be a known
-// browser/ECMAScript global or one of the vendored runtime globals below.
-// `typeof name` is exempt (it never throws), matching ESLint's no-undef.
+// object keys, labels and export specifiers are not references. Computed
+// keys and default values inside destructuring patterns (function, catch and
+// declaration bindings alike) are expressions and are walked.
 //
-// Scope of the gate: `web/app.js` and `web/modules/*.js` — the ES modules the
-// page loads; inline <script> blocks in served HTML are outside it. The walker
-// was validated during development against ESLint no-undef (browser+es2021
-// globals) over the module set and a corpus of ES2022 forms; the self-checks
-// below are the in-tree proof it cannot rot into a no-op. The second test pins
-// import LINKAGE: a stale named import is a load-time SyntaxError that kills
-// the whole page, strictly worse than the dead-call class.
+// The walker was validated during development against ESLint no-undef
+// (browser+es2021 globals) over the module set and a corpus of ES2022 forms;
+// the self-checks below are the in-tree proof it cannot rot into a no-op. The
+// second test pins import LINKAGE: a stale named import is a load-time
+// SyntaxError that kills the whole page, strictly worse than the dead-call
+// class.
 
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -278,6 +284,10 @@ function walk(node, scope, report, parent, key) {
         case 'CatchClause': {
             const inner = new Scope(scope, false);
             if (node.param) for (const n of patternNames(node.param, [])) inner.names.add(n);
+            // A destructuring catch parameter's computed keys and defaults are
+            // expressions evaluated in the catch scope, exactly like function
+            // parameters: `catch ({ [key()]: v = fallback() })` reads both.
+            if (node.param) walkPatternDefaults(node.param, inner, report);
             hoistDeclarations(node.body.body, inner);
             for (const stmt of node.body.body) walk(stmt, inner, report, node.body, 'body');
             return;
@@ -424,7 +434,7 @@ test('the checker itself catches an undeclared call (so it cannot rot into a no-
     assert.deepEqual(findings, ['probe.js: renderGone (line 4)']);
 });
 
-test('arrows do not bind `arguments`, member targets of a destructuring assignment are walked, and `typeof` is exempt', () => {
+test('arrows do not bind `arguments`, member targets of a destructuring assignment and catch-pattern expressions are walked, and `typeof` is exempt', () => {
     const findings = undeclaredReferences(`
         export const f = () => arguments;
         function g() { return () => arguments; }
@@ -432,12 +442,18 @@ test('arrows do not bind `arguments`, member targets of a destructuring assignme
         ({ a: missingNested.x } = o);
         [missingArr.y] = [1];
         if (typeof maybeGlobal !== 'undefined') { g(); }
+        try { g(); } catch ({ [missingKey()]: v }) { void v; }
+        try { g(); } catch ({ v = missingDefault() }) { void v; }
+        try { g(); } catch ([a = missingArrDefault()]) { void a; }
         export { o };
     `, 'forms2.js');
     assert.deepEqual(findings, [
         'forms2.js: arguments (line 2)',
         'forms2.js: missingNested (line 5)',
         'forms2.js: missingArr (line 6)',
+        'forms2.js: missingKey (line 8)',
+        'forms2.js: missingDefault (line 9)',
+        'forms2.js: missingArrDefault (line 10)',
     ]);
 });
 
@@ -469,6 +485,7 @@ test('the checker accepts every declaration form it must understand', () => {
         for (let i = 0; i < 1; i++) { continue; }
         for (const key in { d }) { void key; }
         try { throw new Error('e'); } catch ({ message }) { console.log(message); }
+        try { throw new Error('e'); } catch ({ [fixed]: code = hoisted, ...meta }) { console.log(code, meta); }
         switch (b) { case 1: { const y = 1; void y; } break; default: break; }
         label: for (;;) { break label; }
         const obj = { a, decl, [fixed]: named, get g() { return arrow(); } };
