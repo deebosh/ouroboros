@@ -21,6 +21,7 @@ import time
 from typing import Any, Callable
 
 from devtools.benchmarks.common.server_runner import _api, _api_status
+from devtools.e2e_live.ui_probe import GuardedUI
 
 SM1_NEW_ACCENT = "#2f7de1"
 SM1_COMMIT_MESSAGE = "ui: e2e_live SM1 accent token change (reviewed commit)"
@@ -226,17 +227,26 @@ class DuplicateCheckKey(RuntimeError):
 
 class LaneContext:
     """What one lane hands its scenario: the live server, its clone/data root, the durable
-    readers, the optional UI client, and the two verdict maps the acceptance fills."""
+    readers, the lazily opened UI client, and the two verdict maps the acceptance fills.
+
+    ``ui_resolver(base_url)`` answers ``(open client, "")`` or ``(None, "ui_unavailable:<why>")``
+    (``ui_probe.resolve_ui_client``); ``ui_reason`` non-empty at construction is the lane-start
+    availability verdict and the client is never attempted. The browser opens on the FIRST
+    ``ctx.ui`` use — never at lane start, so a task-long wait cannot kill it unseen — and a
+    later Playwright failure degrades it to a typed reason instead of a lane crash."""
 
     def __init__(self, *, server: Any, clone: pathlib.Path, data_root: pathlib.Path, oracle: Any,
-                 harness: Any, ui: Any, ui_reason: str, shots: pathlib.Path, log: Callable[[str], None],
-                 task_timeout: float, restart: Callable[[], Any]) -> None:
+                 harness: Any, ui_resolver: Callable[[str], tuple[Any, str]] | None, ui_reason: str,
+                 shots: pathlib.Path, log: Callable[[str], None], task_timeout: float,
+                 restart: Callable[[], Any]) -> None:
         self.server = server
         self.clone = pathlib.Path(clone)
         self.data_root = pathlib.Path(data_root)
         self.oracle = oracle
         self.h = harness  # tests.system_e2e.harness: wait_until / wait_durable_result / proc oracles
-        self.ui = ui
+        self._ui_resolver = ui_resolver
+        self._ui: GuardedUI | None = None
+        self._ui_probe_reason = ui_reason  # the lane-start availability verdict: permanent
         self.ui_reason = ui_reason
         self.shots = pathlib.Path(shots)
         self.log = log
@@ -310,20 +320,48 @@ class LaneContext:
                    llm_usage_rows=len(rows), prompt_tokens=prompt_tokens,
                    completion_tokens=sum(int(row.get("completion_tokens") or 0) for row in rows))
 
+    @property
+    def ui(self) -> GuardedUI | None:
+        """The guarded UI client, opened on first use against the CURRENT server; ``None`` with
+        ``ui_reason`` typed when it cannot be opened. Once opened it stays the answer even after
+        a failure (its calls become no-ops, ``ui_reason`` names the failure), so a scenario that
+        tested ``ctx.ui is not None`` before the failure keeps running to its own checks."""
+        if self._ui is None and not self.ui_reason and self._ui_resolver is not None:
+            client, reason = self._ui_resolver(self.server.base_url)
+            if client is None:
+                self.ui_reason = reason
+            else:
+                self._ui = GuardedUI(client, self._ui_unavailable)
+        return self._ui
+
+    def _ui_unavailable(self, reason: str, error: str) -> None:
+        self.ui_reason = reason
+        self.facts["ui_reason"] = reason
+        self.facts.setdefault("ui_errors", []).append(error)
+        self.log(f"ui unavailable: {error}")
+
+    def close_ui(self) -> None:
+        """Close the open probe if any (errors ignored: the browser may already be dead)."""
+        if self._ui is not None:
+            self._ui.close()
+            self._ui = None
+
     def screenshot(self, name: str) -> None:
-        if self.ui is None:
+        ui = self.ui
+        if ui is None:
             return
         path = self.shots / f"{name}.png"
-        try:
-            self.ui.screenshot(path)
+        ui.screenshot(path)
+        if not self.ui_reason:  # the shot is evidence, never a gate: a failed one is typed in ui_reason
             self.screenshots.append(str(path))
-        except Exception as exc:  # noqa: BLE001 - the shot is evidence, never a gate
-            self.facts[f"screenshot_error_{name}"] = f"{type(exc).__name__}: {exc}"[:300]
 
     def restart(self) -> None:
+        """Restart the server, then drop the probe: the self-mod re-exec keeps the port but a
+        non-self-mod restart may not, and a browser that died during the wait must not be reused.
+        The next ``ctx.ui`` use opens a fresh client against the restarted server's base_url."""
         self.server = self._restart()
-        if self.ui is not None:
-            self.ui.rebind(self.server.base_url)
+        self.close_ui()
+        self.ui_reason = self._ui_probe_reason
 
 
 # --------------------------------------------------------------------------- #

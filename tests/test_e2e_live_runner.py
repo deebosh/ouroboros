@@ -6,6 +6,7 @@ rehearsal of SM1 and carries the same three gates as the system_e2e lane.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pathlib
@@ -559,10 +560,154 @@ class _FakeHarness:
         return {"status": "completed", "reason_code": "final_message", "task_id": task_id}
 
 
-def _ctx(server=None) -> scenarios.LaneContext:
+def _ctx(server=None, *, ui_resolver=None, restart=lambda: None, shots=pathlib.Path("/s")) -> scenarios.LaneContext:
     return scenarios.LaneContext(server=server or _FakeServer(), clone=pathlib.Path("/x"), data_root=pathlib.Path("/y"),
-                                 oracle=None, harness=_FakeHarness(), ui=None, ui_reason="", shots=pathlib.Path("/s"),
-                                 log=lambda m: None, task_timeout=1, restart=lambda: None)
+                                 oracle=None, harness=_FakeHarness(), ui_resolver=ui_resolver, ui_reason="", shots=shots,
+                                 log=lambda m: None, task_timeout=1, restart=restart)
+
+
+try:
+    from playwright.sync_api import TargetClosedError  # newer Playwright re-exports it
+except ImportError:  # pragma: no cover - depends on the installed Playwright
+    try:
+        from playwright._impl._errors import TargetClosedError
+    except ImportError:
+        class TargetClosedError(Exception):  # type: ignore[no-redef]
+            """Stand-in with Playwright's class name when Playwright is not installed."""
+
+
+class _FakeUI:
+    """A UI client recording its lifecycle; ``goto`` raises ``fail_goto`` when given (the dead
+    target of the rc.14 incident: the chrome died during the absorb wait, the driver lived)."""
+
+    def __init__(self, base_url: str, calls: list, fail_goto: Exception | None = None) -> None:
+        self.base_url, self.calls, self.fail_goto = base_url, calls, fail_goto
+
+    def open(self):
+        self.calls.append(("open", self.base_url))
+        return self
+
+    def goto(self, path="/"):
+        self.calls.append(("goto", path))
+        if self.fail_goto is not None:
+            raise self.fail_goto
+
+    def computed_property(self, selector, prop):
+        self.calls.append(("computed_property", selector, prop))
+        return "#123456"
+
+    def send_chat(self, text, *, swarm=False): ...
+
+    def screenshot(self, path):
+        self.calls.append(("screenshot", str(path)))
+
+    def rebind(self, base_url): ...
+
+    def close(self):
+        self.calls.append(("close", self.base_url))
+
+
+def _ui_resolver(calls: list, fail_goto: Exception | None = None):
+    def resolve(base_url: str):
+        return _FakeUI(base_url, calls, fail_goto).open(), ""
+    return resolve
+
+
+def _sm1_ui_tail(ctx: scenarios.LaneContext) -> None:
+    """The UI tail of ``run_sm1`` verbatim (restart, the ``ctx.ui`` truthiness gate, goto, the
+    computed property, the check, the screenshot): what the lazy guarded client must carry."""
+    ctx.restart()
+    if ctx.ui is None:
+        ctx.check("ui_computed_style", False, ui_reason=ctx.ui_reason)
+        return
+    ctx.ui.goto("/")
+    observed = str(ctx.ui.computed_property(":root", "--accent") or "").strip()
+    ctx.check("ui_computed_style", observed == "#123456", accent_computed=observed)
+    ctx.screenshot("sm1_after_restart")
+
+
+def test_ui_client_opens_on_first_use_and_restart_reopens_against_the_new_server(tmp_path):
+    calls: list = []
+    servers = [_FakeServer(), _FakeServer()]
+    servers[1].base_url = "http://127.0.0.1:2"
+    ctx = _ctx(servers[0], ui_resolver=_ui_resolver(calls), restart=lambda: servers[1], shots=tmp_path)
+    assert calls == []                              # nothing opened at construction
+    assert ctx.ui is not None and calls == [("open", "http://127.0.0.1:1")]
+    assert ctx.ui is not None and len(calls) == 1   # one client per open, not one per access
+    _sm1_ui_tail(ctx)
+    assert calls[1] == ("close", "http://127.0.0.1:1") and calls[2] == ("open", "http://127.0.0.1:2")
+    assert ctx.checks == {"ui_computed_style": True} and ctx.ui_reason == "" and "ui_reason" not in ctx.facts
+    assert ctx.screenshots == [str(tmp_path / "sm1_after_restart.png")]
+    ctx.close_ui()
+    ctx.close_ui()                                   # idempotent
+    assert [c for c in calls if c[0] == "close"] == [("close", "http://127.0.0.1:1"), ("close", "http://127.0.0.1:2")]
+
+
+def test_ui_open_failure_is_a_typed_reason_and_never_retried_before_restart():
+    attempts: list = []
+
+    def refuse(base_url):
+        attempts.append(base_url)
+        return None, "ui_unavailable:browser_missing"
+
+    ctx = _ctx(ui_resolver=refuse, restart=_FakeServer)
+    assert ctx.ui is None and ctx.ui is None and attempts == ["http://127.0.0.1:1"]
+    assert ctx.ui_reason == "ui_unavailable:browser_missing"
+    ctx.restart()                                    # a restart is the one re-resolve point
+    assert ctx.ui is None and len(attempts) == 2
+
+
+def test_closed_target_degrades_the_ui_checks_typed_and_keeps_every_other_check(tmp_path):
+    calls: list = []
+    ctx = _ctx(ui_resolver=_ui_resolver(calls, TargetClosedError("Target page, context or browser has been closed")),
+               restart=_FakeServer, shots=tmp_path)
+    ctx.check("commit_landed", True)
+    _sm1_ui_tail(ctx)                                # no exception escapes
+    assert ctx.checks == {"commit_landed": True, "ui_computed_style": False}
+    assert ctx.ui_reason == ctx.facts["ui_reason"] == "ui_unavailable:TargetClosedError"
+    assert ctx.facts["ui_errors"] == ["TargetClosedError: Target page, context or browser has been closed"]
+    assert ctx.facts["accent_computed"] == "" and ctx.screenshots == []
+    assert [c[0] for c in calls] == ["open", "goto", "close"]   # closed on the failure, later calls no-ops
+
+
+def test_lane_with_a_dead_browser_target_is_checks_failed_not_infra_error(tmp_path, monkeypatch):
+    """The rc.14 incident at lane level: the probe at lane start opens and closes, the client the
+    scenario uses opens after the restart, its ``goto`` meets a closed target — the lane row is
+    ``fail/checks_failed`` with the UI check typed, the task-side checks kept, no ``refusal``."""
+    _short_tmp(monkeypatch)
+    calls: list = []
+
+    class Server:
+        base_url, attestation = "http://127.0.0.1:1", {}
+
+        def __init__(self, *a, **k): ...
+        def start(self, ready_timeout=0): ...
+        def stop(self): ...
+
+    def acceptance(ctx):
+        ctx.check("commit_landed", True)
+        _sm1_ui_tail(ctx)
+
+    monkeypatch.setattr(run_live_lanes, "IsolatedServer", Server)
+    monkeypatch.setattr(run_live_lanes, "resolve_ui_client",
+                        _ui_resolver(calls, TargetClosedError("Target page, context or browser has been closed")))
+    monkeypatch.setitem(run_live_lanes.SCENARIOS, "SM1",
+                        dataclasses.replace(scenarios.SCENARIOS["SM1"], acceptance=acceptance))
+    args = run_live_lanes.parse_args(["--out", str(tmp_path / "out"), "--watch-interval", "600"])
+    seed = _git_seed(tmp_path)
+    row = run_live_lanes.run_attempt(("SM1", 1), args, tmp_path / "out", {"OUROBOROS_MODEL": "m"},
+                                     run_live_lanes.Stagger(0.0), {}, seed,
+                                     run_live_lanes.RunBudget(100.0, 8.0, reader=lambda root: (0.0, 0)),
+                                     key="", seed_sha=repo_provenance(seed)["head"])
+    assert row["status"] == "fail" and row["reason_code"] == "checks_failed" and row["error"] == ""
+    assert "refusal" not in row
+    assert row["checks"]["commit_landed"] is True and row["checks"]["ui_computed_style"] is False
+    assert row["facts"]["ui_reason"] == "ui_unavailable:TargetClosedError"
+    assert row["ui"] == {"available": False, "reason": "ui_unavailable:TargetClosedError"}
+    # lane start: availability probe opened and closed; use: opened after the restart, dead, closed
+    assert [c[0] for c in calls] == ["open", "close", "open", "goto", "close"]
+    stored = json.loads((tmp_path / "out" / "lanes" / "SM1_a1" / "result.json").read_text(encoding="utf-8"))
+    assert stored["status"] == "fail" and stored["facts"]["ui_reason"] == "ui_unavailable:TargetClosedError"
 
 
 def test_wait_task_namespaces_checks_per_task_and_check_refuses_overwrites():
@@ -1152,16 +1297,24 @@ def test_orphan_after_stop_fails_a_passing_lane_with_a_typed_reason(tmp_path):
         return {"scenario": "SM1", "attempt": 1, "status": "pass", "reason_code": "", "checks": {"fake": True},
                 "error": "", "duration_sec": 1.0, "budget": {}, "refusal": None, "runtime_outcome": "completed"}
     clean = row()
-    run_live_lanes._apply_orphan_scan(clean, True)
+    run_live_lanes._apply_orphan_scan(clean, [])
     assert clean["status"] == "pass" and clean["reason_code"] == "" and clean["checks"]["no_orphans_after_stop"] is True
+    assert "orphans" not in clean
     absent = row()
     run_live_lanes._apply_orphan_scan(absent, None)   # no procfs (macOS, Windows): a typed fact, no check
     assert absent["status"] == "pass" and absent["orphan_scan"] == "unavailable:no_procfs"
     assert absent["no_orphans_after_stop"] is None and "no_orphans_after_stop" not in absent["checks"]
     dirty = row()
-    run_live_lanes._apply_orphan_scan(dirty, False)
+    run_live_lanes._apply_orphan_scan(dirty, [os.getpid()])
     assert dirty["status"] == "fail" and dirty["reason_code"] == "checks_failed"
     assert dirty["checks"]["no_orphans_after_stop"] is False and dirty["no_orphans_after_stop"] is False
+    # The survivors are NAMED: pid + the head of its cmdline (this very interpreter here).
+    assert [o["pid"] for o in dirty["orphans"]] == [os.getpid()] and "orphans_omitted" not in dirty
+    assert "python" in dirty["orphans"][0]["cmdline"] and len(dirty["orphans"][0]["cmdline"]) <= 120
+    crowded = row()
+    run_live_lanes._apply_orphan_scan(crowded, [os.getpid()] + [2 ** 22 + n for n in range(24)])
+    assert len(crowded["orphans"]) == 20 and crowded["orphans_omitted"] == 5
+    assert crowded["orphans"][1] == {"pid": 2 ** 22, "cmdline": ""}   # a pid gone by read time: typed empty
     out = tmp_path / "run"
     lane = out / "lanes" / "SM1_a1"
     lane.mkdir(parents=True)

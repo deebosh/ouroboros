@@ -1336,7 +1336,13 @@ disclosure, and on an infra failure a typed `refusal` {type, code, message} with
 `reason_code=infra_error:<code>` mirrored into `result_index.jsonl`) plus
 screenshots when a browser client exists (`ui_probe.resolve_ui_client`: the
 suite's `PlaywrightUIClient` when it carries this surface, else headless Chromium,
-else a typed `ui_unavailable` reason — never a silently passed check). `--stub`
+else a typed `ui_unavailable` reason — never a silently passed check). Lane start
+only PROBES availability; the client the scenario uses opens on the first
+`ctx.ui` use (after the task and the absorb wait) and is dropped and reopened on
+`ctx.restart()`; a Playwright failure mid-use (a closed target) is the typed
+`ui_unavailable:<ExceptionType>` reason of the UI checks alone, never an
+`infra_error` lane. A failed `no_orphans_after_stop` names the survivors
+(`orphans`: pid + cmdline head, first 20). `--stub`
 runs the same scenarios against the loopback stub model of
 `tests/system_e2e/harness.py` for $0 (`stub_lane.py` routes the swarm wire by
 role); `--attempts N --pass-of K` records every attempt. Run roots are

@@ -597,18 +597,34 @@ def _lane_row(job: tuple[str, int], args: argparse.Namespace) -> dict:
             "screenshots": [], "ui": {"available": False, "reason": ""}, "self_mod_absorb": None, "budget": {}}
 
 
-def _apply_orphan_scan(row: dict, orphans_gone: bool | None) -> None:
+def _proc_cmdline(pid: int) -> str:
+    try:
+        raw = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()[:120]
+
+
+def _apply_orphan_scan(row: dict, survivors: list | None) -> None:
     """The last check of a lane: a process still carrying the lane's data root after stop fails a
-    passing lane, and the index never carries a failed row with an empty reason. ``None`` = the
-    scan is unavailable (no procfs): a typed fact, not a passed check."""
-    if orphans_gone is None:
+    passing lane, and the index never carries a failed row with an empty reason. ``survivors`` are
+    the pids the scan still found after the stop wait (empty = clean); ``None`` = the scan is
+    unavailable (no procfs): a typed fact, not a passed check. Survivors are NAMED in
+    ``row["orphans"]`` (pid + cmdline head, first 20): the rc.14 paid run recorded a bare
+    ``no_orphans_after_stop=false`` with no way to tell which processes outlived the stop."""
+    if survivors is None:
         row["no_orphans_after_stop"] = None
         row["orphan_scan"] = "unavailable:no_procfs"
         return
-    row["no_orphans_after_stop"] = bool(orphans_gone)
-    if not orphans_gone and row["status"] == "pass":
-        row["status"], row["reason_code"] = "fail", "checks_failed"
-    row["checks"]["no_orphans_after_stop"] = bool(orphans_gone)
+    gone = not survivors
+    row["no_orphans_after_stop"] = gone
+    if not gone:
+        row["orphans"] = [{"pid": int(pid), "cmdline": _proc_cmdline(int(pid))} for pid in survivors[:20]]
+        if len(survivors) > 20:
+            row["orphans_omitted"] = len(survivors) - 20
+        if row["status"] == "pass":
+            row["status"], row["reason_code"] = "fail", "checks_failed"
+    row["checks"]["no_orphans_after_stop"] = gone
 
 
 def _record_row(out: pathlib.Path, lane: pathlib.Path, row: dict) -> None:
@@ -666,7 +682,7 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         _log(f"{sid}_a{attempt}: {msg}")
         states[job] = (msg[:60], time.time())
 
-    server = stub = ui = None
+    server = stub = ctx = None
     absorb: dict | None = None
     from tests.system_e2e import harness  # durable readers + /proc oracles (runtime-only import)
     try:
@@ -729,13 +745,18 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         server = start_server(sha)
         row["attestation"] = dict(server.attestation)
         if scenario.needs_ui:
-            ui, reason = resolve_ui_client(server.base_url)
-            row["ui"] = {"available": ui is not None, "reason": reason}
+            # An AVAILABILITY probe only (the browser binary launches), closed at once: the client
+            # the scenario uses is opened by ``LaneContext.ui`` at use time, after the task.
+            probe, reason = resolve_ui_client(server.base_url)
+            if probe is not None:
+                probe.close()
+            row["ui"] = {"available": probe is not None, "reason": reason}
         # The absorb snapshot is taken BEFORE the task (a snapshot at restart time would already
         # see the task's own commit and the evolve cycle it triggered).
         pre_mod = self_mod_snapshot(server, clone, data_root) if args.self_mod else {}
         ctx = LaneContext(server=server, clone=clone, data_root=data_root, oracle=oracle, harness=harness,
-                          ui=ui, ui_reason=row["ui"]["reason"], shots=shots, log=log,
+                          ui_resolver=resolve_ui_client if scenario.needs_ui else None,
+                          ui_reason=row["ui"]["reason"], shots=shots, log=log,
                           task_timeout=args.task_timeout, restart=restart)
         log("running scenario")
         scenario.acceptance(ctx)
@@ -775,13 +796,19 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         row["error"] = f"{type(exc).__name__}: {exc}"[:2000]
         log(f"infra error: {row['error'][:200]}")
     finally:
-        for closer in (getattr(ui, "close", None), getattr(server, "stop", None)):
-            if closer is not None:
-                closer()
+        if ctx is not None:
+            ctx.close_ui()
+            if scenario.needs_ui:
+                row["ui"] = {"available": not ctx.ui_reason, "reason": ctx.ui_reason}
+        if server is not None:
+            server.stop()
         if stub is not None:
             stub.__exit__(None, None, None)
-        _apply_orphan_scan(row, harness.wait_until(
-            lambda: not harness.pids_with_env_value(str(data_root)), 30) if PROCFS_AVAILABLE else None)
+        survivors = None
+        if PROCFS_AVAILABLE:
+            gone = harness.wait_until(lambda: not harness.pids_with_env_value(str(data_root)), 30)
+            survivors = [] if gone else harness.pids_with_env_value(str(data_root))
+        _apply_orphan_scan(row, survivors)
         row["budget"]["spent_usd"], row["budget"]["unknown_cost_rows"] = lane_spend(data_root)
         row["ended_at"], row["duration_sec"] = now_iso(), round(time.time() - started, 1)
         _record_row(out, lane, row)

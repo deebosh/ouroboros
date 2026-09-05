@@ -5,10 +5,17 @@ when that lane has landed an implementation with this surface (open/goto/compute
 send_chat/screenshot/rebind/close); otherwise the built-in ``UIProbe`` below runs headless
 Chromium against the lane's ``IsolatedServer``. Every unavailability is a TYPED reason recorded
 in the lane result (``ui_unavailable:<why>``) — never a silently passed acceptance check.
+
+The browser is opened at USE time, through ``GuardedUI``: the v7.0.0-rc.14 paid run opened it at
+lane start, and after a 10-23 minute self-mod absorb wait the first ``goto`` met a dead target
+(``TargetClosedError``) that escaped the scenario and turned a lane with complete task-side checks
+into ``infra_error``. A Playwright failure is now a typed ``ui_unavailable:<ExceptionType>`` reason
+on the UI checks alone.
 """
 from __future__ import annotations
 
 import pathlib
+from typing import Any, Callable
 
 UI_METHODS = ("open", "goto", "computed_property", "send_chat", "screenshot", "rebind", "close")
 
@@ -64,6 +71,54 @@ class UIProbe:
                     closer()
             except Exception:  # noqa: BLE001 - teardown must not mask the lane verdict
                 pass
+
+
+class GuardedUI:
+    """The lane's view of an OPEN client. A failure of any browser call — a closed target, a dead
+    browser, a timeout — becomes ``ui_unavailable:<ExceptionType>`` handed to ``on_unavailable``
+    (the lane records it as the reason of its UI checks) and every later call is a no-op returning
+    None; the exception never escapes into the scenario, whose other checks stay recorded."""
+
+    def __init__(self, client: Any, on_unavailable: Callable[[str, str], None]) -> None:
+        self.client = client
+        self.reason = ""
+        self._closed = False
+        self._on_unavailable = on_unavailable
+
+    def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        if self.reason:
+            return None
+        try:
+            return getattr(self.client, name)(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - a browser failure is a typed reason, never a lost lane
+            self.reason = f"ui_unavailable:{type(exc).__name__}"
+            self._on_unavailable(self.reason, f"{type(exc).__name__}: {exc}"[:300])
+            self.close()
+            return None
+
+    def goto(self, path: str = "/") -> None:
+        self._call("goto", path)
+
+    def computed_property(self, selector: str, prop: str) -> str | None:
+        return self._call("computed_property", selector, prop)
+
+    def send_chat(self, text: str, *, swarm: bool = False) -> None:
+        self._call("send_chat", text, swarm=swarm)
+
+    def screenshot(self, path: pathlib.Path) -> None:
+        self._call("screenshot", path)
+
+    def rebind(self, base_url: str) -> None:
+        self._call("rebind", base_url)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.client.close()
+        except Exception:  # noqa: BLE001 - teardown of a possibly dead browser must not mask the verdict
+            pass
 
 
 def _suite_client(base_url: str):
