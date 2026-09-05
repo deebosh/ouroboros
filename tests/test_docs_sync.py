@@ -785,3 +785,15 @@ def test_architecture_settings_table_mirrors_config_defaults():
         if key in expected and _normalize_default_cell(cell) != str(config.SETTINGS_DEFAULTS[key]).lower()
     ]
     assert not mismatched, f"documented default differs from config.SETTINGS_DEFAULTS: {mismatched}"
+
+
+def test_the_handbook_names_both_layers_of_the_browser_no_undef_gate():
+    """Two surfaces answer "does every browser identifier resolve?": the
+    dependency-free acorn walker the hermetic commit gate runs, and ESLint's
+    `no-undef` that CI runs as an independent second opinion (D-13). A
+    contributor who sees only one of them either removes the "redundant"
+    other or, seeing a CI-only red, looks for a gate that never ran it.
+    """
+    development = _read("docs/DEVELOPMENT.md")
+    for pointer in ("web/tests/no_undef.test.js", "web/eslint.config.js", "npm ci"):
+        assert pointer in development, f"DEVELOPMENT.md never mentions {pointer}"

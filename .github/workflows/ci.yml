@@ -130,6 +130,13 @@ jobs:
       - name: Run browser-module tests (node --test — mirrored by the hermetic commit gate)
         shell: bash
         run: cd web && node --test tests/*.test.js
+      # ESLint `no-undef` is the second, independent layer of the browser no-undef
+      # gate (owner decision D-13): the hermetic commit gate keeps the dependency-free
+      # acorn walker in the suite above; this layer is CI-only, lockfile-frozen
+      # (`npm ci` on web/package-lock.json) and exact-pinned in web/package.json.
+      - name: Lint browser modules (ESLint no-undef — CI-only second layer of the acorn gate)
+        shell: bash
+        run: cd web && npm ci --no-audit --no-fund && npm run lint:undef
       # NOTE: a command-line `-m` REPLACES the pyproject `addopts` markexpr, so the default
       # `not integration and not browser ...` exclusions must be repeated here, then ANDed with
       # the serial split. --timeout guards against a hung test blocking the whole job.
@@ -222,6 +229,13 @@ jobs:
       - name: Run browser-module tests (node --test — mirrored by the hermetic commit gate)
         shell: bash
         run: cd web && node --test tests/*.test.js
+      # ESLint `no-undef` is the second, independent layer of the browser no-undef
+      # gate (owner decision D-13): the hermetic commit gate keeps the dependency-free
+      # acorn walker in the suite above; this layer is CI-only, lockfile-frozen
+      # (`npm ci` on web/package-lock.json) and exact-pinned in web/package.json.
+      - name: Lint browser modules (ESLint no-undef — CI-only second layer of the acorn gate)
+        shell: bash
+        run: cd web && npm ci --no-audit --no-fund && npm run lint:undef
       # A command-line `-m` REPLACES the pyproject addopts markexpr, so repeat the default
       # marker-lane exclusions and AND them with the serial split. --timeout guards hangs.
       - name: Run tests (parallel — excludes the costly marker lanes AND the serial real-process suites)

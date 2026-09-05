@@ -2646,6 +2646,11 @@ disposable checkout and scrubbed temporary data root: the node test lane
 without web tests never requires node, while an active web suite cannot
 silently disappear when node is missing), then the same two logical pytest
 passes (parallel `not serial`, then flag-free `serial`).
+The browser no-undef check has two layers: the dependency-free acorn walker
+in that suite (`web/tests/no_undef.test.js`) is the hermetic gate's, and
+both CI jobs additionally run ESLint's `no-undef` (`web/eslint.config.js`,
+exact-pinned, installed with `npm ci` from `web/package-lock.json`) as an
+independent second opinion — CI-only, never part of the gate.
 `LANE_EXCLUSION_EXPR` and `PARALLEL_PASS_FLAGS` are executable SSOTs pinned
 against both CI jobs; the candidate is captured as one hardened
 worktree-vs-`HEAD` binary diff, and a capture or apply failure is the typed
