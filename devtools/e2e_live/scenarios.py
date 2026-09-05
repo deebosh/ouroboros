@@ -24,7 +24,19 @@ from devtools.benchmarks.common.server_runner import _api, _api_status
 SM1_NEW_ACCENT = "#2f7de1"
 SM1_COMMIT_MESSAGE = "ui: e2e_live SM1 accent token change (reviewed commit)"
 SM1_CSS_PATH = "web/style.css"
+# ``web/onboarding.css`` is inlined into the standalone first-run page and mirrors the app's
+# ``:root`` tokens BY VALUE; ``tests/test_web_typography_static.py`` pins that every token both
+# files declare resolves to the same value. ``--accent`` is one of them, so the change lands in
+# BOTH files in one reviewed commit (the first paid run edited style.css alone and the tests
+# preflight of ``commit_reviewed`` refused the commit on the parity invariant).
+SM1_MIRROR_CSS_PATH = "web/onboarding.css"
+SM1_CSS_PATHS = (SM1_CSS_PATH, SM1_MIRROR_CSS_PATH)
 _ACCENT_RE = re.compile(r"^(\s*--accent:\s*)([^;]+);", re.MULTILINE)
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_CSS_TOKEN_RE = re.compile(r"(--[a-z0-9-]+)\s*:\s*([^;]+);")
+# The runtime's typed refusal prefix on a blocked review tool result ("⚠️ CODE: ...").
+_REFUSAL_CODE_RE = re.compile(r"⚠️\s*([A-Z][A-Z_]+):")
+_REVIEW_TOOLS = ("preflight_review", "commit_reviewed")
 
 SW1_OBJECTIVE = (
     "E2E_LIVE_SW1: survey this repository with TWO scouts running in parallel. Delegate "
@@ -62,6 +74,8 @@ SK1_PLUGIN = (
 # The ONLY privileged grant the stand ever issues: the manifest above requests exactly it,
 # so "no host/network grant" holds by construction of the grant call, not by a denylist.
 SK1_GRANTS = ["inject_chat"]
+SK1_ECHO_MESSAGE = "ping-e2e-live"
+SK1_ECHO_EXPECTED = f"echo: {SK1_ECHO_MESSAGE}"   # exactly what ``_echo`` in SK1_PLUGIN returns
 
 
 def _git(args: list[str], cwd: pathlib.Path) -> str:
@@ -76,6 +90,74 @@ def accent_value(css_text: str) -> str:
 
 def css_with_accent(css_text: str, value: str) -> str:
     return _ACCENT_RE.sub(lambda m: f"{m.group(1)}{value};", css_text, count=1)
+
+
+def css_root_tokens(css_text: str) -> dict[str, str]:
+    """``{token: value}`` of the FIRST ``:root`` block, comments stripped — the same reading
+    ``tests/test_web_typography_static.py`` applies to both stylesheets."""
+    css = _CSS_COMMENT_RE.sub("", css_text)
+    end = css.find("\n}")
+    root = css if end < 0 else css[:end]
+    if not root.lstrip().startswith(":root"):
+        return {}
+    return {name: " ".join(value.split()) for name, value in _CSS_TOKEN_RE.findall(root)}
+
+
+def css_mirror_drift(style_css: str, onboarding_css: str) -> dict[str, tuple[str, str]]:
+    """Shared ``:root`` tokens whose values differ between the two files (empty == parity)."""
+    style, onboarding = css_root_tokens(style_css), css_root_tokens(onboarding_css)
+    return {token: (style[token], onboarding[token])
+            for token in sorted(set(style) & set(onboarding)) if style[token] != onboarding[token]}
+
+
+def commit_refusal_facts(ledger: dict, tools_rows: list, stored: dict) -> dict:
+    """The TYPED trail of every ``commit_reviewed``/``preflight_review`` refusal of a task.
+
+    Three durable sources, none of them model prose: the advisory ledger's attempt rows
+    (``phase``/``status``/``block_reason``) and advisory-run statuses, the tools.jsonl rows of
+    the two review tools (their typed ``status`` plus the runtime's own ``⚠️ CODE:`` refusal
+    prefix — PREFLIGHT_BLOCKED, TESTS_PREFLIGHT_BLOCKED, SCOPE_REVIEW_BLOCKED, ...), and the
+    task's terminal ``reason_code`` (``budget_exhausted`` = BudgetExceeded, ``deadline_local``
+    = the deadline). The first paid run's SM1 lanes failed on exactly this ladder and the
+    result rows named none of it."""
+    attempts = [a for a in (ledger.get("attempts") or []) if isinstance(a, dict)]
+    runs = [r for r in (ledger.get("advisory_runs") or []) if isinstance(r, dict)]
+    calls = []
+    for row in tools_rows:
+        if str(row.get("tool") or "") not in _REVIEW_TOOLS:
+            continue
+        match = _REFUSAL_CODE_RE.search(str(row.get("result_preview") or ""))
+        calls.append({"tool": str(row.get("tool") or ""), "status": str(row.get("status") or ""),
+                      "code": match.group(1) if match else ""})
+    return {
+        "commit_attempts": [{"attempt": a.get("attempt"), "phase": str(a.get("phase") or ""),
+                             "status": str(a.get("status") or ""), "block_reason": str(a.get("block_reason") or "")}
+                            for a in attempts],
+        "advisory_run_statuses": [str(r.get("status") or "") for r in runs],
+        "review_tool_calls": calls,
+        "refusal_codes": sorted({c["code"] for c in calls if c["code"]}),
+        "terminal_status": str(stored.get("status") or ""),
+        "terminal_reason_code": str(stored.get("reason_code") or ""),
+    }
+
+
+def dispatch_verdict(rows: list, expected_text: str) -> dict:
+    """What the durable tools.jsonl rows of an extension surface prove about its dispatch.
+
+    ``extension_generation`` alone is NOT proof of a successful physical call: the dispatcher
+    stamps it on failed outcomes too. A dispatch counts only when the row's typed ``status`` is
+    ``ok`` AND the recorded result is exactly the extension's own output."""
+    last = rows[-1] if rows else {}
+    meta = last.get("tool_result_meta") if isinstance(last.get("tool_result_meta"), dict) else {}
+    digest = str(meta.get("extension_generation") or "")
+    return {"row_present": bool(rows), "status": str(last.get("status") or ""),
+            "generation": digest, "generation_ok": bool(re.fullmatch(r"[0-9a-f]{8,64}", digest)),
+            "physical_dispatch": meta.get("physical_dispatch") is True,
+            "echo_ok": str(last.get("result_preview") or "").strip() == expected_text}
+
+
+class DuplicateCheckKey(RuntimeError):
+    """A scenario wrote the same check key twice (see ``LaneContext.check``)."""
 
 
 class LaneContext:
@@ -101,6 +183,11 @@ class LaneContext:
         self.screenshots: list[str] = []
 
     def check(self, name: str, ok: bool, **facts: Any) -> bool:
+        """One verdict per key. A second write to the same key is a scenario bug (the SK1
+        author/dispatch awaits once shared ``http_terminal_completed`` and the later one
+        erased the earlier), so it is refused loudly instead of silently winning."""
+        if name in self.checks:
+            raise DuplicateCheckKey(f"check {name!r} already recorded for this lane; namespace it per task")
         self.checks[name] = bool(ok)
         self.facts.update(facts)
         return bool(ok)
@@ -117,22 +204,30 @@ class LaneContext:
             raise RuntimeError(f"task submit refused: {created!r}")
         return task_id
 
-    def wait_task(self, task_id: str) -> dict:
-        """Wait for the HTTP terminal, then for the DURABLE terminal row (they differ in time)."""
+    def wait_task(self, task_id: str, *, label: str = "") -> dict:
+        """Wait for the HTTP terminal, then for the DURABLE terminal row (they differ in time).
+
+        ``label`` prefixes the two check keys (``author_http_terminal_completed``, ...) so a
+        scenario awaiting several tasks keeps one verdict PER task instead of the last await
+        overwriting the earlier ones."""
+        prefix = f"{label}_" if label else ""
         result = self.server.wait_task(task_id, timeout=self.task_timeout + 300)
         if str(result.get("status") or "") == "timeout":
             self.server.cancel_task(task_id)
             result = self.server.wait_task(task_id, timeout=300)
-        self.check("http_terminal_completed", result.get("status") == "completed",
-                   http_status=str(result.get("status") or ""))
+        self.check(f"{prefix}http_terminal_completed", result.get("status") == "completed",
+                   **{f"{prefix}http_status": str(result.get("status") or "")})
         stored = {}
         try:
             stored = self.h.wait_durable_result(self.oracle, task_id, timeout=180)
         except AssertionError as exc:
-            self.facts["durable_result_error"] = str(exc)[:500]
-        self.check("durable_terminal_completed", stored.get("status") == "completed")
-        self.facts["runtime_result"] = stored or result
-        return stored or result
+            self.facts[f"{prefix}durable_result_error"] = str(exc)[:500]
+        self.check(f"{prefix}durable_terminal_completed", stored.get("status") == "completed")
+        terminal = stored or result
+        self.facts[f"{prefix}terminal"] = {"task_id": task_id, "status": str(terminal.get("status") or ""),
+                                           "reason_code": str(terminal.get("reason_code") or "")}
+        self.facts["runtime_result"] = terminal  # the lane's runtime disclosure: the LAST awaited task
+        return terminal
 
     def wait_events(self, oracle: Any, event_type: str, predicate: Callable[[dict], bool], timeout: float = 90) -> list:
         """Rows of ``event_type`` matching ``predicate``, waiting for the ASYNC event queue: the
@@ -173,40 +268,44 @@ class LaneContext:
 
 def sm1_prompt() -> str:
     return (
-        f"Self-modification task. In {SM1_CSS_PATH} change ONLY the value of the CSS custom "
-        f"property `--accent` inside the top-level `:root` block to `{SM1_NEW_ACCENT}` (keep every "
-        "other byte of the file identical). Then run preflight_review(commit_message=...) and land "
-        f"exactly that file through commit_reviewed with commit_message '{SM1_COMMIT_MESSAGE}', paths "
-        f"['{SM1_CSS_PATH}'], goal 'Change the accent token for the live E2E stand' and scope "
-        "'web/style.css only'. If preflight_review answers PREFLIGHT_BLOCKED because VERSION is not in "
-        "scope, do NOT bump the version: retry commit_reviewed with skip_advisory_review=true (the audited "
-        "advisory-only skip; the triad and scope reviews still run). Finish once the commit has landed."
+        "Self-modification task. Change ONLY the value of the CSS custom property `--accent` inside "
+        f"the top-level `:root` block to `{SM1_NEW_ACCENT}` in BOTH {SM1_CSS_PATH} and "
+        f"{SM1_MIRROR_CSS_PATH} (the onboarding stylesheet is inlined standalone and mirrors the app's "
+        "tokens by value; tests/test_web_typography_static.py pins that parity). Keep every other byte "
+        "of both files identical. Then run preflight_review(commit_message=...) and land exactly those "
+        f"two files through commit_reviewed with commit_message '{SM1_COMMIT_MESSAGE}', paths "
+        f"{list(SM1_CSS_PATHS)!r}, goal 'Change the accent token for the live E2E stand' and scope "
+        f"'{SM1_CSS_PATH} and {SM1_MIRROR_CSS_PATH} only'. If preflight_review answers PREFLIGHT_BLOCKED "
+        "because VERSION is not in scope, do NOT bump the version: retry commit_reviewed with "
+        "skip_advisory_review=true (the audited advisory-only skip; the tests preflight, the triad and "
+        "the scope review still run). Finish once the commit has landed."
     )
 
 
 def run_sm1(ctx: LaneContext) -> None:
-    css_before = (ctx.clone / SM1_CSS_PATH).read_text(encoding="utf-8")
-    ctx.facts["accent_before"] = accent_value(css_before)
+    before = {path: (ctx.clone / path).read_text(encoding="utf-8") for path in SM1_CSS_PATHS}
+    ctx.facts["accent_before"] = accent_value(before[SM1_CSS_PATH])
     task_id = ctx.submit(sm1_prompt())
     ctx.facts["task_id"] = task_id
-    ctx.wait_task(task_id)
+    stored = ctx.wait_task(task_id)
     # The commit LANDED in the lane clone: under blocking enforcement that is only reachable
     # through PASS verdicts from both review organs.
     log_output = _git(["log", "-n", "5", "--format=%s"], ctx.clone)
-    committed = subprocess.run(["git", "show", f"HEAD:{SM1_CSS_PATH}"], cwd=str(ctx.clone),
-                               check=False, capture_output=True, text=True).stdout
+    committed = {path: subprocess.run(["git", "show", f"HEAD:{path}"], cwd=str(ctx.clone),
+                                      check=False, capture_output=True, text=True).stdout
+                 for path in SM1_CSS_PATHS}
     ctx.check("commit_landed", SM1_COMMIT_MESSAGE in log_output)
     ctx.check("committed_css_carries_new_accent",
-              accent_value(committed) == SM1_NEW_ACCENT and committed != css_before,
-              accent_committed=accent_value(committed))
+              all(accent_value(committed[p]) == SM1_NEW_ACCENT and committed[p] != before[p] for p in SM1_CSS_PATHS),
+              accent_committed={p: accent_value(committed[p]) for p in SM1_CSS_PATHS})
+    drift = css_mirror_drift(committed[SM1_CSS_PATH], committed[SM1_MIRROR_CSS_PATH])
+    ctx.check("committed_css_mirror_parity", not drift, css_mirror_drift=drift)
     ctx.check("worktree_clean_after_commit", _git(["status", "--porcelain"], ctx.clone) == "")
     task_oracle = ctx.oracle.task_drive(task_id)
     ledger = task_oracle.advisory_review()
     runs = [r for r in (ledger.get("advisory_runs") or []) if isinstance(r, dict)]
-    attempts = [a for a in (ledger.get("attempts") or []) if isinstance(a, dict)]
-    ctx.check("advisory_ledger_row_present", bool(runs),
-              advisory_statuses=[str(r.get("status") or "") for r in runs],
-              commit_attempt_statuses=[str(a.get("status") or "") for a in attempts])
+    ctx.check("advisory_ledger_row_present", bool(runs))
+    ctx.facts["commit_reviewed_refusals"] = commit_refusal_facts(ledger, task_oracle.tools_rows(), stored)
     ctx.check("scope_review_complete_event",
               bool(ctx.wait_events(task_oracle, "scope_review_complete", lambda _row: True)))
     ctx.check_paid_tokens([task_id])
@@ -224,17 +323,27 @@ def run_sm1(ctx: LaneContext) -> None:
 
 
 def sm1_stub_script(clone: pathlib.Path) -> dict:
-    css = (clone / SM1_CSS_PATH).read_text(encoding="utf-8")
+    writes = [{"tool": "write_file", "arguments": {
+        "root": "system_repo", "path": path,
+        "content": css_with_accent((clone / path).read_text(encoding="utf-8"), SM1_NEW_ACCENT)}}
+        for path in SM1_CSS_PATHS]
     return {"agent": [
-        {"tool": "write_file", "arguments": {
-            "root": "system_repo", "path": SM1_CSS_PATH, "content": css_with_accent(css, SM1_NEW_ACCENT)}},
+        *writes,
         {"tool": "preflight_review", "arguments": {"commit_message": SM1_COMMIT_MESSAGE}},
         # The deterministic release-metadata preflight blocks a VERSION-less diff (BIBLE P9);
         # the S2 set lands it through the AUDITED advisory-only skip (recorded as bypassed).
+        # ``skip_tests`` is a documented residual of the $0 rehearsal, NOT of the paid prompt
+        # (which runs the hermetic suite as its tests preflight): the loopback lane's
+        # ``OPENAI_COMPATIBLE_BASE_URL`` is projected into the server environment and
+        # ``preflight_runner._preflight_env`` scrubs only ``OUROBOROS_*``/secret-suffixed keys,
+        # so ``tests/test_settings_effort.py`` routes on it and fails deterministically inside
+        # any loopback lane (observed: four ``test_get_review_models_*`` failures). The mirror
+        # parity is proven here by ``committed_css_mirror_parity`` over the landed commit.
         {"tool": "commit_reviewed", "arguments": {
-            "commit_message": SM1_COMMIT_MESSAGE, "paths": [SM1_CSS_PATH], "skip_tests": True,
+            "commit_message": SM1_COMMIT_MESSAGE, "paths": list(SM1_CSS_PATHS), "skip_tests": True,
             "skip_advisory_review": True,
-            "goal": "Change the accent token for the live E2E stand", "scope": f"{SM1_CSS_PATH} only."}},
+            "goal": "Change the accent token for the live E2E stand",
+            "scope": f"{SM1_CSS_PATH} and {SM1_MIRROR_CSS_PATH} only."}},
         {"final": "SM1 done: the accent token change landed through commit_reviewed."},
     ]}
 
@@ -386,7 +495,7 @@ def run_sk1(ctx: LaneContext) -> None:
     payload_dir = ctx.data_root / "skills" / "external" / SK1_SKILL
     author_id = ctx.submit(sk1_prompt())
     ctx.facts["author_task_id"] = author_id
-    ctx.wait_task(author_id)
+    ctx.wait_task(author_id, label="author")
     ctx.check("payload_authored_by_model", (payload_dir / "SKILL.md").is_file() and (payload_dir / "plugin.py").is_file())
     preflight_rows = [r for r in ctx.oracle.task_drive(author_id).tools_rows() if r.get("tool") == "skill_preflight"]
     ctx.check("skill_preflight_called", bool(preflight_rows))
@@ -410,13 +519,16 @@ def run_sk1(ctx: LaneContext) -> None:
               and entry.get("live_loaded") is True and entry.get("dispatch_live") is True)
     ctx.screenshot("sk1_enabled")
     surface = extension_surface_name(SK1_SKILL, "echo")
-    dispatch_id = ctx.submit(f"Call the tool `{surface}` once with message 'ping-e2e-live', then finish.")
+    dispatch_id = ctx.submit(f"Call the tool `{surface}` once with message '{SK1_ECHO_MESSAGE}', then finish.")
     ctx.facts["dispatch_task_id"] = dispatch_id
-    ctx.wait_task(dispatch_id)
+    ctx.wait_task(dispatch_id, label="dispatch")
     rows = [r for r in ctx.oracle.task_drive(dispatch_id).tools_rows() if str(r.get("tool") or "") == surface]
-    digest = str(((rows[-1].get("tool_result_meta") or {}) if rows else {}).get("extension_generation") or "")
-    ctx.check("dispatch_durable_row_with_generation", bool(rows) and bool(re.fullmatch(r"[0-9a-f]{8,64}", digest)),
-              extension_generation=digest)
+    verdict = dispatch_verdict(rows, SK1_ECHO_EXPECTED)
+    ctx.check("dispatch_durable_row_with_generation", verdict["row_present"] and verdict["generation_ok"],
+              extension_generation=verdict["generation"])
+    ctx.check("dispatch_physical_call_ok_with_echo", verdict["status"] == "ok" and verdict["echo_ok"],
+              dispatch_status=verdict["status"], dispatch_echo_ok=verdict["echo_ok"],
+              dispatch_physical=verdict["physical_dispatch"])
     ctx.check_paid_tokens([author_id, dispatch_id])
     _api_status(ctx.server.base_url, "POST", f"/api/skills/{SK1_SKILL}/toggle", {"enabled": False}, timeout=300)
     deleted = _api_status(ctx.server.base_url, "POST", f"/api/skills/{SK1_SKILL}/delete", {}, timeout=120)
@@ -433,7 +545,7 @@ def sk1_stub_script(_clone: pathlib.Path) -> dict:
         {"tool": "write_file", "arguments": {**payload, "path": "plugin.py", "content": SK1_PLUGIN}},
         {"tool": "skill_preflight", "arguments": {"skill": SK1_SKILL}},
         {"final": "SK1_AUTHORED: payload written and preflighted."},
-        {"tool": extension_surface_name(SK1_SKILL, "echo"), "arguments": {"message": "ping-e2e-live"}},
+        {"tool": extension_surface_name(SK1_SKILL, "echo"), "arguments": {"message": SK1_ECHO_MESSAGE}},
         {"final": "SK1_DISPATCH_DONE: echo absorbed."},
     ]}
 
@@ -451,6 +563,10 @@ class Scenario:
     needs_ui: bool
     acceptance: Callable[[LaneContext], None]
     stub_script: Callable[[pathlib.Path], dict]
+    # ROOT tasks the scenario mints: the runner's run-wide budget reserves
+    # ``per_task_usd x root_tasks`` per attempt (the runtime fences each root task TREE at
+    # OUROBOROS_PER_TASK_COST_USD, so SW1's scouts spend under their one root's ceiling).
+    root_tasks: int = 1
 
     def overrides(self, model: str) -> dict:
         out = dict(self.settings_overrides)
@@ -470,7 +586,7 @@ SCENARIOS: dict[str, Scenario] = {
         True, run_sw1, sw1_stub_script),
     "SK1": Scenario(
         "SK1", "Skill lifecycle: model authors SKILL.md+plugin.py, preflight, review, grants, enable, dispatch",
-        sk1_prompt(), {}, False, run_sk1, sk1_stub_script),
+        sk1_prompt(), {}, False, run_sk1, sk1_stub_script, root_tasks=2),
 }
 
 

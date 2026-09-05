@@ -6,14 +6,22 @@
         --lanes 4 --scenarios SM1,SW1,SK1 --attempts 3 --pass-of 2 --total-budget 100  # paid
 
 Order is load-bearing (the benchmark family's launcher gate, ``launcher_audit``): argument-shaped
-work, then ``admit_benchmark_run`` (fail-closed on a dirty seed, persisted BEFORE anything can
-fail), then — inside ``finalize_run_manifest`` — the key by NAME from the environment (never a
-pool file, never printed), the credit preflight ``min(key limit remaining, account credits)``,
-the effective settings written from the TREE'S DEFAULTS (D-09) with the budget knobs as
-settings keys (never env), and the lane pool. The manifest names the model from the APPLIED
-settings file, not argv. Every lane leaves ``lanes/<id>_a<n>/result.json`` (checks, digests,
-grants by fingerprint, settings sha256, seed describe) plus screenshots when a browser client
-exists; a watcher prints lane states, free disk on ``/`` and ``/mnt/data`` and the key headroom.
+work, then ``admit_benchmark_run`` over the SOURCE checkout (persisted BEFORE anything can
+fail; its cleanliness is disclosed, not enforced — see ``materialize_seed``), then — inside
+``finalize_run_manifest`` — the key by NAME from the environment (never a pool file, never
+printed), the credit preflight ``min(key limit remaining, account credits)``, the SEED as a
+clean DETACHED clone of ``--seed`` (a commit or ref of the source; never the operator's live
+worktree, so concurrent edits cannot dirty it), the effective settings written from the TREE'S
+DEFAULTS (D-09) with the budget knobs as settings keys (never env), and the lane pool.
+``--total-budget`` is a RUN-WIDE cap kept by ``RunBudget``: an attempt is scheduled only while
+spent + reserved stays under it and every lane's TOTAL_BUDGET is the headroom left at its start.
+The run-root template is redacted (the key value lives only in each lane's 0600 settings file
+and is disclosed by fingerprint). The manifest names the model from the APPLIED settings file,
+not argv. Every lane leaves ``lanes/<id>_a<n>/result.json`` (checks, digests, grants by
+fingerprint, settings sha256, seed describe, the lane's spend, a typed refusal on infra
+failure) plus screenshots when a browser client exists; a watcher prints lane states, the
+running spend against the cap, free disk on ``/`` and ``/mnt/data`` and the key headroom from
+an informational, bounded, backing-off probe.
 """
 from __future__ import annotations
 
@@ -21,6 +29,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import math
 import os
 import pathlib
 import shutil
@@ -29,6 +38,7 @@ import sys
 import tempfile
 import threading
 import time
+from typing import Callable
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
@@ -47,6 +57,7 @@ from devtools.benchmarks.common.run_roots import assert_outside_repo, repo_root_
 from devtools.benchmarks.common.secrets import credential_fingerprint, isolated_credential_grants
 from devtools.benchmarks.common.server_runner import (
     IsolatedServer,
+    _api,
     _settings_json_bytes,
     absorbed_cycles_done,
     build_isolated_settings,
@@ -62,6 +73,15 @@ STAGGER_BOUNDS = (2.0, 3.0)
 TMPDIR_MAX_CHARS = 70          # AF_UNIX 108-byte cap on the workers' Manager socket path
 DEFAULT_KEY_ENV = "OUROBOROS_E2E_LIVE_OPENROUTER_KEY"
 DISK_ALERT_GIB = {"/": 40.0, "/mnt/data": 60.0}
+PROBE_TIMEOUT_SEC = 8.0        # the key probe's HTTP bound: shorter than a watcher tick
+WATCH_INTERVAL_MIN_SEC = 5.0   # a watcher tick below this is a hot loop, not monitoring
+PROBE_MIN_INTERVAL_SEC = 60.0  # two provider requests per probe: never more often than this
+PROBE_BACKOFF_MAX_SEC = 900.0  # consecutive probe failures double the wait up to here
+SEED_POLICY = "detached_clone_of_ref"
+# A lane's TOTAL_BUDGET must stay POSITIVE: the runtime reads a non-positive value as "no finite
+# global budget" (``settings_setup_contract.resolve_total_budget_usd``), the opposite of a cap.
+LANE_BUDGET_FLOOR_USD = 0.01
+RESERVATION_RULE = "per_task_usd x root_tasks (children spend under their root task's ceiling)"
 
 
 def _log(msg: str) -> None:
@@ -75,18 +95,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--scenarios", default="SM1,SW1,SK1")
     ap.add_argument("--attempts", type=int, default=1, help="attempts per scenario (every one runs and is recorded)")
     ap.add_argument("--pass-of", type=int, default=1, help="passes needed for a scenario verdict")
-    ap.add_argument("--total-budget", type=float, default=100.0, help="TOTAL_BUDGET written into the lane settings")
-    ap.add_argument("--per-task-usd", type=float, default=8.0, help="OUROBOROS_PER_TASK_COST_USD in the lane settings")
+    ap.add_argument("--total-budget", type=float, default=100.0,
+                    help="RUN-WIDE USD cap shared by every lane (each lane's TOTAL_BUDGET is the headroom at its start)")
+    ap.add_argument("--per-task-usd", type=float, default=8.0,
+                    help="OUROBOROS_PER_TASK_COST_USD in the lane settings; also the per-root-task reservation unit")
     ap.add_argument("--task-timeout", type=int, default=1500)
     ap.add_argument("--ready-timeout", type=int, default=300)
     ap.add_argument("--profile", choices=("full", "wiring"), default="full",
                     help="full = the scenario's own enforcement; wiring = advisory review, the cheap smoke")
-    ap.add_argument("--self-mod", action="store_true", help="post-task evolution with a real re-exec restart (D-11)")
+    ap.add_argument("--self-mod", action="store_true",
+                    help="post-task evolution with a real re-exec restart (D-11); a CONFIRMED absorb is then a required check")
     ap.add_argument("--model", default="", help="pin OUROBOROS_MODEL (paid runs only)")
     ap.add_argument("--key-env", default=DEFAULT_KEY_ENV, help="NAME of the env var carrying the OpenRouter key")
     ap.add_argument("--min-credit-usd", type=float, default=None, help="refuse below this headroom (default: --total-budget)")
     ap.add_argument("--out", default="", help="run root (default: bench_runs/e2e_live/<run id>; never repo/ or live data/)")
-    ap.add_argument("--seed", default="", help="seed checkout (default: this tree); must be clean")
+    ap.add_argument("--seed", default="HEAD",
+                    help="commit or ref of --source-repo materialized as a clean DETACHED clone under the run root "
+                         "(never a live worktree)")
+    ap.add_argument("--source-repo", default="", help="checkout the seed ref is resolved in (default: this tree)")
     ap.add_argument("--stub", action="store_true", help="loopback stub model, no key, no money")
     ap.add_argument("--watch-interval", type=float, default=30.0)
     ap.add_argument("--prune-clones", action="store_true", help="delete lane clones after each lane (results stay)")
@@ -104,6 +130,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("--model cannot be combined with --stub (the stub IS the model)")
     if args.min_credit_usd is None:
         args.min_credit_usd = float(args.total_budget)
+    for name, value in (("--total-budget", args.total_budget), ("--per-task-usd", args.per_task_usd),
+                        ("--min-credit-usd", args.min_credit_usd), ("--watch-interval", args.watch_interval)):
+        if not math.isfinite(float(value)) or float(value) <= 0:
+            ap.error(f"{name} must be a finite positive number, got {value!r} "
+                     "(a non-positive TOTAL_BUDGET means NO cap; a non-positive tick is a hot loop)")
+    if args.watch_interval < WATCH_INTERVAL_MIN_SEC:
+        ap.error(f"--watch-interval must be >= {WATCH_INTERVAL_MIN_SEC:g}s, got {args.watch_interval!r}")
+    if not str(args.seed).strip():
+        ap.error("--seed must name a commit or ref")
     tmpdir = tempfile.gettempdir()
     if len(tmpdir) > TMPDIR_MAX_CHARS:
         ap.error(f"TMPDIR {tmpdir!r} is longer than {TMPDIR_MAX_CHARS} chars: the workers' AF_UNIX "
@@ -118,7 +153,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def effective_settings(args: argparse.Namespace, key: str) -> dict:
     """The run template (D-09: the defaults of the tree under test, never the owner's live
     settings). Every model slot is written explicitly so the manifest can name it from the FILE;
-    in stub mode the slots name the loopback stub, which IS the model of that run."""
+    in stub mode the slots name the loopback stub, which IS the model of that run. The
+    template's TOTAL_BUDGET is the RUN cap; each lane rewrites it with its own headroom
+    (``RunBudget.headroom``) before its server starts."""
     slots = stub_lane.STUB_MODEL_SLOTS if args.stub else declared_model_settings({})
     overrides = {
         **slots,
@@ -135,6 +172,16 @@ def effective_settings(args: argparse.Namespace, key: str) -> dict:
     if key:
         overrides["OPENROUTER_API_KEY"] = key
     return build_isolated_settings({}, **overrides)
+
+
+def redacted_template(cfg: dict) -> dict:
+    """The run-root copy of the template WITHOUT credential values: the key reaches disk only
+    inside each lane's 0600 settings file, never in a run-level artifact."""
+    return {k: v for k, v in cfg.items() if k not in ALL_PROVIDER_CREDENTIAL_KEYS}
+
+
+def template_credentials(cfg: dict) -> dict:
+    return {k: v for k, v in cfg.items() if k in ALL_PROVIDER_CREDENTIAL_KEYS and str(v or "").strip()}
 
 
 def write_settings(path: pathlib.Path, cfg: dict) -> str:
@@ -157,13 +204,290 @@ def config_sha256(cfg: dict) -> str:
     return hashlib.sha256(json.dumps(scrubbed, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def credit_preflight(key: str) -> dict:
+def credit_preflight(key: str, *, timeout: float = 10.0) -> dict:
     """``min`` over both planes; None everywhere = uncapped. Numbers only, never the key."""
-    limit = openrouter_key_remaining(key)
-    credits = openrouter_account_credits(key)
+    limit = openrouter_key_remaining(key, timeout=int(timeout))
+    credits = openrouter_account_credits(key, timeout=int(timeout))
     bounds = [v for v in (limit, credits) if v is not None]
     return {"key_limit_remaining_usd": limit, "account_credits_usd": credits,
             "remaining_usd": min(bounds) if bounds else None}
+
+
+# --------------------------------------------------------------------------- #
+# The run-wide money ledger
+# --------------------------------------------------------------------------- #
+
+def lane_spend(data_root: pathlib.Path) -> tuple[float, int]:
+    """``(USD summed over the lane's durable llm_usage rows, rows whose cost is unknown)``.
+
+    The system-E2E harness oracle is the reader (the same ``logs/events.jsonl`` the runtime
+    writes); the server-level file carries every row of the lane — task loops, review organs,
+    safety — verified on the first paid run against the ``task_results`` accounting. A row
+    without a numeric cost is counted, never priced (no fallback tariff)."""
+    from tests.system_e2e import harness  # durable readers (runtime-only import, outside the audit walk)
+
+    spent, unknown = 0.0, 0
+    for row in harness.ArtifactOracle(data_root).events("llm_usage"):
+        cost = row.get("cost")
+        if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            spent += float(cost)
+        else:
+            unknown += 1
+    return spent, unknown
+
+
+class RunBudget:
+    """The RUN-WIDE ledger behind ``--total-budget`` (the first paid run copied the whole cap
+    into every lane: nine attempts, nine $100 ceilings, no run cap at all).
+
+    Reservation rule, per attempt: ``per_task_usd x root_tasks`` — the runtime fences each
+    ROOT task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their root's
+    ceiling, so SW1 (one root, two scouts) reserves for one root and SK1 (author + dispatch)
+    for two. An attempt is admitted only while ``spent + reserved(in flight) + its own
+    reservation <= cap``; the first refusal halts scheduling for the rest of the run and every
+    later attempt is recorded ``not_run``. ``spent`` is re-read from the lanes' durable usage
+    on every question, so a lane overrunning its reservation is seen by the next admission.
+    """
+
+    def __init__(self, cap_usd: float, per_task_usd: float,
+                 reader: Callable[[pathlib.Path], tuple[float, int]] | None = None) -> None:
+        self.cap, self.per_task = float(cap_usd), float(per_task_usd)
+        self._read = reader or lane_spend
+        self._lock = threading.Lock()
+        self._live: dict[tuple, tuple[pathlib.Path, float]] = {}   # job -> (data root, reservation)
+        self._final: dict[tuple, tuple[float, int]] = {}           # job -> (spent, unknown rows)
+        self.halt: dict | None = None
+        self.not_run: list[str] = []
+
+    def reservation(self, root_tasks: int) -> float:
+        return self.per_task * max(1, int(root_tasks or 1))
+
+    def _spent_locked(self) -> tuple[float, int]:
+        spent, unknown = 0.0, 0
+        for usd, rows in self._final.values():
+            spent, unknown = spent + usd, unknown + rows
+        for data_root, _reserved in self._live.values():
+            usd, rows = self._read(data_root)
+            spent, unknown = spent + usd, unknown + rows
+        return spent, unknown
+
+    def _reserved_locked(self, *, except_job: tuple | None = None) -> float:
+        return sum(reserved for job, (_root, reserved) in self._live.items() if job != except_job)
+
+    def admit(self, job: tuple, root_tasks: int, data_root: pathlib.Path) -> tuple[bool, dict]:
+        need = self.reservation(root_tasks)
+        with self._lock:
+            spent, unknown = self._spent_locked()
+            reserved = self._reserved_locked()
+            facts = {"cap_usd": self.cap, "spent_usd": round(spent, 4), "reserved_usd": round(reserved, 4),
+                     "reservation_usd": need, "unknown_cost_rows": unknown}
+            if self.halt is None and spent + reserved + need > self.cap:
+                self.halt = {"reason": "budget_cap", "at": now_iso(), "first_refused": f"{job[0]}_a{job[1]}", **facts}
+            if self.halt is not None:
+                self.not_run.append(f"{job[0]}_a{job[1]}")
+                return False, {**facts, "halt": dict(self.halt)}
+            self._live[job] = (pathlib.Path(data_root), need)
+            return True, facts
+
+    def headroom(self, job: tuple) -> float:
+        """The lane's TOTAL_BUDGET: the cap minus what is spent minus the OTHER in-flight
+        reservations — never the whole cap while anyone else is running, never non-positive."""
+        with self._lock:
+            spent, _unknown = self._spent_locked()
+            return max(LANE_BUDGET_FLOOR_USD, round(self.cap - spent - self._reserved_locked(except_job=job), 4))
+
+    def settle(self, job: tuple) -> None:
+        with self._lock:
+            entry = self._live.pop(job, None)
+            if entry is not None:
+                self._final[job] = self._read(entry[0])
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            spent, unknown = self._spent_locked()
+            return {"cap_usd": self.cap, "per_task_usd": self.per_task, "reservation_rule": RESERVATION_RULE,
+                    "spent_usd": round(spent, 4), "reserved_usd": round(self._reserved_locked(), 4),
+                    "unknown_cost_rows": unknown, "lanes_in_flight": len(self._live), "lanes_settled": len(self._final),
+                    "halted": self.halt is not None, "halt": dict(self.halt) if self.halt else None,
+                    "attempts_not_run": list(self.not_run)}
+
+
+# --------------------------------------------------------------------------- #
+# The watcher's key probe: bounded, informational, never on the tick's path
+# --------------------------------------------------------------------------- #
+
+class KeyProbe:
+    """Key headroom on its own thread with a bounded HTTP timeout. The first paid run's watcher
+    probed inline and reported ``RemoteDisconnected``/``TimeoutError`` twice while every lane
+    was healthy: a failed or slow probe is INFORMATIONAL (the lanes' spend is the ledger's
+    business), never an ALERT and never a delay of the tick. ALERT only on a GOOD reading
+    under the floor."""
+
+    def __init__(self, probe: Callable[[], float | None], *, floor: float, interval: float,
+                 stop: threading.Event) -> None:
+        # Bounded cadence: never more often than PROBE_MIN_INTERVAL_SEC (two provider
+        # requests per probe), and consecutive failures back off exponentially.
+        self._probe, self.floor, self._stop = probe, float(floor), stop
+        self.interval = max(float(interval), PROBE_MIN_INTERVAL_SEC)
+        self._lock = threading.Lock()
+        self.remaining: float | None = None
+        self.read_at = 0.0
+        self.error = ""
+        self.failures = 0
+
+    def seed(self, remaining: float | None) -> "KeyProbe":
+        with self._lock:
+            self.remaining, self.read_at = remaining, time.time()
+        return self
+
+    def start(self) -> "KeyProbe":
+        threading.Thread(target=self._loop, daemon=True).start()
+        return self
+
+    def next_wait(self) -> float:
+        with self._lock:
+            failures = self.failures
+        return min(self.interval * (2 ** failures), PROBE_BACKOFF_MAX_SEC)
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.next_wait()):
+            self.poll_once()
+
+    def poll_once(self) -> None:
+        try:
+            value = self._probe()
+        except Exception as exc:  # noqa: BLE001 - a failed probe is a reported fact, never fatal
+            with self._lock:
+                self.error, self.failures = f"{type(exc).__name__}: {exc}"[:120], self.failures + 1
+            return
+        with self._lock:
+            self.remaining, self.read_at, self.error, self.failures = value, time.time(), "", 0
+
+    def fragment(self) -> str:
+        with self._lock:
+            remaining, read_at, error = self.remaining, self.read_at, self.error
+        if not read_at:
+            return f"key probe failed: {error} (informational)" if error else "key probe pending"
+        text = f"key remaining ${remaining:.2f}" if remaining is not None else "key uncapped"
+        if remaining is not None and remaining < self.floor:
+            text += " ALERT"
+        if error:
+            text += f" ({time.time() - read_at:.0f}s old; last probe failed: {error}; informational)"
+        return text
+
+
+# --------------------------------------------------------------------------- #
+# Seed: a clean detached clone of the requested commit, never a live worktree
+# --------------------------------------------------------------------------- #
+
+class SeedMaterializeRefused(RuntimeError):
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+def materialize_seed(source: pathlib.Path, ref: str, seed: pathlib.Path) -> dict:
+    """A clean DETACHED clone of ``ref`` (resolved in ``source``) at ``seed``: the tree every
+    lane clones. Never the operator's checkout itself — the first paid run seeded from a live
+    worktree edited concurrently and SK1_a3 recorded ``seed_clean=false`` — so the source may
+    be dirty or move under the run without touching what is under test. Post-admission by
+    design (a clone is world-shaped work); the manifest's ``source`` block discloses the
+    source's own state, ``manifest["seed"]`` records what actually ran."""
+    resolved = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                              cwd=str(source), check=False, capture_output=True, text=True)
+    sha = (resolved.stdout or "").strip()
+    if resolved.returncode != 0 or not sha:
+        raise SeedMaterializeRefused("ref_unresolved", f"--seed {ref!r} does not name a commit in {source}")
+    if seed.exists():
+        raise SeedMaterializeRefused("seed_dir_exists", f"seed directory already exists: {seed}")
+    try:
+        subprocess.run(["git", "clone", "--no-hardlinks", "--no-checkout", "-q", str(source), str(seed)],
+                       check=True, capture_output=True)
+        subprocess.run(["git", "checkout", "-q", "--detach", sha], cwd=str(seed), check=True, capture_output=True)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()[:300]
+        raise SeedMaterializeRefused("clone_failed", f"could not materialize {sha[:12]} from {source}: {detail}") from exc
+    subprocess.run(["git", "remote", "remove", "origin"], cwd=str(seed), check=False, capture_output=True)
+    return {"policy": SEED_POLICY, "requested_ref": ref, "resolved_sha": sha,
+            "seed_dir": str(seed), "source_repo": str(source)}
+
+
+def seed_is_clean(provenance: dict, resolved_sha: str) -> bool:
+    return (bool(provenance.get("git_available")) and bool(provenance.get("status_available"))
+            and not provenance.get("dirty") and str(provenance.get("head") or "") == resolved_sha)
+
+
+# --------------------------------------------------------------------------- #
+# Self-modification: the absorb/re-exec must be CONFIRMED, not assumed
+# --------------------------------------------------------------------------- #
+
+def self_mod_snapshot(server: IsolatedServer, clone: pathlib.Path, data_root: pathlib.Path) -> dict:
+    """Taken BEFORE the task: the clone HEAD, the served sha/uptime and the absorbed-cycle
+    counter a confirmed absorb must move away from."""
+    try:
+        st = _api(server.base_url, "GET", "/api/state", timeout=10)
+    except Exception:  # noqa: BLE001 - a missing snapshot is a recorded gap the confirmation fails on
+        st = {}
+    return {"head": head_sha(clone), "sha": str(st.get("sha") or ""), "uptime": int(st.get("uptime") or 0),
+            "cycles": absorbed_cycles_done(data_root), "at": time.time(), "state_read": bool(st)}
+
+
+def _newest_transaction(data_root: pathlib.Path) -> dict:
+    path = pathlib.Path(data_root) / "state" / "evolution_campaign.json"
+    try:
+        campaign = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    history = campaign.get("transaction_history") if isinstance(campaign, dict) else None
+    rows = [tx for tx in (history or []) if isinstance(tx, dict)]
+    return rows[-1] if rows else {}
+
+
+def confirm_absorb(server: IsolatedServer, clone: pathlib.Path, data_root: pathlib.Path, pre: dict, *,
+                   timeout: float, ready_timeout: float) -> dict:
+    """POSITIVE evidence of an absorbed post-task evolution, or a typed non-confirmation.
+
+    ``wait_for_absorb`` answers ``absorbed=False`` on ``no_promotion``/``timeout``, and a
+    runner that only checks liveness afterwards lets ``--self-mod`` PASS with no restart at
+    all. Confirmed means ALL of: the campaign's absorbed-cycle counter advanced past the
+    pre-task snapshot, the served sha moved off the snapshot (``wait_for_absorb``'s own
+    condition), the server re-exec'd (``/api/state`` uptime reset below the time elapsed
+    since the snapshot) and answers ready again. The clone HEAD after the cycle and the
+    newest campaign transaction (commit sha, restart_verified, verified_by) are recorded as
+    the diagnostic trail; ``serving_head`` says whether the served sha is that HEAD."""
+    wait = server.wait_for_absorb(pre["sha"], pre["cycles"], timeout=timeout)
+    healthy = server.wait_for_health(timeout=ready_timeout)
+    try:
+        st = _api(server.base_url, "GET", "/api/state", timeout=10)
+    except Exception:  # noqa: BLE001 - an unreadable post-state is a failed confirmation, recorded typed
+        st = {}
+    elapsed = time.time() - float(pre.get("at") or time.time())
+    uptime = int(st.get("uptime") or 0) if st else None
+    restarted = uptime is not None and uptime < int(pre.get("uptime") or 0) + elapsed - 2
+    cycles = absorbed_cycles_done(data_root)
+    head_after = head_sha(clone)
+    served = str(st.get("sha") or "")
+    tx = _newest_transaction(data_root)
+    confirmed = bool(pre.get("state_read")) and bool(wait.get("absorbed")) and cycles > int(pre["cycles"]) \
+        and restarted and healthy
+    if confirmed:
+        reason = "absorbed"
+    elif not pre.get("state_read"):
+        reason = "pre_snapshot_unavailable"
+    elif not wait.get("absorbed") or cycles <= int(pre["cycles"]):
+        reason = str(wait.get("reason") or "cycle_not_absorbed")
+    elif not healthy:
+        reason = "unhealthy"
+    else:
+        reason = "not_restarted"
+    return {"confirmed": confirmed, "reason": reason, "pre": dict(pre),
+            "post": {"head": head_after, "sha": served, "uptime": uptime, "cycles": cycles,
+                     "elapsed_sec": round(elapsed, 1)},
+            "head_moved": bool(head_after) and head_after != str(pre.get("head") or ""),
+            "serving_head": bool(served) and head_after.startswith(served),
+            "wait": wait, "healthy": healthy, "restarted": restarted,
+            "transaction": {"commit_sha": str(tx.get("commit_sha") or ""), "cycle_outcome": str(tx.get("cycle_outcome") or ""),
+                            "restart_verified": bool(tx.get("restart_verified")), "verified_by": str(tx.get("verified_by") or "")}}
 
 
 # --------------------------------------------------------------------------- #
@@ -189,30 +513,77 @@ def clone_seed(seed: pathlib.Path, clone: pathlib.Path) -> None:
     subprocess.run(["git", "config", "user.email", "e2e-live@ouroboros.invalid"], cwd=str(clone), check=True, capture_output=True)
 
 
+def _lane_row(job: tuple[str, int], args: argparse.Namespace) -> dict:
+    sid, attempt = job
+    return {"schema": "ouroboros.e2e_live.lane_result.v1", "scenario": sid, "attempt": attempt,
+            "title": SCENARIOS[sid].title, "status": "infra_error", "stub": bool(args.stub), "profile": args.profile,
+            "self_mod": bool(args.self_mod), "started_at": now_iso(), "checks": {}, "facts": {}, "error": "",
+            "screenshots": [], "ui": {"available": False, "reason": ""}, "self_mod_absorb": None, "budget": {}}
+
+
+def _record_row(out: pathlib.Path, lane: pathlib.Path, row: dict) -> None:
+    lane.mkdir(parents=True, exist_ok=True)
+    (lane / "result.json").write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding="utf-8")
+    append_result_index(out, task_result_row(
+        benchmark="e2e_live", instance_id=f"{row['scenario']}_a{row['attempt']}", status=row["status"],
+        reason_code=str(row.get("reason_code") or ""), runtime_result=row.get("runtime_outcome"), error=row["error"],
+        details={"checks": row["checks"], "duration_sec": row.get("duration_sec"), "budget": row.get("budget"),
+                 "refusal": row.get("refusal")}))
+
+
+def run_attempt(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, template: dict,
+                stagger: Stagger, states: dict, seed: pathlib.Path, budget: RunBudget, *,
+                key: str = "", seed_sha: str = "") -> dict:
+    """Budget admission around one lane: reserve, run, settle. A refused attempt is a recorded
+    ``not_run`` row — never a silent gap in the index."""
+    sid, attempt = job
+    lane = out / "lanes" / f"{sid}_a{attempt}"
+    admitted, facts = budget.admit(job, SCENARIOS[sid].root_tasks, lane / "data")
+    if not admitted:
+        row = {**_lane_row(job, args), "status": "not_run", "reason_code": "budget_cap", "budget": facts,
+               "refusal": {"type": "RunBudgetCap", "code": "budget_cap", "message": "run-wide budget cap reached"},
+               "ended_at": now_iso(), "duration_sec": 0.0}
+        _log(f"{sid}_a{attempt}: not run — run budget cap: spent ${facts['spent_usd']:.2f} + reserved "
+             f"${facts['reserved_usd']:.2f} + needed ${facts['reservation_usd']:.2f} > cap ${facts['cap_usd']:.2f}")
+        _record_row(out, lane, row)
+        states[job] = ("not_run (budget cap)", time.time())
+        return row
+    try:
+        return run_lane(job, args, out, template, stagger, states, seed, budget, key=key, seed_sha=seed_sha)
+    finally:
+        budget.settle(job)
+
+
 def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, template: dict,
-             stagger: Stagger, states: dict, seed: pathlib.Path) -> dict:
+             stagger: Stagger, states: dict, seed: pathlib.Path, budget: RunBudget, *,
+             key: str = "", seed_sha: str = "") -> dict:
     sid, attempt = job
     scenario = SCENARIOS[sid]
     lane = out / "lanes" / f"{sid}_a{attempt}"
     clone, data_root, shots = lane / "clone", lane / "data", lane / "shots"
     settings_path = data_root / "settings.json"
     started = time.time()
-    row = {"schema": "ouroboros.e2e_live.lane_result.v1", "scenario": sid, "attempt": attempt,
-           "title": scenario.title, "status": "infra_error", "stub": bool(args.stub), "profile": args.profile,
-           "self_mod": bool(args.self_mod), "started_at": now_iso(), "checks": {}, "facts": {}, "error": "",
-           "screenshots": [], "ui": {"available": False, "reason": ""}, "self_mod_absorb": None}
+    row = _lane_row(job, args)
 
     def log(msg: str) -> None:
         _log(f"{sid}_a{attempt}: {msg}")
         states[job] = (msg[:60], time.time())
 
     server = stub = ui = None
+    absorb: dict | None = None
     from tests.system_e2e import harness  # durable readers + /proc oracles (runtime-only import)
     try:
         log("cloning seed")
         lane.mkdir(parents=True, exist_ok=True)
         clone_seed(seed, clone)
+        # The clone IS the admitted seed: the exact sha the manifest names, clean at start.
+        pre_head = head_sha(clone)
+        row["checks"]["clone_at_seed_sha"] = bool(seed_sha) and pre_head == seed_sha
+        row["checks"]["clone_clean_at_start"] = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=str(clone), check=False, capture_output=True, text=True).stdout == ""
         cfg = dict(template)
+        if key:  # the key reaches disk ONLY here, in this lane's 0600 file
+            cfg["OPENROUTER_API_KEY"] = key
         child_model = str(cfg.get("OUROBOROS_MODEL") or "")
         if args.stub:
             stub = stub_lane.routed_stub_model(scenario.stub_script(clone)).__enter__()
@@ -221,6 +592,10 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         cfg.update(scenario.overrides(child_model))
         if args.profile == "wiring":
             cfg["OUROBOROS_REVIEW_ENFORCEMENT"] = "advisory"
+        # The lane's ceiling is the run's REMAINING headroom at this moment, never the whole cap.
+        cfg["TOTAL_BUDGET"] = budget.headroom(job)
+        row["budget"] = {"reservation_usd": budget.reservation(scenario.root_tasks),
+                         "lane_total_budget_usd": cfg["TOTAL_BUDGET"], "per_task_usd": float(args.per_task_usd)}
         sha = write_settings(settings_path, cfg)
         seed_owner_state(data_root, evolution_enabled=args.self_mod)
         from supervisor import state as sstate
@@ -235,13 +610,18 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
             srv.start(ready_timeout=args.ready_timeout)
             return srv
 
+        def wait_absorb() -> dict:
+            log("waiting for the evolve/absorb re-exec")
+            result = confirm_absorb(server, clone, data_root, pre_mod, timeout=args.task_timeout,
+                                    ready_timeout=args.ready_timeout)
+            log(f"absorb: {result['reason']}")
+            return result
+
         def restart() -> IsolatedServer:
-            nonlocal server
+            nonlocal server, absorb
             if args.self_mod:
-                log("waiting for the evolve/absorb re-exec")
-                row["self_mod_absorb"] = server.wait_for_absorb(
-                    server.current_sha(), absorbed_cycles_done(data_root), timeout=args.task_timeout)
-                if not server.wait_for_health(timeout=args.ready_timeout):
+                absorb = wait_absorb()
+                if not absorb["healthy"]:
                     raise RuntimeError("server unhealthy after the self-mod restart")
                 return server
             log("restarting server on the committed tree")
@@ -254,14 +634,23 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         if scenario.needs_ui:
             ui, reason = resolve_ui_client(server.base_url)
             row["ui"] = {"available": ui is not None, "reason": reason}
-        pre_head = head_sha(clone)
+        # The absorb snapshot is taken BEFORE the task (a snapshot at restart time would already
+        # see the task's own commit and the evolve cycle it triggered).
+        pre_mod = self_mod_snapshot(server, clone, data_root) if args.self_mod else {}
         ctx = LaneContext(server=server, clone=clone, data_root=data_root, oracle=oracle, harness=harness,
                           ui=ui, ui_reason=row["ui"]["reason"], shots=shots, log=log,
                           task_timeout=args.task_timeout, restart=restart)
         log("running scenario")
         scenario.acceptance(ctx)
         server = ctx.server
-        row.update({"checks": ctx.checks, "facts": ctx.facts, "screenshots": ctx.screenshots})
+        row["checks"].update(ctx.checks)
+        row.update({"facts": ctx.facts, "screenshots": ctx.screenshots})
+        if args.self_mod:
+            if absorb is None:  # a scenario that never restarts still owes the post-task absorb
+                absorb = wait_absorb()
+            row["self_mod_absorb"] = absorb
+            row["checks"]["self_mod_absorb_confirmed"] = bool(absorb["confirmed"])
+            row["facts"]["self_mod_absorb_reason"] = absorb["reason"]
         seed_desc = repo_provenance(seed)
         row["checks"]["seed_clean"] = not seed_desc.get("dirty") and bool(seed_desc.get("status_available"))
         post_head = head_sha(clone)
@@ -279,7 +668,13 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
             kinds = stub.kinds()  # the review-organ branches the stub actually served
             row["facts"]["stub_call_kinds"] = {kind: kinds.count(kind) for kind in sorted(set(kinds))}
         row["status"] = "pass" if all(row["checks"].values()) else "fail"
+        row["reason_code"] = "" if row["status"] == "pass" else "checks_failed"
     except Exception as exc:  # noqa: BLE001 - an infra failure is a recorded row, never a lost lane
+        # A typed refusal, not only a flattened string: the exception type, the code the raiser
+        # carries (``reason`` on the stand's own refusals) and a bounded message.
+        code = str(getattr(exc, "reason", "") or type(exc).__name__)
+        row["refusal"] = {"type": type(exc).__name__, "code": code, "message": str(exc)[:2000]}
+        row["reason_code"] = f"infra_error:{code}"
         row["error"] = f"{type(exc).__name__}: {exc}"[:2000]
         log(f"infra error: {row['error'][:200]}")
     finally:
@@ -293,20 +688,17 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         if not row["no_orphans_after_stop"] and row["status"] == "pass":
             row["status"] = "fail"
         row["checks"]["no_orphans_after_stop"] = row["no_orphans_after_stop"]
+        row["budget"]["spent_usd"], row["budget"]["unknown_cost_rows"] = lane_spend(data_root)
         row["ended_at"], row["duration_sec"] = now_iso(), round(time.time() - started, 1)
-        lane.mkdir(parents=True, exist_ok=True)
-        (lane / "result.json").write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding="utf-8")
-        append_result_index(out, task_result_row(
-            benchmark="e2e_live", instance_id=f"{sid}_a{attempt}", status=row["status"],
-            runtime_result=row.get("runtime_outcome"), error=row["error"],
-            details={"checks": row["checks"], "duration_sec": row.get("duration_sec")}))
+        _record_row(out, lane, row)
         if args.prune_clones:
             shutil.rmtree(clone, ignore_errors=True)
         states[job] = (f"{row['status']} ({row.get('duration_sec')}s)", time.time())
     return row
 
 
-def watcher(stop: threading.Event, states: dict, interval: float, key: str, floor: float) -> None:
+def watcher(stop: threading.Event, states: dict, interval: float, budget: RunBudget,
+            probe: KeyProbe | None) -> None:
     started = time.time()
     while not stop.wait(interval):
         lanes = " ".join(f"{sid}_a{n}={txt}" for (sid, n), (txt, _) in sorted(states.items()))
@@ -316,15 +708,13 @@ def watcher(stop: threading.Event, states: dict, interval: float, key: str, floo
                 continue
             free = shutil.disk_usage(mount).free / 2**30
             disks.append(f"{mount}={free:.0f}G" + (" ALERT" if free < alert else ""))
-        line = f"t=+{time.time() - started:.0f}s lanes: {lanes or '-'} | free {' '.join(disks)}"
-        if key:
-            try:
-                remaining = credit_preflight(key)["remaining_usd"]
-                line += f" | key remaining ${remaining:.2f}" if remaining is not None else " | key uncapped"
-                if remaining is not None and remaining < floor:
-                    line += " ALERT"
-            except Exception as exc:  # noqa: BLE001 - a failed probe is reported, not fatal
-                line += f" | key probe failed: {type(exc).__name__}"
+        snap = budget.snapshot()
+        spend = (f"spent ${snap['spent_usd']:.2f}/${snap['cap_usd']:.2f} reserved ${snap['reserved_usd']:.2f}"
+                 + (f" unknown-cost rows {snap['unknown_cost_rows']}" if snap["unknown_cost_rows"] else "")
+                 + (" HALTED" if snap["halted"] else ""))
+        line = f"t=+{time.time() - started:.0f}s lanes: {lanes or '-'} | {spend} | free {' '.join(disks)}"
+        if probe is not None:
+            line += " | " + probe.fragment()
         _log("[watch] " + line)
 
 
@@ -334,25 +724,32 @@ def watcher(stop: threading.Event, states: dict, interval: float, key: str, floo
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    seed = pathlib.Path(args.seed).expanduser().resolve(strict=False) if args.seed else repo_root_from_devtools()
+    source = pathlib.Path(args.source_repo).expanduser().resolve(strict=False) if args.source_repo \
+        else repo_root_from_devtools()
     out = pathlib.Path(args.out).expanduser() if args.out else run_root("e2e_live")
-    out = assert_outside_repo(out, seed)
+    out = assert_outside_repo(out, source)
+    seed = out / "seed"
     jobs = [(sid, n) for sid in args.scenario_ids for n in range(1, args.attempts + 1)]
     manifest_path = out / "run_manifest.json"
+    # The SOURCE is attested for provenance only (require_clean=False discloses its state): the
+    # tree under test is the detached seed materialized from a COMMITTED sha inside the seam,
+    # whose own gate is enforced there and recorded under manifest["seed"].
     manifest = admit_benchmark_run(
-        manifest_path, benchmark="e2e_live", run_root=out, repo_dir=seed,
-        requested_task_ids=[f"{sid}_a{n}" for sid, n in jobs], require_clean=True,
+        manifest_path, benchmark="e2e_live", run_root=out, repo_dir=source,
+        requested_task_ids=[f"{sid}_a{n}" for sid, n in jobs], require_clean=False,
         settings_authoritative_env=True, isolated_data_root=str(out / "lanes"),
-        output_paths={"lanes": str(out / "lanes"), "result_index": str(out / "result_index.jsonl"),
+        output_paths={"lanes": str(out / "lanes"), "seed": str(seed), "result_index": str(out / "result_index.jsonl"),
                       "effective_settings": str(out / "effective_settings.json")},
         extra={"outcome": "started", "lanes": args.lanes, "stagger_sec": args.stagger, "profile": args.profile,
                "self_mod": bool(args.self_mod), "stub": bool(args.stub), "scenarios": args.scenario_ids,
                "attempts": args.attempts, "pass_of": args.pass_of, "total_budget_usd": args.total_budget,
-               "per_task_usd": args.per_task_usd, "key_env": args.key_env if not args.stub else ""},
+               "per_task_usd": args.per_task_usd, "key_env": args.key_env if not args.stub else "",
+               "seed_ref": str(args.seed), "seed_policy": SEED_POLICY, "source_repo": str(source)},
     )
     _log(f"run root: {out}")
     with finalize_run_manifest(manifest_path, manifest) as final:
         key = ""
+        headroom: dict = {}
         if not args.stub:
             key = str(os.environ.get(args.key_env) or "").strip()
             if not key:
@@ -376,24 +773,59 @@ def main(argv: list[str] | None = None) -> int:
                               "refusal": {"stage": "credit_preflight", "reason": "insufficient_remaining", **headroom,
                                           "floor_usd": args.min_credit_usd}})
                 return 3
-        template = effective_settings(args, key)
+        try:
+            manifest["seed"] = materialize_seed(source, str(args.seed), seed)
+        except SeedMaterializeRefused as exc:
+            final.update({"outcome": "refused", "exit_code": 3,
+                          "refusal": {"stage": "seed_materialize", "reason": exc.reason, "error": str(exc)[:300]}})
+            _log(f"refused: {exc}")
+            return 3
+        provenance = repo_provenance(seed)
+        manifest["seed"]["provenance"] = provenance
+        manifest["seed"]["clean"] = seed_is_clean(provenance, manifest["seed"]["resolved_sha"])
+        if not manifest["seed"]["clean"]:
+            final.update({"outcome": "refused", "exit_code": 3,
+                          "refusal": {"stage": "seed_materialize", "reason": "seed_not_clean",
+                                      "describe": provenance.get("describe", ""), "head": provenance.get("head", "")}})
+            _log(f"refused: materialized seed is not clean: {provenance.get('describe')}")
+            return 3
+        final["seed_head"], final["seed_describe"] = provenance.get("head", ""), provenance.get("describe", "")
+        _log(f"seed: {args.seed} -> {provenance.get('describe')} (detached clone at {seed})")
+        if manifest.get("source", {}).get("dirty"):
+            _log(f"WARNING: the source checkout {source} is dirty ({manifest['source'].get('status_entries')} "
+                 "entries): the seed is the COMMITTED ref above; uncommitted edits are NOT under test")
+        full = effective_settings(args, key)
+        # The template the run keeps and hands to lanes is REDACTED (no credential value in
+        # any run-level artifact or shared object); the key is injected into each lane's own
+        # 0600 settings file and disclosed here by fingerprint as the runtime grant.
+        template = redacted_template(full)
         template_path = out / "effective_settings.json"
         write_settings(template_path, template)
         manifest["model_slots"] = model_slot_snapshot(template_path, env_overrides=False)
-        manifest["provider_credentials"] = provider_credential_disclosure(template_path)
+        manifest["provider_credentials"] = provider_credential_disclosure(
+            template_path, runtime_credentials=template_credentials(full))
         final["effective_model"] = manifest["model_slots"].get("OUROBOROS_MODEL", "") if not args.stub else "loopback stub"
-        final["settings_config_sha256"] = config_sha256(template)
-        if manifest["provider_credentials"].get("fail_open") and not args.stub:
-            _log(f"WARNING: declared slots without a credential: {manifest['provider_credentials'].get('planned_keys')}")
+        final["settings_config_sha256"] = config_sha256(full)
+        granted = set(template_credentials(full))
+        missing = [k for k in manifest["provider_credentials"].get("planned_keys") or [] if k not in granted]
+        if missing and not args.stub:
+            _log(f"WARNING: declared slots without a credential: {missing}")
+        budget = RunBudget(args.total_budget, args.per_task_usd)
+        seed_sha = str(manifest["seed"]["resolved_sha"])
         states: dict = {}
         stop = threading.Event()
-        threading.Thread(target=watcher, args=(stop, states, args.watch_interval, key, args.min_credit_usd),
-                         daemon=True).start()
+        probe = None
+        if key:
+            probe = KeyProbe(lambda: credit_preflight(key, timeout=PROBE_TIMEOUT_SEC)["remaining_usd"],
+                             floor=args.min_credit_usd, interval=args.watch_interval, stop=stop)
+            probe.seed(headroom.get("remaining_usd")).start()
+        threading.Thread(target=watcher, args=(stop, states, args.watch_interval, budget, probe), daemon=True).start()
         rows: list[dict] = []
         gate = Stagger(args.stagger)
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.lanes) as pool:
-                futures = [pool.submit(run_lane, job, args, out, template, gate, states, seed) for job in jobs]
+                futures = [pool.submit(run_attempt, job, args, out, template, gate, states, seed, budget,
+                                       key=key, seed_sha=seed_sha) for job in jobs]
                 rows = [f.result() for f in futures]
         finally:
             stop.set()
@@ -402,15 +834,30 @@ def main(argv: list[str] | None = None) -> int:
             passed = sum(1 for r in rows if r["scenario"] == sid and r["status"] == "pass")
             verdicts[sid] = {"attempts": args.attempts, "passed": passed,
                              "infra_errors": sum(1 for r in rows if r["scenario"] == sid and r["status"] == "infra_error"),
+                             "not_run": sum(1 for r in rows if r["scenario"] == sid and r["status"] == "not_run"),
                              "verdict": "pass" if passed >= args.pass_of else "fail"}
         ok = all(v["verdict"] == "pass" for v in verdicts.values())
+        if args.self_mod:
+            # Run-level gate: EVERY self-mod lane that ran must carry a CONFIRMED absorb.
+            unconfirmed = sorted(f"{r['scenario']}_a{r['attempt']}" for r in rows
+                                 if r["status"] != "not_run" and not (r.get("self_mod_absorb") or {}).get("confirmed"))
+            final["self_mod"] = {"lanes": sum(1 for r in rows if r["status"] != "not_run"),
+                                 "absorb_unconfirmed": unconfirmed}
+            ok = ok and not unconfirmed
         for r in rows:
             failed = sorted(k for k, v in r["checks"].items() if not v)
             _log(f"{r['scenario']}_a{r['attempt']}: {r['status']} in {r.get('duration_sec')}s"
                  + (f" failed checks: {failed}" if failed else "") + (f" error: {r['error'][:160]}" if r["error"] else ""))
+        budget_final = budget.snapshot()
         _log(f"verdicts: {json.dumps(verdicts)}")
+        _log(f"budget: spent ${budget_final['spent_usd']:.2f} of cap ${budget_final['cap_usd']:.2f}"
+             + (f"; HALTED at {budget_final['halt']['first_refused']} ({budget_final['halt']['reason']})"
+                if budget_final["halted"] else ""))
         final.update({"outcome": "completed" if ok else "failed", "exit_code": 0 if ok else 1,
-                      "scenarios": verdicts, "lanes_run": len(rows)})
+                      "scenarios": verdicts, "lanes_run": sum(1 for r in rows if r["status"] != "not_run"),
+                      "budget": budget_final})
+        if budget_final["halted"]:
+            final["stop_reason"] = "budget_cap"
     return 0 if ok else 1
 
 

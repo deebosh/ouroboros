@@ -1238,36 +1238,80 @@ devtool files).
 `python -m devtools.e2e_live.run_live_lanes` drives K isolated REAL servers
 (`--lanes`, default 4, at most 6, starts staggered 2–3 s apart), one
 owner-shaped scenario attempt per lane, from the scenario table in
-`scenarios.py`: SM1 (a `web/style.css` custom property landed through
-`commit_reviewed` under advanced runtime and blocking enforcement; acceptance is
-the S2 set plus the computed style read by a browser from the COMMITTED CSS after
-a restart), SW1 (the Swarm button arms `force_plan`; at least two children with
-causal lineage, the `swarm_fanout` receipt, the with-children cost rollup, no
-orphan process by the `/proc` environ scan), SK1 (the model authors
-`SKILL.md`+`plugin.py` and runs `skill_preflight`; the runner reviews, grants
-exactly the manifest's one privileged permission, enables, dispatches, deletes).
-Every acceptance is a callable over durable artifacts, never a reading of model
-prose. The launcher follows the benchmark family's admission contract
-(`launcher_audit.audit_source` is pinned on it by source): a dirty seed is refused
-with the refusal persisted in `run_manifest.json`; the key is read by NAME from
-`$OUROBOROS_E2E_LIVE_OPENROUTER_KEY` (`--key-env`; the pool file is never opened
-and the value never leaves the applied settings file, mode 0600); the preflight
-takes `min(key limit remaining, account credits)` and refuses below
-`--min-credit-usd`; `--total-budget` (default 100) and `--per-task-usd` (default
-8) are SETTINGS keys of the lane, never environment guesses; the manifest names
-the model from the applied settings file, not from argv; `--self-mod` enables
-post-task evolution with the real re-exec restart and records the absorb outcome
-as a diagnostic. Per lane: `lanes/<id>_a<n>/result.json` (checks, digests
-including the settings sha256 and its secret-free config digest, seed `git
-describe`, pre/post HEAD and the exact diff digest, grants by fingerprint,
-runtime terminal disclosure) plus screenshots when a browser client exists
-(`ui_probe.resolve_ui_client`: the suite's `PlaywrightUIClient` when it carries
-this surface, else headless Chromium, else a typed `ui_unavailable` reason — never
-a silently passed check). `--stub` runs the same scenarios against the loopback
-stub model of `tests/system_e2e/harness.py` for $0 (`stub_lane.py` routes the
-swarm wire by role); `--attempts N --pass-of K` records every attempt. Run roots
-are append-only outside `repo/` and live `data/`; a watcher line prints lane
-states, free disk on `/` and `/mnt/data`, and the key headroom.
+`scenarios.py`: SM1 (the `--accent` custom property changed in BOTH
+`web/style.css` and `web/onboarding.css` — the onboarding sheet is inlined
+standalone and mirrors the app tokens by value, `tests/test_web_typography_static.py`
+pins the parity — and landed as one commit through `commit_reviewed` under
+advanced runtime and blocking enforcement with the hermetic suite as the tests
+preflight; the `--stub` rehearsal skips that suite, a documented residual: the
+loopback lane's `OPENAI_COMPATIBLE_BASE_URL` is projected into the server
+environment, `preflight_runner._preflight_env` scrubs only `OUROBOROS_*` and
+secret-suffixed keys, and `tests/test_settings_effort.py` routes on it, so the
+suite is red inside any loopback lane; acceptance is the S2 set, the parity of
+the two committed files, the typed refusal trail of every `commit_reviewed`/`preflight_review`
+call — ledger `block_reason`s, the `⚠️ CODE:` prefixes such as
+PREFLIGHT_BLOCKED / TESTS_PREFLIGHT_BLOCKED / SCOPE_REVIEW_BLOCKED, the task's
+terminal `reason_code` such as `budget_exhausted` or `deadline_local` — plus the
+computed style read by a browser from the COMMITTED CSS after a restart), SW1
+(the Swarm button arms `force_plan`; at least two children with causal lineage,
+the `swarm_fanout` receipt, the with-children cost rollup, no orphan process by
+the `/proc` environ scan), SK1 (the model authors `SKILL.md`+`plugin.py` and runs
+`skill_preflight`; the runner reviews, grants exactly the manifest's one
+privileged permission, enables, dispatches, deletes; the author and dispatch
+tasks keep separate `author_*`/`dispatch_*` terminal checks, and the dispatch
+counts only on a tools.jsonl row with typed status `ok` and the extension's exact
+echo — the generation digest alone is stamped on failures too). Every acceptance
+is a callable over durable artifacts, never a reading of model prose, and
+`LaneContext.check` refuses a second write to the same key. The launcher follows
+the benchmark family's admission contract (`launcher_audit.audit_source` is
+pinned on it by source). The SEED is a clean DETACHED clone of `--seed` (a commit
+or ref, default `HEAD`, resolved in `--source-repo`, default this tree)
+materialized once under the run root; every lane clones it and asserts its HEAD is
+the admitted sha and the clone is clean; the source's own dirtiness is disclosed
+in the manifest, never under test; an unresolvable ref or a dirty seed is a typed
+refusal persisted in `run_manifest.json`. The key is read by NAME from
+`$OUROBOROS_E2E_LIVE_OPENROUTER_KEY` (`--key-env`; the pool file is never opened;
+the run-root `effective_settings.json` is REDACTED and the value reaches disk
+only in each lane's 0600 settings file, disclosed by fingerprint as the runtime
+grant); the preflight takes `min(key limit remaining, account credits)` and
+refuses below `--min-credit-usd`. `--total-budget` (default 100) is the RUN-WIDE
+cap: a ledger sums the lanes' durable `llm_usage` costs, reserves
+`--per-task-usd × root tasks` per attempt (SM1 and SW1 one root — scouts spend
+under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two), schedules a
+new attempt only while `spent + reserved + reservation ≤ cap`, halts scheduling at
+the first refusal (later attempts are recorded `not_run` with
+`reason_code=budget_cap`), and writes each lane's TOTAL_BUDGET as the headroom
+left at its start; the manifest records the cap, the spend, the reservation rule
+and the stop reason. `--per-task-usd` (default 8) is the runtime's per-root-task
+fence: with the tree's default review panel a blocking triad that includes
+claude-opus-5 plus the scope review exceeded $8 on SM1 in the first paid run
+(lanes spent $2–6 and still hit the fence, which counts reserved upper bounds),
+so size it to the review panel (16–20 for a blocking SM1) and let the run-wide
+cap be the real stop; SK1's owner-side skill review spends outside any root task
+and is bounded only by the lane's TOTAL_BUDGET. `--total-budget`,
+`--per-task-usd`, `--min-credit-usd` and `--watch-interval` (≥ 5 s) must be
+finite and positive. The manifest names the model from the applied settings
+file, not from argv. `--self-mod` enables post-task evolution with the real
+re-exec restart and REQUIRES a confirmed absorb per lane: a pre-task snapshot
+(clone HEAD, served sha, uptime, absorbed-cycle counter) and, afterwards, the
+counter advanced, the served sha moved, the uptime reset and the server ready;
+anything less is a typed `self_mod_absorb_confirmed=false` and the run fails.
+Per lane: `lanes/<id>_a<n>/result.json` (checks, digests including the settings
+sha256 and its secret-free config digest, seed `git describe`, pre/post HEAD and
+the exact diff digest, grants by fingerprint, the lane's spend, runtime terminal
+disclosure, and on an infra failure a typed `refusal` {type, code, message} with
+`reason_code=infra_error:<code>` mirrored into `result_index.jsonl`) plus
+screenshots when a browser client exists (`ui_probe.resolve_ui_client`: the
+suite's `PlaywrightUIClient` when it carries this surface, else headless Chromium,
+else a typed `ui_unavailable` reason — never a silently passed check). `--stub`
+runs the same scenarios against the loopback stub model of
+`tests/system_e2e/harness.py` for $0 (`stub_lane.py` routes the swarm wire by
+role); `--attempts N --pass-of K` records every attempt. Run roots are
+append-only outside `repo/` and live `data/`; a watcher line prints lane states,
+the running spend against the cap, free disk on `/` and `/mnt/data`, and the key
+headroom from a probe on its own thread with an 8 s HTTP bound, at most once a
+minute, backing off on failure — a failed probe is informational, never an ALERT
+and never a delay of the tick.
 
 ### Light mode and external deliverables
 
