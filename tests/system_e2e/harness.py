@@ -156,7 +156,7 @@ _SURFACE_LINE_RE = re.compile(r"^Surface: ([A-Za-z_]+)$", re.MULTILINE)
 MARKER_SOURCES = {
     REVIEWER_SLOT_MARKER: "ouroboros/review_execution.py",
     ACCEPTANCE_KEYS_MARKER: "ouroboros/review_execution.py",
-    TRIAD_USER_MARKER: "ouroboros/tools/review.py",
+    TRIAD_USER_MARKER: "ouroboros/tools/review_multi_model.py",   # TRIAD_USER_TURN: the one literal the send and the admission share
     SCOPE_USER_MARKER: "ouroboros/tools/scope_review.py",
     SKILL_REVIEW_MARKER: "ouroboros/skill_review_prompt.py",
     PLAN_REVIEW_MARKER: "ouroboros/tools/plan_packet.py",
