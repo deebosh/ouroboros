@@ -464,6 +464,14 @@ def test_stopped_direct_turn_pays_no_post_task_synthesis(tmp_path, monkeypatch):
             self._target()
 
     monkeypatch.setattr(pipeline.threading, "Thread", InlineThread)
+    # The durable outbox (stamp + owed registration, no model call) must still cover the
+    # stop notice: the marker skips PAID work only (the codex M3 finding).
+    stamped, owed = [], []
+    _stamp, _owe = pipeline.stamp_root_final_phase, pipeline.register_final_answer_owed
+    monkeypatch.setattr(pipeline, "stamp_root_final_phase",
+                        lambda send_event, task, **kw: stamped.append((task["id"], kw.get("post_task_open"))) or _stamp(send_event, task, **kw))
+    monkeypatch.setattr(pipeline, "register_final_answer_owed",
+                        lambda task, send_event, **kw: owed.append(task["id"]) or _owe(task, send_event, **kw))
     root = tmp_path / "data"
     (root / "logs").mkdir(parents=True)
     (root / "memory").mkdir()
@@ -499,6 +507,7 @@ def test_stopped_direct_turn_pays_no_post_task_synthesis(tmp_path, monkeypatch):
     stored = pipeline.load_task_result(root, "stopped1") or {}
     assert stored.get("status") == "failed", stored
     assert "root_phase_checkpoint" not in stored, stored  # nothing for the boot reconciler to re-pay
+    assert ("stopped1", False) in stamped and "stopped1" in owed   # outbox insurance kept, synthesis closed
 
     def _summary_rows(task_id):
         chat_log = root / "logs" / "chat.jsonl"

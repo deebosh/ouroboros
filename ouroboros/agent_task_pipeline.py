@@ -427,10 +427,8 @@ def emit_task_results(
     # closes the remaining durable task-record writes. An inline answer + card
     # resolution and budget metrics still flow so the reply is visible.
     _ephemeral = bool(task.get("_ephemeral_turn"))
-    # "Stop now" (loop_round_limits._handle_direct_turn_hard_stop) recorded the skip
-    # marker on the tool context: onto the task BEFORE any root post-task predicate
-    # (outbox stamp, checkpoint seed, synthesis dispatch), so nothing bills post-stop.
-    if bool(getattr(ctx, "_skip_post_task_synthesis", False)):
+    _root_outbox = _is_root_post_task(task)   # durable outbox (no model call): pre-marker predicate
+    if getattr(ctx, "_skip_post_task_synthesis", False):   # "Stop now": paid root predicates see it
         task["_skip_post_task_synthesis"] = True
     _presence = is_presence_task(task)
     _typed_routing_action = (
@@ -536,10 +534,10 @@ def emit_task_results(
         # a terminal result nobody would ever deliver. The nonblocking lane
         # used to buffer the send with no delivery_id and no owed registration
         # at all. Seam + dedup: ouroboros/task_finalization.py.
-        if _is_root_post_task(task) and not _presence:
+        if _root_outbox and not _presence:
             stamp_root_final_phase(
                 send_event, task,
-                post_task_open=not _root_post_task_already_completed(env, task),
+                post_task_open=not task.get("_skip_post_task_synthesis") and not _root_post_task_already_completed(env, task),
             )
             register_final_answer_owed(task, send_event, env_drive_root=env.drive_root)
         _store_task_result(
