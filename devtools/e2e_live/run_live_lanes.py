@@ -71,6 +71,16 @@ from ouroboros.provider_models import ALL_PROVIDER_CREDENTIAL_KEYS, declared_mod
 
 MAX_LANES = 6
 STAGGER_BOUNDS = (2.0, 3.0)
+# The commit gate's hermetic pytest pass runs INSIDE each lane server and resolves ``-n auto`` to
+# the host's CPU count (128 here) with no ceiling: the paid run of 2026-09-04 started >= 104 xdist
+# workers per self-mod lane, three lanes at once, on a shared host. The runtime's own lever
+# (``preflight_runner._PREFLIGHT_WORKERS_ENV``, floor 2 so PREFLIGHT_PARALLELISM_LOST can never
+# trip) is set in this process and forwarded by ``IsolatedServer`` in settings-authoritative mode
+# (its keep-list); the budget is split evenly across the concurrent lanes so the whole stand stays
+# within the shared-host rule of at most 16 pytest workers.
+PREFLIGHT_WORKERS_ENV = "OUROBOROS_PREFLIGHT_TEST_WORKERS"
+PREFLIGHT_WORKER_BUDGET = 16
+PREFLIGHT_WORKERS_FLOOR = 2
 TMPDIR_MAX_CHARS = 70          # AF_UNIX 108-byte cap on the workers' Manager socket path
 DEFAULT_KEY_ENV = "OUROBOROS_E2E_LIVE_OPENROUTER_KEY"
 DISK_ALERT_GIB = {"/": 40.0, "/mnt/data": 60.0}
@@ -133,6 +143,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("--model cannot be combined with --stub (the stub IS the model)")
     if args.min_credit_usd is None:
         args.min_credit_usd = float(args.total_budget)
+    args.preflight_test_workers = max(PREFLIGHT_WORKERS_FLOOR, PREFLIGHT_WORKER_BUDGET // args.lanes)
     for name, value in (("--total-budget", args.total_budget), ("--per-task-usd", args.per_task_usd),
                         ("--min-credit-usd", args.min_credit_usd), ("--watch-interval", args.watch_interval)):
         if not math.isfinite(float(value)) or float(value) <= 0:
@@ -531,7 +542,8 @@ def _lane_row(job: tuple[str, int], args: argparse.Namespace) -> dict:
     sid, attempt = job
     return {"schema": "ouroboros.e2e_live.lane_result.v1", "scenario": sid, "attempt": attempt,
             "title": SCENARIOS[sid].title, "status": "infra_error", "stub": bool(args.stub), "profile": args.profile,
-            "self_mod": bool(args.self_mod), "started_at": now_iso(), "checks": {}, "facts": {}, "error": "",
+            "self_mod": bool(args.self_mod), "preflight_test_workers": int(args.preflight_test_workers),
+            "started_at": now_iso(), "checks": {}, "facts": {}, "error": "",
             "screenshots": [], "ui": {"available": False, "reason": ""}, "self_mod_absorb": None, "budget": {}}
 
 
@@ -769,7 +781,8 @@ def main(argv: list[str] | None = None) -> int:
                "self_mod": bool(args.self_mod), "stub": bool(args.stub), "scenarios": args.scenario_ids,
                "attempts": args.attempts, "pass_of": args.pass_of, "total_budget_usd": args.total_budget,
                "per_task_usd": args.per_task_usd, "key_env": args.key_env if not args.stub else "",
-               "seed_ref": str(args.seed), "seed_policy": SEED_POLICY, "source_repo": str(source)},
+               "seed_ref": str(args.seed), "seed_policy": SEED_POLICY, "source_repo": str(source),
+               "preflight_test_workers": args.preflight_test_workers},
     )
     _log(f"run root: {out}")
     with finalize_run_manifest(manifest_path, manifest) as final:
@@ -847,6 +860,10 @@ def main(argv: list[str] | None = None) -> int:
         threading.Thread(target=watcher, args=(stop, states, args.watch_interval, budget, probe), daemon=True).start()
         rows: list[dict] = []
         gate = Stagger(args.stagger)
+        # Every lane server inherits THIS process's environment (``IsolatedServer._env`` copies it and
+        # keeps this key through the authoritative sweep); set once, before the first lane starts, and
+        # unconditionally: an ambient value from the operator shell must not decide the stand's load.
+        os.environ[PREFLIGHT_WORKERS_ENV] = str(args.preflight_test_workers)
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.lanes) as pool:
                 futures = [pool.submit(run_attempt, job, args, out, template, gate, states, seed, budget,

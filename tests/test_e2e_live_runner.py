@@ -200,6 +200,52 @@ def test_self_mod_is_off_by_default(monkeypatch):
     assert on["OUROBOROS_POST_TASK_EVOLUTION"] == "true" and on["OUROBOROS_POST_TASK_EVOLUTION_CADENCE"] == "every_n:1"
 
 
+def test_preflight_worker_cap_reaches_every_lane_and_is_recorded(tmp_path, monkeypatch):
+    """The commit gate's hermetic pytest pass runs INSIDE the lane server and resolves ``-n auto``
+    to the host CPU count (the 2026-09-04 paid run fanned out to >= 104 xdist workers per lane): the
+    stand must set the runtime's own lever to ``max(2, 16 // lanes)`` in the process every lane
+    server inherits, override an ambient value, and record the applied number in the manifest
+    and in each lane row. The runtime reads exactly that key (pinned here, not modified)."""
+    from ouroboros import preflight_runner
+    _short_tmp(monkeypatch)
+    assert run_live_lanes.PREFLIGHT_WORKERS_ENV == preflight_runner._PREFLIGHT_WORKERS_ENV
+    assert run_live_lanes.PREFLIGHT_WORKERS_FLOOR == preflight_runner._MIN_PREFLIGHT_WORKERS
+    assert run_live_lanes.parse_args(["--stub", "--lanes", "1"]).preflight_test_workers == 16
+    assert run_live_lanes.parse_args(["--stub", "--lanes", "4"]).preflight_test_workers == 4
+    assert run_live_lanes.parse_args(["--stub", "--lanes", "6"]).preflight_test_workers == 2   # floor at MAX_LANES
+    monkeypatch.setenv(run_live_lanes.PREFLIGHT_WORKERS_ENV, "128")   # the operator shell must lose
+    seen: dict = {}
+
+    def lane(job, args, out, template, stagger, states, seed, budget=None, *, key="", seed_sha=""):
+        seen[job] = (os.environ.get(run_live_lanes.PREFLIGHT_WORKERS_ENV),
+                     run_live_lanes._lane_row(job, args)["preflight_test_workers"],
+                     preflight_runner._preflight_worker_count())
+        return _fake_lane(job, args, out, template, stagger, states, seed, budget, key=key, seed_sha=seed_sha)
+
+    monkeypatch.setattr(run_live_lanes, "run_lane", lane)
+    out = tmp_path / "out"
+    rc = run_live_lanes.main(["--stub", "--source-repo", str(_git_seed(tmp_path)), "--out", str(out),
+                              "--scenarios", "SM1,SW1", "--lanes", "3", "--watch-interval", "600"])
+    assert rc == 0
+    assert seen == {("SM1", 1): ("5", 5, 5), ("SW1", 1): ("5", 5, 5)}
+    manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["extra"]["lanes"] == 3 and manifest["extra"]["preflight_test_workers"] == 5
+
+
+def test_isolated_server_forwards_the_preflight_worker_cap_through_the_authoritative_sweep(tmp_path, monkeypatch):
+    """The lane servers start in settings-authoritative mode, which strips the whole OUROBOROS_
+    namespace; the worker cap is the one operational lever that must survive, while an ambient
+    model slot still does not."""
+    from devtools.benchmarks.common.server_runner import _AUTHORITATIVE_ENV_KEEP, IsolatedServer
+    assert run_live_lanes.PREFLIGHT_WORKERS_ENV in _AUTHORITATIVE_ENV_KEEP
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(run_live_lanes.PREFLIGHT_WORKERS_ENV, "4")
+    monkeypatch.setenv("OUROBOROS_MODEL", "ambient/model")
+    env = IsolatedServer(tmp_path / "clone", tmp_path / "data", settings, settings_authoritative_env=True)._env()
+    assert env[run_live_lanes.PREFLIGHT_WORKERS_ENV] == "4" and "OUROBOROS_MODEL" not in env
+
+
 def test_stub_template_carries_only_the_loopback_slots(monkeypatch):
     _short_tmp(monkeypatch)
     cfg = run_live_lanes.effective_settings(run_live_lanes.parse_args(["--stub"]), "")

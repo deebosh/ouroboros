@@ -1292,7 +1292,13 @@ cap be the real stop; SK1's owner-side skill review spends outside any root task
 and is bounded only by the lane's TOTAL_BUDGET. `--total-budget`,
 `--per-task-usd`, `--min-credit-usd` and `--watch-interval` (≥ 5 s) must be
 finite and positive. The manifest names the model from the applied settings
-file, not from argv. `--self-mod` enables post-task evolution with the real
+file, not from argv. The commit gate's hermetic pytest pass runs inside each lane
+server and resolves `-n auto` to the host CPU count, so the stand sets
+`OUROBOROS_PREFLIGHT_TEST_WORKERS=max(2, 16 // lanes)` in its own process
+(`IsolatedServer` keeps that one key through the settings-authoritative sweep;
+`preflight_runner._preflight_env` still scrubs it from the candidate suite) and
+records the applied value as `extra.preflight_test_workers` in the manifest and
+`preflight_test_workers` in every lane row. `--self-mod` enables post-task evolution with the real
 re-exec restart and REQUIRES a confirmed absorb per lane: a pre-task snapshot
 (clone HEAD, served sha, uptime, absorbed-cycle counter) and, afterwards, the
 counter advanced, the served sha moved, the uptime reset and the server ready;

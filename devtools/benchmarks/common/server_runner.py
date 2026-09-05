@@ -119,7 +119,13 @@ _PROVIDER_ENV_KEYS = frozenset({
 # parent process can still carry compatibility aliases and newer runtime knobs
 # that are not present in ``SETTINGS_DEFAULTS``; retaining any of those would
 # make an otherwise identical run depend on the operator shell.  Keep only the
-# path/port values that this lifecycle writes back explicitly.  This is scoped
+# path/port values that this lifecycle writes back explicitly, plus one
+# operational host-load lever: ``OUROBOROS_PREFLIGHT_TEST_WORKERS`` caps the
+# xdist fan-out of the commit gate's hermetic pytest pass (read by
+# ``preflight_runner._preflight_worker_count`` in the server process, never a
+# model/credential/settings key, and still scrubbed from the candidate suite's
+# own environment by ``preflight_runner._preflight_env``).  Without it every
+# isolated server resolves ``-n auto`` to the host's CPU count.  This is scoped
 # to ``settings_authoritative_env`` below; older env-first benchmark drivers
 # retain their historical inheritance contract.
 _AUTHORITATIVE_ENV_KEEP = frozenset({
@@ -130,6 +136,7 @@ _AUTHORITATIVE_ENV_KEEP = frozenset({
     "OUROBOROS_SERVER_HOST",
     "OUROBOROS_SERVER_PORT",
     "OUROBOROS_HOST_SERVICE_PORT",
+    "OUROBOROS_PREFLIGHT_TEST_WORKERS",
 })
 _AUTHORITATIVE_ENV_PREFIXES = (
     "OUROBOROS_",
