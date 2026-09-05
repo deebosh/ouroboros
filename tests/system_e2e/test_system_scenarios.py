@@ -54,7 +54,9 @@ import sys
 
 import pytest
 
+from ouroboros.settings_defaults import SETTINGS_DEFAULTS, settings_env_keys
 from tests.system_e2e.harness import (
+    _CREDENTIAL_SHAPE_RE,
     ACCEPTANCE_KEYS_MARKER,
     LANE_MOCK,
     MARKER_SOURCES,
@@ -326,6 +328,22 @@ def test_f21_keyless_settings_pin_every_slot_and_refuse_credentials():
         assert_settings_keyless({**cfg, "OPENROUTER_API_KEY": "sk-or-nope"})
     with pytest.raises(AssertionError):
         assert_settings_keyless({**cfg, "OPENAI_COMPATIBLE_BASE_URL": "https://api.example.com/v1"})
+
+
+def test_f21_projected_provider_family_credentials_default_empty():
+    """The carve-out S3's name pin relies on can never legitimise a secret: the server
+    projects settings ∪ ``SETTINGS_DEFAULTS`` into its children, so a credential-shaped
+    member of the stripped provider family that is projected (``settings_env_keys``)
+    must ship an EMPTY default — a keyless file then projects only endpoint fields
+    (base URLs, scope, TLS flag), never a key. Credential shape comes from the
+    harness's own regex over the family it strips, not from a hand list."""
+    projected_family = STRIPPED_PROVIDER_ENV_KEYS & set(settings_env_keys())
+    credential_shaped = sorted(k for k in projected_family if _CREDENTIAL_SHAPE_RE.search(k))
+    # The derivation must see the canonical credentials, or an empty set passes vacuously.
+    assert {"ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "GIGACHAT_CREDENTIALS",
+            "CLOUDRU_FOUNDATION_MODELS_API_KEY"} <= set(credential_shaped), credential_shaped
+    non_empty = [k for k in credential_shaped if str(SETTINGS_DEFAULTS.get(k) or "").strip()]
+    assert not non_empty, f"credential-shaped provider keys ship a non-empty default: {non_empty}"
 
 
 def test_keyless_reviewer_slots_parse_under_the_trees_own_parser():
@@ -678,9 +696,26 @@ def test_s3_poisoned_parent_credentials_never_reach_the_server_tree(
     # Everything that must be invisible to the child tree: the planted fakes PLUS
     # every real credential-shaped value the operator shell happens to carry.
     must_not_appear = set(S3_PLANTED.values()) | set(secret_values_in_parent_env().values())
+    from ouroboros.config import normalize_settings_raw
+    from ouroboros.server_runtime import apply_runtime_provider_defaults
+
     root = tmp_path_factory.mktemp("s3")
     with ScriptedStubModel(S1_SCRIPT) as stub:
-        server = start_server(e2e_clone, root, keyless_settings(stub))
+        settings = keyless_settings(stub)
+        # What the server legitimately projects into its children: the boot pipeline
+        # (server.py lifespan) is load_settings — normalize_settings_raw over the file,
+        # merged over SETTINGS_DEFAULTS — then apply_runtime_provider_defaults, then
+        # apply_settings_to_env exporting every non-empty settings_env_keys() value.
+        # The same pure seams here, so the name pin below is equality against the
+        # projection, not a hand list of what the file happens to name.
+        effective, _changed, _keys = apply_runtime_provider_defaults(
+            {**SETTINGS_DEFAULTS, **normalize_settings_raw(settings)})
+        projected = {
+            key: str(effective[key])
+            for key in settings_env_keys()
+            if key in STRIPPED_PROVIDER_ENV_KEYS and effective.get(key) not in (None, "")
+        }
+        server = start_server(e2e_clone, root, settings)
         try:
             # The server BOOTED and WORKS with the poisoned parent env: one scripted
             # task runs to durable completion, keyless.
@@ -707,16 +742,18 @@ def test_s3_poisoned_parent_credentials_never_reach_the_server_tree(
                     - set(S3_PLANTED.values())
                 )
                 assert not leaked, f"credential values visible in pid {pid} environ: {leaked}"
-                # And by NAME: the stripped provider family is absent — except the
-                # stub pair, which the server itself legitimately projects from the
-                # isolated settings.json into its children (it only ever names the
-                # loopback stub; assert_settings_keyless pins that).
-                named = sorted(
-                    (STRIPPED_PROVIDER_ENV_KEYS
-                     - {"OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_BASE_URL"})
-                    & set(child_env)
+                # And by NAME: a stripped-family key may appear ONLY with exactly its
+                # projected value — every credential key has an empty effective value
+                # and so must be ABSENT; a family name carrying any other value is red.
+                # /proc environ is the exec-time block: forkserver/spawn children are
+                # exec'd from the server's projected os.environ; fork copied the
+                # server's own scrubbed exec-time block and hid that projection.
+                foreign = sorted(
+                    key for key in STRIPPED_PROVIDER_ENV_KEYS & set(child_env)
+                    if child_env[key] != projected.get(key)
                 )
-                assert not named, f"provider env keys present in pid {pid}: {named}"
+                assert not foreign, (
+                    f"provider env keys in pid {pid} beyond the settings projection: {foreign}")
         finally:
             server.stop()
 
