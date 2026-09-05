@@ -44,6 +44,7 @@ from ouroboros.tools.write_shape import (  # noqa: E402,F401
     _shell_write_indicator_scan,
     interpreter_write_shape,
     non_interpreter_write_shape,
+    python_body_ast,
     script_literal_write_targets_and_unknown,
     segment_write_shape as _segment_write_shape,
     shell_has_write_indicator,
@@ -371,9 +372,8 @@ def _python_call_is_opaque(node: ast.Call) -> bool:
 
 
 def _python_write_targets_and_unknown(inline_code: str) -> tuple[list[str], bool]:
-    try:
-        tree = ast.parse(inline_code)
-    except Exception:
+    tree = python_body_ast(inline_code)
+    if tree is None:
         return [], True
     names: dict[str, str] = {}
     write_handles: dict[str, str] = {}

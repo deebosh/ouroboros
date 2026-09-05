@@ -732,7 +732,22 @@ def _ephemeral_block_result(
     return ToolResult(status="blocked", code="ACCESS_BLOCKED", text=text)
 
 
-def _workspace_write_block_runtime_message(path_text: Any = "") -> str:
+def _blocked_path_note(path_text: Any, spelled: Any = "") -> str:
+    """The ``Blocked path:`` clause of both Guard-B messages: the RESOLVED path
+    and, when the model's own spelling differs (a relative operand, a symlink
+    alias, a POSIX-rooted spelling resolved natively on Windows), that spelling
+    too. The windows-latest serial pass named only ``C:\\Users\\Shared\\x`` for
+    a command that wrote ``/Users/Shared/x`` — a path the model never typed."""
+    resolved = str(path_text or "").strip()
+    written = str(spelled or "").strip()
+    if not resolved:
+        return f" Blocked path: {written}." if written else ""
+    if written and written != resolved:
+        return f" Blocked path: {resolved} (as written: {written})."
+    return f" Blocked path: {resolved}."
+
+
+def _workspace_write_block_runtime_message(path_text: Any = "", spelled: Any = "") -> str:
     """Guard-B block for a write-shaped command reaching a protected runtime root.
 
     Names the resolved offending path and the sanctioned route (the light-lane
@@ -740,19 +755,20 @@ def _workspace_write_block_runtime_message(path_text: Any = "") -> str:
     used to emit one byte-identical reasonless string, so the log could not even
     say WHICH path fired, and the agent had no route to self-correct.
     """
-    path_note = f" Blocked path: {path_text}." if str(path_text or "").strip() else ""
     return (
         "⚠️ WORKSPACE_SHELL_BLOCKED: write-like shell command mentions Ouroboros system/data paths."
-        + path_note
+        + _blocked_path_note(path_text, spelled)
         + " Use the gated read_file/write_file tools for runtime data (installed skill"
         " payloads: root=skill_payload with bucket/skill_name, or run the command with"
         " cwd=skill_payload), and keep shell writes inside the selected process root."
     )
 
 
-def _workspace_write_block_outside_root_message(path_text: Any = "", work_dir: Any = "") -> str:
+def _workspace_write_block_outside_root_message(
+    path_text: Any = "", work_dir: Any = "", spelled: Any = "",
+) -> str:
     """Guard-B block for a write-shaped command targeting outside the process root."""
-    path_note = f" Blocked path: {path_text}." if str(path_text or "").strip() else ""
+    path_note = _blocked_path_note(path_text, spelled)
     root_note = f" Selected process root: {work_dir}." if str(work_dir or "").strip() else ""
     return (
         "⚠️ WORKSPACE_SHELL_BLOCKED: write-like shell commands may not target paths"
@@ -776,21 +792,23 @@ def _executor_backend_candidate_path(ctx: Any, candidate: str) -> pathlib.Path |
         return None
 
 
-def _workspace_write_block_runtime_result(path_text: Any = "") -> ToolResult:
+def _workspace_write_block_runtime_result(path_text: Any = "", spelled: Any = "") -> ToolResult:
     """Typed carrier of the Guard-B runtime-path denial (same bytes in text)."""
     return ToolResult(
         status="blocked",
         code="WORKSPACE_BLOCKED",
-        text=_workspace_write_block_runtime_message(path_text),
+        text=_workspace_write_block_runtime_message(path_text, spelled),
     )
 
 
-def _workspace_write_block_outside_root_result(path_text: Any = "", work_dir: Any = "") -> ToolResult:
+def _workspace_write_block_outside_root_result(
+    path_text: Any = "", work_dir: Any = "", spelled: Any = "",
+) -> ToolResult:
     """Typed carrier of the Guard-B outside-root denial (same bytes in text)."""
     return ToolResult(
         status="blocked",
         code="WORKSPACE_BLOCKED",
-        text=_workspace_write_block_outside_root_message(path_text, work_dir),
+        text=_workspace_write_block_outside_root_message(path_text, work_dir, spelled),
     )
 
 
@@ -1322,7 +1340,7 @@ def _workspace_shell_write_block(
                     for protected_path in protected_paths:
                         try:
                             mapped_executor.relative_to(protected_path)
-                            return _workspace_write_block_runtime_result(mapped_executor)
+                            return _workspace_write_block_runtime_result(mapped_executor, candidate)
                         except Exception:
                             pass
                 if _executor_backend_candidate_allowed(
@@ -1362,11 +1380,11 @@ def _workspace_shell_write_block(
                     for protected_path in protected_paths:
                         try:
                             resolved.relative_to(protected_path)
-                            return _workspace_write_block_runtime_result(resolved)
+                            return _workspace_write_block_runtime_result(resolved, candidate)
                         except Exception:
                             pass
                     if is_write and not pro_workspace_passthrough:
-                        return _workspace_write_block_outside_root_result(resolved, work_dir)
+                        return _workspace_write_block_outside_root_result(resolved, work_dir, candidate)
                     continue
                 deliverables_decision = decide_deliverables(pathlib.Path(candidate))
                 if deliverables_decision is not None:
@@ -1401,11 +1419,11 @@ def _workspace_shell_write_block(
             for protected_path in protected_paths:
                 try:
                     resolved.relative_to(protected_path)
-                    return _workspace_write_block_runtime_result(resolved)
+                    return _workspace_write_block_runtime_result(resolved, candidate)
                 except Exception:
                     pass
             if is_write and not pro_workspace_passthrough:
-                return _workspace_write_block_outside_root_result(resolved, work_dir)
+                return _workspace_write_block_outside_root_result(resolved, work_dir, candidate)
     return None
 
 

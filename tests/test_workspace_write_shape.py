@@ -1000,3 +1000,141 @@ def test_round3_ordinary_outside_reads_stay_allowed(tmp_path):
     for name, command in commands:
         out = _shell_guard_text(reg, {"cmd": command, "cwd": workspace}, "advanced")
         assert out is None, (name, command, out)
+
+
+# --- Windows spellings: the first windows-latest execution of this serial suite ---
+#
+# Five failures, two root causes, neither in tokenization (shlex posix mode strips
+# only UNQUOTED backslashes, and the raw-text harvest lane already recovers such a
+# spelling): (1) a Windows path typed into a plain Python literal ("C:\Users\x") is
+# not a valid Python string (\U opens a unicode escape), so the AST lane reported
+# UNKNOWN and the row fail-closed into an outside-root WRITE for a pure read;
+# (2) the block named only the natively RESOLVED path (C:\Users\Shared\x for a
+# command that wrote /Users/Shared/x). The tests below push the exact Windows
+# spellings through the host-independent seams. The one branch that cannot run
+# here — pathlib resolving a drive path natively (`os.name == "nt"` in
+# _workspace_shell_write_block) — is exercised through the message builder with
+# PureWindowsPath inputs: PosixPath cannot resolve a drive path, and patching
+# os.name breaks pathlib's flavour selection rather than simulating Windows.
+
+WINDOWS_TMP = r"C:\Users\runneradmin\AppData\Local\Temp\pytest-of-runneradmin\pytest-0"
+
+
+def test_windows_spelled_python_literals_are_read_verbatim():
+    from ouroboros.tools.shell_guards import _python_write_targets_and_unknown
+    from ouroboros.tools.write_shape import python_body_ast
+
+    read = f'print(open("{WINDOWS_TMP}\\outside\\read").read())'
+    assert python_body_ast(read) is not None
+    assert _python_write_targets_and_unknown(read) == ([], False)
+    assert _python_write_targets_and_unknown(
+        f"print(open('{WINDOWS_TMP}\\scratch\\blob.bin', 'rb').read(8))"
+    ) == ([], False)
+    # Writes keep their targets in the spelling the model typed, through every
+    # modelled channel: mode-open, os.open, pathlib join.
+    out = f"{WINDOWS_TMP}\\outside\\out"
+    assert _python_write_targets_and_unknown(f'open("{out}", "w").write("x")') == ([out], False)
+    assert _python_write_targets_and_unknown(
+        f'import os; fd=os.open("{out}", os.O_WRONLY|os.O_CREAT); os.write(fd, b"x")'
+    ) == ([out], False)
+    assert _python_write_targets_and_unknown(
+        f'from pathlib import Path; (Path("{WINDOWS_TMP}") / "outside" / "out").write_text("y")'
+    ) == ([out], False)
+    # An already-escaped spelling parses first time and keeps the same value.
+    assert _python_write_targets_and_unknown(f"open({out!r}, 'w')") == ([out], False)
+    # Uncertainty is untouched: an opaque body stays UNKNOWN, and so does a body
+    # unparseable for any reason other than its literals (python2 print).
+    assert _python_write_targets_and_unknown(
+        f'import subprocess; subprocess.run(["rm", "{out}"])'
+    )[1] is True
+    assert _python_write_targets_and_unknown(f'print "{out}"') == ([], True)
+
+
+def test_verbatim_string_source_respells_only_unescaped_backslashes():
+    import ast
+
+    from ouroboros.tools.write_shape import _verbatim_string_source
+
+    for source, value in (
+        (r'"C:\Users\x"', "C:\\Users\\x"),
+        (r"b'C:\Users\x'", b"C:\\Users\\x"),
+        (r'"""C:\Users\x"""', "C:\\Users\\x"),
+        (r'"a\"b\\c"', 'a"b\\c'),  # quote and backslash escapes are kept
+        (r"'it\'s'", "it's"),
+        ('"\\n"', "\\n"),  # verbatim, not a newline
+    ):
+        assert ast.literal_eval(_verbatim_string_source(source)) == value, source
+    assert _verbatim_string_source(r'r"C:\Users\x"') == r'r"C:\Users\x"'
+    assert _verbatim_string_source('x = 1\ny = "C:\\Users\\x"\n') == 'x = 1\ny = "C:\\\\Users\\\\x"\n'
+    assert _verbatim_string_source('open("unterminated') is None
+
+
+def test_windows_spelled_pure_reads_stay_allowed_on_every_host(tmp_path):
+    """The three windows-latest shapes, spelled exactly as the Windows run spelled
+    them, allowed on a POSIX host too — the classification is host-independent."""
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    read = f"{WINDOWS_TMP}\\outside\\read"
+    for name, command in (
+        ("python_c", ["python3", "-c", f'print(open("{read}").read())']),
+        ("python_heredoc", f"python3 - <<'EOF'\nprint(open(\"{read}\").read())\nEOF"),
+        ("sh_wrapped_repr", ["sh", "-c", f"python3 -c \"print(open({read!r}, 'rb').read(8))\""]),
+    ):
+        out = _shell_guard_text(reg, {"cmd": command, "cwd": workspace}, "advanced")
+        assert out is None, (name, command, out)
+
+
+def test_windows_spelled_writes_stay_blocked_and_named(tmp_path):
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    out = f"{WINDOWS_TMP}\\outside\\out"
+    for command in (
+        ["python3", "-c", f'open("{out}", "w").write("x")'],
+        ["sh", "-c", f"python3 -c \"open({out!r}, 'w').write('x')\""],
+        f"python3 - <<'EOF'\nopen(\"{out}\", \"w\").write(\"x\")\nEOF",
+    ):
+        text = _shell_guard_text(reg, {"cmd": command, "cwd": workspace}, "advanced") or ""
+        assert "outside the selected process root" in text, command
+        assert f"Blocked path: {out}" in text, command
+
+
+def test_outside_root_block_names_the_spelling_the_model_used(tmp_path):
+    """When the resolved path differs from the operand (a relative spelling, a
+    symlink alias — or, on Windows, a POSIX-rooted spelling resolved onto the
+    cwd drive), the block names both, resolved first so earlier pins hold."""
+    reg = _registry(tmp_path, mode="external")
+    workspace = tmp_path / "workspace"
+    real = tmp_path / "outside_real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    for spelled in (f"{alias / 'f'}", "../outside_real/f"):
+        text = _shell_guard_text(reg,
+            {"cmd": ["sh", "-c", f"echo x > {spelled}"], "cwd": str(workspace)}, "advanced",
+        ) or ""
+        assert f"Blocked path: {real / 'f'} (as written: {spelled})." in text, spelled
+    # Identical spellings are named once.
+    text = _shell_guard_text(reg,
+        {"cmd": ["sh", "-c", f"echo x > {real / 'g'}"], "cwd": str(workspace)}, "advanced",
+    ) or ""
+    assert f"Blocked path: {real / 'g'}." in text
+
+
+def test_block_messages_carry_a_windows_resolution_beside_the_spelling():
+    """The `os.name == "nt"` resolving branch hands the builders a natively
+    resolved WindowsPath for a POSIX-rooted operand; the message must still
+    show the operand the model typed."""
+    from ouroboros.tools.registry_guards import (
+        _workspace_write_block_outside_root_message,
+        _workspace_write_block_runtime_message,
+    )
+
+    resolved = pathlib.PureWindowsPath(r"C:\Users\Shared\x")
+    root = pathlib.PureWindowsPath(r"C:\Users\runneradmin\ws")
+    text = _workspace_write_block_outside_root_message(resolved, root, spelled="/Users/Shared/x")
+    assert r"Blocked path: C:\Users\Shared\x (as written: /Users/Shared/x)." in text
+    assert r"Selected process root: C:\Users\runneradmin\ws." in text
+    runtime = _workspace_write_block_runtime_message(resolved, spelled=str(resolved))
+    assert r"Blocked path: C:\Users\Shared\x." in runtime
+    assert "(as written" not in runtime
+    assert "Blocked path" not in _workspace_write_block_runtime_message("")
