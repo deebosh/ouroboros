@@ -13,9 +13,11 @@ printed), the credit preflight ``min(key limit remaining, account credits)``, th
 clean DETACHED clone of ``--seed`` (a commit or ref of the source; never the operator's live
 worktree, so concurrent edits cannot dirty it), the effective settings written from the TREE'S
 DEFAULTS (D-09) with the budget knobs as settings keys (never env), and the lane pool.
-``--total-budget`` is a RUN-WIDE cap kept by ``RunBudget``: an attempt is scheduled only while
-spent + reserved stays under it and every lane's TOTAL_BUDGET is its OWN reservation — an immutable
-ceiling disjoint from every other lane's, so the settled spend plus the ceilings in flight never exceed the cap.
+``--total-budget`` is a RUN-WIDE cap kept by ``RunBudget``: an attempt whose reservation can never
+fit next to the settled spend is refused (a ``not_run`` row, PER attempt — no run-wide halt); one that
+fits the cap but not the reservations in flight WAITS for a lane to settle and asks again; every
+lane's TOTAL_BUDGET is its OWN reservation — an immutable ceiling disjoint from every other lane's,
+so the settled spend plus the ceilings in flight never exceed the cap.
 The run-root template is redacted (the key value lives only in each lane's 0600 settings file
 and is disclosed by fingerprint). The manifest names the model from the APPLIED settings file,
 not argv. Every lane leaves ``lanes/<id>_a<n>/result.json`` (checks, digests, grants by
@@ -260,25 +262,31 @@ class RunBudget:
     Reservation rule, per attempt: ``per_task_usd x root_tasks`` — the runtime fences each
     ROOT task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their root's
     ceiling, so SW1 (one root, two scouts) reserves for one root and SK1 (author + dispatch)
-    for two. An attempt is admitted only while ``spent + reserved(in flight) + its own
-    reservation <= cap``; the first refusal halts scheduling for the rest of the run and every
-    later attempt is recorded ``not_run``. ``spent`` is re-read from the lanes' durable usage
-    on every question, so a lane overrunning its reservation is seen by the next admission.
-    Each lane's TOTAL_BUDGET is its OWN reservation (``ceiling``): the ceilings in flight are
-    disjoint and, by the admission rule, their sum plus the settled spend never exceeds the cap
-    (a live lane's spend is already inside its ceiling) — the
-    first draft handed every lane ``cap - others' reservations``, which two concurrent lanes
-    could sum above the cap.
+    for two. Admission asks two questions, PER attempt: ``spent + reservation > cap`` — it can
+    NEVER fit, refused and recorded ``not_run`` (a later attempt with a smaller reservation is
+    asked on its own; nothing halts the run); otherwise ``spent + reserved(in flight) +
+    reservation > cap`` — it cannot fit YET, so it waits on the ledger and re-asks after every
+    settle (the first paid run halted the whole run on such a refusal: SW1/SK1 were written off
+    at t=+21 min while the blocker was two SM1 reservations still in flight, not the cap). A
+    waiter only waits while something is in flight, so it is always woken by that lane's settle;
+    ``spent`` is re-read from the lanes' durable usage on every question (it only grows, so a
+    waiter can end refused — its ``waited_sec`` is recorded). Each lane's TOTAL_BUDGET is its
+    OWN reservation (``ceiling``): the ceilings in flight are disjoint and, by the admission rule,
+    their sum plus the settled spend never exceeds the cap (a live lane's spend is already inside
+    its ceiling) — the first draft handed every lane ``cap - others' reservations``, which two
+    concurrent lanes could sum above the cap. The snapshot carries no ``halted`` flag: the run
+    never halts; ``refusals`` lists every refused attempt's facts and ``first_refused`` names the
+    first for the report.
     """
 
     def __init__(self, cap_usd: float, per_task_usd: float,
                  reader: Callable[[pathlib.Path], tuple[float, int]] | None = None) -> None:
         self.cap, self.per_task = float(cap_usd), float(per_task_usd)
         self._read = reader or lane_spend
-        self._lock = threading.Lock()
+        self._lock = threading.Condition()                         # settle() wakes every waiting admission
         self._live: dict[tuple, tuple[pathlib.Path, float]] = {}   # job -> (data root, reservation)
         self._final: dict[tuple, tuple[float, int]] = {}           # job -> (spent, unknown rows)
-        self.halt: dict | None = None
+        self.refusals: list[dict] = []
         self.not_run: list[str] = []
 
     def reservation(self, root_tasks: int) -> float:
@@ -299,20 +307,32 @@ class RunBudget:
     def _reserved_locked(self, *, except_job: tuple | None = None) -> float:
         return sum(reserved for job, (_root, reserved) in self._live.items() if job != except_job)
 
-    def admit(self, job: tuple, root_tasks: int, data_root: pathlib.Path) -> tuple[bool, dict]:
-        need = self.reservation(root_tasks)
+    def admit(self, job: tuple, root_tasks: int, data_root: pathlib.Path, *,
+              on_wait: Callable[[str], None] | None = None) -> tuple[bool, dict]:
+        """``(admitted, facts)`` — blocks while the attempt cannot fit YET (``on_wait`` is told
+        once, with the numbers, when the wait begins); ``facts["waited_sec"]`` is how long."""
+        need, name, waited_from = self.reservation(root_tasks), f"{job[0]}_a{job[1]}", None
         with self._lock:
-            spent, unknown = self._spent_locked()
-            reserved = self._reserved_locked()
-            facts = {"cap_usd": self.cap, "spent_usd": round(spent, 4), "reserved_usd": round(reserved, 4),
-                     "reservation_usd": need, "unknown_cost_rows": unknown}
-            if self.halt is None and spent + reserved + need > self.cap:
-                self.halt = {"reason": "budget_cap", "at": now_iso(), "first_refused": f"{job[0]}_a{job[1]}", **facts}
-            if self.halt is not None:
-                self.not_run.append(f"{job[0]}_a{job[1]}")
-                return False, {**facts, "halt": dict(self.halt)}
-            self._live[job] = (pathlib.Path(data_root), need)
-            return True, facts
+            while True:
+                spent, unknown = self._spent_locked()
+                reserved = self._reserved_locked()
+                waited = round(time.monotonic() - waited_from, 3) if waited_from is not None else 0.0
+                facts = {"cap_usd": self.cap, "spent_usd": round(spent, 4), "reserved_usd": round(reserved, 4),
+                         "reservation_usd": need, "unknown_cost_rows": unknown, "waited_sec": waited}
+                if spent + need > self.cap:                       # can never fit: refused, this attempt only
+                    self.refusals.append({"attempt": name, "reason": "budget_cap", "at": now_iso(), **facts})
+                    self.not_run.append(name)
+                    return False, facts
+                if reserved > 0 and spent + reserved + need > self.cap:   # cannot fit yet: a lane in flight will settle
+                    if waited_from is None:
+                        waited_from = time.monotonic()
+                        if on_wait is not None:
+                            on_wait(f"waiting — in flight reserved ${reserved:.2f}, needs ${need:.2f}, "
+                                    f"spent ${spent:.2f}, cap ${self.cap:.2f}")
+                    self._lock.wait()
+                    continue
+                self._live[job] = (pathlib.Path(data_root), need)
+                return True, facts
 
     def ceiling(self, job: tuple) -> float:
         """The lane's TOTAL_BUDGET: its own reservation — immutable, disjoint from every other
@@ -326,6 +346,7 @@ class RunBudget:
             entry = self._live.pop(job, None)
             if entry is not None:
                 self._final[job] = self._read(entry[0])
+            self._lock.notify_all()                                # every waiter re-asks against the new ledger
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -333,7 +354,8 @@ class RunBudget:
             return {"cap_usd": self.cap, "per_task_usd": self.per_task, "reservation_rule": RESERVATION_RULE,
                     "spent_usd": round(spent, 4), "reserved_usd": round(self._reserved_locked(), 4),
                     "unknown_cost_rows": unknown, "lanes_in_flight": len(self._live), "lanes_settled": len(self._final),
-                    "halted": self.halt is not None, "halt": dict(self.halt) if self.halt else None,
+                    "refusals": [dict(r) for r in self.refusals],
+                    "first_refused": self.refusals[0]["attempt"] if self.refusals else None,
                     "attempts_not_run": list(self.not_run)}
 
 
@@ -574,17 +596,24 @@ def _record_row(out: pathlib.Path, lane: pathlib.Path, row: dict) -> None:
 def run_attempt(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, template: dict,
                 stagger: Stagger, states: dict, seed: pathlib.Path, budget: RunBudget, *,
                 key: str = "", seed_sha: str = "") -> dict:
-    """Budget admission around one lane: reserve, run, settle. A refused attempt is a recorded
+    """Budget admission around one lane: reserve (waiting out the reservations in flight when the
+    attempt fits the cap but not them yet), run, settle. A refused attempt is a recorded
     ``not_run`` row — never a silent gap in the index."""
     sid, attempt = job
     lane = out / "lanes" / f"{sid}_a{attempt}"
-    admitted, facts = budget.admit(job, SCENARIOS[sid].root_tasks, lane / "data")
+
+    def waiting(msg: str) -> None:
+        _log(f"{sid}_a{attempt}: {msg}")
+        states[job] = ("waiting (budget)", time.time())
+
+    admitted, facts = budget.admit(job, SCENARIOS[sid].root_tasks, lane / "data", on_wait=waiting)
     if not admitted:
         row = {**_lane_row(job, args), "status": "not_run", "reason_code": "budget_cap", "budget": facts,
                "refusal": {"type": "RunBudgetCap", "code": "budget_cap", "message": "run-wide budget cap reached"},
                "ended_at": now_iso(), "duration_sec": 0.0}
         _log(f"{sid}_a{attempt}: not run — run budget cap: spent ${facts['spent_usd']:.2f} + reserved "
-             f"${facts['reserved_usd']:.2f} + needed ${facts['reservation_usd']:.2f} > cap ${facts['cap_usd']:.2f}")
+             f"${facts['reserved_usd']:.2f} + needed ${facts['reservation_usd']:.2f} > cap ${facts['cap_usd']:.2f}"
+             + (f" (after waiting {facts['waited_sec']:.0f}s)" if facts["waited_sec"] else ""))
         _record_row(out, lane, row)
         states[job] = ("not_run (budget cap)", time.time())
         return row
@@ -748,7 +777,7 @@ def watcher(stop: threading.Event, states: dict, interval: float, budget: RunBud
         snap = budget.snapshot()
         spend = (f"spent ${snap['spent_usd']:.2f}/${snap['cap_usd']:.2f} reserved ${snap['reserved_usd']:.2f}"
                  + (f" unknown-cost rows {snap['unknown_cost_rows']}" if snap["unknown_cost_rows"] else "")
-                 + (" HALTED" if snap["halted"] else ""))
+                 + (f" not_run {len(snap['attempts_not_run'])}" if snap["attempts_not_run"] else ""))
         line = f"t=+{time.time() - started:.0f}s lanes: {lanes or '-'} | {spend} | free {' '.join(disks)}"
         if probe is not None:
             line += " | " + probe.fragment()
@@ -893,12 +922,12 @@ def main(argv: list[str] | None = None) -> int:
         budget_final = budget.snapshot()
         _log(f"verdicts: {json.dumps(verdicts)}")
         _log(f"budget: spent ${budget_final['spent_usd']:.2f} of cap ${budget_final['cap_usd']:.2f}"
-             + (f"; HALTED at {budget_final['halt']['first_refused']} ({budget_final['halt']['reason']})"
-                if budget_final["halted"] else ""))
+             + (f"; {len(budget_final['refusals'])} attempt(s) refused at the cap, first {budget_final['first_refused']}"
+                if budget_final["refusals"] else ""))
         final.update({"outcome": "completed" if ok else "failed", "exit_code": 0 if ok else 1,
                       "scenarios": verdicts, "lanes_run": sum(1 for r in rows if r["status"] != "not_run"),
                       "budget": budget_final})
-        if budget_final["halted"]:
+        if budget_final["refusals"]:
             final["stop_reason"] = "budget_cap"
     return 0 if ok else 1
 

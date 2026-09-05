@@ -278,33 +278,59 @@ def test_lane_spend_sums_durable_llm_usage_rows_and_counts_unknown_costs(tmp_pat
     assert run_live_lanes.lane_spend(tmp_path / "absent") == (0.0, 0)
 
 
-def test_run_budget_reservation_rule_halts_new_attempts_at_the_cap(tmp_path):
-    """spent (durable, re-read) + reserved (in flight) + this attempt's reservation must fit the
-    cap; the first refusal halts the rest of the run; a lane's TOTAL_BUDGET is its OWN reservation,
-    so the ceilings of the lanes in flight are disjoint and settled spend + in-flight ceilings
-    never exceeds the cap (the first draft handed each lane cap - others' reservations: two
-    concurrent lanes could sum above the cap)."""
+def _ask(budget, job, root_tasks, root, waits: list | None = None):
+    """``admit`` on its own thread (it may block): ``(thread, box)``; ``box["r"]`` is the answer."""
+    box: dict = {}
+    thread = threading.Thread(target=lambda: box.__setitem__(
+        "r", budget.admit(job, root_tasks, root, on_wait=waits.append if waits is not None else None)), daemon=True)
+    thread.start()
+    thread.join(0.3)
+    return thread, box
+
+
+def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_never_fit(tmp_path):
+    """Per attempt: spent (durable, re-read) + reservation > cap -> refused, no run-wide halt; fits
+    the cap but not the reservations in flight -> waits and re-asks after EVERY settle (the first
+    paid run wrote SW1/SK1 off at t=+21 min behind two SM1 reservations still in flight); spent only
+    grows, so a waiter can end refused with its wait recorded. A lane's TOTAL_BUDGET is its OWN
+    reservation, so the ceilings in flight are disjoint and settled spend + in-flight ceilings
+    never exceeds the cap (the first draft handed each lane cap - others' reservations)."""
     spend = {}
     budget = run_live_lanes.RunBudget(20.0, 8.0, reader=lambda root: (spend.get(root.name, 0.0), 0))
     assert budget.reservation(1) == 8.0 and budget.reservation(2) == 16.0 and budget.reservation(0) == 8.0
     ok, facts = budget.admit(("SM1", 1), 1, tmp_path / "a")
     assert ok and facts == {"cap_usd": 20.0, "spent_usd": 0.0, "reserved_usd": 0.0, "reservation_usd": 8.0,
-                            "unknown_cost_rows": 0}
+                            "unknown_cost_rows": 0, "waited_sec": 0.0}
     assert budget.ceiling(("SM1", 1)) == 8.0            # its own reservation, never the whole cap
     ok, facts = budget.admit(("SW1", 1), 1, tmp_path / "b")
     assert ok and facts["reserved_usd"] == 8.0
     assert budget.ceiling(("SW1", 1)) == 8.0            # disjoint from lane a: 8 + 8 + spent 0 <= cap 20
     assert budget.ceiling(("SM1", 1)) + budget.ceiling(("SW1", 1)) <= 20.0
     spend["a"] = 5.0                                    # lane a spends while in flight: visible now
-    ok, facts = budget.admit(("SK1", 1), 2, tmp_path / "c")   # 5 + 16 + 16 > 20
-    assert not ok and facts["spent_usd"] == 5.0 and facts["halt"]["first_refused"] == "SK1_a1"
-    ok, _facts = budget.admit(("SM1", 2), 1, tmp_path / "d")  # would fit (5+16+8 > 20: no) - halted anyway
-    assert not ok and budget.not_run == ["SK1_a1", "SM1_a2"]
-    budget.settle(("SM1", 1))
-    budget.settle(("SW1", 1))
+    ok, facts = budget.admit(("SK1", 1), 2, tmp_path / "c")   # 5 + 16 > 20: can NEVER fit -> refused at once
+    assert not ok and facts["spent_usd"] == 5.0 and facts["waited_sec"] == 0.0 and budget.not_run == ["SK1_a1"]
+    waits: list = []
+    thread, box = _ask(budget, ("SM1", 2), 1, tmp_path / "d", waits)   # 5 + 8 <= 20 but 5 + 16 + 8 > 20: waits
+    assert thread.is_alive() and budget.not_run == ["SK1_a1"]   # not refused: the blocker is in flight
+    assert waits == ["waiting — in flight reserved $16.00, needs $8.00, spent $5.00, cap $20.00"]
+    budget.settle(("SM1", 1))                           # 5 + 8 + 8 > 20: re-asked, still waiting
+    thread.join(0.3)
+    assert thread.is_alive() and waits[1:] == []        # told once per wait, not per wake-up
+    budget.settle(("SW1", 1))                           # 5 + 0 + 8: admitted after the wait
+    thread.join(5.0)
+    assert not thread.is_alive() and box["r"][0] and box["r"][1]["reserved_usd"] == 0.0 and box["r"][1]["waited_sec"] > 0
+    thread, box = _ask(budget, ("SM1", 3), 1, tmp_path / "e")   # 5 + 8 <= 20 but 5 + 8 + 8 > 20: waits
+    assert thread.is_alive()
+    spend["d"] = 10.0                                   # the lane in flight overruns: spent 15 on the next question
+    budget.settle(("SM1", 2))                           # 15 + 8 > 20: refused AFTER the wait
+    thread.join(5.0)
+    assert not thread.is_alive() and not box["r"][0] and box["r"][1]["spent_usd"] == 15.0 and box["r"][1]["waited_sec"] > 0
     snap = budget.snapshot()
-    assert snap["spent_usd"] == 5.0 and snap["reserved_usd"] == 0.0 and snap["lanes_settled"] == 2
-    assert snap["halted"] and snap["halt"]["reason"] == "budget_cap" and snap["attempts_not_run"] == ["SK1_a1", "SM1_a2"]
+    assert snap["spent_usd"] == 15.0 and snap["reserved_usd"] == 0.0 and snap["lanes_settled"] == 3
+    assert snap["attempts_not_run"] == ["SK1_a1", "SM1_a3"] and snap["first_refused"] == "SK1_a1" and "halted" not in snap
+    assert [(r["attempt"], r["reason"], r["reservation_usd"]) for r in snap["refusals"]] == [
+        ("SK1_a1", "budget_cap", 16.0), ("SM1_a3", "budget_cap", 8.0)]
+    assert snap["refusals"][0]["waited_sec"] == 0.0 and snap["refusals"][1]["waited_sec"] > 0
     assert snap["reservation_rule"] == run_live_lanes.RESERVATION_RULE
     # The ceiling ignores what OTHER lanes spend (it is this lane's reservation), and the floor
     # keeps it positive (the runtime reads a non-positive TOTAL_BUDGET as NO cap).
@@ -313,22 +339,33 @@ def test_run_budget_reservation_rule_halts_new_attempts_at_the_cap(tmp_path):
     assert tiny.ceiling(("SM1", 1)) == 8.0
     assert tiny.ceiling(("never", 9)) == run_live_lanes.LANE_BUDGET_FLOOR_USD   # not admitted: the floor, not the cap
     # The floor is part of the ONE effective ceiling: admission reserves it, the lane receives it,
-    # so micro reservations cannot sum past the cap (5 x 0.01 fit a 0.05 cap, the 6th is refused).
+    # so micro reservations cannot sum past the cap (5 x 0.01 fit a 0.05 cap, the 6th waits on them).
     micro = run_live_lanes.RunBudget(0.05, 0.001, reader=lambda root: (0.0, 0))
     assert micro.reservation(1) == run_live_lanes.LANE_BUDGET_FLOOR_USD
     for n in range(5):
         ok, facts = micro.admit(("SM1", n), 1, tmp_path / f"m{n}")
         assert ok and facts["reservation_usd"] == 0.01 and micro.ceiling(("SM1", n)) == 0.01
-    assert not micro.admit(("SM1", 5), 1, tmp_path / "m5")[0]
+    sixth, box = _ask(micro, ("SM1", 5), 1, tmp_path / "m5")
+    assert sixth.is_alive() and micro.not_run == []
     assert sum(micro.ceiling(("SM1", n)) for n in range(5)) <= 0.05
+    for n in range(5):
+        micro.settle(("SM1", n))
+    sixth.join(5.0)
+    assert not sixth.is_alive() and box["r"][0]       # admitted once the five settled at $0
     below = run_live_lanes.RunBudget(0.005, 0.001, reader=lambda root: (0.0, 0))
-    assert not below.admit(("SM1", 1), 1, tmp_path / "z")[0]     # the floored reservation exceeds the cap
+    assert not below.admit(("SM1", 1), 1, tmp_path / "z")[0]     # the floored reservation exceeds the cap: refused
     # Fractional reservations are never rounded upward (round(0.01006, 4) would hand out 0.0101):
     # two exact 0.01006 reservations fill a 0.02012 cap and each lane receives exactly 0.01006.
     frac = run_live_lanes.RunBudget(0.02012, 0.01006, reader=lambda root: (0.0, 0))
     assert frac.admit(("SM1", 1), 1, tmp_path / "f1")[0] and frac.admit(("SM1", 2), 1, tmp_path / "f2")[0]
     assert frac.ceiling(("SM1", 1)) == 0.01006 and frac.ceiling(("SM1", 2)) == 0.01006
-    assert frac.ceiling(("SM1", 1)) + frac.ceiling(("SM1", 2)) <= 0.02012 and not frac.admit(("SM1", 3), 1, tmp_path / "f3")[0]
+    assert frac.ceiling(("SM1", 1)) + frac.ceiling(("SM1", 2)) <= 0.02012
+    third, box = _ask(frac, ("SM1", 3), 1, tmp_path / "f3")
+    assert third.is_alive()                             # full: waits, not refused
+    frac.settle(("SM1", 1))
+    frac.settle(("SM1", 2))
+    third.join(5.0)
+    assert not third.is_alive() and box["r"][0]
 
 
 # --------------------------------------------------------------------------- #
@@ -888,33 +925,39 @@ def test_run_root_template_is_redacted_and_the_key_reaches_only_the_lanes(tmp_pa
     assert manifest["extra"]["outcome"] == "completed" and manifest["extra"]["exit_code"] == 0
     assert manifest["extra"]["total_budget_usd"] == 100.0 and manifest["extra"]["per_task_usd"] == 8.0
     budget = manifest["extra"]["budget"]
-    assert budget["cap_usd"] == 100.0 and budget["halted"] is False and budget["attempts_not_run"] == []
+    assert budget["cap_usd"] == 100.0 and budget["refusals"] == [] and budget["attempts_not_run"] == []
+    assert budget["first_refused"] is None and "halted" not in budget
     assert budget["reservation_rule"] == run_live_lanes.RESERVATION_RULE and "stop_reason" not in manifest["extra"]
 
 
-def test_run_wide_cap_stops_new_attempts_and_records_not_run_rows(tmp_path, monkeypatch):
-    """cap $20, reservation unit $8, every settled lane read back at $5: SM1_a1 (0+0+8), SM1_a2
-    (5+0+8) run; SK1_a1 (10+0+16 > 20) is refused, SK1_a2 follows; both are recorded rows."""
+def test_run_wide_cap_refuses_per_attempt_and_records_not_run_rows(tmp_path, monkeypatch):
+    """cap $20, reservation unit $8, every settled lane read back at $5, one lane (nothing in
+    flight): SM1_a1 (0+8), SM1_a2 (5+8) run; SK1_a1 (10+16 > 20) and SK1_a2 are refused; SW1_a1
+    (10+8) still RUNS after them — a refusal is per attempt, not a halt; SW1_a2 (15+8 > 20) is
+    refused. Every refusal is a recorded row and the manifest's stop_reason."""
     monkeypatch.setattr(run_live_lanes, "lane_spend",
                         lambda root: (5.0, 0) if pathlib.Path(root).parent.exists() else (0.0, 0))
-    out, manifest = _fake_run(tmp_path, monkeypatch, ["--scenarios", "SM1,SK1", "--attempts", "2", "--lanes", "1",
+    out, manifest = _fake_run(tmp_path, monkeypatch, ["--scenarios", "SM1,SK1,SW1", "--attempts", "2", "--lanes", "1",
                                                       "--total-budget", "20", "--per-task-usd", "8"], expect_rc=1)
     budget = manifest["extra"]["budget"]
-    assert budget["halted"] is True and budget["halt"]["first_refused"] == "SK1_a1"
-    assert budget["halt"]["spent_usd"] == 10.0 and budget["halt"]["reservation_usd"] == 16.0
-    assert budget["attempts_not_run"] == ["SK1_a1", "SK1_a2"] and budget["spent_usd"] == 10.0
-    assert manifest["extra"]["stop_reason"] == "budget_cap" and manifest["extra"]["lanes_run"] == 2
+    assert budget["first_refused"] == "SK1_a1" and "halted" not in budget
+    assert [(r["attempt"], r["spent_usd"], r["reservation_usd"], r["waited_sec"]) for r in budget["refusals"]] == [
+        ("SK1_a1", 10.0, 16.0, 0.0), ("SK1_a2", 10.0, 16.0, 0.0), ("SW1_a2", 15.0, 8.0, 0.0)]
+    assert budget["attempts_not_run"] == ["SK1_a1", "SK1_a2", "SW1_a2"] and budget["spent_usd"] == 15.0
+    assert manifest["extra"]["stop_reason"] == "budget_cap" and manifest["extra"]["lanes_run"] == 3
     assert manifest["extra"]["scenarios"]["SK1"] == {"attempts": 2, "passed": 0, "infra_errors": 0, "not_run": 2,
                                                      "verdict": "fail"}
+    assert manifest["extra"]["scenarios"]["SW1"]["passed"] == 1 and manifest["extra"]["scenarios"]["SW1"]["not_run"] == 1
     rows = {json.loads(p.read_text(encoding="utf-8"))["attempt"]: json.loads(p.read_text(encoding="utf-8"))
             for p in out.glob("lanes/SM1_*/result.json")}
     assert rows[1]["lane_total_budget_usd"] == 8.0 and rows[2]["lane_total_budget_usd"] == 8.0   # each: its reservation
     refused = json.loads((out / "lanes" / "SK1_a1" / "result.json").read_text(encoding="utf-8"))
     assert refused["status"] == "not_run" and refused["reason_code"] == "budget_cap"
-    assert refused["refusal"]["code"] == "budget_cap" and refused["budget"]["halt"]["first_refused"] == "SK1_a1"
+    assert refused["refusal"]["code"] == "budget_cap" and refused["budget"]["waited_sec"] == 0.0
+    assert refused["budget"]["spent_usd"] == 10.0 and refused["budget"]["reservation_usd"] == 16.0
     index = [json.loads(ln) for ln in (out / "result_index.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert [(r["instance_id"], r["status"], r["reason_code"]) for r in index if r["instance_id"].startswith("SK1")] == [
-        ("SK1_a1", "not_run", "budget_cap"), ("SK1_a2", "not_run", "budget_cap")]
+    assert [(r["instance_id"], r["status"], r["reason_code"]) for r in index if r["status"] == "not_run"] == [
+        ("SK1_a1", "not_run", "budget_cap"), ("SK1_a2", "not_run", "budget_cap"), ("SW1_a2", "not_run", "budget_cap")]
 
 
 def test_self_mod_run_level_gate_fails_every_unconfirmed_lane(tmp_path, monkeypatch):
