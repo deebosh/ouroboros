@@ -186,6 +186,18 @@
  */
 
 /**
+ * 503 from an owner settings write whose body did not answer within its bound
+ * (twice OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC): the body keeps running
+ * in its server thread, so whether the bytes landed is UNKNOWN — `saved` is
+ * null, neither true nor false. Reload settings to see what landed instead of
+ * re-saving blindly. Shared by POST /api/settings and the owner endpoints.
+ * @typedef {Object} SettingsSaveTimeoutResponse
+ * @property {string} error
+ * @property {string} code  // settings_save_timeout
+ * @property {null} saved
+ */
+
+/**
  * 503 from POST /api/onboarding/complete: NOTHING was persisted, the wizard
  * stays open, and `can_skip` means "finish without agent defaults" will work.
  * @typedef {Object} OnboardingPresetFailureResponse

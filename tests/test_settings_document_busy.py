@@ -84,3 +84,74 @@ def test_every_settings_writer_answers_the_typed_busy_within_the_bound(
     assert payload["code"] == "settings_busy"
     assert payload.get("saved") is False
     assert "try again" in payload["error"]
+
+
+def test_the_initiating_writer_returns_within_the_same_bound(monkeypatch):
+    """The lock bounds only LATER writers; the INITIATING writer — the Save
+    whose body wedges inside its post-commit effects — used to hold the
+    request open forever. The seam now caps it at one lock wait plus one held
+    episode (twice the lock bound) and answers a typed ``settings_save_timeout``
+    with ``saved: null``: the body keeps running in its thread, so whether the
+    bytes landed is unknown and neither ``true`` nor ``false`` would be honest.
+    """
+    import asyncio
+    import threading
+    import time
+
+    import ouroboros.config as config
+    from ouroboros.gateway.settings import _run_settings_writer
+
+    monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 0.2)
+    release = threading.Event()
+    finished = threading.Event()
+
+    def wedged_writer(_request, _body):
+        release.wait(10)
+        finished.set()
+        return None
+
+    # A long-lived loop, as in the server: ``asyncio.run`` would drain its
+    # default executor on exit and wait for the abandoned thread anyway.
+    loop = asyncio.new_event_loop()
+    try:
+        started = time.monotonic()
+        response = loop.run_until_complete(
+            _run_settings_writer(wedged_writer, SimpleNamespace(), {})
+        )
+        elapsed = time.monotonic() - started
+        assert elapsed < 5, elapsed
+        assert not finished.is_set(), "the response must not wait for the wedged body"
+        release.set()
+        assert finished.wait(10), "the abandoned body must still run to completion in its thread"
+        loop.run_until_complete(loop.shutdown_default_executor())
+    finally:
+        release.set()
+        loop.close()
+
+    assert response.status_code == 503
+    payload = json.loads(response.body)
+    assert payload["code"] == "settings_save_timeout"
+    assert "saved" in payload and payload["saved"] is None
+    assert "still running" in payload["error"]
+    assert "reload Settings" in payload["error"]
+
+
+def test_the_typed_busy_refusal_still_wins_under_the_bound(monkeypatch):
+    """A body that raises the lock's typed refusal inside the bound is
+    reported as ``settings_busy``, not as a timeout."""
+    import asyncio
+
+    import ouroboros.config as config
+    from ouroboros.gateway.owner_settings import SettingsDocumentBusy
+    from ouroboros.gateway.settings import _run_settings_writer
+
+    monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 0.5)
+
+    def busy_writer(_request, _body):
+        raise SettingsDocumentBusy("another settings write is still in progress after 0.5s; try again")
+
+    response = asyncio.run(_run_settings_writer(busy_writer, SimpleNamespace(), {}))
+    assert response.status_code == 503
+    payload = json.loads(response.body)
+    assert payload["code"] == "settings_busy"
+    assert payload["saved"] is False

@@ -379,18 +379,42 @@ def _has_started_agent_tasks() -> bool:
 
 
 async def _run_settings_writer(fn: Any, request: Request, body: Any) -> JSONResponse:
-    """Run one settings WRITER endpoint body off the event loop.
+    """Run one settings WRITER endpoint body off the event loop, bounded.
 
     Every writer serializes on the bounded in-process document lock
     (``settings_document_mutation``); its typed refusal answers the same
     503 ``settings_busy`` on every endpoint — the generic save, the four
     single-decision endpoints and onboarding alike — never an untyped 500
     from one of them while another answers honestly.
+
+    The INITIATING writer is bounded by the same contract the lock enforces
+    on later writers (``OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC``): one
+    lock wait plus one held episode, each within that bound. A body wedged
+    in its post-commit effects (extension reload, remote configuration) is
+    abandoned to its uncancellable worker thread and the Save answers a typed
+    503 ``settings_save_timeout`` with ``saved: null`` — whether the bytes
+    landed is genuinely unknown then, so neither ``true`` nor ``false`` would
+    be honest. Later writers keep getting ``settings_busy`` meanwhile.
     """
+    from ouroboros.config import get_settings_document_lock_timeout_sec
+
+    bound_sec = get_settings_document_lock_timeout_sec()
     try:
-        return await asyncio.to_thread(fn, request, body)
+        return await asyncio.wait_for(
+            asyncio.to_thread(fn, request, body), timeout=2 * bound_sec,
+        )
     except SettingsDocumentBusy as exc:
         return unsaved_error(str(exc), 503, code="settings_busy")
+    except asyncio.TimeoutError:
+        log.warning(
+            "Settings writer %s did not answer within %ss; its thread keeps running",
+            getattr(fn, "__name__", fn), 2 * bound_sec,
+        )
+        return json_error(
+            f"the settings save is still running in the server after {2 * bound_sec}s "
+            "and was left to finish on its own; reload Settings to see what landed",
+            503, code="settings_save_timeout", saved=None,
+        )
 
 
 @owner_write_guard
