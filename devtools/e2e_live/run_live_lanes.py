@@ -14,7 +14,8 @@ clean DETACHED clone of ``--seed`` (a commit or ref of the source; never the ope
 worktree, so concurrent edits cannot dirty it), the effective settings written from the TREE'S
 DEFAULTS (D-09) with the budget knobs as settings keys (never env), and the lane pool.
 ``--total-budget`` is a RUN-WIDE cap kept by ``RunBudget``: an attempt is scheduled only while
-spent + reserved stays under it and every lane's TOTAL_BUDGET is the headroom left at its start.
+spent + reserved stays under it and every lane's TOTAL_BUDGET is its OWN reservation — an immutable
+ceiling disjoint from every other lane's, so the ceilings in flight plus the spend never exceed the cap.
 The run-root template is redacted (the key value lives only in each lane's 0600 settings file
 and is disclosed by fingerprint). The manifest names the model from the APPLIED settings file,
 not argv. Every lane leaves ``lanes/<id>_a<n>/result.json`` (checks, digests, grants by
@@ -81,7 +82,8 @@ SEED_POLICY = "detached_clone_of_ref"
 # A lane's TOTAL_BUDGET must stay POSITIVE: the runtime reads a non-positive value as "no finite
 # global budget" (``settings_setup_contract.resolve_total_budget_usd``), the opposite of a cap.
 LANE_BUDGET_FLOOR_USD = 0.01
-RESERVATION_RULE = "per_task_usd x root_tasks (children spend under their root task's ceiling)"
+RESERVATION_RULE = ("per_task_usd x root_tasks (children spend under their root task's ceiling); "
+                    "the lane's TOTAL_BUDGET is that reservation, so in-flight ceilings + spend <= cap")
 
 
 def _log(msg: str) -> None:
@@ -96,7 +98,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--attempts", type=int, default=1, help="attempts per scenario (every one runs and is recorded)")
     ap.add_argument("--pass-of", type=int, default=1, help="passes needed for a scenario verdict")
     ap.add_argument("--total-budget", type=float, default=100.0,
-                    help="RUN-WIDE USD cap shared by every lane (each lane's TOTAL_BUDGET is the headroom at its start)")
+                    help="RUN-WIDE USD cap shared by every lane (each lane's TOTAL_BUDGET is its own reservation)")
     ap.add_argument("--per-task-usd", type=float, default=8.0,
                     help="OUROBOROS_PER_TASK_COST_USD in the lane settings; also the per-root-task reservation unit")
     ap.add_argument("--task-timeout", type=int, default=1500)
@@ -154,8 +156,8 @@ def effective_settings(args: argparse.Namespace, key: str) -> dict:
     """The run template (D-09: the defaults of the tree under test, never the owner's live
     settings). Every model slot is written explicitly so the manifest can name it from the FILE;
     in stub mode the slots name the loopback stub, which IS the model of that run. The
-    template's TOTAL_BUDGET is the RUN cap; each lane rewrites it with its own headroom
-    (``RunBudget.headroom``) before its server starts."""
+    template's TOTAL_BUDGET is the RUN cap; each lane rewrites it with its own ceiling
+    (``RunBudget.ceiling``: its reservation) before its server starts."""
     slots = stub_lane.STUB_MODEL_SLOTS if args.stub else declared_model_settings({})
     overrides = {
         **slots,
@@ -247,6 +249,10 @@ class RunBudget:
     reservation <= cap``; the first refusal halts scheduling for the rest of the run and every
     later attempt is recorded ``not_run``. ``spent`` is re-read from the lanes' durable usage
     on every question, so a lane overrunning its reservation is seen by the next admission.
+    Each lane's TOTAL_BUDGET is its OWN reservation (``ceiling``): the ceilings in flight are
+    disjoint and, by the admission rule, their sum plus the spend never exceeds the cap — the
+    first draft handed every lane ``cap - others' reservations``, which two concurrent lanes
+    could sum above the cap.
     """
 
     def __init__(self, cap_usd: float, per_task_usd: float,
@@ -289,12 +295,12 @@ class RunBudget:
             self._live[job] = (pathlib.Path(data_root), need)
             return True, facts
 
-    def headroom(self, job: tuple) -> float:
-        """The lane's TOTAL_BUDGET: the cap minus what is spent minus the OTHER in-flight
-        reservations — never the whole cap while anyone else is running, never non-positive."""
+    def ceiling(self, job: tuple) -> float:
+        """The lane's TOTAL_BUDGET: its own reservation — immutable, disjoint from every other
+        lane's, never non-positive (the runtime reads a non-positive budget as NO cap)."""
         with self._lock:
-            spent, _unknown = self._spent_locked()
-            return max(LANE_BUDGET_FLOOR_USD, round(self.cap - spent - self._reserved_locked(except_job=job), 4))
+            entry = self._live.get(job)
+            return max(LANE_BUDGET_FLOOR_USD, round(entry[1] if entry else 0.0, 4))
 
     def settle(self, job: tuple) -> None:
         with self._lock:
@@ -592,8 +598,8 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         cfg.update(scenario.overrides(child_model))
         if args.profile == "wiring":
             cfg["OUROBOROS_REVIEW_ENFORCEMENT"] = "advisory"
-        # The lane's ceiling is the run's REMAINING headroom at this moment, never the whole cap.
-        cfg["TOTAL_BUDGET"] = budget.headroom(job)
+        # The lane's ceiling is its own reservation: disjoint from the other lanes', never the whole cap.
+        cfg["TOTAL_BUDGET"] = budget.ceiling(job)
         row["budget"] = {"reservation_usd": budget.reservation(scenario.root_tasks),
                          "lane_total_budget_usd": cfg["TOTAL_BUDGET"], "per_task_usd": float(args.per_task_usd)}
         sha = write_settings(settings_path, cfg)
@@ -687,6 +693,7 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
             lambda: not harness.pids_with_env_value(str(data_root)), 30))
         if not row["no_orphans_after_stop"] and row["status"] == "pass":
             row["status"] = "fail"
+            row["reason_code"] = "checks_failed"   # the index never carries a failed row with an empty reason
         row["checks"]["no_orphans_after_stop"] = row["no_orphans_after_stop"]
         row["budget"]["spent_usd"], row["budget"]["unknown_cost_rows"] = lane_spend(data_root)
         row["ended_at"], row["duration_sec"] = now_iso(), round(time.time() - started, 1)

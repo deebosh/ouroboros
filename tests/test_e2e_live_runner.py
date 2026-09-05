@@ -51,11 +51,11 @@ def _git_seed(root: pathlib.Path, *, dirty: bool = False) -> pathlib.Path:
 def _fake_lane(job, args, out, template, stagger, states, seed, budget=None, *, key="", seed_sha=""):
     sid, attempt = job
     lane = out / "lanes" / f"{sid}_a{attempt}"
-    headroom = budget.headroom(job) if budget is not None else None   # the real lane reads it before spending
+    ceiling = budget.ceiling(job) if budget is not None else None   # the real lane reads it before spending
     lane.mkdir(parents=True)
     row = {"scenario": sid, "attempt": attempt, "status": "pass", "checks": {"fake": True}, "error": "",
            "duration_sec": 0.1, "model_slots": {"OUROBOROS_MODEL": template.get("OUROBOROS_MODEL")},
-           "lane_total_budget_usd": headroom,
+           "lane_total_budget_usd": ceiling,
            "template_has_key": "OPENROUTER_API_KEY" in template, "key_handed": bool(key), "seed_sha": seed_sha}
     (lane / "result.json").write_text(json.dumps(row), encoding="utf-8")
     return row
@@ -233,18 +233,21 @@ def test_lane_spend_sums_durable_llm_usage_rows_and_counts_unknown_costs(tmp_pat
 
 def test_run_budget_reservation_rule_halts_new_attempts_at_the_cap(tmp_path):
     """spent (durable, re-read) + reserved (in flight) + this attempt's reservation must fit the
-    cap; the first refusal halts the rest of the run; a lane's TOTAL_BUDGET is the headroom
-    minus the OTHER reservations at its start."""
+    cap; the first refusal halts the rest of the run; a lane's TOTAL_BUDGET is its OWN reservation,
+    so the ceilings of the lanes in flight are disjoint and their sum plus the spend never
+    exceeds the cap (the first draft handed each lane cap - others' reservations: two
+    concurrent lanes could sum above the cap)."""
     spend = {}
     budget = run_live_lanes.RunBudget(20.0, 8.0, reader=lambda root: (spend.get(root.name, 0.0), 0))
     assert budget.reservation(1) == 8.0 and budget.reservation(2) == 16.0 and budget.reservation(0) == 8.0
     ok, facts = budget.admit(("SM1", 1), 1, tmp_path / "a")
     assert ok and facts == {"cap_usd": 20.0, "spent_usd": 0.0, "reserved_usd": 0.0, "reservation_usd": 8.0,
                             "unknown_cost_rows": 0}
-    assert budget.headroom(("SM1", 1)) == 20.0          # nobody else in flight, nothing spent
+    assert budget.ceiling(("SM1", 1)) == 8.0            # its own reservation, never the whole cap
     ok, facts = budget.admit(("SW1", 1), 1, tmp_path / "b")
     assert ok and facts["reserved_usd"] == 8.0
-    assert budget.headroom(("SW1", 1)) == 12.0          # the other lane's reservation is excluded
+    assert budget.ceiling(("SW1", 1)) == 8.0            # disjoint from lane a: 8 + 8 + spent 0 <= cap 20
+    assert budget.ceiling(("SM1", 1)) + budget.ceiling(("SW1", 1)) <= 20.0
     spend["a"] = 5.0                                    # lane a spends while in flight: visible now
     ok, facts = budget.admit(("SK1", 1), 2, tmp_path / "c")   # 5 + 16 + 16 > 20
     assert not ok and facts["spent_usd"] == 5.0 and facts["halt"]["first_refused"] == "SK1_a1"
@@ -256,11 +259,15 @@ def test_run_budget_reservation_rule_halts_new_attempts_at_the_cap(tmp_path):
     assert snap["spent_usd"] == 5.0 and snap["reserved_usd"] == 0.0 and snap["lanes_settled"] == 2
     assert snap["halted"] and snap["halt"]["reason"] == "budget_cap" and snap["attempts_not_run"] == ["SK1_a1", "SM1_a2"]
     assert snap["reservation_rule"] == run_live_lanes.RESERVATION_RULE
-    # The floor: a lane's TOTAL_BUDGET is never non-positive (the runtime reads that as NO cap),
-    # even when an in-flight lane has already overrun the whole cap.
+    # The ceiling ignores what OTHER lanes spend (it is this lane's reservation), and the floor
+    # keeps it positive (the runtime reads a non-positive TOTAL_BUDGET as NO cap).
     tiny = run_live_lanes.RunBudget(10.0, 8.0, reader=lambda root: (20.0, 0))
     assert tiny.admit(("SM1", 1), 1, tmp_path / "x")[0]
-    assert tiny.headroom(("SM1", 1)) == run_live_lanes.LANE_BUDGET_FLOOR_USD
+    assert tiny.ceiling(("SM1", 1)) == 8.0
+    assert tiny.ceiling(("never", 9)) == run_live_lanes.LANE_BUDGET_FLOOR_USD   # not admitted: the floor, not the cap
+    micro = run_live_lanes.RunBudget(10.0, 0.001, reader=lambda root: (0.0, 0))
+    assert micro.admit(("SM1", 1), 1, tmp_path / "y")[0]
+    assert micro.ceiling(("SM1", 1)) == run_live_lanes.LANE_BUDGET_FLOOR_USD
 
 
 # --------------------------------------------------------------------------- #
@@ -446,8 +453,8 @@ def test_dispatch_verdict_requires_ok_status_and_the_exact_echo():
     assert verdict == {"row_present": True, "status": "ok", "generation": gen, "generation_ok": True,
                        "physical_dispatch": True, "echo_ok": True}
     assert scenarios.dispatch_verdict([], scenarios.SK1_ECHO_EXPECTED)["row_present"] is False
-    assert scenarios.SK1_ECHO_EXPECTED == "echo: ping-e2e-live" and scenarios.SK1_ECHO_MESSAGE in scenarios.SK1_PLUGIN or True
-    assert f"'{scenarios.SK1_ECHO_MESSAGE}'" in scenarios.SCENARIOS["SK1"].stub_script(REPO_ROOT)["agent"][4]["arguments"]["message"].join(["'", "'"])
+    assert scenarios.SK1_ECHO_EXPECTED == f"echo: {scenarios.SK1_ECHO_MESSAGE}"
+    assert scenarios.SCENARIOS["SK1"].stub_script(REPO_ROOT)["agent"][4]["arguments"]["message"] == scenarios.SK1_ECHO_MESSAGE
 
 
 def test_commit_refusal_facts_name_every_typed_refusal():
@@ -704,7 +711,7 @@ def test_run_wide_cap_stops_new_attempts_and_records_not_run_rows(tmp_path, monk
                                                      "verdict": "fail"}
     rows = {json.loads(p.read_text(encoding="utf-8"))["attempt"]: json.loads(p.read_text(encoding="utf-8"))
             for p in out.glob("lanes/SM1_*/result.json")}
-    assert rows[1]["lane_total_budget_usd"] == 20.0 and rows[2]["lane_total_budget_usd"] == 15.0
+    assert rows[1]["lane_total_budget_usd"] == 8.0 and rows[2]["lane_total_budget_usd"] == 8.0   # each: its reservation
     refused = json.loads((out / "lanes" / "SK1_a1" / "result.json").read_text(encoding="utf-8"))
     assert refused["status"] == "not_run" and refused["reason_code"] == "budget_cap"
     assert refused["refusal"]["code"] == "budget_cap" and refused["budget"]["halt"]["first_refused"] == "SK1_a1"
@@ -800,7 +807,8 @@ def test_ui_client_prefers_the_suite_interface_when_it_has_this_surface(monkeypa
 @pytest.mark.serial
 def test_stub_sm1_end_to_end_on_a_real_isolated_server(tmp_path):
     """Real server, loopback stub model, no key: the commit lands through the review organ
-    (both stylesheets, tests preflight included), the durable rows and receipts exist, the
+    (both stylesheets; the stub rehearsal skips the tests preflight — the disclosed residual),
+    the durable rows and receipts exist, the
     seed is a clean detached clone of this tree's HEAD and the manifest names the stub as
     the model."""
     if str(os.environ.get("OUROBOROS_E2E_DEEP") or "").strip().lower() != "mock":
