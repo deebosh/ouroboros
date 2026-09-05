@@ -1,9 +1,6 @@
-"""Pins of the live E2E stand runner (``devtools/e2e_live``).
-
-Default lane: no server, no sockets, no network (the provider probes are monkeypatched and the
-lane pool is replaced by a fake). The one real-server test at the end is the keyless ``--stub``
-rehearsal of SM1 and carries the same three gates as the system_e2e lane.
-"""
+"""Pins of the live E2E stand runner (``devtools/e2e_live``). Default lane: no server, no sockets, no network (the
+provider probes are monkeypatched and the lane pool is replaced by a fake). The one real-server test at the end is
+the keyless ``--stub`` rehearsal of SM1 and carries the same three gates as the system_e2e lane."""
 from __future__ import annotations
 
 import collections
@@ -280,40 +277,39 @@ def test_lane_spend_sums_durable_llm_usage_rows_and_counts_unknown_costs(tmp_pat
     assert run_live_lanes.lane_spend(tmp_path / "absent") == (0.0, 0)
 
 
-def _ask(budget, job, root_tasks, root, waits: list | None = None):
+def _ask(budget, job, root_tasks, root, waits: list | None = None, *, index: int = 0):
     """``admit`` on its own thread (it may block): ``(thread, box)``; ``box["r"]`` is the answer."""
     box: dict = {}
-    thread = threading.Thread(target=lambda: box.__setitem__(
-        "r", budget.admit(job, root_tasks, root, on_wait=waits.append if waits is not None else None)), daemon=True)
+    thread = threading.Thread(target=lambda: box.__setitem__("r", budget.admit(
+        job, root_tasks, root, dispatch_index=index, on_wait=waits.append if waits is not None else None)), daemon=True)
     thread.start()
     thread.join(0.3)
     return thread, box
 
 
 def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_never_fit(tmp_path):
-    """Per attempt: spent (durable, re-read) + reservation > cap -> refused, no run-wide halt; fits
-    the cap but not the reservations in flight -> waits and re-asks after EVERY settle (the first
-    paid run wrote SW1/SK1 off at t=+21 min behind two SM1 reservations still in flight); spent only
-    grows, so a waiter can end refused with its wait recorded. A lane's TOTAL_BUDGET is its OWN
-    reservation, so the ceilings in flight are disjoint and settled spend + in-flight ceilings
-    never exceeds the cap (the first draft handed each lane cap - others' reservations). The
+    """Per attempt: spent (durable, re-read) + reservation > cap -> refused, no run-wide halt; fits the cap but not
+    the reservations in flight -> waits and re-asks after EVERY settle (the first paid run wrote SW1/SK1 off at t=+21
+    min behind two SM1 reservations still in flight); spent only grows, so a waiter can end refused with its wait
+    recorded. A lane's TOTAL_BUDGET is its OWN reservation: the ceilings in flight are disjoint and settled spend +
+    in-flight ceilings never exceeds the cap (the first draft handed each lane cap - others' reservations). The
     reservation unit is per-task x root tasks: $8 per task reserves $8 per root, $16 for SK1's two."""
     spend = {}
     budget = run_live_lanes.RunBudget(20.0, 8.0, reader=lambda root: (spend.get(root.name, 0.0), 0))
     assert budget.reservation(1) == 8.0 and budget.reservation(2) == 16.0 and budget.reservation(0) == 8.0
-    ok, facts = budget.admit(("SM1", 1), 1, tmp_path / "a")
+    ok, facts = budget.admit(("SM1", 1), 1, tmp_path / "a", dispatch_index=0)
     assert ok and facts == {"cap_usd": 20.0, "spent_usd": 0.0, "reserved_usd": 0.0, "reservation_usd": 8.0,
                             "unknown_cost_rows": 0, "waited_sec": 0.0}
     assert budget.ceiling(("SM1", 1)) == 8.0            # its own reservation, never the whole cap
-    ok, facts = budget.admit(("SW1", 1), 1, tmp_path / "b")
+    ok, facts = budget.admit(("SW1", 1), 1, tmp_path / "b", dispatch_index=1)
     assert ok and facts["reserved_usd"] == 8.0
     assert budget.ceiling(("SW1", 1)) == 8.0            # disjoint from lane a: 8 + 8 + spent 0 <= cap 20
     assert budget.ceiling(("SM1", 1)) + budget.ceiling(("SW1", 1)) <= 20.0
     spend["a"] = 5.0                                    # lane a spends while in flight: visible now
-    ok, facts = budget.admit(("SK1", 1), 2, tmp_path / "c")   # 5 + 16 > 20: can NEVER fit -> refused at once
+    ok, facts = budget.admit(("SK1", 1), 2, tmp_path / "c", dispatch_index=2)   # 5 + 16 > 20: can NEVER fit -> refused at once
     assert not ok and facts["spent_usd"] == 5.0 and facts["waited_sec"] == 0.0 and budget.not_run == ["SK1_a1"]
     waits: list = []
-    thread, box = _ask(budget, ("SM1", 2), 1, tmp_path / "d", waits)   # 5 + 8 <= 20 but 5 + 16 + 8 > 20: waits
+    thread, box = _ask(budget, ("SM1", 2), 1, tmp_path / "d", waits, index=3)   # 5 + 8 <= 20 but 5 + 16 + 8 > 20: waits
     assert thread.is_alive() and budget.not_run == ["SK1_a1"]   # not refused: the blocker is in flight
     assert waits == ["waiting — in flight reserved $16.00, needs $8.00, spent $5.00, cap $20.00"]
     budget.settle(("SM1", 1))                           # 5 + 8 + 8 > 20: re-asked, still waiting
@@ -322,7 +318,7 @@ def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_ne
     budget.settle(("SW1", 1))                           # 5 + 0 + 8: admitted after the wait
     thread.join(5.0)
     assert not thread.is_alive() and box["r"][0] and box["r"][1]["reserved_usd"] == 0.0 and box["r"][1]["waited_sec"] > 0
-    thread, box = _ask(budget, ("SM1", 3), 1, tmp_path / "e")   # 5 + 8 <= 20 but 5 + 8 + 8 > 20: waits
+    thread, box = _ask(budget, ("SM1", 3), 1, tmp_path / "e", index=4)   # 5 + 8 <= 20 but 5 + 8 + 8 > 20: waits
     assert thread.is_alive()
     spend["d"] = 10.0                                   # the lane in flight overruns: spent 15 on the next question
     budget.settle(("SM1", 2))                           # 15 + 8 > 20: refused AFTER the wait
@@ -338,7 +334,7 @@ def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_ne
     # The ceiling ignores what OTHER lanes spend (it is this lane's reservation), and the floor
     # keeps it positive (the runtime reads a non-positive TOTAL_BUDGET as NO cap).
     tiny = run_live_lanes.RunBudget(10.0, 8.0, reader=lambda root: (20.0, 0))
-    assert tiny.admit(("SM1", 1), 1, tmp_path / "x")[0]
+    assert tiny.admit(("SM1", 1), 1, tmp_path / "x", dispatch_index=0)[0]
     assert tiny.ceiling(("SM1", 1)) == 8.0
     assert tiny.ceiling(("never", 9)) == run_live_lanes.LANE_BUDGET_FLOOR_USD   # not admitted: the floor, not the cap
     # The floor is part of the ONE effective ceiling: admission reserves it, the lane receives it,
@@ -346,9 +342,9 @@ def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_ne
     micro = run_live_lanes.RunBudget(0.05, 0.001, reader=lambda root: (0.0, 0))
     assert micro.reservation(1) == run_live_lanes.LANE_BUDGET_FLOOR_USD
     for n in range(5):
-        ok, facts = micro.admit(("SM1", n), 1, tmp_path / f"m{n}")
+        ok, facts = micro.admit(("SM1", n), 1, tmp_path / f"m{n}", dispatch_index=n)
         assert ok and facts["reservation_usd"] == 0.01 and micro.ceiling(("SM1", n)) == 0.01
-    sixth, box = _ask(micro, ("SM1", 5), 1, tmp_path / "m5")
+    sixth, box = _ask(micro, ("SM1", 5), 1, tmp_path / "m5", index=5)
     assert sixth.is_alive() and micro.not_run == []
     assert sum(micro.ceiling(("SM1", n)) for n in range(5)) <= 0.05
     for n in range(5):
@@ -356,14 +352,14 @@ def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_ne
     sixth.join(5.0)
     assert not sixth.is_alive() and box["r"][0]       # admitted once the five settled at $0
     below = run_live_lanes.RunBudget(0.005, 0.001, reader=lambda root: (0.0, 0))
-    assert not below.admit(("SM1", 1), 1, tmp_path / "z")[0]     # the floored reservation exceeds the cap: refused
+    assert not below.admit(("SM1", 1), 1, tmp_path / "z", dispatch_index=0)[0]   # the floored reservation exceeds the cap
     # Fractional reservations are never rounded upward (round(0.01006, 4) would hand out 0.0101):
     # two exact 0.01006 reservations fill a 0.02012 cap and each lane receives exactly 0.01006.
     frac = run_live_lanes.RunBudget(0.02012, 0.01006, reader=lambda root: (0.0, 0))
-    assert frac.admit(("SM1", 1), 1, tmp_path / "f1")[0] and frac.admit(("SM1", 2), 1, tmp_path / "f2")[0]
+    assert frac.admit(("SM1", 1), 1, tmp_path / "f1", dispatch_index=0)[0] and frac.admit(("SM1", 2), 1, tmp_path / "f2", dispatch_index=1)[0]
     assert frac.ceiling(("SM1", 1)) == 0.01006 and frac.ceiling(("SM1", 2)) == 0.01006
     assert frac.ceiling(("SM1", 1)) + frac.ceiling(("SM1", 2)) <= 0.02012
-    third, box = _ask(frac, ("SM1", 3), 1, tmp_path / "f3")
+    third, box = _ask(frac, ("SM1", 3), 1, tmp_path / "f3", index=2)
     assert third.is_alive()                             # full: waits, not refused
     frac.settle(("SM1", 1))
     frac.settle(("SM1", 2))
@@ -371,14 +367,36 @@ def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_ne
     assert not third.is_alive() and box["r"][0]
 
 
+def test_admission_is_fifo_by_dispatch_index_and_a_refused_head_frees_the_line(tmp_path):
+    """A later-dispatched attempt that WOULD fit waits while an earlier one is still asking (the freed lane's next
+    job can no longer leapfrog the woken waiter); a head that can never fit is refused and leaves the line. cap 30 /
+    per-task 8: SK1 #0 (16) in flight; SK1 #1 (16) waits on it (32 > 30); SM1 #2 (8) would fit (24 <= 30) but waits
+    behind #1, its wait naming that; lane #0 spends 15 and settles: #1 refused (31 > 30), #2 admitted at reserved $0."""
+    spend: dict = {}
+    budget = run_live_lanes.RunBudget(30.0, 8.0, reader=lambda root: (spend.get(root.name, 0.0), 0))
+    assert budget.admit(("SK1", 1), 2, tmp_path / "a", dispatch_index=0)[0]
+    head_waits, later_waits = [], []
+    head, head_box = _ask(budget, ("SK1", 2), 2, tmp_path / "b", head_waits, index=1)
+    later, later_box = _ask(budget, ("SM1", 1), 1, tmp_path / "c", later_waits, index=2)
+    assert head.is_alive() and later.is_alive() and budget.not_run == []
+    assert head_waits == ["waiting — in flight reserved $16.00, needs $16.00, spent $0.00, cap $30.00"]
+    assert later_waits == ["waiting — behind SK1_a2 in dispatch order, needs $8.00, spent $0.00, cap $30.00"]
+    spend["a"] = 15.0
+    budget.settle(("SK1", 1))
+    head.join(5.0)
+    later.join(5.0)
+    assert not head.is_alive() and not head_box["r"][0] and head_box["r"][1]["spent_usd"] == 15.0
+    assert not later.is_alive() and later_box["r"][0] and later_box["r"][1]["reserved_usd"] == 0.0
+    assert budget.not_run == ["SK1_a2"] and budget.ceiling(("SM1", 1)) == 8.0 and later_box["r"][1]["waited_sec"] > 0
+
+
 def test_reservation_counts_roots_plus_the_evolution_root_and_is_the_lane_total_budget(tmp_path, monkeypatch):
-    """EQUALITY pins of the rc.14/rc.15 finding: the reservation is per-task x root tasks, +1 with
-    --self-mod (rc.14 showed up to TWO evolution cycles per lane, one at t=0 next to the scenario task
-    and one post-task, all under the lane fence: SM1_a1 task $3.84 + cycles $12.40 + $2.84 of $20 — the
-    lane's TOTAL_BUDGET is the true fence); the 2x factor and its product import are gone and no bench
-    budget profile is projected. Per-task $20 and one root reserve $20 ($40 with --self-mod, $60 for SK1
-    + evolution) and that exact number reaches the lane's settings file as TOTAL_BUDGET through
-    ``run_lane`` (never the run-wide cap)."""
+    """EQUALITY pins of the rc.14/rc.15 finding: the reservation is per-task x root tasks, +1 with --self-mod (rc.14
+    showed up to TWO evolution cycles per lane, one at t=0 next to the scenario task and one post-task, all under the
+    lane fence: SM1_a1 task $3.84 + cycles $12.40 + $2.84 of $20 — the lane's TOTAL_BUDGET is the true fence); the 2x
+    factor and its product import are gone and no bench budget profile is projected. Per-task $20 and one root reserve
+    $20 ($40 with --self-mod, $60 for SK1 + evolution) and that exact number reaches the lane's settings file as
+    TOTAL_BUDGET through ``run_lane`` (never the run-wide cap)."""
     _short_tmp(monkeypatch)
     rule = run_live_lanes.RESERVATION_RULE
     assert not hasattr(run_live_lanes, "HARD_STOP_INVERSE") and rule == run_live_lanes.RunBudget(1, 1).snapshot()["reservation_rule"]
@@ -390,7 +408,7 @@ def test_reservation_counts_roots_plus_the_evolution_root_and_is_the_lane_total_
     assert evolving.reservation(1) == 40.0 and evolving.reservation(2) == 60.0 and evolving.self_mod
     seed = _git_seed(tmp_path)
     out, job = tmp_path / "out", ("SM1", 1)
-    ok, facts = budget.admit(job, 1, out / "lanes" / "SM1_a1" / "data")
+    ok, facts = budget.admit(job, 1, out / "lanes" / "SM1_a1" / "data", dispatch_index=0)
     assert ok and facts["reservation_usd"] == 20.0 and budget.ceiling(job) == 20.0
 
     class _NoServer:                                    # the real path up to the written settings, then stop
@@ -430,12 +448,11 @@ def test_submit_injects_no_budget_profile_into_the_stand_roots(monkeypatch):
 
 
 def test_budget_preflight_refuses_reservations_that_can_never_all_be_admitted(tmp_path, monkeypatch):
-    """The rc.15 plan under the 2x rule (cap 200, SK1 reserving the whole cap, attempts 3) would have burned
-    SM1/SW1 and refused every SK1 attempt by construction. The preflight refuses BEFORE any spend a
-    reservation above the cap, or equal to it with attempts >= 2 (the second can never be admitted after
-    any spend), in the credit preflight's typed shape, before the key, the seed or a lane; no override.
-    The per-ROUND worst case is the --lanes largest reservations of one attempt per scenario at once: the
-    owner's cap 300 / per-task 50 / --self-mod / 3 lanes = $350 > cap, so the round's third lane WAITS."""
+    """The rc.15 plan under the 2x rule (cap 200, SK1 reserving the whole cap, attempts 3) would have burned SM1/SW1 and
+    refused every SK1 attempt by construction. The preflight refuses BEFORE any spend a reservation above the cap, or
+    equal to it with attempts >= 2 (the second can never be admitted after any spend), in the credit preflight's typed
+    shape, before the key, the seed or a lane; no override. The per-ROUND worst case is the --lanes largest reservations,
+    ONE attempt per scenario: the owner's cap 300 / per-task 50 / --self-mod / 3 lanes = $350 > cap, so the third lane WAITS."""
     def rows(budget, attempts, ids=("SM1", "SW1", "SK1"), lanes=3):
         pre = run_live_lanes.budget_preflight(budget, list(ids), attempts, lanes)
         return ({r["scenario"]: r["reservation_usd"] for r in pre["scenarios"]}, pre["worst_case_usd"], pre["unreachable"],
@@ -465,9 +482,9 @@ def test_budget_preflight_refuses_reservations_that_can_never_all_be_admitted(tm
 
 
 def test_jobs_are_dispatched_round_robin_by_attempt_largest_reservation_first_within_a_round(tmp_path, monkeypatch):
-    """a1 of every scenario, then a2 (the verdict is pass-of PER scenario: the order protects the MINIMUM
-    admitted per scenario); within a round SK1 (two roots) asks before SM1 and SW1 (stable among equals).
-    Requested ids keep the argument order (the manifest identity pin); the per-round worst case is recorded."""
+    """``dispatch_order``: a1 of every scenario, then a2 (the verdict is pass-of PER scenario: the order protects the
+    MINIMUM admitted per scenario); within a round SK1 (two roots) asks before SM1 and SW1 (stable among equals), and
+    admission keeps that order (FIFO by index). Requested ids keep the argument order; the per-round worst case is recorded."""
     order: list = []
 
     def lane(job, *a, **k):
@@ -488,102 +505,85 @@ def test_jobs_are_dispatched_round_robin_by_attempt_largest_reservation_first_wi
 # --------------------------------------------------------------------------- #
 
 class _Driver:
-    """``main()``'s pool replaced by a virtual clock over the REAL ``RunBudget``: ``admit``/``settle`` as
-    ``run_attempt`` makes them, spend visible at settle, lane durations in virtual minutes (rc.14 SM1 22-54,
-    rc.11 SW1 ~10, SK1 ~7), a freed lane takes the next job at once. A thread counts as waiting once it has
-    entered the ledger's ``wait`` (instrumented, never a timeout); the wake order of EQUAL waiters is the
-    OS's (the ledger is not FIFO by contract), so pins over two equal waiters compare sets."""
+    """``main()``'s pool replaced by a virtual clock over the REAL ``RunBudget``: ``admit``/``settle`` as ``run_attempt``
+    makes them (indices from ``dispatch_order``), spend visible at settle, lane durations in virtual minutes (rc.14 SM1
+    22-54, rc.11 SW1 ~10, SK1 ~7). The ledger's ``wait`` is a park the driver releases one thread at a time, so the
+    schedule is the runner's OBSERVED one, never the OS's: after a settle the freed lane's next job asks FIRST (it wins
+    the lock on CPython, 300/300), then the parked attempts re-ask in dispatch order; a refusal frees its lane at once."""
     DURATION = {"SM1": 50, "SW1": 10, "SK1": 7}
 
-    def __init__(self, cap, per_task, scenario_ids, attempts, spends, *, lanes=3, self_mod=False, round_robin=True) -> None:
+    def __init__(self, cap, per_task, scenario_ids, attempts, spends, *, lanes=3, self_mod=False) -> None:
         self.spend: dict = {}
         self.budget = run_live_lanes.RunBudget(cap, per_task, reader=lambda root: (self.spend.get(root.name, 0.0), 0),
                                                self_mod=self_mod)
-        weight = lambda job: -self.budget.reservation(scenarios.SCENARIOS[job[0]].root_tasks)   # noqa: E731
-        self.pending = collections.deque(sorted(     # main's order (round-robin by attempt) or the rejected largest-first
-            [(sid, n) for sid in scenario_ids for n in range(1, attempts + 1)],
-            key=(lambda job: (job[1], weight(job))) if round_robin else weight))
+        requested = [(sid, n) for sid in scenario_ids for n in range(1, attempts + 1)]
+        self.pending = collections.deque(enumerate(run_live_lanes.dispatch_order(self.budget, requested)))
         self.lanes, self.spends, self.now = lanes, spends, 0.0
-        self.in_flight, self.waiting, self.threads, self.admitted, self.refused = {}, [], {}, [], []
-        self.waits, self.expected = collections.Counter(), collections.Counter()
-        real_wait = self.budget._lock.wait
+        self.in_flight, self.parked, self.threads, self.admitted, self.refused = {}, {}, {}, [], []
+        lock = self.budget._lock
 
-        def counted_wait(*a, **k):
-            self.waits[threading.current_thread().name] += 1
-            return real_wait(*a, **k)
+        def park(*_a, **_k) -> None:   # the ledger's wait: release the lock, hold until the driver wakes this thread
+            gate = self.parked[threading.current_thread().name] = threading.Event()
+            lock.release()
+            gate.wait()
+            lock.acquire()
 
-        self.budget._lock.wait = counted_wait
+        lock.wait = park
 
-    def _ask(self, job) -> None:
+    def _ask(self, index: int, job) -> None:
         name, box = f"{job[0]}_a{job[1]}", {}
-        thread = threading.Thread(name=name, daemon=True, target=lambda: box.__setitem__(
-            "r", self.budget.admit(job, scenarios.SCENARIOS[job[0]].root_tasks, pathlib.Path("/x") / name)))
+        thread = threading.Thread(name=name, daemon=True, target=lambda: box.__setitem__("r", self.budget.admit(
+            job, scenarios.SCENARIOS[job[0]].root_tasks, pathlib.Path("/x") / name, dispatch_index=index)))
+        self.threads[name] = (index, job, thread, box)
         thread.start()
-        self.threads[job] = (thread, box)
-        self._resolve(job)
+        self._settle_thread(name)
 
-    def _resolve(self, job) -> None:
-        thread, box = self.threads[job]
-        self.expected[thread.name] += 1
+    def _settle_thread(self, name: str) -> None:
+        """Spin until the thread has answered or parked; the deadline is a hang guard, never a timing assumption."""
+        _index, job, thread, box = self.threads[name]
         deadline = time.monotonic() + 10.0
-        while thread.is_alive() and self.waits[thread.name] < self.expected[thread.name]:
-            assert time.monotonic() < deadline, f"{thread.name} neither answered nor waited"
-            time.sleep(0.001)
-        if thread.is_alive():
-            if job not in self.waiting:
-                self.waiting.append(job)
-            return
-        del self.threads[job]
-        if job in self.waiting:
-            self.waiting.remove(job)
-        if box["r"][0]:
-            self.in_flight[job] = self.now + self.DURATION[job[0]]
-        (self.admitted if box["r"][0] else self.refused).append(thread.name)
+        while thread.is_alive() and name not in self.parked:
+            assert time.monotonic() < deadline, f"{name} neither answered nor parked"
+            time.sleep(0.0005)
+        if not thread.is_alive():                                  # answered: admitted (in flight now) or refused
+            del self.threads[name]
+            (self.admitted if box["r"][0] else self.refused).append(name)
+            if box["r"][0]:
+                self.in_flight[job] = self.now + self.DURATION[job[0]]
 
     def run(self) -> tuple[list, list, float]:   # (admitted in admission order, refused in refusal order, spend)
         while self.pending or self.in_flight:
-            while self.pending and len(self.in_flight) + len(self.waiting) < self.lanes:
-                self._ask(self.pending.popleft())
-            if not self.in_flight:
-                assert not self.waiting, "a waiter with nothing in flight (the ledger contract forbids it)"
-                continue
+            while self.pending and len(self.in_flight) + len(self.parked) < self.lanes:
+                self._ask(*self.pending.popleft())
+            assert self.in_flight, "parked attempts with nothing in flight (the ledger contract forbids it)"
             job = min(self.in_flight, key=lambda j: (self.in_flight[j], j))
             self.now = self.in_flight.pop(job)
             self.spend[f"{job[0]}_a{job[1]}"] = self.spends[job[0]]
             self.budget.settle(job)
-            for waiter in list(self.waiting):
-                self._resolve(waiter)
+            if self.pending:                                       # the freed lane's next job asks before the line re-asks
+                self._ask(*self.pending.popleft())
+            for name in sorted(self.parked, key=lambda n: self.threads[n][0]):   # then the line, earliest first
+                self.parked.pop(name).set()
+                self._settle_thread(name)
         return self.admitted, self.refused, round(self.budget.snapshot()["spent_usd"], 2)
 
 
 REALISTIC_SPEND = {"SM1": 30.0, "SW1": 8.0, "SK1": 15.0}    # assumed per-attempt spends: rc.14 SM1 lanes, rc.11 SW1/SK1
 PESSIMISTIC_SPEND = {"SM1": 45.0, "SW1": 8.0, "SK1": 30.0}
 OWNER_CONFIGURATION = dict(cap=300.0, per_task=50.0, scenario_ids=["SM1", "SW1", "SK1"], attempts=3, lanes=3, self_mod=True)
-ALL_NINE = sorted(f"{sid}_a{n}" for sid in ("SM1", "SW1", "SK1") for n in (1, 2, 3))
+DISPATCH_ORDER = ["SK1_a1", "SM1_a1", "SW1_a1", "SK1_a2", "SM1_a2", "SW1_a2", "SK1_a3", "SM1_a3", "SW1_a3"]
 
 
-def _admitted_per_scenario(admitted: list) -> dict:
-    return {sid: sum(1 for name in admitted if name.startswith(sid)) for sid in ("SM1", "SW1", "SK1")}
-
-
-def test_owner_configuration_cap_300_per_task_50_three_attempts_self_mod_round_robin():
-    """The live configuration (cap 300, per-task 50, attempts 3, pass-of 2, 3 lanes, --self-mod: SM1/SW1
-    reserve 100, SK1 150; round-robin dispatch). Realistic spends: all nine admitted, $159. Pessimistic:
-    SK1_a3 is always refused ($158 + 150 > 300 once the SM1 lanes settle) and SW1_a3 in most wake orders
-    (equal $100 waiters SM1_a3/SW1_a3 race on notify_all: 7/9 at $211 or 8/9 at $219) — EVERY scenario
-    keeps >= 2 admitted = pass-of, what the order maximises. Largest-first (the rejected order) leaves SW1
-    with at most ONE admitted attempt in every wake order: below pass-of 2 — the reason for the change."""
-    admitted, refused, spent = _Driver(spends=REALISTIC_SPEND, **OWNER_CONFIGURATION).run()
-    assert sorted(admitted) == ALL_NINE and refused == [] and spent == 159.0
-    assert admitted[:3] == ["SK1_a1", "SM1_a1", "SW1_a1"]                      # round 1 by descending reservation
+def test_owner_configuration_cap_300_per_task_50_three_attempts_self_mod_is_exact_under_fifo_admission():
+    """The live configuration (cap 300, per-task 50, attempts 3, pass-of 2, 3 lanes, --self-mod: SM1/SW1 reserve 100,
+    SK1 150; round 1 = 350 > cap, so SW1_a1 waits from t=0) — EXACT sequences, no wake-order range. Realistic spends:
+    all nine admitted in dispatch order, $159. Pessimistic: SK1_a3 refused when SM1_a2 settles ($158 + 150 > 300),
+    SW1_a3 when SM1_a3 settles ($211 + 100 > 300): 7/9 at $211, every scenario keeping two = pass-of. Largest-first
+    dispatch under the same admission refuses all of SW1 ($225, 0/3): the handbook's traced reason, prose, not a pin."""
+    assert _Driver(spends=REALISTIC_SPEND, **OWNER_CONFIGURATION).run() == (DISPATCH_ORDER, [], 159.0)
     admitted, refused, spent = _Driver(spends=PESSIMISTIC_SPEND, **OWNER_CONFIGURATION).run()
-    assert sorted(admitted + refused) == ALL_NINE and "SK1_a3" in refused
-    assert (sorted(refused), spent) in ((["SK1_a3", "SW1_a3"], 211.0), (["SK1_a3"], 219.0))
-    assert _admitted_per_scenario(admitted) in ({"SM1": 3, "SW1": 2, "SK1": 2}, {"SM1": 3, "SW1": 3, "SK1": 2})
-    admitted, refused, spent = _Driver(spends=PESSIMISTIC_SPEND, round_robin=False, **OWNER_CONFIGURATION).run()
-    assert admitted[:2] == ["SK1_a1", "SK1_a2"] and sorted(admitted + refused) == ALL_NINE
-    per_scenario = _admitted_per_scenario(admitted)
-    assert per_scenario["SW1"] <= 1 < 2 <= per_scenario["SK1"] and per_scenario["SM1"] == 3
+    assert (admitted, refused, spent) == (DISPATCH_ORDER[:6] + ["SM1_a3"], ["SK1_a3", "SW1_a3"], 211.0)
+    assert {s: sum(n.startswith(s) for n in admitted) for s in ("SM1", "SW1", "SK1")} == {"SM1": 3, "SW1": 2, "SK1": 2}
 
 
 # --------------------------------------------------------------------------- #
@@ -631,7 +631,7 @@ def test_watcher_tick_never_waits_on_the_key_probe(capsys):
     probe.interval = 0.01
     probe.start()
     budget = run_live_lanes.RunBudget(50.0, 16.0, reader=lambda root: (2.5, 0))
-    budget.admit(("SM1", 1), 1, pathlib.Path("/nonexistent/lane/data"))
+    budget.admit(("SM1", 1), 1, pathlib.Path("/nonexistent/lane/data"), dispatch_index=0)
     states = {("SM1", 1): ("running scenario", time.time())}
     thread = threading.Thread(target=run_live_lanes.watcher, args=(stop, states, 0.05, budget, probe), daemon=True)
     thread.start()
@@ -870,7 +870,7 @@ def test_lane_with_a_dead_browser_target_is_checks_failed_not_infra_error(tmp_pa
     row = run_live_lanes.run_attempt(("SM1", 1), args, tmp_path / "out", {"OUROBOROS_MODEL": "m"},
                                      run_live_lanes.Stagger(0.0), {}, seed,
                                      run_live_lanes.RunBudget(100.0, 8.0, reader=lambda root: (0.0, 0)),
-                                     key="", seed_sha=repo_provenance(seed)["head"])
+                                     dispatch_index=0, key="", seed_sha=repo_provenance(seed)["head"])
     assert row["status"] == "fail" and row["reason_code"] == "checks_failed" and row["error"] == ""
     assert "refusal" not in row
     assert row["checks"]["commit_landed"] is True and row["checks"]["ui_computed_style"] is False
@@ -1382,7 +1382,7 @@ def test_lane_infra_failure_is_a_typed_refusal_in_both_artifacts(tmp_path, monke
     states: dict = {}
     row = run_live_lanes.run_attempt(("SM1", 1), args, out, {}, run_live_lanes.Stagger(2.0), states, tmp_path / "seed",
                                      run_live_lanes.RunBudget(100.0, 8.0, reader=lambda root: (0.0, 0)),
-                                     key="", seed_sha="abc")
+                                     dispatch_index=0, key="", seed_sha="abc")
     assert row["status"] == "infra_error" and row["reason_code"] == "infra_error:clone_failed"
     assert row["refusal"] == {"type": "SeedMaterializeRefused", "code": "clone_failed", "message": "git clone exploded"}
     stored = json.loads((out / "lanes" / "SM1_a1" / "result.json").read_text(encoding="utf-8"))

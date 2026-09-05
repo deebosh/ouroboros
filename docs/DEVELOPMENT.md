@@ -1324,14 +1324,31 @@ cap the round's last lane waits on a settle, it is not refused), and refuses fai
 reservation exceeds the cap or equals it with `--attempts ≥ 2` — its second attempt can never be
 admitted after any spend (the rc.15 plan, cap 200 / per-task 50 under the 2× rule, reserved the
 whole cap for SK1 and would have burned SM1/SW1 first); there is no override flag, the operator
-changes the flags. Jobs are dispatched round-robin by attempt index (a1 of every scenario, then
-a2, then a3), largest reservation first within a round (stable among equals): the verdict is
-pass-of PER scenario, so the order protects the MINIMUM admitted attempts per scenario rather
-than the sum — at cap 300 / per-task 50 / `--self-mod` with pessimistic spends (SM1 45, SW1 8,
-SK1 30) largest-first leaves SW1 with at most one admitted attempt (below pass-of 2) while
-round-robin refuses SK1_a3 and at most one SW1 attempt (every scenario keeps two). Outcomes
-among EQUAL waiters depend on the wake order of the ledger's `notify_all` (not FIFO), so any
-feasibility number is a range at the margin (that run: 7/9 at $211 or 8/9 at $219), and
+changes the flags. Jobs are dispatched round-robin by attempt index (`dispatch_order`: a1 of
+every scenario, then a2, then a3, largest reservation first within a round, stable among equals)
+and the ledger admits them FIFO by that dispatch index: an attempt reserves only when no
+earlier-dispatched attempt is still asking and `spent + reserved + reservation ≤ cap`; one that
+can never fit is refused at once and leaves the line. Ordering the pool alone did not order
+admission — the dominant race is the woken waiter against the freed lane's NEXT job (settle in
+`run_attempt`'s finally → return → the executor takes the next job → `admit` on the same thread),
+which the newcomer won 300/300 on CPython, so a round that overflows the cap (the owner
+configuration: 150 + 100 + 100 = 350 > 300) let later attempts leapfrog the waiter and could
+leave SW1 at 0/3 under pessimistic spends. FIFO admission removes that race at the cost of
+possible head-of-line idle lanes (a waiting large reservation holds back a smaller attempt that
+would fit). The verdict is pass-of PER scenario, so the order protects the MINIMUM admitted
+attempts per scenario rather than the sum: at cap 300 / per-task 50 / `--self-mod` / 3 lanes
+with realistic spends (SM1 30, SW1 8, SK1 15) all nine attempts are admitted in dispatch order
+for $159; with pessimistic spends (SM1 45, SW1 8, SK1 30) the admitted order is SK1_a1, SM1_a1,
+SW1_a1, SK1_a2, SM1_a2, SW1_a2, SM1_a3 — SK1_a3 refused when SM1_a2 settles ($158 + 150 > 300),
+SW1_a3 when SM1_a3 settles ($211 + 100 > 300) — 7/9 at $211 with every scenario keeping two,
+whereas largest-first dispatch (the rejected order) under the same admission runs SK1 ×3 and
+SM1 ×3 first and refuses every SW1 attempt at $225 (SW1 0/3). For a given spend model the
+admitted sequence is exact (pinned in `tests/test_e2e_live_runner.py`); on a live run only the
+lanes' actual spend and its timing move it, and the first `--lanes` attempts, which enter
+admission within microseconds of each other, line up in the thread scheduler's order (in
+practice the submission order) — every later attempt enters alone, as a lane frees.
+`round_worst_case_usd` sums ONE attempt per scenario (the `--lanes` largest reservations), so
+with `--lanes` above the number of scenarios it understates what admission can put in flight;
 `requested_task_ids` keep the argument order (the manifest's identity pin).
 `--per-task-usd` (default 8; an attempt reserves it × its root tasks, +1 with `--self-mod`) is the
 runtime's per-root-task fence: with the tree's default review panel a blocking triad that includes

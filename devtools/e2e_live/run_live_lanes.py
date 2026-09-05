@@ -5,25 +5,23 @@
     OUROBOROS_E2E_LIVE_OPENROUTER_KEY=... python -m devtools.e2e_live.run_live_lanes \
         --lanes 4 --scenarios SM1,SW1,SK1 --attempts 3 --pass-of 2 --total-budget 100  # paid
 
-Order is load-bearing (the benchmark family's launcher gate, ``launcher_audit``): argument-shaped
-work, then ``admit_benchmark_run`` over the SOURCE checkout (persisted BEFORE anything can
-fail; its cleanliness is disclosed, not enforced — see ``materialize_seed``), then — inside
-``finalize_run_manifest`` — the key by NAME from the environment (never a pool file, never
-printed), the credit preflight ``min(key limit remaining, account credits)``, the SEED as a
-clean DETACHED clone of ``--seed`` (a commit or ref of the source; never the operator's live
-worktree, so concurrent edits cannot dirty it), the effective settings written from the TREE'S
-DEFAULTS (D-09) with the budget knobs as settings keys (never env), and the lane pool.
-``--total-budget`` is a RUN-WIDE cap kept by ``RunBudget`` (reservation ``--per-task-usd x (root
-tasks + 1 with --self-mod)``, wait-then-refuse admission PER attempt, each lane's TOTAL_BUDGET = its
-own reservation); ``budget_preflight`` prints the reservation table and refuses, before any spend, a
-run whose attempts can never all be admitted; jobs are dispatched round-robin by attempt index.
-The run-root template is redacted (the key value lives only in each lane's 0600 settings file
-and is disclosed by fingerprint). The manifest names the model from the APPLIED settings file,
-not argv. Every lane leaves ``lanes/<id>_a<n>/result.json`` (checks, digests, grants by
-fingerprint, settings sha256, seed describe, the lane's spend, a typed refusal on infra
-failure) plus screenshots when a browser client exists; a watcher prints lane states, the
-running spend against the cap, free disk on ``/`` and ``/mnt/data`` and the key headroom from
-an informational, bounded, backing-off probe.
+Order is load-bearing (the benchmark family's launcher gate, ``launcher_audit``): argument-shaped work, then
+``admit_benchmark_run`` over the SOURCE checkout (persisted BEFORE anything can fail; its cleanliness is
+disclosed, not enforced — see ``materialize_seed``), then — inside ``finalize_run_manifest`` — the key by NAME
+from the environment (never a pool file, never printed), the credit preflight ``min(key limit remaining,
+account credits)``, the SEED as a clean DETACHED clone of ``--seed`` (a commit or ref of the source; never the
+operator's live worktree, so concurrent edits cannot dirty it), the effective settings written from the TREE'S
+DEFAULTS (D-09) with the budget knobs as settings keys (never env), and the lane pool. ``--total-budget`` is a
+RUN-WIDE cap kept by ``RunBudget`` (reservation ``--per-task-usd x (root tasks + 1 with --self-mod)``,
+wait-then-refuse admission PER attempt, FIFO in ``dispatch_order`` — round-robin by attempt index — and each
+lane's TOTAL_BUDGET = its own reservation); ``budget_preflight`` prints the reservation table and refuses,
+before any spend, a run whose attempts can never all be admitted. The run-root template is redacted (the key
+value lives only in each lane's 0600 settings file and is disclosed by fingerprint). The manifest names the
+model from the APPLIED settings file, not argv. Every lane leaves ``lanes/<id>_a<n>/result.json`` (checks,
+digests, grants by fingerprint, settings sha256, seed describe, the lane's spend, a typed refusal on infra
+failure) plus screenshots when a browser client exists; a watcher prints lane states, the running spend
+against the cap, free disk on ``/`` and ``/mnt/data`` and the key headroom from an informational, bounded,
+backing-off probe.
 """
 from __future__ import annotations
 
@@ -72,13 +70,12 @@ from ouroboros.provider_models import ALL_PROVIDER_CREDENTIAL_KEYS, declared_mod
 
 MAX_LANES = 6
 STAGGER_BOUNDS = (2.0, 3.0)
-# The commit gate's hermetic pytest pass runs INSIDE each lane server and resolves ``-n auto`` to
-# the host's CPU count (128 here) with no ceiling: the paid run of 2026-09-04 started >= 104 xdist
-# workers per self-mod lane, three lanes at once, on a shared host. The runtime's own lever
-# (``preflight_runner._PREFLIGHT_WORKERS_ENV``, floor 2 so PREFLIGHT_PARALLELISM_LOST can never
-# trip) is set in this process and forwarded by ``IsolatedServer`` in settings-authoritative mode
-# (its keep-list); the budget is split evenly across the concurrent lanes so the whole stand stays
-# within the shared-host rule of at most 16 pytest workers.
+# The commit gate's hermetic pytest pass runs INSIDE each lane server and resolves ``-n auto`` to the host's
+# CPU count (128 here) with no ceiling: the paid run of 2026-09-04 started >= 104 xdist workers per self-mod
+# lane, three lanes at once, on a shared host. The runtime's own lever (``preflight_runner._PREFLIGHT_WORKERS_ENV``,
+# floor 2 so PREFLIGHT_PARALLELISM_LOST can never trip) is set in this process and forwarded by ``IsolatedServer``
+# in settings-authoritative mode (its keep-list); the budget is split evenly across the concurrent lanes so the
+# whole stand stays within the shared-host rule of at most 16 pytest workers.
 PREFLIGHT_WORKERS_ENV = "OUROBOROS_PREFLIGHT_TEST_WORKERS"
 PREFLIGHT_WORKER_BUDGET = 16
 PREFLIGHT_WORKERS_FLOOR = 2
@@ -239,12 +236,10 @@ def credit_preflight(key: str, *, timeout: float = 10.0) -> dict:
 # --------------------------------------------------------------------------- #
 
 def lane_spend(data_root: pathlib.Path) -> tuple[float, int]:
-    """``(USD summed over the lane's durable llm_usage rows, rows whose cost is unknown)``.
-
-    The system-E2E harness oracle is the reader (the same ``logs/events.jsonl`` the runtime
-    writes); the server-level file carries every row of the lane — task loops, review organs,
-    safety — verified on the first paid run against the ``task_results`` accounting. A row
-    without a numeric cost is counted, never priced (no fallback tariff)."""
+    """``(USD summed over the lane's durable llm_usage rows, rows whose cost is unknown)``. The system-E2E
+    harness oracle is the reader (the same ``logs/events.jsonl`` the runtime writes); the server-level file
+    carries every row of the lane — task loops, review organs, safety — verified on the first paid run
+    against the ``task_results`` accounting. A row without a numeric cost is counted, never priced."""
     from tests.system_e2e import harness  # durable readers (runtime-only import, outside the audit walk)
 
     spent, unknown = 0.0, 0
@@ -260,29 +255,28 @@ def lane_spend(data_root: pathlib.Path) -> tuple[float, int]:
 class RunBudget:
     """The RUN-WIDE ledger behind ``--total-budget`` (the first paid run gave every lane the whole cap).
 
-    Reservation rule, per attempt: ``per_task_usd x (root_tasks + int(self_mod))`` — the runtime
-    fences each ROOT task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their
-    root's ceiling, so SW1 (one root, two scouts) reserves for one root, SK1 (author + dispatch)
-    for two, and ``--self-mod`` adds one root for the evolution cycle: rc.14 showed up to TWO cycles
-    per lane, one at t=0 next to the scenario task and one post-task, all under the lane fence
-    (SM1_a1: task $3.84 + cycles $12.40 + $2.84 of $20) — the lane's TOTAL_BUDGET is the true fence.
-    Admission asks two questions, PER attempt: ``spent + reservation > cap`` — it can NEVER fit,
-    refused and recorded ``not_run`` (a later, smaller attempt is asked on its own; nothing halts
-    the run); otherwise ``spent + reserved(in flight) + reservation > cap`` — it cannot fit YET, so
-    it waits on the ledger and re-asks after every settle (the first paid run wrote SW1/SK1 off
-    at t=+21 min while the blocker was two SM1 reservations in flight, not the cap). A waiter only
-    waits while something is in flight, so that lane's settle wakes it; ``spent`` is re-read from
-    the lanes' durable usage on every question (it only grows, so a waiter can end refused — its
-    ``waited_sec`` is recorded). Each lane's TOTAL_BUDGET is its OWN reservation (``ceiling``):
-    the ceilings in flight are disjoint and their sum plus the settled spend never exceeds the cap.
-    No ``halted`` flag: ``refusals`` lists every refused attempt's facts, ``first_refused`` the first.
+    Reservation rule, per attempt: ``per_task_usd x (root_tasks + int(self_mod))`` — the runtime fences each ROOT
+    task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their root's ceiling, so SW1 (one root,
+    two scouts) reserves for one root, SK1 (author + dispatch) for two, and ``--self-mod`` adds one root for the
+    evolution cycle: rc.14 showed up to TWO cycles per lane, one at t=0 next to the scenario task and one
+    post-task, all under the lane fence — the lane's TOTAL_BUDGET is the true fence. Admission asks, PER attempt:
+    ``spent + reservation > cap`` — it can NEVER fit, refused and recorded ``not_run`` (a later, smaller attempt is
+    asked on its own; nothing halts the run); otherwise it reserves only when no earlier-dispatched attempt is
+    still asking (FIFO by ``dispatch_index``, see ``admit``) and ``spent + reserved(in flight) + reservation <=
+    cap``, else it waits on the ledger and re-asks after every settle (the first paid run wrote SW1/SK1 off at
+    t=+21 min while the blocker was two SM1 reservations in flight, not the cap). ``spent`` is re-read from the
+    lanes' durable usage on every question (it only grows, so a waiter can end refused — its ``waited_sec`` is
+    recorded). Each lane's TOTAL_BUDGET is its OWN reservation (``ceiling``): the ceilings in flight are disjoint
+    and their sum plus the settled spend never exceeds the cap. No ``halted`` flag: ``refusals`` lists every
+    refused attempt's facts, ``first_refused`` the first.
     """
 
     def __init__(self, cap_usd: float, per_task_usd: float, reader: Callable[[pathlib.Path], tuple[float, int]] | None = None,
                  *, self_mod: bool = False) -> None:
         self.cap, self.per_task, self.self_mod = float(cap_usd), float(per_task_usd), bool(self_mod)
         self._read = reader or lane_spend
-        self._lock = threading.Condition()                         # settle() wakes every waiting admission
+        self._lock = threading.Condition()                         # reserve/refuse/settle wake every waiting admission
+        self._pending: dict[int, str] = {}                         # dispatch index -> attempt name, while asking
         self._live: dict[tuple, tuple[pathlib.Path, float]] = {}   # job -> (data root, reservation)
         self._final: dict[tuple, tuple[float, int]] = {}           # job -> (spent, unknown rows)
         self.refusals: list[dict] = []
@@ -294,46 +288,53 @@ class RunBudget:
         return max(LANE_BUDGET_FLOOR_USD, self.per_task * (max(1, int(root_tasks or 1)) + int(self.self_mod)))
 
     def _spent_locked(self) -> tuple[float, int]:
-        spent, unknown = 0.0, 0
-        for usd, rows in self._final.values():
-            spent, unknown = spent + usd, unknown + rows
-        for data_root, _reserved in self._live.values():
-            usd, rows = self._read(data_root)
-            spent, unknown = spent + usd, unknown + rows
-        return spent, unknown
+        rows = list(self._final.values()) + [self._read(root) for root, _reserved in self._live.values()]
+        return sum((usd for usd, _n in rows), 0.0), sum(n for _usd, n in rows)
 
     def _reserved_locked(self) -> float:
         return sum(reserved for _root, reserved in self._live.values())
 
-    def admit(self, job: tuple, root_tasks: int, data_root: pathlib.Path, *,
+    def admit(self, job: tuple, root_tasks: int, data_root: pathlib.Path, *, dispatch_index: int,
               on_wait: Callable[[str], None] | None = None) -> tuple[bool, dict]:
-        """Admission is not FIFO: a waiting large reservation can be leapfrogged by smaller
-        attempts admitted from other lanes and may end refused after waiting (bounded: spend only
-        grows and the job list is finite; cap-safe at every admission). ``on_wait`` runs UNDER the
-        budget lock — it must not touch the budget itself. ``(admitted, facts)`` — blocks while the attempt cannot fit YET (``on_wait`` is told
-        once, with the numbers, when the wait begins); ``facts["waited_sec"]`` is how long."""
+        """FIFO by ``dispatch_index`` (``dispatch_order``'s position): an attempt reserves only when no earlier-
+        dispatched attempt is still asking and the cap has room beside the reservations in flight; one that can
+        never fit is refused at once and leaves the line. Without the line the freed lane's NEXT job took the lock
+        before the woken waiter every time (300/300: settle in ``run_attempt``'s finally, return, the executor's
+        next job, ``admit`` on the same thread), so a round overflowing the cap let later attempts leapfrog the
+        waiter. No deadlock: a waiter waits only while something is in flight or an earlier attempt is asking; the
+        earliest never waits on the line and, with nothing in flight, either fits or is refused; reserve, refusal
+        and settle wake every waiter, the line predicate re-parks the later ones. Cost: a large head can idle lanes
+        a smaller attempt would use. ``on_wait`` runs UNDER the budget lock (it must not touch the budget), told
+        once, with the reason the wait begins with; ``facts["waited_sec"]`` is how long."""
         need, name, waited_from = self.reservation(root_tasks), f"{job[0]}_a{job[1]}", None
         with self._lock:
-            while True:
-                spent, unknown = self._spent_locked()
-                reserved = self._reserved_locked()
-                waited = round(time.monotonic() - waited_from, 3) if waited_from is not None else 0.0
-                facts = {"cap_usd": self.cap, "spent_usd": round(spent, 4), "reserved_usd": round(reserved, 4),
-                         "reservation_usd": need, "unknown_cost_rows": unknown, "waited_sec": waited}
-                if spent + need > self.cap:                       # can never fit: refused, this attempt only
-                    self.refusals.append({"attempt": name, "reason": "budget_cap", "at": now_iso(), **facts})
-                    self.not_run.append(name)
-                    return False, facts
-                if reserved > 0 and spent + reserved + need > self.cap:   # cannot fit yet: a lane in flight will settle
-                    if waited_from is None:
-                        waited_from = time.monotonic()
-                        if on_wait is not None:
-                            on_wait(f"waiting — in flight reserved ${reserved:.2f}, needs ${need:.2f}, "
-                                    f"spent ${spent:.2f}, cap ${self.cap:.2f}")
-                    self._lock.wait()
-                    continue
-                self._live[job] = (pathlib.Path(data_root), need)
-                return True, facts
+            self._pending[dispatch_index] = name
+            try:
+                while True:
+                    spent, unknown = self._spent_locked()
+                    reserved = self._reserved_locked()
+                    waited = round(time.monotonic() - waited_from, 3) if waited_from is not None else 0.0
+                    facts = {"cap_usd": self.cap, "spent_usd": round(spent, 4), "reserved_usd": round(reserved, 4),
+                             "reservation_usd": need, "unknown_cost_rows": unknown, "waited_sec": waited}
+                    head = min(self._pending)                      # the earliest attempt still asking
+                    if spent + need > self.cap:                    # can never fit: refused, this attempt only
+                        self.refusals.append({"attempt": name, "reason": "budget_cap", "at": now_iso(), **facts})
+                        self.not_run.append(name)
+                        return False, facts
+                    if head < dispatch_index or (reserved > 0 and spent + reserved + need > self.cap):
+                        if waited_from is None:
+                            waited_from = time.monotonic()
+                            if on_wait is not None:
+                                on_wait((f"waiting — behind {self._pending[head]} in dispatch order" if head < dispatch_index
+                                         else f"waiting — in flight reserved ${reserved:.2f}")
+                                        + f", needs ${need:.2f}, spent ${spent:.2f}, cap ${self.cap:.2f}")
+                        self._lock.wait()
+                        continue
+                    self._live[job] = (pathlib.Path(data_root), need)
+                    return True, facts
+            finally:                                               # out of the line, even on a reader error: the next may reserve
+                del self._pending[dispatch_index]
+                self._lock.notify_all()
 
     def ceiling(self, job: tuple) -> float:
         """The lane's TOTAL_BUDGET: its own reservation — immutable, disjoint from every other
@@ -363,10 +364,10 @@ class RunBudget:
 def budget_preflight(budget: RunBudget, scenario_ids: list[str], attempts: int, lanes: int) -> dict:
     """The reservation arithmetic BEFORE any lane spends, in ``credit_preflight``'s typed shape: a row per
     scenario, the worst case ``sum(reservation x attempts)`` against the cap, the per-ROUND worst case (the
-    ``lanes`` largest reservations of one attempt per scenario at once; above the cap the round's last lane
-    WAITS on a settle — no refusal) and ``unreachable``: a reservation above the cap, or equal to it with
-    attempts >= 2 (the second can never be admitted after any spend). No override flag. Among EQUAL
-    waiters the wake order is the OS's, so a feasibility number is a range at the margin."""
+    ``lanes`` largest reservations, ONE attempt per scenario — above the cap the round's last lane WAITS on
+    a settle, no refusal; with ``lanes`` above the scenario count it understates what admission can put in
+    flight) and ``unreachable``: a reservation above the cap, or equal to it with attempts >= 2 (the second
+    can never be admitted after any spend). No override flag: the operator changes the flags."""
     rows = []
     for sid in scenario_ids:
         need = budget.reservation(SCENARIOS[sid].root_tasks)
@@ -380,21 +381,26 @@ def budget_preflight(budget: RunBudget, scenario_ids: list[str], attempts: int, 
             "unreachable": [r["scenario"] for r in rows if r["unreachable"]]}
 
 
+def dispatch_order(budget: RunBudget, requested: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """Round-robin by attempt (a1 of every scenario, then a2, ...), largest reservation first within a round
+    (stable among equals); admission keeps this order (``RunBudget.admit``). The verdict is pass-of PER
+    scenario, so the MINIMUM admitted attempts per scenario is what the order protects, not the sum."""
+    return sorted(requested, key=lambda job: (job[1], -budget.reservation(SCENARIOS[job[0]].root_tasks)))
+
+
 # --------------------------------------------------------------------------- #
 # The watcher's key probe: bounded, informational, never on the tick's path
 # --------------------------------------------------------------------------- #
 
 class KeyProbe:
-    """Key headroom on its own thread with a bounded HTTP timeout. The first paid run's watcher
-    probed inline and reported ``RemoteDisconnected``/``TimeoutError`` twice while every lane
-    was healthy: a failed or slow probe is INFORMATIONAL (the lanes' spend is the ledger's
-    business), never an ALERT and never a delay of the tick. ALERT only on a GOOD reading
-    under the floor."""
+    """Key headroom on its own thread with a bounded HTTP timeout. The first paid run's watcher probed inline
+    and reported ``RemoteDisconnected``/``TimeoutError`` twice while every lane was healthy: a failed or slow
+    probe is INFORMATIONAL (the lanes' spend is the ledger's business), never an ALERT and never a delay of
+    the tick. ALERT only on a GOOD reading under the floor. Bounded cadence: never more often than
+    PROBE_MIN_INTERVAL_SEC (two provider requests per probe), and consecutive failures back off exponentially."""
 
     def __init__(self, probe: Callable[[], float | None], *, floor: float, interval: float,
                  stop: threading.Event) -> None:
-        # Bounded cadence: never more often than PROBE_MIN_INTERVAL_SEC (two provider
-        # requests per probe), and consecutive failures back off exponentially.
         self._probe, self.floor, self._stop = probe, float(floor), stop
         self.interval = max(float(interval), PROBE_MIN_INTERVAL_SEC)
         self._lock = threading.Lock()
@@ -455,12 +461,11 @@ class SeedMaterializeRefused(RuntimeError):
 
 
 def materialize_seed(source: pathlib.Path, ref: str, seed: pathlib.Path) -> dict:
-    """A clean DETACHED clone of ``ref`` (resolved in ``source``) at ``seed``: the tree every
-    lane clones. Never the operator's checkout itself — the first paid run seeded from a live
-    worktree edited concurrently and SK1_a3 recorded ``seed_clean=false`` — so the source may
-    be dirty or move under the run without touching what is under test. Post-admission by
-    design (a clone is world-shaped work); the manifest's ``source`` block discloses the
-    source's own state, ``manifest["seed"]`` records what actually ran."""
+    """A clean DETACHED clone of ``ref`` (resolved in ``source``) at ``seed``: the tree every lane clones.
+    Never the operator's checkout itself — the first paid run seeded from a live worktree edited concurrently
+    and SK1_a3 recorded ``seed_clean=false`` — so the source may be dirty or move under the run without
+    touching what is under test. Post-admission by design (a clone is world-shaped work); the manifest's
+    ``source`` block discloses the source's own state, ``manifest["seed"]`` records what actually ran."""
     resolved = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
                               cwd=str(source), check=False, capture_output=True, text=True)
     sha = (resolved.stdout or "").strip()
@@ -514,15 +519,13 @@ def _newest_transaction(data_root: pathlib.Path) -> dict:
 def confirm_absorb(server: IsolatedServer, clone: pathlib.Path, data_root: pathlib.Path, pre: dict, *,
                    timeout: float, ready_timeout: float) -> dict:
     """POSITIVE evidence of an absorbed post-task evolution, or a typed non-confirmation.
-
-    ``wait_for_absorb`` answers ``absorbed=False`` on ``no_promotion``/``timeout``, and a
-    runner that only checks liveness afterwards lets ``--self-mod`` PASS with no restart at
-    all. Confirmed means ALL of: the campaign's absorbed-cycle counter advanced past the
-    pre-task snapshot, the served sha moved off the snapshot (``wait_for_absorb``'s own
-    condition), the server re-exec'd (``/api/state`` uptime reset below the time elapsed
-    since the snapshot) and answers ready again. The clone HEAD after the cycle and the
-    newest campaign transaction (commit sha, restart_verified, verified_by) are recorded as
-    the diagnostic trail; ``serving_head`` says whether the served sha is that HEAD."""
+    ``wait_for_absorb`` answers ``absorbed=False`` on ``no_promotion``/``timeout``, and a runner that
+    only checks liveness afterwards lets ``--self-mod`` PASS with no restart at all. Confirmed means
+    ALL of: the campaign's absorbed-cycle counter advanced past the pre-task snapshot, the served sha
+    moved off the snapshot (``wait_for_absorb``'s own condition), the server re-exec'd (``/api/state``
+    uptime reset below the time elapsed since the snapshot) and answers ready again. The clone HEAD
+    after the cycle and the newest campaign transaction (commit sha, restart_verified, verified_by)
+    are the recorded diagnostic trail; ``serving_head`` says whether the served sha is that HEAD."""
     wait = server.wait_for_absorb(pre["sha"], pre["cycles"], timeout=timeout)
     healthy = server.wait_for_health(timeout=ready_timeout)
     try:
@@ -599,12 +602,11 @@ def _proc_cmdline(pid: int) -> str:
 
 
 def _apply_orphan_scan(row: dict, survivors: list | None) -> None:
-    """The last check of a lane: a process still carrying the lane's data root after stop fails a
-    passing lane, and the index never carries a failed row with an empty reason. ``survivors`` are
-    the pids the scan still found after the stop wait (empty = clean); ``None`` = the scan is
-    unavailable (no procfs): a typed fact, not a passed check. Survivors are NAMED in
-    ``row["orphans"]`` (pid + cmdline head, first 20): the rc.14 paid run recorded a bare
-    ``no_orphans_after_stop=false`` with no way to tell which processes outlived the stop."""
+    """The last check of a lane: a process still carrying the lane's data root after stop fails a passing
+    lane, and the index never carries a failed row with an empty reason. ``survivors`` are the pids the
+    scan still found after the stop wait (empty = clean); ``None`` = no procfs: a typed fact, not a passed
+    check. Survivors are NAMED in ``row["orphans"]`` (pid + cmdline head, first 20): the rc.14 paid run
+    recorded a bare ``no_orphans_after_stop=false`` with no way to tell which processes outlived the stop."""
     if survivors is None:
         row["no_orphans_after_stop"] = None
         row["orphan_scan"] = "unavailable:no_procfs"
@@ -632,10 +634,10 @@ def _record_row(out: pathlib.Path, lane: pathlib.Path, row: dict) -> None:
 
 def run_attempt(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, template: dict,
                 stagger: Stagger, states: dict, seed: pathlib.Path, budget: RunBudget, *,
-                key: str = "", seed_sha: str = "") -> dict:
-    """Budget admission around one lane: reserve (waiting out the reservations in flight when the
-    attempt fits the cap but not them yet), run, settle. A refused attempt is a recorded
-    ``not_run`` row — never a silent gap in the index."""
+                dispatch_index: int, key: str = "", seed_sha: str = "") -> dict:
+    """Budget admission around one lane: reserve (waiting out an earlier attempt still asking, or the
+    reservations in flight when the attempt fits the cap but not them yet), run, settle. A refused
+    attempt is a recorded ``not_run`` row — never a silent gap in the index."""
     sid, attempt = job
     lane = out / "lanes" / f"{sid}_a{attempt}"
 
@@ -643,7 +645,7 @@ def run_attempt(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Pat
         _log(f"{sid}_a{attempt}: {msg}")
         states[job] = ("waiting (budget)", time.time())
 
-    admitted, facts = budget.admit(job, SCENARIOS[sid].root_tasks, lane / "data", on_wait=waiting)
+    admitted, facts = budget.admit(job, SCENARIOS[sid].root_tasks, lane / "data", dispatch_index=dispatch_index, on_wait=waiting)
     if not admitted:
         row = {**_lane_row(job, args), "status": "not_run", "reason_code": "budget_cap", "budget": facts,
                "refusal": {"type": "RunBudgetCap", "code": "budget_cap", "message": "run-wide budget cap reached"},
@@ -738,14 +740,14 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         server = start_server(sha)
         row["attestation"] = dict(server.attestation)
         if scenario.needs_ui:
-            # An AVAILABILITY probe only (the browser binary launches), closed at once: the client
-            # the scenario uses is opened by ``LaneContext.ui`` at use time, after the task.
+            # An AVAILABILITY probe only (the browser launches), closed at once: the scenario's client is opened
+            # by ``LaneContext.ui`` at use time, after the task.
             probe, reason = resolve_ui_client(server.base_url)
             if probe is not None:
                 probe.close()
             row["ui"] = {"available": probe is not None, "reason": reason}
-        # The absorb snapshot is taken BEFORE the task (a snapshot at restart time would already
-        # see the task's own commit and the evolve cycle it triggered).
+        # The absorb snapshot is taken BEFORE the task (at restart time it would already see the task's own
+        # commit and the evolve cycle it triggered).
         pre_mod = self_mod_snapshot(server, clone, data_root) if args.self_mod else {}
         ctx = LaneContext(server=server, clone=clone, data_root=data_root, oracle=oracle, harness=harness,
                           ui_resolver=resolve_ui_client if scenario.needs_ui else None,
@@ -845,13 +847,10 @@ def main(argv: list[str] | None = None) -> int:
     seed = out / "seed"
     budget = RunBudget(args.total_budget, args.per_task_usd, self_mod=args.self_mod)
     requested = [(sid, n) for sid in args.scenario_ids for n in range(1, args.attempts + 1)]
-    # Round-robin by attempt (a1 of every scenario, then a2, ...), largest reservation first within a round: the verdict
-    # is pass-of PER scenario, so the MINIMUM admitted per scenario is what the order protects (largest-first: SW1 <= 1/3).
-    jobs = sorted(requested, key=lambda job: (job[1], -budget.reservation(SCENARIOS[job[0]].root_tasks)))
+    jobs = dispatch_order(budget, requested)   # the pool's order AND the ledger's: admission is FIFO by this index
     manifest_path = out / "run_manifest.json"
-    # The SOURCE is attested for provenance only (require_clean=False discloses its state): the
-    # tree under test is the detached seed materialized from a COMMITTED sha inside the seam,
-    # whose own gate is enforced there and recorded under manifest["seed"].
+    # The SOURCE is attested for provenance only (require_clean=False discloses its state): the tree under test
+    # is the detached seed materialized from a COMMITTED sha inside the seam (its own gate; manifest["seed"]).
     manifest = admit_benchmark_run(
         manifest_path, benchmark="e2e_live", run_root=out, repo_dir=source,
         requested_task_ids=[f"{sid}_a{n}" for sid, n in requested], require_clean=False,
@@ -926,9 +925,8 @@ def main(argv: list[str] | None = None) -> int:
             _log(f"WARNING: the source checkout {source} is dirty ({manifest['source'].get('status_entries')} "
                  "entries): the seed is the COMMITTED ref above; uncommitted edits are NOT under test")
         full = effective_settings(args, key)
-        # The template the run keeps and hands to lanes is REDACTED (no credential value in
-        # any run-level artifact or shared object); the key is injected into each lane's own
-        # 0600 settings file and disclosed here by fingerprint as the runtime grant.
+        # The template the run keeps and hands to lanes is REDACTED (no credential value in any run-level artifact
+        # or shared object); the key is injected into each lane's own 0600 settings file, disclosed by fingerprint.
         template = redacted_template(full)
         template_path = out / "effective_settings.json"
         write_settings(template_path, template)
@@ -952,14 +950,14 @@ def main(argv: list[str] | None = None) -> int:
         threading.Thread(target=watcher, args=(stop, states, args.watch_interval, budget, probe), daemon=True).start()
         rows: list[dict] = []
         gate = Stagger(args.stagger)
-        # Every lane server inherits THIS process's environment (``IsolatedServer._env`` copies it and
-        # keeps this key through the authoritative sweep); set once, before the first lane starts, and
-        # unconditionally: an ambient value from the operator shell must not decide the stand's load.
+        # Every lane server inherits THIS process's environment (``IsolatedServer._env`` copies it and keeps this
+        # key through the authoritative sweep); set once, before the first lane starts, and unconditionally: an
+        # ambient value from the operator shell must not decide the stand's load.
         os.environ[PREFLIGHT_WORKERS_ENV] = str(args.preflight_test_workers)
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.lanes) as pool:
                 futures = [pool.submit(run_attempt, job, args, out, template, gate, states, seed, budget,
-                                       key=key, seed_sha=seed_sha) for job in jobs]
+                                       dispatch_index=index, key=key, seed_sha=seed_sha) for index, job in enumerate(jobs)]
                 rows = [f.result() for f in futures]
         finally:
             stop.set()
