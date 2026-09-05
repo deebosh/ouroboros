@@ -1,4 +1,4 @@
-"""Self-pin of the root conftest's thread-hygiene guard: after every fixture of an item is
+"""Self-pin of the root conftest's thread-hygiene guard: the baseline is taken after fixtures are set up (a module-scoped fixture's thread is not a test's leak); after every fixture of an item is
 torn down, a thread the item started and left alive is named at the item (the leaker), a
 thread that finishes within the grace is not, and the baseline is held by thread OBJECT so a
 recycled ident cannot hide a leak. The guard itself lives in tests/conftest.py next to the
@@ -61,7 +61,7 @@ def test_a_baseline_thread_is_held_by_object_not_by_ident(monkeypatch):
     old = threading.Thread(target=exit_old.wait, name="probe-old", daemon=True)
     old.start()
     item = SimpleNamespace(nodeid="tests/x.py::recycled", stash=pytest.Stash())
-    snapshot = conftest.pytest_runtest_setup(item)   # the hookwrapper: snapshot, then yield
+    snapshot = conftest.pytest_runtest_call(item)   # the call-phase hookwrapper: snapshot, then yield
     next(snapshot)
     with pytest.raises(StopIteration):
         next(snapshot)

@@ -296,6 +296,12 @@ def pytest_runtest_call(item):  # noqa: ARG001
     """
     test_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(test_loop)
+    # Thread-hygiene baseline, taken AFTER every fixture is set up: a thread a module- or
+    # session-scoped fixture starts on its first use (the E2E stub model server) belongs to
+    # that fixture for its whole scope and is not a leak of this test; only threads the TEST
+    # BODY leaves behind are named at teardown. Thread OBJECTS, not idents: CPython recycles
+    # an ident once a baseline thread exits, so a leaked thread could inherit one.
+    item.stash[_THREADS_BEFORE_ITEM] = set(threading.enumerate())
     yield  # test body runs here
     test_loop.close()
     asyncio.set_event_loop(None)
@@ -598,13 +604,6 @@ _DETACHED_THREAD_NAME_PREFIXES = (
     "onboarding-snapshot",
 )
 
-
-@pytest.hookimpl(hookwrapper=True, tryfirst=True)
-def pytest_runtest_setup(item):
-    # Thread OBJECTS, not idents: CPython recycles an ident once a baseline thread exits, so a
-    # thread leaked during the test could inherit a baseline ident and evade the guard.
-    item.stash[_THREADS_BEFORE_ITEM] = set(threading.enumerate())
-    yield
 
 
 def _fail_if_a_thread_leaked(item):
