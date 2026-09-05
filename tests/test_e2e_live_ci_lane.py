@@ -33,7 +33,7 @@ import textwrap
 
 import yaml
 
-from devtools.e2e_live.run_live_lanes import HARD_STOP_INVERSE, LANE_BUDGET_FLOOR_USD
+from devtools.e2e_live.run_live_lanes import RunBudget
 from devtools.e2e_live.scenarios import SCENARIOS
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -179,15 +179,15 @@ def test_the_run_size_is_feasible_under_the_cap_by_the_worst_case_reservation_ru
     assert scenarios and set(scenarios) <= set(SCENARIOS), scenarios
     assert 1 <= int(args["--pass-of"]) <= attempts
     assert 1 <= int(args["--lanes"]) <= len(scenarios) * attempts
-    reservations = [
-        max(LANE_BUDGET_FLOOR_USD, HARD_STOP_INVERSE * per_task * SCENARIOS[sid].root_tasks)
-        for sid in scenarios for _ in range(attempts)
-    ]
-    assert sum(reservations) <= TOTAL_BUDGET_USD, (reservations, per_task, HARD_STOP_INVERSE)
+    # The stand's own rule (per-task x (roots + the self-mod evolution root)), asked from
+    # the real ledger with the job's --self-mod, so a rule change re-derives this pin itself.
+    budget = RunBudget(TOTAL_BUDGET_USD, per_task, self_mod=args["--self-mod"] is None)
+    reservations = [budget.reservation(SCENARIOS[sid].root_tasks) for sid in scenarios for _ in range(attempts)]
+    assert sum(reservations) <= TOTAL_BUDGET_USD, (reservations, per_task)
     # ...and the set is MAXIMAL at this fence: one more single-root attempt would
     # not fit. When the reservation factor changes this trips on purpose — the
     # subset (and the arithmetic comment in ci.yml) must be revisited, not left.
-    assert sum(reservations) + HARD_STOP_INVERSE * per_task > TOTAL_BUDGET_USD, (reservations, HARD_STOP_INVERSE)
+    assert sum(reservations) + budget.reservation(1) > TOTAL_BUDGET_USD, (reservations, budget.reservation(1))
     # The job title says which subset runs; the full operator set is SM1,SW1,SK1 x3.
     assert "SM1" in _job()["name"] and "feasible" in _job()["name"]
 
