@@ -555,6 +555,18 @@ def test_settings_save_body_runs_off_the_event_loop():
         break
     else:
         raise AssertionError("onboarding.py holds no settings_document_mutation block")
+    # And the onboarding endpoint runs that locked body through the SAME bounded
+    # writer seam as the settings.py writers (audit point 3): a bare
+    # ``to_thread`` was the one settings write with no initiating-writer cap.
+    for node in ast.walk(ast.parse(onboarding_src)):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "api_onboarding_complete":
+            text = ast.unparse(node)
+            assert "_run_settings_writer(" in text and "to_thread(" not in text, (
+                "api_onboarding_complete must persist through settings._run_settings_writer"
+            )
+            break
+    else:
+        raise AssertionError("onboarding.py defines no api_onboarding_complete")
 
     # And any FUTURE writer: every _owner_write_settings / _owner_update_settings
     # call site in this module must live inside one of the locked writers above.

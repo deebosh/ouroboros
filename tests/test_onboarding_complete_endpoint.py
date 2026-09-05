@@ -331,6 +331,50 @@ def test_settings_document_held_past_its_bound_is_a_typed_busy_not_a_hang(onboar
     del threading
 
 
+def test_a_persist_wedged_past_the_writer_bound_answers_the_typed_unknown(onboarding, monkeypatch):
+    """Audit point 3: the INITIATING onboarding writer is capped by the same
+    seam as every settings.py writer (``settings._run_settings_writer``). A
+    persist wedged in its post-commit hot-reload answers 503
+    ``settings_save_timeout`` with ``saved: null`` at twice the document-lock
+    bound and the request RETURNS — the bytes are already on disk, which is
+    exactly why neither ``true`` nor ``false`` would be honest — while the
+    abandoned body still runs to completion in its thread."""
+    import threading
+    import time
+
+    import ouroboros.config as config
+    import ouroboros.gateway.settings as gw_settings
+
+    monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 0.2)
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _wedged(*_a, **_k):
+        release.wait(10)
+        finished.set()
+
+    monkeypatch.setattr(gw_settings, "_apply_settings_save_side_effects", _wedged)
+    started = time.monotonic()
+    try:
+        response = onboarding.client.post(
+            "/api/onboarding/complete",
+            json={**WIZARD_PAYLOAD, "subscriptionsConnected": False},
+        )
+        elapsed = time.monotonic() - started
+        assert 2 * 0.2 <= elapsed < 5, elapsed
+        assert not finished.is_set(), "the response must not wait for the wedged body"
+        assert response.status_code == 503, response.text
+        body = response.json()
+        assert body["code"] == "settings_save_timeout"
+        assert "saved" in body and body["saved"] is None
+        assert "still running" in body["error"]
+        assert onboarding.saved()[ONBOARDING_COMPLETED_KEY]
+        assert onboarding.calls["supervisor"] == 1
+    finally:
+        release.set()
+    assert finished.wait(10), "the abandoned body must still run to completion"
+
+
 def test_retries_join_the_wedged_snapshot_read_instead_of_leaking_a_thread_each(onboarding, monkeypatch):
     """Adversarial finding: ``wait_for`` abandons the awaiting request, not the
     worker. On the loop's shared default executor every timed-out completion

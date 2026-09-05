@@ -882,57 +882,71 @@ async def api_onboarding_complete(request: Request) -> JSONResponse:
     pending_mode = normalize_runtime_mode(current.get("OUROBOROS_RUNTIME_MODE"))
     active_mode = get_runtime_mode()
     boundary = CommitBoundary()
-    try:
-        await asyncio.to_thread(
-            _persist, request, old_settings, current, pending_mode, safety_light,
-            install_preset_applied, boundary, read_fingerprint,
-        )
-    except Exception as exc:
-        if boundary.committed:
-            # The transaction LANDED; a post-save step did not. Saying
-            # "nothing was saved" here would send the owner back through an
-            # onboarding that is already complete (BIBLE P1).
-            return post_commit_failure_response(exc, boundary)
-        if isinstance(exc, SettingsPreconditionFailed):
-            return unsaved_error(str(exc), 409, code="onboarding_state_changed")
-        if isinstance(exc, SettingsDocumentBusy):
-            # The in-process document lock stayed held past its bound (a
-            # writer wedged in its hot-reload effects): nothing was written,
-            # the wizard stays open, and the owner retries — never "Saving..."
-            # forever (issue #464's second half).
-            return unsaved_error(str(exc), 503, code="settings_busy")
-        if isinstance(exc, SettingsLockUnavailable):
-            # NO `can_skip`. That flag means "there is a different button that
-            # WILL work", and the skip is the same request to the same endpoint,
-            # which takes the same lock — offering it under contention promises
-            # an escape that leads straight back here. `can_skip` belongs to the
-            # preset-verification failures, where finishing without agent
-            # defaults genuinely bypasses the thing that failed.
-            return unsaved_error(str(exc), 503, code="settings_locked")
-        if isinstance(exc, PermissionError):
-            return unsaved_error(str(exc), 403)
-        log.exception("onboarding completion failed")
-        return unsaved_error(f"{type(exc).__name__}: {exc}", 500)
 
-    _owner_audit(request, "onboarding_complete", {
-        "runtime_mode": pending_mode,
-        "preset": preset_reason,
-        "preset_harnesses": list(preset.connected) if preset else [],
-        "subscriptions_connected": subscriptions_connected,
-    })
-    payload: Dict[str, Any] = {
-        "ok": True,
-        "status": "saved",
-        "runtime_mode": pending_mode,
-        "restart_required": active_mode != pending_mode,
-        "preset": {
-            "applied": preset is not None,
-            "reason": preset_reason,
-            "harnesses": list(preset.connected) if preset else [],
-            "receipt": dict(preset.receipt) if preset else {},
-        },
-    }
-    return JSONResponse(payload)
+    def _complete_locked(request: Request, _body: Any) -> JSONResponse:
+        # ONE synchronous body — the persist, its exception mapping and the
+        # success audit — run through the shared bounded writer seam
+        # (``settings._run_settings_writer``), so this save inherits the
+        # initiating-writer cap (twice the document-lock bound) and the typed
+        # 503 ``settings_save_timeout`` with ``saved: null`` when the body
+        # wedges in its post-commit effects. A bare ``to_thread`` here used to
+        # be the one settings write with no cap at all: the wizard sat on
+        # "Saving..." for as long as the hot-reload took. ``SettingsDocumentBusy``
+        # is left to the seam, which answers the same 503 ``settings_busy``
+        # this endpoint used to map itself (issue #464's second half).
+        try:
+            _persist(
+                request, old_settings, current, pending_mode, safety_light,
+                install_preset_applied, boundary, read_fingerprint,
+            )
+        except SettingsDocumentBusy:
+            raise
+        except Exception as exc:
+            if boundary.committed:
+                # The transaction LANDED; a post-save step did not. Saying
+                # "nothing was saved" here would send the owner back through an
+                # onboarding that is already complete (BIBLE P1).
+                return post_commit_failure_response(exc, boundary)
+            if isinstance(exc, SettingsPreconditionFailed):
+                return unsaved_error(str(exc), 409, code="onboarding_state_changed")
+            if isinstance(exc, SettingsLockUnavailable):
+                # NO `can_skip`. That flag means "there is a different button that
+                # WILL work", and the skip is the same request to the same endpoint,
+                # which takes the same lock — offering it under contention promises
+                # an escape that leads straight back here. `can_skip` belongs to the
+                # preset-verification failures, where finishing without agent
+                # defaults genuinely bypasses the thing that failed.
+                return unsaved_error(str(exc), 503, code="settings_locked")
+            if isinstance(exc, PermissionError):
+                return unsaved_error(str(exc), 403)
+            log.exception("onboarding completion failed")
+            return unsaved_error(f"{type(exc).__name__}: {exc}", 500)
+
+        _owner_audit(request, "onboarding_complete", {
+            "runtime_mode": pending_mode,
+            "preset": preset_reason,
+            "preset_harnesses": list(preset.connected) if preset else [],
+            "subscriptions_connected": subscriptions_connected,
+        })
+        payload: Dict[str, Any] = {
+            "ok": True,
+            "status": "saved",
+            "runtime_mode": pending_mode,
+            "restart_required": active_mode != pending_mode,
+            "preset": {
+                "applied": preset is not None,
+                "reason": preset_reason,
+                "harnesses": list(preset.connected) if preset else [],
+                "receipt": dict(preset.receipt) if preset else {},
+            },
+        }
+        return JSONResponse(payload)
+
+    # Lazy, in the direction ``_persist`` already imports (settings.py imports
+    # nothing from this module).
+    from ouroboros.gateway.settings import _run_settings_writer
+
+    return await _run_settings_writer(_complete_locked, request, body)
 
 
 __all__ = [

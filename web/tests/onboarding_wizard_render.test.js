@@ -36,6 +36,9 @@ function inertElement() {
         addEventListener(type, fn) { listeners.set(type, fn); },
         removeEventListener() {},
         dispatchEvent() { return true; },
+        // Test-side: run the LAST listener bound for `type` (the wizard rebinds
+        // on every render), the way a click would.
+        fire(type, event = {}) { const fn = listeners.get(type); if (fn) fn(event); },
         setAttribute() {}, removeAttribute() {}, getAttribute: () => null, hasAttribute: () => false,
         appendChild: (c) => c, removeChild: (c) => c, replaceChildren() {}, insertBefore: (c) => c,
         querySelector: () => inertElement(), querySelectorAll: () => [], closest: () => null,
@@ -56,10 +59,15 @@ function inertElement() {
 
 function inertDocument() {
     const doc = inertElement();
+    const byId = new Map();
     doc.body = inertElement();
     doc.documentElement = inertElement();
     doc.head = inertElement();
-    doc.getElementById = () => inertElement();
+    // One element per id, so a listener the wizard binds is the one a test fires.
+    doc.getElementById = (id) => {
+        if (!byId.has(id)) byId.set(id, inertElement());
+        return byId.get(id);
+    };
     doc.createElement = () => inertElement();
     doc.createTextNode = (text) => ({ textContent: String(text) });
     doc.createDocumentFragment = () => inertElement();
@@ -70,26 +78,22 @@ function inertDocument() {
     return doc;
 }
 
-// One import per step: the wizard renders `stepOrder[0]` at boot, so the
-// bootstrap is rotated to put each step first (cache-busting query on the
-// import URL — an ES module is evaluated once per URL) and every step's
-// renderer executes, the summary/save re-render included — the surface
-// #557/#607 actually broke on.
-for (const [index, step] of BOOTSTRAP.stepOrder.entries()) {
-test(`importing the onboarding wizard renders the '${step}' step without throwing`, async () => {
-    const rotated = { ...BOOTSTRAP, stepOrder: [...BOOTSTRAP.stepOrder.slice(index), ...BOOTSTRAP.stepOrder.slice(0, index)] };
+// Import the wizard once under the stand-ins (cache-busting query on the
+// import URL — an ES module is evaluated once per URL) and keep them installed
+// while `body` drives it; the exact prior descriptors are restored afterwards.
+async function withWizard(bootstrap, query, body, { fetch, location } = {}) {
     const doc = inertDocument();
     const win = new Proxy({
         document: doc,
-        location: { origin: 'http://127.0.0.1:8765', href: 'http://127.0.0.1:8765/onboarding', search: '', hash: '', pathname: '/onboarding' },
+        location: location || { origin: 'http://127.0.0.1:8765', href: 'http://127.0.0.1:8765/onboarding', search: '', hash: '', pathname: '/onboarding' },
         navigator: { userAgent: 'node', platform: 'node', clipboard: { writeText: async () => {} } },
         localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-        __OURO_ONBOARDING_BOOTSTRAP__: rotated,
+        __OURO_ONBOARDING_BOOTSTRAP__: bootstrap,
         addEventListener() {}, removeEventListener() {},
         setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
         requestAnimationFrame: (fn) => setTimeout(fn, 0), getComputedStyle: () => ({}),
         matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-        fetch: async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' }),
+        fetch: fetch || (async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' })),
         open() {}, scrollTo() {}, parent: null, pywebview: undefined,
     }, {
         get(obj, prop) { return prop in obj ? obj[prop] : undefined; },
@@ -118,13 +122,80 @@ test(`importing the onboarding wizard renders the '${step}' step without throwin
     install('clearInterval', win.clearInterval);
     try {
         // A ReferenceError here is the exact failure that shipped in 6.113.3–6.114.0.
-        await import(`../modules/onboarding_wizard.js?step=${index}`);
+        await import(`../modules/onboarding_wizard.js?${query}`);
+        await body({ doc, win });
     } finally {
         for (const [name, descriptor] of Object.entries(installed)) {
             if (descriptor) Object.defineProperty(globalThis, name, descriptor);
             else delete globalThis[name];
         }
     }
+}
+
+// One import per step: the wizard renders `stepOrder[0]` at boot, so the
+// bootstrap is rotated to put each step first and every step's renderer
+// executes, the summary/save re-render included — the surface #557/#607
+// actually broke on.
+for (const [index, step] of BOOTSTRAP.stepOrder.entries()) {
+test(`importing the onboarding wizard renders the '${step}' step without throwing`, async () => {
+    const rotated = { ...BOOTSTRAP, stepOrder: [...BOOTSTRAP.stepOrder.slice(index), ...BOOTSTRAP.stepOrder.slice(0, index)] };
+    await withWizard(rotated, `step=${index}`, () => {});
     assert.ok(true);
 });
 }
+
+test('a 503 settings_save_timeout keeps the wizard open with "Check status", which proceeds once the probe says the save landed', async () => {
+    // The completion POST runs through the shared bounded settings writer:
+    // past twice the document-lock bound it answers 503 `settings_save_timeout`
+    // with `saved: null` — the save is STILL RUNNING in the server, so neither
+    // "saved" nor "nothing saved" is true. The wizard must not offer a blind
+    // retry (a second write over an unknown first); it re-reads the readiness
+    // probe on request and proceeds exactly as a receipt would once it passes.
+    const summaryFirst = {
+        ...BOOTSTRAP,
+        stepOrder: ['summary', ...BOOTSTRAP.stepOrder.filter((step) => step !== 'summary')],
+        initialState: { ...BOOTSTRAP.initialState, openrouterKey: 'sk-or-v1-abcdefghijklmnop' },
+    };
+    const calls = [];
+    const fetch = async (url, init = {}) => {
+        calls.push(`${init.method || 'GET'} ${String(url)}`);
+        if (String(url) === '/api/onboarding/complete') {
+            return {
+                ok: false, status: 503, text: async () => '',
+                json: async () => ({
+                    error: 'the settings save is still running in the server after 60s and was left to finish on its own; reload Settings to see what landed',
+                    code: 'settings_save_timeout', saved: null,
+                }),
+            };
+        }
+        if (String(url) === '/api/onboarding') {
+            return { ok: true, status: 204, text: async () => '', json: async () => { throw new Error('no body'); } };
+        }
+        return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
+    };
+    const replaced = [];
+    const location = {
+        origin: 'http://127.0.0.1:8765', href: 'http://127.0.0.1:8765/onboarding', search: '', hash: '', pathname: '/onboarding',
+        replace: (href) => replaced.push(href),
+    };
+    const settle = async () => { for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+
+    await withWizard(summaryFirst, 'save=timeout', async ({ doc }) => {
+        doc.getElementById('next-btn').fire('click');   // "Start Ouroboros"
+        await settle();
+        assert.deepEqual(calls, ['POST /api/onboarding/complete']);
+        const html = doc.getElementById('root').innerHTML;
+        assert.match(html, /is unknown — the save is still running/);
+        assert.match(html, /id="check-save-btn"[^>]*>Check status</);
+        assert.doesNotMatch(html, /Saving\.\.\./, 'the wizard is not stuck on Saving...');
+        assert.equal(replaced.length, 0, 'an unknown save is not announced as a completion');
+
+        doc.getElementById('check-save-btn').fire('click');
+        await settle();
+        assert.deepEqual(calls, ['POST /api/onboarding/complete', 'GET /api/onboarding']);
+        // 204 = the readiness gate passes: the transaction landed. The plain
+        // browser shell proceeds as it does on a receipt (no restart needed —
+        // the runtime mode the wizard holds is the one the page loaded with).
+        assert.deepEqual(replaced, ['/']);
+    }, { fetch, location });
+});

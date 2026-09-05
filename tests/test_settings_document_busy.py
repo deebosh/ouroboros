@@ -22,6 +22,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from ouroboros.gateway.onboarding import api_onboarding_complete
 from ouroboros.gateway.settings import (
     api_owner_auto_grant,
     api_owner_context_mode,
@@ -52,6 +53,18 @@ WRITERS = [
     ("/api/owner/context-mode", api_owner_context_mode, {"mode": "low"}),
     ("/api/owner/safety-mode", api_owner_safety_mode, {"mode": "full"}),
     ("/api/settings", api_settings_post, {"OUROBOROS_MAX_ROUNDS": "12"}),
+    # Onboarding completion runs its persist through the same seam (audit
+    # point 3); a valid wizard payload, no subscription declared, so the
+    # request reaches the document lock without any daemon read.
+    ("/api/onboarding/complete", api_onboarding_complete, {
+        "OPENROUTER_API_KEY": "sk-or-v1-abcdefghijklmnop",
+        "OUROBOROS_MODEL": "openai/gpt-5.6-luna",
+        "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
+        "OUROBOROS_RUNTIME_MODE": "advanced",
+        "TOTAL_BUDGET": 25.0,
+        "OUROBOROS_PER_TASK_COST_USD": 5.0,
+        "subscriptionsConnected": False,
+    }),
 ]
 
 

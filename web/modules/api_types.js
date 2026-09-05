@@ -190,7 +190,8 @@
  * (twice OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC): the body keeps running
  * in its server thread, so whether the bytes landed is UNKNOWN — `saved` is
  * null, neither true nor false. Reload settings to see what landed instead of
- * re-saving blindly. Shared by POST /api/settings and the owner endpoints.
+ * re-saving blindly. Shared by POST /api/settings, the owner endpoints and
+ * POST /api/onboarding/complete (the wizard offers "Check status" on it).
  * @typedef {Object} SettingsSaveTimeoutResponse
  * @property {string} error
  * @property {string} code  // settings_save_timeout

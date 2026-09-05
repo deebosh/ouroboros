@@ -387,9 +387,9 @@ async def _run_settings_writer(fn: Any, request: Request, body: Any) -> JSONResp
     single-decision endpoints and onboarding alike — never an untyped 500
     from one of them while another answers honestly.
 
-    The INITIATING writer is bounded by the same contract the lock enforces
-    on later writers (``OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC``): one
-    lock wait plus one held episode, each within that bound. A body wedged
+    The INITIATING writer (onboarding completion included) is bounded by the same
+    contract the lock enforces on later writers (``OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC``):
+    one lock wait plus one held episode, each within that bound. A body wedged
     in its post-commit effects (extension reload, remote configuration) is
     abandoned to its uncancellable worker thread and the Save answers a typed
     503 ``settings_save_timeout`` with ``saved: null`` — whether the bytes
