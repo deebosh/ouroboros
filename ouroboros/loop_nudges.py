@@ -805,12 +805,14 @@ def _contract_expected_output(ctx: Any) -> str:
     """Read the declared expected_output (as carried on the task contract/metadata for the
     running ctx — the same declared field the M2 ungrounded flag keys on), for the A3 no-op nudge gate."""
     contract = getattr(ctx, "task_contract", {})
-    if isinstance(contract, dict) and str(contract.get("expected_output") or "").strip():
-        return str(contract.get("expected_output") or "")
+    declared = str(contract.get("expected_output") or "") if isinstance(contract, dict) else ""
+    if declared.strip():
+        return declared
     metadata = getattr(ctx, "task_metadata", {})
     if isinstance(metadata, dict):
-        if str(metadata.get("expected_output") or "").strip():
-            return str(metadata.get("expected_output") or "")
+        declared = str(metadata.get("expected_output") or "")
+        if declared.strip():
+            return declared
         meta_contract = metadata.get("task_contract")
         if isinstance(meta_contract, dict):
             return str(meta_contract.get("expected_output") or "")

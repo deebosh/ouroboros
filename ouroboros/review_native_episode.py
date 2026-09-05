@@ -10,8 +10,10 @@ ONE episode is ONE logical review attempt: ``LLMClient.chat(tools=…)`` calls
 against a fresh, instance-local inspection-only ``ToolRegistry`` until the
 reviewer answers. There is NO round cap (BIBLE P13: the floor is hardcoded,
 never the ceiling): the episode's bounds are the transcript bound derived from
-the reviewer's own context window (never above the owner ceiling), the owner
-deadline and the paid ledger. The host announces the bound once at the landing
+the reviewer's own context window (never above the owner ceiling, unless a
+surface's declared mandatory reading lifts it — a floor the window caps and
+the host discloses typed when it cannot be met), the owner deadline and the
+paid ledger. The host announces the bound once at the landing
 fraction so the reviewer can finish; exhaustion is a typed refusal for verdict
 shapes and a disclosed INCOMPLETE product for the report shape — never
 mid-episode compaction or resume. Every provider call is its own ledger row;
@@ -27,6 +29,7 @@ import time
 import hashlib
 import json
 import logging
+import math
 from typing import Any, Dict, List, Optional
 
 from ouroboros.config import get_finalization_grace_sec
@@ -55,7 +58,8 @@ log = logging.getLogger("review_native_episode")
 def review_native_max_transcript_chars() -> int:
     """Owner CEILING on the episode transcript (chars). The effective bound is
     the reviewer window's calibrated capacity (`review_native_transcript_bound`),
-    never above this number."""
+    never above this number — except for a surface-declared mandatory reading,
+    a floor the window (not this ceiling) caps (`native_mandatory_read_bound`)."""
     from ouroboros.config import _clamped_number_setting
 
     return _clamped_number_setting(
@@ -72,9 +76,17 @@ NATIVE_LANDING_FRACTION = 0.8
 # the SAME scale the review packet sizer uses.
 _CHARS_PER_ESTIMATED_TOKEN = 4
 
+# The typed disclosure when a surface's declared mandatory reading cannot land
+# before the landing notice even at the bound the reviewer's window allows: the
+# surface's prompt and the episode facts both carry it, so a full-read
+# instruction the episode cannot honour is never a silent contradiction.
+# Vocabulary sibling of the episode's `native_transcript_cap_exceeded` end.
+NATIVE_MANDATORY_READ_EXCEEDS_BOUND = "native_mandatory_read_exceeds_bound"
+
 
 def review_native_transcript_bound(
     model_id: str, *, output_reserve: int, use_local: Optional[bool] = None,
+    mandatory_read_chars: int = 0,
 ) -> int:
     """The episode's SEND bound in chars, derived from the reviewer's window.
 
@@ -86,6 +98,13 @@ def review_native_transcript_bound(
     therefore lands on the ceiling; a 200K route gets a bound its own window
     can carry instead of a number written for a different model — the
     previous fixed cap either starved a large window or overflowed a small one.
+
+    ``mandatory_read_chars`` is the surface's declared mandatory reading (the
+    task text it hands over plus the wire size of the documents it requires
+    read in full): a FLOOR (P13) that lifts the bound past the owner ceiling to
+    `native_mandatory_read_bound` — never past what the window itself carries;
+    `native_mandatory_read_disclosure` names the shortfall when even that is
+    not enough. The ceiling keeps bounding DISCRETIONARY reading.
     """
     from ouroboros.reviewer_window import reviewer_context_window, window_scaled_reserves
     from ouroboros.tools.review_helpers import calibrated_input_token_limit
@@ -94,10 +113,64 @@ def review_native_transcript_bound(
     window = int(reviewer_context_window(str(model_id or ""), use_local=use_local))
     reserve, margin = window_scaled_reserves(
         window, output_reserve=int(output_reserve or 0), tokenizer_margin=window // 8)
-    tokens = calibrated_input_token_limit(
+    capacity = _CHARS_PER_ESTIMATED_TOKEN * max(0, int(calibrated_input_token_limit(
         str(model_id or ""), context_window=window, output_reserve=reserve,
-        tokenizer_margin=margin, budget_cap=ceiling // _CHARS_PER_ESTIMATED_TOKEN)
-    return max(0, min(ceiling, int(tokens) * _CHARS_PER_ESTIMATED_TOKEN))
+        tokenizer_margin=margin, budget_cap=window)))
+    bound = min(ceiling, capacity)
+    if int(mandatory_read_chars or 0) > 0:
+        bound = max(bound, min(capacity, native_mandatory_read_bound(mandatory_read_chars)))
+    return max(0, bound)
+
+
+def native_mandatory_read_bound(mandatory_read_chars: int) -> int:
+    """The bound at which a declared mandatory reading lands one full result
+    cap BEFORE the landing notice: the host's own first-send additions (the
+    instructions, the tool schemas, the surface's budget section) and the
+    per-read envelopes, which the declaration cannot know, ride in that room."""
+    return math.ceil(
+        (int(mandatory_read_chars) + _EPISODE_TOOL_RESULT_CHAR_CAP) / NATIVE_LANDING_FRACTION)
+
+
+def native_mandatory_read_disclosure(bound: int, mandatory_read_chars: int) -> str:
+    """``""`` when the declared mandatory reading lands before the landing
+    notice under ``bound``, else the typed shortfall code."""
+    if int(mandatory_read_chars or 0) <= 0 or int(bound) >= native_mandatory_read_bound(mandatory_read_chars):
+        return ""
+    return NATIVE_MANDATORY_READ_EXCEEDS_BOUND
+
+
+def native_landing_at(bound: int) -> int:
+    """Where the host posts the landing notice: the landing fraction of the
+    bound, never nearer to it than the landing reserve."""
+    return min(int(int(bound) * NATIVE_LANDING_FRACTION), max(0, int(bound) - _LANDING_RESERVE_CHARS))
+
+
+def native_mandatory_read_chars(request: Any) -> int:
+    """The surface's declared mandatory reading on the request policy (chars)."""
+    return int((getattr(request, "policy", None) or {}).get("native_mandatory_read_chars") or 0)
+
+
+def native_episode_transcript_bound(request: Any, slot: Any) -> int:
+    """THE bound of one episode from its assignment — the one computation the
+    episode applies, which a surface may preview before dispatch (the advisory
+    names it in its prompt's MANDATORY READ budget)."""
+    return review_native_transcript_bound(
+        slot.model, output_reserve=int(request.max_tokens or slot.max_tokens),
+        use_local=bool(slot.use_local), mandatory_read_chars=native_mandatory_read_chars(request))
+
+
+def native_mandatory_read_facts(request: Any, bound: int) -> Dict[str, Any]:
+    """The episode facts of a surface-declared mandatory reading: the declared
+    chars and, when ``bound`` cannot hold it, the typed shortfall code; ``{}``
+    when nothing was declared."""
+    declared = native_mandatory_read_chars(request)
+    if not declared:
+        return {}
+    facts: Dict[str, Any] = {"native_mandatory_read_chars": declared}
+    disclosure = native_mandatory_read_disclosure(bound, declared)
+    if disclosure:
+        facts["native_mandatory_read_disclosure"] = disclosure
+    return facts
 
 
 def native_or_packet_attempt_rail(slot: Any, two_send_surface: bool) -> Any:
@@ -341,10 +414,9 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 code="api_chat_unavailable")
         deadline_at = str(getattr(request, "deadline_at", "") or "")
         max_tokens = int(request.max_tokens or slot.max_tokens)
-        transcript_cap = review_native_transcript_bound(
-            slot.model, output_reserve=max_tokens, use_local=bool(slot.use_local))
-        landing_at = min(int(transcript_cap * NATIVE_LANDING_FRACTION),
-                         max(0, transcript_cap - _LANDING_RESERVE_CHARS))
+        transcript_cap = native_episode_transcript_bound(request, slot)
+        mandatory_read_facts = native_mandatory_read_facts(request, transcript_cap)
+        landing_at = native_landing_at(transcript_cap)
         shape = review_output_shape(request.surface)
         # The data plane is opt-in per surface (policy["native_data_root"]):
         # the default is an empty scratch directory so a repository review
@@ -572,6 +644,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 "native_tool_calls": self._tool_calls_total,
                 "native_transcript_chars": last_send_chars,  # the wire size of the LAST physical send
                 "native_transcript_bound": transcript_cap,
+                **mandatory_read_facts,  # a declared mandatory reading and its typed shortfall
                 **({"native_transcript_refused_chars": refused_chars} if refused_chars else {}),
                 "native_landing_notified": landed,  # posted to the transcript
                 "native_landing_sent": landing_sent,  # a provider send carried it

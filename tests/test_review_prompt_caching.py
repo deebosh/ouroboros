@@ -1567,7 +1567,7 @@ def test_acceptance_panel_declines_wave_on_insufficient_budget(monkeypatch, tmp_
         tools=tools, content="done", task_id="t", task_type="task",
         llm_trace={"tool_calls": []}, drive_root=tmp_path,
         messages=[{"role": "system", "content": ""}, {"role": "user", "content": "goal"}],
-        emit_progress=lambda _m: None, mode="required", subtree_statuses=[],
+        emit_progress=lambda _m, *, incident=None: None, mode="required", subtree_statuses=[],
         budget_profile=None, passes_done=0, evidence={"k": "v"},
     )
     result = loop_mod._execute_task_acceptance_panel(ctx)

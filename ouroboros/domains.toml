@@ -485,6 +485,7 @@ D20 = "Presence"
 "ouroboros/transport_custody.py" = "D02"
 "ouroboros/triad_review.py" = "D06"
 "ouroboros/update_channels.py" = "D12"
+"ouroboros/update_letter.py" = "D12"
 "ouroboros/usage_accounting.py" = "D16"
 "ouroboros/_usage_cache_splits.py" = "D16"
 "ouroboros/usage_compaction.py" = "D16"
@@ -823,6 +824,8 @@ lazy_only = [
   "D12->D05",
   "D12->D06",
   "D12->D10",
+  "D12->D15",
+  "D12->D16",
   "D12->D17",
   "D13->D05",
   "D13->D06",

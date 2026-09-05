@@ -367,14 +367,14 @@ def _handle_owner_stop_finalization(
 
 def _handle_provider_unavailable(
     ctx: _RoundLimitContext, *, error_kind: str = "provider_unavailable",
-    wait_cause: str = "", waited: bool = False, wait_eligible: bool = True,
+    wait_cause: str = "", waited_sec: float = 0.0, interactive: bool = False,
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """Provider-death rail wrapper: every arm carries terminal provenance.
     The forced-finalization sink stamps ``host_notice``; retained/generated
     model candidates stamp ``model_final``."""
     text, usage, llm_trace = _loop()._provider_unavailable_result(
-        ctx, error_kind=error_kind, wait_cause=wait_cause, waited=waited,
-        wait_eligible=wait_eligible,
+        ctx, error_kind=error_kind, wait_cause=wait_cause, waited_sec=waited_sec,
+        interactive=interactive,
     )
     if str(usage.get("reason_code") or "") not in ("", "deadline_local") and usage.get(
             "terminal_origin") in (None, TERMINAL_ORIGIN_HOST_NOTICE):

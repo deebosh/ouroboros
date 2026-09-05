@@ -3,7 +3,10 @@
 Owns what the advisory reviewer is shown: the staged+unstaged diff capture and
 its hard cap, the porcelain changed-file capture, the unresolved-obligation
 history section, and the prompt builder with its two delivery forms (inlined
-governance bodies, or the mandatory-read pointer form both live routes use).
+governance bodies, or the mandatory-read pointer form both live routes use)
+plus the pointer form's MANDATORY READ budget: the corpus measured from the
+files the pointers name, and the section that tells the native episode's
+reviewer the bound that holds it or the typed shortfall code when none does.
 Extracted from ouroboros/tools/claude_advisory_review.py (v7 D06 split,
 re-derived on the v7next tip: the reference leaf predated the native-episode
 rework of the prompt builder and was not reused); claude_advisory_review.py
@@ -123,6 +126,77 @@ def _build_blocking_history_section(drive_root: pathlib.Path, repo_key: str = ""
     )
 
 
+# The governance documents every retrieving delivery is told to read IN FULL
+# (the mandatory-read pointers of `_build_advisory_prompt`); the CHECKLISTS
+# entry is the surface's one checklist section. `_mandatory_read_corpus_chars`
+# measures exactly these, never a remembered size.
+_MANDATORY_READ_DOCS = (
+    "BIBLE.md", "docs/CHECKLISTS.md", "docs/DEVELOPMENT.md", "docs/DESIGN.md", "docs/ARCHITECTURE.md",
+)
+
+
+def _checklist_name(review_surface: str) -> str:
+    return "Skill Review Checklist" if review_surface == "skill" else "Repo Commit Checklist"
+
+
+def _mandatory_read_corpus_chars(repo_dir: pathlib.Path, review_surface: str = "repo") -> int:
+    """Wire size (chars — the native episode's bound unit; chars/4 is its token
+    scale) of the documents the MANDATORY FULL READ pointers name, measured
+    from the files they resolve at prompt-build time: four full documents plus
+    the surface's CHECKLISTS.md section, each as the JSON-serialized text a
+    read_file result rides the next send in (escaping included). A document
+    the tree lacks counts 0 — the pointer still names it and the reviewer's
+    own read discloses the miss."""
+    total = 0
+    for rel in _MANDATORY_READ_DOCS:
+        if rel == "docs/CHECKLISTS.md":
+            try:
+                text = _car().load_checklist_section(
+                    _checklist_name(review_surface), pathlib.Path(repo_dir) / rel)
+            except (OSError, ValueError):
+                text = ""
+        else:
+            text = _car().load_governance_doc(repo_dir, rel, on_missing="silent")
+        total += len(json.dumps(text, ensure_ascii=False)) if text else 0
+    return total
+
+
+def _mandatory_read_budget_section(corpus_chars: int, need_chars: int, bound: int) -> str:
+    """The prompt's MANDATORY READ budget for the native episode: the measured
+    corpus (chars and the bound's token scale), the transcript need, the bound
+    the episode applies with its landing line, and — when the reading cannot
+    land before the landing notice — the typed shortfall code, so the
+    full-read pointers above are never a silent contradiction."""
+    from ouroboros.review_native_episode import native_landing_at, native_mandatory_read_disclosure
+
+    disclosure = native_mandatory_read_disclosure(bound, need_chars)
+    tokens = max(1, (int(corpus_chars) + 3) // 4)  # the utils.estimate_tokens heuristic on a size
+    lines = [
+        "\n## MANDATORY READ budget (native inspection episode)\n",
+        f"The MANDATORY FULL READ pointers above name {int(corpus_chars):,} chars "
+        f"(~{tokens:,} estimated tokens) of documents; with this task text the mandatory "
+        f"reading needs {int(need_chars):,} transcript chars. This episode's transcript bound "
+        f"is {int(bound):,} chars; the host posts its [EPISODE_BUDGET] landing notice at "
+        f"{native_landing_at(bound):,} chars.",
+    ]
+    if disclosure:
+        lines.append(
+            f"MANDATORY_READ_DISCLOSURE: {disclosure} — the mandatory reading does NOT land "
+            "before the landing notice at the bound this reviewer's window allows, so the "
+            "full-read instruction above cannot be honoured in this episode (the episode facts "
+            "record the same code). Read the checklist section, BIBLE.md and the changed files "
+            "first, then DEVELOPMENT.md, DESIGN.md and ARCHITECTURE.md as the room allows, and "
+            "mark every checklist item you could not ground in a document you did not finish "
+            "as unverified instead of reviewing it from memory."
+        )
+    else:
+        lines.append(
+            "The mandatory reading lands before the landing notice: read every pointed "
+            "document in full (in bounded chunks) before answering."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def _build_advisory_prompt(
     repo_dir: pathlib.Path,
     commit_message: str,
@@ -151,7 +225,7 @@ def _build_advisory_prompt(
     omitted_paths = prompt_context.get("omitted_paths")
     review_surface = str(prompt_context.get("review_surface") or "repo")
     expected_items = prompt_context.get("expected_items")
-    checklist_name = "Skill Review Checklist" if review_surface == "skill" else "Repo Commit Checklist"
+    checklist_name = _checklist_name(review_surface)
     if governance_by_retrieval:
         # agent_session delivery: do NOT inline the governance bodies (hundreds of KB) —
         # each becomes a resolvable absolute pointer plus a mandatory-read

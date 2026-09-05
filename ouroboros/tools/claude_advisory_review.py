@@ -166,19 +166,26 @@ def _advisory_child_timeout(ctx: object) -> Optional[float]:
 
 def _run_advisory_native(
     prompt: str, repo_dir: pathlib.Path, ctx: ToolContext, slot, model: str,
+    mandatory_read_corpus_chars: int = 0,
 ):
     """The advisory as a bounded native inspection episode, rehydrated into the
     same result structure the retired SDK path produced (only the transport
     changes). Cost: every provider call already rode the usage ledger inside
     the rebound scope, so ``cost_usd`` stays 0.0 here — the ledger is the one
-    charge source; the disclosed total rides ``usage`` for forensics."""
+    charge source; the disclosed total rides ``usage`` for forensics.
+    ``mandatory_read_corpus_chars`` (wire size of the documents the prompt's
+    MANDATORY FULL READ pointers name) declares the episode's mandatory reading
+    on ``policy["native_mandatory_read_chars"]`` — task text plus corpus, a
+    floor on the episode's bound up to the window — and appends the prompt's
+    MANDATORY READ budget (corpus, bound, typed shortfall code)."""
     from dataclasses import replace as _dc_replace
     from types import SimpleNamespace
 
     from ouroboros.llm import LLMClient
-    from ouroboros.review_execution import ReviewAssignment, ReviewRouteKind
-    from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
-    from ouroboros.review_substrate import ReviewRequest, ReviewSlot
+    from ouroboros.review_execution import ReviewAssignment
+    from ouroboros.review_native_episode import NativeToolRoundReviewExecutor, native_episode_transcript_bound
+    from ouroboros.review_substrate import ReviewRequest
+    from ouroboros.reviewer_slot_config import reviewer_slots
     from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
     _task_metadata = getattr(ctx, "task_metadata", {}) or {}
@@ -200,11 +207,21 @@ def _run_advisory_native(
         no_proxy=True,
         deadline_at=deadline_at,
     )
-    rslot = ReviewSlot(
-        slot_id="advisory_slot_1", model=model, effort=slot.effort or "low",
-        role_hint="advisory pre-reviewer", route=ReviewRouteKind.API_CHAT,
+    # The dispatch builder for api_chat rows (`use_local` off the resolved
+    # route): the bound previewed below and the episode's window are ONE route.
+    rslot = _dc_replace(
+        reviewer_slots([model], effort=slot.effort or "low", role_hint="advisory pre-reviewer",
+                       id_prefix="advisory_slot")[0],
         subagent_id=str(getattr(slot, "subagent_id", "") or ""),
     )
+    if int(mandatory_read_corpus_chars or 0) > 0:
+        # Declared on the request FIRST: the bound the budget section names is
+        # the very computation the episode makes from this assignment.
+        request.policy["native_mandatory_read_chars"] = len(prompt) + int(mandatory_read_corpus_chars)
+        request.session_task += _mandatory_read_budget_section(
+            int(mandatory_read_corpus_chars), request.policy["native_mandatory_read_chars"],
+            native_episode_transcript_bound(request, rslot),
+        )
     assignment = ReviewAssignment(
         request=request, slot=rslot,
         call_id=f"advisory:{request.task_id or 'manual'}",
@@ -218,9 +235,13 @@ def _run_advisory_native(
         with usage_scope(_scope):
             attempt = executor.execute()
     except Exception as exc:
+        # The episode's proven facts (rounds, receipts, transcript vs bound,
+        # paid ledger) and its typed code survive the failure: the caller
+        # classifies on ``failure_code``, never on the message text.
         return SimpleNamespace(
             success=False, result_text="(no output)", session_id="", cost_usd=0.0,
-            usage={}, error=f"{type(exc).__name__}: {exc}", stderr_tail="",
+            usage=executor.failure_custody(), failure_code=str(getattr(exc, "code", "") or ""),
+            error=f"{type(exc).__name__}: {exc}", stderr_tail="",
         ), model
     usage = dict(attempt.usage or {})
     usage["cost_disclosed_usd"] = usage.get("cost")
@@ -465,6 +486,7 @@ def _maybe_overflow_skip(
     failure: object,
     stderr_tail: object = "",
     verb: str = "reported",
+    failure_code: str = "",
 ) -> Optional[tuple]:
     """Post-dispatch overflow classification: the typed skip tuple, or ``None``.
 
@@ -474,7 +496,26 @@ def _maybe_overflow_skip(
     crashed harness and invites a doomed retry of the identical prompt.
     Serves both dispatched-failure shapes: a returned failure result
     (``verb="reported"``, with its stderr tail and run meta) and a raised
-    exception (``verb="raised"``)."""
+    exception (``verb="raised"``). The native episode's own bound end is keyed
+    on its STRUCTURED code (``review_native_episode``:
+    ``native_transcript_cap_exceeded``), never on message text, and is NOT a
+    provider window refusal — it keeps its own skip reason and the episode's
+    numbers (bound, refused chars, paid rounds) from ``failure_custody``."""
+    if failure_code == "native_transcript_cap_exceeded":
+        facts = dict((meta or {}).get("usage") or {})
+        bound, rounds = int(facts.get("native_transcript_bound") or 0), int(facts.get("native_rounds") or 0)
+        refused = int(facts.get("native_transcript_refused_chars") or facts.get("native_transcript_chars") or 0)
+        log.warning("Advisory skipped — native episode transcript bound exceeded after %d round(s) "
+                    "(%d > %d chars)", rounds, refused, bound)
+        _stamp_advisory_skip_meta(ctx, meta, "native_transcript_bound_exceeded")
+        return [], (
+            "⚠️ ADVISORY_SKIPPED: native_transcript_bound_exceeded — the advisory's native "
+            f"inspection episode exhausted its window-derived transcript bound after {rounds} paid "
+            f"round(s) ({refused:,} chars against the {bound:,}-char bound) before a final answer. "
+            "Advisory review skipped — non-blocking and audited; the paid rounds' usage stays on the "
+            "advisory meta. Levers: a larger-window advisory row, or "
+            "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS."
+        ), model, prompt_chars
     if not _overflow_failure_text(failure, stderr_tail):
         return None
     route_name = "agent_session" if delegated_route else "native"
@@ -1427,6 +1468,8 @@ from ouroboros.tools.preflight_review_prompt import (  # noqa: E402, F401 -- int
     _build_blocking_history_section,
     _get_changed_file_list,
     _get_staged_diff,
+    _mandatory_read_budget_section,
+    _mandatory_read_corpus_chars,
 )
 from ouroboros.tools.preflight_review_run import (  # noqa: E402, F401 -- intentional public re-exports
     _ADVISORY_EXTRACT_CONTRACT,

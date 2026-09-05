@@ -396,7 +396,7 @@ def test_typed_failed_publish_is_delivered_to_the_next_llm_turn():
         ],
         messages,
         trace,
-        emit_progress=lambda _message: None,
+        emit_progress=lambda _message, *, incident=None: None,
     )
 
     assert errors == 1

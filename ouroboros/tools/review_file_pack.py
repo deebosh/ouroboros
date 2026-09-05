@@ -238,16 +238,31 @@ def build_touched_file_pack(
     represent_binary: bool = False,
     m0_tree: str = "",  # managed resolutions: binary rows carry the M0 baseline identity
     staged_tree: str = "",
+    exclude_paths: set[str] | None = None,
 ) -> tuple[str, list[str]]:
-    """Read changed files into a prompt code pack plus omission list."""
+    """Read changed files into a prompt code pack plus omission list.
+
+    ``exclude_paths`` (the same ``set[str]`` shape the advisory and full-repo
+    packs take) withholds a path's full text with the pack's own omission
+    marker and lists it in ``omitted`` — the caller's OMISSION NOTE discloses
+    it and the caller states WHY (``triad_pack_exclusions``); an excluded path
+    is never double-marked by the size/binary classes below."""
     if paths is None:
         paths = list_changed_paths_from_git_status(repo_dir)
 
     parts: list[str] = []
     omitted: list[str] = []
     repo_dir_resolved = repo_dir.resolve()
+    exclude = exclude_paths or set()
 
     for rel in paths:
+        if rel in exclude:
+            omitted.append(rel)
+            parts.append(
+                f"### {rel}\n\n*(omitted — full text withheld by the caller's exclusion "
+                "note below; every changed line remains in the staged diff)*\n"
+            )
+            continue
         fp = repo_dir / rel
         # Reject traversal/symlink escapes outside the repo root.
         try:
@@ -321,6 +336,118 @@ def build_touched_file_pack(
     return "\n".join(parts), omitted
 
 
+def _git_blob_text(repo_dir: Path, spec: str) -> str:
+    """``git show <spec>`` as text, or ``""`` (missing blob, timeout, error)."""
+    try:
+        result = subprocess.run(
+            ["git", "show", spec], cwd=str(repo_dir), capture_output=True, timeout=10,
+        )
+    except Exception:
+        return ""
+    return result.stdout.decode("utf-8", errors="replace") if result.returncode == 0 else ""
+
+
+# The one disclosure every pack attaches to a span-only release-carrier cut
+# (owner decision, F3 Q4 = A: "the same one-line cut with the same disclosure"
+# in the commit triad, the scope pack and the advisory pack).
+CARRIER_CUT_REASON = (
+    "release carrier changed only inside its declared version spans "
+    "(release_sync VERSION_CARRIER_SPANS); the release preflight has already verified "
+    "every carrier against VERSION (version_carrier_desyncs)"
+)
+
+
+def span_only_release_carriers(
+    repo_dir: Path, paths: list[str], *, worktree: bool = False,
+) -> list[str]:
+    """The touched release carriers whose reviewed change sits entirely inside
+    their declared version spans — the ONE carrier-cut predicate the commit
+    triad, the scope pack and the advisory pack share.
+
+    ``paths`` must name ``VERSION`` (a release bump: the release preflight has
+    verified every carrier against it); otherwise nothing is cut. The pair
+    compared is each pack's OWN reviewed change: HEAD→index for the commit
+    packs (triad, scope), HEAD→working tree (``worktree=True``) for the
+    advisory, which reviews the live tree the pack reads. A carrier edited
+    outside its spans, one new or deleted at either end, and a malformed or
+    duplicate anchor all keep the full text (``carrier_only_change``)."""
+    from ouroboros.tools.release_sync import CARRIER_SPAN_PATHS, carrier_only_change
+
+    if "VERSION" not in paths:
+        return []
+    carriers: list[str] = []
+    for rel in paths:
+        if rel not in CARRIER_SPAN_PATHS:
+            continue
+        if worktree:
+            try:
+                after = (repo_dir / rel).read_text(encoding="utf-8")
+            except Exception:
+                continue
+        else:
+            after = _git_blob_text(repo_dir, f":{rel}")
+        if carrier_only_change(_git_blob_text(repo_dir, f"HEAD:{rel}"), after, rel):
+            carriers.append(rel)
+    return carriers
+
+
+def pack_exclusion_note(carriers: list[str], duplicated: list[str] = ()) -> str:
+    """The PACK EXCLUSION NOTE a pack appends after its OMISSION NOTE, naming
+    every withheld path by class (``""`` when nothing is withheld)."""
+    excluded = len(carriers) + len(duplicated)
+    if not excluded:
+        return ""
+    lines = [
+        f"⚠️ PACK EXCLUSION NOTE: full text withheld for {excluded} touched file(s); "
+        "every changed line remains in the staged diff below."
+    ]
+    if carriers:
+        lines.append(f"  - {CARRIER_CUT_REASON}: " + ", ".join(carriers))
+    if duplicated:
+        lines.append(
+            "  - governance document(s) whose working-tree text is byte-identical to the copy "
+            "inlined in this prompt's governance prefix (read it there): "
+            + ", ".join(duplicated)
+        )
+    return "\n".join(lines)
+
+
+def triad_pack_exclusions(
+    repo_dir: Path, paths: list[str], *, prefix_texts: dict[str, str],
+) -> tuple[set[str], str]:
+    """The touched paths whose full text the triad pack withholds, plus the
+    disclosure note the caller appends to the pack (``(set(), "")`` when none).
+
+    Exactly two classes, each a fact the host can back, never a size heuristic:
+
+    * release carriers on a VERSION-staged commit whose HEAD→staged change sits
+      entirely inside their declared version spans
+      (``span_only_release_carriers`` over the ``release_sync`` carrier SSOT;
+      uv.lock's 730 KB root-version bump is the money case). The staged diff
+      carries the complete change and the commit preflight
+      (``version_carrier_desyncs``, ``tools/review.py``) has already verified
+      every staged carrier against VERSION;
+    * governance documents whose working-tree text is byte-identical to the
+      copy already inlined in this same prompt's governance prefix
+      (``prefix_texts``: path -> the prefix's text) — pure duplication.
+
+    A carrier edited outside its spans, a prefix doc whose bytes differ from
+    the prefix copy and a managed subject (the caller skips this helper: its
+    reviewed delta is M0→staged, not HEAD→staged) all keep the full text."""
+    carriers = span_only_release_carriers(repo_dir, paths)
+    duplicated: list[str] = []
+    for rel in paths:
+        prefix_text = prefix_texts.get(rel) or ""
+        if not prefix_text or rel in carriers:
+            continue
+        try:
+            if (repo_dir / rel).read_text(encoding="utf-8") == prefix_text:
+                duplicated.append(rel)
+        except Exception:
+            continue
+    return set(carriers) | set(duplicated), pack_exclusion_note(carriers, duplicated)
+
+
 def build_advisory_changed_context(
     repo_dir: Path,
     *,
@@ -338,7 +465,15 @@ def build_advisory_changed_context(
         p for p in resolved_paths
         if p not in (exclude_paths or set())
     ]
-    touched_pack, omitted = build_touched_file_pack(repo_dir, filtered_paths if filtered_paths is not None else None)
+    # The advisory reviews the LIVE tree (staged + unstaged), so its carrier cut
+    # compares HEAD with the working-tree text this pack reads — the same
+    # predicate and the same disclosure as the commit triad and the scope pack.
+    # The native episode keeps read_file for a withheld carrier's full text.
+    carriers = span_only_release_carriers(repo_dir, filtered_paths, worktree=True)
+    touched_pack, omitted = build_touched_file_pack(
+        repo_dir, filtered_paths, exclude_paths=set(carriers))
+    if carriers:
+        touched_pack += "\n\n" + pack_exclusion_note(carriers)
     if not touched_pack.strip():
         touched_pack = "(no touched files)"
     return resolved_paths, touched_pack, omitted

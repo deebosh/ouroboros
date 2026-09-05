@@ -123,8 +123,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Hard ceiling (seconds) a provider call waits for a concurrency slot when the task has
     # NO deadline; past it the call proceeds WITHOUT a slot (never blocks forever). SSOT here.
     "OUROBOROS_MODEL_SLOT_MAX_WAIT_SEC": 180,
-    # Project-naming LIGHT-call provider transport and gateway hard wait. SSOT here
-    # (not project_naming.py magic numbers) per DEVELOPMENT "Timeout & Wait Control".
+    # LIGHT one-shot ceilings (naming, its gateway wait, the update letter): SSOT here, never consumer magic numbers.
+    "OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC": 120,
     "OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC": 60,
     "OUROBOROS_PROJECT_NAMING_ASYNC_TIMEOUT_SEC": 8,
     # Skill lifecycle lane deadline (wedged-job loud-failure bound).
@@ -205,7 +205,8 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Pre-commit review enforcement: advisory | blocking
     "OUROBOROS_REVIEW_ENFORCEMENT": "advisory",
     # Native tool-round reviewer episode transcript CEILING (chars); the effective
-    # bound is derived from the reviewer window (review_native_episode.py). No round cap.
+    # bound is derived from the reviewer window (review_native_episode.py); a
+    # surface's declared mandatory reading may lift it up to the window. No round cap.
     "OUROBOROS_REVIEW_NATIVE_MAX_TRANSCRIPT_CHARS": "900000",
     # Auto-grant reviewed-skill requests by default; grants stay bound to the
     # reviewed content hash and editing a skill still invalidates them.

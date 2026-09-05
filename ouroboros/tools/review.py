@@ -40,6 +40,7 @@ from ouroboros.tools.review_helpers import (
     load_checklist_section as _load_checklist_section_precise,
     load_governance_doc,
     build_touched_file_pack,
+    triad_pack_exclusions,
     build_goal_section,
     build_scope_section,
     review_drive_root,  # noqa: F401 -- facade import surface; leaves read it through the call-time handle
@@ -981,21 +982,33 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     )
 
     # Build touched-file pack for full current context (managed: the reviewed
-    # resolution set; binary rows carry the M0 baseline identity).
+    # resolution set; binary rows carry the M0 baseline identity). A plain
+    # commit withholds the two disclosed pack-exclusion classes (span-only
+    # release carriers, prefix-duplicated governance docs); a managed subject
+    # keeps every full text — its reviewed delta is M0→staged, not HEAD→staged.
     try:
         touched_paths = [f.strip() for f in review_changed.strip().splitlines() if f.strip()]
+        exclude_paths, exclusion_note = (set(), "") if subject is not None else triad_pack_exclusions(
+            pathlib.Path(target_repo), touched_paths, prefix_texts={
+                "docs/DEVELOPMENT.md": dev_guide_text, "docs/DESIGN.md": design_text,
+                "docs/ARCHITECTURE.md": architecture_text,
+            },
+        )
         current_files_section, _omitted = build_touched_file_pack(
             pathlib.Path(target_repo),
             touched_paths,
             represent_binary=subject is not None,
             m0_tree=getattr(subject, "m0_tree", "") or "",
             staged_tree=getattr(subject, "staged_tree", "") or "",
+            exclude_paths=exclude_paths,
         )
         if _omitted:
             current_files_section += (
                 f"\n\n⚠️ OMISSION NOTE: {len(_omitted)} file(s) omitted from direct context: "
                 f"{', '.join(_omitted)}"
             )
+        if exclusion_note:
+            current_files_section += f"\n\n{exclusion_note}"
         if not current_files_section.strip():
             current_files_section = "(no touched files could be read)"
     except Exception as e:

@@ -181,7 +181,7 @@ class TestPreflightGatesBeforeSDK:
 
         monkeypatch.setattr(
             advisory, "_run_advisory_native",
-            lambda prompt, repo_dir, ctx_, slot, model: (
+            lambda prompt, repo_dir, ctx_, slot, model, **_: (
                 _fake_run_readonly(), model,
             ),
         )
@@ -252,7 +252,7 @@ class TestPreflightGatesBeforeSDK:
         # so patch the source symbol.
         monkeypatch.setattr(
             advisory, "_run_advisory_native",
-            lambda prompt, repo_dir, ctx_, slot, model: (
+            lambda prompt, repo_dir, ctx_, slot, model, **_: (
                 _fake_run_readonly(), model,
             ),
         )

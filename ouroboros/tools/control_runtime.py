@@ -15,7 +15,7 @@ from hashlib import sha256
 
 from ouroboros.config import apply_settings_to_env, load_settings, save_settings
 from ouroboros.tools.registry import ToolContext
-from ouroboros.utils import append_jsonl, atomic_write_json, run_cmd, utc_now_iso
+from ouroboros.utils import append_jsonl, run_cmd, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +66,6 @@ def _request_restart(ctx: ToolContext, reason: str) -> str:
     try:
         sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=ctx.repo_dir)
         branch = run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=ctx.repo_dir)
-        verify_path = ctx.drive_path("state") / "pending_restart_verify.json"
         evolution_claim = {}
         if is_evolution:
             metadata = getattr(ctx, "task_metadata", {})
@@ -79,11 +78,13 @@ def _request_restart(ctx: ToolContext, reason: str) -> str:
                 "task_id": str(ctx.task_id or tx.get("task_id") or ""),
                 "commit_sha": str(sha or "").strip(),
             }
-        atomic_write_json(verify_path, {
-            "ts": utc_now_iso(), "expected_sha": sha,
-            "expected_branch": branch, "reason": restart_reason,
-            **({"evolution_claim": evolution_claim} if evolution_claim else {}),
-        })
+        # One marker schema with the supervisor's evolution restart (W4-F3).
+        from supervisor.evolution_lifecycle import write_pending_restart_marker
+
+        write_pending_restart_marker(
+            ctx.drive_root, expected_sha=sha, expected_branch=branch,
+            reason=restart_reason, evolution_claim=evolution_claim,
+        )
         if evolution_claim:
             ctx.pending_restart_is_evolution = True
             try:

@@ -82,7 +82,7 @@ def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, content="del
         tools=SimpleNamespace(_ctx=tool_ctx), content=content, task_id="root-delivery",
         task_type="task", llm_trace={"tool_calls": []}, drive_root=tmp_path,
         messages=[{"role": "system", "content": "policy"}, {"role": "user", "content": "goal"}],
-        emit_progress=lambda _text: None, mode="required", subtree_statuses=[],
+        emit_progress=lambda _text, *, incident=None: None, mode="required", subtree_statuses=[],
         budget_profile=contract["budget_profile"], passes_done=0, evidence=evidence,
         review_binding=build_review_binding(
             candidate=content, evidence=evidence, fence_token_or_state="delivery-test",

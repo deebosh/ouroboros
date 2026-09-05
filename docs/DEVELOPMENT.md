@@ -1233,6 +1233,42 @@ architecture and methodology live beside the devtool, not in core governance
 docs. No automated import guard — review-only (triad/scope review of touched
 devtool files).
 
+### Live E2E stand (`devtools/e2e_live/`)
+
+`python -m devtools.e2e_live.run_live_lanes` drives K isolated REAL servers
+(`--lanes`, default 4, at most 6, starts staggered 2–3 s apart), one
+owner-shaped scenario attempt per lane, from the scenario table in
+`scenarios.py`: SM1 (a `web/style.css` custom property landed through
+`commit_reviewed` under advanced runtime and blocking enforcement; acceptance is
+the S2 set plus the computed style read by a browser from the COMMITTED CSS after
+a restart), SW1 (the Swarm button arms `force_plan`; at least two children with
+causal lineage, the `swarm_fanout` receipt, the with-children cost rollup, no
+orphan process by the `/proc` environ scan), SK1 (the model authors
+`SKILL.md`+`plugin.py` and runs `skill_preflight`; the runner reviews, grants
+exactly the manifest's one privileged permission, enables, dispatches, deletes).
+Every acceptance is a callable over durable artifacts, never a reading of model
+prose. The launcher follows the benchmark family's admission contract
+(`launcher_audit.audit_source` is pinned on it by source): a dirty seed is refused
+with the refusal persisted in `run_manifest.json`; the key is read by NAME from
+`$OUROBOROS_E2E_LIVE_OPENROUTER_KEY` (`--key-env`; the pool file is never opened
+and the value never leaves the applied settings file, mode 0600); the preflight
+takes `min(key limit remaining, account credits)` and refuses below
+`--min-credit-usd`; `--total-budget` (default 100) and `--per-task-usd` (default
+8) are SETTINGS keys of the lane, never environment guesses; the manifest names
+the model from the applied settings file, not from argv; `--self-mod` enables
+post-task evolution with the real re-exec restart and records the absorb outcome
+as a diagnostic. Per lane: `lanes/<id>_a<n>/result.json` (checks, digests
+including the settings sha256 and its secret-free config digest, seed `git
+describe`, pre/post HEAD and the exact diff digest, grants by fingerprint,
+runtime terminal disclosure) plus screenshots when a browser client exists
+(`ui_probe.resolve_ui_client`: the suite's `PlaywrightUIClient` when it carries
+this surface, else headless Chromium, else a typed `ui_unavailable` reason — never
+a silently passed check). `--stub` runs the same scenarios against the loopback
+stub model of `tests/system_e2e/harness.py` for $0 (`stub_lane.py` routes the
+swarm wire by role); `--attempts N --pass-of K` records every attempt. Run roots
+are append-only outside `repo/` and live `data/`; a watcher line prints lane
+states, free disk on `/` and `/mnt/data`, and the key headroom.
+
 ### Light mode and external deliverables
 
 - `runtime_mode=light` is a self-modification boundary (`ouroboros/config.py`
@@ -1742,7 +1778,34 @@ by "Provider Independence" above. Call-site imperatives:
   non-retryable as-is (record the exact category and surface a recovery
   hint); a typed 408/429/5xx or a failure proven pre-dispatch may retry; a
   dispatched request with no terminal provider outcome stops same-model and
-  cross-model sends until reconciled.
+  cross-model sends until reconciled — with one typed exception: the primary
+  main-loop round dispatch may repeat a request that died with a typed
+  transport death (`transport_custody.is_retryable_transport_death`) at most
+  twice per round, each repeat a NEW physical attempt on its own ledger row
+  and never a resend of the unresolved one, deciding the `retry_same_request`
+  flag before the durable row is written
+  (`tests/test_transport_death_retry.py`): the flag records that a repeat
+  was granted when the row was written, and exactly two refusal paths take a
+  never-sent repeat back off the round record, each recorded by its own
+  durable row — the admission gate (`llm_not_dispatched`) and the sleep gate
+  (`llm_retry_deadline_exhausted`). A budget refusal does NOT un-count: the
+  budget rail cannot prove the repeat never left the host (`llm.chat` retries
+  on the wire before a later reservation can be refused), so the record keeps
+  the attempt booked and the budget terminal, not the provider terminal, ends
+  the round; the rail belongs to the primary
+  round dispatch of every main-loop actor (owner turns, managed tasks, native
+  API subagent children). Every other caller — forced-final, fallback
+  candidates, review actors, safety, external-harness delegated runs — keeps
+  `transport_death_retries=0`. A round that holds a transport-death repeat
+  record sends nothing further except the typed-death repeats — a repeat that
+  fails with any other class (a provider status, a transient, an empty
+  response, a context overflow) ends the round on the unknown no-resend
+  terminal with no compaction retry (a released $0 repeat stays the free wait
+  episode's to redial, and an exhausted episode on such a round still ends on
+  the unknown terminal, worded as both the wait and the unresolved attempt;
+  a wait episode's local-only pass that ends unknown writes no record, so the
+  episode keeps its latched cause and its free redials while that dispatched
+  local attempt is never resent).
 
 #### Timeout & Wait Control
 
@@ -1758,6 +1821,13 @@ by "Provider Independence" above. Call-site imperatives:
   a keyword or regex over content (BIBLE P5). Fixed kill-timeouts (hard
   task/tool ceilings, watchdog) remain the outer safety bound; progress-aware
   waiting tunes the passive wait only.
+- The transport-wait episode's owner notes always pass `incident=` — the
+  typed `task_incident`/`toast_once` pair on an ephemeral turn's
+  episode-boundary notes (entry, recovery/closure, exhaustion), `None` on
+  every other note — so any `emit_progress` callable handed to `run_llm_loop`
+  must accept the `incident=` keyword; `OuroborosAgent._emit_progress` is the
+  production implementation and a test fake mirrors it
+  (`lambda text, *, incident=None: ...`).
 - Timeout contract classes differ; keep the axes separate. A transport
   timeout only bounds a dead socket
   (`OUROBOROS_LLM_TRANSPORT_READ_TIMEOUT_SEC`) — it is not a reasoning cutoff
@@ -1805,13 +1875,21 @@ by "Provider Independence" above. Call-site imperatives:
   `dispatched`/`unresolved` without a typed terminal status stays under the
   custody-lost/no-resend classification. Positive capture evidence outranks a
   contradictory synthetic `not_dispatched` label; across one bounded rail,
-  retain the strongest earlier capture — any unknown prior outcome
+  retain the strongest earlier capture — on side-effect surfaces (review
+  actors, external-harness delegated runs, forced-final, fallback candidates)
+  any unknown prior outcome
   monotonically forces no-resend. A dispatched request whose socket or
   stream ends without terminal provider evidence is
-  `provider_outcome_unknown`: THAT request is never resent by any route, its
-  `unresolved` ledger row is terminal, and a NEW logical request is legal
-  only with a unique host-attested input absent from the unknown one (e.g.
-  the nanny-leaf hold contract in `ouroboros/delegate_hold.py`).
+  `provider_outcome_unknown`: its `unresolved` ledger row is terminal and
+  THAT physical attempt is never resent by any route; the primary main-loop
+  completion may repeat the same logical request only after a typed transport
+  death, at most twice per round, as a new physical attempt with its own row,
+  re-prepared at send time (a transport retry is literally a new attempt, so a
+  non-deterministic projection such as a vision caption that failed on the
+  first attempt may differ and may cost its own preparation call); a NEW
+  logical request is legal only with a unique host-attested input absent from
+  the unknown one
+  (e.g. the nanny-leaf hold contract in `ouroboros/delegate_hold.py`).
 - A custody retry key names semantic material and an admitted cycle, not its
   rendered prompt: prior-round scaffolding may change while the same physical
   operation settles and must still join it; changed snapshots, owner intent,

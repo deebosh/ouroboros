@@ -1433,53 +1433,61 @@ def append_unique_transaction(campaign: Dict[str, Any], tx: Dict[str, Any]) -> N
     campaign["transaction_history"] = tx_history[-50:]
 
 
+def write_pending_restart_marker(
+    drive_root: pathlib.Path, *, expected_sha: str, expected_branch: str, reason: str,
+    evolution_claim: Optional[Dict[str, Any]] = None,
+) -> pathlib.Path:
+    """One schema of ``state/pending_restart_verify.json`` for both writers (the
+    supervisor's evolution restart, the agent's ``restart`` tool); ``verify_restart``
+    reads it at boot. The claim key exists only for an exact evolution claim — an
+    empty one would read as a claim mismatch."""
+    path = pathlib.Path(drive_root) / "state" / "pending_restart_verify.json"
+    atomic_write_json(path, {
+        "ts": utc_now_iso(),
+        "expected_sha": str(expected_sha or "").strip(),
+        "expected_branch": str(expected_branch or "").strip(),
+        "reason": str(reason or "").strip(),
+        **({"evolution_claim": dict(evolution_claim)} if evolution_claim else {}),
+    }, trailing_newline=True)
+    return path
+
+
 def request_evolution_restart(drive_root: pathlib.Path, tx: Dict[str, Any], log: Any = None) -> None:
-    if str(os.environ.get("OUROBOROS_EVOLUTION_AUTO_RESTART", "true") or "true").lower() in {"0", "false", "no", "off"}:
-        return
+    """Write the exact restart-verify claim, then ask the server to restart.
+    ``OUROBOROS_EVOLUTION_AUTO_RESTART`` off skips ONLY the restart: the marker is
+    what lets the next boot — the owner's manual one included — attribute the cycle
+    by exact claim rather than the weaker markerless reconcile (W4-F3)."""
     commit_sha = str(tx.get("commit_sha") or "").strip()
     if not commit_sha:
         return
-    claim = {
-        "campaign_id": str(tx.get("campaign_id") or ""),
-        "transaction_id": str(tx.get("transaction_id") or ""),
-        "task_id": str(tx.get("task_id") or ""),
-        "commit_sha": commit_sha,
-    }
+    claim = {key: str(tx.get(key) or "") for key in ("campaign_id", "transaction_id", "task_id")}
+    claim["commit_sha"] = commit_sha
     authority = check_evolution_authority(**claim)
     if not authority.get("ok"):
         if log is not None:
-            log.warning(
-                "Automatic evolution restart cancelled: exact authority changed (%s)",
-                authority.get("reason") or "unknown",
-            )
+            log.warning("Automatic evolution restart cancelled: exact authority changed (%s)",
+                        authority.get("reason") or "unknown")
         return
     try:
-        marker_path = pathlib.Path(drive_root) / "state" / "pending_restart_verify.json"
-        existing = read_json_dict(marker_path) or {}
-        existing_claim = existing.get("evolution_claim")
+        existing = read_json_dict(pathlib.Path(drive_root) / "state" / "pending_restart_verify.json") or {}
         restart_reason = (
-            str(existing.get("reason") or "").strip()
-            if isinstance(existing_claim, dict) and existing_claim == claim
-            else ""
+            str(existing.get("reason") or "").strip() if existing.get("evolution_claim") == claim else ""
         ) or "supervisor_auto_evolution_restart"
-        atomic_write_json(
-            marker_path,
-            {
-                "ts": utc_now_iso(),
-                "expected_sha": commit_sha,
-                "expected_branch": str(tx.get("base_branch") or ""),
-                "reason": restart_reason,
-                "evolution_claim": claim,
-            },
-            trailing_newline=True,
+        write_pending_restart_marker(
+            drive_root, expected_sha=commit_sha, expected_branch=str(tx.get("base_branch") or ""),
+            reason=restart_reason, evolution_claim=claim,
         )
+        auto_restart = str(os.environ.get("OUROBOROS_EVOLUTION_AUTO_RESTART", "true") or "true").lower()
+        if auto_restart in {"0", "false", "no", "off"}:
+            if log is not None:
+                log.info("Automatic evolution restart is off; the restart-verify marker for %s awaits "
+                         "a manual restart", commit_sha[:12])
+            return
         from supervisor import workers
 
         workers.get_event_q().put({
-            "type": "restart_request",
-            "reason": restart_reason,
-            "evolution_restart": True,
-            "ts": utc_now_iso(),
+            "type": "restart_request", "reason": restart_reason,
+            "evolution_restart": True, "ts": utc_now_iso(),
         })
     except Exception:
         if log is not None:

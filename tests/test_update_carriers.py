@@ -479,3 +479,63 @@ def test_resolver_rejects_an_unknown_preference(tmp_path):
         assert "mine" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("unknown preference must be a typed refusal")
+
+
+# --- carrier-only change predicate (the commit-review pack cut) ---------------
+
+
+def _uv_lock(version):
+    return (
+        'version = 1\n\n[[package]]\nname = "ouroboros"\n'
+        f'version = "{version}"\nsource = {{ editable = "." }}\n\n'
+        '[[package]]\nname = "httpx"\nversion = "0.27.0"\n'
+    )
+
+
+def test_span_substitution_primitive_is_owned_by_the_carrier_ssot():
+    """ONE span-substitution primitive: the update resolver calls the SSOT's
+    ``substitute_carrier_spans`` (release_sync) and keeps no private copy, so
+    the commit-review pack cut and the managed-update resolver can never drift
+    on what "inside the span" means."""
+    from ouroboros.tools.release_sync import substitute_carrier_spans
+
+    assert not hasattr(update_carriers, "_substitute_spans")
+    source = (REPO_ROOT / "supervisor" / "update_carriers.py").read_text(encoding="utf-8")
+    assert "substitute_carrier_spans(" in source and "def substitute_carrier_spans" not in source
+    spans = carrier_spans_for("uv.lock")
+    before, after = _uv_lock("7.0.0"), _uv_lock("7.0.1")
+    assert substitute_carrier_spans(after, spans, before) == (before, "")
+    # A missing anchor on either side is the typed degradation, never a guess.
+    assert substitute_carrier_spans("", spans, before)[0] is None
+    assert substitute_carrier_spans(after, spans, "")[1].endswith(":preferred_side")
+
+
+def test_carrier_only_change_matrix(tmp_path):
+    """True only for a declared carrier whose whole change sits inside its
+    declared version spans; every other shape keeps the file's full text."""
+    from ouroboros.tools.release_sync import carrier_only_change
+
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    _write_carriers(old, "7.0.0")
+    _write_carriers(new, "7.0.1", history=("7.0.1", "7.0.0", "6.104.0"))
+    for rel in CARRIER_FILES:
+        before = (old / rel).read_text(encoding="utf-8")
+        after = (new / rel).read_text(encoding="utf-8")
+        assert before != after, rel
+        assert carrier_only_change(before, after, rel) is True, rel
+    # A dependency edit OUTSIDE uv.lock's root-package span keeps the full text.
+    lock_before = _uv_lock("7.0.0")
+    assert carrier_only_change(lock_before, _uv_lock("7.0.1").replace("0.27.0", "0.28.0"), "uv.lock") is False
+    # Prose edits beside the carrier spans, a new file, a deleted file, a
+    # malformed (duplicate) anchor and a non-carrier path all answer False.
+    readme_before = (old / "README.md").read_text(encoding="utf-8")
+    readme_after = (new / "README.md").read_text(encoding="utf-8").replace("Intro line.", "Rewritten intro.")
+    assert carrier_only_change(readme_before, readme_after, "README.md") is False
+    assert carrier_only_change("", _uv_lock("7.0.1"), "uv.lock") is False
+    assert carrier_only_change(lock_before, "", "uv.lock") is False
+    assert carrier_only_change(lock_before, _uv_lock("7.0.1") + _uv_lock("7.0.1"), "uv.lock") is False
+    assert carrier_only_change("base\n", "changed\n", "a.txt") is False
+    # An unchanged carrier is trivially span-only (nothing outside the spans moved).
+    assert carrier_only_change(lock_before, lock_before, "uv.lock") is True

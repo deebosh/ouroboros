@@ -29,6 +29,7 @@ from ouroboros.tools.review_prompt_text import (
     _HISTORY_VERIFICATION_ONLY_RULE,
     format_review_history_entry,
 )
+from ouroboros.tools.review_file_pack import CARRIER_CUT_REASON, span_only_release_carriers
 
 # The parent logger name is pinned on purpose: records moved with their code
 # keep the exact `%(name)s` every handler and reader saw before the split.
@@ -49,6 +50,13 @@ def _sr():
 
 
 _DELETED_INLINE_MAX_BYTES = 1_048_576  # 1 MB
+
+# The atlas coverage row of a span-only release carrier (owner decision, F3 Q4):
+# the same disposition as a ladder-degraded snapshot, a by-design reason.
+_CARRIER_DIFF_ONLY_REASON = (
+    "changes included in the fixed staged diff; full snapshot omitted by design: "
+    + CARRIER_CUT_REASON
+)
 
 
 _SCOPE_CONTEXT_MANIFEST = contextvars.ContextVar("scope_context_manifest", default={})
@@ -287,6 +295,7 @@ def _gather_scope_packs(
     scope_model: str = "",
     diff_only_paths: Optional[list] = None,
     snapshot_included_paths: Optional[frozenset] = None,
+    diff_only_reasons: Optional[dict] = None,
 ) -> str:
     """Collect the bounded wider repository atlas, failing closed on git errors."""
     # WHICH snapshots the fixed part holds is the assembler's fact, never re-derived
@@ -306,6 +315,7 @@ def _gather_scope_packs(
                 anchors=tuple(all_touched_paths),
                 already_included=already_included,
                 diff_only_included=frozenset(diff_only_paths or ()),
+                diff_only_reasons=dict(diff_only_reasons or {}),
                 fixed_prompt_tokens=fixed_prompt_tokens,
                 target_total_tokens=min(850_000, _input_limit),
                 hard_total_tokens=_input_limit,
@@ -337,6 +347,25 @@ def _record_ladder_steps(steps: list) -> None:
     _SCOPE_CONTEXT_MANIFEST.set(manifest)
 
 
+def _carrier_span_only_paths(
+    repo_dir: pathlib.Path, current_context_paths: list, managed_subject: Any,
+) -> list:
+    """The touched release carriers the scope pack cuts by design (owner
+    decision, F3 Q4): the commit triad's span-only cut over the SAME HEAD→index
+    pair this pack reviews. Such a carrier keeps no full snapshot — it is named
+    in the dedup note, declared diff-only to the atlas with that reason and
+    traced as the ladder's first entry. Never for a managed subject (its delta
+    is M0→staged, not HEAD→staged) and never for an artifact the atlas owes in
+    full (canonical docs never reach this list; the guard is structural, so
+    the cut can never turn into a refusal)."""
+    if managed_subject is not None:
+        return []
+    return [
+        p for p in span_only_release_carriers(repo_dir, current_context_paths)
+        if not _sr().atlas_required_beyond_diff(p)
+    ]
+
+
 def _render_touched_section(
     repo_dir: pathlib.Path,
     current_context_paths: list,
@@ -347,11 +376,14 @@ def _render_touched_section(
     represent_binary: bool = False,
     m0_tree: str = "",
     staged_tree: str = "",
+    carrier_span_only: Optional[list] = None,
 ) -> tuple:
     """Build the touched-files prompt section.
 
     ``diff_only_paths`` are degraded to an explicit disclosed note (changes stay
     fully visible in the staged diff) — the guaranteed-fit ladder's step.
+    ``carrier_span_only`` are the release carriers cut by design (their
+    complete change is the staged diff); they are named in the dedup note.
     Returns ``(section, pack_omitted, snapshot_included)``; the latter is the
     CONSERVATIVE set of paths whose full snapshot this section really carries, so
     no coverage row can claim content the pack does not hold (BIBLE P1)."""
@@ -368,18 +400,28 @@ def _render_touched_section(
     # A ladder-degraded touched test moves to the degradation note below; listing
     # it HERE too would claim an atlas snapshot the pack no longer holds.
     skip_listed = [p for p in skipped_by_design if p not in diff_only_paths]
-    if skip_listed:
-        skip_note = (
-            "## CURRENT FILE CONTEXT DEDUPLICATION NOTE\n"
-            "The following touched files are not duplicated as full current-file "
-            "snapshots HERE because they are either canonical docs injected above "
-            "or tests whose exact changes are visible in the staged diff below. "
-            "A touched test listed here is delegated to the generated atlas (full "
-            "snapshot, or a typed binary/oversize row); tests degraded to diff-only "
-            "under budget pressure move to the degradation note instead:\n"
-            + "\n".join(f"- {path}" for path in skip_listed)
-            + "\n"
-        )
+    carriers = list(carrier_span_only or ())
+    if skip_listed or carriers:
+        skip_note = "## CURRENT FILE CONTEXT DEDUPLICATION NOTE\n"
+        if skip_listed:
+            skip_note += (
+                "The following touched files are not duplicated as full current-file "
+                "snapshots HERE because they are either canonical docs injected above "
+                "or tests whose exact changes are visible in the staged diff below. "
+                "A touched test listed here is delegated to the generated atlas (full "
+                "snapshot, or a typed binary/oversize row); tests degraded to diff-only "
+                "under budget pressure move to the degradation note instead:\n"
+                + "\n".join(f"- {path}" for path in skip_listed)
+                + "\n"
+            )
+        if carriers:
+            skip_note += (
+                f"Release carrier(s) omitted by design — {CARRIER_CUT_REASON}; their "
+                "complete change is the staged diff below and the atlas records them "
+                "diff-only with that reason:\n"
+                + "\n".join(f"- {path}" for path in carriers)
+                + "\n"
+            )
         section = section + "\n\n" + skip_note if section.strip() else skip_note
     if diff_only_paths:
         degrade_note = (
@@ -536,6 +578,8 @@ def _build_scope_prompt(
     current_skipped_by_design = [
         p for p in current_paths if _should_skip_current_touched_context(p)
     ]
+    carrier_span_only = _carrier_span_only_paths(repo_dir, current_context_paths, subject)
+    current_context_paths = [p for p in current_context_paths if p not in carrier_span_only]
 
     def _render_current_section(diff_only_paths: list) -> tuple:
         return _render_touched_section(
@@ -543,6 +587,7 @@ def _build_scope_prompt(
             current_skipped_by_design, diff_only_paths, represent_binary=represent_binary,
             m0_tree=getattr(subject, "m0_tree", "") or "",
             staged_tree=getattr(subject, "staged_tree", "") or "",
+            carrier_span_only=carrier_span_only,
         )
 
     current_files_section, omitted, snapshot_included = _render_current_section([])
@@ -580,8 +625,10 @@ def _build_scope_prompt(
         gather_kwargs = {
             "fixed_prompt_tokens": fixed_tokens, "drive_root": drive_root,
             "scope_model": scope_model, "compact": compact,
-            # The ladder owns which snapshots survived; the atlas is TOLD.
-            "diff_only_paths": list(diff_only_paths),
+            # The ladder owns which snapshots survived; the atlas is TOLD —
+            # the by-design carriers ride the same diff-only channel, reasoned.
+            "diff_only_paths": list(diff_only_paths) + list(carrier_span_only),
+            "diff_only_reasons": {p: _CARRIER_DIFF_ONLY_REASON for p in carrier_span_only},
             "snapshot_included_paths": snapshot_included,
         }
         return _gather_scope_packs(
@@ -621,7 +668,11 @@ def _build_scope_prompt(
     unassembled_required: list = []
     atlas_overflowed = False
     # One AGGREGATED ladder record (RS5); a silent ladder is unexplainable (BIBLE P1).
-    ladder_steps: list = []
+    # A by-design carrier cut is its first, typed entry.
+    ladder_steps: list = [{
+        "step": "carrier_span_only_omitted", "paths": list(carrier_span_only),
+        "reason": _CARRIER_DIFF_ONLY_REASON,
+    }] if carrier_span_only else []
     while True:
         prompt = _assemble_prompt(current_files_section)
         fixed_prompt_tokens = _sr().estimate_tokens(prompt)

@@ -39,9 +39,11 @@ artifact / a recorded WIRE fact / the byte truth of the worktree:
   requested→claimed→settled forensics.
 * S22 — EVOLUTION ABSORB KILL-RECOVERY: a REAL evolution cycle (campaign seeded,
   supervisor mints the task, the scripted agent lands a reviewed commit through
-  the blocking triad+scope organ) is SIGKILLed in the crash window between the
-  campaign's ``waiting_for_restart`` write and the restart-verify marker
-  (auto-restart disabled makes that exact durable state stable). Generation B
+  the blocking triad+scope organ) settles with auto-restart disabled, which (W4-F3,
+  owner 5 = A) skips ONLY the restart: generation A pins that the exact
+  restart-verify marker IS still written and the tree stays up, then SIGKILLs the
+  tree and removes the marker — the durable state a crash between the campaign's
+  ``waiting_for_restart`` write and the marker write leaves. Generation B
   boots on the same clone+data root and the markerless boot reconciliation
   absorbs the cycle exactly once (``verified_by=boot_reconciliation``, commit
   still on HEAD — no loss); generation C boots again and NOTHING is absorbed
@@ -819,10 +821,13 @@ def test_s22_absorb_kill_recovery_absorbs_once_and_never_twice(
     seed_owner_state(data_root, evolution_enabled=True)
     campaign_seed = _campaign(data_root)
     assert campaign_seed.get("status") == "active", campaign_seed
-    # Auto-restart OFF makes the exact crash window STABLE: a real crash between
-    # the campaign's waiting_for_restart write and the restart-verify marker
-    # leaves precisely this durable state (commit on HEAD, open transaction, no
-    # marker) — the scenario then kills the tree in that window deterministically.
+    # Auto-restart OFF keeps the tree ALIVE once the cycle settles — since W4-F3
+    # (owner 5 = A) the knob skips only the restart itself, and the marker IS
+    # written (pinned below). The crash window under test — a crash between the
+    # campaign's waiting_for_restart write and the marker write — leaves exactly
+    # this durable state: commit on HEAD, open transaction, NO marker. The two
+    # writes are separate atomic files, so the scenario shapes that state
+    # deterministically by removing the marker after the kill.
     monkeypatch.setenv("OUROBOROS_EVOLUTION_AUTO_RESTART", "false")
 
     settings_kwargs = dict(
@@ -851,14 +856,32 @@ def test_s22_absorb_kill_recovery_absorbs_once_and_never_twice(
             transaction_id = str(tx.get("transaction_id") or "")
             assert transaction_id, tx
             assert _git(["rev-parse", "HEAD"], clone) == commit_sha
-            # The cycle settles into the crash window: waiting_for_restart,
-            # restart NOT verified, and — auto-restart off — NO marker written.
+            # The cycle settles: waiting_for_restart, restart NOT verified. Auto-restart
+            # off skips ONLY the restart (W4-F3): the exact restart-verify claim is
+            # still written, and the tree stays up (the harness runs the server
+            # without a launcher, so a restart exit would have ended the process).
             assert wait_until(
                 lambda: str(((_campaign(data_root).get("active_transaction") or {})
                              ).get("cycle_outcome") or "") == "waiting_for_restart", 300), (
                 _campaign(data_root))
-            assert not list(state_dir.glob(marker_glob)), (
-                "a restart-verify marker exists — the crash window is not the one under test")
+            marker_path = state_dir / "pending_restart_verify.json"
+
+            def _marker():
+                try:
+                    return json.loads(marker_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    return None
+
+            marker = wait_until(_marker, 60)
+            assert marker, "auto-restart off no longer writes the restart-verify marker (W4-F3)"
+            assert marker.get("expected_sha") == commit_sha, marker
+            assert marker.get("evolution_claim") == {
+                "campaign_id": str(_campaign(data_root).get("id") or ""),
+                "transaction_id": transaction_id,
+                "task_id": str(tx.get("task_id") or ""),
+                "commit_sha": commit_sha,
+            }, marker
+            assert server.proc.poll() is None, "auto-restart off must not restart the tree"
             assert "triad_review" in stub.kinds() and "scope_review" in stub.kinds(), (
                 stub.kinds())
 
@@ -866,6 +889,13 @@ def test_s22_absorb_kill_recovery_absorbs_once_and_never_twice(
             _sigkill_server_tree(server)
             killed = True
             assert wait_until(lambda: not pids_with_env_value(str(server.data_root)), 30)
+            # Shape the crash-window durable state: the campaign write and the
+            # marker write are two atomic files, so a crash BETWEEN them leaves
+            # exactly the campaign (open transaction, commit on HEAD) and no
+            # marker — removing the marker after the kill is that state.
+            for stale in state_dir.glob(marker_glob):
+                stale.unlink()
+            assert not list(state_dir.glob(marker_glob))
         finally:
             if not killed:
                 server.stop()

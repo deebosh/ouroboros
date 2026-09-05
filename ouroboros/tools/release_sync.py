@@ -23,7 +23,10 @@ _NUMERIC_CLAIM_RE = re.compile(
 )
 
 # Author-facing pre-release suffix; pyproject gets the PEP 440-normalized form.
-_PRE_SUFFIX = r'(?:-?(?:rc|alpha|beta|a|b)\.?\d+)?'
+# The canonical author-facing pre-release grammar, shared by every surface that has
+# to recognise a release version (update_letter reads README rows with it too).
+PRE_SUFFIX = r'(?:-?(?:rc|alpha|beta|a|b)\.?\d+)?'
+_PRE_SUFFIX = PRE_SUFFIX
 
 _VERSION_RE = re.compile(r'^\d+\.\d+\.\d+' + _PRE_SUFFIX + r'$', re.IGNORECASE)
 
@@ -221,6 +224,54 @@ def locate_carrier_span(
     if next(matches, None) is not None:
         return "duplicate_anchor", None
     return "ok", (first.start(), first.end())
+
+
+def substitute_carrier_spans(
+    text: str, spans: Tuple[VersionCarrierSpan, ...], preferred_text: str
+) -> Tuple[Optional[str], str]:
+    """Replace every carrier span in *text* with the preferred side's span.
+
+    The ONE span-substitution primitive over the descriptors above, shared by
+    the managed-update conflict resolver (``supervisor/update_carriers.py``)
+    and the commit-review pack cut (``carrier_only_change``). Returns
+    ``(substituted_text, "")`` or ``(None, reason)`` when any anchor is
+    malformed/duplicate in either text or the spans overlap — the degradation
+    reasons the update engine surfaces (assisted path, never a guess)."""
+    replacements: List[Tuple[Tuple[int, int], str]] = []
+    for span in spans:
+        preferred_status, preferred_loc = locate_carrier_span(preferred_text, span)
+        if preferred_status != "ok" or preferred_loc is None:
+            return None, f"{preferred_status}:{span.carrier_id}:preferred_side"
+        status, loc = locate_carrier_span(text, span)
+        if status != "ok" or loc is None:
+            return None, f"{status}:{span.carrier_id}"
+        replacements.append((loc, preferred_text[preferred_loc[0]:preferred_loc[1]]))
+    ordered = sorted(replacements, key=lambda item: item[0][0], reverse=True)
+    previous_start: Optional[int] = None
+    for (start, end), _replacement in ordered:
+        if previous_start is not None and end > previous_start:
+            return None, "overlapping_spans"
+        previous_start = start
+    substituted = text
+    for (start, end), replacement in ordered:
+        substituted = substituted[:start] + replacement + substituted[end:]
+    return substituted, ""
+
+
+def carrier_only_change(before_text: str, after_text: str, path: str) -> bool:
+    """True iff *path* is a declared release carrier and *after_text* differs
+    from *before_text* ONLY inside its declared version spans.
+
+    Putting the ``before`` spans back into ``after`` must reproduce ``before``
+    byte-for-byte; a non-carrier path, a malformed or duplicate anchor on
+    either side (a new or deleted file included) and any edit outside the
+    spans all answer False — the caller then keeps the file's full text."""
+    spans = carrier_spans_for(path)
+    if not spans:
+        return False
+    substituted, _reason = substitute_carrier_spans(
+        str(after_text or ""), spans, str(before_text or ""))
+    return substituted is not None and substituted == str(before_text or "")
 
 
 def _sync_readme_download_urls(text: str, version: str) -> str:

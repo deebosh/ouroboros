@@ -21,7 +21,11 @@ import pytest
 from scripts.v7next_adoption import (
     DEFERRED_OUT_OF_V70,
     OPERATOR,
+    OWNER,
+    REQUIRED_PHASE,
     REQUIRED_TRAINS,
+    declared_deferral_authorities,
+    manifest_prose,
     parse_rows,
     validate,
 )
@@ -60,10 +64,21 @@ def _first_done(rows: list[dict[str, str]]) -> dict[str, str]:
     raise AssertionError("no done row carries a ::nodeid hook")
 
 
-def test_the_live_manifest_passes_both_modes(rows):
-    """The manifest on this tree is the thing the bar is about."""
-    assert validate(copy.deepcopy(rows), release=False) == []
-    assert validate(copy.deepcopy(rows), release=True) == []
+@pytest.fixture(scope="module")
+def prose() -> str:
+    return manifest_prose(MANIFEST.read_text(encoding="utf-8"))
+
+
+def test_the_live_manifest_passes_both_modes(rows, prose):
+    """The manifest on this tree is the thing the bar is about — table AND the
+    prose around it, the way ``main()`` runs it."""
+    assert validate(copy.deepcopy(rows), release=False, prose=prose) == []
+    assert validate(copy.deepcopy(rows), release=True, prose=prose) == []
+
+
+def test_manifest_prose_is_everything_but_the_table(prose):
+    assert "Notes:" in prose
+    assert not [line for line in prose.splitlines() if line.startswith("|")]
 
 
 @pytest.mark.parametrize("train_id", sorted(REQUIRED_TRAINS))
@@ -160,3 +175,84 @@ def test_a_required_row_cannot_be_parked_post_release_by_the_operator(rows, monk
     monkeypatch.setitem(DEFERRED_OUT_OF_V70, "ABI-8", OPERATOR)
     errors = validate(copy.deepcopy(rows), release=True)
     assert any("ABI-8" in e and "owner decision" in e for e in errors), errors
+
+
+def test_prose_that_calls_a_row_rowless_turns_the_bar_red(rows):
+    """The contradiction that stood two days past a green bar: the Notes said
+    W4-F3/W4-F4 «get no row» after d348ea46 had made them rows. The validator
+    read rows only; now the prose's ids are resolved against the table."""
+    victim = rows[0]["id"]
+    notes = f"Notes:\n- No-row ids: {victim} — a disclosed observation, not work owed."
+    errors = validate(copy.deepcopy(rows), release=False, prose=notes)
+    assert any(e.startswith("prose:") and victim in e and "No-row ids" in e
+               for e in errors), errors
+
+
+def test_prose_that_names_a_ghost_id_needs_a_no_row_declaration(rows):
+    """The mirror: prose naming an id the table does not have is red unless the
+    prose declares it rowless — the declared form is the escape, not phrasing."""
+    ghost = "DEFER-NO-SUCH-ROW"
+    assert all(r["id"] != ghost for r in rows)
+    notes = f"Notes:\n- {ghost} was folded into another row (see D02)."
+    errors = validate(copy.deepcopy(rows), release=False, prose=notes)
+    assert any(e.startswith("prose:") and ghost in e for e in errors), errors
+    assert validate(copy.deepcopy(rows), release=False,
+                    prose=notes + f"\n- No-row ids: {ghost}.") == []
+
+
+def test_prose_id_grammar_ignores_plan_decisions_and_lane_labels(rows):
+    """`D-14` (a plan decision), `CPL4-C6` (a lane label) and the schema's own
+    pattern words (`Dnn`, `ABI-n`) are not ids and must not be reported."""
+    notes = "Notes:\n- D-14 sent CPL4-C6 here; `Dnn` and `ABI-n` are patterns."
+    assert validate(copy.deepcopy(rows), release=False, prose=notes) == []
+
+
+def _post_release_rows(rows, authority):
+    return [r for r in rows if r["disposition"] == "post-release"
+            and DEFERRED_OUT_OF_V70.get(r["id"]) == authority]
+
+
+def test_an_owner_deferral_row_must_carry_the_owner_quote(rows):
+    """The record and the row tell one story. An OWNER value in
+    DEFERRED_OUT_OF_V70 beside a row with no ``owner verbatim «…»`` quote is
+    the drift the record's own comment block showed (E2/E3, spec §6.4)."""
+    victim = _post_release_rows(rows, OWNER)[0]
+    unquoted = victim["what"].replace("owner verbatim «", "owner said «")
+    errors = validate(_mutate(rows, victim["id"], what=unquoted), release=False)
+    assert any(victim["id"] in e and "owner deferral" in e for e in errors), errors
+
+
+def test_the_notes_declare_the_deferral_authorities_the_register_records(prose):
+    """The Notes carry the register's mirror in the one declared form, and it
+    agrees with ``DEFERRED_OUT_OF_V70`` id for id. Free prose about authority is
+    not read: the Notes called W4-F4 operator-disclosed for a day after the
+    register made it an owner deferral."""
+    assert declared_deferral_authorities(prose) == DEFERRED_OUT_OF_V70
+
+
+@pytest.mark.parametrize("mutant", ["register_moves", "declaration_omits", "declaration_invents"])
+def test_a_deferral_declaration_that_disagrees_with_the_register_turns_the_bar_red(
+        rows, prose, monkeypatch, mutant):
+    """Both directions and both edges: the register moves under a standing
+    declaration, the declaration drops a recorded id, the declaration invents one."""
+    if mutant == "register_moves":
+        monkeypatch.setitem(DEFERRED_OUT_OF_V70, "W4-F4", OPERATOR)
+        text, needle = prose, "W4-F4 is owner while DEFERRED_OUT_OF_V70 records operator-disclosed"
+    elif mutant == "declaration_omits":
+        text, needle = prose.replace("W4-F4 owner, ", ""), "omits W4-F4"
+    else:
+        text, needle = prose.replace("W4-F4 owner,", "W4-F4 owner, DEFER-NO-SUCH-ROW owner,"), "declares DEFER-NO-SUCH-ROW"
+    assert text != prose or mutant == "register_moves"
+    errors = validate(copy.deepcopy(rows), release=False, prose=text)
+    assert any(e.startswith("prose: Deferral authorities") and needle in e for e in errors), errors
+
+
+def test_an_operator_disclosure_row_must_not_carry_an_owner_quote(rows, monkeypatch):
+    """The other direction: a quoted row recorded as operator-disclosed hides
+    an owner decision behind the weaker authority."""
+    victim = next(r for r in _post_release_rows(rows, OWNER)
+                  if r["id"] not in REQUIRED_PHASE)  # keep the required-inventory rule out of it
+    monkeypatch.setitem(DEFERRED_OUT_OF_V70, victim["id"], OPERATOR)
+    errors = validate(copy.deepcopy(rows), release=False)
+    assert any(victim["id"] in e and OPERATOR in e and "owner quote" in e
+               for e in errors), errors

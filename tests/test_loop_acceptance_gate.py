@@ -182,7 +182,7 @@ def test_task_acceptance_review_tool_result_lifts_agent_decision_into_trace():
         }],
         messages,
         trace,
-        emit_progress=lambda _msg: None,
+        emit_progress=lambda _msg, *, incident=None: None,
     )
 
     assert trace["acceptance_decision"]["agent_disposition"] == "deferred"
@@ -217,7 +217,7 @@ def test_root_acceptance_evidence_call_is_not_recorded_as_a_review_run():
         }],
         [],
         trace,
-        emit_progress=lambda _msg: None,
+        emit_progress=lambda _msg, *, incident=None: None,
     )
 
     assert trace.get("review_runs") in (None, [])
@@ -287,7 +287,7 @@ def test_task_acceptance_agent_tool_is_advisory_before_auto_host_gate(monkeypatc
         llm_trace=reviewed_trace,
         drive_root=tmp_path,
         messages=[{"role": "system", "content": ""}, {"role": "user", "content": "goal"}],
-        emit_progress=lambda _msg: None,
+        emit_progress=lambda _msg, *, incident=None: None,
     ) is False
     assert panel_state == {"calls": 1, "reviewed_at_dispatch": False}
     assert ctx._task_acceptance_reviewed is True
@@ -308,7 +308,7 @@ def test_task_acceptance_agent_tool_is_advisory_before_auto_host_gate(monkeypatc
         llm_trace=reviewed_trace,
         drive_root=tmp_path,
         messages=[{"role": "system", "content": ""}, {"role": "user", "content": "goal"}],
-        emit_progress=lambda _msg: None,
+        emit_progress=lambda _msg, *, incident=None: None,
     ) is False
     assert panel_state["calls"] == 1
     assert reviewed_trace["review_decision"]["panel_reused"] is True
@@ -427,7 +427,7 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
 
     assert _run_task_acceptance_review_once(
         tools=tools, content="first answer", task_id=root_id, task_type="task",
-        llm_trace=trace, drive_root=tmp_path, messages=messages, emit_progress=progress.append,
+        llm_trace=trace, drive_root=tmp_path, messages=messages, emit_progress=lambda text, *, incident=None: progress.append(text),
     ) is True
     assert acceptance_ctx._task_acceptance_reviewed is False
     assert root_id not in queue_mod.ACCEPTANCE_FENCES
@@ -444,7 +444,7 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
     assert "newly added criterion" in str(messages[-1]["content"])
     assert _run_task_acceptance_review_once(
         tools=tools, content="revised answer", task_id=root_id, task_type="task",
-        llm_trace=trace, drive_root=tmp_path, messages=messages, emit_progress=progress.append,
+        llm_trace=trace, drive_root=tmp_path, messages=messages, emit_progress=lambda text, *, incident=None: progress.append(text),
     ) is False
     assert acceptance_ctx._task_acceptance_reviewed is True
     assert panel_calls["count"] == 2
@@ -503,7 +503,7 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
     messages = [{"role": "system", "content": ""}, {"role": "user", "content": "goal"}]
     result = _run_task_acceptance_review_once(
         tools=SimpleNamespace(_ctx=ctx), content="done", task_id="t", task_type="task",
-        llm_trace=trace, drive_root=None, messages=messages, emit_progress=lambda _m: None,
+        llm_trace=trace, drive_root=None, messages=messages, emit_progress=lambda _m, *, incident=None: None,
     )
     assert result is False                                        # nothing to improve -> no extra round
     assert len(messages) == 2                                     # transcript NOT mutated
@@ -525,7 +525,7 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
     tools2 = SimpleNamespace(_ctx=ctx2)
     result2 = _run_task_acceptance_review_once(
         tools=tools2, content="done", task_id="t-blocked", task_type="task",
-        llm_trace=trace2, drive_root=None, messages=messages2, emit_progress=lambda _m: None,
+        llm_trace=trace2, drive_root=None, messages=messages2, emit_progress=lambda _m, *, incident=None: None,
     )
     assert result2 is True                                        # capsule -> one bounded re-loop
     # The capsule reaches the agent (appended/merged into the trailing user turn).
@@ -543,7 +543,7 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
     monkeypatch.setattr(rs, "run_review_request", lambda *a, **k: solved)
     replacement = _run_task_acceptance_review_once(
         tools=tools2, content="revised", task_id="t-blocked", task_type="task",
-        llm_trace=trace2, drive_root=None, messages=messages2, emit_progress=lambda _m: None,
+        llm_trace=trace2, drive_root=None, messages=messages2, emit_progress=lambda _m, *, incident=None: None,
     )
     assert replacement is False
     assert trace2["review_runs"][0]["superseded_by_revision"] is True
@@ -558,7 +558,7 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
     _seed_acceptance_root(tmp_path, "t-ok", tools2._ctx)
     result_ok = _run_task_acceptance_review_once(
         tools=tools2, content="revised", task_id="t-ok", task_type="task",
-        llm_trace=trace_ok, drive_root=None, messages=messages_ok, emit_progress=lambda _m: None,
+        llm_trace=trace_ok, drive_root=None, messages=messages_ok, emit_progress=lambda _m, *, incident=None: None,
     )
     assert result_ok is False
     assert trace_ok["acceptance_decision"]["status"] == "accepted"
@@ -574,7 +574,7 @@ def test_task_acceptance_required_feeds_back_capsule(monkeypatch, tmp_path):
         # A changed candidate creates a fresh binding; an unchanged candidate
         # must reuse the already-paid host panel under the v6.65 contract.
         tools=tools2, content="revised again", task_id="t-blocked-alt", task_type="task",
-        llm_trace=trace3, drive_root=None, messages=messages3, emit_progress=lambda _m: None,
+        llm_trace=trace3, drive_root=None, messages=messages3, emit_progress=lambda _m, *, incident=None: None,
     )
     assert result3 is False                                       # capsule already spent -> finalize
     assert len(messages3) == 2                                    # no second capsule injected
@@ -619,7 +619,7 @@ def test_required_review_blocked_commit_does_not_surface_prior_head(monkeypatch,
         llm_trace=trace,
         drive_root=None,
         messages=messages,
-        emit_progress=lambda _m: None,
+        emit_progress=lambda _m, *, incident=None: None,
     )
 
     assert captured["include_recent_commit"] is False
@@ -636,6 +636,6 @@ def test_required_review_blocked_commit_does_not_surface_prior_head(monkeypatch,
         llm_trace=trace_ok,
         drive_root=None,
         messages=messages,
-        emit_progress=lambda _m: None,
+        emit_progress=lambda _m, *, incident=None: None,
     )
     assert captured["include_recent_commit"] is True

@@ -121,7 +121,7 @@ class TestCacheAwareReservation:
             loop._CompactionRoundContext(
                 tools=SimpleNamespace(_ctx=inner), drive_root=tmp_path,
                 drive_logs=tmp_path, task_id="compacted", round_idx=2,
-                event_queue=None, emit_progress=lambda _text: None,
+                event_queue=None, emit_progress=lambda _text, *, incident=None: None,
             ),
         )
 
@@ -559,7 +559,7 @@ class TestCacheSplitOwnership:
         loop_module.run_llm_loop(
             messages=[{"role": "user", "content": "again"}],
             tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
-            llm=FakeLLM(), drive_logs=tmp_path, emit_progress=lambda _t: None,
+            llm=FakeLLM(), drive_logs=tmp_path, emit_progress=lambda _t, *, incident=None: None,
             incoming_messages=queue_module.Queue(), task_id="retry1", drive_root=tmp_path,
         )
         assert seen["split_at_first_send"] is None

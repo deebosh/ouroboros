@@ -18,9 +18,11 @@ spans, a conflict OUTSIDE the spans — leaves the file on the ordinary
 assisted-conflict path: never a crash, never silent adoption, and never
 whole-file theirs (only the spans themselves change sides).
 
-The span descriptors are owned by ``ouroboros.tools.release_sync`` (the
-release-carrier SSOT), imported at call time so importing the update machinery
-never drags the tool package in. Every git invocation here is BOUNDED (the
+The span descriptors AND the span-substitution primitive
+(``substitute_carrier_spans``) are owned by ``ouroboros.tools.release_sync``
+(the release-carrier SSOT; the commit-review pack cut reads the same
+primitive), imported at call time so importing the update machinery never
+drags the tool package in. Every git invocation here is BOUNDED (the
 update-flow redesign's plumbing rule): the live-materializer insertion point
 runs while the update lock is held, and a hung git must die with its whole
 process tree instead of wedging the update flow. The resolver itself never runs
@@ -98,37 +100,6 @@ def _stage_text(worktree: str, stage: int, path: str) -> Optional[str]:
         return None
 
 
-def _substitute_spans(
-    text: str, spans: Tuple[Any, ...], preferred_text: str
-) -> Tuple[Optional[str], str]:
-    """Replace every carrier span in *text* with the preferred side's span.
-
-    Returns ``(substituted_text, "")`` or ``(None, reason)`` when any anchor is
-    malformed/duplicate in either text or the spans overlap — the degradation
-    reasons that keep the file on the assisted path."""
-    from ouroboros.tools.release_sync import locate_carrier_span
-
-    replacements: List[Tuple[Tuple[int, int], str]] = []
-    for span in spans:
-        preferred_status, preferred_loc = locate_carrier_span(preferred_text, span)
-        if preferred_status != "ok" or preferred_loc is None:
-            return None, f"{preferred_status}:{span.carrier_id}:preferred_side"
-        status, loc = locate_carrier_span(text, span)
-        if status != "ok" or loc is None:
-            return None, f"{status}:{span.carrier_id}"
-        replacements.append((loc, preferred_text[preferred_loc[0]:preferred_loc[1]]))
-    ordered = sorted(replacements, key=lambda item: item[0][0], reverse=True)
-    previous_start: Optional[int] = None
-    for (start, end), _replacement in ordered:
-        if previous_start is not None and end > previous_start:
-            return None, "overlapping_spans"
-        previous_start = start
-    substituted = text
-    for (start, end), replacement in ordered:
-        substituted = substituted[:start] + replacement + substituted[end:]
-    return substituted, ""
-
-
 def _merge_span_substituted_texts(
     current: str, base: str, other: str
 ) -> Tuple[Optional[str], str]:
@@ -161,7 +132,7 @@ def resolve_carrier_conflict_file(
     worktree: str, path: str, prefer: str
 ) -> Tuple[bool, str]:
     """Resolve ONE conflicted carrier file in *worktree*; (resolved, reason)."""
-    from ouroboros.tools.release_sync import carrier_spans_for
+    from ouroboros.tools.release_sync import carrier_spans_for, substitute_carrier_spans
 
     spans = carrier_spans_for(path)
     if not spans:
@@ -175,7 +146,7 @@ def resolve_carrier_conflict_file(
     preferred_text = stage_texts[_PREFER_STAGE[prefer]]
     substituted: Dict[int, str] = {}
     for stage in (1, 2, 3):
-        text, reason = _substitute_spans(stage_texts[stage], spans, preferred_text)
+        text, reason = substitute_carrier_spans(stage_texts[stage], spans, preferred_text)
         if text is None:
             return False, reason
         substituted[stage] = text

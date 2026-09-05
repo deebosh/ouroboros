@@ -151,14 +151,15 @@ def _delivery_evidence_state(
 
     owner_directives = getattr(tools._ctx, "_owner_directives", [])
     owner_directives = owner_directives if isinstance(owner_directives, list) else []
-    children = []
-    for child in _loop()._direct_child_results(ctx):
-        children.append({
+    children = [
+        {
             "task_id": str(child.get("task_id") or child.get("id") or ""),
             "status": str(child.get("status") or ""),
             "sha256": _child_result_sha256(child),
             "disposition": _loop()._child_disposition_state(child),
-        })
+        }
+        for child in _loop()._direct_child_results(ctx)
+    ]
     receipt_root = pathlib.Path(
         str(
             getattr(tools._ctx, "drive_root", "")

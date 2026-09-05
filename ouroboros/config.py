@@ -115,6 +115,7 @@ from ouroboros.runtime_limits import (
     get_task_abs_ceiling_sec,  # noqa: F401
     get_task_idle_timeout_sec,  # noqa: F401
     get_vision_caption_timeout_sec,  # noqa: F401
+    get_update_letter_timeout_sec,  # noqa: F401
     get_websearch_timeout_sec,  # noqa: F401
 )
 from ouroboros.update_channels import UPDATE_SETTINGS_DEFAULTS, normalize_update_channel  # noqa: F401
@@ -416,23 +417,19 @@ def get_safety_mode() -> str:
 
 
 def get_context_mode() -> str:
-    """The EFFECTIVE working-context mode (low | max) used by context sizing.
-
-    Owner selection or an explicitly forwarded benchmark/operator value.  The P3 scope
-    gate reads get_owner_context_mode instead so a bare env Low cannot author owner intent.
-    No boot-pin: hot-applies on the next task. The key is dropped from the
-    agent-reachable /api/settings POST (P1)."""
+    """The EFFECTIVE working-context mode (low | max) used by context sizing: owner selection or
+    an explicitly forwarded benchmark/operator value. The P3 scope gate reads
+    get_owner_context_mode instead so a bare env Low cannot author owner intent. No boot-pin:
+    hot-applies on the next task; the key is dropped from the agent-reachable /api/settings POST (P1)."""
     default_val = str(SETTINGS_DEFAULTS["OUROBOROS_CONTEXT_MODE"])
     return normalize_context_mode(os.environ.get("OUROBOROS_CONTEXT_MODE", default_val) or default_val)
 
 
 def get_owner_context_mode() -> str:
-    """The OWNER-SELECTED context mode during the auto-Low compatibility window.
-
-    Persistent auto-Low is retired, but a bare forwarded env ``low`` still lacks owner
-    provenance and therefore keeps P3 at Max.  Only explicit ``low`` + tombstone ``false``
-    means owner Low.  Raw persisted legacy ambiguity is normalized before environment
-    projection, so this distinction is needed only for env-only benchmark/operator runs."""
+    """The OWNER-SELECTED context mode during the auto-Low compatibility window: persistent
+    auto-Low is retired, but a bare forwarded env ``low`` still lacks owner provenance and keeps
+    P3 at Max; only explicit ``low`` + tombstone ``false`` means owner Low. Raw persisted legacy
+    ambiguity is normalized before env projection, so this matters only for env-only runs."""
     if get_context_mode() != "low":
         return "max"
     return "low" if owner_declared_low(os.environ.get("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "")) else "max"
