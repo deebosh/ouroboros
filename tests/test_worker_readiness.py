@@ -308,6 +308,72 @@ def test_a_slot_the_pool_already_replaced_is_left_alone(pool, seam):
     assert _rows(seam.supervisor, "worker_ready_timeout") == []
 
 
+def test_a_generation_change_cannot_interleave_with_the_watcher_s_teardown_and_respawn(pool, monkeypatch):
+    """rc.15 review MAJOR 2: ``_replace_unready_slot`` checked the slot's identity,
+    dropped the queue lock, tore the child down and only then called
+    ``respawn_worker(wid)``. A pool generation change in that gap
+    (``kill_workers`` -> ``spawn_workers``: the supervisor's in-process restart)
+    installed a FRESH live slot at ``wid``; the stale watcher's respawn then
+    found that slot, swapped it out and closed its queue without ever
+    terminating its process — a worker gone from WORKERS, its live child an
+    orphan (the parent-sentinel lifeline does not fire: the server is alive).
+
+    The teardown and the respawn now run under the ONE lifecycle lock every
+    generation change takes (lifecycle -> queue order kept; the RLock lets the
+    nested respawn re-enter), so the change WAITS for the watcher and the
+    watcher never sees the fresh slot: the real ``respawn_worker`` on a fake
+    context, the watcher held inside its teardown while the generation change
+    is attempted through the same serializer."""
+    import threading
+
+    import ouroboros.platform_layer as platform_layer
+
+    lifecycle, workers = pool.lifecycle, pool.workers
+    stale = _booting_slot(pool, 2, 5020)
+    fresh = workers.Worker(wid=2, proc=_FakeProc(5021), in_q=MagicMock(), busy_task_id=None, reaping=True)
+    fake_ctx = MagicMock()
+    fake_ctx.Queue.return_value = MagicMock()
+    fake_ctx.Process.side_effect = lambda *_a, **_k: _FakeProc(5022)
+    monkeypatch.setattr(workers, "_get_ctx", lambda: fake_ctx)
+    monkeypatch.setattr(workers, "get_event_q", lambda: object())
+    monkeypatch.setattr(workers, "_verify_worker_sha_after_spawn", lambda *_a, **_k: None)
+    killed, in_teardown, release = [], threading.Event(), threading.Event()
+
+    def _kill(pid, **_kwargs):
+        killed.append(pid)
+        in_teardown.set()
+        assert release.wait(10), "the test never released the watcher"
+
+    monkeypatch.setattr(platform_layer, "kill_pid_tree", _kill)
+    watcher = threading.Thread(
+        target=lifecycle._replace_unready_slot, args=(2, stale, 0, time.time(), 1), daemon=True,
+    )
+    watcher.start()
+    assert in_teardown.wait(5), "the watcher never reached its teardown"
+
+    generation_done = threading.Event()
+
+    @lifecycle._serialized_worker_lifecycle
+    def _new_generation():
+        with lifecycle._queue_lock:
+            workers.WORKERS.clear()
+            workers.WORKERS[2] = fresh
+        generation_done.set()
+
+    changer = threading.Thread(target=_new_generation, daemon=True)
+    changer.start()
+    interleaved = generation_done.wait(0.5)
+    release.set()
+    watcher.join(10)
+    changer.join(10)
+    assert not watcher.is_alive() and generation_done.is_set()
+
+    assert workers.WORKERS[2] is fresh, "the fresh generation's live slot was evicted by the stale watcher"
+    fresh.in_q.close.assert_not_called()
+    assert killed == [5020], "only the stale child is torn down; the fresh one is never touched"
+    assert not interleaved, "the generation change ran inside the watcher's check/teardown/respawn window"
+
+
 def test_the_first_event_reader_keeps_its_contract_over_the_list_reader(pool, seam):
     lifecycle = pool.lifecycle
     append_jsonl(seam.events, {"type": "worker_ready", "pid": 1})

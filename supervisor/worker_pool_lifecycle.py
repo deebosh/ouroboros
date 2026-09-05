@@ -361,8 +361,17 @@ def _release_booting_slot(
     })
 
 
+@_serialized_worker_lifecycle
 def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: float, attempt: int) -> None:
-    """No worker_ready inside the window: tear the child down and replace the slot, bounded."""
+    """No worker_ready inside the window: tear the child down and replace the slot, bounded.
+
+    One lifecycle transaction (lifecycle -> queue lock order, like every pool
+    start/kill/respawn): the identity check, the teardown and the nested
+    ``respawn_worker`` cannot be interleaved by a generation change
+    (``kill_workers`` -> ``spawn_workers``), which would otherwise install a
+    fresh live slot at ``wid`` in the gap for this stale watcher's respawn to
+    evict — its process never terminated, gone from WORKERS.
+    """
     from ouroboros.platform_layer import kill_pid_tree
 
     with _queue_lock:
