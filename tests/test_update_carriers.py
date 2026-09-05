@@ -17,6 +17,7 @@ import pathlib
 import subprocess
 
 import supervisor.git_ops as git_ops
+import supervisor.update_candidate as update_candidate
 import supervisor.update_carriers as update_carriers
 import supervisor.update_merge as update_merge
 import supervisor.update_merge_plan as update_merge_plan
@@ -25,6 +26,7 @@ from ouroboros.tools.release_sync import (
     carrier_spans_for,
     locate_carrier_span,
 )
+from tests import test_update_merge_assisted as tua
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -540,3 +542,43 @@ def test_carrier_only_change_matrix(tmp_path):
     assert carrier_only_change("base\n", "changed\n", "a.txt") is False
     # An unchanged carrier is trivially span-only (nothing outside the spans moved).
     assert carrier_only_change(lock_before, lock_before, "uv.lock") is True
+
+
+def test_carrier_postcondition_names_a_web_package_lock_the_sync_cannot_fix(tmp_path, monkeypatch):
+    """MAJOR-1 (rc.15 review): the Q8 projection's postcondition promises "a
+    carrier the sync cannot fix is a typed failure, never a silent success" —
+    for web/package-lock.json too. A packages[""] root entry the token sync
+    does not recognise (no "name" key ahead of its version) keeps the fork
+    version; the projection must report the desync naming the lockfile."""
+    repo, head = tua._init_repo(tmp_path)
+    (repo / "VERSION").write_text("1.0.0\n")
+    (repo / "web").mkdir()
+    (repo / "web" / "package.json").write_text('{\n  "version": "1.0.0"\n}\n')
+    (repo / "web" / "package-lock.json").write_text(
+        '{\n  "name": "ouroboros-web",\n  "version": "1.0.0",\n  "lockfileVersion": 3,\n'
+        '  "packages": {\n    "": {\n      "version": "1.0.0"\n    }\n  }\n}\n'
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "carrier base")
+    _git(repo, "checkout", "-q", "-b", "remote-sim")
+    (repo / "VERSION").write_text("2.0.0\n")
+    (repo / "official.txt").write_text("official\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "official release")
+    target = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "checkout", "-q", head)
+    (repo / "VERSION").write_text("1.5.0\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "fork release")
+    _point_at(monkeypatch, tmp_path, repo, head)
+    _git(repo, "merge", "--no-commit", "--no-ff", target)
+
+    ok, note, error = update_candidate.project_version_carriers(target)
+
+    assert not ok, (note, error)
+    assert error.startswith("carriers still desynced after token sync: ")
+    assert 'web/package-lock.json (expected both root "version" entries = "2.0.0")' in error
+    # The recognised root entry WAS token-synced; only the unrecognised one stayed behind.
+    lock_text = (repo / "web" / "package-lock.json").read_text()
+    assert '"name": "ouroboros-web",\n  "version": "2.0.0"' in lock_text
+    assert '"": {\n      "version": "1.0.0"' in lock_text

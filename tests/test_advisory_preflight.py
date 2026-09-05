@@ -408,6 +408,31 @@ class TestHandleAdvisoryPreReviewSurfacesPreflightBlocked:
         assert result is not None
         assert "uv.lock" in result
 
+    def test_release_metadata_preflight_blocks_stale_web_package_lock(self, tmp_path):
+        """MAJOR-1 (rc.15 review): the lockfile is a release carrier the sync
+        writes; the admission preflight must read it like its siblings, so a
+        root-entry desync is a typed PREFLIGHT_BLOCKED naming the file (this
+        preflight is also the SM1 stand check's carrier gate)."""
+        from ouroboros.tools import claude_advisory_review as adv
+
+        repo = _make_agent_repo(tmp_path)
+        _write_release_files(repo, version="5.99.0-rc.1")
+        (repo / "web").mkdir()
+        (repo / "web" / "package.json").write_text(
+            '{\n  "name": "ouroboros-web",\n  "version": "5.99.0-rc.1"\n}\n', encoding="utf-8",
+        )
+        (repo / "web" / "package-lock.json").write_text(
+            '{\n  "name": "ouroboros-web",\n  "version": "5.98.0",\n  "lockfileVersion": 3,\n'
+            '  "packages": {\n    "": {\n      "name": "ouroboros-web",\n      "version": "5.98.0"\n'
+            '    }\n  }\n}\n',
+            encoding="utf-8",
+        )
+
+        result = adv._release_metadata_preflight(repo, "v5.99.0-rc.1: release", ["VERSION"])
+
+        assert result is not None and "PREFLIGHT_BLOCKED" in result
+        assert 'web/package-lock.json (expected both root "version" entries = "5.99.0-rc.1")' in result
+
     def test_changed_diff_without_version_blocks_before_sdk(self, tmp_path, monkeypatch):
         from ouroboros.tools import claude_advisory_review as adv
         import json as _json

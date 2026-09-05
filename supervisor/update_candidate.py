@@ -748,6 +748,7 @@ def project_version_carriers(target_sha: str, *, cwd: Optional[str] = None) -> T
             pyproject_text=_read("pyproject.toml"),
             uv_lock_text=_read("uv.lock"),
             web_package_text=_read("web/package.json"),
+            web_package_lock_text=_read("web/package-lock.json"),
             readme_text=readme_text,
             arch_text=_read("docs/ARCHITECTURE.md"),
             api_types_text=_read("web/modules/api_types.js"),

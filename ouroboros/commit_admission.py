@@ -128,6 +128,7 @@ def release_metadata_preflight(
         pyproject_path = repo_dir / "pyproject.toml"
         uv_lock_path = repo_dir / "uv.lock"
         web_package_path = repo_dir / "web" / "package.json"
+        web_package_lock_path = repo_dir / "web" / "package-lock.json"
         arch_path = repo_dir / "docs" / "ARCHITECTURE.md"
         api_types_path = repo_dir / "web" / "modules" / "api_types.js"
         site_install_path = repo_dir / "site" / "install" / "index.html"
@@ -138,6 +139,9 @@ def release_metadata_preflight(
         pyproject_text = pyproject_path.read_text(encoding="utf-8") if pyproject_path.exists() else ""
         uv_lock_text = uv_lock_path.read_text(encoding="utf-8") if uv_lock_path.exists() else ""
         web_package_text = web_package_path.read_text(encoding="utf-8") if web_package_path.exists() else ""
+        web_package_lock_text = (
+            web_package_lock_path.read_text(encoding="utf-8") if web_package_lock_path.exists() else ""
+        )
         readme_text = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
         arch_text = arch_path.read_text(encoding="utf-8") if arch_path.exists() else ""
         api_types_text = api_types_path.read_text(encoding="utf-8") if api_types_path.exists() else ""
@@ -146,6 +150,7 @@ def release_metadata_preflight(
             pyproject_text=pyproject_text,
             uv_lock_text=uv_lock_text,
             web_package_text=web_package_text,
+            web_package_lock_text=web_package_lock_text,
             readme_text=readme_text,
             arch_text=arch_text,
             api_types_text=api_types_text,

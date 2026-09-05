@@ -274,6 +274,46 @@ class TestPreflightCheck7P9Limits:
         assert result is not None
         assert "uv.lock" in result
 
+    def test_stale_staged_web_package_lock_root_version_blocks(self, monkeypatch):
+        """MAJOR-1 (rc.15 review): the staged lockfile is read like the sibling
+        carriers (the staged blob, not the worktree), so a root-entry desync
+        blocks the commit gate naming web/package-lock.json."""
+        review = _get_review_module()
+        readme = self._wrap_readme("")
+        seen = []
+
+        def _fake_git_show(repo_dir, path: str) -> str:
+            seen.append(path)
+            values = {
+                "VERSION": "4.99.0",
+                "pyproject.toml": 'version = "4.99.0"',
+                "uv.lock": (
+                    '[[package]]\nname = "ouroboros"\nversion = "4.99.0"\n'
+                    'source = { editable = "." }\n'
+                ),
+                "web/package.json": '{"version": "4.99.0"}',
+                "web/package-lock.json": (
+                    '{\n  "name": "ouroboros-web",\n  "version": "4.99.0",\n  "lockfileVersion": 3,\n'
+                    '  "packages": {\n    "": {\n      "name": "ouroboros-web",\n      "version": "4.98.0"\n'
+                    '    }\n  }\n}\n'
+                ),
+                "web/modules/api_types.js": "GATEWAY_CONTRACT_VERSION = '4.99.0'",
+                "README.md": readme,
+                "docs/ARCHITECTURE.md": "# Ouroboros v4.99.0 — Architecture",
+            }
+            return values.get(path, "")
+
+        monkeypatch.setattr(review, "_git_show_staged", _fake_git_show)
+        result = review._preflight_check(
+            "v4.99.0: release",
+            "M  VERSION\nM  README.md\nM  web/package-lock.json",
+            "/repo",
+        )
+
+        assert "web/package-lock.json" in seen, "the lockfile must be read from the staged index"
+        assert result is not None and "PREFLIGHT_BLOCKED" in result
+        assert 'web/package-lock.json (expected both root "version" entries = "4.99.0")' in result
+
     def test_check7_passes_when_readme_not_staged(self, monkeypatch):
         """VERSION staged but README not staged → check 7 silently skips
         (git show returns empty string for an un-staged README)."""
