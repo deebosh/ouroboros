@@ -12,6 +12,12 @@ What is pinned, on fake process objects (no child is ever forked here):
 * the replacement loop is bounded: at ``WORKER_READY_MAX_ATTEMPTS`` the slot is parked (kept
   ``reaping``, no further respawn) and the owner is told;
 * a child that DIED during boot is released to the crash detector, which already owns death;
+* the event reader treats a missing ``events.jsonl`` as an EMPTY read (not written yet at spawn,
+  the rotator's rename->touch instant, removed by hand): the watcher keeps polling and the row is
+  found on whichever side of a rotation it landed;
+* the watcher's own failure is never a parked wave: an exception inside it (the reader, ``load_state``,
+  a teardown) releases every slot of the wave still booting with a typed ``worker_ready_released``
+  row (``reason=watcher_error``), degrading to the crash detector's ownership;
 * the assignment path is unchanged for a ready slot: ``assign_tasks`` skips a booting slot and
   dispatches to the open one, and a slot the seam opened is dispatched to like any other.
 
@@ -22,6 +28,8 @@ child deadlocked on a lock inherited across fork is alive and holds no task.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -154,8 +162,12 @@ def test_respawn_installs_the_fresh_slot_booting_through_the_same_seam_with_its_
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def seam(pool, monkeypatch):
-    """A short window, a recorded teardown and a recorded respawn around the real seam."""
+def seam(pool, monkeypatch, request):
+    """A short window, a recorded teardown and a recorded respawn around the real seam.
+
+    The cursor is taken over a seeded ``events.jsonl`` (one noise row) unless the test asks,
+    through the indirect parameter ``"missing"``, for the log not to exist at spawn.
+    """
     lifecycle = pool.lifecycle
     import ouroboros.platform_layer as platform_layer
 
@@ -165,7 +177,8 @@ def seam(pool, monkeypatch):
     monkeypatch.setattr(lifecycle, "respawn_worker", lambda wid, **kw: respawned.append((wid, kw)))
     monkeypatch.setattr(pool.workers, "send_with_budget", lambda chat_id, text, **_k: sent.append((chat_id, text)))
     events = pool.root / "logs" / "events.jsonl"
-    append_jsonl(events, {"type": "noise"})
+    if getattr(request, "param", "seeded") != "missing":
+        append_jsonl(events, {"type": "noise"})
     cursor = lifecycle.events_log_cursor()
     return SimpleNamespace(
         run=lifecycle._verify_worker_sha_after_spawn, cursor=cursor, events=events,
@@ -298,6 +311,144 @@ def test_the_first_event_reader_keeps_its_contract_over_the_list_reader(pool, se
     assert lifecycle._first_worker_event_since(seam.cursor, "worker_ready")["pid"] == 1
     assert lifecycle._first_worker_event_since(seam.cursor)["pid"] == 2
     assert lifecycle._first_worker_event_since(seam.cursor, "absent") is None
+
+
+# ---------------------------------------------------------------------------
+# (c) a missing log is an empty read; a rotation gap loses no row; the watcher never wedges
+# ---------------------------------------------------------------------------
+
+_READY_ROW = {"type": "worker_ready", "worker_id": 0, "pid": 5001, "git_sha": "abc123"}
+
+
+def _counting_reader(lifecycle, monkeypatch, before_poll):
+    """Wrap the real reader: ``before_poll(n, real)`` runs ahead of poll ``n`` (1-based)."""
+    real = lifecycle._worker_events_since
+    polls = []
+
+    def reader(cursor, event_type):
+        polls.append(cursor)
+        before_poll(len(polls), lambda: real(cursor, event_type))
+        return real(cursor, event_type)
+
+    monkeypatch.setattr(lifecycle, "_worker_events_since", reader)
+    return polls
+
+
+@pytest.mark.parametrize("seam", ["missing"], indirect=True)
+def test_a_missing_events_log_at_spawn_is_an_empty_read_until_the_child_writes_its_row(pool, seam, monkeypatch):
+    lifecycle = pool.lifecycle
+    assert not seam.events.exists() and seam.cursor == (0, 0, 0), "missing log = a zeroed cursor"
+    assert lifecycle._worker_events_since(seam.cursor, "worker_ready") == [], "an empty read, never None"
+    monkeypatch.setattr(lifecycle, "WORKER_READY_WINDOW_SEC", 5.0)
+    slot = _booting_slot(pool, 0, 5001)
+
+    def before_poll(n, _read):
+        if n == 3:  # the child creates the log with its row after two empty polls
+            append_jsonl(seam.events, _READY_ROW)
+
+    polls = _counting_reader(lifecycle, monkeypatch, before_poll)
+    seam.run({0: slot}, seam.cursor, 1)
+
+    assert len(polls) == 3 and slot.reaping is False, "the watcher kept polling and opened the slot"
+    assert seam.killed == [] and seam.respawned == []
+    assert _rows(seam.supervisor, "worker_ready_timeout") == []
+    assert _rows(seam.supervisor, "worker_ready_released") == []
+    verify = _rows(seam.supervisor, "worker_sha_verify")
+    assert len(verify) == 1 and verify[0]["slot_opened"] is True and verify[0]["ok"] is True
+
+
+@pytest.mark.parametrize("row_lands", ["in_the_rotated_segment", "in_the_new_live_file"])
+def test_a_rotation_gap_during_polling_is_an_empty_read_and_the_row_is_found_on_either_side(
+    pool, seam, monkeypatch, row_lands,
+):
+    """``rotate_jsonl_log_if_needed`` renames the live file, then touches a fresh one; a poll
+    between the two sees no live file. The child's row is durable on one side of the rename."""
+    lifecycle = pool.lifecycle
+    monkeypatch.setattr(lifecycle, "WORKER_READY_WINDOW_SEC", 5.0)
+    slot = _booting_slot(pool, 0, 5001)
+    archive = pool.root / "archive" / "events_20260905T000000.jsonl"
+    archive.parent.mkdir()
+    gap_reads = []
+
+    def before_poll(n, read):
+        if n != 2:
+            return
+        if row_lands == "in_the_rotated_segment":
+            append_jsonl(seam.events, _READY_ROW)  # appended under the lock, just before the rename
+        os.replace(seam.events, archive)  # the rotator's rename ...
+        gap_reads.append(read())  # ... and a poll landing before its touch
+        seam.events.touch()
+        if row_lands == "in_the_new_live_file":
+            append_jsonl(seam.events, _READY_ROW)  # appended just after the touch
+
+    polls = _counting_reader(lifecycle, monkeypatch, before_poll)
+    seam.run({0: slot}, seam.cursor, 1)
+
+    assert gap_reads == [[]], "the gap is an empty read, not None and not an error"
+    assert len(polls) == 2 and slot.reaping is False, "the row was found on the next read"
+    assert seam.killed == [] and seam.respawned == []
+    assert _rows(seam.supervisor, "worker_ready_timeout") == []
+    assert _rows(seam.supervisor, "worker_sha_verify")[0]["worker_pid"] == 5001
+    assert _rows(archive, "noise") and lifecycle._first_worker_event_since(seam.cursor, "noise") is None, \
+        "the pre-cursor noise row is in the rotated segment and stays excluded: the offset is honoured there"
+
+
+@pytest.mark.parametrize("failing", ["_worker_events_since", "load_state", "kill_pid_tree"])
+def test_a_watcher_failure_releases_the_whole_wave_to_the_crash_detector_with_a_typed_row(
+    pool, seam, monkeypatch, caplog, failing,
+):
+    lifecycle = pool.lifecycle
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("events log unreadable")
+
+    if failing == "load_state":
+        monkeypatch.setattr(pool.workers, "load_state", boom)
+    elif failing == "kill_pid_tree":  # the end-of-window teardown itself raises
+        import ouroboros.platform_layer as platform_layer
+
+        monkeypatch.setattr(platform_layer, "kill_pid_tree", boom)
+    else:
+        monkeypatch.setattr(lifecycle, failing, boom)
+    first, second = _booting_slot(pool, 0, 5001), _booting_slot(pool, 1, 5002)
+
+    with caplog.at_level(logging.ERROR, logger="supervisor.worker_pool_lifecycle"):
+        seam.run({0: first, 1: second}, seam.cursor, 1)  # the seam itself never raises
+
+    assert first.reaping is False and second.reaping is False, "released: the crash detector owns them now"
+    assert seam.respawned == [], "no respawn: nothing about the children is known"
+    rows = _rows(seam.supervisor, "worker_ready_released")
+    assert [(r["worker_id"], r["pid"], r["reason"], r["error_type"], r["attempt"], r["slot_released"]) for r in rows] == [
+        (0, 5001, "watcher_error", "RuntimeError", 1, True),
+        (1, 5002, "watcher_error", "RuntimeError", 1, True),
+    ]
+    assert all("events log unreadable" in r["error"] and r["waited_sec"] >= 0 for r in rows)
+    assert any(rec.levelno == logging.ERROR and rec.exc_info for rec in caplog.records), "logged with the traceback"
+    if failing == "kill_pid_tree":
+        assert [r["worker_id"] for r in _rows(seam.supervisor, "worker_ready_timeout")] == [0], "the timeout row precedes the raise"
+    else:
+        assert _rows(seam.supervisor, "worker_ready_timeout") == []
+
+
+def test_a_watcher_failure_after_one_slot_opened_releases_only_the_slots_still_booting(pool, seam, monkeypatch):
+    lifecycle = pool.lifecycle
+    opened, booting = _booting_slot(pool, 0, 5001), _booting_slot(pool, 1, 5002)
+    replaced = pool.workers.Worker(wid=2, proc=_FakeProc(5003), in_q=MagicMock(), busy_task_id=None, reaping=True)
+    _booting_slot(pool, 2, 5004)  # the pool replaced slot 2 under the watcher
+    append_jsonl(seam.events, _READY_ROW)
+
+    def before_poll(n, _read):
+        if n == 2:
+            raise OSError("poll failed")
+
+    _counting_reader(lifecycle, monkeypatch, before_poll)
+    seam.run({0: opened, 1: booting, 2: replaced}, seam.cursor, 1)
+
+    assert opened.reaping is False and booting.reaping is False
+    assert replaced.reaping is True and pool.workers.WORKERS[2].reaping is True, "a slot no longer ours is left alone"
+    assert [r["worker_id"] for r in _rows(seam.supervisor, "worker_sha_verify")] == [0]
+    rows = _rows(seam.supervisor, "worker_ready_released")
+    assert [(r["worker_id"], r["error_type"], r["slot_released"]) for r in rows] == [(1, "OSError", True), (2, "OSError", False)]
 
 
 # ---------------------------------------------------------------------------

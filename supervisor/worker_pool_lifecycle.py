@@ -129,8 +129,8 @@ def events_log_cursor() -> Tuple[int, int, int]:
     try:
         stat = path.stat()
         return int(stat.st_size), int(stat.st_dev), int(stat.st_ino)
-    except OSError:
-        return 0, 0, 0
+    except Exception:
+        return 0, 0, 0  # cannot measure = zeroed cursor; the reader reads from the start
 
 
 def _worker_events_since(cursor: Tuple[int, int, int], event_type: str) -> List[Dict[str, Any]]:
@@ -145,11 +145,17 @@ def _worker_events_since(cursor: Tuple[int, int, int], event_type: str) -> List[
     matching segment is read from the SAME offset (the continuation is exact);
     a cursor whose file is gone entirely falls back to the newest segment
     whole.
+
+    A missing live file is an EMPTY read, never an error: the log may not have
+    been written yet (a zeroed cursor), a poll may land in the instant between
+    the rotator's ``os.replace`` and its ``touch``, or the file may have been
+    removed by hand. Nothing durable is lost to that read — a row appended
+    before the rename sits in the segment the cursor's identity finds, one
+    appended after the touch sits in the new live file, and the next poll sees
+    both.
     """
     offset_bytes, dev, ino = cursor
     path = _pool().DRIVE_ROOT / "logs" / "events.jsonl"
-    if not path.exists():
-        return None
     chunks: list[str] = []
     try:
         with path.open("rb") as f:
@@ -178,6 +184,8 @@ def _worker_events_since(cursor: Tuple[int, int, int], event_type: str) -> List[
                     chunks.insert(0, sf.read().decode("utf-8", errors="replace"))
             elif segments:
                 chunks.insert(0, segments[-1].read_bytes().decode("utf-8", errors="replace"))
+    except FileNotFoundError:
+        return []  # not written yet, the rotation gap, or removed by hand: an empty read
     except Exception:
         log.debug("Suppressed exception", exc_info=True)
         return []
@@ -237,14 +245,43 @@ def _verify_worker_sha_after_spawn(
     from the task idle rail: a deadlocked child is alive and holds no task.
     ``spawned_at`` is the instant before ``proc.start()``: the window and the
     reported wait count from the child's birth, not from this thread's start.
+
+    The watcher owns capacity, so its body is guarded: it runs in a bare
+    daemon thread, and a thread that died of an unexpected exception (the
+    event reader, ``load_state``, a teardown) would leave every slot of the
+    wave ``reaping`` with nothing left to open or replace it — a pool parked
+    until restart. Instead the slots still booting are released to the crash
+    detector (``worker_ready_released``, ``reason=watcher_error``), which is
+    the pre-readiness behaviour: assignable slots, death owned by the detector.
     """
+    pending = dict(slots)
+    started = float(spawned_at or 0.0) or time.time()
+    try:
+        _watch_booting_slots(pending, events_cursor, attempt, started)
+    except Exception as exc:
+        log.exception(
+            "Worker readiness watcher failed (attempt %d); releasing %d booting slot(s) to the crash detector",
+            attempt, len(pending),
+        )
+        for wid, slot in list(pending.items()):
+            try:
+                _release_booting_slot(
+                    wid, slot, started, attempt, "watcher_error",
+                    error_type=type(exc).__name__, error=str(exc)[:400],
+                )
+            except Exception:
+                log.exception("Release of booting worker slot %d failed", wid)
+
+
+def _watch_booting_slots(
+    pending: Dict[int, Any], events_cursor: Tuple[int, int, int], attempt: int, started: float,
+) -> None:
+    """Poll for each pending slot's ``worker_ready`` row; ``pending`` keeps only the unresolved slots."""
     st = _pool().load_state()
     expected_sha = str(st.get("current_sha") or "").strip()
     owner_chat_id = int(st.get("owner_chat_id") or 0)
     if not expected_sha:
         _supervisor_row({"type": "worker_sha_verify_skipped", "reason": "missing_current_sha"})
-    pending = dict(slots)
-    started = float(spawned_at or 0.0) or time.time()
     deadline = started + max(float(WORKER_READY_WINDOW_SEC), 1.0)
     while pending:
         ready_rows: Dict[int, Dict[str, Any]] = {}
@@ -259,13 +296,17 @@ def _verify_worker_sha_after_spawn(
                 _open_ready_slot(wid, slot, row, expected_sha, owner_chat_id, started, attempt)
                 pending.pop(wid)
             elif not slot.proc.is_alive():
-                _release_dead_booting_slot(wid, slot, started, attempt)
+                _release_booting_slot(
+                    wid, slot, started, attempt, "died_during_boot",
+                    exitcode=getattr(slot.proc, "exitcode", None),
+                )
                 pending.pop(wid)
         if not pending or time.time() >= deadline:
             break
         time.sleep(0.25)
-    for wid, slot in pending.items():
+    for wid, slot in list(pending.items()):
         _replace_unready_slot(wid, slot, owner_chat_id, started, attempt)
+        pending.pop(wid)
 
 
 def _open_ready_slot(
@@ -297,21 +338,26 @@ def _open_ready_slot(
         )
 
 
-def _release_dead_booting_slot(wid: int, slot: Any, started: float, attempt: int) -> None:
-    """The child died before confirming ready: hand the dead slot to the crash detector."""
+def _release_booting_slot(
+    wid: int, slot: Any, started: float, attempt: int, reason: str, **detail: Any,
+) -> None:
+    """Hand a booting slot to the crash detector: ``reaping`` cleared if it is still ours, one typed row.
+
+    ``died_during_boot`` carries the exit code; ``watcher_error`` carries the error type and message.
+    """
     with _queue_lock:
         owned = _pool().WORKERS.get(wid) is slot
         if owned:
             slot.reaping = False
     _supervisor_row({
         "type": "worker_ready_released",
-        "reason": "died_during_boot",
+        "reason": reason,
         "worker_id": wid,
         "pid": _slot_pid(slot),
-        "exitcode": getattr(slot.proc, "exitcode", None),
         "waited_sec": round(time.time() - started, 2),
         "attempt": attempt,
         "slot_released": owned,
+        **detail,
     })
 
 

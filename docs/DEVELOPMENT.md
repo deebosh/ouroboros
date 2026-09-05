@@ -1936,7 +1936,12 @@ by "Provider Independence" above. Call-site imperatives:
   process liveness (`proc.is_alive`) or the task idle rail: a child deadlocked
   on a lock inherited across fork is alive and holds no task. The readiness
   seam in `supervisor/worker_pool_lifecycle.py` is the one place both spawn
-  paths pass through; a slot it holds `reaping` is not capacity.
+  paths pass through; a slot it holds `reaping` is not capacity. Because it
+  owns capacity, its watcher body is guarded: an unexpected failure (the event
+  reader, `load_state`, a teardown) releases the wave's still-booting slots
+  with a typed `worker_ready_released` row (`reason=watcher_error`) instead of
+  leaving them parked, and a missing `events.jsonl` is an empty read for the
+  reader, not an error.
 - Nested process wrappers are ordered, never tied: the provider bound settles
   before its killable child, the child before the generic ToolEntry envelope
   (fixed structural settlement margin from `config.py`), so a child or
