@@ -431,11 +431,12 @@ def test_every_descriptor_matches_the_live_repo_exactly_once():
     # The span set is cut from THIS tree's carrier inventory (everything
     # sync_release_metadata writes / version_carrier_desyncs checks): the 7
     # ratified carriers + README-history, the README direct-download reference
-    # block, the uv.lock root-package mirror, and 8 release-download anchors on
+    # block, the uv.lock root-package mirror, the web/package-lock.json header
+    # (both root version entries in one span), and 8 release-download anchors on
     # each of the two public install pages (macos-arm64 appears twice there).
-    assert len(VERSION_CARRIER_SPANS) == 25
+    assert len(VERSION_CARRIER_SPANS) == 26
     assert {s.carrier_id for s in VERSION_CARRIER_SPANS} >= {
-        "uv_lock_root_package", "readme_download_refs",
+        "uv_lock_root_package", "web_package_lock_version", "readme_download_refs",
         "site_install_download_macos-arm64_button",
         "site_install_download_macos-arm64_step",
         "docs_install_download_linux-x86_64",

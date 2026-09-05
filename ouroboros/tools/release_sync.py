@@ -61,6 +61,13 @@ _ARCH_HEADER_RE = re.compile(
 # web/package-lock.json (npm lockfileVersion 3) repeats the package version twice at the
 # top: the root object and its packages[""] entry; both are carriers (npm ci tolerates a
 # drift, the P9 "carriers in sync" contract does not).
+# The carrier SPAN (merge/rebase policy) is the lockfile HEADER as one anchor: the root object
+# up to the packages[""] version, so both root entries fall inside a single span.
+_WEB_LOCK_SPAN_RE = re.compile(
+    r'\A\{\s*"name"\s*:\s*"[^"\n]*",\s*"version"\s*:\s*"[^"\n]*",.*?"packages"\s*:\s*\{\s*""\s*:\s*\{'
+    r'\s*"name"\s*:\s*"[^"\n]*",\s*"version"\s*:\s*"[^"\n]*"',
+    re.DOTALL,
+)
 _WEB_LOCK_VERSION_RE = re.compile(
     r'(^\{\s*"name"\s*:\s*"[^"\n]*",\s*"version"\s*:\s*")([^"\n]*)(")'
     r'|(^\s*""\s*:\s*\{\s*"name"\s*:\s*"[^"\n]*",\s*"version"\s*:\s*")([^"\n]*)(")',
@@ -175,7 +182,7 @@ VERSION_CARRIER_SPANS: Tuple[VersionCarrierSpan, ...] = (
         re.compile(r'^\s*"version"\s*:\s*"[^"\n]*"', re.MULTILINE),
     ),
     VersionCarrierSpan(
-        "web_package_lock_version", "web/package-lock.json", _WEB_LOCK_VERSION_RE,
+        "web_package_lock_version", "web/package-lock.json", _WEB_LOCK_SPAN_RE,
     ),
     VersionCarrierSpan(
         "gateway_contract_version", "web/modules/api_types.js",
