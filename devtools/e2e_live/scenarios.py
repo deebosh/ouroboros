@@ -16,6 +16,7 @@ import json
 import pathlib
 import re
 import subprocess
+import tempfile
 import time
 from typing import Any, Callable
 
@@ -31,12 +32,21 @@ SM1_CSS_PATH = "web/style.css"
 # preflight of ``commit_reviewed`` refused the commit on the parity invariant).
 SM1_MIRROR_CSS_PATH = "web/onboarding.css"
 SM1_CSS_PATHS = (SM1_CSS_PATH, SM1_MIRROR_CSS_PATH)
+# The stub's README Version History row (the release preflight requires one per VERSION).
+SM1_HISTORY_ROW = "Live E2E stand SM1 rehearsal: the brand accent changed in both stylesheets."
 _ACCENT_RE = re.compile(r"^(\s*--accent:\s*)([^;]+);", re.MULTILINE)
 _CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _CSS_TOKEN_RE = re.compile(r"(--[a-z0-9-]+)\s*:\s*([^;]+);")
+# ``release_sync.PRE_SUFFIX`` split into the parts the stub bump increments.
+_VERSION_PARTS_RE = re.compile(r"^(\d+\.\d+\.)(\d+)(-?(?:rc|alpha|beta|a|b)\.?)?(\d+)?$", re.IGNORECASE)
 # The runtime's typed refusal prefix on a blocked review tool result ("⚠️ CODE: ...").
 _REFUSAL_CODE_RE = re.compile(r"⚠️\s*([A-Z][A-Z_]+):")
 _REVIEW_TOOLS = ("preflight_review", "commit_reviewed")
+# The prefix ``claude_advisory_review`` stamps on an oversize-prompt skip row's ``raw_result``.
+_ADVISORY_SKIP_PREFIX = "⚠️ ADVISORY_SKIPPED:"
+# The product's vision/browser inspection surfaces (``ouroboros/tools/vision.py``, ``browser.py``).
+_VISION_TOOLS = ("analyze_screenshot", "vlm_query", "view_image")
+_BROWSER_TOOL = "browser_action"
 
 SW1_OBJECTIVE = (
     "E2E_LIVE_SW1: survey this repository with TWO scouts running in parallel. Delegate "
@@ -317,49 +327,149 @@ class LaneContext:
 
 
 # --------------------------------------------------------------------------- #
-# SM1 — a CSS custom property change lands through commit_reviewed (the S2 set + UI)
+# SM1 — the brand accent changes and lands as a reviewed RELEASE (the S2 set + UI)
 # --------------------------------------------------------------------------- #
+# The realistic design: an owner asks for a new brand accent, and the product's own policy
+# shapes the work — the design system (docs/DESIGN.md §3: one ``--accent`` value, its named roles
+# and the accent alpha ladder), the visible-UI evidence rule (a real consumer flow inspected in
+# the browser), and BIBLE P9 (every commit is a release: the synchronized carriers bump in the
+# same diff). The stand describes that task and pins only the observable contract; it never
+# routes around the review organs. Incident (first paid run on v7.0.0-rc.14, three attempts):
+# the earlier prompt changed ONLY ``--accent``, forbade the bump and skipped the advisory
+# preflight, and the commit gate refused it three ways — [triad] version_bump (CHECKLISTS item 8
+# / P9), [scope] a mixed blue/red palette against DESIGN §3 (the red-derived roles and ladder
+# were left behind), [triad] development_compliance 2(i) (no vision-inspected UI evidence).
 
 def sm1_prompt() -> str:
     return (
-        "Self-modification task. Change ONLY the value of the CSS custom property `--accent` inside "
-        f"the top-level `:root` block to `{SM1_NEW_ACCENT}` in BOTH {SM1_CSS_PATH} and "
-        f"{SM1_MIRROR_CSS_PATH} (the onboarding stylesheet is inlined standalone and mirrors the app's "
-        "tokens by value; tests/test_web_typography_static.py pins that parity). Keep every other byte "
-        "of both files identical. Then run preflight_review(commit_message=...) and land exactly those "
-        f"two files through commit_reviewed with commit_message '{SM1_COMMIT_MESSAGE}', paths "
-        f"{list(SM1_CSS_PATHS)!r}, goal 'Change the accent token for the live E2E stand' and scope "
-        f"'{SM1_CSS_PATH} and {SM1_MIRROR_CSS_PATH} only'. If preflight_review answers PREFLIGHT_BLOCKED "
-        "because VERSION is not in scope, do NOT bump the version: retry commit_reviewed with "
-        "skip_advisory_review=true (the audited advisory-only skip; the tests preflight, the triad and "
-        "the scope review still run). Finish once the commit has landed."
+        f"Change the product's brand accent to {SM1_NEW_ACCENT} (a blue) consistently with the design "
+        "system (docs/DESIGN.md §3: the one --accent value, its named roles and the accent alpha "
+        f"ladder) in BOTH {SM1_CSS_PATH} and {SM1_MIRROR_CSS_PATH}, keeping the two sheets' token "
+        "parity (tests/test_web_typography_static.py pins it); verify the visible result the way the "
+        "review policy requires (exercise at least one real consumer flow in the browser and inspect "
+        "it); then land it as a reviewed release through preflight_review and commit_reviewed with "
+        f"commit message '{SM1_COMMIT_MESSAGE}', following the release policy the review organs "
+        "enforce (every commit is a release: the synchronized version carriers are bumped in the same "
+        "diff — a patch bump). Finish once the commit has landed."
     )
+
+
+def version_is_bumped(before: str, after: str) -> bool:
+    """``after`` is a release version in the product's grammar (``release_sync``) AND a valid
+    PEP 440 version strictly greater than ``before`` (``packaging`` ships with pytest, so it is
+    present wherever the stand or its pins run)."""
+    from packaging.version import InvalidVersion, Version
+
+    from ouroboros.tools.release_sync import is_release_version
+
+    try:
+        return is_release_version(after) and Version(after.strip()) > Version(before.strip())
+    except InvalidVersion:
+        return False
+
+
+def advisory_run_is_real(run: dict) -> bool:
+    """A ledger row the advisory reviewer actually produced. ``fresh`` is written only by a
+    completed reviewer episode; ``stale`` is ANY aged row (fresh, bypassed or skipped), told
+    apart by the bypass fields and the skip prefix the two audited paths stamp."""
+    status = str(run.get("status") or "")
+    if status == "fresh":
+        return True
+    return (status == "stale" and not run.get("bypass_reason") and not run.get("bypassed_by_task")
+            and not str(run.get("raw_result") or "").startswith(_ADVISORY_SKIP_PREFIX))
+
+
+def vision_evidence_rows(tools_rows: list) -> list:
+    """tools.jsonl rows of a browser/vision inspection: the vision tools, or a browser screenshot."""
+    out = []
+    for row in tools_rows:
+        tool = str(row.get("tool") or "")
+        args = row.get("args") if isinstance(row.get("args"), dict) else {}
+        if tool in _VISION_TOOLS or (tool == _BROWSER_TOOL and str(args.get("action") or "") == "screenshot"):
+            out.append(row)
+    return out
+
+
+def _git_show(clone: pathlib.Path, rev: str, path: str) -> str:
+    """The exact text of ``path`` at ``rev`` ('' when absent there)."""
+    proc = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=str(clone), check=False, capture_output=True, text=True)
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def release_carriers_desync_at(clone: pathlib.Path, rev: str) -> str:
+    """The product's own release-metadata admission gate, read over the carrier files of
+    ``rev`` exported to a scratch root (the commit, not the worktree): '' when VERSION, its
+    README row and every carrier the SSOT names agree, else the gate's PREFLIGHT_BLOCKED text."""
+    from ouroboros.commit_admission import release_metadata_preflight
+    from ouroboros.tools.release_sync import CARRIER_SPAN_PATHS
+
+    with tempfile.TemporaryDirectory(prefix="sm1_carriers_") as tmp:
+        root = pathlib.Path(tmp)
+        for rel in sorted(CARRIER_SPAN_PATHS):
+            text = _git_show(clone, rev, rel)
+            if text:
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(text, encoding="utf-8")
+        return str(release_metadata_preflight(root, SM1_COMMIT_MESSAGE, ["VERSION"]) or "")
+
+
+def sm1_out_of_scope(clone: pathlib.Path, rev: str, files: list[str]) -> list[str]:
+    """Committed paths OUTSIDE the SM1 contract: the two stylesheets, the release carriers the
+    SSOT names, ``docs/DESIGN.md``, and any other ``web/**/*.css`` whose change is comment-only."""
+    from ouroboros.tools.release_sync import CARRIER_SPAN_PATHS
+
+    def comment_only(path: str) -> bool:
+        return (_CSS_COMMENT_RE.sub("", _git_show(clone, f"{rev}^", path))
+                == _CSS_COMMENT_RE.sub("", _git_show(clone, rev, path)))
+
+    return [path for path in files
+            if path not in SM1_CSS_PATHS and path not in CARRIER_SPAN_PATHS and path != "docs/DESIGN.md"
+            and not (path.startswith("web/") and path.endswith(".css") and comment_only(path))]
 
 
 def run_sm1(ctx: LaneContext) -> None:
     before = {path: (ctx.clone / path).read_text(encoding="utf-8") for path in SM1_CSS_PATHS}
+    version_before = (ctx.clone / "VERSION").read_text(encoding="utf-8").strip()
     ctx.facts["accent_before"] = accent_value(before[SM1_CSS_PATH])
+    ctx.facts["version_before"] = version_before
     task_id = ctx.submit(sm1_prompt())
     ctx.facts["task_id"] = task_id
     stored = ctx.wait_task(task_id)
     # The commit LANDED in the lane clone: under blocking enforcement that is only reachable
-    # through PASS verdicts from both review organs.
-    log_output = _git(["log", "-n", "5", "--format=%s"], ctx.clone)
-    committed = {path: subprocess.run(["git", "show", f"HEAD:{path}"], cwd=str(ctx.clone),
-                                      check=False, capture_output=True, text=True).stdout
-                 for path in SM1_CSS_PATHS}
-    ctx.check("commit_landed", SM1_COMMIT_MESSAGE in log_output)
+    # through PASS verdicts from both review organs. Located by its message (the post-task
+    # evolve cycle may commit after it), read from that commit, never from the worktree.
+    commit = next((sha for sha, _sep, subject in (line.partition("\x00") for line in _git(
+        ["log", "-n", "5", "--format=%H%x00%s"], ctx.clone).splitlines()) if SM1_COMMIT_MESSAGE in subject), "")
+    ctx.check("commit_landed", bool(commit), commit_sha=commit)
+    rev = commit or "HEAD"
+    committed = {path: _git_show(ctx.clone, rev, path) for path in SM1_CSS_PATHS}
     ctx.check("committed_css_carries_new_accent",
               all(accent_value(committed[p]) == SM1_NEW_ACCENT and committed[p] != before[p] for p in SM1_CSS_PATHS),
               accent_committed={p: accent_value(committed[p]) for p in SM1_CSS_PATHS})
+    # The WHOLE shared ``:root`` token set agrees between the sheets: a re-derived accent family
+    # is fine exactly as long as both carry the same values.
     drift = css_mirror_drift(committed[SM1_CSS_PATH], committed[SM1_MIRROR_CSS_PATH])
     ctx.check("committed_css_mirror_parity", not drift, css_mirror_drift=drift)
+    version_after = _git_show(ctx.clone, rev, "VERSION").strip()
+    ctx.check("committed_version_bumped", version_is_bumped(version_before, version_after), version_committed=version_after)
+    desync = release_carriers_desync_at(ctx.clone, rev)
+    ctx.check("committed_release_carriers_in_sync", desync == "", release_carriers_desync=desync[:500])
+    files = [f for f in _git(["show", "--format=", "--name-only", rev], ctx.clone).splitlines() if f]
+    out_of_scope = sm1_out_of_scope(ctx.clone, rev, files)
+    ctx.check("committed_diff_scope", bool(files) and not out_of_scope,
+              committed_files=files, committed_out_of_scope=out_of_scope)
     ctx.check("worktree_clean_after_commit", _git(["status", "--porcelain"], ctx.clone) == "")
     task_oracle = ctx.oracle.task_drive(task_id)
     ledger = task_oracle.advisory_review()
     runs = [r for r in (ledger.get("advisory_runs") or []) if isinstance(r, dict)]
-    ctx.check("advisory_ledger_row_present", bool(runs))
-    ctx.facts["commit_reviewed_refusals"] = commit_refusal_facts(ledger, task_oracle.tools_rows(), stored)
+    # A REAL advisory run, not the audited skip/bypass row the earlier prompt routed through.
+    ctx.check("advisory_ledger_row_present", any(advisory_run_is_real(r) for r in runs))
+    tools_rows = task_oracle.tools_rows()
+    ctx.facts["commit_reviewed_refusals"] = commit_refusal_facts(ledger, tools_rows, stored)
+    # A FACT, not a check: the reviewers judge the UI evidence (development_compliance 2(i)).
+    vision = vision_evidence_rows(tools_rows)
+    ctx.facts["vision_evidence_present"] = bool(vision)
+    ctx.facts["vision_evidence_tools"] = sorted({str(r.get("tool") or "") for r in vision})
     ctx.check("scope_review_complete_event",
               bool(ctx.wait_events(task_oracle, "scope_review_complete", lambda _row: True)))
     ctx.check_paid_tokens([task_id])
@@ -376,26 +486,87 @@ def run_sm1(ctx: LaneContext) -> None:
     ctx.screenshot("sm1_after_restart")
 
 
+def sm1_next_version(version: str) -> str:
+    """The smallest strictly-greater release version the stub bumps to: the next pre-release
+    number on a pre-release seed (``7.0.0-rc.14`` -> ``7.0.0-rc.15``), else the next patch."""
+    match = _VERSION_PARTS_RE.match(version.strip())
+    if match is None:
+        raise ValueError(f"seed VERSION is not a release version: {version.strip()!r}")
+    base, patch, pre, number = match.groups()
+    if pre:
+        return f"{base}{patch}{pre}{int(number) + 1}"
+    return f"{base}{int(patch) + 1}"
+
+
+def readme_with_history_row(readme: str, version: str, description: str) -> str:
+    """README with ONE new Version History row for ``version`` on top of the table, trimmed to
+    the P9 row limits the release preflight enforces: while ``check_history_limit`` complains,
+    the oldest row whose removal reduces the complaints goes — the trim the gate text asks for."""
+    from ouroboros.tools.release_sync import _VERSION_ROW_RE, check_history_limit
+
+    first = _VERSION_ROW_RE.search(readme)
+    if first is None:
+        raise ValueError("README has no Version History rows")
+    row = f"| {version} | {time.strftime('%Y-%m-%d', time.gmtime())} | {description} |\n"
+    text = readme[:first.start()] + row + readme[first.start():]
+    while check_history_limit(text):
+        for match in reversed(list(_VERSION_ROW_RE.finditer(text))):
+            end = text.find("\n", match.start())
+            candidate = text[:match.start()] + ("" if end < 0 else text[end + 1:])
+            if len(check_history_limit(candidate)) < len(check_history_limit(text)):
+                text = candidate
+                break
+        else:
+            raise ValueError("cannot trim the Version History to the P9 limits")
+    return text
+
+
+def sm1_release_writes(clone: pathlib.Path, version: str) -> list[dict]:
+    """The bump's carrier edits, computed OFFLINE through the product's release-sync SSOT: the
+    clone's carrier files (every path ``CARRIER_SPAN_PATHS`` names) are copied to a scratch root,
+    VERSION is bumped, the README gains its Version History row (changelog prose stays manual
+    by the SSOT's own contract), ``sync_release_metadata`` rewrites the rest, and each file that
+    differs from the clone becomes one ``write_file`` step. No hand-written carrier list: the
+    stub's tool vocabulary has no release-sync tool, so the projection is built here."""
+    from ouroboros.tools.release_sync import CARRIER_SPAN_PATHS, sync_release_metadata
+
+    with tempfile.TemporaryDirectory(prefix="sm1_release_") as tmp:
+        root = pathlib.Path(tmp)
+        before = {}
+        for rel in sorted(CARRIER_SPAN_PATHS):
+            if (clone / rel).is_file():
+                before[rel] = (clone / rel).read_text(encoding="utf-8")
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(before[rel], encoding="utf-8")
+        (root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+        (root / "README.md").write_text(
+            readme_with_history_row(before["README.md"], version, SM1_HISTORY_ROW), encoding="utf-8")
+        sync_release_metadata(str(root))
+        after = {rel: (root / rel).read_text(encoding="utf-8") for rel in before}
+    return [{"tool": "write_file", "arguments": {"root": "system_repo", "path": rel, "content": after[rel]}}
+            for rel in before if after[rel] != before[rel]]
+
+
 def sm1_stub_script(clone: pathlib.Path) -> dict:
+    # The mock reviewers do not judge design, so the stub changes the one value; the paid
+    # model re-derives the roles and the ladder under the real reviewers.
     writes = [{"tool": "write_file", "arguments": {
         "root": "system_repo", "path": path,
         "content": css_with_accent((clone / path).read_text(encoding="utf-8"), SM1_NEW_ACCENT)}}
         for path in SM1_CSS_PATHS]
+    writes.extend(sm1_release_writes(clone, sm1_next_version((clone / "VERSION").read_text(encoding="utf-8"))))
     return {"agent": [
         *writes,
+        # The full user path, no skip flags: the release preflight sees VERSION in scope, the
+        # advisory episode runs against the stub (a REAL ledger row), and the hermetic suite is
+        # the tests preflight exactly like the paid prompt (``preflight_runner._preflight_env``
+        # scrubs every settings key the loopback lane projects).
         {"tool": "preflight_review", "arguments": {"commit_message": SM1_COMMIT_MESSAGE}},
-        # The deterministic release-metadata preflight blocks a VERSION-less diff (BIBLE P9);
-        # the S2 set lands it through the AUDITED advisory-only skip (recorded as bypassed).
-        # No ``skip_tests``: the rehearsal runs the hermetic suite as its tests preflight
-        # exactly like the paid prompt (``preflight_runner._preflight_env`` scrubs every
-        # settings key the loopback lane projects, ``OPENAI_COMPATIBLE_BASE_URL`` included).
-        # The mirror parity is proven by ``committed_css_mirror_parity`` over the landed commit.
         {"tool": "commit_reviewed", "arguments": {
-            "commit_message": SM1_COMMIT_MESSAGE, "paths": list(SM1_CSS_PATHS),
-            "skip_advisory_review": True,
-            "goal": "Change the accent token for the live E2E stand",
-            "scope": f"{SM1_CSS_PATH} and {SM1_MIRROR_CSS_PATH} only."}},
-        {"final": "SM1 done: the accent token change landed through commit_reviewed."},
+            "commit_message": SM1_COMMIT_MESSAGE, "paths": [w["arguments"]["path"] for w in writes],
+            "goal": "Change the brand accent for the live E2E stand and release it",
+            "scope": f"{SM1_CSS_PATH}, {SM1_MIRROR_CSS_PATH} and the release version carriers."}},
+        {"final": "SM1 done: the brand accent change landed as a reviewed release."},
     ]}
 
 
@@ -640,7 +811,7 @@ class Scenario:
 
 SCENARIOS: dict[str, Scenario] = {
     "SM1": Scenario(
-        "SM1", "CSS custom property change lands through commit_reviewed (advanced, blocking)",
+        "SM1", "Brand accent change lands as a reviewed release through commit_reviewed (advanced, blocking)",
         sm1_prompt(), {"OUROBOROS_RUNTIME_MODE": "advanced", "OUROBOROS_REVIEW_ENFORCEMENT": "blocking"},
         True, run_sm1, sm1_stub_script),
     "SW1": Scenario(

@@ -752,19 +752,21 @@ def test_commit_refusal_facts_name_every_typed_refusal():
 def test_sm1_changes_both_stylesheets_and_keeps_the_mirror_parity():
     """web/onboarding.css mirrors web/style.css BY VALUE (tests/test_web_typography_static.py):
     the scenario edits, commits and validates both files, in the prompt, the stub and the
-    acceptance. Both the paid prompt and the stub run the tests preflight that pins the
-    invariant: neither carries ``skip_tests`` (the former loopback residual closed when
-    ``preflight_runner._preflight_env`` began scrubbing every projected settings key)."""
+    acceptance. Both take the FULL user path: no ``skip_tests``, no ``skip_advisory_review``,
+    no "do not bump" (the first paid run's narrower prompt was refused by the commit gate on
+    exactly the version bump, the design system and the missing UI evidence)."""
     assert scenarios.SM1_CSS_PATHS == ("web/style.css", "web/onboarding.css")
     prompt = scenarios.sm1_prompt()
-    assert "web/style.css" in prompt and "web/onboarding.css" in prompt and "['web/style.css', 'web/onboarding.css']" in prompt
+    assert "web/style.css" in prompt and "web/onboarding.css" in prompt and "docs/DESIGN.md" in prompt
+    assert "skip_" not in prompt.lower() and "do not bump" not in prompt.lower() and "bumped in the same diff" in prompt
     script = scenarios.sm1_stub_script(REPO_ROOT)["agent"]
     writes = [s for s in script if s.get("tool") == "write_file"]
-    assert [w["arguments"]["path"] for w in writes] == list(scenarios.SM1_CSS_PATHS)
+    written = [w["arguments"]["path"] for w in writes]
+    assert written[:2] == list(scenarios.SM1_CSS_PATHS)
     commit = next(s for s in script if s.get("tool") == "commit_reviewed")["arguments"]
-    assert commit["paths"] == list(scenarios.SM1_CSS_PATHS) and "skip_tests" not in prompt.lower()
-    assert "skip_tests" not in commit, "the stub rehearsal must run the tests preflight like the paid prompt"
-    edited = {w["arguments"]["path"]: w["arguments"]["content"] for w in writes}
+    assert commit["paths"] == written and "commit_message" in commit
+    assert not any(key.startswith("skip_") for key in commit), "the stub rehearsal takes the full user path like the paid prompt"
+    edited = {w["arguments"]["path"]: w["arguments"]["content"] for w in writes if w["arguments"]["path"] in scenarios.SM1_CSS_PATHS}
     for path, text in edited.items():
         original = (REPO_ROOT / path).read_text(encoding="utf-8")
         assert scenarios.accent_value(text) == scenarios.SM1_NEW_ACCENT
@@ -781,6 +783,35 @@ def test_sm1_changes_both_stylesheets_and_keeps_the_mirror_parity():
     assert "--accent" in style_tokens and "--accent" in onboarding_tokens and len(set(style_tokens) & set(onboarding_tokens)) > 20
     lopsided = scenarios.css_with_accent(edited["web/style.css"], "#000000")
     assert scenarios.css_mirror_drift(lopsided, edited["web/onboarding.css"]) == {"--accent": ("#000000", scenarios.SM1_NEW_ACCENT)}
+
+
+def test_sm1_stub_bumps_the_release_carriers_through_the_sync_ssot(tmp_path):
+    """The stub's bump is a strictly-greater release version whose carriers come from
+    ``release_sync`` (no hand list) and pass the product's own release admission gate; the
+    acceptance's advisory-row and vision-evidence readers tell the real rows from the audited ones."""
+    from ouroboros.commit_admission import release_metadata_preflight
+    from ouroboros.tools.release_sync import CARRIER_SPAN_PATHS
+
+    writes = [s for s in scenarios.sm1_stub_script(REPO_ROOT)["agent"] if s.get("tool") == "write_file"]
+    carriers = {w["arguments"]["path"]: w["arguments"]["content"] for w in writes
+                if w["arguments"]["path"] not in scenarios.SM1_CSS_PATHS}
+    assert {"VERSION", "README.md"} <= set(carriers) <= CARRIER_SPAN_PATHS
+    seed = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    bumped = carriers["VERSION"].strip()
+    assert scenarios.version_is_bumped(seed, bumped) and f"| {bumped} |" in carriers["README.md"]
+    root = tmp_path / "carriers"
+    for rel in sorted(CARRIER_SPAN_PATHS):
+        if (REPO_ROOT / rel).is_file():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(carriers.get(rel) or (REPO_ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
+    assert release_metadata_preflight(root, scenarios.SM1_COMMIT_MESSAGE, ["VERSION"]) is None
+    assert scenarios.sm1_next_version("7.0.0-rc.14") == "7.0.0-rc.15" and scenarios.sm1_next_version("7.0.0") == "7.0.1"
+    assert not scenarios.version_is_bumped("7.0.0-rc.14", "7.0.0-rc.14") and not scenarios.version_is_bumped("7.0.0-rc.14", "7.0.0-rc.13")
+    assert scenarios.advisory_run_is_real({"status": "fresh"}) and scenarios.advisory_run_is_real({"status": "stale", "raw_result": "[]"})
+    assert not scenarios.advisory_run_is_real({"status": "bypassed", "bypass_reason": "skip_advisory_review"})
+    assert not scenarios.advisory_run_is_real({"status": "stale", "raw_result": "⚠️ ADVISORY_SKIPPED: prompt too large"})
+    rows = [{"tool": "vlm_query"}, {"tool": "browser_action", "args": {"action": "click"}}, {"tool": "read_file"}]
+    assert [r["tool"] for r in scenarios.vision_evidence_rows(rows)] == ["vlm_query"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1092,8 +1123,8 @@ def test_ui_client_prefers_the_suite_interface_when_it_has_this_surface(monkeypa
 @pytest.mark.serial
 def test_stub_sm1_end_to_end_on_a_real_isolated_server(tmp_path):
     """Real server, loopback stub model, no key: the commit lands through the review organ
-    (both stylesheets, through the same hermetic tests preflight as the paid prompt),
-    the durable rows and receipts exist, the
+    (both stylesheets plus the release-carrier bump, no skip flags, through the same hermetic
+    tests preflight as the paid prompt), the durable rows and receipts exist, the
     seed is a clean detached clone of this tree's HEAD and the manifest names the stub as
     the model."""
     if str(os.environ.get("OUROBOROS_E2E_DEEP") or "").strip().lower() != "mock":

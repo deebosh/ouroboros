@@ -1239,20 +1239,37 @@ devtool files).
 `python -m devtools.e2e_live.run_live_lanes` drives K isolated REAL servers
 (`--lanes`, default 4, at most 6, starts staggered 2–3 s apart), one
 owner-shaped scenario attempt per lane, from the scenario table in
-`scenarios.py`: SM1 (the `--accent` custom property changed in BOTH
-`web/style.css` and `web/onboarding.css` — the onboarding sheet is inlined
-standalone and mirrors the app tokens by value, `tests/test_web_typography_static.py`
-pins the parity — and landed as one commit through `commit_reviewed` under
-advanced runtime and blocking enforcement with the hermetic suite as the tests
-preflight — the `--stub` rehearsal runs that same suite, since
-`preflight_runner._preflight_env` scrubs every settings key
+`scenarios.py`: SM1 (the brand accent changed to a blue consistently with the
+design system — DESIGN.md §3: the one `--accent` value, its named roles and the
+accent alpha ladder — in BOTH `web/style.css` and `web/onboarding.css`, the
+onboarding sheet being inlined standalone and mirroring the app tokens by value
+with `tests/test_web_typography_static.py` pinning the parity; verified in the
+browser on a real consumer flow; and landed as one reviewed RELEASE through
+`preflight_review` → `commit_reviewed` under advanced runtime and blocking
+enforcement with no skip flags, the synchronized version carriers bumped in the
+same diff. The task is the realistic one an owner would give and lets the
+product's own policy shape the work, because the first paid run's narrower prompt
+— only `--accent`, no bump, the advisory preflight skipped — was refused by the
+commit gate three ways: the triad's version_bump item (BIBLE P9), the scope
+review's mixed blue/red palette against DESIGN §3, and the triad's
+development_compliance 2(i) with no vision-inspected UI evidence. The `--stub`
+rehearsal projects the bump offline through `release_sync.sync_release_metadata`
+plus the README history row and runs the same hermetic suite as its tests
+preflight, since `preflight_runner._preflight_env` scrubs every settings key
 `config.apply_settings_to_env` projects, so the loopback lane's
 `OPENAI_COMPATIBLE_BASE_URL` never reaches `tests/test_settings_effort.py`;
-acceptance is the S2 set, the parity of
-the two committed files, the typed refusal trail of every `commit_reviewed`/`preflight_review`
-call — ledger `block_reason`s, the `⚠️ CODE:` prefixes such as
-PREFLIGHT_BLOCKED / TESTS_PREFLIGHT_BLOCKED / SCOPE_REVIEW_BLOCKED, the task's
-terminal `reason_code` such as `budget_exhausted` or `deadline_local` — plus the
+acceptance is the S2 set, the parity of the two committed files' whole shared
+`:root` token set, a strictly-greater release VERSION whose carriers pass the
+release admission gate (`commit_admission.release_metadata_preflight`) read at
+the landed commit, a diff confined to the stylesheets, the carriers the
+`release_sync` SSOT names, `docs/DESIGN.md` and comment-only `web/**/*.css`
+companions, a REAL advisory ledger row rather than a skip/bypass row, the typed
+refusal trail of every `commit_reviewed`/`preflight_review` call — ledger
+`block_reason`s, the `⚠️ CODE:` prefixes such as PREFLIGHT_BLOCKED /
+TESTS_PREFLIGHT_BLOCKED / SCOPE_REVIEW_BLOCKED, the task's terminal
+`reason_code` such as `budget_exhausted` or `deadline_local` — the browser/vision
+tool rows recorded as a `vision_evidence_present` fact for the reviewers to judge,
+plus the
 computed style read by a browser from the COMMITTED CSS after a restart), SW1
 (the Swarm button arms `force_plan`; at least two children with causal lineage,
 the `swarm_fanout` receipt, the with-children cost rollup, no orphan process by
