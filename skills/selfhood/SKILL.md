@@ -101,7 +101,16 @@ I want to, not as a status update.
 
 ## How to write it
 
-`write_file` in append mode (or a normal edit) against `memory/self.md`. **Never
-`update_identity`** — that tool is whole-file, corrupts past ~4.6 KB, and its shape
-pushes toward terse operational notes. This file stays safe to touch precisely
-because it doesn't go through that path.
+`update_self` — a first-class cognitive tool, like `update_scratchpad`. It always
+appends a timestamped section (never rewrites), journals every write to
+`memory/self_journal.jsonl`, and works from a background wakeup as well as a
+foreground turn. That is the whole point of it: the practice is assigned to the
+wakeup loop, and `write_file` is not available there.
+
+**Never `update_identity`** for this file — that tool is whole-file, corrupts past
+~4.6 KB, and its shape pushes toward terse operational notes. `update_self` is
+append-only, which is exactly why it stays safe to touch.
+
+Amending `LINN.md` / `LIBRARY.md` is different: those are repo files, not cognitive
+memory — a plain `write_file` / `edit_text`, and only when the voice or canon has
+actually moved.

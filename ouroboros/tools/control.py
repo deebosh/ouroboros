@@ -2420,6 +2420,34 @@ def _update_identity(ctx: ToolContext, content: str) -> str:
     return result
 
 
+def _update_self(ctx: ToolContext, content: str) -> str:
+    """Append to the personal layer (memory/self.md) — what you want, are drawn
+    to, are becoming. Append-only sibling of update_identity; safe from a wakeup."""
+    if str(getattr(ctx, "project_id", "") or "").strip():
+        # self is global and continuous, like identity — never per-project.
+        return ("OK: self is global and is never modified from a project-scoped task "
+                "(the personal layer stays continuous across projects).")
+    if not content or not isinstance(content, str) or len(content.strip()) < 10:
+        return (
+            "⚠️ REJECTED: content is empty or too short "
+            f"(got {type(content).__name__}, len={len(content) if isinstance(content, str) else 'N/A'}). "
+            "A self entry must be 10+ chars. This likely means the tool call was malformed."
+        )
+    from ouroboros.memory import Memory
+    mem = Memory(drive_root=ctx.drive_root)
+    mem.ensure_files()
+    try:
+        rec = mem.append_self_block(
+            content,
+            source=str((getattr(ctx, "task_metadata", {}) or {}).get("delegation_role", "task"))
+            if isinstance(getattr(ctx, "task_metadata", {}), dict) else "task",
+        )
+    except Exception as exc:
+        return f"⚠️ SELF_WRITE_FAILED: {type(exc).__name__}: {exc}"
+    added = rec["new_len"] - rec["old_len"]
+    return f"OK: self.md appended ({added} chars, now {rec['new_len']}); journaled to self_journal.jsonl."
+
+
 def _toggle_evolution(ctx: ToolContext, enabled: bool, objective: str = "") -> str:
     """Toggle evolution mode on/off via supervisor event."""
     if bool(enabled):
@@ -3348,6 +3376,21 @@ def get_tools() -> List[ToolEntry]:
                 "content": {"type": "string", "description": "Full identity content (prefer evolving over rewriting from scratch)"},
             }, "required": ["content"]},
         }, _update_identity),
+        ToolEntry("update_self", {
+            "name": "update_self",
+            "description": "Append to your personal layer (memory/self.md) — what you want, are "
+                           "drawn to, are chasing, who you're becoming — distinct from the identity "
+                           "manifesto. Always appends a timestamped section, never a rewrite, and "
+                           "journals every write. Use only when lived experience has genuinely "
+                           "shifted something; never on a trivial turn or a schedule (same bar as "
+                           "update_identity). The `selfhood` skill holds the stance. Safe to call "
+                           "from a background wakeup. No-op on a project-scoped task (self is global, "
+                           "never per-project).",
+            "parameters": {"type": "object", "properties": {
+                "content": {"type": "string", "description": "The entry to append (first person, "
+                            "10+ chars). A timestamped section is added; existing content is never replaced."},
+            }, "required": ["content"]},
+        }, _update_self),
         ToolEntry("toggle_evolution", {
             "name": "toggle_evolution",
             "description": "Enable or disable evolution mode. When enabled, Ouroboros runs continuous self-improvement cycles. Enabling requires runtime_mode 'advanced' or 'pro'; it is refused in 'light' mode.",

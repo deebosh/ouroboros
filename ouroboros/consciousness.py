@@ -1313,7 +1313,7 @@ class BackgroundConsciousness:
 
     _BG_TOOL_WHITELIST = frozenset({
         "send_user_message", "update_scratchpad",
-        "update_identity", "set_next_wakeup",
+        "update_identity", "update_self", "set_next_wakeup",
         "knowledge_read", "knowledge_write", "knowledge_list",
         "web_search", "read_file", "list_files", "query_code",
         "chat_history", "recent_tasks",

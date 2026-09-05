@@ -145,6 +145,7 @@ class Memory:
     def world_path(self) -> pathlib.Path: return self._memory_path("WORLD.md")
     def journal_path(self) -> pathlib.Path: return self._memory_path("scratchpad_journal.jsonl")
     def identity_journal_path(self) -> pathlib.Path: return self._memory_path("identity_journal.jsonl")
+    def self_journal_path(self) -> pathlib.Path: return self._memory_path("self_journal.jsonl")
     def logs_path(self, name: str) -> pathlib.Path: return (self.drive_root / "logs" / name).resolve()
 
     @staticmethod
@@ -569,13 +570,47 @@ class Memory:
 
     def load_self(self) -> str:
         """The personal layer: what Lynn wants and cares about, distinct from the
-        identity manifesto. Written via write_file (append), never update_identity."""
+        identity manifesto. Appended via update_self (append-only, journaled); never
+        update_identity (whole-file, corrupts past ~4.6 KB)."""
         path = self.self_path()
         if path.exists():
             return read_text(path)
         default = self._default_self()
         write_text(path, default)
         return default
+
+    def append_self_block(
+        self, content: str, source: str = "wakeup", metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Append a timestamped section to memory/self.md and journal it.
+
+        Append-only: existing content is never replaced (unlike update_identity).
+        No FIFO cap — self.md is meant to compound; oversize is surfaced by the
+        context section budget, not by eviction. Raises if the journal append
+        fails, so there is never a file write without a durable record."""
+        text = content.strip()
+        if not text:
+            raise ValueError("append_self_block: empty content")
+        path = self.self_path()
+        old = read_text(path) if path.exists() else self._default_self()
+        ts = utc_now_iso()
+        appended = f"\n\n## {ts}\n\n{text}\n"
+        new = old + appended
+        write_text(path, new)
+        rec: Dict[str, Any] = {
+            "ts": ts,
+            "type": "self_appended",
+            "source": source,
+            "old_len": len(old),
+            "new_len": len(new),
+            "sha256": hashlib.sha256(new.encode("utf-8")).hexdigest(),
+            "appended_preview": short(text, 500),
+        }
+        if metadata:
+            rec["metadata"] = metadata
+        if not append_jsonl(self.self_journal_path(), rec):
+            raise RuntimeError("append_self_block: journal write failed; self.md write not recorded")
+        return rec
 
     def load_world_profile(self) -> str:
         p = self.world_path()
@@ -592,7 +627,7 @@ class Memory:
                 generate_world_profile(str(self.world_path()))
             except Exception:
                 log.debug("Failed to generate WORLD.md during memory bootstrap", exc_info=True)
-        for path in (self.journal_path(), self.identity_journal_path()):
+        for path in (self.journal_path(), self.identity_journal_path(), self.self_journal_path()):
             if not path.exists():
                 write_text(path, "")
 

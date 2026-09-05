@@ -639,7 +639,8 @@ A pre-existing cross-platform residual remains: shutdown admission is not atomic
 │   ├── claudexor/ ← Ouroboros-owned Claudexor home (`CLAUDEXOR_CONFIG_DIR`): daemon descriptor/token, credential profiles, runs, `ouroboros-owned.json`, `daemon.log` — never the operator's `~/.claudexor`
 │   ├── memory/
 │   │   ├── identity.md     ← Agent's self-description (persistent)
-│   │   ├── self.md         ← Personal layer: what Lynn wants and is drawn to, independent of any task. Tier-0 (always full in context). Tended via `write_file` append — never `update_identity` — at the same experience bar as identity.md; the `selfhood` skill holds the stance. Departs from the given character docs `LINN.md` / `LIBRARY.md` (repo root, `read_file(root='system_repo')`) and records where lived experience confirms or outgrows them. Distinct from identity.md (the manifesto) and never a changelog.
+│   │   ├── self.md         ← Personal layer: what Lynn wants and is drawn to, independent of any task. Tier-0 (always full in context). Tended via `update_self` (append-only, journaled to `self_journal.jsonl`, available from a background wakeup) — never `update_identity` — at the same experience bar as identity.md; the `selfhood` skill holds the stance. Departs from the given character docs `LINN.md` / `LIBRARY.md` (repo root, `read_file(root='system_repo')`) and records where lived experience confirms or outgrows them. Distinct from identity.md (the manifesto) and never a changelog.
+│   │   ├── self_journal.jsonl ← Append-only journal of every update_self write (ts, old/new len, sha256, preview)
 │   │   ├── scratchpad.md   ← Working memory (auto-generated from scratchpad_blocks.json)
 │   │   ├── scratchpad_blocks.json ← Append-block scratchpad (FIFO, max 10)
 │   │   ├── dialogue_blocks.json ← Block-wise consolidated chat history

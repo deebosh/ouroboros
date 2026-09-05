@@ -1,9 +1,9 @@
 """The `memory/self.md` personal layer and the `selfhood` instruction skill.
 
 `self.md` is Lynn's space for what she wants and is drawn to, distinct from the
-identity manifesto. It is tier-0 (always in context), tended via write_file append
-(never the corruption-prone update_identity), and its stance lives in a reviewed
-instruction skill.
+identity manifesto. It is tier-0 (always in context), tended via the append-only
+`update_self` tool (never the corruption-prone whole-file `update_identity`), and
+its stance lives in a reviewed instruction skill.
 """
 
 from pathlib import Path
@@ -75,7 +75,9 @@ def test_self_section_present_in_stable_memory(tmp_path):
     assert "## Self (from `memory/self.md`" in combined
     assert "thinks in dataflow" in combined
     assert "do not re-read" in combined
-    assert "never update_identity" in combined
+    # the write mechanism: the dedicated append tool, never the whole-file identity tool
+    assert "update_self" in combined
+    assert "never `update_identity`" in combined
     # the section names the given character as the departure point
     assert "LINN.md" in combined and "LIBRARY.md" in combined
     assert "root='system_repo'" in combined
@@ -138,6 +140,9 @@ def test_selfhood_body_states_the_stance_not_a_schedule():
     assert "never `update_identity`" in body
     assert "not because time passed" in body
     assert "not a procedure to run" in body
+    # the write mechanism is the dedicated append tool, and it explains why
+    assert "update_self" in body
+    assert "append" in body
     # the stance names the given character as the starting point, not a blank slate
     assert "where i start from" in body
     assert "linn.md" in body and "library.md" in body
