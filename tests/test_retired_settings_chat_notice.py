@@ -6,8 +6,8 @@ supervisor boot now tells the OWNER once, in their chat, from the sets that read
 recorded, with the same sentence, deduplicated durably per retired-key set in
 ``state.json``. These tests pin: emitted once for a document carrying a retired key,
 not emitted without one, not repeated on a second boot, not sent (and not marked)
-before an owner chat is bound, the active panel source named truthfully, and the
-boot wiring itself.
+before an owner chat is bound, the active panel source named truthfully in each of its three
+states (absent / authored / invalid), and the boot wiring itself.
 """
 
 from __future__ import annotations
@@ -136,17 +136,57 @@ AUTHORED_SLOTS = (
 )
 
 
-def test_a_malformed_reviewer_slots_setting_is_not_named_as_the_active_panel(boot_state, sent):
-    """Non-empty is not authored: text the strict parser rejects never runs, so the notice
-    must say the shipped default panel is active (the codex M3 finding)."""
-    import ouroboros.config as cfg
-    from ouroboros import server_maintenance
+MALFORMED_SLOTS = '{"triad": [{"model": "x/y"}]}'  # a row without slot_id/route: rejected
+
+
+def test_a_malformed_reviewer_slots_setting_names_no_panel_and_the_parse_error(boot_state, sent, caplog):
+    """Non-empty is not authored, and malformed is not absent either: the loader
+    (``load_reviewer_slot_config``) RAISES on text the strict parser rejects, so no panel
+    serves — commit review blocks, plan and skill review refuse — until the owner repairs
+    the setting. The notice must say exactly that, with the row-precise parse error, in the
+    chat and in the read-seam log line; it must claim neither the authored panel nor the
+    shipped default (astra M4 finding 8: the earlier pin asserted "SHIPPED default" here)."""
+    import logging
+
+    from ouroboros.reviewer_slot_config import parse_reviewer_slots
+
+    with pytest.raises(ValueError) as err:
+        parse_reviewer_slots(MALFORMED_SLOTS)
+    parse_error = str(err.value)
 
     _bind_owner(1)
-    doc = dict(RETIRED_DOC, OUROBOROS_REVIEWER_SLOTS='{"triad": [{"model": "x/y"}]}')
-    loaded = cfg.normalize_settings_raw(doc)
+    doc = dict(RETIRED_DOC, OUROBOROS_REVIEWER_SLOTS=MALFORMED_SLOTS)
+    with caplog.at_level(logging.WARNING, logger="ouroboros.config"):
+        loaded = cfg.normalize_settings_raw(doc)
     server_maintenance._startup_retired_settings_notice(loaded)
-    assert len(sent) == 1 and "SHIPPED default" in sent[0][1] and "OUROBOROS_REVIEWER_SLOTS" in sent[0][1]
+
+    assert len(sent) == 1
+    text = sent[0][1]
+    assert "OUROBOROS_REVIEWER_SLOTS" in text and "NO reviewer panel" in text
+    assert "refused" in text and "repaired" in text
+    assert parse_error in text, "the row-precise parse error is what the owner has to fix"
+    assert "shipped" not in text.lower() and "authored in that setting" not in text
+    log_lines = [r.getMessage() for r in caplog.records if "retired" in r.getMessage()]
+    assert len(log_lines) == 1 and "NO reviewer panel" in log_lines[0] and parse_error in log_lines[0]
+
+
+@pytest.mark.parametrize("slots_state,expected,forbidden", [
+    (("absent", ""), "SHIPPED default", ("authored in that setting", "NO reviewer panel")),
+    (("authored", ""), "authored in that setting", ("SHIPPED", "NO reviewer panel")),
+    (("invalid", "OUROBOROS_REVIEWER_SLOTS: triad[0] is not an object"),
+     "NO reviewer panel", ("SHIPPED", "authored in that setting")),
+], ids=["absent", "authored", "invalid"])
+def test_the_notice_sentence_has_three_honest_panel_states(slots_state, expected, forbidden):
+    """The sentence itself, per state the reviewer-slot seam derives: absent -> the shipped
+    default runs; authored -> that panel runs; invalid -> no panel, the parse error named."""
+    from ouroboros.settings_defaults import retired_setting_keys_notice
+
+    text = retired_setting_keys_notice(("OUROBOROS_REVIEW_MODELS",), reviewer_slots=slots_state)
+    assert expected in text, text
+    for phrase in forbidden:
+        assert phrase not in text, (phrase, text)
+    if slots_state[0] == "invalid":
+        assert slots_state[1] in text
 
 def test_an_authored_reviewer_slots_setting_is_named_as_the_active_panel(boot_state, sent, caplog):
     """The notice names what runs NOW: an owner who already authored the structured

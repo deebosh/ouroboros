@@ -23,6 +23,7 @@ from ouroboros.reviewer_slot_config import (
     load_reviewer_slot_config,
     parse_reviewer_slots,
     project_reviewer_slots_into_env,
+    reviewer_slot_config_error,
     reviewer_slot_save_check,
 )
 
@@ -288,6 +289,24 @@ def test_config_error_reports_row_precise_text(monkeypatch):
         json.dumps({"triad": [], "scope": [], "advisory": None}),
     )
     assert "triad needs at least one slot" in reviewer_slot_config_error()
+
+
+def test_authored_state_is_three_valued_and_invalid_means_the_loader_refuses(monkeypatch):
+    """``authored_reviewer_slots_state`` is what the retired-keys notice reads: absent and
+    invalid are DIFFERENT states, because on malformed text the loader raises instead of
+    serving the shipped default (the fact the notice sentence has to state). The facade
+    ``reviewer_slot_config_error`` is the env-read projection of the same state."""
+    from ouroboros.reviewer_slot_config import authored_reviewer_slots_state
+
+    assert authored_reviewer_slots_state("") == ("absent", "")
+    assert authored_reviewer_slots_state("   ") == ("absent", "")
+    assert authored_reviewer_slots_state(json.dumps(_STRUCTURED)) == ("authored", "")
+    state, err = authored_reviewer_slots_state("{broken")
+    assert state == "invalid" and "not valid JSON" in err
+    monkeypatch.setenv(REVIEWER_SLOTS_ENV, "{broken")
+    assert reviewer_slot_config_error() == err
+    with pytest.raises(ValueError, match="not valid JSON"):
+        load_reviewer_slot_config()  # no default panel serves on malformed text
 
 
 def test_api_rows_keep_the_existing_provider_tagged_spelling():

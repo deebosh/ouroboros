@@ -406,25 +406,34 @@ RETIRED_SETTING_SUCCESSORS: dict[str, tuple[str, ...]] = {
 }
 
 
-def retired_setting_keys_notice(dropped: tuple[str, ...], *, reviewer_slots_authored: bool) -> str:
+def retired_setting_keys_notice(dropped: tuple[str, ...], *, reviewer_slots: tuple[str, str]) -> str:
     """THE sentence every surface says about retired keys found in the owner's document.
 
     Read by the settings read seam (``config.normalize_settings_raw``, the once-per-process
     log line) and by the boot-time owner chat notice (``server_maintenance``), so the log
     and the chat never describe the same loss differently. It names every dropped key,
     says they are NOT honored, and states what replaced them from the two tables above;
-    for the reviewer comma-lists it names the panel that is ACTIVE now — the structured
-    ``OUROBOROS_REVIEWER_SLOTS`` the owner authored, or the shipped default panel until
-    they do — because "which reviewers run" is the fact the owner has to see.
+    for the reviewer comma-lists it names what runs NOW from ``reviewer_slots`` — the
+    ``(state, parse_error)`` pair ``reviewer_slot_config.authored_reviewer_slots_state``
+    derives from the document's ``OUROBOROS_REVIEWER_SLOTS``: the panel authored there,
+    the shipped default panel while it is absent, or — malformed — NO panel, because the
+    loader rejects it and every review surface refuses with that parse error until the
+    owner repairs the setting. "Which reviewers run" is the fact the owner has to see, and
+    a default panel that is not serving must never be announced.
     """
     comma = [k for k in dropped if k in RETIRED_COMMA_LIST_SETTING_KEYS]
     clauses = []
     if comma:
-        panel = (
-            "the reviewer panel authored in that setting"
-            if reviewer_slots_authored else
-            "the SHIPPED default reviewer panel until that setting is authored (Settings page)"
-        )
+        state, parse_error = reviewer_slots
+        if state == "authored":
+            panel = "the reviewer panel authored in that setting"
+        elif state == "invalid":
+            panel = (
+                "NO reviewer panel: that setting is malformed, so reviews are refused "
+                "(commit review blocks; under Advisory enforcement it warns and commits "
+                "unreviewed) until it is repaired on the Settings page — %s" % parse_error)
+        else:
+            panel = "the SHIPPED default reviewer panel until that setting is authored (Settings page)"
         clauses.append(
             "the reviewer comma-lists (%s) are replaced by the structured "
             "OUROBOROS_REVIEWER_SLOTS, so this install now runs %s" % (", ".join(comma), panel))

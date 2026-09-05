@@ -761,10 +761,10 @@ def normalize_settings_raw(raw: dict) -> dict:
         loaded.pop(_retired, None)
     if dropped and dropped not in _RETIREMENT_NOTICE_SEEN:
         _RETIREMENT_NOTICE_SEEN.add(dropped)
-        from ouroboros.reviewer_slot_config import authored_reviewer_slots_active
+        from ouroboros.reviewer_slot_config import authored_reviewer_slots_state
 
         log.warning("settings: %s", retired_setting_keys_notice(
-            dropped, reviewer_slots_authored=authored_reviewer_slots_active(
+            dropped, reviewer_slots=authored_reviewer_slots_state(
                 str(loaded.get("OUROBOROS_REVIEWER_SLOTS") or ""))))
     migrate_legacy_slot_keys(loaded)
     return strip_masked_secrets(loaded, known_setting_keys=SETTINGS_DEFAULTS)

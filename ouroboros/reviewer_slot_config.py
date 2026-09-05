@@ -562,19 +562,26 @@ def parse_reviewer_slots(raw: str) -> ReviewerSlotConfig:
 
 
 
-def authored_reviewer_slots_active(raw: str) -> bool:
-    """True only when the owner's structured setting is present AND the strict parser
-    accepts it — that is the panel that actually runs. Malformed authored text is rejected
-    at read time and the shipped default serves instead, so "authored" alone would let a
-    notice claim a panel that never ran."""
+def authored_reviewer_slots_state(raw: str) -> Tuple[str, str]:
+    """THE three states of the owner's structured setting, as ``(state, parse_error)``.
+
+    ``("absent", "")`` — no structured value: the loader serves the shipped default
+    panel. ``("authored", "")`` — the strict parser accepts the text: that panel runs.
+    ``("invalid", <row-precise error>)`` — the text is malformed: the loader RAISES on it
+    (``load_reviewer_slot_config``), so NO panel serves — commit review blocks as
+    ``infra_failure`` (advisory enforcement merely warns and commits unreviewed), plan
+    and skill review refuse through ``reviewer_slot_config_error`` — until the owner
+    repairs the setting. The retired-keys notice reads this so it never announces a
+    default panel that is not serving.
+    """
     text = str(raw or "").strip()
     if not text:
-        return False
+        return "absent", ""
     try:
         parse_reviewer_slots(text)
-    except ValueError:
-        return False
-    return True
+    except ValueError as exc:
+        return "invalid", str(exc)
+    return "authored", ""
 
 # ---------------------------------------------------------------------------
 # Shipped default panel (ABI 7.0: served when no structured value is saved).
@@ -634,14 +641,7 @@ def reviewer_slot_config_error() -> str:
     the structured raw value — an install without it runs the shipped default
     panel and always returns ''. No caching: the check re-parses so a
     hot-reloaded fix is seen immediately."""
-    raw = structured_reviewer_slots_raw()
-    if not raw:
-        return ""
-    try:
-        parse_reviewer_slots(raw)
-    except ValueError as exc:
-        return str(exc)
-    return ""
+    return authored_reviewer_slots_state(structured_reviewer_slots_raw())[1]
 
 
 # ---------------------------------------------------------------------------
@@ -1140,6 +1140,7 @@ __all__ = [
     "load_reviewer_slot_config",
     "parse_reviewer_slots",
     "reviewer_slot_config_error",
+    "authored_reviewer_slots_state",
     "project_reviewer_slots_into_env",
     "record_reviewer_slot_executions",
     "reviewer_slot_last_executions",

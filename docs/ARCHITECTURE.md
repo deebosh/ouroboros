@@ -1696,8 +1696,10 @@ Add the field to the active frozen owner — `ouroboros/contracts/` for the pack
     install carrying only comma keys comes up on the shipped default panel. The owner is TOLD: the read seam
     logs the dropped keys once per process, and the first supervisor boot with an owner chat bound posts one
     system row there (`server_maintenance._startup_retired_settings_notice`, the same sentence —
-    `settings_defaults.retired_setting_keys_notice` — naming the keys as NOT honored and the panel that is
-    active now), deduplicated durably per retired-key set in `state.json:retired_settings_notified`. A
+    `settings_defaults.retired_setting_keys_notice` — naming the keys as NOT honored and, from
+    `reviewer_slot_config.authored_reviewer_slots_state`, what runs now: the authored panel, the shipped default
+    while the structured key is absent, or NO panel with the parse error while it is malformed and the loader
+    rejects it), deduplicated durably per retired-key set in `state.json:retired_settings_notified`. A
     comma-spelled ENV projection survives as the derived runtime plane, never as configuration.
   - *Plugin ABI.* `PLUGIN_API_VERSION` is `"2.0"` with manifest negotiation checked before plugin import or
     out-of-process cataloging; an absent field means legacy `1.3` by construction, and a hash-bound PASS is
