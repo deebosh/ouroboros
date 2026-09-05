@@ -58,6 +58,16 @@ SW1_OBJECTIVE = (
 SW1_ROSTER_ID = "scout"
 
 SK1_SKILL = "e2e_live_probe"
+# The per-task budget knob of every root the stand submits itself (``LaneContext.submit``), the seam
+# ProgramBench uses: ``metadata.budget_profile`` -> ``task_contract.budget_profile`` (``build_task_contract``).
+# The product's in-task ceiling is min(cost_hard_stop_pct of the GLOBAL remaining at task start, per-task
+# cap - planning margin) and in a lane the global remaining IS the lane's TOTAL_BUDGET = its reservation,
+# so the default 50% halved every stand root's ceiling (rc.14: SM1_a3 'budget_exhausted' at $10.21 of $20).
+# 100 = no halving; the per-task fence and the lane budget stay the bounds. Roots the stand does NOT
+# submit keep the product default: the --self-mod evolution root (its task carries only the transaction;
+# no seam) and SW1's root on the UI path (``ui_probe.send_chat``: a WS chat frame without metadata —
+# acceptable, SW1 spends ~$8 against a 50% ceiling of >= $25 at per-task $50).
+STAND_BUDGET_PROFILE = {"cost_hard_stop_pct": 100}
 # The web owner's Main chat. The plugin below hard-binds every relayed line to it: the chat is
 # never chosen by the caller, so the grant covers exactly one owner-facing destination.
 SK1_OWNER_CHAT_ID = 1
@@ -270,7 +280,8 @@ class LaneContext:
         body = {
             "description": description, "memory_mode": "forked", "actor_id": "e2e_live",
             "source": "e2e_live", "timeout_sec": int(self.task_timeout),
-            "metadata": {"source": "e2e_live", "delegation_role": "root", **(metadata or {})},
+            "metadata": {"source": "e2e_live", "delegation_role": "root", "budget_profile": dict(STAND_BUDGET_PROFILE),
+                         **(metadata or {})},
         }
         created = _api(self.server.base_url, "POST", "/api/tasks", body, timeout=60)
         task_id = str(created.get("task_id") or "")

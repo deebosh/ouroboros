@@ -6,6 +6,7 @@ rehearsal of SM1 and carries the same three gates as the system_e2e lane.
 """
 from __future__ import annotations
 
+import collections
 import dataclasses
 import json
 import os
@@ -296,10 +297,9 @@ def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_ne
     grows, so a waiter can end refused with its wait recorded. A lane's TOTAL_BUDGET is its OWN
     reservation, so the ceilings in flight are disjoint and settled spend + in-flight ceilings
     never exceeds the cap (the first draft handed each lane cap - others' reservations). The
-    reservation unit is HARD_STOP_INVERSE (2) x per-task: $4 per task reserves $8 per root."""
+    reservation unit is per-task x root tasks: $8 per task reserves $8 per root, $16 for SK1's two."""
     spend = {}
-    budget = run_live_lanes.RunBudget(20.0, 4.0, reader=lambda root: (spend.get(root.name, 0.0), 0))
-    assert run_live_lanes.HARD_STOP_INVERSE * 4.0 == 8.0
+    budget = run_live_lanes.RunBudget(20.0, 8.0, reader=lambda root: (spend.get(root.name, 0.0), 0))
     assert budget.reservation(1) == 8.0 and budget.reservation(2) == 16.0 and budget.reservation(0) == 8.0
     ok, facts = budget.admit(("SM1", 1), 1, tmp_path / "a")
     assert ok and facts == {"cap_usd": 20.0, "spent_usd": 0.0, "reserved_usd": 0.0, "reservation_usd": 8.0,
@@ -337,7 +337,7 @@ def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_ne
     assert snap["reservation_rule"] == run_live_lanes.RESERVATION_RULE
     # The ceiling ignores what OTHER lanes spend (it is this lane's reservation), and the floor
     # keeps it positive (the runtime reads a non-positive TOTAL_BUDGET as NO cap).
-    tiny = run_live_lanes.RunBudget(10.0, 4.0, reader=lambda root: (20.0, 0))
+    tiny = run_live_lanes.RunBudget(10.0, 8.0, reader=lambda root: (20.0, 0))
     assert tiny.admit(("SM1", 1), 1, tmp_path / "x")[0]
     assert tiny.ceiling(("SM1", 1)) == 8.0
     assert tiny.ceiling(("never", 9)) == run_live_lanes.LANE_BUDGET_FLOOR_USD   # not admitted: the floor, not the cap
@@ -358,8 +358,8 @@ def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_ne
     below = run_live_lanes.RunBudget(0.005, 0.001, reader=lambda root: (0.0, 0))
     assert not below.admit(("SM1", 1), 1, tmp_path / "z")[0]     # the floored reservation exceeds the cap: refused
     # Fractional reservations are never rounded upward (round(0.01006, 4) would hand out 0.0101):
-    # two exact 2 x 0.00503 reservations fill a 0.02012 cap and each lane receives exactly 0.01006.
-    frac = run_live_lanes.RunBudget(0.02012, 0.00503, reader=lambda root: (0.0, 0))
+    # two exact 0.01006 reservations fill a 0.02012 cap and each lane receives exactly 0.01006.
+    frac = run_live_lanes.RunBudget(0.02012, 0.01006, reader=lambda root: (0.0, 0))
     assert frac.admit(("SM1", 1), 1, tmp_path / "f1")[0] and frac.admit(("SM1", 2), 1, tmp_path / "f2")[0]
     assert frac.ceiling(("SM1", 1)) == 0.01006 and frac.ceiling(("SM1", 2)) == 0.01006
     assert frac.ceiling(("SM1", 1)) + frac.ceiling(("SM1", 2)) <= 0.02012
@@ -371,26 +371,26 @@ def test_run_budget_waits_on_in_flight_reservations_and_refuses_only_what_can_ne
     assert not third.is_alive() and box["r"][0]
 
 
-def test_reservation_is_the_inverse_hard_stop_times_per_task_and_is_the_lane_total_budget(tmp_path, monkeypatch):
-    """EQUALITY pins of the rc.14 finding: the product's in-task ceiling is min(cost_hard_stop_pct
-    of the GLOBAL remaining at task start, per-task cap - margin) and in a lane the global
-    remaining IS the lane budget, so a 1x reservation halved every root task's ceiling (SM1_a3
-    'budget_exhausted' at $10.21 of $20); with --self-mod the evolution cycle is a second root task
-    under the same fence. The factor is 100 / the product's default (imported, not copied); for
-    per-task $20 and one root the reservation is $40 and that exact number reaches the lane's
-    settings file as TOTAL_BUDGET through ``run_lane`` (never the template's run-wide cap)."""
-    from ouroboros import task_pacing
+def test_reservation_counts_roots_plus_the_evolution_root_and_is_the_lane_total_budget(tmp_path, monkeypatch):
+    """EQUALITY pins of the rc.14/rc.15 finding: the reservation is per-task x root tasks, +1 with
+    --self-mod (the evolution cycle starts at t=0 next to the scenario task and shares the lane fence:
+    SM1_a1 task $3.84 + evolution $15.25 of $20 — a fact of root COUNT); the 2x factor and its product
+    import are gone, the in-task halving it covered is switched off by ``STAND_BUDGET_PROFILE``. Per-task
+    $20 and one root reserve $20 ($40 with --self-mod, $60 for SK1 + evolution) and that exact number
+    reaches the lane's settings file as TOTAL_BUDGET through ``run_lane`` (never the run-wide cap)."""
     _short_tmp(monkeypatch)
-    assert run_live_lanes.HARD_STOP_INVERSE == 100 / task_pacing._DEFAULT_COST_HARD_STOP_PCT == 2.0
     rule = run_live_lanes.RESERVATION_RULE
-    assert rule.startswith("max(0.01, 2 x per_task_usd x root_tasks)") and "cost_hard_stop_pct (50%)" in rule
-    assert "global remaining IS the lane budget" in rule and "--self-mod" in rule and "second root task" in rule
+    assert not hasattr(run_live_lanes, "HARD_STOP_INVERSE") and rule == run_live_lanes.RunBudget(1, 1).snapshot()["reservation_rule"]
+    assert rule.startswith("max(0.01, per_task_usd x (root_tasks + 1 if --self-mod else root_tasks))")
+    assert "cost_hard_stop_pct=100" in rule and "evolution cycle as another root" in rule
     budget = run_live_lanes.RunBudget(100.0, 20.0, reader=lambda root: (0.0, 0))
-    assert budget.reservation(1) == 40.0 and budget.reservation(2) == 80.0
+    assert budget.reservation(1) == 20.0 and budget.reservation(2) == 40.0 and not budget.self_mod
+    evolving = run_live_lanes.RunBudget(100.0, 20.0, reader=lambda root: (0.0, 0), self_mod=True)
+    assert evolving.reservation(1) == 40.0 and evolving.reservation(2) == 60.0 and evolving.self_mod
     seed = _git_seed(tmp_path)
     out, job = tmp_path / "out", ("SM1", 1)
     ok, facts = budget.admit(job, 1, out / "lanes" / "SM1_a1" / "data")
-    assert ok and facts["reservation_usd"] == 40.0 and budget.ceiling(job) == 40.0
+    assert ok and facts["reservation_usd"] == 20.0 and budget.ceiling(job) == 20.0
 
     class _NoServer:                                    # the real path up to the written settings, then stop
         def __init__(self, *_a, **_k) -> None:
@@ -407,11 +407,183 @@ def test_reservation_is_the_inverse_hard_stop_times_per_task_and_is_the_lane_tot
     row = run_live_lanes.run_lane(job, args, out, template, run_live_lanes.Stagger(2.0), {}, seed, budget,
                                   key=FAKE_KEY, seed_sha=run_live_lanes.head_sha(seed))
     applied = json.loads((out / "lanes" / "SM1_a1" / "data" / "settings.json").read_text(encoding="utf-8"))
-    assert applied["TOTAL_BUDGET"] == 40.0 == budget.ceiling(job) == budget.reservation(1)
+    assert applied["TOTAL_BUDGET"] == 20.0 == budget.ceiling(job) == budget.reservation(1)
     assert applied["OUROBOROS_PER_TASK_COST_USD"] == 20.0 and applied["OPENROUTER_API_KEY"] == FAKE_KEY
-    assert row["budget"] == {"reservation_usd": 40.0, "lane_total_budget_usd": 40.0, "per_task_usd": 20.0,
+    assert row["budget"] == {"reservation_usd": 20.0, "lane_total_budget_usd": 20.0, "per_task_usd": 20.0,
                              "spent_usd": 0.0, "unknown_cost_rows": 0}
     assert row["status"] == "infra_error" and row["refusal"]["type"] == "RuntimeError"
+
+
+def test_submit_projects_the_stand_budget_profile_into_every_stand_root(monkeypatch):
+    """The stand's own roots carry ``metadata.budget_profile.cost_hard_stop_pct=100`` (the ProgramBench
+    seam), in the exact shape ``normalize_budget_profile`` accepts: the product then resolves the in-task
+    ceiling to the per-task cap minus the planning margin instead of half the lane budget (per-task $50
+    in a $50 lane: $47, not $25). Scenario metadata (SW1's force_plan) rides alongside."""
+    from ouroboros.contracts.task_contract import normalize_budget_profile
+    from ouroboros.task_pacing import COST_CEILING_ACTIVE, resolve_cost_ceiling
+    bodies: list = []
+    monkeypatch.setattr(scenarios, "_api", lambda base, method, path, payload=None, timeout=0:
+                        bodies.append((method, path, payload)) or {"task_id": "t-1"})
+    assert _ctx().submit("do it", metadata={"force_plan": True, "force_plan_source": "swarm"}) == "t-1"
+    (method, path, body), = bodies
+    assert (method, path) == ("POST", "/api/tasks") and body["timeout_sec"] == 1
+    assert body["metadata"] == {"source": "e2e_live", "delegation_role": "root", "budget_profile": {"cost_hard_stop_pct": 100},
+                                "force_plan": True, "force_plan_source": "swarm"} and scenarios.STAND_BUDGET_PROFILE == {"cost_hard_stop_pct": 100}
+    profile = normalize_budget_profile(body["metadata"]["budget_profile"])
+    assert profile["cost_hard_stop_pct"] == 100
+    projected = resolve_cost_ceiling(50.0, profile, root_cap_usd=50.0)
+    default = resolve_cost_ceiling(50.0, normalize_budget_profile(None), root_cap_usd=50.0)
+    assert projected.state == default.state == COST_CEILING_ACTIVE
+    assert projected.ceiling_usd == 47.0 and default.ceiling_usd == 25.0
+
+
+def test_budget_preflight_refuses_reservations_that_can_never_all_be_admitted(tmp_path, monkeypatch):
+    """The rc.15 plan under the 2x rule (cap 200, SK1 reserving the whole cap, attempts 3) would have burned
+    SM1/SW1 and refused every SK1 attempt by construction. The preflight refuses BEFORE any spend a
+    reservation above the cap, or equal to it with attempts >= 2 (the second can never be admitted after
+    any spend), in the credit preflight's typed shape, before the key, the seed or a lane; no override."""
+    def rows(budget, attempts, ids=("SM1", "SW1", "SK1")):
+        pre = run_live_lanes.budget_preflight(budget, list(ids), attempts)
+        return ({r["scenario"]: r["reservation_usd"] for r in pre["scenarios"]}, pre["worst_case_usd"], pre["unreachable"])
+
+    reader = lambda root: (0.0, 0)   # noqa: E731 - a stub reader
+    assert rows(run_live_lanes.RunBudget(200.0, 50.0, reader, self_mod=True), 3) == ({"SM1": 100.0, "SW1": 100.0, "SK1": 150.0}, 1050.0, [])
+    assert rows(run_live_lanes.RunBudget(100.0, 50.0, reader, self_mod=True), 1) == ({"SM1": 100.0, "SW1": 100.0, "SK1": 150.0}, 350.0, ["SK1"])
+    at_cap = run_live_lanes.RunBudget(150.0, 50.0, reader, self_mod=True)   # SK1 == cap: one attempt fits at $0, never a second
+    assert rows(at_cap, 1)[2] == [] and rows(at_cap, 2)[2] == ["SK1"]
+    assert rows(run_live_lanes.RunBudget(200.0, 100.0, reader), 3)[2] == ["SK1"]                 # the shipped 2x rule's SK1 = 200 of 200
+    pre = run_live_lanes.budget_preflight(run_live_lanes.RunBudget(200.0, 50.0, reader), ["SK1"], 2)
+    assert pre == {"cap_usd": 200.0, "per_task_usd": 50.0, "self_mod": False, "reservation_rule": run_live_lanes.RESERVATION_RULE,
+                   "scenarios": [{"scenario": "SK1", "root_tasks": 2, "reservation_usd": 100.0, "attempts": 2,
+                                  "worst_case_usd": 200.0, "unreachable": False}], "worst_case_usd": 200.0, "unreachable": []}
+    out, manifest = _fake_run(tmp_path, monkeypatch, ["--total-budget", "100", "--per-task-usd", "50", "--self-mod",
+                                                      "--scenarios", "SM1,SW1,SK1"],
+                              lane=lambda *a, **k: pytest.fail("a lane started after a budget refusal"), expect_rc=3)
+    refusal = manifest["extra"]["refusal"]
+    assert refusal["stage"] == "budget_preflight" and refusal["reason"] == "reservation_unreachable"
+    assert refusal["unreachable"] == ["SK1"] and refusal["cap_usd"] == 100.0 and refusal["self_mod"] is True
+    assert manifest["extra"]["budget_preflight"]["unreachable"] == ["SK1"] and manifest["extra"]["exit_code"] == 3
+    assert "credential_fingerprint" not in manifest["extra"] and not (out / "seed").exists() and not (out / "lanes").exists()
+    assert manifest["requested_task_ids"] == ["SM1_a1", "SW1_a1", "SK1_a1"]   # SM1/SW1 = $100 = cap: one attempt fits
+
+
+def test_jobs_are_dispatched_largest_reservation_first(tmp_path, monkeypatch):
+    """SK1 (two roots) asks before SM1 and SW1 (stable among equals): a reservation that only fits next to
+    little spend must not be last (rc.15 audit: SK1 last = refused 3/3). Requested ids keep the argument order."""
+    order: list = []
+
+    def lane(job, *a, **k):
+        order.append(f"{job[0]}_a{job[1]}")
+        return _fake_lane(job, *a, **k)
+
+    _out, manifest = _fake_run(tmp_path, monkeypatch, ["--total-budget", "200", "--per-task-usd", "50", "--lanes", "1",
+                                                       "--scenarios", "SM1,SW1,SK1", "--attempts", "2"], lane=lane)
+    assert order == ["SK1_a1", "SK1_a2", "SM1_a1", "SM1_a2", "SW1_a1", "SW1_a2"]
+    assert manifest["requested_task_ids"] == ["SM1_a1", "SM1_a2", "SW1_a1", "SW1_a2", "SK1_a1", "SK1_a2"]
+    assert manifest["extra"]["budget_preflight"]["unreachable"] == [] and manifest["extra"]["outcome"] == "completed"
+    assert manifest["extra"]["budget_preflight"]["worst_case_usd"] == 400.0
+
+
+# --------------------------------------------------------------------------- #
+# Feasibility pins with POSITIVE spends: the audit's driver over the REAL ledger
+# --------------------------------------------------------------------------- #
+
+class _Driver:
+    """``main()``'s pool replaced by a virtual clock over the REAL ``RunBudget``: ``admit``/``settle`` as
+    ``run_attempt`` makes them, spend visible at settle, lane durations in virtual minutes (rc.14 SM1 22-54,
+    rc.11 SW1 ~10, SK1 ~7), a freed lane takes the next job at once. A thread counts as waiting once it has
+    entered the ledger's ``wait`` (instrumented, never a timeout); the wake order of EQUAL waiters is the
+    OS's (the ledger is not FIFO by contract), so pins over two equal waiters compare sets."""
+    DURATION = {"SM1": 50, "SW1": 10, "SK1": 7}
+
+    def __init__(self, cap, per_task, scenario_ids, attempts, spends, *, lanes=3, self_mod=False) -> None:
+        self.spend: dict = {}
+        self.budget = run_live_lanes.RunBudget(cap, per_task, reader=lambda root: (self.spend.get(root.name, 0.0), 0),
+                                               self_mod=self_mod)
+        self.pending = collections.deque(sorted(
+            [(sid, n) for sid in scenario_ids for n in range(1, attempts + 1)],
+            key=lambda job: -self.budget.reservation(scenarios.SCENARIOS[job[0]].root_tasks)))
+        self.lanes, self.spends, self.now = lanes, spends, 0.0
+        self.in_flight, self.waiting, self.threads, self.admitted, self.refused = {}, [], {}, [], []
+        self.waits, self.expected = collections.Counter(), collections.Counter()
+        real_wait = self.budget._lock.wait
+
+        def counted_wait(*a, **k):
+            self.waits[threading.current_thread().name] += 1
+            return real_wait(*a, **k)
+
+        self.budget._lock.wait = counted_wait
+
+    def _ask(self, job) -> None:
+        name, box = f"{job[0]}_a{job[1]}", {}
+        thread = threading.Thread(name=name, daemon=True, target=lambda: box.__setitem__(
+            "r", self.budget.admit(job, scenarios.SCENARIOS[job[0]].root_tasks, pathlib.Path("/x") / name)))
+        thread.start()
+        self.threads[job] = (thread, box)
+        self._resolve(job)
+
+    def _resolve(self, job) -> None:
+        thread, box = self.threads[job]
+        self.expected[thread.name] += 1
+        deadline = time.monotonic() + 10.0
+        while thread.is_alive() and self.waits[thread.name] < self.expected[thread.name]:
+            assert time.monotonic() < deadline, f"{thread.name} neither answered nor waited"
+            time.sleep(0.001)
+        if thread.is_alive():
+            if job not in self.waiting:
+                self.waiting.append(job)
+            return
+        del self.threads[job]
+        if job in self.waiting:
+            self.waiting.remove(job)
+        if box["r"][0]:
+            self.in_flight[job] = self.now + self.DURATION[job[0]]
+        (self.admitted if box["r"][0] else self.refused).append(thread.name)
+
+    def run(self) -> tuple[list, list, float]:   # (admitted in admission order, refused in refusal order, spend)
+        while self.pending or self.in_flight:
+            while self.pending and len(self.in_flight) + len(self.waiting) < self.lanes:
+                self._ask(self.pending.popleft())
+            if not self.in_flight:
+                assert not self.waiting, "a waiter with nothing in flight (the ledger contract forbids it)"
+                continue
+            job = min(self.in_flight, key=lambda j: (self.in_flight[j], j))
+            self.now = self.in_flight.pop(job)
+            self.spend[f"{job[0]}_a{job[1]}"] = self.spends[job[0]]
+            self.budget.settle(job)
+            for waiter in list(self.waiting):
+                self._resolve(waiter)
+        return self.admitted, self.refused, round(self.budget.snapshot()["spent_usd"], 2)
+
+
+REALISTIC_SPEND = {"SM1": 30.0, "SW1": 8.0, "SK1": 15.0}    # assumed per-attempt spends: rc.14 SM1 lanes, rc.11 SW1/SK1
+PESSIMISTIC_SPEND = {"SM1": 45.0, "SW1": 8.0, "SK1": 30.0}
+
+
+def test_configuration_a_cap_200_per_task_50_two_attempts_three_lanes():
+    """Configuration A (cap 200, per-task 50, attempts 2, pass-of 2, SM1+SW1+SK1, 3 lanes, no self-mod:
+    SM1/SW1 reserve 50, SK1 100). Realistic spends: all six admitted, SK1 first, $106. Pessimistic spends
+    (SM1 45, SK1 30): both SW1 attempts wait behind the SM1 lanes ($105 + 50 + 50 > 200), the first woken
+    one is admitted at $150 + 50 = 200 and the other is refused after it settles ($158 + 50 > 200): five
+    admitted, EXACTLY ONE SW1 attempt refused (which one is wake order), $158 spent; nothing halts."""
+    admitted, refused, spent = _Driver(200.0, 50.0, ["SM1", "SW1", "SK1"], 2, REALISTIC_SPEND).run()
+    assert admitted == ["SK1_a1", "SK1_a2", "SM1_a1", "SM1_a2", "SW1_a1", "SW1_a2"] and refused == [] and spent == 106.0
+    admitted, refused, spent = _Driver(200.0, 50.0, ["SM1", "SW1", "SK1"], 2, PESSIMISTIC_SPEND).run()
+    assert admitted[:4] == ["SK1_a1", "SK1_a2", "SM1_a1", "SM1_a2"] and spent == 158.0
+    assert len(admitted) == 5 and len(refused) == 1 and sorted(admitted[4:] + refused) == ["SW1_a1", "SW1_a2"]
+
+
+def test_configuration_b_cap_260_per_task_50_three_attempts_three_lanes():
+    """Configuration B (cap 260, per-task 50, attempts 3, 3 lanes, no self-mod). Realistic spends: all
+    nine admitted, $159 (SW1_a3 waits once behind two SW1 reservations). Pessimistic spends: six
+    admitted (SK1 x3, SM1 x3, $225) and every SW1 attempt refused — $225 + 50 > 260 once the SM1
+    lanes settle; which SW1 waiter is recorded first is wake order, so the set is pinned."""
+    admitted, refused, spent = _Driver(260.0, 50.0, ["SM1", "SW1", "SK1"], 3, REALISTIC_SPEND).run()
+    assert admitted == ["SK1_a1", "SK1_a2", "SK1_a3", "SM1_a1", "SM1_a2", "SM1_a3", "SW1_a1", "SW1_a2", "SW1_a3"]
+    assert refused == [] and spent == 159.0
+    admitted, refused, spent = _Driver(260.0, 50.0, ["SM1", "SW1", "SK1"], 3, PESSIMISTIC_SPEND).run()
+    assert admitted == ["SK1_a1", "SK1_a2", "SK1_a3", "SM1_a1", "SM1_a2", "SM1_a3"] and spent == 225.0
+    assert sorted(refused) == ["SW1_a1", "SW1_a2", "SW1_a3"]
 
 
 # --------------------------------------------------------------------------- #
@@ -458,7 +630,7 @@ def test_watcher_tick_never_waits_on_the_key_probe(capsys):
     probe = run_live_lanes.KeyProbe(stuck, floor=1.0, interval=30.0, stop=stop)
     probe.interval = 0.01
     probe.start()
-    budget = run_live_lanes.RunBudget(50.0, 8.0, reader=lambda root: (2.5, 0))
+    budget = run_live_lanes.RunBudget(50.0, 16.0, reader=lambda root: (2.5, 0))
     budget.admit(("SM1", 1), 1, pathlib.Path("/nonexistent/lane/data"))
     states = {("SM1", 1): ("running scenario", time.time())}
     thread = threading.Thread(target=run_live_lanes.watcher, args=(stop, states, 0.05, budget, probe), daemon=True)
@@ -472,7 +644,7 @@ def test_watcher_tick_never_waits_on_the_key_probe(capsys):
     release.set()
     thread.join(timeout=5)
     line = next(ln for ln in seen.splitlines() if "[watch]" in ln)
-    assert "spent $2.50/$50.00 reserved $16.00" in line and "SM1_a1=running scenario" in line   # 2 x $8, one root
+    assert "spent $2.50/$50.00 reserved $16.00" in line and "SM1_a1=running scenario" in line   # $16 per task, one root
     assert "key probe pending" in line and "ALERT" not in line
 
 
@@ -1155,33 +1327,34 @@ def test_run_root_template_is_redacted_and_the_key_reaches_only_the_lanes(tmp_pa
 
 
 def test_run_wide_cap_refuses_per_attempt_and_records_not_run_rows(tmp_path, monkeypatch):
-    """cap $20, per-task $4 = reservation unit $8, every settled lane read back at $5, one lane (nothing in
-    flight): SM1_a1 (0+8), SM1_a2 (5+8) run; SK1_a1 (10+16 > 20) and SK1_a2 are refused; SW1_a1
-    (10+8) still RUNS after them — a refusal is per attempt, not a halt; SW1_a2 (15+8 > 20) is
-    refused. Every refusal is a recorded row and the manifest's stop_reason."""
-    monkeypatch.setattr(run_live_lanes, "lane_spend",
-                        lambda root: (5.0, 0) if pathlib.Path(root).parent.exists() else (0.0, 0))
+    """cap $14, per-task $4 (SK1 reserves $8, SM1/SW1 $4), one lane, dispatch largest first; a settled SK1
+    lane reads back $7, every other $2: SK1_a1 (0+8) runs; SK1_a2 (7+8 > 14) is refused at once; SM1_a1
+    (7+4) and SM1_a2 (9+4) still RUN after that refusal — a refusal is per attempt, not a halt; SW1_a1
+    and SW1_a2 (11+4 > 14) are refused. Every refusal is a recorded row and the manifest's stop_reason."""
+    monkeypatch.setattr(run_live_lanes, "lane_spend", lambda root: (
+        (7.0 if pathlib.Path(root).parent.name.startswith("SK1") else 2.0, 0)
+        if pathlib.Path(root).parent.exists() else (0.0, 0)))
     out, manifest = _fake_run(tmp_path, monkeypatch, ["--scenarios", "SM1,SK1,SW1", "--attempts", "2", "--lanes", "1",
-                                                      "--total-budget", "20", "--per-task-usd", "4"], expect_rc=1)
+                                                      "--total-budget", "14", "--per-task-usd", "4"], expect_rc=1)
     budget = manifest["extra"]["budget"]
-    assert budget["first_refused"] == "SK1_a1" and "halted" not in budget
+    assert budget["first_refused"] == "SK1_a2" and "halted" not in budget
     assert [(r["attempt"], r["spent_usd"], r["reservation_usd"], r["waited_sec"]) for r in budget["refusals"]] == [
-        ("SK1_a1", 10.0, 16.0, 0.0), ("SK1_a2", 10.0, 16.0, 0.0), ("SW1_a2", 15.0, 8.0, 0.0)]
-    assert budget["attempts_not_run"] == ["SK1_a1", "SK1_a2", "SW1_a2"] and budget["spent_usd"] == 15.0
+        ("SK1_a2", 7.0, 8.0, 0.0), ("SW1_a1", 11.0, 4.0, 0.0), ("SW1_a2", 11.0, 4.0, 0.0)]
+    assert budget["attempts_not_run"] == ["SK1_a2", "SW1_a1", "SW1_a2"] and budget["spent_usd"] == 11.0
     assert manifest["extra"]["stop_reason"] == "budget_cap" and manifest["extra"]["lanes_run"] == 3
-    assert manifest["extra"]["scenarios"]["SK1"] == {"attempts": 2, "passed": 0, "infra_errors": 0, "not_run": 2,
+    assert manifest["extra"]["scenarios"]["SW1"] == {"attempts": 2, "passed": 0, "infra_errors": 0, "not_run": 2,
                                                      "verdict": "fail"}
-    assert manifest["extra"]["scenarios"]["SW1"]["passed"] == 1 and manifest["extra"]["scenarios"]["SW1"]["not_run"] == 1
+    assert manifest["extra"]["scenarios"]["SK1"]["passed"] == 1 and manifest["extra"]["scenarios"]["SK1"]["not_run"] == 1
     rows = {json.loads(p.read_text(encoding="utf-8"))["attempt"]: json.loads(p.read_text(encoding="utf-8"))
             for p in out.glob("lanes/SM1_*/result.json")}
-    assert rows[1]["lane_total_budget_usd"] == 8.0 and rows[2]["lane_total_budget_usd"] == 8.0   # each: its reservation
-    refused = json.loads((out / "lanes" / "SK1_a1" / "result.json").read_text(encoding="utf-8"))
+    assert rows[1]["lane_total_budget_usd"] == 4.0 and rows[2]["lane_total_budget_usd"] == 4.0   # each: its reservation
+    refused = json.loads((out / "lanes" / "SK1_a2" / "result.json").read_text(encoding="utf-8"))
     assert refused["status"] == "not_run" and refused["reason_code"] == "budget_cap"
     assert refused["refusal"]["code"] == "budget_cap" and refused["budget"]["waited_sec"] == 0.0
-    assert refused["budget"]["spent_usd"] == 10.0 and refused["budget"]["reservation_usd"] == 16.0
+    assert refused["budget"]["spent_usd"] == 7.0 and refused["budget"]["reservation_usd"] == 8.0
     index = [json.loads(ln) for ln in (out / "result_index.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert [(r["instance_id"], r["status"], r["reason_code"]) for r in index if r["status"] == "not_run"] == [
-        ("SK1_a1", "not_run", "budget_cap"), ("SK1_a2", "not_run", "budget_cap"), ("SW1_a2", "not_run", "budget_cap")]
+        ("SK1_a2", "not_run", "budget_cap"), ("SW1_a1", "not_run", "budget_cap"), ("SW1_a2", "not_run", "budget_cap")]
 
 
 def test_self_mod_run_level_gate_fails_every_unconfirmed_lane(tmp_path, monkeypatch):
