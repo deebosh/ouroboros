@@ -21,6 +21,8 @@ const VENDORED_SCRIPT_GLOBALS = {
 };
 
 export default [
+    // The vendored parser the hermetic gate ships is not ours to lint.
+    { ignores: ['tests/vendor/**', 'tests/fixtures/**', 'node_modules/**'] },
     {
         // The ES modules the page loads.
         files: ['app.js', 'modules/**/*.js'],
