@@ -1004,8 +1004,26 @@ def verify_restart(env: Any, git_sha: str) -> None:
     supervisor_state.assert_test_data_path(campaign_path)
     # The campaign write and the ledger append are two writes: re-derive any
     # cycle-outcome row a crash between them lost, before anything reads them.
+    # The scan-then-append runs under the SAME locks/state.lock both resolution
+    # writers below hold across their campaign write AND their tag, so a second
+    # booting worker sees either the unresolved campaign or the tagged ledger —
+    # never the gap in between (an unlocked scan landing there is exactly the
+    # duplicate-row writer S22 caught). An unavailable lock SKIPS the repair
+    # (the next boot replays it) rather than backfilling unlocked; the boot
+    # itself never fails on it.
     drive_root = campaign_path.parent.parent
-    backfill_missing_cycle_outcomes(drive_root, read_json_dict(campaign_path) or {})
+    state_lock_path = env.drive_path("locks") / "state.lock"
+    try:
+        backfill_fd = supervisor_state.acquire_file_lock(state_lock_path)
+        if backfill_fd is None:
+            log.warning("Skipped cycle-outcome backfill: %s unavailable", state_lock_path)
+        else:
+            try:
+                backfill_missing_cycle_outcomes(drive_root, read_json_dict(campaign_path) or {})
+            finally:
+                supervisor_state.release_file_lock(state_lock_path, backfill_fd)
+    except Exception:
+        log.debug("Failed to backfill cycle-outcome checkpoints at boot", exc_info=True)
 
     def _append_unique_transaction(campaign: Dict[str, Any], tx: Dict[str, Any]) -> None:
         tx_history = list(campaign.get("transaction_history") or [])
@@ -1115,15 +1133,18 @@ def verify_restart(env: Any, git_sha: str) -> None:
             # file lost all call this; the lock + in-lock re-read make exactly one
             # of them reconcile per generation (the rest see the claimed gen and
             # abort), instead of an unlocked stampede that double-increments
-            # absorbed_cycles_done / lost-updates each other. (The os.rename WINNER
-            # runs _mark_campaign_restart_verified, which stays unlocked; the narrow
+            # absorbed_cycles_done / lost-updates each other. Invariant shared with
+            # the os.rename WINNER's _mark_campaign_restart_verified: the campaign
+            # resolution and its cycle_outcome ledger tag are ONE critical section
+            # under locks/state.lock, and the repair-side reader (the boot backfill
+            # at the top of verify_restart) takes the same lock — so no actor can
+            # observe a resolved campaign whose tag is still pending. (The narrow
             # winner-vs-loser ordering edge on an ancestor-not-HEAD commit is
             # idempotency-mitigated — see _mark_campaign_restart_verified.)
             event: Dict[str, Any] = {}  # captured in-lock for post-lock event logging
 
             outcome_snapshot: Dict[str, Any] = {}
             state_path = env.drive_path("state") / "state.json"
-            state_lock_path = env.drive_path("locks") / "state.lock"
 
             def _mutate(campaign: Dict[str, Any]):
                 if not isinstance(campaign, dict):
@@ -1246,18 +1267,21 @@ def verify_restart(env: Any, git_sha: str) -> None:
                 return
             try:
                 update_json_locked(campaign_path, _mutate)
+                # The tag lands INSIDE the state lock, like the marker path's: a
+                # ledger failure is swallowed by append_cycle_outcome_tag, so the
+                # boot never breaks on it — only the lock hold grows by one append.
+                if outcome_snapshot.get("transaction"):
+                    append_cycle_outcome_tag(
+                        drive_root,
+                        campaign=outcome_snapshot.get("campaign"),
+                        transaction=outcome_snapshot.get("transaction"),
+                        source="boot_reconcile",
+                        backlog_id=str(outcome_snapshot.get("backlog_id") or ""),
+                    )
             finally:
                 supervisor_state.release_file_lock(state_lock_path, lock_fd)
             if event:
                 append_jsonl(env.drive_path("logs") / "events.jsonl", event)
-            if outcome_snapshot.get("transaction"):
-                append_cycle_outcome_tag(
-                    drive_root,
-                    campaign=outcome_snapshot.get("campaign"),
-                    transaction=outcome_snapshot.get("transaction"),
-                    source="boot_reconcile",
-                    backlog_id=str(outcome_snapshot.get("backlog_id") or ""),
-                )
         except Exception:
             log.debug("Failed to reconcile dangling evolution transaction", exc_info=True)
 
@@ -1269,7 +1293,6 @@ def verify_restart(env: Any, git_sha: str) -> None:
         # Only the os.rename winner reaches this transition. It stamps the custody
         # generation before removing the claim; losers either see the claimed file or
         # the generation stamp, so markerless reconciliation cannot bypass the claim.
-        state_lock_path = env.drive_path("locks") / "state.lock"
         lock_fd = None
         try:
             lock_fd = supervisor_state.acquire_file_lock(state_lock_path)

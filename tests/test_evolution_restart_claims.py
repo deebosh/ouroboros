@@ -10,6 +10,7 @@ rechecks that gate an evolution restart against a stale marker or a moved head.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -784,6 +785,115 @@ def test_boot_backfills_the_cycle_outcome_row_a_crash_lost(tmp_path, monkeypatch
 
     agent_startup_checks.verify_restart(_boot_env(tmp_path), sha)
     assert len(ledger.read_text().splitlines()) == len(rows)  # idempotent
+
+
+def _cycle_outcome_rows(ledger):
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()] if ledger.exists() else []
+    return [
+        (row["task_id"], row["cycle_outcome"], row["source"])
+        for row in rows if row.get("kind") == "cycle_outcome"
+    ]
+
+
+def test_boot_backfill_waits_for_the_reconcile_tag_instead_of_duplicating_it(
+    tmp_path, monkeypatch,
+):
+    """S22: two booters, one ledger row. Actor 1 (this thread) reconciles the
+    dangling commit; actor 2 (a thread) boots exactly while actor 1 sits between
+    its campaign write and its ledger tag. Actor 2's backfill must block on
+    ``locks/state.lock`` — an unlocked scan in that gap sees ``absorbed`` with no
+    row and appends the duplicate ``boot_backfill`` row CI caught."""
+    from ouroboros import agent_startup_checks, process_custody
+    from supervisor import evolution_lifecycle
+
+    campaign, tx = _active_transaction(tmp_path)
+    sha = "e" * 40
+    assert evolution_lifecycle.record_evolution_commit(
+        campaign["id"], tx["transaction_id"], tx["task_id"], sha,
+    )["ok"] is True
+    monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "gen-2")
+    ledger = tmp_path / "state" / "evolution_checkpoints.jsonl"
+    real_tag = agent_startup_checks.append_cycle_outcome_tag
+    second_booter = threading.Thread(
+        target=agent_startup_checks.verify_restart, args=(_boot_env(tmp_path), sha),
+    )
+    seen_in_gap = {}
+
+    def _tag_with_a_second_booter_in_the_gap(*args, **kwargs):
+        resolved = evolution_lifecycle._read_evolution_campaign()["transaction_history"][-1]
+        assert resolved["cycle_outcome"] == "absorbed"  # campaign resolved, tag pending
+        second_booter.start()
+        second_booter.join(timeout=0.5)
+        seen_in_gap["second_booter_blocked"] = second_booter.is_alive()
+        seen_in_gap["rows_written_in_gap"] = _cycle_outcome_rows(ledger)
+        real_tag(*args, **kwargs)
+
+    monkeypatch.setattr(
+        agent_startup_checks, "append_cycle_outcome_tag", _tag_with_a_second_booter_in_the_gap,
+    )
+    agent_startup_checks.verify_restart(_boot_env(tmp_path), sha)
+    second_booter.join(timeout=10)
+    assert not second_booter.is_alive()
+
+    assert seen_in_gap == {"second_booter_blocked": True, "rows_written_in_gap": []}
+    assert _cycle_outcome_rows(ledger) == [(tx["task_id"], "absorbed", "boot_reconcile")]
+    current = evolution_lifecycle._read_evolution_campaign()
+    assert [
+        row["cycle_outcome"] for row in current["transaction_history"]
+        if row.get("transaction_id") == tx["transaction_id"]
+    ] == ["absorbed"]
+    assert current["absorbed_cycles_done"] == 1
+
+
+def test_boot_skips_the_backfill_when_the_state_lock_is_unavailable(
+    tmp_path, monkeypatch, caplog,
+):
+    """No lock, no row: an unlocked backfill IS the duplicate writer, so the
+    repair waits for a later boot instead — and the boot itself does not fail."""
+    from ouroboros import agent_startup_checks, evolution_checkpoints, process_custody
+    from supervisor import evolution_lifecycle
+    from supervisor import state as supervisor_state
+
+    campaign, tx = _active_transaction(tmp_path)
+    sha = "f" * 40
+    assert evolution_lifecycle.record_evolution_commit(
+        campaign["id"], tx["transaction_id"], tx["task_id"], sha,
+    )["ok"] is True
+    monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "gen-1")
+
+    def _crash(*a, **k):
+        raise RuntimeError("process died between the campaign write and the ledger")
+
+    monkeypatch.setattr(evolution_checkpoints, "append_cycle_outcome_checkpoint", _crash)
+    agent_startup_checks.verify_restart(_boot_env(tmp_path), sha)
+    ledger = tmp_path / "state" / "evolution_checkpoints.jsonl"
+    assert evolution_lifecycle._read_evolution_campaign()["transaction_history"][-1][
+        "cycle_outcome"
+    ] == "absorbed"
+    assert not ledger.exists()
+
+    monkeypatch.undo()
+    monkeypatch.setattr(process_custody, "current_custody_session_id", lambda: "gen-2")
+    lock_path = tmp_path / "locks" / "state.lock"
+    real_acquire = supervisor_state.acquire_file_lock
+    held_elsewhere = real_acquire(lock_path)  # another actor holds the state lock
+    assert held_elsewhere is not None
+    monkeypatch.setattr(
+        supervisor_state, "acquire_file_lock",
+        lambda path, **kwargs: real_acquire(path, timeout_sec=0.2),
+    )
+    try:
+        with caplog.at_level(logging.WARNING, logger="ouroboros.agent_startup_checks"):
+            agent_startup_checks.verify_restart(_boot_env(tmp_path), sha)
+    finally:
+        supervisor_state.release_file_lock(lock_path, held_elsewhere)
+    assert not ledger.exists()
+    assert any(
+        "Skipped cycle-outcome backfill" in record.getMessage() for record in caplog.records
+    )
+
+    agent_startup_checks.verify_restart(_boot_env(tmp_path), sha)  # lock free: repair replays
+    assert _cycle_outcome_rows(ledger) == [(tx["task_id"], "absorbed", "boot_backfill")]
 
 
 def test_containment_disowns_the_commit_intent_so_boot_cannot_adopt_it(
