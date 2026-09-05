@@ -15,7 +15,7 @@ worktree, so concurrent edits cannot dirty it), the effective settings written f
 DEFAULTS (D-09) with the budget knobs as settings keys (never env), and the lane pool.
 ``--total-budget`` is a RUN-WIDE cap kept by ``RunBudget``: an attempt is scheduled only while
 spent + reserved stays under it and every lane's TOTAL_BUDGET is its OWN reservation — an immutable
-ceiling disjoint from every other lane's, so the ceilings in flight plus the spend never exceed the cap.
+ceiling disjoint from every other lane's, so the settled spend plus the ceilings in flight never exceed the cap.
 The run-root template is redacted (the key value lives only in each lane's 0600 settings file
 and is disclosed by fingerprint). The manifest names the model from the APPLIED settings file,
 not argv. Every lane leaves ``lanes/<id>_a<n>/result.json`` (checks, digests, grants by
@@ -83,7 +83,7 @@ SEED_POLICY = "detached_clone_of_ref"
 # global budget" (``settings_setup_contract.resolve_total_budget_usd``), the opposite of a cap.
 LANE_BUDGET_FLOOR_USD = 0.01
 RESERVATION_RULE = ("per_task_usd x root_tasks (children spend under their root task's ceiling); "
-                    "the lane's TOTAL_BUDGET is that reservation, so in-flight ceilings + spend <= cap")
+                    "the lane's TOTAL_BUDGET is that reservation, so settled spend + in-flight ceilings <= cap")
 
 
 def _log(msg: str) -> None:
@@ -250,7 +250,8 @@ class RunBudget:
     later attempt is recorded ``not_run``. ``spent`` is re-read from the lanes' durable usage
     on every question, so a lane overrunning its reservation is seen by the next admission.
     Each lane's TOTAL_BUDGET is its OWN reservation (``ceiling``): the ceilings in flight are
-    disjoint and, by the admission rule, their sum plus the spend never exceeds the cap — the
+    disjoint and, by the admission rule, their sum plus the settled spend never exceeds the cap
+    (a live lane's spend is already inside its ceiling) — the
     first draft handed every lane ``cap - others' reservations``, which two concurrent lanes
     could sum above the cap.
     """
@@ -266,7 +267,10 @@ class RunBudget:
         self.not_run: list[str] = []
 
     def reservation(self, root_tasks: int) -> float:
-        return self.per_task * max(1, int(root_tasks or 1))
+        """The ONE effective ceiling of an attempt: ``per_task_usd x root_tasks``, floored at
+        ``LANE_BUDGET_FLOOR_USD`` and never rounded upward — admission, the stored reservation,
+        the lane's TOTAL_BUDGET and the reports all carry this same number."""
+        return max(LANE_BUDGET_FLOOR_USD, self.per_task * max(1, int(root_tasks or 1)))
 
     def _spent_locked(self) -> tuple[float, int]:
         spent, unknown = 0.0, 0
@@ -300,7 +304,7 @@ class RunBudget:
         lane's, never non-positive (the runtime reads a non-positive budget as NO cap)."""
         with self._lock:
             entry = self._live.get(job)
-            return max(LANE_BUDGET_FLOOR_USD, round(entry[1] if entry else 0.0, 4))
+            return entry[1] if entry else LANE_BUDGET_FLOOR_USD   # exactly what admission reserved
 
     def settle(self, job: tuple) -> None:
         with self._lock:
@@ -527,6 +531,15 @@ def _lane_row(job: tuple[str, int], args: argparse.Namespace) -> dict:
             "screenshots": [], "ui": {"available": False, "reason": ""}, "self_mod_absorb": None, "budget": {}}
 
 
+def _apply_orphan_scan(row: dict, orphans_gone: bool) -> None:
+    """The last check of a lane: a process still carrying the lane's data root after stop fails a
+    passing lane, and the index never carries a failed row with an empty reason."""
+    row["no_orphans_after_stop"] = bool(orphans_gone)
+    if not orphans_gone and row["status"] == "pass":
+        row["status"], row["reason_code"] = "fail", "checks_failed"
+    row["checks"]["no_orphans_after_stop"] = bool(orphans_gone)
+
+
 def _record_row(out: pathlib.Path, lane: pathlib.Path, row: dict) -> None:
     lane.mkdir(parents=True, exist_ok=True)
     (lane / "result.json").write_text(json.dumps(row, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -689,12 +702,8 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
                 closer()
         if stub is not None:
             stub.__exit__(None, None, None)
-        row["no_orphans_after_stop"] = bool(harness.wait_until(
+        _apply_orphan_scan(row, harness.wait_until(
             lambda: not harness.pids_with_env_value(str(data_root)), 30))
-        if not row["no_orphans_after_stop"] and row["status"] == "pass":
-            row["status"] = "fail"
-            row["reason_code"] = "checks_failed"   # the index never carries a failed row with an empty reason
-        row["checks"]["no_orphans_after_stop"] = row["no_orphans_after_stop"]
         row["budget"]["spent_usd"], row["budget"]["unknown_cost_rows"] = lane_spend(data_root)
         row["ended_at"], row["duration_sec"] = now_iso(), round(time.time() - started, 1)
         _record_row(out, lane, row)

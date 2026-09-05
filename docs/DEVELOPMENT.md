@@ -1281,8 +1281,8 @@ under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two), schedules a
 new attempt only while `spent + reserved + reservation ≤ cap`, halts scheduling at
 the first refusal (later attempts are recorded `not_run` with
 `reason_code=budget_cap`), and writes each lane's TOTAL_BUDGET as its OWN reservation — an
-immutable ceiling disjoint from every other lane's, so the ceilings in flight plus the
-spend never exceed the cap; the manifest records the cap, the spend, the reservation rule
+immutable ceiling disjoint from every other lane's, so the settled spend plus the ceilings
+in flight never exceed the cap; the manifest records the cap, the spend, the reservation rule
 and the stop reason. `--per-task-usd` (default 8) is the runtime's per-root-task
 fence: with the tree's default review panel a blocking triad that includes
 claude-opus-5 plus the scope review exceeded $8 on SM1 in the first paid run

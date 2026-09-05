@@ -265,9 +265,21 @@ def test_run_budget_reservation_rule_halts_new_attempts_at_the_cap(tmp_path):
     assert tiny.admit(("SM1", 1), 1, tmp_path / "x")[0]
     assert tiny.ceiling(("SM1", 1)) == 8.0
     assert tiny.ceiling(("never", 9)) == run_live_lanes.LANE_BUDGET_FLOOR_USD   # not admitted: the floor, not the cap
-    micro = run_live_lanes.RunBudget(10.0, 0.001, reader=lambda root: (0.0, 0))
-    assert micro.admit(("SM1", 1), 1, tmp_path / "y")[0]
-    assert micro.ceiling(("SM1", 1)) == run_live_lanes.LANE_BUDGET_FLOOR_USD
+    # The floor is part of the ONE effective ceiling: admission reserves it, the lane receives it,
+    # so micro reservations cannot sum past the cap (5 x 0.01 fit a 0.05 cap, the 6th is refused).
+    micro = run_live_lanes.RunBudget(0.05, 0.001, reader=lambda root: (0.0, 0))
+    assert micro.reservation(1) == run_live_lanes.LANE_BUDGET_FLOOR_USD
+    for n in range(5):
+        ok, facts = micro.admit(("SM1", n), 1, tmp_path / f"m{n}")
+        assert ok and facts["reservation_usd"] == 0.01 and micro.ceiling(("SM1", n)) == 0.01
+    assert not micro.admit(("SM1", 5), 1, tmp_path / "m5")[0]
+    assert sum(micro.ceiling(("SM1", n)) for n in range(5)) <= 0.05
+    below = run_live_lanes.RunBudget(0.005, 0.001, reader=lambda root: (0.0, 0))
+    assert not below.admit(("SM1", 1), 1, tmp_path / "z")[0]     # the floored reservation exceeds the cap
+    # Fractional reservations are not rounded upward: two exact quarters fill a half-dollar cap.
+    frac = run_live_lanes.RunBudget(0.5, 0.25, reader=lambda root: (0.0, 0))
+    assert frac.admit(("SM1", 1), 1, tmp_path / "f1")[0] and frac.admit(("SM1", 2), 1, tmp_path / "f2")[0]
+    assert frac.ceiling(("SM1", 1)) + frac.ceiling(("SM1", 2)) == 0.5 and not frac.admit(("SM1", 3), 1, tmp_path / "f3")[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -824,3 +836,26 @@ def test_stub_sm1_end_to_end_on_a_real_isolated_server(tmp_path):
     assert row["digests"]["pre_head"] == manifest["seed"]["resolved_sha"] != row["digests"]["post_head"]
     assert len(row["digests"]["diff_sha256"]) == 64 and not row["digests"]["seed_describe"].endswith("-dirty")
     assert (out / "result_index.jsonl").read_text(encoding="utf-8").count("\n") == 1
+
+
+def test_orphan_after_stop_fails_a_passing_lane_with_a_typed_reason(tmp_path):
+    """A process still carrying the lane's data root after stop flips a passing lane to fail with
+    reason_code=checks_failed, in result.json AND in result_index.jsonl — never an empty reason."""
+    def row():
+        return {"scenario": "SM1", "attempt": 1, "status": "pass", "reason_code": "", "checks": {"fake": True},
+                "error": "", "duration_sec": 1.0, "budget": {}, "refusal": None, "runtime_outcome": "completed"}
+    clean = row()
+    run_live_lanes._apply_orphan_scan(clean, True)
+    assert clean["status"] == "pass" and clean["reason_code"] == "" and clean["checks"]["no_orphans_after_stop"] is True
+    dirty = row()
+    run_live_lanes._apply_orphan_scan(dirty, False)
+    assert dirty["status"] == "fail" and dirty["reason_code"] == "checks_failed"
+    assert dirty["checks"]["no_orphans_after_stop"] is False and dirty["no_orphans_after_stop"] is False
+    out = tmp_path / "run"
+    lane = out / "lanes" / "SM1_a1"
+    lane.mkdir(parents=True)
+    run_live_lanes._record_row(out, lane, dirty)
+    recorded = json.loads((lane / "result.json").read_text(encoding="utf-8"))
+    assert recorded["status"] == "fail" and recorded["reason_code"] == "checks_failed"
+    index = [json.loads(ln) for ln in (out / "result_index.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert [(r["instance_id"], r["status"], r["reason_code"]) for r in index] == [("SM1_a1", "fail", "checks_failed")]
