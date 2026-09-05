@@ -58,6 +58,7 @@ def _handle_task_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
 # review_wave_budget_partial_unknown twin was the v6.69.0-class omission: the
 # fix registered one branch of review_helpers' if/else and missed the other.
 TELEMETRY_EVENT_HANDLERS = {
+    "review_density_probe": _handle_typed_telemetry,
     "review_wave_budget_insufficient": _handle_typed_telemetry,
     "review_wave_budget_partial_unknown": _handle_typed_telemetry,
     "advisory_suspect_result": _handle_typed_telemetry,

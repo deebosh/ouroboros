@@ -159,6 +159,9 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
         note="the fact that a deadline left no useful planning window"),
     "quiz_answer_injected": _telemetry(
         "ouroboros/owner_mailbox.py"),
+    "review_density_probe": _telemetry(
+        "ouroboros/tools/review_admission.py",
+        note="one bounded exact-model send that calibrates tokenizer density before a size refusal"),
     "review_wave_budget_insufficient": _telemetry(
         "ouroboros/tools/review_helpers.py"),
     "review_wave_budget_partial_unknown": _telemetry(
