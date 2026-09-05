@@ -1427,3 +1427,27 @@ def test_stopped_direct_turn_hard_stop_wins_over_the_transport_diversion(tmp_pat
     )
     assert routed == ["hard_stop"]
     assert text == "stopped"
+
+
+def test_stopped_direct_turn_marks_post_task_synthesis_skipped_but_wrap_up_does_not(tmp_path, monkeypatch):
+    """"Stop now" reaches past the loop: the hard stop records the EXISTING
+    ``_skip_post_task_synthesis`` marker on the tool context (the seam
+    ``emit_task_results`` copies onto the task record), so the paid post-task
+    summary/reflection/consolidation never dispatches for a stopped direct
+    turn — while the graceful "Wrap up" rail keeps its memory write."""
+    from tests.test_delivery_forced_finalization import _forced_test_context
+    from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN
+
+    loop, registry, ctx, _trace = _forced_test_context(tmp_path)
+    assert not getattr(registry._ctx, "_skip_post_task_synthesis", False)
+    loop._handle_forced_finalization(ctx, REASON_OWNER_STOPPED_DIRECT_TURN)
+    assert registry._ctx._skip_post_task_synthesis is True
+
+    graceful = tmp_path / "graceful"
+    graceful.mkdir()
+    loop2, registry2, ctx2, trace2 = _forced_test_context(graceful)
+    loop2._replace_delivery_candidate(
+        registry2, ctx2, trace2, "Retained partial answer.", control="candidate",
+    )
+    loop2._handle_forced_finalization(ctx2, REASON_OWNER_REQUESTED_FINALIZATION)
+    assert not getattr(registry2._ctx, "_skip_post_task_synthesis", False)

@@ -304,9 +304,20 @@ def _handle_direct_turn_hard_stop(
     process of its own, so custody writes this control and the turn ends at
     its next round boundary with whatever delivery candidate it already
     holds, else the typed fallback — never a paid final turn (that is the
-    graceful "Wrap up" contract, ``_handle_owner_stop_finalization``)."""
+    graceful "Wrap up" contract, ``_handle_owner_stop_finalization``).
+
+    The contract reaches past the loop: the killed pooled worker never runs
+    its post-task synthesis, so the stopped direct turn must not either. The
+    existing ``_skip_post_task_synthesis`` marker (the authority-refusal
+    terminal's seam, honoured by ``post_task_checkpoint.is_root_post_task``)
+    is recorded on the tool context here; ``emit_task_results`` copies it
+    onto the task record before the root predicate runs, so no summary,
+    reflection or consolidation bills after the owner's stop."""
     live_trace = getattr(ctx, "llm_trace", None)
     llm_trace = live_trace if isinstance(live_trace, dict) else {}
+    tool_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+    if tool_ctx is not None:
+        tool_ctx._skip_post_task_synthesis = True
     _loop()._finalize_forced_services(ctx, llm_trace)
     ctx.accumulated_usage["execution_status"] = "failed"
     ctx.accumulated_usage["reason_code"] = REASON_OWNER_REQUESTED_FINALIZATION

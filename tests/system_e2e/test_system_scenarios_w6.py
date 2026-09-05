@@ -12,7 +12,9 @@ ownership reader every ingress resolves a live direct turn through; custody stop
 the turn COOPERATIVELY — the typed ``finalize_now`` control carrying
 ``REASON_OWNER_STOPPED_DIRECT_TURN`` on the canonical owner mailbox, drained at the
 loop's next round boundary (``_handle_direct_turn_hard_stop``: ZERO further model
-calls). ``tests/test_direct_chat_turn_owner_control.py`` pins the seams against a
+calls, the post-task synthesis included — the hard stop records the existing
+``_skip_post_task_synthesis`` marker the pipeline honours, so no summary or
+reflection bills after the stop). ``tests/test_direct_chat_turn_owner_control.py`` pins the seams against a
 stubbed agent; THIS scenario pins the whole path on a real server, keyless, over
 the same WS chat and HTTP cancel surfaces the SPA drives.
 
@@ -47,7 +49,11 @@ WHAT S26 ASSERTS, in order:
    further model rounds: the durable terminal carries
    ``reason_code=owner_requested_finalization`` and the typed no-further-work
    answer, ``task_done`` names the same status, the gate matched exactly ONE round
-   and the keepalive script was never run down;
+   and the keepalive script was never run down; the DURABLE artifacts show no
+   post-stop paid work either — the tool-bearing gate cannot see a tool-less
+   summary/reflection call, so the pin reads the task result (no open
+   ``root_phase_checkpoint``), chat.jsonl (no ``authored_root_summary`` row) and
+   ``task_reflections.jsonl`` (no row) for the turn;
 5. the chat CONCLUDED (no "Working…" forever) — over the SAME /ws the SPA opens
    the turn announced itself (typing frame: activity_id = task id, kind
    ``direct_chat``, the client_message_id link), the toast frame carried
@@ -266,6 +272,27 @@ def _toast_rows(oracle: ArtifactOracle, task_id: str) -> list:
             and S26_TOAST_TEXT in str(row.get("text") or "")]
 
 
+def _post_task_synthesis_is_open(stored: dict) -> bool:
+    """The durable checkpoint the boot reconciler re-dispatches (and re-pays) from."""
+    from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
+
+    checkpoint = stored.get("root_phase_checkpoint")
+    status = str(checkpoint.get("post_task_synthesis") or "") if isinstance(checkpoint, dict) else ""
+    return post_task_synthesis_is_open(status)
+
+
+def _post_stop_synthesis_rows(oracle: ArtifactOracle, task_id: str) -> list:
+    """Durable traces of the post-task worker for the turn: the authored summary
+    row (written even for a trivial turn, so its absence means the phase never
+    ran) and any reflection row."""
+    summaries = [r for r in oracle._jsonl("logs/chat.jsonl", type_filter="task_summary")
+                 if str(r.get("task_id") or "") == task_id
+                 and r.get("summary_kind") == "authored_root_summary"]
+    reflections = [r for r in oracle._jsonl("logs/task_reflections.jsonl")
+                   if str(r.get("task_id") or "") == task_id]
+    return summaries + reflections
+
+
 def _terminal_fields(oracle: ArtifactOracle, task_id: str) -> dict:
     row = oracle.task_result(task_id)
     return {key: row.get(key) for key in ("status", "reason_code", "result")}
@@ -445,6 +472,15 @@ def test_s26_direct_chat_turn_owner_stop_mid_round_is_typed_and_ends_the_turn(
             assert gate.matched == 1 and gate.held == 1, (gate.matched, gate.held)
             assert gate.timed_out is False, "the gate expired: the scenario lost its mid-round premise"
             assert not stub.script_consumed(), "the keepalive script was run down: the stop was not honored"
+            # ...and ZERO paid POST-TASK work: the matcher above counts tool-bearing
+            # rounds only, so a tool-less summary/reflection call after the stop is
+            # invisible to it. Read the durable artifacts instead. The sync point
+            # is structural — the stored terminal carries no open checkpoint, so no
+            # synthesis worker was ever dispatched — and the row probes get a short
+            # bounded grace so a leaked worker's write cannot slip past a fast reader.
+            assert not _post_task_synthesis_is_open(stored), stored.get("root_phase_checkpoint")
+            leaked = wait_until(lambda: _post_stop_synthesis_rows(oracle, task_id) or None, 3)
+            assert not leaked, leaked
         finally:
             gate.release.set()  # never leave the stub's request thread parked on a failed scenario
             server.stop()

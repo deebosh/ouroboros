@@ -426,3 +426,87 @@ def test_emit_task_results_surfaces_receipt_absent_flag_in_event_stream(tmp_path
 
     # single source: the SAME flagged loop_outcome is threaded to _store_task_result (not re-derived)
     assert captured["loop_outcome"]["outcome_axes"]["objective"].get("warning") == "receipt_absent"
+
+
+def test_stopped_direct_turn_pays_no_post_task_synthesis(tmp_path, monkeypatch):
+    """"Stop now" on a direct-chat turn: ZERO model calls after the stop, end to
+    end through the real post-task lane. The loop's hard stop records the
+    existing ``_skip_post_task_synthesis`` marker on the tool context;
+    ``emit_task_results`` copies it onto the task before the root predicate
+    runs, so the summary/reflection worker is never dispatched and no open
+    ``root_phase_checkpoint`` is seeded for the boot reconciler to re-pay. A
+    positive control (the same turn, not stopped) proves the recording model
+    would have seen the paid summary + reflection calls."""
+    import ouroboros.llm as llm_mod
+    from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
+    from supervisor.owner_stop import REASON_OWNER_STOPPED_DIRECT_TURN
+    from tests.test_delivery_forced_finalization import _forced_test_context
+
+    calls = []
+
+    class RecordingLLM:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def chat(self, messages=None, model=None, **kw):
+            calls.append({"model": model, "has_tools": bool(kw.get("tools"))})
+            return ({"role": "assistant", "content": "recorded"},
+                    {"cost": 0.0, "prompt_tokens": 1, "completion_tokens": 1})
+
+    monkeypatch.setattr(llm_mod, "LLMClient", RecordingLLM)
+
+    class InlineThread:  # the non-blocking lane, run inline so any paid call is recorded
+        def __init__(self, *, target, daemon):
+            assert daemon is True
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(pipeline.threading, "Thread", InlineThread)
+    root = tmp_path / "data"
+    (root / "logs").mkdir(parents=True)
+    (root / "memory").mkdir()
+    (root / "repo").mkdir()
+    env = SimpleNamespace(drive_root=root, repo_dir=root / "repo", drive_path=lambda rel: root / rel)
+    # Non-trivial and above the reflection threshold: both paid post-steps would fire.
+    llm_trace = {"reasoning_notes": [], "tool_calls": [
+        {"tool": "list_files", "arguments": {}, "result": "ok", "is_error": False}]}
+
+    def _turn(task_id, *, stopped):
+        loop, registry, ctx, _trace = _forced_test_context(root, usage={"rounds": 20, "cost": 0.02})
+        registry._ctx.task_id = task_id
+        registry._ctx.task_metadata = {"budget_drive_root": str(root), "root_task_id": task_id}
+        if stopped:
+            text, usage, _t = loop._handle_forced_finalization(ctx, REASON_OWNER_STOPPED_DIRECT_TURN)
+            assert usage["reason_code"] == REASON_OWNER_REQUESTED_FINALIZATION
+        else:
+            text, usage = "Listed the root.", dict(ctx.accumulated_usage)
+        task = {"id": task_id, "type": "task", "chat_id": 1, "_is_direct_chat": True,
+                "text": "List the repository root and keep listing it until the owner stops you."}
+        events = []
+        calls.clear()
+        pipeline.emit_task_results(
+            env, object(), object(), events, task, text, usage, dict(llm_trace), 0.0,
+            root / "logs", ctx=registry._ctx, event_queue=None,
+        )
+        return task, events, list(calls)
+
+    task, events, stopped_calls = _turn("stopped1", stopped=True)
+    assert stopped_calls == [], stopped_calls
+    assert task.get("_skip_post_task_synthesis") is True
+    assert [e["type"] for e in events] == ["send_message", "task_metrics", "task_done"]
+    stored = pipeline.load_task_result(root, "stopped1") or {}
+    assert stored.get("status") == "failed", stored
+    assert "root_phase_checkpoint" not in stored, stored  # nothing for the boot reconciler to re-pay
+
+    def _summary_rows(task_id):
+        chat_log = root / "logs" / "chat.jsonl"
+        rows = chat_log.read_text(encoding="utf-8").splitlines() if chat_log.exists() else []
+        return [row for row in rows if "authored_root_summary" in row and task_id in row]
+
+    assert _summary_rows("stopped1") == []
+
+    _task, _events, control_calls = _turn("control1", stopped=False)
+    assert len(control_calls) >= 2 and all(not c["has_tools"] for c in control_calls), control_calls
+    assert len(_summary_rows("control1")) == 1  # the reader sees the phase when it does run

@@ -427,6 +427,11 @@ def emit_task_results(
     # closes the remaining durable task-record writes. An inline answer + card
     # resolution and budget metrics still flow so the reply is visible.
     _ephemeral = bool(task.get("_ephemeral_turn"))
+    # "Stop now" (loop_round_limits._handle_direct_turn_hard_stop) recorded the skip
+    # marker on the tool context: onto the task BEFORE any root post-task predicate
+    # (outbox stamp, checkpoint seed, synthesis dispatch), so nothing bills post-stop.
+    if bool(getattr(ctx, "_skip_post_task_synthesis", False)):
+        task["_skip_post_task_synthesis"] = True
     _presence = is_presence_task(task)
     _typed_routing_action = (
         str(getattr(ctx, "_typed_routing_action_emitted", "") or "").strip()
