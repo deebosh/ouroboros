@@ -234,8 +234,8 @@ def test_lane_spend_sums_durable_llm_usage_rows_and_counts_unknown_costs(tmp_pat
 def test_run_budget_reservation_rule_halts_new_attempts_at_the_cap(tmp_path):
     """spent (durable, re-read) + reserved (in flight) + this attempt's reservation must fit the
     cap; the first refusal halts the rest of the run; a lane's TOTAL_BUDGET is its OWN reservation,
-    so the ceilings of the lanes in flight are disjoint and their sum plus the spend never
-    exceeds the cap (the first draft handed each lane cap - others' reservations: two
+    so the ceilings of the lanes in flight are disjoint and settled spend + in-flight ceilings
+    never exceeds the cap (the first draft handed each lane cap - others' reservations: two
     concurrent lanes could sum above the cap)."""
     spend = {}
     budget = run_live_lanes.RunBudget(20.0, 8.0, reader=lambda root: (spend.get(root.name, 0.0), 0))
@@ -276,10 +276,12 @@ def test_run_budget_reservation_rule_halts_new_attempts_at_the_cap(tmp_path):
     assert sum(micro.ceiling(("SM1", n)) for n in range(5)) <= 0.05
     below = run_live_lanes.RunBudget(0.005, 0.001, reader=lambda root: (0.0, 0))
     assert not below.admit(("SM1", 1), 1, tmp_path / "z")[0]     # the floored reservation exceeds the cap
-    # Fractional reservations are not rounded upward: two exact quarters fill a half-dollar cap.
-    frac = run_live_lanes.RunBudget(0.5, 0.25, reader=lambda root: (0.0, 0))
+    # Fractional reservations are never rounded upward (round(0.01006, 4) would hand out 0.0101):
+    # two exact 0.01006 reservations fill a 0.02012 cap and each lane receives exactly 0.01006.
+    frac = run_live_lanes.RunBudget(0.02012, 0.01006, reader=lambda root: (0.0, 0))
     assert frac.admit(("SM1", 1), 1, tmp_path / "f1")[0] and frac.admit(("SM1", 2), 1, tmp_path / "f2")[0]
-    assert frac.ceiling(("SM1", 1)) + frac.ceiling(("SM1", 2)) == 0.5 and not frac.admit(("SM1", 3), 1, tmp_path / "f3")[0]
+    assert frac.ceiling(("SM1", 1)) == 0.01006 and frac.ceiling(("SM1", 2)) == 0.01006
+    assert frac.ceiling(("SM1", 1)) + frac.ceiling(("SM1", 2)) <= 0.02012 and not frac.admit(("SM1", 3), 1, tmp_path / "f3")[0]
 
 
 # --------------------------------------------------------------------------- #
