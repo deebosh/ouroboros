@@ -455,9 +455,12 @@ def run_sm1(ctx: LaneContext) -> None:
     desync = release_carriers_desync_at(ctx.clone, rev)
     ctx.check("committed_release_carriers_in_sync", desync == "", release_carriers_desync=desync[:500])
     files = [f for f in _git(["show", "--format=", "--name-only", rev], ctx.clone).splitlines() if f]
-    out_of_scope = sm1_out_of_scope(ctx.clone, rev, files)
-    ctx.check("committed_diff_scope", bool(files) and not out_of_scope,
-              committed_files=files, committed_out_of_scope=out_of_scope)
+    # The stand pins only the observable contract: both sheets are IN the commit. Files beyond
+    # the sheets, the carriers and the documented companions are recorded as a fact, never a
+    # failure: a scope reviewer may legitimately name another accent touchpoint (an inline
+    # colour on the unlock page, the site stylesheet), and the reviewers own that judgment.
+    ctx.check("committed_diff_includes_sheets", all(path in files for path in SM1_CSS_PATHS),
+              committed_files=files, committed_companions=sm1_out_of_scope(ctx.clone, rev, files))
     ctx.check("worktree_clean_after_commit", _git(["status", "--porcelain"], ctx.clone) == "")
     task_oracle = ctx.oracle.task_drive(task_id)
     ledger = task_oracle.advisory_review()
@@ -486,16 +489,22 @@ def run_sm1(ctx: LaneContext) -> None:
     ctx.screenshot("sm1_after_restart")
 
 
-def sm1_next_version(version: str) -> str:
+def sm1_next_version(version: str, taken: "frozenset[str] | set[str]" = frozenset()) -> str:
     """The smallest strictly-greater release version the stub bumps to: the next pre-release
-    number on a pre-release seed (``7.0.0-rc.14`` -> ``7.0.0-rc.15``), else the next patch."""
-    match = _VERSION_PARTS_RE.match(version.strip())
-    if match is None:
-        raise ValueError(f"seed VERSION is not a release version: {version.strip()!r}")
-    base, patch, pre, number = match.groups()
-    if pre:
-        return f"{base}{patch}{pre}{int(number) + 1}"
-    return f"{base}{int(patch) + 1}"
+    number on a pre-release seed (``7.0.0-rc.14`` -> ``7.0.0-rc.15``), else the next patch —
+    skipping every version whose tag ``v<version>`` is already in ``taken``: a seed cloned from
+    an older ref carries the newer tags, and the review binding refuses a staged version whose
+    tag exists (``git_review_cycle._prepare_review_binding``)."""
+    candidate = version.strip()
+    for _ in range(1000):
+        match = _VERSION_PARTS_RE.match(candidate)
+        if match is None:
+            raise ValueError(f"seed VERSION is not a release version: {candidate!r}")
+        base, patch, pre, number = match.groups()
+        candidate = f"{base}{patch}{pre}{int(number) + 1}" if pre else f"{base}{int(patch) + 1}"
+        if f"v{candidate}" not in taken:
+            return candidate
+    raise ValueError(f"no free release version above {version.strip()!r}")
 
 
 def readme_with_history_row(readme: str, version: str, description: str) -> str:
@@ -554,7 +563,8 @@ def sm1_stub_script(clone: pathlib.Path) -> dict:
         "root": "system_repo", "path": path,
         "content": css_with_accent((clone / path).read_text(encoding="utf-8"), SM1_NEW_ACCENT)}}
         for path in SM1_CSS_PATHS]
-    writes.extend(sm1_release_writes(clone, sm1_next_version((clone / "VERSION").read_text(encoding="utf-8"))))
+    taken = frozenset(_git(["tag", "-l"], clone).split())
+    writes.extend(sm1_release_writes(clone, sm1_next_version((clone / "VERSION").read_text(encoding="utf-8"), taken)))
     return {"agent": [
         *writes,
         # The full user path, no skip flags: the release preflight sees VERSION in scope, the

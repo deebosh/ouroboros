@@ -806,6 +806,9 @@ def test_sm1_stub_bumps_the_release_carriers_through_the_sync_ssot(tmp_path):
             (root / rel).write_text(carriers.get(rel) or (REPO_ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
     assert release_metadata_preflight(root, scenarios.SM1_COMMIT_MESSAGE, ["VERSION"]) is None
     assert scenarios.sm1_next_version("7.0.0-rc.14") == "7.0.0-rc.15" and scenarios.sm1_next_version("7.0.0") == "7.0.1"
+    # A seed cloned from an older ref carries the newer tags: the stub skips taken versions.
+    assert scenarios.sm1_next_version("7.0.0-rc.14", {"v7.0.0-rc.15", "v7.0.0-rc.16"}) == "7.0.0-rc.17"
+    assert scenarios.sm1_next_version("7.0.0", {"v7.0.1"}) == "7.0.2"
     assert not scenarios.version_is_bumped("7.0.0-rc.14", "7.0.0-rc.14") and not scenarios.version_is_bumped("7.0.0-rc.14", "7.0.0-rc.13")
     assert scenarios.advisory_run_is_real({"status": "fresh"}) and scenarios.advisory_run_is_real({"status": "stale", "raw_result": "[]"})
     assert not scenarios.advisory_run_is_real({"status": "bypassed", "bypass_reason": "skip_advisory_review"})
