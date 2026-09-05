@@ -79,6 +79,7 @@ WATCH_INTERVAL_MIN_SEC = 5.0   # a watcher tick below this is a hot loop, not mo
 PROBE_MIN_INTERVAL_SEC = 60.0  # two provider requests per probe: never more often than this
 PROBE_BACKOFF_MAX_SEC = 900.0  # consecutive probe failures double the wait up to here
 SEED_POLICY = "detached_clone_of_ref"
+PROCFS_AVAILABLE = os.path.isdir("/proc")   # the orphan scan reads /proc environ: Linux only
 # A lane's TOTAL_BUDGET must stay POSITIVE: the runtime reads a non-positive value as "no finite
 # global budget" (``settings_setup_contract.resolve_total_budget_usd``), the opposite of a cap.
 LANE_BUDGET_FLOOR_USD = 0.01
@@ -192,10 +193,13 @@ def write_settings(path: pathlib.Path, cfg: dict) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)   # O_CREAT's mode applies on creation only
         os.write(fd, raw)
     finally:
         os.close(fd)
+    if not hasattr(os, "fchmod"):   # Windows: no fchmod; chmod after the write is the best it has
+        os.chmod(path, 0o600)
     return hashlib.sha256(raw).hexdigest()
 
 
@@ -531,9 +535,14 @@ def _lane_row(job: tuple[str, int], args: argparse.Namespace) -> dict:
             "screenshots": [], "ui": {"available": False, "reason": ""}, "self_mod_absorb": None, "budget": {}}
 
 
-def _apply_orphan_scan(row: dict, orphans_gone: bool) -> None:
+def _apply_orphan_scan(row: dict, orphans_gone: bool | None) -> None:
     """The last check of a lane: a process still carrying the lane's data root after stop fails a
-    passing lane, and the index never carries a failed row with an empty reason."""
+    passing lane, and the index never carries a failed row with an empty reason. ``None`` = the
+    scan is unavailable (no procfs): a typed fact, not a passed check."""
+    if orphans_gone is None:
+        row["no_orphans_after_stop"] = None
+        row["orphan_scan"] = "unavailable:no_procfs"
+        return
     row["no_orphans_after_stop"] = bool(orphans_gone)
     if not orphans_gone and row["status"] == "pass":
         row["status"], row["reason_code"] = "fail", "checks_failed"
@@ -703,7 +712,7 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         if stub is not None:
             stub.__exit__(None, None, None)
         _apply_orphan_scan(row, harness.wait_until(
-            lambda: not harness.pids_with_env_value(str(data_root)), 30))
+            lambda: not harness.pids_with_env_value(str(data_root)), 30) if PROCFS_AVAILABLE else None)
         row["budget"]["spent_usd"], row["budget"]["unknown_cost_rows"] = lane_spend(data_root)
         row["ended_at"], row["duration_sec"] = now_iso(), round(time.time() - started, 1)
         _record_row(out, lane, row)

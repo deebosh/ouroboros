@@ -242,7 +242,11 @@ def _write_evolution_campaign(
         if lock_fd is None:
             return False
     try:
-        current = read_json_dict(path) or {}
+        current = read_json_dict(path)
+        if current is None and path.is_file():   # present but unreadable is NOT "no campaign"
+            log.warning("Refusing evolution campaign write: %s exists but is unreadable", path)
+            return False
+        current = current or {}
         current_id = str(current.get("id") or "")
         data_id = str(data.get("id") or "")
         expected_id = data_id if expected_campaign_id is None else str(expected_campaign_id or "")

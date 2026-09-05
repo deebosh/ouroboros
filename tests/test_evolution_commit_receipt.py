@@ -334,3 +334,23 @@ def test_panic_campaign_close_uses_nonblocking_state_lock(tmp_path, monkeypatch)
     )
 
     assert timeouts == [0.001]
+
+
+def test_unreadable_campaign_file_refuses_writes_instead_of_treating_it_as_absent(tmp_path, monkeypatch):
+    """A campaign file that EXISTS but cannot be read (a transient Windows sharing
+    violation, corruption) is not "no campaign": the stale-write guard cannot compare
+    ids, so the write is refused — never allowed as if the slot were free. An absent
+    file stays writable (the first campaign of a fresh data root)."""
+    from supervisor import evolution_lifecycle, queue, state
+
+    state.init(tmp_path)
+    queue.init(tmp_path)
+    path = evolution_lifecycle._evolution_campaign_path()
+    assert not path.exists()
+    fresh = {"schema_version": 1, "id": "abc12345", "status": "active", "objective": "First"}
+    assert evolution_lifecycle._write_evolution_campaign(dict(fresh)) is True
+    assert path.is_file()
+    monkeypatch.setattr(evolution_lifecycle, "read_json_dict", lambda _p: None)
+    assert evolution_lifecycle._write_evolution_campaign({**fresh, "id": "other001"}) is False
+    monkeypatch.undo()
+    assert evolution_lifecycle._read_evolution_campaign()["id"] == "abc12345"

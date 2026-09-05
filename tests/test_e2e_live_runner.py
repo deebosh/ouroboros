@@ -849,6 +849,10 @@ def test_orphan_after_stop_fails_a_passing_lane_with_a_typed_reason(tmp_path):
     clean = row()
     run_live_lanes._apply_orphan_scan(clean, True)
     assert clean["status"] == "pass" and clean["reason_code"] == "" and clean["checks"]["no_orphans_after_stop"] is True
+    absent = row()
+    run_live_lanes._apply_orphan_scan(absent, None)   # no procfs (macOS, Windows): a typed fact, no check
+    assert absent["status"] == "pass" and absent["orphan_scan"] == "unavailable:no_procfs"
+    assert absent["no_orphans_after_stop"] is None and "no_orphans_after_stop" not in absent["checks"]
     dirty = row()
     run_live_lanes._apply_orphan_scan(dirty, False)
     assert dirty["status"] == "fail" and dirty["reason_code"] == "checks_failed"

@@ -11,9 +11,6 @@ the real resolution order, and it asserts the pre-state it relies on by name so 
 polluted worker fails there, not as a downstream 200/404.
 """
 
-import os
-import time
-
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -37,42 +34,37 @@ def _make_client(monkeypatch, password: str = "secret") -> TestClient:
     return TestClient(app)
 
 
-def test_configured_password_resolution_env_over_settings_then_empty(monkeypatch):
-    """The ONE resolution pin: env wins over settings, a blank env falls through
-    to settings, a missing/blank/unreadable settings value is the empty password."""
+def test_configured_password_resolution_env_over_settings_then_empty():
+    """The ONE resolution pin, on the PURE resolver: env wins over settings, a blank env
+    falls through to settings, a missing/blank/unreadable settings value is the empty
+    password. It reads neither os.environ nor a module attribute, so neither polluter
+    class (a leaked daemon re-applying settings to the environment; a started-and-never-
+    stopped patch of the module wrapper on the same xdist worker — the macos-latest
+    rc.11 red: the wrapper answered '' with settings patched to a password) can reach it."""
     key = server_auth.NETWORK_PASSWORD_KEY
-    monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(server_auth, "load_settings", lambda: {})
-    # The polluter is a THREAD (a leaked daemon re-applying a settings dict to
-    # os.environ), so the pre-state is read over a short window, not once: a
-    # writer racing this test is named HERE instead of surfacing downstream.
-    for _ in range(20):
-        assert os.environ.get(key) is None, (
-            f"{key} is present in os.environ after monkeypatch.delenv: "
-            "ambient environment pollution on this worker"
-        )
-        assert server_auth.get_configured_network_password() == "", (
-            f"a password resolves with {key} unset and settings empty: "
-            "ambient environment pollution on this worker"
-        )
-        time.sleep(0.001)
-
-    monkeypatch.setattr(server_auth, "load_settings", lambda: {key: " from-settings "})
-    assert server_auth.get_configured_network_password() == "from-settings"
-    monkeypatch.setenv(key, " from-env ")
-    assert server_auth.get_configured_network_password() == "from-env"
-    monkeypatch.setenv(key, "   ")
-    assert server_auth.get_configured_network_password() == "from-settings"
-
-    monkeypatch.delenv(key)
-    monkeypatch.setattr(server_auth, "load_settings", lambda: {key: "  "})
-    assert server_auth.get_configured_network_password() == ""
+    resolve = server_auth.resolve_network_password
+    assert resolve(None, dict) == "" and resolve("", lambda: {}) == ""
+    assert resolve(None, lambda: {key: " from-settings "}) == "from-settings"
+    assert resolve(" from-env ", lambda: {key: " from-settings "}) == "from-env"
+    assert resolve("   ", lambda: {key: " from-settings "}) == "from-settings"
+    assert resolve(None, lambda: {key: "  "}) == ""
+    assert resolve("", lambda: {"other": "x"}) == ""
 
     def _unreadable():
         raise RuntimeError("settings unreadable")
 
-    monkeypatch.setattr(server_auth, "load_settings", _unreadable)
-    assert server_auth.get_configured_network_password() == ""
+    assert resolve(None, _unreadable) == ""
+
+
+def test_wrapper_reads_the_environment_then_the_settings_loader(monkeypatch):
+    """The wrapper hands the pure resolver the live environment value and the module's
+    settings loader — pinned through the resolver seam, immune to a leaked patch."""
+    key = server_auth.NETWORK_PASSWORD_KEY
+    seen = []
+    monkeypatch.setattr(server_auth, "resolve_network_password", lambda env, loader: seen.append((env, loader)) or "r")
+    monkeypatch.setenv(key, "env-value")
+    assert server_auth.get_configured_network_password() == "r"
+    assert seen == [("env-value", server_auth.load_settings)]
 
 
 def test_validate_network_auth_configuration_allows_open_bind_without_password(monkeypatch):
