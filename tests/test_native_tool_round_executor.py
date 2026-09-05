@@ -897,7 +897,9 @@ def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypa
     llm.chat = slow_chat
     result = executor.execute()
     assert result.raw_text == "# Draft\n" and result.usage["native_incomplete"] == "deadline_exhausted"
-    assert llm.calls[0]["timeout"] <= 0.2  # one send never outlives the window: no floor above it
+    # one send never outlives the window: no floor above it (1e-6: the window is deadline - now and
+    # two monotonic() reads on Windows can coincide, leaving a float tail above 0.2)
+    assert llm.calls[0]["timeout"] <= 0.2 + 1e-6
 
     # The window expiring between the round's admission check and dispatch
     # takes the deadline path — no send with a floored timeout.
