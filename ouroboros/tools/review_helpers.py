@@ -59,8 +59,9 @@ def calibrated_input_token_limit(
     allowed: the prompt-size SSOT (``budget_cap``), the density form
     ``(window − output_reserve) / density``, and the historical absolute-margin form
     ``window − output_reserve − tokenizer_margin``. The review reducer uses the
-    densest fresh compatible witness with its safety factor, never below the cold
-    1.65 floor; the absolute-margin form remains an independent upper bound."""
+    densest fresh EXACT-MODEL witness with its safety factor (it may undercut the
+    cold 1.65 floor), else the floor — never another model's witness; the
+    absolute-margin form remains an independent upper bound."""
     from ouroboros.capability_evidence import resolve_review_token_density
 
     density, _ = resolve_review_token_density(

@@ -687,13 +687,17 @@ def _normalized_density_model(model_id: str) -> str:
 def _fresh_density_pairs(
     store: Dict[str, Any], model_id: str = "", *, basis: str = "",
 ) -> List[Tuple[Dict[str, Any], float]]:
+    # Without ``model_id`` every model's rows are returned — ONLY for the main
+    # resolver's exact-route lookup (a route fingerprint belongs to one model;
+    # the caller filters on it). No resolver reduces over other models' rows:
+    # another tokenizer's density is no evidence about this route.
     # ``basis`` filters to rows measured on one named basis. The MAIN fit
     # resolver passes "bounded_proxy" — its multiplier must match the fit
     # estimator's own measure: a pre-basis row (no stamp) or a legacy ``raw``
     # row was measured against raw base64 chars and can sit at 0.05-0.65 on
     # image routes, so letting it stay authoritative for its 14-day TTL after
     # an upgrade re-poisons exactly what the basis fix cures (the cost is a
-    # brief cold start at 1.0). Review/aggregate resolvers pass no basis: their
+    # brief cold start at 1.0). The review resolver passes no basis: its
     # text-heavy witnesses measure the same on either basis.
     entries = [store.get(model_id) or {}] if model_id else list(store.values())
     return [
@@ -736,23 +740,24 @@ def resolve_main_token_density(drive_root: Any, route_fp: str, model_id: str) ->
 
 def resolve_review_token_density(drive_root: Any, model_id: str) -> Tuple[float, str]:
     """Densest fresh exact-model witness (authoritative, may undercut the cold
-    floor), else the cold floor over any fresh compatible witness.
+    floor), else the cold floor.
 
     A fresh exact-model witness measures THIS model's real tokenizer density, so
     it is allowed to lower the effective density below ``COLD_START_TOKEN_DENSITY``
     (issue #284: the floor otherwise shrinks a 1M-window reviewer to ~575K
     estimated input tokens against a measured 0.86-1.01 density, and the managed
-    scope atlas can never assemble). The floor keeps governing when the only
-    evidence is stale (TTL-expired), absent, or from a different model."""
+    scope atlas can never assemble). The floor governs when the only evidence is
+    stale (TTL-expired) or absent — and when the only witnesses belong to OTHER
+    models: another tokenizer's density says nothing about this route, and
+    letting the densest foreign pair govern could only push the cap BELOW the
+    already-conservative floor (paid run 2026-09-04: a gemini-3.8-flash row at
+    1.81 sized gpt-5.6-terra, measured 0.87-0.96, at 1.90 and cut its scope cap
+    from 575,757 to 499,627 of a 1,050,000-token window)."""
     try:
         store = _load(drive_root).get("token_density", {}) or {}
         exact = _fresh_density_pairs(store, _normalized_density_model(model_id))
         if exact:
             return max(item[1] for item in exact) * MEASURED_DENSITY_SAFETY_FACTOR, "measured"
-        witnessed = _fresh_density_pairs(store)
-        if witnessed:
-            density = max(item[1] for item in witnessed) * MEASURED_DENSITY_SAFETY_FACTOR
-            return max(COLD_START_TOKEN_DENSITY, density), "cold_conservative"
     except Exception:
         pass
     return COLD_START_TOKEN_DENSITY, "cold_conservative"
@@ -1085,14 +1090,24 @@ def observe_token_density(request: Any, usage: Optional[Dict[str, Any]], *, driv
     """Learn density after settlement; unknown cache semantics produce no witness."""
     try:
         normalized = dict(usage or {})
-        cache_bearing = bool(
-            int(normalized.get("cached_tokens") or 0)
-            or int(normalized.get("cache_write_tokens") or 0)
-        )
+        cached = int(normalized.get("cached_tokens") or 0)
+        cache_bearing = bool(cached or int(normalized.get("cache_write_tokens") or 0))
         provider = str(request.provider or "").strip().lower()
         if cache_bearing and provider not in _CACHE_INCLUSIVE_PROMPT_TOKEN_PROVIDERS:
             return
         real = int(normalized.get("prompt_tokens") or normalized.get("input_tokens") or 0)
+        # A cache-inclusive total landing on 2 x cached_tokens (+-1) is a gateway
+        # adding the cache read on top of an already inclusive total, not a
+        # tokenizer measurement (paid run 2026-09-04: 22 openrouter gemini rows
+        # at exactly 2 x cached - 1, beside honest rows of the same prompt at
+        # 1.00-1.17 x cached). One such row, promoted by the densest-wins review
+        # reducer, governs the exact model for the 90-day TTL (1.81 against a
+        # real 0.88-1.03), so it is no witness. An honest row with
+        # uncached == cached +-1 is a coincidence whose loss costs nothing
+        # (writes are throttled and five pairs retained); uncached ABOVE cached
+        # is ordinary and stays measurable.
+        if cached and abs(real - 2 * cached) <= 1:
+            return
         # The witness MUST calibrate the basis the fit estimator measures on
         # (bounded image proxy) — the raw-base64 basis fed a self-consistent
         # ~27% under-prediction: measure_main_fit multiplied a BOUNDED

@@ -290,6 +290,30 @@ def test_calibrated_input_limit_shared_helper(tmp_path, monkeypatch):
     assert "calibrated_input_token_limit" in inspect.getsource(triad)
 
 
+def test_scope_cap_of_an_unwitnessed_reviewer_ignores_another_models_witness(tmp_path, monkeypatch):
+    """Paid run 2026-09-04, lane SM1_a1, commit-gate attempt 2: gpt-5.6-terra's
+    window confirmed at 1,050,000, no terra witness yet, and a gemini-3.8-flash
+    witness at 1.81 in the store. The scope cap came out at 499,627 (1.81 x 1.05
+    applied to terra) instead of the floor-based 575,757, starving 48 required
+    protected-path artifacts before any reviewer was dispatched. The cap of an
+    unwitnessed reviewer is the floor's, whatever other models measured."""
+    from ouroboros.capability_evidence import _DENSITY_MEMO, COLD_START_TOKEN_DENSITY, record_token_density
+    from ouroboros.reviewer_window import ReviewerWindow
+    from ouroboros.tools.scope_review import _effective_scope_input_limit
+
+    monkeypatch.setattr("ouroboros.tools.scope_review._scope_window",
+                        lambda m: ReviewerWindow(1_050_000, "confirmed"))
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
+    _DENSITY_MEMO.clear()
+    record_token_density(
+        tmp_path, "google/gemini-3.8-flash", prompt_chars=900_708, prompt_tokens=407_767,
+    )
+
+    cap = _effective_scope_input_limit(scope_model="openai/gpt-5.6-terra")
+    assert cap == int((1_050_000 - 100_000) / COLD_START_TOKEN_DENSITY) == 575_757
+    assert cap != 499_627
+
+
 def test_measured_density_never_loosens_a_models_own_review_pack_cap(tmp_path, monkeypatch):
     """A still-fresh dense witness may only tighten a model's review cap.
 
