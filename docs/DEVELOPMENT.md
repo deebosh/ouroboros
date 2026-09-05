@@ -1929,6 +1929,14 @@ by "Provider Independence" above. Call-site imperatives:
   `runtime_limits.py`, both re-exported through `ouroboros.config`, which stays
   the one import surface. Register the env key; do not scatter magic wait
   numbers across call sites (`tests/test_timeout_policy.py`).
+- Worker readiness is its own bound, not a tuning knob: `WORKER_READY_WINDOW_SEC`
+  and `WORKER_READY_MAX_ATTEMPTS` sit in `config.py` beside the spawn grace as
+  structural constants (a warm fork confirms in seconds; the window is the
+  pool's existing init budget). Never fold "the child confirmed ready" into
+  process liveness (`proc.is_alive`) or the task idle rail: a child deadlocked
+  on a lock inherited across fork is alive and holds no task. The readiness
+  seam in `supervisor/worker_pool_lifecycle.py` is the one place both spawn
+  paths pass through; a slot it holds `reaping` is not capacity.
 - Nested process wrappers are ordered, never tied: the provider bound settles
   before its killable child, the child before the generic ToolEntry envelope
   (fixed structural settlement margin from `config.py`), so a child or

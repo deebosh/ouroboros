@@ -1,9 +1,12 @@
-"""Keeping the pool populated: spawn verification, pid records, reaping, respawn.
+"""Keeping the pool populated: readiness gate, pid records, reaping, respawn.
 
-A spawned worker is not trusted until it reports the SHA it actually booted; the
-pids it ran under are recorded durably so an orphan surviving a restart can be
-reaped; a replaced worker's queue is closed under the lock before the new one
-takes its slot.
+A spawned or respawned slot is installed unassignable (``reaping=True``) and opens
+only when the child's own ``worker_ready`` row is observed, which is also where the
+SHA it booted is verified; a child alive but silent past the readiness window is
+torn down and replaced through the same respawn path, a bounded number of times.
+The pids workers ran under are recorded durably so an orphan surviving a restart
+can be reaped; a replaced worker's queue is closed under the lock before the new
+one takes its slot.
 
 The lifecycle serializer lives here too: it is a decorator, so it is applied at
 import time and cannot be reached through a call-time handle. It is a primitive,
@@ -21,6 +24,7 @@ import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from ouroboros.config import WORKER_READY_MAX_ATTEMPTS, WORKER_READY_WINDOW_SEC
 from supervisor.state import append_jsonl
 from ouroboros.outcomes import EXECUTION_INFRA_FAILED, terminal_outcome_axes
 from ouroboros.utils import utc_now_iso
@@ -129,10 +133,8 @@ def events_log_cursor() -> Tuple[int, int, int]:
         return 0, 0, 0
 
 
-def _first_worker_event_since(
-    cursor: Tuple[int, int, int], event_type: str = "worker_boot"
-) -> Optional[Dict[str, Any]]:
-    """Read the first event of one worker lifecycle type after a cursor.
+def _worker_events_since(cursor: Tuple[int, int, int], event_type: str) -> List[Dict[str, Any]]:
+    """Every event of one worker lifecycle type after a cursor, in log order.
 
     The event log rotates (CPL4-C1), so the file the cursor was taken from may
     now BE an archive segment. Rotation is detected by IDENTITY, not by size:
@@ -178,8 +180,9 @@ def _first_worker_event_since(
                 chunks.insert(0, segments[-1].read_bytes().decode("utf-8", errors="replace"))
     except Exception:
         log.debug("Suppressed exception", exc_info=True)
-        return None
+        return []
 
+    found: List[Dict[str, Any]] = []
     for line in "".join(chunks).splitlines():
         raw = line.strip()
         if not raw:
@@ -190,67 +193,169 @@ def _first_worker_event_since(
             log.debug("Suppressed exception in loop", exc_info=True)
             continue
         if isinstance(evt, dict) and str(evt.get("type") or "") == event_type:
-            return evt
-    return None
+            found.append(evt)
+    return found
 
 
-def _first_worker_boot_event_since(cursor: Tuple[int, int, int]) -> Optional[Dict[str, Any]]:
-    return _first_worker_event_since(cursor, "worker_boot")
+def _first_worker_event_since(
+    cursor: Tuple[int, int, int], event_type: str = "worker_boot"
+) -> Optional[Dict[str, Any]]:
+    """The first event of one worker lifecycle type after a cursor, or None."""
+    rows = _worker_events_since(cursor, event_type)
+    return rows[0] if rows else None
+
+
+def _slot_pid(slot: Any) -> int:
+    try:
+        return int(getattr(slot.proc, "pid", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _supervisor_row(row: Dict[str, Any]) -> None:
+    append_jsonl(_pool().DRIVE_ROOT / "logs" / "supervisor.jsonl", {"ts": utc_now_iso(), **row})
 
 
 def _verify_worker_sha_after_spawn(
-    events_cursor: Tuple[int, int, int], timeout_sec: float = 90.0,
+    slots: Dict[int, Any], events_cursor: Tuple[int, int, int], attempt: int = 1,
+    spawned_at: float = 0.0,
 ) -> None:
-    """Verify newly spawned workers booted at expected current_sha."""
+    """Hold freshly spawned slots unassignable until each child confirms ready.
+
+    The ONE readiness seam for both spawn paths: ``spawn_workers`` and
+    ``respawn_worker`` install a slot with ``reaping=True`` (the marker the
+    assignment path, the crash detector and the reaper already honour) and hand
+    it here. A slot opens only when the child's own ``worker_ready`` row
+    (supervisor/worker_process.py) names its pid, and that row's ``git_sha`` is
+    verified against ``current_sha`` in the same step. A child that is alive
+    but silent past ``WORKER_READY_WINDOW_SEC`` is torn down and replaced
+    through ``respawn_worker`` — at most ``WORKER_READY_MAX_ATTEMPTS``
+    consecutive times for one slot, then the slot is parked and reported. A
+    child that DIED during boot is released to the crash detector, which
+    already owns process death (``worker_dead_detected``, retry, the
+    crash-storm fence). This is a contract distinct from process liveness and
+    from the task idle rail: a deadlocked child is alive and holds no task.
+    ``spawned_at`` is the instant before ``proc.start()``: the window and the
+    reported wait count from the child's birth, not from this thread's start.
+    """
     st = _pool().load_state()
     expected_sha = str(st.get("current_sha") or "").strip()
+    owner_chat_id = int(st.get("owner_chat_id") or 0)
     if not expected_sha:
-        append_jsonl(
-            _pool().DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "worker_sha_verify_skipped",
-                "reason": "missing_current_sha",
-            },
-        )
-        return
-
-    deadline = time.time() + max(float(timeout_sec), 1.0)
-    boot_evt = None
-    while time.time() < deadline:
-        boot_evt = _first_worker_boot_event_since(events_cursor)
-        if boot_evt is not None:
+        _supervisor_row({"type": "worker_sha_verify_skipped", "reason": "missing_current_sha"})
+    pending = dict(slots)
+    started = float(spawned_at or 0.0) or time.time()
+    deadline = started + max(float(WORKER_READY_WINDOW_SEC), 1.0)
+    while pending:
+        ready_rows: Dict[int, Dict[str, Any]] = {}
+        for row in _worker_events_since(events_cursor, "worker_ready"):
+            try:
+                ready_rows.setdefault(int(row.get("pid") or 0), row)
+            except (TypeError, ValueError):
+                continue
+        for wid, slot in list(pending.items()):
+            row = ready_rows.get(_slot_pid(slot))
+            if row is not None:
+                _open_ready_slot(wid, slot, row, expected_sha, owner_chat_id, started, attempt)
+                pending.pop(wid)
+            elif not slot.proc.is_alive():
+                _release_dead_booting_slot(wid, slot, started, attempt)
+                pending.pop(wid)
+        if not pending or time.time() >= deadline:
             break
         time.sleep(0.25)
+    for wid, slot in pending.items():
+        _replace_unready_slot(wid, slot, owner_chat_id, started, attempt)
 
-    if boot_evt is None:
-        append_jsonl(
-            _pool().DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "worker_sha_verify_timeout",
-                "expected_sha": expected_sha,
-            },
-        )
-        return
 
-    observed_sha = str(boot_evt.get("git_sha") or "").strip()
-    ok = bool(observed_sha and observed_sha == expected_sha)
-    append_jsonl(
-        _pool().DRIVE_ROOT / "logs" / "supervisor.jsonl",
-        {
-            "ts": utc_now_iso(),
-            "type": "worker_sha_verify",
-            "ok": ok,
-            "expected_sha": expected_sha,
-            "observed_sha": observed_sha,
-            "worker_pid": boot_evt.get("pid"),
-        },
-    )
-    if not ok and st.get("owner_chat_id"):
+def _open_ready_slot(
+    wid: int, slot: Any, row: Dict[str, Any], expected_sha: str, owner_chat_id: int,
+    started: float, attempt: int,
+) -> None:
+    """The child confirmed ready: open the slot (if it is still ours) and verify its SHA."""
+    with _queue_lock:
+        owned = _pool().WORKERS.get(wid) is slot
+        if owned:
+            slot.reaping = False
+    observed_sha = str(row.get("git_sha") or "").strip()
+    ok = (bool(observed_sha) and observed_sha == expected_sha) if expected_sha else None
+    _supervisor_row({
+        "type": "worker_sha_verify",
+        "ok": ok,
+        "expected_sha": expected_sha,
+        "observed_sha": observed_sha,
+        "worker_pid": row.get("pid"),
+        "worker_id": wid,
+        "wait_sec": round(time.time() - started, 2),
+        "attempt": attempt,
+        "slot_opened": owned,
+    })
+    if ok is False and owner_chat_id:
         _pool().send_with_budget(
-            int(st["owner_chat_id"]),
+            owner_chat_id,
             f"⚠️ Worker SHA mismatch after spawn: expected {expected_sha[:8]}, got {(observed_sha or 'unknown')[:8]}",
+        )
+
+
+def _release_dead_booting_slot(wid: int, slot: Any, started: float, attempt: int) -> None:
+    """The child died before confirming ready: hand the dead slot to the crash detector."""
+    with _queue_lock:
+        owned = _pool().WORKERS.get(wid) is slot
+        if owned:
+            slot.reaping = False
+    _supervisor_row({
+        "type": "worker_ready_released",
+        "reason": "died_during_boot",
+        "worker_id": wid,
+        "pid": _slot_pid(slot),
+        "exitcode": getattr(slot.proc, "exitcode", None),
+        "waited_sec": round(time.time() - started, 2),
+        "attempt": attempt,
+        "slot_released": owned,
+    })
+
+
+def _replace_unready_slot(wid: int, slot: Any, owner_chat_id: int, started: float, attempt: int) -> None:
+    """No worker_ready inside the window: tear the child down and replace the slot, bounded."""
+    from ouroboros.platform_layer import kill_pid_tree
+
+    with _queue_lock:
+        if _pool().WORKERS.get(wid) is not slot:
+            return  # a pool restart already replaced or cleared this slot
+    pid = _slot_pid(slot)
+    action = "respawn" if attempt < WORKER_READY_MAX_ATTEMPTS else "parked"
+    _supervisor_row({
+        "type": "worker_ready_timeout",
+        "reason": "no_worker_ready",
+        "worker_id": wid,
+        "pid": pid,
+        "waited_sec": round(time.time() - started, 2),
+        "window_sec": float(WORKER_READY_WINDOW_SEC),
+        "attempt": attempt,
+        "max_attempts": int(WORKER_READY_MAX_ATTEMPTS),
+        "action": action,
+    })
+    if pid:
+        kill_pid_tree(pid)
+    try:
+        slot.proc.join(timeout=2)
+    except Exception:
+        log.debug("Join of an unready worker failed", exc_info=True)
+    if action == "respawn":
+        try:
+            respawn_worker(wid, ready_attempt=attempt + 1)
+        except Exception:
+            log.warning("Respawn of unready worker %d failed; clearing reaping for recovery", wid, exc_info=True)
+            with _queue_lock:
+                if _pool().WORKERS.get(wid) is slot:
+                    slot.reaping = False  # the crash detector recovers the dead slot
+        return
+    log.error("Worker %d never confirmed ready in %d attempts; slot parked until restart", wid, attempt)
+    if owner_chat_id:
+        _pool().send_with_budget(
+            owner_chat_id,
+            f"⚠️ Worker slot {wid} never confirmed ready in {attempt} attempts "
+            f"({WORKER_READY_WINDOW_SEC:.0f}s window each); the slot is parked. Use /restart.",
         )
 
 
@@ -395,13 +500,15 @@ def _kill_survivors() -> None:
 
 
 @_serialized_worker_lifecycle
-def respawn_worker(wid: int) -> bool:
+def respawn_worker(wid: int, *, ready_attempt: int = 1) -> bool:
     """Replace one owned slot without forking under the queue RLock.
 
     The lifecycle lock makes the two-phase check/start/swap mutually exclusive
     with full-pool shutdown/start.  The identity check after ``proc.start()``
     prevents a replacement from being installed if the slot was removed while
-    the queue lock was released.
+    the queue lock was released.  The fresh slot is installed unassignable and
+    handed to the readiness seam; ``ready_attempt`` is that seam's own
+    consecutive-failure count for this slot.
     """
     with _queue_lock:
         old = _pool().WORKERS.get(wid)
@@ -409,6 +516,7 @@ def respawn_worker(wid: int) -> bool:
         return False
     ctx = _pool()._get_ctx()
     in_q = ctx.Queue()
+    events_cursor, spawned_at = events_log_cursor(), time.time()
     proc = ctx.Process(target=worker_main,
                        args=(wid, in_q, _pool().get_event_q(), str(_pool().REPO_DIR), str(_pool().DRIVE_ROOT),
                              _current_custody_session_id()))
@@ -425,7 +533,8 @@ def respawn_worker(wid: int) -> bool:
     installed = False
     with _queue_lock:
         if _pool().WORKERS.get(wid) is old:
-            _pool().WORKERS[wid] = _pool().Worker(wid=wid, proc=proc, in_q=in_q, busy_task_id=None)
+            fresh = _pool().Worker(wid=wid, proc=proc, in_q=in_q, busy_task_id=None, reaping=True)
+            _pool().WORKERS[wid] = fresh
             installed = True
     if not installed:
         try:
@@ -452,5 +561,9 @@ def respawn_worker(wid: int) -> bool:
         except Exception:
             log.debug("Failed to close old worker queue on respawn", exc_info=True)
     _record_worker_pids()
+    threading.Thread(
+        target=_pool()._verify_worker_sha_after_spawn,
+        args=({wid: fresh}, events_cursor, int(ready_attempt), spawned_at), daemon=True,
+    ).start()
     # Do not reset _LAST_SPAWN_TIME here; respawn grace would hide crash storms.
     return True

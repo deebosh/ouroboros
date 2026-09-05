@@ -464,6 +464,86 @@ def queue_snapshot(data_root) -> dict:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
+_READINESS_ROW_TYPES = (
+    "worker_sha_verify", "worker_ready_timeout", "worker_ready_released",
+    "worker_dead_detected", "worker_crash",
+)
+
+
+def stall_forensics(data_root, task_id: str) -> dict:
+    """What a red ``wait_task`` must say instead of ``{'status': 'timeout'}``.
+
+    Three facts separate the live hypotheses for a task that never went terminal:
+    the task's own queue row (still PENDING = stuck in assignment; RUNNING = on a
+    worker that never answered, with its ``worker_id``), whether ``events.jsonl``
+    carries a ``worker_boot``/``worker_ready`` row for a pid NEWER than the last
+    cancel's ``settled`` row (a respawned child that never confirmed ready wedged
+    during boot), and the readiness rows the pool wrote to ``supervisor.jsonl``
+    after that settle; ``task_event_types`` shows whether the task ever produced
+    a round (a child ready but silent on the task wedged at its first lazy import).
+    """
+    root = pathlib.Path(data_root)
+    snapshot = queue_snapshot(root)
+    task = {"state": "absent"}
+    for row in snapshot.get("pending") or []:
+        if str(row.get("id") or "") == task_id:
+            task = {"state": "pending", "attempt": row.get("attempt"), "queued_at": row.get("queued_at")}
+    for row in snapshot.get("running") or []:
+        if str(row.get("id") or "") == task_id:
+            task = {
+                "state": "running", "worker_id": row.get("worker_id"),
+                "runtime_sec": row.get("runtime_sec"), "heartbeat_lag_sec": row.get("heartbeat_lag_sec"),
+            }
+    settled = [str(row.get("ts") or "") for row in forensics(root, event="settled")]
+    settled_ts = max(settled) if settled else ""
+
+    def _scan(path, keep):
+        rows = []
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    row = json.loads(line) if line.strip() else None
+                except ValueError:
+                    row = None
+                if isinstance(row, dict) and keep(row):
+                    rows.append(row)
+        return rows
+
+    events_path = root / "logs" / "events.jsonl"
+    worker_rows = _scan(
+        events_path,
+        lambda r: r.get("type") in ("worker_boot", "worker_ready") and str(r.get("ts") or "") > settled_ts,
+    )
+    readiness_rows = _scan(
+        root / "logs" / "supervisor.jsonl",
+        lambda r: r.get("type") in _READINESS_ROW_TYPES and str(r.get("ts") or "") > settled_ts,
+    )
+    task_event_types = sorted({
+        str(r.get("type") or "") for r in _scan(events_path, lambda r: str(r.get("task_id") or "") == task_id)
+    })
+    worker_id = task.get("worker_id")
+    ready_for_worker = None
+    if worker_id is not None:
+        ready_for_worker = any(
+            r.get("type") == "worker_ready" and r.get("worker_id") == worker_id for r in worker_rows
+        )
+    return {
+        "task": task,
+        "cancel_settled_ts": settled_ts,
+        "worker_rows_after_settle": [
+            {"type": r.get("type"), "pid": r.get("pid"), "worker_id": r.get("worker_id"), "ts": r.get("ts")}
+            for r in worker_rows
+        ],
+        "readiness_rows_after_settle": readiness_rows,
+        "worker_ready_for_assigned_worker": ready_for_worker,
+        "task_event_types": task_event_types,
+        "snapshot_counts": {
+            key: snapshot.get(key)
+            for key in ("pending_count", "running_count", "reaping_count", "worker_total", "assignable_idle_workers")
+        },
+    }
+
+
 def wait_until(predicate, timeout: float, interval: float = 0.5):
     deadline = time.time() + timeout
     last = None

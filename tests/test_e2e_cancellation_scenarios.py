@@ -87,6 +87,7 @@ from tests.fixtures_e2e_cancellation import (
     isolated_settings,
     queue_snapshot,
     require_lane,
+    stall_forensics,
     start_server,
     submit_running,
     task_result,
@@ -332,6 +333,45 @@ def test_api_status_helper_never_raises_on_an_error_status():
     assert answer["body"] == {}
 
 
+def test_stall_forensics_separates_the_three_stall_hypotheses(tmp_path):
+    """The diagnostic a red ``wait_task`` carries must itself never fail: on a
+    task RUNNING on the slot a cancel respawned, it names the worker, whether that
+    worker's child ever confirmed ready after the settle, and the pool's readiness
+    rows -- and it degrades to plain facts on an empty root."""
+    from tests.fixtures_e2e_cancellation import stall_forensics
+
+    assert stall_forensics(tmp_path, "t1")["task"] == {"state": "absent"}
+
+    (tmp_path / "state").mkdir()
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "state" / "queue_snapshot.json").write_text(json.dumps({
+        "pending_count": 0, "running_count": 1, "reaping_count": 0, "worker_total": 4,
+        "assignable_idle_workers": 3,
+        "pending": [], "running": [{"id": "t1", "worker_id": 0, "runtime_sec": 241.0, "heartbeat_lag_sec": 241.0}],
+    }), encoding="utf-8")
+    (tmp_path / "logs" / "supervisor.jsonl").write_text("\n".join([
+        json.dumps({"ts": "2026-09-05T13:28:27.5+00:00", "type": "cancel_intent", "event": "settled", "task_id": "t0"}),
+        json.dumps({"ts": "2026-09-05T13:28:29.0+00:00", "type": "worker_sha_verify", "worker_id": 0, "worker_pid": 20}),
+        json.dumps({"ts": "2026-09-05T13:28:30.0+00:00", "type": "task_received", "task_id": "t1"}),
+    ]) + "\n", encoding="utf-8")
+    (tmp_path / "logs" / "events.jsonl").write_text("\n".join([
+        json.dumps({"ts": "2026-09-05T13:28:21.0+00:00", "type": "worker_ready", "worker_id": 0, "pid": 10}),
+        json.dumps({"ts": "2026-09-05T13:28:27.6+00:00", "type": "worker_boot", "pid": 20}),
+        json.dumps({"ts": "2026-09-05T13:28:29.0+00:00", "type": "worker_ready", "worker_id": 0, "pid": 20}),
+        json.dumps({"ts": "2026-09-05T13:28:31.0+00:00", "type": "llm_usage", "task_id": "t1"}),
+        "not json",
+    ]) + "\n", encoding="utf-8")
+
+    facts = stall_forensics(tmp_path, "t1")
+    assert facts["task"] == {"state": "running", "worker_id": 0, "runtime_sec": 241.0, "heartbeat_lag_sec": 241.0}
+    assert facts["cancel_settled_ts"] == "2026-09-05T13:28:27.5+00:00"
+    assert [(r["type"], r["pid"]) for r in facts["worker_rows_after_settle"]] == [("worker_boot", 20), ("worker_ready", 20)]
+    assert [r["type"] for r in facts["readiness_rows_after_settle"]] == ["worker_sha_verify"]
+    assert facts["worker_ready_for_assigned_worker"] is True
+    assert facts["task_event_types"] == ["llm_usage"]
+    assert facts["snapshot_counts"]["assignable_idle_workers"] == 3
+
+
 # ===========================================================================
 # Mock lane: a real isolated server driven by the local stub model.
 # ===========================================================================
@@ -418,6 +458,11 @@ def test_e6_cancel_after_settlement_is_a_404_and_preserves_the_result(mock_stack
         final = server.wait_task(task_id, timeout=240)
     finally:
         stub.mode = previous_mode
+    if final.get("status") != "completed":
+        # A bare {'status': 'timeout'} cannot tell a child wedged during boot from one wedged at
+        # its first lazy import from a task stuck in assignment: the queue row, the post-cancel
+        # worker_boot/worker_ready pids and the pool's readiness rows separate them in one red run.
+        final = dict(final, stall=stall_forensics(data_root, task_id))
     assert final.get("status") == "completed", final
 
     # A `completed` STATUS is not yet "settled and dead". A settled result whose worker is

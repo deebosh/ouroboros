@@ -374,7 +374,8 @@ def test_respawn_worker_does_not_reset_spawn_time(tmp_path):
     ctx.Queue.return_value = fake_queue
 
     with patch("supervisor.workers._get_ctx", return_value=ctx), \
-         patch("supervisor.workers.get_event_q", return_value=fake_queue):
+         patch("supervisor.workers.get_event_q", return_value=fake_queue), \
+         patch("supervisor.workers._verify_worker_sha_after_spawn"):
         W.respawn_worker(0)
 
     assert W._LAST_SPAWN_TIME == original_time, (

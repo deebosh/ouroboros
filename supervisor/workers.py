@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union  # noqa: F401
 from supervisor.state import load_state, append_jsonl, reconstruct_task_cost
 from supervisor.message_bus import send_with_budget
 from supervisor.message_bus import coerce_chat_identity  # noqa: F401 -- worker_health leaf reads it via the _pool() handle
-from ouroboros.config import DATA_DIR, REPO_DIR as CONFIG_REPO_DIR
+from ouroboros.config import DATA_DIR, REPO_DIR as CONFIG_REPO_DIR, WORKER_SPAWN_GRACE_SEC
 from ouroboros.depth_evidence import parse_task_depth
 from ouroboros.review_owner_custody import (
     reconcile_confirmed_dead_review_owner as _reconcile_confirmed_dead_review_owner_for_root,
@@ -36,7 +36,7 @@ BRANCH_STABLE: str = "ouroboros-stable"
 
 _CTX = None
 _LAST_SPAWN_TIME: float = 0.0  # grace period: don't count dead workers right after spawn
-_SPAWN_GRACE_SEC: float = 90.0  # workers need up to ~60s to init (spawn + pip)
+_SPAWN_GRACE_SEC: float = WORKER_SPAWN_GRACE_SEC  # config SSOT; leaves read it through _pool()
 
 # macOS + Windows default to spawn; Linux keeps fork.
 #
@@ -1106,7 +1106,7 @@ def spawn_workers(n: int = 0) -> None:
     reap_orphaned_workers()
     _CTX = mp.get_context(_WORKER_START_METHOD)
     event_q = get_event_q()
-    events_cursor = events_log_cursor()
+    events_cursor, spawned_at = events_log_cursor(), time.time()
 
     count = n or MAX_WORKERS
     append_jsonl(
@@ -1129,7 +1129,8 @@ def spawn_workers(n: int = 0) -> None:
                                      _current_custody_session_id()))
             proc.daemon = True
             proc.start()
-            new_workers[i] = Worker(wid=i, proc=proc, in_q=in_q, busy_task_id=None)
+            # Unassignable until the readiness seam observes this child's worker_ready row.
+            new_workers[i] = Worker(wid=i, proc=proc, in_q=in_q, busy_task_id=None, reaping=True)
     except Exception:
         for worker in new_workers.values():
             try:
@@ -1151,8 +1152,8 @@ def spawn_workers(n: int = 0) -> None:
         _WORKER_POOL_DISABLED_REASON = ""
         _LAST_SPAWN_TIME = time.time()
     _record_worker_pids()
-    # Verify asynchronously so spawn does not block the supervisor loop.
-    threading.Thread(target=_verify_worker_sha_after_spawn, args=(events_cursor,), daemon=True).start()
+    # Readiness + SHA verification run off-loop so spawn does not block the supervisor loop.
+    threading.Thread(target=_verify_worker_sha_after_spawn, args=(dict(new_workers), events_cursor, 1, spawned_at), daemon=True).start()
 
 
 @_serialized_worker_lifecycle
@@ -2146,7 +2147,6 @@ from supervisor.worker_health import (  # noqa: E402, F401 -- intentional public
 )
 from supervisor.worker_pool_lifecycle import (  # noqa: E402, F401 -- intentional public re-exports
     _WORKER_LIFECYCLE_LOCK,
-    _first_worker_boot_event_since,
     _first_worker_event_since,
     _kill_survivors,
     _record_worker_pids,

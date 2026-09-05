@@ -68,8 +68,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
     })),
     "supervisor/worker_pool_lifecycle.py": ("supervisor/workers.py", "_pool", frozenset({
         "DRIVE_ROOT", "REPO_DIR", "WORKERS", "Worker", "_WORKER_PIDS_FILENAME",
-        "_get_ctx", "_reconcile_confirmed_dead_review_owner", "get_event_q",
-        "kill_workers", "load_state", "reconstruct_task_cost", "send_with_budget",
+        "_get_ctx", "_reconcile_confirmed_dead_review_owner",
+        "_verify_worker_sha_after_spawn", "get_event_q", "kill_workers", "load_state",
+        "reconstruct_task_cost", "send_with_budget",
     })),
     "supervisor/worker_promotion.py": ("supervisor/workers.py", "_pool", frozenset({
         "DRIVE_ROOT", "PENDING", "REPO_DIR", "RUNNING", "_announce_created_project",

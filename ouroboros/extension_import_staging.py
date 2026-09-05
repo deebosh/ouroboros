@@ -18,6 +18,7 @@ import time
 import uuid
 from typing import Optional, Sequence
 
+from ouroboros.config import WORKER_SPAWN_GRACE_SEC
 from ouroboros.extension_isolated_deps import is_skill_cache_path
 from ouroboros.extension_registry_state import _extensions, _lock
 from ouroboros.skill_loader import _SKILL_DIR_CACHE_NAMES, LoadedSkill, skill_state_dir
@@ -96,10 +97,10 @@ def _stage_extension_import_tree(
 
 
 # Grace window before a per-PID staged tree whose owner process is already gone is
-# reaped: a just-spawned peer worker can still be mid-copytree of a fresh tree.
-# Value-mirrored from supervisor/workers.py:_SPAWN_GRACE_SEC (do NOT import supervisor
-# into ouroboros/ — layering inversion); it only affects reclaim latency, not safety.
-_IMPORT_SWEEP_GRACE_SEC = 90.0
+# reaped: a just-spawned peer worker can still be mid-copytree of a fresh tree. The
+# pool's spawn grace from the config SSOT (supervisor/ must not be imported into
+# ouroboros/ — layering inversion); it only affects reclaim latency, not safety.
+_IMPORT_SWEEP_GRACE_SEC = WORKER_SPAWN_GRACE_SEC
 
 
 def _sweep_stale_extension_imports(

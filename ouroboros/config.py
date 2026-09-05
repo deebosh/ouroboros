@@ -169,6 +169,17 @@ NETWORK_WAIT_BACKOFF_START_SEC = 4.0
 TCP_KEEPALIVE_IDLE_SEC = 60
 TCP_KEEPALIVE_INTERVAL_SEC = 60
 TCP_KEEPALIVE_PROBE_COUNT = 5
+# Worker-pool spawn bounds (structural constants, not env knobs). Grace after a full-pool spawn before the crash
+# detector counts dead workers (up to ~60s to init: spawn + pip); workers.py binds it as `_SPAWN_GRACE_SEC`, the extension import-staging sweep reads it too.
+WORKER_SPAWN_GRACE_SEC = 90.0
+# Readiness window for ONE spawned/respawned slot: unassignable until the child's own `worker_ready` row lands; alive
+# but silent past this = torn down and replaced. Sized to the spawn grace (the pool's existing init budget): a warm
+# fork boots in ~3s, a cold 4-vCPU CI runner well under 60s (its 21-scenario mock lane runs in ~80s), and the E2E
+# scenarios wait 240s per task, so a wedged child is a fast, named failure. A contract distinct from process liveness
+# (`proc.is_alive`, worker_health.py) and from the task idle rail (queue_timeouts.py): a deadlocked child is alive.
+WORKER_READY_WINDOW_SEC = 90.0
+# Consecutive readiness failures of one slot before it is parked and reported (three strikes, like the crash-storm fence).
+WORKER_READY_MAX_ATTEMPTS = 3
 
 # --- Usage-ledger compaction policy (CPL4-C6, owner sanction 1A) -------------
 # docs/v7next/DESIGN_USAGE_COMPACTION.md. Constants, not env knobs. Compact the
