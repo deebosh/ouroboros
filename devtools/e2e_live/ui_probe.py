@@ -65,6 +65,9 @@ class UIProbe:
         self.page.screenshot(path=str(path), full_page=True)
 
     def close(self) -> None:
+        # Thread affinity: Playwright's sync API binds the browser to the thread that opened it; a
+        # close() from another thread raises ("cannot switch to a different thread"), is swallowed
+        # below, and LEAKS the whole browser tree. Open, use and close on the lane thread only.
         for closer in (getattr(self._browser, "close", None), getattr(self._pw, "stop", None)):
             try:
                 if closer is not None:

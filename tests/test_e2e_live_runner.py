@@ -1310,7 +1310,9 @@ def test_orphan_after_stop_fails_a_passing_lane_with_a_typed_reason(tmp_path):
     assert dirty["checks"]["no_orphans_after_stop"] is False and dirty["no_orphans_after_stop"] is False
     # The survivors are NAMED: pid + the head of its cmdline (this very interpreter here).
     assert [o["pid"] for o in dirty["orphans"]] == [os.getpid()] and "orphans_omitted" not in dirty
-    assert "python" in dirty["orphans"][0]["cmdline"] and len(dirty["orphans"][0]["cmdline"]) <= 120
+    assert len(dirty["orphans"][0]["cmdline"]) <= 120
+    if run_live_lanes.PROCFS_AVAILABLE:   # the cmdline text is read from /proc: Linux only; elsewhere it is the typed ""
+        assert "python" in dirty["orphans"][0]["cmdline"]
     crowded = row()
     run_live_lanes._apply_orphan_scan(crowded, [os.getpid()] + [2 ** 22 + n for n in range(24)])
     assert len(crowded["orphans"]) == 20 and crowded["orphans_omitted"] == 5

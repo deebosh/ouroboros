@@ -1338,7 +1338,7 @@ screenshots when a browser client exists (`ui_probe.resolve_ui_client`: the
 suite's `PlaywrightUIClient` when it carries this surface, else headless Chromium,
 else a typed `ui_unavailable` reason — never a silently passed check). Lane start
 only PROBES availability; the client the scenario uses opens on the first
-`ctx.ui` use (after the task and the absorb wait) and is dropped and reopened on
+`ctx.ui` use (for SM1 after the task and the absorb wait; SW1 drives the task through the UI and holds its browser throughout) and is dropped and reopened on
 `ctx.restart()`; a Playwright failure mid-use (a closed target) is the typed
 `ui_unavailable:<ExceptionType>` reason of the UI checks alone, never an
 `infra_error` lane. A failed `no_orphans_after_stop` names the survivors
