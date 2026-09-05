@@ -214,9 +214,11 @@ def test_paid_seats_are_priced_seat_by_seat_scope_first(gate, tmp_path, monkeypa
     per slot, and asks the gate as ONE wave."""
     seen = {}
 
-    def _gate(ctx, *, surface, models, prompt_chars, max_completion_tokens, extra=None):
+    def _gate(ctx, *, surface, models, prompt_chars, max_completion_tokens, extra=None,
+              categories="", slot_ids=""):
         seen.update(surface=surface, models=models, prompt_chars=prompt_chars,
-                    max_completion_tokens=max_completion_tokens, extra=extra)
+                    max_completion_tokens=max_completion_tokens, extra=extra,
+                    categories=categories, slot_ids=slot_ids)
         return None
 
     monkeypatch.setattr("ouroboros.tools.review_helpers.review_wave_budget_gate", _gate)
@@ -233,6 +235,11 @@ def test_paid_seats_are_priced_seat_by_seat_scope_first(gate, tmp_path, monkeypa
     # the triad pack carries the constitutional preamble + BIBLE ahead of it.
     assert scope_chars > len("SCOPE PACK " * 50) and triad_chars > len("TRIAD PACK " * 20) + 1000
     assert seen["max_completion_tokens"] == [100_000, _review_output_budget(), _review_output_budget()]
+    # Every seat names the usage scope its substrate sends under (category + slot),
+    # so its bound is read under the seat's own cache split, never the caller's.
+    assert seen["categories"] == ["scope_review_review", "multi_model_review_review",
+                                  "multi_model_review_review"]
+    assert seen["slot_ids"] == ["scope_slot_1", "slot_1", "slot_2"]
 
 
 def test_review_wave_admission_prices_per_slot_and_discloses_holds(gate, monkeypatch):
@@ -266,17 +273,264 @@ def test_review_wave_admission_prices_per_slot_and_discloses_holds(gate, monkeyp
 
 def test_wave_without_paid_seats_neither_waits_nor_refuses(gate, tmp_path, monkeypatch):
     """An all-retrieving wave rides the owner's subscription: nothing to price."""
-    from ouroboros.tools.parallel_review import _admit_commit_gate_wave, _commit_gate_paid_seats
+    from ouroboros.tools.review_admission import admit_commit_gate_wave, commit_gate_paid_seats
 
     session_slot = SimpleNamespace(model="m/session", slot_id="scope_slot_1",
                                    route=ReviewRouteKind.AGENT_SESSION, subagent_id="")
-    seats = _commit_gate_paid_seats(
+    seats = commit_gate_paid_seats(
         {"prompt": "", "models": ["m/session"], "routes": [ReviewRouteKind.AGENT_SESSION],
          "row_plan": {"models": ["m/session"], "routes": [ReviewRouteKind.AGENT_SESSION]}},
         False, [{"slot": session_slot, "prepared": {"prompt": ""}, "final": None}],
     )
     assert seats == []
-    assert _admit_commit_gate_wave(_ctx(gate, tmp_path), seats) is None
+    ctx = _ctx(gate, tmp_path)
+    assert admit_commit_gate_wave(ctx, seats) is None
     started = time.monotonic()
-    parallel_review._await_scope_reservation(SimpleNamespace(done=lambda: False), seats, started)
-    assert time.monotonic() - started < 0.5
+    parallel_review._await_scope_reservation(ctx, SimpleNamespace(done=lambda: False), seats, started)
+    assert time.monotonic() - started < 0.5 and ctx.pending_events == []
+
+
+# ---------------------------------------------------------------------------
+# rc.14 audit findings (astra MAJOR 1-4, fable minors on e27bc3b5)
+# ---------------------------------------------------------------------------
+
+def _native_first_send_size(repo, *, surface, session_task, role_hint, output_contract, slot_id, model):
+    """The executor's OWN opening send, measured by its own `_open_episode`."""
+    from ouroboros.review_execution import ReviewAssignment
+    from ouroboros.review_native_episode import NativeToolRoundReviewExecutor
+    from ouroboros.review_substrate import ReviewRequest, ReviewSlot
+
+    request = ReviewRequest(surface=surface, goal="g", task_id=ROOT, session_root=str(repo),
+                            session_task=session_task, policy={"output_contract": output_contract})
+    slot = ReviewSlot(slot_id=slot_id, model=model, effort="low", role_hint=role_hint,
+                      route=ReviewRouteKind.API_CHAT, subagent_id="critic")
+    executor = NativeToolRoundReviewExecutor(ReviewAssignment(request=request, slot=slot, call_id="op"), llm=None)
+    return executor._open_episode(str(repo), str(repo))[3]
+
+
+def test_native_episode_seats_are_paid_and_priced_by_their_first_send(gate, tmp_path):
+    """Finding 1: a configured-subagent api row (native episode) reserves every
+    round on the ledger exactly like a packet row, so it is a PAID seat priced
+    by its first send — measured by the executor's own opening — while an
+    agent-session row (subscription, ledger row written at settlement) is not."""
+    from ouroboros.reviewer_slot_config import SCOPE_ROLE_HINT
+    from ouroboros.tools.review_admission import commit_gate_paid_seats
+    from ouroboros.tools.review_multi_model import TRIAD_ROLE_HINT, _review_output_budget
+    from ouroboros.triad_review import REVIEW_JSON_ARRAY_CONTRACT
+
+    repo = tmp_path / "subject"
+    repo.mkdir()
+    native_scope = SimpleNamespace(model=SCOPE_MODEL, slot_id="scope_slot_1", route=ReviewRouteKind.API_CHAT,
+                                   subagent_id="critic", retrieves=True)
+    session_scope = SimpleNamespace(model="m/session", slot_id="scope_slot_2",
+                                    route=ReviewRouteKind.AGENT_SESSION, subagent_id="", retrieves=True)
+    scope_rows = [
+        {"slot": native_scope, "final": None, "prepared": {
+            "prompt": "SCOPE TASK", "session_task": "SCOPE TASK", "repo_dir": repo,
+            "scope_model_id": SCOPE_MODEL, "stable_prefix_len": 0}},
+        {"slot": session_scope, "final": None, "prepared": {"prompt": "", "session_task": "SCOPE TASK"}},
+    ]
+    triad = {
+        "prompt": "TRIAD PACK", "stable_prefix_len": 0, "session_task": "TRIAD TASK", "target_repo": repo,
+        "models": ["triad/a", "triad/native", "m/session"],
+        "routes": [ReviewRouteKind.API_CHAT, ReviewRouteKind.API_CHAT, ReviewRouteKind.AGENT_SESSION],
+        "row_plan": {"slot_ids": ["slot_1", "slot_2", "slot_3"], "subagent_ids": ["", "critic", ""]},
+    }
+    seats = commit_gate_paid_seats(triad, False, scope_rows)
+
+    assert [(s["surface"], s["slot_id"], s["model"]) for s in seats] == [
+        ("scope_review", "scope_slot_1", SCOPE_MODEL),
+        ("multi_model_review", "slot_1", "triad/a"),
+        ("multi_model_review", "slot_2", "triad/native"),
+    ]
+    assert seats[0]["prompt_chars"] == _native_first_send_size(
+        repo, surface="scope_review", session_task="SCOPE TASK", role_hint=SCOPE_ROLE_HINT,
+        output_contract=scope_mod.SCOPE_RETRIEVING_OUTPUT_CONTRACT, slot_id="scope_slot_1", model=SCOPE_MODEL)
+    assert seats[2]["prompt_chars"] == _native_first_send_size(
+        repo, surface="multi_model_review", session_task="TRIAD TASK", role_hint=TRIAD_ROLE_HINT,
+        output_contract=REVIEW_JSON_ARRAY_CONTRACT, slot_id="slot_2", model="triad/native")
+    # A native first send carries instructions, the work-order AND the six tool
+    # schemas (the packet row beside it carries the constitutional pack instead).
+    from ouroboros.review_native_episode import native_episode_prompt, native_first_send_messages
+
+    work_order_only = json.dumps(native_first_send_messages(native_episode_prompt(
+        "multi_model_review", TRIAD_ROLE_HINT, "TRIAD TASK", REVIEW_JSON_ARRAY_CONTRACT, "slot_2")),
+        ensure_ascii=False)
+    assert seats[2]["prompt_chars"] > len(work_order_only) > 0 and seats[1]["prompt_chars"] > 0
+    assert [s["max_completion_tokens"] for s in seats] == [100_000, _review_output_budget(), _review_output_budget()]
+
+
+def test_scope_seat_is_measured_as_the_cached_block_pair_it_sends(gate, monkeypatch):
+    """Fable minor: the scope send wraps the prompt in cached blocks at the
+    recorded stable boundary; the admission measures THAT pair, not a plain
+    system string, and the triad's user turn is one literal for both."""
+    import ouroboros.review_substrate as rs
+    from ouroboros.tools.review_admission import commit_gate_paid_seats
+    from ouroboros.tools.review_multi_model import TRIAD_USER_TURN
+
+    prefix, dynamic = "STABLE GOVERNANCE " * 20, "DYNAMIC DIFF " * 5
+    prompt = prefix + dynamic
+    sent = {}
+
+    class _StubLLM:
+        def chat(self, **kwargs):
+            sent["messages"] = kwargs["messages"]
+            return {"content": _scope_matrix()}, {"prompt_tokens": 4, "completion_tokens": 2}
+
+    original = rs.ReviewCoordinator.__init__
+    monkeypatch.setattr(rs.ReviewCoordinator, "__init__",
+                        lambda self, *, llm=None, drive_root=None, usage_ctx=None:
+                        original(self, llm=_StubLLM(), drive_root=drive_root, usage_ctx=usage_ctx))
+    ctx = SimpleNamespace(task_id=ROOT, event_queue=None, pending_events=[], drive_root=str(gate))
+    token = scope_mod._SCOPE_STABLE_PREFIX_LEN.set(len(prefix))
+    try:
+        _raw, _usage, err = scope_mod._call_scope_llm(prompt, scope_model=SCOPE_MODEL, ctx=ctx)
+    finally:
+        scope_mod._SCOPE_STABLE_PREFIX_LEN.reset(token)
+    assert err == ""
+    expected = scope_mod.scope_api_messages(prompt, len(prefix))
+    assert sent["messages"] == expected
+    assert isinstance(expected[0]["content"], list) and expected[0]["content"][0].get("cache_control")
+
+    slot = SimpleNamespace(model=SCOPE_MODEL, slot_id="scope_slot_1", route=ReviewRouteKind.API_CHAT, subagent_id="")
+    seats = commit_gate_paid_seats(None, True, [{"slot": slot, "final": None, "prepared": {
+        "prompt": prompt, "session_task": "", "scope_model_id": SCOPE_MODEL, "stable_prefix_len": len(prefix)}}])
+    measured = json.dumps({"messages": sent["messages"]}, ensure_ascii=False, default=str)
+    plain = json.dumps({"messages": [{"role": "system", "content": prompt},
+                                     {"role": "user", "content": scope_mod.SCOPE_USER_TURN}]}, ensure_ascii=False)
+    assert seats[0]["prompt_chars"] == len(measured) != len(plain)
+
+    captured = {}
+
+    def _fanout(ctx, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("captured")
+
+    monkeypatch.setattr(review, "_handle_multi_model_review", _fanout)
+    review._dispatch_unified_review(
+        SimpleNamespace(task_id=ROOT, _review_history=[], _review_advisory=[], pending_events=[]),
+        "m", {"blocking_review": True, "prompt": "p", "models": ["triad/a"], "stable_prefix_len": 0,
+              "routes": [ReviewRouteKind.API_CHAT], "session_task": "", "target_repo": ".", "row_plan": {}})
+    assert captured["content"] == TRIAD_USER_TURN
+
+
+def test_each_seat_is_priced_under_its_own_cache_split_not_the_callers(tmp_path, monkeypatch):
+    """Finding 2: the observed cache split is keyed by the SENDING scope
+    (category + review slot). A warm split of the caller's own transcript must
+    not price a reviewer seat's cold prefix — the seat's bound is the full
+    write until the seat's OWN scope has observed a split. Real
+    ``_reservation_cost``; only the price catalog is pinned."""
+    from dataclasses import replace
+
+    from ouroboros import pricing as pricing_mod
+    from ouroboros.pricing import infer_provider_from_model
+
+    class _P(tuple):
+        tiers = ()
+
+    model = "anthropic/claude-fable-5"
+    monkeypatch.setattr(pricing_mod, "get_pricing", lambda **k: {model: _P((10.0, 1.0, 12.5, 50.0))})
+    ua._reset_task_cache_splits()
+    provider = infer_provider_from_model(model)
+    caller = ua.UsageScope(drive_root=tmp_path, task_id=ROOT, root_task_id=ROOT, root_limit_usd=1000.0)
+    seat_scope = replace(caller, category="scope_review_review", review_slot_id="scope_slot_1")
+    kwargs = dict(root_task_id=ROOT, models=[model], prompt_chars=400_000, max_completion_tokens=1000,
+                  task_id=ROOT, root_limit_usd=1000.0)
+    with ua.usage_scope(caller):
+        # The caller's transcript is warm (90% of the prompt read from cache).
+        ua.stash_task_cache_split(ROOT, model, 90_000, provider=provider, ttl_seconds=300.0)
+        callers_own = ua.review_wave_admission(tmp_path, **kwargs)["slot_bounds"][0]
+        cold_seat = ua.review_wave_admission(
+            tmp_path, categories="scope_review_review", slot_ids="scope_slot_1", **kwargs)["slot_bounds"][0]
+        with ua.usage_scope(seat_scope):
+            expected_cold = ua._reservation_cost(ua.AttemptRequest(
+                model=model, provider=provider, prompt_tokens_estimate=100_000,
+                max_completion_tokens=1000, task_id=ROOT))
+            ua.stash_task_cache_split(ROOT, model, 90_000, provider=provider, ttl_seconds=300.0)
+        warm_seat = ua.review_wave_admission(
+            tmp_path, categories="scope_review_review", slot_ids="scope_slot_1", **kwargs)["slot_bounds"][0]
+    assert cold_seat == pytest.approx(expected_cold)
+    assert cold_seat > callers_own  # the caller's warm split never priced the seat
+    assert warm_seat == pytest.approx(callers_own)  # the seat's OWN observed split does
+
+
+def test_current_root_fence_governs_admission_over_the_ledgers_historical_minimum(gate, monkeypatch):
+    """Finding 3: ``reserve_attempt`` enforces the CURRENT scope fence; the
+    ledger projection carries the minimum of historical row limits. Admission
+    must compare against the fence the reservation will use, whether it was
+    raised or lowered since the earlier rows — the projection serves only a
+    caller that binds no fence of its own."""
+    with ua.usage_scope(ua.UsageScope(drive_root=gate, task_id=ROOT, root_task_id=ROOT, root_limit_usd=8.0)):
+        held = ua.reserve_attempt(ua.AttemptRequest(model="triad/a", provider="test", source="main"))
+        ua.mark_dispatched(held)
+        ua.settle_attempt(held, {"prompt_tokens": 1, "completion_tokens": 1}, cost_usd=3.0, cost_final=True)
+    monkeypatch.setattr(ua, "_reservation_cost", lambda request: 4.5)
+    kwargs = dict(root_task_id=ROOT, models=["triad/a"], prompt_chars=10, task_id=ROOT)
+
+    raised = ua.review_wave_admission(gate, root_limit_usd=50.0, **kwargs)
+    assert (raised["limit_usd"], raised["accounted_usd"], raised["remaining_usd"]) == (50.0, 3.0, 47.0)
+    assert raised["fits"] is True
+    lowered = ua.review_wave_admission(gate, root_limit_usd=6.0, **kwargs)
+    assert (lowered["limit_usd"], lowered["remaining_usd"], lowered["fits"]) == (6.0, 3.0, False)
+    unfenced = ua.review_wave_admission(gate, **kwargs)  # no fence of its own: the ledger's $8 row
+    assert (unfenced["limit_usd"], unfenced["remaining_usd"], unfenced["fits"]) == (8.0, 5.0, True)
+
+
+def test_scope_first_hold_observes_only_the_scope_seats_own_reservation(gate, tmp_path, monkeypatch):
+    """Finding 4: the hold releases on the scope seat's OWN appended reservation
+    (category + slot identity after the wave started) — a refresh, a
+    settlement, a refused reservation or another seat's reservation never
+    releases it — and a hold that ends without it is a typed event."""
+    from ouroboros import config as cfg
+
+    monkeypatch.setattr(cfg, "NESTED_SETTLEMENT_MARGIN_SEC", 0.3)
+    seats = [{"surface": "scope_review", "slot_id": "scope_slot_1", "model": SCOPE_MODEL,
+              "prompt_chars": 10, "max_completion_tokens": 10}]
+    never_done = SimpleNamespace(done=lambda: False)
+    base = ua.UsageScope(drive_root=gate, task_id=ROOT, root_task_id=ROOT, root_limit_usd=8.0)
+    scope_seat = ua.UsageScope(drive_root=gate, task_id=ROOT, root_task_id=ROOT, root_limit_usd=8.0,
+                               category="scope_review_review", review_slot_id="scope_slot_1")
+    triad_seat = ua.UsageScope(drive_root=gate, task_id=ROOT, root_task_id=ROOT, root_limit_usd=8.0,
+                               category="multi_model_review_review", review_slot_id="slot_1")
+
+    with ua.usage_scope(base):
+        earlier = ua.reserve_attempt(ua.AttemptRequest(model="triad/a", provider="test", source="main"))
+        ua.mark_dispatched(earlier)
+    started = time.monotonic()
+    # Non-scope root telemetry updates after the wave started: none may release the hold.
+    ua.refresh_root_accounting(gate, ROOT)
+    with ua.usage_scope(base):
+        ua.settle_attempt(earlier, {"prompt_tokens": 1, "completion_tokens": 1}, cost_usd=0.5, cost_final=True)
+    with ua.usage_scope(ua.UsageScope(drive_root=gate, task_id=ROOT, root_task_id=ROOT, root_limit_usd=0.75)):
+        with pytest.raises(ua.BudgetExceeded):  # refused: pre-fence refresh only, no identity
+            ua.reserve_attempt(ua.AttemptRequest(model="triad/a", provider="test", source="main"))
+    with ua.usage_scope(triad_seat):
+        ua.reserve_attempt(ua.AttemptRequest(model="triad/a", provider="test"))
+    assert not any(r["category"] == "scope_review_review"
+                   for r in ua.last_root_accounting(ROOT)["reservations"])
+    with ua.usage_scope(base):
+        ctx = _ctx(gate, tmp_path)
+        parallel_review._await_scope_reservation(ctx, never_done, seats, started)
+    assert time.monotonic() - started >= 0.3
+    events = [e for e in ctx.pending_events if e.get("type") == "review_scope_lead_unobserved"]
+    assert len(events) == 1 and events[0]["scope_slot_ids"] == ["scope_slot_1"]
+    assert events[0]["scope_seat_done"] is False and events[0]["root_task_id"] == ROOT
+
+    # The scope seat's own reservation, appended after the start, releases at once.
+    started = time.monotonic()
+    with ua.usage_scope(scope_seat):
+        own = ua.reserve_attempt(ua.AttemptRequest(model=SCOPE_MODEL, provider="test"))
+    identities = ua.last_root_accounting(ROOT)["reservations"]
+    assert any(r["attempt_id"] == own.attempt_id and r["review_slot_id"] == "scope_slot_1" for r in identities)
+    with ua.usage_scope(base):
+        ctx = _ctx(gate, tmp_path)
+        parallel_review._await_scope_reservation(ctx, never_done, seats, started)
+    assert time.monotonic() - started < 0.25 and ctx.pending_events == []
+
+    # A scope seat that finished without ever reserving (e.g. refused) ends the hold typed.
+    started = time.monotonic()
+    with ua.usage_scope(base):
+        ctx = _ctx(gate, tmp_path)
+        parallel_review._await_scope_reservation(ctx, SimpleNamespace(done=lambda: True), seats, started)
+    events = [e for e in ctx.pending_events if e.get("type") == "review_scope_lead_unobserved"]
+    assert len(events) == 1 and events[0]["scope_seat_done"] is True

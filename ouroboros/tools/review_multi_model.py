@@ -68,6 +68,12 @@ err on the side of NOT recommending it and explain the tension.
 
 """
 
+# The one user turn every api triad row sends, and the one role hint every
+# triad row (packet or native episode) carries; the commit gate's wave
+# admission measures the same sends the fan-out dispatches.
+TRIAD_USER_TURN = "Review the staged diff and context provided in the instructions above."
+TRIAD_ROLE_HINT = "multi-model review"
+
 
 def _review_output_budget() -> int:
     """Reviewer response reservation. The operator may lower it to fit a full
@@ -209,7 +215,7 @@ async def _query_model(
                 effort=effort or _rev()._cfg.resolve_effort("review"),
                 max_tokens=_out_budget,
                 temperature=0.2,
-                role_hint="multi-model review",
+                role_hint=TRIAD_ROLE_HINT,
                 use_local=_rev()._cfg.review_model_uses_local(model),
                 route=slot_route,
                 session_target=session_target if delegated else "",

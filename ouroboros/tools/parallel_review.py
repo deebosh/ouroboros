@@ -188,124 +188,45 @@ def _scope_not_dispatched_result(slot, reason: str = ""):
     )
 
 
-def _commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows) -> list:
-    """The paid (api, non-retrieving) seats of one commit-gate wave, SCOPE FIRST
-    (owner decision 2026-09-05: the only constitutionally blocking seat takes
-    precedence in admission and reservation order). Each seat carries the exact
-    prompt chars of the message pair its substrate sends and that send's output
-    reservation, so the wave is priced the way ``reserve_attempt`` prices each
-    seat. Retrieving rows ride the owner's subscription and are not priced."""
-    from ouroboros.review_execution import delivery_retrieves
-    from ouroboros.tools import scope_review as _sr
-
-    def _chars(messages) -> int:
-        return len(json.dumps({"messages": messages}, ensure_ascii=False, default=str))
-
-    seats = []
-    for row in scope_rows or []:
-        slot, prepared = row["slot"], row.get("prepared") or {}
-        if row.get("final") is not None or delivery_retrieves(
-            getattr(slot, "route", None), getattr(slot, "subagent_id", ""),
-        ):
-            continue
-        model = str(prepared.get("scope_model_id") or slot.model or "")
-        output_tokens, _ = _sr._window_scaled_reserves(
-            _sr._scope_window(model).sizing_window(_sr._SCOPE_FAILCLOSED_WINDOW)
-        )
-        seats.append({
-            "surface": "scope_review", "slot_id": str(slot.slot_id or ""), "model": model,
-            "prompt_chars": _chars([
-                {"role": "system", "content": str(prepared.get("prompt") or "")},
-                {"role": "user", "content": _sr.SCOPE_USER_TURN},
-            ]),
-            "max_completion_tokens": int(output_tokens),
-        })
-    if triad_exited or not triad_prepared:
-        return seats
-    from ouroboros.tools.review_multi_model import _review_output_budget, triad_api_messages
-
-    row_plan = triad_prepared.get("row_plan") or {}
-    models = list(triad_prepared.get("models") or row_plan.get("models") or [])
-    routes = list(triad_prepared.get("routes") or row_plan.get("routes") or [])
-    slot_ids, actors = list(row_plan.get("slot_ids") or []), list(row_plan.get("subagent_ids") or [])
-    triad_chars = None
-    for index, model in enumerate(models):
-        route = routes[index] if index < len(routes) else "api_chat"
-        if delivery_retrieves(route, actors[index] if index < len(actors) else ""):
-            continue
-        if triad_chars is None:
-            messages, _ = triad_api_messages(
-                str(triad_prepared.get("prompt") or ""), int(triad_prepared.get("stable_prefix_len") or 0),
-                "Review the staged diff and context provided in the instructions above.",
-            )
-            triad_chars = _chars(messages)
-        seats.append({
-            "surface": "multi_model_review",
-            "slot_id": str(slot_ids[index] if index < len(slot_ids) else f"slot_{index + 1}"),
-            "model": str(model or ""), "prompt_chars": triad_chars,
-            "max_completion_tokens": int(_review_output_budget()),
-        })
-    return seats
-
-
-def _admit_commit_gate_wave(ctx, seats) -> str | None:
-    """All-or-nothing money admission of one commit-gate wave (owner decision
-    2026-09-05): every paid seat's reservation upper bound must fit the root
-    fence TOGETHER before ANY seat is dispatched. Returns the typed refusal
-    text ($0, nothing dispatched) or None; fail-open on unknowns like the
-    task-level surfaces that already ride ``review_wave_budget_gate``."""
-    if not seats:
-        return None
-    from ouroboros.tools.review_helpers import review_wave_budget_gate
-
-    admission = review_wave_budget_gate(
-        ctx, surface="commit_gate",
-        models=[seat["model"] for seat in seats],
-        prompt_chars=[seat["prompt_chars"] for seat in seats],
-        max_completion_tokens=[seat["max_completion_tokens"] for seat in seats],
-        extra={"seats": [f"{seat['surface']}:{seat['slot_id']}" for seat in seats]},
-    )
-    if admission is None:
-        return None
-    usd = lambda value: "unknown" if value is None else f"${float(value):.6f}"  # noqa: E731
-    bounds = list(admission.get("slot_bounds") or []) + [None] * len(seats)
-    wave, remaining = admission.get("estimated_wave_usd"), admission.get("remaining_usd")
-    shortfall = None if wave is None or remaining is None else max(0.0, float(wave) - float(remaining))
-    return (
-        "⚠️ REVIEW_BLOCKED: commit-gate review wave declined before dispatch ($0 spent). "
-        f"The wave's reservation upper bound {usd(wave)} ("
-        + "; ".join(f"{s['surface']}:{s['slot_id']} {s['model']} {usd(bounds[i])}" for i, s in enumerate(seats))
-        + f") does not fit the per-task budget fence {usd(admission.get('limit_usd'))}: "
-        f"accounted={usd(admission.get('accounted_usd'))} (of which {usd(admission.get('reserved_usd'))} "
-        f"is reserved by other in-flight attempts), remaining={usd(remaining)}, shortfall={usd(shortfall)}. "
-        "No reviewer seat was dispatched (scope and triad alike): wait for in-flight attempts to "
-        "settle or raise OUROBOROS_PER_TASK_COST_USD, then retry the same commit."
-    )
-
-
-def _await_scope_reservation(scope_future, seats, started_monotonic: float) -> None:
-    """Hold the triad until the scope seat has taken its reservation (owner
-    decision 2026-09-05: scope reserves FIRST), observed through the ledger's
-    process-local root telemetry — refreshed by every ``reserve_attempt`` for
-    the root INSIDE the ledger lock, before the row is appended, so a triad
-    send released here still queues behind the scope's append. Bounded by the
-    scope future and ``NESTED_SETTLEMENT_MARGIN_SEC`` (a structural ordering
-    margin, not a timeout contract); no paid scope seat or no root = no wait."""
-    if scope_future is None or not any(seat["surface"] == "scope_review" for seat in seats):
+def _await_scope_reservation(ctx, scope_future, seats, started_monotonic: float) -> None:
+    """Hold the triad until a scope seat's OWN reservation is on the ledger
+    (owner decision 2026-09-05: scope reserves FIRST): the identity (usage
+    category + review slot) of a row ``reserve_attempt`` APPENDED for this root
+    after the wave started, read from the ledger's process-local root
+    telemetry — a refresh, a settlement or a refused reservation never leaves
+    one, so none of them can release the triad early. Bounded by the scope
+    future and ``NESTED_SETTLEMENT_MARGIN_SEC`` (a structural ordering margin,
+    not a timeout contract); a hold that ends WITHOUT observing the scope
+    reservation is a typed ``review_scope_lead_unobserved`` event, never a
+    silent fall-through. No paid scope seat or no root = no wait."""
+    scope_slots = {seat["slot_id"] for seat in seats if seat["surface"] == "scope_review"}
+    if scope_future is None or not scope_slots:
         return
     from ouroboros.config import NESTED_SETTLEMENT_MARGIN_SEC
+    from ouroboros.review_substrate import review_usage_category
+    from ouroboros.tools.review_helpers import emit_review_event
     from ouroboros.usage_accounting import current_usage_scope, last_root_accounting
 
     root_task_id = str(getattr(current_usage_scope(), "root_task_id", "") or "")
+    category = review_usage_category("scope_review")
     deadline = started_monotonic + float(NESTED_SETTLEMENT_MARGIN_SEC)
-    while root_task_id and not scope_future.done():
+    while root_task_id:
         now = time.monotonic()
-        entry = last_root_accounting(root_task_id)
-        if entry is not None and now - float(entry.get("age_sec") or 0.0) >= started_monotonic:
-            return
-        if now >= deadline:
-            log.warning("scope seat reserved nothing within %ss; the triad proceeds without the scope lead",
-                        NESTED_SETTLEMENT_MARGIN_SEC)
+        for row in (last_root_accounting(root_task_id) or {}).get("reservations") or []:
+            if (str(row.get("category") or "") == category
+                    and str(row.get("review_slot_id") or "") in scope_slots
+                    and now - float(row.get("age_sec") or 0.0) >= started_monotonic):
+                return
+        scope_done = bool(scope_future.done())
+        if scope_done or now >= deadline:
+            emit_review_event(ctx, {
+                "type": "review_scope_lead_unobserved",
+                "task_id": str(getattr(ctx, "task_id", "") or ""), "root_task_id": root_task_id,
+                "scope_slot_ids": sorted(scope_slots), "scope_seat_done": scope_done,
+                "margin_sec": float(NESTED_SETTLEMENT_MARGIN_SEC),
+            })
+            log.warning("no scope seat reservation observed (%s); the triad proceeds without the scope lead",
+                        "scope seat finished" if scope_done else f"margin {NESTED_SETTLEMENT_MARGIN_SEC}s")
             return
         time.sleep(0.05)
 
@@ -765,12 +686,14 @@ def run_parallel_review(
         # seats first, must fit the root fence before ANY seat is dispatched;
         # otherwise every seat is a typed $0 not_dispatched record and the gate
         # blocks naming the shortfall, never a half-dispatched panel. ----
+        from ouroboros.tools.review_admission import admit_commit_gate_wave, commit_gate_paid_seats
+
         seats = []
         wave_refusal = None
         if not bool(getattr(ctx, "_review_reconcile_only", False)):
             try:
-                seats = _commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows)
-                wave_refusal = _admit_commit_gate_wave(ctx, seats)
+                seats = commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows)
+                wave_refusal = admit_commit_gate_wave(ctx, seats)
             except Exception:
                 log.debug("commit-gate wave admission failed open", exc_info=True)
                 seats, wave_refusal = [], None
@@ -849,7 +772,7 @@ def run_parallel_review(
                         if scope_rows else None
                     )
                     if not triad_exited:
-                        _await_scope_reservation(scope_fut, seats, wave_started)
+                        _await_scope_reservation(ctx, scope_fut, seats, wave_started)
                     triad_fut = (
                         None if triad_exited
                         else pool.submit(_dispatch_unified_review, ctx, commit_message, triad_prepared)

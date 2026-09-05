@@ -1151,7 +1151,7 @@ def _dispatch_unified_review(ctx: ToolContext, commit_message: str, prepared: di
     try:
         result_json = _handle_multi_model_review(
             ctx,
-            content="Review the staged diff and context provided in the instructions above.",
+            content=TRIAD_USER_TURN,
             prompt=prepared["prompt"],
             models=prepared["models"],
             stable_prefix_len=prepared["stable_prefix_len"],
@@ -1317,6 +1317,7 @@ def _run_unified_review(ctx: ToolContext, commit_message: str,
 from ouroboros.tools.review_multi_model import (  # noqa: E402, F401 -- intentional public re-exports
     CONCURRENCY_LIMIT,
     MAX_MODELS,
+    TRIAD_USER_TURN,
     _CONSTITUTIONAL_PREAMBLE,
     _handle_multi_model_review,
     _multi_model_review_async,

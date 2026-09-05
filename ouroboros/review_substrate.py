@@ -136,7 +136,7 @@ from ouroboros.review_dispatch import (  # noqa: E402,F401 — re-exports
 
 
 # reviewer_slots()/triad_delivery_slots() live in reviewer_slot_config (altitude, P7); re-exported for callers here.
-from ouroboros.reviewer_slot_config import reviewer_slots, triad_delivery_slots  # noqa: F401,E402
+from ouroboros.reviewer_slot_config import SCOPE_ROLE_HINT, reviewer_slots, triad_delivery_slots  # noqa: F401,E402
 
 
 def scope_reviewer_slots(
@@ -177,8 +177,16 @@ def scope_reviewer_slots(
 
         models = get_scope_review_models()
     return reviewer_slots(
-        models, effort=effort, role_hint="scope reviewer", id_prefix=SCOPE_SLOT_ID_PREFIX,
+        models, effort=effort, role_hint=SCOPE_ROLE_HINT, id_prefix=SCOPE_SLOT_ID_PREFIX,
     )
+
+
+def review_usage_category(surface: str) -> str:
+    """The usage-scope category every send of a review surface is attributed
+    under — the key the ledger's cache split and the root telemetry's
+    reservation identities carry, so the commit gate's admission and its
+    scope-first hold name the same scope the substrate sends under."""
+    return f"{surface}_review"
 
 
 class ReviewCoordinator:
@@ -277,7 +285,7 @@ class ReviewCoordinator:
             task_id=task_id,
             root_task_id=root_task_id,
             parent_task_id=str(usage_meta.get("parent_task_id") or base_scope.parent_task_id or ""),
-            category=f"{request.surface}_review",
+            category=review_usage_category(request.surface),
             source="review_substrate",
             review_skill=str(review_meta.get("review_skill") or base_scope.review_skill or ""),
             review_wave_id=str(review_meta.get("review_wave_id") or base_scope.review_wave_id or ""),

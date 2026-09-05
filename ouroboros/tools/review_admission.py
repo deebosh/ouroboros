@@ -28,6 +28,16 @@ recorded, the cap recomputed and the pack rebuilt ONCE — never on a warm
 store, never retried, never on a commit whose pack fits. A probe the paid
 ledger refuses is a typed disclosure on the ladder and in the review events,
 and the existing refusal path proceeds unchanged.
+
+Money admission (owner decision 2026-09-05, answer 2 = A) is the last
+pre-dispatch gate: ``commit_gate_paid_seats`` prices every PAID seat of the
+wave — scope first, packet rows by their exact message pair, native episodes
+by their exact first send — each under the usage scope its substrate sends
+under, and ``admit_commit_gate_wave`` admits them as ONE wave against the
+task's current root fence through the shared ``review_wave_budget_gate``; a
+wave that does not fit is a typed $0 refusal naming the shortfall, never a
+half-dispatched panel. The scope-first dispatch ORDER stays with the
+orchestrator (``parallel_review._await_scope_reservation``).
 """
 
 from __future__ import annotations
@@ -486,3 +496,126 @@ def prepare_scope_review(
         "context_manifest": sr._current_scope_context_manifest(),
         "stable_prefix_len": int(sr._SCOPE_STABLE_PREFIX_LEN.get() or 0),
     }, None
+
+
+def commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows) -> list:
+    """The PAID seats of one commit-gate wave, SCOPE FIRST (owner decision
+    2026-09-05: the only constitutionally blocking seat takes precedence in
+    admission and reservation order). A paid seat is an api row — packet OR
+    native episode — whose every send is a ``reserve_attempt`` on the ledger;
+    an agent-session row rides the owner's subscription (its ledger row is
+    written at settlement, never reserved) and is not priced. Each seat carries
+    the exact chars of the send its substrate opens with (the packet's message
+    pair; a native episode's first send: instructions, work-order and tool
+    schemas — its later rounds reserve themselves) and that send's output
+    reservation, so the wave is priced the way ``reserve_attempt`` prices it."""
+    import json
+
+    from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
+    from ouroboros.review_native_episode import native_first_send_chars
+    from ouroboros.reviewer_slot_config import SCOPE_ROLE_HINT
+    from ouroboros.tools.review_multi_model import (
+        TRIAD_ROLE_HINT, TRIAD_USER_TURN, _review_output_budget, triad_api_messages,
+    )
+    from ouroboros.triad_review import REVIEW_JSON_ARRAY_CONTRACT
+
+    sr = _scope()
+
+    def _chars(messages) -> int:
+        return len(json.dumps({"messages": messages}, ensure_ascii=False, default=str))
+
+    def _session(route) -> bool:
+        return str(getattr(route, "value", route) or "") == ReviewRouteKind.AGENT_SESSION.value
+
+    seats = []
+    for row in scope_rows or []:
+        slot, prepared = row["slot"], row.get("prepared") or {}
+        route, slot_id = getattr(slot, "route", None), str(slot.slot_id or "")
+        if row.get("final") is not None or _session(route):
+            continue
+        model = str(prepared.get("scope_model_id") or slot.model or "")
+        output_tokens, _ = sr._window_scaled_reserves(
+            sr._scope_window(model).sizing_window(sr._SCOPE_FAILCLOSED_WINDOW)
+        )
+        if delivery_retrieves(route, getattr(slot, "subagent_id", "")):
+            chars = native_first_send_chars(
+                str(prepared.get("repo_dir") or ""), surface="scope_review", role_hint=SCOPE_ROLE_HINT,
+                slot_id=slot_id, session_task=str(prepared.get("session_task") or ""),
+                output_contract=sr.SCOPE_RETRIEVING_OUTPUT_CONTRACT,
+            )
+        else:
+            chars = _chars(sr.scope_api_messages(
+                str(prepared.get("prompt") or ""), int(prepared.get("stable_prefix_len") or 0)))
+        seats.append({"surface": "scope_review", "slot_id": slot_id, "model": model,
+                      "prompt_chars": chars, "max_completion_tokens": int(output_tokens)})
+    if triad_exited or not triad_prepared:
+        return seats
+    row_plan = triad_prepared.get("row_plan") or {}
+    models = list(triad_prepared.get("models") or row_plan.get("models") or [])
+    routes = list(triad_prepared.get("routes") or row_plan.get("routes") or [])
+    slot_ids, actors = list(row_plan.get("slot_ids") or []), list(row_plan.get("subagent_ids") or [])
+    triad_chars = None
+    for index, model in enumerate(models):
+        route = routes[index] if index < len(routes) else "api_chat"
+        slot_id = str(slot_ids[index] if index < len(slot_ids) else f"slot_{index + 1}")
+        if _session(route):
+            continue
+        if delivery_retrieves(route, actors[index] if index < len(actors) else ""):
+            chars = native_first_send_chars(
+                str(triad_prepared.get("target_repo") or ""), surface="multi_model_review",
+                role_hint=TRIAD_ROLE_HINT, slot_id=slot_id,
+                session_task=str(triad_prepared.get("session_task") or ""),
+                output_contract=REVIEW_JSON_ARRAY_CONTRACT,
+            )
+        else:
+            if triad_chars is None:
+                messages, _ = triad_api_messages(
+                    str(triad_prepared.get("prompt") or ""),
+                    int(triad_prepared.get("stable_prefix_len") or 0), TRIAD_USER_TURN,
+                )
+                triad_chars = _chars(messages)
+            chars = triad_chars
+        seats.append({"surface": "multi_model_review", "slot_id": slot_id, "model": str(model or ""),
+                      "prompt_chars": chars, "max_completion_tokens": int(_review_output_budget())})
+    return seats
+
+
+def admit_commit_gate_wave(ctx, seats) -> str | None:
+    """All-or-nothing money admission of one commit-gate wave (owner decision
+    2026-09-05): every paid seat's reservation upper bound must fit the root
+    fence TOGETHER before ANY seat is dispatched. Returns the typed refusal
+    text ($0, nothing dispatched) or None; fail-open on unknowns like the
+    task-level surfaces that already ride ``review_wave_budget_gate``."""
+    if not seats:
+        return None
+    from ouroboros.review_substrate import review_usage_category
+    from ouroboros.tools.review_helpers import review_wave_budget_gate
+
+    # Each seat is priced under the usage scope its substrate will SEND under
+    # (surface category + slot), so its bound reads the seat's own observed
+    # cache split — never the caller's warm transcript split.
+    admission = review_wave_budget_gate(
+        ctx, surface="commit_gate",
+        models=[seat["model"] for seat in seats],
+        prompt_chars=[seat["prompt_chars"] for seat in seats],
+        max_completion_tokens=[seat["max_completion_tokens"] for seat in seats],
+        categories=[review_usage_category(seat["surface"]) for seat in seats],
+        slot_ids=[seat["slot_id"] for seat in seats],
+        extra={"seats": [f"{seat['surface']}:{seat['slot_id']}" for seat in seats]},
+    )
+    if admission is None:
+        return None
+    usd = lambda value: "unknown" if value is None else f"${float(value):.6f}"  # noqa: E731
+    bounds = list(admission.get("slot_bounds") or []) + [None] * len(seats)
+    wave, remaining = admission.get("estimated_wave_usd"), admission.get("remaining_usd")
+    shortfall = None if wave is None or remaining is None else max(0.0, float(wave) - float(remaining))
+    return (
+        "⚠️ REVIEW_BLOCKED: commit-gate review wave declined before dispatch ($0 spent). "
+        f"The wave's reservation upper bound {usd(wave)} ("
+        + "; ".join(f"{s['surface']}:{s['slot_id']} {s['model']} {usd(bounds[i])}" for i, s in enumerate(seats))
+        + f") does not fit the per-task budget fence {usd(admission.get('limit_usd'))}: "
+        f"accounted={usd(admission.get('accounted_usd'))} (of which {usd(admission.get('reserved_usd'))} "
+        f"is reserved by other in-flight attempts), remaining={usd(remaining)}, shortfall={usd(shortfall)}. "
+        "No reviewer seat was dispatched (scope and triad alike): wait for in-flight attempts to "
+        "settle or raise OUROBOROS_PER_TASK_COST_USD, then retry the same commit."
+    )

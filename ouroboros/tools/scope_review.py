@@ -256,6 +256,36 @@ def _log_scope_result(
 # The one user turn every api scope row sends; the commit gate's wave admission
 # measures the same pair the substrate dispatches.
 SCOPE_USER_TURN = "Review the staged change and context above. Output ONLY a JSON array."
+# The output contract a RETRIEVING scope row (session or native episode) is
+# handed: the extraction fallback canonicalizes to the SCOPE contract —
+# required-matrix shape, eight verbatim item ids (D19 — never a looser contract).
+SCOPE_RETRIEVING_OUTPUT_CONTRACT = (
+    REVIEW_JSON_MATRIX_CONTRACT
+    + "\nRequired item ids (verbatim, one entry each): "
+    + ", ".join(sorted(SCOPE_REQUIRED_ITEMS))
+)
+
+
+def scope_api_messages(prompt: str, stable_prefix_len: int) -> list:
+    """The exact message pair an api scope row sends — split at the recorded
+    stable/dynamic boundary so the byte-stable prefix carries the provider
+    cache marker and the per-commit tail stays unmarked. One builder for the
+    send and for the commit gate's wave admission, which measures it."""
+    from ouroboros.tools.review_helpers import cached_prompt_blocks
+
+    stable_len = int(stable_prefix_len or 0)
+    if 0 < stable_len <= len(prompt):
+        system_content: Any = cached_prompt_blocks(prompt[:stable_len], prompt[stable_len:])
+    else:
+        # No recorded boundary (e.g. a caller that did not assemble via
+        # _build_scope_prompt): send a plain string. Marking the WHOLE prompt —
+        # per-commit diff included — as a 1h cache block would pay the extended
+        # write premium on content that never repeats.
+        system_content = prompt
+    return [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": SCOPE_USER_TURN},
+    ]
 
 
 def _call_scope_llm(
@@ -296,29 +326,7 @@ def _call_scope_llm(
     _scope_output_tokens, _ = _window_scaled_reserves(
         _scope_window(scope_model).sizing_window(_SCOPE_FAILCLOSED_WINDOW)
     )
-    if retrieves:
-        messages: Any = []
-    else:
-        # Split at the recorded stable/dynamic boundary: the byte-stable prefix
-        # carries the provider cache marker, the per-commit tail stays unmarked.
-        from ouroboros.tools.review_helpers import cached_prompt_blocks
-
-        _stable_len = int(_SCOPE_STABLE_PREFIX_LEN.get() or 0)
-        if 0 < _stable_len <= len(prompt):
-            system_content: Any = cached_prompt_blocks(prompt[:_stable_len], prompt[_stable_len:])
-        else:
-            # No recorded boundary (e.g. a caller that did not assemble via
-            # _build_scope_prompt): send a plain string. Marking the WHOLE prompt —
-            # per-commit diff included — as a 1h cache block would pay the extended
-            # write premium on content that never repeats.
-            system_content = prompt
-        messages = [
-            {"role": "system", "content": system_content},
-            {
-                "role": "user",
-                "content": SCOPE_USER_TURN,
-            },
-        ]
+    messages: Any = [] if retrieves else scope_api_messages(prompt, int(_SCOPE_STABLE_PREFIX_LEN.get() or 0))
     try:
         from ouroboros.review_substrate import ReviewRequest, run_review_request
 
@@ -335,19 +343,7 @@ def _call_scope_llm(
             session_root=session_root if retrieves else "",
             reconcile_only=bool(getattr(ctx, "_review_reconcile_only", False)),
             deadline_at=_owner_deadline_at(ctx),
-            # The extraction fallback canonicalizes to the SCOPE contract: required-
-            # matrix shape, eight verbatim item ids (D19 — never a looser contract).
-            policy=(
-                {
-                    "output_contract": (
-                        REVIEW_JSON_MATRIX_CONTRACT
-                        + "\nRequired item ids (verbatim, one entry each): "
-                        + ", ".join(sorted(SCOPE_REQUIRED_ITEMS))
-                    ),
-                }
-                if retrieves
-                else {}
-            ),
+            policy={"output_contract": SCOPE_RETRIEVING_OUTPUT_CONTRACT} if retrieves else {},
         )
         row = scope_reviewer_slots([scope_model], effort=scope_effort)[0]
         slot = replace(

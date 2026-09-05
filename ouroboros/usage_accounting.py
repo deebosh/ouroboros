@@ -94,11 +94,18 @@ _LAST_PHYSICAL_ATTEMPT: contextvars.ContextVar[Optional["PhysicalAttemptCapture"
 _ROOT_ACCOUNTING_TELEMETRY: Dict[str, Dict[str, Any]] = {}
 _ROOT_ACCOUNTING_TELEMETRY_LOCK = threading.Lock()
 _ROOT_ACCOUNTING_TELEMETRY_CAP = 64
+_ROOT_RESERVATIONS_KEPT = 8  # identities of the newest appended reservations per root
 def _stash_root_accounting(
     root_task_id: str,
     accounted_usd: Optional[float],
     root_limit_usd: Optional[float],
+    reservation: Optional[Dict[str, Any]] = None,
 ) -> None:
+    """Refresh the process-local root snapshot. ``reservation`` is the identity
+    of a row this call has just APPENDED (attempt id, task, category, review
+    slot): only a successful ``reserve_attempt`` passes one, so a reader that
+    finds its own identity here has observed its own reservation — a refresh,
+    a settlement or a refused reservation never leaves one."""
     root_task_id = str(root_task_id or "").strip()
     if not root_task_id:
         return
@@ -112,20 +119,34 @@ def _stash_root_accounting(
                 key=lambda key: _ROOT_ACCOUNTING_TELEMETRY[key]["updated_monotonic"],
             )
             _ROOT_ACCOUNTING_TELEMETRY.pop(oldest, None)
+        now = time.monotonic()
+        kept = list((_ROOT_ACCOUNTING_TELEMETRY.get(root_task_id) or {}).get("reservations") or [])
+        if reservation:
+            kept = (kept + [{**reservation, "reserved_monotonic": now}])[-_ROOT_RESERVATIONS_KEPT:]
         _ROOT_ACCOUNTING_TELEMETRY[root_task_id] = {
             "accounted_usd": None if accounted_usd is None else float(accounted_usd),
             "root_limit_usd": None if root_limit_usd is None else float(root_limit_usd),
-            "updated_monotonic": time.monotonic(),
+            "updated_monotonic": now,
+            "reservations": kept,
         }
 
 def last_root_accounting(root_task_id: str) -> Optional[Dict[str, Any]]:
-    """Newest process-local root snapshot, including in-flight holds."""
+    """Newest process-local root snapshot, including in-flight holds and the
+    identities of the newest appended reservations (each with its own
+    ``age_sec``)."""
     with _ROOT_ACCOUNTING_TELEMETRY_LOCK:
         entry = _ROOT_ACCOUNTING_TELEMETRY.get(str(root_task_id or "").strip())
         if entry is None:
             return None
         entry = dict(entry)
-    entry["age_sec"] = max(0.0, time.monotonic() - entry.pop("updated_monotonic"))
+    now = time.monotonic()
+    entry["age_sec"] = max(0.0, now - entry.pop("updated_monotonic"))
+    reservations = []
+    for row in (entry.get("reservations") or []):
+        row = dict(row)
+        row["age_sec"] = max(0.0, now - float(row.pop("reserved_monotonic", now)))
+        reservations.append(row)
+    entry["reservations"] = reservations
     return entry
 
 def refresh_root_accounting(
@@ -597,21 +618,29 @@ def review_wave_admission(
     remaining_usd_override: float | None = None,
     task_id: str = "",
     root_limit_usd: float | None = None,
+    categories: str | Sequence[str] = "",
+    slot_ids: str | Sequence[str] = "",
 ) -> Dict[str, Any]:
     """Read-only all-slot admission using the normal reservation math; fail open.
     ``remaining_usd_override`` serves callers outside any task usage scope (the
     managed-update admission gate): compared against instead of the projection.
 
-    ``prompt_chars``/``max_completion_tokens`` accept one value for every slot
-    or one value PER slot (aligned with ``models``): a mixed wave (the commit
-    gate's scope pack beside its triad pack) is priced seat by seat exactly as
-    ``reserve_attempt`` will price each send, and ``task_id`` keys the same
-    observed cache split the reservation reads. The result also discloses the
-    projection's ``accounted_usd``, the open holds of in-flight attempts
-    (``reserved_usd``: reserved plus dispatched upper bounds) and the per-slot
-    bounds so a refusal can name what holds the money. ``root_limit_usd`` is the caller's
-    bound fence, consulted only when the root has no ledger row yet to carry
-    one (a first wave must not fail open just because nothing was spent)."""
+    ``prompt_chars``/``max_completion_tokens``/``categories``/``slot_ids``
+    accept one value for every slot or one value PER slot (aligned with
+    ``models``): a mixed wave (the commit gate's scope pack beside its triad
+    pack) is priced seat by seat exactly as ``reserve_attempt`` will price each
+    send. The observed cache split a reservation reads is keyed by the SENDING
+    scope (task, provider, model, category and review slot): each seat is
+    priced under its own category/slot, so a warm split of the caller's own
+    transcript never stands in for a reviewer seat's cold prefix — an empty
+    category keeps the caller's scope (a wave the caller sends itself). The
+    result also discloses the projection's ``accounted_usd``, the open holds of
+    in-flight attempts (``reserved_usd``: reserved plus dispatched upper
+    bounds) and the per-slot bounds so a refusal can name what holds the money.
+    ``root_limit_usd`` is the caller's CURRENT bound fence — the one
+    ``reserve_attempt`` will enforce — and governs when given; the ledger's
+    projection (the minimum of the historical row limits) serves only a caller
+    that binds no fence of its own."""
     result: Dict[str, Any] = {
         "fits": True,
         "estimated_wave_usd": None,
@@ -633,9 +662,10 @@ def review_wave_admission(
             remaining = float(remaining_usd_override)
         else:
             projection = usage_projection(drive_root, root_task_id=root_task_id)
-            limit = _number(projection.get("limit_usd"))
-            if limit is None and root_limit_usd is not None:
-                limit = max(0.0, float(root_limit_usd))
+            limit = (
+                max(0.0, float(root_limit_usd)) if root_limit_usd is not None
+                else _number(projection.get("limit_usd"))
+            )
             accounted = _number(projection.get("accounted_usd"))
             if limit is None or accounted is None:
                 return result
@@ -651,17 +681,27 @@ def review_wave_admission(
         result["remaining_usd"] = remaining
         chars = _per_slot(prompt_chars, len(models))
         outputs = _per_slot(max_completion_tokens, len(models))
+        seat_categories = _per_slot(categories, len(models))
+        seat_slot_ids = _per_slot(slot_ids, len(models))
+        base_scope = current_usage_scope() or UsageScope()
         total = 0.0
         for index, model in enumerate(models):
-            bound = _reservation_cost(
-                AttemptRequest(
-                    model=str(model or ""),
-                    provider=infer_provider_from_model(str(model or "")),
-                    prompt_tokens_estimate=max(0, int(chars[index] or 0)) // 4,
-                    max_completion_tokens=max(0, int(outputs[index] or 0)),
-                    task_id=str(task_id or ""),
+            seat_scope = base_scope
+            if str(seat_categories[index] or ""):
+                seat_scope = replace(
+                    base_scope, category=str(seat_categories[index]),
+                    review_slot_id=str(seat_slot_ids[index] or ""),
                 )
-            )
+            with usage_scope(seat_scope):
+                bound = _reservation_cost(
+                    AttemptRequest(
+                        model=str(model or ""),
+                        provider=infer_provider_from_model(str(model or "")),
+                        prompt_tokens_estimate=max(0, int(chars[index] or 0)) // 4,
+                        max_completion_tokens=max(0, int(outputs[index] or 0)),
+                        task_id=str(task_id or ""),
+                    )
+                )
             result["slot_bounds"].append(None if bound is None else round(float(bound), 6))
             if bound is None:
                 # Unknown contributes no invented price and remains explicitly counted.
@@ -820,6 +860,10 @@ def reserve_attempt(request: AttemptRequest) -> AttemptReservation:
                 scope.root_task_id,
                 float(_summary([*root_rows, *appended])["accounted_usd"]),
                 root_limit,
+                reservation={
+                    "attempt_id": attempt_id, "task_id": scope.task_id,
+                    "category": scope.category, "review_slot_id": scope.review_slot_id,
+                },
             )
     bucket = _ATTEMPT_COLLECTOR.get()
     if bucket is not None:

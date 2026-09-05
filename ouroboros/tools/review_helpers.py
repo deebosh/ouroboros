@@ -241,6 +241,8 @@ def review_wave_budget_gate(
     prompt_chars: int | list,
     max_completion_tokens: int | list = 65536,
     extra: dict | None = None,
+    categories: str | list = "",
+    slot_ids: str | list = "",
 ) -> Optional[dict]:
     """Shared review-wave budget admission (v6.69.0).
 
@@ -250,10 +252,12 @@ def review_wave_budget_gate(
     and, since the owner decision of 2026-09-05, the P3 commit gate
     (``surface="commit_gate"``: scope seats first, then the triad, each seat
     priced with its own pack size and output reservation — ``prompt_chars`` /
-    ``max_completion_tokens`` take one value per slot). A wave that fits is
-    dispatched whole; one that does not is refused BEFORE any seat spends,
-    never half-dispatched. Fail-open on any error/unknown, mirroring
-    ``review_wave_admission``."""
+    ``max_completion_tokens`` take one value per slot, and ``categories`` /
+    ``slot_ids`` name the usage scope each seat will SEND under, so its bound
+    reads the seat's own observed cache split rather than the caller's). A
+    wave that fits is dispatched whole; one that does not is refused BEFORE
+    any seat spends, never half-dispatched. Fail-open on any error/unknown,
+    mirroring ``review_wave_admission``."""
     try:
         from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
 
@@ -268,6 +272,8 @@ def review_wave_budget_gate(
             max_completion_tokens=max_completion_tokens,
             task_id=str(scope.task_id or ""),
             root_limit_usd=scope.root_limit_usd,
+            categories=categories,
+            slot_ids=slot_ids,
         )
         unpriced = int(admission.get("unpriced_slots") or 0)
         base = {

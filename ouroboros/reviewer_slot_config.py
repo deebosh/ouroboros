@@ -77,6 +77,9 @@ REVIEWER_SLOTS_ENV = "OUROBOROS_REVIEWER_SLOTS"
 
 ROUTE_KIND_API = "api_chat"
 ROUTE_KIND_SESSION = "agent_session"
+# The one role hint every scope row carries (structured or default panel); the
+# commit gate's wave admission renders a native scope seat's work-order with it.
+SCOPE_ROLE_HINT = "scope reviewer"
 
 # Real limits, shown in the UI instead of promising an arbitrary number (D14).
 # Pinned against their owners by tests: the triad ceiling is
@@ -702,7 +705,7 @@ def structured_scope_review_slots() -> Optional[list]:
     if not structured_reviewer_slots_present():
         return None
     return [
-        _delivery_slot(row, effort_surface="scope_review", role_hint="scope reviewer")
+        _delivery_slot(row, effort_surface="scope_review", role_hint=SCOPE_ROLE_HINT)
         for row in commit_scope_rows()
     ]
 
