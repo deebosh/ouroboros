@@ -18,6 +18,16 @@ rollback + retry).
 here whole; the dispatch half stays in ``scope_review``. Internals are reached
 through the module object (``_scope().name``) so test monkeypatching of
 ``scope_review`` attributes keeps working.
+
+Both packets share ONE cold-start density rung (owner decision 2026-09-05,
+answer 1 = A: the commit gate gets the SAME rung the packed deep self-review
+has): a pack that would be refused or degraded for SIZE while the reviewer
+route has NO fresh exact-model density witness gets one bounded probe send on
+the exact model (``capability_evidence.cold_start_density_probe``), the witness is
+recorded, the cap recomputed and the pack rebuilt ONCE — never on a warm
+store, never retried, never on a commit whose pack fits. A probe the paid
+ledger refuses is a typed disclosure on the ladder and in the review events,
+and the existing refusal path proceeds unchanged.
 """
 
 from __future__ import annotations
@@ -65,6 +75,60 @@ def _scope():
     return scope_review
 
 
+# The scope ladder's SIZE terminals (never the integrity ones: empty/omitted).
+_SCOPE_SIZE_TERMINALS = frozenset({"fixed_overflow", "budget_exceeded"})
+
+DENSITY_PROBE_CALL_TYPE = "review_density_probe"
+DENSITY_PROBE_EVENT = "review_density_probe"
+
+
+def density_probe_before_size_refusal(ctx: Any, model: str, sample: str, *, surface: str) -> str:
+    """The commit gate's cold-start density rung; returns the shared probe's
+    typed outcome (``capability_evidence.cold_start_density_probe``) plus
+    ``"budget_refused"`` and ``"unavailable"`` (no ctx/drive root to record a
+    witness on — a bare fit-check never sends).
+
+    Disclosure mirrors the deep review's: every attempted probe is a progress
+    line (``ctx.emit_progress_fn``) and one ``review_density_probe`` review
+    event (the scope caller adds the ladder step); the send itself lands in
+    custody through ``chat_observed`` and in the paid ledger like any review
+    send. A ``BudgetExceeded`` from the ledger is the typed
+    ``budget_refused`` outcome — the pack keeps its existing size refusal;
+    nothing crashes and nothing is retried."""
+    from ouroboros.capability_evidence import cold_start_density_probe
+    from ouroboros.tools.review_helpers import emit_review_event, review_drive_root
+    from ouroboros.usage_accounting import BudgetExceeded
+
+    if ctx is None or not getattr(ctx, "drive_root", None):
+        return "unavailable"
+
+    def _progress(text: str) -> None:
+        try:
+            ctx.emit_progress_fn(f"{surface}: {text}")
+        except Exception:
+            pass
+
+    from ouroboros.llm import LLMClient
+
+    try:
+        outcome = cold_start_density_probe(
+            review_drive_root(ctx), LLMClient(), _progress, str(model), sample,
+            task_id=str(getattr(ctx, "task_id", "") or "") or "commit_review",
+            call_type=DENSITY_PROBE_CALL_TYPE, source="commit_gate_cold_start_probe",
+        )
+        reason = ""
+    except BudgetExceeded as exc:
+        outcome, reason = "budget_refused", str(exc)
+        _progress(f"density probe refused by the budget ({reason}); the cold input cap stands.")
+    if outcome not in ("warm", "no_sample"):
+        emit_review_event(ctx, {
+            "type": DENSITY_PROBE_EVENT, "surface": surface, "model": str(model),
+            "outcome": outcome, "reason": reason,
+            "task_id": str(getattr(ctx, "task_id", "") or ""),
+        })
+    return outcome
+
+
 def fit_triad_prompt(api_models: list, assemble, current_files_section: str,
                      diff_text: str, changed: str, target_repo, ctx=None,
                      subject=None) -> tuple:
@@ -99,9 +163,25 @@ def fit_triad_prompt(api_models: list, assemble, current_files_section: str,
         ))
 
     estimate_tokens = _rv.estimate_tokens
-    input_limit = _rv._quorum_input_token_limit(
-        api_models, {m: _slot_input_limit(m) for m in api_models})
+    slot_limits = {m: _slot_input_limit(m) for m in api_models}
+    input_limit = _rv._quorum_input_token_limit(api_models, slot_limits)
     prompt, stable_prefix_len = assemble(current_files_section, diff_text)
+    if input_limit and estimate_tokens(prompt) > input_limit:
+        # Cold-start density rung: every api slot the full prompt overflows and
+        # whose route has no fresh witness gets ONE bounded probe on a slice of
+        # this very prompt; a recorded witness re-sizes the slots once, then
+        # the ladder below runs unchanged on the recalibrated limit.
+        from ouroboros.tools.review_helpers import DENSITY_PROBE_SAMPLE_CHARS
+
+        prompt_tokens = estimate_tokens(prompt)
+        if any(
+            density_probe_before_size_refusal(
+                ctx, m, prompt[:DENSITY_PROBE_SAMPLE_CHARS], surface="triad_review",
+            ) == "measured"
+            for m in api_models if prompt_tokens > slot_limits.get(m, 0)
+        ):
+            slot_limits = {m: _slot_input_limit(m) for m in api_models}
+            input_limit = _rv._quorum_input_token_limit(api_models, slot_limits)
     if input_limit and estimate_tokens(prompt) > input_limit:
         touched_paths = [line.strip() for line in changed.splitlines() if line.strip()]
         fit_note = (
@@ -216,6 +296,19 @@ def drop_api_rows(row_plan: dict) -> dict:
     return filtered
 
 
+def _scope_pack_starved(context_status: Any, manifest: dict) -> bool:
+    """True when the assembled scope pack was refused or degraded for SIZE —
+    the only condition under which the density rung may spend a probe: a size
+    terminal of the ladder, or an assembled pack whose ladder trace shows a
+    rung taken (touched files degraded to diff-only, or the -U0 diff)."""
+    if context_status is not None:
+        return str(getattr(context_status, "status", "") or "") in _SCOPE_SIZE_TERMINALS
+    return any(
+        int(step.get("diff_only_files") or 0) > 0 or bool(step.get("zero_context_diff"))
+        for step in (dict(manifest or {}).get("ladder_steps") or []) if isinstance(step, dict)
+    )
+
+
 def prepare_scope_review(
     ctx: Any,
     commit_message: str,
@@ -285,24 +378,49 @@ def prepare_scope_review(
             prompt, context_status = session_task, None
         else:
             session_task = ""
-            prompt, context_status = sr._build_scope_prompt(
-                repo_dir, commit_message,
-                goal=goal, scope=scope,
-                review_rebuttal=review_rebuttal,
-                review_history=review_history,
-                scope_review_history=scope_review_history,
-                context=sr._ScopePromptContext(
-                    drive_root=(
-                        pathlib.Path(ctx.drive_root)
-                        if getattr(ctx, "drive_root", None)
-                        else None
+
+            def _assemble():
+                return sr._build_scope_prompt(
+                    repo_dir, commit_message,
+                    goal=goal, scope=scope,
+                    review_rebuttal=review_rebuttal,
+                    review_history=review_history,
+                    scope_review_history=scope_review_history,
+                    context=sr._ScopePromptContext(
+                        drive_root=(
+                            pathlib.Path(ctx.drive_root)
+                            if getattr(ctx, "drive_root", None)
+                            else None
+                        ),
+                        scope_model=scope_model_id,
+                        governance_repo_dir=governance_repo,
+                        represent_binary=subject is not None,
+                        managed_subject=subject,
                     ),
-                    scope_model=scope_model_id,
-                    governance_repo_dir=governance_repo,
-                    represent_binary=subject is not None,
-                    managed_subject=subject,
-                ),
-            )
+                )
+
+            prompt, context_status = _assemble()
+            if _scope_pack_starved(context_status, sr._current_scope_context_manifest()):
+                # Cold-start density rung (the deep review's, shared): the
+                # sample is the refused required rows first, then the selected
+                # ones; a recorded witness rebuilds the pack ONCE under the
+                # recalibrated cap. The manifest is reset by every build, so
+                # the probe's ladder step is recorded on the LAST build.
+                from ouroboros.tools.review_helpers import density_probe_sample
+
+                outcome = density_probe_before_size_refusal(
+                    ctx, scope_model_id,
+                    density_probe_sample(repo_dir, sr._current_scope_context_manifest()),
+                    surface="scope_review",
+                )
+                if outcome == "measured":
+                    prompt, context_status = _assemble()
+                if outcome not in ("warm", "no_sample", "unavailable"):
+                    sr._record_ladder_steps(
+                        list(sr._current_scope_context_manifest().get("ladder_steps") or [])
+                        + [{"step": "density_probe", "model": scope_model_id, "outcome": outcome,
+                            "rebuilt": outcome == "measured"}]
+                    )
     except (RuntimeError, StagedDiffUnavailable) as exc:
         return None, sr.ScopeReviewResult(
             blocked=True,

@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
 from ouroboros.utils import (
     atomic_write_json,
+    estimate_tokens,
     is_credential_header_name,
     read_json_dict,
     utc_now_iso,
@@ -766,6 +767,102 @@ def resolve_review_token_density(drive_root: Any, model_id: str) -> Tuple[float,
 def resolve_token_density(drive_root: Any, model_id: str) -> Tuple[float, str]:
     """Compatibility alias for the conservative review reducer."""
     return resolve_review_token_density(drive_root, model_id)
+
+
+# Cold-start density probe (owner decisions R60/R61 for the packed deep
+# self-review; the commit gate runs the same rung since 2026-09-05): when a
+# review pack is refused or degraded under the COLD floor, ONE bounded send on
+# the exact model sources a real witness for the store above.
+# Room for a reasoning model to finish thinking AND answer: a cap that ends the
+# call mid-reasoning comes back with no content and no usage — no witness.
+DENSITY_PROBE_MAX_TOKENS = 256
+DENSITY_PROBE_EFFORT = "low"
+DENSITY_PROBE_SYSTEM_PROMPT = "Token-density calibration probe: reply with the single word OK."
+
+
+def cold_start_density_probe(
+    drive_root: Any,
+    llm: Any,
+    emit_progress: Any,
+    model: str,
+    sample: str,
+    *,
+    task_id: str,
+    call_type: str,
+    source: str,
+) -> str:
+    """The cold-start rung shared by the packed deep self-review and the commit
+    gate (scope ladder and triad fit). Returns a typed outcome:
+
+    ``"warm"`` — a fresh exact-model witness already governs: nothing is sent;
+    ``"no_sample"`` — nothing to measure on; ``"failed"`` / ``"no_usage"`` /
+    ``"unrecorded"`` — the probe sent but yielded no governing witness (the
+    cold cap stands, disclosed on progress); ``"measured"`` — the witness is
+    recorded and now governs, so the caller recomputes the cap and rebuilds
+    ONCE.
+
+    The calibrated input cap is the density-form bound over a FRESH exact-model
+    witness, else the cold floor ``COLD_START_TOKEN_DENSITY`` — which lies
+    above every measured density, so a repository whose required set fits warm
+    is refused cold, and the refusal happens before any send, so the model
+    never records the witness that would have admitted it. This rung breaks
+    that loop with ONE bounded send on the exact model (``sample``: a slice of
+    the real pack, a few output tokens) through the ordinary observed call. It
+    never runs on a warm store and never retries. ``BudgetExceeded`` propagates:
+    the paid ledger's refusal is budget vocabulary the caller discloses in its
+    own terms (the deep review lets it reach the agent's budget rail; the
+    commit gate records a typed disclosure and keeps its existing refusal)."""
+    from ouroboros.llm_observability import chat_observed
+    from ouroboros.usage_accounting import BudgetExceeded
+
+    _density, density_source = resolve_review_token_density(drive_root, model)
+    if density_source == "measured":
+        return "warm"
+    if not sample:
+        return "no_sample"
+    emit_progress(
+        f"No fresh token-density witness for {model}: one bounded probe "
+        f"(~{estimate_tokens(sample):,} estimated tokens) calibrates the input cap..."
+    )
+    try:
+        _response, usage = chat_observed(
+            llm,
+            drive_root=drive_root,
+            task_id=task_id,
+            call_type=call_type,
+            messages=[
+                {"role": "system", "content": DENSITY_PROBE_SYSTEM_PROMPT},
+                {"role": "user", "content": sample},
+            ],
+            model=model,
+            tools=None,
+            reasoning_effort=DENSITY_PROBE_EFFORT,
+            max_tokens=DENSITY_PROBE_MAX_TOKENS,
+            temperature=None,
+            no_proxy=True,
+        )
+    except BudgetExceeded:
+        raise
+    except Exception as exc:
+        log.warning("Token-density probe failed (%s): %s", call_type, exc, exc_info=True)
+        emit_progress(f"Density probe failed ({type(exc).__name__}); the cold input cap stands.")
+        return "failed"
+    real = int((usage or {}).get("prompt_tokens") or 0)
+    if real <= 0:
+        emit_progress("Density probe returned no usage (prompt_tokens=0); the cold input cap stands.")
+        return "no_usage"
+    record_token_density(
+        drive_root,
+        _normalized_density_model(model),
+        prompt_chars=len(DENSITY_PROBE_SYSTEM_PROMPT) + len(sample),
+        prompt_tokens=real,
+        source=source,
+    )
+    density, density_source = resolve_review_token_density(drive_root, model)
+    emit_progress(f"Token density for {model}: {density:.2f} ({density_source}).")
+    # A witness the store refused (too few chars, an insane ratio) leaves the
+    # cold cap standing — disclosed above by the unchanged source.
+    return "measured" if density_source == "measured" else "unrecorded"
 
 
 # --- Owner acknowledgement (asserted) -----------------------------------------

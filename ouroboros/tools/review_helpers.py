@@ -73,6 +73,39 @@ def calibrated_input_token_limit(
         context_window - output_reserve - tokenizer_margin,
     )
 
+
+# The cold-start density probe itself (one bounded send on the exact model that
+# sources a witness) is ``capability_evidence.cold_start_density_probe``, shared
+# by the packed deep self-review and the commit gate; the sample it measures on
+# is a slice of the REAL pack content, built here from the atlas manifest.
+DENSITY_PROBE_SAMPLE_CHARS = 80_000
+
+
+def density_probe_sample(repo_dir: pathlib.Path, manifest: dict) -> str:
+    """A bounded slice of the REAL atlas content (the refused required rows
+    first, then the selected rows) so the probe measures the density of what
+    the pack is made of, not of an unrelated text."""
+    parts: list[str] = []
+    total = 0
+    manifest = dict(manifest or {})
+    rows = list(manifest.get("unassembled_required") or []) + list(manifest.get("selected") or [])
+    for row in rows:
+        rel = str((row or {}).get("path") or "")
+        if not rel or rel.startswith("/") or ".." in rel.split("/"):
+            continue
+        try:
+            text = (pathlib.Path(repo_dir) / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        room = DENSITY_PROBE_SAMPLE_CHARS - total
+        if room <= 0:
+            break
+        chunk = text[:room]
+        parts.append(f"### {rel}\n{chunk}\n")
+        total += len(chunk)
+    return "".join(parts)
+
+
 SKILL_HOST_CONTEXT_FILES = (
     ("docs/CREATING_SKILLS.md", "markdown"),
     ("ouroboros/contracts/plugin_api.py", "python"),
