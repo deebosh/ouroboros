@@ -388,9 +388,8 @@ def test_admission_is_fifo_by_dispatch_index_and_a_refused_head_frees_the_line(t
 
 
 def test_reservation_counts_roots_plus_the_evolution_root_and_is_the_lane_total_budget(tmp_path, monkeypatch):
-    """EQUALITY pins of the rc.14/rc.15 finding: the reservation is per-task x root tasks, +1 with --self-mod (rc.14
-    showed up to TWO evolution cycles per lane, one at t=0 next to the scenario task and one post-task, all under the
-    lane fence: SM1_a1 task $3.84 + cycles $12.40 + $2.84 of $20 — the lane's TOTAL_BUDGET is the true fence); the 2x
+    """EQUALITY pins of the rc.14/rc.15 finding: the reservation is per-task x root tasks, +1 with --self-mod (the one
+    post-task cycle; rc.14: SM1_a1 task $3.84 + cycles $12.40 + $2.84 of $20 — the lane's TOTAL_BUDGET is the fence); the 2x
     factor and its product import are gone and no bench budget profile is projected. Per-task $20 and one root reserve
     $20 ($40 with --self-mod, $60 for SK1 + evolution) and that exact number reaches the lane's settings file as
     TOTAL_BUDGET through ``run_lane`` (never the run-wide cap)."""
@@ -398,7 +397,7 @@ def test_reservation_counts_roots_plus_the_evolution_root_and_is_the_lane_total_
     rule = run_live_lanes.RESERVATION_RULE
     assert not hasattr(run_live_lanes, "HARD_STOP_INVERSE") and rule == run_live_lanes.RunBudget(1, 1).snapshot()["reservation_rule"]
     assert rule.startswith("max(0.01, per_task_usd x (root_tasks + 1 if --self-mod else root_tasks))")
-    assert "up to two cycles per lane" in rule and "the true fence" in rule and "cost_hard_stop" not in rule
+    assert "one post-task evolution cycle" in rule and "the true fence" in rule and "cost_hard_stop" not in rule
     budget = run_live_lanes.RunBudget(100.0, 20.0, reader=lambda root: (0.0, 0))
     assert budget.reservation(1) == 20.0 and budget.reservation(2) == 40.0 and not budget.self_mod
     evolving = run_live_lanes.RunBudget(100.0, 20.0, reader=lambda root: (0.0, 0), self_mod=True)
@@ -408,10 +407,7 @@ def test_reservation_counts_roots_plus_the_evolution_root_and_is_the_lane_total_
     ok, facts = budget.admit(job, 1, out / "lanes" / "SM1_a1" / "data", dispatch_index=0)
     assert ok and facts["reservation_usd"] == 20.0 and budget.ceiling(job) == 20.0
 
-    class _NoServer:                                    # the real path up to the written settings, then stop
-        def __init__(self, *_a, **_k) -> None:
-            self.base_url = "http://127.0.0.1:0"
-
+    class _NoServer(_NoopServer):                       # the real path up to the written settings, then stop
         def start(self, **_k) -> None:
             raise RuntimeError("no server in this pin: the settings file on disk is the evidence")
 
@@ -877,8 +873,8 @@ def test_lane_with_a_dead_browser_target_is_checks_failed_not_infra_error(tmp_pa
 def test_absorb_wait_and_check_follow_the_scenarios_expects_absorb(tmp_path, monkeypatch):
     """The rc.15 paid stand (2026-09-05, SK1_a1): every ``--self-mod`` lane waited ``--task-timeout`` for an absorb
     only SM1's commit could trigger, then failed ``self_mod_absorb_confirmed`` by construction. Now SM1 waits and
-    carries the check; SW1/SK1 stop right after the scenario with ``{"expected": False}``, no check, and post-task
-    evolution still ON in their settings (the campaign may run during the scenario; the stand does not wait)."""
+    carries the check; SW1/SK1 stop right after the scenario with ``{"expected": False}``, no check, post-task
+    evolution ON in their settings; every lane seeds ``owner_chat_id`` ONLY, never a campaign (run2's t=0 cycles)."""
     waits: list = []
     monkeypatch.setattr(run_live_lanes, "resolve_ui_client", lambda base_url: (None, "ui_unavailable:test"))
     monkeypatch.setattr(run_live_lanes, "self_mod_snapshot", lambda server, clone, data_root: {"pre": True})
@@ -887,12 +883,16 @@ def test_absorb_wait_and_check_follow_the_scenarios_expects_absorb(tmp_path, mon
     sm1 = _attempt_row(tmp_path, monkeypatch, "SM1", flags="--self-mod")
     assert waits == [{"pre": True}] and sm1["status"] == "fail" and sm1["checks"]["self_mod_absorb_confirmed"] is False
     assert sm1["self_mod_absorb"] == {"expected": True, "confirmed": False, "reason": "no_promotion", "healthy": True}
-    for sid in ("SW1", "SK1"):
-        row = _attempt_row(tmp_path, monkeypatch, sid, flags="--self-mod")
-        assert row["status"] == "pass" and "self_mod_absorb_confirmed" not in row["checks"], row["checks"]
-        assert row["self_mod_absorb"] == {"expected": False} and row["self_mod"] is True and waits == [{"pre": True}]
-        applied = json.loads((tmp_path / sid / "out" / "lanes" / f"{sid}_a1" / "data" / "settings.json").read_text())
-        assert applied["OUROBOROS_POST_TASK_EVOLUTION"] == "true"
+    for sid in ("SM1", "SW1", "SK1"):
+        if sid != "SM1":
+            row = _attempt_row(tmp_path, monkeypatch, sid, flags="--self-mod")
+            assert row["status"] == "pass" and "self_mod_absorb_confirmed" not in row["checks"], row["checks"]
+            assert row["self_mod_absorb"] == {"expected": False} and row["self_mod"] is True and waits == [{"pre": True}]
+        lane = tmp_path / sid / "out" / "lanes" / f"{sid}_a1" / "data"
+        state = json.loads((lane / "state" / "state.json").read_text(encoding="utf-8"))
+        assert json.loads((lane / "settings.json").read_text())["OUROBOROS_POST_TASK_EVOLUTION"] == "true"
+        assert state["owner_chat_id"] == 1 and "evolution_mode_enabled" not in state, state
+        assert not (lane / "state" / "evolution_campaign.json").exists(), sid
 
 
 def test_wait_task_namespaces_checks_per_task_and_check_refuses_overwrites():
