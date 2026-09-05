@@ -406,6 +406,40 @@ RETIRED_SETTING_SUCCESSORS: dict[str, tuple[str, ...]] = {
 }
 
 
+def retired_setting_keys_notice(dropped: tuple[str, ...], *, reviewer_slots_authored: bool) -> str:
+    """THE sentence every surface says about retired keys found in the owner's document.
+
+    Read by the settings read seam (``config.normalize_settings_raw``, the once-per-process
+    log line) and by the boot-time owner chat notice (``server_maintenance``), so the log
+    and the chat never describe the same loss differently. It names every dropped key,
+    says they are NOT honored, and states what replaced them from the two tables above;
+    for the reviewer comma-lists it names the panel that is ACTIVE now — the structured
+    ``OUROBOROS_REVIEWER_SLOTS`` the owner authored, or the shipped default panel until
+    they do — because "which reviewers run" is the fact the owner has to see.
+    """
+    comma = [k for k in dropped if k in RETIRED_COMMA_LIST_SETTING_KEYS]
+    clauses = []
+    if comma:
+        panel = (
+            "the reviewer panel authored in that setting"
+            if reviewer_slots_authored else
+            "the SHIPPED default reviewer panel until that setting is authored (Settings page)"
+        )
+        clauses.append(
+            "the reviewer comma-lists (%s) are replaced by the structured "
+            "OUROBOROS_REVIEWER_SLOTS, so this install now runs %s" % (", ".join(comma), panel))
+    if named := [k for k in dropped if k in RETIRED_SETTING_SUCCESSORS]:
+        clauses.append("the retirement table names a successor setting: %s" % "; ".join(
+            "%s -> %s" % (k, ", ".join(RETIRED_SETTING_SUCCESSORS[k])) for k in named))
+    if rest := [k for k in dropped if k not in comma and k not in named]:
+        clauses.append(
+            "the retirement table names no successor setting for %s: they are "
+            "removed, not honored — see the release notes for what, if anything, "
+            "replaced them" % ", ".join(rest))
+    return "retired key(s) %s are present in the settings document and are NOT honored; %s" % (
+        ", ".join(dropped), "; ".join(clauses))
+
+
 # The same keys from the other side: load_settings overlays env onto disk-ABSENT keys, so without this an
 # ordinary load->save round-trip in a process whose env says low/off would launder that value onto disk
 # unauthorised — or, once the guard reads disk, raise a PermissionError nobody authored. Owner endpoints

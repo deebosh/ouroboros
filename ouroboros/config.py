@@ -35,6 +35,7 @@ from ouroboros.settings_defaults import (
     RETIRED_COMMA_LIST_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_KEYS,  # noqa: F401
     RETIRED_SETTING_SUCCESSORS,  # noqa: F401
+    retired_setting_keys_notice,  # noqa: F401
     SETTINGS_DEFAULTS,  # noqa: F401
     SETTINGS_KEYS_NOT_EXPORTED_TO_ENV,  # noqa: F401
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,  # noqa: F401
@@ -708,6 +709,13 @@ log = logging.getLogger(__name__)
 _RETIREMENT_NOTICE_SEEN: set[tuple[str, ...]] = set()
 
 
+def retired_key_sets_seen() -> tuple[tuple[str, ...], ...]:
+    """The dropped-retired-key sets this process's settings reads have reported so far.
+    The boot-time owner chat notice (``server_maintenance``) reads them from here instead
+    of re-reading the document or keeping a second retirement table."""
+    return tuple(sorted(_RETIREMENT_NOTICE_SEEN))
+
+
 def normalize_settings_raw(raw: dict) -> dict:
     """THE raw-stage normalization every settings READER applies BEFORE defaults.
 
@@ -730,7 +738,9 @@ def normalize_settings_raw(raw: dict) -> dict:
     authored is a loss the owner has to be able to see, so the first read that finds one
     says so on the module logger (once per process per dropped set — this seam runs on
     every settings read, and routing the notice into the typed event store would make each
-    read a write, which is exactly what the seam exists to prevent)."""
+    read a write, which is exactly what the seam exists to prevent); the supervisor boot
+    then tells the OWNER once, in their chat, from the sets recorded here
+    (``retired_key_sets_seen`` -> ``server_maintenance._startup_retired_settings_notice``)."""
     from ouroboros.retention import LEGACY_RETENTION_KEYS, pick_legacy_retention_seed
 
     loaded = {
@@ -751,27 +761,8 @@ def normalize_settings_raw(raw: dict) -> dict:
         loaded.pop(_retired, None)
     if dropped and dropped not in _RETIREMENT_NOTICE_SEEN:
         _RETIREMENT_NOTICE_SEEN.add(dropped)
-        comma = [k for k in dropped if k in RETIRED_COMMA_LIST_SETTING_KEYS]
-        clauses = []
-        if comma:
-            clauses.append(
-                "the reviewer comma-lists (%s) are replaced by the structured "
-                "OUROBOROS_REVIEWER_SLOTS, so this install now runs the SHIPPED default "
-                "reviewer panel until that setting is authored" % ", ".join(comma))
-        if named := [k for k in dropped if k in RETIRED_SETTING_SUCCESSORS]:
-            clauses.append("the retirement table names a successor setting: %s" % "; ".join(
-                "%s -> %s" % (k, ", ".join(RETIRED_SETTING_SUCCESSORS[k])) for k in named))
-        if rest := [k for k in dropped if k not in comma and k not in named]:
-            clauses.append(
-                "the retirement table names no successor setting for %s: they are "
-                "removed, not honored — see the release notes for what, if anything, "
-                "replaced them" % ", ".join(rest))
-        replacement = "; ".join(clauses)
-        log.warning(
-            "settings: retired key(s) %s are present in the settings document and "
-            "are NOT honored; %s",
-            ", ".join(dropped), replacement,
-        )
+        log.warning("settings: %s", retired_setting_keys_notice(
+            dropped, reviewer_slots_authored=bool(str(loaded.get("OUROBOROS_REVIEWER_SLOTS") or "").strip())))
     migrate_legacy_slot_keys(loaded)
     return strip_masked_secrets(loaded, known_setting_keys=SETTINGS_DEFAULTS)
 

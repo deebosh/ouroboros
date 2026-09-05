@@ -132,6 +132,55 @@ def _reconcile_delegated_runs(running_task_ids: set) -> None:
         log.debug("Delegated-run reconciliation failed", exc_info=True)
 
 
+def _startup_retired_settings_notice(settings: dict) -> None:
+    """Tell the OWNER, in their chat, that retired keys in ``settings.json`` are NOT honored.
+
+    ``config.normalize_settings_raw`` reports the loss on the module logger only, which an
+    owner who never opens the Logs panel does not see — and the reviewer comma-lists are
+    the case that matters: an install upgraded without authoring
+    ``OUROBOROS_REVIEWER_SLOTS`` silently runs the shipped default panel. The dropped sets
+    come from that same read seam (``config.retired_key_sets_seen``), the sentence is the
+    one the log line uses (``settings_defaults.retired_setting_keys_notice``), and the
+    dedupe is durable: ``state.json:retired_settings_notified`` keyed by the exact
+    retired-key set, so a restart or a supervisor revival never repeats it. Nothing is
+    sent — and nothing marked — while no owner chat is bound: the notice waits for the
+    first boot that has somewhere to deliver it.
+    """
+    try:
+        from ouroboros.config import retired_key_sets_seen
+        from ouroboros.settings_defaults import retired_setting_keys_notice
+        from supervisor.message_bus import send_with_budget
+        from supervisor.state import load_state, update_state
+
+        state = load_state()
+        owner_chat = int(state.get("owner_chat_id") or 0)
+        if not owner_chat:
+            return
+        notified = state.get("retired_settings_notified")
+        notified = notified if isinstance(notified, dict) else {}
+        slots_authored = bool(str((settings or {}).get("OUROBOROS_REVIEWER_SLOTS") or "").strip())
+        for dropped in retired_key_sets_seen():
+            marker = ",".join(dropped)
+            if marker in notified:
+                continue
+            send_with_budget(
+                owner_chat,
+                "⚙️ Settings: " + retired_setting_keys_notice(
+                    dropped, reviewer_slots_authored=slots_authored),
+                role="system", system_type="retired_settings_notice",
+            )
+
+            def _mark(st: dict, key: str = marker) -> None:
+                seen = st.get("retired_settings_notified")
+                seen = dict(seen) if isinstance(seen, dict) else {}
+                seen[key] = utc_now_iso()
+                st["retired_settings_notified"] = seen
+
+            update_state(_mark)
+    except Exception:
+        log.debug("retired settings owner notice failed", exc_info=True)
+
+
 def _startup_worktree_prune() -> None:
     """Startup hygiene: prune orphaned subagent worktrees (after the custody sweep)."""
     from supervisor.state import append_jsonl

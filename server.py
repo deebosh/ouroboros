@@ -88,6 +88,7 @@ from ouroboros.server_maintenance import (  # noqa: F401
     _reconcile_delegated_runs,
     _resume_interrupted_project_deletions,
     _run_startup_task_recovery,
+    _startup_retired_settings_notice,
     _startup_custody_sweep,
     _startup_prune_sweeps,
     _startup_worktree_prune,
@@ -746,6 +747,7 @@ def _run_supervisor(settings: dict) -> None:
             if st_boot.get("owner_chat_id"):
                 send_with_budget(int(st_boot["owner_chat_id"]),
                     f"♻️ Restored pending queue from snapshot: {restored_pending} tasks.")
+        _startup_retired_settings_notice(settings)
 
         auto_resume_after_restart()
 

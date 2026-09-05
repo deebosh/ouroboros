@@ -37,6 +37,9 @@ _MOVED_OWNERS = {
     # retired keys whose successor SETTING the table states, so the first-boot
     # notice can name it instead of claiming there is none.
     "RETIRED_SETTING_SUCCESSORS": settings_defaults,
+    # D-07: the ONE sentence both the read seam's log line and the boot-time
+    # owner chat notice say about retired keys, next to the tables it reads.
+    "retired_setting_keys_notice": settings_defaults,
     "SETTINGS_DEFAULTS": settings_defaults,
     "SETTINGS_KEYS_NOT_EXPORTED_TO_ENV": settings_defaults,
     "SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC": settings_defaults,

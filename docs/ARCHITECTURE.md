@@ -1693,8 +1693,12 @@ Add the field to the active frozen owner — `ouroboros/contracts/` for the pack
     (`OUROBOROS_REVIEW_MODELS`, `OUROBOROS_SCOPE_REVIEW_MODELS`, `OUROBOROS_SCOPE_REVIEW_MODEL`,
     `OUROBOROS_REVIEW_ROUTES`, `OUROBOROS_SCOPE_REVIEW_ROUTES`, `OUROBOROS_ADVISORY_REVIEW_ROUTE`). Their
     migration note: move the configuration into the structured `OUROBOROS_REVIEWER_SLOTS` BEFORE upgrading — an
-    install carrying only comma keys comes up on the shipped default panel. A comma-spelled ENV projection
-    survives as the derived runtime plane, never as configuration.
+    install carrying only comma keys comes up on the shipped default panel. The owner is TOLD: the read seam
+    logs the dropped keys once per process, and the first supervisor boot with an owner chat bound posts one
+    system row there (`server_maintenance._startup_retired_settings_notice`, the same sentence —
+    `settings_defaults.retired_setting_keys_notice` — naming the keys as NOT honored and the panel that is
+    active now), deduplicated durably per retired-key set in `state.json:retired_settings_notified`. A
+    comma-spelled ENV projection survives as the derived runtime plane, never as configuration.
   - *Plugin ABI.* `PLUGIN_API_VERSION` is `"2.0"` with manifest negotiation checked before plugin import or
     out-of-process cataloging; an absent field means legacy `1.3` by construction, and a hash-bound PASS is
     grandfathered.
