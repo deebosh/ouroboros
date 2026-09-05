@@ -189,10 +189,22 @@ test('a 503 settings_save_timeout keeps the wizard open with "Check status", whi
         assert.match(html, /id="check-save-btn"[^>]*>Check status</);
         assert.doesNotMatch(html, /Saving\.\.\./, 'the wizard is not stuck on Saving...');
         assert.equal(replaced.length, 0, 'an unknown save is not announced as a completion');
+        // "Check status" is the ONE primary action while the outcome is
+        // unknown; the re-submit stays offered, but as an explicit secondary
+        // "Retry save" — the default "Start Ouroboros" beside it re-POSTed a
+        // second write over the first (rc.15 review MINOR 3).
+        assert.match(html, /class="btn btn-primary" id="check-save-btn"/, 'Check status is the primary action');
+        assert.match(html, /class="btn btn-secondary" id="next-btn"[^>]*>Retry save</, 'the retry is explicit and secondary');
+        assert.equal((html.match(/btn-primary/g) || []).length, 1, 'exactly one primary action');
+
+        doc.getElementById('next-btn').fire('click');   // the explicit retry path stays reachable
+        await settle();
+        assert.deepEqual(calls, ['POST /api/onboarding/complete', 'POST /api/onboarding/complete']);
+        assert.match(doc.getElementById('root').innerHTML, /class="btn btn-primary" id="check-save-btn"/);
 
         doc.getElementById('check-save-btn').fire('click');
         await settle();
-        assert.deepEqual(calls, ['POST /api/onboarding/complete', 'GET /api/onboarding']);
+        assert.deepEqual(calls, ['POST /api/onboarding/complete', 'POST /api/onboarding/complete', 'GET /api/onboarding']);
         // 204 = the readiness gate passes: the transaction landed. The plain
         // browser shell proceeds as it does on a receipt (no restart needed —
         // the runtime mode the wizard holds is the one the page loaded with).

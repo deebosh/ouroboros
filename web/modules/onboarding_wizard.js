@@ -801,8 +801,13 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
     function render() {
         const meta = STEP_META[state.currentStep];
         const index = STEP_ORDER.indexOf(state.currentStep);
+        // An UNKNOWN save (503 settings_save_timeout: the write may still be
+        // running in the server) makes "Check status" the primary action and
+        // the re-submit an explicit, secondary "Retry save" — never the default
+        // button beside it, which re-POSTed a second write over the first.
+        const saveUnknown = state.currentStep === 'summary' && state.saveUnknown;
         const nextLabel = state.currentStep === 'summary'
-            ? (state.saving ? 'Saving...' : 'Start Ouroboros')
+            ? (state.saving ? 'Saving...' : (saveUnknown ? 'Retry save' : 'Start Ouroboros'))
             : 'Continue';
         root.innerHTML = `
             <div class="wizard-shell">
@@ -824,10 +829,10 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
                             ${state.currentStep === 'summary' && shouldOfferPresetSkip() ? `
                                 <button class="btn btn-secondary" id="skip-presets-btn" type="button" ${state.saving ? 'disabled' : ''}>Finish without subscription presets</button>
                             ` : ''}
-                            ${state.currentStep === 'summary' && state.saveUnknown ? `
-                                <button class="btn btn-secondary" id="check-save-btn" type="button" ${state.saving ? 'disabled' : ''}>Check status</button>
+                            <button class="btn ${saveUnknown ? 'btn-secondary' : 'btn-primary'}" id="next-btn" type="button" ${nextButtonShouldBeDisabled() ? 'disabled' : ''}>${escapeHtml(nextLabel)}</button>
+                            ${saveUnknown ? `
+                                <button class="btn btn-primary" id="check-save-btn" type="button" ${state.saving ? 'disabled' : ''}>Check status</button>
                             ` : ''}
-                            <button class="btn btn-primary" id="next-btn" type="button" ${nextButtonShouldBeDisabled() ? 'disabled' : ''}>${escapeHtml(nextLabel)}</button>
                         </div>
                     </div>
                     <div class="wizard-error">${escapeHtml(state.error)}</div>
