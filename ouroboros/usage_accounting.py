@@ -579,18 +579,39 @@ def _reservation_cost(request: AttemptRequest) -> Optional[float]:
     )
 
 
+def _per_slot(value: Any, count: int) -> list:
+    """Broadcast one scalar, or align one per-slot sequence, over ``count`` slots."""
+    if isinstance(value, (list, tuple)):
+        values = list(value)
+        return values[:count] + [values[-1] if values else 0] * max(0, count - len(values))
+    return [value] * count
+
+
 def review_wave_admission(
     drive_root: pathlib.Path | str | None = None,
     *,
     root_task_id: str,
     models: Sequence[str],
-    prompt_chars: int,
-    max_completion_tokens: int = 65536,
+    prompt_chars: int | Sequence[int],
+    max_completion_tokens: int | Sequence[int] = 65536,
     remaining_usd_override: float | None = None,
+    task_id: str = "",
+    root_limit_usd: float | None = None,
 ) -> Dict[str, Any]:
     """Read-only all-slot admission using the normal reservation math; fail open.
     ``remaining_usd_override`` serves callers outside any task usage scope (the
-    managed-update admission gate): compared against instead of the projection."""
+    managed-update admission gate): compared against instead of the projection.
+
+    ``prompt_chars``/``max_completion_tokens`` accept one value for every slot
+    or one value PER slot (aligned with ``models``): a mixed wave (the commit
+    gate's scope pack beside its triad pack) is priced seat by seat exactly as
+    ``reserve_attempt`` will price each send, and ``task_id`` keys the same
+    observed cache split the reservation reads. The result also discloses the
+    projection's ``accounted_usd``, the open holds of in-flight attempts
+    (``reserved_usd``: reserved plus dispatched upper bounds) and the per-slot
+    bounds so a refusal can name what holds the money. ``root_limit_usd`` is the caller's
+    bound fence, consulted only when the root has no ledger row yet to carry
+    one (a first wave must not fail open just because nothing was spent)."""
     result: Dict[str, Any] = {
         "fits": True,
         "estimated_wave_usd": None,
@@ -598,6 +619,9 @@ def review_wave_admission(
         "limit_usd": None,
         "slots": len(list(models or [])),
         "unpriced_slots": 0,
+        "accounted_usd": None,
+        "reserved_usd": None,
+        "slot_bounds": [],
     }
     root_task_id = str(root_task_id or "").strip()
     if not root_task_id or not models:
@@ -610,22 +634,35 @@ def review_wave_admission(
         else:
             projection = usage_projection(drive_root, root_task_id=root_task_id)
             limit = _number(projection.get("limit_usd"))
-            remaining = _number(projection.get("remaining_known_usd"))
-            if limit is None or remaining is None:
+            if limit is None and root_limit_usd is not None:
+                limit = max(0.0, float(root_limit_usd))
+            accounted = _number(projection.get("accounted_usd"))
+            if limit is None or accounted is None:
                 return result
+            remaining = round(max(0.0, limit - accounted), 6)
             result["limit_usd"] = limit
+            result["accounted_usd"] = accounted
+            # Every OPEN hold counts as reserved-by-others: a reserved row and a
+            # dispatched (in-flight) row both bind their upper bound on the fence.
+            result["reserved_usd"] = round(
+                float(_number(projection.get("reserved_usd")) or 0.0)
+                + float(_number(projection.get("unresolved_upper_bound_usd")) or 0.0), 6,
+            )
         result["remaining_usd"] = remaining
-        prompt_tokens = max(0, int(prompt_chars or 0)) // 4
+        chars = _per_slot(prompt_chars, len(models))
+        outputs = _per_slot(max_completion_tokens, len(models))
         total = 0.0
-        for model in models:
+        for index, model in enumerate(models):
             bound = _reservation_cost(
                 AttemptRequest(
                     model=str(model or ""),
                     provider=infer_provider_from_model(str(model or "")),
-                    prompt_tokens_estimate=prompt_tokens,
-                    max_completion_tokens=max(0, int(max_completion_tokens or 0)),
+                    prompt_tokens_estimate=max(0, int(chars[index] or 0)) // 4,
+                    max_completion_tokens=max(0, int(outputs[index] or 0)),
+                    task_id=str(task_id or ""),
                 )
             )
+            result["slot_bounds"].append(None if bound is None else round(float(bound), 6))
             if bound is None:
                 # Unknown contributes no invented price and remains explicitly counted.
                 result["unpriced_slots"] = int(result.get("unpriced_slots") or 0) + 1

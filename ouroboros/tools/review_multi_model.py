@@ -80,6 +80,45 @@ def _review_output_budget() -> int:
     return max(8192, min(raw, 65536))
 
 
+def triad_api_messages(prompt: str, stable_prefix_len: int, content: str) -> tuple:
+    """The exact api-row message pair of a triad panel, and the BIBLE text it
+    carries ("" when BIBLE.md could not be loaded).
+
+    One builder for both consumers: the fan-out sends these messages, and the
+    commit gate's wave admission measures them — a reservation priced on
+    anything else would admit a wave the ledger then refuses seat by seat.
+    """
+    bible_text = _rev().load_governance_doc(_rev()._REPO_ROOT, "BIBLE.md", on_missing="explicit")
+    if bible_text:
+        stable_head = (
+            _CONSTITUTIONAL_PREAMBLE
+            + "### BIBLE.md (Full Text)\n\n" + bible_text
+            + "\n\n---\n\n## REVIEW INSTRUCTIONS\n\n"
+        )
+    else:
+        log.warning("Proceeding without BIBLE.md — constitutional compliance cannot be guaranteed")
+        stable_head = (
+            _CONSTITUTIONAL_PREAMBLE
+            + "(BIBLE.md could not be loaded)\n\n## REVIEW INSTRUCTIONS\n\n"
+        )
+    # System content is split at the caller-declared stable/dynamic boundary so
+    # the byte-stable prefix (constitutional preamble + BIBLE + the prompt's own
+    # stable governance head) carries a provider cache marker; per-round evidence
+    # stays in the unmarked tail. Callers that pass no boundary still get the
+    # preamble+BIBLE prefix cached.
+    from ouroboros.tools.review_helpers import cached_prompt_blocks
+
+    boundary = max(0, min(int(stable_prefix_len or 0), len(prompt)))
+    messages = [
+        {
+            "role": "system",
+            "content": cached_prompt_blocks(stable_head + prompt[:boundary], prompt[boundary:]),
+        },
+        {"role": "user", "content": content},
+    ]
+    return messages, bible_text
+
+
 def _handle_multi_model_review(ctx: ToolContext, content: str = "",
                                 prompt: str = "", models: list = None,
                                 stable_prefix_len: int = 0,
@@ -261,39 +300,14 @@ async def _multi_model_review_async(content: str, prompt: str,
     if len(models) > MAX_MODELS:
         return {"error": f"Too many models ({len(models)}). Maximum is {MAX_MODELS}."}
 
-    bible_text = _rev().load_governance_doc(_rev()._REPO_ROOT, "BIBLE.md", on_missing="explicit")
-    if bible_text:
-        stable_head = (
-            _CONSTITUTIONAL_PREAMBLE
-            + "### BIBLE.md (Full Text)\n\n" + bible_text
-            + "\n\n---\n\n## REVIEW INSTRUCTIONS\n\n"
-        )
-    else:
-        log.warning("Proceeding without BIBLE.md — constitutional compliance cannot be guaranteed")
-        stable_head = (
-            _CONSTITUTIONAL_PREAMBLE
-            + "(BIBLE.md could not be loaded)\n\n## REVIEW INSTRUCTIONS\n\n"
-        )
-
-    # System content is split at the caller-declared stable/dynamic boundary so
-    # the byte-stable prefix (constitutional preamble + BIBLE + the prompt's own
-    # stable governance head) carries a provider cache marker; per-round evidence
-    # stays in the unmarked tail. Callers that pass no boundary still get the
-    # preamble+BIBLE prefix cached. Built ONLY when an api row will send it —
-    # a panel of session rows never assembles the api pack (5.2).
+    # Built ONLY when an api row will send it — a panel of session rows never
+    # assembles the api pack (5.2); the constitutional flag below stays a fact
+    # about the repository either way.
     if any_api_rows:
-        from ouroboros.tools.review_helpers import cached_prompt_blocks
-
-        boundary = max(0, min(int(stable_prefix_len or 0), len(prompt)))
-        messages = [
-            {
-                "role": "system",
-                "content": cached_prompt_blocks(stable_head + prompt[:boundary], prompt[boundary:]),
-            },
-            {"role": "user", "content": content},
-        ]
+        messages, bible_text = triad_api_messages(prompt, stable_prefix_len, content)
     else:
         messages = []
+        bible_text = _rev().load_governance_doc(_rev()._REPO_ROOT, "BIBLE.md", on_missing="explicit")
 
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
     llm_client = _rev().LLMClient()

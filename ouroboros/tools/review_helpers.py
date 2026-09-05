@@ -233,16 +233,22 @@ def review_wave_budget_gate(
     *,
     surface: str,
     models: list,
-    prompt_chars: int,
-    max_completion_tokens: int = 65536,
+    prompt_chars: int | list,
+    max_completion_tokens: int | list = 65536,
     extra: dict | None = None,
 ) -> Optional[dict]:
     """Shared review-wave budget admission (v6.69.0).
 
     Returns the admission dict when the wave must be DECLINED (emitting one
-    typed ``review_wave_budget_insufficient`` event), else None. Task-level
-    review surfaces only (skill/plan/acceptance) — never the P3 commit gate.
-    Fail-open on any error/unknown, mirroring ``review_wave_admission``."""
+    typed ``review_wave_budget_insufficient`` event), else None. Every paid
+    review wave is admitted here as a whole — skill/plan/acceptance reviewers
+    and, since the owner decision of 2026-09-05, the P3 commit gate
+    (``surface="commit_gate"``: scope seats first, then the triad, each seat
+    priced with its own pack size and output reservation — ``prompt_chars`` /
+    ``max_completion_tokens`` take one value per slot). A wave that fits is
+    dispatched whole; one that does not is refused BEFORE any seat spends,
+    never half-dispatched. Fail-open on any error/unknown, mirroring
+    ``review_wave_admission``."""
     try:
         from ouroboros.usage_accounting import current_usage_scope, review_wave_admission
 
@@ -253,8 +259,10 @@ def review_wave_budget_gate(
             scope.drive_root,
             root_task_id=scope.root_task_id,
             models=list(models or []),
-            prompt_chars=int(prompt_chars or 0),
+            prompt_chars=prompt_chars,
             max_completion_tokens=max_completion_tokens,
+            task_id=str(scope.task_id or ""),
+            root_limit_usd=scope.root_limit_usd,
         )
         unpriced = int(admission.get("unpriced_slots") or 0)
         base = {
@@ -264,7 +272,10 @@ def review_wave_budget_gate(
             "estimated_wave_usd": admission.get("estimated_wave_usd"),
             "remaining_usd": admission.get("remaining_usd"),
             "limit_usd": admission.get("limit_usd"),
+            "accounted_usd": admission.get("accounted_usd"),
+            "reserved_usd": admission.get("reserved_usd"),
             "slots": admission.get("slots"),
+            "slot_bounds": admission.get("slot_bounds"),
             "unpriced_slots": unpriced,
         }
         if admission.get("fits", True):

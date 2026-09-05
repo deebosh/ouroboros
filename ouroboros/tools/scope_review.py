@@ -253,6 +253,11 @@ def _log_scope_result(
         pass
 
 
+# The one user turn every api scope row sends; the commit gate's wave admission
+# measures the same pair the substrate dispatches.
+SCOPE_USER_TURN = "Review the staged change and context above. Output ONLY a JSON array."
+
+
 def _call_scope_llm(
     prompt: str,
     scope_model: str | None = None,
@@ -311,7 +316,7 @@ def _call_scope_llm(
             {"role": "system", "content": system_content},
             {
                 "role": "user",
-                "content": "Review the staged change and context above. Output ONLY a JSON array.",
+                "content": SCOPE_USER_TURN,
             },
         ]
     try:
@@ -319,7 +324,7 @@ def _call_scope_llm(
 
         request = ReviewRequest(
             surface="scope_review",
-            goal="Review the staged change and context above. Output ONLY a JSON array.",
+            goal=SCOPE_USER_TURN,
             messages=messages,
             task_id=str(getattr(ctx, "task_id", "") or "scope_review") if ctx is not None else "scope_review", retry_key=str(retry_key or ""),
             call_type="scope_review",
