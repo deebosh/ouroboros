@@ -94,8 +94,12 @@ def density_probe_before_size_refusal(ctx: Any, model: str, sample: str, *, surf
     custody through ``chat_observed`` and in the paid ledger like any review
     send. A ``BudgetExceeded`` from the ledger is the typed
     ``budget_refused`` outcome — the pack keeps its existing size refusal;
-    nothing crashes and nothing is retried."""
+    nothing crashes and nothing is retried. The client comes from the review
+    surface's ``LLMClient`` seam and any failure short of the ledger's refusal
+    (a client that cannot be constructed included) is the typed ``failed``
+    outcome, never an untyped infra block of the whole gate."""
     from ouroboros.capability_evidence import cold_start_density_probe
+    from ouroboros.tools import review as _rv
     from ouroboros.tools.review_helpers import emit_review_event, review_drive_root
     from ouroboros.usage_accounting import BudgetExceeded
 
@@ -108,11 +112,9 @@ def density_probe_before_size_refusal(ctx: Any, model: str, sample: str, *, surf
         except Exception:
             pass
 
-    from ouroboros.llm import LLMClient
-
     try:
         outcome = cold_start_density_probe(
-            review_drive_root(ctx), LLMClient(), _progress, str(model), sample,
+            review_drive_root(ctx), _rv.LLMClient(), _progress, str(model), sample,
             task_id=str(getattr(ctx, "task_id", "") or "") or "commit_review",
             call_type=DENSITY_PROBE_CALL_TYPE, source="commit_gate_cold_start_probe",
         )
@@ -120,6 +122,10 @@ def density_probe_before_size_refusal(ctx: Any, model: str, sample: str, *, surf
     except BudgetExceeded as exc:
         outcome, reason = "budget_refused", str(exc)
         _progress(f"density probe refused by the budget ({reason}); the cold input cap stands.")
+    except Exception as exc:
+        outcome, reason = "failed", f"{type(exc).__name__}: {exc}"
+        log.warning("Density probe could not run (%s): %s", surface, exc, exc_info=True)
+        _progress(f"density probe failed ({type(exc).__name__}); the cold input cap stands.")
     if outcome not in ("warm", "no_sample"):
         emit_review_event(ctx, {
             "type": DENSITY_PROBE_EVENT, "surface": surface, "model": str(model),
@@ -173,13 +179,17 @@ def fit_triad_prompt(api_models: list, assemble, current_files_section: str,
         # the ladder below runs unchanged on the recalibrated limit.
         from ouroboros.tools.review_helpers import DENSITY_PROBE_SAMPLE_CHARS
 
+        # EVERY overflowing slot is probed (a list, not a short-circuit): the
+        # quorum cap is the quorum-th largest slot cap, so one witness alone
+        # leaves the other cold slots — and the shared prompt — where they were.
         prompt_tokens = estimate_tokens(prompt)
-        if any(
+        outcomes = [
             density_probe_before_size_refusal(
                 ctx, m, prompt[:DENSITY_PROBE_SAMPLE_CHARS], surface="triad_review",
-            ) == "measured"
+            )
             for m in api_models if prompt_tokens > slot_limits.get(m, 0)
-        ):
+        ]
+        if "measured" in outcomes:
             slot_limits = {m: _slot_input_limit(m) for m in api_models}
             input_limit = _rv._quorum_input_token_limit(api_models, slot_limits)
     if input_limit and estimate_tokens(prompt) > input_limit:

@@ -807,13 +807,16 @@ def cold_start_density_probe(
     is refused cold, and the refusal happens before any send, so the model
     never records the witness that would have admitted it. This rung breaks
     that loop with ONE bounded send on the exact model (``sample``: a slice of
-    the real pack, a few output tokens) through the ordinary observed call. It
-    never runs on a warm store and never retries. ``BudgetExceeded`` propagates:
+    the real pack, a few output tokens) through the ordinary observed call,
+    under ``physical_attempt_limit(1)`` so the transport ladder's own retries
+    (a body-error reroute, an encrypted-reasoning strip) cannot turn the ONE
+    send into several paid attempts. It never runs on a warm store and never
+    retries. ``BudgetExceeded`` propagates:
     the paid ledger's refusal is budget vocabulary the caller discloses in its
     own terms (the deep review lets it reach the agent's budget rail; the
     commit gate records a typed disclosure and keeps its existing refusal)."""
     from ouroboros.llm_observability import chat_observed
-    from ouroboros.usage_accounting import BudgetExceeded
+    from ouroboros.usage_accounting import BudgetExceeded, physical_attempt_limit
 
     _density, density_source = resolve_review_token_density(drive_root, model)
     if density_source == "measured":
@@ -825,22 +828,23 @@ def cold_start_density_probe(
         f"(~{estimate_tokens(sample):,} estimated tokens) calibrates the input cap..."
     )
     try:
-        _response, usage = chat_observed(
-            llm,
-            drive_root=drive_root,
-            task_id=task_id,
-            call_type=call_type,
-            messages=[
-                {"role": "system", "content": DENSITY_PROBE_SYSTEM_PROMPT},
-                {"role": "user", "content": sample},
-            ],
-            model=model,
-            tools=None,
-            reasoning_effort=DENSITY_PROBE_EFFORT,
-            max_tokens=DENSITY_PROBE_MAX_TOKENS,
-            temperature=None,
-            no_proxy=True,
-        )
+        with physical_attempt_limit(1):
+            _response, usage = chat_observed(
+                llm,
+                drive_root=drive_root,
+                task_id=task_id,
+                call_type=call_type,
+                messages=[
+                    {"role": "system", "content": DENSITY_PROBE_SYSTEM_PROMPT},
+                    {"role": "user", "content": sample},
+                ],
+                model=model,
+                tools=None,
+                reasoning_effort=DENSITY_PROBE_EFFORT,
+                max_tokens=DENSITY_PROBE_MAX_TOKENS,
+                temperature=None,
+                no_proxy=True,
+            )
     except BudgetExceeded:
         raise
     except Exception as exc:

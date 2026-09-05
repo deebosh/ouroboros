@@ -85,16 +85,21 @@ def density_probe_sample(repo_dir: pathlib.Path, manifest: dict) -> str:
     """A bounded slice of the REAL atlas content (the refused required rows
     first, then the selected rows) so the probe measures the density of what
     the pack is made of, not of an unrelated text."""
+    from ouroboros.tool_access_paths import path_is_relative_to
+
     parts: list[str] = []
     total = 0
     manifest = dict(manifest or {})
     rows = list(manifest.get("unassembled_required") or []) + list(manifest.get("selected") or [])
+    root = pathlib.Path(repo_dir)
     for row in rows:
         rel = str((row or {}).get("path") or "")
-        if not rel or rel.startswith("/") or ".." in rel.split("/"):
+        # Containment resolved on the filesystem (not a POSIX-shaped string
+        # test): a drive-absolute or ``..`` row on any platform stays outside.
+        if not rel or not path_is_relative_to(root / rel, root):
             continue
         try:
-            text = (pathlib.Path(repo_dir) / rel).read_text(encoding="utf-8", errors="replace")
+            text = (root / rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         room = DENSITY_PROBE_SAMPLE_CHARS - total
