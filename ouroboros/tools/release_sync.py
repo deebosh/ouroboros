@@ -58,6 +58,14 @@ _ARCH_HEADER_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
+# web/package-lock.json (npm lockfileVersion 3) repeats the package version twice at the
+# top: the root object and its packages[""] entry; both are carriers (npm ci tolerates a
+# drift, the P9 "carriers in sync" contract does not).
+_WEB_LOCK_VERSION_RE = re.compile(
+    r'(^\{\s*"name"\s*:\s*"[^"\n]*",\s*"version"\s*:\s*")([^"\n]*)(")'
+    r'|(^\s*""\s*:\s*\{\s*"name"\s*:\s*"[^"\n]*",\s*"version"\s*:\s*")([^"\n]*)(")',
+    re.MULTILINE,
+)
 _UV_LOCK_ROOT_RE = re.compile(
     r'^(\[\[package\]\]\nname = "ouroboros"\nversion = ")([^"]+)'
     r'("\nsource = \{ editable = "\." \})',
@@ -165,6 +173,9 @@ VERSION_CARRIER_SPANS: Tuple[VersionCarrierSpan, ...] = (
     VersionCarrierSpan(
         "web_package_version", "web/package.json",
         re.compile(r'^\s*"version"\s*:\s*"[^"\n]*"', re.MULTILINE),
+    ),
+    VersionCarrierSpan(
+        "web_package_lock_version", "web/package-lock.json", _WEB_LOCK_VERSION_RE,
     ),
     VersionCarrierSpan(
         "gateway_contract_version", "web/modules/api_types.js",
@@ -426,6 +437,7 @@ def version_carrier_desyncs(
     pyproject_text: str = "",
     uv_lock_text: str = "",
     web_package_text: str = "",
+    web_package_lock_text: str = "",
     readme_text: str = "",
     arch_text: str = "",
     api_types_text: str = "",
@@ -453,6 +465,11 @@ def version_carrier_desyncs(
         match = re.search(r'"version"\s*:\s*"([^"]+)"', web_package_text)
         if not match or match.group(1).strip() != version:
             desync.append(f'web/package.json (expected "version": "{version}")' if detailed else "web/package.json")
+    if web_package_lock_text:
+        found = [m.group(2) or m.group(5) for m in _WEB_LOCK_VERSION_RE.finditer(web_package_lock_text)]
+        if len(found) != 2 or any(v.strip() != version for v in found):
+            desync.append(f'web/package-lock.json (expected both root "version" entries = "{version}")'
+                          if detailed else "web/package-lock.json")
     if readme_text:
         badge_token = f"version-{_shields_escape(version)}-green"
         if extract_readme_badge_version(readme_text) != version or badge_token not in readme_text:
@@ -502,6 +519,7 @@ def check_worktree_version_sync(repo_dir) -> str:
             pyproject_text=_read("pyproject.toml"),
             uv_lock_text=_read("uv.lock"),
             web_package_text=_read("web/package.json"),
+            web_package_lock_text=_read("web/package-lock.json"),
             readme_text=_read("README.md"),
             arch_text=_read("docs/ARCHITECTURE.md"),
             api_types_text=_read("web/modules/api_types.js"),
@@ -570,6 +588,18 @@ def sync_release_metadata(repo_dir: str) -> List[str]:
         if new_text != text:
             web_package.write_text(new_text, encoding="utf-8")
             changed.append("web/package.json")
+
+    web_lock = root / "web" / "package-lock.json"
+    if web_lock.exists():
+        text = web_lock.read_text(encoding="utf-8")
+        new_text = _WEB_LOCK_VERSION_RE.sub(
+            lambda m: (f"{m.group(1)}{version}{m.group(3)}" if m.group(1) is not None
+                       else f"{m.group(4)}{version}{m.group(6)}"),
+            text,
+        )
+        if new_text != text:
+            web_lock.write_text(new_text, encoding="utf-8")
+            changed.append("web/package-lock.json")
 
     api_types = root / "web" / "modules" / "api_types.js"
     if api_types.exists():

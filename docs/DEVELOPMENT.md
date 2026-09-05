@@ -1043,7 +1043,7 @@ preserve authorship, and run the normal final exact-candidate gate.
 
 A pull request into `ouroboros` leaves every version carrier byte-identical to
 its target: `VERSION`, `pyproject.toml`, the editable root version in
-`uv.lock`, `web/package.json`,
+`uv.lock`, `web/package.json`, `web/package-lock.json` (both root entries),
 `web/modules/api_types.js::GATEWAY_CONTRACT_VERSION`, the README badge and
 latest Version History row, the named direct-download links in README and both
 install pages, and the Architecture header. At integration,
