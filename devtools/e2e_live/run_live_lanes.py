@@ -93,7 +93,7 @@ PROCFS_AVAILABLE = os.path.isdir("/proc")   # the orphan scan reads /proc enviro
 LANE_BUDGET_FLOOR_USD = 0.01
 RESERVATION_RULE = (f"max({LANE_BUDGET_FLOOR_USD:g}, per_task_usd x (root_tasks + 1 if --self-mod else root_tasks)) — the "
                     "runtime fences each root task tree at OUROBOROS_PER_TASK_COST_USD and --self-mod adds one root for the "
-                    "evolution cycle (rc.14: up to two cycles per lane, one at t=0 and one post-task, under the same lane fence). "
+                    "one post-task evolution cycle (the lane seeds no campaign: the promotion enables a one-shot one). "
                     "The lane's TOTAL_BUDGET is that reservation — the true fence — so settled spend + in-flight ceilings <= cap")
 
 
@@ -257,8 +257,7 @@ class RunBudget:
     Reservation rule, per attempt: ``per_task_usd x (root_tasks + int(self_mod))`` — the runtime fences each ROOT
     task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their root's ceiling, so SW1 (one root,
     two scouts) reserves for one root, SK1 (author + dispatch) for two, and ``--self-mod`` adds one root for the
-    evolution cycle: rc.14 showed up to TWO cycles per lane, one at t=0 next to the scenario task and one
-    post-task, all under the lane fence — the lane's TOTAL_BUDGET is the true fence. Admission asks, PER attempt:
+    one post-task evolution cycle, all under the lane fence — the true fence. Admission asks, PER attempt:
     ``spent + reservation > cap`` — it can NEVER fit, refused and recorded ``not_run`` (a later, smaller attempt is
     asked on its own; nothing halts the run); otherwise it reserves only when no earlier-dispatched attempt is
     still asking (FIFO by ``dispatch_index``, see ``admit``) and ``spent + reserved(in flight) + reservation <=
@@ -705,7 +704,8 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
         row["budget"] = {"reservation_usd": budget.reservation(scenario.root_tasks),
                          "lane_total_budget_usd": cfg["TOTAL_BUDGET"], "per_task_usd": float(args.per_task_usd)}
         sha = write_settings(settings_path, cfg)
-        seed_owner_state(data_root, evolution_enabled=args.self_mod)
+        # Owner id only, never a campaign: the task's post-task promotion enables the one-shot one (rc.15 run2 pin).
+        seed_owner_state(data_root, evolution_enabled=False)
         from supervisor import state as sstate
         (data_root / sstate.ISOLATED_BENCHMARK_SENTINEL).write_text("isolated e2e_live data root\n", encoding="utf-8")
         oracle = harness.ArtifactOracle(data_root)

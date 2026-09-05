@@ -1296,8 +1296,8 @@ refuses below `--min-credit-usd`. `--total-budget` (default 100) is the RUN-WIDE
 cap: a ledger sums the lanes' durable `llm_usage` costs, reserves
 `max(0.01, --per-task-usd × (root tasks + 1 with --self-mod))` per attempt (SM1 and SW1 one root — scouts spend
 under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two; with `--self-mod` the
-evolution cycle is one more root: the rc.14 paid run showed up to TWO cycles per lane, one
-starting at t=0 next to the scenario task and one post-task, all under the lane fence — SM1_a1
+one post-task evolution cycle is one more root (the rc.14 paid run showed a second, generic
+cycle at t=0 from the benchmark campaign the lane pre-seeded then), all under the lane fence — SM1_a1
 task $3.84 + cycles $12.40 + $2.84 of $20; the lane's TOTAL_BUDGET is the true fence and the
 +1 root is its reservation), admits an
 attempt only while `spent + reserved(in flight) + reservation ≤ cap` — an attempt that
@@ -1366,7 +1366,12 @@ server and resolves `-n auto` to the host CPU count, so the stand sets
 `preflight_runner._preflight_env` still scrubs it from the candidate suite) and
 records the applied value as `extra.preflight_test_workers` in the manifest and
 `preflight_test_workers` in every lane row. `--self-mod` enables post-task evolution with the real
-re-exec restart and REQUIRES a confirmed absorb per lane whose scenario
+re-exec restart — a settings fact (`OUROBOROS_POST_TASK_EVOLUTION` + cadence `every_n:1`) while the
+lane seeds `owner_chat_id` ONLY, never a campaign: the scenario task's post-task promotion
+(`apply_pending_request`) enables the one-shot campaign whose cycle lands, restarts and absorbs.
+A pre-seeded active campaign (the benchmark helper's form, rc.15 paid run2) runs generic cycles from
+t=0, gets the promotion refused (evolution already enabled) and its kept request file blocks the
+`no_promotion` exit of the absorb wait. `--self-mod` REQUIRES a confirmed absorb per lane whose scenario
 `expects_absorb` (SM1, the one that lands a commit): a pre-task snapshot
 (clone HEAD, served sha, uptime, absorbed-cycle counter) and, afterwards, the
 counter advanced, the served sha moved, the uptime reset and the server ready;
