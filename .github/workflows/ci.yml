@@ -6,6 +6,7 @@
 # Tier 2.6 (Skill smoke): Push to ouroboros-stable / manual / tag                     → LIVE OuroborosHub official-skill install smoke (3-OS, ~5 min) + review→grant→enable-persistence flow on one cheap reviewer slot (ubuntu-only step, OPENROUTER_API_KEY, ~$1.2/run)
 # Tier 3 (Build+Release): Tag v*                                                       → PyInstaller + GitHub Release (~15 min)
 # Scheduled (System E2E): Daily cron / manual                                          → KEYLESS tests/system_e2e/ scenario lane (Ubuntu, ≤40 min)
+# Scheduled (Live E2E):   Nightly cron 03:17 UTC / manual                              → PAID devtools/e2e_live stand, $30 cap, OUROBOROS_E2E_LIVE_OPENROUTER_KEY (skipped honestly without it)
 #
 # Tier 2.5 requires OPENROUTER_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY.
 # Optional MiniMax / DeepSeek / Cloud.ru / GigaChat rows run when their
@@ -53,12 +54,16 @@ on:
   pull_request:
     branches: [ouroboros]
   workflow_dispatch:
-  # Only the system-e2e-mock job below matches a scheduled run. Off the hour
-  # deliberately: GitHub's cron queue is deepest at :00. NOTE for any job added
-  # later — a scheduled run reports the DEFAULT BRANCH in github.ref, so a job
-  # gated on a branch ref alone will fire here too (see integration-test).
+  # Two crons, each owned by exactly ONE job through `github.event.schedule`:
+  # 04:37 is the keyless system-e2e-mock lane, 03:17 the paid e2e-live stand.
+  # Off the hour deliberately: GitHub's cron queue is deepest at :00. NOTE for
+  # any job added later — a scheduled run reports the DEFAULT BRANCH in
+  # github.ref, so a job gated on a branch ref alone will fire on BOTH crons
+  # (see integration-test), and a job gated on the bare event name fires twice
+  # a night — bind it to its own cron string.
   schedule:
     - cron: '37 4 * * *'
+    - cron: '17 3 * * *'
 
 # Note: GitHub Actions evaluates `branches` + `paths` together but `tags`
 # separately — a tag push matching `v*` will trigger regardless of paths.
@@ -508,9 +513,12 @@ jobs:
   # ──────────────────────────────────────────────────────────────────
   system-e2e-mock:
     # Also on a release tag: the release bar must not skip the 57-scenario lane
-    # (owner decision, batch №13 item 4, 2026-09-02).
+    # (owner decision, batch №13 item 4, 2026-09-02). Bound to ITS cron string:
+    # the 03:17 cron belongs to e2e-live and must not run this lane a second
+    # time each night.
     if: |
-      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      (github.event_name == 'schedule' && github.event.schedule == '37 4 * * *')
+      || github.event_name == 'workflow_dispatch'
       || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -538,6 +546,145 @@ jobs:
           OUROBOROS_DATA_DIR: ${{ runner.temp }}/ouroboros-e2e-cancel/data
           OUROBOROS_SETTINGS_PATH: ${{ runner.temp }}/ouroboros-e2e-cancel/data/settings.json
         run: python -m pytest tests/test_e2e_cancellation_scenarios.py -o addopts="" -q
+
+  # ──────────────────────────────────────────────────────────────────
+  # Scheduled (paid): the LIVE E2E stand (devtools/e2e_live/run_live_lanes.py)
+  # exactly as the operator runs it — a clean detached seed of THIS sha, one
+  # isolated real server per lane, a real OpenRouter key, the post-task
+  # evolution cycle with its re-exec restart (--self-mod), the same flag set
+  # as the operator launcher minus the run size. Nightly 03:17 UTC (its own
+  # cron string, see the schedule block) or manual dispatch; never push, PR
+  # or tag. The key is the repository secret OUROBOROS_E2E_LIVE_OPENROUTER_KEY
+  # (the owner creates it; nothing in this repo writes a secret to GitHub):
+  # without it the job is SKIPPED honestly — one step-summary line, exit 0 —
+  # never red and never a pretend run. The secret context is illegal inside
+  # `if:`, so the presence gate is the job-level non-secret env
+  # HAS_E2E_LIVE_KEY (the same shape as HAS_APPLE_SIGNING in `build`).
+  #
+  # Run size — the stand's own admission arithmetic, computed from the code at
+  # this base (devtools/e2e_live/run_live_lanes.py `RunBudget.reservation`):
+  #   reservation(attempt) = max(0.01, HARD_STOP_INVERSE x per_task_usd x root_tasks)
+  #   HARD_STOP_INVERSE    = 100 / task_pacing._DEFAULT_COST_HARD_STOP_PCT = 100 / 50 = 2
+  #   root_tasks           = 1 for SM1 and SW1, 2 for SK1 (scenarios.py)
+  # and an attempt is admitted only while spent + reserved(in flight) +
+  # reservation <= --total-budget; one that can never fit is recorded not_run
+  # and fails the verdict. Worst case (every attempt spends its whole
+  # reservation) the full operator set SM1,SW1,SK1 x3 needs 2 x per_task x
+  # (1 + 1 + 2) x 3 = 24 x per_task, and the product's default per-task cap
+  # (settings_defaults OUROBOROS_PER_TASK_COST_USD = 50) makes a SINGLE SM1
+  # attempt reserve 2 x 50 x 1 = $100 > $30: nothing would be admissible.
+  # So the fence is --per-task-usd 15 = 30 / HARD_STOP_INVERSE, the largest
+  # value under which one single-root attempt fits: SM1 x1 reserves exactly
+  # 2 x 15 x 1 = $30 = the cap. A second attempt of any scenario (SW1 $30,
+  # SK1 2 x 15 x 2 = $60) cannot fit by that rule, hence ONE lane, ONE
+  # attempt, SM1 only — the largest feasible subset, named in the job title.
+  # If the reservation factor drops to 1x, SM1 + SW1 (15 + 15 = 30) become
+  # feasible together: revisit --scenarios then, keep the arithmetic here.
+  # --min-credit-usd defaults to --total-budget: the key needs >= $30 headroom
+  # (min of key limit remaining and account credits) or the stand refuses
+  # with a typed credit_preflight refusal in run_manifest.json.
+  #
+  # Runner shape: the commit gate's hermetic pytest pass runs INSIDE the lane
+  # server with OUROBOROS_PREFLIGHT_TEST_WORKERS = 16 // lanes = 16 workers
+  # on a 4-vCPU runner (slower than the operator host, not wrong), the node
+  # lane of that gate needs node 22, and the UI probe / the agent's browser
+  # tool need Playwright Chromium — the same provisioning as ui-smoke, minus
+  # webkit. The run root is under runner.temp (the stand refuses a root inside
+  # the repo), the lane settings file (0600, carries the key) is NEVER
+  # uploaded: the artifact globs name the manifest, the result index, each
+  # lane's result.json and its screenshots only — no `lanes/**`.
+  # ──────────────────────────────────────────────────────────────────
+  e2e-live:
+    name: e2e-live (SM1 x1 — largest subset feasible under the $30 cap)
+    if: |
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'schedule' && github.event.schedule == '17 3 * * *')
+    runs-on: ubuntu-latest
+    # One SM1 lane: the task (--task-timeout 2400), the self-mod evolution cycle
+    # as a second root task, the absorb wait with the re-exec restart, and two
+    # hermetic preflight suites on a 4-vCPU runner — well inside this bound.
+    timeout-minutes: 150
+    env:
+      HAS_E2E_LIVE_KEY: ${{ secrets.OUROBOROS_E2E_LIVE_OPENROUTER_KEY != '' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags: the seed's `git describe` provenance and the
+          # SM1 release admission gate read them.
+          fetch-depth: 0
+          # The model under test executes real code and commits inside its
+          # lane clone; it must never find GITHUB_TOKEN in .git/config.
+          persist-credentials: false
+      - name: Report the missing secret (skip, not red)
+        if: env.HAS_E2E_LIVE_KEY != 'true'
+        run: |
+          echo "skipped: secret OUROBOROS_E2E_LIVE_OPENROUTER_KEY not configured" >> "$GITHUB_STEP_SUMMARY"
+          echo "skipped: secret OUROBOROS_E2E_LIVE_OPENROUTER_KEY not configured"
+      - uses: ./.github/actions/setup-python-env
+        if: env.HAS_E2E_LIVE_KEY == 'true'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: env.HAS_E2E_LIVE_KEY == 'true'
+        with:
+          node-version: '22'
+      - name: Install the UI probe browser (Playwright Chromium)
+        if: env.HAS_E2E_LIVE_KEY == 'true'
+        run: python -m playwright install --with-deps chromium
+      # The key reaches the stand by NAME (--key-env) and this step's env only;
+      # the stand redacts the run-level settings template and writes the value
+      # solely into the lane's 0600 settings file, disclosed by fingerprint.
+      - name: Run the live E2E stand (SM1 x1, $30 cap, self-mod)
+        if: env.HAS_E2E_LIVE_KEY == 'true'
+        env:
+          OUROBOROS_E2E_LIVE_OPENROUTER_KEY: ${{ secrets.OUROBOROS_E2E_LIVE_OPENROUTER_KEY }}
+        run: |
+          python -m devtools.e2e_live.run_live_lanes \
+            --source-repo "$GITHUB_WORKSPACE" --seed "$GITHUB_SHA" --out "$RUNNER_TEMP/e2e_live" \
+            --scenarios SM1 --attempts 1 --pass-of 1 --lanes 1 \
+            --total-budget 30 --per-task-usd 15 --task-timeout 2400 --self-mod \
+            --key-env OUROBOROS_E2E_LIVE_OPENROUTER_KEY --watch-interval 60
+      # The manifest is written at admission and finalized on EVERY exit path
+      # (a typed refusal included), so the summary reads the run's own record.
+      - name: Summarize the run
+        if: always() && env.HAS_E2E_LIVE_KEY == 'true'
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          manifest = pathlib.Path(os.environ["RUNNER_TEMP"]) / "e2e_live" / "run_manifest.json"
+          lines = ["## e2e-live: SM1 x1 — the largest subset feasible under the $30 cap "
+                   "(reservation = 2 x per-task $15 x 1 root = $30; the full SM1/SW1/SK1 x3 set needs $360)"]
+          if not manifest.exists():
+              lines.append("no run_manifest.json: the stand never reached admission (see the step log)")
+          else:
+              extra = json.loads(manifest.read_text(encoding="utf-8")).get("extra") or {}
+              lines.append(f"outcome: {extra.get('outcome')} (exit {extra.get('exit_code')}); "
+                           f"seed {extra.get('seed_describe') or extra.get('seed_head')}; "
+                           f"model {extra.get('effective_model')}")
+              if extra.get("refusal"):
+                  lines.append(f"refusal: {json.dumps(extra['refusal'], ensure_ascii=False)}")
+              for sid, verdict in (extra.get("scenarios") or {}).items():
+                  lines.append(f"{sid}: {json.dumps(verdict)}")
+              budget = extra.get("budget") or {}
+              if budget:
+                  lines.append(f"budget: spent ${budget.get('spent_usd', 0):.2f} of cap ${budget.get('cap_usd', 0):.2f}; "
+                               f"refusals {len(budget.get('refusals') or [])}")
+              if extra.get("self_mod"):
+                  lines.append(f"self_mod: {json.dumps(extra['self_mod'])}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PY
+      - name: Upload run artifacts (manifest, lane results, screenshots)
+        if: always() && env.HAS_E2E_LIVE_KEY == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-live-run
+          path: |
+            ${{ runner.temp }}/e2e_live/run_manifest.json
+            ${{ runner.temp }}/e2e_live/result_index.jsonl
+            ${{ runner.temp }}/e2e_live/lanes/*/result.json
+            ${{ runner.temp }}/e2e_live/lanes/*/shots/*.png
+          if-no-files-found: warn
+          retention-days: 30
 
   # ──────────────────────────────────────────────────────────────────
   # Tier 3: Build & Release (tag push only)

@@ -48,22 +48,40 @@ def _job_text(job: str) -> str:
     return block.group(1)
 
 
-def test_the_workflow_carries_a_daily_off_peak_schedule():
-    schedule = _triggers(_workflow()).get("schedule") or []
-    assert len(schedule) == 1, schedule
-    minute, hour, day, month, weekday = str(schedule[0]["cron"]).split()
-    assert (day, month, weekday) == ("*", "*", "*"), schedule[0]
-    assert minute.isdigit() and hour.isdigit(), "one fixed daily time, not a range"
-    # On the hour is when everyone else's cron fires and GitHub's queue is
-    # deepest; an off-peak minute is the documented way to avoid the backlog.
-    assert int(minute) != 0, schedule[0]
+MOCK_CRON = "37 4 * * *"
+
+
+def test_the_workflow_carries_daily_off_peak_schedules_each_owned_by_one_job():
+    workflow = _workflow()
+    schedule = _triggers(workflow).get("schedule") or []
+    crons = [str(entry["cron"]) for entry in schedule]
+    # Two crons: this keyless lane and the paid `e2e-live` stand
+    # (tests/test_e2e_live_ci_lane.py). A cron nobody binds to is a second
+    # nightly wake-up of every job gated on the bare event name.
+    assert crons == [MOCK_CRON, "17 3 * * *"], schedule
+    for entry in schedule:
+        minute, hour, day, month, weekday = str(entry["cron"]).split()
+        assert (day, month, weekday) == ("*", "*", "*"), entry
+        assert minute.isdigit() and hour.isdigit(), "one fixed daily time, not a range"
+        # On the hour is when everyone else's cron fires and GitHub's queue is
+        # deepest; an off-peak minute is the documented way to avoid the backlog.
+        assert int(minute) != 0, entry
+    # Every job that fires on `schedule` names ITS cron string, so neither cron
+    # wakes the other lane: a bare `github.event_name == 'schedule'` would.
+    for name, job in workflow["jobs"].items():
+        condition = " ".join(str(job.get("if", "")).split())
+        if "github.event_name == 'schedule'" not in condition:
+            continue  # `!= 'schedule'` guards (integration-test) keep a lane OFF both crons
+        assert "github.event.schedule ==" in condition, (name, condition)
+        assert "github.event_name == 'schedule' ||" not in condition, (name, condition)
 
 
 def test_the_scheduled_lane_never_runs_on_a_push_or_a_pull_request():
     job = _workflow()["jobs"][JOB]
     condition = " ".join(str(job["if"]).split())
     assert condition == (
-        "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+        f"(github.event_name == 'schedule' && github.event.schedule == '{MOCK_CRON}')"
+        " || github.event_name == 'workflow_dispatch'"
         " || startsWith(github.ref, 'refs/tags/v')"
     )  # a release tag joins the lane to the release bar (batch №13 item 4); push/PR never, condition
     assert job["runs-on"] == "ubuntu-latest"
