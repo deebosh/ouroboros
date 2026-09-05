@@ -399,13 +399,16 @@ async def _run_settings_writer(fn: Any, request: Request, body: Any) -> JSONResp
     from ouroboros.config import get_settings_document_lock_timeout_sec
 
     bound_sec = get_settings_document_lock_timeout_sec()
+    # The body runs in its own task so a timeout of the WAIT can be told apart from a
+    # TimeoutError raised BY the body (asyncio.TimeoutError is the builtin on 3.11+).
+    episode = asyncio.ensure_future(asyncio.to_thread(fn, request, body))
     try:
-        return await asyncio.wait_for(
-            asyncio.to_thread(fn, request, body), timeout=2 * bound_sec,
-        )
+        return await asyncio.wait_for(asyncio.shield(episode), timeout=2 * bound_sec)
     except SettingsDocumentBusy as exc:
         return unsaved_error(str(exc), 503, code="settings_busy")
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
+        if episode.done():
+            raise   # the writer body itself raised: an ordinary failure, not a wedged episode
         log.warning(
             "Settings writer %s did not answer within %ss; its thread keeps running",
             getattr(fn, "__name__", fn), 2 * bound_sec,

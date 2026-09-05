@@ -119,7 +119,7 @@ def test_the_initiating_writer_returns_within_the_same_bound(monkeypatch):
             _run_settings_writer(wedged_writer, SimpleNamespace(), {})
         )
         elapsed = time.monotonic() - started
-        assert elapsed < 5, elapsed
+        assert 2 * 0.2 <= elapsed < 5, elapsed   # exactly the 2x bound, then the typed answer
         assert not finished.is_set(), "the response must not wait for the wedged body"
         release.set()
         assert finished.wait(10), "the abandoned body must still run to completion in its thread"
@@ -155,3 +155,27 @@ def test_the_typed_busy_refusal_still_wins_under_the_bound(monkeypatch):
     payload = json.loads(response.body)
     assert payload["code"] == "settings_busy"
     assert payload["saved"] is False
+
+
+def test_a_writer_body_raising_timeout_error_is_not_a_wedged_episode(monkeypatch):
+    """``asyncio.TimeoutError`` is the builtin ``TimeoutError`` on Python 3.11+, so a body
+    that raises it (a remote configuration step timing out) must NOT be answered as
+    ``settings_save_timeout`` ("thread keeps running, saved unknown"): it finished, and its
+    failure propagates like any other writer error (the codex M3 finding)."""
+    import asyncio
+
+    import ouroboros.config as config
+    from ouroboros.gateway.settings import _run_settings_writer
+
+    monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 5.0)
+
+    def raising_writer(_request, _body):
+        raise TimeoutError("remote configuration step timed out")
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(TimeoutError, match="remote configuration"):
+            loop.run_until_complete(_run_settings_writer(raising_writer, SimpleNamespace(), {}))
+        loop.run_until_complete(loop.shutdown_default_executor())
+    finally:
+        loop.close()
