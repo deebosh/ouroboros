@@ -1243,11 +1243,11 @@ owner-shaped scenario attempt per lane, from the scenario table in
 standalone and mirrors the app tokens by value, `tests/test_web_typography_static.py`
 pins the parity — and landed as one commit through `commit_reviewed` under
 advanced runtime and blocking enforcement with the hermetic suite as the tests
-preflight; the `--stub` rehearsal skips that suite, a documented residual: the
-loopback lane's `OPENAI_COMPATIBLE_BASE_URL` is projected into the server
-environment, `preflight_runner._preflight_env` scrubs only `OUROBOROS_*` and
-secret-suffixed keys, and `tests/test_settings_effort.py` routes on it, so the
-suite is red inside any loopback lane; acceptance is the S2 set, the parity of
+preflight — the `--stub` rehearsal runs that same suite, since
+`preflight_runner._preflight_env` scrubs every settings key
+`config.apply_settings_to_env` projects, so the loopback lane's
+`OPENAI_COMPATIBLE_BASE_URL` never reaches `tests/test_settings_effort.py`;
+acceptance is the S2 set, the parity of
 the two committed files, the typed refusal trail of every `commit_reviewed`/`preflight_review`
 call — ledger `block_reason`s, the `⚠️ CODE:` prefixes such as
 PREFLIGHT_BLOCKED / TESTS_PREFLIGHT_BLOCKED / SCOPE_REVIEW_BLOCKED, the task's
@@ -2547,7 +2547,10 @@ worktree-vs-`HEAD` binary diff, and a capture or apply failure is the typed
 Contributor rules:
 
 - The candidate cannot weaken the pass: `PYTEST_*`/`NODE_OPTIONS` are
-  scrubbed, required plugins are probed outside candidate control and
+  scrubbed, and so is owner runtime state — `OUROBOROS_*`, secret-suffixed
+  keys and every settings key `config.apply_settings_to_env` projects
+  (derived from `settings_env_keys()`), so the verdict cannot depend on the
+  operator's install profile; required plugins are probed outside candidate control and
   forced on with host-owned worker evidence, post-commit checks also
   inspect `HEAD~1` so suite deletion cannot hide after the commit exists,
   and exit status owns the verdict — rendered diagnostics do not.

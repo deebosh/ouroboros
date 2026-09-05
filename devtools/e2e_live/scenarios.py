@@ -332,15 +332,12 @@ def sm1_stub_script(clone: pathlib.Path) -> dict:
         {"tool": "preflight_review", "arguments": {"commit_message": SM1_COMMIT_MESSAGE}},
         # The deterministic release-metadata preflight blocks a VERSION-less diff (BIBLE P9);
         # the S2 set lands it through the AUDITED advisory-only skip (recorded as bypassed).
-        # ``skip_tests`` is a documented residual of the $0 rehearsal, NOT of the paid prompt
-        # (which runs the hermetic suite as its tests preflight): the loopback lane's
-        # ``OPENAI_COMPATIBLE_BASE_URL`` is projected into the server environment and
-        # ``preflight_runner._preflight_env`` scrubs only ``OUROBOROS_*``/secret-suffixed keys,
-        # so ``tests/test_settings_effort.py`` routes on it and fails deterministically inside
-        # any loopback lane (observed: four ``test_get_review_models_*`` failures). The mirror
-        # parity is proven here by ``committed_css_mirror_parity`` over the landed commit.
+        # No ``skip_tests``: the rehearsal runs the hermetic suite as its tests preflight
+        # exactly like the paid prompt (``preflight_runner._preflight_env`` scrubs every
+        # settings key the loopback lane projects, ``OPENAI_COMPATIBLE_BASE_URL`` included).
+        # The mirror parity is proven by ``committed_css_mirror_parity`` over the landed commit.
         {"tool": "commit_reviewed", "arguments": {
-            "commit_message": SM1_COMMIT_MESSAGE, "paths": list(SM1_CSS_PATHS), "skip_tests": True,
+            "commit_message": SM1_COMMIT_MESSAGE, "paths": list(SM1_CSS_PATHS),
             "skip_advisory_review": True,
             "goal": "Change the accent token for the live E2E stand",
             "scope": f"{SM1_CSS_PATH} and {SM1_MIRROR_CSS_PATH} only."}},

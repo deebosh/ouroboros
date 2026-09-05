@@ -496,9 +496,9 @@ def test_commit_refusal_facts_name_every_typed_refusal():
 def test_sm1_changes_both_stylesheets_and_keeps_the_mirror_parity():
     """web/onboarding.css mirrors web/style.css BY VALUE (tests/test_web_typography_static.py):
     the scenario edits, commits and validates both files, in the prompt, the stub and the
-    acceptance. The paid prompt runs the tests preflight that pins the invariant; the stub's
-    ``skip_tests`` is a documented residual of the loopback lane (see ``sm1_stub_script``)
-    and is deliberately NOT pinned here."""
+    acceptance. Both the paid prompt and the stub run the tests preflight that pins the
+    invariant: neither carries ``skip_tests`` (the former loopback residual closed when
+    ``preflight_runner._preflight_env`` began scrubbing every projected settings key)."""
     assert scenarios.SM1_CSS_PATHS == ("web/style.css", "web/onboarding.css")
     prompt = scenarios.sm1_prompt()
     assert "web/style.css" in prompt and "web/onboarding.css" in prompt and "['web/style.css', 'web/onboarding.css']" in prompt
@@ -507,6 +507,7 @@ def test_sm1_changes_both_stylesheets_and_keeps_the_mirror_parity():
     assert [w["arguments"]["path"] for w in writes] == list(scenarios.SM1_CSS_PATHS)
     commit = next(s for s in script if s.get("tool") == "commit_reviewed")["arguments"]
     assert commit["paths"] == list(scenarios.SM1_CSS_PATHS) and "skip_tests" not in prompt.lower()
+    assert "skip_tests" not in commit, "the stub rehearsal must run the tests preflight like the paid prompt"
     edited = {w["arguments"]["path"]: w["arguments"]["content"] for w in writes}
     for path, text in edited.items():
         original = (REPO_ROOT / path).read_text(encoding="utf-8")
@@ -824,7 +825,7 @@ def test_ui_client_prefers_the_suite_interface_when_it_has_this_surface(monkeypa
 @pytest.mark.serial
 def test_stub_sm1_end_to_end_on_a_real_isolated_server(tmp_path):
     """Real server, loopback stub model, no key: the commit lands through the review organ
-    (both stylesheets; the stub rehearsal skips the tests preflight — the disclosed residual),
+    (both stylesheets, through the same hermetic tests preflight as the paid prompt),
     the durable rows and receipts exist, the
     seed is a clean detached clone of this tree's HEAD and the manifest names the stub as
     the model."""

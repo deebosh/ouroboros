@@ -12,6 +12,7 @@ import time
 import pytest
 
 from ouroboros.platform_layer import force_kill_pid, pid_is_alive
+from ouroboros.settings_defaults import settings_env_keys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -496,6 +497,24 @@ def test_external_pytest_controls_never_reach_the_candidate_suite(tmp_path, monk
         assert int(env[key]) >= 2, "the inherited single-worker downgrade survived"
     else:
         assert key not in env, f"{key} leaked into the candidate suite"
+
+
+@pytest.mark.parametrize("key", settings_env_keys())
+def test_projected_settings_keys_never_reach_the_candidate_suite(tmp_path, monkeypatch, key):
+    """`config.apply_settings_to_env` exports every one of these from the owner's
+    settings.json into the server process, and most carry neither the OUROBOROS_
+    prefix nor a secret suffix (OPENAI_COMPATIBLE_BASE_URL, USE_LOCAL_*,
+    LOCAL_MODEL_*, MCP_*, GITHUB_REPO, TOTAL_BUDGET). Inherited, they made the
+    hermetic verdict depend on the operator's install profile: with
+    OPENAI_COMPATIBLE_BASE_URL alone set, tests/test_settings_effort.py routed on
+    it and lost four tests; USE_LOCAL_MAIN lost a different four. The scrub is
+    DERIVED from `settings_env_keys()`, so tomorrow's settings key is covered
+    without anyone extending a hand-kept list."""
+    from ouroboros.preflight_runner import _preflight_env
+
+    monkeypatch.setenv(key, "owner-runtime-state")
+    env = _preflight_env(tmp_path / "root", tmp_path / "root" / "repo")
+    assert key not in env, f"{key} leaked into the candidate suite"
 
 
 def test_the_gate_pins_the_worker_count_it_verified(tmp_path, monkeypatch):
