@@ -103,12 +103,17 @@ def test_the_durable_marker_survives_a_fresh_process(boot_state, sent):
     server_maintenance._startup_retired_settings_notice(loaded)
     assert len(sent) == 1
 
-    # A DIFFERENT retired-key set is its own loss and gets its own line.
-    cfg.normalize_settings_raw({"OUROBOROS_SOFT_TIMEOUT_SEC": "5"})
+    # A DIFFERENT retired-key set is its own loss and gets its own line. The key is taken
+    # from the successor table, never spelled here: the grep-class retirement gate
+    # (tests/test_legacy_timeout_retirement.py) keeps retired names out of live surfaces.
+    from ouroboros.settings_defaults import RETIRED_SETTING_SUCCESSORS
+
+    retired_key, successors = next(iter(RETIRED_SETTING_SUCCESSORS.items()))
+    cfg.normalize_settings_raw({retired_key: "5"})
     server_maintenance._startup_retired_settings_notice(loaded)
     assert len(sent) == 2
-    assert "OUROBOROS_SOFT_TIMEOUT_SEC" in sent[1][1]
-    assert "OUROBOROS_TASK_IDLE_TIMEOUT_SEC" in sent[1][1], "the successor table is read"
+    assert retired_key in sent[1][1]
+    assert successors[0] in sent[1][1], "the successor table is read"
 
 
 def test_nothing_is_sent_or_marked_before_an_owner_chat_is_bound(boot_state, sent):
