@@ -309,7 +309,10 @@ class RunBudget:
 
     def admit(self, job: tuple, root_tasks: int, data_root: pathlib.Path, *,
               on_wait: Callable[[str], None] | None = None) -> tuple[bool, dict]:
-        """``(admitted, facts)`` — blocks while the attempt cannot fit YET (``on_wait`` is told
+        """Admission is not FIFO: a waiting large reservation can be leapfrogged by smaller
+        attempts admitted from other lanes and may end refused after waiting (bounded: spend only
+        grows and the job list is finite; cap-safe at every admission). ``on_wait`` runs UNDER the
+        budget lock — it must not touch the budget itself. ``(admitted, facts)`` — blocks while the attempt cannot fit YET (``on_wait`` is told
         once, with the numbers, when the wait begins); ``facts["waited_sec"]`` is how long."""
         need, name, waited_from = self.reservation(root_tasks), f"{job[0]}_a{job[1]}", None
         with self._lock:

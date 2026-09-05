@@ -1278,10 +1278,12 @@ grant); the preflight takes `min(key limit remaining, account credits)` and
 refuses below `--min-credit-usd`. `--total-budget` (default 100) is the RUN-WIDE
 cap: a ledger sums the lanes' durable `llm_usage` costs, reserves
 `--per-task-usd × root tasks` per attempt (SM1 and SW1 one root — scouts spend
-under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two), schedules a
-new attempt only while `spent + reserved + reservation ≤ cap`, halts scheduling at
-the first refusal (later attempts are recorded `not_run` with
-`reason_code=budget_cap`), and writes each lane's TOTAL_BUDGET as its OWN reservation — an
+under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two), admits an
+attempt only while `spent + reserved(in flight) + reservation ≤ cap` — an attempt that
+cannot fit YET (blocked only by reservations in flight) waits for a settle and asks again,
+one that can NEVER fit (`spent + reservation > cap`) is refused and recorded `not_run` with
+`reason_code=budget_cap` for that attempt alone (no run-wide halt: a later, smaller attempt
+is asked on its own; the manifest carries `refusals` and `first_refused`), and writes each lane's TOTAL_BUDGET as its OWN reservation — an
 immutable ceiling disjoint from every other lane's, so the settled spend plus the ceilings
 in flight never exceed the cap; the manifest records the cap, the spend, the reservation rule
 and the stop reason. `--per-task-usd` (default 8) is the runtime's per-root-task
