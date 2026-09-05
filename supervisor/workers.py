@@ -48,7 +48,7 @@ _SPAWN_GRACE_SEC: float = WORKER_SPAWN_GRACE_SEC  # config SSOT; leaves read it 
 # server process, so no lock is inherited, and a warm child still confirms in
 # seconds (mock lane, fork -> forkserver: startup 2.4-3.3 -> 3.5-4.9s, respawn
 # 2.3 -> 2.5-3.2s; window 90s). worker_main is module-level and re-derives state
-# from argv, so spawn/forkserver (and PyInstaller's frozen re-exec hook) are safe.
+# from argv (its lifeline: spawner sentinel, not ppid), so spawn/forkserver/frozen re-exec are safe.
 _DEFAULT_WORKER_START_METHOD = "forkserver" if sys.platform.startswith("linux") else "spawn"
 _WORKER_START_METHOD = str(os.environ.get("OUROBOROS_WORKER_START_METHOD", _DEFAULT_WORKER_START_METHOD) or _DEFAULT_WORKER_START_METHOD).strip().lower()
 if _WORKER_START_METHOD not in {"fork", "spawn", "forkserver"}:

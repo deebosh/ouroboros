@@ -129,8 +129,10 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
             pass
     from ouroboros.platform_layer import create_new_session
     create_new_session()
-    # Lifeline: if the supervisor dies abruptly, this worker is reparented to
-    # init and would keep running LLM rounds invisibly — group-suicide instead.
+    # Lifeline: if the supervisor dies abruptly, this worker would keep running
+    # LLM rounds invisibly — group-suicide instead. It watches the spawner's
+    # parent sentinel, not the ppid: under forkserver the parent is the
+    # forkserver, which outlives a dead supervisor while any worker lives.
     try:
         from ouroboros.process_custody import start_parent_lifeline
 

@@ -477,6 +477,63 @@ def test_lifeline_kills_child_when_parent_dies(tmp_path):
     raise AssertionError("child outlived dead parent despite lifeline")
 
 
+def _process_gone(pid: int) -> bool:
+    """True once ``pid`` is dead — an unreaped zombie counts as dead too."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return not state.strip() or state.strip().startswith("Z")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="lifeline is POSIX-only")
+@pytest.mark.parametrize("start_method", ["forkserver", "spawn"])
+def test_lifeline_fires_on_supervisor_death_under_every_start_method(tmp_path, start_method):
+    """The lifeline watches the SUPERVISOR, not the immediate parent: under forkserver
+    the parent is the forkserver process, which outlives a SIGKILLed supervisor for as
+    long as any worker holds its alive pipe, so a ppid watch never fires and the orphan
+    would keep running LLM rounds until the next boot."""
+    script = tmp_path / "supervisor.py"
+    script.write_text(
+        "import multiprocessing as mp, pathlib, sys, time\n"
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        "def child(armed):\n"
+        "    from ouroboros.process_custody import start_parent_lifeline\n"
+        "    start_parent_lifeline(poll_sec=0.2, label='test')\n"
+        "    pathlib.Path(armed).write_text('armed')\n"
+        "    time.sleep(60)\n"
+        "if __name__ == '__main__':\n"
+        f"    proc = mp.get_context({start_method!r}).Process(target=child, args=(sys.argv[2],))\n"
+        "    proc.start()\n"
+        "    pathlib.Path(sys.argv[1]).write_text(str(proc.pid))\n"
+        "    time.sleep(60)\n"
+    )
+    pid_file, armed = tmp_path / "child_pid", tmp_path / "armed"
+    # Own session: the lifeline's group-kill can only ever hit this tree, and the
+    # cleanup killpg below reaps the forkserver/resource-tracker helpers with it.
+    supervisor = subprocess.Popen([sys.executable, str(script), str(pid_file), str(armed)], start_new_session=True)
+    try:
+        deadline = time.time() + 60
+        while not armed.exists() and supervisor.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert armed.exists(), "child never armed its lifeline"
+        child_pid = int(pid_file.read_text())
+        supervisor.kill()
+        supervisor.wait(timeout=10)
+        deadline = time.time() + 15
+        while time.time() < deadline and not _process_gone(child_pid):
+            time.sleep(0.2)
+        assert _process_gone(child_pid), f"{start_method} child outlived the dead supervisor"
+    finally:
+        try:
+            os.killpg(supervisor.pid, 9)
+        except ProcessLookupError:
+            pass
+        if supervisor.poll() is None:
+            supervisor.wait(timeout=5)
+
+
 # --- NW-10: custody session-id adoption + keep-service sparing ---
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX session semantics")
