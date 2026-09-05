@@ -685,7 +685,12 @@ def test_sm1_changes_both_stylesheets_and_keeps_the_mirror_parity():
     edited = {w["arguments"]["path"]: w["arguments"]["content"] for w in writes}
     for path, text in edited.items():
         original = (REPO_ROOT / path).read_text(encoding="utf-8")
-        assert scenarios.accent_value(text) == scenarios.SM1_NEW_ACCENT and text != original
+        assert scenarios.accent_value(text) == scenarios.SM1_NEW_ACCENT
+        # The tree under test may ALREADY carry the target accent (this suite runs inside the
+        # SM1 candidate's hermetic preflight after the model applied the change): then the
+        # stub edit is a no-op by design, not a failure.
+        if scenarios.accent_value(original) != scenarios.SM1_NEW_ACCENT:
+            assert text != original
         assert len(text.splitlines()) == len(original.splitlines())
     assert scenarios.css_mirror_drift(edited["web/style.css"], edited["web/onboarding.css"]) == {}
     # The parser reads the SAME :root block the invariant reads, and the invariant is real.
