@@ -56,6 +56,26 @@ def post_task_synthesis_is_terminal(value: Any) -> bool:
     return str(value or "") in POST_TASK_SYNTHESIS_TERMINAL_STATUSES
 
 
+def post_task_synthesis_in_flight(drive_root: Any, task_id: str) -> bool:
+    """Whether THIS process is still running the paid post-task synthesis of
+    ``task_id`` on ``drive_root`` — the in-flight key the pipeline holds from
+    dispatch until its terminal checkpoint is stored (GR6-1, widened to the
+    non-blocking lane): a direct-chat turn's loop returns and its liveness
+    ends while the synthesis thread still bills, so the key is the live
+    physical ownership the stop ingress and custody must see. Process-local
+    on purpose: a durable ``running`` phase alone cannot tell a live worker
+    from one that died before the boot reconciler degraded it."""
+    tid = str(task_id or "").strip()
+    if not tid or not drive_root:
+        return False
+    try:
+        root_key = str(pathlib.Path(drive_root).resolve(strict=False))
+    except (TypeError, OSError, ValueError):
+        return False
+    with POST_TASK_SYNTHESIS_LOCK:
+        return (root_key, tid) in POST_TASK_SYNTHESIS_INFLIGHT
+
+
 def _parse_updated_at(value: Any) -> datetime | None:
     raw = str(value or "").strip()
     if not raw:
@@ -360,6 +380,10 @@ def set_root_post_task_checkpoint(
                 "task_id": task_id,
                 "root_task_id": str(stored.get("root_task_id") or task.get("root_task_id") or task_id),
                 "post_task_status": stored_post_task,
+                # The typed stop disclosure rides the same event (owner Stop-now
+                # during synthesis, restart recovery): absent when nothing stopped.
+                **({"post_task_stop_reason": str(stored_checkpoint.get("post_task_stop_reason"))}
+                   if stored_checkpoint.get("post_task_stop_reason") else {}),
                 # ABI-3: cost pair CONVERTED from a possibly-legacy stored row
                 # (deprecated-wins) — the event carries honest names only.
                 **carry_cost_meta(stored),

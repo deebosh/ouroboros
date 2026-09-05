@@ -536,20 +536,35 @@ def _finish_captured_chat_turn(
     the same miss finalizer a pooled task does — ``cancelled`` with the
     reconstructed cost — so a "successful" stop can never leave a ``running``
     row that no control can reach again. A turn that was already gone before
-    the stop could be armed is the pooled lane's ``already_settled``."""
+    the stop could be armed is the pooled lane's ``already_settled`` — unless
+    its paid post-task synthesis is still billing on the in-process worker
+    (``turn`` is then None): the claim is released with the typed "still
+    live" error so the durable immediate intent stays open for the
+    pipeline's per-stage gate, and the sweep settles ``already_settled``
+    once the worker drops its in-flight key."""
     from supervisor.task_lifecycle import (
         CANCEL_FAILED, SETTLED_ALREADY, _release_intent_claim, _settle_intent,
     )
     from supervisor.worker_chat_lane import (
         DIRECT_TURN_STOP_GONE, DIRECT_TURN_STOP_LIVE, stop_direct_chat_turn,
     )
+    from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
     from ouroboros.task_results import load_task_result
     from ouroboros.task_status import SETTLED_STATUSES
 
-    outcome = stop_direct_chat_turn(task_id, turn, deliver=deliver)
+    outcome = (
+        DIRECT_TURN_STOP_GONE if turn is None
+        else stop_direct_chat_turn(task_id, turn, deliver=deliver)
+    )
     if outcome == DIRECT_TURN_STOP_LIVE:
         _release_intent_claim(
             q, task_id, error="direct chat turn has not reached its next step yet",
+            intent=intent,
+        )
+        return CANCEL_FAILED
+    if post_task_synthesis_in_flight(q.DRIVE_ROOT, task_id):
+        _release_intent_claim(
+            q, task_id, error="post-task synthesis of the direct chat turn is still running",
             intent=intent,
         )
         return CANCEL_FAILED

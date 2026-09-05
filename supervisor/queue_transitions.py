@@ -842,8 +842,9 @@ def _live_retry_target_locked(q: Any, task_id: str) -> Tuple[str, str]:
 
 
 def task_has_live_ownership(task_id: str) -> bool:
-    """Whether live PHYSICAL ownership remains for this task: a RUNNING row or
-    a busy worker slot (GR6-1, the one predicate behind the class rule).
+    """Whether live PHYSICAL ownership remains for this task: a RUNNING row, a
+    busy worker slot, the in-process direct-chat turn or its still-billing
+    post-task synthesis (GR6-1, the one predicate behind the class rule).
 
     The pipeline persists the durable terminal result BEFORE post-task
     cognition ends, so "the status is settled" and "the worker is dead" are
@@ -874,6 +875,15 @@ def task_has_live_ownership(task_id: str) -> bool:
         # writes an ordinary durable running row, so it must be as
         # addressable as a pooled worker (custody stops it cooperatively).
         if workers.direct_chat_turn(task_id) is not None:
+            return True
+        # The turn's paid post-task synthesis OUTLIVES the turn: the loop
+        # returns and ``_busy`` drops while the in-process worker thread still
+        # bills, so the pipeline's in-flight key is live physical ownership
+        # too — the stop ingress must not answer 404 while the spend
+        # continues, and custody keeps the intent open for the stage gate.
+        from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
+
+        if post_task_synthesis_in_flight(q.DRIVE_ROOT, task_id):
             return True
         try:
             retry_target, _retry_settled_status = _live_retry_target_locked(q, task_id)

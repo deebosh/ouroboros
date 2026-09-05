@@ -137,39 +137,44 @@ def _run_post_task_processing_async(
     # terminal checkpoint remains the only final accounting authority.
     usage_snapshot = _pre_synthesis_usage_snapshot(env, task_snapshot, usage)
 
+    # The owner's will while the synthesis is ALREADY billing (Stop-now after
+    # the loop returned): one local predicate, consulted before EACH paid
+    # stage — the durable immediate cancel intent every stop ingress mints
+    # and custody keeps open while this worker holds its in-flight key, or
+    # the live task marker re-read (the entry snapshot cannot see a stop that
+    # landed later). The owner mailbox control is NOT the worker's currency:
+    # it is unlinked at task_done and its only reader is the loop's drain.
+    intent_root = task_snapshot.get("budget_drive_root") or env.drive_root
+    stage_task_id = str(task_snapshot.get("id") or task_snapshot.get("task_id") or "")
+
+    def _owner_stop_requested() -> bool:
+        if task.get("_skip_post_task_synthesis"):
+            return True
+        try:
+            from ouroboros.cancel_intents import STOP_POLICY_IMMEDIATE, active_intent, stop_policy
+
+            intent = active_intent(intent_root, stage_task_id)
+        except Exception:
+            log.debug("cancel-intent read failed for post-task stage gate", exc_info=True)
+            return False
+        return isinstance(intent, dict) and stop_policy(intent) == STOP_POLICY_IMMEDIATE
+
     def _run_scoped() -> None:
         checkpoint_status = "degraded"
+        skipped: list[str] = []
         try:
             from ouroboros.llm import LLMClient
             from ouroboros.memory import Memory
 
             llm_client = LLMClient()
             task_memory = Memory(drive_root=env.drive_root, repo_dir=env.repo_dir)
-            # All late model work belongs to this one scoped worker.  This keeps
-            # the root checkpoint non-final until consolidation, summary,
-            # reflection, and promotion have all stopped billing.
-            _run_chat_consolidation(env, task_memory, llm_client, task_snapshot, drive_logs)
-            _run_scratchpad_consolidation(env, task_memory, llm_client)
-            # Summary first: chat.jsonl is more durable than best-effort reflection/backlog.
-            _run_task_summary(
-                env,
-                llm_client,
-                task_snapshot,
-                usage_snapshot,
-                trace_snapshot,
-                drive_logs,
-                review_evidence=review_evidence_snapshot,
-                sealed_final=sealed_snapshot,
-            )
-            reflection_entry = _run_reflection(
-                env, llm_client, task_snapshot, usage_snapshot,
-                trace_snapshot, review_evidence_snapshot,
-                sealed_final=sealed_snapshot,
-            )
-            result["reflection_entry"] = reflection_entry
-            if not is_presence_task(task_snapshot):
+
+            def _promotion() -> None:
+                if is_presence_task(task_snapshot):
+                    return
                 from ouroboros.project_facts import resolve_project_id
 
+                reflection_entry = result.get("reflection_entry")
                 _pid = resolve_project_id(task_snapshot)
                 # Project facts stay scoped; generic process lessons remain global.
                 _update_improvement_backlog(env, reflection_entry)
@@ -182,11 +187,41 @@ def _run_post_task_processing_async(
                     log.debug("Post-task evolution promotion failed", exc_info=True)
                 if on_reflection is not None:
                     on_reflection(reflection_entry, llm_client)
-            checkpoint_status = "completed"
+
+            # All late model work belongs to this one scoped worker.  This keeps
+            # the root checkpoint non-final until consolidation, summary,
+            # reflection, and promotion have all stopped billing.  Summary
+            # before reflection: chat.jsonl is more durable than best-effort
+            # reflection/backlog.
+            stages: List[tuple[str, Callable[[], Any]]] = [
+                ("chat_consolidation", lambda: _run_chat_consolidation(
+                    env, task_memory, llm_client, task_snapshot, drive_logs)),
+                ("scratchpad_consolidation", lambda: _run_scratchpad_consolidation(
+                    env, task_memory, llm_client)),
+                ("summary", lambda: _run_task_summary(
+                    env, llm_client, task_snapshot, usage_snapshot, trace_snapshot, drive_logs,
+                    review_evidence=review_evidence_snapshot, sealed_final=sealed_snapshot)),
+                ("reflection", lambda: result.__setitem__("reflection_entry", _run_reflection(
+                    env, llm_client, task_snapshot, usage_snapshot, trace_snapshot,
+                    review_evidence_snapshot, sealed_final=sealed_snapshot))),
+                ("promotion", _promotion),
+            ]
+            for index, (_name, run_stage) in enumerate(stages):
+                if _owner_stop_requested():
+                    # Stop-now: the remaining paid stages are skipped and NAMED
+                    # in the typed disclosure below; what already ran stays.
+                    skipped = [name for name, _run in stages[index:]]
+                    break
+                run_stage()
+            if not skipped:
+                checkpoint_status = "completed"
         except Exception:
             log.warning("Async post-task processing failed", exc_info=True)
         finally:
-            _set_root_post_task_checkpoint(env, task_snapshot, checkpoint_status)
+            _set_root_post_task_checkpoint(
+                env, task_snapshot, checkpoint_status,
+                stop_reason=f"owner_stopped:skipped={','.join(skipped)}" if skipped else "",
+            )
             if post_task_key is not None:
                 with _POST_TASK_SYNTHESIS_LOCK:
                     _POST_TASK_SYNTHESIS_INFLIGHT.discard(post_task_key)

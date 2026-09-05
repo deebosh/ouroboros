@@ -14,6 +14,7 @@ import pathlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
 from ouroboros.review_owner_custody import reconcile_confirmed_dead_review_owner as _reconcile_dead_review_owner
 from ouroboros.utils import utc_now_iso
 
@@ -659,12 +660,13 @@ def cancel_task_custody(task_id: str, *, deliver: bool = True) -> str:
 
     if captured_pending is None and captured_worker is None:
         # A settled row does not prove the direct turn is done: the pipeline
-        # persists the terminal BEFORE post-task cognition, and the chat agent
-        # stays busy through it (the pooled twin: a settled-but-live worker
-        # still goes through the kill path). Live ownership wins over the
-        # settled fast path; the stored terminal stays the answer either way.
+        # persists the terminal BEFORE post-task cognition, whose in-process
+        # synthesis thread outlives the turn's own liveness (the pooled twin:
+        # a settled-but-live worker still goes through the kill path). Live
+        # ownership wins over the settled fast path; the stored terminal
+        # stays the answer either way.
         turn = workers.direct_chat_turn(task_id)
-        if turn is not None:
+        if turn is not None or post_task_synthesis_in_flight(q.DRIVE_ROOT, task_id):
             from supervisor.cancel_publication import _finish_captured_chat_turn
 
             return _finish_captured_chat_turn(q, task_id, turn, intent=intent, deliver=deliver)

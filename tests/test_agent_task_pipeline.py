@@ -2,6 +2,8 @@ import json
 import pathlib
 from types import SimpleNamespace
 
+import pytest
+
 import ouroboros.agent_task_pipeline as pipeline
 
 
@@ -527,3 +529,126 @@ def test_stopped_direct_turn_pays_no_post_task_synthesis(tmp_path, monkeypatch):
     _task, _events, control_calls = _turn("control1", stopped=False)
     assert len(control_calls) >= 2 and all(not c["has_tools"] for c in control_calls), control_calls
     assert len(_summary_rows("control1")) == 1  # the reader sees the phase when it does run
+
+
+# --- "Stop now" while the paid synthesis is ALREADY in flight (audit point 4, G18) ---
+
+_STAGES = ("chat_consolidation", "scratchpad_consolidation", "summary", "reflection", "promotion")
+
+
+def _stubbed_stages(monkeypatch, calls, *, on_first=None):
+    """Record the five paid stages in order; ``on_first`` runs INSIDE stage 1
+    (the Stop lands after the synthesis has begun, past the entry snapshot)."""
+    import ouroboros.llm as llm_mod
+    import ouroboros.post_task_evolution as pte
+
+    monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: object())
+
+    def _stage(name, ret=None):
+        def _f(*a, **k):
+            calls.append(name)
+            if name == "chat_consolidation" and on_first is not None:
+                on_first()
+            return ret
+        return _f
+
+    monkeypatch.setattr(pipeline, "_run_chat_consolidation", _stage("chat_consolidation"))
+    monkeypatch.setattr(pipeline, "_run_scratchpad_consolidation", _stage("scratchpad_consolidation"))
+    monkeypatch.setattr(pipeline, "_run_task_summary", _stage("summary"))
+    monkeypatch.setattr(pipeline, "_run_reflection", _stage(
+        "reflection", {"reflection": "x", "backlog_candidates": [], "memory_actions": []}))
+    monkeypatch.setattr(pipeline, "_update_improvement_backlog", _stage("promotion"))
+    monkeypatch.setattr(pipeline, "_apply_reflection_memory_actions", lambda *a, **k: None)
+    monkeypatch.setattr(pte, "maybe_promote", lambda *a, **k: None)
+
+
+def _synthesis_root(tmp_path):
+    root = tmp_path / "data"
+    for rel in ("logs", "memory", "repo"):
+        (root / rel).mkdir(parents=True)
+    return root, SimpleNamespace(drive_root=root, repo_dir=root / "repo", drive_path=lambda rel: root / rel)
+
+
+def _finalized_events(root, task_id):
+    rows = [json.loads(line) for line in (root / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    return [row for row in rows if row.get("type") == "task_cost_finalized" and row.get("task_id") == task_id]
+
+
+@pytest.mark.parametrize("stop", ["intent", "live_marker"])
+def test_stop_now_during_inflight_synthesis_skips_the_remaining_paid_stages(tmp_path, monkeypatch, stop):
+    """The Stop lands AFTER stage 1 began (the loop has returned, the entry
+    snapshot saw no marker): the durable immediate cancel intent every stop
+    ingress mints — or the live task marker re-read — trips the per-stage gate,
+    so stages 2..5 never run, the checkpoint settles ``degraded`` and the typed
+    ``post_task_stop_reason`` NAMES the skipped stages, riding the result row
+    and the ``task_cost_finalized`` event alike. The in-flight key is gone."""
+    from ouroboros.cancel_intents import STOP_POLICY_IMMEDIATE, request_cancel
+
+    root, env = _synthesis_root(tmp_path)
+    task_id = "inflight1"
+    task = {"id": task_id, "type": "task", "chat_id": 1, "_is_direct_chat": True, "text": "keep listing"}
+    pipeline._store_task_result(env, task, "Listed.", {"rounds": 20, "cost": 0.02}, {"tool_calls": [], "reasoning_notes": []})
+    calls = []
+
+    def _deliver_stop():
+        if stop == "intent":
+            request_cancel(root, task_id, source="http_single", allow_settled_target=True,
+                           requested_stop_policy=STOP_POLICY_IMMEDIATE)
+        else:
+            task["_skip_post_task_synthesis"] = True   # the LIVE dict, not the entry snapshot
+
+    _stubbed_stages(monkeypatch, calls, on_first=_deliver_stop)
+    pipeline._run_post_task_processing_async(
+        env, task, {"rounds": 20, "cost": 0.02}, {"tool_calls": [], "reasoning_notes": []}, {}, root / "logs", blocking=True)
+
+    assert calls == ["chat_consolidation"], calls
+    checkpoint = (pipeline.load_task_result(root, task_id) or {}).get("root_phase_checkpoint") or {}
+    assert checkpoint.get("post_task_synthesis") == "degraded", checkpoint
+    assert checkpoint.get("post_task_stop_reason") == (
+        "owner_stopped:skipped=scratchpad_consolidation,summary,reflection,promotion"), checkpoint
+    finalized = _finalized_events(root, task_id)
+    assert len(finalized) == 1 and finalized[0]["post_task_status"] == "degraded", finalized
+    assert finalized[0]["post_task_stop_reason"] == checkpoint["post_task_stop_reason"], finalized
+    assert (str(root.resolve()), task_id) not in pipeline._POST_TASK_SYNTHESIS_INFLIGHT
+
+
+def test_no_stop_runs_every_paid_stage_and_finalizes_without_a_stop_reason(tmp_path, monkeypatch):
+    """Positive control for the gate: an un-stopped synthesis runs all five
+    stages in order and the checkpoint is byte-identical to before (``completed``,
+    no ``post_task_stop_reason`` anywhere)."""
+    root, env = _synthesis_root(tmp_path)
+    task_id = "unstopped1"
+    task = {"id": task_id, "type": "task", "chat_id": 1, "_is_direct_chat": True, "text": "keep listing"}
+    pipeline._store_task_result(env, task, "Listed.", {"rounds": 20, "cost": 0.02}, {"tool_calls": [], "reasoning_notes": []})
+    calls = []
+    _stubbed_stages(monkeypatch, calls)
+    pipeline._run_post_task_processing_async(
+        env, task, {"rounds": 20, "cost": 0.02}, {"tool_calls": [], "reasoning_notes": []}, {}, root / "logs", blocking=True)
+
+    assert calls == list(_STAGES), calls
+    checkpoint = (pipeline.load_task_result(root, task_id) or {}).get("root_phase_checkpoint") or {}
+    assert checkpoint.get("post_task_synthesis") == "completed", checkpoint
+    assert "post_task_stop_reason" not in checkpoint, checkpoint
+    finalized = _finalized_events(root, task_id)
+    assert len(finalized) == 1 and "post_task_stop_reason" not in finalized[0], finalized
+
+
+def test_entry_marker_still_skips_every_paid_stage_and_seeds_no_checkpoint(tmp_path, monkeypatch):
+    """The rc.14 path is unchanged: a Stop that landed inside the loop (marker
+    on the task at entry) pays nothing and leaves no open checkpoint for the
+    boot reconciler — the gate trips before stage 1 and the marker keeps the
+    checkpoint writer's root predicate False."""
+    root, env = _synthesis_root(tmp_path)
+    task_id = "marked1"
+    task = {"id": task_id, "type": "task", "chat_id": 1, "_is_direct_chat": True,
+            "text": "keep listing", "_skip_post_task_synthesis": True}
+    pipeline._store_task_result(env, task, "Stopped.", {"rounds": 2, "cost": 0.01}, {"tool_calls": [], "reasoning_notes": []})
+    calls = []
+    _stubbed_stages(monkeypatch, calls)
+    pipeline._run_post_task_processing_async(
+        env, task, {"rounds": 2, "cost": 0.01}, {"tool_calls": [], "reasoning_notes": []}, {}, root / "logs", blocking=True)
+
+    assert calls == [], calls
+    stored = pipeline.load_task_result(root, task_id) or {}
+    assert "root_phase_checkpoint" not in stored, stored
+    assert not (root / "logs" / "events.jsonl").exists() or _finalized_events(root, task_id) == []

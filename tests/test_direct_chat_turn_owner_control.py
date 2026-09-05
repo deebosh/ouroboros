@@ -418,7 +418,7 @@ def test_settled_row_does_not_hide_a_still_busy_direct_turn_from_custody(tmp_pat
         first = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
         assert first.status_code == 503, first.text          # armed, still busy
         assert "finalize_now" in _mailbox_kinds(tmp_path)
-        agent._busy = False                                    # post-task cognition ends
+        agent._busy = False                                    # the turn ends; no synthesis in flight
         second = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
     assert second.status_code == 404, second.text              # already settled, honestly
     assert load_task_result(tmp_path, TURN_ID)["status"] == "completed"
@@ -507,3 +507,115 @@ def test_wrap_up_on_a_turn_that_ended_under_its_lock_arms_nothing(tmp_path, monk
     assert _mailbox_kinds(tmp_path) == []
     assert toasts == []
     assert load_task_result(tmp_path, TURN_ID)["status"] == "completed"
+
+
+# --- the turn ended, its PAID post-task synthesis is still billing (G18) -------
+
+def _inflight_synthesis(monkeypatch, tmp_path, task_id=TURN_ID):
+    """The real non-blocking post-task lane on its daemon thread, stage 1 held
+    open behind an event: exactly the state ``emit_task_results`` leaves behind
+    after the turn's caller returned and agent.py ended the turn's liveness."""
+    import threading
+
+    import ouroboros.agent_task_pipeline as pipeline
+    import ouroboros.llm as llm_mod
+    import ouroboros.post_task_evolution as pte
+
+    env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path / "repo", drive_path=lambda rel: tmp_path / rel)
+    for rel in ("logs", "memory", "repo"):
+        (tmp_path / rel).mkdir(exist_ok=True)
+    task = {"id": task_id, "type": "task", "chat_id": 0, "_is_direct_chat": True, "text": "modify yourself"}
+    arrived, release = threading.Event(), threading.Event()
+    calls = []
+
+    def _stage(name):
+        def _f(*a, **k):
+            calls.append(name)
+            if name == "chat_consolidation":
+                arrived.set()
+                assert release.wait(30), "stage gate never released"
+            return {"reflection": "x", "backlog_candidates": [], "memory_actions": []} if name == "reflection" else None
+        return _f
+
+    monkeypatch.setattr(llm_mod, "LLMClient", lambda *a, **k: object())
+    for name, attr in (("chat_consolidation", "_run_chat_consolidation"),
+                       ("scratchpad_consolidation", "_run_scratchpad_consolidation"),
+                       ("summary", "_run_task_summary"), ("reflection", "_run_reflection"),
+                       ("promotion", "_update_improvement_backlog")):
+        monkeypatch.setattr(pipeline, attr, _stage(name))
+    monkeypatch.setattr(pipeline, "_apply_reflection_memory_actions", lambda *a, **k: None)
+    monkeypatch.setattr(pte, "maybe_promote", lambda *a, **k: None)
+    spawned = []
+    _real_thread = threading.Thread
+
+    class CapturingThread(_real_thread):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            spawned.append(self)
+
+    monkeypatch.setattr(pipeline.threading, "Thread", CapturingThread)
+    pipeline._run_post_task_processing_async(
+        env, task, {"rounds": 3, "cost": 0.01}, {"tool_calls": [], "reasoning_notes": []}, {}, tmp_path / "logs")
+    assert arrived.wait(30), "the synthesis never reached its first paid stage"
+    return SimpleNamespace(thread=spawned[0], release=release, calls=calls)
+
+
+def test_live_ownership_holds_through_the_inflight_synthesis_and_ends_with_its_checkpoint(tmp_path, monkeypatch):
+    """``task_has_live_ownership`` answers True while the pipeline holds the
+    turn's in-flight key (the turn itself is gone: no busy agent, no queue
+    row) and False once the terminal checkpoint is stored and the key dropped."""
+    queue = _isolate_queue(monkeypatch, tmp_path)
+    write_task_result(tmp_path, TURN_ID, "completed", chat_id=0, description="modify yourself")
+    assert queue.task_has_live_ownership(TURN_ID) is False
+    synthesis = _inflight_synthesis(monkeypatch, tmp_path)
+    try:
+        assert queue.task_has_live_ownership(TURN_ID) is True
+    finally:
+        synthesis.release.set()
+        synthesis.thread.join(30)
+    assert not synthesis.thread.is_alive()
+    assert queue.task_has_live_ownership(TURN_ID) is False
+    checkpoint = load_task_result(tmp_path, TURN_ID)["root_phase_checkpoint"]
+    assert checkpoint["post_task_synthesis"] == "completed", checkpoint
+
+
+def test_stop_now_during_the_inflight_synthesis_is_accepted_and_stops_the_remaining_paid_stages(tmp_path, monkeypatch):
+    """The audit-point-4 class, end to end over the UI's endpoint: the turn's
+    answer has landed and only its paid synthesis is running. Stop-now is
+    ACCEPTED (typed 503 "still live", the durable immediate intent minted and
+    left open by custody — never 404), the pipeline's per-stage gate then
+    skips every remaining paid stage and discloses them; the next stop after
+    the checkpoint settled answers the honest 404 with the intent drained."""
+    from ouroboros.cancel_intents import INTENT_REQUESTED, active_intent
+
+    _isolate_queue(monkeypatch, tmp_path)
+    agent = _live_chat_agent(monkeypatch)
+    agent._busy = False                                    # the turn's caller returned
+    agent._accepting_owner_messages = False
+    write_task_result(tmp_path, TURN_ID, "completed", chat_id=0, description="modify yourself")
+    _write_snapshot(tmp_path, running_ids=())
+    synthesis = _inflight_synthesis(monkeypatch, tmp_path)
+    try:
+        with _client(tmp_path) as client:
+            first = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
+            assert first.status_code == 503, first.text
+            assert "still live" in first.json()["error"], first.text
+            intent = active_intent(tmp_path, TURN_ID) or {}
+            assert intent.get("state") == INTENT_REQUESTED, intent
+            assert "post-task synthesis" in str(intent.get("last_error") or ""), intent
+            assert _mailbox_kinds(tmp_path) == []          # no control for a loop that is gone
+            synthesis.release.set()
+            synthesis.thread.join(30)
+            assert not synthesis.thread.is_alive()
+            second = client.post(f"/api/tasks/{TURN_ID}/cancel", json={"stop_policy": "immediate"})
+    finally:
+        synthesis.release.set()
+    assert second.status_code == 404, second.text
+    assert synthesis.calls == ["chat_consolidation"], synthesis.calls
+    stored = load_task_result(tmp_path, TURN_ID)
+    assert stored["status"] == "completed"
+    checkpoint = stored["root_phase_checkpoint"]
+    assert checkpoint["post_task_synthesis"] == "degraded", checkpoint
+    assert checkpoint["post_task_stop_reason"] == (
+        "owner_stopped:skipped=scratchpad_consolidation,summary,reflection,promotion"), checkpoint
+    assert not active_intent(tmp_path, TURN_ID)
