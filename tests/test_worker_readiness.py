@@ -81,6 +81,12 @@ def pool(monkeypatch, tmp_path):
     monkeypatch.setattr(workers, "WORKERS", {})
     monkeypatch.setattr(workers, "load_state", lambda: {"current_sha": "abc123", "owner_chat_id": 0})
     monkeypatch.setattr(workers, "_record_worker_pids", lambda: None)
+    # A prior TestClient lifespan in the same xdist worker leaves the process-lifetime
+    # event bus latched (server shutdown calls shutdown_event_q()); these tests pin the
+    # readiness seam, never the bus, so the latch is isolated here — the precedent of
+    # tests/test_promote_event_transport.py::_isolate_event_bus_shutdown_latch and
+    # tests/test_inflight_indicator_seams.py (seen red once in the rc.15 battery).
+    monkeypatch.setattr(workers, "_EVENT_Q_SHUTDOWN", False)
     (tmp_path / "logs").mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(workers=workers, lifecycle=lifecycle, root=tmp_path)
 
@@ -110,7 +116,7 @@ def test_spawn_installs_every_slot_booting_and_hands_the_set_to_the_readiness_se
     fake_ctx.Process.side_effect = make_process
     monkeypatch.setattr(workers, "_CTX", fake_ctx)
     monkeypatch.setattr(workers.mp, "get_context", lambda _method: fake_ctx)
-    monkeypatch.setattr(workers, "_EVENT_Q", object())
+    monkeypatch.setattr(workers, "get_event_q", lambda: object())   # the seam, not the bus
     monkeypatch.setattr(workers, "_EVENT_Q_GENERATION", "test-generation")
     monkeypatch.setattr(workers, "reap_orphaned_workers", lambda: 0)
     handed = []
