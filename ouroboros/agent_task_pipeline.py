@@ -535,8 +535,8 @@ def emit_task_results(
         # used to buffer the send with no delivery_id and no owed registration
         # at all. Seam + dedup: ouroboros/task_finalization.py.
         if _root_outbox and not _presence:
-            stamp_root_final_phase(
-                send_event, task,
+            stamp_root_final_phase(  # the stamp names the SAME word the durable row below settles to
+                send_event, task, terminal_status=_durable_terminal_status(env, task, execution_status),
                 post_task_open=not task.get("_skip_post_task_synthesis") and not _root_post_task_already_completed(env, task),
             )
             register_final_answer_owed(task, send_event, env_drive_root=env.drive_root)
@@ -755,6 +755,25 @@ def _dispatch_root_post_task(
         )
 
 
+def _durable_terminal_status(
+    env: Any, task: Dict[str, Any], execution_status: str, *, existing: Dict[str, Any] | None = None,
+) -> str:
+    """The status the durable task row settles to (ONE rule for the row and its outbox stamp).
+
+    A failed execution axis — including the owner's "Stop now", whose forced
+    finalization stamps ``execution_status="failed"`` under
+    ``owner_requested_finalization`` — and an already-failed row both settle
+    ``failed``; everything else settles ``completed``.
+    """
+    if existing is None:
+        existing = load_task_result(env.drive_root, str(task.get("id") or "")) or {}
+    failed = (
+        str(existing.get("status") or "") == STATUS_FAILED
+        or execution_status in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED}
+    )
+    return STATUS_FAILED if failed else STATUS_COMPLETED
+
+
 def _store_task_result(env: Any, task: Dict[str, Any], text: str,
                        usage: Dict[str, Any], llm_trace: Dict[str, Any],
                        review_evidence: Dict[str, Any] | None = None,
@@ -792,12 +811,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
         execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
         reason_code = str(loop_outcome.get("reason_code") or "")
-        status = (
-            STATUS_FAILED
-            if str(existing.get("status") or "") == STATUS_FAILED
-            or execution_status in {EXECUTION_FAILED, EXECUTION_INFRA_FAILED}
-            else STATUS_COMPLETED
-        )
+        status = _durable_terminal_status(env, task, execution_status, existing=existing)
         task_contract = build_task_contract(task)
         task = {**task, "task_contract": task_contract}
         artifact_bundle_for_ledger = artifact_bundle_from_result(existing)

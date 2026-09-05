@@ -79,7 +79,9 @@ def send_provider_death_notice(
     return True
 
 
-def stamp_root_final_phase(send_event: Dict[str, Any], task: Dict[str, Any], *, post_task_open: bool) -> None:
+def stamp_root_final_phase(
+    send_event: Dict[str, Any], task: Dict[str, Any], *, post_task_open: bool, terminal_status: str,
+) -> None:
     """Type a root's final frame for the client's live conclusion gate.
 
     With post-task synthesis still OPEN the owner's answer leaves early: the
@@ -87,12 +89,15 @@ def stamp_root_final_phase(send_event: Dict[str, Any], task: Dict[str, Any], *, 
     the card on "Finalizing…" until the settled task_done, instead of the
     early final reading as the task's terminal conclusion. With post-task
     already settled a DIRECT turn's bare final IS the turn's terminal word
-    (#369) — managed roots keep their task_done conclusion untouched.
+    (#369), so it names ``terminal_status`` — the status the durable row
+    settles to, which the chat row persists and replay reads as the card's
+    phase (a stopped turn is ``failed``, never a blanket ``completed``) —
+    managed roots keep their task_done conclusion untouched.
     """
     if post_task_open:
         send_event.setdefault("progress_meta", {})["task_phase"] = "finalizing"
     elif task.get("_is_direct_chat"):
-        send_event.setdefault("progress_meta", {})["task_terminal_status"] = "completed"
+        send_event.setdefault("progress_meta", {})["task_terminal_status"] = terminal_status
 
 
 def prepare_terminal_send_event(

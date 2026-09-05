@@ -508,6 +508,14 @@ def test_stopped_direct_turn_pays_no_post_task_synthesis(tmp_path, monkeypatch):
     assert stored.get("status") == "failed", stored
     assert "root_phase_checkpoint" not in stored, stored  # nothing for the boot reconciler to re-pay
     assert ("stopped1", False) in stamped and "stopped1" in owed   # outbox insurance kept, synthesis closed
+    # The closed-phase stamp names the turn's ACTUAL terminal word: the durable row is
+    # "failed" (owner_requested_finalization), and the stamp is what the chat row persists
+    # and replay reads as the card's phase — a blanket "completed" would flip it to Done.
+    from supervisor.terminal_delivery import pending_deliveries
+
+    assert events[0]["progress_meta"]["task_terminal_status"] == "failed", events[0]
+    owed_rows = [row for row in pending_deliveries(root) if row.get("task_id") == "stopped1"]
+    assert owed_rows and owed_rows[0]["progress_meta"]["task_terminal_status"] == "failed", owed_rows
 
     def _summary_rows(task_id):
         chat_log = root / "logs" / "chat.jsonl"
