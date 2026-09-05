@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import concurrent.futures as _cf
+import contextvars
 import copy
 import hashlib
 import json
@@ -198,7 +199,9 @@ def _await_scope_reservation(ctx, scope_future, seats, started_monotonic: float)
     future and ``NESTED_SETTLEMENT_MARGIN_SEC`` (a structural ordering margin,
     not a timeout contract); a hold that ends WITHOUT observing the scope
     reservation is a typed ``review_scope_lead_unobserved`` event, never a
-    silent fall-through. No paid scope seat or no root = no wait."""
+    silent fall-through. The reservation must be THIS task's (``ctx.task_id``,
+    the id the substrate stamps on the row): a sibling task's scope seat under
+    the same root never releases it. No paid scope seat or no root = no wait."""
     scope_slots = {seat["slot_id"] for seat in seats if seat["surface"] == "scope_review"}
     if scope_future is None or not scope_slots:
         return
@@ -208,13 +211,17 @@ def _await_scope_reservation(ctx, scope_future, seats, started_monotonic: float)
     from ouroboros.usage_accounting import current_usage_scope, last_root_accounting
 
     root_task_id = str(getattr(current_usage_scope(), "root_task_id", "") or "")
+    task_id = str(getattr(ctx, "task_id", "") or "")
     category = review_usage_category("scope_review")
     deadline = started_monotonic + float(NESTED_SETTLEMENT_MARGIN_SEC)
     while root_task_id:
         now = time.monotonic()
         for row in (last_root_accounting(root_task_id) or {}).get("reservations") or []:
+            # Category + slot + time + THIS task: a sibling task under the same
+            # root running its own gate reserves a same-named scope slot too.
             if (str(row.get("category") or "") == category
                     and str(row.get("review_slot_id") or "") in scope_slots
+                    and str(row.get("task_id") or "") == task_id
                     and now - float(row.get("age_sec") or 0.0) >= started_monotonic):
                 return
         scope_done = bool(scope_future.done())
@@ -361,7 +368,12 @@ def _run_scope(ctx, commit_message, scope_rows, dispatch, *, goal, scope,
         scope_slots = [row["slot"] for row in scope_rows]
         scope_models = [slot.model for slot in scope_slots]
         with _cf.ThreadPoolExecutor(max_workers=min(len(scope_slots), 4)) as scope_pool:
-            futures = [scope_pool.submit(_run_one_scope, row) for row in scope_rows]
+            # copy_context (the loop_tool_execution precedent): the admitting
+            # usage scope — and its bound root fence — reaches each row's
+            # substrate; a bare pool thread would re-read the fence from the
+            # environment and reserve against a different number.
+            futures = [scope_pool.submit(contextvars.copy_context().run, _run_one_scope, row)
+                       for row in scope_rows]
             results = [future.result() for future in futures]
         ctx._last_scope_raw_results = [
             build_scope_actor_record(
@@ -694,8 +706,19 @@ def run_parallel_review(
             try:
                 seats = commit_gate_paid_seats(triad_prepared, triad_exited, scope_rows)
                 wave_refusal = admit_commit_gate_wave(ctx, seats)
-            except Exception:
-                log.debug("commit-gate wave admission failed open", exc_info=True)
+            except Exception as e:
+                # Fail-open is the enforcement choice (as review_wave_budget_gate's
+                # own), but "admitted" and "admission crashed" are different
+                # facts: the wave dispatches unadmitted and without the
+                # scope-first hold, and says so once, typed.
+                from ouroboros.tools.review_helpers import emit_review_event
+                log.warning("commit-gate wave admission unavailable (%s: %s); the wave dispatches "
+                            "unadmitted and without the scope-first hold", type(e).__name__, e)
+                emit_review_event(ctx, {
+                    "type": "review_wave_admission_unavailable", "surface": "commit_gate",
+                    "task_id": str(getattr(ctx, "task_id", "") or ""),
+                    "error": f"{type(e).__name__}: {e}",
+                })
                 seats, wave_refusal = [], None
         if wave_refusal is not None:
             from ouroboros.tools.review import _handle_review_block_or_warning
@@ -764,9 +787,17 @@ def run_parallel_review(
                     # reservation is on the ledger, so a fitting wave can never
                     # leave scope unfunded while non-blocking seats hold the money.
                     wave_started = time.monotonic()
+                    # Both seats run under a COPY of the admitting context
+                    # (contextvars.copy_context, the loop_tool_execution and
+                    # plan_review precedent): the usage scope the wave was
+                    # admitted with — its bound root fence included — is the
+                    # one every seat's reserve_attempt binds, so admission and
+                    # reservation share one fence even after a mid-turn
+                    # settings reload changed the environment's number.
                     scope_fut = (
-                        pool.submit(_run_scope, ctx, commit_message, scope_rows, True,
-                                    goal=goal, scope=scope, review_rebuttal=review_rebuttal,
+                        pool.submit(contextvars.copy_context().run, _run_scope, ctx, commit_message,
+                                    scope_rows, True, goal=goal, scope=scope,
+                                    review_rebuttal=review_rebuttal,
                                     history_snapshot=_history_snapshot,
                                     scope_history=_scope_history, retry_key=retry_key)
                         if scope_rows else None
@@ -775,7 +806,8 @@ def run_parallel_review(
                         _await_scope_reservation(ctx, scope_fut, seats, wave_started)
                     triad_fut = (
                         None if triad_exited
-                        else pool.submit(_dispatch_unified_review, ctx, commit_message, triad_prepared)
+                        else pool.submit(contextvars.copy_context().run, _dispatch_unified_review,
+                                         ctx, commit_message, triad_prepared)
                     )
                     if triad_fut is None:
                         review_err = triad_early

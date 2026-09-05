@@ -60,6 +60,7 @@ def _handle_task_message_injected(evt: Dict[str, Any], ctx: Any) -> None:
 TELEMETRY_EVENT_HANDLERS = {
     "review_density_probe": _handle_typed_telemetry,
     "review_scope_lead_unobserved": _handle_typed_telemetry,
+    "review_wave_admission_unavailable": _handle_typed_telemetry,
     "review_wave_budget_insufficient": _handle_typed_telemetry,
     "review_wave_budget_partial_unknown": _handle_typed_telemetry,
     "advisory_suspect_result": _handle_typed_telemetry,

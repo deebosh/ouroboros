@@ -113,10 +113,12 @@ def _ctx(root, tmp_path):
     )
 
 
-def _run(root, tmp_path, monkeypatch, llm, *, fence: float):
-    """Run the commit gate with the task's usage scope bound (the orchestrator
-    thread) and the substrate's own root fence (its worker threads)."""
-    monkeypatch.setenv("OUROBOROS_PER_TASK_COST_USD", str(fence))
+def _run(root, tmp_path, monkeypatch, llm, *, fence: float, env_fence: float | None = None):
+    """Run the commit gate with the task's usage scope bound on the orchestrator
+    thread (``fence``: the root task's bound limit, the one admission uses) while
+    the environment carries ``env_fence`` (a hot-reloaded setting; the same
+    value unless a test pins the divergence)."""
+    monkeypatch.setenv("OUROBOROS_PER_TASK_COST_USD", str(fence if env_fence is None else env_fence))
     monkeypatch.setattr(review, "LLMClient", lambda: llm)
     monkeypatch.setattr(scope_mod, "LLMClient", lambda: llm)
     ctx = _ctx(root, tmp_path)
@@ -534,3 +536,117 @@ def test_scope_first_hold_observes_only_the_scope_seats_own_reservation(gate, tm
         parallel_review._await_scope_reservation(ctx, SimpleNamespace(done=lambda: True), seats, started)
     events = [e for e in ctx.pending_events if e.get("type") == "review_scope_lead_unobserved"]
     assert len(events) == 1 and events[0]["scope_seat_done"] is True
+
+
+def _seed_settled(root, *, fence: float, cost: float) -> None:
+    """One settled main-loop row under ``fence`` (a ledger history row)."""
+    with ua.usage_scope(ua.UsageScope(drive_root=root, task_id=ROOT, root_task_id=ROOT, root_limit_usd=fence)):
+        row = ua.reserve_attempt(ua.AttemptRequest(model="triad/a", provider="test", source="main"))
+        ua.mark_dispatched(row)
+        ua.settle_attempt(row, {"prompt_tokens": 1, "completion_tokens": 1}, cost_usd=cost, cost_final=True)
+
+
+def test_seats_reserve_against_exactly_the_fence_the_wave_was_admitted_with(gate, tmp_path, monkeypatch):
+    """rc.14 audit (astra MAJOR on G1): admission prefers the caller scope's
+    bound fence, so the seats must reserve against THAT fence — not against a
+    setting hot-reloaded mid-turn that the reviewer threads would re-read from
+    the environment once the executor transitions dropped the usage scope.
+    Bound $50, environment $8, a $4 history row at $8: the $5 wave is admitted
+    against $50 AND every seat's own ``reserve_attempt`` binds $50 — dispatched
+    whole, never a partial paid wave."""
+    _seed_settled(gate, fence=8.0, cost=4.0)
+    llm = LedgerLLM()
+    ctx, (review_err, scope_result, _reason, _adv) = _run(
+        gate, tmp_path, monkeypatch, llm, fence=50.0, env_fence=8.0)
+
+    assert review_err is None, review_err
+    assert scope_result.blocked is False and scope_result.status == "responded"
+    assert sorted(llm.calls) == sorted([SCOPE_MODEL, *TRIAD_MODELS])
+    seats = [row for row in _ledger(gate) if row["state"] == "reserved" and row["source"] != "main"]
+    assert sorted(row["model"] for row in seats) == sorted([SCOPE_MODEL, *TRIAD_MODELS])
+    assert {row["root_limit_usd"] for row in seats} == {50.0}
+    assert not [e for e in ctx.pending_events if e.get("type") == "review_wave_budget_insufficient"]
+    assert not [r for r in ctx._last_triad_raw_results if r.get("status") != "ok"] or all(
+        "BudgetExceeded" not in str(r.get("error") or "") for r in ctx._last_triad_raw_results)
+
+
+def test_bound_fence_that_does_not_fit_refuses_even_when_the_environment_is_roomier(gate, tmp_path, monkeypatch):
+    """The converse: bound $8 (admission's fence), environment $50, a $4 history
+    row: the $5 wave does not fit the bound fence and nothing is dispatched —
+    the roomier setting never buys a seat the admitting fence refused."""
+    _seed_settled(gate, fence=8.0, cost=4.0)
+    llm = LedgerLLM()
+    ctx, (review_err, scope_result, block_reason, _adv) = _run(
+        gate, tmp_path, monkeypatch, llm, fence=8.0, env_fence=50.0)
+
+    assert llm.calls == [] and len(_ledger(gate)) == 3  # the seeded row's reserved/dispatched/settled only
+    assert review_err and "per-task budget fence $8.000000" in review_err
+    assert "remaining=$4.000000, shortfall=$1.000000" in review_err
+    assert block_reason == "review_wave_budget_insufficient"
+    assert scope_result.status == "not_dispatched"
+
+
+def test_scope_first_hold_ignores_a_sibling_tasks_same_named_scope_slot(gate, tmp_path, monkeypatch):
+    """rc.14 audit (fable MINOR 1): two tasks under one root each run their own
+    commit gate with the default ``scope_slot_1``; the sibling's reservation
+    carries the right category, slot and time but ITS task id, and must not
+    release this task's hold — only this task's own scope seat does."""
+    from ouroboros import config as cfg
+
+    monkeypatch.setattr(cfg, "NESTED_SETTLEMENT_MARGIN_SEC", 0.3)
+    seats = [{"surface": "scope_review", "slot_id": "scope_slot_1", "model": SCOPE_MODEL,
+              "prompt_chars": 10, "max_completion_tokens": 10}]
+    never_done = SimpleNamespace(done=lambda: False)
+    base = ua.UsageScope(drive_root=gate, task_id=ROOT, root_task_id=ROOT, root_limit_usd=8.0)
+    sibling_seat = ua.UsageScope(drive_root=gate, task_id="sibling-task", root_task_id=ROOT, root_limit_usd=8.0,
+                                 category="scope_review_review", review_slot_id="scope_slot_1")
+    own_seat = ua.UsageScope(drive_root=gate, task_id=ROOT, root_task_id=ROOT, root_limit_usd=8.0,
+                             category="scope_review_review", review_slot_id="scope_slot_1")
+
+    started = time.monotonic()
+    with ua.usage_scope(sibling_seat):
+        sibling = ua.reserve_attempt(ua.AttemptRequest(model=SCOPE_MODEL, provider="test"))
+    identities = ua.last_root_accounting(ROOT)["reservations"]
+    assert any(r["attempt_id"] == sibling.attempt_id and r["task_id"] == "sibling-task" for r in identities)
+    with ua.usage_scope(base):
+        ctx = _ctx(gate, tmp_path)
+        parallel_review._await_scope_reservation(ctx, never_done, seats, started)
+    assert time.monotonic() - started >= 0.3
+    events = [e for e in ctx.pending_events if e.get("type") == "review_scope_lead_unobserved"]
+    assert len(events) == 1 and events[0]["task_id"] == ROOT
+
+    started = time.monotonic()
+    with ua.usage_scope(own_seat):
+        ua.reserve_attempt(ua.AttemptRequest(model=SCOPE_MODEL, provider="test"))
+    with ua.usage_scope(base):
+        ctx = _ctx(gate, tmp_path)
+        parallel_review._await_scope_reservation(ctx, never_done, seats, started)
+    assert time.monotonic() - started < 0.25 and ctx.pending_events == []
+
+
+def test_admission_that_raises_fails_open_loudly_and_typed(gate, tmp_path, monkeypatch, caplog):
+    """rc.14 audit (fable MINOR 2): an exception inside the money admission keeps
+    the owner's fail-open (the wave dispatches, unadmitted and without the
+    scope-first hold) but is a warning plus ONE typed
+    ``review_wave_admission_unavailable`` event naming the error — never a
+    debug line indistinguishable from an admitted wave."""
+    import logging
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("no inspection tool schemas are projectable")
+
+    monkeypatch.setattr(review_admission, "commit_gate_paid_seats", _boom)
+    llm = LedgerLLM()
+    with caplog.at_level(logging.WARNING, logger="ouroboros.tools.parallel_review"):
+        ctx, (review_err, scope_result, _reason, _adv) = _run(gate, tmp_path, monkeypatch, llm, fence=10.0)
+
+    assert review_err is None and scope_result.status == "responded"
+    assert sorted(llm.calls) == sorted([SCOPE_MODEL, *TRIAD_MODELS])
+    events = [e for e in ctx.pending_events if e.get("type") == "review_wave_admission_unavailable"]
+    assert len(events) == 1
+    assert events[0]["surface"] == "commit_gate" and events[0]["task_id"] == ROOT
+    assert events[0]["error"] == "RuntimeError: no inspection tool schemas are projectable"
+    assert not [e for e in ctx.pending_events if e.get("type") in {
+        "review_wave_budget_insufficient", "review_scope_lead_unobserved"}]
+    assert any("commit-gate wave admission unavailable (RuntimeError" in r.getMessage()
+               and r.levelno == logging.WARNING for r in caplog.records)

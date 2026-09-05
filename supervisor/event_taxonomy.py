@@ -165,6 +165,10 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "review_scope_lead_unobserved": _telemetry(
         "ouroboros/tools/parallel_review.py",
         note="the commit gate's scope-first hold ended without observing the scope seat's own reservation"),
+    "review_wave_admission_unavailable": _telemetry(
+        "ouroboros/tools/parallel_review.py",
+        note="the commit gate's money admission raised: the wave dispatched unadmitted (fail-open) "
+             "and without the scope-first hold"),
     "review_wave_budget_insufficient": _telemetry(
         "ouroboros/tools/review_helpers.py"),
     "review_wave_budget_partial_unknown": _telemetry(

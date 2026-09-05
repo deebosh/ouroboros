@@ -1530,8 +1530,10 @@ class TestGitWiring:
         source = inspect.getsource(git._run_parallel_review)
         prepare_triad = source.find("_prepare_unified_review(")
         prepare_scope = source.find("_prepare_scope_rows(")
-        submit_triad = source.find("pool.submit(_dispatch_unified_review")
-        submit_scope = source.find("pool.submit(_run_scope")
+        # Each submission runs under a copy of the admitting context (one fence
+        # for admission and reservation); the anchors name the submitted seam.
+        submit_triad = source.find("copy_context().run, _dispatch_unified_review")
+        submit_scope = source.find("copy_context().run, _run_scope")
         result_triad = source.find("triad_fut.result()")
         result_scope = source.find("scope_fut.result()")
         for position in (prepare_triad, prepare_scope, submit_triad, submit_scope,

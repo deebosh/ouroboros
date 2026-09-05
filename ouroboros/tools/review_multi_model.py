@@ -7,6 +7,7 @@ ouroboros/tools/review_response.py); review.py re-exports every name."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -143,7 +144,11 @@ def _handle_multi_model_review(ctx: ToolContext, content: str = "",
             asyncio.get_running_loop()
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                # copy_context (the plan_review precedent): the caller's usage
+                # scope — the fence the wave was admitted with — rides into
+                # the loop thread instead of a bare pool thread's empty context.
                 result = pool.submit(
+                    contextvars.copy_context().run,
                     asyncio.run,
                     _multi_model_review_async(content, prompt, models, ctx, stable_prefix_len,
                                               routes, session_task, session_root, row_plan,
@@ -223,8 +228,11 @@ async def _query_model(
                 subagent_id=str(subagent_id or ""),
             )
             loop = asyncio.get_running_loop()
+            # run_in_executor copies no context: carry the usage scope (and its
+            # bound fence) into the executor thread the substrate reserves on.
             run_result = await loop.run_in_executor(
                 None,
+                contextvars.copy_context().run,
                 lambda: run_review_request(
                     request,
                     slots=[slot],
