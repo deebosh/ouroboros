@@ -619,3 +619,53 @@ def test_stop_now_during_the_inflight_synthesis_is_accepted_and_stops_the_remain
     assert checkpoint["post_task_stop_reason"] == (
         "owner_stopped:skipped=scratchpad_consolidation,summary,reflection,promotion"), checkpoint
     assert not active_intent(tmp_path, TURN_ID)
+
+
+def test_cascade_stop_now_during_the_inflight_synthesis_keeps_the_intent_open_and_stops_the_remaining_paid_stages(tmp_path, monkeypatch):
+    """The UI's Stop sends ``cascade:true`` (task_control_menu.js), so the
+    audit-point-4 state must hold over the CASCADE path too: the turn's answer
+    landed (stored ``completed``, no queue row, no busy agent) and only its paid
+    synthesis is running. The cascade's PHYSICAL postcondition must see the
+    in-flight synthesis as live — the answer is the single lane's typed 503
+    "still live", the cascade-scope immediate intent stays OPEN for the
+    pipeline's per-stage gate, and the remaining paid stages are skipped.
+    (rc.15 review MAJOR 1: the postcondition re-judged custody's refusal
+    against the stored ``completed`` alone, settled the intent and answered
+    ok:true while the next stage kept billing.) The next cascade stop after
+    the checkpoint settled is the already-down replay: it drains the intent."""
+    from ouroboros.cancel_intents import INTENT_REQUESTED, SCOPE_CASCADE, active_intent
+
+    _isolate_queue(monkeypatch, tmp_path)
+    agent = _live_chat_agent(monkeypatch)
+    agent._busy = False                                    # the turn's caller returned
+    agent._accepting_owner_messages = False
+    write_task_result(tmp_path, TURN_ID, "completed", chat_id=0, description="modify yourself")
+    _write_snapshot(tmp_path, running_ids=())
+    synthesis = _inflight_synthesis(monkeypatch, tmp_path)
+    body = {"cascade": True, "stop_policy": "immediate"}
+    try:
+        with _client(tmp_path) as client:
+            first = client.post(f"/api/tasks/{TURN_ID}/cancel", json=body)
+            assert first.status_code == 503, first.text
+            assert "still live" in first.json()["error"], first.text
+            intent = active_intent(tmp_path, TURN_ID) or {}
+            assert intent.get("state") == INTENT_REQUESTED, intent
+            assert intent.get("scope") == SCOPE_CASCADE, intent
+            assert "post-task synthesis" in str(intent.get("last_error") or ""), intent
+            assert _mailbox_kinds(tmp_path) == []          # no control for a loop that is gone
+            assert synthesis.calls == ["chat_consolidation"], synthesis.calls
+            synthesis.release.set()
+            synthesis.thread.join(30)
+            assert not synthesis.thread.is_alive()
+            assert synthesis.calls == ["chat_consolidation"], synthesis.calls
+            second = client.post(f"/api/tasks/{TURN_ID}/cancel", json=body)
+    finally:
+        synthesis.release.set()
+    assert second.status_code == 200 and second.json().get("cascade") is True, second.text
+    stored = load_task_result(tmp_path, TURN_ID)
+    assert stored["status"] == "completed"
+    checkpoint = stored["root_phase_checkpoint"]
+    assert checkpoint["post_task_synthesis"] == "degraded", checkpoint
+    assert checkpoint["post_task_stop_reason"] == (
+        "owner_stopped:skipped=scratchpad_consolidation,summary,reflection,promotion"), checkpoint
+    assert not active_intent(tmp_path, TURN_ID)

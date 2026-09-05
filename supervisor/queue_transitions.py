@@ -27,6 +27,7 @@ import pathlib
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
 from ouroboros.utils import utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -625,10 +626,11 @@ def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False) -> bool:
     """Cheap liveness pre-check for the HTTP cascade-cancel path (v6.82).
 
     True when the task itself is queued/running, when it still has live
-    descendants in the queue, or when it holds an ACTIVE durable cancel intent
-    (or the legacy ``cancel_requested`` status latch of pre-redesign files) —
-    the intent's settle still has honest work to do. Everything else is
-    inactive and must keep today's 404 contract.
+    descendants in the queue, when THIS process still runs its paid post-task
+    synthesis (the direct-chat turn's in-flight key), or when it holds an
+    ACTIVE durable cancel intent (or the legacy ``cancel_requested`` status
+    latch of pre-redesign files) — the intent's settle still has honest work
+    to do. Everything else is inactive and must keep today's 404 contract.
 
     ``ignore_intents=True`` is the PHYSICAL variant for the cascade
     postcondition (GR2-1e): the root's own cascade intent now survives until
@@ -659,6 +661,14 @@ def task_subtree_is_live(task_id: str, *, ignore_intents: bool = False) -> bool:
     if self_running and not _settled_status(q.DRIVE_ROOT, task_id):
         return True
     if any(tid and not _settled_status(q.DRIVE_ROOT, tid) for tid in descendants):
+        return True
+    # The direct-chat turn's paid post-task synthesis is PHYSICAL liveness with
+    # no queue row at all (GR6-1): the row settled and the turn's loop returned
+    # while the in-process thread still bills. Custody refuses it as "still
+    # live"; the cascade postcondition must see the same fact, or it re-judges
+    # that refusal against the stored ``completed`` alone, settles the root's
+    # cascade intent and the per-stage gate loses the Stop it was waiting on.
+    if post_task_synthesis_in_flight(q.DRIVE_ROOT, task_id):
         return True
     if ignore_intents:
         return False
@@ -881,8 +891,6 @@ def task_has_live_ownership(task_id: str) -> bool:
         # bills, so the pipeline's in-flight key is live physical ownership
         # too — the stop ingress must not answer 404 while the spend
         # continues, and custody keeps the intent open for the stage gate.
-        from ouroboros.post_task_checkpoint import post_task_synthesis_in_flight
-
         if post_task_synthesis_in_flight(q.DRIVE_ROOT, task_id):
             return True
         try:
