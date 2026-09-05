@@ -1296,9 +1296,10 @@ refuses below `--min-credit-usd`. `--total-budget` (default 100) is the RUN-WIDE
 cap: a ledger sums the lanes' durable `llm_usage` costs, reserves
 `max(0.01, --per-task-usd × (root tasks + 1 with --self-mod))` per attempt (SM1 and SW1 one root — scouts spend
 under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two; with `--self-mod` the
-evolution cycle is one more root: the rc.14 paid run showed it starting at t=0 next to the
-scenario task and sharing the lane fence, SM1_a1 task $3.84 + evolution $15.25 of $20 — a
-fact of root count, which the earlier 2× factor covered by accident), admits an
+evolution cycle is one more root: the rc.14 paid run showed up to TWO cycles per lane, one
+starting at t=0 next to the scenario task and one post-task, all under the lane fence — SM1_a1
+task $3.84 + cycles $12.40 + $2.84 of $20; the lane's TOTAL_BUDGET is the true fence and the
++1 root is its reservation), admits an
 attempt only while `spent + reserved(in flight) + reservation ≤ cap` — an attempt that
 cannot fit YET (blocked only by reservations in flight) waits for a settle and asks again,
 one that can NEVER fit (`spent + reservation > cap`) is refused and recorded `not_run` with
@@ -1306,24 +1307,32 @@ one that can NEVER fit (`spent + reservation > cap`) is refused and recorded `no
 is asked on its own; the manifest carries `refusals` and `first_refused`), and writes each lane's TOTAL_BUDGET as its OWN reservation — an
 immutable ceiling disjoint from every other lane's, so the settled spend plus the ceilings
 in flight never exceed the cap; the manifest records the cap, the spend, the reservation rule
-and the stop reason. The in-task halving that 2× factor stood in for (the product's ceiling is
-min(`cost_hard_stop_pct` of the GLOBAL remaining at task start, per-task cap − planning margin),
-and in a lane the global remaining IS the lane budget: rc.14 SM1_a3 `budget_exhausted` at $10.21
-of $20) is switched off on the roots the stand submits itself: `LaneContext.submit` projects
-`metadata.budget_profile.cost_hard_stop_pct=100` (`scenarios.STAND_BUDGET_PROFILE`, the seam
-ProgramBench uses; `build_task_contract` normalizes it into `task_contract.budget_profile`).
-Two roots keep the product default of 50%, stated here because no seam exists: the `--self-mod`
-evolution root (its task metadata carries only the transaction) and SW1's root on the UI path
-(`ui_probe.send_chat` is a WS chat frame without metadata — acceptable: SW1 spends ~$8 against
-a ceiling of ≥ $25 at per-task $50). Before any lane spends, `budget_preflight` (recorded as
+and the stop reason. Every stand root runs under the PRODUCT'S default in-task ceiling —
+min(`cost_hard_stop_pct` 50% of the GLOBAL remaining at task start, per-task cap − planning
+margin), where in a lane the global remaining IS the lane budget (rc.14, under a 1× lane fence:
+SM1_a3 `budget_exhausted` at $10.21 of $20); no bench profile is injected, because with a
+reservation ≥ 2 × per-task the per-task axis already binds at task start and a projected
+profile would change the pacing path under test. That default therefore also covers the two
+roots that have no metadata seam anyway: the `--self-mod` evolution root (its task metadata
+carries only the transaction) and SW1's root on the UI path (`ui_probe.send_chat` is a WS chat
+frame without metadata). Before any lane spends, `budget_preflight` (recorded as
 `extra.budget_preflight`, the same typed shape as the credit preflight) prints one row per
-scenario and the worst case Σ reservation × attempts against the cap, and refuses fail-closed
+scenario, the worst case Σ reservation × attempts against the cap and the per-ROUND worst case
+(the `--lanes` largest reservations of one attempt per scenario in flight at once; above the
+cap the round's last lane waits on a settle, it is not refused), and refuses fail-closed
 (`{stage: budget_preflight, reason: reservation_unreachable}`, exit 3) a scenario whose
 reservation exceeds the cap or equals it with `--attempts ≥ 2` — its second attempt can never be
 admitted after any spend (the rc.15 plan, cap 200 / per-task 50 under the 2× rule, reserved the
 whole cap for SK1 and would have burned SM1/SW1 first); there is no override flag, the operator
-changes the flags. Jobs are dispatched largest reservation first (stable among equals), so the
-attempt that only fits next to little spend asks before the smaller ones fill the ledger.
+changes the flags. Jobs are dispatched round-robin by attempt index (a1 of every scenario, then
+a2, then a3), largest reservation first within a round (stable among equals): the verdict is
+pass-of PER scenario, so the order protects the MINIMUM admitted attempts per scenario rather
+than the sum — at cap 300 / per-task 50 / `--self-mod` with pessimistic spends (SM1 45, SW1 8,
+SK1 30) largest-first leaves SW1 with at most one admitted attempt (below pass-of 2) while
+round-robin refuses SK1_a3 and at most one SW1 attempt (every scenario keeps two). Outcomes
+among EQUAL waiters depend on the wake order of the ledger's `notify_all` (not FIFO), so any
+feasibility number is a range at the margin (that run: 7/9 at $211 or 8/9 at $219), and
+`requested_task_ids` keep the argument order (the manifest's identity pin).
 `--per-task-usd` (default 8; an attempt reserves it × its root tasks, +1 with `--self-mod`) is the
 runtime's per-root-task fence: with the tree's default review panel a blocking triad that includes
 claude-opus-5 plus the scope review exceeded $8 on SM1 in the first paid run

@@ -16,7 +16,7 @@ DEFAULTS (D-09) with the budget knobs as settings keys (never env), and the lane
 ``--total-budget`` is a RUN-WIDE cap kept by ``RunBudget`` (reservation ``--per-task-usd x (root
 tasks + 1 with --self-mod)``, wait-then-refuse admission PER attempt, each lane's TOTAL_BUDGET = its
 own reservation); ``budget_preflight`` prints the reservation table and refuses, before any spend, a
-run whose attempts can never all be admitted; jobs are dispatched largest reservation first.
+run whose attempts can never all be admitted; jobs are dispatched round-robin by attempt index.
 The run-root template is redacted (the key value lives only in each lane's 0600 settings file
 and is disclosed by fingerprint). The manifest names the model from the APPLIED settings file,
 not argv. Every lane leaves ``lanes/<id>_a<n>/result.json`` (checks, digests, grants by
@@ -94,12 +94,10 @@ PROCFS_AVAILABLE = os.path.isdir("/proc")   # the orphan scan reads /proc enviro
 # A lane's TOTAL_BUDGET must stay POSITIVE: the runtime reads a non-positive value as "no finite
 # global budget" (``settings_setup_contract.resolve_total_budget_usd``), the opposite of a cap.
 LANE_BUDGET_FLOOR_USD = 0.01
-# The reservation counts ROOTS under the lane fence (``RunBudget``); the in-task halving the earlier 2x
-# factor stood in for is switched off on the stand's own roots by ``scenarios.STAND_BUDGET_PROFILE``.
 RESERVATION_RULE = (f"max({LANE_BUDGET_FLOOR_USD:g}, per_task_usd x (root_tasks + 1 if --self-mod else root_tasks)) — the "
-                    "runtime fences each root task tree at OUROBOROS_PER_TASK_COST_USD, --self-mod starts the evolution cycle "
-                    "as another root under the same lane fence at t=0, and the stand's own roots carry cost_hard_stop_pct=100 "
-                    "(no in-task halving). The lane's TOTAL_BUDGET is that reservation, so settled spend + in-flight ceilings <= cap")
+                    "runtime fences each root task tree at OUROBOROS_PER_TASK_COST_USD and --self-mod adds one root for the "
+                    "evolution cycle (rc.14: up to two cycles per lane, one at t=0 and one post-task, under the same lane fence). "
+                    "The lane's TOTAL_BUDGET is that reservation — the true fence — so settled spend + in-flight ceilings <= cap")
 
 
 def _log(msg: str) -> None:
@@ -265,9 +263,9 @@ class RunBudget:
     Reservation rule, per attempt: ``per_task_usd x (root_tasks + int(self_mod))`` — the runtime
     fences each ROOT task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their
     root's ceiling, so SW1 (one root, two scouts) reserves for one root, SK1 (author + dispatch)
-    for two, and ``--self-mod`` adds the evolution cycle: rc.14 showed it starting at t=0 next to
-    the scenario task and sharing the lane fence (SM1_a1: task $3.84 + evolution $15.25 of $20), a
-    fact of root COUNT that the earlier 2x factor was covering by accident.
+    for two, and ``--self-mod`` adds one root for the evolution cycle: rc.14 showed up to TWO cycles
+    per lane, one at t=0 next to the scenario task and one post-task, all under the lane fence
+    (SM1_a1: task $3.84 + cycles $12.40 + $2.84 of $20) — the lane's TOTAL_BUDGET is the true fence.
     Admission asks two questions, PER attempt: ``spent + reservation > cap`` — it can NEVER fit,
     refused and recorded ``not_run`` (a later, smaller attempt is asked on its own; nothing halts
     the run); otherwise ``spent + reserved(in flight) + reservation > cap`` — it cannot fit YET, so
@@ -362,12 +360,13 @@ class RunBudget:
                     "attempts_not_run": list(self.not_run)}
 
 
-def budget_preflight(budget: RunBudget, scenario_ids: list[str], attempts: int) -> dict:
-    """The reservation arithmetic BEFORE any lane spends, in ``credit_preflight``'s typed shape: a row
-    per scenario, the worst case ``sum(reservation x attempts)`` against the cap (every lane may spend
-    its whole ceiling) and ``unreachable`` — a reservation above the cap, or equal to it with attempts
-    >= 2 (the second attempt can never be admitted after any spend). No override flag: the operator
-    changes the flags (the rc.15 plan would have burned SM1/SW1 and refused every SK1 by construction)."""
+def budget_preflight(budget: RunBudget, scenario_ids: list[str], attempts: int, lanes: int) -> dict:
+    """The reservation arithmetic BEFORE any lane spends, in ``credit_preflight``'s typed shape: a row per
+    scenario, the worst case ``sum(reservation x attempts)`` against the cap, the per-ROUND worst case (the
+    ``lanes`` largest reservations of one attempt per scenario at once; above the cap the round's last lane
+    WAITS on a settle — no refusal) and ``unreachable``: a reservation above the cap, or equal to it with
+    attempts >= 2 (the second can never be admitted after any spend). No override flag. Among EQUAL
+    waiters the wake order is the OS's, so a feasibility number is a range at the margin."""
     rows = []
     for sid in scenario_ids:
         need = budget.reservation(SCENARIOS[sid].root_tasks)
@@ -376,7 +375,8 @@ def budget_preflight(budget: RunBudget, scenario_ids: list[str], attempts: int) 
                      "unreachable": need > budget.cap or (attempts >= 2 and need >= budget.cap)})
     return {"cap_usd": budget.cap, "per_task_usd": budget.per_task, "self_mod": budget.self_mod,
             "reservation_rule": RESERVATION_RULE, "scenarios": rows,
-            "worst_case_usd": round(sum(r["worst_case_usd"] for r in rows), 4),
+            "worst_case_usd": round(sum(r["worst_case_usd"] for r in rows), 4), "lanes": int(lanes),
+            "round_worst_case_usd": round(sum(sorted((r["reservation_usd"] for r in rows), reverse=True)[:int(lanes)]), 4),
             "unreachable": [r["scenario"] for r in rows if r["unreachable"]]}
 
 
@@ -845,8 +845,9 @@ def main(argv: list[str] | None = None) -> int:
     seed = out / "seed"
     budget = RunBudget(args.total_budget, args.per_task_usd, self_mod=args.self_mod)
     requested = [(sid, n) for sid in args.scenario_ids for n in range(1, args.attempts + 1)]
-    # Largest reservation first (stable): it only fits next to little spend (rc.15 audit: SK1 last = never).
-    jobs = sorted(requested, key=lambda job: -budget.reservation(SCENARIOS[job[0]].root_tasks))
+    # Round-robin by attempt (a1 of every scenario, then a2, ...), largest reservation first within a round: the verdict
+    # is pass-of PER scenario, so the MINIMUM admitted per scenario is what the order protects (largest-first: SW1 <= 1/3).
+    jobs = sorted(requested, key=lambda job: (job[1], -budget.reservation(SCENARIOS[job[0]].root_tasks)))
     manifest_path = out / "run_manifest.json"
     # The SOURCE is attested for provenance only (require_clean=False discloses its state): the
     # tree under test is the detached seed materialized from a COMMITTED sha inside the seam,
@@ -866,13 +867,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     _log(f"run root: {out}")
     with finalize_run_manifest(manifest_path, manifest) as final:
-        preflight = budget_preflight(budget, args.scenario_ids, args.attempts)
+        preflight = budget_preflight(budget, args.scenario_ids, args.attempts, args.lanes)
         final["budget_preflight"] = preflight
         for r in preflight["scenarios"]:
             _log(f"reservation {r['scenario']}: ${r['reservation_usd']:.2f} x {r['attempts']} ({r['root_tasks']} root"
                  f"{' + evolution' if preflight['self_mod'] else ''})" + (" UNREACHABLE" if r["unreachable"] else ""))
-        _log(f"worst case sum of reservations ${preflight['worst_case_usd']:.2f} vs cap ${budget.cap:.2f}; "
-             f"dispatch order: {', '.join(f'{sid}_a{n}' for sid, n in jobs)}")
+        _log(f"worst case sum of reservations ${preflight['worst_case_usd']:.2f} vs cap ${budget.cap:.2f}; per round ({args.lanes} "
+             f"lanes) ${preflight['round_worst_case_usd']:.2f}; dispatch order: {', '.join(f'{sid}_a{n}' for sid, n in jobs)}")
         if preflight["unreachable"]:
             final.update({"outcome": "refused", "exit_code": 3,
                           "refusal": {"stage": "budget_preflight", "reason": "reservation_unreachable", **preflight}})
