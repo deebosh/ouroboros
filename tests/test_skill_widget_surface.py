@@ -447,7 +447,7 @@ def test_save_enabled_best_effort_disclosure_contract_is_documented():
 def test_api_skill_toggle_records_the_owner_ui_actor(tmp_path, monkeypatch):
     """The HTTP owner toggle labels itself, so the incident class is reconstructible."""
     from ouroboros.skill_loader import SkillReviewState, compute_content_hash, save_review_state
-    from tests.test_extensions_api import _make_client, _write_ext
+    from tests.test_extensions_api import _make_client, _stop_patches, _write_ext
 
     skills_root = tmp_path / "skills"
     skill_dir = _write_ext(
@@ -471,6 +471,7 @@ def test_api_skill_toggle_records_the_owner_ui_actor(tmp_path, monkeypatch):
         assert resp.status_code == 200, resp.text
     finally:
         client.close()
+        _stop_patches(_patches)   # the started patches (the password resolver among them) must not outlive the test
 
     rows = [
         json.loads(line)

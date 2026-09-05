@@ -535,6 +535,35 @@ def pytest_runtest_teardown(item, nextitem):  # noqa: ARG001
     yield  # fixture finalizers and teardown run here
     teardown_loop.close()
     asyncio.set_event_loop(None)
+    _fail_if_the_password_resolver_leaked(item)
+
+
+_PRISTINE_PASSWORD_RESOLVER = None
+
+
+def _fail_if_the_password_resolver_leaked(item):
+    """A started-and-never-stopped ``patch("ouroboros.server_auth.get_configured_network_password")``
+    on a shared xdist worker made the password gate answer '' for every later module (the rc.11
+    macos-latest red, the rc.12 ubuntu/macos red — the victim was named, never the leaker). After
+    EVERY fixture of the item is torn down (monkeypatch included) the module attribute must be the
+    genuine function again; otherwise the test that leaked it is named here and the attribute is
+    restored so no victim fails by worker ordering."""
+    import os
+
+    import ouroboros.server_auth as server_auth
+
+    global _PRISTINE_PASSWORD_RESOLVER
+    current = server_auth.__dict__.get("get_configured_network_password")
+    genuine = (getattr(current, "__module__", None) == "ouroboros.server_auth"
+               and getattr(current, "__name__", "") == "get_configured_network_password")
+    if genuine:
+        _PRISTINE_PASSWORD_RESOLVER = _PRISTINE_PASSWORD_RESOLVER or current
+        return
+    server_auth.get_configured_network_password = _PRISTINE_PASSWORD_RESOLVER or (
+        lambda: server_auth.resolve_network_password(
+            os.environ.get(server_auth.NETWORK_PASSWORD_KEY, ""), server_auth.load_settings))
+    pytest.fail(f"{item.nodeid} left ouroboros.server_auth.get_configured_network_password patched "
+                f"({type(current).__name__}); a started patch was never stopped", pytrace=False)
 
 
 # Pre-v5.15 conftest exported four fixtures (``make_git_repo``, ``tool_context``,
@@ -543,3 +572,5 @@ def pytest_runtest_teardown(item, nextitem):  # noqa: ARG001
 # contexts under ``tmp_path`` because the per-test layouts diverged enough that a
 # shared fixture was always wrong (different branch names, different ``ToolContext``
 # shapes, ``MagicMock`` vs real, etc.).
+
+

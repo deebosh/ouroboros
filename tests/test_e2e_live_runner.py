@@ -686,7 +686,10 @@ def test_run_root_template_is_redacted_and_the_key_reaches_only_the_lanes(tmp_pa
                                                       "--attempts", "2", "--pass-of", "2", "--lanes", "2"])
     assert manifest["model_slots"]["OUROBOROS_MODEL"] == "argv/model-y"
     template_path = out / "effective_settings.json"
-    assert (template_path.stat().st_mode & 0o777) == 0o600
+    if os.name == "posix":
+        assert (template_path.stat().st_mode & 0o777) == 0o600
+    else:   # Windows: chmod only toggles read-only; the mode reads 0o666 — the redaction is the guarantee there
+        assert template_path.is_file()
     template = json.loads(template_path.read_text(encoding="utf-8"))
     assert "OPENROUTER_API_KEY" not in template and template["OUROBOROS_MODEL"] == "argv/model-y"
     for artifact in (out / "run_manifest.json", template_path, *out.glob("lanes/*/result.json")):
