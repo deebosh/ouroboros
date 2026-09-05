@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import ast
 import logging
+import os
 import pathlib
 import shutil
 import subprocess
+import time
 from subprocess import Popen
 import json
 from typing import Any, Dict, List, Optional, Tuple
@@ -22,6 +24,7 @@ from ouroboros.tool_access import (
     build_resolved_resource_binding,
     load_bound_skill,
 )
+from ouroboros.tools.process_facts import publish_process_facts, signal_name_for_returncode
 from ouroboros.tools.shell import _active_subprocesses, _kill_process_group, _subprocess_lock
 from ouroboros.platform_layer import (
     merge_hidden_kwargs,
@@ -43,6 +46,17 @@ log = logging.getLogger(__name__)
 _PREFLIGHT_TIMEOUT_SEC = 30
 _PREFLIGHT_MAX_OUTPUT_BYTES = 16 * 1024
 _PREFLIGHT_HARD_FILE_LIMIT = 60  # independent preflight headroom (skill_review now uses a pack-level token budget)
+# The scrubbed validator env keeps the Windows process-base variables a child
+# needs to START: without SystemRoot a Windows process cannot initialise the
+# system services it loads (node dies in libuv's Winsock startup before it
+# reads the script), so `node --check` on a VALID file exited non-zero and
+# preflight reported a syntax error that did not exist (windows-latest,
+# 7.0.0-rc.9). TEMP/TMP back the msys `bash -n` /tmp. Forwarded only when set,
+# so a POSIX child env is byte-identical to before; the same base-env class as
+# extension_companion._COMPANION_BASE_ENV_KEYS (SYSTEMROOT/WINDIR/TEMP/TMP) and
+# CPython's own test.support.script_helper ("Windows requires at least the
+# SYSTEMROOT environment variable to start").
+_WINDOWS_BASE_ENV_KEYS: Tuple[str, ...] = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
 
 # Extension -> argv template + runtime; {path} is substituted into argv only.
 _VALIDATORS: Dict[str, Tuple[List[str], str]] = {
@@ -93,23 +107,45 @@ def _resolve_runtime(runtime: str) -> Tuple[Optional[str], str]:
 
 
 def _run_check(cmd: List[str], cwd: pathlib.Path) -> Dict[str, Any]:
-    """Run validator argv through panic-tracked subprocess machinery; never raises."""
+    """Run validator argv through panic-tracked subprocess machinery; never raises.
+
+    Returns the validator's own facts, never a synthesized stand-in: a
+    validator the host killed on the preflight deadline, and one that never
+    reached exec, both report ``returncode=None`` beside the typed reason
+    (``timeout`` / ``pre_exec_failure``). Earlier revisions answered ``-9`` and
+    ``-1`` there, which read downstream as real POSIX signal deaths — including
+    on Windows, where the host kill produces neither. The abnormal outcomes are
+    also published on the typed process-facts channel so the preflight CALL's
+    result_meta, tools.jsonl row and UI card carry them; a clean validator is
+    described by its finding and leaves the channel alone."""
+    env: Dict[str, str] = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": "C.UTF-8",
+    }
+    env.update({key: os.environ[key] for key in _WINDOWS_BASE_ENV_KEYS if os.environ.get(key)})
     popen_kwargs: Dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "stdin": subprocess.DEVNULL,
         "cwd": str(cwd),
-        "env": {
-            "PATH": str(__import__("os").environ.get("PATH", "")),
-            "HOME": str(__import__("os").environ.get("HOME", "")),
-            "LANG": "C.UTF-8",
-        },
+        "env": env,
     }
     popen_kwargs.update(subprocess_new_group_kwargs())
+    _check_started_ts = time.monotonic()
     try:
         proc = Popen(cmd, **merge_hidden_kwargs(popen_kwargs))  # noqa: S603 — argv array
     except FileNotFoundError as exc:
-        return {"returncode": -1, "stdout": "", "stderr": f"runtime not found: {exc}", "timeout": False}
+        publish_process_facts(
+            started_ts=_check_started_ts, pre_exec_failure="FileNotFoundError",
+        )
+        return {
+            "returncode": None,
+            "stdout": "",
+            "stderr": f"runtime not found: {exc}",
+            "timeout": False,
+            "pre_exec_failure": "FileNotFoundError",
+        }
     with _subprocess_lock:
         _active_subprocesses.add(proc)
     try:
@@ -124,17 +160,27 @@ def _run_check(cmd: List[str], cwd: pathlib.Path) -> Dict[str, Any]:
                 stdout, stderr = proc.communicate(timeout=2)
             except Exception:
                 stdout, stderr = b"", b""
+            publish_process_facts(
+                started_ts=_check_started_ts, timed_out=True, killed_by_host=True,
+            )
             return {
-                "returncode": -9,
+                "returncode": None,
                 "stdout": stdout.decode("utf-8", errors="replace")[:_PREFLIGHT_MAX_OUTPUT_BYTES],
                 "stderr": stderr.decode("utf-8", errors="replace")[:_PREFLIGHT_MAX_OUTPUT_BYTES],
                 "timeout": True,
+                "killed_by_host": True,
             }
     finally:
         with _subprocess_lock:
             _active_subprocesses.discard(proc)
+    returncode = int(proc.returncode or 0)
+    if returncode < 0:
+        # A validator killed by something OTHER than our deadline (the macOS
+        # code-signing SIGKILL this skip path exists for) is a real signal
+        # death: publish it so the call carries the exit code and signal name.
+        publish_process_facts(returncode=returncode, started_ts=_check_started_ts)
     return {
-        "returncode": int(proc.returncode or 0),
+        "returncode": returncode,
         "stdout": (stdout or b"").decode("utf-8", errors="replace")[:_PREFLIGHT_MAX_OUTPUT_BYTES],
         "stderr": (stderr or b"").decode("utf-8", errors="replace")[:_PREFLIGHT_MAX_OUTPUT_BYTES],
         "timeout": False,
@@ -817,29 +863,43 @@ def _handle_skill_preflight(
         result = _run_check(cmd, cwd=skill_dir)
         rc = result["returncode"]
         timed_out = bool(result["timeout"])
-        if timed_out or (isinstance(rc, int) and rc < 0):
+        pre_exec = str(result.get("pre_exec_failure") or "")
+        if timed_out or pre_exec or (isinstance(rc, int) and rc < 0):
             # The validator process itself failed to run to completion — e.g. a
             # Homebrew `node` killed by macOS code-signing enforcement
-            # (SIGKILL), or a timeout. This is infrastructure, not a syntax
+            # (SIGKILL), a preflight-deadline kill, or a runtime that vanished
+            # between resolution and exec. This is infrastructure, not a syntax
             # error: only a clean non-zero exit (rc > 0) means bad syntax.
             # Skip so a working skill is not falsely blocked; tri-model review
             # remains the authoritative gate.
-            file_findings.append({
+            if timed_out:
+                skip_reason, detail = "validator_timeout", "timed out"
+            elif pre_exec:
+                skip_reason, detail = "validator_not_started", f"never started: {pre_exec}"
+            else:
+                # The signal NAME comes from the one host signal table, and is
+                # empty on a platform with no such signal — the disclosed
+                # residual, never a fabricated POSIX name.
+                signal_name = signal_name_for_returncode(rc)
+                skip_reason = "validator_killed"
+                detail = f"process killed, {signal_name or f'exit {rc}'}"
+            finding = {
                 "path": rel_path,
                 "runtime": runtime,
                 "ok": True,
                 "skipped": True,
-                "skip_reason": "validator_timeout" if timed_out else "validator_killed",
-                "detail": (
-                    f"{runtime} syntax not verified ("
-                    + ("timed out" if timed_out else f"process killed, signal {-rc}")
-                    + "); relying on tri-model review"
-                ),
+                "skip_reason": skip_reason,
+                "detail": f"{runtime} syntax not verified ({detail}); relying on tri-model review",
                 "returncode": rc,
                 "timeout": timed_out,
                 "stderr": result["stderr"][:2000],
                 **grammar,
-            })
+            }
+            if pre_exec:
+                finding["pre_exec_failure"] = pre_exec
+            if result.get("killed_by_host"):
+                finding["killed_by_host"] = True
+            file_findings.append(finding)
             continue
         ok = rc == 0
         file_findings.append({

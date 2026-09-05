@@ -1253,7 +1253,7 @@ def test_omitted_ledger_stub_keeps_the_real_summary_across_artifact_finalization
     """
     from hashlib import sha256
 
-    from tests.test_headless_cli import _init_repo_with_file
+    from tests._headless_cli_shared import _init_repo_with_file
 
     from ouroboros import headless
     from ouroboros.task_results import STATUS_COMPLETED, load_task_result, write_task_result

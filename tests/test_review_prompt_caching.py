@@ -231,7 +231,7 @@ def _send_direct_anthropic(monkeypatch, messages, tools):
 
 def _main_loop_messages(system_ttl: dict) -> list:
     """The main loop's real shape: a context_fit system prefix plus a transcript sealed by
-    ``loop.seal_task_transcript``. Sizes are pinned by explicit seal arguments, never by
+    ``context_fit.seal_task_transcript``. Sizes are pinned by explicit seal arguments, never by
     whatever this checkout's defaults or prompts happen to be."""
     from ouroboros.loop import seal_task_transcript
 
@@ -510,13 +510,16 @@ def test_global_ttl_docstrings_name_every_consumer():
 
     repo = pathlib.Path(__file__).resolve().parents[1]
     call = re.compile(r"resolve_prompt_cache_ttl\(\)")
+    # The definition site is not a consumer: `settings_scales.py` owns the setting's
+    # closed scale and `config.py` re-exports it as the settings import surface.
+    definition_sites = {"config.py", "settings_scales.py"}
     consumers = sorted(
         p.relative_to(repo).as_posix()
         for p in (repo / "ouroboros").rglob("*.py")
-        if p.name != "config.py" and call.search(p.read_text(encoding="utf-8"))
+        if p.name not in definition_sites and call.search(p.read_text(encoding="utf-8"))
     )
     assert consumers == [
-        "ouroboros/llm.py",
+        "ouroboros/llm_attempt.py",
         "ouroboros/tools/review_helpers.py",
         "ouroboros/usage_accounting.py",
     ], consumers
@@ -1375,9 +1378,10 @@ def test_emit_review_usage_carries_scope_lineage():
 
 def test_supervisor_backfills_lineage_from_running(monkeypatch):
     from supervisor import events as sup_events
+    from supervisor import events_budget
 
     captured = {}
-    monkeypatch.setattr(sup_events, "append_jsonl", lambda path, row: captured.update(row))
+    monkeypatch.setattr(events_budget, "append_jsonl", lambda path, row: captured.update(row))
 
     class _Ctx:
         RUNNING = {
@@ -1563,7 +1567,7 @@ def test_acceptance_panel_declines_wave_on_insufficient_budget(monkeypatch, tmp_
         tools=tools, content="done", task_id="t", task_type="task",
         llm_trace={"tool_calls": []}, drive_root=tmp_path,
         messages=[{"role": "system", "content": ""}, {"role": "user", "content": "goal"}],
-        emit_progress=lambda _m: None, mode="required", subtree_statuses=[],
+        emit_progress=lambda _m, *, incident=None: None, mode="required", subtree_statuses=[],
         budget_profile=None, passes_done=0, evidence={"k": "v"},
     )
     result = loop_mod._execute_task_acceptance_panel(ctx)

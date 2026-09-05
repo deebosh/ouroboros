@@ -63,9 +63,8 @@ def _task_record(
         "status": str(data.get("status") or ""),
         "outcome_axes": normalize_outcome_axes(data),
         "description": str(data.get("description") or ""),
-        # SSOT cost projection (C2): honest null (never a fabricated $0), the
-        # additive honest name beside the deprecated alias, finality unfabricated.
-        "cost_usd": _cost["cost_usd"],
+        # SSOT cost projection (C2/ABI-3): honest null (never a fabricated $0),
+        # the honest name only, finality unfabricated.
         "accounted_upper_bound_usd": _cost["accounted_upper_bound_usd"],
         "cost_final": _cost["cost_final"],
         "total_rounds": data.get("total_rounds"),

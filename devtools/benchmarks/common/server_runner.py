@@ -119,7 +119,13 @@ _PROVIDER_ENV_KEYS = frozenset({
 # parent process can still carry compatibility aliases and newer runtime knobs
 # that are not present in ``SETTINGS_DEFAULTS``; retaining any of those would
 # make an otherwise identical run depend on the operator shell.  Keep only the
-# path/port values that this lifecycle writes back explicitly.  This is scoped
+# path/port values that this lifecycle writes back explicitly, plus one
+# operational host-load lever: ``OUROBOROS_PREFLIGHT_TEST_WORKERS`` caps the
+# xdist fan-out of the commit gate's hermetic pytest pass (read by
+# ``preflight_runner._preflight_worker_count`` in the server process, never a
+# model/credential/settings key, and still scrubbed from the candidate suite's
+# own environment by ``preflight_runner._preflight_env``).  Without it every
+# isolated server resolves ``-n auto`` to the host's CPU count.  This is scoped
 # to ``settings_authoritative_env`` below; older env-first benchmark drivers
 # retain their historical inheritance contract.
 _AUTHORITATIVE_ENV_KEEP = frozenset({
@@ -130,6 +136,7 @@ _AUTHORITATIVE_ENV_KEEP = frozenset({
     "OUROBOROS_SERVER_HOST",
     "OUROBOROS_SERVER_PORT",
     "OUROBOROS_HOST_SERVICE_PORT",
+    "OUROBOROS_PREFLIGHT_TEST_WORKERS",
 })
 _AUTHORITATIVE_ENV_PREFIXES = (
     "OUROBOROS_",
@@ -241,6 +248,36 @@ def _api(base_url: str, method: str, path: str, payload: dict | None = None, tim
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
     return json.loads(raw) if raw.strip() else {}
+
+
+def _api_status(base_url: str, method: str, path: str, payload: dict | None = None,
+                timeout: float = 60) -> dict:
+    """Like ``_api`` but returns ``{"status": <http status>, "body": {...}}`` and never
+    raises for an error status.
+
+    The owner control surface answers its REFUSALS typed (404 ``task_not_live``, 409
+    ``cancel_pending``, 503 ``cancel_intent_projection_corrupt``, 202 ``pending``), and
+    urllib turns every non-2xx into an exception — so a driver built on ``_api`` can only
+    see "it threw", which is exactly the distinction an owner-control scenario has to
+    assert. Transport failures (server gone) surface as ``status == 0``.
+    """
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    req = urllib.request.Request(base_url + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = int(resp.status)
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        status = int(exc.code)
+        raw = exc.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, OSError) as exc:
+        return {"status": 0, "body": {}, "error": repr(exc)}
+    try:
+        parsed = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        parsed = {}
+    return {"status": status, "body": parsed if isinstance(parsed, dict) else {"raw": parsed}}
 
 
 def seed_owner_state(data_root: pathlib.Path, *, evolution_enabled: bool = False) -> None:
@@ -355,6 +392,9 @@ class IsolatedServer:
         self.host_service_port = free_port()
         self.base_url = f"http://{host}:{self.port}"
         self.proc: subprocess.Popen | None = None
+        # Stable per-task hurry request ids (see `hurry_task`), the driver-side mirror of
+        # the UI's `hurryRequestId` map.
+        self._hurry_request_ids: dict = {}
         # Digest of the exact settings snapshot admitted by a strict adapter.  It
         # is carried across the port patch and checked again immediately before
         # spawn, so a valid replacement cannot silently alter the applied run.
@@ -549,14 +589,48 @@ class IsolatedServer:
             time.sleep(3)
         return {"status": "timeout"}
 
-    def cancel_task(self, task_id: str) -> None:
-        """Best-effort cancel of a still-running task (used when wait_task hits its own
-        deadline) so the worker stops before the driver captures/continues."""
-        try:
-            _api(self.base_url, "POST",
-                 "/api/tasks/" + urllib.parse.quote(task_id) + "/cancel", {}, timeout=30)
-        except (urllib.error.URLError, OSError, ValueError):
-            pass
+    def cancel_task(self, task_id: str, *, cascade: bool = False, stop_policy: str = "",
+                    timeout: float = 300) -> dict:
+        """Owner stop over the SAME HTTP surface the web UI drives.
+
+        Body assembled exactly like ``cancelTask`` in ``web/modules/api_client.js``: the
+        two axes are independent — ``cascade`` selects the subtree teardown, ``stop_policy``
+        selects the terminalization policy (``finalize_then_cancel`` = the graceful
+        202/``cancel_state=pending`` acknowledgement; absent or ``immediate`` = today's hard
+        cancel). An options-free call still posts ``{}``, so the pre-existing best-effort
+        callers (a driver cleaning up after its own ``wait_task`` deadline) keep the
+        byte-identical legacy single-task request they have always sent.
+
+        The cascade lane answers only once the subtree is actually torn down, hence the
+        wide default timeout. Returns the ``_api_status`` envelope; the refusal statuses are
+        part of the contract under test, so nothing is raised or swallowed.
+        """
+        body: dict = {}
+        if cascade:
+            body["cascade"] = True
+        policy = str(stop_policy or "")
+        if policy and policy != "immediate":
+            body["stop_policy"] = policy
+        return _api_status(
+            self.base_url, "POST",
+            "/api/tasks/" + urllib.parse.quote(task_id) + "/cancel", body, timeout=timeout)
+
+    def hurry_task(self, task_id: str, request_id: str = "") -> dict:
+        """Owner hurry over the SAME HTTP surface the web UI drives (``hurryTask`` in
+        ``web/modules/api_client.js``): ``POST /api/tasks/{id}/hurry`` with a body carrying
+        ONLY the stable client-generated ``request_id`` — the endpoint refuses any other
+        field rather than dropping it, and this path never produces a chat message.
+
+        An omitted ``request_id`` mints a per-driver STABLE id for the task, mirroring the
+        UI's ``hurryRequestId`` map: a retry of the same logical hurry reuses the id and is
+        acknowledged idempotently instead of minting a second typed control.
+        """
+        rid = str(request_id or "").strip() or self._hurry_request_ids.setdefault(
+            task_id, f"hurry-{uuid.uuid4()}")
+        return _api_status(
+            self.base_url, "POST",
+            "/api/tasks/" + urllib.parse.quote(task_id) + "/hurry",
+            {"request_id": rid}, timeout=30)
 
     def wait_for_health(self, timeout: float = 180) -> bool:
         """Wait for /api/state to answer with supervisor ready again (after a

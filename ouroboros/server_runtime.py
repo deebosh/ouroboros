@@ -256,11 +256,17 @@ def _refresh_retired_model_defaults(settings: dict) -> tuple[dict, list[str]]:
 
 
 def _migrate_scope_review_prior_default(settings: dict) -> tuple[dict, list[str]]:
+    # ABI 7.0 (ABI-10): the comma keys are RETIRED settings — load_settings
+    # purges them before this runs, so the branch fires only on a raw dict fed
+    # directly (tests/tools). The replacement source is the shipped default
+    # (the keys left SETTINGS_DEFAULTS with the retirement).
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
+
     normalized = dict(settings)
     changed: list[str] = []
     for key in ("OUROBOROS_SCOPE_REVIEW_MODEL", "OUROBOROS_SCOPE_REVIEW_MODELS"):
         if _setting_text(normalized, key) in _SCOPE_REVIEW_PRIOR_DEFAULTS:
-            normalized[key] = str(SETTINGS_DEFAULTS[key])
+            normalized[key] = ",".join(OPENROUTER_REVIEW_DEFAULTS["scope"])
             changed.append(key)
     return normalized, changed
 
@@ -578,20 +584,28 @@ def apply_runtime_provider_defaults(settings: dict) -> tuple[dict, bool, list[st
             normalized[key] = next_value
             changed_keys.append(key)
 
-    review_models = _normalize_direct_review_models(normalized, provider)
-    if review_models != _setting_text(normalized, "OUROBOROS_REVIEW_MODELS"):
-        normalized["OUROBOROS_REVIEW_MODELS"] = review_models
-        changed_keys.append("OUROBOROS_REVIEW_MODELS")
+    # ABI 7.0 (ABI-10): the comma keys are RETIRED settings. A ghost value fed
+    # directly still normalizes (owner-value preservation on a stale dict), but
+    # an absent key is never INTRODUCED — the read-time getters
+    # (`get_review_models`/`get_scope_review_models`) perform this same
+    # direct-provider adaptation on the derived env plane.
+    if _setting_text(normalized, "OUROBOROS_REVIEW_MODELS"):
+        review_models = _normalize_direct_review_models(normalized, provider)
+        if review_models != _setting_text(normalized, "OUROBOROS_REVIEW_MODELS"):
+            normalized["OUROBOROS_REVIEW_MODELS"] = review_models
+            changed_keys.append("OUROBOROS_REVIEW_MODELS")
 
-    scope_review_model = _normalize_direct_scope_review_model(normalized, provider)
-    if scope_review_model != _setting_text(normalized, "OUROBOROS_SCOPE_REVIEW_MODEL"):
-        normalized["OUROBOROS_SCOPE_REVIEW_MODEL"] = scope_review_model
-        changed_keys.append("OUROBOROS_SCOPE_REVIEW_MODEL")
+    if _setting_text(normalized, "OUROBOROS_SCOPE_REVIEW_MODEL"):
+        scope_review_model = _normalize_direct_scope_review_model(normalized, provider)
+        if scope_review_model != _setting_text(normalized, "OUROBOROS_SCOPE_REVIEW_MODEL"):
+            normalized["OUROBOROS_SCOPE_REVIEW_MODEL"] = scope_review_model
+            changed_keys.append("OUROBOROS_SCOPE_REVIEW_MODEL")
 
-    scope_review_models = _normalize_direct_scope_review_models(normalized, provider)
-    if scope_review_models != _setting_text(normalized, "OUROBOROS_SCOPE_REVIEW_MODELS"):
-        normalized["OUROBOROS_SCOPE_REVIEW_MODELS"] = scope_review_models
-        changed_keys.append("OUROBOROS_SCOPE_REVIEW_MODELS")
+    if _setting_text(normalized, "OUROBOROS_SCOPE_REVIEW_MODELS"):
+        scope_review_models = _normalize_direct_scope_review_models(normalized, provider)
+        if scope_review_models != _setting_text(normalized, "OUROBOROS_SCOPE_REVIEW_MODELS"):
+            normalized["OUROBOROS_SCOPE_REVIEW_MODELS"] = scope_review_models
+            changed_keys.append("OUROBOROS_SCOPE_REVIEW_MODELS")
 
     changed_keys = _unique_changed_keys(changed_keys)
     return normalized, bool(changed_keys), changed_keys

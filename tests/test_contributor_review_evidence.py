@@ -7,7 +7,6 @@ def test_receipt_mismatch_preserves_the_original_block_cause():
     from scripts.contributor_review_evidence import finalize_contributor_outcome
 
     exit_code, outcome = finalize_contributor_outcome(
-        snapshot={"review_substrate_changed": []},
         outcome={
             "status": "blocked",
             "block_reason": "tests_preflight_blocked",

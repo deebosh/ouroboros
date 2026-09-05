@@ -638,7 +638,7 @@ class TestNoProxyLlmChat:
                 repo_dir=tmp_repo,
                 drive_root=tmp_drive,
                 llm=mock_llm,
-                emit_progress=lambda x: None,
+                emit_progress=lambda x, *, incident=None: None,
                 slot=_packed_row("openai/gpt-5.5-pro"),
             )
 
@@ -683,7 +683,7 @@ class TestReviewPackOverflow:
                 repo_dir=tmp_repo,
                 drive_root=tmp_drive,
                 llm=mock_llm,
-                emit_progress=lambda x: None,
+                emit_progress=lambda x, *, incident=None: None,
                 slot=_packed_row("test-model"),
             )
 
@@ -707,7 +707,7 @@ class TestReviewPackOverflow:
                 repo_dir=tmp_repo,
                 drive_root=tmp_drive,
                 llm=mock_llm,
-                emit_progress=lambda x: None,
+                emit_progress=lambda x, *, incident=None: None,
                 slot=_packed_row("test-model"),
             )
 

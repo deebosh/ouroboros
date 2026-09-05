@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 from hashlib import sha256
 import json
 import logging
@@ -57,6 +58,8 @@ from ouroboros.tools.plan_review_runtime import (
     plan_fanout_inputs as _plan_fanout_inputs,
     plan_in_flight_custody_error as _plan_in_flight_custody_error,
     plan_deadline_skip as _plan_deadline_skip,
+    publish_plan_review_projection as _publish_plan_review_projection,
+    publish_rendered_wave as _publish_rendered_wave,
     plan_payload_roots as _plan_payload_roots,
     plan_review_slots as _plan_review_slots,
     plan_wave_replay_decision as _plan_wave_replay_decision,
@@ -84,7 +87,7 @@ from ouroboros.tools.plan_review_references import (
     _record_raw_plan_request_with_reference,
 )
 from ouroboros.tools.registry import ToolContext, ToolEntry
-from ouroboros.tools.review_helpers import review_wave_budget_gate
+from ouroboros.tools.review_helpers import review_wave_binding_fence, review_wave_budget_gate
 from ouroboros.tools.review_synthesis import (
     PLAN_REVIEW_CONTROL_PREFIX,
 )
@@ -302,7 +305,11 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
         try:
             asyncio.get_running_loop()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                # copy_context: the registry's tool-result sidecar is a ContextVar,
+                # and the published native plan result must reach the dispatching
+                # thread's slot (D02) — a bare pool thread would publish into the void.
                 return pool.submit(
+                    contextvars.copy_context().run,
                     asyncio.run,
                     _run_plan_review_async(ctx, request),
                 ).result()
@@ -546,8 +553,8 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
         elif bool(existing.get("closed")) and not resume_in_flight:
             # A closed verdict is earned authority; later roster changes govern
             # future panels and do not retroactively void it (accepted 3a).
-            return _render_wave(existing, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
-                                cached=True, reminder=reminder)
+            return _publish_rendered_wave(ctx, existing, cap=cap, cycles_paid=cycles_paid,
+                                          enforcement=enforcement, cached=True, reminder=reminder)
         elif not resume_in_flight:  # stale ⇒ identical envelope re-dispatches fresh
             stale, replay_snapshot = _plan_wave_replay_decision(_plan_review_slots, existing)
             if not stale:
@@ -556,7 +563,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
                     # at record time retries on replay (memo only on success ⇒ landed dedups).
                     _emit_plan_review_advisory_open(ctx, state_root, task_id=task_id,
                                                     wave=existing, cycles_paid=cycles_paid, cap=cap)
-                return _render_wave(existing, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement, cached=True, reminder=reminder)
+                return _publish_rendered_wave(ctx, existing, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement, cached=True, reminder=reminder)
     deadline_skip = _plan_deadline_skip(ctx)
     # An existing paid wave with a live physical reviewer is a custody
     # reconciliation, not a new planning dispatch.  Let it pass the owner
@@ -585,7 +592,8 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
     slots = _plan_review_slots()
     if not slots:
         return _plan_unavailable(
-            ctx, "ERROR: No review models configured. Set OUROBOROS_REVIEW_MODELS in settings.",
+            ctx, "ERROR: No review models configured. Configure Review lanes "
+            "(OUROBOROS_REVIEWER_SLOTS) on the Agents tab in Settings.",
             "review_models_unconfigured")
     configured_slots = list(slots)
     resume = _plan_in_flight_resume_inputs(
@@ -627,8 +635,8 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
     if fanout["error"]:
         if not resume_in_flight:
             return _plan_unavailable(ctx, fanout["error"], "review_context_unavailable")
-        return _render_wave(
-            existing, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
+        return _publish_rendered_wave(
+            ctx, existing, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
             cached=True, reminder="\n".join(x for x in (reminder, fanout["error"]) if x),
         )
     callable_slots = fanout["callable_slots"]
@@ -640,8 +648,8 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
             callable_slots=list(callable_slots), ctx=ctx,
         )
         if pending_note:
-            return _render_wave(
-                existing, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
+            return _publish_rendered_wave(
+                ctx, existing, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
                 cached=True, reminder="\n".join(x for x in (reminder, pending_note) if x),
             )
     admission = None if resume_in_flight else review_wave_budget_gate(
@@ -649,12 +657,13 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
         prompt_chars=len(system_prompt) + len(user_content), max_completion_tokens=_PLAN_REVIEW_MAX_TOKENS,
     )
     if admission is not None:
+        fence, remedy = review_wave_binding_fence(admission)
         return _plan_unavailable(
             ctx,
             "⚠️ PLAN_REVIEW_SKIPPED_BUDGET: the reviewer wave was declined before dispatch — "
-            f"estimated cost ~${admission.get('estimated_wave_usd')} exceeds the remaining root "
-            f"budget ${admission.get('remaining_usd')} (limit ${admission.get('limit_usd')}). "
-            "No reviewer was called. Shrink the evidence, split the plan, or raise the per-task budget.",
+            f"estimated cost ~${admission.get('estimated_wave_usd')} exceeds the remaining budget "
+            f"${admission.get('remaining_usd')} ({fence}). No reviewer was called. Shrink the evidence, "
+            f"split the plan, or {remedy}.",
             "review_budget_unavailable")
     ctx.emit_progress_fn(
         f"📐 plan_task: cycle {cycle_index}{'' if cap is None else f'/{cap}'} — running "
@@ -728,7 +737,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
             fingerprint=fingerprint)
     ctx.emit_progress_fn(_plan_wave_progress_line(
         aggregate, agg["counts"], cycles_paid=paid_now, cap=cap))
-    return _render_wave(stored, cap=cap, cycles_paid=paid_now, enforcement=enforcement, reminder=reminder)
+    return _publish_rendered_wave(ctx, stored, cap=cap, cycles_paid=paid_now, enforcement=enforcement, reminder=reminder)
 
 
 def _last_paid_wave(state: dict) -> Optional[dict]:
@@ -808,16 +817,6 @@ def _cycles_exhausted(
     ctx.emit_progress_fn(
         f"📐 plan_task: PLAN_REVIEW_CYCLES_EXHAUSTED — {cycles_paid}/{cap} paid cycles spent ({enforcement})."
     )
-    body = (
-        _render_wave(current, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
-                     cached=True, reminder=reminder)
-        if current
-        # No live wave for THIS envelope (a fresh spec submitted at a spent cap): the
-        # host still owns exactly one control line, and it can never be a closed one.
-        else (f"{reminder}\n\n" if reminder else "") + PLAN_REVIEW_CONTROL_PREFIX + json.dumps(
-            {"outcome": "REVISE_PLAN", "closed": False}, ensure_ascii=False
-        )
-    )
     head = (
         f"⚠️ PLAN_REVIEW_CYCLES_EXHAUSTED: {cycles_paid} of {cap} paid plan-review cycles are spent "
         "for this task; no reviewer was called and no cycle was consumed. "
@@ -835,7 +834,20 @@ def _cycles_exhausted(
             "Advisory enforcement: you may proceed with the review open; the host records and "
             "discloses it loudly (typed event review_cycles_exhausted)."
         )
-    return head + "\n\n" + body
+    if current:
+        return _publish_rendered_wave(
+            ctx, current, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
+            cached=True, reminder=reminder, head=head + "\n\n",
+        )
+    # No live wave for THIS envelope (a fresh spec submitted at a spent cap): the
+    # host still owns exactly one control line, and it can never be a closed one.
+    text = (
+        head + "\n\n" + (f"{reminder}\n\n" if reminder else "")
+        + PLAN_REVIEW_CONTROL_PREFIX
+        + json.dumps({"outcome": "REVISE_PLAN", "closed": False}, ensure_ascii=False)
+    )
+    return _publish_plan_review_projection(
+        ctx, {"aggregate_signal": "REVISE_PLAN", "closed": False}, text)
 
 
 # ---------------------------------------------------------------------- disposition
@@ -877,8 +889,9 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
             "No plan attempt was recorded."
         )
     if wave.get("closed"):
-        return _render_wave(wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement, cached=True,
-                            notes=["already_closed: this wave is closed; the disposition is not re-applied"])
+        return _publish_rendered_wave(ctx, wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
+                                      cached=True,
+                                      notes=["already_closed: this wave is closed; the disposition is not re-applied"])
     raw_items = disposition.get("items")
     if not isinstance(raw_items, list):
         return "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: items must be an array"
@@ -929,8 +942,8 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
         f"📐 plan_task: disposition recorded — {'closed' if closure['closed'] else 'still open'} "
         f"({len(closure['open_ids'])} open finding id(s); no reviewer call, no cycle)."
     )
-    return _render_wave(stored, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
-                        notes=list(closure["notes"]))
+    return _publish_rendered_wave(ctx, stored, cap=cap, cycles_paid=cycles_paid,
+                                  enforcement=enforcement, notes=list(closure["notes"]))
 
 
 # ------------------------------------------------------------------------ rendering

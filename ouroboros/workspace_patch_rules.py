@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pathlib
 import re
-from typing import List
+from typing import Any, List
 
 # Version 3: generated output directories are no longer excluded by NAME. The
 # project's own `.gitignore` (honoured through `--exclude-standard`), the 5 MiB
@@ -147,3 +147,37 @@ __all__ = [
     "_patch_exclude_reason",
     "_sensitive_untracked_reason",
 ]
+
+
+def format_patch_exclusions(manifest: Any) -> str:
+    """One disclosure line for files the capture dropped per policy, or ''.
+
+    The per-file exclusions (#447 F5) live in the workspace_patch manifest,
+    which no parent-facing surface used to render — a dropped deliverable hid
+    behind an affirmative "Integrated N file(s)" success line. This renders the
+    manifest rows the rules above produce, so it belongs beside them rather
+    than in either of the two integration tools that display it.
+    """
+    entries = []
+    for key in ("sensitive_blocked", "untracked_excluded", "tracked_excluded"):
+        for item in (manifest or {}).get(key) or []:
+            if isinstance(item, dict):
+                path, reason = str(item.get("path") or ""), str(item.get("reason") or "")
+            else:
+                path, reason = str(item or ""), ""
+            if path:
+                entries.append(f"{path} ({reason})" if reason else path)
+    if not entries:
+        return ""
+    shown = "; ".join(entries[:8])
+    more = (
+        f" and {len(entries) - 8} more (full list with reasons: the child's "
+        "workspace_patch.json artifact)"
+        if len(entries) > 8 else ""
+    )
+    return (
+        f"\n⚠️ {len(entries)} file(s) EXCLUDED from this patch by capture policy: "
+        f"{shown}{more}. Excluded content is NOT in this patch: if one is a real "
+        "deliverable, recover it from the child workspace/snapshot while that "
+        "still exists, or have it re-produced."
+    )

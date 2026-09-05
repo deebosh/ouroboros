@@ -220,14 +220,24 @@ SCRATCHPAD_CONSOLIDATION_THRESHOLD_CHARS = 30_000
 # Ledger: measured evidence in ouroboros/usage_ledger.py::_locked — a ~20MB
 # usage_attempts.jsonl costs ~0.5s per full re-read UNDER THE MONETARY LOCK,
 # starving concurrent workers (the 2026-07-23 lock-timeout incident). Warn at
-# exactly that measured degradation point.
+# exactly that measured degradation point. Since CPL4-C6, size-triggered
+# compaction (config.USAGE_LEDGER_COMPACT_BYTES, usage_compaction.py) should
+# hold the file far below this — like the rotation-log warns, this fires only
+# if compaction is broken, the unfoldable residue itself grows this large, or
+# the lock directory takes no kernel locks and compaction refuses on the name
+# tier (typed usage_ledger_compaction_refused event, once per process).
 USAGE_LEDGER_WARN_BYTES = 20_000_000
-# events/tools logs have no rotation and no per-request reader on the hot path
-# today (health scans are tail-bounded); the thresholds are deliberately
-# generous — they exist to flag runaway growth long before a full read of the
-# file becomes a seconds-scale operation, not to nag normal accumulation.
-EVENTS_LOG_WARN_BYTES = 100_000_000
-TOOLS_LOG_WARN_BYTES = 100_000_000
+# events/tools/supervisor/task_reflections logs are ROTATION-BOUNDED since the
+# CPL4-C1..C4 rotation train (same 800KB rotator and supervisor tick as
+# chat/progress). 8MB = 10x the rotation cap: these warnings fire only if
+# rotation is broken or missing — deliberate regression tripwires, not size
+# preferences (the pre-train 100MB values watched for replay degradation of
+# the then-unbounded live files; that duty moved to the archive-chain watch
+# below).
+EVENTS_LOG_WARN_BYTES = 8_000_000
+TOOLS_LOG_WARN_BYTES = 8_000_000
+SUPERVISOR_LOG_WARN_BYTES = 8_000_000
+TASK_REFLECTIONS_LOG_WARN_BYTES = 8_000_000
 # progress.jsonl is expected to be ROTATION-BOUNDED (the chat.jsonl rotation
 # pattern, 800KB cap in supervisor/state.py::rotate_chat_log_if_needed,
 # generalized to progress by the perf/lifecycle sprint). 8MB = 10x that cap:
@@ -252,6 +262,12 @@ SKILL_REVIEW_ROOT_TASKS_WARN_BYTES = 20_000_000
 # explicit full-history read becomes seconds-scale; this is observability, not
 # a retention gate and never shortens the memory horizon.
 CHAT_ARCHIVE_SCAN_WARN_BYTES = 100_000_000
+# Custody replay (delegate_custody) walks the WHOLE events chain — live file
+# plus archive/events_*.jsonl — on ownership questions. This inherits the
+# pre-rotation 100MB replay-degradation signal, now measured over the chain;
+# archives stay durable history (never GC'd), so the remediation is chain
+# indexing/compaction, never deletion.
+EVENTS_ARCHIVE_SCAN_WARN_BYTES = 100_000_000
 
 
 def estimate_message_chars(messages: Any) -> int:

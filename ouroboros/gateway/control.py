@@ -1176,7 +1176,19 @@ async def api_update_apply(request: Request) -> JSONResponse:
     body = await request_json_or(request, {}, exceptions=(Exception,))
     if not isinstance(body, dict):
         return json_error("JSON body must be an object.", 400)
-    strategy = str(body.get("strategy") or "auto_merge").strip().lower()
+    # Executable gateway ABI (ABI-3, Q7=A): UpdateApplyRequest declares
+    # `strategy` REQUIRED with a closed vocabulary — the derived schema now
+    # enforces the contract as written (no silent auto_merge default).
+    from ouroboros.gateway.contracts import UpdateApplyRequest
+    from ouroboros.gateway.schema import validate_ingress
+
+    schema_errors = validate_ingress(body, UpdateApplyRequest)
+    if schema_errors:
+        return json_error(
+            f"invalid request body: {schema_errors[0]}", 400,
+            schema_errors=schema_errors[:8],
+        )
+    strategy = str(body.get("strategy") or "").strip().lower()
     if strategy not in _UPDATE_STRATEGIES:
         return json_error(f"unsupported update strategy: {strategy or 'missing'}", 400)
     expected_base_sha = str(body.get("expected_base_sha") or "").strip()

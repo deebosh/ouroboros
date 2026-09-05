@@ -23,7 +23,7 @@ import os
 import pathlib
 import threading
 from dataclasses import replace
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Dict, Optional, Sequence
 
 log = logging.getLogger("ouroboros.project_naming")
 
@@ -382,3 +382,24 @@ def spawn_proactive_namer(
         threading.Thread(target=_work, name=f"namer-{task_id}", daemon=True).start()
     except Exception:
         log.debug("proactive namer thread spawn failed for %s", task_id, exc_info=True)
+
+
+def admission_names(body: Dict[str, Any], description: str) -> tuple:
+    """The run's owner-facing name at admission: ``(title, suggested_name)``.
+
+    A caller-supplied title is AUTHORSHIP — it fills both slots, exactly as a
+    chat turn promoted into a task does. Without one, the request's first line is
+    DERIVED for display only: it fills ``suggested_name`` (what the live card,
+    history replay and the Project lifecycle row read) and leaves ``title``
+    empty, so a truncated prompt never outranks a real name coined later. Lexical
+    only — markdown is stripped before the first line is taken, then the shared
+    title cleaner caps it at the project-name length (P5: no model call, and
+    therefore no benchmark-visible cost for a scripted run).
+    """
+    from ouroboros.projects_registry import PROJECT_NAME_MAX
+    from ouroboros.utils import strip_markdown
+
+    explicit = clean_model_title(strip_markdown(str(body.get("title") or "")), max_len=PROJECT_NAME_MAX)
+    if explicit:
+        return explicit, explicit
+    return "", clean_model_title(strip_markdown(description), max_len=PROJECT_NAME_MAX)

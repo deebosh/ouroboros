@@ -121,7 +121,7 @@ class TestCacheAwareReservation:
             loop._CompactionRoundContext(
                 tools=SimpleNamespace(_ctx=inner), drive_root=tmp_path,
                 drive_logs=tmp_path, task_id="compacted", round_idx=2,
-                event_queue=None, emit_progress=lambda _text: None,
+                event_queue=None, emit_progress=lambda _text, *, incident=None: None,
             ),
         )
 
@@ -209,6 +209,23 @@ class TestCacheAwareReservation:
     def test_the_reservation_still_takes_one_positional_argument(self):
         assert usage_accounting._reservation_cost(_request(task_id="t1", reservation_usd=2.0)) == 2.0
 
+
+
+def _patch_execute_candidate(monkeypatch, llm_module, execute):
+    """Patch the physical candidate executor where the v7 lanes BIND it.
+
+    Upstream's ``LLMClient`` read ``_execute_candidate`` as a module global of
+    ``ouroboros.llm``; the v7 split imports it into each lane mixin
+    (``llm_anthropic``, ``llm_fallback``, ``llm_gigachat``) from ``llm_attempt``,
+    so the historical single patch target no longer reaches the send. Patch the
+    facade AND every lane that binds the name."""
+    import importlib
+
+    monkeypatch.setattr(llm_module, "_execute_candidate", execute)
+    for name in ("ouroboros.llm_anthropic", "ouroboros.llm_fallback", "ouroboros.llm_gigachat", "ouroboros.llm_local"):
+        module = importlib.import_module(name)
+        if hasattr(module, "_execute_candidate"):
+            monkeypatch.setattr(module, "_execute_candidate", execute)
 
 class TestWrapupAffordability:
     """The graceful stop uses the fence's own reservation, and fails open."""
@@ -356,7 +373,7 @@ class TestWrapupAffordability:
                 "content": [{"type": "text", "text": "ok"}], "usage": {},
             })
 
-        monkeypatch.setattr(llm_module, "_execute_candidate", execute)
+        _patch_execute_candidate(monkeypatch, llm_module, execute)
         with usage_accounting.usage_scope(scope):
             prospective = task_pacing.prospective_wrapup_attempt_request(
                 llm=client, messages=messages, model=model,
@@ -390,7 +407,7 @@ class TestWrapupAffordability:
             captured["request"] = request
             return SimpleNamespace(model_dump=lambda: {"choices": [{"message": {"content": "ok"}}], "usage": {}})
 
-        monkeypatch.setattr(llm_module, "_execute_candidate", execute)
+        _patch_execute_candidate(monkeypatch, llm_module, execute)
         with usage_accounting.usage_scope(usage_accounting.UsageScope(
             drive_root=tmp_path, task_id="openai", root_task_id="openai", global_limit_usd=100.0,
         )):
@@ -430,7 +447,13 @@ class TestWrapupAffordability:
             return SimpleNamespace(model_dump=lambda: {"choices": [{"message": {"content": "ok"}}], "usage": {}})
 
         monkeypatch.setattr(llm_module, "prepare_wire_payload_for_send", prepare)
-        monkeypatch.setattr(llm_module, "_execute_candidate", execute)
+        # v7 split: the physical send binds the wire-recovery preparer from
+        # llm_attempt (its own import from request_wire_recovery), so the facade
+        # patch alone would leave the real preparer running.
+        import ouroboros.llm_attempt as llm_attempt
+
+        monkeypatch.setattr(llm_attempt, "prepare_wire_payload_for_send", prepare)
+        _patch_execute_candidate(monkeypatch, llm_module, execute)
         with usage_accounting.usage_scope(usage_accounting.UsageScope(
             drive_root=tmp_path, task_id="recovery", root_task_id="recovery", global_limit_usd=100.0,
         )):
@@ -536,7 +559,7 @@ class TestCacheSplitOwnership:
         loop_module.run_llm_loop(
             messages=[{"role": "user", "content": "again"}],
             tools=ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path),
-            llm=FakeLLM(), drive_logs=tmp_path, emit_progress=lambda _t: None,
+            llm=FakeLLM(), drive_logs=tmp_path, emit_progress=lambda _t, *, incident=None: None,
             incoming_messages=queue_module.Queue(), task_id="retry1", drive_root=tmp_path,
         )
         assert seen["split_at_first_send"] is None
@@ -756,7 +779,7 @@ class TestForcedCandidatePredicate:
             sent.append(request)
             return real_execute(request, send, before_dispatch)
 
-        monkeypatch.setattr(llm_module, "_execute_candidate", execute)
+        _patch_execute_candidate(monkeypatch, llm_module, execute)
         with usage_accounting.usage_scope(usage_accounting.UsageScope(
             drive_root=tmp_path, task_id="pred", root_task_id="pred", global_limit_usd=100.0,
         )), usage_accounting.bind_physical_attempt_context(

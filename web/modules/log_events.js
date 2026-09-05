@@ -590,7 +590,10 @@ export function summarizeLogEvent(evt) {
             meta: taskMeta(
                 evt.model || '',
                 formatLogTokens(evt),
-                formatLogMoney(evt.cost_usd ?? evt.cost),
+                // ABI-3: /api/logs backfill rows carry the honest name; live
+                // frames still say cost_usd/cost — resolve the pair via the
+                // SSOT helper, then the live-frame `cost` spelling.
+                formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.response_kind === 'tool_calls' ? `${evt.tool_call_count || 0} tool calls` : evt.response_kind || '',
             ),
         });
@@ -614,7 +617,7 @@ export function summarizeLogEvent(evt) {
             meta: taskMeta(
                 evt.model || '',
                 formatLogTokens(evt),
-                formatLogMoney(evt.cost_usd ?? evt.cost),
+                formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.category || '',
             ),
         });
@@ -812,7 +815,7 @@ export function summarizeLogEvent(evt) {
 
     return view('info', shortText(t, 120), {
         body: shortText(evt.text || evt.error || evt.result_preview || compactJson(evt.args || evt.task || evt.checks, 260), 260),
-        meta: taskMeta(evt.model || '', formatLogMoney(evt.cost_usd ?? evt.cost)),
+        meta: taskMeta(evt.model || '', formatLogMoney(accountedUpperBound(evt) ?? evt.cost)),
     });
 }
 

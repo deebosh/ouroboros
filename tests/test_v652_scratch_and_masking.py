@@ -38,8 +38,14 @@ def _reg(tmp_path, monkeypatch):
     monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "light")
     home = tmp_path / "home"
-    repo = home / "Ouroboros" / "repo"
-    data = home / "Ouroboros" / "data"
+    # NEUTRAL layout, not home/Ouroboros/data: the registry gets explicit
+    # roots. The pytest fail-closed guard (`utils.assert_test_data_path`, the
+    # issue #455 class) reads `os.path.expanduser("~")`, deliberately NOT
+    # `Path.home()`, so the `Path.home` patch below neither trips nor moves it;
+    # keeping these roots off a live-shaped `Ouroboros/data` path just keeps
+    # the fixture visibly hermetic rather than relying on that distinction.
+    repo = tmp_path / "repo"
+    data = tmp_path / "data"
     desktop = home / "Desktop"
     for d in (repo, data, desktop):
         d.mkdir(parents=True)
@@ -188,20 +194,21 @@ def test_run_script_success_keeps_payload_alongside_undeclared_nudge(tmp_path, m
     nudge must APPEND (as the error path and run_command already do)."""
     registry, _repo, _data, desktop = _reg(tmp_path, monkeypatch)
     target = desktop / "undeclared_deliverable.txt"
-    result = registry.execute(
+    published = registry.execute_result(
         "run_script",
         {"script": f"open({str(target)!r}, 'w').write('deliverable')\nprint('THE ANSWER IS 42')",
          "interpreter": "python3", "cwd": str(desktop)},
     )
+    result = published.text
     assert "ARTIFACT_OUTPUT_UNDECLARED" in result, result  # the nudge still fires
     assert "THE ANSWER IS 42" in result, result            # ...without eating stdout
     assert "exit_code=0" in result, result                 # ...or the exit description
-    assert result.result_meta["status"] == "artifact_output_undeclared"
-    assert result.result_meta["is_failure"] is True
-    from ouroboros.loop_tool_execution import _extract_result_metadata, _is_tool_execution_failure
-
-    assert _is_tool_execution_failure(True, result) is True
-    assert _extract_result_metadata("run_script", result, True)["status"] == "artifact_output_undeclared"
+    # v7 typed publication (the text-envelope `result_meta` is retired; the loop
+    # classifier reads the published ToolResult): the nudge is the typed
+    # policy-denial code on the SAME published result, blocked, not ok.
+    assert published.code == "ARTIFACT_OUTPUT_UNDECLARED"
+    assert published.status == "blocked"
+    assert published.meta["exit_code"] == 0
 
 
 def test_undeclared_output_audit_detects_clobber_redirect(tmp_path, monkeypatch):

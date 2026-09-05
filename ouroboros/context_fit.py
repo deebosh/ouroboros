@@ -18,10 +18,22 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from ouroboros.context_layout import reference_doc_sections
-from ouroboros.delivery_protocol import extract_plain_text_from_content
 from ouroboros.utils import estimate_tokens
 
 log = logging.getLogger(__name__)
+
+
+def extract_plain_text_from_content(content: Any) -> str:
+    """Text of a string or multipart message content, for transcript sealing.
+
+    The one extractor lives in ``loop_messages`` (the retired ``delivery_protocol``
+    leaf carried a copy). Read at CALL time: ``loop_messages`` imports
+    ``ouroboros.llm`` at module top and the LLM lanes import this module, so a
+    top-level import here would be an import cycle.
+    """
+    from ouroboros.loop_messages import _extract_plain_text_from_content
+
+    return _extract_plain_text_from_content(content)
 
 ContextProfile = Literal["owner_max", "owner_low", "task_local_low"]
 MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]
@@ -479,12 +491,20 @@ def resolve_context_fit_route(
     *,
     allow_fetch: bool,
 ) -> Tuple[Dict[str, Any], Any]:
-    """Resolve one exact route through the existing settings/evidence SSOT."""
-    from ouroboros.capability_evidence import probe
-    from ouroboros.config import DATA_DIR
-    from ouroboros.gateway.settings import _active_main_route, _owner_read_settings_raw
+    """Resolve one exact route through the existing settings/evidence SSOT.
 
-    settings = _owner_read_settings_raw()
+    The document the route is read from is the provider-normalized EFFECTIVE
+    settings — the same derivation the task-start projection and the settings
+    GET make — never the owner-raw read: the read seam carries the vocabulary
+    normalization only, and a direct-provider install with no explicit model
+    resolves its main slot through the provider normalization alone, so the
+    owner-raw route would name a model the loop never runs."""
+    from ouroboros.capability_evidence import probe
+    from ouroboros.config import DATA_DIR, load_settings
+    from ouroboros.gateway.settings import _active_main_route
+    from ouroboros.server_runtime import apply_runtime_provider_defaults
+
+    settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
     model = str(task.get("model") or "").strip()
     local_override = task.get("use_local_model")
     route = _active_main_route(
@@ -507,10 +527,13 @@ def resolve_context_fit_route(
 
 def _failed_route_evidence(task: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
     from ouroboros.capability_evidence import route_fingerprint
-    from ouroboros.gateway.settings import _active_main_route, _owner_read_settings_raw
+    from ouroboros.config import load_settings
+    from ouroboros.gateway.settings import _active_main_route
+    from ouroboros.server_runtime import apply_runtime_provider_defaults
 
+    settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
     route = _active_main_route(
-        _owner_read_settings_raw(),
+        settings,
         model_override=str(task.get("model") or ""),
         use_local_override=(
             bool(task.get("use_local_model"))

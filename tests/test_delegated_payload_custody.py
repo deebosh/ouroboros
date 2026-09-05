@@ -361,11 +361,15 @@ def test_executor_classifies_an_orphan_payload_no_op_as_a_failure(
         return handle.payload_hash if calls["n"] >= 2 else real(root)
 
     monkeypatch.setattr(integration, "payload_content_hash", _baseline_after_apply)
+    from ouroboros.tools.tool_result import LegacyTextResultAdapter
+
+    # v7 typed dispatch: the executor consumes ``execute_result`` (a ToolResult);
+    # the text producer stays the upstream one, adapted through the legacy seam.
     tools = SimpleNamespace(
         CODE_TOOLS=set(),
         _ctx=second,
-        execute=lambda _name, args: _integrate_delegated_patch(
-            second, args["run_id"], args["decision"], ""),
+        execute_result=lambda name, args: LegacyTextResultAdapter.from_text(
+            name, _integrate_delegated_patch(second, args["run_id"], args["decision"], "")),
     )
     logs = tmp_path / "executor-logs"
     logs.mkdir()

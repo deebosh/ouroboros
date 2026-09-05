@@ -213,13 +213,13 @@ def test_send_ws_message_broadcasts_namespaced_event(tmp_path):
 
 def test_send_ws_message_still_works_after_registration_phase(tmp_path):
     sent: list[dict] = []
-    impl = extension_loader.PluginAPIImpl(
+    impl = extension_loader.PluginAPIImpl(extension_loader._PluginAPIConfig(
         skill_name="push_runtime",
         permissions=["ws_handler"],
         env_allowlist=[],
         state_dir=tmp_path,
         settings_reader=lambda: {},
-    )
+    ))
     extension_loader.set_ws_broadcaster(sent.append)
 
     impl._close_registration()

@@ -10,6 +10,9 @@ its own effort outranks the surface key.
 
 import asyncio
 import json
+import ntpath
+import os
+import types
 
 import pytest
 
@@ -185,10 +188,12 @@ def test_reviewer_slots_endpoint_reports_the_deep_review_row_and_its_limit(env):
     row = _get_endpoint()["deep_review"]
     assert row["subagent_id"] == "api-critic" and "route" not in row and "slot_id" not in row
     assert row["resolved_route"] == {"kind": "api_chat", "target_id": "openai/gpt-5.6-terra"}
-    # Legacy install: the synthesized row is reported the same way.
+    # Unconfigured install: the synthesized row is reported the same way.
+    # ABI 7.0 (ABI-10) retired the comma-list "legacy" source, so an install
+    # without the structured key reports the shipped default panel instead.
     env.delenv(REVIEWER_SLOTS_ENV, raising=False)
     body = _get_endpoint()
-    assert body["source"] == "legacy"
+    assert body["source"] == "default"
     assert body["deep_review"]["synthesized_from"] == "OUROBOROS_MODEL_DEEP_SELF_REVIEW"
 
 
@@ -966,6 +971,14 @@ def test_a_registry_refused_read_never_inherits_the_previous_reads_extent(review
     assert deep_self_review._repo_relative("BIBLE.md/../BIBLE.md", review_repo) == "BIBLE.md/../BIBLE.md"
     assert deep_self_review._repo_relative("./docs//ARCHITECTURE.md", review_repo) == "docs/ARCHITECTURE.md"
     assert deep_self_review._repo_relative(str(review_repo / "BIBLE.md"), review_repo) == "BIBLE.md"
+    # The key is POSIX on EVERY host OS (a Windows runner's `os.path` IS ntpath,
+    # whose normpath renders `docs\ARCHITECTURE.md`): with the module's OS-native
+    # path module swapped for ntpath, relative and backslash spellings still fold
+    # onto the POSIX mandatory-read key, and `..` still stays as spelled.
+    monkeypatch.setattr(deep_self_review, "os", types.SimpleNamespace(path=ntpath, environ=os.environ))
+    assert deep_self_review._repo_relative("./docs//ARCHITECTURE.md", review_repo) == "docs/ARCHITECTURE.md"
+    assert deep_self_review._repo_relative(".\\docs\\ARCHITECTURE.md", review_repo) == "docs/ARCHITECTURE.md"
+    assert deep_self_review._repo_relative("a\\..\\BIBLE.md", review_repo) == "a/../BIBLE.md"
 
 
 

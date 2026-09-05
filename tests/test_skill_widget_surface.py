@@ -182,6 +182,56 @@ def test_skill_preflight_parses_module_entry_as_classic_script(
         assert row["ok"] is True
 
 
+def test_skill_preflight_validator_env_keeps_windows_process_base_keys(tmp_path, monkeypatch):
+    """The scrubbed validator env still lets a Windows child start.
+
+    A node started without SystemRoot aborts before it reads the script, so the
+    valid entry above read as a syntax error on windows-latest (7.0.0-rc.9).
+    Pinned on every host by simulating that environment: the process-base keys
+    are forwarded, everything else stays scrubbed, a POSIX env is byte-identical
+    to before, and the validator's pipes stay BYTES decoded as UTF-8 with
+    replacement -- the 0x8f that kills a locale-decoded (cp1252) reader thread
+    is inert here.
+    """
+    from ouroboros.tools import skill_preflight as sp
+
+    seen: dict = {}
+
+    class _FakeProc:
+        returncode = 0
+        pid = 4242
+
+        def communicate(self, timeout=None):
+            return b"", b"\x8f\xff not utf-8"
+
+    def _fake_popen(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        seen["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(sp, "Popen", _fake_popen)
+    for key in sp._WINDOWS_BASE_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "must-not-reach-the-validator")
+
+    result = sp._run_check(["node", "--check", "widget.js"], cwd=tmp_path)
+    posix_env = seen["kwargs"]["env"]
+    assert set(posix_env) == {"PATH", "HOME", "LANG"}
+    assert posix_env["LANG"] == "C.UTF-8"
+    assert not any(key in seen["kwargs"] for key in ("text", "universal_newlines", "encoding"))
+    assert result["returncode"] == 0
+    assert result["stderr"] == "\ufffd\ufffd not utf-8"
+
+    monkeypatch.setenv("SYSTEMROOT", "C:\\Windows")
+    monkeypatch.setenv("TEMP", "C:\\Users\\runneradmin\\AppData\\Local\\Temp")
+    sp._run_check(["node", "--check", "widget.js"], cwd=tmp_path)
+    windows_env = seen["kwargs"]["env"]
+    assert windows_env["SYSTEMROOT"] == "C:\\Windows"
+    assert windows_env["TEMP"] == "C:\\Users\\runneradmin\\AppData\\Local\\Temp"
+    assert set(windows_env) == {"PATH", "HOME", "LANG", "SYSTEMROOT", "TEMP"}
+    assert "OPENROUTER_API_KEY" not in windows_env
+
+
 # ------------------------------------------------------------- S1-07 / S1-02 / F14
 
 
@@ -230,13 +280,28 @@ def _clean_loader_state(monkeypatch):
     clean_extension_runtime_state()
 
 
+
+def _set_process_role(monkeypatch, server: bool) -> None:
+    """Pin which process "answers" a reconcile.
+
+    v7 split: the loader stamps its own receipts through its imported binding,
+    while the reconcile queue and the liveness projection read the OWNER
+    (``extension_companion.is_server_process``) at call time — so the pin must
+    land on both, or the receipt vocabulary (``requested`` / ``request_failed``)
+    is decided by whatever process-pid state an earlier test left behind."""
+    import ouroboros.extension_companion as extension_companion
+    import ouroboros.extension_loader as extension_loader
+
+    monkeypatch.setattr(extension_companion, "is_server_process", lambda: server)
+    monkeypatch.setattr(extension_loader, "is_server_process", lambda: server)
+
 def test_reconcile_receipt_names_the_answering_process(tmp_path, monkeypatch):
     """A reconcile receipt says which process answered and whether the marker landed."""
     from ouroboros import extension_loader
 
     loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
 
-    monkeypatch.setattr(extension_loader, "is_server_process", lambda: True)
+    _set_process_role(monkeypatch, True)
     state = extension_loader.reconcile_extension(
         loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
     )
@@ -244,7 +309,7 @@ def test_reconcile_receipt_names_the_answering_process(tmp_path, monkeypatch):
     assert state["server_reconcile"] == ""
 
     extension_loader.unload_extension(loaded.name)
-    monkeypatch.setattr(extension_loader, "is_server_process", lambda: False)
+    _set_process_role(monkeypatch, False)
     state = extension_loader.reconcile_extension(
         loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
     )
@@ -259,7 +324,7 @@ def test_reconcile_records_health_for_the_resulting_runtime_state(tmp_path, monk
     from ouroboros.skill_loader import save_enabled
 
     loaded, repo_root, drive_root = _prepare_live_extension(tmp_path)
-    monkeypatch.setattr(extension_loader, "is_server_process", lambda: True)
+    _set_process_role(monkeypatch, True)
 
     state = extension_loader.reconcile_extension(
         loaded.name, drive_root, lambda: {}, repo_path=str(repo_root)
@@ -288,7 +353,7 @@ def test_reconcile_receipt_reports_a_failed_marker_request(tmp_path, monkeypatch
         drive_root, loaded.name, status="broken", version="0.0.2", sha="shared-sha",
         reason="load_error", load_error="server import failed",
     )
-    monkeypatch.setattr(extension_loader, "is_server_process", lambda: False)
+    _set_process_role(monkeypatch, False)
 
     def boom(*_a, **_k):
         raise OSError("marker directory is read-only")
@@ -382,7 +447,7 @@ def test_save_enabled_best_effort_disclosure_contract_is_documented():
 def test_api_skill_toggle_records_the_owner_ui_actor(tmp_path, monkeypatch):
     """The HTTP owner toggle labels itself, so the incident class is reconstructible."""
     from ouroboros.skill_loader import SkillReviewState, compute_content_hash, save_review_state
-    from tests.test_extensions_api import _make_client, _write_ext
+    from tests.test_extensions_api import _make_client, _stop_patches, _write_ext
 
     skills_root = tmp_path / "skills"
     skill_dir = _write_ext(
@@ -406,6 +471,7 @@ def test_api_skill_toggle_records_the_owner_ui_actor(tmp_path, monkeypatch):
         assert resp.status_code == 200, resp.text
     finally:
         client.close()
+        _stop_patches(_patches)   # the started patches (the password resolver among them) must not outlive the test
 
     rows = [
         json.loads(line)

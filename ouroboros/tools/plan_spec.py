@@ -530,14 +530,17 @@ def resolve_constitutional(
                 if label == "evidence" and not exists(resolved):
                     skipped.append(locator)
                     continue
+                # The locator is quoted VERBATIM (never ``repr``): the note is disclosure a
+                # reviewer copies back, and ``repr`` doubles every backslash of a Windows path.
                 return True, (
-                    f"constitutional: {label} locator {locator!r} resolves under the "
+                    f"constitutional: {label} locator '{locator}' resolves under the "
                     "Ouroboros system repository (structural fact)"
                 )
     if skipped:
+        listed = ", ".join(f"'{item}'" for item in skipped[:5])
         return False, (
             "not constitutional: the only system-repo locators declared are EVIDENCE paths that do "
-            f"not exist ({', '.join(repr(item) for item in skipped[:5])}) — declare them under "
+            f"not exist ({listed}) — declare them under "
             "affected_resources if the work will change them"
         )
     return False, "not constitutional: no declared locator resolves under the Ouroboros system repository"
@@ -814,7 +817,7 @@ def closure_after_disposition(
     rationale → next paid delta cycle). DEGRADED → not closable by disposition
     (rerun the wave). Advisory enforcement never flips ``closed``: the caller
     may proceed with the wave open under loud disclosure — this function only
-    reports. Control-line invariants (``loop_tool_execution
+    reports. Control-line invariants (``tools.plan_render
     ._parse_plan_review_control``): GREEN ⇒ closed, REVISE_PLAN ⇒ not closed.
     """
     verdict = str(aggregate or "").strip().upper()

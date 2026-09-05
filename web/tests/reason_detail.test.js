@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import {
     taskDoneIsTerminal, taskPresentation, taskReasonDetail, taskReasonPhrase, taskTerminalPhase,
@@ -36,7 +36,15 @@ test('every typed cause the loop can record has a sentence', () => {
     // Cross-language completeness: the reachable literals live in the Python
     // loop, the sentences live here, and a new cause must not silently fall
     // back to its machine code on the card.
-    const loop = readFileSync(new URL('../../ouroboros/loop.py', import.meta.url), 'utf8');
+    // v7 split ouroboros/loop.py into leaves — the reachable literals now sit in
+    // loop_budget.py and loop_delivery.py — so scan the whole loop family
+    // instead of the one file that used to hold them all.
+    const pkg = new URL('../../ouroboros/', import.meta.url);
+    const loop = readdirSync(pkg)
+        .filter((name) => /^loop.*\.py$/.test(name))
+        .sort()
+        .map((name) => readFileSync(new URL(name, pkg), 'utf8'))
+        .join('\n');
     const literals = new Set(
         [...loop.matchAll(/degraded_reason\s*=\s*"([a-z_]+)"/g)].map((m) => m[1]),
     );
