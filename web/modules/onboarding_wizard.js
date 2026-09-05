@@ -830,7 +830,6 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         `;
         bindEvents();
         renderLocalStatus();
-        renderClaudeCliStatus();
     }
 
         function bindClearButtons() {
