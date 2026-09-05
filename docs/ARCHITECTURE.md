@@ -1546,11 +1546,12 @@ The local `ouroboros-stable` ref is also a recovery fallback maintained by expli
 
 ### CI topology
 
-`.github/workflows/ci.yml` has 13 jobs, grouped by trigger and secret exposure:
+`.github/workflows/ci.yml` has 16 jobs, grouped by trigger and secret exposure:
 
 | Tier | Jobs | Trust boundary |
 |---|---|---|
-| Fork-safe PR validation | `quick-test`, `betterleaks-platform-smoke` | `ouroboros` pushes, pull requests into `ouroboros`, manual runs; read-only, no provider secrets, never `pull_request_target` |
+| Fork-safe PR validation | `quick-test`, `betterleaks-platform-smoke`, `benchmark-methodology` (also on `ouroboros-stable` pushes and `v*` tags) | `ouroboros` pushes, pull requests into `ouroboros`, manual runs; read-only, no provider secrets, never `pull_request_target` |
+| Scheduled lanes | `system-e2e-mock` (keyless; daily 04:37 UTC, manual runs, `v*` tags — on the release bar), `e2e-live` (`OUROBOROS_E2E_LIVE_OPENROUTER_KEY`, `$30` cap) | `e2e-live` fires only on its own nightly cron (03:17 UTC, seeding the `ouroboros` branch tip rather than the default branch the schedule fires on) or a dispatch that opts in through the `e2e_live` input; without the secret it is one summary line and green, never a pretend run |
 | Stable/tag matrix | `full-test` (no secrets), `skill-smoke` (`OPENROUTER_API_KEY`) | `ouroboros-stable` pushes, manual runs, `v*` tags — never pull requests |
 | Trusted provider run | `integration-test` | provider secrets; `main`/`ouroboros`/`ouroboros-stable` pushes, manual runs and `v*` tags (the release chain needs it) — never pull requests |
 | Tag-only gates and release chain | `marker-guards`, `ui-smoke`, `docker-ui-smoke`, `docker-portable-test` (manual runs or tags, no secrets); `release-preflight` (needs `full-test` + `integration-test`) → `build` (signing secrets) → `release` (needs `build`, `release-preflight`, `skill-smoke` and the four tag-only gates); `vendor-package-smoke` needs `build` and stays informational | tag-triggered; a reproducible provider-contract failure blocks tag builds, a typed inconclusive provider outage does not |

@@ -1,8 +1,13 @@
 """The paid `e2e-live` CI job: the live E2E stand (devtools/e2e_live) on a nightly
-cron or manual dispatch, sized to a $30 cap, skipped honestly without its secret.
+cron or an OPTED-IN manual dispatch, sized to a $30 cap, skipped honestly without
+its secret.
 
 Pinned as a contract, not as text: the job fires only on its OWN cron string or a
-dispatch (never push, pull_request, tag, or the keyless lane's cron); it names
+dispatch whose `e2e_live` input is true (never a plain dispatch — the pre-tag
+3-OS matrix must not spend money — nor push, pull_request, tag, or the keyless
+lane's cron); the input changes no other job's gate; the nightly checks out and
+seeds the `ouroboros` branch tip (a schedule fires on the default branch, the
+promoted release line) while a dispatch seeds its own sha; it names
 exactly one secret, `OUROBOROS_E2E_LIVE_OPENROUTER_KEY`, gated through a
 non-secret job-level env (GitHub rejects `secrets.*` inside `if:`); a missing
 secret is one step-summary line and a green exit, not a red run and not a
@@ -11,14 +16,20 @@ detached seed of the checked-out sha; the run size is FEASIBLE under the cap by
 the stand's own worst-case reservation rule computed from the code (a set that
 can never be admitted would be a nightly red by construction); artifacts are
 uploaded even on failure and never include a lane settings file (0600, carries
-the key).
+the key); and the step summary renders EVERY manifest shape — verdicts on
+completion, the typed refusal or error otherwise — and never fails on its own.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import pathlib
 import re
 import shlex
+import subprocess
+import sys
+import textwrap
 
 import yaml
 
@@ -30,6 +41,8 @@ CI_PATH = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 JOB = "e2e-live"
 SECRET = "OUROBOROS_E2E_LIVE_OPENROUTER_KEY"
 LIVE_CRON = "17 3 * * *"
+DISPATCH_INPUT = "e2e_live"
+NIGHTLY_REF = "ouroboros"
 SKIP_LINE = f"skipped: secret {SECRET} not configured"
 TOTAL_BUDGET_USD = 30.0
 
@@ -66,15 +79,30 @@ def _stand_args() -> dict[str, str | None]:
     return args
 
 
-def test_the_paid_lane_fires_only_on_its_own_cron_or_a_dispatch():
+def test_the_paid_lane_fires_only_on_its_own_cron_or_an_opted_in_dispatch():
     workflow = _workflow()
-    crons = [str(entry["cron"]) for entry in (workflow.get("on") or workflow.get(True))["schedule"]]
+    triggers = workflow.get("on") or workflow.get(True)
+    crons = [str(entry["cron"]) for entry in triggers["schedule"]]
     assert LIVE_CRON in crons, crons
+    # The opt-in: a boolean dispatch input, OFF by default, naming the cost and
+    # the secret. A plain `gh workflow run CI --ref <branch>` (the pre-tag 3-OS
+    # matrix) therefore never runs the paid lane.
+    inputs = triggers["workflow_dispatch"]["inputs"]
+    assert list(inputs) == [DISPATCH_INPUT], inputs
+    spec = inputs[DISPATCH_INPUT]
+    assert spec["type"] == "boolean" and spec["default"] is False, spec
+    assert "$30" in spec["description"] and SECRET in spec["description"], spec
     condition = " ".join(str(_job()["if"]).split())
     assert condition == (
-        "github.event_name == 'workflow_dispatch'"
+        f"(github.event_name == 'workflow_dispatch' && github.event.inputs.{DISPATCH_INPUT} == 'true')"
         f" || (github.event_name == 'schedule' && github.event.schedule == '{LIVE_CRON}')"
     )
+    # The input gates THIS job only: no other job reads dispatch inputs, so the
+    # `github.event_name == 'workflow_dispatch'` gates elsewhere keep firing on
+    # every dispatch exactly as before the block gained inputs.
+    for name, job in workflow["jobs"].items():
+        if name != JOB:
+            assert "inputs" not in str(job.get("if", "")), (name, job.get("if"))
     assert _job()["runs-on"] == "ubuntu-latest"
     # One SM1 lane with --self-mod: the task, the evolution cycle, the absorb
     # wait and two hermetic preflight suites on a 4-vCPU runner.
@@ -116,10 +144,12 @@ def test_a_missing_secret_is_one_summary_line_and_a_green_exit():
         assert "env.HAS_E2E_LIVE_KEY == 'true'" in str(step.get("if", "")), step
 
 
-def test_the_stand_runs_with_the_operator_flag_set_on_a_clean_seed_of_this_sha():
+def test_the_stand_runs_with_the_operator_flag_set_on_a_clean_seed_of_the_checkout():
     args = _stand_args()
     assert args["--source-repo"] == "$GITHUB_WORKSPACE"
-    assert args["--seed"] == "$GITHUB_SHA"
+    # HEAD of the checkout, never $GITHUB_SHA: on a schedule GITHUB_SHA names
+    # the DEFAULT branch (main) while the checkout below is the ouroboros tip.
+    assert args["--seed"] == "HEAD"
     assert args["--out"].startswith("$RUNNER_TEMP/")
     assert args["--self-mod"] is None
     assert float(args["--total-budget"]) == TOTAL_BUDGET_USD
@@ -128,7 +158,11 @@ def test_the_stand_runs_with_the_operator_flag_set_on_a_clean_seed_of_this_sha()
     # The seed's `git describe` and the release admission gate read history and tags.
     checkout = _job()["steps"][0]
     assert checkout["uses"].startswith("actions/checkout@")
-    assert checkout["with"] == {"fetch-depth": 0, "persist-credentials": False}
+    # Nightly = the development line's tip; dispatch = the dispatched sha.
+    assert checkout["with"] == {
+        "ref": f"${{{{ github.event_name == 'schedule' && '{NIGHTLY_REF}' || github.sha }}}}",
+        "fetch-depth": 0, "persist-credentials": False,
+    }
     # The gate's node lane and the UI probe need node 22 and Chromium, as in ui-smoke.
     steps = _job()["steps"]
     assert any(step.get("uses", "").startswith("actions/setup-node@") for step in steps)
@@ -175,3 +209,73 @@ def test_artifacts_upload_even_on_failure_and_never_a_lane_settings_file():
                    and SKIP_LINE not in str(step.get("run", "")))
     assert summary["if"] == "always() && env.HAS_E2E_LIVE_KEY == 'true'"
     assert "run_manifest.json" in summary["run"]
+
+
+def _summary_step() -> dict:
+    return next(step for step in _job()["steps"] if "GITHUB_STEP_SUMMARY" in str(step.get("run", ""))
+                and SKIP_LINE not in str(step.get("run", "")))
+
+
+def _run_summary(tmp_path: pathlib.Path, manifest: dict | str | None) -> tuple[int, str, str]:
+    """Execute the summary step's inline Python against a run root holding ``manifest``
+    (a dict is written as JSON, a str verbatim, None means no manifest at all)."""
+    run = _summary_step()["run"]
+    heredoc = re.search(r"python - <<'PY'\n(.*?)\n\s*PY\s*$", run, re.DOTALL)
+    assert heredoc, run
+    code = textwrap.dedent(heredoc.group(1))
+    runner_temp = tmp_path / "runner_temp"
+    (runner_temp / "e2e_live").mkdir(parents=True)
+    if manifest is not None:
+        body = json.dumps(manifest) if isinstance(manifest, dict) else manifest
+        (runner_temp / "e2e_live" / "run_manifest.json").write_text(body, encoding="utf-8")
+    summary = tmp_path / "step_summary.md"
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
+        env={**os.environ, "RUNNER_TEMP": str(runner_temp), "GITHUB_STEP_SUMMARY": str(summary)},
+    )
+    return proc.returncode, summary.read_text(encoding="utf-8") if summary.exists() else "", proc.stderr
+
+
+def test_the_summary_step_renders_every_manifest_shape_and_never_fails(tmp_path):
+    """`extra.scenarios` is the requested id LIST from admission until the verdict
+    dict is written on completion: a typed refusal (credit_preflight, key_unusable,
+    seed_materialize) or a crash leaves the list behind. The summary must render
+    the refusal/error then, the verdicts only for the dict, and exit 0 in every
+    case — the stand's own exit code is the job's verdict, not this report."""
+    assert _summary_step()["if"] == "always() && env.HAS_E2E_LIVE_KEY == 'true'"
+    refused = {"extra": {"outcome": "refused", "exit_code": 3, "scenarios": ["SM1"], "seed_ref": "HEAD",
+                         "refusal": {"stage": "credit_preflight", "reason": "insufficient_remaining",
+                                     "remaining_usd": 4.2, "floor_usd": 30.0}}}
+    rc, text, err = _run_summary(tmp_path / "refused", refused)
+    assert rc == 0, err
+    assert "outcome: refused (exit 3)" in text and "insufficient_remaining" in text, text
+    assert "no verdicts" in text and "SM1" in text, text
+
+    crashed = {"extra": {"outcome": "crashed", "exit_code": 1, "scenarios": ["SM1"],
+                         "error": {"type": "RuntimeError", "message": "lane server never became ready"}},
+               "seed": {"resolved_sha": "abc123"}}
+    rc, text, err = _run_summary(tmp_path / "crashed", crashed)
+    assert rc == 0, err
+    assert "outcome: crashed (exit 1)" in text and "lane server never became ready" in text, text
+    assert "seed abc123" in text, text
+
+    completed = {"extra": {"outcome": "completed", "exit_code": 0, "seed_describe": "v7.0.0-rc.14-3-gabc",
+                           "effective_model": "openrouter/some-model",
+                           "scenarios": {"SM1": {"attempts": 1, "passed": 1, "infra_errors": 0, "not_run": 0,
+                                                 "verdict": "pass"}},
+                           "budget": {"spent_usd": 12.345, "cap_usd": 30.0, "refusals": []},
+                           "self_mod": {"lanes": 1, "absorb_unconfirmed": []}}}
+    rc, text, err = _run_summary(tmp_path / "completed", completed)
+    assert rc == 0, err
+    assert "outcome: completed (exit 0)" in text and "seed v7.0.0-rc.14-3-gabc" in text, text
+    assert 'SM1: {"attempts": 1' in text and '"verdict": "pass"' in text, text
+    assert "budget: spent $12.35 of cap $30.00; refusals 0" in text and "self_mod:" in text, text
+    assert "no verdicts" not in text
+
+    rc, text, err = _run_summary(tmp_path / "absent", None)
+    assert rc == 0, err
+    assert "no run_manifest.json" in text, text
+
+    rc, text, err = _run_summary(tmp_path / "corrupt", "{not json")
+    assert rc == 0, err
+    assert "summary could not read run_manifest.json" in text, text

@@ -1392,15 +1392,20 @@ the running spend against the cap, free disk on `/` and `/mnt/data`, and the key
 headroom from a probe on its own thread with an 8 s HTTP bound, at most once a
 minute, backing off on failure — a failed probe is informational, never an ALERT
 and never a delay of the tick. In CI the same stand is the `e2e-live` job of
-`.github/workflows/ci.yml` — manual dispatch or its own nightly cron (03:17 UTC),
-`--total-budget 30` on the repository secret `OUROBOROS_E2E_LIVE_OPENROUTER_KEY`
+`.github/workflows/ci.yml` — a dispatch that opts in through the `e2e_live` input
+(`gh workflow run CI --ref <branch> -f e2e_live=true`; a plain dispatch such as
+the pre-tag 3-OS matrix never runs it) or its own nightly cron (03:17 UTC, which
+fires on the default branch `main` and checks out the `ouroboros` branch tip, the
+development line, as the seed), `--total-budget 30` on the repository secret
+`OUROBOROS_E2E_LIVE_OPENROUTER_KEY`
 (the owner creates it; the repository never writes one), sized by the
 reservation rule above to the largest subset admissible under that cap (one SM1
 attempt at `--per-task-usd 15` while the factor is 2), honestly skipped with the
 step-summary line `skipped: secret OUROBOROS_E2E_LIVE_OPENROUTER_KEY not
 configured` until the secret exists, and uploading `run_manifest.json`, every
 `lanes/*/result.json` and the screenshots as the run's artifact even when the run
-fails.
+fails; its step summary renders the verdicts on completion and the typed refusal
+or error otherwise, never failing on its own.
 
 ### Light mode and external deliverables
 
