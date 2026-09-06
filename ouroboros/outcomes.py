@@ -20,40 +20,18 @@ from ouroboros import _outcome_receipts
 # Tool-call trace vocabulary + execution-axis classifier (leaf module). Re-exported
 # here so `from ouroboros.outcomes import _classify_tool_errors/_POLICY_DENIAL_STATUSES/...`
 # keeps resolving for every historical import site.
-from ouroboros._outcome_tool_errors import (
+from ouroboros._outcome_tool_errors import (  # explicit re-exports, one statement
     _BLOCKING_TOOL_STATUSES as _BLOCKING_TOOL_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _classify_tool_errors as _classify_tool_errors,
-)
-from ouroboros._outcome_tool_errors import (
     _COSMETIC_TOOL_NAMES as _COSMETIC_TOOL_NAMES,
-)
-from ouroboros._outcome_tool_errors import (
     _is_ignored_readonly_block as _is_ignored_readonly_block,
-)
-from ouroboros._outcome_tool_errors import (
     _NON_BLOCKING_READONLY_BLOCK_STATUSES as _NON_BLOCKING_READONLY_BLOCK_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _NON_BLOCKING_RECOVERABLE_STATUSES as _NON_BLOCKING_RECOVERABLE_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _OK_TOOL_STATUSES as _OK_TOOL_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _POLICY_DENIAL_STATUSES as _POLICY_DENIAL_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _RECOVERY_TOOL_NAMES as _RECOVERY_TOOL_NAMES,
-)
-from ouroboros._outcome_tool_errors import (
     _ROOT_WRITE_TOOLS as _ROOT_WRITE_TOOLS,
-)
-from ouroboros._outcome_tool_errors import (
     _unresolved_tool_errors as _unresolved_tool_errors,
-)
-from ouroboros._outcome_tool_errors import (
     _user_file_basenames as _user_file_basenames,
 )
 from ouroboros.headless import (
@@ -917,6 +895,17 @@ def public_task_result(result: Dict[str, Any], *, include_outcome_axes: bool = T
                     stack.append((child_value, clone, child_key))
     if not isinstance(public, dict):
         return {}
+    # ABI-3 projection boundary: the public contract carries NO retired cost
+    # alias — a stored legacy row's pair resolves deprecated-wins and leaves
+    # under the honest names only, at the top level and on the nested public
+    # cost planes (the subagent envelope with its usage snapshot and the
+    # loop-outcome usage snapshot) — ONE shared normalizer with the
+    # write_task_result rewrite seam (fix-round-3). Internal planes that
+    # merely share the spelling inside evidence blobs (review receipts,
+    # ledger rows) are their own schemas and pass through untouched.
+    from ouroboros.cost_projection import normalize_task_result_cost_planes
+
+    public = normalize_task_result_cost_planes(public)
     plan_state = public.get("plan_review_state")
     if isinstance(plan_state, dict) and plan_state.get("schema_version") == 1:
         plan_state["legacy_v1_projection"] = legacy_plan_review_projection(plan_state)
@@ -972,6 +961,25 @@ def _apply_actor_first_terminal_projection(
         })
     outcome["actor_first_terminal"] = actor
     return outcome
+
+
+def _loop_usage_snapshot(usage: Dict[str, Any], resource_limit: Dict[str, Any]) -> Dict[str, Any]:
+    """The loop-outcome's flat usage snapshot (module-size law extraction).
+
+    ABI-3: the loop's own accounted cost rides the honest name — this
+    sub-dict reaches the public task-result payload through ``loop_outcome``
+    (stored legacy rows still resolve deprecated-wins at the projection
+    boundary)."""
+    return {
+        "accounted_upper_bound_usd": (
+            round(float(usage["cost"]), 6)
+            if usage.get("cost") is not None else None
+        ),
+        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "total_rounds": int(usage.get("rounds") or 0),
+        **({"resource_limit": resource_limit} if resource_limit else {}),
+    }
 
 
 def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[str, Any]) -> Dict[str, Any]:
@@ -1256,16 +1264,7 @@ def derive_loop_outcome(final_text: str, usage: Dict[str, Any], llm_trace: Dict[
         "final_answer_missing_sentinel": not final_answer_payload,
         "failure": headline_failure, "degraded": bool(delivery_candidate.get("degraded")), "degraded_reason": degraded_reason,
         "recoveries": recovered_tool_errors[:20],
-        "usage": {
-            "cost_usd": (
-                round(float(usage["cost"]), 6)
-                if usage.get("cost") is not None else None
-            ),
-            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-            "completion_tokens": int(usage.get("completion_tokens") or 0),
-            "total_rounds": int(usage.get("rounds") or 0),
-            **({"resource_limit": resource_limit} if resource_limit else {}),
-        },
+        "usage": _loop_usage_snapshot(usage, resource_limit),
         "trace_refs": collect_trace_refs(usage, llm_trace),
     }
     return _apply_actor_first_terminal_projection(outcome, usage)

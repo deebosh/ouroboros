@@ -4,7 +4,8 @@ Absorbs the milestone CONTENT logic that lived inline in ``loop.py`` (deadline
 50/25/10% TIME BUDGET notes and the v6.53.0 intrinsic no-deadline pacing) and
 adds the acceptance-review budget layer: the finalization reserve, a budget
 snapshot, and the improvement-pass gates driven by ``task_contract.budget_profile``
-(``improvement_policy`` fixed | adaptive | until_deadline).
+(``improvement_policy`` fixed | adaptive; the legacy ``until_deadline`` /
+``stall_rounds_threshold`` aliases were removed in the 7.0 ABI window, Q10=A).
 
 Design contract (owner-decided, sprint v6.55):
 - Pacing notes fire only on milestone triggers, never per round (prompt-cache
@@ -38,7 +39,6 @@ from ouroboros.review_cycles import (
     get_acceptance_max_improvement_passes,
     review_max_cycles,
 )
-from ouroboros.utils import append_jsonl, utc_now_iso
 
 
 # The host never predicts how long a review takes (owner R52, 2026-09-03). A
@@ -127,57 +127,19 @@ def _supplied_budget_profile(ctx: Any) -> Any:
     return contract.get("budget_profile") if isinstance(contract, dict) else None
 
 
-def _deprecated_pacing_aliases(profile: Any) -> list:
-    """The one-minor compatibility aliases a SUPPLIED profile carries."""
-    if not isinstance(profile, dict):
-        return []
-    legacy_keys = []
-    if str(profile.get("improvement_policy") or "").strip().lower() == "until_deadline":
-        legacy_keys.append("until_deadline")
-    # Normalization materializes this field as ``None`` for every task.
-    # Only a supplied value is a deprecated alias; defaults stay quiet.
-    if profile.get("stall_rounds_threshold") is not None:
-        legacy_keys.append("stall_rounds_threshold")
-    return legacy_keys
-
-
 def observe_budget_profile(ctx: Any) -> Dict[str, Any]:
-    """The task's normalized budget_profile resolved SIDE-EFFECT FREE (R49).
-
-    The same answer ``resolve_budget_profile`` returns: the deprecation row and
-    its ctx latch belong to the path that OWNS a mutation, so this reader — the
-    coordination poll's ``delegate_supervision._time_fact`` — writes nothing and
-    mutates no context attribute."""
+    """The task's normalized budget_profile resolved SIDE-EFFECT FREE (R49): the
+    reader the coordination poll (``delegate_supervision._time_fact``) uses."""
     return normalize_budget_profile(_supplied_budget_profile(ctx))
 
 
 def resolve_budget_profile(ctx: Any) -> Dict[str, Any]:
     """The task's normalized budget_profile (from task_contract; absent ->
-    defaults), plus the one-shot ``deprecated_task_pacing_alias`` row a supplied
-    legacy alias owes. For the acceptance/pacing paths that own a mutation;
-    observers call ``observe_budget_profile`` for the same answer."""
-    profile = _supplied_budget_profile(ctx)
-    legacy_keys = _deprecated_pacing_aliases(profile)
-    if legacy_keys and not getattr(ctx, "_acceptance_pacing_deprecation_emitted", False):
-        try:
-            append_jsonl(
-                pathlib.Path(getattr(ctx, "drive_root")) / "logs" / "events.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "deprecated_task_pacing_alias",
-                    "task_id": str(getattr(ctx, "task_id", "") or ""),
-                    "aliases": legacy_keys,
-                    "removal": "next_major",
-                },
-            )
-            ctx._acceptance_pacing_deprecation_emitted = True
-        except Exception:
-            log.warning(
-                "Failed to persist deprecated task-pacing aliases %s",
-                legacy_keys,
-                exc_info=True,
-            )
-    return normalize_budget_profile(profile)
+    defaults). The deprecated ``until_deadline`` / ``stall_rounds_threshold``
+    aliases and their deprecation row are gone (7.0 ABI window), so this is
+    the same side-effect-free read as ``observe_budget_profile``; both names
+    stay so the observer contract remains explicit at its call sites."""
+    return normalize_budget_profile(_supplied_budget_profile(ctx))
 
 
 def _acceptance_floor_sec() -> float:
@@ -300,7 +262,7 @@ def review_launch_allowed(snapshot: BudgetSnapshot) -> Tuple[bool, str]:
 
 
 def effective_max_improvement_passes(
-    profile: Dict[str, Any], *, has_deadline: bool = True,
+    profile: Dict[str, Any], *,
     required_blocking: bool = False,
 ) -> Optional[int]:
     """The COUNT axis for improvement passes.
@@ -310,19 +272,12 @@ def effective_max_improvement_passes(
     Required+Blocking included (owner decisions D10/D20): passes = cycles - 1
     from ``OUROBOROS_REVIEW_MAX_CYCLES`` (``review_cycles.py``), ``None`` only
     when that setting is ``unlimited``. Deadline and global lifecycle rails
-    apply on top. The one-minor ``until_deadline`` alias keeps its historical
-    meaning outside Required+Blocking: with a deadline the count axis is off."""
+    apply on top. (The ``until_deadline`` alias that lifted the count axis
+    outside Required+Blocking was removed in the 7.0 ABI window, Q10=A.)"""
     cap = profile.get("max_improvement_passes")
-    # An explicit task-local cap is authoritative under every policy, including
-    # the one-minor ``until_deadline`` compatibility alias.
+    # An explicit task-local cap is authoritative under every policy.
     if cap is not None:
         return max(0, int(cap))
-    if (
-        not required_blocking
-        and profile.get("improvement_policy") == "until_deadline"
-        and has_deadline
-    ):
-        return None
     cap = get_acceptance_max_improvement_passes()
     return None if cap is None else max(0, int(cap))
 
@@ -353,7 +308,6 @@ def improvement_pass_allowed(
     budget_profile) keeps the generic ``improvement_passes_exhausted``."""
     cap = effective_max_improvement_passes(
         profile,
-        has_deadline=snapshot.has_deadline,
         required_blocking=required_blocking,
     )
     if cap is not None and passes_done >= cap:
@@ -1063,12 +1017,11 @@ def _acceptance_rails_line_inner(
     try:
         cap = effective_max_improvement_passes(
             budget_profile,
-            has_deadline=bool(getattr(budget_snapshot, "has_deadline", False)),
             required_blocking=required_blocking,
         )
         if cap is None:
-            # None comes from either the unlimited shared cap or the non-RB
-            # ``until_deadline``+deadline alias path; only claim the former when true.
+            # None comes only from the unlimited shared cap now (the
+            # until_deadline alias path was removed in 7.0, Q10=A).
             why = "review cycles unlimited; " if review_max_cycles() is None else ""
             parts.append(
                 f"review passes: {int(passes_done)} done, no local count cap "

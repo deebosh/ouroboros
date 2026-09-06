@@ -23,6 +23,9 @@ pytestmark = pytest.mark.serial
 
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros.tools.shell_guards import interpreter_write_shape, shell_has_write_indicator
+from tests._typed_guard_shared import _shell_guard_text
+
+
 
 
 @pytest.fixture(autouse=True)
@@ -184,7 +187,7 @@ def test_external_pure_read_outside_runtime_is_allowed(tmp_path):
     target = scratch / "artifact.bin"
     target.write_bytes(b"payload")
     cmd = ["python3", "-c", READ_ONLY_HASH_SCRIPT.format(target=str(target))]
-    assert reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") is None
+    assert _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") is None
 
 
 def test_workspace_mode_pure_read_outside_root_is_allowed(tmp_path):
@@ -194,7 +197,7 @@ def test_workspace_mode_pure_read_outside_root_is_allowed(tmp_path):
     target = scratch / "report.txt"
     target.write_text("data", encoding="utf-8")
     cmd = ["python3", "-c", f"print(open({str(target)!r}, 'r').read())"]
-    assert reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") is None
+    assert _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") is None
 
 
 def test_external_sh_wrapped_pure_read_is_allowed(tmp_path):
@@ -204,7 +207,7 @@ def test_external_sh_wrapped_pure_read_is_allowed(tmp_path):
     target = scratch / "blob.bin"
     target.write_bytes(b"x" * 16)
     inner = f"python3 -c \"print(open({str(target)!r}, 'rb').read(8))\""
-    assert reg._run_shell_safety_check({"cmd": ["sh", "-c", inner], "cwd": str(tmp_path / "workspace")}, "advanced") is None
+    assert _shell_guard_text(reg, {"cmd": ["sh", "-c", inner], "cwd": str(tmp_path / "workspace")}, "advanced") is None
 
 
 def test_external_pure_read_of_runtime_still_blocked_via_read_guard(tmp_path):
@@ -219,7 +222,7 @@ def test_external_pure_read_of_runtime_still_blocked_via_read_guard(tmp_path):
         "-c",
         READ_ONLY_HASH_SCRIPT.format(target=str(data / "settings.json")),
     ]
-    out = reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
+    out = _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
     assert "WORKSPACE_SHELL_BLOCKED" in out
     assert "read_file" in out
     assert "write-like" not in out
@@ -229,11 +232,11 @@ def test_external_write_mode_open_to_runtime_still_blocked(tmp_path):
     reg = _registry(tmp_path, mode="external")
     data = tmp_path / "data"
     cmd = ["python3", "-c", f"open({str(data / 'x')!r}, 'w').write('hi')"]
-    out = reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
+    out = _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
     assert "WORKSPACE_SHELL_BLOCKED" in out
     # A bare write-mode open with NO .write( chain (truncation alone) as well.
     bare = ["python3", "-c", f"open({str(data / 'x')!r}, 'w')"]
-    out2 = reg._run_shell_safety_check({"cmd": bare, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
+    out2 = _shell_guard_text(reg, {"cmd": bare, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
     assert "WORKSPACE_SHELL_BLOCKED" in out2
 
 
@@ -244,10 +247,10 @@ def test_external_ruby_pure_read_allowed_and_ruby_write_blocked(tmp_path):
     target = scratch / "f.txt"
     target.write_text("data", encoding="utf-8")
     read_cmd = ["ruby", "-e", f"puts File.read({str(target)!r})"]
-    assert reg._run_shell_safety_check({"cmd": read_cmd, "cwd": str(tmp_path / "workspace")}, "advanced") is None
+    assert _shell_guard_text(reg, {"cmd": read_cmd, "cwd": str(tmp_path / "workspace")}, "advanced") is None
     data = tmp_path / "data"
     write_cmd = ["ruby", "-e", f"File.write({str(data / 'x')!r}, 'y')"]
-    out = reg._run_shell_safety_check({"cmd": write_cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
+    out = _shell_guard_text(reg, {"cmd": write_cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
     assert "WORKSPACE_SHELL_BLOCKED" in out
 
 
@@ -259,7 +262,7 @@ def test_external_pathlib_write_open_to_runtime_still_blocked(tmp_path):
         "-c",
         f"from pathlib import Path; Path({str(data / 'x')!r}).open('w')",
     ]
-    out = reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
+    out = _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
     assert "WORKSPACE_SHELL_BLOCKED" in out
 
 
@@ -271,7 +274,7 @@ def test_external_opaque_subprocess_naming_runtime_still_blocked(tmp_path):
         "-c",
         f"import subprocess; subprocess.run(['rm', '-rf', {str(data / 'x')!r}])",
     ]
-    out = reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
+    out = _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
     assert "WORKSPACE_SHELL_BLOCKED" in out
 
 
@@ -292,7 +295,7 @@ def test_pure_filter_reads_outside_root_are_allowed(tmp_path):
         ["tar", "-tf", str(archive)],
         ["gzip", "-l", str(archive)],
     ):
-        out = reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced")
+        out = _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced")
         assert out is None, (cmd, out)
 
 
@@ -321,7 +324,7 @@ def test_sed_script_write_channels_stay_write_shaped(tmp_path):
     # reading host scratch passes.
     reg = _registry(tmp_path, mode="external")
     data = tmp_path / "data"
-    out = reg._run_shell_safety_check(
+    out = _shell_guard_text(reg,
         {"cmd": ["sed", f"w {data / 'x'}", "/etc/hostname"], "cwd": str(tmp_path / "workspace")},
         "advanced",
     ) or ""
@@ -330,7 +333,7 @@ def test_sed_script_write_channels_stay_write_shaped(tmp_path):
     scratch.mkdir()
     target = scratch / "f.txt"
     target.write_text("x", encoding="utf-8")
-    assert reg._run_shell_safety_check(
+    assert _shell_guard_text(reg,
         {"cmd": ["sed", "-n", "/delete/p", str(target)], "cwd": str(tmp_path / "workspace")},
         "advanced",
     ) is None
@@ -407,7 +410,7 @@ def test_pure_filter_write_channels_still_blocked(tmp_path):
         ["tar", "-xf", str(scratch / "a.tar"), "-C", str(scratch)],
         ["gzip", str(src)],
     ):
-        out = reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
+        out = _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
         assert "WORKSPACE_SHELL_BLOCKED" in out, (cmd, out)
 
 
@@ -417,7 +420,7 @@ def test_workspace_write_block_message_names_path_and_route(tmp_path):
     reg = _registry(tmp_path, mode="external")
     data = tmp_path / "data"
     cmd = ["python3", "-c", f"open({str(data / 'x')!r}, 'w').write('hi')"]
-    out = reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
+    out = _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
     assert "Blocked path:" in out
     assert "read_file" in out
 
@@ -429,7 +432,7 @@ def test_outside_root_write_block_message_names_path_and_root(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     cmd = ["python3", "-c", f"open({str(scratch / 'out.txt')!r}, 'w').write('hi')"]
-    out = reg._run_shell_safety_check({"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
+    out = _shell_guard_text(reg, {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced") or ""
     assert "WORKSPACE_SHELL_BLOCKED" in out
     assert "outside the selected process root" in out
     assert "Blocked path:" in out
@@ -453,7 +456,7 @@ def test_unprovable_row_never_promotes_absolute_executable_to_write(tmp_path, cm
         for token, is_write, _row in _workspace_write_candidates(forced_uncertain_row, [], cmd)
     )
     reg = _registry(tmp_path, mode="external")
-    assert reg._run_shell_safety_check(
+    assert _shell_guard_text(reg,
         {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) is None
 
@@ -464,7 +467,7 @@ def test_uncertain_python_body_naming_outside_path_stays_blocked(tmp_path):
         "/usr/bin/python3", "-c",
         'import subprocess; subprocess.run(["rm", "/Users/Shared/x"])',
     ]
-    out = reg._run_shell_safety_check(
+    out = _shell_guard_text(reg,
         {"cmd": cmd, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) or ""
     assert "outside the selected process root" in out
@@ -481,7 +484,7 @@ def test_os_write_through_literal_os_open_outside_stays_blocked(tmp_path):
     )
     targets, unknown = _python_write_targets_and_unknown(code)
     assert targets == ["/Users/Shared/out"] and unknown is False
-    out = reg._run_shell_safety_check(
+    out = _shell_guard_text(reg,
         {"cmd": ["/usr/bin/python3", "-c", code], "cwd": str(tmp_path / "workspace")},
         "advanced",
     ) or ""
@@ -559,7 +562,7 @@ def test_cp_source_outside_root_is_a_read_and_destination_still_blocked(tmp_path
     outside.mkdir()
 
     def check(cmd):
-        return reg._run_shell_safety_check({"cmd": cmd, "cwd": workspace}, "advanced")
+        return _shell_guard_text(reg, {"cmd": cmd, "cwd": workspace}, "advanced")
 
     assert check(["cp", str(outside / "widget.js"), "widget.js"]) is None
     assert check(["ln", "-s", str(outside / "src"), "link.js"]) is None
@@ -585,7 +588,7 @@ def test_relative_protected_root_source_still_blocked(tmp_path):
             tmp_path / "system" / "ouroboros" / "safety.py",
         ),
     ):
-        out = reg._run_shell_safety_check({"cmd": cmd, "cwd": workspace}, "advanced") or ""
+        out = _shell_guard_text(reg, {"cmd": cmd, "cwd": workspace}, "advanced") or ""
         assert "mentions Ouroboros system/data paths" in out, cmd
         # The blocked path is the FILE, i.e. the per-candidate containment branch
         # rather than the whole-command text scan.
@@ -601,7 +604,7 @@ def test_glued_operator_is_not_a_path_candidate(tmp_path):
     outside.mkdir()
 
     def check(cmd):
-        return reg._run_shell_safety_check({"cmd": cmd, "cwd": workspace}, "advanced")
+        return _shell_guard_text(reg, {"cmd": cmd, "cwd": workspace}, "advanced")
 
     assert check(["sh", "-c", "git reset HEAD scratch/ 2>/dev/null; rm -rf scratch/"]) is None
     assert check(["sh", "-c", "node build.js 2>/dev/null; echo ok"]) is None
@@ -619,7 +622,7 @@ def test_round5_redirect_only_segments_are_allowed_without_crash(tmp_path, body)
     reg = _registry(tmp_path, mode="external")
     workspace = tmp_path / "workspace"
     (workspace / "sub").mkdir()
-    assert reg._run_shell_safety_check(
+    assert _shell_guard_text(reg,
         {"cmd": ["sh", "-c", body], "cwd": str(workspace)}, "advanced"
     ) is None
 
@@ -640,7 +643,7 @@ def test_inline_code_segment_keeps_the_mention_scan(tmp_path):
     protected.write_text("{}", encoding="utf-8")
 
     def check(code):
-        return reg._run_shell_safety_check(
+        return _shell_guard_text(reg,
             {"cmd": ["python3", "-c", code], "cwd": workspace}, "advanced"
         )
 
@@ -664,7 +667,7 @@ def test_sed_in_script_target_survives_the_narrowed_scan(tmp_path):
     workspace = str(tmp_path / "workspace")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    out = reg._run_shell_safety_check(
+    out = _shell_guard_text(reg,
         {"cmd": ["sed", f"w {scratch / 'x'}", "f"], "cwd": workspace}, "advanced"
     ) or ""
     assert "outside the selected process root" in out
@@ -677,7 +680,7 @@ def _outside_write_result(tmp_path, cmd):
     outside = tmp_path / "outside"
     outside.mkdir(exist_ok=True)
     rendered = cmd(outside)
-    return rendered, reg._run_shell_safety_check(
+    return rendered, _shell_guard_text(reg,
         {"cmd": rendered, "cwd": workspace}, "advanced"
     ) or ""
 
@@ -784,7 +787,7 @@ def test_f7_python_literal_heredoc_read_stays_allowed(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     command = f"python3 - <<'EOF'\nprint(open(\"{outside / 'read'}\").read())\nEOF"
-    assert reg._run_shell_safety_check(
+    assert _shell_guard_text(reg,
         {"cmd": command, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) is None
 
@@ -800,7 +803,7 @@ def test_round5_sequential_effective_cwd_blocks_nested_escape(tmp_path):
         "pushd .. && echo x > ../outside",
         "env -C .. sh -c 'echo x > ../outside'",
     ):
-        out = reg._run_shell_safety_check(
+        out = _shell_guard_text(reg,
             {"cmd": ["sh", "-c", body], "cwd": str(fixtures)}, "advanced"
         ) or ""
         assert "WORKSPACE_SHELL_BLOCKED" in out, (body, out)
@@ -813,7 +816,7 @@ def test_round5_sequential_effective_cwd_keeps_in_workspace_write_allowed(tmp_pa
     (workspace / "tools").mkdir()
     for body in ("cd sub && echo x > f", "cd sub && touch ../file", "cd tools && touch ../shell_parse.py"):
         args = {"cmd": ["sh", "-c", body], "cwd": str(workspace)}
-        assert reg._run_shell_safety_check(args, "advanced") is None, body
+        assert _shell_guard_text(reg, args, "advanced") is None, body
 
 
 def test_round6_redirect_file_targets_outside_workspace_are_blocked(tmp_path):
@@ -824,7 +827,7 @@ def test_round6_redirect_file_targets_outside_workspace_are_blocked(tmp_path):
     (workspace / "1").symlink_to(outside / "numeric-log")
     for body in (f"echo x >& {outside / 'redirect-log'}", "echo x >1"):
         args = {"cmd": ["sh", "-c", body], "cwd": str(workspace)}
-        out = reg._run_shell_safety_check(args, "advanced") or ""
+        out = _shell_guard_text(reg, args, "advanced") or ""
         assert "WORKSPACE_SHELL_BLOCKED" in out, (body, out)
 
 
@@ -843,7 +846,7 @@ def test_round5_stdin_heredoc_writes_outside_are_blocked(tmp_path, command):
     outside.mkdir()
     target = outside / "heredoc-write"
     rendered = command.format(outside=str(target))
-    out = reg._run_shell_safety_check(
+    out = _shell_guard_text(reg,
         {"cmd": rendered, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) or ""
     assert "WORKSPACE_SHELL_BLOCKED" in out, (rendered, out)
@@ -854,7 +857,7 @@ def test_round5_python_stdin_heredoc_read_without_dash_is_allowed(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     command = f"python3 <<'EOF'\nprint(open({str(outside / 'read')!r}).read())\nEOF"
-    assert reg._run_shell_safety_check(
+    assert _shell_guard_text(reg,
         {"cmd": command, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) is None
 
@@ -867,7 +870,7 @@ def test_round6_piped_python_heredoc_write_policy(tmp_path, write):
     target = outside / ("write" if write else "read")
     statement = f"open({str(target)!r}, 'w')" if write else f"print(open({str(target)!r}).read())"
     command = f"python3 <<'EOF' | cat\n{statement}\nEOF"
-    out = reg._run_shell_safety_check(
+    out = _shell_guard_text(reg,
         {"cmd": command, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) or ""
     assert ("WORKSPACE_SHELL_BLOCKED" in out) is write, out
@@ -883,7 +886,7 @@ def test_round6_piped_python_heredoc_write_policy(tmp_path, write):
 )
 def test_round5_mixed_literal_writer_targets_are_all_modelled(tmp_path, argv):
     reg = _registry(tmp_path, mode="external")
-    out = reg._run_shell_safety_check(
+    out = _shell_guard_text(reg,
         {"cmd": argv, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) or ""
     assert "WORKSPACE_SHELL_BLOCKED" in out, (argv, out)
@@ -894,7 +897,7 @@ def test_f8_uncertain_perl_row_does_not_widen_independent_cat(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     command = f"perl -e 'print 1' && cat {outside / 'read'}"
-    assert reg._run_shell_safety_check(
+    assert _shell_guard_text(reg,
         {"cmd": command, "cwd": str(tmp_path / "workspace")}, "advanced"
     ) is None
 
@@ -947,7 +950,7 @@ def test_round3_old_block_coverage_stays_blocked(tmp_path):
         ("windows_unc", ["cp", "x", r"\\server\share\unc.txt"]),
     )
     for name, command in commands:
-        out = reg._run_shell_safety_check({"cmd": command, "cwd": workspace}, "advanced") or ""
+        out = _shell_guard_text(reg, {"cmd": command, "cwd": workspace}, "advanced") or ""
         assert "WORKSPACE_SHELL_BLOCKED" in out, (name, command, out)
 
 
@@ -995,5 +998,143 @@ def test_round3_ordinary_outside_reads_stay_allowed(tmp_path):
         ),
     )
     for name, command in commands:
-        out = reg._run_shell_safety_check({"cmd": command, "cwd": workspace}, "advanced")
+        out = _shell_guard_text(reg, {"cmd": command, "cwd": workspace}, "advanced")
         assert out is None, (name, command, out)
+
+
+# --- Windows spellings: the first windows-latest execution of this serial suite ---
+#
+# Five failures, two root causes, neither in tokenization (shlex posix mode strips
+# only UNQUOTED backslashes, and the raw-text harvest lane already recovers such a
+# spelling): (1) a Windows path typed into a plain Python literal ("C:\Users\x") is
+# not a valid Python string (\U opens a unicode escape), so the AST lane reported
+# UNKNOWN and the row fail-closed into an outside-root WRITE for a pure read;
+# (2) the block named only the natively RESOLVED path (C:\Users\Shared\x for a
+# command that wrote /Users/Shared/x). The tests below push the exact Windows
+# spellings through the host-independent seams. The one branch that cannot run
+# here — pathlib resolving a drive path natively (`os.name == "nt"` in
+# _workspace_shell_write_block) — is exercised through the message builder with
+# PureWindowsPath inputs: PosixPath cannot resolve a drive path, and patching
+# os.name breaks pathlib's flavour selection rather than simulating Windows.
+
+WINDOWS_TMP = r"C:\Users\runneradmin\AppData\Local\Temp\pytest-of-runneradmin\pytest-0"
+
+
+def test_windows_spelled_python_literals_are_read_verbatim():
+    from ouroboros.tools.shell_guards import _python_write_targets_and_unknown
+    from ouroboros.tools.write_shape import python_body_ast
+
+    read = f'print(open("{WINDOWS_TMP}\\outside\\read").read())'
+    assert python_body_ast(read) is not None
+    assert _python_write_targets_and_unknown(read) == ([], False)
+    assert _python_write_targets_and_unknown(
+        f"print(open('{WINDOWS_TMP}\\scratch\\blob.bin', 'rb').read(8))"
+    ) == ([], False)
+    # Writes keep their targets in the spelling the model typed, through every
+    # modelled channel: mode-open, os.open, pathlib join.
+    out = f"{WINDOWS_TMP}\\outside\\out"
+    assert _python_write_targets_and_unknown(f'open("{out}", "w").write("x")') == ([out], False)
+    assert _python_write_targets_and_unknown(
+        f'import os; fd=os.open("{out}", os.O_WRONLY|os.O_CREAT); os.write(fd, b"x")'
+    ) == ([out], False)
+    assert _python_write_targets_and_unknown(
+        f'from pathlib import Path; (Path("{WINDOWS_TMP}") / "outside" / "out").write_text("y")'
+    ) == ([out], False)
+    # An already-escaped spelling parses first time and keeps the same value.
+    assert _python_write_targets_and_unknown(f"open({out!r}, 'w')") == ([out], False)
+    # Uncertainty is untouched: an opaque body stays UNKNOWN, and so does a body
+    # unparseable for any reason other than its literals (python2 print).
+    assert _python_write_targets_and_unknown(
+        f'import subprocess; subprocess.run(["rm", "{out}"])'
+    )[1] is True
+    assert _python_write_targets_and_unknown(f'print "{out}"') == ([], True)
+
+
+def test_verbatim_string_source_respells_only_unescaped_backslashes():
+    import ast
+
+    from ouroboros.tools.write_shape import _verbatim_string_source
+
+    for source, value in (
+        (r'"C:\Users\x"', "C:\\Users\\x"),
+        (r"b'C:\Users\x'", b"C:\\Users\\x"),
+        (r'"""C:\Users\x"""', "C:\\Users\\x"),
+        (r'"a\"b\\c"', 'a"b\\c'),  # quote and backslash escapes are kept
+        (r"'it\'s'", "it's"),
+        ('"\\n"', "\\n"),  # verbatim, not a newline
+    ):
+        assert ast.literal_eval(_verbatim_string_source(source)) == value, source
+    assert _verbatim_string_source(r'r"C:\Users\x"') == r'r"C:\Users\x"'
+    assert _verbatim_string_source('x = 1\ny = "C:\\Users\\x"\n') == 'x = 1\ny = "C:\\\\Users\\\\x"\n'
+    assert _verbatim_string_source('open("unterminated') is None
+
+
+def test_windows_spelled_pure_reads_stay_allowed_on_every_host(tmp_path):
+    """The three windows-latest shapes, spelled exactly as the Windows run spelled
+    them, allowed on a POSIX host too — the classification is host-independent."""
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    read = f"{WINDOWS_TMP}\\outside\\read"
+    for name, command in (
+        ("python_c", ["python3", "-c", f'print(open("{read}").read())']),
+        ("python_heredoc", f"python3 - <<'EOF'\nprint(open(\"{read}\").read())\nEOF"),
+        ("sh_wrapped_repr", ["sh", "-c", f"python3 -c \"print(open({read!r}, 'rb').read(8))\""]),
+    ):
+        out = _shell_guard_text(reg, {"cmd": command, "cwd": workspace}, "advanced")
+        assert out is None, (name, command, out)
+
+
+def test_windows_spelled_writes_stay_blocked_and_named(tmp_path):
+    reg = _registry(tmp_path, mode="external")
+    workspace = str(tmp_path / "workspace")
+    out = f"{WINDOWS_TMP}\\outside\\out"
+    for command in (
+        ["python3", "-c", f'open("{out}", "w").write("x")'],
+        ["sh", "-c", f"python3 -c \"open({out!r}, 'w').write('x')\""],
+        f"python3 - <<'EOF'\nopen(\"{out}\", \"w\").write(\"x\")\nEOF",
+    ):
+        text = _shell_guard_text(reg, {"cmd": command, "cwd": workspace}, "advanced") or ""
+        assert "outside the selected process root" in text, command
+        assert f"Blocked path: {out}" in text, command
+
+
+def test_outside_root_block_names_the_spelling_the_model_used(tmp_path):
+    """When the resolved path differs from the operand (a relative spelling, a
+    symlink alias — or, on Windows, a POSIX-rooted spelling resolved onto the
+    cwd drive), the block names both, resolved first so earlier pins hold."""
+    reg = _registry(tmp_path, mode="external")
+    workspace = tmp_path / "workspace"
+    real = tmp_path / "outside_real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    for spelled in (f"{alias / 'f'}", "../outside_real/f"):
+        text = _shell_guard_text(reg,
+            {"cmd": ["sh", "-c", f"echo x > {spelled}"], "cwd": str(workspace)}, "advanced",
+        ) or ""
+        assert f"Blocked path: {real / 'f'} (as written: {spelled})." in text, spelled
+    # Identical spellings are named once.
+    text = _shell_guard_text(reg,
+        {"cmd": ["sh", "-c", f"echo x > {real / 'g'}"], "cwd": str(workspace)}, "advanced",
+    ) or ""
+    assert f"Blocked path: {real / 'g'}." in text
+
+
+def test_block_messages_carry_a_windows_resolution_beside_the_spelling():
+    """The `os.name == "nt"` resolving branch hands the builders a natively
+    resolved WindowsPath for a POSIX-rooted operand; the message must still
+    show the operand the model typed."""
+    from ouroboros.tools.registry_guards import (
+        _workspace_write_block_outside_root_message,
+        _workspace_write_block_runtime_message,
+    )
+
+    resolved = pathlib.PureWindowsPath(r"C:\Users\Shared\x")
+    root = pathlib.PureWindowsPath(r"C:\Users\runneradmin\ws")
+    text = _workspace_write_block_outside_root_message(resolved, root, spelled="/Users/Shared/x")
+    assert r"Blocked path: C:\Users\Shared\x (as written: /Users/Shared/x)." in text
+    assert r"Selected process root: C:\Users\runneradmin\ws." in text
+    runtime = _workspace_write_block_runtime_message(resolved, spelled=str(resolved))
+    assert r"Blocked path: C:\Users\Shared\x." in runtime
+    assert "(as written" not in runtime
+    assert "Blocked path" not in _workspace_write_block_runtime_message("")

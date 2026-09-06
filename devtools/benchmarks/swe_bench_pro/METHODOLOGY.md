@@ -248,8 +248,10 @@ E1v2 contract:
   Global improvement-backlog/promotion signals still flow from workspace tasks
   (v6.44.0), so native post-task evolution keeps working. Export
   `OBO_SOLVE_WORKSPACE_ROOT=""` for the legacy rootless `dig-direct` mode.
-- (v6.56.0) Budget/pacing disclosure: the solve task carries
-  `budget_profile = {improvement_policy: until_deadline, max_improvement_passes: 6, cost_hard_stop_pct: 0}`
+- (v6.56.0; policy spelling updated for ABI 7.0 — the `until_deadline` alias
+  was removed, and the explicit pass cap was always the binding count axis)
+  Budget/pacing disclosure: the solve task carries
+  `budget_profile = {improvement_policy: fixed, max_improvement_passes: 6, cost_hard_stop_pct: 0}`
   — NO in-task cost stop (cost milestones are informational against the start
   snapshot); the bounds are the task deadline (`OBO_SOLVE_TIMEOUT`), the round
   ceiling (`OUROBOROS_MAX_ROUNDS=200`, below the leaderboard-relevant 250-step

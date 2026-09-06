@@ -1,4 +1,19 @@
+import threading
 from types import SimpleNamespace
+
+
+def _stop_restart_watcher(server):
+    """Stop the restart watcher ``server.main()`` starts (an unnamed daemon polling
+    ``_restart_requested`` on a 0.5 s ``time.sleep``). Its only stop seam is the flag it polls,
+    so a test that returns from ``main()`` with the flag clear — or clears it before the next
+    poll — leaves the poller running on the xdist worker for good (the ``sleeps`` polluter
+    tests/test_delegate_hold.py pinned around). Raise the flag, join, then restore it."""
+    server._restart_requested.set()
+    for thread in threading.enumerate():
+        if thread.name.endswith("(_check_restart)"):
+            thread.join(timeout=5)
+            assert not thread.is_alive(), "restart watcher did not stop"
+    server._restart_requested.clear()
 
 
 def test_lifespan_shutdown_kills_executor_foreground_before_services():
@@ -229,9 +244,13 @@ def test_main_normal_exit_does_not_run_emergency_cleanup(monkeypatch):
     monkeypatch.setattr(server.uvicorn, "Config", lambda *a, **k: object())
     monkeypatch.setattr(server.uvicorn, "Server", FakeServer)
     monkeypatch.setattr(server, "_emergency_process_cleanup", lambda: cleanup_calls.append("cleanup"))
+    monkeypatch.setattr(server, "_event_loop", None)  # the watcher's close_all_ws hop needs no loop here
     server._restart_requested.clear()
 
-    assert server.main() == 0
+    try:
+        assert server.main() == 0
+    finally:
+        _stop_restart_watcher(server)
     assert cleanup_calls == []
 
 
@@ -262,6 +281,7 @@ def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch):
     monkeypatch.setattr(server, "_LAUNCHER_MANAGED", True)
     monkeypatch.setattr(server, "_emergency_process_cleanup", lambda **kw: cleanup_calls.append(kw))
     monkeypatch.setattr(server.os, "_exit", lambda code: (_ for _ in ()).throw(ExitCalled(code)))
+    monkeypatch.setattr(server, "_event_loop", None)  # the watcher's close_all_ws hop needs no loop here
     server._restart_requested.clear()
 
     try:
@@ -269,7 +289,7 @@ def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch):
     except ExitCalled:
         pass
     finally:
-        server._restart_requested.clear()
+        _stop_restart_watcher(server)
 
     assert cleanup_calls == [{"port_sweep": False}]
 

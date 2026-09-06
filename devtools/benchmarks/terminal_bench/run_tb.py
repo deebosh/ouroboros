@@ -186,7 +186,9 @@ def _effective_helper_models(
     config defaults). Returns ordered (model_id, role) pairs, deduped by model
     id.
     """
-    review_default = str(SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"])
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
+
+    review_default = ",".join(OPENROUTER_REVIEW_DEFAULTS["triad"])
     websearch_default = str(SETTINGS_DEFAULTS["OUROBOROS_WEBSEARCH_MODEL"])
     websearch = os.environ.get("OUROBOROS_WEBSEARCH_MODEL", websearch_default) or websearch_default
     ordered: list[tuple[str, str]] = [(measured_model, "agent")]

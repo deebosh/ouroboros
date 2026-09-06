@@ -79,7 +79,9 @@ def send_provider_death_notice(
     return True
 
 
-def stamp_root_final_phase(send_event: Dict[str, Any], task: Dict[str, Any], *, post_task_open: bool) -> None:
+def stamp_root_final_phase(
+    send_event: Dict[str, Any], task: Dict[str, Any], *, post_task_open: bool, terminal_status: str,
+) -> None:
     """Type a root's final frame for the client's live conclusion gate.
 
     With post-task synthesis still OPEN the owner's answer leaves early: the
@@ -87,12 +89,15 @@ def stamp_root_final_phase(send_event: Dict[str, Any], task: Dict[str, Any], *, 
     the card on "Finalizing…" until the settled task_done, instead of the
     early final reading as the task's terminal conclusion. With post-task
     already settled a DIRECT turn's bare final IS the turn's terminal word
-    (#369) — managed roots keep their task_done conclusion untouched.
+    (#369), so it names ``terminal_status`` — the status the durable row
+    settles to, which the chat row persists and replay reads as the card's
+    phase (a stopped turn is ``failed``, never a blanket ``completed``) —
+    managed roots keep their task_done conclusion untouched.
     """
     if post_task_open:
         send_event.setdefault("progress_meta", {})["task_phase"] = "finalizing"
     elif task.get("_is_direct_chat"):
-        send_event.setdefault("progress_meta", {})["task_terminal_status"] = "completed"
+        send_event.setdefault("progress_meta", {})["task_terminal_status"] = terminal_status
 
 
 def prepare_terminal_send_event(
@@ -215,7 +220,11 @@ def register_final_answer_owed(
 ) -> None:
     """GR2-5 (§8-A2, ONE outbox for EVERY root): owe the final answer durably.
 
-    Called right after durable result persistence for every non-ephemeral ROOT,
+    Called immediately BEFORE durable result persistence for every non-ephemeral
+    ROOT (``agent_task_pipeline.emit_task_results`` registers, then stores), so a
+    crash in that window leaves an owed row the boot replay delivers instead of
+    a persisted result nobody was told about — the cancel lanes are the ones that
+    write first and owe before they SETTLE the intent. Registration happens
     regardless of the blocking/nonblocking post-task split: the nonblocking
     lane used to buffer the send with NO delivery_id and NO owed registration,
     so a worker crash before the buffered drain lost the owner's answer with
@@ -340,7 +349,7 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     swarm_intent = metadata.get("force_plan_source") == "swarm"
     try:
-        from ouroboros.utils import iter_jsonl_objects
+        from ouroboros.utils import iter_jsonl_chain_objects
 
         drive_root = getattr(env, "drive_root", None)
         if drive_root is None:
@@ -355,7 +364,9 @@ def build_swarm_efficiency(env: Any, task: Dict[str, Any]) -> Dict[str, Any] | N
         # events can occur EARLY in a long fan-out task, so a bounded tail would
         # silently undercount waves/children (P1 no-silent-loss). This runs once at
         # finalization (not a hot path), for fan-out and Swarm-intent tasks.
-        for ev in iter_jsonl_objects(events_path):
+        # Chain-aware (CPL4-C1): early fan-out events may already have rotated
+        # into archive/events_*.jsonl by finalization time.
+        for ev in iter_jsonl_chain_objects(events_path):
             if ev.get("type") != "swarm_fanout":
                 continue
             if str(ev.get("parent_task_id") or ev.get("task_id") or "") != task_id:

@@ -338,7 +338,9 @@ _OUTPUT_LIMIT_STOPS = frozenset({"length", "max_tokens"})
 
 
 def _letter_timeout_sec() -> float:
-    """The whole one-shot's ceiling — slot wait and provider call share it (config.py SSOT)."""
+    """Transport ceiling of the letter one-shot: the clamped getter lives in
+    ``ouroboros/runtime_limits.py`` (re-exported by ``ouroboros.config``), its default in
+    ``ouroboros/settings_defaults.py`` — never a consumer magic number."""
     from ouroboros.config import get_update_letter_timeout_sec
 
     return get_update_letter_timeout_sec()

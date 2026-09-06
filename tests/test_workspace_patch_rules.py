@@ -69,15 +69,17 @@ def test_a_project_that_declares_dist_ignored_keeps_it_out_of_the_patch(tmp_path
 
 
 def test_the_remaining_host_vetoes_still_apply_to_generated_output(tmp_path, monkeypatch):
-    import ouroboros.headless as headless
-
     repo = _genesis_repo(tmp_path / "repo")
     (repo / "dist").mkdir()
     (repo / "dist" / "widget.js").write_text("export const widget = 1;\n", encoding="utf-8")
     (repo / "dist" / "app.bin").write_bytes(b"\x7fELF\x00\x01\x02\x03binary\x00blob")
     (repo / "dist" / "build.log").write_text("noise\n", encoding="utf-8")
     (repo / "dist" / "big.js").write_text("x" * 200, encoding="utf-8")
-    monkeypatch.setattr(headless, "_PATCH_MAX_UNTRACKED_FILE_BYTES", 100)
+    import ouroboros.workspace_patch_capture as patch_capture
+
+    # v7: the capture predicate reads the cap through its own module binding
+    # (workspace_patch_capture imports it from workspace_patch_rules); patch the reader.
+    monkeypatch.setattr(patch_capture, "_PATCH_MAX_UNTRACKED_FILE_BYTES", 100)
 
     patch, manifest = _capture(repo, tmp_path / "artifacts")
 

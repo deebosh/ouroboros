@@ -76,8 +76,10 @@ def _write(tmp_path, *, chat_lines=(), progress_lines=(), results=None):
         results_dir = tmp_path / "task_results"
         results_dir.mkdir(exist_ok=True)
         for task_id, payload in results.items():
+            # 7.0 ABI (Q8=B): a stored task row carries its schema marker; the
+            # strict loader ignores an unmarked row, so the fixture stamps it.
             (results_dir / f"{task_id}.json").write_text(
-                json.dumps(payload), encoding="utf-8",
+                json.dumps({"_schema_version": 1, **payload}), encoding="utf-8",
             )
 
 

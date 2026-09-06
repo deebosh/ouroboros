@@ -28,8 +28,6 @@ def test_ui_preferences_round_trip_and_normalization(tmp_path):
             "sidebar_width": 0,
             "project_panel_width": 0,
             "project_seen_revision": {},
-            "project_last_viewed": {},
-            "project_hidden": {},
         }
 
         create_project(tmp_path, "racer", name="Racer")
@@ -53,18 +51,27 @@ def test_ui_preferences_round_trip_and_normalization(tmp_path):
         assert "missing" not in unknown.json()["project_seen_revision"]
         assert client.get("/api/ui/preferences").json()["project_seen_revision"]["racer"] == 2
 
-        # One-minor aliases remain accepted but are loud no-ops.
+        # ABI 7.0 (ABI-3): the one-minor deprecation window is CLOSED — the
+        # retired keys answer the ordinary unknown-key 400 and never appear in
+        # any response payload.
         legacy = client.post(
             "/api/ui/preferences",
-            json={
-                "project_hidden": {"racer": True},
-                "project_last_viewed": {"racer": "2026-06-15T01:00:00Z"},
-            },
+            json={"project_hidden": {"racer": True}},
         )
-        assert legacy.status_code == 200
-        assert legacy.json()["project_hidden"] == {}
-        assert legacy.json()["project_last_viewed"] == {}
-        assert legacy.json()["warnings"][0]["type"] == "deprecated_ui_preferences_ignored"
+        assert legacy.status_code == 400
+        assert "project_hidden" in legacy.json()["error"]
+        current = client.get("/api/ui/preferences").json()
+        assert "project_hidden" not in current and "project_last_viewed" not in current
+        # A STORED legacy file still loads: unknown stored keys are ignored on
+        # read and dropped on the next write, never fatal.
+        import json as _json
+        prefs_path = tmp_path / "state" / "ui_preferences.json"
+        stored_now = _json.loads(prefs_path.read_text(encoding="utf-8"))
+        stored_now["project_last_viewed"] = {"racer": "2026-06-15T01:00:00Z"}
+        prefs_path.write_text(_json.dumps(stored_now), encoding="utf-8")
+        tolerated = client.get("/api/ui/preferences")
+        assert tolerated.status_code == 200
+        assert "project_last_viewed" not in tolerated.json()
 
         # Resizable side-section widths round-trip and clamp (v6.33.0).
         widths = client.post(

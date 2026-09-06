@@ -19,6 +19,220 @@ def _read(rel: str) -> str:
     return (REPO / rel).read_text(encoding="utf-8")
 
 
+def _names_basename(text: str, basename: str) -> bool:
+    """Whether ``text`` names this module file as its own token.
+
+    The boundary is stated as "not a file-name character" rather than a list
+    of allowed delimiters: the component map introduces modules after a space,
+    a backtick, a path separator AND an opening parenthesis (``(clawhub.py
+    registry client``), so an allow-list of delimiters would report a module
+    the document does name. What must NOT precede the basename is a character
+    that could be part of a longer file name — a word character, a dot or a
+    hyphen — which is exactly how ``test_s3_task_control_browser.py`` used to
+    answer for ``browser.py``. A trailing word character is refused too, so
+    ``x.py`` never answers for ``x.pyi``.
+    """
+    return re.search(
+        r"(?<![\w.\-])" + re.escape(basename) + r"(?!\w)", text
+    ) is not None
+
+
+def test_the_domain_quotient_report_ends_without_a_blank_line():
+    """The report generator wrote a blank line at EOF, so the whitespace gate
+    (`git diff --check`) was red on the one file nobody edits by hand.
+
+    Its sections append a trailing "" separator, and `"\\n".join(L) + "\\n"` then
+    turned the last separator into a blank final line. The generator now drops
+    the trailing separators; this pins both the artifact and that fix, without
+    pinning the report's CONTENT — the header carries a HEAD sha and a tree
+    fingerprint, so byte-identity to a regeneration is deliberately not a gate
+    (that gate belongs to `docs/DOMAIN_MAP.md`, whose input is the manifest).
+    """
+    report = _read("docs/v7next/DOMAIN_QUOTIENT_REPORT.md")
+    generator = _read("scripts/v7next_domain_report.py")
+
+    assert report.endswith("\n") and not report.endswith("\n\n")
+    assert "while L and not L[-1]:" in generator
+
+
+def test_the_domain_manifest_is_reachable_from_the_handbook():
+    """The domain SSOT and its generated map were reachable from neither doc.
+
+    A contributor is told to read DEVELOPMENT.md before moving code, and moving
+    code across domains is exactly what `ouroboros/domains.toml` gates. With no
+    pointer, the first they learned of it was a red `check_domains` run.
+    """
+    development = _read("docs/DEVELOPMENT.md")
+    for pointer in ("ouroboros/domains.toml", "docs/DOMAIN_MAP.md",
+                    "scripts/check_domains.py --write"):
+        assert pointer in development, f"DEVELOPMENT.md never mentions {pointer}"
+
+
+def test_recent_abi_retirements_section_carries_the_abi_70_window():
+    """Section 11.4 documented a 5.25.0-rc.4 banner API and nothing since.
+
+    ABI 7.0 is the largest retirement window in the project's history — five
+    gateway aliases, the reviewer comma-list configuration keys, two wall-clock
+    timeout keys, a plugin-API major, and a durable task-row schema stamp with
+    no legacy converter — and an upgrading operator read "recent retirements"
+    as though none of it happened. Every key of
+    `RETIRED_COMMA_LIST_SETTING_KEYS` must be named there, because those are
+    the ones whose migration must happen BEFORE the upgrade.
+    """
+    arch = _read("docs/ARCHITECTURE.md")
+    section = arch.split("### 11.4 Recent ABI Retirements", 1)[1].split("\n## ", 1)[0]
+
+    from ouroboros.settings_defaults import RETIRED_COMMA_LIST_SETTING_KEYS
+
+    assert "**ABI 7.0**" in section
+    assert "5.25.0-rc.4" in section, "older entries stay: this is a history"
+    missing = [key for key in RETIRED_COMMA_LIST_SETTING_KEYS if key not in section]
+    assert not missing, f"11.4 does not name the retired comma-list keys: {missing}"
+    assert "OUROBOROS_REVIEWER_SLOTS" in section, "the migration target must be named"
+
+
+def test_model_send_design_note_matches_the_landed_observability_contract():
+    """The CPL-5 note still said DESIGN ONLY and demanded fail-closed dispatch.
+
+    `ouroboros/model_send_seal.py` landed with the opposite rule, pinned by
+    `tests/test_model_send_seal.py`: a reconstruction mismatch is a typed
+    durable fact and the call is NOT blocked — dispatch authority stays with
+    the pre-existing in-memory identity re-check. A design note that outranks
+    the code it describes is how the next author reintroduces the gate.
+    """
+    note = _read("docs/v7next/DESIGN_MODEL_VISIBLE_LOGGED.md")
+    note_flat = " ".join(note.split())
+
+    assert (REPO / "ouroboros" / "model_send_seal.py").exists()
+    assert "Status: DESIGN ONLY" not in note
+    assert "Status: LANDED" in note
+    assert "refuse dispatch with the existing `PhysicalAttemptPreparationFailed`" \
+        not in note_flat
+    assert "The call is NOT blocked" in note_flat
+
+
+def test_settings_docs_name_every_key_owner_and_what_startup_persists():
+    """Three settings-layer claims the code contradicts (all red pre-fix).
+
+    1. The Default settings table skipped two live `SETTINGS_DEFAULTS` keys
+       (`OUROBOROS_CONTEXT_MODE_AUTO_LOW`, `OUROBOROS_CLAWHUB_REGISTRY_URL`).
+    2. Startup was described as persisting NOTHING, while the server lifespan's
+       `load_settings()` runs `normalize_and_persist_context_mode_compat`,
+       which rewrites the compat pair when it changed under a held lock.
+    3. Invariant 3 and the README pointed at the `config.py` facade as the
+       owner of defaults, after the v7next split moved the vocabularies into
+       sibling leaves.
+    """
+    arch = _read("docs/ARCHITECTURE.md")
+    arch_flat = " ".join(arch.split())
+    readme_flat = " ".join(_read("README.md").split())
+    development = _read("docs/DEVELOPMENT.md")
+
+    from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+    for key in ("OUROBOROS_CONTEXT_MODE_AUTO_LOW", "OUROBOROS_CLAWHUB_REGISTRY_URL"):
+        assert key in SETTINGS_DEFAULTS
+        assert f"| {key} |" in arch, f"{key} is missing from the settings table"
+
+    # Startup persistence: the compat migration is a real write, not "nothing".
+    # (Other "persists nothing" statements in this document are about the
+    # onboarding failure path and a no-change owner transform, both true.)
+    assert "boot provider normalization in-process and persists nothing" not in arch_flat
+    assert "Startup is a read, with one exception" in arch_flat
+    assert "normalize_and_persist_context_mode_compat" in arch_flat
+    # 4. What retired is the persistent auto-Low MECHANISM, not the key: the
+    #    startup sentence called `OUROBOROS_CONTEXT_MODE` itself retired while
+    #    the settings table right below it documents the same key as the live
+    #    owner-selected horizon.
+    assert "retired `OUROBOROS_CONTEXT_MODE`" not in arch_flat
+    assert "left by the RETIRED persistent auto-Low mechanism" in arch_flat
+
+    # Ownership: the leaves own the vocabularies; config.py stays the facade.
+    owners = ("settings_defaults", "settings_scales", "model_slots",
+              "review_model_routes", "runtime_limits", "settings_integrity")
+    invariant = next(
+        line for line in arch.splitlines()
+        if line.startswith("3. **Configuration and messaging have single owners.**")
+    )
+    assert all(owner in invariant for owner in owners), invariant
+    assert "exact settings and defaults live in" not in readme_flat
+    assert "settings_defaults.py" in readme_flat
+    assert "an SSOT in `config.py` `SETTINGS_DEFAULTS`" not in development
+    assert "`settings_defaults.py`" in development
+
+
+def test_architecture_does_not_claim_usage_response_is_the_only_usage_reader():
+    """`_usage_response` normalizes for accounting; it does not own the block.
+
+    The row claimed "The only reader of a provider's usage block", but every
+    provider adapter reads the raw `usage` dict for its own response envelope
+    (`llm_openai_compatible.py:285`, `llm_anthropic.py`, `llm_local.py`,
+    `local_model.py`). A false absolute in the component map is how the next
+    author "consolidates" a read that was never centralized here; the honest
+    claim is the narrower one the two importers support.
+    """
+    arch_flat = " ".join(_read("docs/ARCHITECTURE.md").split())
+
+    assert "The only reader of a provider's usage block" not in arch_flat
+    assert "the one NORMALIZER of a provider's usage block" in arch_flat
+    assert "Not the only READER of that block" in arch_flat
+    for module in ("ouroboros/usage_accounting.py", "ouroboros/loop_llm_call.py"):
+        assert "from ouroboros._usage_response import" in _read(module), module
+    assert 'resp_dict.get("usage")' in _read("ouroboros/llm_openai_compatible.py")
+
+
+def test_architecture_deep_review_has_no_compact_manifest_retry_rung():
+    """The compact-manifest retry rung was removed; the doc still promised it.
+
+    ``deep_self_review._compile`` is now called once with ``compact=True``
+    because compact coverage IS the atlas default (the durable manifest keeps
+    full per-file coverage either way), so there is no fuller form to fall back
+    from. A failed assembly returns no pack at all (BIBLE P3). The
+    final-shrink rebuild — one retry at a hard budget tightened by the measured
+    overage — is a different rung and still exists.
+    """
+    arch_flat = " ".join(_read("docs/ARCHITECTURE.md").split())
+    source = _read("ouroboros/deep_self_review.py")
+
+    assert "no compact retry rung anymore" in source
+    assert "retries once with the compact manifest" not in arch_flat
+    assert "the compact manifest is the atlas default" in arch_flat
+    assert "final-shrink rebuild" in arch_flat and "hard_budget_reduction" in source
+
+
+def test_architecture_component_map_covers_every_live_runtime_module():
+    """README calls ARCHITECTURE.md the full component map — so prove it.
+
+    Every non-``__init__`` module of the tracked runtime population must be
+    named in the component map (by path or by basename). A module nobody wrote
+    a row for is invisible to the one document a contributor is told to read
+    before editing, and the omission is silent: no other gate reads this
+    document against the tree. Population comes from the domain manifest's own
+    SSOT helper (``scripts/domain_graph.tracked_population``) so this pin and
+    the domain gates can never disagree about what "live module" means.
+
+    The basename must appear as its OWN token, not as a substring. A plain
+    ``name in arch`` accepted a basename buried inside a longer name — so
+    ``browser.py`` was "documented" by ``test_s3_task_control_browser.py``,
+    ``health.py`` by ``extension_health.py`` and ``vision.py`` by
+    ``delegate_supervision.py``, while those three modules had no row of any
+    kind.
+    """
+    from scripts.domain_graph import tracked_population
+
+    arch = _read("docs/ARCHITECTURE.md")
+    missing = sorted(
+        path for path in tracked_population(REPO)
+        if not path.endswith("__init__.py")
+        and path not in arch
+        and not _names_basename(arch, pathlib.PurePosixPath(path).name)
+    )
+    assert not missing, (
+        "docs/ARCHITECTURE.md names no owner for these live modules: "
+        f"{missing}"
+    )
+
+
 def test_architecture_mentions_shared_log_grouping_and_direct_provider_review_fallback():
     arch = _read("docs/ARCHITECTURE.md")
 
@@ -211,8 +425,8 @@ def test_continuity_projection_contract_is_mirrored_across_governance_docs():
     assert "state/skill_review_root_tasks.jsonl" in development
     assert "state/skill_review_root_tasks.jsonl" in architecture
     assert "SKILL_REVIEW_ROOT_TASKS_WARN_BYTES" in architecture
-    assert "seven hot stores" in architecture
-    assert "seven os.stat calls" in _read("ouroboros/agent_startup_checks.py")
+    assert "nine hot stores" in architecture
+    assert "nine os.stat calls" in _read("ouroboros/agent_startup_checks.py")
     for item in (
         "source_completeness",
         "actor_readable_projection",
@@ -571,3 +785,15 @@ def test_architecture_settings_table_mirrors_config_defaults():
         if key in expected and _normalize_default_cell(cell) != str(config.SETTINGS_DEFAULTS[key]).lower()
     ]
     assert not mismatched, f"documented default differs from config.SETTINGS_DEFAULTS: {mismatched}"
+
+
+def test_the_handbook_names_both_layers_of_the_browser_no_undef_gate():
+    """Two surfaces answer "does every browser identifier resolve?": the
+    dependency-free acorn walker the hermetic commit gate runs, and ESLint's
+    `no-undef` that CI runs as an independent second opinion (D-13). A
+    contributor who sees only one of them either removes the "redundant"
+    other or, seeing a CI-only red, looks for a gate that never ran it.
+    """
+    development = _read("docs/DEVELOPMENT.md")
+    for pointer in ("web/tests/no_undef.test.js", "web/eslint.config.js", "npm ci"):
+        assert pointer in development, f"DEVELOPMENT.md never mentions {pointer}"

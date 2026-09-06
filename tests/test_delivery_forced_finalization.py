@@ -1355,7 +1355,7 @@ def test_child_result_change_during_host_panel_supersedes_pass(tmp_path, monkeyp
         llm_trace=trace,
         drive_root=tmp_path,
         messages=messages,
-        emit_progress=lambda _text: None,
+        emit_progress=lambda _text, *, incident=None: None,
     )
 
     assert another_round is True

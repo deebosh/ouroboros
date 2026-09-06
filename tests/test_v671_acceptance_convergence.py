@@ -586,7 +586,7 @@ def _decision(status: str, reason: str = "") -> dict:
 
 
 def test_a_terminal_decision_is_never_overwritten():
-    from ouroboros.acceptance_dialogue import terminalize_dangling_revision
+    from ouroboros.loop_acceptance import terminalize_dangling_revision
 
     for status in ("accepted", "finalized_unaccepted"):
         trace = _decision(status, reason="clean_quorum")
@@ -597,7 +597,7 @@ def test_a_terminal_decision_is_never_overwritten():
 
 
 def test_a_dangling_revision_terminalizes_on_every_forced_rail():
-    from ouroboros.acceptance_dialogue import terminalize_dangling_revision
+    from ouroboros.loop_acceptance import terminalize_dangling_revision
 
     for rail, prior in (
         ("round_limit", "delivery_binding_superseded"),

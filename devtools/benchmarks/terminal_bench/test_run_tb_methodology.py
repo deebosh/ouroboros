@@ -384,7 +384,6 @@ def test_metadata_declares_what_the_container_executes_from_the_structured_panel
     misrepresent the submission); the session row is a typed disclosure,
     `triad_rows_not_executable_in_container`, and neither a stale legacy comma
     key nor a shipped default the container does not run is declared."""
-    from ouroboros.config import SETTINGS_DEFAULTS
 
     monkeypatch.delenv("OUROBOROS_WEBSEARCH_MODEL", raising=False)
     monkeypatch.setenv("OUROBOROS_REVIEW_MODELS", "foreign/stale-triad")
@@ -415,7 +414,12 @@ def test_metadata_declares_what_the_container_executes_from_the_structured_panel
     monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps(all_session))
     roles = dict(run_tb._effective_helper_models("openai/gpt-5.5", "google/gemini-3.5-flash", disable_agent_web=True))
     assert roles["openai/gpt-5.5"] == "agent" and "commit_review_triad" not in "+".join(roles.values())
-    for helper in SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"].split(","):
+    # The shipped triad defaults: ABI 7.0 retired the OUROBOROS_REVIEW_MODELS
+    # settings key, and the launcher itself reads the SSOT list the key used
+    # to be derived from (run_tb._effective_helper_models).
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
+
+    for helper in OPENROUTER_REVIEW_DEFAULTS["triad"]:
         assert helper not in roles
     assert run_tb.triad_rows_not_executable_in_container("openai/gpt-5.5") == ["codex=gpt-5.6-sol"]
 
@@ -506,10 +510,10 @@ def test_metadata_parses_the_panel_under_the_container_roster(monkeypatch):
     # The benchmark actor row RETRIEVES (native tool rounds) on the measured
     # model: acceptance executes it, so the measured model carries the triad
     # role and no shipped default is declared.
-    from ouroboros.config import SETTINGS_DEFAULTS
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
 
     assert roles["openai/gpt-5.5"] == "agent+commit_review_triad"
-    assert not any(h in roles for h in SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"].split(","))
+    assert not any(h in roles for h in OPENROUTER_REVIEW_DEFAULTS["triad"])
     # An operator-roster reference the container cannot resolve is a typed refusal.
     monkeypatch.setenv("OUROBOROS_REVIEWER_SLOTS", json.dumps({**panel, "triad": [{"slot_id": "t1", "subagent_id": "operator-critic"}]}))
     with pytest.raises(ValueError, match="operator-critic"):

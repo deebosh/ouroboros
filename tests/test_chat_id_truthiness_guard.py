@@ -45,16 +45,24 @@ ALLOWED = {
         "unhomed answer into the hidden partition would add rows to the "
         "benchmark-parsed chat log for a surface with no reader.",
     ),
-    ("supervisor/workers.py", "if not chat_id:"): (
-        2,
-        "Promote/steer lane (evt always arrives from a real chat) and the "
-        "auto-resume gate, where owner_chat_id 0 means 'no owner chat "
-        "configured' rather than the panel. Disclosed residual: workers.py sits "
-        "~55 bytes under its 200k module ceiling, so it takes no edit this sprint.",
-    ),
-    ("supervisor/workers.py", "if chat_id:"): (
+    # v7 split supervisor/workers.py: the same three lines now live in the two
+    # leaves that own them (promotion lane -> worker_promotion.py, auto-resume
+    # gate -> worker_chat_lane.py). Relocated exemptions, not new ones.
+    ("supervisor/worker_promotion.py", "if not chat_id:"): (
         1,
-        "Same promote lane, same ceiling. Disclosed residual.",
+        "Promote/steer lane: evt always arrives from a real chat, so a falsy "
+        "chat_id means 'the event carried no chat' and the owner chat is the "
+        "fallback address, not the hidden partition.",
+    ),
+    ("supervisor/worker_promotion.py", "if chat_id:"): (
+        1,
+        "Same promote lane: the loud-fail notice needs a reader, and the hidden "
+        "partition has none.",
+    ),
+    ("supervisor/worker_chat_lane.py", "if not chat_id:"): (
+        1,
+        "Auto-resume gate, where owner_chat_id 0 means 'no owner chat "
+        "configured' rather than the panel.",
     ),
     ("supervisor/terminal_delivery.py", "if not tid or not core_text or not chat_id:"): (
         1,
@@ -141,10 +149,25 @@ def test_a_records_own_address_is_never_relabelled_by_notice_routing():
     assert row_chat_identity(None, "", 0, 7) == 0, "an explicit 0 is present, not absent"
     assert row_chat_identity(None, "", default=1) == 1
 
-    events = (REPO / "supervisor/events.py").read_text(encoding="utf-8")
-    for block in events.split('"chat_id": ')[1:]:
-        head = block[:40]
-        if head.startswith("notification_chat_route"):
-            assert "task_done" not in block[:400], (
-                "a task_done record must address itself with row_chat_identity"
-            )
+    # The records live wherever the v7 split put them (the two terminal
+    # task_done records are in supervisor/events_task_done.py; events.py holds
+    # none), so scan the same packages the lints above scan and prove the scan
+    # saw something — a relocated file must not silence this test.
+    blocks_seen = 0
+    self_addressed_task_done = 0
+    for rel, text in _sources():
+        for match in re.finditer(r'"chat_id": ', text):
+            blocks_seen += 1
+            head = text[match.end():match.end() + 40]
+            window = text[max(0, match.start() - 400):match.end() + 400]
+            if head.startswith("notification_chat_route"):
+                assert "task_done" not in window, (
+                    f"{rel}: a task_done record must address itself with row_chat_identity"
+                )
+            elif head.startswith("row_chat_identity(") and '"type": "task_done"' in window:
+                self_addressed_task_done += 1
+    assert blocks_seen, "no chat_id record blocks scanned"
+    assert self_addressed_task_done >= 1, (
+        "no terminal task_done record addresses itself with row_chat_identity — "
+        "the positive half of this pin (supervisor/events_task_done.py) is gone"
+    )

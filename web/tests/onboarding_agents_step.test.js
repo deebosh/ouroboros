@@ -351,6 +351,28 @@ test('an untyped failure is not dressed up as a skippable preset problem', () =>
     assert.equal(notice.text, 'HTTP 500');
 });
 
+test('a 503 settings_save_timeout is read as UNKNOWN, never as "nothing was saved"', () => {
+    // The shared bounded writer answers `saved: null` when the save body outlives
+    // its bound: the bytes may already be on disk. Collapsing null to false used
+    // to offer the skip (a second write) over a transaction that may have landed.
+    const read = readCompletionAnswer({
+        status: 503, ok: false, parsed: true,
+        data: { error: 'the settings save is still running in the server', code: 'settings_save_timeout', saved: null, can_skip: true },
+    });
+    assert.equal(read.failure.saved, null);
+    const notice = completionFailureNotice(read.failure);
+    assert.equal(notice.saved, null);
+    assert.equal(notice.saveUnknown, true);
+    assert.equal(notice.canSkip, false);
+    assert.match(notice.text, /still running in the server/);
+    assert.match(notice.text, /unknown/);
+    assert.match(notice.text, /Check status/);
+    assert.doesNotMatch(notice.text, /WERE written/);
+    // The two boolean states are untouched by the third.
+    assert.equal(readCompletionAnswer({ status: 503, ok: false, parsed: true, data: { saved: false } }).failure.saved, false);
+    assert.equal(readCompletionAnswer({ status: 500, ok: false, parsed: true, data: { saved: true } }).failure.saved, true);
+});
+
 test('a failure AFTER the bytes reached disk never claims nothing was saved', () => {
     // The endpoint distinguishes a refusal (nothing persisted) from a failure
     // in a post-commit stage. Reporting the second as "nothing was saved" would

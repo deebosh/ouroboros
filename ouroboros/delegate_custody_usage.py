@@ -78,31 +78,38 @@ def complete_custody_rows(path, marker: str, *, started_type: str = ""):
     fail closed: a marker-bearing line that cannot decode as strict UTF-8 or
     parse as a row, or a STARTED row missing its run identity, means a
     sibling's state may be invisible - no complete view exists. Streamed
-    line-by-line (event logs grow to hundreds of MB)."""
+    line-by-line (event logs grow to hundreds of MB). Chain-aware (CPL4-C1):
+    reads the rotated ``archive/events_*.jsonl`` segments before the live
+    file — live-first open + inode dedup keeps a racing rotation from hiding
+    rows — and anything in the chain that exists but cannot be READ (segment,
+    live file, or the archive directory itself) is an incomplete view, not an
+    empty one: the STRICT chain reader turns each of those into a typed
+    ``JsonlChainUnreadable`` this authority answers with ``None``."""
     import json
 
-    rows = []
+    from ouroboros.utils import JsonlChainUnreadable, jsonl_chain_handles
+
     try:
-        with path.open("rb") as handle:
-            for raw in handle:
-                if marker.encode("ascii") not in raw:
-                    continue
-                try:
-                    row = json.loads(raw.decode("utf-8", errors="strict"))
-                except (ValueError, UnicodeDecodeError):
-                    return None
-                if not isinstance(row, dict):
-                    return None
-                if not str(row.get("type") or "").startswith(marker):
-                    continue  # a valid row of another event family
-                if started_type and row.get("type") == started_type and not str(row.get("run_id") or ""):
-                    return None
-                rows.append(row)
-    except FileNotFoundError:
-        return rows
-    except OSError:
+        with jsonl_chain_handles(path, strict=True) as handles:
+            rows = []
+            for _, handle in handles:
+                for raw in handle:
+                    if marker.encode("ascii") not in raw:
+                        continue
+                    try:
+                        row = json.loads(raw.decode("utf-8", errors="strict"))
+                    except (ValueError, UnicodeDecodeError):
+                        return None
+                    if not isinstance(row, dict):
+                        return None
+                    if not str(row.get("type") or "").startswith(marker):
+                        continue  # a valid row of another event family
+                    if started_type and row.get("type") == started_type and not str(row.get("run_id") or ""):
+                        return None
+                    rows.append(row)
+            return rows
+    except (JsonlChainUnreadable, OSError):
         return None
-    return rows
 
 
 # ---- reviewer usage observation (one llm_usage row per physical send) ----

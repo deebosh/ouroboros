@@ -500,7 +500,9 @@ def test_delegate_start_recipes_match_the_fresh_start_schema():
         # schema-valid too. The live checklist has none TODAY, so it is scanned
         # tolerantly below rather than dropped from coverage.
         "docs/CHECKLISTS_ARCHIVE.md",
-        "ouroboros/subagent_dispatch_notes.py",
+        # v7 D01 split: the dispatch-note pair (and its delegate_start recipe
+        # strings) moved to the agent_dispatch leaf; sdn re-exports the pair.
+        "ouroboros/agent_dispatch.py",
         "ouroboros/tools/control.py",
         "ouroboros/tools/delegate.py",
         "ouroboros/tools/delegate_integration.py",

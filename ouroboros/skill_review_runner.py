@@ -20,7 +20,9 @@ from ouroboros.skill_lifecycle_queue import (
     run_blocking_preserving_cancellation,
     run_lifecycle_job_blocking,
 )
+from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.skill_loader import (
+    SKILL_OWNER_STATE_SCHEMA_VERSION,
     SkillPayloadUnreadable,
     compute_content_hash,
     find_skill,
@@ -60,6 +62,17 @@ ReviewImpl = Callable[..., SkillReviewOutcome]
 
 def review_job_state_path(drive_root: pathlib.Path, skill_name: str) -> pathlib.Path:
     return skill_state_dir(pathlib.Path(drive_root), skill_name) / "review_job.json"
+
+
+def _write_review_job(path: pathlib.Path, data: Dict[str, Any]) -> None:
+    """Single write seam for review_job.json: every write — fresh or merge —
+    lands with the ABI-2 stamp (CPL4-C10), so a job started before the upgrade
+    still finishes stamped. Readers keep legacy-0 tolerance."""
+    atomic_write_json(
+        path,
+        with_schema_version(data, SKILL_OWNER_STATE_SCHEMA_VERSION),
+        trailing_newline=True,
+    )
 
 
 _UI_REVIEW_FIELDS = (
@@ -497,7 +510,7 @@ def mark_stale_review_job_interrupted(
         "content_hash": data.get("content_hash") or current_content_hash,
     }
     payload["terminal_reason"] = payload["interrupt_reason"]
-    atomic_write_json(path, payload, trailing_newline=True)
+    _write_review_job(path, payload)
     _append_terminal_history(
         drive_root,
         skill_name,
@@ -569,7 +582,7 @@ def _patch_review_job(
     if expected_job_id and current_job_id and current_job_id != expected_job_id:
         return
     data.update(updates)
-    atomic_write_json(path, data, trailing_newline=True)
+    _write_review_job(path, data)
 
 
 @contextlib.contextmanager
@@ -776,7 +789,7 @@ def _mark_review_job_timeout(
         "terminal_reason": reason or "lifecycle_timeout",
         "content_hash": current.get("content_hash") or content_hash,
     }
-    atomic_write_json(path, payload, trailing_newline=True)
+    _write_review_job(path, payload)
     _append_terminal_history(
         drive_root,
         skill_name,
@@ -996,7 +1009,7 @@ def _on_started(
             "snapshot_revised": snapshot_revised,
             "terminal_reason": "",
         }
-        atomic_write_json(review_job_state_path(drive_root, skill_name), payload, trailing_newline=True)
+        _write_review_job(review_job_state_path(drive_root, skill_name), payload)
         append_jsonl(
             _events_path(drive_root),
             {
@@ -1087,7 +1100,7 @@ def _on_finished(
         replayed_from_ts = str(getattr(result, "replayed_from_ts", "") or "")
         if replayed_from_ts:
             payload["replayed_from_ts"] = replayed_from_ts
-        atomic_write_json(review_job_state_path(drive_root, skill_name), payload, trailing_newline=True)
+        _write_review_job(review_job_state_path(drive_root, skill_name), payload)
         # Lifecycle completion is not a semantic review verdict.  A runner can
         # finish without returning a result (for example after an in-process
         # handoff), so never let the lifecycle word ``completed`` paint a

@@ -155,12 +155,19 @@ def test_projecting_an_exhausted_cap_emits_no_review_cycles_exhausted_event(monk
     assertion from passing vacuously."""
     from ouroboros import task_pacing
     from ouroboros.outcomes import REASON_REVIEW_CYCLES_EXHAUSTED
-    from ouroboros.task_results import project_task_acceptance_review_capacity
+    from ouroboros.task_results import (
+        project_task_acceptance_review_capacity,
+        task_acceptance_required_blocking,
+    )
 
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "required")
     monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
     monkeypatch.setenv("OUROBOROS_REVIEW_MAX_CYCLES", "2")  # 2 cycles => 1 improvement pass
     ctx, events = _floor_band_ctx(monkeypatch, tmp_path, seconds_left=620, claims=2)
+    # The lane really is Required+Blocking through the ONE derivation every
+    # reader shares (the control the retired `until_deadline` count-axis test
+    # carried): otherwise the typed reason below could come from a default.
+    assert task_acceptance_required_blocking() is True
     profile = task_pacing.resolve_budget_profile(ctx)
     snapshot = task_pacing.build_budget_snapshot(ctx, profile=profile)
     assert profile["max_improvement_passes"] is None
@@ -181,47 +188,20 @@ def test_projecting_an_exhausted_cap_emits_no_review_cycles_exhausted_event(monk
         snapshot, 1, profile, required_blocking=True, ctx=ctx) == (
         False, REASON_REVIEW_CYCLES_EXHAUSTED)
     assert len(_rows(events, REASON_REVIEW_CYCLES_EXHAUSTED)) == 1
+    # Counter-control (owner D10/D20, 7.0 ABI): the SHARED cap binds under every
+    # policy, so the very same numbers stay refused WITHOUT the enforcement —
+    # what the enforcement changes is the typed reason and the escalation
+    # event, not whether the count axis bites; no second row is written.
+    assert task_pacing.improvement_pass_allowed(snapshot, 1, profile, ctx=None) == (
+        False, "improvement_passes_exhausted")
+    assert task_pacing.improvement_pass_allowed(snapshot, 1, profile, ctx=ctx) == (
+        False, "improvement_passes_exhausted")
+    assert len(_rows(events, REASON_REVIEW_CYCLES_EXHAUSTED)) == 1
 
 
-def test_required_blocking_until_deadline_agrees_with_the_real_gate_on_the_count_axis(
-        monkeypatch, tmp_path):
-    """Required+Blocking is where the `until_deadline` alias stops meaning "no
-    count cap" (owner D10/D20): the shared review-cycle cap binds under EVERY
-    policy, and the wallet cap the projection reports is derived through that
-    same enforcement predicate (`_root_task_acceptance_review_cap`). Dropping
-    the enforcement would leave the alias claiming no count cap at all — the
-    exact drift this pins closed, at numbers where the time rail admits."""
-    from ouroboros import task_pacing
-    from ouroboros.outcomes import REASON_REVIEW_CYCLES_EXHAUSTED
-    from ouroboros.task_results import (
-        project_task_acceptance_review_capacity,
-        task_acceptance_required_blocking,
-    )
-
-    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "required")
-    monkeypatch.setenv("OUROBOROS_REVIEW_ENFORCEMENT", "blocking")
-    ctx, events = _floor_band_ctx(
-        monkeypatch, tmp_path, seconds_left=370, claims=2, policy="until_deadline")
-    assert task_acceptance_required_blocking() is True
-    profile = task_pacing.resolve_budget_profile(ctx)
-    snapshot = task_pacing.build_budget_snapshot(ctx, profile=profile)
-    # `until_deadline` keeps the ×1 window, and the window is open here.
-    assert 200.0 < snapshot.spendable_sec <= 400.0
-    # 2 paid cycles -> 1 completed improvement pass, shared cap 1: exhausted.
-    assert task_pacing.improvement_pass_allowed(
-        snapshot, 1, profile, required_blocking=True, ctx=None) == (
-        False, REASON_REVIEW_CYCLES_EXHAUSTED)
-    # Dropping the enforcement makes the alias claim no count cap at all, so
-    # the very same numbers admit — the time rail refuses nothing here.
-    assert task_pacing.improvement_pass_allowed(snapshot, 1, profile, ctx=None) == (True, "")
-
-    projection = project_task_acceptance_review_capacity(ctx, task_id="root-floor-band")
-    assert projection["cap_cycles"] == 2 and projection["claimed_cycles"] == 2
-    assert projection["state"] == "unavailable"
-    assert projection["reason"] == REASON_REVIEW_CYCLES_EXHAUSTED
-    assert _rows(events, REASON_REVIEW_CYCLES_EXHAUSTED) == []  # the poll never reaches the gate
-
-
+# NOTE (7.0 ABI, Q10=A): upstream's `until_deadline` count-axis test was dropped here —
+# the alias itself is retired (tests/test_abi5_q10_removals.py pins its absence), so the
+# Required+Blocking count cap is exercised by the `fixed`/`adaptive` policies alone.
 def test_the_per_send_wallet_fence_still_binds_after_an_admitted_dispatch(monkeypatch, tmp_path):
     """The per-send wallet binding at dispatch is what actually protects money,
     proven with PRICED sends: the wave gate admits on ONE send per paid row, so
@@ -427,14 +407,14 @@ def _admitted_panel(monkeypatch, root, *, burns_sec):
     a wallet: the same binding claims once), admitted by the loop gate's OWN
     predicate at floor + 60 s, whose host packet builder then CONSUMES
     `burns_sec` of that window. Returns `(ctx, clock, llm)`."""
-    from ouroboros import acceptance_dialogue, task_pacing
+    from ouroboros import loop_acceptance_review, task_pacing
 
     root.mkdir(exist_ok=True)
     ctx, clock = _deadline_panel_ctx(monkeypatch, root, over_floor=60)
     llm = _EpisodeLLM(root, [{"content": json.dumps(_CLEAN_VERDICT)}])
     _real_panel(monkeypatch, llm)
     monkeypatch.setattr(
-        acceptance_dialogue, "_build_host_acceptance_evidence",
+        loop_acceptance_review, "_build_host_acceptance_evidence",
         _evidence_build(clock, burns_sec=burns_sec))
     # The loop gate, on exactly what loop.py feeds it: ADMIT at floor + 60 s.
     admitted = task_pacing.build_budget_snapshot(ctx.tools._ctx, profile=ctx.budget_profile)
@@ -664,25 +644,26 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
     the empty `state/` directory on a never-initialized root, the stale-lock
     removal, and the usage ledger's torn-tail quarantine — is pinned by the
     absent-ledger and stale-lock tests above and the torn-ledger test below).
-    On a task carrying the legacy `until_deadline` alias AND no
+    On a task carrying an `adaptive` profile (the `until_deadline` alias is retired) AND no
     `created_at`/`started_at` (both writes armed), with the grace env ABSENT and
     a legacy context-mode settings file (the settings write armed): the settings
     bytes and mtime, the events stream, the task result and the event queue are
     byte-identical, no ctx attribute appears, and the `time` fact honestly
-    answers `not_set` for a task whose window nobody has latched yet. The three
-    controls below fire all three writes from the paths that OWN them, so
-    nothing passes vacuously."""
+    answers `not_set` for a task whose window nobody has latched yet. The two
+    controls below fire both writes from the paths that OWN them, so nothing
+    passes vacuously."""
     from ouroboros import config as cfg, task_pacing
     from ouroboros.delegate_supervision import coordination_live_context
     from ouroboros.task_results import task_result_path
 
     ctx, events = _floor_band_ctx(
-        monkeypatch, tmp_path, seconds_left=620, policy="until_deadline")
+        monkeypatch, tmp_path, seconds_left=620, policy="adaptive")  # 7.0 ABI: until_deadline retired
     del ctx.task_metadata["created_at"]  # metadata-poor: no anchor without a WRITE
     monkeypatch.delenv("OUROBOROS_FINALIZATION_GRACE_SEC", raising=False)
     settings_path, settings_before = _legacy_settings(monkeypatch, tmp_path)
     result_file = task_result_path(tmp_path, "root-floor-band", create=False)
     before = (events.read_bytes(), result_file.read_bytes())
+    attrs_before = set(vars(ctx))
 
     for _ in range(2):
         live = coordination_live_context(ctx)
@@ -694,15 +675,17 @@ def test_the_whole_coordination_poll_writes_nothing_and_reports_an_unlatched_tas
     assert (settings_path.read_bytes(), settings_path.stat().st_mtime_ns) == settings_before
     assert (events.read_bytes(), result_file.read_bytes()) == before
     assert ctx.event_queue.empty() and ctx.pending_events == []
-    assert not hasattr(ctx, "_time_budget_started_at")
-    assert not hasattr(ctx, "_acceptance_pacing_deprecation_emitted")
+    assert set(vars(ctx)) == attrs_before  # the EXACT attribute set: nothing latched, nothing cached
+    assert not hasattr(ctx, "_time_budget_started_at")  # the one latch a poll could take
 
     # Controls: each armed write really is reachable from its owning path.
     assert cfg.load_settings().get("OUROBOROS_CONTEXT_MODE") == "max"
     assert settings_path.read_bytes() != settings_before[0]  # load_settings persists
-    assert task_pacing.resolve_budget_profile(ctx)["improvement_policy"] == "until_deadline"
-    assert ctx._acceptance_pacing_deprecation_emitted is True
-    assert len(_rows(events, "deprecated_task_pacing_alias")) == 1
+    assert task_pacing.resolve_budget_profile(ctx)["improvement_policy"] == "adaptive"
+    # (the third control of the upstream test — the alias deprecation row and
+    # its `_acceptance_pacing_deprecation_emitted` latch — is void: the
+    # ``until_deadline`` alias and its emission are retired, 7.0 ABI Q10=A, and
+    # nothing in the tree writes that attribute any more)
     assert task_pacing.build_budget_snapshot(ctx).has_deadline is True
     assert getattr(ctx, "_time_budget_started_at", None) is not None
 

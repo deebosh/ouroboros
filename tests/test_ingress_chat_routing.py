@@ -152,7 +152,8 @@ def test_api_task_with_a_malformed_chat_id_is_still_a_typed_400(admission):
         "/api/tasks", json={"description": "x", "chat_id": "nope"},
     )
     assert response.status_code == 400
-    assert "integers" in response.text
+    # v7 ABI-3: the derived-schema ingress gate answers first, with its typed message.
+    assert "chat_id must be a JSON integer" in response.text
 
 
 def test_derived_project_id_is_scoped_but_never_announced_in_main(tmp_path, monkeypatch):

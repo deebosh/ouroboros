@@ -189,6 +189,7 @@ def test_current_plan_and_open_dispositions_enter_actual_model_request():
     result_dir = env.drive_root / "task_results"
     result_dir.mkdir(parents=True)
     (result_dir / f"{task_id}.json").write_text(json.dumps({
+        "_schema_version": 1,
         "task_id": task_id,
         "status": "running",
         "plan_review_state": {
@@ -242,6 +243,7 @@ def test_valid_named_predecessor_materializes_into_first_model_request_and_actor
     result_dir = env.drive_root / "task_results"
     result_dir.mkdir(parents=True)
     (result_dir / f"{predecessor_id}.json").write_text(json.dumps({
+        "_schema_version": 1,
         "task_id": predecessor_id,
         "status": "completed",
         "objective": "o" * 700 + tail,
