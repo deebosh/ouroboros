@@ -21,6 +21,13 @@ import pytest
 from ouroboros.tool_access import user_files_path_block_reason
 from ouroboros.tools.core import _code_search, _list_files, _read_file, _write_file
 from ouroboros.tools.registry import ToolContext, ToolRegistry
+from ouroboros.tools import registry_guard_process
+
+
+def _posix(rendered: str) -> str:
+    """Listings and search hits spell paths with the host separator (JSON-escaped
+    in a listing); compare them separator-agnostically."""
+    return rendered.replace("\\\\", "/").replace("\\", "/")
 
 
 AWS_SECRET_LINE = "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
@@ -78,9 +85,9 @@ def test_root_reads_credential_named_user_file_masked_not_refused(user_files_ctx
 def test_root_lists_and_searches_credential_named_user_files(user_files_ctx):
     ctx, _home = user_files_ctx
     listing = _list_files(ctx, path=".aws", root="user_files")
-    assert ".aws/credentials" in listing                 # the name is not hidden
+    assert ".aws/credentials" in _posix(listing)         # the name is not hidden
     found = _code_search(ctx, "aws_secret_access_key", root="user_files", path=".aws")
-    assert ".aws/credentials" in found                   # search reaches the file
+    assert ".aws/credentials" in _posix(found)           # search reaches the file
     assert "wJalrXUtnFEMI" not in found                  # match lines are masked
     assert "SECRET_BYTES_MASKED" in found
 
@@ -106,7 +113,7 @@ def test_root_read_authorization_is_location_only(user_files_ctx, operation, rel
 ])
 def test_sudo_named_as_data_passes_the_deterministic_prefilter(tmp_path, cmd):
     registry = ToolRegistry(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data")
-    assert registry._run_shell_safety_check({"cmd": cmd}, "advanced") is None
+    assert registry_guard_process._run_shell_safety_check(registry, {"cmd": cmd}, "advanced") is None
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +143,7 @@ def test_git_read_modes_pass_the_read_allowlist(cmd):
 ])
 def test_skill_owner_state_inspection_read_passes(tmp_path, cmd):
     registry = ToolRegistry(repo_dir=tmp_path / "repo", drive_root=tmp_path / "data")
-    assert registry._run_shell_safety_check({"cmd": cmd}, "advanced") is None
+    assert registry_guard_process._run_shell_safety_check(registry, {"cmd": cmd}, "advanced") is None
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +231,7 @@ def test_vcs_restore_directory_with_only_unprotected_dirty_files_restores(repo_c
 
 @pytest.mark.parametrize("component", [(".gitignore",), (".env.example",)])
 def test_declared_dotfile_outputs_are_exportable(component):
-    from ouroboros.tools.output_export_policy import _sensitive_output_component_reason
+    from ouroboros.tools.shell_outputs import _sensitive_output_component_reason
 
     assert _sensitive_output_component_reason(component) == ""
 

@@ -1,4 +1,4 @@
-import { accountedUpperBound, accountedUpperBoundWithChildren, formatUsd4 } from './utils.js';
+import { accountedUpperBound, accountedUpperBoundWithChildren, formatUsd4, joinMarkdownHeadings } from './utils.js';
 import { harnessPresentation } from './harness_presentation.js';
 import {
     classifyReviewLifecycle,
@@ -54,10 +54,15 @@ function shortText(text, maxLen = 180) {
     return s.length > maxLen ? s.slice(0, maxLen - 3) + '...' : s;
 }
 
-function describeText(text, maxLen = 180) {
+// For markdown narration, headings are projected (markers off, ` — ` before the
+// text under them) BEFORE the newlines collapse into the one-line preview:
+// afterwards no line-anchored rule could tell a heading from prose. Typed text
+// (shell commands, errors, traces) is never markdown: a `# comment` stays one.
+// `full` stays the source text either way.
+function describeText(text, maxLen = 180, { markdown = false } = {}) {
     const full = String(text || '').trim();
     if (!full) return { preview: '', full: '' };
-    const previewSource = full.replace(/\s+/g, ' ');
+    const previewSource = (markdown ? joinMarkdownHeadings(full) : full).replace(/\s+/g, ' ');
     return {
         preview: previewSource.length > maxLen ? previewSource.slice(0, maxLen - 3) + '...' : previewSource,
         full,
@@ -234,16 +239,18 @@ export function executorChip(evt) {
     };
 }
 
-function subagentHeadline(sid = '', role = '', label = '', model = '') {
+// The child card's headline is its identity, not its status: `role · model`
+// (or `Subagent · model` when the role is unknown). The status lives in the
+// card's chip, so no ` — Done` suffix, and the short task id is never part of
+// the compact form — chat.js appends it for twins at render time. Logs keep
+// the full diagnostic form (`role · model (id) — status`).
+function subagentHeadline(sid = '', role = '', label = '', model = '', { full = false } = {}) {
     const shortId = String(sid || '').slice(0, 8);
-    const cleanRole = String(role || '').trim();
-    const suffix = label ? ` — ${label}` : '';
+    const cleanRole = String(role || '').trim() || 'Subagent';
+    const suffix = full && label ? ` — ${label}` : '';
     // Show the resolved model compactly NEXT TO the role (e.g. "planning-scout · gemini-3.5-flash").
     const modelPart = compactModel(model) ? ` · ${compactModel(model)}` : '';
-    if (cleanRole) {
-        return `${cleanRole}${modelPart}${shortId ? ` (${shortId})` : ''}${suffix}`;
-    }
-    return `Subagent ${shortId || 'child'}${modelPart}${suffix}`;
+    return `${cleanRole}${modelPart}${shortId && full ? ` (${shortId})` : ''}${suffix}`;
 }
 
 const SUBAGENT_CARD_LABEL = {
@@ -332,6 +339,42 @@ export const OWNER_STOP_DETAIL_MARKER = "summary at the owner's request — best
 
 export function taskStoppedWithSummary(evt) {
     return String(evt?.reason_code || '') === 'owner_requested_finalization';
+}
+
+// The typed degradation causes a card can state in the owner's words. The record
+// keeps the machine code (Logs, task detail, benchmark ledgers); only the card
+// speaks. An UNKNOWN code stays raw on purpose: a reason we have no sentence for
+// must read as itself rather than as a wrong sentence.
+const TASK_REASON_PHRASES = {
+    plan_review_advisory: 'plan review never closed; the work continued under advisory enforcement',
+    host_child_status_suffix: 'a child task had not settled when the answer was delivered',
+    invalid_delivery_control_after_repair: 'the delivery control object was still malformed after repair',
+    budget_exhausted: 'the task ran out of budget before it could finish cleanly',
+    delivery_control_degraded: 'delivery finished in a degraded control state',
+};
+
+export function taskReasonPhrase(code) {
+    const raw = String(code || '');
+    return TASK_REASON_PHRASES[raw] || raw;
+}
+
+export function taskReasonDetail(evt) {
+    // An owner-requested stop is a success and carries its own marker instead.
+    if (taskStoppedWithSummary(evt)) return '';
+    // A warning caused by REVIEW must not be explained by the execution reason
+    // that happens to sit beside it: the host's acceptance decision is the
+    // cause, and it speaks in its own stored words. A hard failure or a
+    // cancellation keeps explaining itself by its execution reason.
+    const record = normalizeTaskTerminalRecord(evt);
+    const decision = record.outcome_axes?.review?.acceptance_decision
+        ?? record.review_status?.acceptance_decision;
+    const severity = taskOutcomeSeverity(evt);
+    if (severity !== 'error' && severity !== 'cancelled' && decision?.status && decision.status !== 'accepted') {
+        const rationale = String(decision.rationale || '').split(/\s+/).filter(Boolean).join(' ');
+        return `Acceptance: ${decision.status}${rationale ? ` — ${rationale}` : ''}`;
+    }
+    if (!evt?.reason_code) return '';
+    return `Reason: ${taskReasonPhrase(evt.reason_code)}`;
 }
 
 // S3 (HQ1): the ONE shared projection of a typed owner_hurry event for the
@@ -457,6 +500,8 @@ function taskOutcomeMeta(evt) {
         axes.lifecycle?.status ? `lifecycle ${axes.lifecycle.status}` : '',
         axes.execution?.status ? `execution ${axes.execution.status}` : '',
         axes.objective?.status ? `objective ${axes.objective.status}` : '',
+        axes.review?.status ? `review ${axes.review.status}` : '',
+        axes.review?.acceptance_decision?.status ? `acceptance ${axes.review.acceptance_decision.status}` : '',
     ].filter(Boolean);
 }
 
@@ -476,7 +521,7 @@ export function summarizeLogEvent(evt) {
             const sid = subagentId(evt);
             const event = String(evt.subagent_event || 'update').toLowerCase();
             const role = String(evt.subagent_role || '').trim();
-            return view(event === 'completed' ? 'done' : event === 'failed' || event === 'rejected' ? 'warn' : 'progress', subagentHeadline(sid, role, event, evt.model), {
+            return view(event === 'completed' ? 'done' : event === 'failed' || event === 'rejected' ? 'warn' : 'progress', subagentHeadline(sid, role, event, evt.model, { full: true }), {
                 body: shortText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240),
                 meta: [
                     sid ? `task=${sid}` : '',
@@ -545,7 +590,10 @@ export function summarizeLogEvent(evt) {
             meta: taskMeta(
                 evt.model || '',
                 formatLogTokens(evt),
-                formatLogMoney(evt.cost_usd ?? evt.cost),
+                // ABI-3: /api/logs backfill rows carry the honest name; live
+                // frames still say cost_usd/cost — resolve the pair via the
+                // SSOT helper, then the live-frame `cost` spelling.
+                formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.response_kind === 'tool_calls' ? `${evt.tool_call_count || 0} tool calls` : evt.response_kind || '',
             ),
         });
@@ -569,7 +617,7 @@ export function summarizeLogEvent(evt) {
             meta: taskMeta(
                 evt.model || '',
                 formatLogTokens(evt),
-                formatLogMoney(evt.cost_usd ?? evt.cost),
+                formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.category || '',
             ),
         });
@@ -767,7 +815,7 @@ export function summarizeLogEvent(evt) {
 
     return view('info', shortText(t, 120), {
         body: shortText(evt.text || evt.error || evt.result_preview || compactJson(evt.args || evt.task || evt.checks, 260), 260),
-        meta: taskMeta(evt.model || '', formatLogMoney(evt.cost_usd ?? evt.cost)),
+        meta: taskMeta(evt.model || '', formatLogMoney(accountedUpperBound(evt) ?? evt.cost)),
     });
 }
 
@@ -818,7 +866,7 @@ function chatView({
 export function summarizeChatLiveEvent(evt) {
     const t = evt.type || evt.event || 'unknown';
     const groupId = getLogTaskGroupId(evt);
-    const progressText = describeText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240);
+    const progressText = describeText(String(evt.content || evt.text || '').replace(/^💬\s*/, ''), 240, { markdown: true });
     const key = (...parts) => [t, groupId, ...parts].join(':');
 
     if (t === 'owner_hurry') {
@@ -865,10 +913,10 @@ export function summarizeChatLiveEvent(evt) {
         const rawEvent = String(evt.subagent_event || '').toLowerCase();
         const role = String(evt.subagent_role || '').trim();
         const status = String(evt.status || '').trim();
-        const resultText = describeText(evt.result || '', 320);
+        const resultText = describeText(evt.result || '', 320, { markdown: true });
         const traceText = describeText(evt.trace_summary || '', 320);
         const errorText = describeText(evt.error || '', 220);
-        const reasonDetail = evt.reason_code ? `Reason: ${String(evt.reason_code)}` : '';
+        const reasonDetail = evt.reason_code ? `Reason: ${taskReasonPhrase(evt.reason_code)}` : '';
         const detailParts = [
             progressText.full,
             resultText.full ? `[RESULT]\n${resultText.full}` : '',
@@ -1093,8 +1141,7 @@ export function summarizeChatLiveEvent(evt) {
         // №8/Q3: an owner-requested soft stop keeps 'done' severity but carries
         // its own headline and the owner-request marker in the details meta.
         const softStopped = taskStoppedWithSummary(evt);
-        const reasonDetail = !softStopped && evt.reason_code
-            ? `Reason: ${String(evt.reason_code)}` : '';
+        const reasonDetail = taskReasonDetail(evt);
         return chatView({
             phase: presentation.phase,
             headline: presentation.headline,

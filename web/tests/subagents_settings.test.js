@@ -26,6 +26,8 @@ import {
     validateAvailableSubagentsSetting,
 } from '../modules/subagents_settings.js';
 import { buildReviewerSlotsSetting } from '../modules/reviewer_slots.js';
+import { sessionRouteVerdict } from '../modules/subagent_status_primitives.js';
+import { revealNewRow } from '../modules/ui_helpers.js';
 
 const CONTRACT_FIXTURE = JSON.parse(fs.readFileSync(
     new URL('./fixtures/available_subagents_contract.json', import.meta.url),
@@ -489,7 +491,7 @@ test('session render signature follows account-pool routing verdict changes', ()
                 target_id: 'codex=gpt-5.6-sol-high',
                 credential_profile_id: '',
             },
-        })]), baselineLabel: 'Saved intent',
+        })]), baseline: 'saved',
         source: 'configured', diagnostics: [], statusError: '', catalogKnown: true,
         accountsKnown: true, quotaKnown: true, apiModels: [],
         snapshot: {
@@ -516,7 +518,7 @@ test('session render signature follows account-pool routing verdict changes', ()
 test('session render signature expires a cooldown without a changed payload', () => {
     const cooldownUntil = Date.parse('2030-01-01T00:00:00Z');
     const state = {
-        loaded: true, parseError: '', setting: setting(), baselineLabel: 'Saved intent',
+        loaded: true, parseError: '', setting: setting(), baseline: 'saved',
         source: 'configured', diagnostics: [], statusError: '', catalogKnown: true,
         accountsKnown: true, quotaKnown: true, apiModels: [],
         snapshot: {
@@ -662,4 +664,122 @@ test('Settings section keeps global task-authority controls beside the actor lis
     assert.match(html, /id="s-subagent-worktree-root"/);
     assert.match(html, /id="s-subagent-projects-root"/);
     assert.doesNotMatch(html, /chooses one by its stable ID/);
+});
+
+test('revealNewRow scrolls the shortest distance and focuses the named field without a second scroll', () => {
+    // docs/DESIGN.md "List editors": a freshly added entry is scrolled into
+    // view without animation and takes the caret. Both arguments are the
+    // caller's; a stub or detached node without the DOM methods is tolerated.
+    const calls = [];
+    const row = { scrollIntoView: (opts) => calls.push(['scroll', opts]) };
+    const field = { focus: (opts) => calls.push(['focus', opts]) };
+    revealNewRow(row, field);
+    assert.deepEqual(calls, [
+        ['scroll', { block: 'nearest' }],
+        ['focus', { preventScroll: true }],
+    ]);
+    assert.doesNotThrow(() => revealNewRow({}, null));
+    assert.doesNotThrow(() => revealNewRow(null, {}));
+});
+
+const QUIET_STATE = Object.freeze({
+    snapshot: null, catalogKnown: false, accountsKnown: false, quotaKnown: false,
+    dirty: false, baseline: 'saved', saveAttempted: false,
+});
+
+test('the card head carries the ordinal, the route mark, a two-word status and the actions', () => {
+    // docs/DESIGN.md §6 row anatomy on the compact card: one primary thing (the
+    // ordinal), the harness mark, a dot + short words for the two status axes
+    // (intent · availability, full sentences in the title), actions docked right.
+    const html = availableSubagentRowMarkup(sessionRow(), QUIET_STATE, 2);
+    const head = html.slice(html.indexOf('available-subagent-head'), html.indexOf('available-subagent-purpose'));
+    assert.match(head, /class="available-subagent-heading"[^>]*>Subagent 3</);
+    assert.match(head, /available-subagent-route-identity-wrap/);
+    assert.match(head, /class="settings-inline-status" data-subagent-status data-tone="neutral" title="Saved intent · Agent session · live availability not checked">Saved · Not checked</);
+    assert.match(head, /data-subagent-duplicate/);
+    assert.match(head, /data-subagent-remove/);
+    assert.match(html, /<textarea data-subagent-field="recommended_use" rows="1"/);
+    assert.equal((html.match(/<textarea/g) || []).length, 1);
+    // A routed row with no run evidence carries no meta band at all.
+    assert.match(html, /data-subagent-meta[^>]*hidden/);
+    assert.doesNotMatch(html, /data-invalid/);
+    // An API model's availability is only known when a child starts: the
+    // second word says that instead of repeating the route mark beside it.
+    const api = availableSubagentRowMarkup(apiRow(), { ...QUIET_STATE, dirty: true }, 0);
+    assert.match(api, /data-tone="neutral" title="Draft intent · API model · availability is checked when a child starts">Draft · Checked at start</);
+});
+
+test('a fresh row invites instead of erroring until the owner tries to save', () => {
+    const fresh = {
+        subagent_id: 'subagent_new', recommended_use: '',
+        route: { kind: ROUTE_KIND_API_MODEL, target_id: '' },
+    };
+    const before = availableSubagentRowMarkup(fresh, QUIET_STATE, 3);
+    assert.doesNotMatch(before, /data-invalid/);
+    assert.doesNotMatch(before, /data-tone="error"/);
+    assert.match(before, /data-subagent-meta[^>]*>Choose how this subagent runs: an API model or an agent session\.</);
+
+    // A save attempt judges the rows that existed then (`_uiAttempted`) …
+    const judged = availableSubagentRowMarkup({ ...fresh, _uiAttempted: true }, { ...QUIET_STATE, saveAttempted: true }, 3);
+    assert.match(judged, /<article[^>]*data-invalid/);
+    assert.match(judged, /data-subagent-meta data-tone="error"[^>]*>Subagent 4 needs a model or agent-session route\.</);
+    // … while an entry added AFTER that attempt is an invitation again.
+    const later = availableSubagentRowMarkup(fresh, { ...QUIET_STATE, saveAttempted: true }, 4);
+    assert.doesNotMatch(later, /data-invalid/);
+    assert.match(later, /data-subagent-meta[^>]*>Choose how this subagent runs/);
+});
+
+test('validate() stays pure and names rows the way the cards do', () => {
+    const editor = createAvailableSubagentsEditor({ doc: null, win: null });
+    editor.load(setting([apiRow()]), { source: 'configured' });
+    assert.deepEqual(editor.validate(), []);
+    // The Save button reports the attempt; the validator itself changes nothing
+    // and a host-less editor (node tests, detached panel) tolerates the note.
+    assert.doesNotThrow(() => editor.noteSaveAttempt());
+    assert.deepEqual(editor.validate(), []);
+    assert.deepEqual(editor.collect(), { OUROBOROS_SUBAGENTS: setting([apiRow()]) });
+
+    const unrouted = validateAvailableSubagentsSetting(setting([
+        apiRow({ route: { kind: ROUTE_KIND_API_MODEL, target_id: '' } }),
+    ]));
+    assert.deepEqual(unrouted, ['Subagent 1 needs a model or agent-session route.']);
+    const errors = validateAvailableSubagentsSetting(setting([apiRow(), apiRow()]));
+    assert.match(errors[0], /^Subagent 2 repeats stable ID/);
+    assert.doesNotMatch(errors.join(' '), /\bRow \d/);
+});
+
+test('sessionRouteVerdict decides label, tone and sentence together', () => {
+    const unchecked = sessionRouteVerdict(sessionRow(), { catalogKnown: false, accountsKnown: false });
+    assert.deepEqual(unchecked, {
+        label: 'Not checked', tone: 'neutral', text: 'Agent session · live availability not checked',
+    });
+    const gone = { catalogKnown: true, accountsKnown: true, quotaKnown: true, snapshot: { harnesses: [] } };
+    const missing = sessionRouteVerdict(sessionRow(), gone);
+    assert.deepEqual(missing, { label: 'Unavailable', tone: 'warn', text: 'codex · currently unavailable' });
+});
+
+test('the head dot takes the worse of the two status axes', () => {
+    // docs/ARCHITECTURE.md §3: intent · availability, one dot whose tone is the
+    // worse of the two — an unsaved draft is never shown as green success even
+    // when its session is available now, and a saved API row stays neutral
+    // because an API model is only checked when a child starts.
+    const live = {
+        catalogKnown: true, accountsKnown: true, quotaKnown: true, statusError: '',
+        dirty: false, baseline: 'saved', saveAttempted: false,
+        snapshot: {
+            harnesses: [{ id: 'codex', status: 'ok', enabled: true, models: [{ id: 'gpt-5.6-sol-high' }] }],
+            profiles: { harnessAccounts: [], profiles: [{
+                profile: { harness_id: 'codex', profile_id: 'koshak', enabled: true },
+                status: { verification: 'passed' },
+            }] },
+            quota: [{ subject: { harness: 'codex', subject_id: 'koshak' }, freshness: 'fresh', constraints: [] }],
+        },
+    };
+    assert.match(availableSubagentRowMarkup(sessionRow(), live, 0),
+        /data-tone="ok" title="Saved intent · codex · available now[^"]*">Saved · Available</);
+    assert.match(availableSubagentRowMarkup(sessionRow(), { ...live, dirty: true }, 0),
+        /data-tone="neutral" title="Draft intent · codex · available now[^"]*">Draft · Available</);
+    assert.match(availableSubagentRowMarkup(sessionRow(), { ...live, baseline: 'generated' }, 0),
+        /data-tone="neutral"[^>]*>Generated · Available</);
+    assert.match(availableSubagentRowMarkup(apiRow(), live, 0), /data-tone="neutral"[^>]*>Saved · Checked at start</);
 });

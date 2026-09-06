@@ -169,8 +169,55 @@ class TestBackgroundConsciousnessToolScope(unittest.TestCase):
         self.assertNotIn("run_command", schema_names)
         self.assertNotIn("commit_reviewed", schema_names)
 
+    def test_set_next_wakeup_schema_follows_configured_bounds(self):
+        """The advertised range is the LIVE clamp, not a constant: with
+        OUROBOROS_BG_WAKEUP_MIN/MAX overridden the schema must say so, because
+        the handler clamps to those values (prompt-audit review finding)."""
+        import os
+        from unittest import mock
+
+        from ouroboros.consciousness import BackgroundConsciousness
+
+        tmpdir = pathlib.Path(tempfile.mkdtemp())
+        drive_root = tmpdir / "drive"
+        repo_dir = tmpdir / "repo"
+        (drive_root / "logs").mkdir(parents=True, exist_ok=True)
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        with mock.patch.dict(os.environ, {"OUROBOROS_BG_WAKEUP_MIN": "60", "OUROBOROS_BG_WAKEUP_MAX": "3600"}):
+            bc = BackgroundConsciousness(
+                drive_root=drive_root,
+                repo_dir=repo_dir,
+                event_queue=queue.Queue(),
+                owner_chat_id_fn=lambda: 42,
+            )
+            schema = next(
+                s["function"] for s in bc._tool_schemas() if s.get("function", {}).get("name") == "set_next_wakeup"
+            )
+        self.assertIn("60-3600", schema["description"])
+        self.assertIn("60-3600", schema["parameters"]["properties"]["seconds"]["description"])
+        self.assertEqual(bc._wakeup_min, 60)
+        self.assertEqual(bc._wakeup_max, 3600)
+
 
 class TestBackgroundConsciousnessCost(unittest.TestCase):
+    def test_think_accepts_unlimited_total_budget(self):
+        from ouroboros.consciousness import BackgroundConsciousness
+        from ouroboros.settings_setup_contract import resolve_total_budget_usd
+        from ouroboros.usage_accounting import current_usage_scope
+
+        bc = object.__new__(BackgroundConsciousness)
+        bc._drive_root = pathlib.Path(tempfile.mkdtemp())
+        bc._bg_budget_pct = 5.0
+        captured = []
+        bc._think_scoped = lambda: captured.append(current_usage_scope()) or True
+
+        with patch.dict(os.environ, {"TOTAL_BUDGET": "0"}):
+            self.assertIsNone(resolve_total_budget_usd())
+            self.assertTrue(bc._think())
+
+        self.assertIsNone(captured[0].global_limit_usd)
+        self.assertIsNone(captured[0].root_limit_usd)
+
     def test_unknown_round_cost_stays_nullable_in_durable_thought(self):
         from ouroboros.consciousness import BackgroundConsciousness
 

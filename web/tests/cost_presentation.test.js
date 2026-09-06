@@ -42,22 +42,27 @@ test('task cards distinguish unavailable, pending zero, and final zero', () => {
         cost_final: false,
     }), ['cost unavailable']);
 
+    // The producer's amount is already the upper bound (settled + reserved +
+    // unresolved, cost_projection.py); the openness fields ride beside it and the
+    // card states the one number as a ceiling while the ledger is open.
     assert.deepEqual(taskCostMeta({
-        cost_usd: 0,
+        cost_usd: 1.75,
         cost_accounting_status: 'available',
         cost_final: false,
         reserved_usd: 1.25,
         unresolved_upper_bound_usd: 0.5,
-    }), ['cost=$0.00 (pending)', 'reserved=$1.25', 'unresolved≤$0.50']);
+    }), ['up to $1.75']);
 
     assert.deepEqual(taskCostMeta({
         cost_usd: 0,
         cost_accounting_status: 'available',
         cost_final: true,
-    }), ['cost=$0.00']);
+    }), ['$0.00']);
 });
 
-test('compact task cards show one complete cost and keep openness details', () => {
+test('compact task cards show ONE amount whose wording carries the openness', () => {
+    // Calls with no known price are not named on the card (owner: no counter);
+    // the open ledger still reads as a ceiling.
     assert.deepEqual(taskCostMeta({
         cost_usd: 55.86,
         cost_usd_with_children: 76.82,
@@ -67,17 +72,22 @@ test('compact task cards show one complete cost and keep openness details', () =
         reserved_usd: 1.25,
         unresolved_upper_bound_usd: 0.5,
         unknown_unmetered: 2,
-    }), [
-        'cost=$76.82 (pending)',
-        'reserved=$1.25',
-        'unresolved≤$0.50',
-        'unmetered=2',
-    ]);
+    }), ['up to $76.82']);
+    // Every call priced, ledger still open: a ceiling.
+    assert.deepEqual(taskCostMeta({
+        cost_usd: 55.86,
+        cost_usd_with_children: 76.82,
+        cost_accounting_status: 'available',
+        cost_final: false,
+        cost_with_children_partial: true,
+        reserved_usd: 1.25,
+        unresolved_upper_bound_usd: 0.5,
+    }), ['up to $76.82']);
     assert.deepEqual(taskCostMeta({
         cost_usd: 4.25,
         cost_accounting_status: 'available',
         cost_final: true,
-    }), ['cost=$4.25']);
+    }), ['$4.25']);
 
     const partialChild = taskCostProjection({
         cost_usd: 4.25,
@@ -86,7 +96,7 @@ test('compact task cards show one complete cost and keep openness details', () =
         cost_final: true,
         cost_with_children_partial: true,
     }, '2026-07-29T00:00:00Z');
-    assert.deepEqual(partialChild.meta, ['cost=$6.50 (pending)']);
+    assert.deepEqual(partialChild.meta, ['up to $6.50']);
     assert.equal(partialChild.final, false);
 });
 
@@ -98,13 +108,13 @@ test('unknown zero-dollar accounting stays pending instead of becoming free', ()
         cost_final: false,
         cost_with_children_partial: true,
         unknown_unmetered: 1,
-    }), ['cost pending', 'unmetered=1']);
+    }), ['cost pending']);
     assert.deepEqual(taskCostMeta({
         cost_usd: 0,
         cost_accounting_status: 'available',
         cost_final: false,
         unknown_unmetered: 1,
-    }), ['cost pending', 'unmetered=1']);
+    }), ['cost pending']);
 });
 
 test('a bare per-round cost_usd delta is NOT task cost (v6.82 P1)', () => {
@@ -112,13 +122,21 @@ test('a bare per-round cost_usd delta is NOT task cost (v6.82 P1)', () => {
     // evidence — so it must render nothing and produce no sticky projection.
     assert.deepEqual(taskCostMeta({ cost_usd: 0.03 }), []);
     assert.equal(taskCostProjection({ cost_usd: 0.03 }, '2026-07-29T00:00:00Z'), null);
+    // Nor is a frame that merely carries the NAMES: chat.js `costMetaKeys`
+    // materializes all twelve as own properties valued `undefined`, and a key
+    // without a value is not accounting evidence.
+    assert.deepEqual(taskCostMeta({
+        cost_usd: undefined, accounted_upper_bound_usd: undefined,
+        cost_accounting_status: undefined, cost_final: undefined,
+        unknown_unmetered: undefined, reserved_usd: undefined,
+    }), []);
     // Task-scope frames (subagent progress_meta shape) still qualify.
     const projection = taskCostProjection({
         cost_usd: 0.12,
         cost_accounting_status: 'available',
         cost_final: false,
     }, '2026-07-29T00:00:00Z');
-    assert.deepEqual(projection.meta, ['cost=$0.12 (pending)']);
+    assert.deepEqual(projection.meta, ['up to $0.12']);
     assert.equal(projection.final, false);
     assert.equal(projection.ts, Date.parse('2026-07-29T00:00:00Z'));
 });
@@ -276,13 +294,13 @@ test('an unavailable snapshot is sticky but never pins the card (v6.82 r2)', () 
     assert.equal(mergeStickyCostMeta(settled, unavailable), settled);
 });
 
-test('a cost-only frame never moves the card’s Latest clock', () => {
-    // "Latest" answers "when did this task last DO something". A cost frame carries
+test('a cost-only frame never moves the card’s activity clock', () => {
+    // "updated" answers "when did this task last DO something". A cost frame carries
     // no narration, so letting it move the clock would make a silent card look
     // freshly active. Pinned at source: the meta line reads the activity clock, and
     // only a human/activity-bearing frame advances it.
     const source = readFileSync(new URL('../modules/chat.js', import.meta.url), 'utf8');
-    assert.match(source, /record\.latestActivityTs \? `Latest \$\{record\.latestActivityTs\}`/);
+    assert.match(source, /record\.latestActivityTs \? `updated \$\{record\.latestActivityTs\}`/);
     assert.match(source, /if \(ts && \(summary\.human \|\| activityCandidate\)\) record\.latestActivityTs = ts/);
 });
 
@@ -295,10 +313,16 @@ test('one precedence rule: the deprecated alias wins a diverged pair, in every r
         cost_accounting_status: 'available', cost_final: true,
     };
     assert.equal(accountedUpperBound(diverged), 1);
-    assert.deepEqual(taskCostMeta(diverged), ['cost=$1.00']);
+    assert.deepEqual(taskCostMeta(diverged), ['$1.00']);
     // The additive name alone still reads (a producer that only writes it).
     assert.equal(accountedUpperBound({ accounted_upper_bound_usd: 9 }), 9);
     assert.equal(accountedUpperBound({}), null);
+    // ABI-3: a browser producer literal materializes the retired name as an own
+    // property valued `undefined`. That is a key the wire never carried, not a
+    // diverged pair — so the honest name is read. An explicit `null` IS present
+    // and still wins (Python parity with `old in src`).
+    assert.equal(accountedUpperBound({ cost_usd: undefined, accounted_upper_bound_usd: 9 }), 9);
+    assert.equal(accountedUpperBound({ cost_usd: null, accounted_upper_bound_usd: 9 }), null);
     assert.equal(accountedUpperBoundWithChildren(
         { cost_usd_with_children: 2, accounted_upper_bound_usd_with_children: 7 }), 2);
 });
@@ -323,4 +347,30 @@ test('log events read the shared cost names and stop hiding a real $0', () => {
         cost_accounting_status: 'available',
     });
     assert.ok(done.meta.includes('$0.0000'), JSON.stringify(done.meta));
+});
+
+test('llm round rows show money from BOTH the honest backfill name and the live frame', () => {
+    // Fix-round-3: /api/logs converts durable rows to the honest name, but the
+    // Logs renderer read only `cost_usd ?? cost` — the LLM-round cost column
+    // was empty after a page reload. The pair now resolves via the SSOT
+    // helper, with the live-frame `cost` spelling as the last fallback.
+    const backfill = summarizeLogEvent({
+        type: 'llm_round_finished', round: 2, model: 'm',
+        accounted_upper_bound_usd: 0.1234,
+    });
+    assert.ok(backfill.meta.includes('$0.1234'), JSON.stringify(backfill.meta));
+    const live = summarizeLogEvent({
+        type: 'llm_round_finished', round: 2, model: 'm', cost: 0.5,
+    });
+    assert.ok(live.meta.includes('$0.5000'), JSON.stringify(live.meta));
+    const usage = summarizeLogEvent({
+        type: 'llm_usage', model: 'm', accounted_upper_bound_usd: 0.25,
+    });
+    assert.ok(usage.meta.includes('$0.2500'), JSON.stringify(usage.meta));
+    // Diverged stored pair keeps the ONE precedence rule (deprecated wins).
+    const diverged = summarizeLogEvent({
+        type: 'llm_round_finished', round: 1, model: 'm',
+        cost_usd: 0.9, accounted_upper_bound_usd: 0.1,
+    });
+    assert.ok(diverged.meta.includes('$0.9000'), JSON.stringify(diverged.meta));
 });

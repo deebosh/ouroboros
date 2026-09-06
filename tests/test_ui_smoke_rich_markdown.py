@@ -26,6 +26,7 @@ def test_ui_browser_marked_rich_markdown_and_security(direct_server_with_data): 
         # Rich markdown smoke
         ## Structure
         ### Details
+        #### Fourth level
 
         > A quoted conclusion.
 
@@ -135,6 +136,12 @@ def test_ui_browser_marked_rich_markdown_and_security(direct_server_with_data): 
                 assert rich.locator("h1.md-h1").count() == 1, rich.inner_html()
                 assert rich.locator("h2.md-h2").count() == 1
                 assert rich.locator("h3.md-h3").count() == 1
+                # Every heading level is a body-size semibold label inside a bubble (DESIGN §5);
+                # h4+ carry the smallest label class so the clamp reaches them.
+                h4 = rich.locator("h4.md-h3")
+                assert h4.count() == 1, rich.inner_html()
+                assert h4.evaluate("el => [getComputedStyle(el).fontSize, getComputedStyle(el).fontWeight]") == ["14px", "600"]
+                assert rich.locator("h1.md-h1").evaluate("el => getComputedStyle(el).fontSize") == "14px"
                 assert rich.locator("blockquote.md-quote").count() == 1
                 table = rich.locator(".md-table-wrap > table.md-table")
                 assert table.count() == 1

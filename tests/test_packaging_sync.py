@@ -31,6 +31,22 @@ def test_version_file_and_pyproject_are_synced():
     assert f'name = "ouroboros"\nversion = "{pyproject_version}"' in uv_lock
 
 
+def test_web_package_lock_root_entries_match_version():
+    """Both root entries of web/package-lock.json (the root object and its
+    packages[""] entry) carry VERSION on THIS tree, and the carrier SSOT
+    agrees — the pin the blocking gates rely on (rc.15 review MAJOR-1)."""
+    import json
+
+    from ouroboros.tools.release_sync import version_carrier_desyncs
+
+    version = (REPO / "VERSION").read_text(encoding="utf-8").strip()
+    lock_text = (REPO / "web" / "package-lock.json").read_text(encoding="utf-8")
+    lock = json.loads(lock_text)
+    assert lock["version"] == version
+    assert lock["packages"][""]["version"] == version
+    assert version_carrier_desyncs(version, web_package_lock_text=lock_text, detailed=True) == []
+
+
 def test_push_to_remote_push_tags_compatibility(monkeypatch):
     from supervisor import git_ops
 
@@ -207,19 +223,52 @@ def test_architecture_doc_describes_build_script_release_tag_check():
 
 
 def test_system_prompt_lists_bible_in_safety_critical_set():
-    """prompts/SYSTEM.md ``Immutable Safety Files`` section must match
+    """prompts/SYSTEM.md ``Safety-critical files`` section must name EXACTLY
     ``ouroboros.runtime_mode_policy.SAFETY_CRITICAL_PATHS`` — including
-    ``BIBLE.md``, which is protected by the hardcoded sandbox."""
+    ``BIBLE.md``, which is protected by the hardcoded sandbox. The prompt keeps
+    this one exact list (the LLM must recognise the names) and points at
+    ``runtime_mode_policy.py`` for the wider protected surface instead of
+    mirroring the frozen/release sets, which rotted twice before."""
+    from ouroboros.runtime_mode_policy import SAFETY_CRITICAL_PATHS
+
     system_md = (REPO / "prompts" / "SYSTEM.md").read_text(encoding="utf-8")
 
-    safety_section_start = system_md.find("## Immutable Safety Files")
+    safety_section_start = system_md.find("## Safety-critical files")
     assert safety_section_start != -1
-    safety_section_end = system_md.find("##", safety_section_start + 1)
+    safety_section_end = system_md.find("\n## ", safety_section_start + 1)
     safety_section = system_md[safety_section_start:safety_section_end]
     assert "`BIBLE.md`" in safety_section
     assert "`ouroboros/safety.py`" in safety_section
     assert "`prompts/SAFETY.md`" in safety_section
     assert "`ouroboros/tools/registry.py`" in safety_section
+    named_paths = {
+        token for token in re.findall(r"`([^`]+)`", safety_section)
+        if "/" in token or token.endswith(".md")
+    }
+    assert named_paths == set(SAFETY_CRITICAL_PATHS), (
+        named_paths ^ set(SAFETY_CRITICAL_PATHS)
+    )
+
+
+def test_safety_prompt_protected_path_list_mirrors_runtime_policy():
+    """prompts/SAFETY.md is the ONE prose copy of the protected-path set (the
+    LLM supervisor is the only gate for MCP/extension tools, so it needs the
+    exact names). It must equal ``PROTECTED_RUNTIME_PATHS`` plus the
+    ``ouroboros/contracts/`` prefix — a drifted list silently stops protecting
+    whatever was added to the policy module."""
+    from ouroboros.runtime_mode_policy import (
+        PROTECTED_RUNTIME_PATH_PREFIXES,
+        PROTECTED_RUNTIME_PATHS,
+    )
+
+    safety_md = (REPO / "prompts" / "SAFETY.md").read_text(encoding="utf-8")
+    marker = "Protected paths (exact mirror of `PROTECTED_RUNTIME_PATHS` plus the protected prefix in `ouroboros/runtime_mode_policy.py`):"
+    start = safety_md.find(marker)
+    assert start != -1, "SAFETY.md lost its protected-path mirror sentence"
+    line_end = safety_md.find("\n", start)
+    listed = set(re.findall(r"`([^`]+)`", safety_md[start + len(marker):line_end]))
+    expected = set(PROTECTED_RUNTIME_PATHS) | set(PROTECTED_RUNTIME_PATH_PREFIXES)
+    assert listed == expected, listed ^ expected
 
 
 def test_architecture_doc_does_not_claim_ensure_managed_repo_fetches():

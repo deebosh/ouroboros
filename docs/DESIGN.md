@@ -176,7 +176,9 @@ Status, owner action, and urgent notification are separate product concepts:
 
 - **Status** states a fact about the affected object. It does not imply that the
   owner can or must act. Task status uses one factual word family: `Working`,
-  `Done`, `Done with warnings`, `Failed`, `Cancelled`.
+  `Done`, `Done with warnings`, `Failed`, `Cancelled`. The same five words are
+  the host's durable label vocabulary for its own task rows in Main and the
+  Project thread (`OUTCOME_PHASE_HEADLINE`), not only the browser's.
 - **Owner action** exists only when the responsible domain exposes a current
   concrete continuation, such as Resume, Retry, Connect, Repair, Grant access,
   or Restart. The action is a real adjacent control; severity alone never
@@ -194,7 +196,9 @@ Local diagnostic failures remain inspectable in details and Logs, but do not
 relabel the whole still-working task. A failed child keeps a compact factual
 `Failed` marker inside its parent while the root continues under its own
 authoritative status. Internal reason codes belong in details and diagnostics,
-not compact headlines.
+not compact headlines. Where a card does show a cause, it says it in the owner's
+words while the record keeps the machine code; a cause with no sentence yet stays
+raw rather than borrowing a wrong one.
 
 | Role | Foreground | Background | Border |
 | --- | --- | --- | --- |
@@ -253,13 +257,57 @@ not move them into the migrated set in section 8.
   `--text-meta`). The description explains what the section decides; the note
   carries consequences and caveats.
 - Subsections inside a section use a `--type-body` semibold heading and stay
-  visually grouped with their own rows and their own action toolbar. A heading
-  that floats equidistant between two groups belongs to neither.
+  visually grouped with their own rows, their own add action in the head
+  (List editors, below). A heading that floats equidistant between two groups
+  belongs to neither.
 - Spacing comes from the 8pt tokens (`--space-*`); a new visual dimension
   becomes a CSS variable before it becomes a page-local literal.
 - An item in a popup menu or a picker list highlights with
   `--menu-item-hover`. One gesture, one fill: a menu that highlights at a
   different strength than the menu beside it reads as a different control.
+- **Content text is always selectable and copyable.** A control may suppress
+  selection (`user-select: none`) only on its own label or chrome, never on
+  content it contains. Where content lives inside a click-to-toggle surface
+  (a task card's summary), the surface ignores a pointer click whose drag
+  produced a non-empty selection; keyboard activation is unaffected.
+- **A markdown heading inside chat is a subsection label**, never a page
+  title: in chat bubbles every heading level renders at `--type-body`
+  semibold; in a task card's timeline it renders inline, without block
+  margins, at its row's own size. The page-size `md-h1` belongs to non-chat
+  surfaces only.
+- **A task card's summary outranks its details.** The latest-activity line is
+  `--type-body`; collapsed timeline rows are a dense log at `--type-meta` in
+  `--text-secondary`; an expanded row returns to `--type-body` in
+  `--text-primary`. Details never render larger than the summary above them;
+  an inline label inside a row is semibold at the row's own size.
+- **A nested child card is subordinate to its root.** Collapsed, it is an
+  identity row — status chip · `role · model` · `N notes` and the chevron (the
+  `Show details` label belongs to the root) — in `--text-secondary` ink at
+  weight 400, with no reserved title or activity lines, over its metadata row
+  (harness chip with the run count, cost, last update). Only its narration
+  line waits for expansion. The root keeps `--text-primary` at weight 500 for
+  its title.
+
+### List editors
+
+A list editor is any section where the owner adds and edits entries in place:
+the Available subagents roster, the Review lanes groups, MCP servers, custom
+keys.
+
+- A section-level add action acts from its group's header (§6). A list
+  editor's new entry appears at the end of its own group, is scrolled into
+  view — the shortest distance, without animation — and takes the caret in its
+  first field. A button that stays in view while the entry it made is born
+  off-screen has not finished its job.
+- A freshly added entry is an invitation, not an error. Where a list editor
+  validates in the browser (today the Available subagents roster), the entry
+  shows a neutral hint in its own meta line until the owner tries to save; the
+  error then names the entry and stands beside it — the entry tinted with the
+  status pair, never dimmed — with the section-level line as the summary. A
+  save attempt judges the entries that existed then; one added afterwards is
+  an invitation again.
+- A multi-field card (an MCP server) follows the add-and-reveal rule without
+  adopting the §6 row anatomy.
 
 ### Reviews inside task cards
 
@@ -268,8 +316,10 @@ exact real task that owns their presentation. Harness and neutral API marks
 identify the delivery channel alongside explicit execution evidence; they are
 not child-task cards and never prove execution by themselves.
 
-- A collapsed task card shows only a quiet `Reviews N` line, optionally with an
-  active count. It has no aggregate pass/fail alert, no synthesized verdict, and
+- A collapsed task card shows only a quiet `Reviews N` count, docked on the
+  metadata row (it wraps under the metadata on a narrow card), optionally with an
+  active count; a collapsed nested child card docks it on its metadata row the
+  same way. It has no aggregate pass/fail alert, no synthesized verdict, and
   no review dollars.
 - Expanding `Reviews` reveals one row per currently admitted review group
   (`Skill review`, `Plan review`, or `Task acceptance`). Expanding a group

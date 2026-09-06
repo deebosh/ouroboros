@@ -22,7 +22,7 @@ import { initDashboard } from './modules/dashboard.js';
 import { hydrateNavIcons } from './modules/page_icons.js';
 
 import { initOnboardingOverlay } from './modules/onboarding_overlay.js';
-import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from './modules/ui_helpers.js';
+import { installAltMenuSuppression, installDesktopShellLinkInterceptor, renderProjectChip } from './modules/ui_helpers.js';
 
 const state = {
     messages: [],
@@ -75,6 +75,17 @@ function setMobileDrawerOpen(open, { sync = true } = {}) {
     if (nextOpen) releaseMobileKeyboardForDrawer();
     navState.mobileDrawerOpen = nextOpen;
     if (sync) syncNavigationState();
+}
+
+// The application's one client-side route: a `#<page>` fragment, honoured once
+// on load and validated against the injected sections rather than against a
+// duplicated page list — the DOM is the single source of truth, so an unknown
+// fragment is ignored instead of painting a blank surface. Deliberately NOT
+// written back on navigation: the desktop shell and the Telegram mini app have
+// no address bar to read it from.
+function pageFromHash() {
+    const name = String(window.location.hash || '').replace(/^#/, '').trim();
+    return name && document.getElementById(`page-${name}`) ? name : '';
 }
 
 async function showPage(name, options = {}) {
@@ -560,7 +571,10 @@ function applyTaskBindings(bindings) {
     const entries = window.__ouroTaskBindings;
     const bound = new Set(Object.keys(entries));
     if (!bound.size) return;
-    document.querySelectorAll('.chat-live-card[data-task-id]').forEach((card) => {
+    // The pointer is a Main ROOT card affordance: a card inside a project panel
+    // is already in that project (its pointer would only close the panel), and a
+    // nested subagent card is not the task the binding names.
+    document.querySelectorAll('#page-chat .chat-live-card[data-task-id]:not(.subagent)').forEach((card) => {
         const tid = card.dataset.taskId;
         // A converted card (projectCreated) already shows its own project chip.
         if (!bound.has(tid) || card.dataset.projectCreated === '1') return;
@@ -583,20 +597,14 @@ function renderBoundProjectPointer(card, projectId, chatId = 0) {
         || { id: projectId, name: projectId, chat_id: chatId };
     let ptr = card.querySelector('.chat-live-bound-pointer');
     if (!ptr) {
-        ptr = document.createElement('button');
-        ptr.type = 'button';
-        ptr.className = 'chat-live-project-card-btn chat-live-bound-pointer';
-        const icon = document.createElement('span');
-        icon.className = 'chat-live-project-icon';
-        icon.setAttribute('aria-hidden', 'true');
-        icon.textContent = '📁';
-        const nameEl = document.createElement('span');
-        nameEl.className = 'chat-live-project-name';
-        const status = document.createElement('span');
-        status.className = 'chat-live-project-status';
-        status.textContent = 'in project ↗';
-        ptr.append(icon, nameEl, status);
-        ptr.addEventListener('click', () => openProjectPanel(project));
+        ptr = renderProjectChip({
+            name: project.name || project.id,
+            status: 'in project ↗',
+            className: 'chat-live-bound-pointer',
+            // Open-or-noop: openProjectPanel toggles, and a pointer must never close
+            // the panel it points at.
+            onClick: () => { if (navState.activeProjectId !== project.id) openProjectPanel(project); },
+        });
         card.appendChild(ptr);
     }
     card.dataset.projectBound = '1';
@@ -716,6 +724,8 @@ initOnboardingOverlay();
 initMatrixRain();
 loadVersion();
 syncNavigationState();
+const hashPage = pageFromHash();
+if (hashPage && hashPage !== state.activePage) showPage(hashPage);
 
 // Mobile soft-keyboard handling: viewport shrink counts only while an editable
 // owns focus. Drawer opening clears that state explicitly before navigation is

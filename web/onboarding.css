@@ -56,8 +56,12 @@
   --status-error-bg: var(--red-dim);
   --status-neutral-fg: var(--text-meta);
   --status-neutral-bg: rgba(255, 255, 255, 0.06);
+  --status-error-border: rgba(239, 68, 68, 0.30);
   --radius-sm: 8px;
+  --radius: 12px;
   --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
   --button-padding-y: 8px;
   --button-padding-x: 16px;
   --button-font-size: 13px;
@@ -939,22 +943,27 @@ textarea:focus {
   margin-top: 10px;
 }
 
+/* Mirror of the settings.css compact card (docs/DESIGN.md §6 row anatomy):
+   the wizard loads only this sheet. Same rhythm tokens, the wizard's own
+   surface tokens. */
 .available-subagents-editor {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  margin-top: 12px;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .available-subagents-toolbar,
+.available-subagent-head,
 .available-subagent-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
-.available-subagents-toolbar .btn-default { margin-left: auto; }
+.available-subagents-toolbar .btn-default,
+.available-subagent-actions { margin-left: auto; }
 
 .available-subagents-count,
 .available-subagents-source,
@@ -966,37 +975,49 @@ textarea:focus {
   line-height: var(--line-body);
 }
 
-.available-subagents-diagnostics[data-tone="error"] { color: var(--status-error-fg); }
+.available-subagents-diagnostics[data-tone="error"],
+.available-subagent-meta[data-tone="error"] { color: var(--status-error-fg); }
 
 .available-subagents-list {
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: var(--space-2);
 }
 
 .available-subagent-row {
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 12px;
+  gap: var(--space-1);
+  padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   background: var(--panel-3);
+}
+
+/* An entry the owner tried to finish with an error is emphasised, not dimmed. */
+.available-subagent-row[data-invalid] {
+  border-color: var(--status-error-border);
+  background: var(--status-error-bg);
 }
 
 .available-subagent-route {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 9px;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: var(--space-2);
 }
-
-.available-subagent-route { grid-template-columns: repeat(4, minmax(120px, 1fr)); }
 
 .available-subagent-heading {
   margin: 0;
   color: var(--text);
   font-size: var(--type-body);
   font-weight: 600;
+}
+
+.available-subagent-head .settings-inline-status {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Standalone mirror of style.css: onboarding does not load the app sheet. */
@@ -1034,18 +1055,28 @@ textarea:focus {
 .available-subagent-purpose {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: var(--space-1);
   color: var(--text-meta);
   font-size: var(--type-meta);
 }
 
+/* One line that grows with its text up to four, then scrolls (`field-sizing`);
+   a shell without it keeps the one-line field and manual resize. */
 .available-subagent-purpose textarea {
   width: 100%;
-  min-height: 60px;
+  field-sizing: content;
+  line-height: var(--line-body);
+  min-height: calc(var(--type-body) * var(--line-body) + 22px);
+  max-height: calc(4 * var(--type-body) * var(--line-body) + 22px);
+  overflow-y: auto;
   resize: vertical;
 }
 
-.available-subagent-actions { justify-content: flex-end; }
+.available-subagent-meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .available-subagent-actions .btn-default {
   min-height: 34px;
@@ -1184,6 +1215,7 @@ textarea:focus {
   color: var(--status-neutral-fg);
 }
 
+.settings-inline-status[data-tone="neutral"] { color: var(--status-neutral-fg); }
 .settings-inline-status[data-tone="ok"] { color: var(--status-ok-fg); }
 .settings-inline-status[data-tone="warn"] { color: var(--status-warn-fg); }
 .settings-inline-status[data-tone="error"] { color: var(--status-error-fg); }

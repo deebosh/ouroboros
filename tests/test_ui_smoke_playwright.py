@@ -998,6 +998,7 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
     task_results = data_dir / "task_results"
     task_results.mkdir(parents=True, exist_ok=True)
     (task_results / "named-act.json").write_text(json.dumps({
+        "_schema_version": 1,
         "task_id": "named-act",
         "status": "completed",
         "suggested_name": "Data Analysis",
@@ -1073,7 +1074,9 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     assert geometry["title"]["lines"] <= 2.2, geometry
                     assert geometry["activity"]["lines"] <= 2.2, geometry
                     assert geometry["scrollWidth"] <= geometry["clientWidth"] + 1, geometry
-                    assert "cost=$0.42" in named.locator('[data-live-meta]').inner_text()
+                    named_meta = named.locator('[data-live-meta]').inner_text().split()
+                    # Final ledger: the plain amount, never the open-ledger ceiling.
+                    assert "$0.42" in named_meta and "up" not in named_meta, named_meta
 
                     unnamed_activity = unnamed.locator('[data-live-activity]')
                     assert "Doing things without a name" in unnamed.locator('[data-live-title]').text_content()
@@ -1103,13 +1106,71 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
                     assert bands["named-act"]["finished"] is True, bands
                     assert bands["unnamed-act"]["finished"] is False, bands
                     assert bands["running-act"]["finished"] is False, bands
-                    for slot in ("title", "activity"):
+                    for slot, low in (("title", 0.9), ("activity", 1.9)):
                         heights = [bands[task_id][slot]["height"] for task_id in bands]
                         assert max(heights) - min(heights) <= 1, bands
-                        assert all(1.9 <= bands[task_id][slot]["lines"] <= 2.2 for task_id in bands), bands
+                        assert all(low <= bands[task_id][slot]["lines"] <= low + 0.3 for task_id in bands), bands
                     assert bands["unnamed-act"]["activity"]["display"] != "none", bands
                     assert bands["unnamed-act"]["activity"]["visibility"] == "hidden", bands
+                    # D23 (owner, 2026-09-02): a FINISHED card folds an empty activity
+                    # band; a running card keeps the two-line reserve (31.08 seam).
+                    _emit_ws_frame(page, {
+                        "type": "chat", "role": "assistant", "is_progress": True,
+                        "chat_id": 1, "task_id": "done-empty", "suggested_name": "Quick task",
+                        "content": "", "ts": "2026-07-29T10:00:03+00:00",
+                    })
+                    done_empty = page.locator('.chat-live-card[data-task-id="done-empty"]')
+                    done_empty.wait_for(state="attached", timeout=30_000)
+                    _emit_ws_frame(page, {
+                        "type": "chat", "role": "system", "system_type": "task_summary",
+                        "chat_id": 1, "task_id": "done-empty", "content": "Done",
+                        "ts": "2026-07-29T10:00:04+00:00",
+                    })
+                    page.wait_for_function(
+                        "() => document.querySelector('.chat-live-card[data-task-id=\"done-empty\"]')"
+                        "?.dataset.finished === '1'",
+                        timeout=30_000,
+                    )
+                    fold = done_empty.evaluate(
+                        """card => { const node = card.querySelector('[data-live-activity]');
+                            return {text: node.textContent, display: getComputedStyle(node).display,
+                                height: card.getBoundingClientRect().height}; }"""
+                    )
+                    assert fold["text"].strip() == "", fold
+                    assert fold["display"] == "none", fold
+                    running_height = running.evaluate("el => el.getBoundingClientRect().height")
+                    assert fold["height"] <= running_height - 20, (fold, running_height)
                     assert all(bands[task_id]["meta"]["lines"] >= 0.9 for task_id in bands), bands
+                    button_height = "el => el.getBoundingClientRect().height"
+                    before_reviews = running.locator(":scope > [data-live-summary-button]").evaluate(button_height)
+                    # A root card's acceptance evidence rides the log channel (task detail seam).
+                    _emit_ws_frame(page, {"type": "log", "chat_id": 1, "data": {
+                        "type": "task_metrics_event", "task_id": "running-act",
+                        "ts": "2026-07-29T10:00:03+00:00",
+                        "review_projection": {"panels": [{
+                            "panel_id": "act-review", "surface": "task_acceptance",
+                            "aggregate_signal": "PASS", "reason": "smoke", "actors": [],
+                        }]},
+                    }})
+                    page.wait_for_function(
+                        "() => document.querySelector('.chat-live-card[data-task-id=\"running-act\"]"
+                        " [data-live-review-summary]')?.textContent === 'Reviews 1'",
+                        timeout=10_000,
+                    )
+                    row = running.evaluate(
+                        """card => {
+                            const btn = card.querySelector(':scope > [data-live-summary-button]');
+                            const meta = btn.querySelector('[data-live-meta]').getBoundingClientRect();
+                            const review = btn.querySelector('[data-live-review-summary]').getBoundingClientRect();
+                            return {height: btn.getBoundingClientRect().height, metaTop: meta.top,
+                                reviewTop: review.top, reviewRight: review.right,
+                                buttonRight: btn.getBoundingClientRect().right};
+                        }"""
+                    )
+                    # The quiet count shares the metadata row, docked right, without a new row.
+                    assert abs(row["reviewTop"] - row["metaTop"]) <= 2, row
+                    assert row["buttonRight"] - row["reviewRight"] <= 20, row
+                    assert abs(row["height"] - before_reviews) <= 1, row
                     assert all(not bands[task_id]["clipped"] for task_id in bands), bands
                     assert all("Reviews" not in bands[task_id]["reviews"] for task_id in bands), bands
 
@@ -1271,6 +1332,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                 task_results = data_dir / "task_results"
                 task_results.mkdir(parents=True, exist_ok=True)
                 (task_results / "chronology-progress-only.json").write_text(json.dumps({
+                    "_schema_version": 1,
                     "task_id": "chronology-progress-only",
                     "status": "completed",
                     "outcome_axes": {
@@ -1645,8 +1707,8 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                     " const g = document.querySelector('.chat-live-card.subagent[data-parent-task-id=\"child1\"]');"
                     " return !!p && !!c && c.closest('.chat-subagents') && c.parentElement.closest('.chat-live-card') === p"
                     " && !!g && g.closest('.chat-subagents') && g.parentElement.closest('.chat-live-card') === c"
-                    " && /researcher \\(child1\\)/.test(c.innerText)"
-                    " && /evidence-mapper \\(grandchi/.test(g.innerText); }",
+                    " && /researcher/.test(c.innerText)"
+                    " && /evidence-mapper/.test(g.innerText); }",
                     timeout=30_000,
                 )
                 parent = page.locator(".chat-live-card:not(.subagent)").first
@@ -1663,14 +1725,14 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 child_text = child.inner_text()
                 assert "Parent task started" in parent_text
                 assert "2 children" in parent_count.inner_text()
-                assert "researcher (child1)" in child_text
+                assert "researcher" in child_text and "(child1)" not in child_text
                 assert "1 child" in child_count.inner_text()
                 assert "child=child1" not in child_text
                 assert "role=researcher" not in child_text
                 assert "panel_child_review" not in child_text
                 assert "claude-fable-5" not in child_text
                 assert "verdict=DEGRADED" not in child_text
-                assert "evidence-mapper (grandchi" in grandchild.inner_text()
+                assert "evidence-mapper" in grandchild.inner_text()
                 assert child.get_attribute("data-task-id") == "child1"
                 assert page.locator(
                     '.chat-live-card[data-task-id="parent1"] > .chat-subagents > '
@@ -1754,7 +1816,7 @@ def test_ui_smoke_direct_mode_nests_subagent_child_cards(direct_server_with_data
                 assert replay_grandchild.get_attribute("data-finished") == "1"
                 assert replay_child.get_attribute("data-expanded") == "0"
                 assert replay_grandchild.get_attribute("data-expanded") == "0"
-                assert "researcher (child1)" in replay_child.inner_text()
+                assert "researcher" in replay_child.inner_text()
                 assert "child=child1" not in replay_child.inner_text()
                 assert "role=researcher" not in replay_child.inner_text()
                 assert page.locator(".chat-bubble").filter(
@@ -2360,12 +2422,15 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         });
         const main = root.querySelector(':scope > .chat-live-summary-button .chat-live-summary-main').getBoundingClientRect();
         const side = root.querySelector(':scope > .chat-live-summary-button .chat-live-summary-side').getBoundingClientRect();
+        const title = root.querySelector(':scope > .chat-live-summary-button [data-live-title]').getBoundingClientRect();
         return {
             messageWidth: usableMessageWidth,
             rootWidth: root.getBoundingClientRect().width,
             deepestWidth: deepest.getBoundingClientRect().width,
             rootMainBottom: main.bottom,
             rootSideTop: side.top,
+            rootSideBottom: side.bottom,
+            rootTitleTop: title.top,
             cardFacts,
         };
     }"""
@@ -2384,9 +2449,13 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         facts = page.evaluate(mobile_geometry)
         assert facts["rootWidth"] >= facts["messageWidth"] * 0.95, facts
         assert facts["rootWidth"] - facts["deepestWidth"] <= 40, facts
-        assert facts["rootSideTop"] >= facts["rootMainBottom"] - 1, facts
+        # Narrow regime: the side controls share the chip row, the title takes its own
+        # full-width row below both.
+        assert facts["rootSideTop"] < facts["rootMainBottom"], facts
+        assert facts["rootTitleTop"] >= max(facts["rootMainBottom"], facts["rootSideBottom"]) - 1, facts
         assert all(card["scrollWidth"] <= card["clientWidth"] + 1 for card in facts["cardFacts"]), facts
         assert min(card["titleWidth"] for card in facts["cardFacts"]) >= 160, facts
+        assert 0.9 <= min(card["titleLines"] for card in facts["cardFacts"]), facts
         assert max(card["titleLines"] for card in facts["cardFacts"]) <= 2.2, facts
         assert max(card["activityLines"] for card in facts["cardFacts"]) <= 2.2, facts
         assert all(card["activityTitle"] is None for card in facts["cardFacts"]), facts
@@ -2539,6 +2608,43 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                     assert min(card["mainBottom"], card["sideBottom"]) \
                         > max(card["mainTop"], card["sideTop"]), wide_facts
 
+                # The 620-700px column (laptop with the project panel open): the root
+                # card takes up to 620px there and keeps its single-row header.
+                wide.set_viewport_size({"width": 1004, "height": 750})
+                wide.wait_for_timeout(250)
+                owner_facts = wide.evaluate(
+                    """() => {
+                        const card = document.querySelector('#page-chat .chat-live-card[data-task-id="layout-root"]');
+                        const summary = card.querySelector(':scope > .chat-live-summary-button .chat-live-summary');
+                        return {column: document.querySelector('#page-chat #chat-messages').clientWidth,
+                            width: card.getBoundingClientRect().width,
+                            wrap: getComputedStyle(summary).flexWrap};
+                    }"""
+                )
+                assert 700 <= owner_facts["column"] <= 740, owner_facts
+                # 80% of a 700-740px column is below the 620px floor, so the floor wins.
+                assert abs(owner_facts["width"] - 620) <= 1 and owner_facts["wrap"] == "nowrap", owner_facts
+                # The width is monotonic across the 620px chatcol breakpoint: against
+                # its containing block's content width the card is
+                # min(content, max(80% of content, 620px)) at every column width.
+                width_formula = (
+                    """() => {
+                        const card = document.querySelector('#page-chat .chat-live-card[data-task-id="layout-root"]');
+                        const block = card.parentElement;
+                        const style = getComputedStyle(block);
+                        const content = block.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+                        return {content, width: card.getBoundingClientRect().width};
+                    }"""
+                )
+                for viewport_width in (880, 920, 1100):
+                    wide.set_viewport_size({"width": viewport_width, "height": 750})
+                    wide.wait_for_timeout(250)
+                    sample = wide.evaluate(width_formula)
+                    expected = min(sample["content"], max(0.8 * sample["content"], 620))
+                    assert abs(sample["width"] - expected) <= 1, (viewport_width, sample, expected)
+                wide.set_viewport_size({"width": 1100, "height": 750})
+                wide.wait_for_timeout(250)
+
                 assert_jump_geometry(wide, "#page-chat")
                 jump = wide.locator("#page-chat .chat-scroll-bottom-btn")
                 before_hover = jump.bounding_box()
@@ -2602,8 +2708,10 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                             cardClient: card.clientWidth,
                             cardScroll: card.scrollWidth,
                             titleWidth: title.width,
+                            titleTop: title.top,
                             mainBottom: main.bottom,
                             sideTop: side.top,
+                            sideBottom: side.bottom,
                         };
                     }"""
                 )
@@ -2611,7 +2719,8 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                 assert panel_facts["cardWidth"] >= panel_facts["panelWidth"] * 0.9, panel_facts
                 assert panel_facts["cardScroll"] <= panel_facts["cardClient"] + 1, panel_facts
                 assert panel_facts["titleWidth"] >= 180, panel_facts
-                assert panel_facts["sideTop"] >= panel_facts["mainBottom"] - 1, panel_facts
+                assert panel_facts["sideTop"] < panel_facts["mainBottom"], panel_facts
+                assert panel_facts["titleTop"] >= max(panel_facts["mainBottom"], panel_facts["sideBottom"]) - 1, panel_facts
                 assert_jump_geometry(
                     wide, "#panel-pchat-layout-project", require_overflow=False
                 )
@@ -2775,7 +2884,8 @@ def test_ui_smoke_v679_subagent_depth_zero_round_trips_through_settings(direct_s
     full page reload — and pins the three neighbouring states so the fix cannot silently break
     them: 0 (no delegation), a normal positive value, and empty (falls back, does not persist
     an invalid value). Screenshots are written for vision inspection; a saved screenshot is
-    not verification on its own (docs/DEVELOPMENT.md "Browser/mobile verification").
+    not verification on its own (docs/DEVELOPMENT.md "Responsive and accessible
+    behavior").
     """
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
@@ -3568,6 +3678,7 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
     task_results = data_dir / "task_results"
     task_results.mkdir(parents=True, exist_ok=True)
     (task_results / "gone-root.json").write_text(json.dumps({
+        "_schema_version": 1,
         "task_id": "gone-root",
         "status": "cancelled",
         "reason_code": "cancelled",
@@ -3620,4 +3731,5 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
 
 
 # The in-flight indicator lifecycle smoke test lives in
-# tests/test_ui_smoke_inflight_indicator.py (size-ratchet byte gate on this module).
+# tests/test_ui_smoke_inflight_indicator.py and the Settings → Agents list-editor
+# acceptance in tests/test_ui_smoke_agents_panel.py (size-ratchet byte gate on this module).
