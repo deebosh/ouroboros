@@ -770,6 +770,20 @@ def _skill_entry(base_url: str, name: str) -> dict:
     return next((row for row in rows if isinstance(row, dict) and row.get("name") == name), {})
 
 
+def sk1_review_gate(review: dict, entry: dict, findings: list) -> tuple[bool, dict]:
+    """The SK1 review criterion is the PRODUCT gate (owner decision 2026-09-06): the review ran (HTTP 200 with
+    recorded findings) and the ``/api/extensions`` row says ``executable_review`` — clean, warnings, or blockers
+    under advisory enforcement by operator choice (``skill_review_gate``). A clean all-PASS review is a recorded
+    FACT, not the verdict: the rc.15 SK1 rerun on 560f7d71 authored one clean, one warnings and one blockers
+    payload with every other lifecycle check green, so all-PASS measured the author model, not the product."""
+    gate = entry.get("review_gate") if isinstance(entry.get("review_gate"), dict) else {}
+    failed = [f.get("item") for f in findings if str(f.get("verdict") or "") != "PASS"]
+    ok = review["status"] == 200 and entry.get("executable_review") is True and bool(findings)
+    return ok, {"review_status": review["body"].get("status"), "review_executable": entry.get("executable_review"),
+                "review_enforcement": gate.get("review_enforcement"), "review_blocking_reason": gate.get("blocking_reason"),
+                "findings": len(findings), "findings_failed": failed, "review_clean": bool(findings) and not failed}
+
+
 def run_sk1(ctx: LaneContext) -> None:
     from ouroboros.extension_surface_names import extension_surface_name
 
@@ -785,11 +799,8 @@ def run_sk1(ctx: LaneContext) -> None:
     review = _api_status(ctx.server.base_url, "POST", f"/api/skills/{SK1_SKILL}/review", {}, timeout=900)
     review_state = ctx.oracle._json(f"state/skills/{SK1_SKILL}/review.json")
     findings = [f for f in (review_state.get("findings") or []) if isinstance(f, dict)]
-    ctx.check("review_all_pass",
-              review["status"] == 200 and review["body"].get("status") == "clean" and bool(findings)
-              and all(str(f.get("verdict") or "") == "PASS" for f in findings),
-              review_status=review["body"].get("status"), findings=len(findings),
-              findings_failed=[f.get("item") for f in findings if str(f.get("verdict") or "") != "PASS"])
+    ok, review_facts = sk1_review_gate(review, _skill_entry(ctx.server.base_url, SK1_SKILL), findings)
+    ctx.check("review_executable", ok, **review_facts)
     grants = _api_status(ctx.server.base_url, "POST", f"/api/skills/{SK1_SKILL}/grants", {"items": SK1_GRANTS}, timeout=120)
     granted = ctx.oracle._json(f"state/skills/{SK1_SKILL}/grants.json").get("granted_permissions")
     ctx.check("grants_exactly_requested", (grants["body"].get("grants") or {}).get("all_granted") is True

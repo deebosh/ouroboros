@@ -1274,7 +1274,10 @@ computed style read by a browser from the COMMITTED CSS after a restart), SW1
 (the Swarm button arms `force_plan`; at least two children with causal lineage,
 the `swarm_fanout` receipt, the with-children cost rollup, no orphan process by
 the `/proc` environ scan), SK1 (the model authors `SKILL.md`+`plugin.py` and runs
-`skill_preflight`; the runner reviews, grants exactly the manifest's one
+`skill_preflight`; the runner reviews — the verdict is the product gate, the
+`/api/extensions` row's `executable_review` (clean, warnings, or blockers under advisory
+enforcement), with the review status, non-PASS items and the clean state recorded as
+facts — grants exactly the manifest's one
 privileged permission, enables, dispatches, deletes; the author and dispatch
 tasks keep separate `author_*`/`dispatch_*` terminal checks, and the dispatch
 counts only on a tools.jsonl row with typed status `ok` and the extension's exact
