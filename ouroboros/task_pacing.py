@@ -4,7 +4,8 @@ Absorbs the milestone CONTENT logic that lived inline in ``loop.py`` (deadline
 50/25/10% TIME BUDGET notes and the v6.53.0 intrinsic no-deadline pacing) and
 adds the acceptance-review budget layer: the finalization reserve, a budget
 snapshot, and the improvement-pass gates driven by ``task_contract.budget_profile``
-(``improvement_policy`` fixed | adaptive | until_deadline).
+(``improvement_policy`` fixed | adaptive; the legacy ``until_deadline`` /
+``stall_rounds_threshold`` aliases were removed in the 7.0 ABI window, Q10=A).
 
 Design contract (owner-decided, sprint v6.55):
 - Pacing notes fire only on milestone triggers, never per round (prompt-cache
@@ -38,7 +39,6 @@ from ouroboros.review_cycles import (
     get_acceptance_max_improvement_passes,
     review_max_cycles,
 )
-from ouroboros.utils import append_jsonl, utc_now_iso
 
 
 # The host never predicts how long a review takes (owner R52, 2026-09-03). A
@@ -127,57 +127,19 @@ def _supplied_budget_profile(ctx: Any) -> Any:
     return contract.get("budget_profile") if isinstance(contract, dict) else None
 
 
-def _deprecated_pacing_aliases(profile: Any) -> list:
-    """The one-minor compatibility aliases a SUPPLIED profile carries."""
-    if not isinstance(profile, dict):
-        return []
-    legacy_keys = []
-    if str(profile.get("improvement_policy") or "").strip().lower() == "until_deadline":
-        legacy_keys.append("until_deadline")
-    # Normalization materializes this field as ``None`` for every task.
-    # Only a supplied value is a deprecated alias; defaults stay quiet.
-    if profile.get("stall_rounds_threshold") is not None:
-        legacy_keys.append("stall_rounds_threshold")
-    return legacy_keys
-
-
 def observe_budget_profile(ctx: Any) -> Dict[str, Any]:
-    """The task's normalized budget_profile resolved SIDE-EFFECT FREE (R49).
-
-    The same answer ``resolve_budget_profile`` returns: the deprecation row and
-    its ctx latch belong to the path that OWNS a mutation, so this reader — the
-    coordination poll's ``delegate_supervision._time_fact`` — writes nothing and
-    mutates no context attribute."""
+    """The task's normalized budget_profile resolved SIDE-EFFECT FREE (R49): the
+    reader the coordination poll (``delegate_supervision._time_fact``) uses."""
     return normalize_budget_profile(_supplied_budget_profile(ctx))
 
 
 def resolve_budget_profile(ctx: Any) -> Dict[str, Any]:
     """The task's normalized budget_profile (from task_contract; absent ->
-    defaults), plus the one-shot ``deprecated_task_pacing_alias`` row a supplied
-    legacy alias owes. For the acceptance/pacing paths that own a mutation;
-    observers call ``observe_budget_profile`` for the same answer."""
-    profile = _supplied_budget_profile(ctx)
-    legacy_keys = _deprecated_pacing_aliases(profile)
-    if legacy_keys and not getattr(ctx, "_acceptance_pacing_deprecation_emitted", False):
-        try:
-            append_jsonl(
-                pathlib.Path(getattr(ctx, "drive_root")) / "logs" / "events.jsonl",
-                {
-                    "ts": utc_now_iso(),
-                    "type": "deprecated_task_pacing_alias",
-                    "task_id": str(getattr(ctx, "task_id", "") or ""),
-                    "aliases": legacy_keys,
-                    "removal": "next_major",
-                },
-            )
-            ctx._acceptance_pacing_deprecation_emitted = True
-        except Exception:
-            log.warning(
-                "Failed to persist deprecated task-pacing aliases %s",
-                legacy_keys,
-                exc_info=True,
-            )
-    return normalize_budget_profile(profile)
+    defaults). The deprecated ``until_deadline`` / ``stall_rounds_threshold``
+    aliases and their deprecation row are gone (7.0 ABI window), so this is
+    the same side-effect-free read as ``observe_budget_profile``; both names
+    stay so the observer contract remains explicit at its call sites."""
+    return normalize_budget_profile(_supplied_budget_profile(ctx))
 
 
 def _acceptance_floor_sec() -> float:
@@ -300,7 +262,7 @@ def review_launch_allowed(snapshot: BudgetSnapshot) -> Tuple[bool, str]:
 
 
 def effective_max_improvement_passes(
-    profile: Dict[str, Any], *, has_deadline: bool = True,
+    profile: Dict[str, Any], *,
     required_blocking: bool = False,
 ) -> Optional[int]:
     """The COUNT axis for improvement passes.
@@ -310,19 +272,12 @@ def effective_max_improvement_passes(
     Required+Blocking included (owner decisions D10/D20): passes = cycles - 1
     from ``OUROBOROS_REVIEW_MAX_CYCLES`` (``review_cycles.py``), ``None`` only
     when that setting is ``unlimited``. Deadline and global lifecycle rails
-    apply on top. The one-minor ``until_deadline`` alias keeps its historical
-    meaning outside Required+Blocking: with a deadline the count axis is off."""
+    apply on top. (The ``until_deadline`` alias that lifted the count axis
+    outside Required+Blocking was removed in the 7.0 ABI window, Q10=A.)"""
     cap = profile.get("max_improvement_passes")
-    # An explicit task-local cap is authoritative under every policy, including
-    # the one-minor ``until_deadline`` compatibility alias.
+    # An explicit task-local cap is authoritative under every policy.
     if cap is not None:
         return max(0, int(cap))
-    if (
-        not required_blocking
-        and profile.get("improvement_policy") == "until_deadline"
-        and has_deadline
-    ):
-        return None
     cap = get_acceptance_max_improvement_passes()
     return None if cap is None else max(0, int(cap))
 
@@ -353,7 +308,6 @@ def improvement_pass_allowed(
     budget_profile) keeps the generic ``improvement_passes_exhausted``."""
     cap = effective_max_improvement_passes(
         profile,
-        has_deadline=snapshot.has_deadline,
         required_blocking=required_blocking,
     )
     if cap is not None and passes_done >= cap:
@@ -406,11 +360,11 @@ COST_PLANNING_MARGIN_USD = max(1.0, 2.0 * _WRAPUP_CALL_RESERVATION_BOUND_USD)
 
 
 # Deciding-spend basis vocabulary (v6.91). The tree-accounted number is the
-# authority whenever a root cap exists (the ledger fence counts the TREE); when
-# it is momentarily unavailable the own-cost number still decides — but the
-# substitution is DISCLOSED, never silent (BIBLE P1: represent the gap). Without
-# a root cap there is no tree fence at all, so own cost is complete, not a
-# fallback — the three states are kept distinct for exactly that reason.
+# authority for every rooted task (with a root cap the ledger fence counts the
+# TREE; without one the in-task ceiling still decides on the subtree); when it
+# is momentarily unavailable the own-cost number still decides — but the
+# substitution is DISCLOSED as a lower bound, never silent (BIBLE P1). Only a
+# task with no root at all has no tree to read, so its own cost is complete.
 SPEND_BASIS_TREE = "tree_accounted"
 SPEND_BASIS_OWN_TREE_UNKNOWN = "own_fallback_tree_unknown"
 SPEND_BASIS_OWN_NO_TREE_CAP = "own_only_no_tree_cap"
@@ -427,10 +381,13 @@ def resolve_deciding_spend(
     Shared by the loop's ceiling check and the milestone note so the stop and
     the nudge can never disagree about which number they are reading. Unknown
     spend stays None end-to-end — it is never coerced to $0."""
+    from ouroboros.usage_accounting import current_usage_scope
+
     if tree_cost_usd is not None:
         return float(tree_cost_usd), SPEND_BASIS_TREE
     deciding = None if task_cost_usd is None else float(task_cost_usd)
-    if root_cap_usd is not None:
+    scope = current_usage_scope()
+    if root_cap_usd is not None or (scope is not None and scope.root_task_id):
         return deciding, SPEND_BASIS_OWN_TREE_UNKNOWN
     return deciding, SPEND_BASIS_OWN_NO_TREE_CAP
 
@@ -463,6 +420,8 @@ def resolve_cost_ceiling(
     profile: Dict[str, Any],
     *,
     root_cap_usd: Optional[float] = None,
+    non_root_member: bool = False,
+    root_ceiling_usd: Optional[float] = None,
 ) -> CostCeiling:
     """The in-task cost stop, computed ONCE at loop start (typed; v6.91).
 
@@ -475,6 +434,9 @@ def resolve_cost_ceiling(
     the owner's chosen cap would silently halve it). The ceiling is
     min(available components); NEVER a computed $0 — a root cap at or below the
     margin resolves to ``exhausted_soft_land`` instead.
+
+    A non-root member intersects its own global and root-cap resolutions with
+    the propagated root deciding ceiling, so it can never exceed the root.
 
     Stated plainly rather than implied: the ``room <= 0`` bail is the owner's
     "$0 ceiling" rule EXACTLY, no wider. A cap just ABOVE the margin therefore
@@ -521,6 +483,11 @@ def resolve_cost_ceiling(
                 )
             components.append(room)
             basis_parts.append("root_cap_minus_margin")
+            if non_root_member:
+                basis_parts.append("non_root_member")
+        if non_root_member and root_ceiling_usd is not None and float(root_ceiling_usd) > 0:
+            components.append(float(root_ceiling_usd))
+            basis_parts.append("root_resolved_ceiling")
         if not components:
             return CostCeiling(state=COST_CEILING_DISABLED, basis="no_finite_budget")
         return CostCeiling(
@@ -537,6 +504,236 @@ def resolve_cost_ceiling(
     except Exception:
         log.warning("Cost ceiling resolution failed; axis stays silent", exc_info=True)
         return CostCeiling(state=COST_CEILING_UNKNOWN, basis="resolve_error")
+
+
+def resolve_task_cost_ceiling(ctx: Any, budget_remaining_usd: Optional[float]) -> CostCeiling:
+    """The typed in-task cost stop of ONE task, resolved once per task.
+
+    The root cap comes from the bound usage scope -- the SAME
+    ``OUROBOROS_PER_TASK_COST_USD``-derived value the ledger fence enforces
+    (``agent.py`` wires it as ``UsageScope.root_limit_usd``), so the graceful
+    stop and the fence can never disagree about the cap. The same scope says
+    whether this task is the root of its tree or one of its members."""
+    root_cap = None
+    root_ceiling = None
+    non_root_member = False
+    try:
+        from ouroboros.usage_accounting import current_usage_scope
+
+        scope = current_usage_scope()
+        if scope is not None:
+            root_cap = getattr(scope, "root_limit_usd", None)
+            root_ceiling = getattr(scope, "root_cost_ceiling_usd", None)
+            non_root_member = bool(
+                scope.root_task_id and scope.task_id and scope.root_task_id != scope.task_id
+            )
+    except Exception:
+        log.debug("Usage scope unavailable for cost ceiling resolution", exc_info=True)
+    return resolve_cost_ceiling(
+        budget_remaining_usd,
+        resolve_budget_profile(ctx),
+        root_cap_usd=root_cap,
+        non_root_member=non_root_member,
+        root_ceiling_usd=root_ceiling,
+    )
+
+
+def cost_ceiling_disclosure(ceiling: CostCeiling) -> Dict[str, Any]:
+    """The start-of-task shape of the ceiling the loop will actually decide on."""
+    return {
+        "state": ceiling.state,
+        "ceiling_usd": ceiling.ceiling_usd,
+        "root_cap_usd": ceiling.root_cap_usd,
+        "planning_margin_usd": ceiling.planning_margin_usd,
+        "basis": ceiling.basis,
+        "rule": (
+            "The graceful in-task cost stop of THIS task's whole tree, resolved once at task "
+            "start: the root resolves min(configured share of global remaining, hard tree cap "
+            "minus a planning margin); every other member intersects that resolved root number "
+            "with its own global and root-cap resolutions. Crossing it asks for a "
+            "best-effort final answer; the ledger fence at the full cap still binds "
+            "independently. Budget checkpoints during the task report the live tree spend."
+        ),
+    }
+
+
+def in_task_cost_ceiling_disclosure(ctx: Any, budget_remaining_usd: Optional[float]) -> Dict[str, Any]:
+    """Resolve this task's ceiling once, stash it on ctx, and disclose that object.
+
+    The loop reads the same stashed object, so the number the model is shown at
+    task start and the number that later stops the task cannot differ."""
+    ceiling = resolve_task_cost_ceiling(ctx, budget_remaining_usd)
+    try:
+        setattr(ctx, "_cost_ceiling", ceiling)
+    except Exception:
+        log.debug("Cost ceiling could not be stashed on the tool context", exc_info=True)
+    return cost_ceiling_disclosure(ceiling)
+
+
+def tree_spend_line(tree_info: Any, ceiling: Optional[CostCeiling] = None) -> str:
+    """The one live tree-spend line the checkpoint and the pacing note share.
+
+    Names the BINDING bound: the in-task ceiling when one is active (that is
+    what stops the task first), with the hard tree cap the ledger fence
+    enforces beside it. Empty string when tree accounting is unavailable --
+    unknown is never rendered as $0."""
+    if not isinstance(tree_info, dict) or tree_info.get("accounted_usd") is None:
+        return ""
+    raw_cap = tree_info.get("root_limit_usd")
+    cap = float(raw_cap) if raw_cap is not None else None
+    ceiling_usd = (
+        ceiling.ceiling_usd
+        if ceiling is not None and ceiling.state == COST_CEILING_ACTIVE
+        else None
+    )
+    if ceiling_usd is not None:
+        bound = f" of ${ceiling_usd:.2f} in-task cost ceiling"
+        if cap is not None:
+            bound += f" (${cap:.2f} hard tree cap)"
+    else:
+        bound = f" of ${cap:.2f} hard tree cap" if cap is not None else ""
+    return (
+        f"Task tree spend: ~${float(tree_info['accounted_usd']):.2f}{bound} "
+        "(ledger-accounted incl. in-flight holds, subagents included)"
+    )
+
+
+def wrapup_unaffordable_text(deciding_usd: float, ceiling: CostCeiling) -> str:
+    """The owner-facing reason a task ends without even one affordable wrap-up send."""
+    cap = ceiling.root_cap_usd
+    cap_text = f" of the ${cap:.2f} hard tree cap" if cap is not None else ""
+    return (
+        f"Task tree spent ${deciding_usd:.3f}{cap_text}; not even one wrap-up call can "
+        "be reserved, so the host delivers the retained evidence without a model synthesis."
+    )
+
+
+def wrapup_last_fit_text(deciding_usd: float, ceiling: CostCeiling) -> str:
+    """The owner-facing reason a task claims the last affordable wrap-up send."""
+    cap = ceiling.root_cap_usd
+    cap_text = f" of the ${cap:.2f} hard tree cap" if cap is not None else ""
+    return (
+        f"Task tree spent ${deciding_usd:.3f}{cap_text}; one wrap-up call is still "
+        "admissible, but another similarly reserved work call would consume that room."
+    )
+
+
+def prospective_wrapup_attempt_request(
+    *, llm: Any, messages: list[Dict[str, Any]], model: str,
+    reasoning_effort: str, tools: Optional[list[Dict[str, Any]]] = None,
+    allow_server_web_search: bool = False, prompt_tokens: int = 0,
+) -> Any:
+    """Build the conservative request facts from the prospective wire payload."""
+    from ouroboros.llm import _attempt_request, _finalized_physical_candidate
+    from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
+    from ouroboros.request_wire_recovery import request_wire_call_scope
+    from ouroboros.pricing import infer_provider_from_model
+    from ouroboros.usage_accounting import AttemptRequest, _merge_scope
+
+    if not callable(getattr(llm, "_resolve_remote_target", None)):
+        return _merge_scope(AttemptRequest(
+            model=model, provider=infer_provider_from_model(model),
+            prompt_tokens_estimate=prompt_tokens,
+            max_completion_tokens=MAIN_LOOP_MAX_TOKENS,
+        ))[0]
+
+    target = llm._resolve_remote_target(model)
+    with request_wire_call_scope():
+        candidate = llm._build_remote_candidate(
+            target, messages, reasoning_effort, MAIN_LOOP_MAX_TOKENS, "auto", None, tools,
+            skip_capability_fetch=True, allow_server_web_search=allow_server_web_search,
+        )
+        llm._normalize_payload_cache_ttl(target, candidate)
+        candidate = _finalized_physical_candidate(
+            target, candidate,
+            "messages" if target.get("provider") == "anthropic" else "chat.completions",
+        )
+        llm._pop_thread_disclosure("_cache_breakpoint_tls")
+    return _merge_scope(_attempt_request(target, candidate))[0]
+
+
+def prepared_wrapup_candidate(
+    ctx: Any, messages: list[Dict[str, Any]], *, allow_server_web_search: bool,
+) -> Tuple[Any, list[Dict[str, Any]]]:
+    """Prepare the exact first-send transcript and price that same payload."""
+    from ouroboros.loop_llm_call import _prepare_main_messages
+
+    send_messages = _prepare_main_messages(
+        messages, model=ctx.active_model, llm=ctx.llm,
+        accumulated_usage=ctx.accumulated_usage,
+        drive_root=ctx.drive_root or pathlib.Path(ctx.drive_logs or ".").parent,
+        task_id=ctx.task_id, event_queue=ctx.event_queue,
+        use_local=ctx.active_use_local,
+        task_attempt=ctx.accumulated_usage.get("_task_attempt"),
+        deadline_ts=ctx.deadline_ts,
+    )
+    request = prospective_wrapup_attempt_request(
+        llm=ctx.llm, messages=send_messages, model=ctx.active_model,
+        reasoning_effort=ctx.active_effort, tools=ctx.tool_schemas,
+        allow_server_web_search=allow_server_web_search,
+        prompt_tokens=int(ctx.accumulated_usage.get("_context_prompt_estimate") or 0),
+    )
+    return request, send_messages
+
+
+def wrapup_reservation_fits(
+    *,
+    model: str = "",
+    prompt_tokens: int = 0,
+    root_cap_usd: Optional[float],
+    deciding_usd: float,
+    reservation_count: int = 1,
+    request: Any = None,
+    llm: Any = None,
+    messages: Optional[list[Dict[str, Any]]] = None,
+    reasoning_effort: str = "medium",
+    tools: Optional[list[Dict[str, Any]]] = None,
+    use_local: bool = False,
+    allow_server_web_search: bool = False,
+) -> Optional[bool]:
+    """Whether one more wrap-up call would still be admitted under the root cap.
+
+    Borrows the ledger fence's OWN per-attempt reservation so the graceful stop
+    and the fence can never disagree about what a wrap-up call costs: the same
+    function, the same cache split, the same arithmetic. Returns None -- fail
+    open, the axis stays silent -- when there is no bound task scope, no root
+    cap, or no known price for the route. ``reservation_count=2`` detects the
+    last-fit window while one final call is still admissible.
+
+    Deliberately does NOT read ``usage_projection``: the deciding spend is
+    passed in by the caller that already measured it, never re-scanned per
+    round."""
+    try:
+        from ouroboros.loop_llm_call import MAIN_LOOP_MAX_TOKENS
+        from ouroboros.pricing import infer_provider_from_model
+        from ouroboros.usage_accounting import AttemptRequest, _merge_scope, _reservation_cost, current_usage_scope
+
+        scope = current_usage_scope()
+        task_id = str(getattr(scope, "task_id", "") or "") if scope is not None else ""
+        if not task_id or root_cap_usd is None or float(root_cap_usd) <= 0 or use_local:
+            return None
+        if request is None and messages is not None and callable(getattr(llm, "_resolve_remote_target", None)):
+            request = prospective_wrapup_attempt_request(
+                llm=llm, messages=messages, model=model, reasoning_effort=reasoning_effort,
+                tools=tools, allow_server_web_search=allow_server_web_search,
+            )
+        if request is None:
+            if prompt_tokens <= 0:
+                return None
+            request = AttemptRequest(
+                model=str(model or ""), provider=infer_provider_from_model(str(model or "")),
+                prompt_tokens_estimate=int(prompt_tokens), max_completion_tokens=MAIN_LOOP_MAX_TOKENS,
+                task_id=task_id,
+            )
+        request, _scope = _merge_scope(request)
+        bound = _reservation_cost(request)
+        if bound is None:
+            return None
+        return bool(float(deciding_usd) + float(bound) * max(1, int(reservation_count))
+                    <= float(root_cap_usd) + 1e-9)
+    except Exception:
+        log.warning("Wrap-up affordability check failed; axis stays silent", exc_info=True)
+        return None
 
 
 def _cost_checkpoint(
@@ -739,6 +936,29 @@ def acceptance_rails_line(
         return ""
 
 
+def _headroom_phrase(
+    remaining_known_usd: Optional[float],
+    cost_ceiling_usd: Optional[float],
+    task_cost_usd: Optional[float],
+) -> str:
+    """Money headroom to the bound that actually binds first, and which one it is.
+
+    The wallet remainder alone reads as more room than the task has: the
+    in-task ceiling usually stops it earlier. Both are shown as one number so
+    the mind plans against the real limit, with the binding bound named."""
+    wallet = None if remaining_known_usd is None else float(remaining_known_usd)
+    ceiling_room = None
+    if cost_ceiling_usd is not None and task_cost_usd is not None:
+        ceiling_room = max(0.0, float(cost_ceiling_usd) - float(task_cost_usd))
+    if wallet is None and ceiling_room is None:
+        return "budget left unknown"
+    if ceiling_room is None:
+        return f"${wallet:.2f} budget left (wallet binds)"
+    if wallet is None or ceiling_room <= wallet:
+        return f"${ceiling_room:.2f} budget left (in-task cost ceiling binds)"
+    return f"${wallet:.2f} budget left (wallet binds)"
+
+
 def _acceptance_rails_line_inner(
     budget_snapshot: Any,
     budget_profile: Dict[str, Any],
@@ -768,11 +988,11 @@ def _acceptance_rails_line_inner(
             scope = current_usage_scope()
             if scope is not None and scope.root_task_id:
                 projection = usage_projection(
-                    scope.drive_root, root_task_id=scope.root_task_id,
+                    scope.drive_root, global_limit_usd=scope.global_limit_usd,
                 )
+                root = (projection.get("by_root") or {}).get(scope.root_task_id) or {}
                 remaining = projection.get("remaining_known_usd")
-                if remaining is not None:
-                    money_bits.append(f"${float(remaining):.2f} budget left")
+                money_bits.append(_headroom_phrase(remaining, rails.get("cost_ceiling_usd"), root.get("accounted_usd")))
         except Exception:
             log.debug("rails: budget projection unavailable", exc_info=True)
         if money_bits:
@@ -797,12 +1017,11 @@ def _acceptance_rails_line_inner(
     try:
         cap = effective_max_improvement_passes(
             budget_profile,
-            has_deadline=bool(getattr(budget_snapshot, "has_deadline", False)),
             required_blocking=required_blocking,
         )
         if cap is None:
-            # None comes from either the unlimited shared cap or the non-RB
-            # ``until_deadline``+deadline alias path; only claim the former when true.
+            # None comes only from the unlimited shared cap now (the
+            # until_deadline alias path was removed in 7.0, Q10=A).
             why = "review cycles unlimited; " if review_max_cycles() is None else ""
             parts.append(
                 f"review passes: {int(passes_done)} done, no local count cap "
@@ -962,15 +1181,12 @@ def build_intrinsic_pacing_note(
             tree_info = tree_cost_provider()
         except Exception:
             tree_info = None
-        if isinstance(tree_info, dict) and tree_info.get("accounted_usd") is not None:
+        rendered = tree_spend_line(tree_info, getattr(ctx, "_cost_ceiling", None))
+        if rendered:
             tree_accounted = float(tree_info["accounted_usd"])
             raw_cap = tree_info.get("root_limit_usd")
             tree_cap = float(raw_cap) if raw_cap is not None else None
-            cap_text = f" of ${tree_cap:.2f} tree cap" if tree_cap is not None else ""
-            tree_line = (
-                f" | Task tree spend: ~${tree_accounted:.2f}{cap_text} "
-                "(ledger-accounted incl. in-flight holds, subagents included)"
-            )
+            tree_line = f" | {rendered}"
     _marker_tail = (
         " If you have a current best short answer, record it with a `FINAL ANSWER:` line "
         "before continuing so it remains salvageable if later work stalls."

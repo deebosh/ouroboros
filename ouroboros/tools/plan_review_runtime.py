@@ -19,6 +19,8 @@ import logging
 import pathlib
 from typing import Any, Dict, List, Optional
 
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
 from ouroboros.llm import LLMClient
 from ouroboros.review_execution_projection import review_executions_from_actor_usage
@@ -149,6 +151,59 @@ def build_plan_review_packet(
     return system_prompt, user_content, _session_task_text(system(True), user_content, str(active_root))
 
 
+def publish_plan_review_projection(
+    ctx: ToolContext,
+    review: dict,
+    text: str,
+) -> str:
+    """Publish control metadata only from validated structured review state."""
+    aggregate = review.get("aggregate_signal")
+    closed = review.get("closed")
+    if aggregate not in {"GREEN", "REVIEW_REQUIRED", "REVISE_PLAN", "DEGRADED"}:
+        raise ValueError(f"invalid plan review aggregate signal: {aggregate!r}")
+    if type(closed) is not bool:
+        raise ValueError("plan review closed state must be boolean")
+    if (aggregate == "GREEN" and not closed) or (
+        aggregate in {"REVISE_PLAN", "DEGRADED"} and closed
+    ):
+        raise ValueError(
+            f"invalid plan review control state: outcome={aggregate}, closed={closed}"
+        )
+    return _publish_tool_result(
+        ctx,
+        ToolResult(
+            status="ok",
+            code="OK",
+            text=text,
+            meta={
+                "plan_review_outcome": aggregate,
+                "plan_review_closed": closed,
+            },
+        ),
+    )
+
+
+def publish_rendered_wave(
+    ctx: ToolContext, wave: dict, *, cap, cycles_paid: int, enforcement: str,
+    cached: bool = False, notes=None, reminder: str = "", head: str = "",
+) -> str:
+    """Render one recorded wave and publish it as the typed plan result (D02).
+
+    The public text and the native structured control leave in ONE ``ToolResult``:
+    ``plan_render.wave_control_state`` is the same projection the rendered
+    ``PLAN_REVIEW_CONTROL_JSON`` footer reads, so the loop's trusted metadata can
+    never diverge from the text the model sees."""
+    from ouroboros.tools.plan_render import _render_wave, wave_control_state
+
+    outcome, closed = wave_control_state(wave)
+    text = head + _render_wave(
+        wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
+        cached=cached, notes=notes, reminder=reminder,
+    )
+    return publish_plan_review_projection(
+        ctx, {"aggregate_signal": outcome, "closed": closed}, text)
+
+
 def plan_deadline_skip(ctx: ToolContext, *, emit: bool = False) -> str:
     """Project the existing deadline rail without starting a paid reviewer panel."""
     from ouroboros.config import get_plan_task_deadline_min_sec
@@ -277,6 +332,9 @@ async def run_plan_review_slots(
         session_root=session_root,
         session_threads=dict(session_threads or {}),
         retry_key=str(retry_key or ""),
+        # The paid cycle's identity (plan fingerprint + cycle) owns its cache
+        # split: a revised plan under the same task/model/slot starts cold.
+        usage_attribution={"review_wave_id": str(retry_key or "")} if retry_key else {},
         policy={"output_contract": output_contract} if output_contract else {},
     )
     loop = asyncio.get_running_loop()

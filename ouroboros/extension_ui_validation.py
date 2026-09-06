@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import copy
 import math
+import pathlib
+import re
 from typing import Any, Dict
 
 from ouroboros.contracts.plugin_api import ExtensionRegistrationError, VALID_EXTENSION_ROUTE_METHODS
+from ouroboros.skill_loader import SkillPayloadUnreadable, _iter_payload_files
 
 _EXTENSION_SHORT_MAX = 24
 _UI_RENDER_KINDS = {"", "iframe", "declarative", "module"}
@@ -394,12 +397,21 @@ def validate_ui_render(render: Dict[str, Any]) -> Dict[str, Any]:
     _validate_start_mode(clean, kind=kind)
     if kind in {"iframe", "module"}:
         _validate_frame_geometry(clean, kind=kind)
+    if kind == "iframe" and not _text(clean.get("route")):
+        raise ExtensionRegistrationError("iframe widget render requires route (the extension route the frame loads)")
     if kind == "module":
         entry = _text(clean.get("entry"))
         if not entry:
             raise ExtensionRegistrationError("module widget render requires entry filename (e.g. 'widget.js')")
         if "/" in entry or ".." in entry or entry.startswith(".") or entry.endswith("/"):
             raise ExtensionRegistrationError(f"module widget entry {entry!r} must be a bare filename inside the skill directory")
+        if re.fullmatch(r"[A-Za-z0-9._-]+", entry) is None:
+            raise ExtensionRegistrationError(
+                f"module widget entry {entry!r} must use browser-safe characters [A-Za-z0-9._-] only"
+            )
+        # The suffix is cosmetic for the ENTRY: the host injects it as a classic
+        # inline script, so top-level import/export in it will not run. Files the
+        # entry pulls in via dynamic import() may be real ES modules.
         if not entry.endswith((".js", ".mjs")):
             raise ExtensionRegistrationError("module widget entry must be a .js / .mjs file")
         clean["entry"] = entry  # normalized once: the loader capture and the module URL agree
@@ -426,6 +438,19 @@ def validate_ui_render(render: Dict[str, Any]) -> Dict[str, Any]:
             state={"nodes": 0, "ids": {}},
         )
         return clean
+    return clean
+
+
+def validate_runtime_ui_render(render: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate UI while retaining the public contract's route-less iframe shape."""
+    if not isinstance(render, dict):
+        return validate_ui_render(render)
+    if str(render.get("kind") or "").strip() != "iframe" or str(render.get("route") or "").strip():
+        return validate_ui_render(render)
+    compatible = dict(render)
+    compatible["route"] = "legacy-contract-placeholder"
+    clean = validate_ui_render(compatible)
+    clean.pop("route", None)
     return clean
 
 
@@ -460,6 +485,48 @@ __all__ = [
     "WIDGET_FRAME_MAX_HEIGHT",
     "WIDGET_FRAME_MIN_HEIGHT",
     "WIDGET_START_MODES",
+    "validate_runtime_ui_render",
+    "read_module_sources",
     "validate_settings_schema",
     "validate_ui_render",
 ]
+
+
+def read_module_sources(skill_dir: pathlib.Path | None, *entries: str) -> Dict[str, str]:
+    """Capture every reviewed ``.js``/``.mjs`` file under the skill directory for
+    the declared ``kind: "module"`` ``entries``, keyed by POSIX path relative to it.
+
+    Read once at load and served from memory by the module endpoint, so the
+    bytes a browser receives are the bytes the live (reviewed) bundle loaded
+    from; a file edited afterwards is not served until the skill reloads. The
+    walk is the review-hash surface (``skill_loader._iter_payload_files``:
+    dependency/cache directories and symlinks escaping the root are not
+    reviewed, so they are not captured) minus dot-prefixed segments. A missing
+    or escaping entry, or any JavaScript file that is not UTF-8 text, fails the
+    registration loudly — the tab is not live without its sources.
+    """
+    if skill_dir is None:
+        raise ExtensionRegistrationError(f"module widget entries {entries!r} need a skill directory to read from")
+    root = pathlib.Path(skill_dir).resolve()
+    for entry in entries:
+        if not (root / entry).resolve().is_relative_to(root):
+            raise ExtensionRegistrationError(f"module widget entry {entry!r} escapes the skill directory")
+    try:
+        files = _iter_payload_files(root)
+    except SkillPayloadUnreadable as exc:
+        raise ExtensionRegistrationError(f"module widget sources are unreadable: {exc}") from None
+    sources: Dict[str, str] = {}
+    for path in files:
+        rel = path.relative_to(root).as_posix()
+        if path.suffix not in (".js", ".mjs") or any(part.startswith(".") for part in rel.split("/")):
+            continue
+        try:
+            sources[rel] = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ExtensionRegistrationError(f"module widget file {rel!r} is not UTF-8 text: {exc}") from None
+        except OSError as exc:
+            raise ExtensionRegistrationError(f"module widget file {rel!r} is unreadable: {exc}") from None
+    for entry in entries:
+        if entry not in sources:
+            raise ExtensionRegistrationError(f"module widget entry {entry!r} is missing from the skill directory")
+    return sources

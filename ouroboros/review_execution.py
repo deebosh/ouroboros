@@ -29,6 +29,9 @@ from ouroboros.review_slot_cancel import (  # noqa: F401 — re-exported seam su
 )
 from ouroboros.review_dispatch import bind_api_review_paid_stamp, invoke_review_paid_stamp
 from ouroboros.usage_accounting import POSITIVE_PHYSICAL_ATTEMPT_STATES
+from ouroboros.delegate_custody_usage import (
+    observe_failed_review_send, observe_review_usage, session_usage_once,
+)
 from ouroboros.triad_review import (
     ACCEPTANCE_SURFACE_RULES,
     TIER_CLASSIFICATION_RULES,
@@ -362,6 +365,13 @@ class ReviewSlotExecutor:
     def __init__(self, assignment: ReviewAssignment, *, llm: Any = None):
         self.assignment = assignment
         self.llm = llm
+        self.usage_observer: Optional[Callable[[Dict[str, Any]], None]] = None
+
+    def _observe_usage(self, usage: Optional[Dict[str, Any]]) -> None:
+        observe_review_usage(self.usage_observer, usage)
+
+    def _observe_failed_send(self, exc: BaseException) -> None:
+        observe_failed_review_send(self.usage_observer, exc)
 
     def prompt_payload(self) -> Dict[str, Any]:
         """Route-owned projection of what will actually be sent (for the durable
@@ -458,56 +468,28 @@ class ApiChatReviewExecutor(ReviewSlotExecutor):
                 capture = getattr(exc, "physical_attempt_capture", None)
                 if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                     invoke_review_paid_stamp(self.assignment.dispatch_stamp)
+                self._observe_failed_send(exc)
                 raise
         # Null/non-object provider messages follow the caller's empty-response rail.
         raw_text = str(msg.get("content") or "") if isinstance(msg, dict) else ""
+        self._observe_usage(usage)
         return ReviewAttemptResult(message=msg, usage=usage, raw_text=raw_text)
 
 
 # ---------------------------------------------------------------------------
-# Route configuration (phase-5 shape).
+# Route configuration.
 #
-# One key per surface names each configured row's DELIVERY, aligned by index
-# with that surface's model list; one shared key names the session target as an
-# OPAQUE ``harness[=model][:effort]`` spec (Claudexor's own reviewer-panel
-# spelling — no codex/claude/cursor member anywhere in this module). Phase 6's
-# structured slot config (one settings SSOT per D14/6.1) supersedes these keys;
-# they are read here, below the seam, so ``config.py`` stays untouched.
+# Per-row delivery lives in the structured reviewer-slot SSOT
+# (``OUROBOROS_REVIEWER_SLOTS`` — D14/6.1); the phase-5 per-row route envs
+# (``OUROBOROS_REVIEW_ROUTES`` / ``OUROBOROS_SCOPE_REVIEW_ROUTES``) are
+# RETIRED settings keys (ABI-10) and are ignored — a row built outside the
+# structured config is pinned ``api_chat`` explicitly. The one surviving key
+# below names the shared session target as an OPAQUE
+# ``harness[=model][:effort]`` spec (Claudexor's own reviewer-panel spelling —
+# no codex/claude/cursor member anywhere in this module).
 # ---------------------------------------------------------------------------
 
-TRIAD_REVIEW_ROUTES_ENV = "OUROBOROS_REVIEW_ROUTES"
-SCOPE_REVIEW_ROUTES_ENV = "OUROBOROS_SCOPE_REVIEW_ROUTES"
 REVIEW_SESSION_ROUTE_ENV = "OUROBOROS_REVIEW_SESSION_ROUTE"
-
-_ROUTE_TOKENS: Dict[str, ReviewRouteKind] = {
-    "": ReviewRouteKind.API_CHAT,
-    "api": ReviewRouteKind.API_CHAT,
-    "api_chat": ReviewRouteKind.API_CHAT,
-    "agent_session": ReviewRouteKind.AGENT_SESSION,
-}
-
-
-def configured_review_routes(env_key: str, count: int) -> List[ReviewRouteKind]:
-    """Per-row delivery routes for one review surface.
-
-    An empty key (the shipped default) is the historical behavior: every row is
-    ``api_chat``. An unknown token raises — mapping a typo to ``api_chat`` would
-    silently spend the API money the owner configured the row to move off of,
-    and mapping it to ``agent_session`` would silently delegate a row the owner
-    never delegated.
-    """
-    raw = os.environ.get(env_key, "") if env_key else ""
-    tokens = [t.strip().lower() for t in raw.split(",")] if raw.strip() else []
-    routes: List[ReviewRouteKind] = []
-    for idx in range(max(0, int(count))):
-        token = tokens[idx] if idx < len(tokens) else ""
-        if token not in _ROUTE_TOKENS:
-            raise ValueError(
-                f"{env_key} row {idx + 1} names an unknown review route {token!r}; "
-                f"valid: api_chat, agent_session"
-            )
-        routes.append(_ROUTE_TOKENS[token])
-    return routes
 
 
 def review_session_route() -> Any:
@@ -1162,6 +1144,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         self._conformance_passed = False
         self._run_id = ""
         self._session_usage: Dict[str, Any] = {}
+        self._session_usage_observed = False
         self._deltas: List[Dict[str, Any]] = []
         # Unknown starts retain the exact invocation token for the permitted retry.
         self._retry_state: Dict[str, Any] = {}
@@ -1226,9 +1209,19 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             self._run_session()
         except BaseException as exc:
             self._run_id = self._run_id or str(getattr(exc, "delegated_run_id", "") or "")
+            started = bool(self._run_id or getattr(exc, "delegated_run_started", False))
+            if started and not self._session_usage_observed and session_usage_once(self._run_id):
+                self._observe_usage({
+                    "provider": "claudexor", "resolved_model": str(self.assignment.slot.model or ""),
+                    "delegated_run_started": True, "delegated_run_id": self._run_id, "cost": None,
+                })
+                self._session_usage_observed = True
             if not self._retry_state.get("pending_invocation_id"):
                 self._settled_failure = exc
             raise
+        if not self._session_usage_observed and session_usage_once(self._run_id):
+            self._observe_usage(self._session_usage)
+        self._session_usage_observed = True
         return self._verdict_result()
 
     def failure_custody(self) -> Dict[str, Any]:

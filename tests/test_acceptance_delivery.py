@@ -82,7 +82,7 @@ def _acceptance_ctx(tmp_path, *, evidence=None, task_metadata=None, content="del
         tools=SimpleNamespace(_ctx=tool_ctx), content=content, task_id="root-delivery",
         task_type="task", llm_trace={"tool_calls": []}, drive_root=tmp_path,
         messages=[{"role": "system", "content": "policy"}, {"role": "user", "content": "goal"}],
-        emit_progress=lambda _text: None, mode="required", subtree_statuses=[],
+        emit_progress=lambda _text, *, incident=None: None, mode="required", subtree_statuses=[],
         budget_profile=contract["budget_profile"], passes_done=0, evidence=evidence,
         review_binding=build_review_binding(
             candidate=content, evidence=evidence, fence_token_or_state="delivery-test",
@@ -551,9 +551,11 @@ def test_partial_source_refusal_spares_retrieving_rows_and_core_overflow_refuses
         tmp_path, evidence=partial, repo_dir=str(governance),
         workspace_root=str(workspace), workspace_mode="project"))
     by_id = {a["slot_id"]: a for a in result.actors}
-    # The packet row is refused free (a partial PROJECTION is not complete evidence);
-    # the native row reads the exact source itself and runs.
-    assert by_id["t_api"]["parsed"]["verdict"] == "DEGRADED" and "partial" in by_id["t_api"]["parsed"]["summary"]
+    # The packet row is refused free (a partial PROJECTION is not complete evidence)
+    # as a typed `not_dispatched` transport state — never a verdict — with the
+    # refusal cause on the row; the native row reads the exact source itself and runs.
+    assert by_id["t_api"]["status"] == "not_dispatched" and by_id["t_api"]["parsed"] is None
+    assert "partial" in str(by_id["t_api"]["error"])
     assert by_id["t_actor"]["parsed"]["verdict"] == "PASS"
     assert len(llm.calls) == 1 and "tools" in llm.calls[0]
     # The immutable-core overflow refuses EVERY delivery: no owner requirement is truncated for anyone.
@@ -561,7 +563,8 @@ def test_partial_source_refusal_spares_retrieving_rows_and_core_overflow_refuses
     result = loop_mod._execute_task_acceptance_panel(_acceptance_ctx(
         tmp_path, evidence=overflow, repo_dir=str(governance),
         workspace_root=str(workspace), workspace_mode="project"))
-    assert [a["parsed"]["verdict"] for a in result.actors] == ["DEGRADED", "DEGRADED"]
+    assert [a["status"] for a in result.actors] == ["not_dispatched", "not_dispatched"]
+    assert all(a["parsed"] is None and "overflow" in str(a["error"]) for a in result.actors)
     assert len(llm.calls) == 1  # nothing further was sent
 
 
@@ -589,7 +592,7 @@ def test_wallet_stamp_claims_once_per_panel_on_api_native_and_mixed_rows(monkeyp
     panel whatever the rows' deliveries, and a spent wallet refuses a NEW paid
     identity before any reviewer is sent — on every delivery alike."""
     from ouroboros import loop as loop_mod
-    from ouroboros.acceptance_dialogue import _total_paid_acceptance_cycles
+    from ouroboros.loop_acceptance_review import _total_paid_acceptance_cycles
 
     _offline_env(monkeypatch, *rows)
     governance, workspace = _roots(tmp_path)
@@ -613,7 +616,7 @@ def test_wallet_stamp_claims_once_per_panel_on_api_native_and_mixed_rows(monkeyp
 
 def test_session_row_claims_the_same_wallet_and_receives_the_full_packet(monkeypatch, tmp_path):
     from ouroboros import loop as loop_mod
-    from ouroboros.acceptance_dialogue import _total_paid_acceptance_cycles
+    from ouroboros.loop_acceptance_review import _total_paid_acceptance_cycles
     from ouroboros.review_substrate import task_acceptance_is_clean
 
     FakeGateway = _fake_session(monkeypatch)
@@ -630,7 +633,11 @@ def test_session_row_claims_the_same_wallet_and_receives_the_full_packet(monkeyp
     (start,) = FakeGateway.instances[0].start_requests
     wire = json.dumps(start)
     assert "RETRIEVAL POINTERS" in wire and "TRAJECTORY-RESULT-3-passed" in wire and "not guaranteed" in wire
-    assert str(workspace) in wire
+    # The start request carries the workspace root: as the run scope (parsed
+    # field, never a substring of the serialized wire — json.dumps escapes the
+    # backslashes of an OS-native path) and as the work order's retrieval pointer.
+    assert start["scope"] == {"kind": "project", "root": str(workspace)}
+    assert str(workspace) in start["prompt"]
 
 
 def test_replayed_panel_keeps_the_delivery_it_actually_ran_on(monkeypatch, tmp_path):
@@ -638,7 +645,7 @@ def test_replayed_panel_keeps_the_delivery_it_actually_ran_on(monkeypatch, tmp_p
     submission replays the recorded run, whose actors still say how they
     were executed (a native episode), not what the rows say today."""
     from ouroboros import loop as loop_mod
-    from ouroboros.acceptance_dialogue import _prior_acceptance_run
+    from ouroboros.loop_acceptance_review import _prior_acceptance_run
 
     _offline_env(monkeypatch, _ROW_NATIVE)
     governance, workspace = _roots(tmp_path)
@@ -735,7 +742,7 @@ def test_the_wave_gate_decides_on_one_work_order_send_per_paid_row(monkeypatch, 
 
 
 def test_native_projection_never_turns_a_malformed_manifest_into_its_keys():
-    from ouroboros.acceptance_dialogue import _retrieving_packet_projection
+    from ouroboros.loop_acceptance_review import _retrieving_packet_projection
 
     projected = _retrieving_packet_projection({**_ACCEPTANCE_PACKET, "omissions_manifest": {"bad": "shape"}})
     assert [row["section"] for row in projected["omissions_manifest"]] == ["tool_trajectory", "artifact_previews"]
@@ -760,7 +767,7 @@ def test_a_renderer_tail_ending_in_a_newline_still_loses_its_slot_label(structur
     line even if the renderer's dynamic segment ever grows a trailing newline
     (or CRLF) after the label — the `.rstrip()` branch of the trim."""
     from ouroboros import review_execution
-    from ouroboros.acceptance_dialogue import acceptance_retrieving_work_order
+    from ouroboros.loop_acceptance_review import acceptance_retrieving_work_order
     from ouroboros.review_substrate import ReviewRequest, triad_delivery_slots
 
     original = review_execution._render_prompt_parts

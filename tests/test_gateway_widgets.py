@@ -266,6 +266,47 @@ def test_module_widget_without_readable_sources_is_not_live(tmp_path, files, exp
     assert extension_loader.live_widget_projection("ext_broken") is None
 
 
+def _reviewed_widget_skill(tmp_path: pathlib.Path, name: str):
+    """A reviewed+enabled out-of-process widget extension the staged publication
+    path (``_publish_out_of_process_registration``) accepts: a real
+    ``LoadedSkill`` with a manifest, not a namespace stub."""
+    from ouroboros.skill_loader import SkillReviewState, find_skill, save_enabled, save_review_state
+
+    repo_root = tmp_path / "skills"
+    drive_root = tmp_path / "drive"
+    drive_root.mkdir(exist_ok=True)
+    skill_dir = repo_root / name
+    (skill_dir / "lib").mkdir(parents=True)
+    (skill_dir / "plugin.py").write_text("def register(api):\n    pass\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        "description: widget skill\n"
+        "version: 0.1.0\n"
+        "type: extension\n"
+        "entry: plugin.py\n"
+        "permissions: [widget]\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+    loaded = find_skill(drive_root, name, repo_path=str(repo_root))
+    assert loaded is not None
+    save_enabled(drive_root, loaded.name, True)
+    save_review_state(drive_root, loaded.name, SkillReviewState(status="pass", content_hash=loaded.content_hash))
+    loaded = find_skill(drive_root, loaded.name, repo_path=str(repo_root))
+    assert loaded is not None
+    return loaded, skill_dir, drive_root
+
+
+def _publish_oop(skill, drive_root, *, catalog, current_hash):
+    extension_loader._publish_out_of_process_registration(
+        skill, catalog=catalog, current_hash=current_hash,
+        state_dir=extension_loader.skill_state_dir(drive_root, skill.name),
+        settings_reader=lambda: {}, granted_keys=[], dependency_site_dirs_enabled=False,
+    )
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privileges on Windows")
 def test_module_sources_never_follow_symlinks_out_of_the_skill(tmp_path):
     """The capture is the review-hash surface: a sibling symlink escaping the skill
@@ -273,43 +314,37 @@ def test_module_sources_never_follow_symlinks_out_of_the_skill(tmp_path):
     ENTRY fails the registration. Exercised on the host-side catalog path, which
     has no import-tree staging in front of it (the in-process loader already
     refuses such a tree while staging its import copy)."""
-    from types import SimpleNamespace
 
     from ouroboros.contracts.plugin_api import ExtensionRegistrationError
 
     outside = tmp_path / "outside.js"
     outside.write_text("window.__outside = true;\n", encoding="utf-8")
-    skill_dir = tmp_path / "skills" / "oop_link"
-    (skill_dir / "lib").mkdir(parents=True)
+    skill, skill_dir, drive_root = _reviewed_widget_skill(tmp_path, "oop_link")
     (skill_dir / "widget.js").write_text("window.__ok = true;\n", encoding="utf-8")
     (skill_dir / "lib" / "leak.js").symlink_to(outside)
-    skill = SimpleNamespace(name="oop_link", skill_dir=skill_dir)
     catalog = {"ui_tabs": [{"key": "oop_link:m", "skill": "oop_link", "tab_id": "m", "title": "M",
                             "render": {"kind": "module", "entry": "widget.js"}}]}
-    extension_loader._register_out_of_process_surfaces(skill, current_hash="h1", catalog=catalog)
+    _publish_oop(skill, drive_root, catalog=catalog, current_hash="h1")
     assert extension_loader.live_module_sources("oop_link") == {"widget.js": "window.__ok = true;\n"}
     extension_loader.unload_extension("oop_link")
     (skill_dir / "widget.js").unlink()
     (skill_dir / "widget.js").symlink_to(outside)
     with pytest.raises(ExtensionRegistrationError, match="entry 'widget.js' escapes the skill directory"):
-        extension_loader._register_out_of_process_surfaces(skill, current_hash="h2", catalog=catalog)
+        _publish_oop(skill, drive_root, catalog=catalog, current_hash="h2")
     assert extension_loader.live_module_sources("oop_link") is None
 
 
 def test_out_of_process_catalog_captures_module_sources_at_load(tmp_path):
     """The host-side catalog path stores the same reviewed sources as register_ui_tab."""
-    from types import SimpleNamespace
 
     from ouroboros.contracts.plugin_api import ExtensionRegistrationError
 
-    skill_dir = tmp_path / "skills" / "oop"
-    (skill_dir / "lib").mkdir(parents=True)
+    skill, skill_dir, drive_root = _reviewed_widget_skill(tmp_path, "oop")
     (skill_dir / "widget.js").write_text("export const oop = 1;\n", encoding="utf-8")
     (skill_dir / "lib" / "x.js").write_text("export const x = 1;\n", encoding="utf-8")
-    skill = SimpleNamespace(name="oop", skill_dir=skill_dir)
     catalog = {"ui_tabs": [{"key": "oop:m", "skill": "oop", "tab_id": "m", "title": "M",
                             "render": {"kind": "module", "entry": "widget.js"}}]}
-    extension_loader._register_out_of_process_surfaces(skill, current_hash="h1", catalog=catalog)
+    _publish_oop(skill, drive_root, catalog=catalog, current_hash="h1")
     rows = extension_loader.live_widget_projection("oop")
     assert [row["tab"]["key"] for row in rows] == ["oop:m"] and rows[0]["revision"] == "h1"
     assert extension_loader.live_module_sources("oop") == {
@@ -321,15 +356,18 @@ def test_out_of_process_catalog_captures_module_sources_at_load(tmp_path):
     # A catalog declaring an entry the payload lacks is not installed at all.
     (skill_dir / "widget.js").unlink()
     with pytest.raises(ExtensionRegistrationError, match="'widget.js' is missing"):
-        extension_loader._register_out_of_process_surfaces(skill, current_hash="h2", catalog=catalog)
+        _publish_oop(skill, drive_root, catalog=catalog, current_hash="h2")
     assert extension_loader.live_widget_projection("oop") is None
     assert extension_loader.live_module_sources("oop") is None
 
 
 def test_contracts_import_stays_transport_free():
     """``gateway/contracts.py`` re-exports the Widgets TypedDicts homed in
-    ``gateway/widgets.py``; importing the contracts must not load Starlette."""
-    code = "import sys, ouroboros.contracts.api_v1; sys.exit(1 if 'starlette' in sys.modules else 0)"
+    ``gateway/widgets.py``; importing the contracts must not load Starlette.
+    (The ``contracts.api_v1`` re-export shim is gone in the 7.0 ABI —
+    ``tests/test_contracts.py`` pins its absence — so the transport-free
+    boundary under test is ``ouroboros.gateway.contracts`` itself.)"""
+    code = "import sys, ouroboros.gateway.contracts; sys.exit(1 if 'starlette' in sys.modules else 0)"
     proc = subprocess.run(
         [sys.executable, "-c", code],
         cwd=pathlib.Path(__file__).resolve().parent.parent,
@@ -337,4 +375,4 @@ def test_contracts_import_stays_transport_free():
         text=True,
         timeout=120,
     )
-    assert proc.returncode == 0, proc.stderr or "starlette was imported by ouroboros.contracts.api_v1"
+    assert proc.returncode == 0, proc.stderr or "starlette was imported by ouroboros.gateway.contracts"

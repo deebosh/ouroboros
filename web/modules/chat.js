@@ -2114,11 +2114,11 @@ export function createChatInstance({
             return finishLiveCard(taskId, 'done');
         }
         let changed = false;
-        // Restore the coined task name even when history retained no progress row.
+        // Restore task name from history.
         if (msg?.suggested_name) {
             changed = applySuggestedName(taskId, msg.suggested_name) || changed;
         }
-        const finalizing = msg?.task_phase === 'finalizing';
+        const finalizing = msg?.task_phase === 'finalizing' || msg?.outcome_final === false;
         const projectedReviews = reviewGroupsFromTaskDetail(msg, taskId);
         const hasAcceptanceReview = projectedReviews.length > 0;
         const taskState = getTaskUiState(taskId, hasAcceptanceReview || finalizing);

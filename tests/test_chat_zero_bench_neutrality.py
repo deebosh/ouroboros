@@ -153,9 +153,13 @@ def test_the_two_toasts_this_sprint_touched_stay_out_of_a_headless_progress_log(
     trajectory builder does not yet consult, which is a pre-existing gap in the
     harness rather than something this change introduced — filed separately.
     """
-    events = (REPO / "supervisor/events.py").read_text(encoding="utf-8")
-    assert "if _notice_chat is not None and _notice_chat != HIDDEN_CHAT_ID:" in events
-    assert "if chat_id is None or chat_id == HIDDEN_CHAT_ID:" in events
+    # v7 split supervisor/events.py: _handle_schedule_task moved to
+    # events_schedule_task.py and the subagent-admission notice to
+    # events_subagent_admission.py. Same two lines, new owning leaves.
+    schedule = (REPO / "supervisor/events_schedule_task.py").read_text(encoding="utf-8")
+    assert "if _notice_chat is not None and _notice_chat != HIDDEN_CHAT_ID:" in schedule
+    admission = (REPO / "supervisor/events_subagent_admission.py").read_text(encoding="utf-8")
+    assert "if chat_id is None or chat_id == HIDDEN_CHAT_ID:" in admission
 
     atif = (REPO / "devtools/benchmarks/terminal_bench/atif.py").read_text(encoding="utf-8")
     assert 'progress.jsonl' in atif and 'narration_rows' in atif, (

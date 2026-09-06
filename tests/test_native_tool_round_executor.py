@@ -91,6 +91,8 @@ def test_episode_reads_then_answers(subject_repo):
         {"content": _VERDICT},
     ])
     executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
+    observed_usage = []
+    executor.usage_observer = observed_usage.append
     result = executor.execute()
     assert result.raw_text == _VERDICT
     assert result.message["native_transcript"] == _VERDICT
@@ -99,6 +101,7 @@ def test_episode_reads_then_answers(subject_repo):
     assert usage["host_file_read_attestation"] == "host_observed"
     assert usage["native_tool_receipts"][0]["tool"] == "read_file"
     assert usage["native_tool_receipts"][0]["path"] == "greeting.txt"
+    assert len(observed_usage) == 2
     # The REAL inspection tool ran against the pinned root: its output (with
     # the file body) went back to the model as a role=tool message.
     round2_messages = llm.calls[1]["messages"]
@@ -894,7 +897,9 @@ def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypa
     llm.chat = slow_chat
     result = executor.execute()
     assert result.raw_text == "# Draft\n" and result.usage["native_incomplete"] == "deadline_exhausted"
-    assert llm.calls[0]["timeout"] <= 0.2  # one send never outlives the window: no floor above it
+    # one send never outlives the window: no floor above it (1e-6: the window is deadline - now and
+    # two monotonic() reads on Windows can coincide, leaving a float tail above 0.2)
+    assert llm.calls[0]["timeout"] <= 0.2 + 1e-6
 
     # The window expiring between the round's admission check and dispatch
     # takes the deadline path — no send with a floored timeout.
@@ -1418,7 +1423,7 @@ def _last_read_view_sites(sources):
     return sites
 
 
-_CORE, _EPISODE = "ouroboros/tools/core.py", "ouroboros/review_native_episode.py"
+_CORE, _EPISODE = "ouroboros/tools/core_file_tools.py", "ouroboros/review_native_episode.py"
 _LAST_READ_VIEW_WRITERS = {  # exact (file, enclosing def, kind); the site COUNT is pinned at three
     (_CORE, "_stamp_read_view", "assign"),
     (_CORE, "_read_file", "assign"),
@@ -1434,7 +1439,7 @@ def _assert_three_writers(sites):
 def test_last_read_view_has_exactly_three_writers():
     """Writer-set invariant behind the structural stamp binding: `last_read_view`
     is written at exactly three SITES — the reader's entry reset and its stamp
-    (`tools/core.py::_read_file` / `_stamp_read_view`) and the episode's
+    (`tools/core_file_tools.py::_read_file` / `_stamp_read_view`) and the episode's
     clear-before-dispatch (`review_native_episode.py::_execute_inspection_call`)
     — and no `setattr` / `__setattr__` call or `__dict__` store names it
     anywhere in the runtime. Sites, not (file, def) members: a fourth

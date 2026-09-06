@@ -7,6 +7,7 @@ import {
     isRetainedWidget,
     renderWidgetCardControls,
     renderWidgetFacade,
+    setWidgetCardFault,
     syncWidgetCardControls,
     WIDGET_START_MODE_LABELS,
     WIDGET_START_MODES,
@@ -176,4 +177,29 @@ test('the launch-policy menu speaks to the owner: "Keep running", never the enum
     const controls = renderWidgetCardControls(tab({ kind: 'module', entry: 'widget.js' }));
     assert.doesNotMatch(controls, /\(retain\)/);
     assert.match(controls, /Keep running</);
+});
+
+test('a widget fault survives unchanged reconciliation and clears on a lifecycle transition', () => {
+    const card = fakeCard();
+    syncWidgetCardControls(card, 'running', 'retain');
+    const power = card.querySelector('[data-widget-power]');
+    const status = card.querySelector('[data-widget-status]');
+
+    setWidgetCardFault(card, 'Widget script error: boom');
+    assert.equal(status.hidden, false);
+    assert.equal(status.dataset.tone, 'error');
+    assert.equal(status.textContent, 'Widget script error: boom');
+    // The frame is still mounted, so the primary button must keep saying Stop.
+    assert.equal(power.textContent, 'Stop');
+    assert.equal(power.disabled, false);
+
+    // A reconnect reconciles an unchanged, still-mounted card as running.
+    syncWidgetCardControls(card, 'running', 'retain');
+    assert.equal(status.dataset.tone, 'error');
+    assert.equal(status.textContent, 'Widget script error: boom');
+
+    syncWidgetCardControls(card, 'stopping', 'retain');
+    assert.equal(status.dataset.widgetFault, undefined);
+    assert.equal(status.dataset.tone, 'neutral');
+    assert.equal(status.textContent, 'Stopping…');
 });

@@ -473,7 +473,7 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     ),
     "delegated_custody_unreconciled": (
         False,
-        "agent_task_pipeline.py terminal custody audit; a delegated-child infrastructure terminal, never a root benchmark capability result",
+        "agent_task_pipeline.py terminal custody overlay; an additive custody-debt disclosure (Done with warnings) on any task that finished with an undisposed own delegated patch, never a truncation; a truncation rail code is preserved",
     ),
     "provider_outcome_unknown": (
         False,
@@ -521,6 +521,10 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     # a HURRY request — the task itself keeps running untouched, so no trial
     # ever terminalizes with any of them.
     "request_id_required": (False, "gateway/task_hurry.py hurry ingress refusal (400); never a task terminal"),
+    "invalid_request_body": (
+        False,
+        "gateway/task_hurry.py ABI-3 derived-schema ingress refusal (400); never a task terminal",
+    ),
     "unexpected_fields": (
         False,
         "gateway/task_hurry.py hurry ingress refusal (400, text-free contract); never a task terminal",

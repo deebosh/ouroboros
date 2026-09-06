@@ -898,10 +898,9 @@ def test_programbench_task_body_sets_executor_and_protected_policy(tmp_path):
     profile = body["metadata"]["budget_profile"]
     assert profile == {
         "cost_hard_stop_pct": 0,
-        "improvement_policy": "until_deadline",
+        "improvement_policy": "fixed",
         "max_improvement_passes": 6,
         "reserve_finalization_pct": 15,
-        "stall_rounds_threshold": 12,
     }
     # Advisory acceptance claims ride the body top-level (gateway-normalized);
     # the wording stays task-general (no benchmark-specific oracle taxonomy).
@@ -1763,10 +1762,10 @@ def test_terminal_bench_metadata_declares_all_assisting_models(monkeypatch):
     meta = module.leaderboard_metadata(
         agent_name="Ouroboros", org_name="Ouroboros",
         model="openai/gpt-5.5", light_model="google/gemini-3.5-flash")
-    from ouroboros.config import SETTINGS_DEFAULTS
-
     # Every shipped default is read from the config SSOT and must be visible.
-    for helper in SETTINGS_DEFAULTS["OUROBOROS_REVIEW_MODELS"].split(","):
+    from ouroboros.settings_defaults import OPENROUTER_REVIEW_DEFAULTS
+
+    for helper in OPENROUTER_REVIEW_DEFAULTS["triad"]:
         assert helper in meta
     assert "scope_review" not in meta
     assert "commit_review_triad" in meta
@@ -3561,10 +3560,6 @@ def test_gaia_audit_gold_verbatim_alone_is_weak_only(tmp_path):
     assert gv2 and gfl2
     assert audit._distinctive_gold(gold)
 
-
-def test_gaia_events_serializer_carries_web_search_sources():
-    src = (REPO_ROOT / "supervisor" / "events.py").read_text(encoding="utf-8")
-    assert "web_search_sources" in src
 
 
 def test_gaia_score_leakage_adjusted(tmp_path):

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Tuple
+import os
+from typing import Any, Dict, Optional, Tuple
 
 from ouroboros.config import SETTINGS_DEFAULTS, VALID_RUNTIME_MODES
 from ouroboros.provider_models import (
@@ -19,6 +20,35 @@ from ouroboros.secret_masking import (
     MASKED_SECRET_SETTING_KEYS as SECRET_SETTING_KEYS,
 )
 from ouroboros.task_pacing import COST_PLANNING_MARGIN_USD
+
+
+
+def resolve_total_budget_usd() -> Optional[float]:
+    """The effective global money limit, or None when the owner set no limit.
+
+    Lives beside this setting's owner-facing declaration below, because the
+    question it answers is what the declared default MEANS at runtime. Every
+    reader used to invent its own fallback for an absent key and they disagreed
+    threefold on the same install ($1, no limit at all, $200): the same machine
+    could reject a task at round one on the loop's money axis while the ledger
+    fence still allowed $200 of work. An absent key is not an owner decision --
+    ``config.apply_settings_to_env`` deliberately projects only what the
+    settings file actually says, so a raw harness run with no settings.json has
+    no entry at all -- so absence resolves to the product default here. A
+    non-positive value IS an owner decision and keeps its historical meaning of
+    no finite global budget.
+    """
+    raw = str(os.environ.get("TOTAL_BUDGET", "") or "").strip()
+    default = float(SETTINGS_DEFAULTS["TOTAL_BUDGET"])
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
+        return default
+    return value if value > 0 else None
 
 
 def _rows(keys: tuple[str, ...], specs: tuple[tuple[Any, ...], ...]) -> list[dict]:
@@ -191,7 +221,7 @@ _SUBSCRIPTION_FIELDS = _rows(("id", "payloadKey", "label", "note"), (
     ("skip-subscription-presets", SKIP_SUBSCRIPTION_PRESETS_FIELD, "Finish without agent defaults", "Completes onboarding without moving reviewers and subagents onto the connected subscriptions. Everything stays editable in Settings afterwards."),
 ))
 
-_MODEL_SUGGESTIONS = list(dict.fromkeys(("google/gemini-3.7-flash", "x-ai/grok-4.6", "openai/gpt-5.6-terra", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "openai::gpt-5.6-terra", "openai::gpt-5.6-sol", "openai::gpt-5.6-luna", "anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "anthropic::claude-sonnet-5", "anthropic::claude-opus-5", "anthropic::claude-opus-4-6", "deepseek/deepseek-v4-pro", "deepseek::deepseek-v4-pro", "deepseek::deepseek-v4-flash", "openai-compatible::meta-llama/compatible", "cloudru::zai-org/GLM-4.7", "minimax::MiniMax-M3", "minimax::MiniMax-M2.7")))
+_MODEL_SUGGESTIONS = list(dict.fromkeys(("google/gemini-3.8-flash", "x-ai/grok-4.6", "openai/gpt-5.6-terra", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "openai::gpt-5.6-terra", "openai::gpt-5.6-sol", "openai::gpt-5.6-luna", "anthropic/claude-sonnet-5", "anthropic/claude-opus-5", "anthropic::claude-sonnet-5", "anthropic::claude-opus-5", "anthropic::claude-opus-4-6", "deepseek/deepseek-v4-pro", "deepseek::deepseek-v4-pro", "deepseek::deepseek-v4-flash", "openai-compatible::meta-llama/compatible", "cloudru::zai-org/GLM-4.7", "minimax::MiniMax-M3", "minimax::MiniMax-M2.7")))
 
 
 def _string(value: Any) -> str:

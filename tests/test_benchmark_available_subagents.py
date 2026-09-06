@@ -330,18 +330,22 @@ def test_committed_single_model_profiles_use_one_canonical_actor(relative: str, 
 
 
 @pytest.mark.parametrize(
-    "relative,expected",
+    "relative,expected,triad_count,scope_count",
     (
-        ("devtools/benchmarks/programbench/settings_base.json", "openai/gpt-5.5"),
-        ("devtools/benchmarks/osworld/settings_base.json", "anthropic/claude-sonnet-4.6"),
+        ("devtools/benchmarks/programbench/settings_base.json", "openai/gpt-5.5", 3, 3),
+        ("devtools/benchmarks/osworld/settings_base.json", "anthropic/claude-sonnet-4.6", 3, 1),
     ),
 )
-def test_target_attached_profiles_override_foreign_runtime_defaults(relative, expected):
+def test_target_attached_profiles_override_foreign_runtime_defaults(
+        relative, expected, triad_count, scope_count):
     payload = json.loads((REPO / relative).read_text(encoding="utf-8"))
-    triad_count = len([item for item in payload["OUROBOROS_REVIEW_MODELS"].split(",")
-                       if item.strip()])
-    scope_count = len([item for item in payload["OUROBOROS_SCOPE_REVIEW_MODELS"].split(",")
-                       if item.strip()])
+    # ABI 7.0 (ABI-10): the comma keys are retired — the structured slots value
+    # is the template's ONE reviewer configuration surface. The slot counts are
+    # the committed template shape (programbench 3 triad + 3 scope, osworld
+    # 3 triad + 1 scope), pinned as literals: derived from the payload they
+    # would certify whatever count the file happens to carry.
+    slots = json.loads(payload[REVIEWER_SLOTS_ENV])
+    assert (len(slots["triad"]), len(slots["scope"])) == (triad_count, scope_count)
     assert payload[REVIEWER_SLOTS_ENV] == single_model_reviewer_slots_setting(
         expected,
         review_slots=triad_count,

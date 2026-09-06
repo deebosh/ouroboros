@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import os
 
+from ouroboros.model_slots import ResolvedModelTarget, parse_fallback_chain
+from ouroboros.settings_defaults import OPENROUTER_DEFAULTS, OPENROUTER_REVIEW_DEFAULTS, SETTINGS_DEFAULTS  # noqa: F401
+
 # MiniMax exposes the same OpenAI-compatible API on two regional hosts. Keep the
 # mapping centralized so transport, capability evidence, and settings diagnostics
 # fingerprint the exact endpoint selected by the owner.
@@ -145,6 +148,51 @@ def provider_for_model(model: str) -> str:
     return "openrouter"
 
 
+def resolve_model_target(
+    model: str,
+    *,
+    effort: str = "",
+    credential_ref: str = "",
+    context_window: int = 0,
+) -> ResolvedModelTarget:
+    """Construct the ABI-4 typed target at an EXISTING resolution seam.
+
+    Wraps what the resolution already computed (reuse-first): the transport
+    lane comes from ``provider_for_model``, and the optional facts keep their
+    typed sentinels unless the calling seam genuinely resolved them. No
+    parallel resolver, no pricing, no window probing — a context window is
+    Capability Evidence's fact (0 = unknown, fail-open).
+    """
+    model_id = str(model or "").strip()
+    return ResolvedModelTarget(
+        model_id=model_id,
+        provider_route=provider_for_model(model_id),
+        credential_ref=str(credential_ref or "").strip(),
+        effort=str(effort or "").strip(),
+        context_window=max(0, int(context_window or 0)),
+    )
+
+
+def fallback_candidate_targets(active_model: str = "") -> tuple[ResolvedModelTarget, ...]:
+    """The cross-model fallback candidate ladder as typed targets (ABI-4).
+
+    Same membership and order as ``model_slots.get_fallback_models`` — a typed
+    view over the ONE chain SSOT, not a second resolver. Effort stays the ""
+    sentinel: the ladder resolves destinations, the dispatching round owns the
+    active effort. ``provider_route`` stays the ``""`` sentinel DELIBERATELY:
+    the chain's local-vs-remote dispatch lane is the loop's single global
+    ``USE_LOCAL_FALLBACK`` flag (the pre-existing contract, byte-identical
+    through the ABI-4 sweep), so a per-candidate route here would be a
+    fabricated fact no dispatcher consumes.
+    """
+    from ouroboros.model_slots import get_fallback_models
+
+    return tuple(
+        ResolvedModelTarget(model_id=model, provider_route="")
+        for model in get_fallback_models(active_model)
+    )
+
+
 def provider_has_credentials(provider: str) -> bool:
     """Return True when the environment carries usable credentials for a provider."""
     if provider == "local":
@@ -222,9 +270,7 @@ def resolve_credentialed_model(default_model: str) -> str:
     # LIGHT/MAIN are single-model slots; FALLBACKS is a comma chain expanded via the
     # shared SSOT parser (which also honors the legacy singular OUROBOROS_MODEL_FALLBACK)
     # instead of testing the whole comma-string as one broken model id. Empty Light
-    # (default -> Main) simply contributes nothing here. Lazy import: config imports this
-    # module, so importing config at module load would be circular.
-    from ouroboros.config import parse_fallback_chain
+    # (default -> Main) simply contributes nothing here.
     candidates: list[str] = []
     light = str(os.environ.get("OUROBOROS_MODEL_LIGHT", "") or "").strip()
     if light:
@@ -251,9 +297,7 @@ def declared_model_settings(
     ``config.SETTINGS_DEFAULTS`` for it, so the default's provider is genuinely reachable and
     must be declared.  ``include_claude_sdk_defaults`` is a RETIRED no-op kept for caller
     compatibility: the Claude-SDK transport and its dedicated model slots are gone, so both
-    values declare the same set. Lazy config import (config imports this module)."""
-    from ouroboros.config import SETTINGS_DEFAULTS
-
+    values declare the same set."""
     declared: dict[str, str] = {}
     for key in MODEL_SETTING_KEYS:
         value = str((settings or {}).get(key) or "").strip()
@@ -328,32 +372,6 @@ def provider_credential_plan(
     }
 
 
-# Shipped router profile. Keeping the root-loop role policy beside the direct
-# provider profiles gives onboarding, runtime defaults, and tests one vocabulary
-# instead of repeating model ids across those surfaces.
-OPENROUTER_DEFAULTS = {
-    "main": "google/gemini-3.7-flash",
-    "heavy": "",
-    "light": "openai/gpt-5.6-luna",
-    "vision": "",
-    "consciousness": "",
-    "fallback": "openai/gpt-5.6-luna",
-    "deep_self_review": "openai/gpt-5.6-sol-pro",
-}
-
-OPENROUTER_REVIEW_DEFAULTS = {
-    "triad": (
-        "google/gemini-3.7-flash",
-        "openai/gpt-5.6-terra",
-        "anthropic/claude-opus-5",
-    ),
-    "scope": ("openai/gpt-5.6-terra",),
-    # Routed catalog id (the retired Claude-SDK spelling migrated same-model);
-    # without provider credentials the advisory gate records an audited bypass.
-    "advisory": "anthropic/claude-sonnet-5",
-}
-
-
 OPENAI_DIRECT_DEFAULTS = {
     "main": "openai::gpt-5.6-terra",
     "heavy": "",
@@ -366,15 +384,13 @@ OPENAI_DIRECT_DEFAULTS = {
     # Cloud.ru and GigaChat are documented BELOW that floor, so filling their slot
     # would advertise a deep review that is doomed to overflow its real route.
     #
-    # DELIBERATELY plain Sol, NOT the OpenRouter default's `-pro`: that suffix is an
-    # OpenRouter slug, not an OpenAI model id. Live-probed 2026-07-29 against
-    # api.openai.com: `gpt-5.6-sol-pro` on /v1/chat/completions -> 404; the pro
+    # Plain Sol, the same model the OpenRouter default names. A `-pro` suffix is an
+    # OpenRouter routing slug, not an OpenAI model id: live-probed 2026-07-29 against
+    # api.openai.com, `gpt-5.6-sol-pro` on /v1/chat/completions -> 404; the pro
     # reasoning mode exists only on /v1/responses as `reasoning.mode="pro"` (200),
     # and passing `reasoning` to /v1/chat/completions -> 400 "Unknown parameter".
-    # Every LLM call in llm.py is a chat.completions call, so a direct-OpenAI
-    # install runs deep review on plain Sol — an owner-accepted capability
-    # difference from the OpenRouter default, disclosed in README/ARCHITECTURE
-    # rather than papered over with a slug that does not exist.
+    # Every LLM call in llm.py is a chat.completions call, so an owner's pinned
+    # `-pro` slug lands here too (deep_self_review.deep_review_route).
     "deep_self_review": "openai::gpt-5.6-sol",
 }
 

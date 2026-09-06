@@ -360,7 +360,20 @@ export function taskReasonPhrase(code) {
 
 export function taskReasonDetail(evt) {
     // An owner-requested stop is a success and carries its own marker instead.
-    if (taskStoppedWithSummary(evt) || !evt?.reason_code) return '';
+    if (taskStoppedWithSummary(evt)) return '';
+    // A warning caused by REVIEW must not be explained by the execution reason
+    // that happens to sit beside it: the host's acceptance decision is the
+    // cause, and it speaks in its own stored words. A hard failure or a
+    // cancellation keeps explaining itself by its execution reason.
+    const record = normalizeTaskTerminalRecord(evt);
+    const decision = record.outcome_axes?.review?.acceptance_decision
+        ?? record.review_status?.acceptance_decision;
+    const severity = taskOutcomeSeverity(evt);
+    if (severity !== 'error' && severity !== 'cancelled' && decision?.status && decision.status !== 'accepted') {
+        const rationale = String(decision.rationale || '').split(/\s+/).filter(Boolean).join(' ');
+        return `Acceptance: ${decision.status}${rationale ? ` — ${rationale}` : ''}`;
+    }
+    if (!evt?.reason_code) return '';
     return `Reason: ${taskReasonPhrase(evt.reason_code)}`;
 }
 
@@ -487,6 +500,8 @@ function taskOutcomeMeta(evt) {
         axes.lifecycle?.status ? `lifecycle ${axes.lifecycle.status}` : '',
         axes.execution?.status ? `execution ${axes.execution.status}` : '',
         axes.objective?.status ? `objective ${axes.objective.status}` : '',
+        axes.review?.status ? `review ${axes.review.status}` : '',
+        axes.review?.acceptance_decision?.status ? `acceptance ${axes.review.acceptance_decision.status}` : '',
     ].filter(Boolean);
 }
 
@@ -575,7 +590,10 @@ export function summarizeLogEvent(evt) {
             meta: taskMeta(
                 evt.model || '',
                 formatLogTokens(evt),
-                formatLogMoney(evt.cost_usd ?? evt.cost),
+                // ABI-3: /api/logs backfill rows carry the honest name; live
+                // frames still say cost_usd/cost — resolve the pair via the
+                // SSOT helper, then the live-frame `cost` spelling.
+                formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.response_kind === 'tool_calls' ? `${evt.tool_call_count || 0} tool calls` : evt.response_kind || '',
             ),
         });
@@ -599,7 +617,7 @@ export function summarizeLogEvent(evt) {
             meta: taskMeta(
                 evt.model || '',
                 formatLogTokens(evt),
-                formatLogMoney(evt.cost_usd ?? evt.cost),
+                formatLogMoney(accountedUpperBound(evt) ?? evt.cost),
                 evt.category || '',
             ),
         });
@@ -797,7 +815,7 @@ export function summarizeLogEvent(evt) {
 
     return view('info', shortText(t, 120), {
         body: shortText(evt.text || evt.error || evt.result_preview || compactJson(evt.args || evt.task || evt.checks, 260), 260),
-        meta: taskMeta(evt.model || '', formatLogMoney(evt.cost_usd ?? evt.cost)),
+        meta: taskMeta(evt.model || '', formatLogMoney(accountedUpperBound(evt) ?? evt.cost)),
     });
 }
 

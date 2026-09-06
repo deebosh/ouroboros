@@ -176,7 +176,9 @@ Status, owner action, and urgent notification are separate product concepts:
 
 - **Status** states a fact about the affected object. It does not imply that the
   owner can or must act. Task status uses one factual word family: `Working`,
-  `Done`, `Done with warnings`, `Failed`, `Cancelled`.
+  `Done`, `Done with warnings`, `Failed`, `Cancelled`. The same five words are
+  the host's durable label vocabulary for its own task rows in Main and the
+  Project thread (`OUTCOME_PHASE_HEADLINE`), not only the browser's.
 - **Owner action** exists only when the responsible domain exposes a current
   concrete continuation, such as Resume, Retry, Connect, Repair, Grant access,
   or Restart. The action is a real adjacent control; severity alone never

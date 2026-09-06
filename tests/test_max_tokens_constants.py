@@ -81,7 +81,7 @@ def test_summary_and_background_token_budgets():
         "ouroboros/tools/review_synthesis.py": "max_tokens=16384",
         "ouroboros/consolidator.py": "max_tokens=16384",
         "ouroboros/reflection.py": "max_tokens=16384",
-        "ouroboros/agent_task_pipeline.py": "max_tokens=16384",
+        "ouroboros/post_task_synthesis.py": "max_tokens=16384",
         "ouroboros/tools/skill_publish.py": "max_tokens=8192",
         "ouroboros/consciousness.py": "max_tokens=65536",
     }
@@ -290,6 +290,30 @@ def test_calibrated_input_limit_shared_helper(tmp_path, monkeypatch):
     assert "calibrated_input_token_limit" in inspect.getsource(triad)
 
 
+def test_scope_cap_of_an_unwitnessed_reviewer_ignores_another_models_witness(tmp_path, monkeypatch):
+    """Paid run 2026-09-04, lane SM1_a1, commit-gate attempt 2: gpt-5.6-terra's
+    window confirmed at 1,050,000, no terra witness yet, and a gemini-3.8-flash
+    witness at 1.81 in the store. The scope cap came out at 499,627 (1.81 x 1.05
+    applied to terra) instead of the floor-based 575,757, starving 48 required
+    protected-path artifacts before any reviewer was dispatched. The cap of an
+    unwitnessed reviewer is the floor's, whatever other models measured."""
+    from ouroboros.capability_evidence import _DENSITY_MEMO, COLD_START_TOKEN_DENSITY, record_token_density
+    from ouroboros.reviewer_window import ReviewerWindow
+    from ouroboros.tools.scope_review import _effective_scope_input_limit
+
+    monkeypatch.setattr("ouroboros.tools.scope_review._scope_window",
+                        lambda m: ReviewerWindow(1_050_000, "confirmed"))
+    monkeypatch.setenv("OUROBOROS_DATA_DIR", str(tmp_path))
+    _DENSITY_MEMO.clear()
+    record_token_density(
+        tmp_path, "google/gemini-3.8-flash", prompt_chars=900_708, prompt_tokens=407_767,
+    )
+
+    cap = _effective_scope_input_limit(scope_model="openai/gpt-5.6-terra")
+    assert cap == int((1_050_000 - 100_000) / COLD_START_TOKEN_DENSITY) == 575_757
+    assert cap != 499_627
+
+
 def test_measured_density_never_loosens_a_models_own_review_pack_cap(tmp_path, monkeypatch):
     """A still-fresh dense witness may only tighten a model's review cap.
 
@@ -480,7 +504,7 @@ def test_tool_timeout_settings_wins_when_higher():
 def test_review_evidence_no_truncation_by_default():
     """format_review_evidence_for_prompt must NOT truncate by default (max_chars=0)."""
     from ouroboros.review_evidence import format_review_evidence_for_prompt
-    big = {"has_evidence": True, "data": "x" * 10000}
+    big = {"has_evidence": True, "task_id": "task-review", "data": "x" * 10000}
     result = format_review_evidence_for_prompt(big)
     assert "truncated" not in result.lower()
     assert len(result) > 10000
@@ -489,7 +513,7 @@ def test_review_evidence_no_truncation_by_default():
 def test_review_evidence_bounded_with_omission_note():
     """format_review_evidence_for_prompt truncates with explicit omission note when max_chars>0."""
     from ouroboros.review_evidence import format_review_evidence_for_prompt
-    big = {"has_evidence": True, "data": "x" * 10000}
+    big = {"has_evidence": True, "task_id": "task-review", "data": "x" * 10000}
     result = format_review_evidence_for_prompt(big, max_chars=500)
     assert "OMISSION NOTE" in result
     assert "truncated at 500 chars" in result
@@ -533,7 +557,7 @@ def test_summary_and_reflection_callers_use_bounded_evidence():
     """Summary and reflection prompt builders must call format_review_evidence_for_prompt with max_chars."""
     from pathlib import Path
 
-    for filename in ("ouroboros/agent_task_pipeline.py", "ouroboros/reflection.py"):
+    for filename in ("ouroboros/post_task_synthesis.py", "ouroboros/reflection.py"):
         src = Path(filename).read_text(encoding="utf-8")
         assert "format_review_evidence_for_prompt(" in src
         # Must pass max_chars argument (not rely on default 0)
@@ -841,3 +865,55 @@ def test_triad_fit_sizes_against_the_local_route(monkeypatch, tmp_path):
         "a local-only install must size the triad prompt against the local "
         "route's real window, not the provider inferred from the model text"
     )
+
+
+def test_update_letter_max_tokens_pinned():
+    """The update letter is ONE short paragraph (owner decision 2026-09-03): its LIGHT
+    one-shot budget stays 1024 and matches the ARCHITECTURE 'LLM output token budgets' row."""
+    from ouroboros.update_letter import UPDATE_LETTER_MAX_TOKENS
+
+    assert UPDATE_LETTER_MAX_TOKENS == 1024
+
+
+def test_acceptance_panels_reach_the_synthesis_prompts():
+    """AP7/F27: the post-task summariser and the reflection were told there was
+    no review evidence even when the task bought an acceptance panel — the
+    commit/advisory lens simply does not know about it. The panels ride along,
+    and the absence statement names the lens it describes."""
+    from ouroboros.review_evidence import format_review_evidence_for_prompt
+
+    panels = [{
+        "panel_id": "panel_1", "surface": "task_acceptance", "authority": "host",
+        "aggregate_signal": "DEGRADED", "transport_status": "not_dispatched",
+        "parse_status": "malformed", "superseded": False,
+        "quorum": {"required": 2, "contributed": 0, "configured": 3},
+        "reason": "slot_1:degraded_partial_source: the exact source is unavailable",
+    }]
+    out = format_review_evidence_for_prompt({}, max_chars=8000, acceptance_panels=panels)
+    assert "TASK ACCEPTANCE PANELS" in out
+    assert "no structured review evidence" not in out
+    assert "DEGRADED" in out and "not_dispatched" in out
+    assert '"required": 2' in out and '"contributed": 0' in out
+    assert "degraded_partial_source" in out
+
+    # No lens and no panels: the sentinel names WHICH evidence is absent.
+    bare = format_review_evidence_for_prompt({}, max_chars=8000)
+    assert bare == "(no commit/advisory review evidence recorded for this task)"
+
+    # Both together, and the existing bound still applies.
+    both = format_review_evidence_for_prompt(
+        {"has_evidence": True, "task_id": "task-review", "data": "x" * 10_000}, max_chars=500,
+        acceptance_panels=panels,
+    )
+    assert "OMISSION NOTE" in both
+    assert "truncated at 500 chars" in both
+
+
+def test_summary_and_reflection_callers_pass_the_acceptance_panels():
+    from pathlib import Path
+
+    # v7 relocated the summary/reflection synthesis callers out of
+    # agent_task_pipeline.py into ouroboros/post_task_synthesis.py.
+    for filename in ("ouroboros/post_task_synthesis.py", "ouroboros/reflection.py"):
+        src = Path(filename).read_text(encoding="utf-8")
+        assert "acceptance_panels=" in src, filename

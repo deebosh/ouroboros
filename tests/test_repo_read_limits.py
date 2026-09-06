@@ -76,7 +76,7 @@ def test_data_read_existing_file_still_read_verbatim(tmp_path):
 
 def test_data_read_propagates_non_filenotfound_errors(tmp_path, monkeypatch):
     import pytest
-    import ouroboros.tools.core as core_mod
+    import ouroboros.tools.core_file_tools as core_mod
     from ouroboros.tools.core import _data_read
 
     ctx = MagicMock()
@@ -98,7 +98,7 @@ def test_data_read_propagates_non_filenotfound_errors(tmp_path, monkeypatch):
 
 
 def test_data_read_toctou_race_handled_by_sentinel(tmp_path, monkeypatch):
-    import ouroboros.tools.core as core_mod
+    import ouroboros.tools.core_file_tools as core_mod
     from ouroboros.tools.core import _data_read
 
     target = tmp_path / "memory" / "racy.md"

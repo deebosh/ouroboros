@@ -130,7 +130,7 @@ def _registered_types():
     for name in (
         "supervisor/events.py",
         "supervisor/cognitive_operations.py",
-        "supervisor/chat_delivery_events.py",
+        "supervisor/events_chat_delivery.py",
         "supervisor/telemetry_events.py",
     ):
         tree = ast.parse((REPO / name).read_text(encoding="utf-8"))

@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import posixpath
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -45,8 +46,10 @@ from ouroboros.tools.review_helpers import (  # noqa: E402
     _MAX_FULL_REPO_FILE_BYTES,
     REVIEW_PROMPT_TOKEN_BUDGET,
     calibrated_input_token_limit,
+    density_probe_sample,
     load_governance_doc,
 )
+from ouroboros.shell_parse import is_absolute_path_text  # noqa: E402
 from ouroboros.utils import atomic_write_json, estimate_tokens, utc_now_iso  # noqa: E402
 from ouroboros.config import get_context_mode  # noqa: E402
 from ouroboros.provider_models import provider_for_model, provider_has_credentials  # noqa: E402
@@ -59,6 +62,7 @@ from ouroboros.reviewer_slot_config import (  # noqa: E402
     row_effort,
 )
 from ouroboros.usage_accounting import BudgetExceeded  # noqa: E402
+from ouroboros.outcomes import REASON_DEEP_SELF_REVIEW_PACK_UNFIT  # noqa: E402
 from ouroboros.triad_review import REVIEW_REPORT_CONTRACT  # noqa: E402
 
 # Output reservation inside the reviewer's 1M window (same class of fix as
@@ -68,6 +72,8 @@ from ouroboros.triad_review import REVIEW_REPORT_CONTRACT  # noqa: E402
 _DEEP_MAX_OUTPUT_TOKENS = 100_000
 _DEEP_MODEL_CONTEXT_WINDOW = 1_000_000
 _DEEP_OUTPUT_MARGIN_TOKENS = 155_000
+# The cold-start density probe (R60/R61) is the shared rung
+# ``capability_evidence.cold_start_density_probe``; the commit gate runs the same one.
 _DEEP_INPUT_TOKEN_LIMIT = min(
     REVIEW_PROMPT_TOKEN_BUDGET,
     _DEEP_MODEL_CONTEXT_WINDOW - _DEEP_MAX_OUTPUT_TOKENS - _DEEP_OUTPUT_MARGIN_TOKENS,
@@ -597,25 +603,31 @@ def _record_execution(slot: Any, usage: Dict[str, Any], *, status: str, error: s
 
 
 def _repo_relative(path: Any, repo_dir: pathlib.Path) -> str:
-    """A receipt path as a repo-relative POSIX path. Coverage hands it the
-    receipt's ``opened_path`` (the root-relative path the reader actually
-    opened — already free of the model's spelling: absolute, whitespace-padded,
-    ``repo/``-prefixed or ``/``-qualified forms all arrive as ``BIBLE.md``)
-    and, for a receipt WITHOUT one (nothing rendered), the raw spelling.
-    Absolute paths under the repository are relativized, relative ones
-    normalized — but a ``..`` component is kept AS SPELLED and so names no
-    mandatory read: the registry refuses traversal shapes before dispatch, so
-    ``a/../BIBLE.md`` delivered nothing and is never folded onto ``BIBLE.md``."""
+    """A receipt path as a repo-relative POSIX path — on EVERY host OS.
+    Coverage hands it the receipt's ``opened_path`` (the root-relative path
+    the reader actually opened — already free of the model's spelling:
+    absolute, whitespace-padded, ``repo/``-prefixed or ``/``-qualified forms
+    all arrive as ``BIBLE.md``) and, for a receipt WITHOUT one (nothing
+    rendered), the raw spelling. Absolute paths under the repository are
+    relativized, relative ones normalized — but a ``..`` component is kept AS
+    SPELLED and so names no mandatory read: the registry refuses traversal
+    shapes before dispatch, so ``a/../BIBLE.md`` delivered nothing and is
+    never folded onto ``BIBLE.md``. The POSIX contract is by construction:
+    separators are folded to ``/`` first, absolute spellings are recognized
+    for every OS (``/``, drive-letter and UNC forms — ``PurePosixPath`` alone
+    is blind to ``C:/``), and normalization is ``posixpath``'s, never
+    ``os.path``'s, whose Windows form renders ``docs\\ARCHITECTURE.md`` and
+    would never match a mandatory read."""
     text = str(path or "").replace("\\", "/")
     pure = pathlib.PurePosixPath(text)
     if ".." in pure.parts:
         return text
-    if pure.is_absolute():
+    if is_absolute_path_text(text):
         try:
             return pathlib.Path(text).resolve().relative_to(pathlib.Path(repo_dir).resolve()).as_posix()
         except (ValueError, OSError):
             return pure.as_posix()
-    return pathlib.PurePosixPath(os.path.normpath(text)).as_posix().removeprefix("./")
+    return posixpath.normpath(text).removeprefix("./")
 
 
 def _native_read_coverage(usage: Dict[str, Any], repo_dir: pathlib.Path) -> Dict[str, Dict[str, Any]]:
@@ -962,6 +974,26 @@ def _run_retrieving_review(
     return _provenance_header(delivery, model, usage, task_facts["memory"], coverage, human, incomplete=incomplete) + text, usage
 
 
+def _pack_unfit_failure(
+    drive_root: pathlib.Path, model: str, stats: Dict[str, Any], input_limit: int, deep_window: int,
+) -> Tuple[str, Dict[str, Any]]:
+    """The typed refusal for a required set that does not fit this model's
+    calibrated cap even warm. Its text is the agent's cue to ask the owner to
+    switch the ``deep_review`` row — the host never switches deliveries itself."""
+    from ouroboros.capability_evidence import resolve_review_token_density
+
+    density, source = resolve_review_token_density(drive_root, model)
+    return _failed(
+        "❌ Deep self-review pack unfit: the one-packet review does not fit this repository on "
+        f"{model} — {stats['skipped'][0]}. Calibrated input cap ~{input_limit:,} tokens "
+        f"({deep_window:,}-token window, token density {density:.2f} {source}). "
+        "No automatic fallback runs: ask the owner to switch the `deep_review` reviewer row "
+        "(Settings → Review lanes) to a retrieving delivery — a configured subagent (native tool "
+        "rounds) or an agent session — or to a model with a larger context window.",
+        reason_code=REASON_DEEP_SELF_REVIEW_PACK_UNFIT,
+    )
+
+
 def _run_packed_review(
     repo_dir: pathlib.Path,
     drive_root: pathlib.Path,
@@ -1001,6 +1033,7 @@ def _run_packed_review(
         context_window=deep_window,
         output_reserve=deep_output_reserve,
         tokenizer_margin=deep_margin,
+        drive_root=drive_root,
     ))
 
     emit_progress("Building generated review atlas and memory pack...")
@@ -1010,6 +1043,37 @@ def _run_packed_review(
         fixed_prompt_tokens=estimate_tokens(_SYSTEM_PROMPT),
         input_token_limit=input_limit,
     )
+    if not pack_text and stats.get("skipped") and stats.get("context_manifest"):
+        # The required set did not fit under the calibrated cap. Cold store →
+        # one probe (the shared rung; a slice of the real pack, a few output
+        # tokens, through chat_observed), one rebuild under the recalibrated
+        # cap; still unfit → the typed refusal that asks the owner to switch
+        # the row (never a fallback). BudgetExceeded propagates to the agent's
+        # budget rail exactly like the review send itself.
+        from ouroboros.capability_evidence import cold_start_density_probe
+
+        if cold_start_density_probe(
+            drive_root, llm, emit_progress, model,
+            density_probe_sample(repo_dir, stats["context_manifest"]),
+            task_id="deep_self_review", call_type="deep_self_review_density_probe",
+            source="deep_review_cold_start_probe",
+        ) == "measured":
+            input_limit = max(0, calibrated_input_token_limit(
+                model,
+                context_window=deep_window,
+                output_reserve=deep_output_reserve,
+                tokenizer_margin=deep_margin,
+                drive_root=drive_root,
+            ))
+            emit_progress(f"Rebuilding the pack under the recalibrated input cap (~{input_limit:,} tokens)...")
+            pack_text, stats = build_review_pack(
+                repo_dir,
+                drive_root,
+                fixed_prompt_tokens=estimate_tokens(_SYSTEM_PROMPT),
+                input_token_limit=input_limit,
+            )
+        if not pack_text and stats.get("skipped") and stats.get("context_manifest"):
+            return _pack_unfit_failure(drive_root, model, stats, input_limit, deep_window)
     if not pack_text and stats.get("skipped"):
         return _failed(f"❌ Failed to build review pack: {stats['skipped'][0]}", reason_code="deep_self_review_error")
 

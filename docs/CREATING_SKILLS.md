@@ -89,6 +89,9 @@ permissions: [net, tool, route, widget, read_settings, companion_process, superv
 conflicts: [legacy-weather]            # optional incompatible installed skill names
 env_from_settings: [OPENROUTER_API_KEY]                  # core keys require an owner grant
 when_to_use: User asks for the weather forecast.
+model_experience:                   # optional prose (CPL-7); a bare string is also accepted
+  what_model_sees: One weather tool joins the tool list; results come back as compact JSON.
+  token_effect: Small fixed schema cost per round while enabled.
 timeout_sec: 60                     # default 60, hard cap 300
 companion_processes:                # optional; PLURAL, and needs the companion_process permission
   - name: demo_worker               # see "Declaring a companion process"
@@ -142,6 +145,20 @@ dash, underscore, or dot; at most 32 entries). If either enabled skill names
 the other, both readiness and extension loading fail closed with a typed
 conflict until the owner disables one. Ouroboros never resolves a conflict by
 automatically disabling, deleting, or moving either payload.
+
+`model_experience` is an optional prose section describing the skill from the
+model's point of view: `what_model_sees` (what the skill adds to the model's
+context — tools, sections, attachments) and `token_effect` (roughly what that
+costs and when it is loaded). A bare string is shorthand for
+`what_model_sees`. The prose travels verbatim (bounded) to the model-visible
+surfaces — the `list_skills` JSON and the "Installed Skills" context section —
+so write it for the model, not for the human reviewer. Unknown keys or
+non-string values are refused at parse time.
+
+Manifest refusals teach: every `SkillManifestError` carries the problem plus,
+where the parser knows the repair, a `fix_hint` rendered into the message
+(`... — fix: ...`), so a refused registration tells you how to fix the
+manifest instead of only what was wrong.
 
 ## Lifecycle: install → review → enable → execute
 
@@ -361,9 +378,13 @@ dropped in silence.
 When you are writing a skill (or repairing one in heal mode),
 `skill_preflight` runs cheap, offline syntax validators on the
 payload — in-process Python `compile()` for `.py` files (no
-`__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs`,
+`__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs` (a
+declared module-widget entry is instead parsed as a classic script, the
+grammar the widget frame runs it in, so top-level `import`/`export` in the
+entry fails preflight),
 `bash -n` for `.sh`/`.bash`, plus a manifest parse, explicit
-entry/script existence checks, and static widget render-schema
+entry/script existence checks (including a module widget's `render.entry`
+existence and containment), and static widget render-schema
 validation. It validates manifest `ui_tab.render` plus actual
 `register_ui_tab` and `register_settings_section` calls in `plugin.py`
 through the same runtime validator as `extension_loader`. The static
@@ -374,6 +395,10 @@ interpret eval, comprehensions, or merges. A schema it can resolve but that is
 invalid fails preflight; an unresolved dynamic registration is recorded as
 `verified=false`, `skipped=true`, `skip_reason=dynamic_ui_schema` with its source
 reference, while runtime registration remains the final fail-closed validator.
+One frozen compatibility exception is intentionally asymmetric: deterministic
+preflight reports an iframe declaration with an omitted `route` as invalid,
+while runtime registration preserves that route-less shape so an existing
+extension still loads (the card remains not-supported rather than executable).
 It does not call any LLM and does not mutate review state, so the agent can
 iterate without burning review tokens.
 
@@ -661,6 +686,22 @@ The recommended closed-loop workflow is:
 The frozen ABI is documented in
 [`ouroboros/contracts/plugin_api.py`](../ouroboros/contracts/plugin_api.py).
 This section shows the practical shape.
+
+Extensions declare the PluginAPI generation they bind against in the manifest
+(PluginAPI 2.0, ABI 7.0):
+
+```yaml
+plugin_api: "2.0"            # major strict; minor = required minimum
+# or, with required capabilities (closed set, validated per execution mode):
+# plugin_api:
+#   version: "2.0"
+#   capabilities: [register_tool, subscribe_event]
+```
+
+A payload without the field binds the legacy "1.3" generation by
+construction: an already-reviewed payload keeps loading on its existing
+hash-bound review PASS, but a NEW review PASS (LLM review, owner attestation,
+or native-seed trust) is refused until the field is declared.
 
 ```python
 def register(api):

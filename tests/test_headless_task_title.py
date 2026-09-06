@@ -14,13 +14,14 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from ouroboros.gateway.tasks import _admission_names, api_tasks_create
+from ouroboros.gateway.tasks import api_tasks_create
+from ouroboros.project_naming import admission_names
 from ouroboros.projects_registry import PROJECT_NAME_MAX
 from ouroboros.task_results import load_task_result
 
 
 def test_an_explicit_title_is_authorship_and_fills_both_slots():
-    assert _admission_names({"title": "Audit the report"}, "ignored") == (
+    assert admission_names({"title": "Audit the report"}, "ignored") == (
         "Audit the report", "Audit the report",
     )
 
@@ -32,14 +33,14 @@ def test_a_derived_name_is_display_only_and_leaves_title_empty():
     there would outrank a real name coined later. The derivation fills only the
     slot the card, history replay and the Project lifecycle row actually read.
     """
-    title, suggested = _admission_names({}, "Fix the failing test\n\nmore detail")
+    title, suggested = admission_names({}, "Fix the failing test\n\nmore detail")
     assert title == ""
     assert suggested == "Fix the failing test"
 
 
 def test_markdown_is_stripped_before_the_first_line_is_taken():
     # The live incident: the Main lifecycle row read "Project › # Задача: ...".
-    title, suggested = _admission_names(
+    title, suggested = admission_names(
         {}, "# Задача: жёсткая многомодельная прожарка отчёта\n\nтело запроса",
     )
     assert title == ""
@@ -47,13 +48,13 @@ def test_markdown_is_stripped_before_the_first_line_is_taken():
 
 
 def test_a_long_first_line_is_capped_like_a_project_name():
-    _title, suggested = _admission_names({}, "https://example.com/" + "x" * 400)
+    _title, suggested = admission_names({}, "https://example.com/" + "x" * 400)
     assert len(suggested) == PROJECT_NAME_MAX
     assert suggested.endswith("…")
 
 
 def test_an_empty_request_never_invents_a_name():
-    assert _admission_names({}, "") == ("", "")
+    assert admission_names({}, "") == ("", "")
 
 
 @pytest.fixture()

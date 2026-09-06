@@ -998,6 +998,7 @@ def test_ui_smoke_collapsed_activity_line_named_vs_unnamed(
     task_results = data_dir / "task_results"
     task_results.mkdir(parents=True, exist_ok=True)
     (task_results / "named-act.json").write_text(json.dumps({
+        "_schema_version": 1,
         "task_id": "named-act",
         "status": "completed",
         "suggested_name": "Data Analysis",
@@ -1331,6 +1332,7 @@ def test_ui_smoke_chat_chronology_reconnect_and_plain_answer_marker(direct_serve
                 task_results = data_dir / "task_results"
                 task_results.mkdir(parents=True, exist_ok=True)
                 (task_results / "chronology-progress-only.json").write_text(json.dumps({
+                    "_schema_version": 1,
                     "task_id": "chronology-progress-only",
                     "status": "completed",
                     "outcome_axes": {
@@ -3676,6 +3678,7 @@ def test_ui_smoke_cancel_run_button_eligibility_and_cancelled_state(direct_serve
     task_results = data_dir / "task_results"
     task_results.mkdir(parents=True, exist_ok=True)
     (task_results / "gone-root.json").write_text(json.dumps({
+        "_schema_version": 1,
         "task_id": "gone-root",
         "status": "cancelled",
         "reason_code": "cancelled",

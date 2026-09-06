@@ -223,7 +223,12 @@ export function readCompletionAnswer({ status = 0, ok = false, parsed = false, d
                 code: String(body.code || ''),
                 detail: String(body.detail || ''),
                 canSkip: Boolean(body.can_skip),
-                saved: Boolean(body.saved),
+                // Tri-state, as the server sends it: `null` is the typed 503
+                // `settings_save_timeout` — the save body kept running in the
+                // server past its bound, so whether the bytes landed is
+                // genuinely UNKNOWN. Collapsing it to `false` would offer a
+                // blind re-save over a transaction that may already be on disk.
+                saved: body.saved === null ? null : Boolean(body.saved),
                 // `post_commit_failed` is what the server actually sends (see
                 // the gateway contract); `stage` was a name this reader made up,
                 // so a real post-commit envelope parsed to '' and the owner lost
@@ -270,20 +275,30 @@ export function completionFailureNotice(error) {
     // escape hatch is only offered when nothing is on disk — once settings
     // exist, "finish without agent defaults" would be a second write, not an
     // alternative to the first.
+    //
+    // `saved === null` is the third state (503 `settings_save_timeout`): the
+    // save is still running in the server, so neither "written" nor "nothing
+    // saved" is true yet. The wizard offers "Check status" for that case
+    // instead of a retry, which would be a second write over an unknown first.
     const message = String(error?.message || error || 'Failed to save onboarding settings.');
     const detail = String(error?.detail || '').trim();
-    const saved = Boolean(error?.saved);
+    const saved = error?.saved === null ? null : Boolean(error?.saved);
     const parts = [message];
     if (detail) parts.push(detail);
     if (saved) {
         parts.push('Your settings WERE written'
             + `${error?.stage ? ` — the step that failed afterwards was ${String(error.stage)}` : ''}`
             + '. Restart Ouroboros to pick them up rather than filling this in again.');
+    } else if (saved === null) {
+        parts.push('Whether your settings were saved is unknown — the save is still '
+            + 'running in the server. Use "Check status" to see whether it landed '
+            + 'before finishing setup again.');
     }
     return {
         code: String(error?.code || ''),
         saved,
-        canSkip: Boolean(error?.canSkip) && !saved,
+        saveUnknown: saved === null,
+        canSkip: Boolean(error?.canSkip) && saved === false,
         text: parts.join(' — '),
     };
 }

@@ -5,12 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import pathlib
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
 
 from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, is_a2a_chat_id
 from ouroboros.gateway._helpers import (
@@ -18,6 +17,8 @@ from ouroboros.gateway._helpers import (
     coerce_int,
     read_rotated_jsonl_entries,
 )
+from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint  # noqa: F401 — historical import path (router)
+from ouroboros.cost_projection import carry_cost_meta
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
 from ouroboros.subagent_messages import SUBAGENT_MESSAGE_FIELDS, subagent_message_meta
@@ -47,22 +48,6 @@ _LINEAGE_CAP = 300
 # quota the newest segments cannot satisfy is an "archive_floor" truncation.
 _ARCHIVE_BACKFILL_CAP = 3
 
-_ACCOUNTING_SUMMARY_FIELDS = (
-    "settled_usd",
-    "confirmed_usd",
-    "estimated_usd",
-    "reserved_usd",
-    "unresolved_upper_bound_usd",
-    "accounted_usd",
-    "unknown_unmetered",
-    "cost_final",
-    # `cost_final`'s DISCLOSED CAUSE travels with the flag it explains — without it
-    # the client's "Pending (N open)" text could never render (costs.js reads
-    # `accounting.non_final_rows`), so the reason for a non-final cost never
-    # reached the owner at all.
-    "non_final_rows",
-    "attempt_counts",
-)
 
 _PROGRESS_META_FIELDS = (
     "ephemeral_decision",
@@ -136,63 +121,6 @@ def _stored_chat_id(value: Any, default: int = 1) -> int:
         return int(default)
 
 
-def _compat_cost_bucket(bucket: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "cost": round(float(bucket.get("settled_usd") or 0.0), 6),
-        "calls": int(bucket.get("physical_calls") or 0),
-        # Keep the compatibility tables honest about rows whose settled dollar
-        # amount is zero but whose accounting is still open or undisclosed.
-        "unknown_unmetered": int(bucket.get("unknown_unmetered") or 0),
-        "non_final_rows": int(bucket.get("non_final_rows") or 0),
-        "cost_final": bool(bucket.get("cost_final")),
-        "prompt_tokens": int(bucket.get("prompt_tokens") or 0),
-        "completion_tokens": int(bucket.get("completion_tokens") or 0),
-        "cached_tokens": int(bucket.get("cached_tokens") or 0),
-        "cache_write_tokens": int(bucket.get("cache_write_tokens") or 0),
-        "prompt_cache_ttls": dict(bucket.get("prompt_cache_ttls") or {}),
-    }
-
-
-def _compat_cost_groups(
-    groups: Dict[str, Dict[str, Any]],
-    unattributed: Dict[str, Any],
-    *,
-    group_key: Optional[Callable[[str], str]] = None,
-) -> Dict[str, Dict[str, Any]]:
-    result: Dict[str, Dict[str, Any]] = {}
-    for name, raw_bucket in groups.items():
-        if not (
-            int(raw_bucket.get("physical_calls") or 0)
-            or int(raw_bucket.get("unknown_unmetered") or 0)
-            or float(raw_bucket.get("accounted_usd") or 0.0)
-        ):
-            continue
-        key = group_key(str(name)) if group_key else str(name)
-        source = _compat_cost_bucket(raw_bucket)
-        if key not in result:
-            result[key] = source
-            continue
-        target = result[key]
-        for field in (
-            "cost", "calls", "unknown_unmetered", "non_final_rows",
-            "prompt_tokens", "completion_tokens",
-            "cached_tokens", "cache_write_tokens",
-        ):
-            target[field] += source[field]
-        target["cost_final"] = target["cost_final"] and source["cost_final"]
-        for ttl, count in source["prompt_cache_ttls"].items():
-            target["prompt_cache_ttls"][ttl] = int(target["prompt_cache_ttls"].get(ttl, 0)) + int(count)
-    if (
-        int(unattributed.get("physical_calls") or 0)
-        or int(unattributed.get("unknown_unmetered") or 0)
-        or float(unattributed.get("accounted_usd") or 0.0)
-    ):
-        result["unattributed"] = _compat_cost_bucket(unattributed)
-    for bucket in result.values():
-        bucket["cost"] = round(float(bucket["cost"]), 6)
-    return dict(sorted(result.items(), key=lambda item: item[1]["cost"], reverse=True))
-
-
 def _project_history_context(
     data_dir: pathlib.Path,
     thread_id: int,
@@ -264,81 +192,6 @@ def _user_annotation(
     }
 
 
-def make_cost_breakdown_endpoint(data_dir: pathlib.Path):
-    async def api_cost_breakdown(_request: Request) -> JSONResponse:
-        """Return ledger-derived cost and physical-attempt breakdowns."""
-        try:
-            from ouroboros.pricing import infer_model_category
-            from ouroboros.usage_accounting import ensure_legacy_imported, usage_breakdown
-
-            ensure_legacy_imported(data_dir)
-            breakdown = usage_breakdown(data_dir)
-            unattributed = dict(breakdown.get("unattributed") or {})
-            by_model_raw = dict(breakdown.get("by_model") or {})
-            try:
-                from supervisor.state import TOTAL_BUDGET_LIMIT
-
-                limit = float(TOTAL_BUDGET_LIMIT or 0.0)
-            except (ImportError, TypeError, ValueError):
-                limit = 0.0
-            if limit <= 0 and "TOTAL_BUDGET" in os.environ:
-                try:
-                    limit = max(0.0, float(os.environ.get("TOTAL_BUDGET") or 0.0))
-                except (TypeError, ValueError):
-                    limit = 0.0
-            accounting = {field: breakdown.get(field) for field in _ACCOUNTING_SUMMARY_FIELDS}
-            accounting.update({
-                "available": True,
-                "authority": "physical_attempt_ledger",
-                "limit_usd": round(limit, 6),
-                "remaining_known_usd": (
-                    round(max(0.0, limit - float(breakdown.get("accounted_usd") or 0.0)), 6)
-                    if limit > 0
-                    else None
-                ),
-            })
-            return JSONResponse({
-                # Compatibility fields now project the physical-attempt ledger;
-                # events.jsonl is import evidence, never a second cost authority.
-                "total_cost": round(float(breakdown.get("settled_usd") or 0.0), 6),
-                "total_calls": int(breakdown.get("physical_calls") or 0),
-                "total_prompt_tokens": int(breakdown.get("prompt_tokens") or 0),
-                "total_completion_tokens": int(breakdown.get("completion_tokens") or 0),
-                "total_cached_tokens": int(breakdown.get("cached_tokens") or 0),
-                "total_cache_write_tokens": int(breakdown.get("cache_write_tokens") or 0),
-                "prompt_cache_ttls": dict(breakdown.get("prompt_cache_ttls") or {}),
-                "by_model": _compat_cost_groups(by_model_raw, dict(unattributed.get("model") or {})),
-                "by_api_key": _compat_cost_groups(
-                    dict(breakdown.get("by_provider") or {}),
-                    dict(unattributed.get("provider") or {}),
-                ),
-                "by_model_category": _compat_cost_groups(
-                    by_model_raw,
-                    dict(unattributed.get("model") or {}),
-                    group_key=infer_model_category,
-                ),
-                "by_task_category": _compat_cost_groups(
-                    dict(breakdown.get("by_category") or {}),
-                    dict(unattributed.get("category") or {}),
-                ),
-                "accounting": accounting,
-                "unattributed": unattributed,
-            })
-        except Exception:
-            log.exception("Physical-attempt accounting unavailable")
-            return JSONResponse({
-                "error": "Physical-attempt accounting unavailable",
-                "accounting": {
-                    "available": False,
-                    "authority": "physical_attempt_ledger",
-                    "cost_final": False,
-                    "error_code": "ledger_unavailable",
-                },
-            }, status_code=503)
-
-    return api_cost_breakdown
-
-
 def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
     """Binding-backed origin rows for a Project thread (v6.73.0 lens fallback).
 
@@ -378,7 +231,6 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
             "sender_session_id": "",
             "client_message_id": cmid,
             "task_id": "",
-            "telegram_chat_id": 0,
             "origin_projected": True,
         })
         if len(synthesized) >= _ORIGIN_SYNTH_CAP:
@@ -398,7 +250,7 @@ def _origin_fallback_rows(data_dir, thread_id: int, human_tail: list) -> list:
                     "is_progress": False, "system_type": "origin_omission",
                     "markdown": False, "source": "", "sender_label": "",
                     "sender_session_id": "", "client_message_id": "",
-                    "task_id": "", "telegram_chat_id": 0,
+                    "task_id": "",
                 })
             break
     return synthesized
@@ -488,7 +340,12 @@ def _copy_task_summary_metadata(rec: Dict[str, Any], entry: Dict[str, Any]) -> N
     # written by agent_task_pipeline; replay it so a reload still shows cost.
     # _annotate_terminal_task_truth later OVERRIDES these with the persisted
     # task_results values when the result file survives (row = fallback only).
-    for key in _TASK_COST_META_FIELDS:
+    # ABI-3: CONVERTED, not copied — a stored legacy row's pair resolves
+    # deprecated-wins and replays under the honest names only.
+    rec.update(carry_cost_meta(entry))
+    # Live-card outcome axes ride the summary row too (the pruned-result
+    # fallback); persisted task_results values still override them below.
+    for key in ("outcome_phase", "outcome_final"):
         if key in entry:
             rec[key] = entry[key]
 
@@ -546,6 +403,7 @@ def _annotate_terminal_task_truth(
     the pre-computed set — zero extra reads."""
 
     try:
+        from ouroboros.project_dialogue import outcome_phase
         from ouroboros.task_status import FINAL_STATUSES
 
         cache = result_cache if result_cache is not None else {}
@@ -599,6 +457,7 @@ def _annotate_terminal_task_truth(
                 terminal_status_by_task[task_id] = status
                 terminal_truth: Dict[str, Any] = {
                     "outcome_axes": normalize_outcome_axes(result),
+                    "outcome_phase": outcome_phase(result, {}), "outcome_final": True,
                 }
                 if result.get("reason_code"):
                     terminal_truth["reason_code"] = str(result.get("reason_code") or "")
@@ -608,10 +467,10 @@ def _annotate_terminal_task_truth(
                 # v6.82 P1: attach the persisted terminal cost truth. Applied via
                 # message.update() below, so it OVERRIDES any row-embedded
                 # task_summary snapshot values (the result file is authoritative;
-                # the row snapshot is the pruned-result fallback).
-                for key in _TASK_COST_META_FIELDS:
-                    if key in result:
-                        terminal_truth[key] = result[key]
+                # the row snapshot is the pruned-result fallback). ABI-3:
+                # CONVERTED, not copied — a stored legacy result's pair
+                # resolves deprecated-wins and leaves under the honest names.
+                terminal_truth.update(carry_cost_meta(result))
                 terminal_truth_by_task[task_id] = terminal_truth
                 envelope = result.get("subagent_envelope")
                 evidence = (
@@ -884,7 +743,10 @@ def _collect_chat_rows(
                 "sender_session_id": str(entry.get("sender_session_id", "")),
                 "client_message_id": str(entry.get("client_message_id", "")),
                 "task_id": str(entry.get("task_id", "")),
-                "telegram_chat_id": int(entry.get("telegram_chat_id") or 0),
+                # ABI-3: the deprecated ``telegram_chat_id`` twin is no longer
+                # re-emitted; legacy chat.jsonl rows carrying it stay readable
+                # (the key is simply ignored), and ``transport`` is the
+                # provenance surface.
             }
             if rec["system_type"] in {"project_started", "project_completion_summary"}:
                 # Read-side plain normalization for lifecycle rows persisted
@@ -1047,6 +909,10 @@ def _collect_progress_rows(
             for field in _PROGRESS_META_FIELDS:
                 if field in entry:
                     rec[field] = entry[field]
+            # ABI-3: the whitelist passes only the honest cost names; a stored
+            # legacy row's pair is CONVERTED here (deprecated-wins) instead of
+            # being replayed under the retired spelling or silently dropped.
+            rec.update(carry_cost_meta(entry))
             combined.append(rec)
     except Exception as exc:
         log.warning("Failed to read progress log: %s", exc)
