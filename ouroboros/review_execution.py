@@ -20,10 +20,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional
 
-from ouroboros.review_cross_check import (  # noqa: F401 — re-exported: tests import from here
-    _cross_check_findings,
-    _identifier_present_in_repo,
-)
 from ouroboros.review_slot_cancel import (  # noqa: F401 — re-exported seam surface
     ReviewSessionSucceededResultUnavailable,
     _cancel_honesty_clause,
@@ -748,7 +744,7 @@ def run_delegated_review_session(
     from ouroboros import delegate_custody as custody
     from ouroboros.claudexor_daemon import ensure_owned_gateway
     from ouroboros.gateways.claudexor import (
-        WINDOW_EXHAUSTED_CODES, ClaudexorSubscriptionWindowExhausted, ClaudexorUnavailable,
+        WINDOW_EXHAUSTED_CODES, ClaudexorSubscriptionWindowExhausted, ClaudexorUnavailable, final_attempt_facts,
     )
     from ouroboros.subagents import delegated_run_shape, route_health
     from ouroboros.usage_accounting import current_usage_scope
@@ -972,6 +968,7 @@ def run_delegated_review_session(
             raise
         settlement = custody.settle_run(custody_drive, gateway, entry, detail)
         summary = custody.summary_of(detail)
+        observed = final_attempt_facts(detail, run_id)
         run_state = str(summary.get("state") or "")
         if run_state != "succeeded":
             failure = summary.get("failure") if isinstance(summary.get("failure"), dict) else {}
@@ -991,7 +988,7 @@ def run_delegated_review_session(
             from ouroboros.review_thread_continuity import review_thread_receipt as receipt_for
             thread_receipt = receipt_for(gateway, thread_id, run_id, turn_id,
                 expected_profile=str(getattr(route, "profile_id", "") or ""),
-                applied_profile=str((summary.get("authRoute") or {}).get("profileId") or ""))
+                applied_profile=observed.get("profile_id", ""))
             turn_id = str(thread_receipt.get("turn_id") or turn_id)
         state.pop("pending_invocation_id", None)
         state.pop("delegated_run_id", None)
@@ -1008,15 +1005,14 @@ def run_delegated_review_session(
             "idempotent_recovery": recovering,
             "settlement": settlement,
             "route_id": str(entry.route_id),
-            # Engine receipt of the used pool; pinned-route drift is disclosed (D4).
-            "effective_route_ids": [
-                str(h) for h in (summary.get("harnesses") or []) if str(h)
-            ],
-            "model": str(summary.get("model") or ""),
+            # One final attempt, never the requested pool or a mixed summary route.
+            "effective_route_ids": [observed["harness_id"]] if observed.get("harness_id") else [],
+            "observed_attempt": observed,
+            "model": observed.get("model", ""),
             "spend": spend,
             "spend_estimated": estimated,
             # D22/D29 applied facts are verbatim telemetry, never inferred.
-            "applied_profile": str((summary.get("authRoute") or {}).get("profileId") or ""),
+            "applied_profile": observed.get("profile_id", ""),
             "auth_route_receipt": summary.get("authRoute") or {},
             # Only effectiveAccess witnesses applied access; request echo is insufficient.
             "applied_access": str(summary.get("effectiveAccess") or ""),
@@ -1216,7 +1212,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             started = bool(self._run_id or getattr(exc, "delegated_run_started", False))
             if started and not self._session_usage_observed and session_usage_once(self._run_id):
                 self._observe_usage({
-                    "provider": "claudexor", "resolved_model": str(self.assignment.slot.model or ""),
+                    "provider": "claudexor", "resolved_model": "",
                     "delegated_run_started": True, "delegated_run_id": self._run_id, "cost": None,
                 })
                 self._session_usage_observed = True
@@ -1364,7 +1360,9 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
             "provider": "claudexor",
             "resolved_model": facts["model"],
             "delegated_run_id": facts["run_id"],
-            "delegated_route": facts["route_id"],
+            "delegated_route": effective_routes[0] if len(effective_routes) == 1 else "",
+            "requested_route": facts["route_id"],
+            "observed_attempt": facts.get("observed_attempt") or {},
             "review_thread_id": str(facts.get("thread_id") or ""),
             "review_turn_id": str(facts.get("turn_id") or ""),
             "review_thread_receipt": facts.get("thread_receipt") or {},
@@ -1418,21 +1416,11 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
 
     def _verdict_result(self, force_extraction: bool = False) -> ReviewAttemptResult:
         text = self._raw_transcript or ""
-        # Cross-check: when the request carries a session_root, pass it so
-        # critical findings whose factual claims cannot be substantiated against
-        # the actual code are downgraded to advisory before the obligation gate
-        # sees them. Empty / None disables it (every non-session caller).
-        session_root = (
-            str(getattr(self.assignment.request, "session_root", "") or "")
-            if self.assignment is not None
-            else ""
-        )
         canonical, method, extraction_usage = canonicalize_session_verdict(
             text,
             conformance_passed=self._conformance_passed and not force_extraction,
             contract=self._output_contract(),
             llm=self.llm,
-            repo_root=session_root or None,
             deadline_at=getattr(self.assignment.request, "deadline_at", "") or "",
             transport_timeout_sec=getattr(self.assignment.slot, "transport_timeout_sec", None),
             shape=review_output_shape(self.assignment.request.surface),
@@ -1457,12 +1445,6 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
                 ),
                 "reason": "extraction_incomplete_transcript_exceeds_bound",
             }]
-        # ibl-01b310c0ce18: promote the cross_check audit to top-level usage so
-        # it survives the downstream merge (schema/strict branches return it in
-        # `extraction_usage`; the light branch keeps its own under `extraction`).
-        cc_audit = extraction_usage.get("cross_check")
-        if cc_audit and not usage.get("cross_check"):
-            usage["cross_check"] = cc_audit
         usage["verdict_method"] = method
         # P1: the cognitive artifact is the SESSION's own output, and canonicalization
         # legitimately destroys it — a schema-conformant `{"findings": []}` becomes `[]`
