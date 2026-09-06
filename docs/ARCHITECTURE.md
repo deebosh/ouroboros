@@ -1128,7 +1128,8 @@ for words or identifiers.
 ### Delegated subagents (Claudexor transport + the nanny)
 
 Ordinary delegation requests no extra engine review panel; new ordinary runs on
-the pinned Claudexor 3.9.8 default to no panel. The start receipt's `engine_version`
+Claudexor 3.9.8+ default to no panel. This is the behavior's version boundary,
+not a second release pin. The start receipt's `engine_version`
 is the handshaken serving version, distinct from the release pin. Older serving
 engines and already-recorded runs can retain historical review behavior. Engine
 review outcome, execution success, the parent's integration decision and Ouroboros
