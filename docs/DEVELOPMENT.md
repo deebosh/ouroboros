@@ -1602,7 +1602,10 @@ both critical. The imperatives:
   manifest observation is a preflight, not a lease. `subagents.route_health`
   is the ONE route reader for every consumer; quota readers project one
   `ClaudexorGateway.quota_state()` envelope
-  (`tests/test_available_subagents_runtime.py`). Substrate facts and the
+  (`tests/test_available_subagents_runtime.py`). A fully-used ratio without a
+  valid future reset must neither refuse dispatch nor certify available quota
+  in the UI; retain explicit active cooldowns and leave final admission with
+  the engine. Substrate facts and the
   packet's per-skill lifecycle facts are VISIBILITY ONLY — acceptance judges
   quality, never the execution route — and an unreadable custody log reads
   `evidence_read_failed`, never a proven-empty substrate.
