@@ -481,6 +481,12 @@ filtered down to the answer.
   Task-event v2 cursors advance after each consumed row; preserve physical byte
   positions through rotation and disclose replay/gaps rather than resetting an
   unavailable cursor. Keep the legacy GET rank contract separate.
+  Bound native handle lifetime independently of network backpressure: close
+  each JSONL read buffer before yielding its per-row cursors. Stamp creation
+  only where the host allocates a fresh id, before preparation; neither a
+  supplied id nor a legacy/final result timestamp proves task creation.
+  Pin each source's logical EOF until the pass ends; later appends belong to
+  the next pass, without truncating history or imposing an event-count cap.
 
 Enforcement: Repo Commit Checklist item 24 (advisory) triggers on diffs that
 add or change an endpoint/poller/subscription/timer or read a growing store;

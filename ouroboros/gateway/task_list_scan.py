@@ -8,6 +8,7 @@ selection; selected full results still pass the existing admission reader.
 from __future__ import annotations
 
 import os
+import logging
 import pathlib
 from typing import Dict, List
 
@@ -91,7 +92,11 @@ def _raw_sorted_result_names(results_dir: pathlib.Path) -> tuple[List[str], List
     is re-read on the next request (and the quarantine primitive itself
     re-checks under the row's write lock — a row a concurrent writer just
     made admissible is KEPT, never moved)."""
-    rows, malformed = raw_result_facts(results_dir)
+    try:
+        rows, malformed = raw_result_facts(results_dir)
+    except OSError:
+        logging.getLogger(__name__).warning("Task-result directory is unreadable: %s", results_dir, exc_info=True)
+        return [], []  # preserve the legacy list caller's fail-soft return
     decorated = [(row["ts"], name) for name, row in rows.items()]
     decorated.sort(reverse=True)  # "" (no ts) sorts after every real timestamp
     return [name for _ts, name in decorated], malformed

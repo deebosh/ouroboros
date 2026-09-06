@@ -757,72 +757,70 @@ def jsonl_archive_segments(
 @contextlib.contextmanager
 def jsonl_chain_handles(
     path: pathlib.Path, *, strict: bool = False,
-) -> Iterator[List[Tuple[pathlib.Path, Any]]]:
-    """Open a rotated JSONL store's whole chain for ONE consistent read.
+    start_offset: Optional[int] = None, max_segments: Optional[int] = None,
+    include_total: bool = False,
+) -> Iterator[List[Tuple[pathlib.Path, Any]] | Tuple[List[Tuple[pathlib.Path, Any]], int]]:
+    """Open a rotated JSONL store for one consistent read, whole-chain by default.
 
     Yields ``[(path, binary_handle), ...]`` oldest→newest with the live file
-    last. The live file is opened FIRST, then the archive is enumerated: a
-    rotation racing this read renames the just-opened file into the archive,
-    where inode identity dedups it — so every durable row as of the open
-    instant is seen exactly once, in chronological order, whichever side of
-    the rename the reader lands on. (On Windows the rotator's ``os.replace``
-    fails while the handle is open, so the race cannot occur at all.)
-    By default unopenable segments are skipped (fail-soft readers own their
-    own probes). ``strict=True`` raises :class:`JsonlChainUnreadable` instead —
-    an absent live file, or a segment that vanished between enumeration and
-    stat, stays benign (rotation never deletes, so absence is positively
-    empty), but anything UNREADABLE is an incomplete view. Handles are closed
-    on exit.
+    last. Open live FIRST, then enumerate archives and dedup its inode after
+    a racing rename; on Windows the open handle prevents that rename.
+    ``start_offset`` counts all chain bytes: consumed segments are stat'd but
+    not opened, and the first returned handle is positioned at that offset.
+    ``max_segments`` bounds returned handles (plus the pinned live handle).
+    ``include_total`` returns ``(handles, total_bytes)`` so bounded callers
+    can pin a logical EOF for a pass independently of later appends/rotation.
+    Offsets beyond the complete chain fail rather than restart at zero.
+    Missing live files or segments lost before stat are benign; unreadable
+    enumeration/stat/open raises JsonlChainUnreadable in strict mode and is
+    skipped otherwise. Consumed prefix segments need only stat, not read access.
+    All handles close on context exit, including errors and early returns.
     """
     path = pathlib.Path(path)
     handles: List[Tuple[pathlib.Path, Any]] = []
-    live_handle = None
-    try:
+    live_handle = live_stat = None
+    with contextlib.ExitStack() as stack:
         try:
-            live_handle = path.open("rb")
+            live_handle = stack.enter_context(path.open("rb"))
+            live_stat = os.fstat(live_handle.fileno())
         except FileNotFoundError:
-            live_handle = None
+            pass
         except OSError as exc:
             if strict:
-                raise JsonlChainUnreadable(f"cannot open {path}: {exc}") from exc
-            live_handle = None
-        live_id = None
-        if live_handle is not None:
-            try:
-                stat = os.fstat(live_handle.fileno())
-                live_id = (stat.st_dev, stat.st_ino)
-            except OSError as exc:
-                if strict:
-                    raise JsonlChainUnreadable(f"cannot stat {path}: {exc}") from exc
-                live_id = None
-        for segment in jsonl_archive_segments(path, strict=strict):
-            try:
-                seg_stat = segment.stat()
-            except FileNotFoundError:
+                raise JsonlChainUnreadable(f"cannot open or stat {path}: {exc}") from exc
+        total = 0
+        for segment in [*jsonl_archive_segments(path, strict=strict), path]:
+            if segment == path:
+                if live_handle is None:
+                    continue
+                stat = live_stat
+            else:
+                try:
+                    stat = segment.stat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    if strict:
+                        raise JsonlChainUnreadable(f"cannot stat {segment}: {exc}") from exc
+                    continue
+                if live_stat is not None and (stat.st_dev, stat.st_ino) == (live_stat.st_dev, live_stat.st_ino):
+                    continue  # the pinned live handle IS this rotated segment
+            start, total = total, total + (stat.st_size if stat is not None else 0)
+            if start_offset is not None and total <= start_offset:
                 continue
-            except OSError as exc:
-                if strict:
-                    raise JsonlChainUnreadable(f"cannot stat {segment}: {exc}") from exc
+            if max_segments is not None and len(handles) >= max_segments:
                 continue
-            if live_id is not None and (seg_stat.st_dev, seg_stat.st_ino) == live_id:
-                continue  # the open live handle IS this rotated segment
             try:
-                handles.append((segment, segment.open("rb")))
+                handle = live_handle if segment == path else stack.enter_context(segment.open("rb"))
+                if start_offset is not None:
+                    handle.seek(max(0, start_offset - start))
+                handles.append((segment, handle))
             except OSError as exc:
                 if strict:
                     raise JsonlChainUnreadable(f"cannot open {segment}: {exc}") from exc
-                continue
-        if live_handle is not None:
-            handles.append((path, live_handle))
-            live_handle = None  # ownership moved into the list
-        yield handles
-    finally:
-        if live_handle is not None:
-            with contextlib.suppress(Exception):
-                live_handle.close()
-        for _, handle in handles:
-            with contextlib.suppress(Exception):
-                handle.close()
+        if start_offset is not None and start_offset > total:
+            raise JsonlChainUnreadable(f"shortened or missing chain at {path}: offset {start_offset} > {total}")
+        yield (handles, total) if include_total else handles
 
 
 def iter_jsonl_chain_objects(

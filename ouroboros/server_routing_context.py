@@ -285,7 +285,12 @@ def _main_routing_manifest(ctx: Any) -> Dict[str, Any]:
     } for row in list_projects(ctx.DRIVE_ROOT)]
     roots = _addressable_root_tasks(ctx, None)
 
-    facts, unreadable = raw_result_facts(task_results_dir(ctx.DRIVE_ROOT, create=False))
+    results_error = ""
+    try:
+        facts, unreadable = raw_result_facts(task_results_dir(ctx.DRIVE_ROOT, create=False))
+    except OSError as exc:
+        facts, unreadable = {}, ["result_directory_unreadable"]
+        results_error = f"result_directory_unreadable: {exc}"
     ordered = sorted(facts, key=lambda name: facts[name]["ts"] or facts[name]["updated_at"], reverse=True)
     finals = []
     for name in ordered:
@@ -325,6 +330,7 @@ def _main_routing_manifest(ctx: Any) -> Dict[str, Any]:
             "projects": max(0, len(projects) - 40),
             "root_tasks": max(0, len(roots) - 40),
             "final_results": None if unreadable else max(0, len(facts) - len(finals)),
+            "final_results_error": results_error,
             # A bounded read cannot count bytes/rows it deliberately did not
             # visit. The exact historical messages remain available by id.
             "dialogue_rows": None,

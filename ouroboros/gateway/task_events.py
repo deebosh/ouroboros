@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -24,7 +25,9 @@ from ouroboros.outcomes import public_task_result
 from ouroboros.task_results import load_task_result, task_results_dir, validate_task_id
 from ouroboros.task_status import FINAL_STATUSES
 from ouroboros.gateway.task_list_scan import raw_result_facts
-from ouroboros.utils import jsonl_chain_handles
+from ouroboros.gateway.contracts import TaskEventsRequest
+from ouroboros.gateway.schema import validate_ingress
+from ouroboros.utils import jsonl_archive_segments, jsonl_chain_handles
 
 
 def _tasks_namespace():
@@ -72,7 +75,7 @@ async def api_task_events(request: Request) -> StreamingResponse:
             yield _sse({"type": "error", "error": "task not found", "task_id": task_id, "seq": 1}, event_id=1)
         return StreamingResponse(_missing(), media_type="text/event-stream", status_code=404)
 
-    async def _stream():
+    async def _legacy_events():
         # Initial replay = one full archive-aware merge (identical to a fresh
         # iter_task_events call, so the client's cross-reconnect `cursor` keeps
         # addressing the same positions — the CLI contract, ouroboros/cli.py
@@ -169,6 +172,14 @@ async def api_task_events(request: Request) -> StreamingResponse:
                 yield ": heartbeat\n\n"
                 break
             await asyncio.sleep(0.5)
+
+    async def _stream():
+        try:
+            async for frame in _legacy_events():
+                yield frame
+        except (OSError, ValueError) as exc:
+            yield _sse({"type": "error", "task_id": task_id, "seq": cursor + 1,
+                        "error": str(exc), "reason": "history_unavailable"}, event_id=cursor + 1)
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
@@ -461,11 +472,9 @@ def _cursor_input(value: Any) -> Dict[str, Any]:
     """Validate only the versioned transport; paths never select read authority."""
     if value is None:
         return {"v": 2, "seq": 0, "view": "", "positions": {}}
-    if not isinstance(value, dict) or set(value) != {"v", "seq", "view", "positions"}:
-        raise ValueError("cursor must contain v, seq, view and positions")
-    if value["v"] != 2 or type(value["seq"]) is not int or value["seq"] < 0:
+    if value["v"] != 2 or value["seq"] < 0:
         raise ValueError("cursor version or sequence is invalid")
-    if not isinstance(value["view"], str) or not value["view"] or not isinstance(value["positions"], dict):
+    if not value["view"]:
         raise ValueError("cursor view or positions is invalid")
     for root, sources in value["positions"].items():
         if not isinstance(root, str) or not isinstance(sources, dict):
@@ -522,72 +531,92 @@ class _TaskEventCursorFollower(_TaskEventFollower):
         return None
 
     def read_events(self):
-        """Yield one row and its own post-row checkpoint, in root/source order."""
+        """Close each bounded read before yielding its rows and per-row cursors.
+
+        The buffer is at most 64 KiB plus one complete line. A single large
+        JSONL record keeps its existing support; history is never one batch.
+        Each source's logical EOF is pinned for this pass; later appends wait
+        for the next pass so a busy source cannot starve the rest of the view.
+        """
         for root in self.roots:
             for source, parts in _LOG_SOURCES:
                 live = root.joinpath(*parts)
                 position = self.positions[str(root)][source]
-                with jsonl_chain_handles(live, strict=True) as handles:
-                    segments = []
-                    total = 0
-                    for path, handle in handles:
-                        size = os.fstat(handle.fileno()).st_size
-                        segments.append((path, handle, total, size))
-                        total += size
-                    if position > total:
-                        raise ValueError(f"cursor_unavailable: shortened or missing {source} chain at {root}")
-                    for path, handle, start, size in segments:
-                        if position >= start + size:
-                            continue
+                if position == 0 and self._created_floor:
+                    # Skip the known pre-birth prefix in one metadata pass,
+                    # without opening each old archive as a separate batch.
+                    for path in jsonl_archive_segments(live, strict=True):
+                        if not _archive_stamp_predates(path.name, source, self._created_floor):
+                            break
+                        position += path.stat().st_size
+                    self.positions[str(root)][source] = position
+                end_position = None
+                while end_position is None or position < end_position:
+                    before = position
+                    with jsonl_chain_handles(live, strict=True, start_offset=position,
+                                             max_segments=1, include_total=True) as selection:
+                        handles, total = selection
+                        if end_position is None:
+                            end_position = total
+                        elif total < end_position:
+                            raise ValueError(f"shortened or missing chain at {live}")
+                        if not handles:
+                            break
+                        path, handle = handles[0]
+                        remaining = os.fstat(handle.fileno()).st_size - handle.tell()
+                        snapshot_cut = remaining > end_position - position
+                        remaining = min(remaining, end_position - position)
                         if (path != live and self._created_floor
                                 and _archive_stamp_predates(path.name, source, self._created_floor)):
-                            position = start + size
+                            position += remaining
                             self.positions[str(root)][source] = position
                             continue
-                        handle.seek(max(0, position - start))
-                        while handle.tell() < size:
-                            row_start = start + handle.tell()
-                            raw = handle.readline(size - handle.tell())
-                            if not raw:
-                                break
-                            if not raw.endswith(b"\n") and path == live:
-                                break  # an append still owns this unfinished row
-                            position = start + handle.tell()
-                            self.positions[str(root)][source] = position
-                            identity = json.dumps([str(root), source, row_start], separators=(",", ":"))
-                            try:
-                                if not raw.endswith(b"\n"):
-                                    raise ValueError("incomplete_archive_line")
-                                if not raw.strip():
-                                    continue
-                                entry = json.loads(raw.decode("utf-8"))
-                                if not isinstance(entry, dict):
-                                    raise ValueError("non_object_line")
-                            except (ValueError, UnicodeDecodeError):
-                                yield self.envelope({"type": "history_gap", "source": source,
-                                    "root": str(root), "task_id": self.task_id,
-                                    "reason": "invalid_archive_line" if path != live else "invalid_jsonl_line"},
-                                    identity=identity, delivery=False)
+                        data = handle.read(min(64 * 1024, remaining))
+                        if data and not data.endswith(b"\n") and len(data) < remaining:
+                            data += handle.readline(remaining - len(data))
+                    for raw in io.BytesIO(data):
+                        if not raw.endswith(b"\n") and (path == live or snapshot_cut):
+                            break  # an append still owns this unfinished row
+                        row_start = position
+                        position += len(raw)
+                        self.positions[str(root)][source] = position
+                        identity = json.dumps([str(root), source, row_start], separators=(",", ":"))
+                        try:
+                            if not raw.endswith(b"\n"):
+                                raise ValueError("incomplete_archive_line")
+                            if not raw.strip():
                                 continue
-                            if (str(entry.get("task_id") or "") not in self.task_filter_ids
-                                    and str(entry.get("subagent_task_id") or "") not in self.task_filter_ids
-                                    and str(entry.get("parent_task_id") or "") != self.task_id
-                                    and str(entry.get("root_task_id") or "") != self.task_id):
-                                continue
-                            event = _event_from_log_entry(source, 0, entry, root)
-                            # Legacy ``line`` counts parsed rows. A resumed byte
-                            # reader cannot reconstruct that count without replay.
-                            event.pop("line")
-                            if self.suppress_task_done and event["type"] == "task_done":
-                                continue
-                            yield self.envelope(event, identity=identity)
+                            entry = json.loads(raw.decode("utf-8"))
+                            if not isinstance(entry, dict):
+                                raise ValueError("non_object_line")
+                        except (ValueError, UnicodeDecodeError):
+                            yield self.envelope({"type": "history_gap", "source": source,
+                                "root": str(root), "task_id": self.task_id,
+                                "reason": "invalid_archive_line" if path != live else "invalid_jsonl_line"},
+                                identity=identity, delivery=False)
+                            continue
+                        if (str(entry.get("task_id") or "") not in self.task_filter_ids
+                                and str(entry.get("subagent_task_id") or "") not in self.task_filter_ids
+                                and str(entry.get("parent_task_id") or "") != self.task_id
+                                and str(entry.get("root_task_id") or "") != self.task_id):
+                            continue
+                        event = _event_from_log_entry(source, 0, entry, root)
+                        # Legacy ``line`` counts parsed rows. A resumed byte
+                        # reader cannot reconstruct that count without replay.
+                        event.pop("line")
+                        if self.suppress_task_done and event["type"] == "task_done":
+                            continue
+                        yield self.envelope(event, identity=identity)
+                    if position == before:
+                        break
 
 
 async def _api_task_events_v2(request: Request, task_id: str):
     try:
         body = await request.json()
-        if not isinstance(body, dict) or body.get("v") != 2 or set(body) - {"v", "wait", "cursor"}:
-            raise ValueError("expected {v: 2, wait?, cursor?}")
+        if errors := validate_ingress(body, TaskEventsRequest):
+            return JSONResponse({"error": f"invalid request body: {errors[0]}",
+                                 "schema_errors": errors[:8]}, status_code=400)
         cursor = _cursor_input(body.get("cursor"))
         wait = body.get("wait", 30)
         if type(wait) is not int or not 0 <= wait <= 120:
@@ -620,7 +649,7 @@ async def _api_task_events_v2(request: Request, task_id: str):
                             raise
                         if event is None:
                             break
-                        yield _sse(event, event_id=follower.seq)
+                        yield _sse(event, event_id=event["seq"])
                 finally:
                     rows.close()
                 terminal = follower.result_is_final()
