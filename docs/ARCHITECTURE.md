@@ -817,6 +817,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `/api/marketplace/ouroboroshub/install` | `gateway.marketplace.api_ouroboroshub_install` (also the adopt transport: `{adopt: true, expected_content_hash}` replaces an external same-name occupant with the sha256-verified catalog payload; adopt forces `auto_review`, conflicts with `overwrite`, typed 400/409/502 codes ride the lifecycle payload) |
 | POST | `/api/marketplace/ouroboroshub/update/{name}` | `gateway.marketplace.api_ouroboroshub_update` |
 | POST | `/api/marketplace/ouroboroshub/uninstall/{name}` | `gateway.marketplace.api_ouroboroshub_uninstall` |
+| POST | `/api/marketplace/ouroboroshub/publication/{name}/clear` | `gateway.marketplace.api_ouroboroshub_clear_publication` (compares the displayed receipt and clears only local waiting state) |
 | GET | `/api/files/list` | `gateway.files.api_files_list` |
 | GET | `/api/files/read` | `gateway.files.api_files_read` |
 | GET | `/api/files/content` | `gateway.files.api_files_content` |
@@ -1356,6 +1357,8 @@ Every outbound byte derives from the capture; the mutable live payload is neithe
 Owner lifecycle actions share `skill_lifecycle_actions.run_skill_action`: grant/toggle execute their existing effects in the lifecycle lane, local delete uses `skill_uninstall_state`, and attestation keeps its deterministic floor in `skill_owner_attestation`. The host supplies actor identity and checks exact resource/revision plus an existing member chat message, answered quiz or owner-mailbox record when owner intent is needed; the model interprets that source. A generated edit-and-review request confers no grant, attestation, deletion or enable authority. No permission ledger or HTTP impersonation is added. The configured auto-grant policy remains separate from enablement; explicit owner disable survives review and free replay. `skill_exec` returns the revision captured before its physical script launch, and extension tool receipts carry the descriptor's `content_hash` from the same publication as `extension_generation`, only after physical dispatch; neither is review PASS or a semantic test verdict.
 
 Marketplace update retains the owner's selected version through repeated retries. `install.PayloadRollbackSnapshot` captures payload/environment and the existing affected lifecycle-state quintet; update and adopt use that same owner. A single restore path verifies required reload before claiming `rolled_back`, preserves independent enablement/history, and never deletes an already restored payload when a state write failed.
+
+Catalog updates disclose the exact current and proposed version strings in the tool result and host-authored PR body; they do not infer semantic ordering. The existing atomic publication-record owner also handles explicit local clearing: it compares the displayed `published` object before setting that section to `null`, preserving unknown siblings. Clearing changes no GitHub PR or installed skill bytes. Both skill views refresh through their existing selection/refresh paths, without polling PR state.
 
 ### MCP and browser-facing external tools
 

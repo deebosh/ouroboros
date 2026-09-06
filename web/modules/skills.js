@@ -904,7 +904,9 @@ export function initSkills(ctx) {
         btn.addEventListener('click', () => {
             const tabName = btn.dataset.tab;
             activateTab(tabName);
-            if (tabName === 'marketplace') {
+            if (tabName === 'installed') {
+                renderFn();
+            } else if (tabName === 'marketplace') {
                 renderMarketplacePane().catch((err) => {
                     showToast(`ClawHub failed: ${err.message || err}`, 'danger');
                 });

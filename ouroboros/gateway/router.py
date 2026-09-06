@@ -62,6 +62,7 @@ def collect_routes(
         api_ouroboroshub_preview,
         api_ouroboroshub_uninstall,
         api_ouroboroshub_update,
+        api_ouroboroshub_clear_publication,
     )
     from ouroboros.gateway.claudexor_accounts import (
         api_claudexor_credential_profile,
@@ -196,6 +197,7 @@ def collect_routes(
         ),
         Route("/api/marketplace/ouroboroshub/install", endpoint=api_ouroboroshub_install, methods=["POST"]),
         Route("/api/marketplace/ouroboroshub/update/{name}", endpoint=api_ouroboroshub_update, methods=["POST"]),
+        Route("/api/marketplace/ouroboroshub/publication/{name}/clear", endpoint=api_ouroboroshub_clear_publication, methods=["POST"]),
         Route(
             "/api/marketplace/ouroboroshub/uninstall/{name}",
             endpoint=api_ouroboroshub_uninstall,

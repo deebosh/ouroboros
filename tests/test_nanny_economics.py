@@ -662,6 +662,7 @@ def test_succeeded_run_with_a_big_metered_tail_gets_the_overrun_reminder(tmp_pat
         _nanny_finalization_injected=False,
         _nanny_metered_progress={"round": 30, "cost": 9.0},
         _nanny_delegate_baseline={"round": 5, "cost": 1.0},
+        drive_root=drive,
     )
     tools = SimpleNamespace(_ctx=ctx, available_tools=lambda: ["delegate_start", "delegate_wait"])
     msgs: list = []
@@ -685,6 +686,7 @@ def test_succeeded_run_with_a_modest_tail_keeps_the_silence(tmp_path):
         _nanny_finalization_injected=False,
         _nanny_metered_progress={"round": 8, "cost": 1.2},
         _nanny_delegate_baseline={"round": 6, "cost": 1.0},
+        drive_root=drive,
     )
     tools = SimpleNamespace(_ctx=ctx, available_tools=lambda: ["delegate_start", "delegate_wait"])
     msgs: list = []

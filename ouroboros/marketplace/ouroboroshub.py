@@ -203,7 +203,7 @@ def load_catalog(fresh: bool = True) -> Dict[str, Any]:
         raise OuroborosHubError(f"catalog is not valid JSON: {exc}") from exc
     if not isinstance(catalog, dict):
         raise OuroborosHubError("catalog root must be an object")
-    catalog.setdefault("raw_base_url", _raw_base(catalog, url))
+    catalog["raw_base_url"] = _raw_base(catalog, url)
     _catalog_cache_store(catalog)
     return catalog
 

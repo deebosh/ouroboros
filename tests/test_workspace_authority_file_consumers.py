@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from ouroboros.skill_loader import compute_content_hash, load_enabled
+from ouroboros.skill_loader import compute_content_hash, load_enabled, save_review_state, SkillReviewState
 from ouroboros.skill_owner_attestation import review_skill_owner_attest
 from ouroboros.skill_review import SkillReviewOutcome
 from ouroboros.skill_review_runner import run_skill_review_lifecycle_blocking
@@ -174,8 +174,9 @@ def test_registry_preflight_infers_unique_canonical_skill_binding(tmp_path):
     assert not (child / "state" / "skills" / "alpha").exists()
 
 
+@pytest.mark.parametrize("persisted_review", [False, True])
 def test_review_lifecycle_enablement_and_job_state_follow_binding_state_root(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, persisted_review,
 ):
     import ouroboros.skill_review_runner as runner
 
@@ -188,6 +189,12 @@ def test_review_lifecycle_enablement_and_job_state_follow_binding_state_root(
     content_hash = compute_content_hash(canonical)
 
     def fake_review(_ctx, skill_name):
+        # The real review owner persists its exact verdict before returning.
+        # A returned clean label without that record must not enable execution.
+        if persisted_review:
+            save_review_state(parent, skill_name, SkillReviewState(
+                status="clean", content_hash=content_hash,
+            ))
         return SkillReviewOutcome(
             skill_name=skill_name,
             status="clean",
@@ -215,7 +222,7 @@ def test_review_lifecycle_enablement_and_job_state_follow_binding_state_root(
     )
 
     assert result["status"] == "clean"
-    assert load_enabled(parent, "alpha") is True
+    assert load_enabled(parent, "alpha") is persisted_review
     assert (parent / "state" / "skills" / "alpha" / "review_job.json").is_file()
     assert not (child / "state" / "skills" / "alpha").exists()
 
