@@ -210,6 +210,18 @@ SCRATCHPAD_SECTION_BUDGET_CHARS = 90_000
 SCRATCHPAD_BLOAT_WARN_CHARS = 50_000
 # Block-storage consolidation trigger (consolidator compresses oldest blocks).
 SCRATCHPAD_CONSOLIDATION_THRESHOLD_CHARS = 30_000
+# Source-side content cap for Memory.append_scratchpad_block (ibl-2b09abdadd25).
+# SINGLE SOURCE OF TRUTH for the new content cap; obeys the ordering invariant
+#   SCRATCHPAD_CONSOLIDATION_THRESHOLD_CHARS (30_000)
+#     < SCRATCHPAD_MAX_CONTENT_CHARS (60_000)
+#     <= SCRATCHPAD_SECTION_BUDGET_CHARS (90_000) - RENDERING_HEADROOM
+# Pinned at 60_000 so the consolidator (trigger at >30_000) still fires before
+# this cap kicks in, AND the rendered section's framing (header + per-block
+# '### [...]' / '---' / journal-pointer lines) fits under the section budget
+# at the 10-block cap. Measured in characters (len(str)), matching the family
+# naming convention. The count cap (_SCRATCHPAD_MAX_BLOCKS in ouroboros/memory.py)
+# is AND'd with this cap (single-pass eviction), not replaced by it.
+SCRATCHPAD_MAX_CONTENT_CHARS = 60_000
 
 # --- Hot-store growth thresholds (health invariant; bytes) -------------------
 # Deterministic tripwires for the append-only stores whose interactive readers

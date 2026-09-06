@@ -232,20 +232,28 @@ class Memory:
         if metadata:
             new_block["metadata"] = dict(metadata)
 
+        # Lazy import keeps ouroboros.context_budget optional at import time,
+        # matching ouroboros/consolidator.py:~674.
+        from ouroboros.context_budget import SCRATCHPAD_MAX_CONTENT_CHARS
+
         try:
             def _append(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 updated = [*blocks, new_block]
-                if len(updated) <= _SCRATCHPAD_MAX_BLOCKS:
-                    return updated
-                # FIFO eviction that respects pinning (ibl-3d7b7b7d5dc9):
-                # pinned blocks are exempt; we evict the oldest ELIGIBLE
-                # block until the list is back under cap. The block we just
-                # appended (updated[-1]) is never an eviction target — if the
-                # only eligible victims are pinned older blocks, we let the
-                # list grow past the cap rather than drop the newest write.
-                # Each eviction is journalled with a source_ref and FAILS HARD
-                # if the journal write does not land (no silent amputation).
-                while len(updated) > _SCRATCHPAD_MAX_BLOCKS:
+                # Single-pass FIFO eviction that respects pinning AND both caps:
+                #   - _SCRATCHPAD_MAX_BLOCKS   (count cap,  ibl-3d7b7b7d5dc9)
+                #   - SCRATCHPAD_MAX_CONTENT_CHARS (content cap, ibl-2b09abdadd25)
+                # Pinned blocks are exempt from BOTH; we evict the oldest
+                # ELIGIBLE block until EITHER cap is satisfied. The block we
+                # just appended (updated[-1]) is never an eviction target — if
+                # the only eligible victims are pinned older blocks, we let
+                # the list grow past the caps rather than drop the newest
+                # write. Each eviction is journalled with a source_ref and
+                # FAILS HARD if the journal write does not land (no silent
+                # amputation, BIBLE P1).
+                while (
+                    len(updated) > _SCRATCHPAD_MAX_BLOCKS
+                    or sum(len(b.get("content", "")) for b in updated) > SCRATCHPAD_MAX_CONTENT_CHARS
+                ):
                     evicted_idx = next(
                         (i for i, b in enumerate(updated[:-1]) if not b.get("pinned", False)),
                         None,
