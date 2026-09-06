@@ -2141,6 +2141,22 @@ by "Provider Independence" above. Call-site imperatives:
   acceptance, atomically fence new descendants under the queue lock and
   prove recursive subtree quiescence from the task-status SSOT; a revision
   must explicitly reopen the fence, and terminal/degraded outcomes seal it.
+- Acceptance evidence identity hashes source facts before history-dependent
+  budgeting; recording a review must not change the facts it reviewed. Complete
+  applied host records (including resolved criteria, decisions and supersession)
+  are saved by `review_projection.publish_acceptance_checkpoint` through the
+  existing artifact store before compact publication. Artifact registration uses
+  a short locked manifest merge shared by all three writers; copying/hashing
+  finishes before the lock, which never acquires a task-result lock. The live
+  publication changes only `review_projection`, preserving lifecycle and other
+  writers' fields. Test delayed snapshots and child replicas through the same
+  central merge, and verify that the full source downloads while the task is
+  still running. Registered review bookkeeping remains downloadable without entering
+  user deliverables or making an otherwise artifact-free task ready. Preserve that
+  distinction through effective reads and child copy-back; terminal references must
+  carry the task's chat id, including zero. A missing source is disclosed, never reconstructed from a
+  bounded preview. Source/capacity, publication order and paid identity are
+  separate contracts; changing history or presentation must not mint work.
 - The host buys one authoritative acceptance panel per PAID IDENTITY —
   `sha256(candidate_hash + the sorted set of nonempty (obligation_id,
   disposition, sha256(reason)) tuples)`; an empty disposition reason hashes
