@@ -33,10 +33,6 @@ from ouroboros.tools.commit_gate import _invalidate_advisory
 from ouroboros.shell_parse import is_absolute_path_text, recover_stringified_argv  # noqa: F401
 from ouroboros.tools.tool_result import _publish_process_result, _wrap_run_script_process_result
 from ouroboros.tools.verify import check_exit_masking  # noqa: F401 -- ONE exit-masking sensor shared with verify_and_record (pinned here); its disclosure lives in shell_audit
-from ouroboros.tools.shell_and_chain import (
-    _maybe_split_single_element_and_chain,
-    _maybe_wrap_single_element_pipeline,
-)
 from ouroboros.tools.registry import (
     ToolContext,
     ToolEntry,
@@ -355,12 +351,6 @@ def _run_shell(
 
     cmd, autocorrect_note = _maybe_autocorrect_grep_backslash_pipe(cmd)
     regex_autocorrected = bool(autocorrect_note)
-    cmd, and_chain_note = _maybe_split_single_element_and_chain(cmd)
-    if and_chain_note:
-        autocorrect_note = (autocorrect_note + and_chain_note) if autocorrect_note else and_chain_note
-    cmd, pipeline_note = _maybe_wrap_single_element_pipeline(cmd)
-    if pipeline_note:
-        autocorrect_note = (autocorrect_note + pipeline_note) if autocorrect_note else pipeline_note
     autocorrect_note += _literal_argv_notes(cmd)
 
     try:
@@ -544,27 +534,15 @@ def _run_shell(
     except Exception as e:
         _publish_unfinished_process_facts(ctx, _command_start_ts, spawn_error=e)
         _record_scratch_fingerprints(ctx, scratch_abs)
+        if isinstance(e, FileNotFoundError) and len(cmd) == 1:
+            return (
+                "⚠️ SHELL_ARG_ERROR: the sole cmd element was treated as ONE executable name, "
+                "and that executable was not found. Pass the program and each argument as "
+                'separate array elements, e.g. ["git", "status", "--porcelain"]. For pipes, '
+                'redirects or chaining, explicitly use ["sh", "-c", "..."] or run_script. '
+                f"No command was started. root={binding.root}, cwd={work_dir}"
+            )
         return f"⚠️ SHELL_ERROR: {e}. root={binding.root}, cwd={work_dir}"
-
-
-def _load_project_context(repo_dir: pathlib.Path) -> str:
-    """Load governance docs for Claude Code system_prompt injection."""
-    docs = [
-        ("BIBLE.md", "CONSTITUTION"),
-        ("docs/DEVELOPMENT.md", "DEVELOPMENT GUIDE"),
-        ("docs/CHECKLISTS.md", "REVIEW CHECKLISTS"),
-        ("docs/ARCHITECTURE.md", "ARCHITECTURE"),
-    ]
-    parts: list = []
-    for relpath, label in docs:
-        fpath = repo_dir / relpath
-        if fpath.is_file():
-            try:
-                content = fpath.read_text(encoding="utf-8", errors="replace")
-                parts.append(f"## {label}\n\n{content}")
-            except Exception:
-                pass
-    return "\n\n---\n\n".join(parts)
 
 
 # The run_script interpreter VALIDATOR (SSOT; the schema enum below is the

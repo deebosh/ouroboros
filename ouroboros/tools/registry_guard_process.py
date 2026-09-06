@@ -8,8 +8,10 @@ monkeypatch targets keep working unchanged.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import pathlib
+import re
 import subprocess
 
 from ouroboros.contracts.skill_payload_policy import SKILL_OWNER_STATE_STEMS
@@ -52,28 +54,50 @@ def _detect_runtime_mode_elevation(text_lower: str, *, writeish: bool = True) ->
     return _registry()._owner_control_mention_blocks(text_lower, detected, writeish)
 
 
-_SUBAGENT_SHELL_SECRET_MARKERS = (
-    # Ouroboros owner secrets/control state. The relative form (no leading slash)
-    # closes the interpreter-string bypass (CW4, v6.34.0): the whole-command
-    # substring scan already catches "/data/settings.json" and "../../data/..",
-    # but a bare "data/settings.json" (e.g. python -c "open('data/settings.json')"
-    # from a workspace cwd) needs the slash-less marker too.
-    "/data/settings.json", "data/settings.json", "ouroboros/data/settings", "file1.txt",
-    # Universal credential/secret/control files (relative or absolute).
-    # ouroboros-update-tx.json is the managed-update tx marker (.git/…): owner
-    # control state, mirrored on .git/config. Subagent shell only — the
-    # authorized resolver is the MAIN agent and the supervisor/host writers go
-    # through supervisor.update_merge, so neither is affected (synthesis F3).
-    ".env", ".git/config", ".git/credentials", "ouroboros-update-tx.json",
-    "credentials.json", "tokens.json",
-    "/.ssh/", ".ssh/", "id_rsa", "id_ed25519", ".netrc", ".npmrc", ".pgpass", ".aws/",
-)
+def _subagent_shell_targets_secret(cmd_path_lower: str, *, ctx: Any = None, cwd: Any = None) -> bool:
+    """Inspect path operands/literals, never substrings of code such as os.environ.
 
+    Runtime/control locations are physical; the same repo-file predicate as
+    read_file protects credential leaves without hiding auth/tokens source dirs.
+    This is a best-effort argv inspection, not a sandbox for computed paths.
+    """
+    from ouroboros.credential_shapes import owner_credential_locations
+    from ouroboros.shell_parse import embedded_absolute_path_tokens, shell_argv_with_inline
+    from ouroboros.tools.core_secret_paths import _is_subagent_secret_repo_path, _is_subagent_secret_data_path
+    from ouroboros.tools.write_shape import python_body_ast
 
-def _subagent_shell_targets_secret(cmd_path_lower: str) -> bool:
-    """Deterministic guard: a shell command referencing Ouroboros secrets/credentials
-    or owner-control state (settings.json, ssh keys, token/credential files)."""
-    return any(marker in cmd_path_lower for marker in _SUBAGENT_SHELL_SECRET_MARKERS)
+    argv = shell_argv_with_inline(cmd_path_lower)
+    bodies = _registry().interpreter_inline_code(argv)
+    paths = [str(token) for token in argv[1:] if token not in bodies and not str(token).startswith("-")]
+    for body in bodies:
+        tree = python_body_ast(body)
+        if tree is not None:
+            paths.extend(node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str))
+        else:
+            paths.extend(value for _quote, value in re.findall(r'''(['"])(.*?)\1''', body))
+    paths.extend(embedded_absolute_path_tokens(
+        " ".join(str(part) for part in cmd_path_lower) if isinstance(cmd_path_lower, list) else cmd_path_lower))
+    work_dir = pathlib.Path(cwd or ".").resolve(strict=False)
+    protected, allowed = owner_credential_locations(pathlib.Path.home())
+    data_roots = []
+    if ctx is not None:
+        metadata = getattr(ctx, "task_metadata", {}) or {}
+        for root in (getattr(ctx, "drive_root", None), metadata.get("budget_drive_root")):
+            if root:
+                data_roots.append(pathlib.Path(root).resolve(strict=False))
+    for text in paths:
+        if _is_subagent_secret_repo_path(text):
+            return True
+        try:
+            target = (work_dir / pathlib.Path(text).expanduser()).resolve(strict=False)
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if target not in allowed and any(target.is_relative_to(path.resolve(strict=False)) for path in protected):
+            return True
+        for root in data_roots:
+            if target.is_relative_to(root) and _is_subagent_secret_data_path(target.relative_to(root).as_posix()):
+                return True
+    return False
 
 
 def _detect_mutative_toggle_self_change(text_lower: str, *, writeish: bool = True) -> bool:
@@ -480,7 +504,9 @@ def _run_shell_safety_check(
     self, args: Dict[str, Any], runtime_mode: str, binding: Any = None,
 ) -> ToolResult | None:
     """Pre-execution run_command filter; returns a native denial or ``None``."""
-    raw_cmd = args.get("cmd", args.get("command", ""))
+    from ouroboros.shell_parse import local_shell_subject
+
+    raw_cmd = local_shell_subject(args.get("cmd", args.get("command", "")))
     if binding is None:
         operation = (
             "service"
@@ -524,7 +550,8 @@ def _run_shell_safety_check(
     while "//" in cmd_path_lower: cmd_path_lower = cmd_path_lower.replace("//", "/")
     # Subagents must not read owner secrets/credentials/control state via shell
     # (read_file already denies these). read_file is the gated inspection path.
-    if (acting_subagent or self._is_local_readonly_subagent()) and _subagent_shell_targets_secret(cmd_path_lower):
+    if (acting_subagent or self._is_local_readonly_subagent()) and _subagent_shell_targets_secret(
+            raw_cmd, ctx=self._ctx, cwd=getattr(binding, "target_path", None)):
         return ToolResult(
             status="blocked",
             code="SUBAGENT_SECRET_READ_BLOCKED",
@@ -711,17 +738,17 @@ def _run_shell_safety_check(
                 drive_root=pathlib.Path(self._ctx.drive_root),
                 work_dir=pathlib.Path(work_dir),
                 allowed_roots=allowed_runtime_roots,
+                target_rows=target_rows,
             )
             if runtime_data_targets:
-                action = "write under" if writeish else "write-indicating commands that mention"
                 # Name the REAL task roots: a mis-guessed absolute path used to
                 # produce this block with no way to self-correct (v6.54.3).
                 return ToolResult(
                     status="blocked",
                     code="LIGHT_MODE_BLOCKED",
                     text=(
-                        "⚠️ LIGHT_MODE_BLOCKED: runtime_mode=light blocks process commands "
-                        f"that {action} runtime_data paths outside this task's own roots. "
+                        "⚠️ LIGHT_MODE_BLOCKED: runtime_mode=light blocks this command's "
+                        "access to runtime_data outside the permitted task roots. "
                         f"This task's real roots are: artifact_store={own_artifact_dir}, "
                         f"task_drive={own_task_drive} — staged attachments live under "
                         f"{own_artifact_dir / 'attachments'}. Use those absolute paths in scripts, "
