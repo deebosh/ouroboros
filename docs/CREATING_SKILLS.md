@@ -1304,6 +1304,17 @@ the tool result and never cancels the real PR. The Skills UI reads it for the
 "Submitted PR #N" badge and the adopt confirmation copy; it survives
 uninstall and adopt, and a republish overwrites it.
 
+If a submission is no longer being pursued, **Clear local submission** on its
+OuroborosHub card removes that local waiting state. The action preserves the
+installed files, review and grants, and does not close or change the GitHub PR.
+It clears the receipt shown on the card; if another publication replaced it,
+refresh the card first. Returning to My skills refreshes the submission badge.
+
+For a catalog update, the tool result and PR body name both the current catalog
+version and the proposed version. Versions are opaque strings: an older-looking
+or non-semantic version is allowed, while an identical version still needs to
+change before publishing an update.
+
 Publication succeeds only when the task records a validated pull-request
 receipt in the configured Hub repository for this exact skill. A branch,
 commit, refusal report, or unfinished attempt is partial progress, not

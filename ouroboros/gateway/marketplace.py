@@ -917,6 +917,29 @@ async def api_ouroboroshub_uninstall(request: Request) -> JSONResponse:
     return JSONResponse(payload, status_code=200 if payload.get("ok") else 400)
 
 
+async def api_ouroboroshub_clear_publication(request: Request) -> JSONResponse:
+    """Clear the displayed submission through its existing local receipt owner."""
+    from ouroboros.marketplace.provenance import PublicationRecordChanged, clear_publication_record
+
+    name = str(request.path_params.get("name") or "").strip()
+    if error := _validate_path_param_name(name):
+        return json_error(error, 400)
+    body = await request_json_or(request, {}, exceptions=(Exception,))
+    expected = body.get("expected_published") if isinstance(body, dict) else None
+    if not isinstance(expected, dict):
+        return json_error("expected_published must contain the displayed publication receipt", 400)
+    try:
+        cleared = await asyncio.to_thread(clear_publication_record, _request_drive_root(request), name, expected)
+    except PublicationRecordChanged as exc:
+        return JSONResponse({"ok": False, "code": "publication_changed", "error": str(exc)}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "code": "publication_invalid", "error": str(exc)}, status_code=400)
+    except Exception as exc:
+        log.warning("Clearing local publication failed", exc_info=True)
+        return json_exception(exc)
+    return JSONResponse({"ok": True, "sanitized_name": name, "publication_cleared": cleared})
+
+
 __all__ = [
     "api_marketplace_search",
     "api_marketplace_info",
@@ -931,4 +954,5 @@ __all__ = [
     "api_ouroboroshub_update",
     "api_ouroboroshub_installed",
     "api_ouroboroshub_uninstall",
+    "api_ouroboroshub_clear_publication",
 ]

@@ -815,6 +815,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `/api/marketplace/ouroboroshub/install` | `gateway.marketplace.api_ouroboroshub_install` (also the adopt transport: `{adopt: true, expected_content_hash}` replaces an external same-name occupant with the sha256-verified catalog payload; adopt forces `auto_review`, conflicts with `overwrite`, typed 400/409/502 codes ride the lifecycle payload) |
 | POST | `/api/marketplace/ouroboroshub/update/{name}` | `gateway.marketplace.api_ouroboroshub_update` |
 | POST | `/api/marketplace/ouroboroshub/uninstall/{name}` | `gateway.marketplace.api_ouroboroshub_uninstall` |
+| POST | `/api/marketplace/ouroboroshub/publication/{name}/clear` | `gateway.marketplace.api_ouroboroshub_clear_publication` (compares the displayed receipt and clears only local waiting state) |
 | GET | `/api/files/list` | `gateway.files.api_files_list` |
 | GET | `/api/files/read` | `gateway.files.api_files_read` |
 | GET | `/api/files/content` | `gateway.files.api_files_content` |
@@ -1314,6 +1315,8 @@ The passive installed-skill projection never launches Betterleaks and never clai
 `passive index (no scan) → selected preflight → explicit confirmation → ordinary managed task → fresh immutable capture bound to the stored review hash → payload scan → GitHub read-only planning → derived-output scans → first GitHub mutation → validated same-skill pull-request receipt → ordinary acceptance`
 
 Every outbound byte derives from the capture; the mutable live payload is neither reread nor rehashed to authorize the transaction, which is what prevents time-of-check/time-of-use drift. Literal Betterleaks `high` findings block the current outbound call; lower or unknown confidence remains a redacted warning. Packaged installs resolve the bundled `betterleaks-standalone`; source checkouts resolve the exact managed runtime installed explicitly with `python -m ouroboros.betterleaks_runtime install` — Publish never downloads it. A top-level `skill_publish` task can be accepted only when pre-truncation metadata contains a validated pull-request receipt for the requested skill and configured Hub repository; the receipt is a narrow veto prerequisite that never manufactures PASS.
+
+Catalog updates disclose the exact current and proposed version strings in the tool result and host-authored PR body; they do not infer semantic ordering. The existing atomic publication-record owner also handles explicit local clearing: it compares the displayed `published` object before setting that section to `null`, preserving unknown siblings. Clearing changes no GitHub PR or installed skill bytes. Both skill views refresh through their existing selection/refresh paths, without polling PR state.
 
 ### MCP and browser-facing external tools
 
