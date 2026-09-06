@@ -439,6 +439,20 @@ def vision_evidence_rows(tools_rows: list) -> list:
     return out
 
 
+RUNTIME_SCRATCH_PREFIX = ".ouroboros/"   # run_script's active-workspace scratch (tools/shell.py), unlinked in a finally
+
+
+def worktree_after_commit(clone: pathlib.Path) -> tuple[bool, str, list[str]]:
+    """``(clean, porcelain, transient)`` for the clean-worktree check: the runtime's OWN transient scratch under
+    ``.ouroboros/`` does not count — a post-task evolution cycle starts seconds after the commit in the same clone
+    and its ``run_script`` files live there until unlinked (rc.15 run3, SM1_a1: ``?? .ouroboros/`` at check time,
+    issue #701) — but it is recorded, and every other untracked or modified path fails the check."""
+    porcelain = _git(["status", "--porcelain"], clone)
+    entries = [line for line in porcelain.splitlines() if line.strip()]
+    transient = [line for line in entries if line.split(None, 1)[-1].startswith(RUNTIME_SCRATCH_PREFIX)]   # ``_git`` strips
+    return len(entries) == len(transient), porcelain, transient
+
+
 def _git_show(clone: pathlib.Path, rev: str, path: str) -> str:
     """The exact text of ``path`` at ``rev`` ('' when absent there)."""
     proc = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=str(clone), check=False, capture_output=True, text=True)
@@ -510,7 +524,8 @@ def run_sm1(ctx: LaneContext) -> None:
     # colour on the unlock page, the site stylesheet), and the reviewers own that judgment.
     ctx.check("committed_diff_includes_sheets", all(path in files for path in SM1_CSS_PATHS),
               committed_files=files, committed_companions=sm1_out_of_scope(ctx.clone, rev, files))
-    ctx.check("worktree_clean_after_commit", _git(["status", "--porcelain"], ctx.clone) == "")
+    clean, porcelain, transient = worktree_after_commit(ctx.clone)
+    ctx.check("worktree_clean_after_commit", clean, worktree_porcelain=porcelain, worktree_transient=transient)
     task_oracle = ctx.oracle.task_drive(task_id)
     ledger = task_oracle.advisory_review()
     runs = [r for r in (ledger.get("advisory_runs") or []) if isinstance(r, dict)]
