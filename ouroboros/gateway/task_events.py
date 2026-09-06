@@ -121,6 +121,10 @@ async def api_task_events(request: Request) -> StreamingResponse:
                         pending.append(row)
                     if pending:
                         tail_key = _event_sort_key(pending[-1])
+            if follower._lineage_notice is not None:
+                notice, follower._lineage_notice = follower._lineage_notice, None
+                # A read diagnostic is not a legacy history row/rank.
+                yield _sse({**notice, "seq": cursor}, event_id=cursor)
             for event in pending:
                 cursor = int(event.get("seq") or cursor)
                 if str(event.get("type") or "") == "task_result":
@@ -266,7 +270,11 @@ class _TaskEventFollower:
         self.filter_grew = False
         self._queue_snapshot_mtime: Any = None
         self._results_dir = task_results_dir(self.drive_root, create=False)
-        self._seen_result_names: set = set()
+        # Per-file proof belongs to this live follower, never a client cursor
+        # or the shared current-facts memo. Failed reads may retain this proof.
+        self._seen_result_names: Dict[str, tuple[str, str]] = {}
+        self._lineage_failed_names: set[str] = set()
+        self._lineage_notice: Optional[dict] = None
         # Only an explicit creation fact may bound the scan. Legacy ``ts`` can
         # describe finalization and must never hide earlier task history.
         raw = load_task_result(self.drive_root, task_id) or {}
@@ -303,21 +311,32 @@ class _TaskEventFollower:
         child = str(self.result.get("child_drive_root") or self.result.get("headless_child_drive_root") or "").strip()
         if child:
             candidates.append(pathlib.Path(child))
-        facts, _malformed = raw_result_facts(
+        facts, malformed = raw_result_facts(
             self._results_dir, reader=_tasks_namespace().read_json_dict,
         )
-        self._seen_result_names = {name for name, row in facts.items() if not row["schema_refusal"]}
-        ids = {self.task_id}
-        for row in facts.values():
+        failed = set(malformed)
+        bindings = {name: binding for name, binding in self._seen_result_names.items() if name in failed}
+        retained_count = len(bindings)
+        for name, row in facts.items():
             if row["schema_refusal"] or row["delegation_role"] != "subagent":
                 continue
             child_id = row["task_id"] or row["id"]
             if not child_id or not (row["parent_task_id"] == self.task_id or row["root_task_id"] == self.task_id):
                 continue
-            ids.add(child_id)
             child_root = row["child_drive_root"] or row["headless_child_drive_root"]
+            bindings[name] = (child_id, child_root)
+        ids = {self.task_id, *(child_id for child_id, _root in bindings.values())}
+        for _child_id, child_root in bindings.values():
             if child_root:
                 candidates.append(pathlib.Path(child_root))
+        self._seen_result_names = bindings
+        if failed != self._lineage_failed_names:
+            self._lineage_notice = ({"type": "history_gap", "source": "task_result",
+                "task_id": self.task_id, "reason": "lineage_incomplete",
+                "data": {"failed_result_reads": len(failed), "retained_result_bindings": retained_count,
+                         "unknown_result_membership": len(failed) - retained_count}}
+                if failed else None)
+        self._lineage_failed_names = failed
         roots = sorted(set(candidates), key=str)
         changed = ids != self.task_filter_ids or roots != self.roots
         self.filter_grew = self.filter_grew or changed
@@ -430,7 +449,7 @@ class _TaskEventFollower:
         self.roots = []
         self.task_filter_ids = {self.task_id}
         # The process-local stat memo survives a connection/replay rebuild.
-        self._seen_result_names = set()
+        # A replay rebuilds log positions, not the live follower's prior proof.
         self.refresh_result()
         self.queue_snapshot_changed()
         self._discover_roots()
@@ -538,6 +557,9 @@ class _TaskEventCursorFollower(_TaskEventFollower):
         Each source's logical EOF is pinned for this pass; later appends wait
         for the next pass so a busy source cannot starve the rest of the view.
         """
+        if self._lineage_notice is not None:
+            notice, self._lineage_notice = self._lineage_notice, None
+            yield self.envelope(notice, delivery=False)
         for root in self.roots:
             for source, parts in _LOG_SOURCES:
                 live = root.joinpath(*parts)
@@ -550,16 +572,12 @@ class _TaskEventCursorFollower(_TaskEventFollower):
                             break
                         position += path.stat().st_size
                     self.positions[str(root)][source] = position
-                end_position = None
-                while end_position is None or position < end_position:
+                snapshot: dict = {}
+                while not snapshot or position < snapshot["total"]:
                     before = position
                     with jsonl_chain_handles(live, strict=True, start_offset=position,
-                                             max_segments=1, include_total=True) as selection:
-                        handles, total = selection
-                        if end_position is None:
-                            end_position = total
-                        elif total < end_position:
-                            raise ValueError(f"shortened or missing chain at {live}")
+                                             snapshot=snapshot) as handles:
+                        end_position = snapshot["total"]
                         if not handles:
                             break
                         path, handle = handles[0]
