@@ -176,7 +176,7 @@ test('both verification statuses are honest: vendor is trusted, local is neutral
     assert.equal(vendor.label, 'Verified live');
     // The raw ISO instant left the badge entirely (owner: a row must never lead
     // with a timestamp); accountMetaLine humanizes it on line 2 instead.
-    assert.doesNotMatch(vendor.label, /2026-/);
+    assert.doesNotMatch(vendor.label, /\d{4}-\d{2}-\d{2}/);
 
     const local = verificationBadge({ status: { verification: 'passed', verification_source: 'local_store' } });
     assert.equal(local.tone, 'muted');
@@ -207,7 +207,7 @@ test('an exhausted window is shown with its reset time, never hidden', () => {
     assert.equal(summary.exhausted, true);
     assert.equal(summary.resetsAt, '2099-08-04T00:00:00Z');
     assert.equal(summary.label, 'Limit reached · resets in 2h');
-    assert.doesNotMatch(summary.label, /2026-/);
+    assert.doesNotMatch(summary.label, /\d{4}-\d{2}-\d{2}/);
 
     const healthy = quotaSummary([{
         subject: { harness: 'codex' }, freshness: 'fresh', constraints: [{ used_ratio: 0.42 }],
