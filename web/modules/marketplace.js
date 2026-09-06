@@ -243,6 +243,8 @@ function buildHealPrompt(installed, summary) {
         source: 'clawhub',
         payload_root: installed?.payload_root || '',
         type: installed?.type || 'unknown',
+        initial_enabled: Boolean(installed?.enabled),
+        content_hash: installed?.content_hash || '',
         review_status: installed?.review_status || 'pending',
         review_stale: Boolean(installed?.review_stale),
         load_error: boundedText(installed?.load_error || 'none', 2000),
@@ -580,7 +582,9 @@ export function initMarketplace(pane, controlsHost = null) {
             setPending(slug, { label: 'Granting', tone: 'warn', message: 'Waiting for human confirmation…' });
             const result = bridge
                 ? await bridge(installed.name, items)
-                : await jsonPost(`/api/skills/${encodeURIComponent(installed.name)}/grants`, { items });
+                : await jsonPost(`/api/skills/${encodeURIComponent(installed.name)}/grants`, {
+                    items, expected_content_hash: installed.content_hash,
+                });
             if (!result?.ok) throw new Error(result?.error || 'Skill grant was cancelled.');
             showStatus(pane, `${slug} grant saved`, 'ok');
             emitSkillLifecycle('grant', installed.name, result);
@@ -589,14 +593,14 @@ export function initMarketplace(pane, controlsHost = null) {
         if (action === 'fix' && installed) {
             const ok = await openConfirmDialog({
                 title: `Repair ${installed.name || slug}`,
-                body: `Start a repair task for ${installed.name || slug}? Ouroboros will edit only the skill payload and re-run review.`,
+                body: `Start a repair task for ${installed.name || slug}? Ouroboros will repair the selected skill and test the result using the normal development tools.`,
                 confirmLabel: 'Start repair',
             });
             if (!ok) return;
             setPending(slug, { label: 'Repair requested', tone: 'warn', message: 'Sending repair request…' });
             await jsonPost('/api/command', {
                 cmd: buildHealPrompt(installed, summary),
-                task_constraint: { mode: 'skill_repair', skill_name: installed.name || '', payload_root: installed.payload_root || '', allow_enable: false, allow_review: true },
+                task_constraint: { mode: 'normal', skill_name: installed.name || '', payload_root: installed.payload_root || '', allow_enable: true, allow_review: true },
                 visible_text: `Repair request sent for ${installed.name || slug}. Watch for its live card; if the task cannot start, chat will show why. Review re-runs when it finishes.`,
                 visible_task_id: `skill_repair_${installed.name || slug}`,
             });
@@ -617,13 +621,17 @@ export function initMarketplace(pane, controlsHost = null) {
             return;
         }
         if (action === 'update' && installed) {
+            const retryVersion = getPending(slug)?.retry_version || '';
+            const target = getPending(slug)?.target || installed.name;
             setPending(slug, {
                 label: 'Updating',
                 tone: 'warn',
                 message: 'Updating skill…',
-                target: installed.name,
+                target,
+                retry_version: retryVersion,
             });
-            const result = await jsonPost(`/api/marketplace/clawhub/update/${encodeURIComponent(installed.name)}`);
+            const body = retryVersion ? { version: retryVersion } : {};
+            const result = await jsonPost(`/api/marketplace/clawhub/update/${encodeURIComponent(target)}`, body);
             if (!result.ok) throw new Error(result.error || 'update failed');
             showStatus(pane, `Updated ${slug} — review ${result.review_status}`, reviewTone(result.review_status));
             emitSkillLifecycle('update', installed.name, result);
@@ -708,6 +716,7 @@ export function initMarketplace(pane, controlsHost = null) {
                 const tone = action === 'install' && isRateLimitError(failedMessage) ? 'warn' : 'danger';
                 showStatus(pane, `${slug}: ${failedMessage}`, tone);
                 setPending(slug, {
+                    ...getPending(slug),
                     label: `${action} failed`,
                     tone,
                     message: failedMessage,
@@ -751,6 +760,7 @@ export function initMarketplace(pane, controlsHost = null) {
                 tone: 'warn',
                 message: 'Updating skill…',
                 target: sanitized,
+                retry_version: targetVersion,
             });
             try {
                 const body = targetVersion ? { version: targetVersion } : {};
@@ -763,9 +773,6 @@ export function initMarketplace(pane, controlsHost = null) {
                     emitSkillLifecycle('update', sanitized, result);
                 }
             } catch (err) {
-                // Pre-existing quirk (disclosed, unchanged): "Retry update" goes
-                // through runLifecycleAction('update'), which always POSTs {} =
-                // latest — a typed pinned version does not survive into the retry.
                 setPending(slug, {
                     label: 'Failed',
                     tone: 'danger',
@@ -774,6 +781,7 @@ export function initMarketplace(pane, controlsHost = null) {
                     retry_action: 'update',
                     retry_label: 'Retry update',
                     target: sanitized,
+                    retry_version: targetVersion,
                 });
                 showStatus(pane, `Update error: ${err.message}`, 'danger');
             } finally {

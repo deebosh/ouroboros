@@ -1145,31 +1145,33 @@ memory/context decision.
 
 ### Skill repair and payload lanes
 
-- Skill repair uses structured `task_constraint.mode="skill_repair"`, not
-  prompt markers; edit paths are payload-relative. Use `edit_text` for one
-  exact replacement and `write_file` (with `root=skill_payload`) for new files
-  or intentional full rewrites; `edit_batch`/`apply_patch` are repo-lane tools
-  and do not accept `root=skill_payload`. Finish with `skill_preflight` and
-  `skill_review`; grants and enablement stay owner-controlled.
-- Repair mode is a stricter UI lane, not the only authoring path: in every
-  runtime mode, ordinary top-level tasks may mutate an exact user-managed
-  payload via `root=skill_payload`, `bucket`, and `skill_name`;
-  `skill_payload_binding.py` projects a markerless physical native payload as
-  logical `external` while retaining its physical confinement. Marker-present
-  launcher seeds, `data/state/skills/*`, marketplace/provenance/dependency
-  sidecars, and direct `run_command` writes to repo targets remain blocked;
-  the constrained `skill_repair` selector stays limited to
-  `{external,clawhub,ouroboroshub}`.
-- The direct `operator_control` and `local_readonly_subagent` profiles may
-  inspect a selected native payload with `read`/`list`/`search` only; native
-  mutation, owner state, grants/review/enablement, and acting-child selection
-  remain closed.
-- New path checks for skill edits use
-  `ouroboros.contracts.skill_payload_policy`, never reimplemented bucket/path
-  traversal logic.
+- Start Repair as ordinary managed development carrying the selected skill,
+  source request and admitted revision. Read existing `skill_repair` records as
+  selectors, never as a reduced profile. Preserve normal file, shell, browser
+  and delegation tools, with existing readonly/acting-child ceilings.
+- Keep installed payloads as ordinary directories; a delegated Git copy is an
+  optional existing capability. Check the known revision before an operation;
+  after opaque process work, record the observed revision without asserting
+  exclusive authorship. No long shell lock or automatic rollback belongs here.
+- Use the existing payload binding/policy owners for all path forms. Markerless
+  native-directory payloads remain logical external; launcher seeds and
+  provenance/review/grant/dependency control state keep their existing guards.
+- Review, grants, dependency readiness, desired enablement and actual execution
+  are independent facts. Resume an unchanged reviewed snapshot through its
+  existing free replay; a dependency or load failure never rewrites the review
+  verdict. Preserve explicit owner disable and the original automatic request.
+- UI, existing CLI commands and task tools call the shared operation owners.
+  Actor identity is host-derived; owner-only actions require a real member
+  chat/quiz/mailbox source and exact skill, revision and requested items. The
+  model interprets intent; no synthetic reference creates permission. Ordinary
+  Repair implies neither grant-all, attestation nor deletion.
+- Test the real installed script/tool/HTTP/widget/companion after review and
+  prerequisites, repeat after corrections, and inspect a widget screenshot.
+  Execution receipts name the actual dispatched revision; they are not PASS.
 
-Enforcement: `tests/test_skill_repair_hash_bind.py`; admission itself is the
-skill review gate (`skill_preflight` → `skill_review`).
+Enforcement: `tests/test_skill_development_revision.py`,
+`tests/test_skill_lifecycle_actions.py`, `tests/test_skill_development_execution.py`
+and the UI lane `tests/test_ui_smoke_skill_lifecycle.py`.
 
 ### Extension dispatch and isolated dependencies
 
@@ -2594,7 +2596,7 @@ ARCHITECTURE "MCP and browser-facing external tools";
 `ouroboros/mcp_client.py`). MCP descriptions and results are untrusted data,
 not policy: configuration trust must not turn remote prose into policy.
 Enabled tools join the initial capability envelope, still pass runtime
-safety, and remain unavailable in repair/heal contexts; discovery failure
+safety and the caller's ordinary capability ceiling; discovery failure
 becomes a visible capability omission. Stdio accepts one executable command
 and an exact string argument list — no shell, custom environment, or custom
 working directory. Tokens never appear in status responses

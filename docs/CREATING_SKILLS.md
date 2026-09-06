@@ -375,7 +375,7 @@ dropped in silence.
 
 ## The `skill_preflight` tool
 
-When you are writing a skill (or repairing one in heal mode),
+When you are writing or repairing a skill,
 `skill_preflight` runs cheap, offline syntax validators on the
 payload — in-process Python `compile()` for `.py` files (no
 `__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs` (a
@@ -409,9 +409,11 @@ skill_preflight(skill="weather", paths=["plugin.py"])
 
 ## Repair task path scheme and edit tools
 
-Skills repaired from the Skills or Marketplace UI run under a structured
-`task_constraint.mode="skill_repair"`. The constraint identifies the selected
-skill and payload root, so repair tools use payload-relative paths:
+Repair from the Skills or Marketplace UI starts an ordinary managed development
+task. Its normal task constraint records the selected skill and physical payload
+root; the task also retains the request source and initial content revision.
+Persisted `mode="skill_repair"` task records remain readable with the same ordinary
+tool capabilities. Payload-relative paths address the selected installation:
 
 | Tool | Repair path example | Use when |
 |------|---------------------|----------|
@@ -419,12 +421,25 @@ skill and payload root, so repair tools use payload-relative paths:
 | `edit_text` with `root=skill_payload` | `plugin.py` | One exact replacement in an existing file. |
 | `write_file` with `root=skill_payload` | `new_module.py` | New files or intentional full-file rewrites. |
 | `skill_preflight` | `skill="weather"` | Cheap read-only syntax/schema check before LLM review. |
-| `skill_review` | `skill="weather"` | Required final reviewer-slot review. |
+| `skill_review` | `skill="weather"` | Review the changed payload before execution. |
 
-Repair mode blocks shell, browser/search, scheduling, skill execution,
-repo commits, extension tools, key grants, and enable/disable flows. Finish
-with `skill_preflight` and `skill_review`; the owner enables or grants access
-after a fresh executable review.
+The task retains ordinary shell, browser, search, delegation and execution tools.
+The installed payload is usually a normal directory; an isolated Git copy through
+delegation is optional. Selected payload operations check the known revision;
+after an opaque shell command the task records the observed revision without
+claiming every concurrent change as its own.
+
+Test the repaired installation through its real script, extension tool, HTTP
+route, widget or companion after the normal review, dependencies and permissions
+checks. Review does not forcibly unload a working extension. Inspect widget
+screenshots and repeat the edit/review/execution cycle when fixes are needed.
+
+Repair alone does not authorize granting all permissions, attestation, deletion,
+or overriding an owner's explicit disable. Existing auto-grant policy still
+applies. `skill_owner_action` uses the shared lifecycle owners only with the
+specific action, revision and existing owner-intent source; a source reference
+alone is not permission. An automatic edit-and-review request retains
+`allow_enable=False` and does not gain enablement authority from being a Repair.
 
 ### Top-level short-form authoring (including light mode)
 
@@ -439,9 +454,9 @@ one returns a clear
 `bucket and skill_name must be supplied together` error instead of silently
 writing into the drive root.
 
-The constrained Skills UI Repair lane is intentionally narrower and unchanged:
-it still selects only its declared non-native payload and has no shell or
-delegation capability.
+The selected-skill constraint keeps payload-relative calls attached to their
+declared physical skill. Ordinary development capabilities remain available;
+selecting another payload is not an implicit redirect of this task's target.
 
 To **create a new skill** the payload directory need not pre-exist: writing the
 manifest at the payload root (`path="SKILL.md"` or `path="skill.json"`) is the
@@ -1344,7 +1359,7 @@ def register(api):
 | `SKILL_EXEC_BLOCKED: review status is 'pending'` | Run `skill_review` for this skill. |
 | `SKILL_TOGGLE_ERROR: dependency fingerprint is stale` | Re-run `skill_review`; post-review deps reconciliation will reinstall. |
 | `EXTENSION_NOT_LIVE` on tool dispatch | The skill is disabled or the loader had a load_error — check the Skills UI. |
-| `HEAL_MODE_BLOCKED: ...` | The Repair task tried to call a tool the internal heal-mode allowlist does not permit; finish the Repair flow with `skill_review` and exit. |
+| `SKILL_REPAIR_STALE: ...` | The selected payload or its admission revision changed; inspect the current state and the reported conflict before continuing. |
 | `PluginAPI.register_*` raises `ExtensionRegistrationError` | Usually the skill is missing the matching permission in its manifest. For `register_companion_process` the name must also be alnum/underscore and declared under `companion_processes` — see "Declaring a companion process". |
 | Reviewer marks `widget_module_safety: FAIL` | `widget.js` fetches outside `/api/extensions/<skill>/`, talks to the parent through its own `postMessage` protocol, declares a `start` mode heavier than the widget needs, or keeps state only inside the frame. Move data through your own routes and save it from `__ouroWidgetOnDispose` (autosave while running until the host's dispose acknowledgement ships). |
 

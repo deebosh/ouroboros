@@ -1,12 +1,15 @@
-"""Shared dependency-spec resolution for skill payloads."""
+"""Shared dependency-spec resolution and installed readiness for skill payloads."""
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from typing import Any, Dict, List
 
 from ouroboros.marketplace.install_specs import normalize_install_specs
 from ouroboros.utils import read_json_dict
+
+log = logging.getLogger(__name__)
 
 
 def _coerce_dependency_specs(raw: Any) -> Any:
@@ -141,3 +144,23 @@ def auto_install_specs_for_skill(drive_root: pathlib.Path, loaded: Any) -> List[
         return sidecar
 
     return _manifest_install_specs(getattr(loaded, "manifest", None))
+
+
+def skill_deps_not_ready(drive_root: pathlib.Path, loaded: Any) -> tuple[str, str]:
+    try:
+        from ouroboros.marketplace.install_specs import install_specs_hash as _specs_hash
+        from ouroboros.marketplace.isolated_deps import read_deps_state
+
+        auto_specs = auto_install_specs_for_skill(drive_root, loaded)
+        if not auto_specs:
+            return "", ""
+        deps_state = read_deps_state(drive_root, loaded.name, loaded.skill_dir)
+        deps_status = str(deps_state.get("status") or "pending")
+        if deps_status != "installed":
+            return deps_status, "status"
+        if str(deps_state.get("specs_hash") or "") != _specs_hash(auto_specs):
+            return deps_status, "fingerprint"
+        return "", ""
+    except Exception:
+        log.debug("skill deps readiness probe failed", exc_info=True)
+        return "", ""

@@ -283,6 +283,8 @@ function buildHealPrompt(skill) {
         source: boundedText(skill.source || 'unknown', 80),
         payload_root: boundedText(skill.payload_root || '', 300),
         type: boundedText(skill.type || 'unknown', 80),
+        initial_enabled: Boolean(skill.enabled),
+        content_hash: skill.content_hash || '',
         review_status: boundedText(skill.review_status || 'pending', 80),
         review_stale: Boolean(skill.review_stale),
         load_error: boundedText(skill.load_error || 'none', 2000),
@@ -310,9 +312,11 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
         });
     }
 
-    async function requestMissingKeyGrants(name, items) {
+    async function requestMissingKeyGrants(name, items, expectedContentHash = '') {
         const cleanItems = (items || []).map((k) => String(k || '').trim()).filter(Boolean);
         if (!cleanItems.length) return;
+        const revision = expectedContentHash || (await fetchSkills()).skills.find((skill) => skill.name === name)?.content_hash;
+        if (!revision) throw new Error('Skill revision is unavailable. Refresh and retry.');
         const ok = await openConfirmDialog({
             title: `Grant access to ${name}`,
             body: `Grant access to these keys and permissions for ${name}?\n\n${cleanItems.join('\n')}\n\nOnly grant access to reviewed skills you trust.`,
@@ -322,7 +326,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
         const bridge = window.pywebview?.api?.request_skill_key_grant;
         const result = bridge
             ? await bridge(name, cleanItems)
-            : await apiClient.skillGrants(name, cleanItems);
+            : await apiClient.skillGrants(name, cleanItems, revision);
         if (!result?.ok) {
             throw new Error(result?.error || 'Skill grant was cancelled.');
         }
@@ -409,7 +413,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
             const missingKeys = Array.isArray(grants.missing_keys) ? grants.missing_keys : (grants.requested_keys || []);
             const missingPermissions = Array.isArray(grants.missing_permissions) ? grants.missing_permissions : (grants.requested_permissions || []);
             const missing = keys.length ? keys : [...missingKeys, ...missingPermissions];
-            const result = await requestMissingKeyGrants(name, missing);
+            const result = await requestMissingKeyGrants(name, missing, skill.content_hash);
             if (result) {
                 showToast(`${name}: requested grants saved`, 'ok');
                 emitSkillLifecycle('grant', name, result);
@@ -423,7 +427,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
             const missingKeys = Array.isArray(grants.missing_keys) ? grants.missing_keys : (grants.requested_keys || []);
             const missingPermissions = Array.isArray(grants.missing_permissions) ? grants.missing_permissions : (grants.requested_permissions || []);
             const missing = keys.length ? keys : [...missingKeys, ...missingPermissions];
-            if (missing.length) await requestMissingKeyGrants(name, missing);
+            if (missing.length) await requestMissingKeyGrants(name, missing, skill.content_hash);
             await toggleSkillEnabled(name, true);
             return;
         }
@@ -435,7 +439,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
             }
             const ok = await openConfirmDialog({
                 title: `Repair ${name}`,
-                body: `Send a repair task for ${name} to Ouroboros? The agent will work on the skill in chat.`,
+                body: `Start a repair task for ${name}? Ouroboros will repair the selected skill and test the result using the normal development tools.`,
                 confirmLabel: 'Start repair',
                 danger: true,
             });
@@ -446,7 +450,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
                 const prompt = buildHealPrompt(skill);
                 await postWithFeedback('/api/command', {
                     cmd: prompt,
-                    task_constraint: { mode: 'skill_repair', skill_name: skill.name || name, payload_root: skill.payload_root || '', allow_enable: false, allow_review: true },
+                    task_constraint: { mode: 'normal', skill_name: skill.name || name, payload_root: skill.payload_root || '', allow_enable: true, allow_review: true },
                     visible_text: `Repair request sent for ${name}. Watch for its live card; if the task cannot start, chat will show why. Review re-runs when it finishes.`,
                     visible_task_id: `skill_repair_${name}`,
                 });
@@ -509,7 +513,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
         }
     }
 
-    async function attestSkillReviewInBackground(name) {
+    async function attestSkillReviewInBackground(name, expectedContentHash) {
         // Owner-attestation: SKIP only the expensive LLM review for the owner's own skill.
         // The deterministic preflight floor still runs server-side (a 409 surfaces here as a
         // thrown error caught by the click handler). Reuses the reviewingSkills lock + spinner.
@@ -520,7 +524,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
             showToast(`${name}: skipping LLM review (owner attestation)…`, 'warn');
             const result = await postWithFeedback(
                 `/api/owner/skills/${encodeURIComponent(name)}/attest-review`,
-                {}
+                { expected_content_hash: expectedContentHash }
             );
             showToast(`${name}: review skipped — owner-attested`, 'warn');
             emitSkillLifecycle('attest_review', name, result);
@@ -556,7 +560,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
                     const missingKeys = Array.isArray(grants.missing_keys) ? grants.missing_keys : (grants.requested_keys || []);
                     const missingPermissions = Array.isArray(grants.missing_permissions) ? grants.missing_permissions : (grants.requested_permissions || []);
                     const missing = [...missingKeys, ...missingPermissions];
-                    await requestMissingKeyGrants(name, missing);
+                    await requestMissingKeyGrants(name, missing, current.content_hash);
                 }
             }
             await toggleSkillEnabled(name, wantsEnabled);
@@ -666,6 +670,11 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
         }
         if (target.classList.contains('skills-attest-review')) {
             if (reviewingSkills.has(name)) return;
+            const current = (await fetchSkills()).skills.find((skill) => skill.name === name);
+            if (!current?.content_hash) {
+                showToast(`${name}: skill revision unavailable; refresh and retry`, 'warn');
+                return;
+            }
             const ok = await openConfirmDialog({
                 title: `Skip review for ${name}`,
                 body: `Skip the expensive LLM security review for ${name}? The deterministic safety preflight still runs and refuses an unsafe or invalid skill. Owner-attestation is logged for audit — only skip review for a skill you authored or fully trust.`,
@@ -675,7 +684,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
             if (!ok) return;
             target.disabled = true;
             try {
-                await attestSkillReviewInBackground(name);
+                await attestSkillReviewInBackground(name, current.content_hash);
             } catch (err) {
                 showToast(`${name}: ${err.message || err}`, 'danger');
             } finally {
@@ -758,6 +767,8 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
                 if (result.ok) emitSkillLifecycle('uninstall', name, result);
             } else if (target.classList.contains('skills-delete-local')) {
                 const payloadRoot = target.dataset.payloadRoot || `skills/external/${name}`;
+                const current = (await fetchSkills()).skills.find((skill) => skill.name === name);
+                if (!current?.content_hash) throw new Error('Skill revision is unavailable. Refresh and retry.');
                 const ok = await openConfirmDialog({
                     title: `Delete ${name}`,
                     body: `Delete ${name}? This deletes data/${payloadRoot}/ and data/state/skills/${name}/.`,
@@ -767,7 +778,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
                 if (!ok) {
                     return;
                 }
-                const result = await apiClient.deleteSkill(name, payloadRoot);
+                const result = await apiClient.deleteSkill(name, payloadRoot, current.content_hash);
                 showToast(
                     result.ok ? `${name}: deleted` : `${name}: delete failed — ${result.error}`,
                     result.ok ? 'ok' : 'danger',

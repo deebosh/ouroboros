@@ -484,7 +484,8 @@ def test_external_alias_does_not_widen_child_or_repair_profiles(
     _skill(data, "user-native")
     ctx = ToolContext(repo_dir=repo, drive_root=data, task_constraint=constraint)
 
-    with pytest.raises(ValueError, match="cannot select skill location=native"):
+    refusal = "cannot select skill location=native" if constraint.mode == "local_readonly_subagent" else "selected a different skill payload"
+    with pytest.raises(ValueError, match=refusal):
         build_resolved_resource_binding(
             ctx,
             root="skill_payload",

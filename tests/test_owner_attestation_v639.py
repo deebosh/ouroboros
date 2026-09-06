@@ -175,6 +175,9 @@ def test_owner_attest_allows_verified_ouroboroshub(monkeypatch, tmp_path):
     class _Manifest:
         entry = "plugin.py"
         scripts = []
+        env_from_settings = []
+        permissions = []
+        subscribe_events = []
 
         def validate(self):
             return []
@@ -190,6 +193,7 @@ def test_owner_attest_allows_verified_ouroboroshub(monkeypatch, tmp_path):
     skill = _Skill()
     skill.skill_dir.mkdir(parents=True)
     (skill.skill_dir / "plugin.py").write_text("def run(): pass\n", encoding="utf-8")
+    skill.content_hash = soa.compute_content_hash(skill.skill_dir, manifest_entry="plugin.py")
     monkeypatch.setattr(soa, "find_skill", lambda dr, n: skill)
     monkeypatch.setattr(soa._sr, "is_official_hub_payload_verified", lambda loaded: loaded is skill)
     monkeypatch.setattr(sr, "_run_deterministic_preflight", lambda *a, **k: None)

@@ -48,6 +48,7 @@ from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     build_resolved_resource_binding,
+    canonical_data_root,
     load_bound_skill,
 )
 
@@ -841,14 +842,6 @@ def _reconcile_deps_after_pass_review(
         return "failed", f"{type(exc).__name__}: {exc}"
 
 
-def _heal_mode(ctx: Any) -> bool:
-    try:
-        constraint = getattr(ctx, "task_constraint", None)
-        return bool(constraint and getattr(constraint, "mode", "") == "skill_repair")
-    except Exception:
-        return False
-
-
 def _outcome_payload(
     outcome: SkillReviewOutcome,
     *,
@@ -886,6 +879,8 @@ def _outcome_payload(
         "extension_reason": extension_reason,
         "extension_process": extension_process,
         "extension_server_reconcile": extension_server_reconcile,
+        "extension_load_error": getattr(outcome, "extension_load_error", None),
+        "extension_live_loaded": getattr(outcome, "extension_live_loaded", None),
     }
     if getattr(outcome, "convergence_hint", ""):
         payload["convergence_hint"] = outcome.convergence_hint
@@ -910,23 +905,9 @@ def _reconcile_extension_payload(
     drive_root: pathlib.Path,
     repo_path: str | None,
     binding: ResolvedResourceBinding | None,
-    heal_mode: bool,
     revert_enabled_on_error: bool = False,
 ) -> Dict[str, Any]:
     """Reconcile after review; the receipt also names the answering process."""
-    def heal(action: str) -> Dict[str, Any]:
-        return {"action": action, "reason": "heal_review_only", "process": "", "server_reconcile": ""}
-
-    if heal_mode:
-        try:
-            from ouroboros import extension_loader
-
-            if skill_name in extension_loader.snapshot()["extensions"]:
-                extension_loader.unload_extension(skill_name)
-                return heal("extension_unloaded")
-            return heal("extension_heal_review_only")
-        except Exception:
-            return heal("extension_heal_review_only")
     try:
         from ouroboros import extension_loader
 
@@ -946,9 +927,12 @@ def _reconcile_extension_payload(
             "reason": live_state.get("reason"),
             "process": str(live_state.get("process") or ""),
             "server_reconcile": str(live_state.get("server_reconcile") or ""),
+            "load_error": live_state.get("load_error"),
+            "live_loaded": live_state.get("live_loaded"),
         }
-    except Exception:
-        return {"action": None, "reason": None, "process": "", "server_reconcile": ""}
+    except Exception as exc:
+        return {"action": None, "reason": "reconcile_failed", "process": "", "server_reconcile": "",
+                "load_error": f"{type(exc).__name__}: {exc}", "live_loaded": None}
 
 
 def _on_started(
@@ -1261,7 +1245,7 @@ def run_skill_review_lifecycle_blocking(
             )
     drive_root = (
         binding.state_drive_root if binding is not None
-        else pathlib.Path(ctx.drive_root)
+        else canonical_data_root(ctx)
     )
     repo_path = repo_path if repo_path is not None else get_skills_repo_path()
     selected = _load_binding_skill(binding) if binding is not None else find_skill(
@@ -1321,11 +1305,21 @@ def run_skill_review_lifecycle_blocking(
                 )
             setattr(outcome, "deps_status", deps_status)
             setattr(outcome, "deps_error", deps_error)
-            if executable_review and getattr(outcome, "auto_flow", False) and deps_status == "failed":
-                outcome.status = STATUS_PENDING
-                outcome.error = deps_error or "self-authored dependency reconciliation failed"
-                executable_review = False
-            just_auto_enabled = bool(executable_review and getattr(outcome, "auto_flow", False))
+            from ouroboros.contracts.task_constraint import normalize_task_constraint
+            from ouroboros.skill_loader import grant_status_for_skill
+
+            current = _load_binding_skill(binding) if binding is not None else find_skill(
+                drive_root, skill_name, repo_path=repo_path,
+            )
+            constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+            just_auto_enabled = bool(
+                executable_review and getattr(outcome, "auto_flow", False)
+                and deps_status != "failed" and current is not None
+                and current.content_hash == outcome.content_hash
+                and grant_status_for_skill(drive_root, current).get("usable")
+                and (constraint is None or constraint.allow_enable)
+                and not (skill_state_dir(drive_root, skill_name) / "enabled.json").exists()
+            )
             if just_auto_enabled:
                 save_enabled(drive_root, skill_name, True, actor="review_auto_enable")
             progress.set("Reloading extension…")
@@ -1335,7 +1329,6 @@ def run_skill_review_lifecycle_blocking(
                 drive_root=drive_root,
                 repo_path=repo_path,
                 binding=binding,
-                heal_mode=_heal_mode(ctx),
                 revert_enabled_on_error=just_auto_enabled,
             )
             for key, value in reconcile.items():
@@ -1358,7 +1351,7 @@ def run_skill_review_lifecycle_blocking(
                 presentation=provenance,
                 progress_target=progress,
                 result_message=_review_result_message,
-                result_error=lambda item: getattr(item, "error", "") or getattr(item, "deps_error", "") or "",
+                result_error=lambda item: getattr(item, "error", "") or getattr(item, "deps_error", "") or getattr(item, "extension_load_error", "") or "",
                 on_started=_on_started(
                     drive_root, skill_name, content_hash, started_monotonic, provenance,
                     refresh_content_hash=lambda: _skill_content_hash(

@@ -883,98 +883,49 @@ def _request_auto_grant_reviewed_skills_change(enabled: bool, confirm_fn) -> dic
 
 
 def _request_skill_key_grant(skill: str, keys: list, confirm_fn) -> dict:
-    from ouroboros.skill_loader import (
-        find_skill,
-        requested_core_setting_keys,
-        requested_skill_permissions,
-        review_status_allows_execution,
-        save_skill_grants,
-    )
+    from types import SimpleNamespace
+    from ouroboros.skill_loader import find_skill
+    from ouroboros.skill_lifecycle_actions import prepare_skill_grant, run_skill_action
 
     skill_name = str(skill or "").strip()
-    requested_raw = [str(k or "").strip() for k in (keys or []) if str(k or "").strip()]
-    loaded = find_skill(
-        DATA_DIR,
-        skill_name,
-        repo_path=str(_load_settings().get("OUROBOROS_SKILLS_REPO_PATH") or ""),
-    )
+    items = [str(key or "").strip() for key in (keys or []) if str(key or "").strip()]
+    repo_path = str(_load_settings().get("OUROBOROS_SKILLS_REPO_PATH") or "")
+    loaded = find_skill(DATA_DIR, skill_name, repo_path=repo_path)
     if loaded is None:
         return {"ok": False, "error": f"Skill {skill_name!r} not found"}
-    if not (loaded.manifest.is_script() or loaded.manifest.is_extension()):
-        return {"ok": False, "error": "Key and permission grants are supported for script and extension skills."}
-    if not review_status_allows_execution(loaded.review.status) or loaded.review.is_stale_for(loaded.content_hash):
-        return {"ok": False, "error": "Key and permission grants require a fresh executable review."}
-    allowed = requested_core_setting_keys(list(loaded.manifest.env_from_settings or []))
-    allowed_permissions = requested_skill_permissions(
-        list(getattr(loaded.manifest, "permissions", []) or []),
-        list(getattr(loaded.manifest, "subscribe_events", []) or []),
-    )
-    allowed_permission_map = {permission.lower(): permission for permission in allowed_permissions}
-    requested_keys = [item.upper() for item in requested_raw if item.upper() in allowed]
-    requested_permissions = [
-        allowed_permission_map[item.lower()]
-        for item in requested_raw
-        if item.lower() in allowed_permission_map
-    ]
-    if not requested_raw or len(requested_keys) + len(requested_permissions) != len(requested_raw):
-        return {
-            "ok": False,
-            "error": f"Grant items must be requested by the current manifest: keys={allowed}, permissions={allowed_permissions}",
-        }
+    preview = prepare_skill_grant(loaded, DATA_DIR, items)
+    if preview.get("error"):
+        return preview
     message = (
         f"Grant skill {loaded.name!r} access to these settings keys / host permissions?\n\n"
-        + "\n".join([*requested_keys, *requested_permissions])
+        + "\n".join([*preview["keys"], *preview["permissions"]])
         + "\n\nOnly grant keys and permissions to reviewed skills you trust."
     )
     if not confirm_fn("Confirm Skill Grant", message):
         return {"ok": False, "error": "Skill grant cancelled."}
-    save_skill_grants(
-        DATA_DIR,
-        loaded.name,
-        requested_keys,
-        content_hash=loaded.content_hash,
-        requested_keys=allowed,
-        granted_permissions=requested_permissions,
-        requested_permissions=allowed_permissions,
-    )
-    # Extension grants must reconcile inside server.py, not the immutable launcher process.
-    extension_action = None
-    extension_reason = None
-    extension_load_error = None
-    if loaded.manifest.is_extension():
-        import json as _json
-        import urllib.parse as _urlparse
-        import urllib.request as _urlreq
 
-        try:
-            actual_port = _read_port_file() or AGENT_SERVER_PORT
-            req = _urlreq.Request(
-                f"http://127.0.0.1:{actual_port}/api/skills/"
-                f"{_urlparse.quote(loaded.name)}/reconcile",
-                method="POST",
-                data=b"{}",
-                headers={"Content-Type": "application/json"},
-            )
-            with _urlreq.urlopen(req, timeout=10) as resp:
-                payload = _json.loads(resp.read().decode("utf-8") or "{}")
-            extension_action = payload.get("extension_action")
-            extension_reason = payload.get("extension_reason")
-            extension_load_error = payload.get("load_error")
-        except Exception as exc:
-            log.warning(
-                "Skill grant saved but server-side reconcile failed for %s: %s",
-                loaded.name, exc, exc_info=True,
-            )
-            extension_reason = "reconcile_call_failed"
-    return {
-        "ok": True,
-        "skill": loaded.name,
-        "granted_keys": requested_keys,
-        "granted_permissions": requested_permissions,
-        "extension_action": extension_action,
-        "extension_reason": extension_reason,
-        "load_error": extension_load_error,
-    }
+    def reconcile_on_server(current):
+        # The immutable launcher never imports or registers the skill locally.
+        # Keep the existing server reconcile transport, after the shared grant
+        # owner has revalidated the revision confirmed above and saved its grant.
+        if not current.manifest.is_extension():
+            return {"action": None, "reason": None}
+        actual_port = _read_port_file() or AGENT_SERVER_PORT
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{actual_port}/api/skills/{urllib.parse.quote(current.name)}/reconcile",
+            method="POST", data=b"{}", headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+        return {"action": payload.get("extension_action"), "reason": payload.get("extension_reason"),
+                "load_error": payload.get("load_error"), "live_loaded": payload.get("live_loaded"),
+                "process": payload.get("process"), "server_reconcile": payload.get("server_reconcile")}
+
+    ctx = SimpleNamespace(drive_root=DATA_DIR, repo_dir=REPO_DIR, task_id="", current_chat_id=0)
+    return run_skill_action(
+        ctx, loaded.name, "grant", expected_content_hash=preview["content_hash"], items=items,
+        repo_path=repo_path, _owner_actor="owner_launcher", _reconcile_grant=reconcile_on_server,
+    )
 
 
 def _display_ready(backend) -> tuple[bool, str]:

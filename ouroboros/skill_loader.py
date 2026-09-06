@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import pathlib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ouroboros.contracts.skill_manifest import SkillManifest, SkillManifestError, canonical_skill_name, parse_skill_manifest_text
@@ -1526,6 +1526,8 @@ def summarize_skills(drive_root: pathlib.Path) -> Dict[str, Any]:
             "model_experience": s.manifest.model_experience,
             "type": s.manifest.type,
             "version": s.manifest.version,
+            "content_hash": s.content_hash,
+            "readiness": asdict(readiness) if readiness is not None else None,
             "enabled": s.enabled,
             "review_status": s.review.status,
             "review_stale": stale,

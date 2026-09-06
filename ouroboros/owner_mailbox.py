@@ -447,24 +447,28 @@ def drain_owner_entries(
     task_id: str,
     seen_ids: Optional[set] = None,
     attempt_key: Any = None,
+    *,
+    include_acknowledged: bool = False,
 ) -> List[dict]:
     """Read unseen mailbox entries without mutating the append-only mailbox.
 
     Revocations are resolved over the WHOLE mailbox before anything is yielded,
     so a control retracted by a later line is never delivered even if the reader
     had not drained it yet; the revocation lines themselves are protocol and are
-    never returned as content.
+    never returned as content. ``include_acknowledged`` supports exact owner-source
+    lookup after transcript delivery; it writes no acknowledgement or mailbox row.
     """
     path = _mailbox_path(drive_root, task_id)
     if not path.exists():
         return []
     if seen_ids is None:
         seen_ids = set()
-    seen_ids.update(
-        acknowledged_task_message_ids(
-            drive_root, task_id, attempt_key=attempt_key,
+    if not include_acknowledged:
+        seen_ids.update(
+            acknowledged_task_message_ids(
+                drive_root, task_id, attempt_key=attempt_key,
+            )
         )
-    )
     try:
         content = path.read_text(encoding="utf-8").strip()
         if not content:

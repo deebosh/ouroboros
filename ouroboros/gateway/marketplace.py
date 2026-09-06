@@ -352,7 +352,7 @@ def _maybe_enqueue_marketplace_auto_repair(
             broadcast=False,
             suppress_chat_log=True,
             task_constraint={
-                "mode": "skill_repair",
+                "mode": "normal",
                 "skill_name": skill.name,
                 "payload_root": payload_root,
                 "allow_enable": False,

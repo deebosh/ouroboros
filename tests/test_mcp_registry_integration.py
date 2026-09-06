@@ -252,7 +252,7 @@ def test_execute_blocks_mcp_when_safety_fails(registry, monkeypatch):
     assert fake.call_calls == []
 
 
-def test_execute_blocks_mcp_in_skill_repair_context(registry, monkeypatch):
+def test_execute_preserves_mcp_in_ordinary_skill_development(registry, monkeypatch):
     fake = _FakeTransport(
         [{"name": "echo", "description": "Echo back", "input_schema": {"type": "object", "properties": {}}}]
     )
@@ -269,9 +269,8 @@ def test_execute_blocks_mcp_in_skill_repair_context(registry, monkeypatch):
 
     monkeypatch.setattr(safety_mod, "check_safety", lambda *a, **kw: (True, ""))
     out = registry.execute("mcp_svc__echo", {"hello": "world"})
-    assert "HEAL_MODE_BLOCKED" in out
-    assert "MCP tools" in out
-    assert fake.call_calls == []
+    assert "echo(svc/echo)" in out
+    assert fake.call_calls and fake.call_calls[0][0] == "svc"
 
 
 def test_execute_unknown_mcp_returns_not_found(registry, monkeypatch):

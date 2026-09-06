@@ -503,42 +503,57 @@ OuroborosHub payloads are not attestable. The DETERMINISTIC preflight floor stil
 (409 on failure); only the LLM phase is skipped. The result is a durable `clean` verdict
 with `review_profile=owner_attested`, `reviewer_models=[owner_attestation]`, bound to
 `content_hash` (a content edit stales it) and valid only while the owner-issued
-`owner_attestation.json` marker is present. The AGENT can NEVER trigger this — the
-marker is an owner-state file (agent-write-blocked) and the endpoint is blocked from
-agent self-call on shell/CLI/browser channels (`prompts/SAFETY.md` DANGEROUS rule).
-This is the only owner-issued review-bypass.
+`owner_attestation.json` marker is present. The marker remains owner state, blocked from generic agent file writes and raw
+shell/CLI/browser endpoint self-calls. An ordinary task may carry an already
+expressed owner instruction through `skill_owner_action`; the shared host owner
+checks the actual caller, resolved member source, selected revision and source
+eligibility before invoking this same attestation. The model interprets the
+owner's words; a formatted reference alone grants nothing. This remains the
+only owner-issued review bypass.
 `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS` is default-on as of v6.10.0 (the owner
 may disable it), in which case a fresh executable review grants only
 manifest-declared settings keys and host permissions for that exact content
 hash; when disabled, key and permission grants remain explicit.
 
-The Skills UI Repair affordance is only a task starter: it asks Ouroboros
-to edit payload files and rerun `skill_review`. It must not write
-trust/control-plane state directly, auto-enable a repaired skill, or
-grant keys. Repair tasks carry the legacy `task_constraint.mode="skill_repair"` marker so deterministic
-tool guards allow `list_skills`, payload-oriented `read_file`/`list_files`/
-`write_file`/`edit_text` with `root=skill_payload`, `skill_review`, and
-`skill_preflight` for cheap offline syntax/manifest/widget
-validation, and block `toggle_skill`, `skill_exec`, shell/browser
-indirection, extension tools, broad repo mutation, and subtask delegation
-while the repair task is active.
-Payload data access is scoped to the selected non-native skill under
-`data/skills/external/<skill>/`, `data/skills/clawhub/<skill>/`, or
-`data/skills/ouroboroshub/<skill>/`. Marketplace/official provenance
-sidecars inside those payload roots (`.clawhub.json`, `.ouroboroshub.json`)
-remain control-plane state and are not writable from Repair mode. User-managed
-payloads physically left under `data/skills/native/` without `.seed-origin` are
-classified as logical `external` in place for ordinary top-level
-read/write/edit/shell/delegation in every runtime mode; no migration is needed.
-The constrained Repair contract itself remains non-native and does not gain
-that alias. A marker-present launcher seed stays read/review-only, and generic
-tools still cannot mutate `.seed-origin`, review/grant state, marketplace
-provenance, dependency sidecars, or other control state.
+The Skills UI Repair affordance and automatic repair both start ordinary managed
+development tasks. Keep the selected skill, source request and admitted payload
+revision; a legacy `task_constraint.mode="skill_repair"` record remains readable
+as a selected-resource binding, never a reduced execution profile. Ordinary file,
+shell, browser, delegation and functional skill operations remain available
+through their existing guards. Review must not force-unload a skill because the
+caller is repairing it. Preserve readonly and acting-child ceilings independently.
 
-The direct/read-only inspection profiles may read, list, and search a selected
-native payload, including ordinary payload markers and dependency directories;
-that read contract does not extend to native mutation, owner state, grants,
-review/enablement, acting selection, or the constrained Repair lane.
+Before a selected payload operation, verify the task's known revision. File-tool
+effects retain their existing attribution; after opaque process work, persist the
+observed payload revision without claiming exclusive authorship. A known foreign
+change refuses overwrite. No long shell lock, mandatory private Git copy, new
+patch pipeline or automatic rollback is implied. Native seeds with `.seed-origin`
+retain their existing protections. Ordinary user-managed native-directory payloads
+without that marker retain the existing logical-external binding. Generic tools
+cannot write provenance, review, grants, dependencies or other control state.
+
+UI, CLI and task calls share each existing lifecycle effect owner. An owner-only
+action names its exact action, selected skill and revision, requested grant items,
+and source of expressed owner intent. The host validates actual caller identity,
+source membership/provenance and current manifest/review/dependency restrictions;
+the acting model interprets the source's meaning. A formatted reference or an
+automatically generated repair request is not owner permission. Ordinary repair
+does not grant all permissions, self-attest or authorize deletion. Preserve the
+configured auto-grant policy, ClawHub no-Skip rule, and explicit owner disable/Stop.
+Do not require repeated owner clicks for operations already covered by the task.
+
+Keep review, grants, desired enablement, dependency readiness and loaded/tested
+revision as separate facts. A dependency or load failure does not rewrite a review
+verdict, and a functional test is not independent review PASS. Reconcile supported
+owner attestation through the same post-review lifecycle. Project the actual
+blocking phase and available next action; repeat review only when it addresses
+that blocker. Verify the real installed script/tool/HTTP/widget/companion flow
+and preserve an honest partial result if a required permission or runtime is
+unavailable.
+
+The direct/read-only inspection profiles retain their existing native read/list/
+search contract; ordinary Repair does not grant owner-state access or widen
+unrelated child/Presence authority.
 
 A selected `skill_publish` task may recover one exact known manifestless
 `user_repo` leaf through the existing selected-candidate binding: omitted

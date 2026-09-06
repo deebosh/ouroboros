@@ -22,6 +22,7 @@ class SkillReadiness:
     # G3 (capinv-447): declared dependencies that need manual installation —
     # disclosed ("kind:package"), never silently dropped; not a hard blocker.
     manual_dependencies: List[str] = field(default_factory=list)
+    next_actions: List[Dict[str, str]] = field(default_factory=list)
 
 
 _SKILL_PAYLOAD_EDIT_TOOLS = frozenset({
@@ -36,11 +37,11 @@ _ROOT_TASK_PROJECTION_MAX_RECORDS = 512
 
 def _skill_tool_identity_mapping() -> Dict[str, str]:
     """Live skill-tool name -> identity argument, derived from their schemas."""
-    from ouroboros.tools.skill_exec import _EXEC_SCHEMA, _REVIEW_SCHEMA, _TOGGLE_SCHEMA
+    from ouroboros.tools.skill_exec import _EXEC_SCHEMA, _REVIEW_SCHEMA, _TOGGLE_SCHEMA, _OWNER_ACTION_SCHEMA
     from ouroboros.tools.skill_preflight import _PREFLIGHT_SCHEMA
     from ouroboros.tools.skill_publish import _PUBLISH_SCHEMA
 
-    schemas = (_REVIEW_SCHEMA, _PREFLIGHT_SCHEMA, _EXEC_SCHEMA, _TOGGLE_SCHEMA, _PUBLISH_SCHEMA)
+    schemas = (_REVIEW_SCHEMA, _PREFLIGHT_SCHEMA, _EXEC_SCHEMA, _TOGGLE_SCHEMA, _PUBLISH_SCHEMA, _OWNER_ACTION_SCHEMA)
     return {
         str(schema["name"]): str(schema["parameters"]["required"][0])
         for schema in schemas
@@ -132,15 +133,28 @@ def acceptance_skill_lifecycle(
             rows.append({"name": name, "present": False})
             continue
         readiness = skill_readiness_for_execution(root, skill, skills=peers)
+        runtime = None
+        if skill.manifest.is_extension():
+            try:
+                from ouroboros.extension_loader import runtime_state_for_loaded_skill
+
+                live = runtime_state_for_loaded_skill(skill, root, skills=peers)
+                runtime = {key: live.get(key) for key in ("desired_live", "live_loaded", "reason", "load_error", "process")}
+            except Exception as exc:
+                runtime = {"live_loaded": None, "reason": "unavailable", "load_error": str(exc)}
         rows.append({
             "name": skill.name,
             "source": str(getattr(skill, "source", "") or ""),
+            "content_hash": skill.content_hash,
             "review_status": str(getattr(skill.review, "status", "") or ""),
             "review_stale": bool(skill.review.is_stale_for(skill.content_hash)),
             "enabled": bool(getattr(skill, "enabled", False)),
             "ready": bool(readiness.ready),
             "blockers": list(readiness.blockers),
             "manual_dependencies": list(readiness.manual_dependencies),
+            "grants": dict(readiness.grant_status),
+            "next_actions": list(readiness.next_actions),
+            "extension_runtime": runtime,
         })
     return rows
 
@@ -241,26 +255,31 @@ def skill_readiness_for_execution(
     blockers: List[str] = []
     agent_fixable: List[str] = []
     owner_action: List[str] = []
+    next_actions: List[Dict[str, str]] = []
 
     if getattr(skill, "load_error", ""):
         msg = f"load_error={skill.load_error!r}"
         blockers.append(msg)
         agent_fixable.append(msg)
+        next_actions.append({"phase": "payload", "tool": "skill_preflight", "reason": msg})
 
     stale = skill.review.is_stale_for(skill.content_hash)
     gate = skill_review_gate(skill.review.status, stale=stale)
     if stale:
         blockers.append("review_stale")
         agent_fixable.append("review_stale")
+        next_actions.append({"phase": "review", "tool": "skill_review", "reason": "review_stale"})
     elif not gate.get("executable_review"):
         reason = str(gate.get("blocking_reason") or "review_not_executable")
         msg = f"review_not_executable:{reason}"
         blockers.append(msg)
         agent_fixable.append(msg)
+        next_actions.append({"phase": "review", "tool": "skill_review", "reason": msg})
 
     if require_enabled and not getattr(skill, "enabled", False):
         blockers.append("skill_disabled")
-        owner_action.append("skill_disabled")
+        agent_fixable.append("skill_disabled")
+        next_actions.append({"phase": "enablement", "tool": "toggle_skill", "reason": "Enable only when requested; preserve intentional disablement."})
 
     from ouroboros.skill_loader import discover_skills, skill_conflict_status
 
@@ -272,6 +291,7 @@ def skill_readiness_for_execution(
         msg = f"skill_conflict{suffix}"
         blockers.append(msg)
         owner_action.append(msg)
+        next_actions.append({"phase": "conflict", "tool": "toggle_skill", "reason": "Resolve conflicting enablement according to owner intent."})
 
     grants: Dict[str, Any] = {}
     if require_grants:
@@ -284,6 +304,7 @@ def skill_readiness_for_execution(
             msg = f"missing_grants:keys={missing_keys},permissions={missing_permissions}"
             blockers.append(msg)
             owner_action.append(msg)
+            next_actions.append({"phase": "grants", "tool": "skill_owner_action", "reason": "Grant only manifest items covered by expressed owner intent; repeating review does not supply owner permission."})
 
     try:
         from ouroboros.marketplace.install_specs import install_specs_hash
@@ -301,9 +322,11 @@ def skill_readiness_for_execution(
                 msg = f"deps_not_ready:{deps_status}"
                 blockers.append(msg)
                 agent_fixable.append(msg)
+                next_actions.append({"phase": "dependencies", "tool": "skill_review", "reason": "Reconcile dependencies; an unchanged matched review verdict replays without a new panel."})
             elif deps_state.get("specs_hash") != install_specs_hash(auto_specs):
                 blockers.append("deps_stale")
                 agent_fixable.append("deps_stale")
+                next_actions.append({"phase": "dependencies", "tool": "skill_review", "reason": "Refresh the declared dependency fingerprint."})
         # G3 (capinv-447) third readiness state: manually-installed dependencies
         # are DISCLOSED, not silently dropped from the dependency list. They do
         # not hard-block (the owner may have installed them system-wide, and no
@@ -325,4 +348,5 @@ def skill_readiness_for_execution(
         grant_status=grants,
         conflict=conflict,
         manual_dependencies=manual_dependencies,
+        next_actions=next_actions,
     )

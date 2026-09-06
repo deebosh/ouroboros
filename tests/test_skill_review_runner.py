@@ -10,6 +10,7 @@ from ouroboros.skill_loader import (
     load_enabled,
     load_review_state,
     load_skill_grants,
+    save_skill_grants,
     save_review_state,
 )
 from ouroboros.skill_review import SkillReviewOutcome
@@ -342,6 +343,10 @@ def test_review_lifecycle_payload_surfaces_auto_flow_grants(tmp_path, monkeypatc
     repo_dir.mkdir()
     skills_root.mkdir(parents=True)
     skill_dir = _build_keyed_extension(skills_root, "alpha")
+    manifest_path = skill_dir / "SKILL.md"
+    manifest_path.write_text(manifest_path.read_text().replace(
+        "permissions: [read_settings]", "permissions: [read_settings, inject_chat]",
+    ), encoding="utf-8")
     _mark_self_authored(skill_dir)
     content_hash = compute_content_hash(skill_dir, manifest_entry="plugin.py")
     ctx = SimpleNamespace(drive_root=drive_root, repo_dir=repo_dir, messages=[])
@@ -357,6 +362,12 @@ def test_review_lifecycle_payload_surfaces_auto_flow_grants(tmp_path, monkeypatc
     )
 
     def fake_review(_ctx, _skill_name):
+        save_review_state(drive_root, "alpha", SkillReviewState(status="clean", content_hash=content_hash))
+        save_skill_grants(
+            drive_root, "alpha", ["OPENROUTER_API_KEY"], content_hash=content_hash,
+            requested_keys=["OPENROUTER_API_KEY"], granted_permissions=["inject_chat"],
+            requested_permissions=["inject_chat"],
+        )
         return SkillReviewOutcome(
             skill_name="alpha",
             status="pass",
@@ -409,6 +420,7 @@ def test_self_authored_review_does_not_enable_when_deps_fail(tmp_path, monkeypat
             reviewer_models=["reviewer"],
         )
         outcome.auto_flow = True
+        save_review_state(drive_root, "alpha", SkillReviewState(status="clean", content_hash=outcome.content_hash))
         return outcome
 
     payload = run_skill_review_lifecycle_blocking(
@@ -419,7 +431,9 @@ def test_self_authored_review_does_not_enable_when_deps_fail(tmp_path, monkeypat
         repo_path=str(drive_root / "skills"),
     )
 
-    assert payload["status"] == "pending"
+    assert payload["status"] == "clean"
+    assert load_review_state(drive_root, "alpha").status == "clean"
+    assert payload["error"] == ""
     assert payload["deps_status"] == "failed"
     assert "pip exploded" in payload["deps_error"]
     assert load_enabled(drive_root, "alpha") is False

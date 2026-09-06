@@ -93,13 +93,16 @@ def _canonical_promoted_repair_constraint(value: Any) -> tuple[Optional[dict], s
     from ouroboros.contracts.task_constraint import TaskConstraint, normalize_task_constraint
 
     constraint = normalize_task_constraint(value)
-    if constraint is None or constraint.mode != "skill_repair":
+    if constraint is None or not (
+        constraint.mode == "skill_repair"
+        or (constraint.mode == "normal" and (constraint.skill_name or constraint.payload_root))
+    ):
         return None, ""
     canonical = TaskConstraint(
-        mode="skill_repair",
+        mode="normal",
         skill_name=constraint.skill_name,
         payload_root=constraint.payload_root,
-        allow_enable=False,
+        allow_enable=constraint.allow_enable,
         allow_review=True,
     )
     try:
@@ -121,7 +124,7 @@ def _canonical_promoted_repair_constraint(value: Any) -> tuple[Optional[dict], s
         "mode": canonical.mode,
         "skill_name": canonical.skill_name,
         "payload_root": canonical.payload_root,
-        "allow_enable": False,
+        "allow_enable": canonical.allow_enable,
         "allow_review": True,
         "_base_content_hash": base_content_hash,
     }, ""
@@ -252,8 +255,8 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
                 "reason": "skill_repair_admission_unwritable",
                 "task_id": tid,
             }, attachment_manifest)
-        # Must be present before attach_task_contract so the managed root task
-        # enters execution with its confined repair profile, never ephemeral.
+        # Bind the selected resource before attach_task_contract. This remains
+        # an ordinary managed task; the selection is not a reduced tool profile.
         task["task_constraint"] = repair_constraint
     # Ingress-captured origin identity rides the task record (post-hoc UI convert
     # reads it from the persisted result — never re-derived from content).

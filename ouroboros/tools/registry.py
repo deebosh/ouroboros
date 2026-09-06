@@ -143,20 +143,17 @@ from ouroboros.tools.write_shape import _workspace_write_candidates  # noqa: F40
 from ouroboros.tools.registry_guards import (  # noqa: F401 — re-exported moved surface
     _EPHEMERAL_ALLOWED_TOOLS,
     _GITHUB_TOKEN_TOOLS,
-    _HEAL_MODE_ALLOWED_TOOLS,
     _WEB_TOOLS,
     _authorized_managed_update_resolver,
     _builtin_tool_availability,
     _command_mentions_protected_root,
     _disabled_tools,
     _executor_backend_candidate_allowed,
-    _heal_protected_payload_sidecar,
     _light_mode_payload_mutation_allowed,
     _managed_update_code_tool_block,
     _payload_dispatch_constraint,
     _resource_allowed,
     _stray_skill_payload_failsoft,
-    _task_constraint_path_allowed,
 )
 from ouroboros.tools.registry_guard_process import (  # noqa: F401 — re-exported moved surface
     _COMMAND_HEAD_WRAPPERS,
@@ -202,7 +199,6 @@ from ouroboros.tools.registry_guards import (  # noqa: F401 — re-exported move
     _capability_resource_guard_result,
     _ephemeral_block_result,
     _executor_backend_candidate_path,
-    _heal_mode_guard_result,
     _managed_update_code_tool_block_result,
     _subagent_and_update_guard_result,
     _workspace_write_block_outside_root_message,

@@ -24,7 +24,9 @@ from ouroboros.config import get_ouroboroshub_catalog_url, get_ouroboroshub_skil
 from ouroboros.marketplace.fetcher import FetchError, land_staged_tree
 from ouroboros.marketplace.install import (
     discard_payload_snapshot,
+    restore_lifecycle_state as _restore_adopt_state,
     restore_payload_state,
+    snapshot_lifecycle_state,
     snapshot_payload_state,
 )
 from ouroboros.marketplace.install_specs import install_specs_hash
@@ -502,7 +504,7 @@ async def run_hub_update(
     HTTP-layer seams — and the test monkeypatch points on the gateway module —
     stay authoritative.
     """
-    from ouroboros.skill_loader import review_status_allows_execution
+    from ouroboros.skill_loader import load_enabled, review_status_allows_execution
 
     drive_root = pathlib.Path(drive_root)
     target_dir = drive_root / "skills" / "ouroboroshub" / name
@@ -544,37 +546,18 @@ async def run_hub_update(
         )
     rollback_snapshot = snapshot_payload_state(drive_root, name, target_dir)
     was_live = False
-
-    async def _restore_previous_live(log_label: str) -> None:
-        if not was_live:
-            return
-        try:
-            from ouroboros.config import load_settings
-            from ouroboros.extension_loader import reconcile_extension
-
-            await run_blocking(
-                reconcile_extension,
-                name,
-                drive_root,
-                load_settings,
-                log_label=log_label,
-            )
-        except Exception:
-            log.debug("OuroborosHub failed-update re-reconcile failed for %s", name, exc_info=True)
-
+    desired_live = load_enabled(drive_root, name)
     try:
-        try:
-            from ouroboros.extension_loader import is_extension_live, unload_extension
+        from ouroboros.extension_loader import is_extension_live, unload_extension
 
-            was_live = bool(is_extension_live(name, drive_root))
-            progress.set("Unloading existing extension…")
-            await run_blocking(
-                unload_extension,
-                name,
-                log_label="OuroborosHub update extension unload lifecycle operation",
-            )
-        except Exception:
-            log.debug("OuroborosHub pre-update extension unload failed for %s", name, exc_info=True)
+        was_live = bool(is_extension_live(name, drive_root))
+        desired_live = desired_live or was_live
+        progress.set("Unloading existing extension…")
+        await run_blocking(
+            unload_extension,
+            name,
+            log_label="OuroborosHub update extension unload lifecycle operation",
+        )
         progress.set("Downloading from OuroborosHub…")
         result = await run_blocking(
             install,
@@ -585,41 +568,27 @@ async def run_hub_update(
         payload = serialize_hub_install_result(result)
         if result.ok:
             status, error, deps_status = await apply_review_and_deps(payload, result.sanitized_name)
-            if was_live and review_status_allows_execution(status) and not error and deps_status != "failed":
-                try:
-                    from ouroboros.config import load_settings
-                    from ouroboros.extension_loader import reconcile_extension
-
-                    progress.set("Reloading extension…")
-                    live_state = await run_blocking(
-                        reconcile_extension,
-                        result.sanitized_name,
-                        drive_root,
-                        load_settings,
-                        log_label="OuroborosHub update extension reload lifecycle operation",
-                    )
-                    payload.update({
-                        "extension_action": live_state.get("action"),
-                        "extension_reason": live_state.get("reason"),
-                    })
-                except Exception:
-                    log.debug("OuroborosHub post-update reconcile failed for %s", name, exc_info=True)
             if deps_status == "failed" or error or not review_status_allows_execution(status):
-                restore_payload_state(rollback_snapshot)
-                payload["rolled_back"] = True
-                await _restore_previous_live("OuroborosHub non-executable update restore lifecycle operation")
-            else:
-                discard_payload_snapshot(rollback_snapshot)
-        elif was_live:
-            restore_payload_state(rollback_snapshot)
-            payload["rolled_back"] = True
-            await _restore_previous_live("OuroborosHub failed-update extension restore lifecycle operation")
-        else:
-            discard_payload_snapshot(rollback_snapshot)
-        return payload
+                payload["ok"] = False
+                payload["error"] = payload.get("error") or error or f"review status {status!r} does not allow execution"
+            elif desired_live:
+                from ouroboros.config import load_settings
+                from ouroboros.extension_loader import reconcile_extension
+
+                progress.set("Reloading extension…")
+                live_state = await run_blocking(
+                    reconcile_extension, result.sanitized_name, drive_root, load_settings,
+                    log_label="OuroborosHub update extension reload lifecycle operation",
+                )
+                payload.update({
+                    "extension_action": live_state.get("action"),
+                    "extension_reason": live_state.get("reason"),
+                })
+                reload_error = _extension_reconcile_error(live_state)
+                if reload_error:
+                    payload["ok"] = False
+                    payload["error"] = f"extension reload failed after update: {reload_error}"
     except Exception as exc:
-        restore_payload_state(rollback_snapshot)
-        await _restore_previous_live("OuroborosHub exception-update extension restore lifecycle operation")
         log.warning("OuroborosHub update failed after snapshot for %s", name, exc_info=True)
         payload = serialize_hub_install_result(
             HubInstallResult(
@@ -629,23 +598,34 @@ async def run_hub_update(
                 target_dir=target_dir,
             )
         )
-        payload["rolled_back"] = True
+    if payload.get("ok"):
+        discard_payload_snapshot(rollback_snapshot)
         return payload
+    # One rollback site: a partial restore is an error, never a reason to run
+    # the destructive payload replacement a second time.
+    errors = []
+    try:
+        restore_payload_state(rollback_snapshot)
+    except Exception as exc:
+        errors.append(f"payload_restore: {type(exc).__name__}: {exc}")
+    if desired_live:
+        try:
+            reconcile_error = await run_blocking(
+                _reconcile_extension_quiet, name, drive_root,
+                log_label="OuroborosHub update rollback reconcile lifecycle operation",
+            )
+            if reconcile_error:
+                errors.append(reconcile_error)
+        except Exception as exc:
+            errors.append(f"live_reconcile: {type(exc).__name__}: {exc}")
+    payload["rolled_back"] = not errors
+    if errors:
+        payload["rollback_errors"] = errors
+        payload["error"] = str(payload.get("error") or "update failed") + " ROLLBACK INCOMPLETE: " + "; ".join(errors)
+    return payload
 
 
 # --- Adopt transaction (§7.3): replace an external occupant with the hub payload ---
-
-# The state files the adopt transaction may (re)write through install + review
-# + deps + auto-grant, snapshotted before the transaction and byte-restored on
-# rollback. review_history.jsonl / other append-only ledgers are intentionally
-# NOT restored (disclosed residual: abortive-review entries remain).
-_ADOPT_STATE_SNAPSHOT_FILENAMES = (
-    "review.json",
-    "review_job.json",
-    "deps.json",
-    "grants.json",
-    "accepted_rebuttals.json",
-)
 
 # Physical occupant location -> typed adopt_not_eligible reason (§7.3).
 _ADOPT_NOT_ELIGIBLE_REASONS = (
@@ -691,36 +671,22 @@ def _reconcile_extension_quiet(name: str, drive_root: pathlib.Path) -> str:
         from ouroboros.extension_loader import reconcile_extension
 
         state = reconcile_extension(name, pathlib.Path(drive_root), load_settings)
-        if isinstance(state, dict):
-            load_error = state.get("load_error") or (
-                str(state.get("reason") or "extension reload failed")
-                if str(state.get("action") or "") == "extension_load_error" else ""
-            )
-            if load_error:
-                return f"live_reconcile: {load_error}"
-        return ""
+        error = _extension_reconcile_error(state)
+        return f"live_reconcile: {error}" if error else ""
     except Exception as exc:
         log.warning("adopt reconcile failed for %s", name, exc_info=True)
         return f"live_reconcile: {type(exc).__name__}: {exc}"
 
 
-def _restore_adopt_state(drive_root: pathlib.Path, name: str, snapshot: Dict[str, Optional[bytes]]) -> List[str]:
-    """Byte-restore the state quintet; files absent pre-adopt are removed."""
-    errors: List[str] = []
-    state_dir = skill_state_dir(pathlib.Path(drive_root), name)
-    for filename, blob in snapshot.items():
-        path = state_dir / filename
-        try:
-            if blob is None:
-                path.unlink(missing_ok=True)
-            else:
-                tmp = path.with_name(path.name + ".adopt-restore.tmp")
-                tmp.write_bytes(blob)
-                tmp.replace(path)
-        except OSError as exc:
-            log.error("adopt rollback could not restore state file %s for %s", filename, name, exc_info=True)
-            errors.append(f"state:{filename}: {type(exc).__name__}: {exc}")
-    return errors
+def _extension_reconcile_error(state: Dict[str, Any]) -> str:
+    """An enabled extension must actually load before update/restore succeeds."""
+    if not isinstance(state, dict):
+        return "extension reconciliation returned no state"
+    if state.get("load_error") or state.get("action") == "extension_load_error":
+        return str(state.get("load_error") or state.get("reason") or "extension reload failed")
+    if state.get("type") == "extension" and state.get("enabled") and not state.get("live_loaded"):
+        return str(state.get("reason") or "enabled extension is not loaded")
+    return ""
 
 
 def _adopt_rollback(ctx: _AdoptContext) -> List[str]:
@@ -877,11 +843,7 @@ def _adopt_begin(slug: str, drive_root: pathlib.Path, expected_content_hash: str
         log.debug("adopt enabled-state read failed for %s", sanitized, exc_info=True)
 
     try:
-        state_dir = skill_state_dir(drive_root, sanitized)
-        state_snapshot: Dict[str, Optional[bytes]] = {}
-        for filename in _ADOPT_STATE_SNAPSHOT_FILENAMES:
-            path = state_dir / filename
-            state_snapshot[filename] = path.read_bytes() if path.is_file() else None
+        state_snapshot = snapshot_lifecycle_state(drive_root, sanitized)
         rollback_root = selected.skill_dir.parent / ".rollback"
         rollback_root.mkdir(parents=True, exist_ok=True)
         aside_dir = rollback_root / f"{sanitized}.adopt.{uuid.uuid4().hex}"
@@ -952,10 +914,9 @@ async def run_hub_adopt(
     ordinary install (its built-in identity precheck sees a clean tree), share
     the update path's review/deps orchestration, then reload.
 
-    Any failure after the source payload was moved aside rolls back the dest
-    payload plus the state quintet and reports ``rolled_back: true``. Unlike
-    update, a reload/load_error failure is TERMINAL for adopt (disclosed
-    asymmetry; aligning update is a separate issue).
+    Any failure after the source payload was moved aside restores the payload
+    and affected lifecycle state. Like update, reload failures are terminal;
+    ``rolled_back`` is true only after restoration has been verified.
     """
     from ouroboros.skill_loader import review_status_allows_execution
 
@@ -1032,8 +993,7 @@ async def run_hub_adopt(
                     "extension_action": live_state.get("action"),
                     "extension_reason": live_state.get("reason"),
                 })
-                if str(live_state.get("action") or "") == "extension_load_error" or live_state.get("load_error"):
-                    reload_error = str(live_state.get("load_error") or "extension reload failed")
+                reload_error = _extension_reconcile_error(live_state)
             except Exception as exc:
                 reload_error = f"{type(exc).__name__}: {exc}"
             if reload_error:
