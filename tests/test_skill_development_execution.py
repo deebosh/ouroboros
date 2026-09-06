@@ -41,13 +41,25 @@ def development(tmp_path, monkeypatch):
     registry._ctx.task_id = "develop-demo"
     registry._ctx.current_chat_id = 42
     registry._ctx.task_constraint = TaskConstraint(
-        skill_name="demo", payload_root="skills/external/demo", allow_enable=True,
+        skill_name="demo", payload_root="skills/external/demo", allow_enable=False,
     )
     return registry, repo, drive, calls
 
 
 def _admit(registry, drive, payload):
+    from dataclasses import asdict
+    from ouroboros.project_dialogue import build_owner_message_ref
+    from ouroboros.task_results import write_task_result
+    from ouroboros.utils import append_jsonl, utc_now_iso
+
     _mark_self_authored(payload, drive)
+    text = "Repair and run demo; leave the repaired installation working."
+    ref = build_owner_message_ref(chat_id=42, client_message_id="repair-demo",
+                                  ts=utc_now_iso(), text=text)
+    append_jsonl(drive / "logs" / "chat.jsonl", {**ref, "direction": "in", "text": text, "source": "web"})
+    write_task_result(drive, registry._ctx.task_id, "running", chat_id=42,
+                      task_constraint=asdict(registry._ctx.task_constraint),
+                      origin_message_ref=ref, origin_message_text=text)
     record_repair_admission(drive, "demo", task_id=registry._ctx.task_id,
                             base_content_hash=compute_content_hash(payload))
 
@@ -76,7 +88,9 @@ def test_installed_script_edit_review_execute_repeat_without_owner_click(develop
         hashes.append(state.content_hash)
         assert state.status == "clean", checked
         assert state.content_hash == compute_content_hash(payload)
-        assert load_enabled(drive, "demo")
+        # Review is not enable authority; the ordinary task chooses its toggle.
+        enabled = registry.execute("toggle_skill", {"skill": "demo", "enabled": True})
+        assert load_enabled(drive, "demo"), enabled
         actual = json.loads(registry.execute("skill_exec", {"skill": "demo", "script": "run.py"}))
         assert actual["exit_code"] == 0 and text in actual["stdout"], actual
         assert actual["content_hash"] == state.content_hash
@@ -152,9 +166,15 @@ def test_review_verdict_survives_visible_extension_load_failure(development, mon
         monkeypatch.setattr(extension_loader, "reconcile_extension", fail_reconcile)
     result = run_skill_review_lifecycle_blocking(registry._ctx, "demo")
     assert result["status"] == "clean", result
+    # Controlled reconciliation errors still describe review's reconciliation;
+    # a plugin load starts only when this task explicitly enables it.
+    if failure == "plugin":
+        result = registry.execute("toggle_skill", {"skill": "demo", "enabled": True})
+        assert "controlled plugin failure" in result, result
+    else:
+        assert "controlled" in result["extension_load_error"], result
+        assert result["extension_live_loaded"] is not True
+        job = json.loads((drive / "state" / "skills" / "demo" / "review_job.json").read_text())
+        assert job["lifecycle_status"] == "failed"
+        assert job["review_status"] == "clean"
     assert load_review_state(drive, "demo").status == "clean"
-    assert "controlled" in result["extension_load_error"], result
-    assert result["extension_live_loaded"] is not True
-    job = json.loads((drive / "state" / "skills" / "demo" / "review_job.json").read_text())
-    assert job["lifecycle_status"] == "failed"
-    assert job["review_status"] == "clean"

@@ -102,7 +102,9 @@ def _canonical_promoted_repair_constraint(value: Any) -> tuple[Optional[dict], s
         mode="normal",
         skill_name=constraint.skill_name,
         payload_root=constraint.payload_root,
-        allow_enable=constraint.allow_enable,
+        # Selection is not enable authority. The task resolves its real owner
+        # source when it chooses to enable the repaired installation.
+        allow_enable=False,
         allow_review=True,
     )
     try:

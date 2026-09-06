@@ -18,10 +18,10 @@ from ouroboros.skill_lifecycle_queue import LifecycleJobOptions, run_lifecycle_j
 from ouroboros.skill_loader import (
     discover_skills, find_skill, grant_status_for_skill, requested_core_setting_keys,
     requested_skill_permissions, save_enabled, save_skill_grants, skill_conflict_status,
-    skill_review_gate,
+    skill_review_gate, skill_state_dir,
 )
 from ouroboros.tool_access import active_tool_profile, canonical_data_root
-from ouroboros.utils import append_jsonl, utc_now_iso
+from ouroboros.utils import append_jsonl, read_json_dict, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def resolve_skill_owner_source(ctx: Any, source: Any) -> dict[str, Any]:
         ref = source.get("ref")
         if not owner_message_ref_is_valid(ref):
             return {}
-        task = load_effective_task_result(drive, task_id) if task_id else {}
+        task = load_effective_task_result(drive, task_id, materialize_artifacts=False) if task_id else {}
         chat_id = getattr(ctx, "current_chat_id", None)
         if ref.get("chat_id") != chat_id and ref != (task or {}).get("origin_message_ref"):
             return {}
@@ -66,7 +66,7 @@ def resolve_skill_owner_source(ctx: Any, source: Any) -> dict[str, Any]:
         # retaining an inbound-looking row or a copied owner reference.
         if row.get("system_type") or row.get("presence") or row.get("source") == "skill_repair":
             return {}
-        return {"kind": kind, "ref": dict(ref), "text": row["text"]}
+        return {"kind": kind, "ref": dict(ref), "ts": row["ts"], "text": row["text"]}
     if not task_id or source.get("task_id") != task_id:
         return {}
     if kind == "quiz":
@@ -82,7 +82,7 @@ def resolve_skill_owner_source(ctx: Any, source: Any) -> dict[str, Any]:
         if not label and not str(row.get("comment") or "").strip():
             return {}
         return {"kind": kind, "task_id": task_id, "quiz_id": row["quiz_id"],
-                "request_id": row["request_id"], "text": text}
+                "request_id": row["request_id"], "ts": row.get("answered_at"), "text": text}
     if kind == "mailbox":
         from ouroboros.owner_mailbox import KIND_OWNER_TEXT, drain_owner_entries
 
@@ -106,15 +106,26 @@ def _caller_action_error(ctx: Any, action: str, owner_actor: str, owner_source: 
     if task_id and cancel_pending(canonical_data_root(ctx), task_id):
         return "the task has a pending Stop; its skill action was not performed", {}
     constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+    from ouroboros.presence_authority import presence_ceiling_from_context
+
+    # A selected payload or a copied owner reference cannot widen Presence.
+    if presence_ceiling_from_context(ctx) is not None:
+        return "a Presence task cannot issue owner-only skill authority", {}
     needs_owner = action in {"grant", "attest", "delete"} or (
-        action == "enable" and constraint is not None and not constraint.allow_enable
+        action == "enable" and constraint is not None
+        and (constraint.has_selected_skill or not constraint.allow_enable)
     )
     if not needs_owner:
         return "", {}
-    from ouroboros.presence_authority import presence_ceiling_from_context
+    if action == "enable" and owner_source is None:
+        from ouroboros.task_status import load_effective_task_result
 
-    if presence_ceiling_from_context(ctx) is not None:
-        return "a Presence task cannot issue owner-only skill authority", {}
+        task = load_effective_task_result(canonical_data_root(ctx), task_id, materialize_artifacts=False) if task_id else {}
+        metadata = getattr(ctx, "task_metadata", None)
+        origin = (task or {}).get("origin_message_ref")
+        if not origin and isinstance(metadata, dict):
+            origin = metadata.get("origin_message_ref")
+        owner_source = {"kind": "chat", "ref": origin}
     resolved = resolve_skill_owner_source(ctx, owner_source)
     if not resolved:
         return "an existing owner message, answered quiz or owner mailbox entry in this task is required", {}
@@ -272,6 +283,19 @@ def run_skill_action(
             binding = build_resolved_resource_binding(ctx, root="skill_payload", operation="review", skill_name=skill_name)
             if Path(loaded.skill_dir).resolve() != binding.base_path:
                 return None, _refusal("selected skill payload does not match this task", 403)
+            if action == "enable" and not _owner_actor:
+                from ouroboros.deadline_utils import parse_deadline_ts
+
+                enabled_state = read_json_dict(skill_state_dir(drive, skill_name) / "enabled.json") or {}
+                # Only known direct owner actors attest an independent choice.
+                # Load-error reverts and old unlabelled snapshots do not.
+                if enabled_state.get("enabled") is False and enabled_state.get("actor") in {
+                    "owner_ui", "owner_cli", "owner_launcher",
+                }:
+                    disabled_at = parse_deadline_ts(enabled_state.get("updated_at"))
+                    source_at = parse_deadline_ts(source.get("ts"))
+                    if disabled_at is None or source_at is None or source_at <= disabled_at:
+                        return None, _refusal("the owner disabled this skill after the referenced request; use a newer owner instruction", 403)
         return loaded, None
 
     def audit(result):

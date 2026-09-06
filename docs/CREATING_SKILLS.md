@@ -465,8 +465,9 @@ skill_preflight(skill="weather", paths=["plugin.py"])
 
 ## Repair task path scheme and edit tools
 
-Repair from the Skills or Marketplace UI starts an ordinary managed development
-task. Its normal task constraint records the selected skill and physical payload
+**Repair and run** from the Skills or Marketplace UI starts an ordinary managed
+development task. The confirmed request is retained as a real owner message, not
+a presentation-only acknowledgement. Its normal task constraint records the selected skill and physical payload
 root; the task also retains the request source and initial content revision.
 Persisted `mode="skill_repair"` task records remain readable with the same ordinary
 tool capabilities. Payload-relative paths address the selected installation:
@@ -490,9 +491,11 @@ route, widget or companion after the normal review, dependencies and permissions
 checks. Review does not forcibly unload a working extension. Inspect widget
 screenshots and repeat the edit/review/execution cycle when fixes are needed.
 
-Repair alone does not authorize granting all permissions, attestation, deletion,
-or overriding an owner's explicit disable. Existing auto-grant policy still
-applies. `skill_owner_action` uses the shared lifecycle owners only with the
+Repair and run authorizes enabling and testing the repaired installation, leaving
+it working. After review, the model calls `toggle_skill`; the host resolves the
+task's actual original owner message by default. A later direct owner disable
+requires a newer owner instruction. Repair does not authorize granting all
+permissions, attestation or deletion. Existing auto-grant policy still applies. `skill_owner_action` uses the shared lifecycle owners only with the
 specific action, revision and existing owner-intent source; a source reference
 alone is not permission. An automatic edit-and-review request retains
 `allow_enable=False` and does not gain enablement authority from being a Repair.

@@ -295,7 +295,7 @@ function buildHealPrompt(skill) {
         })),
     };
     return renderSkillRepairPrompt(
-        'Repair the installed Ouroboros skill selected in the Skills UI.',
+        'Repair and run the installed Ouroboros skill selected in the Skills UI.',
         JSON.stringify(diagnostics, null, 2),
     );
 }
@@ -438,9 +438,9 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
                 return;
             }
             const ok = await openConfirmDialog({
-                title: `Repair ${name}`,
-                body: `Start a repair task for ${name}? Ouroboros will repair the selected skill and test the result using the normal development tools.`,
-                confirmLabel: 'Start repair',
+                title: `Repair and run ${name}`,
+                body: `Start a repair task for ${name}? Ouroboros will repair the selected skill, review it, enable it when its prerequisites are ready, and test the result. The repaired skill stays running unless you stop or disable it. If the task cannot start, chat will show why.`,
+                confirmLabel: 'Repair and run',
                 danger: true,
             });
             if (!ok) return;
@@ -450,8 +450,7 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
                 const prompt = buildHealPrompt(skill);
                 await postWithFeedback('/api/command', {
                     cmd: prompt,
-                    task_constraint: { mode: 'normal', skill_name: skill.name || name, payload_root: skill.payload_root || '', allow_enable: true, allow_review: true },
-                    visible_text: `Repair request sent for ${name}. Watch for its live card; if the task cannot start, chat will show why. Review re-runs when it finishes.`,
+                    task_constraint: { mode: 'normal', skill_name: skill.name || name, payload_root: skill.payload_root || '', allow_enable: false, allow_review: true },
                     visible_task_id: `skill_repair_${name}`,
                 });
                 showToast(`${name}: repair request sent to Ouroboros`, 'ok');

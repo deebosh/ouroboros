@@ -136,7 +136,7 @@ export function lifecycleFor(summary, installed, pending) {
             label: 'Install needs fix',
             hint: installed.load_error,
             action: 'fix',
-            button: 'Repair',
+            button: 'Repair and run',
         };
     }
     if (installed.review_status === 'blockers' && !reviewReady(installed, { requireFresh: true })) {
@@ -146,7 +146,7 @@ export function lifecycleFor(summary, installed, pending) {
             label: 'Review blockers',
             hint: finding || 'Review has blocker findings; ask Ouroboros to repair the skill payload.',
             action: 'fix',
-            button: 'Repair',
+            button: 'Repair and run',
         };
     }
     // #335: a deterministic preflight FAIL persists as pending — Re-review
@@ -158,7 +158,7 @@ export function lifecycleFor(summary, installed, pending) {
             label: 'Preflight failed',
             hint: finding || 'The deterministic preflight failed; ask Ouroboros to repair the skill payload.',
             action: 'fix',
-            button: 'Repair',
+            button: 'Repair and run',
         };
     }
     // D11: the recorded preflight FAIL is stale for the current payload bytes —
@@ -255,7 +255,7 @@ function buildHealPrompt(installed, summary) {
         })),
     };
     return renderSkillRepairPrompt(
-        'Repair the ClawHub skill selected in the Marketplace UI.',
+        'Repair and run the ClawHub skill selected in the Marketplace UI.',
         JSON.stringify(diagnostics, null, 2),
     );
 }
@@ -268,7 +268,7 @@ function buildHealPrompt(installed, summary) {
 export function staleRepairSecondaryHtml(slug, installed, pending) {
     if (pending || !installed) return '';
     if (!preflightFailedStale(installed) || preflightFailed(installed)) return '';
-    return `<button class="btn btn-default" data-mp-action="fix" data-slug="${escapeHtml(slug)}" title="Repair based on the last recorded preflight — the payload changed since that run">Repair</button>`;
+    return `<button class="btn btn-default" data-mp-action="fix" data-slug="${escapeHtml(slug)}" title="Repair based on the last recorded preflight — the payload changed since that run">Repair and run</button>`;
 }
 
 
@@ -592,16 +592,15 @@ export function initMarketplace(pane, controlsHost = null) {
         }
         if (action === 'fix' && installed) {
             const ok = await openConfirmDialog({
-                title: `Repair ${installed.name || slug}`,
-                body: `Start a repair task for ${installed.name || slug}? Ouroboros will repair the selected skill and test the result using the normal development tools.`,
-                confirmLabel: 'Start repair',
+                title: `Repair and run ${installed.name || slug}`,
+                body: `Start a repair task for ${installed.name || slug}? Ouroboros will repair the selected skill, review it, enable it when its prerequisites are ready, and test the result. The repaired skill stays running unless you stop or disable it. If the task cannot start, chat will show why.`,
+                confirmLabel: 'Repair and run',
             });
             if (!ok) return;
             setPending(slug, { label: 'Repair requested', tone: 'warn', message: 'Sending repair request…' });
             await jsonPost('/api/command', {
                 cmd: buildHealPrompt(installed, summary),
-                task_constraint: { mode: 'normal', skill_name: installed.name || '', payload_root: installed.payload_root || '', allow_enable: true, allow_review: true },
-                visible_text: `Repair request sent for ${installed.name || slug}. Watch for its live card; if the task cannot start, chat will show why. Review re-runs when it finishes.`,
+                task_constraint: { mode: 'normal', skill_name: installed.name || '', payload_root: installed.payload_root || '', allow_enable: false, allow_review: true },
                 visible_task_id: `skill_repair_${installed.name || slug}`,
             });
             showStatus(pane, `${slug}: repair request sent — watch for its live card`, 'ok');

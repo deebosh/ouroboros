@@ -1186,7 +1186,11 @@ _TOGGLE_SCHEMA = {
     "description": (
         "Enable or disable a skill. Disabled skills are excluded from "
         "skill_exec regardless of review status. Enabling requires a fresh "
-        "executable review and any requested key or host-permission grants."
+        "executable review and any requested key or host-permission grants. "
+        "For selected-skill development, interpret the real owner request: "
+        "Repair and run authorizes enabling and leaving the repaired skill running. "
+        "The host resolves that task's original owner message when owner_source is omitted; "
+        "automatic repair-and-review alone grants no enable authority."
     ),
     "parameters": {
         "type": "object",
@@ -1200,7 +1204,7 @@ _TOGGLE_SCHEMA = {
                 "description": "True to enable, False to disable.",
             },
             "expected_content_hash": {"type": "string", "description": "Optional exact selected payload revision."},
-            "owner_source": {"type": "object", "description": "Existing owner source if a generated task originally excluded enabling; same shape as skill_owner_action."},
+            "owner_source": {"type": "object", "description": "Existing owner source when enabling a selected skill; omitted uses the task's actual owner origin. Use a newer message/quiz/mailbox reply after an intentional disable. Same shape as skill_owner_action."},
         },
         "required": ["skill", "enabled"],
     },

@@ -1340,7 +1340,7 @@ def test_promoted_skill_repair_is_ordinary_managed_task_with_selected_resource(t
         "mode": "normal",
         "skill_name": "alpha",
         "payload_root": "skills/external/alpha",
-        "allow_enable": True,
+        "allow_enable": False,
         "allow_review": True,
     }
     assert task["task_contract"]["objective"] == "Repair alpha and re-run review"

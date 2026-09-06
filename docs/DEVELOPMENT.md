@@ -1146,7 +1146,11 @@ memory/context decision.
 ### Skill repair and payload lanes
 
 - Start Repair as ordinary managed development carrying the selected skill,
-  source request and admitted revision. Read existing `skill_repair` records as
+  source request and admitted revision. The UI's Repair and run request is a real
+  owner message; its origin follows the ordinary task path. Resolve that source
+  when the model enables the repaired skill, never trust a client allow_enable
+  flag. Preserve a later direct owner disable; a load-error revert is not one.
+  Read existing `skill_repair` records as
   selectors, never as a reduced profile. Preserve normal file, shell, browser
   and delegation tools, with existing readonly/acting-child ceilings.
 - Keep installed payloads as ordinary directories; a delegated Git copy is an

@@ -278,8 +278,8 @@ def skill_readiness_for_execution(
 
     if require_enabled and not getattr(skill, "enabled", False):
         blockers.append("skill_disabled")
-        agent_fixable.append("skill_disabled")
-        next_actions.append({"phase": "enablement", "tool": "toggle_skill", "reason": "Enable only when requested; preserve intentional disablement."})
+        owner_action.append("skill_disabled")
+        next_actions.append({"phase": "enablement", "tool": "toggle_skill", "reason": "Use the existing owner request when it covers enabling; Repair and run needs no new approval. Preserve later owner disablement."})
 
     from ouroboros.skill_loader import discover_skills, skill_conflict_status
 

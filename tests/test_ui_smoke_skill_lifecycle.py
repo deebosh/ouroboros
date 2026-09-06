@@ -108,6 +108,8 @@ def test_installed_repair_reloads_tool_route_widget_and_companion(direct_server_
     from ouroboros.platform_layer import pid_is_alive
     from ouroboros.skill_loader import compute_content_hash, load_review_state
     from ouroboros.skill_repair_admission import record_repair_admission
+    from ouroboros.project_dialogue import build_owner_message_ref
+    from ouroboros.utils import append_jsonl, utc_now_iso
     from ouroboros.tools.registry import ToolRegistry
     from tests._extension_loader_shared import _write_ext_skill
     from tests._skill_review_shared import _make_actor, _pass_array_for_script_skill, _patch_review
@@ -151,7 +153,12 @@ def test_installed_repair_reloads_tool_route_widget_and_companion(direct_server_
     monkeypatch.setattr(skill_review, "_review_wave_budget_block", lambda *a, **k: None)
     registry = ToolRegistry(repo_dir=Path(__file__).resolve().parents[1], drive_root=drive)
     registry._ctx.task_id = "live-repair"
-    registry._ctx.task_constraint = TaskConstraint(skill_name=name, payload_root=f"skills/external/{name}")
+    registry._ctx.current_chat_id = 42
+    registry._ctx.task_constraint = TaskConstraint(skill_name=name, payload_root=f"skills/external/{name}", allow_enable=False)
+    owner_text = "Repair and run the installed application, leaving it working."
+    origin = build_owner_message_ref(chat_id=42, client_message_id="repair-fixture", ts=utc_now_iso(), text=owner_text)
+    append_jsonl(drive / "logs" / "chat.jsonl", {**origin, "direction": "in", "text": owner_text, "source": "web"})
+    registry._ctx.task_metadata = {"origin_message_ref": origin}
     record_repair_admission(drive, name, task_id="live-repair", base_content_hash=compute_content_hash(payload))
     canned = json.dumps({"results": [_make_actor(f"reviewer-{n}", _pass_array_for_script_skill()) for n in range(3)]})
 
@@ -180,6 +187,8 @@ def test_installed_repair_reloads_tool_route_widget_and_companion(direct_server_
                 state = load_review_state(drive, name)
                 assert state.status == "clean", reviewed
                 revisions.append(state.content_hash)
+                enabled = registry.execute("toggle_skill", {"skill": name, "enabled": True})
+                assert json.loads(enabled)["enabled"], enabled
                 reconciled = api(f"/api/skills/{name}/reconcile", {})
                 assert not reconciled.get("load_error"), reconciled
                 assert api(f"/api/extensions/{name}/status")["value"] == value

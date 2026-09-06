@@ -1317,7 +1317,7 @@ def run_skill_review_lifecycle_blocking(
                 and deps_status != "failed" and current is not None
                 and current.content_hash == outcome.content_hash
                 and grant_status_for_skill(drive_root, current).get("usable")
-                and (constraint is None or constraint.allow_enable)
+                and (constraint is None or (constraint.allow_enable and not constraint.has_selected_skill))
                 and not (skill_state_dir(drive_root, skill_name) / "enabled.json").exists()
             )
             if just_auto_enabled:

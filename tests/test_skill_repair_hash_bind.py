@@ -136,8 +136,10 @@ class TestAdmissionCapture:
         canonical, error = workers._canonical_promoted_repair_constraint({
             "mode": "skill_repair", "skill_name": "alpha",
             "payload_root": "skills/external/alpha",
+            "allow_enable": True,
         })
         assert error == "" and canonical is not None
+        assert canonical["allow_enable"] is False
         assert canonical["_base_content_hash"] == _hash(payload)
         # The binding site pops the hash and records the admission keyed by the
         # REAL task id (exercised end-to-end by the promote-flow tests); here we

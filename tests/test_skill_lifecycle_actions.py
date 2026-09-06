@@ -107,6 +107,47 @@ def test_auto_repair_cannot_enable_from_its_generated_request(skill_actor):
     assert run_skill_action(ctx, "demo", "disable")["enabled"] is False
 
 
+@pytest.mark.parametrize("allow_enable", [False, True])
+def test_selected_enable_requires_real_source_even_when_client_allows_it(skill_actor, allow_enable):
+    ctx, _skill, revision = skill_actor
+    ctx.task_constraint = TaskConstraint(skill_name="demo", payload_root="skills/external/demo", allow_enable=allow_enable)
+    source = _owner_chat(ctx, text="Repair and run demo; leave it working.")
+    assert run_skill_action(ctx, "demo", "enable")["status_code"] == 403
+    grant = run_skill_action(ctx, "demo", "grant", expected_content_hash=revision,
+                              items=["inject_chat"], owner_source=source)
+    assert grant["ok"], grant
+    ctx.task_metadata = {"origin_message_ref": source["ref"]}
+    enabled = run_skill_action(ctx, "demo", "enable")
+    assert enabled["ok"] and enabled["enabled"], enabled
+
+
+@pytest.mark.parametrize("actor", ["owner_ui", "owner_cli", "owner_launcher", "load_error_revert", ""])
+def test_only_proven_later_owner_disable_supersedes_repair_intent(skill_actor, monkeypatch, actor):
+    from ouroboros.skill_loader import load_enabled, save_enabled
+
+    ctx, _skill, revision = skill_actor
+    ctx.task_constraint = TaskConstraint(skill_name="demo", payload_root="skills/external/demo", allow_enable=False)
+    source = _owner_chat(ctx, text="Repair and run demo; leave it working.")
+    grant = run_skill_action(ctx, "demo", "grant", expected_content_hash=revision,
+                              items=["inject_chat"], owner_source=source)
+    assert grant["ok"], grant
+    ctx.task_metadata = {"origin_message_ref": source["ref"]}
+    monkeypatch.setattr("ouroboros.skill_loader.utc_now_iso", lambda: "2026-09-06T11:00:00Z")
+    save_enabled(ctx.drive_root, "demo", False, actor=actor)
+    state = json.loads((ctx.drive_root / "state" / "skills" / "demo" / "enabled.json").read_text())
+    assert state["actor"] == actor
+    result = run_skill_action(ctx, "demo", "enable")
+    if actor.startswith("owner_"):
+        assert result["status_code"] == 403 and "disabled" in result["error"], result
+        assert not load_enabled(ctx.drive_root, "demo")
+        text = "Run demo again now."
+        ref = build_owner_message_ref(chat_id=42, client_message_id="new-owner-request",
+                                     ts="2026-09-06T12:00:00Z", text=text)
+        append_jsonl(ctx.drive_root / "logs" / "chat.jsonl", {**ref, "direction": "in", "text": text})
+        result = run_skill_action(ctx, "demo", "enable", owner_source={"kind": "chat", "ref": ref})
+    assert result["ok"] and load_enabled(ctx.drive_root, "demo"), result
+
+
 def test_launcher_grant_preserves_server_reconcile_ownership(skill_actor):
     ctx, _skill, revision = skill_actor
     seen = []
@@ -141,13 +182,15 @@ def test_child_cannot_acquire_owner_action_authority(skill_actor, mode):
     assert load_skill_grants(ctx.drive_root, "demo")["granted_permissions"] == []
 
 
-def test_non_owner_presence_cannot_reuse_an_owner_chat_reference(skill_actor):
+@pytest.mark.parametrize("action", ["grant", "enable"])
+def test_non_owner_presence_cannot_reuse_an_owner_chat_reference(skill_actor, action):
     from ouroboros.presence_authority import build_presence_capability_ceiling, presence_ceiling_payload
     from ouroboros.presence_capabilities import PresenceProfileResolution
     from ouroboros.presence_runtime import ResolvedPresenceRuntime
 
     ctx, _payload, revision = skill_actor
     source = _owner_chat(ctx)
+    ctx.task_constraint = TaskConstraint(skill_name="demo", payload_root="skills/external/demo", allow_enable=True)
     resolution = PresenceProfileResolution(
         active=(), missing_required=(), missing_optional=(), orphaned=(),
         runtime=ResolvedPresenceRuntime("main", 10, 10, False),
@@ -159,7 +202,7 @@ def test_non_owner_presence_cannot_reuse_an_owner_chat_reference(skill_actor):
         state_fingerprint="d" * 64, resolution=resolution,
     )
     ctx.task_contract = {"capability_ceiling": presence_ceiling_payload(ceiling)}
-    result = run_skill_action(ctx, "demo", "grant", expected_content_hash=revision,
+    result = run_skill_action(ctx, "demo", action, expected_content_hash=revision,
                               items=["inject_chat"], owner_source=source)
     assert result["ok"] is False and result["status_code"] == 403
     assert "Presence" in result["error"]
