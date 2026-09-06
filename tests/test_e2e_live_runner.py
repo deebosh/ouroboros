@@ -874,7 +874,7 @@ def test_absorb_wait_and_check_follow_the_scenarios_expects_absorb(tmp_path, mon
     """The rc.15 paid stand (2026-09-05, SK1_a1): every ``--self-mod`` lane waited ``--task-timeout`` for an absorb
     only SM1's commit could trigger, then failed ``self_mod_absorb_confirmed`` by construction. Now SM1 waits and
     carries the check; SW1/SK1 stop right after the scenario with ``{"expected": False}``, no check, post-task
-    evolution ON in their settings; every lane seeds ``owner_chat_id`` ONLY, never a campaign (run2's t=0 cycles)."""
+    evolution OFF in their settings; every lane seeds ``owner_chat_id`` ONLY, never a campaign (run2's t=0 cycles)."""
     waits: list = []
     monkeypatch.setattr(run_live_lanes, "resolve_ui_client", lambda base_url: (None, "ui_unavailable:test"))
     monkeypatch.setattr(run_live_lanes, "self_mod_snapshot", lambda server, clone, data_root: {"pre": True})
@@ -890,7 +890,7 @@ def test_absorb_wait_and_check_follow_the_scenarios_expects_absorb(tmp_path, mon
             assert row["self_mod_absorb"] == {"expected": False} and row["self_mod"] is True and waits == [{"pre": True}]
         lane = tmp_path / sid / "out" / "lanes" / f"{sid}_a1" / "data"
         state = json.loads((lane / "state" / "state.json").read_text(encoding="utf-8"))
-        assert json.loads((lane / "settings.json").read_text())["OUROBOROS_POST_TASK_EVOLUTION"] == "true"
+        assert json.loads((lane / "settings.json").read_text())["OUROBOROS_POST_TASK_EVOLUTION"] == ("true" if sid == "SM1" else "false")
         assert state["owner_chat_id"] == 1 and "evolution_mode_enabled" not in state, state
         assert not (lane / "state" / "evolution_campaign.json").exists(), sid
 

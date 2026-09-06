@@ -765,7 +765,10 @@ def sk1_prompt() -> str:
 
 
 def _skill_entry(base_url: str, name: str) -> dict:
-    listing = _api(base_url, "GET", "/api/extensions", timeout=30)
+    """The skill's ``/api/extensions`` row, or ``{}`` — a listing that fails is a failed check with facts
+    (``review_executable``/``live_loaded`` absent), never an infra_error that aborts the lifecycle."""
+    resp = _api_status(base_url, "GET", "/api/extensions", None, timeout=30)
+    listing = resp["body"] if resp["status"] == 200 else {}
     rows = listing if isinstance(listing, list) else (listing.get("extensions") or listing.get("skills") or [])
     return next((row for row in rows if isinstance(row, dict) and row.get("name") == name), {})
 
@@ -775,11 +778,17 @@ def sk1_review_gate(review: dict, entry: dict, findings: list) -> tuple[bool, di
     recorded findings) and the ``/api/extensions`` row says ``executable_review`` — clean, warnings, or blockers
     under advisory enforcement by operator choice (``skill_review_gate``). A clean all-PASS review is a recorded
     FACT, not the verdict: the rc.15 SK1 rerun on 560f7d71 authored one clean, one warnings and one blockers
-    payload with every other lifecycle check green, so all-PASS measured the author model, not the product."""
+    payload with every other lifecycle check green, so all-PASS measured the author model, not the product.
+    The verdict also needs the review call itself to answer 200 with its own ``executable_review`` (the
+    lifecycle's gate; a ``pending`` duplicate job never passes) and persisted findings (a review really ran).
+    The SK1 lane sets no enforcement, so it runs the tree default (advisory today) under both profiles: the
+    ``blockers under blocking enforcement`` branch is the product's rule, not a path the stand exercises."""
     gate = entry.get("review_gate") if isinstance(entry.get("review_gate"), dict) else {}
     failed = [f.get("item") for f in findings if str(f.get("verdict") or "") != "PASS"]
-    ok = review["status"] == 200 and entry.get("executable_review") is True and bool(findings)
+    ok = (review["status"] == 200 and review["body"].get("executable_review") is True
+          and entry.get("executable_review") is True and bool(findings))
     return ok, {"review_status": review["body"].get("status"), "review_executable": entry.get("executable_review"),
+                "review_body_executable": review["body"].get("executable_review"),
                 "review_enforcement": gate.get("review_enforcement"), "review_blocking_reason": gate.get("blocking_reason"),
                 "findings": len(findings), "findings_failed": failed, "review_clean": bool(findings) and not failed}
 
@@ -880,6 +889,11 @@ class Scenario:
         out = dict(self.settings_overrides)
         if self.id == "SW1":
             out["OUROBOROS_SUBAGENTS"] = sw1_roster(model)
+        if not self.expects_absorb:
+            # A lane that commits nothing must not promote either: under --self-mod its one-shot cycle could
+            # commit and re-exec the server in the middle of the lifecycle under test (SK1 review/grants/
+            # dispatch), turning an unrelated restart into the lane's verdict. Only SM1 exercises evolution.
+            out["OUROBOROS_POST_TASK_EVOLUTION"] = "false"
         return out
 
 

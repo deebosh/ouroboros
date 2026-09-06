@@ -1274,10 +1274,11 @@ computed style read by a browser from the COMMITTED CSS after a restart), SW1
 (the Swarm button arms `force_plan`; at least two children with causal lineage,
 the `swarm_fanout` receipt, the with-children cost rollup, no orphan process by
 the `/proc` environ scan), SK1 (the model authors `SKILL.md`+`plugin.py` and runs
-`skill_preflight`; the runner reviews — the verdict is the product gate, the
-`/api/extensions` row's `executable_review` (clean, warnings, or blockers under advisory
-enforcement), with the review status, non-PASS items and the clean state recorded as
-facts — grants exactly the manifest's one
+`skill_preflight`; the runner reviews — the verdict is the product gate: the review call
+answers 200 with its own `executable_review`, the `/api/extensions` row says
+`executable_review` (clean, warnings, or blockers under advisory enforcement — the SK1 lane
+sets none, so it runs the tree default) and findings were persisted; the status, enforcement,
+blocking reason, non-PASS items and the clean state are recorded facts — grants exactly the manifest's one
 privileged permission, enables, dispatches, deletes; the author and dispatch
 tasks keep separate `author_*`/`dispatch_*` terminal checks, and the dispatch
 counts only on a tools.jsonl row with typed status `ok` and the extension's exact
@@ -1378,10 +1379,18 @@ t=0, gets the promotion refused (evolution already enabled) and its kept request
 `expects_absorb` (SM1, the one that lands a commit): a pre-task snapshot
 (clone HEAD, served sha, uptime, absorbed-cycle counter) and, afterwards, the
 counter advanced, the served sha moved, the uptime reset and the server ready;
-anything less is a typed `self_mod_absorb_confirmed=false` and the run fails.
+anything less is a typed `self_mod_absorb_confirmed=false` and the run fails. The
+wait (`IsolatedServer.wait_for_absorb`) ends early only with proof that no cycle is
+pending — six consecutive polls with the queue idle, `supervisor_ready`, no promotion
+request and no campaign `active_transaction` (a committed cycle keeps its transaction
+as `waiting_for_restart` through the synchronous restart and the re-exec boot, when a
+single idle sample looks exactly like a declined promotion) — and types the reason from
+the durable campaign state (`no_promotion`, `no_decision`, `cycle_no_op`,
+`cycle_not_absorbed`, `campaign_<status>`, `cycle_not_enqueued`).
 SW1/SK1 commit nothing, so under `--self-mod` they stop their server right after
-the scenario with `self_mod_absorb: {"expected": false}` and no absorb check
-(evolution stays on in their settings; the stand just does not wait for it) —
+the scenario with `self_mod_absorb: {"expected": false}` and no absorb check, and their
+lane settings pin `OUROBOROS_POST_TASK_EVOLUTION=false` (a one-shot cycle promoted from
+their own roots could re-exec the server inside the lifecycle under test) —
 the rc.15 paid stand (2026-09-05) had SK1_a1 pass twelve of its thirteen lifecycle
 checks (the thirteenth was a real reviewer finding on the model-authored plugin),
 then wait about 27 minutes for a promotion nothing had committed before the

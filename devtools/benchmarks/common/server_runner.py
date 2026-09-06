@@ -310,6 +310,45 @@ def seed_owner_state(data_root: pathlib.Path, *, evolution_enabled: bool = False
     state_path.write_text(json.dumps(st), encoding="utf-8")
 
 
+def campaign_summary(data_root: pathlib.Path) -> dict:
+    """The durable campaign facts an absorb wait reasons about: evolution_campaign.json (presence, status,
+    source, a pending ``active_transaction``, the newest transaction outcome, the absorbed counter) and the
+    post-task promotion counter (``post_task_evolution_counter.json``: the decision ran at least once)."""
+    state_dir = pathlib.Path(data_root) / "state"
+    try:
+        campaign = json.loads((state_dir / "evolution_campaign.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        campaign = {}
+    campaign = campaign if isinstance(campaign, dict) else {}
+    try:
+        counter = int(json.loads((state_dir / "post_task_evolution_counter.json").read_text(encoding="utf-8"))["n"])
+    except (OSError, ValueError, TypeError, KeyError):
+        counter = 0
+    history = [tx for tx in (campaign.get("transaction_history") or []) if isinstance(tx, dict)]
+    return {"present": bool(campaign), "status": str(campaign.get("status") or ""),
+            "source": str(campaign.get("source") or ""),
+            "active_transaction": isinstance(campaign.get("active_transaction"), dict),
+            "absorbed_cycles_done": int(campaign.get("absorbed_cycles_done") or 0),
+            "newest_outcome": str(history[-1].get("cycle_outcome") or "") if history else "",
+            "post_task_counter": counter}
+
+
+def absorb_idle_reason(campaign: dict) -> str:
+    """Typed non-confirmation of an idle lane (``IsolatedServer.wait_for_absorb``): ``no_promotion`` (no
+    campaign although the post-task decision ran), ``no_decision`` (no campaign, no decision), ``cycle_no_op``
+    (the newest cycle committed nothing), ``cycle_not_absorbed`` (a cycle ended otherwise without an absorb),
+    ``campaign_<status>`` (paused/stopped/completed) or ``cycle_not_enqueued`` (active campaign, no cycle)."""
+    if not campaign.get("present"):
+        return "no_promotion" if campaign.get("post_task_counter") else "no_decision"
+    if campaign.get("newest_outcome") == "no_op":
+        return "cycle_no_op"
+    if campaign.get("newest_outcome"):
+        return "cycle_not_absorbed"
+    if campaign.get("status") in ("paused", "stopped", "completed"):
+        return f"campaign_{campaign['status']}"
+    return "cycle_not_enqueued"
+
+
 def absorbed_cycles_done(data_root: pathlib.Path) -> int:
     """Read absorbed self-evolution cycle count from evolution_campaign.json."""
     path = pathlib.Path(data_root) / "state" / "evolution_campaign.json"
@@ -647,33 +686,44 @@ class IsolatedServer:
         return False
 
     def wait_for_absorb(self, prev_sha: str, prev_absorbed: int, timeout: float = 1800,
-                        idle_grace: float = 90) -> dict:
-        """Between instances, wait for an absorbed self-evolution cycle: the server
-        re-execs onto a new SHA and `absorbed_cycles_done` increments. Returns
-        {absorbed, new_sha, cycles, reason}. When the LLM legitimately declines to
-        promote (the common path), this returns absorbed=False EARLY — once the queue
-        is idle, no post_task_evolution_request.json is pending, and no cycle absorbed
-        within a short grace — instead of stalling the full timeout."""
+                        idle_grace: float = 90, idle_polls: int = 6) -> dict:
+        """Between instances, wait for an absorbed self-evolution cycle: the server re-execs onto a
+        new SHA and ``absorbed_cycles_done`` increments. Returns ``{absorbed, new_sha, cycles, reason,
+        campaign}``. An EARLY ``absorbed=False`` needs PROOF that no cycle is pending, held on
+        ``idle_polls`` consecutive polls after ``idle_grace``: the queue idle AND ``supervisor_ready``
+        AND no ``post_task_evolution_request.json`` AND no campaign ``active_transaction``. One idle
+        sample is not proof: a cycle that committed keeps its transaction as ``waiting_for_restart``
+        while the supervisor restarts synchronously (queue empty, counter unchanged), and the re-exec'd
+        server answers ``/api/state`` with zero counts before its supervisor is up — the counter moves
+        only when the worker boot verifies the restart (rc.15 stand, adversarial finding of 2026-09-06).
+        The typed reason is what the durable campaign state proves (``absorb_idle_reason``)."""
         deadline = time.time() + timeout
         start = time.time()
         request_path = self.data_root / "state" / "post_task_evolution_request.json"
+        idle_streak = 0
         while time.time() < deadline:
             cycles = absorbed_cycles_done(self.data_root)
             sha = self.current_sha()
             if cycles > prev_absorbed and sha and sha != prev_sha:
                 self.wait_for_health(timeout=180)
-                return {"absorbed": True, "new_sha": sha, "cycles": cycles, "reason": "absorbed"}
+                return {"absorbed": True, "new_sha": sha, "cycles": cycles, "reason": "absorbed",
+                        "campaign": campaign_summary(self.data_root)}
             if time.time() - start > idle_grace and cycles == prev_absorbed:
+                campaign = campaign_summary(self.data_root)
                 try:
                     st = self._state(timeout=5)
-                    idle = int(st.get("pending_count") or 0) == 0 and int(st.get("running_count") or 0) == 0
+                    idle = (int(st.get("pending_count") or 0) == 0 and int(st.get("running_count") or 0) == 0
+                            and bool(st.get("supervisor_ready")))
                 except (urllib.error.URLError, OSError, ValueError):
                     idle = False
-                if idle and not request_path.exists():
-                    return {"absorbed": False, "new_sha": sha, "cycles": cycles, "reason": "no_promotion"}
+                idle = idle and not request_path.exists() and not campaign["active_transaction"]
+                idle_streak = idle_streak + 1 if idle else 0
+                if idle_streak >= max(1, int(idle_polls)):
+                    return {"absorbed": False, "new_sha": sha, "cycles": cycles,
+                            "reason": absorb_idle_reason(campaign), "campaign": campaign}
             time.sleep(5)
-        return {"absorbed": False, "new_sha": self.current_sha(),
-                "cycles": absorbed_cycles_done(self.data_root), "reason": "timeout"}
+        return {"absorbed": False, "new_sha": self.current_sha(), "cycles": absorbed_cycles_done(self.data_root),
+                "reason": "timeout", "campaign": campaign_summary(self.data_root)}
 
     def stop(self) -> None:
         if self.proc is not None and self.proc.poll() is None:
