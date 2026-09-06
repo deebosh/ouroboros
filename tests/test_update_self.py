@@ -179,3 +179,55 @@ def test_consciousness_prompt_has_no_phantom_tools():
         if m.group(1) in whitelist or any(m.group(1).startswith(p) for p in prefixes)
     }
     assert refs - whitelist == set(), f"phantom tools in CONSCIOUSNESS.md: {sorted(refs - whitelist)}"
+
+
+def test_update_self_reached_through_bg_execute_tool(tmp_path):
+    """End-to-end: a wakeup runs a tool via BackgroundConsciousness._execute_tool.
+    Verify update_self is both offered (in the cycle's tool schema) and permitted
+    (not rejected by the whitelist gate), and that running it appends + journals.
+
+    This mirrors the manual live-runtime check done when the feature landed."""
+    import json as _json
+    import queue
+
+    from ouroboros.consciousness import BackgroundConsciousness
+
+    drive_root = tmp_path / "drive"
+    (drive_root / "logs").mkdir(parents=True, exist_ok=True)
+    (drive_root / "memory").mkdir(parents=True, exist_ok=True)
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+
+    bc = BackgroundConsciousness(
+        drive_root=drive_root,
+        repo_dir=repo_dir,
+        event_queue=queue.Queue(),
+        owner_chat_id_fn=lambda: None,
+    )
+
+    # offered to the wakeup LLM this cycle
+    schema_names = {s.get("function", {}).get("name") for s in bc._tool_schemas()}
+    assert "update_self" in schema_names
+
+    # the whitelist gate: a bogus name is refused, update_self is not
+    bogus = bc._execute_tool(
+        {"function": {"name": "definitely_not_a_bg_tool", "arguments": "{}"}},
+        all_pending_events=[],
+    )
+    assert "not available in background mode" in bogus
+
+    out = bc._execute_tool(
+        {"function": {"name": "update_self", "arguments": _json.dumps(
+            {"content": "BG path check — reached update_self from the wakeup loop."})}},
+        all_pending_events=[],
+    )
+    assert "not available in background mode" not in out
+
+    self_md = (drive_root / "memory" / "self.md").read_text(encoding="utf-8")
+    assert "reached update_self from the wakeup loop" in self_md
+    journal = [
+        _json.loads(x)
+        for x in (drive_root / "memory" / "self_journal.jsonl").read_text(encoding="utf-8").splitlines()
+        if x.strip()
+    ]
+    assert journal and journal[-1]["type"] == "self_appended"

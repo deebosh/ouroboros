@@ -165,6 +165,7 @@ class TestBackgroundConsciousnessToolScope(unittest.TestCase):
         schema_names = {s.get("function", {}).get("name") for s in bc._tool_schemas()}
         self.assertIn("send_user_message", schema_names)
         self.assertIn("update_identity", schema_names)
+        self.assertIn("update_self", schema_names)  # the selfhood practice runs from a wakeup
         self.assertIn("recent_tasks", schema_names)
         self.assertNotIn("schedule_subagent", schema_names)
         self.assertNotIn("get_task_result", schema_names)
