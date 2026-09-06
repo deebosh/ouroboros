@@ -1396,7 +1396,9 @@ lane seeds `owner_chat_id` ONLY, never a campaign: the scenario task's post-task
 A pre-seeded active campaign (the benchmark helper's form, rc.15 paid run2) runs generic cycles from
 t=0, gets the promotion refused (evolution already enabled) and its kept request file blocks the
 `no_promotion` exit of the absorb wait. `--self-mod` REQUIRES a confirmed absorb per lane whose scenario
-`expects_absorb` (SM1, the one that lands a commit): a pre-task snapshot
+`expects_absorb` (SM1, the one that lands a commit; its clean-worktree check records the
+porcelain and tolerates only the runtime's transient `.ouroboros/` scratch, which a post-task
+cycle in the same clone writes seconds after the commit): a pre-task snapshot
 (clone HEAD, served sha, uptime, absorbed-cycle counter) and, afterwards, the
 counter advanced, the served sha moved, the uptime reset and the server ready;
 anything less is a typed `self_mod_absorb_confirmed=false` and the run fails. The
