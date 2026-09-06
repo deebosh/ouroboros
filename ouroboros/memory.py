@@ -230,24 +230,38 @@ class Memory:
         if metadata:
             new_block["metadata"] = dict(metadata)
 
+        # Lazy import keeps ouroboros.context_budget optional at import time,
+        # matching ouroboros/consolidator.py:~674.
+        from ouroboros.context_budget import SCRATCHPAD_MAX_CONTENT_CHARS
+
         try:
             def _append(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 updated = [*blocks, new_block]
-                if len(updated) <= _SCRATCHPAD_MAX_BLOCKS:
-                    return updated
-                evicted = updated[:-_SCRATCHPAD_MAX_BLOCKS]
-                for eb in evicted:
+                # Evict oldest-first (FIFO) until BOTH caps are satisfied:
+                #   - _SCRATCHPAD_MAX_BLOCKS (count cap)
+                #   - SCRATCHPAD_MAX_CONTENT_CHARS (content-size cap, ibl-2b09abdadd25:
+                #     a count-only cap still lets N blocks' combined content run
+                #     well past the context section's char budget)
+                # The block we just appended (updated[-1]) is never an
+                # eviction target. Each eviction is journalled with a
+                # source_ref and FAILS HARD if the journal write does not
+                # land (no silent amputation, BIBLE P1).
+                while len(updated) > 1 and (
+                    len(updated) > _SCRATCHPAD_MAX_BLOCKS
+                    or sum(len(b.get("content", "")) for b in updated) > SCRATCHPAD_MAX_CONTENT_CHARS
+                ):
+                    evicted_block = updated.pop(0)
                     written = append_jsonl(self.journal_path(), {
                         "ts": utc_now_iso(),
                         "type": "block_evicted",
-                        "evicted_block_ts": eb.get("ts", ""),
-                        "evicted_block_source": eb.get("source", ""),
-                        "evicted_block_content": eb.get("content", ""),
+                        "evicted_block_ts": evicted_block.get("ts", ""),
+                        "evicted_block_source": evicted_block.get("source", ""),
+                        "evicted_block_content": evicted_block.get("content", ""),
                         "source_ref": self.scratchpad_journal_source_ref(),
                     })
                     if not written:
                         raise RuntimeError("scratchpad eviction journal write failed")
-                return updated[-_SCRATCHPAD_MAX_BLOCKS:]
+                return updated
 
             self.mutate_scratchpad_blocks(_append)
         except Exception:
