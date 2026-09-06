@@ -280,10 +280,12 @@ def get_tool_with_generation(name: str) -> tuple[Optional[Dict[str, Any]], str]:
         if not raw:
             return None, ""
         tool = dict(raw)
+        bundle = _extensions.get(str(tool.get("skill") or ""))
         digest = str(tool.get("extension_generation") or "")
         if not digest:
-            bundle = _extensions.get(str(tool.get("skill") or ""))
             digest = str(bundle.generation_digest or "") if bundle is not None else ""
+        if bundle is not None and digest == bundle.generation_digest and not tool.get("content_hash"):
+            tool["content_hash"] = str(bundle.content_hash or "")
         return tool, digest
 
 

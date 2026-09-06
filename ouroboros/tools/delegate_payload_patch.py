@@ -167,8 +167,9 @@ def _write_payload_patch_artifacts(
     patch whose result loader hash equals the baseline is a typed
     ``unreviewable_metadata_change`` refusal. ``workspace.patch`` is
     ``git diff --binary`` against the recorded baseline. A candidate
-    add/modify of genuinely non-UTF-8 content is a typed FAILURE (permanent
-    text-only contract); reserved lifecycle/control paths never block capture —
+    add/modify follows the existing skill-review byte classifier; ordinary
+    non-UTF-8 resources retain descriptors and exact bytes. Large declared
+    dependencies remain outside the loader inventory. Reserved lifecycle/control paths never block capture —
     reported as ``blocked_reserved_paths`` and refused whole at apply, with the
     candidate always preserved for the parent's decision.
     """
@@ -324,7 +325,9 @@ def _write_payload_patch_artifacts(
                              tracked_changed=[], untracked_included=[],
                              blocked_reserved_paths=[], result_content_hash=result_hash,
                              current_head=current_head)
-        non_utf8 = []
+        from ouroboros.skill_review_packs import _read_skill_file
+
+        binary_files = []
         for rel in changed:
             if rel in dropped:
                 continue  # rides as a deletion; on-disk leftovers are not content
@@ -332,15 +335,11 @@ def _write_payload_patch_artifacts(
             if candidate.is_symlink() or not candidate.is_file():
                 continue
             try:
-                candidate.read_bytes().decode("utf-8", "strict")
-            except (OSError, UnicodeDecodeError):
-                non_utf8.append(rel)
-        if non_utf8:
-            return _manifest(
-                ARTIFACT_STATUS_FAILED, non_utf8_paths=non_utf8,
-                note="the candidate adds/modifies non-UTF-8 payload content, which the "
-                     "current text-only skill posture refuses "
-                     f"({', '.join(non_utf8[:5])}); the snapshot is preserved")
+                _text, _digest, descriptor = _read_skill_file(candidate, relpath=rel)
+            except RuntimeError as exc:
+                return _manifest(ARTIFACT_STATUS_FAILED, note=str(exc))
+            if descriptor is not None:
+                binary_files.append(descriptor)
         diff = _git("diff", *diff_isolation, "--cached", "--binary", baseline)
         if diff.returncode != 0:
             detail = (diff.stderr or diff.stdout or b"").decode("utf-8", errors="replace")
@@ -373,6 +372,7 @@ def _write_payload_patch_artifacts(
             result_content_hash=result_hash,
             current_head=current_head,
             normalized_mode_paths=normalized_modes,
+            binary_files=binary_files,
         )
 
 

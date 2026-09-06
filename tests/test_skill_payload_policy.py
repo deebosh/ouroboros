@@ -183,12 +183,12 @@ def test_control_plane_policy_catches_hardlink_alias_inside_payload(tmp_path):
     assert is_skill_control_plane_path(alias, data_root) is True
 
 
-def test_registry_heal_sidecar_wrapper_uses_shared_control_filenames():
-    from ouroboros.tools.registry import _heal_protected_payload_sidecar
+def test_payload_sidecars_use_shared_control_filenames():
+    from ouroboros.contracts.skill_payload_policy import is_skill_payload_control_filename
 
     for filename in SKILL_PAYLOAD_CONTROL_FILENAMES:
-        assert _heal_protected_payload_sidecar(f"nested/{filename}") is True
-    assert _heal_protected_payload_sidecar("nested/plugin.py") is False
+        assert is_skill_payload_control_filename(filename) is True
+    assert is_skill_payload_control_filename("plugin.py") is False
 
 
 def test_registry_shell_guard_keeps_legacy_control_dir_subset(tmp_path):

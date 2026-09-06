@@ -46,6 +46,14 @@ class TaskConstraint:
     parent_only_commit: bool = True
     return_kind: str = "workspace_patch"
 
+    @property
+    def has_selected_skill(self) -> bool:
+        """An ordinary task's payload selection, including persisted Repair rows."""
+        return bool(
+            self.mode in {"normal", "skill_repair"}
+            and self.skill_name and self.payload_root
+        )
+
 
 def normalize_task_constraint(value: Any) -> Optional[TaskConstraint]:
     if isinstance(value, TaskConstraint):

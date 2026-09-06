@@ -435,14 +435,13 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
     from ouroboros.contracts.task_constraint import normalize_task_constraint
 
     normalized_constraint = normalize_task_constraint(task_constraint)
-    if normalized_constraint and normalized_constraint.mode == "skill_repair":
-        # Repair is already a typed, narrowly confined task request. Sending it
-        # through the conversation decision lane would combine skill_repair with
-        # _ephemeral_turn: ephemeral hides the repair mutators while heal mode
-        # blocks promotion. Promote it directly without weakening either policy.
-        # DELIBERATE: task_metadata (incl. any client_surface fact) is dropped on
-        # this branch — a repair task's objective is a fixed UI action and the
-        # sending surface adds nothing to it (same treatment as force_plan here).
+    if normalized_constraint and (
+        normalized_constraint.mode == "skill_repair"
+        or (normalized_constraint.mode == "normal" and (normalized_constraint.skill_name or normalized_constraint.payload_root))
+    ):
+        # An explicit selected-skill development request already asks for a
+        # managed task. Preserve its source/caller facts while ordinary promotion
+        # validates the payload and records the admitted revision.
         from supervisor.events import _handle_promote_chat_to_task
 
         ctx.consciousness.inject_observation(
@@ -459,6 +458,12 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
             "task_constraint": task_constraint,
             "routed_from_main": True,
         }
+        metadata = task_metadata if isinstance(task_metadata, dict) else {}
+        if isinstance(metadata.get("client_surface"), dict):
+            event["client_surface"] = dict(metadata["client_surface"])
+        if isinstance(metadata.get("presence"), dict) and metadata["presence"]:
+            event["presence"] = dict(metadata["presence"])
+            event["task_contract"] = dict(metadata.get("task_contract") or {})
         origin_ref = incoming.get("origin_message_ref")
         if isinstance(origin_ref, dict) and origin_ref:
             event["source_ref"] = origin_ref

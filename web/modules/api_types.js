@@ -836,6 +836,8 @@
  * @property {string=} extension_reason
  * @property {string=} extension_process
  * @property {string=} extension_server_reconcile
+ * @property {string|null=} extension_load_error
+ * @property {boolean|null=} extension_live_loaded
  */
 
 /**

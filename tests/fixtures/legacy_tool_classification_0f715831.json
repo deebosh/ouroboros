@@ -2291,6 +2291,14 @@
    "is_error": true,
    "status": "error"
   },
+  "ident:SKILL_ACTION_BLOCKED:named": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "ident:SKILL_ACTION_BLOCKED:plain": {
+   "is_error": true,
+   "status": "blocked"
+  },
   "ident:SKILL_EXEC_ARGV_TOO_LARGE:named": {
    "is_error": false,
    "status": "ok"

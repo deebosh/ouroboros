@@ -42,8 +42,8 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
     hash/provenance check. On a clean preflight, persist a durable CLEAN verdict bound to the content_hash
     (review_profile='owner_attested', reviewer_models=['owner_attestation'], one explicit
     PASS finding so the status serializes) and drop the owner-issued marker that
-    load_review_state requires for the verdict to stay valid. Owner-only (the endpoint gates
-    it); the agent can never forge the marker (it is an owner-state file)."""
+    load_review_state requires for the verdict to stay valid. Owner intent is checked by the shared lifecycle action owner; generic
+    agent file writes cannot forge the owner-state marker."""
     # A FAILED attestation preflight persists as a normal review result (so the gate's
     # fresh ``preflight_failed`` fact and the Repair affordance appear) — but ONLY when
     # persisting cannot clobber a FRESH valid verdict: review.json absent, or its recorded
@@ -134,7 +134,7 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
         SKILL_OWNER_STATE_SCHEMA_VERSION,
     ))
     skill.review = review_state
-    return _sr.SkillReviewOutcome(
+    outcome = _sr.SkillReviewOutcome(
         skill_name=skill.name,
         status=_sr.STATUS_CLEAN,
         findings=findings,
@@ -142,6 +142,8 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
         content_hash=content_hash,
         review_profile="owner_attested",
     )
+    _sr._apply_auto_grant_outcome(outcome, skill, _sr.auto_grant_if_enabled(drive_root, skill))
+    return outcome
 
 
 def review_skill_owner_attest(ctx: Any, skill_name: str):
