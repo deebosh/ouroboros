@@ -6,6 +6,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -175,7 +176,7 @@ def _run_skill_subprocess(
     *,
     cwd: str,
     env: Dict[str, str],
-    timeout_sec: int,
+    timeout_sec: float,
     stdout_cap: int,
     stderr_cap: int,
     on_spawn: Optional[Callable[[], None]] = None,
@@ -240,7 +241,7 @@ def _run_skill_subprocess(
     stdout_thread.start()
     stderr_thread.start()
 
-    deadline = time.monotonic() + max(1, int(timeout_sec))
+    deadline = time.monotonic() + max(0.0, float(timeout_sec))
     overflowed = False
     timed_out = False
     try:
@@ -293,6 +294,55 @@ def _run_skill_subprocess(
             stderr=bytes(stderr_buf),
         )
     return proc.returncode or 0, bytes(stdout_buf), bytes(stderr_buf), overflowed
+
+
+def _deno_permission_args(ctx: ToolContext, permissions: List[str], state_dir: pathlib.Path,
+                          env: Dict[str, str]) -> List[str]:
+    """Translate existing reviewed script effects to Deno's invocation flags."""
+    from ouroboros.tools.registry_guards import _resource_allowed
+
+    # Script fs declares writes outside state; ordinary reads need no new
+    # grant. Env authority is only the names actually passed after grants.
+    flags = ["run", "--no-prompt", "--allow-read"]
+    if env:
+        flags.append("--allow-env=" + ",".join(key.replace(",", ",,") for key in sorted(env)))
+    state_arg = str(state_dir).replace(",", ",,")
+    flags.append("--allow-write" if "fs" in permissions else f"--allow-write={state_arg}")
+    if "net" in permissions and _resource_allowed(ctx, "network"):
+        flags.append("--allow-net")
+    if not _resource_allowed(ctx, "network"):
+        flags.append("--cached-only")  # Static imports must not fetch either.
+    if "subprocess" in permissions:
+        flags.append("--allow-run")
+    return flags
+
+
+def _run_go_skill(cmd: List[str], *, state_dir: pathlib.Path, **kwargs: Any) -> Tuple[int, bytes, bytes, bool, str]:
+    """Compile then execute through the same bounded process owner.
+
+    go run consumes .go-looking arguments and does not return the program's
+    exit status. A private executable preserves both. Compilation and execution
+    share the original timeout, and cleanup follows both owned child waits.
+    """
+    deadline = time.monotonic() + kwargs["timeout_sec"]
+    env = dict(kwargs["env"])
+    env.setdefault("GOCACHE", str(state_dir / "go-cache"))
+    env.setdefault("GOPATH", str(state_dir / "go"))
+    with tempfile.TemporaryDirectory(prefix="go-exec-", dir=state_dir) as directory:
+        executable = str(pathlib.Path(directory) / ("skill.exe" if os.name == "nt" else "skill"))
+        compiled = _run_skill_subprocess(
+            [cmd[0], "build", "-o", executable, cmd[1]], **{**kwargs, "env": env},
+        )
+        if compiled[0] != 0 or compiled[3]:
+            return (*compiled, "compile")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout_sec"])
+        executed = _run_skill_subprocess(
+            [executable, *cmd[2:]],
+            **{**kwargs, "timeout_sec": remaining, "on_spawn": None},
+        )
+        return (*executed, "execute")
 
 
 def _record_skill_exec_dispatch(
@@ -750,10 +800,10 @@ def _handle_skill_exec(
     except Exception:
         log.debug("Could not resolve isolated Python runtime", exc_info=True)
     if runtime_binary is None:
+        reason = (f"is not in the allowlist {sorted(_ALLOWED_RUNTIMES)}" if runtime not in _ALLOWED_RUNTIMES
+                  else "has no available binary on PATH")
         return (
-            f"⚠️ SKILL_EXEC_ERROR: skill {skill_name!r} declared runtime "
-            f"{runtime!r} is not in the allowlist {sorted(set(_ALLOWED_RUNTIMES))} "
-            f"or the matching binary is not on PATH."
+            f"⚠️ SKILL_EXEC_ERROR: skill {skill_name!r} declared runtime {runtime!r} {reason}."
             + (f" ({runtime_unavailable_reason})" if runtime_unavailable_reason else "")
         )
 
@@ -853,6 +903,9 @@ def _handle_skill_exec(
     except Exception:
         log.debug("Could not augment skill env with isolated dependencies", exc_info=True)
 
+    if runtime == "deno":
+        cmd = [runtime_binary, *_deno_permission_args(ctx, loaded.manifest.permissions, state_dir, env), *cmd[1:]]
+
     # E2BIG hygiene (C5): byte-accurate argv+env budget against the REAL exec
     # environment, checked before spawn (type validation above only proves the
     # args are scalars). No automatic file/stdin fallback — a skill accepts
@@ -891,13 +944,9 @@ def _handle_skill_exec(
     dispatch_id = f"skill_exec:{uuid.uuid4().hex}"
     model_capable = any(str(env.get(key) or "").strip() for key in MODEL_PROVIDER_CREDENTIAL_KEYS)
     try:
-        returncode, stdout_bytes, stderr_bytes, overflowed = _run_skill_subprocess(
-            cmd,
-            cwd=str(loaded.skill_dir),
-            env=env,
-            timeout_sec=timeout,
-            stdout_cap=_MAX_STDOUT_BYTES,
-            stderr_cap=_MAX_STDERR_BYTES,
+        process_options = dict(
+            cwd=str(loaded.skill_dir), env=env, timeout_sec=timeout,
+            stdout_cap=_MAX_STDOUT_BYTES, stderr_cap=_MAX_STDERR_BYTES,
             on_spawn=((
                 lambda: _record_skill_exec_dispatch(
                     ctx,
@@ -907,6 +956,13 @@ def _handle_skill_exec(
                 )
             ) if model_capable else None),
         )
+        if runtime == "go":
+            returncode, stdout_bytes, stderr_bytes, overflowed, phase = _run_go_skill(
+                cmd, state_dir=state_dir, **process_options,
+            )
+        else:
+            returncode, stdout_bytes, stderr_bytes, overflowed = _run_skill_subprocess(cmd, **process_options)
+            phase = "execute"
     except subprocess.TimeoutExpired as exc:
         _emit_skill_lifecycle_event(
             ctx,
@@ -949,6 +1005,7 @@ def _handle_skill_exec(
             "skill": loaded.name,
             "script": script_rel,
             "runtime": runtime,
+            "runtime_phase": phase,
             "content_hash": spawn_hash,
             "exit_code": int(returncode),
             "timeout_sec": timeout,

@@ -140,6 +140,20 @@ execute), and required for `script` / `extension`. Allowed values are
 `shutil.which` at exec time, so the operator's host must ship the
 runtime; otherwise `skill_exec` fails closed with a clear error.
 
+Go scripts are compiled into a private temporary executable and then run with
+the caller's arguments unchanged, including arguments ending in `.go`. The
+compiler and program share the invocation timeout; `runtime_phase` distinguishes
+a compilation failure from the program's own exit status. Cleanup uses the same
+tracked-process path as the other script runtimes.
+
+Deno receives `run --no-prompt` and permissions before the script operand.
+Ordinary reads remain available; `fs` permits writes outside the existing skill
+state directory, `net` permits network calls unless the task disables network,
+and `subprocess` permits child processes. Environment access names only the keys
+actually forwarded after grants. A task with network disabled also requires
+cached imports. These are the existing reviewed script effects, not a new OS
+sandbox: in particular, an allowed child process has ordinary host privileges.
+
 `conflicts` is an optional list of canonical skill names (letters, numbers,
 dash, underscore, or dot; at most 32 entries). If either enabled skill names
 the other, both readiness and extension loading fail closed with a typed
@@ -237,8 +251,50 @@ install:
 Bare `dependencies` entries are treated as Python packages. `pip`,
 `pipx`, `uv`, `npm`, and `node` specs are installed only after a fresh
 executable review and only under the skill's `.ouroboros_env` directory.
-Global package-manager or arbitrary-download specs remain manual setup
-guidance.
+Global package-manager specs remain manual setup guidance. Exact resources and
+explicit build actions use the same isolated install owner:
+
+```yaml
+install_specs:
+  - kind: download
+    url: https://example.org/application/disk.img
+    # Replace both with the publisher's exact artifact facts.
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    size_bytes: 9437184
+    version: application-data-1
+    target: resources/disk.img
+    platforms: [linux, darwin, win32]
+```
+
+`target`, step `cwd`, and `outputs` are relative to `.ouroboros_env` and must
+remain inside it. Platform names are `sys.platform`, optionally followed by
+`-` and the lowercase `platform.machine()` value (for example,
+`linux-x86_64` or `darwin-arm64`); omitted `platforms` applies everywhere.
+An inapplicable entry is recorded as skipped. Resources are verified by size
+and digest before landing; no package-size cap is borrowed for this file path.
+The content-addressed resource and package caches live under
+`state/skills/<name>/dependency_cache/`, outside the replaceable payload/env.
+Replacing the environment or retrying therefore reuses verified downloaded
+bytes; a different digest selects a different cache entry.
+
+An entry may also declare `steps: [{argv: [...], cwd: "."}]`, `outputs:
+["bin/helper"]`, and `check: {argv: ["helper", "--version"]}`. Arguments stay
+literal; no shell interpolation is performed. Steps require outputs and a
+concrete successful check; declared `bins` must resolve after installation.
+Build tools use the existing process tracking, timeout and cancellation path.
+The normal installer invokes new downloads/build declarations only against
+their fresh executable review and hash-covered specs, rechecking the pinned
+payload before each build/check process.
+
+Python `allow_source_build: true` and npm `allow_install_scripts: true` opt in
+per entry, each with a declared `check`. Without those flags pip remains
+wheel-only and npm keeps `--ignore-scripts`. An already installed npm package
+can be rebuilt explicitly on retry without rebuilding unrelated packages.
+`deps.json` records resource digests, actual resolved package metadata,
+output hashes and build diagnostics. `installed` records delivery;
+`executable_ready` is unknown without a declared check and true only after
+that check succeeds. A failed check stays failed, even if the package manager
+returned zero. Manual dependencies do not acquire a new universal probe gate.
 
 For `type: extension`, any reviewed isolated dependency env is kept out of
 `server.py`: `plugin.py` cataloging and tool/route/WS handlers run in a
@@ -1084,8 +1140,12 @@ ClawHub archives are capped at 8 MiB per file, 50 MiB uncompressed in total,
 and 200 files (`ouroboros/marketplace/fetcher.py`); OuroborosHub catalog files
 at 5 MiB each (`ouroboros/marketplace/ouroboroshub.py`). A large runtime image
 — a v86 disk image of several megabytes and up — does not fit a package: have
-the skill download it at runtime (with the `net` permission) into its state
-directory (`state_dir` from `api.get_runtime_info()`) and serve it from there.
+the installer fetch it through an exact `download` spec and serve it from
+`<skill_dir>/.ouroboros_env/resources/` (`skill_dir` comes from
+`api.get_runtime_info()`). The existing runtime-download path into the skill
+state directory remains available for dynamic data. Declared automatic
+dependencies select the existing process executor; persistent subscriptions
+and long-lived work still use the documented companion facilities.
 Locally installed skills have no per-file cap; the review pack budget is the
 only bound. The frame's `img-src`/`media-src`/`font-src` admit your skill's
 route prefix, so `<img src="/api/extensions/<skill>/logo.png">`,

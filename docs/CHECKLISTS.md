@@ -680,11 +680,17 @@ two manifests as part of items 2 (`permissions_honesty`) and 5
 3. **Install spec policy (v5.7.0+)** — the adapter NORMALISES
    `metadata.openclaw.install` specs into Ouroboros's isolated
    per-skill dependency lane. ``pip``/``pipx``/``uv``/``npm``/``node``
-   specs land in `data/skills/<bucket>/<skill>/.ouroboros_env/` and
-   are invoked with `--ignore-scripts` for npm + `--only-binary=:all:`
-   for pip. Specs with global side effects (``brew``, ``apt``,
-   ``cargo``, ``go``, ``download``) are translated into manual setup
-   warnings instead. Reviewers should confirm the auto-installed
+   specs land in `data/skills/<bucket>/<skill>/.ouroboros_env/`; npm
+   defaults to `--ignore-scripts` and pip to `--only-binary=:all:`.
+   A reviewed entry may explicitly opt into source builds/install scripts
+   with a concrete executable check. Exact ``download`` entries bind URL,
+   digest, size and relative target; any literal build steps also declare
+   outputs and a check. These declarations must match the fresh reviewed
+   payload at process launch; package-manager exit zero alone is not a
+   functional verdict. Verified caches stay outside replaceable payload/env,
+   and actual resource/package/output facts and diagnostics stay in deps.json.
+   Global-manager specs (``brew``, ``apt``, ``cargo``, ``go``) remain manual
+   setup warnings. Reviewers should confirm the auto-installed
    packages match the skill's stated purpose; an unjustified `pip
    install <package>` for a skill that doesn't import it is a FAIL of
    item 2 (`permissions_honesty`). The adapter still rejects Node/TS

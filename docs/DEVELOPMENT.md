@@ -1194,6 +1194,28 @@ Enforcement: `tests/test_extension_dispatch_threaded.py`,
 `tests/test_extension_isolated_deps.py`,
 `tests/test_extension_process_runner.py`.
 
+### Declared skill resources and builds
+
+- Reuse the isolated dependency owner for exact downloads and literal build/check
+  argv. New declarations must match a fresh executable review and hash-covered
+  specs; revalidate the pinned payload before launching their processes.
+- Keep verified resource/package caches outside the replaceable payload/env.
+  Record actual resolved versions, resource/output hashes and diagnostics in
+  the existing dependency records; package-manager success is not proof of the
+  requested function. Only an explicitly declared check establishes that fact.
+- Preserve wheel-only and npm ignore-scripts unless that entry opts into the
+  corresponding build action. Manual dependencies keep their existing contract.
+- Ordinary binary payload resources use the review classifier/descriptors during
+  delegated capture too; large downloaded/build resources belong to the isolated
+  dependency path, not a giant source patch.
+- Go compilation/execution share the existing child owner and timeout. Deno
+  flags express current script effects and task network constraints, not new
+  grants or a stronger claimed OS sandbox than the other reviewed scripts.
+
+Enforcement: `tests/test_skill_install_resources.py`,
+`tests/test_skill_runtime_commands.py`, `tests/test_skill_runtime_lifetime.py`
+and `tests/test_skill_payload_binary_transfer.py`.
+
 ### Task contract resource policy
 
 - `resource_policy.protected_artifacts` is enforced as a typed affordance
