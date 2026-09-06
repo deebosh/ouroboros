@@ -1098,25 +1098,16 @@ def get_git_info(repo_dir: pathlib.Path) -> tuple[str, str]:
     branch = ""
     sha = ""
     try:
-        r = subprocess.run(
+        branch = run_cmd(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=2,
+            cwd=repo_dir, timeout=2,
         )
-        if r.returncode == 0:
-            branch = r.stdout.strip()
     except Exception:
         log.debug("Failed to get git branch", exc_info=True)
-        pass
     try:
-        r = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=2,
-        )
-        if r.returncode == 0:
-            sha = r.stdout.strip()
+        sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_dir, timeout=2)
     except Exception:
         log.debug("Failed to get git SHA", exc_info=True)
-        pass
     return branch, sha
 
 def sanitize_task_for_event(
