@@ -105,6 +105,7 @@ HTTP_ENDPOINTS: tuple[str, ...] = (
     "GET /api/marketplace/ouroboroshub/preview/{slug:path}",
     "POST /api/marketplace/ouroboroshub/install",
     "POST /api/marketplace/ouroboroshub/update/{name}",
+    "POST /api/marketplace/ouroboroshub/publication/{name}/clear",
     "POST /api/marketplace/ouroboroshub/uninstall/{name}",
     # The wizard PAGE (one onboarding host: desktop setup window, blocking
     # overlay frame, plain browser). /api/onboarding stays the readiness probe.

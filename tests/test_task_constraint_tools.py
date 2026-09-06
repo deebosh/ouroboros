@@ -96,13 +96,14 @@ def test_payload_absolute_other_skill_path_is_blocked(tmp_path):
     assert "DATA_READ_BLOCKED" in _data_read(ctx, "skills/external/beta/plugin.py")
 
 
-def test_repair_mode_blocks_code_search(tmp_path):
+def test_skill_development_preserves_code_search(tmp_path):
     from ouroboros.tools.registry import ToolRegistry
     ctx, _skill = _ctx(tmp_path)
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
-    result = registry.execute("search_code", {"query": "ToolRegistry"})
-    assert "HEAL_MODE_BLOCKED" in result
+    (ctx.repo_dir / "probe.py").write_text("class RepairSearchProbe:\n    pass\n")
+    result = registry.execute("search_code", {"query": "RepairSearchProbe"})
+    assert "probe.py" in result and "RepairSearchProbe" in result, result
 
 
 def test_repair_data_write_manifest_does_not_create_self_authored_markers(tmp_path, monkeypatch):
@@ -162,6 +163,7 @@ def test_light_mode_allows_constrained_str_replace_editor_payload_edit(tmp_path,
     ctx, skill = _ctx(tmp_path)
     target = skill / "plugin.py"
     target.write_text("VALUE = 1\n", encoding="utf-8")
+    _admit_repair(ctx, skill)
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
     monkeypatch.setattr(cfg, "get_runtime_mode", lambda: "light")
@@ -308,6 +310,7 @@ def test_light_mode_allows_repair_edit_text_with_skill_payload_root(tmp_path, mo
     ctx, skill = _ctx(tmp_path)
     target = skill / "plugin.py"
     target.write_text("VALUE = 1\n", encoding="utf-8")
+    _admit_repair(ctx, skill)
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
     monkeypatch.setattr(cfg, "get_runtime_mode", lambda: "light")

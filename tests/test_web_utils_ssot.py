@@ -126,9 +126,10 @@ def test_skills_does_not_redeclare_shared_helpers():
     assert "source === 'self_authored' || source === 'external'" in renderer
     assert "payloadRoot.startsWith('skills/external/')" in renderer
     assert "skills-delete-local" in renderer
-    assert "apiClient.deleteSkill(name, payloadRoot)" in src
+    assert "apiClient.deleteSkill(name, payloadRoot, current.content_hash)" in src
     assert "/api/skills/${encodeURIComponent(skill)}/delete" in api_client
     assert "payload_root: payloadRoot" in api_client
+    assert "expected_content_hash: expectedContentHash" in api_client
     assert "data/state/skills/${name}" in src
 
 

@@ -27,7 +27,7 @@ function installedWithPreflightFail() {
 test('preflight-failed install offers Repair with the human diagnosis', () => {
     const lifecycle = lifecycleFor({}, installedWithPreflightFail(), null);
     assert.equal(lifecycle.action, 'fix');
-    assert.equal(lifecycle.button, 'Repair');
+    assert.equal(lifecycle.button, 'Repair and run');
     assert.equal(lifecycle.tone, 'danger');
     assert.equal(lifecycle.label, 'Preflight failed');
     assert.match(lifecycle.hint, /missing or escaping entry: plugin\.py/);
@@ -66,7 +66,7 @@ test('stale-Repair secondary renders only while no lifecycle work is pending', (
     const html = staleRepairSecondaryHtml('minecraft-widget', installed, null);
     assert.match(html, /data-mp-action="fix"/);
     assert.match(html, /data-slug="minecraft-widget"/);
-    assert.match(html, />Repair</);
+    assert.match(html, />Repair and run</);
     assert.match(html, /based on the last recorded preflight/);
     // A queued/running lifecycle job suppresses it (the primary's pending
     // discipline): no concurrent repair while other work runs.

@@ -996,6 +996,7 @@ class ToolRegistry:
         """Run one builtin handler under the scoped attestation."""
         from ouroboros.process_interpreters import interpreter_attestation
 
+        observed_skill = None
         missing = object()
         prior_tool_result_attr = getattr(self._ctx, _TOOL_RESULT_ATTR, missing)
         tool_result_sentinel = object()
@@ -1020,6 +1021,18 @@ class ToolRegistry:
                         inspect.signature(entry.handler).bind(self._ctx, **handler_args)
                     except TypeError:
                         return tool_resolution._format_tool_arg_error(entry), None
+                    constraint = normalize_task_constraint(getattr(self._ctx, "task_constraint", None))
+                    if _shell_guard_required(name, args) and constraint and constraint.has_selected_skill:
+                        from ouroboros.skill_repair_admission import repair_write_cas_error
+                        from ouroboros.tool_access import canonical_data_root
+
+                        state_root = canonical_data_root(self._ctx)
+                        refusal = repair_write_cas_error(
+                            state_root, constraint, task_id=self._ctx.task_id, repair_task=True,
+                        )
+                        if refusal:
+                            return refusal, None
+                        observed_skill = (state_root, constraint)
                     result = entry.handler(self._ctx, **handler_args)
                     published = _published_tool_result(
                         self._ctx,
@@ -1037,6 +1050,13 @@ class ToolRegistry:
                 except Exception as e:
                     return f"⚠️ TOOL_ERROR ({name}): {e}", None
         finally:
+            if observed_skill is not None:
+                from ouroboros.skill_repair_admission import advance_repair_expected_hash
+
+                advance_repair_expected_hash(
+                    *observed_skill, task_id=self._ctx.task_id,
+                    attribution="opaque_operation_unproven",
+                )
             _restore_tool_result_sidecar(tool_result_token)
             if prior_tool_result_attr is missing:
                 try:
@@ -1114,12 +1134,7 @@ class ToolRegistry:
             _route_note = path_normalization.text
             if path_normalization.required_root == "active_workspace":
                 return ToolResult(status="blocked", code="ROOT_REQUIRED_ACTIVE_WORKSPACE", text=_route_note, meta={"required_root": "active_workspace"})
-        heal_no_enable = bool(task_constraint and task_constraint.mode == "skill_repair")
-        if heal_no_enable:
-            heal_block = registry_guards._heal_mode_guard_result(
-                self._ctx, name, args, task_constraint, ext_tool, is_mcp)
-            if heal_block is not None:
-                return heal_block
+        selected_skill = bool(task_constraint and task_constraint.has_selected_skill)
         workspace_mode = bool(getattr(self._ctx, "is_workspace_mode", lambda: False)())
         effective_constraint = task_constraint
         if entry is not None and not (skip_binding := _configured_delegate_selector(self._ctx, name, args)):
@@ -1185,13 +1200,13 @@ class ToolRegistry:
         if interpreter_block is not None:
             return interpreter_block
         allow_short_relative = bool(
-            effective_constraint and effective_constraint.mode == "skill_repair"
+            effective_constraint and effective_constraint.has_selected_skill
         )
         light_skill_scoped_str_replace = resolved_binding is None and (
             registry_guards._light_mode_payload_mutation_allowed(
                 ctx=self._ctx, tool_name=name, args=args, runtime_mode=_runtime_mode,
                 effective_constraint=effective_constraint,
-                implicit_skill_cwd_allowed=heal_no_enable,
+                implicit_skill_cwd_allowed=selected_skill,
                 allow_short_relative=allow_short_relative,
             ))
         if name in _SYSTEM_INTRINSIC_REPO_MUTATION_TOOLS:

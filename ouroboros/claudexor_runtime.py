@@ -14,7 +14,6 @@ and its preserved directory again.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -32,6 +31,10 @@ from typing import Any, Mapping, Optional
 from urllib.parse import urlparse
 
 from ouroboros.utils import replace_atomic
+from ouroboros.verified_download import (
+    fetch_exact_file as _fetch_exact_file,
+    verify_exact_file as _verify_exact_file,
+)
 
 log = logging.getLogger(__name__)
 
@@ -274,43 +277,6 @@ def load_runtime_pin(path: "str | pathlib.Path | None" = None) -> Optional[Claud
     return ClaudexorRuntimePin.from_mapping(release)
 
 
-def _verify_exact_file(
-    path: "str | pathlib.Path",
-    *,
-    size_bytes: int,
-    sha256: str,
-    code_prefix: str,
-    label: str,
-) -> pathlib.Path:
-    """Verify one review-bound download without interpreting its contents."""
-    archive = pathlib.Path(path)
-    try:
-        size = archive.stat().st_size
-    except OSError as exc:
-        raise ClaudexorRuntimeError(
-            f"{code_prefix}_missing", f"{label} is unavailable: {type(exc).__name__}: {exc}"
-        ) from exc
-    if size != size_bytes:
-        raise ClaudexorRuntimeError(
-            f"{code_prefix}_size_mismatch",
-            f"{label} size {size} does not match the reviewed {size_bytes}",
-        )
-    digest = hashlib.sha256()
-    try:
-        with archive.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as exc:
-        raise ClaudexorRuntimeError(
-            f"{code_prefix}_unreadable", f"{label} read failed: {type(exc).__name__}: {exc}"
-        ) from exc
-    actual = digest.hexdigest()
-    if actual != sha256:
-        raise ClaudexorRuntimeError(
-            f"{code_prefix}_digest_mismatch",
-            f"{label} sha256 {actual} does not match the reviewed {sha256}",
-        )
-    return archive
 
 
 def verify_runtime_archive(path: "str | pathlib.Path", pin: ClaudexorRuntimePin) -> pathlib.Path:
@@ -322,6 +288,7 @@ def verify_runtime_archive(path: "str | pathlib.Path", pin: ClaudexorRuntimePin)
         sha256=pin.sha256,
         code_prefix="runtime_archive",
         label="runtime archive",
+        error_type=ClaudexorRuntimeError,
     )
 
 
@@ -336,60 +303,10 @@ def verify_node_archive(
         sha256=artifact.sha256,
         code_prefix="runtime_node_archive",
         label="Node archive",
+        error_type=ClaudexorRuntimeError,
     )
 
 
-def _fetch_exact_file(
-    *,
-    url: str,
-    destination: "str | pathlib.Path",
-    verify: Any,
-    size_bytes: int,
-    overflow_code: str,
-    failure_code: str,
-    label: str,
-) -> pathlib.Path:
-    """Atomically fetch one exact file; an existing verified cache wins."""
-    target = pathlib.Path(destination)
-    try:
-        return verify(target)
-    except ClaudexorRuntimeError:
-        pass
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-    try:
-        import httpx
-
-        written = 0
-        with httpx.Client(follow_redirects=True, timeout=_DOWNLOAD_TIMEOUT_SEC) as client:
-            with client.stream("GET", url) as response:
-                response.raise_for_status()
-                with temporary.open("xb") as sink:
-                    for chunk in response.iter_bytes():
-                        if not chunk:
-                            continue
-                        written += len(chunk)
-                        if written > size_bytes:
-                            raise ClaudexorRuntimeError(
-                                overflow_code, f"{label} download exceeded the reviewed size"
-                            )
-                        sink.write(chunk)
-                    sink.flush()
-                    os.fsync(sink.fileno())
-        verify(temporary)
-        replace_atomic(temporary, target)
-        return verify(target)
-    except ClaudexorRuntimeError:
-        raise
-    except Exception as exc:
-        raise ClaudexorRuntimeError(
-            failure_code, f"{label} download failed: {type(exc).__name__}: {exc}"
-        ) from exc
-    finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def fetch_runtime_archive(
@@ -410,6 +327,8 @@ def fetch_runtime_archive(
         overflow_code="runtime_archive_size_mismatch",
         failure_code="runtime_download_failed",
         label="managed runtime",
+        timeout_sec=_DOWNLOAD_TIMEOUT_SEC,
+        error_type=ClaudexorRuntimeError,
     )
 
 
@@ -426,6 +345,8 @@ def fetch_node_archive(
         overflow_code="runtime_node_archive_size_mismatch",
         failure_code="runtime_node_download_failed",
         label="managed Node",
+        timeout_sec=_DOWNLOAD_TIMEOUT_SEC,
+        error_type=ClaudexorRuntimeError,
     )
 
 

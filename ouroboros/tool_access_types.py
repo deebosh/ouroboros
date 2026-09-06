@@ -22,7 +22,6 @@ ToolProfile = Literal[
     "workspace_task",
     "external_workspace_task",
     "acting_subagent",
-    "skill_repair",
     "local_readonly_subagent",
     "operator_control",
 ]
@@ -148,12 +147,6 @@ _POLICY: dict[str, dict[str, set[str]]] = {
         # (data/skills/...); grants/secrets live in data/state/skills, which
         # stays invisible to this profile.
         "skill_payload": {"read", "list", "search"},
-    },
-    "skill_repair": {
-        "skill_payload": {"read", "list", "search", "write", "edit", "review"},
-        "runtime_data": {"read", "list"},
-        "task_drive": {"read", "list"},
-        "artifact_store": {"read", "list"},
     },
     # Top-level preset names remain observable, but workspace focus never narrows
     # the ordinary principal. Independent path/credential/child/runtime guards

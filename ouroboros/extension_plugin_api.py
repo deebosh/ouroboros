@@ -799,10 +799,12 @@ class PluginAPIImpl:
                         published = live.get(key)
                         if isinstance(published, dict):
                             published["extension_generation"] = digest
+                            published["content_hash"] = str(bundle.content_hash or "")
                             published["plugin_api_generation"] = self._plugin_api_generation
                 for key, value in staged_map.items():
                     if stamp:
                         value["extension_generation"] = digest
+                        value["content_hash"] = str(bundle.content_hash or "")
                         value["plugin_api_generation"] = self._plugin_api_generation
                     live[key] = value
                     bundle_keys.append(key)

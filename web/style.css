@@ -4338,10 +4338,17 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 
 .skills-card {
+    container: skillcard / inline-size;
     padding: 16px 18px;
     display: flex;
     flex-direction: column;
     gap: 12px;
+}
+
+/* Older WebViews isolate query containers; keep an open menu above siblings. */
+.skills-card:has(.skills-card-menu-dialog[open]) {
+    position: relative;
+    z-index: 1;
 }
 
 .skills-card-head {
@@ -4383,6 +4390,23 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     flex-wrap: wrap;
     justify-content: flex-end;
     min-width: 0;
+}
+
+/* A saved wide sidebar can make the card narrow even in a wide window. */
+@container skillcard (max-width: 520px) {
+    .skills-card-head {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .skills-card-title,
+    .skills-card-toggle {
+        width: 100%;
+    }
+
+    .skills-card-toggle {
+        justify-content: flex-start;
+    }
 }
 
 .skills-status-chip {

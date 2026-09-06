@@ -6,6 +6,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -17,13 +18,13 @@ from ouroboros.contracts.plugin_api import FORBIDDEN_SKILL_SETTINGS
 from ouroboros.platform_layer import merge_hidden_kwargs, subprocess_new_group_kwargs
 from ouroboros.provider_models import MODEL_PROVIDER_CREDENTIAL_KEYS
 from ouroboros.tools.process_facts import publish_process_facts as _publish_process_facts
+from ouroboros.skill_dependencies import skill_deps_not_ready as _skill_deps_not_ready
 from ouroboros.skill_loader import (
     SkillPayloadUnreadable,
     compute_content_hash,
     discover_skills,
     find_skill,
     grant_status_for_skill,
-    save_enabled,
     skill_conflict_status,
     skill_review_gate,
     skill_state_dir,
@@ -175,7 +176,7 @@ def _run_skill_subprocess(
     *,
     cwd: str,
     env: Dict[str, str],
-    timeout_sec: int,
+    timeout_sec: float,
     stdout_cap: int,
     stderr_cap: int,
     on_spawn: Optional[Callable[[], None]] = None,
@@ -240,7 +241,7 @@ def _run_skill_subprocess(
     stdout_thread.start()
     stderr_thread.start()
 
-    deadline = time.monotonic() + max(1, int(timeout_sec))
+    deadline = time.monotonic() + max(0.0, float(timeout_sec))
     overflowed = False
     timed_out = False
     try:
@@ -293,6 +294,55 @@ def _run_skill_subprocess(
             stderr=bytes(stderr_buf),
         )
     return proc.returncode or 0, bytes(stdout_buf), bytes(stderr_buf), overflowed
+
+
+def _deno_permission_args(ctx: ToolContext, permissions: List[str], state_dir: pathlib.Path,
+                          env: Dict[str, str]) -> List[str]:
+    """Translate existing reviewed script effects to Deno's invocation flags."""
+    from ouroboros.tools.registry_guards import _resource_allowed
+
+    # Script fs declares writes outside state; ordinary reads need no new
+    # grant. Env authority is only the names actually passed after grants.
+    flags = ["run", "--no-prompt", "--allow-read"]
+    if env:
+        flags.append("--allow-env=" + ",".join(key.replace(",", ",,") for key in sorted(env)))
+    state_arg = str(state_dir).replace(",", ",,")
+    flags.append("--allow-write" if "fs" in permissions else f"--allow-write={state_arg}")
+    if "net" in permissions and _resource_allowed(ctx, "network"):
+        flags.append("--allow-net")
+    if not _resource_allowed(ctx, "network"):
+        flags.append("--cached-only")  # Static imports must not fetch either.
+    if "subprocess" in permissions:
+        flags.append("--allow-run")
+    return flags
+
+
+def _run_go_skill(cmd: List[str], *, state_dir: pathlib.Path, **kwargs: Any) -> Tuple[int, bytes, bytes, bool, str]:
+    """Compile then execute through the same bounded process owner.
+
+    go run consumes .go-looking arguments and does not return the program's
+    exit status. A private executable preserves both. Compilation and execution
+    share the original timeout, and cleanup follows both owned child waits.
+    """
+    deadline = time.monotonic() + kwargs["timeout_sec"]
+    env = dict(kwargs["env"])
+    env.setdefault("GOCACHE", str(state_dir / "go-cache"))
+    env.setdefault("GOPATH", str(state_dir / "go"))
+    with tempfile.TemporaryDirectory(prefix="go-exec-", dir=state_dir) as directory:
+        executable = str(pathlib.Path(directory) / ("skill.exe" if os.name == "nt" else "skill"))
+        compiled = _run_skill_subprocess(
+            [cmd[0], "build", "-o", executable, cmd[1]], **{**kwargs, "env": env},
+        )
+        if compiled[0] != 0 or compiled[3]:
+            return (*compiled, "compile")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout_sec"])
+        executed = _run_skill_subprocess(
+            [executable, *cmd[2:]],
+            **{**kwargs, "timeout_sec": remaining, "on_spawn": None},
+        )
+        return (*executed, "execute")
 
 
 def _record_skill_exec_dispatch(
@@ -594,26 +644,6 @@ def _skill_deps_exec_block(drive_root: pathlib.Path, loaded: Any) -> str:
     )
 
 
-def _skill_deps_not_ready(drive_root: pathlib.Path, loaded: Any) -> tuple[str, str]:
-    try:
-        from ouroboros.marketplace.install_specs import install_specs_hash as _specs_hash
-        from ouroboros.marketplace.isolated_deps import read_deps_state
-        from ouroboros.skill_dependencies import auto_install_specs_for_skill
-
-        auto_specs = auto_install_specs_for_skill(drive_root, loaded)
-        if not auto_specs:
-            return "", ""
-        deps_state = read_deps_state(drive_root, loaded.name, loaded.skill_dir)
-        deps_status = str(deps_state.get("status") or "pending")
-        if deps_status != "installed":
-            return deps_status, "status"
-        if str(deps_state.get("specs_hash") or "") != _specs_hash(auto_specs):
-            return deps_status, "fingerprint"
-        return "", ""
-    except Exception:
-        log.debug("skill deps readiness probe failed", exc_info=True)
-        return "", ""
-
 
 def _non_executable_review_message(prefix: str, skill_name: str, status: str, *, stale: bool = False) -> str:
     gate = skill_review_gate(status, stale=stale)
@@ -770,10 +800,10 @@ def _handle_skill_exec(
     except Exception:
         log.debug("Could not resolve isolated Python runtime", exc_info=True)
     if runtime_binary is None:
+        reason = (f"is not in the allowlist {sorted(_ALLOWED_RUNTIMES)}" if runtime not in _ALLOWED_RUNTIMES
+                  else "has no available binary on PATH")
         return (
-            f"⚠️ SKILL_EXEC_ERROR: skill {skill_name!r} declared runtime "
-            f"{runtime!r} is not in the allowlist {sorted(set(_ALLOWED_RUNTIMES))} "
-            f"or the matching binary is not on PATH."
+            f"⚠️ SKILL_EXEC_ERROR: skill {skill_name!r} declared runtime {runtime!r} {reason}."
             + (f" ({runtime_unavailable_reason})" if runtime_unavailable_reason else "")
         )
 
@@ -873,6 +903,9 @@ def _handle_skill_exec(
     except Exception:
         log.debug("Could not augment skill env with isolated dependencies", exc_info=True)
 
+    if runtime == "deno":
+        cmd = [runtime_binary, *_deno_permission_args(ctx, loaded.manifest.permissions, state_dir, env), *cmd[1:]]
+
     # E2BIG hygiene (C5): byte-accurate argv+env budget against the REAL exec
     # environment, checked before spawn (type validation above only proves the
     # args are scalars). No automatic file/stdin fallback — a skill accepts
@@ -911,13 +944,9 @@ def _handle_skill_exec(
     dispatch_id = f"skill_exec:{uuid.uuid4().hex}"
     model_capable = any(str(env.get(key) or "").strip() for key in MODEL_PROVIDER_CREDENTIAL_KEYS)
     try:
-        returncode, stdout_bytes, stderr_bytes, overflowed = _run_skill_subprocess(
-            cmd,
-            cwd=str(loaded.skill_dir),
-            env=env,
-            timeout_sec=timeout,
-            stdout_cap=_MAX_STDOUT_BYTES,
-            stderr_cap=_MAX_STDERR_BYTES,
+        process_options = dict(
+            cwd=str(loaded.skill_dir), env=env, timeout_sec=timeout,
+            stdout_cap=_MAX_STDOUT_BYTES, stderr_cap=_MAX_STDERR_BYTES,
             on_spawn=((
                 lambda: _record_skill_exec_dispatch(
                     ctx,
@@ -927,6 +956,13 @@ def _handle_skill_exec(
                 )
             ) if model_capable else None),
         )
+        if runtime == "go":
+            returncode, stdout_bytes, stderr_bytes, overflowed, phase = _run_go_skill(
+                cmd, state_dir=state_dir, **process_options,
+            )
+        else:
+            returncode, stdout_bytes, stderr_bytes, overflowed = _run_skill_subprocess(cmd, **process_options)
+            phase = "execute"
     except subprocess.TimeoutExpired as exc:
         _emit_skill_lifecycle_event(
             ctx,
@@ -969,6 +1005,8 @@ def _handle_skill_exec(
             "skill": loaded.name,
             "script": script_rel,
             "runtime": runtime,
+            "runtime_phase": phase,
+            "content_hash": spawn_hash,
             "exit_code": int(returncode),
             "timeout_sec": timeout,
         },
@@ -997,11 +1035,10 @@ def _coerce_bool_arg(value: Any) -> Optional[bool]:
 
 
 def _handle_toggle_skill(
-    ctx: ToolContext,
-    skill: str = "",
-    enabled: Any = None,
+    ctx: ToolContext, skill: str = "", enabled: Any = None,
+    expected_content_hash: str = "", owner_source: dict | None = None,
     **_kwargs: Any,
-    ) -> str:
+) -> str:
     skill_name = str(skill or "").strip()
     if not skill_name:
         return "⚠️ SKILL_TOGGLE_ERROR: 'skill' argument is required."
@@ -1014,117 +1051,33 @@ def _handle_toggle_skill(
             f"{sorted(_TRUE_LITERALS | _FALSE_LITERALS)}. "
             f"Got {enabled!r} ({type(enabled).__name__})."
         )
-    err = _skill_tool_preflight(ctx)
-    if err:
-        return err
+    from ouroboros.skill_lifecycle_actions import run_skill_action
 
-    drive_root = canonical_data_root(ctx)
-    from ouroboros.skill_lifecycle_queue import skill_lifecycle_file_lock
+    payload = run_skill_action(
+        ctx, skill_name, "enable" if coerced else "disable",
+        expected_content_hash=expected_content_hash, owner_source=owner_source,
+    )
+    if payload.get("error"):
+        return "⚠️ SKILL_TOGGLE_ERROR: " + json.dumps(payload, ensure_ascii=False)
+    payload["message"] = f"Skill {skill_name!r} enabled={payload.get('enabled', False)}"
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
-    with skill_lifecycle_file_lock(drive_root):
-        loaded = find_skill(drive_root, skill_name)
-        if loaded is None:
-            return (
-                f"⚠️ SKILL_TOGGLE_ERROR: skill {skill_name!r} not found in "
-                "OUROBOROS_SKILLS_REPO_PATH."
-            )
-        collision_load_error = loaded.load_error.lower().startswith("skill name collision:")
-        if coerced and loaded.load_error:
-            return (
-                f"⚠️ SKILL_TOGGLE_ERROR: skill {skill_name!r} cannot be enabled "
-                f"— loader rejected it ({loaded.load_error})."
-            )
-        if coerced:
-            conflict = skill_conflict_status(loaded, discover_skills(drive_root))
-            if conflict:
-                names = list(conflict.get("skills") or [])
-                return (
-                    f"⚠️ SKILL_TOGGLE_ERROR: cannot enable {loaded.name!r} while "
-                    f"conflicting skills are enabled: {names}. Disable them first."
-                )
-            stale = loaded.review.is_stale_for(loaded.content_hash)
-            gate = skill_review_gate(loaded.review.status, stale=stale)
-            grants = grant_status_for_skill(drive_root, loaded)
-            if not gate["executable_review"]:
-                return _non_executable_review_message(
-                    "SKILL_TOGGLE_ERROR",
-                    skill_name,
-                    loaded.review.status,
-                    stale=stale,
-                )
-            if not grants.get("all_granted", True):
-                missing_bits = []
-                if grants.get("missing_keys"):
-                    missing_bits.append(f"keys={grants.get('missing_keys')}")
-                if grants.get("missing_permissions"):
-                    missing_bits.append(f"permissions={grants.get('missing_permissions')}")
-                missing_text = f" ({', '.join(missing_bits)})" if missing_bits else ""
-                return (
-                    "⚠️ SKILL_TOGGLE_ERROR: cannot enable until requested grants "
-                    f"are approved{missing_text}."
-                )
-            deps_status, deps_reason = _skill_deps_not_ready(drive_root, loaded)
-            if deps_reason == "status":
-                return (
-                    f"⚠️ SKILL_TOGGLE_ERROR: skill {loaded.name!r} declares "
-                    f"isolated dependencies (status={deps_status!r}). "
-                    "Re-run skill_review (PASS triggers a deps re-install) before enabling."
-                )
-            if deps_reason == "fingerprint":
-                return (
-                    f"⚠️ SKILL_TOGGLE_ERROR: skill {loaded.name!r} dependency "
-                    "fingerprint is stale (provenance changed since last install). "
-                    "Re-run skill_review before enabling."
-                )
-        if not coerced and collision_load_error:
-            extension_action = None
-            extension_reason = "name_collision"
-            from ouroboros import extension_loader
-            if loaded.name in extension_loader.snapshot()["extensions"]:
-                extension_loader.unload_extension(loaded.name)
-                extension_action = "extension_unloaded"
-            stale = loaded.review.is_stale_for(loaded.content_hash)
-            gate = skill_review_gate(loaded.review.status, stale=stale)
-            return json.dumps({"skill": loaded.name, "enabled": False, "review_status": loaded.review.status, "review_gate": gate, "executable_review": gate["executable_review"], "extension_action": extension_action, "extension_reason": extension_reason, "message": f"Skill {loaded.name!r} was not persisted as disabled because its sanitized identity collides with another skill directory. Rename one of the directories first."}, ensure_ascii=False, indent=2)
-        save_enabled(drive_root, loaded.name, coerced, actor="agent_tool", reason=str(ctx.task_id or ""))
-        loaded.enabled = coerced
-        extension_action = None
-        extension_reason = "not_extension"
-        extension_load_error_msg = ""
-        extension_process = ""
-        extension_server_reconcile = ""
-        from ouroboros import extension_loader
-        if loaded.manifest.is_extension() or loaded.name in extension_loader.snapshot()["extensions"]:
-            from ouroboros.config import load_settings as _load_settings
-            live_state = extension_loader.reconcile_extension(
-                loaded.name, drive_root, _load_settings,
-                selected_skill=loaded, retry_load_error=True,
-                revert_enabled_on_error=coerced,
-            )
-            extension_action = live_state.get("action")
-            extension_reason = str(live_state.get("reason") or "")
-            extension_load_error_msg = str(live_state.get("load_error") or "")
-            extension_process = str(live_state.get("process") or "")
-            extension_server_reconcile = str(live_state.get("server_reconcile") or "")
-        # Mirror schedule readiness immediately (parallel to the HTTP toggle path).
-        try:
-            from supervisor.queue import resync_skill_schedules
 
-            resync_skill_schedules(drive_root)
-        except Exception:
-            log.debug("toggle_skill schedule sync failed", exc_info=True)
-        stale = loaded.review.is_stale_for(loaded.content_hash)
-        gate = skill_review_gate(loaded.review.status, stale=stale)
-        # Atomic enable: reconcile reverts enabled.json to False when the out-of-process
-        # catalog/register dry-run fails, so report the effective (reverted) state — not
-        # the requested one — to avoid an enabled=True report over a disabled-on-disk skill.
-        reverted = coerced and extension_action == "extension_load_error"
-        effective_enabled = coerced and not reverted
-        message = (
-            f"cannot enable {loaded.name!r}: {extension_load_error_msg or 'extension failed to load'}"
-            if reverted else f"Skill {loaded.name!r} enabled={effective_enabled}"
-        )
-        return json.dumps({"skill": loaded.name, "enabled": effective_enabled, "review_status": loaded.review.status, "review_gate": gate, "executable_review": gate["executable_review"], "extension_action": extension_action, "extension_reason": extension_reason, "process": extension_process, "server_reconcile": extension_server_reconcile, "message": message}, ensure_ascii=False, indent=2)
+def _handle_skill_owner_action(
+    ctx: ToolContext, skill: str, action: str, expected_content_hash: str,
+    owner_source: dict, items: list[str] | None = None,
+) -> str:
+    """Carry expressed owner intent to its real effect without an HTTP self-call."""
+    from ouroboros.skill_lifecycle_actions import run_skill_action
+
+    if action not in {"grant", "attest", "delete"}:
+        return "⚠️ SKILL_ACTION_BLOCKED: use toggle_skill for enable/disable."
+    payload = run_skill_action(
+        ctx, skill, action, expected_content_hash=expected_content_hash,
+        owner_source=owner_source, items=items,
+    )
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    return "⚠️ SKILL_ACTION_BLOCKED: " + rendered if payload.get("error") else rendered
 
 _LIST_SCHEMA = {
     "name": "list_skills",
@@ -1233,7 +1186,11 @@ _TOGGLE_SCHEMA = {
     "description": (
         "Enable or disable a skill. Disabled skills are excluded from "
         "skill_exec regardless of review status. Enabling requires a fresh "
-        "executable review and any requested key or host-permission grants."
+        "executable review and any requested key or host-permission grants. "
+        "For selected-skill development, interpret the real owner request: "
+        "Repair and run authorizes enabling and leaving the repaired skill running. "
+        "The host resolves that task's original owner message when owner_source is omitted; "
+        "automatic repair-and-review alone grants no enable authority."
     ),
     "parameters": {
         "type": "object",
@@ -1246,8 +1203,42 @@ _TOGGLE_SCHEMA = {
                 "type": "boolean",
                 "description": "True to enable, False to disable.",
             },
+            "expected_content_hash": {"type": "string", "description": "Optional exact selected payload revision."},
+            "owner_source": {"type": "object", "description": "Existing owner source when enabling a selected skill; omitted uses the task's actual owner origin. Use a newer message/quiz/mailbox reply after an intentional disable. Same shape as skill_owner_action."},
         },
         "required": ["skill", "enabled"],
+    },
+}
+
+
+_OWNER_ACTION_SCHEMA = {
+    "name": "skill_owner_action",
+    "description": (
+        "Carry an already expressed owner instruction to one exact skill revision: "
+        "grant manifest-requested permissions/settings keys, perform eligible owner attestation, "
+        "or delete a local external skill. Ordinary Repair does not imply these actions. "
+        "Interpret the referenced owner's actual words; do not invent a source or treat an ID "
+        "as approval. Host validates source membership, caller and revision. Attestation still "
+        "runs deterministic preflight and is unavailable for ClawHub/native payloads. "
+        "Use toggle_skill for ordinary enable/disable."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "skill": {"type": "string"},
+            "action": {"type": "string", "enum": ["grant", "attest", "delete"]},
+            "expected_content_hash": {"type": "string", "description": "Current selected content hash from list_skills."},
+            "items": {"type": "array", "items": {"type": "string"}, "description": "For grant only: exact manifest-requested key/permission names, never secret values."},
+            "owner_source": {
+                "type": "object",
+                "description": (
+                    "Existing source: {kind:'chat',ref:{chat_id,client_message_id,ts,text_sha256}}; "
+                    "{kind:'quiz',task_id,quiz_id}; or {kind:'mailbox',task_id,msg_id}. "
+                    "Quiz/mailbox must belong to this task; a quiz must already be answered."
+                ),
+            },
+        },
+        "required": ["skill", "action", "expected_content_hash", "owner_source"],
     },
 }
 
@@ -1281,6 +1272,11 @@ def get_tools() -> List[ToolEntry]:
             handler=_handle_toggle_skill,
             is_code_tool=False,
             timeout_sec=15,
+        ),
+        ToolEntry(
+            name="skill_owner_action", schema=_OWNER_ACTION_SCHEMA,
+            handler=_handle_skill_owner_action, is_code_tool=False,
+            timeout_sec=_SKILL_REVIEW_TOOL_TIMEOUT_SEC,
         ),
     ]
 

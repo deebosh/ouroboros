@@ -597,7 +597,7 @@ def test_marketplace_auto_repair_enqueues_once_per_payload_hash(monkeypatch, tmp
     assert first is True
     assert second is False
     assert len(calls) == 1
-    assert calls[0][1]["task_constraint"]["mode"] == "skill_repair"
+    assert calls[0][1]["task_constraint"]["mode"] == "normal"
     assert calls[0][1]["task_constraint"]["allow_review"] is True
     assert calls[0][1]["task_constraint"]["allow_enable"] is False
     assert broadcasts and broadcasts[0]["system_type"] == "skill_repair"

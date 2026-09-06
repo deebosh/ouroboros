@@ -188,8 +188,8 @@ def _dispatch_extension_tool_result(
     """Dispatch once, stamping ABI-9 generation provenance on physical calls.
 
     The model-facing text and the typed status/code are exactly the inner
-    dispatcher's; the only addition is the ``extension_generation`` meta fact
-    on outcomes of a physical dispatch attempt, which the loop projects into
+    dispatcher's; the ``extension_generation`` and known ``content_hash`` meta facts appear
+    only on outcomes of a physical dispatch attempt, which the loop projects into
     the tools.jsonl ``tool_result_meta`` provenance record.
 
     The digest is snapshotted BEFORE the call (a registry-fallback read taken
@@ -199,6 +199,7 @@ def _dispatch_extension_tool_result(
     so a pre-handler refusal or failure (liveness, safety, runner import,
     disclosure gate, calling-convention resolution) is never stamped."""
     digest = _generation_digest_for(ext_tool)
+    content_hash = str(ext_tool.get("content_hash") or "")
     result = _dispatch_extension_tool_untagged(ctx, name, ext_tool, args)
     if (
         not isinstance(result, ToolResult)
@@ -210,7 +211,8 @@ def _dispatch_extension_tool_result(
         status=result.status,
         code=result.code,
         text=result.text,
-        meta={**dict(result.meta), "extension_generation": digest},
+        meta={**dict(result.meta), "extension_generation": digest,
+              **({"content_hash": content_hash} if content_hash else {})},
     )
 
 

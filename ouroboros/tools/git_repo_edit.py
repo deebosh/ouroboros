@@ -14,7 +14,7 @@ import subprocess
 from typing import Dict, List, Optional
 
 from ouroboros.tools.registry import ToolContext
-from ouroboros.tool_access import ResolvedResourceBinding
+from ouroboros.tool_access import ResolvedResourceBinding, canonical_data_root
 
 
 def _git():
@@ -295,9 +295,9 @@ def _str_replace_editor(
         redirect_err = _git().cross_skill_redirect_error(existing_tc, synth)
         if redirect_err:
             return f"⚠️ SKILL_REDIRECT_BLOCKED: {redirect_err}"
-        task_constraint = existing_tc if existing_tc and existing_tc.mode == "skill_repair" else synth or existing_tc
+        task_constraint = existing_tc if existing_tc and existing_tc.has_selected_skill else synth or existing_tc
 
-    if binding is None and not ctx.is_workspace_mode() and task_constraint and task_constraint.mode == "skill_repair" and task_constraint.payload_root:
+    if binding is None and not ctx.is_workspace_mode() and task_constraint and task_constraint.has_selected_skill and task_constraint.payload_root:
         try:
             target = _git().resolve_payload_path(pathlib.Path(ctx.drive_root), task_constraint, path)
             data_skill_target = target
@@ -378,7 +378,8 @@ def _str_replace_editor(
     # terminalization, never a silent write over foreign changes.
     _repair_cas_constraint = (
         task_constraint
-        if task_constraint and task_constraint.mode == "skill_repair"
+        if task_constraint and task_constraint.has_selected_skill
+        and (data_skill_target is not None or (binding is not None and binding.skill_name))
         and str(getattr(task_constraint, "skill_name", "") or "")
         else None
     )
@@ -386,11 +387,11 @@ def _str_replace_editor(
         from ouroboros.skill_repair_admission import repair_write_cas_error
 
         _cas = repair_write_cas_error(
-            pathlib.Path(ctx.drive_root), _repair_cas_constraint,
+            canonical_data_root(ctx), _repair_cas_constraint,
             task_id=str(getattr(ctx, "task_id", "") or ""),
             # Mandatory only for a real repair TASK; a synthesized short-form
             # selector on an ordinary edit lane is not an admitted repair.
-            repair_task=bool(existing_tc and existing_tc.mode == "skill_repair"))
+            repair_task=bool(existing_tc and existing_tc.has_selected_skill))
         if _cas:
             return _cas
     try:
@@ -401,7 +402,7 @@ def _str_replace_editor(
         from ouroboros.skill_repair_admission import advance_repair_expected_hash
 
         advance_repair_expected_hash(
-            pathlib.Path(ctx.drive_root), _repair_cas_constraint,
+            canonical_data_root(ctx), _repair_cas_constraint,
             task_id=str(getattr(ctx, "task_id", "") or ""))
 
     replacement_line = new_content[:new_content.index(new_str)].count('\n') + 1

@@ -446,6 +446,13 @@ def _select_process_target(
     if decision is not None and not decision.allow:
         raise ValueError(decision.reason)
     include_skill = reserved_root == "skill_payload"
+    constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+    if include_skill and constraint and constraint.has_selected_skill:
+        from ouroboros.contracts.skill_payload_policy import constraint_bucket_skill
+
+        selected_bucket, selected_skill = constraint_bucket_skill(constraint)
+        bucket = bucket or selected_bucket
+        skill_name = skill_name or selected_skill
     if include_skill and (not str(bucket or "").strip() or not str(skill_name or "").strip()):
         raise ValueError("cwd=skill_payload[/subdir] requires bucket and skill_name")
     candidate_records = _process_root_candidates(
@@ -726,7 +733,7 @@ def build_resolved_resource_binding(
         selected_bucket = str(bucket or "").strip()
         selected_skill = str(skill_name or "").strip()
         constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
-        if constraint and constraint.mode == "skill_repair":
+        if constraint and constraint.has_selected_skill:
             from ouroboros.contracts.skill_payload_policy import constraint_bucket_skill
 
             expected_bucket, expected_skill = constraint_bucket_skill(constraint)
@@ -736,12 +743,9 @@ def build_resolved_resource_binding(
             ):
                 selected_bucket = expected_bucket
                 selected_skill = selected_skill or expected_skill
-            elif (selected_bucket, selected_skill) != (expected_bucket, expected_skill):
-                raise ValueError(
-                    "SKILL_REDIRECT_BLOCKED: active skill_repair payload is "
-                    f"{expected_bucket}/{expected_skill}; cannot select "
-                    f"{selected_bucket}/{selected_skill}"
-                )
+            # Physical identity is checked by resolve_skill_payload_base for
+            # file, legacy runtime-data and process selectors alike; logical
+            # external/native aliases must not look like a different payload.
         from ouroboros.contracts.skill_payload_policy import _is_skill_create_signal
 
         base, source, selected_name = _skill_payload_base(

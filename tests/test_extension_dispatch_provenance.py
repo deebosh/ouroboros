@@ -45,6 +45,7 @@ def test_pre_handler_runner_import_failure_is_never_stamped(tmp_path, monkeypatc
     result = _dispatch_extension_tool_result(ctx, surface, ext_tool, {})
     assert (result.status, result.code) == ("error", "EXTENSION_ERROR")
     assert "extension_generation" not in result.meta
+    assert "content_hash" not in result.meta
     assert "physical_dispatch" not in result.meta
 
 
@@ -415,9 +416,11 @@ def test_fallback_digest_is_snapshotted_before_the_handler_runs(tmp_path, monkey
     DURING the handler (deterministic barrier: the handler itself republishes)
     cannot be misattributed to this call's result."""
     from ouroboros.tools.extension_dispatch import _dispatch_extension_tool_result
+    from ouroboros.skill_loader import SkillReviewState, find_skill, save_review_state
 
     surface, ctx, ext_tool, drive_root, loaded = _dispatch_ready(tmp_path, monkeypatch, "presnap")
     pre_call_digest = extension_loader.extension_generation_digest("presnap")
+    pre_call_hash = loaded.content_hash
     assert pre_call_digest
 
     ext_tool = dict(ext_tool)
@@ -426,8 +429,14 @@ def test_fallback_digest_is_snapshotted_before_the_handler_runs(tmp_path, monkey
 
     def _republishing_handler(**_kw):
         extension_loader.unload_extension("presnap")
+        plugin = loaded.skill_dir / "plugin.py"
+        plugin.write_text(plugin.read_text() + "\n# a different payload revision\n")
+        revised = find_skill(drive_root, "presnap", repo_path=str(loaded.skill_dir.parent))
+        assert revised.content_hash != pre_call_hash
+        save_review_state(drive_root, "presnap", SkillReviewState(status="clean", content_hash=revised.content_hash))
+        revised = find_skill(drive_root, "presnap", repo_path=str(loaded.skill_dir.parent))
         err = extension_loader.load_extension(
-            loaded, lambda: {}, drive_root=drive_root, _force_in_process=True
+            revised, lambda: {}, drive_root=drive_root, _force_in_process=True
         )
         assert err is None, err
         return "ok"
@@ -438,6 +447,8 @@ def test_fallback_digest_is_snapshotted_before_the_handler_runs(tmp_path, monkey
     assert result.status == "ok"
     assert post_call_digest and post_call_digest != pre_call_digest
     assert result.meta.get("extension_generation") == pre_call_digest
+    assert result.meta.get("content_hash") == pre_call_hash
+    assert extension_loader.get_tool(surface)["content_hash"] != pre_call_hash
 
 
 def test_legacy_descriptor_digest_is_read_atomically_with_the_descriptor(tmp_path, monkeypatch):
@@ -526,4 +537,5 @@ def test_tools_jsonl_direct_record_carries_the_extension_generation(tmp_path, mo
     meta = rows[-1].get("tool_result_meta")
     assert isinstance(meta, dict)
     assert meta.get("extension_generation") == digest
+    assert meta.get("content_hash") == _loaded.content_hash
     assert meta.get("physical_dispatch") is True

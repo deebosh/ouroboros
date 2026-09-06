@@ -241,10 +241,13 @@ export const apiClient = {
     createTask,
     skillLifecycleQueue: () => fetchJson('/api/skills/lifecycle-queue', { cache: 'no-store' }),
     /** @returns {Promise<import('./api_types.js').SkillDeleteResponse>} */
-    deleteSkill: (skill, payloadRoot) => jsonPost(`/api/skills/${encodeURIComponent(skill)}/delete`, {
+    deleteSkill: (skill, payloadRoot, expectedContentHash = '') => jsonPost(`/api/skills/${encodeURIComponent(skill)}/delete`, {
         payload_root: payloadRoot,
+        ...(expectedContentHash ? { expected_content_hash: expectedContentHash } : {}),
     }),
-    skillGrants: (skill, items) => jsonPost(`/api/skills/${encodeURIComponent(skill)}/grants`, { items }),
+    skillGrants: (skill, items, expectedContentHash = '') => jsonPost(`/api/skills/${encodeURIComponent(skill)}/grants`, {
+        items, ...(expectedContentHash ? { expected_content_hash: expectedContentHash } : {}),
+    }),
     /**
      * @param {string} skill
      * @param {import('./api_types.js').OwnerSkillPresenceRuntimeRequest} payload
