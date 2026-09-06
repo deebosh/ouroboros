@@ -475,6 +475,12 @@ filtered down to the answer.
   unbounded event log (`ouroboros/delegate_custody.py`); the fingerprint-keyed
   render cache in `ouroboros/_usage_rows_memo.py` — a projection cached while
   its input is unchanged, invalidated only by advance/refold, never by TTL.
+  Interactive result discovery reuses `gateway/task_list_scan.py`'s compact
+  stat-invalidated facts; decode changed/new files, never cache failed or torn
+  reads, and fetch selected full rows through the existing schema owner.
+  Task-event v2 cursors advance after each consumed row; preserve physical byte
+  positions through rotation and disclose replay/gaps rather than resetting an
+  unavailable cursor. Keep the legacy GET rank contract separate.
 
 Enforcement: Repo Commit Checklist item 24 (advisory) triggers on diffs that
 add or change an endpoint/poller/subscription/timer or read a growing store;

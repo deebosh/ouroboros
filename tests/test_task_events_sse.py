@@ -281,8 +281,8 @@ def test_iter_task_events_reads_progress_archive_chain(tmp_path):
 
 
 def test_sse_archive_floor_skips_archives_predating_task_creation(tmp_path):
-    """Fix 4: an archive whose rotation stamp predates the watched task's raw
-    creation ts is never read (bounds the glob to the task lifetime); archives
+    """An archive whose rotation stamp predates proven task creation is never
+    read (bounds the scan to the task lifetime); archives
     stamped after creation are still consulted."""
     data = tmp_path / "data"
     (data / "logs").mkdir(parents=True)
@@ -301,7 +301,8 @@ def test_sse_archive_floor_skips_archives_predating_task_creation(tmp_path):
         json.dumps({"ts": "2026-01-01T00:02:30Z", "content": "live-row", "task_id": "t1"}) + "\n",
         encoding="utf-8",
     )
-    write_task_result(data, "t1", "running", result="working", ts="2026-01-01T00:01:00Z")
+    write_task_result(data, "t1", "running", result="working", ts="2026-01-01T00:01:00Z",
+                      created_at="2026-01-01T00:01:00Z")
 
     events = iter_task_events(data, "t1")
 
@@ -500,6 +501,7 @@ def test_sse_torn_child_result_is_retried_and_discovered_next_tick(tmp_path):
     child_drive.mkdir()
     (data / "task_results" / "c1.json").write_text(
         json.dumps({
+            "_schema_version": 1,
             "task_id": "c1",
             "status": "running",
             "delegation_role": "subagent",
@@ -528,7 +530,7 @@ def test_sse_nonlineage_result_names_read_once_then_committed(tmp_path, monkeypa
     follower.full_merge()
 
     (data / "task_results" / "other.json").write_text(
-        json.dumps({"task_id": "other", "status": "running", "delegation_role": "root", "ts": OLD_TS}),
+        json.dumps({"_schema_version": 1, "task_id": "other", "status": "running", "delegation_role": "root", "ts": OLD_TS}),
         encoding="utf-8",
     )
     reads = []
