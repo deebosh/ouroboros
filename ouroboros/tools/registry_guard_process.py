@@ -62,22 +62,15 @@ def _subagent_shell_targets_secret(cmd_path_lower: str, *, ctx: Any = None, cwd:
     This is a best-effort argv inspection, not a sandbox for computed paths.
     """
     from ouroboros.credential_shapes import owner_credential_locations
-    from ouroboros.shell_parse import embedded_absolute_path_tokens, shell_argv_with_inline
+    from ouroboros.shell_parse import (
+        collect_leading_env, embedded_absolute_path_tokens, env_chdir_operand,
+        interpreter_reads_program_from_stdin, sequential_effective_cwds,
+        shell_command_string, shell_segment_rows,
+    )
     from ouroboros.tools.core_secret_paths import _is_subagent_secret_repo_path, _is_subagent_secret_data_path
+    from ouroboros.tools.shell_guards import _MAX_INLINE_RECURSION, _SHELL_WRAPPER_HEADS
     from ouroboros.tools.write_shape import python_body_ast
 
-    argv = shell_argv_with_inline(cmd_path_lower)
-    bodies = _registry().interpreter_inline_code(argv)
-    paths = [str(token) for token in argv[1:] if token not in bodies and not str(token).startswith("-")]
-    for body in bodies:
-        tree = python_body_ast(body)
-        if tree is not None:
-            paths.extend(node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str))
-        else:
-            paths.extend(value for _quote, value in re.findall(r'''(['"])(.*?)\1''', body))
-    paths.extend(embedded_absolute_path_tokens(
-        " ".join(str(part) for part in cmd_path_lower) if isinstance(cmd_path_lower, list) else cmd_path_lower))
-    work_dir = pathlib.Path(cwd or ".").resolve(strict=False)
     protected, allowed = owner_credential_locations(pathlib.Path.home())
     data_roots = []
     if ctx is not None:
@@ -85,19 +78,61 @@ def _subagent_shell_targets_secret(cmd_path_lower: str, *, ctx: Any = None, cwd:
         for root in (getattr(ctx, "drive_root", None), metadata.get("budget_drive_root")):
             if root:
                 data_roots.append(pathlib.Path(root).resolve(strict=False))
-    for text in paths:
-        if _is_subagent_secret_repo_path(text):
-            return True
-        try:
-            target = (work_dir / pathlib.Path(text).expanduser()).resolve(strict=False)
-        except (OSError, ValueError, RuntimeError):
-            continue
-        if target not in allowed and any(target.is_relative_to(path.resolve(strict=False)) for path in protected):
-            return True
-        for root in data_roots:
-            if target.is_relative_to(root) and _is_subagent_secret_data_path(target.relative_to(root).as_posix()):
-                return True
-    return False
+
+    def inspect(command: Any, work_dir: pathlib.Path, depth: int = 0) -> bool:
+        segments = shell_segment_rows(command)
+        rows = [(collect_leading_env(segment)[1], [], (), False) for segment, _, _ in segments]
+        cwds = sequential_effective_cwds(rows, work_dir)
+        for (segment, _, heredocs), (argv, _, _, _), row_cwd in zip(segments, rows, cwds):
+            if not argv:
+                continue
+            wrapper_cwd = env_chdir_operand(segment)
+            if wrapper_cwd:
+                row_cwd = (row_cwd / pathlib.Path(wrapper_cwd).expanduser()).resolve(strict=False)
+            head = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
+            bodies = []
+            nested = []
+            if head in _SHELL_WRAPPER_HEADS and depth < _MAX_INLINE_RECURSION:
+                body = shell_command_string(argv)
+                nested = [body] if body else list(heredocs) if interpreter_reads_program_from_stdin(argv) else []
+                if nested:
+                    if any(inspect(body, row_cwd, depth + 1) for body in nested):
+                        return True
+                    bodies = nested  # the wrapper body is code; outer redirects still count
+            bodies = bodies or _registry().interpreter_inline_code(argv)
+            if not bodies and interpreter_reads_program_from_stdin(argv):
+                bodies = list(heredocs)
+            paths = [str(token) for token in argv[1:] if token not in bodies and not str(token).startswith("-")]
+            # A wrapper body was already inspected under its own sequential
+            # cwd. Re-reading its literals here would assign the outer cwd.
+            for body in (() if nested else bodies):
+                tree = python_body_ast(body)
+                if tree is not None:
+                    paths.extend(node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str))
+                else:
+                    paths.extend(value for _quote, value in re.findall(r"(['\"])(.*?)\1", body))
+            paths.extend(embedded_absolute_path_tokens(" ".join(argv)))
+            for text in paths:
+                try:
+                    path = pathlib.Path(text).expanduser()
+                    target = (row_cwd / path).resolve(strict=False)
+                    # Bare search terms and string data are not file operands.
+                    # A separator, suffix or existing entry supplies path shape.
+                    plausible = "/" in text or "\\" in text or bool(path.suffix) or text.startswith(".") or target.exists()
+                except (OSError, ValueError, RuntimeError):
+                    continue
+                if not plausible:
+                    continue
+                if _is_subagent_secret_repo_path(text):
+                    return True
+                if target not in allowed and any(target.is_relative_to(path.resolve(strict=False)) for path in protected):
+                    return True
+                for root in data_roots:
+                    if target.is_relative_to(root) and _is_subagent_secret_data_path(target.relative_to(root).as_posix()):
+                        return True
+        return False
+
+    return inspect(cmd_path_lower, pathlib.Path(cwd or ".").resolve(strict=False))
 
 
 def _detect_mutative_toggle_self_change(text_lower: str, *, writeish: bool = True) -> bool:

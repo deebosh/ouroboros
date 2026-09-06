@@ -579,6 +579,15 @@ def _python_write_targets_and_unknown(inline_code: str) -> tuple[list[str], bool
 from ouroboros.tool_access import path_is_relative_to as _path_inside
 
 
+def _expand_known_runtime_roots(text: str, drive: pathlib.Path, home: pathlib.Path) -> str:
+    """Expand the existing runtime/home spellings for inspection, never execution."""
+    return (text.replace("$OUROBOROS_DATA_DIR", str(drive))
+            .replace("${OUROBOROS_DATA_DIR}", str(drive))
+            .replace("%OUROBOROS_DATA_DIR%", str(drive))
+            .replace("$HOME", str(home)).replace("${HOME}", str(home))
+            .replace("%USERPROFILE%", str(home)).replace("~/", f"{home}/"))
+
+
 def runtime_data_write_targets(
     raw_cmd: Any,
     *,
@@ -609,14 +618,7 @@ def runtime_data_write_targets(
         # shapes (no backslashes to eat) and dedups via the blocked list.
         scan_texts.append(raw_cmd)
     for text in scan_texts:
-        expanded_texts = {
-            text,
-            text.replace("$OUROBOROS_DATA_DIR", str(drive))
-            .replace("${OUROBOROS_DATA_DIR}", str(drive))
-            .replace("%OUROBOROS_DATA_DIR%", str(drive)),
-            text.replace("$HOME", str(home)).replace("${HOME}", str(home)).replace("%USERPROFILE%", str(home)),
-            text.replace("~/", f"{home}/"),
-        }
+        expanded_texts = {text, _expand_known_runtime_roots(text, drive, home)}
         candidates: List[str] = []
         for expanded in expanded_texts:
             if expanded.startswith(("/", "~")) or re.match(r"^[A-Za-z]:[\\/]", expanded):
@@ -749,12 +751,13 @@ def runtime_data_guard_targets(
     cwds = sequential_effective_cwds(rows, pathlib.Path(work_dir))
     drive = pathlib.Path(drive_root).resolve(strict=False)
     allowed = [pathlib.Path(root).resolve(strict=False) for root in allowed_roots]
+    home = pathlib.Path.home().resolve(strict=False)
     for candidate, is_write, row_index in _workspace_write_candidates(rows, [], raw_cmd):
         if not is_write or candidate == "/dev/null":
             continue
         cwd = cwds[row_index] if 0 <= row_index < len(cwds) else pathlib.Path(work_dir)
         try:
-            path = pathlib.Path(candidate).expanduser()
+            path = pathlib.Path(_expand_known_runtime_roots(candidate, drive, home)).expanduser()
             path = (cwd / path).resolve(strict=False)
         except (OSError, ValueError, RuntimeError):
             continue

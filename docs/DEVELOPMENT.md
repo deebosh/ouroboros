@@ -83,9 +83,15 @@ rules have no automated surface — review-only.
   preserve child write confinement and actual runtime/credential boundaries.
   Local guard inspection excludes SSH remote payloads while retaining local
   options and redirections; the executed argv remains literal and unchanged.
+  Remote commands can reach local files through configured SSH trust (including
+  loopback); this local inspection is not a remote-effect sandbox.
 - Do not infer credential authority from ordinary source/config directory
   names. Restricted source reads/searches use the existing byte masker; the
-  exact owner SSH config exception never permits key-store writes.
+  owner credential fence covers the enumerated locations in
+  `credential_shapes.owner_credential_locations`, credential leaves and VCS
+  control directories. The exact SSH config exception does not permit key writes
+  under `.ssh`; unlisted stores such as `.cargo`, `.terraform.d` and `.kaggle`
+  are not protected by an arbitrary dotted-directory default-deny.
 - An unlaunchable sole cmd element gets an actionable argv/shell hint, never
   automatic splitting or an implicit shell. Repo-only edit tools reject their
   unsupported roots through their existing argument categories.

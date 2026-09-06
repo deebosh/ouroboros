@@ -279,3 +279,104 @@ def test_ssh_remote_task_runs_with_original_argv(environment):
     result = reg.execute('run_command', {'cmd': [str(fixture), 'fixture-host', payload], 'cwd': str(work)})
     assert 'REMOTE_OK:' + payload in result, result
     assert 'WORKSPACE_SHELL_BLOCKED' not in result
+
+
+@pytest.mark.parametrize('actor', ['acting_subagent', 'local_readonly_subagent'])
+@pytest.mark.parametrize('command', [
+    ['grep', '-rn', 'token', 'src/'], ['rg', 'password', '.'],
+    ['pytest', '-k', 'secret'], ['git', 'log', '--grep', 'credential'],
+    [sys.executable, '-c', "print('token')"],
+])
+def test_child_search_words_are_not_credential_path_operands(environment, actor, command):
+    from copy import deepcopy
+    from tests._typed_guard_shared import _shell_guard_text
+
+    reg, ctx, _home, work, _data = environment
+    ctx.task_constraint = (TaskConstraint(mode=actor, surface='external_workspace', write_root=str(work))
+                           if actor == 'acting_subagent' else TaskConstraint(mode=actor))
+    original = deepcopy(command)
+    if actor == 'local_readonly_subagent':
+        # This profile exposes file inspection, not shell execution. Exercise
+        # the shared predicate without inventing a shell capability for it.
+        from ouroboros.tools.registry_guard_process import _subagent_shell_targets_secret
+        assert not _subagent_shell_targets_secret(command, ctx=ctx, cwd=work)
+        assert reg.get_schema_by_name('run_command') is None
+    else:
+        assert _shell_guard_text(reg, {'cmd': command, 'cwd': str(work)}, 'advanced') is None
+    assert command == original
+
+
+@pytest.mark.parametrize('wrapper', ['direct', 'env', 'sh', 'sh_env'])
+def test_wrapped_inline_credential_read_is_blocked_at_the_same_physical_target(environment, wrapper):
+    reg, ctx, _home, work, _data = environment
+    ctx.task_constraint = TaskConstraint(mode='acting_subagent', surface='external_workspace', write_root=str(work))
+    (work / '.env').write_text('FIXTURE_SECRET_MUST_NOT_REACH_OUTPUT', encoding='utf-8')
+    command = [sys.executable, '-c', "print(open('.env').read())"]
+    if wrapper in {'env', 'sh_env'}:
+        command = ['env', *command]
+    if wrapper in {'sh', 'sh_env'}:
+        command = ['sh', '-c', shlex.join(command)]
+    result = reg.execute_result('run_command', {'cmd': command, 'cwd': str(work)})
+    assert (result.status, result.code) == ('blocked', 'SUBAGENT_SECRET_READ_BLOCKED')
+    assert 'FIXTURE_SECRET_MUST_NOT_REACH_OUTPUT' not in result.text
+
+
+def test_secret_paths_use_sequential_and_env_local_cwd(environment):
+    from ouroboros.tools.registry_guard_process import _subagent_shell_targets_secret
+
+    _reg, ctx, home, work, data = environment
+    source = work / 'src'
+    source.mkdir()
+    (source / 'settings.json').write_text('ordinary project config', encoding='utf-8')
+    (data / 'settings.json').write_text('runtime control fixture', encoding='utf-8')
+    body = "print(open('settings.json').read())"
+    python = shlex.join([sys.executable, '-c', body])
+    assert _subagent_shell_targets_secret(['sh', '-c', f'cd {shlex.quote(str(data))}; {python}'], ctx=ctx, cwd=work)
+    assert not _subagent_shell_targets_secret(
+        ['sh', '-c', f'cd {shlex.quote(str(source))}; {python}'], ctx=ctx, cwd=data)
+    assert _subagent_shell_targets_secret(['env', '-C', str(data), sys.executable, '-c', body], ctx=ctx, cwd=work)
+    # env -C applies only to its command; it must not retarget a later reader.
+    command = ['sh', '-c', f'env -C {shlex.quote(str(data))} true; {python}']
+    assert not _subagent_shell_targets_secret(command, ctx=ctx, cwd=source)
+    key = home / '.ssh' / 'id_fixture'
+    key.parent.mkdir()
+    key.write_text('owner-key-fixture', encoding='utf-8')
+    assert _subagent_shell_targets_secret(['sh', '-c', 'true', '<', str(key)], ctx=ctx, cwd=work)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='actual POSIX sh/env execution')
+@pytest.mark.parametrize('wrapper', ['direct', 'env', 'sh'])
+def test_child_inline_source_read_and_bare_word_execute_without_argv_rewrite(environment, wrapper):
+    reg, ctx, _home, work, _data = environment
+    ctx.task_constraint = TaskConstraint(mode='acting_subagent', surface='external_workspace', write_root=str(work))
+    source = work / 'src' / 'auth' / 'source.py'
+    source.parent.mkdir(parents=True)
+    source.write_text('SOURCE_READ_OK', encoding='utf-8')
+    command = [sys.executable, '-c', "print('token'); print(open('src/auth/source.py').read())"]
+    if wrapper == 'env':
+        command = ['env', *command]
+    elif wrapper == 'sh':
+        command = ['sh', '-c', shlex.join(command)]
+    result = reg.execute_result('run_command', {'cmd': command, 'cwd': str(work)})
+    assert 'SOURCE_READ_OK' in result.text and 'token' in result.text
+    assert result.status != 'blocked'
+
+
+@pytest.mark.parametrize('spelling', [
+    '$OUROBOROS_DATA_DIR', '${OUROBOROS_DATA_DIR}', '%OUROBOROS_DATA_DIR%',
+    '$HOME/Ouroboros/data', '${HOME}/Ouroboros/data', '%USERPROFILE%/Ouroboros/data', '~/Ouroboros/data',
+])
+def test_known_root_expansion_applies_to_write_targets_only(tmp_path, monkeypatch, spelling):
+    from ouroboros.tools.shell_guards import runtime_data_guard_targets
+
+    home = tmp_path / 'home'
+    data = home / 'Ouroboros' / 'data'
+    scratch = data / 'task_drives' / 'current'
+    scratch.mkdir(parents=True)
+    monkeypatch.setattr(pathlib.Path, 'home', lambda: home)
+    def targets(body):
+        return runtime_data_guard_targets(['sh', '-c', body], writeish=True,
+            drive_root=data, work_dir=scratch, allowed_roots=[scratch])
+    log = data / 'logs' / 'events.jsonl'
+    assert str(log) in targets(f'printf changed > "{spelling}/logs/events.jsonl"')
+    assert targets(f'cat "{spelling}/logs/events.jsonl" > "{spelling}/task_drives/current/copy.txt"') == []
