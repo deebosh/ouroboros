@@ -1309,7 +1309,8 @@ the run-root `effective_settings.json` is REDACTED and the value reaches disk
 only in each lane's 0600 settings file, disclosed by fingerprint as the runtime
 grant); the preflight takes `min(key limit remaining, account credits)` and
 refuses below `--min-credit-usd`. `--total-budget` (default 100) is the RUN-WIDE
-cap: a ledger sums the lanes' durable `llm_usage` costs, reserves
+cap: a ledger sums the lanes' settled physical-attempt ledger rows (`state/usage_attempts.jsonl`, the
+product's money authority; the `llm_usage` telemetry misses skill review, advisory and synthesis), reserves
 `max(0.01, --per-task-usd × (root tasks + 1 with --self-mod for the scenario that absorbs))` per attempt (SM1 and SW1 one root — scouts spend
 under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two; with `--self-mod` SM1's
 one post-task evolution cycle is one more root (SW1/SK1 pin promotion off) (the rc.14 paid run showed a second, generic
