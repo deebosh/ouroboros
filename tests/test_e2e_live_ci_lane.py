@@ -182,7 +182,8 @@ def test_the_run_size_is_feasible_under_the_cap_by_the_worst_case_reservation_ru
     # The stand's own rule (per-task x (roots + the self-mod evolution root)), asked from
     # the real ledger with the job's --self-mod, so a rule change re-derives this pin itself.
     budget = RunBudget(TOTAL_BUDGET_USD, per_task, self_mod=args["--self-mod"] is None)
-    reservations = [budget.reservation(SCENARIOS[sid].root_tasks) for sid in scenarios for _ in range(attempts)]
+    reservations = [budget.reservation(SCENARIOS[sid].root_tasks, SCENARIOS[sid].expects_absorb)
+                    for sid in scenarios for _ in range(attempts)]
     assert sum(reservations) <= TOTAL_BUDGET_USD, (reservations, per_task)
     # ...and the set is MAXIMAL at this fence: one more single-root attempt would
     # not fit. When the reservation factor changes this trips on purpose — the
@@ -200,13 +201,14 @@ def test_the_summary_header_and_the_job_comment_state_the_current_reservation_ar
     OWN reservations are rendered from the manifest's budget_preflight."""
     args = _stand_args()
     budget = RunBudget(TOTAL_BUDGET_USD, float(args["--per-task-usd"]), self_mod=args["--self-mod"] is None)
-    chosen = budget.reservation(SCENARIOS["SM1"].root_tasks)
-    full_set = sum(budget.reservation(SCENARIOS[sid].root_tasks) for sid in ("SM1", "SW1", "SK1")) * 3
+    chosen = budget.reservation(SCENARIOS["SM1"].root_tasks, SCENARIOS["SM1"].expects_absorb)
+    full_set = sum(budget.reservation(SCENARIOS[sid].root_tasks, SCENARIOS[sid].expects_absorb)
+                   for sid in ("SM1", "SW1", "SK1")) * 3
     run = _summary_step()["run"]
     assert f"SM1 x1 = ${chosen:.0f}" in run and f"x3 set needs ${full_set:.0f}" in run, run
     assert "budget_preflight" in run, run
     ci = CI_PATH.read_text(encoding="utf-8")
-    for retired in ("HARD_STOP_INVERSE", "$360", "2 x per"):
+    for retired in ("HARD_STOP_INVERSE", "$360", "2 x per", "$315", "(2 + 2 + 3)"):
         assert retired not in ci, retired
 
 

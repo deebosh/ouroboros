@@ -391,17 +391,17 @@ def test_reservation_counts_roots_plus_the_evolution_root_and_is_the_lane_total_
     """EQUALITY pins of the rc.14/rc.15 finding: the reservation is per-task x root tasks, +1 with --self-mod (the one
     post-task cycle; rc.14: SM1_a1 task $3.84 + cycles $12.40 + $2.84 of $20 — the lane's TOTAL_BUDGET is the fence); the 2x
     factor and its product import are gone and no bench budget profile is projected. Per-task $20 and one root reserve
-    $20 ($40 with --self-mod, $60 for SK1 + evolution) and that exact number reaches the lane's settings file as
+    $20 ($40 for the absorbing SM1 root with --self-mod; SK1's two roots stay $40, it does not promote) and that exact number reaches the lane's settings file as
     TOTAL_BUDGET through ``run_lane`` (never the run-wide cap)."""
     _short_tmp(monkeypatch)
     rule = run_live_lanes.RESERVATION_RULE
     assert not hasattr(run_live_lanes, "HARD_STOP_INVERSE") and rule == run_live_lanes.RunBudget(1, 1).snapshot()["reservation_rule"]
-    assert rule.startswith("max(0.01, per_task_usd x (root_tasks + 1 if --self-mod else root_tasks))")
-    assert "one post-task evolution cycle" in rule and "the true fence" in rule and "cost_hard_stop" not in rule
+    assert rule.startswith("max(0.01, per_task_usd x (root_tasks + 1 if --self-mod and the scenario absorbs else root_tasks))")
+    assert "post-task cycle of a lane that promotes" in rule and "the true fence" in rule and "cost_hard_stop" not in rule
     budget = run_live_lanes.RunBudget(100.0, 20.0, reader=lambda root: (0.0, 0))
     assert budget.reservation(1) == 20.0 and budget.reservation(2) == 40.0 and not budget.self_mod
     evolving = run_live_lanes.RunBudget(100.0, 20.0, reader=lambda root: (0.0, 0), self_mod=True)
-    assert evolving.reservation(1) == 40.0 and evolving.reservation(2) == 60.0 and evolving.self_mod
+    assert evolving.reservation(1, absorbs=True) == 40.0 and evolving.reservation(2) == 40.0 and evolving.reservation(1) == 20.0
     seed = _git_seed(tmp_path)
     out, job = tmp_path / "out", ("SM1", 1)
     ok, facts = budget.admit(job, 1, out / "lanes" / "SM1_a1" / "data", dispatch_index=0)
@@ -445,31 +445,31 @@ def test_budget_preflight_refuses_reservations_that_can_never_all_be_admitted(tm
     refused every SK1 attempt by construction. The preflight refuses BEFORE any spend a reservation above the cap, or
     equal to it with attempts >= 2 (the second can never be admitted after any spend), in the credit preflight's typed
     shape, before the key, the seed or a lane; no override. The per-ROUND worst case is the --lanes largest reservations,
-    ONE attempt per scenario: the owner's cap 300 / per-task 50 / --self-mod / 3 lanes = $350 > cap, so the third lane WAITS."""
+    ONE attempt per scenario: the owner's cap 300 / per-task 50 / --self-mod / 3 lanes = $250 (SM1 100, SK1 100, SW1 50)."""
     def rows(budget, attempts, ids=("SM1", "SW1", "SK1"), lanes=3):
         pre = run_live_lanes.budget_preflight(budget, list(ids), attempts, lanes)
         return ({r["scenario"]: r["reservation_usd"] for r in pre["scenarios"]}, pre["worst_case_usd"], pre["unreachable"],
                 pre["round_worst_case_usd"])
 
     reader = lambda root: (0.0, 0)   # noqa: E731 - a stub reader
-    assert rows(run_live_lanes.RunBudget(300.0, 50.0, reader, self_mod=True), 3) == ({"SM1": 100.0, "SW1": 100.0, "SK1": 150.0}, 1050.0, [], 350.0)
-    assert rows(run_live_lanes.RunBudget(300.0, 50.0, reader, self_mod=True), 3, lanes=2)[3] == 250.0
-    assert rows(run_live_lanes.RunBudget(100.0, 50.0, reader, self_mod=True), 1) == ({"SM1": 100.0, "SW1": 100.0, "SK1": 150.0}, 350.0, ["SK1"], 350.0)
-    at_cap = run_live_lanes.RunBudget(150.0, 50.0, reader, self_mod=True)   # SK1 == cap: one attempt fits at $0, never a second
-    assert rows(at_cap, 1)[2] == [] and rows(at_cap, 2)[2] == ["SK1"]
+    assert rows(run_live_lanes.RunBudget(300.0, 50.0, reader, self_mod=True), 3) == ({"SM1": 100.0, "SW1": 50.0, "SK1": 100.0}, 750.0, [], 250.0)
+    assert rows(run_live_lanes.RunBudget(300.0, 50.0, reader, self_mod=True), 3, lanes=2)[3] == 200.0
+    assert rows(run_live_lanes.RunBudget(90.0, 50.0, reader, self_mod=True), 1) == ({"SM1": 100.0, "SW1": 50.0, "SK1": 100.0}, 250.0, ["SM1", "SK1"], 250.0)
+    at_cap = run_live_lanes.RunBudget(100.0, 50.0, reader, self_mod=True)   # SM1/SK1 == cap: one attempt fits at $0, never a second
+    assert rows(at_cap, 1)[2] == [] and rows(at_cap, 2)[2] == ["SM1", "SK1"]
     assert rows(run_live_lanes.RunBudget(200.0, 100.0, reader), 3)[2] == ["SK1"]                 # the shipped 2x rule's SK1 = 200 of 200
     pre = run_live_lanes.budget_preflight(run_live_lanes.RunBudget(200.0, 50.0, reader), ["SK1"], 2, 4)
     assert pre == {"cap_usd": 200.0, "per_task_usd": 50.0, "self_mod": False, "reservation_rule": run_live_lanes.RESERVATION_RULE,
                    "scenarios": [{"scenario": "SK1", "root_tasks": 2, "reservation_usd": 100.0, "attempts": 2,
                                   "worst_case_usd": 200.0, "unreachable": False}], "worst_case_usd": 200.0, "lanes": 4,
                    "round_worst_case_usd": 100.0, "unreachable": []}
-    out, manifest = _fake_run(tmp_path, monkeypatch, ["--total-budget", "100", "--per-task-usd", "50", "--self-mod",
+    out, manifest = _fake_run(tmp_path, monkeypatch, ["--total-budget", "90", "--per-task-usd", "50", "--self-mod",
                                                       "--scenarios", "SM1,SW1,SK1"],
                               lane=lambda *a, **k: pytest.fail("a lane started after a budget refusal"), expect_rc=3)
     refusal = manifest["extra"]["refusal"]
     assert refusal["stage"] == "budget_preflight" and refusal["reason"] == "reservation_unreachable"
-    assert refusal["unreachable"] == ["SK1"] and refusal["cap_usd"] == 100.0 and refusal["self_mod"] is True
-    assert manifest["extra"]["budget_preflight"]["unreachable"] == ["SK1"] and manifest["extra"]["exit_code"] == 3
+    assert refusal["unreachable"] == ["SM1", "SK1"] and refusal["cap_usd"] == 90.0 and refusal["self_mod"] is True
+    assert manifest["extra"]["budget_preflight"]["unreachable"] == ["SM1", "SK1"] and manifest["extra"]["exit_code"] == 3
     assert "credential_fingerprint" not in manifest["extra"] and not (out / "seed").exists() and not (out / "lanes").exists()
     assert manifest["requested_task_ids"] == ["SM1_a1", "SW1_a1", "SK1_a1"]   # SM1/SW1 = $100 = cap: one attempt fits
 
@@ -524,9 +524,9 @@ class _Driver:
         lock.wait = park
 
     def _ask(self, index: int, job) -> None:
-        name, box = f"{job[0]}_a{job[1]}", {}
+        name, box, row = f"{job[0]}_a{job[1]}", {}, scenarios.SCENARIOS[job[0]]
         thread = threading.Thread(name=name, daemon=True, target=lambda: box.__setitem__("r", self.budget.admit(
-            job, scenarios.SCENARIOS[job[0]].root_tasks, pathlib.Path("/x") / name, dispatch_index=index)))
+            job, row.root_tasks, pathlib.Path("/x") / name, dispatch_index=index, absorbs=row.expects_absorb)))
         self.threads[name] = (index, job, thread, box)
         thread.start()
         self._settle_thread(name)
@@ -564,19 +564,19 @@ class _Driver:
 REALISTIC_SPEND = {"SM1": 30.0, "SW1": 8.0, "SK1": 15.0}    # assumed per-attempt spends: rc.14 SM1 lanes, rc.11 SW1/SK1
 PESSIMISTIC_SPEND = {"SM1": 45.0, "SW1": 8.0, "SK1": 30.0}
 OWNER_CONFIGURATION = dict(cap=300.0, per_task=50.0, scenario_ids=["SM1", "SW1", "SK1"], attempts=3, lanes=3, self_mod=True)
-DISPATCH_ORDER = ["SK1_a1", "SM1_a1", "SW1_a1", "SK1_a2", "SM1_a2", "SW1_a2", "SK1_a3", "SM1_a3", "SW1_a3"]
+DISPATCH_ORDER = ["SM1_a1", "SK1_a1", "SW1_a1", "SM1_a2", "SK1_a2", "SW1_a2", "SM1_a3", "SK1_a3", "SW1_a3"]
 
 
 def test_owner_configuration_cap_300_per_task_50_three_attempts_self_mod_is_exact_under_fifo_admission():
-    """The live configuration (cap 300, per-task 50, attempts 3, pass-of 2, 3 lanes, --self-mod: SM1/SW1 reserve 100,
-    SK1 150; round 1 = 350 > cap, so SW1_a1 waits from t=0) — EXACT sequences, no wake-order range. Realistic spends:
-    all nine admitted in dispatch order, $159. Pessimistic: SK1_a3 refused when SM1_a2 settles ($158 + 150 > 300),
-    SW1_a3 when SM1_a3 settles ($211 + 100 > 300): 7/9 at $211, every scenario keeping two = pass-of. Largest-first
-    dispatch under the same admission refuses all of SW1 ($225, 0/3): the handbook's traced reason, prose, not a pin."""
+    """The live configuration (cap 300, per-task 50, attempts 3, pass-of 2, 3 lanes, --self-mod: SM1 reserves 100 — its
+    root plus the post-task cycle only it promotes — SK1 100 for two roots, SW1 50; round 1 = 250 fits) — EXACT
+    sequences, no wake-order range. Realistic spends: all nine admitted in dispatch order, $159. Pessimistic: SK1_a3
+    refused ($219 + 100 > 300): 8/9 at $219, every scenario keeping two = pass-of. Largest-first dispatch under the
+    earlier +1-for-every-lane rule refused all of SW1 ($225, 0/3): the handbook's traced reason, prose, not a pin."""
     assert _Driver(spends=REALISTIC_SPEND, **OWNER_CONFIGURATION).run() == (DISPATCH_ORDER, [], 159.0)
     admitted, refused, spent = _Driver(spends=PESSIMISTIC_SPEND, **OWNER_CONFIGURATION).run()
-    assert (admitted, refused, spent) == (DISPATCH_ORDER[:6] + ["SM1_a3"], ["SK1_a3", "SW1_a3"], 211.0)
-    assert {s: sum(n.startswith(s) for n in admitted) for s in ("SM1", "SW1", "SK1")} == {"SM1": 3, "SW1": 2, "SK1": 2}
+    assert (admitted, refused, spent) == (DISPATCH_ORDER[:7] + ["SW1_a3"], ["SK1_a3"], 219.0)
+    assert {s: sum(n.startswith(s) for n in admitted) for s in ("SM1", "SW1", "SK1")} == {"SM1": 3, "SW1": 3, "SK1": 2}
 
 
 # --------------------------------------------------------------------------- #
@@ -874,7 +874,7 @@ def test_absorb_wait_and_check_follow_the_scenarios_expects_absorb(tmp_path, mon
     """The rc.15 paid stand (2026-09-05, SK1_a1): every ``--self-mod`` lane waited ``--task-timeout`` for an absorb
     only SM1's commit could trigger, then failed ``self_mod_absorb_confirmed`` by construction. Now SM1 waits and
     carries the check; SW1/SK1 stop right after the scenario with ``{"expected": False}``, no check, post-task
-    evolution ON in their settings; every lane seeds ``owner_chat_id`` ONLY, never a campaign (run2's t=0 cycles)."""
+    evolution OFF in their settings; every lane seeds ``owner_chat_id`` ONLY, never a campaign (run2's t=0 cycles)."""
     waits: list = []
     monkeypatch.setattr(run_live_lanes, "resolve_ui_client", lambda base_url: (None, "ui_unavailable:test"))
     monkeypatch.setattr(run_live_lanes, "self_mod_snapshot", lambda server, clone, data_root: {"pre": True})
@@ -890,7 +890,7 @@ def test_absorb_wait_and_check_follow_the_scenarios_expects_absorb(tmp_path, mon
             assert row["self_mod_absorb"] == {"expected": False} and row["self_mod"] is True and waits == [{"pre": True}]
         lane = tmp_path / sid / "out" / "lanes" / f"{sid}_a1" / "data"
         state = json.loads((lane / "state" / "state.json").read_text(encoding="utf-8"))
-        assert json.loads((lane / "settings.json").read_text())["OUROBOROS_POST_TASK_EVOLUTION"] == "true"
+        assert json.loads((lane / "settings.json").read_text())["OUROBOROS_POST_TASK_EVOLUTION"] == ("true" if sid == "SM1" else "false")
         assert state["owner_chat_id"] == 1 and "evolution_mode_enabled" not in state, state
         assert not (lane / "state" / "evolution_campaign.json").exists(), sid
 
