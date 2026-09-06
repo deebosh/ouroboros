@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 import ouroboros.tools.claude_advisory_review as advisory
-from tests._review_session_route_shared import _terminal_detail, fake_route  # noqa: F401 -- shared pytest fixture
+from tests._review_session_route_shared import _terminal_detail, fake_route as fake_route
 
 
 @pytest.fixture(autouse=True)
