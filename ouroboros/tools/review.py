@@ -195,7 +195,21 @@ def _handle_task_acceptance_review(
                 exc_info=True,
             )
 
-    agent_evidence = dict(evidence or {})
+    # ibl-329e1741d5f9: some providers occasionally emit `evidence` as a
+    # JSON-encoded string instead of a nested object (or some other non-dict
+    # type). `dict(some_str)` iterates the string char-by-char and raises
+    # "dictionary update sequence element #0 has length 1; 2 is required" —
+    # crashing the tool entirely instead of degrading. Coerce defensively,
+    # matching the `evidence if isinstance(evidence, dict) else {}` guard
+    # used everywhere else this field is consumed (e.g. review_dispatch.py,
+    # subagents.py, mutation_attribution.py).
+    if isinstance(evidence, str):
+        try:
+            parsed_evidence = json.loads(evidence)
+        except (TypeError, ValueError):
+            parsed_evidence = None
+        evidence = parsed_evidence if isinstance(parsed_evidence, dict) else {"raw_evidence": evidence}
+    agent_evidence = dict(evidence) if isinstance(evidence, dict) else {}
     # Bind the cheap evidence revision to the agent's actual acceptance claim,
     # goal, and checklist as well as its supporting references.  Otherwise two
     # materially different claims over the same evidence dict would share a
