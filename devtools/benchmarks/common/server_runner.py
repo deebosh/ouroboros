@@ -329,23 +329,24 @@ def campaign_summary(data_root: pathlib.Path) -> dict:
             "source": str(campaign.get("source") or ""),
             "active_transaction": isinstance(campaign.get("active_transaction"), dict),
             "absorbed_cycles_done": int(campaign.get("absorbed_cycles_done") or 0),
+            "history_len": len(history),
             "newest_outcome": str(history[-1].get("cycle_outcome") or "") if history else "",
             "post_task_counter": counter}
 
 
-def absorb_idle_reason(campaign: dict) -> str:
-    """Typed non-confirmation of an idle lane (``IsolatedServer.wait_for_absorb``): ``no_promotion`` (no
-    campaign although the post-task decision ran), ``no_decision`` (no campaign, no decision), ``cycle_no_op``
-    (the newest cycle committed nothing), ``cycle_not_absorbed`` (a cycle ended otherwise without an absorb),
-    ``campaign_<status>`` (paused/stopped/completed) or ``cycle_not_enqueued`` (active campaign, no cycle)."""
-    if not campaign.get("present"):
-        return "no_promotion" if campaign.get("post_task_counter") else "no_decision"
-    if campaign.get("newest_outcome") == "no_op":
-        return "cycle_no_op"
-    if campaign.get("newest_outcome"):
-        return "cycle_not_absorbed"
+def absorb_idle_reason(campaign: dict, history_len_at_start: int = 0) -> str:
+    """Typed non-confirmation of an idle lane (``IsolatedServer.wait_for_absorb``), relative to the wait's
+    start so a resumed campaign's OLDER cycles never speak for this boundary: ``campaign_<status>`` (paused/
+    stopped/completed wins), ``no_promotion`` (no campaign although an ``every_n`` post-task tick was
+    recorded — the decision may still have declined), ``no_decision`` (no campaign, no tick recorded: ``llm``
+    cadences write none), ``cycle_no_op`` / ``cycle_not_absorbed`` (a cycle newer than the wait ended without
+    an absorb) or ``cycle_not_enqueued`` (a campaign that attached no new cycle)."""
     if campaign.get("status") in ("paused", "stopped", "completed"):
         return f"campaign_{campaign['status']}"
+    if not campaign.get("present"):
+        return "no_promotion" if campaign.get("post_task_counter") else "no_decision"
+    if int(campaign.get("history_len") or 0) > int(history_len_at_start or 0):
+        return "cycle_no_op" if campaign.get("newest_outcome") == "no_op" else "cycle_not_absorbed"
     return "cycle_not_enqueued"
 
 
@@ -700,7 +701,7 @@ class IsolatedServer:
         deadline = time.time() + timeout
         start = time.time()
         request_path = self.data_root / "state" / "post_task_evolution_request.json"
-        idle_streak = 0
+        idle_streak, history_at_start = 0, campaign_summary(self.data_root)["history_len"]
         while time.time() < deadline:
             cycles = absorbed_cycles_done(self.data_root)
             sha = self.current_sha()
@@ -720,7 +721,7 @@ class IsolatedServer:
                 idle_streak = idle_streak + 1 if idle else 0
                 if idle_streak >= max(1, int(idle_polls)):
                     return {"absorbed": False, "new_sha": sha, "cycles": cycles,
-                            "reason": absorb_idle_reason(campaign), "campaign": campaign}
+                            "reason": absorb_idle_reason(campaign, history_at_start), "campaign": campaign}
             time.sleep(5)
         return {"absorbed": False, "new_sha": self.current_sha(), "cycles": absorbed_cycles_done(self.data_root),
                 "reason": "timeout", "campaign": campaign_summary(self.data_root)}

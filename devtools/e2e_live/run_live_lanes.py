@@ -91,10 +91,9 @@ PROCFS_AVAILABLE = os.path.isdir("/proc")   # the orphan scan reads /proc enviro
 # A lane's TOTAL_BUDGET must stay POSITIVE: the runtime reads a non-positive value as "no finite
 # global budget" (``settings_setup_contract.resolve_total_budget_usd``), the opposite of a cap.
 LANE_BUDGET_FLOOR_USD = 0.01
-RESERVATION_RULE = (f"max({LANE_BUDGET_FLOOR_USD:g}, per_task_usd x (root_tasks + 1 if --self-mod else root_tasks)) — the "
-                    "runtime fences each root task tree at OUROBOROS_PER_TASK_COST_USD and --self-mod adds one root for the "
-                    "one post-task evolution cycle (the lane seeds no campaign: the promotion enables a one-shot one). "
-                    "The lane's TOTAL_BUDGET is that reservation — the true fence — so settled spend + in-flight ceilings <= cap")
+RESERVATION_RULE = (f"max({LANE_BUDGET_FLOOR_USD:g}, per_task_usd x (root_tasks + 1 if --self-mod and the scenario absorbs else root_tasks)) "
+                    "— the runtime fences each root task tree at OUROBOROS_PER_TASK_COST_USD; --self-mod adds one root for the post-task "
+                    "cycle of a lane that promotes (SM1; SW1/SK1 pin it off). The lane's TOTAL_BUDGET is that reservation — the true fence")
 
 
 def _log(msg: str) -> None:
@@ -254,10 +253,10 @@ def lane_spend(data_root: pathlib.Path) -> tuple[float, int]:
 class RunBudget:
     """The RUN-WIDE ledger behind ``--total-budget`` (the first paid run gave every lane the whole cap).
 
-    Reservation rule, per attempt: ``per_task_usd x (root_tasks + int(self_mod))`` — the runtime fences each ROOT
-    task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their root's ceiling, so SW1 (one root,
-    two scouts) reserves for one root, SK1 (author + dispatch) for two, and ``--self-mod`` adds one root for the
-    one post-task evolution cycle, all under the lane fence — the true fence. Admission asks, PER attempt:
+    Reservation rule, per attempt: ``per_task_usd x (root_tasks + int(self_mod and absorbs))`` — the runtime fences
+    each ROOT task tree at ``OUROBOROS_PER_TASK_COST_USD`` and children spend under their root's ceiling, so SW1 (one
+    root, two scouts) reserves for one root, SK1 (author + dispatch) for two, and ``--self-mod`` adds one root for
+    the post-task cycle of a lane that promotes (SM1 only), all under the lane fence. Admission asks, PER attempt:
     ``spent + reservation > cap`` — it can NEVER fit, refused and recorded ``not_run`` (a later, smaller attempt is
     asked on its own; nothing halts the run); otherwise it reserves only when no earlier-dispatched attempt is
     still asking (FIFO by ``dispatch_index``, see ``admit``) and ``spent + reserved(in flight) + reservation <=
@@ -280,10 +279,10 @@ class RunBudget:
         self.refusals: list[dict] = []
         self.not_run: list[str] = []
 
-    def reservation(self, root_tasks: int) -> float:
-        """The ONE effective ceiling of an attempt (admission, the lane's TOTAL_BUDGET and the reports
-        carry this same number): ``per_task_usd x (root_tasks + int(self_mod))``, floored, never rounded up."""
-        return max(LANE_BUDGET_FLOOR_USD, self.per_task * (max(1, int(root_tasks or 1)) + int(self.self_mod)))
+    def reservation(self, root_tasks: int, absorbs: bool = False) -> float:
+        """The ONE effective ceiling of an attempt (admission, the lane's TOTAL_BUDGET and the reports carry this
+        same number): ``per_task_usd x (root_tasks + int(self_mod and absorbs))``, floored, never rounded up."""
+        return max(LANE_BUDGET_FLOOR_USD, self.per_task * (max(1, int(root_tasks or 1)) + int(self.self_mod and absorbs)))
 
     def _spent_locked(self) -> tuple[float, int]:
         rows = list(self._final.values()) + [self._read(root) for root, _reserved in self._live.values()]
@@ -293,7 +292,7 @@ class RunBudget:
         return sum(reserved for _root, reserved in self._live.values())
 
     def admit(self, job: tuple, root_tasks: int, data_root: pathlib.Path, *, dispatch_index: int,
-              on_wait: Callable[[str], None] | None = None) -> tuple[bool, dict]:
+              on_wait: Callable[[str], None] | None = None, absorbs: bool = False) -> tuple[bool, dict]:
         """FIFO by ``dispatch_index`` (``dispatch_order``'s position): an attempt reserves only when no earlier-
         dispatched attempt is still asking and the cap has room beside the reservations in flight; one that can
         never fit is refused at once and leaves the line. Without the line the freed lane's NEXT job took the lock
@@ -304,7 +303,7 @@ class RunBudget:
         and settle wake every waiter, the line predicate re-parks the later ones. Cost: a large head can idle lanes
         a smaller attempt would use. ``on_wait`` runs UNDER the budget lock (it must not touch the budget), told
         once, with the reason the wait begins with; ``facts["waited_sec"]`` is how long."""
-        need, name, waited_from = self.reservation(root_tasks), f"{job[0]}_a{job[1]}", None
+        need, name, waited_from = self.reservation(root_tasks, absorbs), f"{job[0]}_a{job[1]}", None
         with self._lock:
             self._pending[dispatch_index] = name
             try:
@@ -368,7 +367,7 @@ def budget_preflight(budget: RunBudget, scenario_ids: list[str], attempts: int, 
     can never be admitted after any spend). No override flag: the operator changes the flags."""
     rows = []
     for sid in scenario_ids:
-        need = budget.reservation(SCENARIOS[sid].root_tasks)
+        need = budget.reservation(SCENARIOS[sid].root_tasks, SCENARIOS[sid].expects_absorb)
         rows.append({"scenario": sid, "root_tasks": SCENARIOS[sid].root_tasks, "reservation_usd": need,
                      "attempts": int(attempts), "worst_case_usd": round(need * attempts, 4),
                      "unreachable": need > budget.cap or (attempts >= 2 and need >= budget.cap)})
@@ -383,7 +382,7 @@ def dispatch_order(budget: RunBudget, requested: list[tuple[str, int]]) -> list[
     """Round-robin by attempt (a1 of every scenario, then a2, ...), largest reservation first within a round
     (stable among equals); admission keeps this order (``RunBudget.admit``). The verdict is pass-of PER
     scenario, so the MINIMUM admitted attempts per scenario is what the order protects, not the sum."""
-    return sorted(requested, key=lambda job: (job[1], -budget.reservation(SCENARIOS[job[0]].root_tasks)))
+    return sorted(requested, key=lambda job: (job[1], -budget.reservation(SCENARIOS[job[0]].root_tasks, SCENARIOS[job[0]].expects_absorb)))
 
 
 # --------------------------------------------------------------------------- #
@@ -517,7 +516,7 @@ def _newest_transaction(data_root: pathlib.Path) -> dict:
 def confirm_absorb(server: IsolatedServer, clone: pathlib.Path, data_root: pathlib.Path, pre: dict, *,
                    timeout: float, ready_timeout: float) -> dict:
     """POSITIVE evidence of an absorbed post-task evolution, or a typed non-confirmation.
-    ``wait_for_absorb`` answers ``absorbed=False`` on ``no_promotion``/``timeout``, and a runner that
+    ``wait_for_absorb`` answers ``absorbed=False`` typed (``absorb_idle_reason`` or ``timeout``), and a runner that
     only checks liveness afterwards lets ``--self-mod`` PASS with no restart at all. Confirmed means
     ALL of: the campaign's absorbed-cycle counter advanced past the pre-task snapshot, the served sha
     moved off the snapshot (``wait_for_absorb``'s own condition), the server re-exec'd (``/api/state``
@@ -642,7 +641,8 @@ def run_attempt(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Pat
         _log(f"{sid}_a{attempt}: {msg}")
         states[job] = ("waiting (budget)", time.time())
 
-    admitted, facts = budget.admit(job, SCENARIOS[sid].root_tasks, lane / "data", dispatch_index=dispatch_index, on_wait=waiting)
+    admitted, facts = budget.admit(job, SCENARIOS[sid].root_tasks, lane / "data", dispatch_index=dispatch_index,
+                                   on_wait=waiting, absorbs=SCENARIOS[sid].expects_absorb)
     if not admitted:
         row = {**_lane_row(job, args), "status": "not_run", "reason_code": "budget_cap", "budget": facts,
                "refusal": {"type": "RunBudgetCap", "code": "budget_cap", "message": "run-wide budget cap reached"},
@@ -701,7 +701,7 @@ def run_lane(job: tuple[str, int], args: argparse.Namespace, out: pathlib.Path, 
             cfg["OUROBOROS_REVIEW_ENFORCEMENT"] = "advisory"
         # The lane's ceiling is its own reservation: disjoint from the other lanes', never the whole cap.
         cfg["TOTAL_BUDGET"] = budget.ceiling(job)
-        row["budget"] = {"reservation_usd": budget.reservation(scenario.root_tasks),
+        row["budget"] = {"reservation_usd": budget.reservation(scenario.root_tasks, scenario.expects_absorb),
                          "lane_total_budget_usd": cfg["TOTAL_BUDGET"], "per_task_usd": float(args.per_task_usd)}
         sha = write_settings(settings_path, cfg)
         # Owner id only, never a campaign: the task's post-task promotion enables the one-shot one (rc.15 run2 pin).

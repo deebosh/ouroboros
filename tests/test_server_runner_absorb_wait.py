@@ -89,20 +89,40 @@ def test_the_absorb_is_confirmed_when_the_counter_and_the_served_sha_move(tmp_pa
 
 
 @pytest.mark.parametrize("campaign,counter,expected", [
-    (None, 1, "no_promotion"),                                            # decision ran, nothing promoted
-    (None, 0, "no_decision"),                                             # the post-task decision never ran
+    (None, 1, "no_promotion"),                                            # an every_n tick ran, nothing promoted
+    (None, 0, "no_decision"),                                             # no tick recorded (llm cadence / ineligible)
     ({"status": "active", "transaction_history": [{"cycle_outcome": "no_op"}]}, 1, "cycle_no_op"),
     ({"status": "active", "transaction_history": [{"cycle_outcome": "abandoned"}]}, 1, "cycle_not_absorbed"),
-    ({"status": "paused"}, 1, "campaign_paused"),
+    ({"status": "paused", "transaction_history": [{"cycle_outcome": "no_op"}]}, 1, "campaign_paused"),
     ({"status": "active"}, 1, "cycle_not_enqueued"),
 ])
 def test_idle_reasons_are_typed_from_the_durable_campaign_state(tmp_path, monkeypatch, campaign, counter, expected):
-    if campaign is not None:
-        _campaign(tmp_path, **campaign)
+    """The cycle written DURING the wait decides ``cycle_*``: the campaign file is created empty before the wait
+    and the cycle's transaction lands after it started (a fresh one-shot campaign); a paused status wins."""
     (tmp_path / "state").mkdir(exist_ok=True)
     if counter:
         (tmp_path / "state" / "post_task_evolution_counter.json").write_text(json.dumps({"n": counter}), encoding="utf-8")
     srv = _server(tmp_path, [IDLE], monkeypatch)
+    if campaign is not None:
+        # the campaign appears after the wait's first summary: the first poll writes it, so its history is "new"
+        original = srv._state
+
+        def _state_then_campaign(timeout: float = 5) -> dict:
+            _campaign(tmp_path, **campaign)
+            return original(timeout)
+
+        srv._state = _state_then_campaign
     out = srv.wait_for_absorb("aaaaaaaa", 0, timeout=1_000, idle_grace=10, idle_polls=3)
     assert out["reason"] == expected and out["absorbed"] is False
     assert out["campaign"]["post_task_counter"] == counter and out["campaign"]["present"] is (campaign is not None)
+
+
+def test_older_cycles_of_a_resumed_campaign_never_speak_for_this_boundary(tmp_path, monkeypatch):
+    """A campaign resumed across instances (CLB stateful, evolve_smoke --tasks N) carries the previous cycle's
+    ``no_op``/``absorbed`` outcome in its history: a boundary that attaches no new cycle is ``cycle_not_enqueued``,
+    not the older cycle's outcome."""
+    _campaign(tmp_path, status="active", source="benchmark", absorbed_cycles_done=1,
+              transaction_history=[{"cycle_outcome": "absorbed"}, {"cycle_outcome": "no_op"}])
+    srv = _server(tmp_path, [IDLE], monkeypatch)
+    out = srv.wait_for_absorb("aaaaaaaa", 1, timeout=1_000, idle_grace=10, idle_polls=2)
+    assert out["reason"] == "cycle_not_enqueued" and out["campaign"]["history_len"] == 2

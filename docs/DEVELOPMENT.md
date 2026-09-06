@@ -1298,9 +1298,9 @@ only in each lane's 0600 settings file, disclosed by fingerprint as the runtime
 grant); the preflight takes `min(key limit remaining, account credits)` and
 refuses below `--min-credit-usd`. `--total-budget` (default 100) is the RUN-WIDE
 cap: a ledger sums the lanes' durable `llm_usage` costs, reserves
-`max(0.01, --per-task-usd × (root tasks + 1 with --self-mod))` per attempt (SM1 and SW1 one root — scouts spend
-under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two; with `--self-mod` the
-one post-task evolution cycle is one more root (the rc.14 paid run showed a second, generic
+`max(0.01, --per-task-usd × (root tasks + 1 with --self-mod for the scenario that absorbs))` per attempt (SM1 and SW1 one root — scouts spend
+under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two; with `--self-mod` SM1's
+one post-task evolution cycle is one more root (SW1/SK1 pin promotion off) (the rc.14 paid run showed a second, generic
 cycle at t=0 from the benchmark campaign the lane pre-seeded then), all under the lane fence — SM1_a1
 task $3.84 + cycles $12.40 + $2.84 of $20; the lane's TOTAL_BUDGET is the true fence and the
 +1 root is its reservation), admits an
@@ -1336,17 +1336,16 @@ can never fit is refused at once and leaves the line. Ordering the pool alone di
 admission — the dominant race is the woken waiter against the freed lane's NEXT job (settle in
 `run_attempt`'s finally → return → the executor takes the next job → `admit` on the same thread),
 which the newcomer won 300/300 on CPython, so a round that overflows the cap (the owner
-configuration: 150 + 100 + 100 = 350 > 300) let later attempts leapfrog the waiter and could
+configuration under the earlier +1-for-every-lane rule: 150 + 100 + 100 = 350 > 300) let later attempts leapfrog the waiter and could
 leave SW1 at 0/3 under pessimistic spends. FIFO admission removes that race at the cost of
 possible head-of-line idle lanes (a waiting large reservation holds back a smaller attempt that
 would fit). The verdict is pass-of PER scenario, so the order protects the MINIMUM admitted
 attempts per scenario rather than the sum: at cap 300 / per-task 50 / `--self-mod` / 3 lanes
 with realistic spends (SM1 30, SW1 8, SK1 15) all nine attempts are admitted in dispatch order
-for $159; with pessimistic spends (SM1 45, SW1 8, SK1 30) the admitted order is SK1_a1, SM1_a1,
-SW1_a1, SK1_a2, SM1_a2, SW1_a2, SM1_a3 — SK1_a3 refused when SM1_a2 settles ($158 + 150 > 300),
-SW1_a3 when SM1_a3 settles ($211 + 100 > 300) — 7/9 at $211 with every scenario keeping two,
-whereas largest-first dispatch (the rejected order) under the same admission runs SK1 ×3 and
-SM1 ×3 first and refuses every SW1 attempt at $225 (SW1 0/3). For a given spend model the
+(SM1_a1, SK1_a1, SW1_a1, …: SM1 and SK1 reserve 100, SW1 50) for $159; with pessimistic spends
+(SM1 45, SW1 8, SK1 30) eight are admitted and SK1_a3 is refused ($219 + 100 > 300) — 8/9 at
+$219 with every scenario keeping two, whereas largest-first dispatch (the rejected order, traced
+under the earlier rule) refused every SW1 attempt (SW1 0/3). For a given spend model the
 admitted sequence is exact (pinned in `tests/test_e2e_live_runner.py`); on a live run only the
 lanes' actual spend and its timing move it, and the first `--lanes` attempts, which enter
 admission within microseconds of each other, line up in the thread scheduler's order (in
