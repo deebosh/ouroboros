@@ -430,98 +430,6 @@ def test_emit_task_results_surfaces_receipt_absent_flag_in_event_stream(tmp_path
     assert captured["loop_outcome"]["outcome_axes"]["objective"].get("warning") == "receipt_absent"
 
 
-def _work_uncommitted_loop_outcome(tmp_path):
-    """A ``derive_loop_outcome`` result put through the work-uncommitted
-    post-processor against a repo with an uncommitted tracked change — the
-    isolated-worktree regime (task tree != env tree), so the raw probe fires."""
-    import subprocess
-
-    from ouroboros.outcomes import derive_loop_outcome
-    from ouroboros.work_uncommitted import REASON_WORK_UNCOMMITTED
-    from ouroboros.work_uncommitted import downgrade_outcome_for_uncommitted_work
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    for args in (("init", "-q"), ("config", "user.email", "t@t"), ("config", "user.name", "t")):
-        subprocess.run(["git", *args], cwd=str(repo), check=True, capture_output=True)
-    (repo / "a.py").write_text("x = 1\n")
-    subprocess.run(["git", "add", "."], cwd=str(repo), check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=str(repo), check=True, capture_output=True)
-    (repo / "a.py").write_text("x = 2  # changed, never committed\n")
-
-    loop_outcome = derive_loop_outcome(
-        "I implemented the change to a.py; the tests pass.",
-        {"rounds": 3, "cost": 0.0},
-        {"tool_calls": [], "reasoning_notes": []},
-    )
-    loop_outcome = downgrade_outcome_for_uncommitted_work(
-        loop_outcome,
-        SimpleNamespace(repo_dir=str(tmp_path / "host_tree"), drive_root=tmp_path),
-        {"id": "task-a", "repo_dir": str(repo)},
-        {},
-    )
-    assert loop_outcome["reason_code"] == REASON_WORK_UNCOMMITTED
-    return loop_outcome
-
-
-def test_store_task_result_fails_host_bound_task_with_uncommitted_diff(tmp_path):
-    """ibl-local-27745117e0e1 enforcement: a host-bound task that left its own
-    tracked changes uncommitted finalizes STATUS_FAILED, not STATUS_COMPLETED —
-    the uncommitted diff IS the failure. The axes still carry the typed reason
-    and the file list."""
-    from ouroboros.task_results import STATUS_FAILED
-
-    env = SimpleNamespace(drive_root=tmp_path)
-    loop_outcome = _work_uncommitted_loop_outcome(tmp_path)
-
-    pipeline._store_task_result(
-        env=env,
-        task={"id": "task-uncommitted", "type": "task", "text": "implement it"},
-        text="I implemented the change to a.py; the tests pass.",
-        usage={"rounds": 3, "cost": 0.0},
-        llm_trace={"tool_calls": [], "reasoning_notes": []},
-        review_evidence={},
-        loop_outcome=loop_outcome,
-    )
-
-    payload = json.loads((tmp_path / "task_results" / "task-uncommitted.json").read_text(encoding="utf-8"))
-    assert payload["status"] == STATUS_FAILED
-    assert payload["reason_code"] == "work_uncommitted"
-    assert payload["outcome_axes"]["execution"]["status"] == "degraded"
-    assert any(
-        "a.py" in line
-        for line in payload["loop_outcome"]["failure"].get("files", [])
-    )
-
-
-def test_store_task_result_does_not_fail_subagent_with_uncommitted_diff(tmp_path):
-    """A subagent's uncommitted worktree is the parent's concern, not a task
-    failure — the enforcement is scoped to host-bound (non-subagent) tasks."""
-    from ouroboros.task_results import STATUS_COMPLETED
-
-    env = SimpleNamespace(drive_root=tmp_path)
-    loop_outcome = _work_uncommitted_loop_outcome(tmp_path)
-
-    pipeline._store_task_result(
-        env=env,
-        task={
-            "id": "task-sub-uncommitted", "type": "task", "text": "implement it",
-            "delegation_role": "subagent",
-        },
-        text="Implemented; parent will absorb the patch.",
-        usage={"rounds": 3, "cost": 0.0},
-        llm_trace={"tool_calls": [], "reasoning_notes": []},
-        review_evidence={},
-        loop_outcome=loop_outcome,
-    )
-
-    payload = json.loads(
-        (tmp_path / "task_results" / "task-sub-uncommitted.json").read_text(encoding="utf-8")
-    )
-    assert payload["status"] == STATUS_COMPLETED
-    # The typed reason is still recorded — observation preserved, verdict withheld.
-    assert payload["reason_code"] == "work_uncommitted"
-
 def test_stopped_direct_turn_pays_no_post_task_synthesis(tmp_path, monkeypatch):
     """"Stop now" on a direct-chat turn: ZERO model calls after the stop, end to
     end through the real post-task lane. The loop's hard stop records the
@@ -744,3 +652,41 @@ def test_entry_marker_still_skips_every_paid_stage_and_seeds_no_checkpoint(tmp_p
     stored = pipeline.load_task_result(root, task_id) or {}
     assert "root_phase_checkpoint" not in stored, stored
     assert not (root / "logs" / "events.jsonl").exists() or _finalized_events(root, task_id) == []
+
+
+@pytest.mark.parametrize("role", ["root", "subagent"])
+def test_requested_file_result_completes_without_committing_the_worktree(tmp_path, role):
+    """An edited file is a valid requested result; dirty Git state adds no failure.
+
+    Retains the contributor's isolated tracked-diff fixture, while asserting the
+    owner-approved contract instead of universal commit-or-fail finalization.
+    """
+    import subprocess
+
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q")
+    (repo / "answer.txt").write_text("old\n", encoding="utf-8")
+    git("add", "answer.txt")
+    git("-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    (repo / "answer.txt").write_text("42\n", encoding="utf-8")
+    task = {"id": "file-result", "type": "task", "repo_dir": str(repo), "delegation_role": role,
+            "text": "Write 42 to answer.txt and leave the edited file for me.",
+            "expected_output": "The edited answer.txt file; no Git commit requested."}
+    pipeline._store_task_result(
+        env=SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path / "host_tree"), task=task,
+        text="answer.txt contains 42.", usage={"rounds": 1, "cost": 0},
+        llm_trace={"tool_calls": [{"tool": "write_file", "status": "ok",
+                                   "args": {"path": "answer.txt", "content": "42\n"}}]},
+    )
+    stored = pipeline.load_task_result(tmp_path, "file-result")
+    assert stored["status"] == "completed"
+    assert stored["reason_code"] != "work_uncommitted"
+    assert stored["result"] == "answer.txt contains 42."
+    assert (repo / "answer.txt").read_text(encoding="utf-8") == "42\n"
+    assert git("rev-parse", "HEAD") == base
+    assert "+42" in git("diff", "--", "answer.txt")
