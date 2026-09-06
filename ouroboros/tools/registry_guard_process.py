@@ -63,31 +63,40 @@ def _subagent_shell_targets_secret(cmd_path_lower: str, *, ctx: Any = None, cwd:
     """
     from ouroboros.credential_shapes import owner_credential_locations
     from ouroboros.shell_parse import (
+        EMBEDDED_WINDOWS_ABSOLUTE_PATH_RE,
         collect_leading_env, embedded_absolute_path_tokens, env_chdir_operand,
         interpreter_reads_program_from_stdin, sequential_effective_cwds,
         shell_command_string, shell_segment_rows,
     )
     from ouroboros.tools.core_secret_paths import _is_subagent_secret_repo_path, _is_subagent_secret_data_path
-    from ouroboros.tools.shell_guards import _MAX_INLINE_RECURSION, _SHELL_WRAPPER_HEADS
+    from ouroboros.tools.shell_guards import (
+        _MAX_INLINE_RECURSION, _SHELL_WRAPPER_HEADS, _expand_known_runtime_roots,
+    )
     from ouroboros.tools.write_shape import python_body_ast
 
-    protected, allowed = owner_credential_locations(pathlib.Path.home())
+    home = pathlib.Path.home()
+    protected, allowed = owner_credential_locations(home)
     data_roots = []
     if ctx is not None:
         metadata = getattr(ctx, "task_metadata", {}) or {}
         for root in (getattr(ctx, "drive_root", None), metadata.get("budget_drive_root")):
             if root:
                 data_roots.append(pathlib.Path(root).resolve(strict=False))
+    drive = data_roots[0] if data_roots else home
 
     def inspect(command: Any, work_dir: pathlib.Path, depth: int = 0) -> bool:
         segments = shell_segment_rows(command)
         rows = [(collect_leading_env(segment)[1], [], (), False) for segment, _, _ in segments]
-        cwds = sequential_effective_cwds(rows, work_dir)
+        # Expand only the inspection view; the executor retains the original argv.
+        cwd_rows = [([_expand_known_runtime_roots(str(token), drive, home) for token in argv], [], (), False)
+                    for argv, _, _, _ in rows]
+        cwds = sequential_effective_cwds(cwd_rows, work_dir)
         for (segment, _, heredocs), (argv, _, _, _), row_cwd in zip(segments, rows, cwds):
             if not argv:
                 continue
             wrapper_cwd = env_chdir_operand(segment)
             if wrapper_cwd:
+                wrapper_cwd = _expand_known_runtime_roots(wrapper_cwd, drive, home)
                 row_cwd = (row_cwd / pathlib.Path(wrapper_cwd).expanduser()).resolve(strict=False)
             head = pathlib.PurePath(argv[0]).name.lower().removesuffix(".exe")
             bodies = []
@@ -111,10 +120,12 @@ def _subagent_shell_targets_secret(cmd_path_lower: str, *, ctx: Any = None, cwd:
                     paths.extend(node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str))
                 else:
                     paths.extend(value for _quote, value in re.findall(r"(['\"])(.*?)\1", body))
-            paths.extend(embedded_absolute_path_tokens(" ".join(argv)))
+            expanded = _expand_known_runtime_roots(" ".join(argv), drive, home)
+            paths.extend(embedded_absolute_path_tokens(expanded))
+            paths.extend(EMBEDDED_WINDOWS_ABSOLUTE_PATH_RE.findall(expanded))
             for text in paths:
                 try:
-                    path = pathlib.Path(text).expanduser()
+                    path = pathlib.Path(_expand_known_runtime_roots(text, drive, home)).expanduser()
                     target = (row_cwd / path).resolve(strict=False)
                     # Bare search terms and string data are not file operands.
                     # A separator, suffix or existing entry supplies path shape.

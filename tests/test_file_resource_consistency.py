@@ -380,3 +380,39 @@ def test_known_root_expansion_applies_to_write_targets_only(tmp_path, monkeypatc
     log = data / 'logs' / 'events.jsonl'
     assert str(log) in targets(f'printf changed > "{spelling}/logs/events.jsonl"')
     assert targets(f'cat "{spelling}/logs/events.jsonl" > "{spelling}/task_drives/current/copy.txt"') == []
+
+
+@pytest.mark.parametrize('command', [
+    ['sh', '-c', 'cat $HOME/.ssh/id_fixture'],
+    ['sh', '-c', 'cat ${HOME}/file1.txt'],
+    ['sh', '-c', 'cd $HOME && cat .ssh/id_fixture'],
+    ['sh', '-c', 'env -C $HOME cat .ssh/id_fixture'],
+    ['sh', '-c', 'cat $OUROBOROS_DATA_DIR/settings.json'],
+    ['cmd', '/c', 'type %USERPROFILE%/.ssh/id_fixture'],
+])
+def test_child_known_root_credential_reads_are_blocked(environment, monkeypatch, command):
+    reg, ctx, home, work, data = environment
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))
+    monkeypatch.setenv('OUROBOROS_DATA_DIR', str(data))
+    ctx.task_constraint = TaskConstraint(mode='acting_subagent', surface='external_workspace', write_root=str(work))
+    for target in (home / '.ssh/id_fixture', home / 'file1.txt', data / 'settings.json'):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('FIXTURE_SECRET_MUST_NOT_REACH_OUTPUT', encoding='utf-8')
+    original = list(command)
+    result = reg.execute_result('run_command', {'cmd': command, 'cwd': str(work)})
+    assert (result.status, result.code) == ('blocked', 'SUBAGENT_SECRET_READ_BLOCKED')
+    assert 'FIXTURE_SECRET_MUST_NOT_REACH_OUTPUT' not in result.text
+    assert command == original
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='actual POSIX shell expansion')
+def test_child_known_root_source_read_keeps_shell_capability(environment, monkeypatch):
+    reg, ctx, home, work, _data = environment
+    monkeypatch.setenv('HOME', str(home))
+    ctx.task_constraint = TaskConstraint(mode='acting_subagent', surface='external_workspace', write_root=str(work))
+    (work / 'README.md').write_text('SOURCE_READ_OK', encoding='utf-8')
+    command = ['sh', '-c', 'cat "$HOME/project/README.md"; printf "token\\n"']
+    result = reg.execute_result('run_command', {'cmd': command, 'cwd': str(work)})
+    assert result.status == 'ok' and 'SOURCE_READ_OK' in result.text and 'token' in result.text
+    assert '$HOME/project/README.md' in command[2]
