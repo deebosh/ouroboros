@@ -30,6 +30,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers(); self.wfile.write(b'work-survives')
     def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
         if self.headers.get('Authorization') != 'Bearer fixture-token':
             self.send_response(401); self.end_headers(); return
         self.send_response(200); self.end_headers()
