@@ -2473,9 +2473,11 @@ commit review.
   answering, the registry guard still refuses repo tools to every other task,
   and steering reaches the resolver through the ordinary `steer_task` mailbox
   (`supervisor/worker_chat_lane.py::conversation_admitted_during_update`).
-  The server's owner-control path is imported BEFORE conflict markers land in
-  the live tree (`preload_owner_control_path`, called after the resolver
-  readiness proof and before a boot re-materialization).
+  The server's first-party packages are discovered and imported BEFORE conflict
+  markers land in the live tree (`preload_owner_control_path`, called after the
+  resolver readiness proof and before a boot re-materialization). Discovery uses
+  the imported package paths; the packaged server runs embedded Python from the
+  materialized Git repository. Tool admission remains owned by the registry.
 - Dirty local work never enters merge history: the apply stashes it and
   restores it as uncommitted content; a conflicting restore keeps the stash
   and discloses the recovery command. The reviewed assisted resolver runs

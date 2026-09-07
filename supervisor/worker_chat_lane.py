@@ -91,44 +91,6 @@ def owner_conversation_admitted(chat_id: int) -> bool:
     return bool(_pool()._repo_writer_turn_allowed(chat_id))
 
 
-# The server's owner-control path: every first-party module a Main turn may
-# import for the first time while answering, steering or waiting for a receipt
-# during an update. tests/test_update_owner_conversation.py pins the transitive
-# closure against the function-local imports of the routing/steering chain.
-OWNER_CONTROL_PATH_MODULES: tuple[str, ...] = (
-    "ouroboros.server_owner_routing",
-    "ouroboros.server_routing_context",
-    "ouroboros.routing_wait",
-    "ouroboros.owner_mailbox",
-    "ouroboros.owner_hurry",
-    "ouroboros.owner_quiz",
-    "ouroboros.project_dialogue",
-    "ouroboros.project_naming",
-    "ouroboros.projects_registry",
-    "ouroboros.cancel_intents",
-    "ouroboros.artifacts",
-    "ouroboros.client_surface",
-    "ouroboros.loop_round_limits",
-    "ouroboros.post_task_evolution",
-    "ouroboros.promotion_source",
-    "ouroboros.contracts.task_constraint",
-    "ouroboros.contracts.chat_id_policy",
-    "ouroboros.gateway.tasks",
-    "ouroboros.gateway.task_decision",
-    "ouroboros.tools.control_routing",
-    "ouroboros.agent",
-    "supervisor.steering",
-    "supervisor.events",
-    "supervisor.events_project_routing",
-    "supervisor.message_bus",
-    "supervisor.queue",
-    "supervisor.active_activity",
-    "supervisor.owner_stop",
-    "supervisor.task_reaper",
-    "supervisor.update_merge",
-)
-
-
 def preload_owner_control_path() -> list[str]:
     """Import the server's owner-control path while the live tree is still clean.
 
@@ -139,15 +101,28 @@ def preload_owner_control_path() -> list[str]:
     the update conversation (#283). Called right after the resolver readiness
     proof and before a boot re-materialization. Best effort: a failure is logged
     and returned, never a reason to refuse the update (it would degrade the
-    conversation, not the update). The tool catalog is loaded exactly the way
-    the chat agent's registry loads it, so every tool module is resident too.
+    conversation, not the update). First-party packages are discovered so newly
+    added function-local imports do not escape a manually maintained list.
+    The tool catalog still loads through the chat agent's registry, preserving
+    its admission rules and module-failure diagnostics.
     """
     import importlib
+    import pkgutil
 
     failed: list[str] = []
-    for name in OWNER_CONTROL_PATH_MODULES:
+    pending = ["ouroboros", "supervisor"]
+    while pending:
+        name = pending.pop()
         try:
-            importlib.import_module(name)
+            module = importlib.import_module(name)
+            # Discover from the imported package's own path, including nested
+            # packages. The packaged server runs embedded Python against the
+            # materialized repo; this never depends on the process cwd or a
+            # hand-maintained frozen module list.
+            if hasattr(module, "__path__"):
+                pending.extend(info.name for info in pkgutil.iter_modules(
+                    module.__path__, module.__name__ + ".",
+                ))
         except Exception:
             log.warning("owner control path preload: %s failed", name, exc_info=True)
             failed.append(name)

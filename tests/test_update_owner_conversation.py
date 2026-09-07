@@ -8,15 +8,13 @@ owner-control path is resident BEFORE conflict markers land in the live tree.
 """
 from __future__ import annotations
 
-import ast
-import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import textwrap
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -231,133 +229,141 @@ def test_main_steers_the_resolver_through_the_mailbox_while_the_gate_is_closed(
 
 # --- the control path is resident before conflict markers land -----------------
 
-_OWNER_CONTROL_CHAIN = (
-    "ouroboros/server_owner_routing.py",
-    "ouroboros/server_routing_context.py",
-    "supervisor/worker_chat_lane.py",
-    "supervisor/steering.py",
-    "supervisor/events_project_routing.py",
-    "ouroboros/tools/control_routing.py",
-    "ouroboros/routing_wait.py",
-    "ouroboros/owner_mailbox.py",
-    "ouroboros/loop_round_limits.py",
-)
-
-
-def _is_module(name: str) -> bool:
-    try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, AttributeError, ValueError):
-        return False
-
-
-def _first_party_imports(path: pathlib.Path) -> set[str]:
-    """Every ``ouroboros.*``/``supervisor.*`` module the file imports at ANY depth."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            names.add(node.module)
-            names.update(f"{node.module}.{alias.name}" for alias in node.names)
-    return {n for n in names if n.split(".")[0] in {"ouroboros", "supervisor"} and _is_module(n)}
-
-
-@pytest.mark.serial
-def test_preload_covers_every_import_of_the_owner_control_chain():
-    expected: set[str] = set()
-    for rel in _OWNER_CONTROL_CHAIN:
-        expected |= _first_party_imports(REPO_ROOT / rel)
-    assert expected, "the chain scan found nothing — the file list is stale"
-    code = textwrap.dedent("""
-        import json, sys
-        import supervisor.worker_chat_lane as lane
-        failed = lane.preload_owner_control_path()
-        resident = sorted(m for m in sys.modules if m.split(".")[0] in ("ouroboros", "supervisor"))
-        print(json.dumps({"failed": failed, "resident": resident}))
-    """)
-    proc = subprocess.run(
-        [sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True,
-        timeout=240, env=dict(os.environ),
-    )
-    assert proc.returncode == 0, proc.stderr[-4000:]
-    report = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert report["failed"] == [], report["failed"]
-    missing = expected - set(report["resident"])
-    assert not missing, f"first imported only AFTER conflict markers could land: {sorted(missing)}"
-    assert "ouroboros.tools.core" in report["resident"], "the tool catalog was not loaded"
-
-
-def _git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
-
-
-@pytest.mark.serial
-def test_preloaded_module_keeps_working_once_real_conflict_markers_land(tmp_path):
-    """An isolated checkout with a REAL merge conflict: the module imported before
-    the markers keeps answering, the module first imported after them cannot."""
+@pytest.fixture
+def package_repo(tmp_path):
+    """The materialized source layout used by the packaged server as well as source installs."""
     repo = tmp_path / "repo"
-    pkg = repo / "ctl"
-    pkg.mkdir(parents=True)
-    (pkg / "__init__.py").write_text("", encoding="utf-8")
-    (pkg / "resident.py").write_text("def answer():\n    return 'resident ok'\n", encoding="utf-8")
-    (pkg / "late.py").write_text("def steer():\n    return 'late ok'\n", encoding="utf-8")
-    assert _git(repo, "init", "-q", "-b", "main").returncode == 0
-    for key, value in (("user.email", "t@example.com"), ("user.name", "t"), ("commit.gpgsign", "false")):
-        _git(repo, "config", key, value)
-    _git(repo, "add", "-A")
-    assert _git(repo, "commit", "-q", "-m", "base").returncode == 0
-    assert _git(repo, "checkout", "-q", "-b", "release").returncode == 0
-    (pkg / "resident.py").write_text("def answer():\n    return 'resident upstream'\n", encoding="utf-8")
-    (pkg / "late.py").write_text("def steer():\n    return 'late upstream'\n", encoding="utf-8")
-    _git(repo, "commit", "-q", "-am", "upstream")
-    assert _git(repo, "checkout", "-q", "main").returncode == 0
-    (pkg / "resident.py").write_text("def answer():\n    return 'resident local'\n", encoding="utf-8")
-    (pkg / "late.py").write_text("def steer():\n    return 'late local'\n", encoding="utf-8")
-    _git(repo, "commit", "-q", "-am", "local")
+    repo.mkdir()
+    for package in ("ouroboros", "supervisor"):
+        shutil.copytree(
+            REPO_ROOT / package, repo / package,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+    shutil.copyfile(REPO_ROOT / "VERSION", repo / "VERSION")
+    return repo
 
-    ready, go = tmp_path / "ready", tmp_path / "go"
-    driver = tmp_path / "driver.py"
-    driver.write_text(textwrap.dedent(f"""
-        import json, pathlib, sys, time
-        sys.path.insert(0, {str(repo)!r})
-        import ctl.resident  # the preload: imported while the tree is clean
-        pathlib.Path({str(ready)!r}).write_text("1")
-        deadline = time.time() + 30
-        while not pathlib.Path({str(go)!r}).exists() and time.time() < deadline:
-            time.sleep(0.02)
-        out = {{"resident": ctl.resident.answer()}}
-        try:
-            import ctl.late
-            out["late"] = ctl.late.steer()
-        except SyntaxError as exc:
-            out["late"] = "SyntaxError:" + pathlib.Path(exc.filename).name
-        print(json.dumps(out))
-    """), encoding="utf-8")
-    proc = subprocess.Popen(
-        [sys.executable, str(driver)], cwd=tmp_path, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True,
+
+def _run_package_code(repo: pathlib.Path, code: str) -> dict:
+    env = dict(os.environ, OUROBOROS_REPO_DIR=str(repo))
+    # The copied package wins over this test process and any editable install;
+    # imports never depend on cwd being the repository.
+    script = "import sys; sys.path.insert(0, " + repr(str(repo)) + ")\n" + textwrap.dedent(code)
+    proc = subprocess.run(
+        [sys.executable, "-c", script], cwd=repo.parent, capture_output=True,
+        text=True, timeout=240, env=env,
     )
-    try:
-        deadline = time.time() + 30
-        while not ready.exists() and time.time() < deadline:
-            time.sleep(0.02)
-        assert ready.exists(), "the driver never finished its clean-tree import"
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
-        merge = _git(repo, "merge", "--no-commit", "--no-ff", "release")
-        assert merge.returncode != 0, "the fixture merge did not conflict"
-        for name in ("resident.py", "late.py"):
-            text = (pkg / name).read_text(encoding="utf-8")
-            assert "<<<<<<<" in text and ">>>>>>>" in text, f"{name} carries no conflict markers"
-        go.write_text("1", encoding="utf-8")
-        stdout, stderr = proc.communicate(timeout=60)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=10)
-    assert proc.returncode == 0, stderr[-4000:]
-    out = json.loads(stdout.strip().splitlines()[-1])
-    # The preloaded module still answers with the code imported BEFORE the merge;
-    # the module first imported after the markers landed cannot be imported at all.
-    assert out == {"resident": "resident local", "late": "SyntaxError:late.py"}
+
+@pytest.mark.serial
+@pytest.mark.parametrize("frozen", [False, True])
+def test_preload_discovers_nested_packages_and_preserves_tool_catalog(package_repo, frozen):
+    # The shipped server is a standalone-Python subprocess of the frozen
+    # launcher, with both first-party packages on disk. A frozen caller with
+    # those same bundled paths also retains the registry's frozen inventory.
+    nested = package_repo / "ouroboros" / "_discovery_fixture"
+    nested.mkdir()
+    (nested / "__init__.py").write_text("", encoding="utf-8")
+    (nested / "late.py").write_text("value = 42\n", encoding="utf-8")
+    expected = {
+        ".".join(path.relative_to(package_repo).with_suffix("").parts).removesuffix(".__init__")
+        for package in ("ouroboros", "supervisor")
+        for path in (package_repo / package).rglob("*.py")
+    }
+    out = _run_package_code(package_repo, f"""
+        import json, pathlib, sys
+        import supervisor.worker_chat_lane as lane
+        from ouroboros.tools.registry import ToolRegistry
+        from ouroboros.config import DATA_DIR, REPO_DIR
+        sys.frozen = {frozen!r}
+        before = ToolRegistry(REPO_DIR, DATA_DIR).available_tools()
+        failed = lane.preload_owner_control_path()
+        after = ToolRegistry(REPO_DIR, DATA_DIR).available_tools()
+        print(json.dumps({{"failed": failed, "resident": sorted(sys.modules),
+                          "same_catalog": before == after}}))
+    """)
+    assert out["failed"] == []
+    assert expected <= set(out["resident"]), sorted(expected - set(out["resident"]))
+    assert out["same_catalog"], "preloading code must not change tool admission"
+
+
+@pytest.mark.serial
+def test_preload_reports_failed_optional_modules_and_continues(package_repo):
+    nested = package_repo / "ouroboros" / "_discovery_fixture"
+    nested.mkdir()
+    (nested / "__init__.py").write_text("", encoding="utf-8")
+    (nested / "broken.py").write_text("raise ImportError('optional dependency unavailable')\n", encoding="utf-8")
+    (nested / "valid.py").write_text("value = 42\n", encoding="utf-8")
+    out = _run_package_code(package_repo, """
+        import io, json, logging, sys
+        from supervisor.worker_chat_lane import preload_owner_control_path
+        log = io.StringIO()
+        logging.getLogger('supervisor.worker_chat_lane').addHandler(logging.StreamHandler(log))
+        failed = preload_owner_control_path()
+        print(json.dumps({"failed": failed, "valid": 'ouroboros._discovery_fixture.valid' in sys.modules,
+                          "diagnostic": log.getvalue()}))
+    """)
+    assert out["failed"] == ["ouroboros._discovery_fixture.broken"]
+    assert out["valid"]
+    assert "optional dependency unavailable" in out["diagnostic"]
+
+
+def _git(repo: pathlib.Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    proc = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+    if check:
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    return proc
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("preload", [False, True])
+def test_update_recovery_uses_preloaded_policy_after_real_git_conflict(package_repo, preload):
+    """Exercise the real late import that the old manual closure missed."""
+    policy = package_repo / "supervisor" / "update_merge_policy.py"
+    source = policy.read_text(encoding="utf-8")
+    policy.write_text(source + "\nCONFLICT_FIXTURE = 0\n", encoding="utf-8")
+    _git(package_repo, "init", "-q", "-b", "main")
+    for key, value in (("user.email", "test@example.invalid"), ("user.name", "Fixture"),
+                       ("commit.gpgsign", "false")):
+        _git(package_repo, "config", key, value)
+    _git(package_repo, "add", "supervisor/update_merge_policy.py")
+    _git(package_repo, "commit", "-qm", "base")
+    _git(package_repo, "checkout", "-qb", "release")
+    policy.write_text(source + "\nCONFLICT_FIXTURE = 1\n", encoding="utf-8")
+    _git(package_repo, "commit", "-qam", "upstream")
+    _git(package_repo, "checkout", "-q", "main")
+    policy.write_text(source + "\nCONFLICT_FIXTURE = 2\n", encoding="utf-8")
+    _git(package_repo, "commit", "-qam", "local")
+
+    out = _run_package_code(package_repo, f"""
+        import json, pathlib, subprocess, sys
+        import supervisor.worker_chat_lane as lane
+        if {preload!r}:
+            assert lane.preload_owner_control_path() == []
+        resident = 'supervisor.update_merge_policy' in sys.modules
+        repo = pathlib.Path({str(package_repo)!r})
+        merged = subprocess.run(['git', 'merge', '--no-commit', '--no-ff', 'release'],
+                                cwd=repo, capture_output=True, text=True)
+        assert merged.returncode == 1, merged.stdout + merged.stderr
+        text = (repo / 'supervisor/update_merge_policy.py').read_text()
+        assert '<<<<<<<' in text and '>>>>>>>' in text
+        from supervisor import workers, update_merge
+        # Reach the real objective/metadata path without starting any work.
+        workers.RUNNING = {{'probe': {{}}}}
+        workers.PENDING = []
+        workers.ensure_worker_pool_started = lambda **_: True
+        result = {{'resident': resident}}
+        try:
+            result['task'] = update_merge.enqueue_assisted_resolution_task({{
+                'task_id': 'probe', 'owner_chat_id': 1, 'target_sha': '1' * 40,
+                'conflict_paths': ['supervisor/update_merge_policy.py'],
+            }})
+        except SyntaxError as exc:
+            result['syntax_error'] = pathlib.Path(exc.filename).name
+        print(json.dumps(result))
+    """)
+    if preload:
+        assert out == {"resident": True, "task": "probe"}
+    else:
+        assert out == {"resident": False, "syntax_error": "update_merge_policy.py"}
