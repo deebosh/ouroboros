@@ -123,6 +123,11 @@ def test_workspace_run_shell_cwd_allows_scratch_and_explicit_system(tmp_path, mo
 
 def test_workspace_shell_safe_stdio_redirects_are_not_write_like(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    # Model host scratch outside HOME on every OS, as the neighboring cwd
+    # test does; Windows pytest temp otherwise lies under the runtime parent.
+    fake_home = tmp_path / "_home"
+    fake_home.mkdir()
+    monkeypatch.setattr(pathlib.Path, "home", lambda: fake_home)
     system_repo = tmp_path / "system"
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
@@ -134,10 +139,10 @@ def test_workspace_shell_safe_stdio_redirects_are_not_write_like(tmp_path, monke
     registry = ToolRegistry(repo_dir=system_repo, drive_root=data)
     registry.set_context(ctx)
 
-    stderr_sink = registry.execute("run_command", {"cmd": f"find {outside} -maxdepth 1 2>/dev/null"})
-    fd_dup = registry.execute("run_command", {"cmd": f"ls {outside} 2>&1 | head -n 1"})
-    fd_close = registry.execute("run_command", {"cmd": f"find {outside} -maxdepth 1 2>&-"})
-    real_redirect = registry.execute("run_command", {"cmd": f"echo x > {outside / 'out.txt'}"})
+    stderr_sink = registry.execute("run_command", {"cmd": ["find", str(outside), "-maxdepth", "1", "2>/dev/null"]})
+    fd_dup = registry.execute("run_command", {"cmd": ["ls", str(outside), "2>&1", "|", "head", "-n", "1"]})
+    fd_close = registry.execute("run_command", {"cmd": ["find", str(outside), "-maxdepth", "1", "2>&-"]})
+    real_redirect = registry.execute("run_command", {"cmd": ["echo", "x", ">", str(outside / "out.txt")]})
 
     assert "WORKSPACE_SHELL_BLOCKED" not in stderr_sink, stderr_sink
     assert "WORKSPACE_SHELL_BLOCKED" not in fd_dup, fd_dup
