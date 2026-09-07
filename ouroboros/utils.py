@@ -28,6 +28,12 @@ def set_log_sink(fn: Optional[Callable[[Dict[str, Any]], None]]) -> None:
     global _log_sink
     _log_sink = fn
 
+
+def has_log_sink() -> bool:
+    """Whether this process registered a sink, not a delivery acknowledgement."""
+    return _log_sink is not None
+
+
 def utc_now_iso() -> str:
     return _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
 

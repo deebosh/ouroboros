@@ -635,22 +635,7 @@ async def api_extension_dispatch(request: Request) -> Response:
                 drive_root=drive_root,
                 repo_dir=_request_repo_dir(request),
             )
-            route_result = dict(child_result.get("route") or {})
-            kind = str(route_result.get("kind") or "")
-            status_code = int(route_result.get("status_code") or 200)
-            if kind == "response":
-                headers = dict(route_result.get("headers") or {})
-                headers.pop("content-length", None)
-                body_bytes = base64.b64decode(str(route_result.get("body_b64") or ""))
-                return Response(
-                    body_bytes,
-                    status_code=status_code,
-                    headers=headers,
-                    media_type=route_result.get("media_type") or None,
-                )
-            if kind == "json":
-                return JSONResponse(route_result.get("data"), status_code=status_code)
-            return Response(str(route_result.get("text") or ""), status_code=status_code)
+            return child_result
         except Exception as exc:
             log.exception("extension child dispatch failure: %s", mount)
             return json_error(f"{type(exc).__name__}: {exc}", 502)

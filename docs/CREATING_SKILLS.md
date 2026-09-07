@@ -324,8 +324,13 @@ Out-of-process caveats: (1) `register()` and `on_unload` run for **each per-call
 child** (every tool/route/WS dispatch and catalog), so `on_unload` fires per call,
 not once per disable — keep it cheap and idempotent and put durable/once-per-session
 teardown in a `companion_process` shutdown. (2) `send_ws_message` relays through the
-loopback Host Service and is best-effort and rate-limited (~60/min per skill), so a
-progress-heavy job should throttle updates or rely on poll-based status. (3) A
+loopback Host Service and is best-effort: the relay lane holds a 60-message burst
+reserve per skill that refills one message per second, the excess is refused (a 429
+with `retry_after_sec`; the host records each refused burst once with its dropped
+count), so a progress-heavy job should throttle updates or rely on poll-based
+status. Successful children also return aggregate transport/HTTP refusal counts
+through their normal result/process diagnostics; `send_ws_message` still returns
+`None`, and acceptance does not prove browser delivery. (3) A
 `companion_process` is spawned and supervised by the host **server** process: enabling
 a companion skill from the agent's `toggle_skill` tool or via post-review auto-enable
 records it in the worker process and writes a durable
@@ -577,7 +582,7 @@ calls and runtime behaviours:
 | `supervised_task` | The skill may register an in-process host-supervised async task. |
 | `companion_process` | The skill may register a manifest-declared companion subprocess supervised by the host. |
 | `subscribe_event` | The skill may subscribe to manifest-declared host event topics such as `chat.outbound` or `skill.lifecycle`. Chat topics require owner permission grants; `skill.lifecycle` does not. |
-| `inject_chat` | The skill may request Host Service chat injection after an explicit owner permission grant: `POST /chat/inject` carries text, an inline image, or `attachments` (`[{path, name?, mime?}]` — regular files under the skill's own state root, at most 25 per message, which the host copies without the former 50 MiB upload cap into the shared `data/uploads` chat-upload store and stages for the task; a file-only message needs no text). The same grant lets the skill relay the owner's decision-card answer through `POST /chat/decision` (`{request_id, decision_id, option_index?, comment?}`, the `POST /api/decisions` contract). |
+| `inject_chat` | The skill may request Host Service chat injection after an explicit owner permission grant: `POST /chat/inject` carries text, an inline image, or `attachments` (`[{path, name?, mime?}]` — regular files under the skill's own state root, at most 25 per message, which the host copies without the former 50 MiB upload cap into the shared `data/uploads` chat-upload store and stages for the task; a file-only message needs no text). The same grant lets the skill relay the owner's decision-card answer through `POST /chat/decision` (`{request_id, decision_id, option_index?, comment?}`, the `POST /api/decisions` contract). A message that carries a `client_message_id` becomes an addressable operation: the host answers with its `operation_ref` (`<chat_id>:<client_message_id>`) on 202, 200 and 504; a repeated delivery of the same message rejoins it instead of enqueueing again (a different message under a reused id is refused with 409); `GET /chat/operations/{operation_ref}` reports the skill's own accepted message (`pending`, `running` with its task or turn, the durable answer, a terminal task status, or `lost` after a host restart); and `POST /chat/cancel` (`{operation_ref, reason?}`) runs the existing cancellation owner on work that message started, answering `cancelled`, `already_terminal`, `unresolved` or `cancel_unsupported` — never a cancellation that did not happen. |
 | `presence` | A reviewed transport skill may submit authenticated non-owner conversation events to the Host Service Presence boundary and poll only their correlated late work. Requires an explicit content-hash-bound owner grant. |
 
 A missing permission causes the matching `register_*` call to raise
@@ -873,6 +878,20 @@ ui_tab:
     start: manual                   # auto | manual | retain — see "Launch policy" below
 ```
 
+The manifest declaration is checked during preflight and review; it does not
+create a live tab. With `permissions: [widget]` in your extension manifest,
+register the same surface in `plugin.py`:
+
+```python
+def register(api):
+    api.register_ui_tab("editor", "Editor", render={
+        "kind": "module", "entry": "widget.js", "start": "manual",
+    })
+```
+
+`register_ui_tab` creates the tab on the Widgets page after the extension loads.
+Keep `widget.js` beside `plugin.py`; it renders into the provided `#root` element.
+
 The host fetches reviewed JS through `GET /api/extensions/<skill>/module/<entry>`,
 embeds it in an opaque-origin iframe (`sandbox="allow-scripts allow-pointer-lock
 allow-downloads"`, never `allow-same-origin`; see "What the frame may do"
@@ -913,7 +932,7 @@ The frame has no scriptable network of its own: `connect-src` stays closed, so
 `XMLHttpRequest`, `WebSocket`, `EventSource` and beacons are refused by the
 document policy, and every request goes through the parent over one nonce-bound
 message grammar (passive image, media and font loads from your own route prefix
-are the one exception — "What the frame may do" below). Two calls cover it:
+are the one exception — "What the frame may do" below). The bridge exposes:
 
 - **`OuroborosWidget.fetch(url, init)`** (also installed as the frame's
   `fetch`). `url` must resolve under `/api/extensions/<skill>/...`; anything
@@ -925,7 +944,8 @@ are the one exception — "What the frame may do" below). Two calls cover it:
   answers with a redirect rejects instead of being followed; it streams the
   answer back, so you get a
   real `Response`: `status`, `statusText`, **every** response header, and a
-  body that is binary by default — `.text()`, `.json()`, `.arrayBuffer()`,
+  body that is binary by default. Each next chunk is read only when your
+  consumer requests it — `.text()`, `.json()`, `.arrayBuffer()`,
   `.blob()` and incremental `body.getReader()` reads all work. Server-sent
   events are a plain streaming `GET` with `Accept: text/event-stream` read
   through `body.getReader()` (there is no `EventSource` polyfill); NDJSON works
@@ -943,13 +963,29 @@ are the one exception — "What the frame may do" below). Two calls cover it:
   host strips its own namespace prefix. The first listener subscribes the frame,
   the last unsubscribe stops delivery, and other skills' events never reach it.
 
-Two limits are disclosed rather than hidden: a route served by the
-out-of-process runner (isolated dependencies) is buffered whole before the frame
-sees it and capped at about 380 KiB of body (the same ceiling as the
-out-of-process module-bytes route below) — only an in-process route's `StreamingResponse` streams chunk by
-chunk; and the out-of-process / companion WS push (`POST /ui/ws-message`) is
-capped at 60 messages per 60 seconds per skill, so throttle progress events or
-fall back to poll-based status for bursts.
+- **`OuroborosWidget.download(name, source)`** saves an existing `Blob`, a
+  `data:` URL, or a URL under this skill's extension route prefix. It resolves
+  to the host's delivery result or rejects with a visible error. In the desktop
+  app it uses the same native Downloads owner as other file controls; in a
+  browser success means the download was started, not that disk writing was
+  confirmed. Large backend files should be passed as route URLs so the host
+  does not turn an HTTP stream into a Blob. Ordinary `<a download>` controls
+  using these routes, `data:` URLs or frame-created Blob URLs use this same path.
+
+Out-of-process routes execute standard Starlette responses in the child and
+stream their ordered headers and body to the host, including `FileResponse`
+HEAD/Range behavior and background actions. There is no total or pre-header
+request timer: finish, abort, disconnect or unloading that skill instance ends
+its response. Slow consumption is backpressure, not a timeout. A body failure
+breaks the stream; cleanup failure after the complete body is logged separately.
+The incoming request body retains its 512 KiB cap, and one-shot tool/catalog/WS
+results retain their existing caps and timeouts.
+
+The out-of-process / companion WS push (`POST /ui/ws-message`) admits
+a 60-message burst per skill and then one message per second (the excess gets a
+429 with `retry_after_sec`, and the host logs each refused burst once with its
+dropped count), so throttle sustained progress streams or fall back to
+poll-based status.
 
 #### What the frame may do
 
@@ -987,15 +1023,12 @@ What that gives you, verified on Chromium and WebKit through
   `data:` / `blob:` URLs — "Assets" below, including the CORS rule for fonts.
 - **Clipboard write** (`navigator.clipboard.writeText`) from a user click; the
   clipboard is never readable from the frame.
-- **Downloads**: an `<a download>` or `blob:` link clicked by the owner
-  downloads in browsers (`allow-downloads`). The desktop shell's link
-  interceptor runs in the parent document only and the frame cannot reach the
-  shell bridge, so a download started inside the frame may be ignored there.
-  A download that must also work in the desktop shell stays host-side today:
-  serve the file from a skill route and let a declarative widget's `file`
-  component or a chat-delivered file offer it — both go through the host's
-  `downloadViaHostBridge` path. A module-frame download call over the bridge
-  is not built yet (disclosed).
+- **Downloads**: module widgets use `OuroborosWidget.download` or ordinary
+  `<a download>` controls for their own route files, data URLs and frame-created
+  Blobs; the existing host save path supports both the desktop app and browsers.
+  A legacy `kind: iframe` route page has no module bridge: its downloads still
+  depend on the embedding engine. Use a module widget or a host-side declarative
+  `file` component when a native Downloads handoff is required.
 - **Pointer lock** (`allow-pointer-lock`) and **fullscreen**
   (`allowfullscreen` + `allow="fullscreen"`) for games and emulators. Both need
   a user gesture and a focused window; feature-detect with
@@ -1114,12 +1147,9 @@ review blockers. Reviewers judge the JavaScript that instantiates the module
 and the module's provenance instead of its bytes.
 
 Ship and load it through your own route: register a route that returns the
-module bytes (an in-process handler may return a Starlette `Response` or
-`FileResponse` of any size; an out-of-process handler's body is buffered by the
-host and capped at about 380 KiB of body — `_RESULT_CAP` = 512 KiB in
-`ouroboros/extension_process_runner.py` bounds the base64-encoded result — so a
-larger module needs an in-process skill or the runtime-download path described
-under assets below), then in the widget:
+module bytes with a Starlette `Response` or `FileResponse`. The same response
+runs in an isolated child for dependency-bearing skills and streams without the
+old serialized-result body cap. Then in the widget:
 
 ```js
 const bytes = await (await OuroborosWidget.fetch('/api/extensions/<skill>/core.wasm')).arrayBuffer();
@@ -1136,8 +1166,8 @@ routes. The frame CSP admits this with `'wasm-unsafe-eval'` — there is no plai
 #### Assets: fonts, audio, video, images
 
 Widget assets are ordinary payload files and travel the same way as
-WebAssembly: your own routes serve them (`register_route` returning the bytes;
-an out-of-process handler answers about 380 KiB of body per response, as above), the
+WebAssembly: your own routes serve them (`register_route` returning a standard
+response, streamed from an isolated child when required), the
 widget references them by `/api/extensions/<skill>/...` URL, and review
 sees each non-text asset as a content-hash-bound descriptor. The module
 endpoint stays JavaScript-only. Hub packages admit `.png .jpg .jpeg .gif .webp

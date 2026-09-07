@@ -110,6 +110,7 @@ class ChatOutbound(TypedDict):
     markdown: NotRequired[bool]
     is_progress: NotRequired[bool]
     task_id: NotRequired[str]
+    origin_message_ref: NotRequired[Dict[str, Any]]
     # X3: a repair receipt whose managed task id does not exist yet (the router
     # mints it at promotion). Typed truth instead of an invented id.
     task_id_pending: NotRequired[bool]
