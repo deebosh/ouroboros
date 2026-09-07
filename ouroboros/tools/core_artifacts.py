@@ -152,30 +152,48 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
     fp = pathlib.Path(file_path).expanduser().resolve()
     if not fp.exists() or not fp.is_file():
         return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ File not found: {file_path}"))
-    if fp.stat().st_size > _MAX_DOCUMENT_FILE_BYTES:
-        return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ File too large ({fp.stat().st_size} bytes). Max: {_MAX_DOCUMENT_FILE_BYTES} bytes."))
-
+    mime = _detect_document_mime(str(fp))
+    # Capture immutable, task-owned bytes before publishing a link. File delivery
+    # stays available above the old inline limit without placing the file in RAM.
     try:
-        raw = fp.read_bytes()
-        mime = _detect_document_mime(str(fp))
-        actual_b64 = base64.b64encode(raw).decode()
-    except Exception as e:
-        return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ Failed to read file: {e}"))
-
-    # Copy into the task's canonical artifact store so the delivered file stays
-    # downloadable after reload even if the original path is temporary / GC'd,
-    # and derive a loopback download URL from that DURABLE copy (WKWebView-safe
-    # desktop download + base64-free history replay).
-    download_url = ""
-    try:
-        from ouroboros.artifacts import copy_file_to_task_artifacts
+        from types import SimpleNamespace
+        from urllib.parse import quote
+        from ouroboros.artifacts import copy_file_to_task_artifacts, task_id_for_artifacts
         from ouroboros.gateway.files import download_url_for_local_file
 
-        record = copy_file_to_task_artifacts(ctx, fp, kind="user_file")
-        durable = pathlib.Path(str(record.get("path"))) if record and record.get("path") else fp
-        download_url = download_url_for_local_file(durable)
-    except Exception:
-        download_url = ""  # non-fatal: fall back to base64 blob delivery
+        if getattr(ctx, "drive_root", None) is None:
+            raise OSError("artifact context is unavailable")
+        task_id = task_id_for_artifacts(ctx)
+        record = copy_file_to_task_artifacts(ctx, fp, kind="user_file", immutable=True)
+        if not record:
+            raise ValueError("file was refused by the artifact store")
+        metadata = getattr(ctx, "task_metadata", {}) or {}
+        canonical = pathlib.Path(getattr(ctx, "budget_drive_root", None) or metadata.get("budget_drive_root") or ctx.drive_root)
+        if canonical.resolve() != pathlib.Path(ctx.drive_root).resolve():
+            record = copy_file_to_task_artifacts(SimpleNamespace(drive_root=canonical, task_id=task_id),
+                                                 pathlib.Path(record["path"]), kind="user_file", immutable=True, expected=record)
+        durable = pathlib.Path(record["path"])
+        file_ref = {"kind": "task_artifact", "root": "artifact_store", "task_id": task_id,
+                    "path": record["name"], "size": record["size"], "sha256": record["sha256"]}
+        download_url = f"/api/tasks/{quote(task_id, safe='')}/artifacts/{quote(record['name'], safe='')}"
+        compat_url = download_url_for_local_file(durable)
+        # Existing transport subscribers can keep consuming bounded inline files.
+        actual_b64 = base64.b64encode(durable.read_bytes()).decode() if record["size"] <= _MAX_DOCUMENT_FILE_BYTES else ""
+    except (OSError, TypeError) as exc:
+        # Preserve the historical bounded inline delivery when storage or an
+        # older caller's artifact context is unavailable. No uncaptured URL or
+        # reference is published, and source-read failures still refuse delivery.
+        try:
+            with fp.open("rb") as source:
+                raw = source.read(_MAX_DOCUMENT_FILE_BYTES + 1)
+            if len(raw) > _MAX_DOCUMENT_FILE_BYTES:
+                raise OSError(f"large file requires artifact capture: {exc}")
+            actual_b64 = base64.b64encode(raw).decode()
+            file_ref, download_url, compat_url = None, "", ""
+        except OSError as read_error:
+            return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ Failed to read or capture file: {read_error}"))
+    except ValueError as exc:
+        return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ Failed to capture file: {exc}"))
 
     from ouroboros.tools.owner_delivery import deliver_owner_event
     mode = deliver_owner_event(ctx, {
@@ -186,6 +204,8 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
         "filename": fp.name,
         "caption": caption or "",
         "download_url": download_url,
+        "download_url_compat": compat_url,
+        "file_ref": file_ref,
     })
     text = (f"OK: file '{fp.name}' sent to owner chat." if mode == "live"
             else f"OK: file '{fp.name}' queued for delivery to owner.")

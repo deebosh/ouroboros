@@ -356,12 +356,15 @@ def _build_task(
         # every staged/rejected declaration on the canonical carrier before the
         # task contract is normalized so a later promotion or child can inherit
         # and materialize the exact inputs.
-        task["attachments"] = [dict(item) for item in manifest]
+        from ouroboros.artifacts import attachment_manifest_projection
+        authority = attachment_manifest_projection(drive_root, task_id, manifest)
+        task.update(authority)
+        task["attachments"] = authority["attachment_manifest"]
         task["attachment_images"] = [
             dict(item) for item in manifest
             if str(item.get("status") or "staged") == "staged" and item.get("is_image")
         ]
-        rendered = _render_attachment_lines(manifest)
+        rendered = _render_attachment_lines(authority)
         if rendered:
             task["text"] = f"{task['text']}\n\n[ATTACHMENTS]\n{rendered}\n[END_ATTACHMENTS]".strip()
     if not task["text"]:

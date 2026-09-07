@@ -79,6 +79,9 @@ def cleanup_settled_owner_mailbox(
     from supervisor.queue import _task_drive_for_task
 
     durable = load_task_result(pathlib.Path(drive_root), str(task_id)) or {}
+    pending = (durable.get("child_ref_promotion") or {}).get("pending_refs", [])
+    if any(isinstance(ref, dict) and ref.get("kind") == "task_attachment" for ref in pending):
+        return  # Accepted inputs still need this mailbox as their retry source.
     if str(durable.get("status") or "") in SETTLED_STATUSES:
         cleanup_task_mailbox(
             _task_drive_for_task(task or durable, str(task_id)), str(task_id),

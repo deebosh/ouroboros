@@ -1584,6 +1584,50 @@ or error otherwise, never failing on its own.
   non-manifest history with last-5 retention (history is for recovery, not a
   second deliverable list). The logical `root=deliverables` tool stays
   read/list/search-only and is not granted to children.
+- Host chat attachment admission owns its new upload copies until enqueue succeeds.
+  Keep copying under the shared settled HTTP-worker wait; cancelling the waiter
+  first settles copying, then cleans its unaccepted destinations. Accepted inputs
+  and the skill's original files survive cancellation; do not treat disconnect
+  as task cancellation.
+
+- Large task files use `artifacts.stream_artifact_file` and atomic
+  `copy_artifact_file`; do not read complete datasets into a bytes object.
+  HTTP admission and materialization run their complete blocking operation off
+  the event loop through `gateway._helpers.run_sync_to_completion`. Cancellation
+  waits for that operation before releasing its reservation, input or iterator;
+  cancelling an HTTP waiter never means cancelling the admitted task. Multipart
+  spool copy and close belong to the same worker so cleanup cannot be cancelled.
+  Directory exports keep a complete relative member/size/SHA manifest and a
+  streamed ZIP, including outputs above 50 MiB. File changes and missing members
+  are explicit capture failures. Reject a read as soon as it exceeds the source's
+  initial regular-file size; do not wait for a growing file to reach EOF. A borrowed
+  completed multipart spool uses the same copy/hash/atomic owner and descriptor
+  checks, without claiming verification of an original pathname; its caller closes
+  it only after the copy worker settles, including cancellation. Host path uploads
+  retain source confinement and the existing Path return. Automatic genesis listing
+  is discovery: record unreadable/changing entries and incomplete coverage, while
+  actual capture/copy remains strict. `send_file` uses immutable captured names so
+  an earlier delivery URL never aliases a later rewrite. If capture is unavailable,
+  existing small-file inline delivery stays available without a fabricated URL
+  or reference; source-read refusals and the inline size boundary still apply.
+  Registered immutable downloads verify their bytes once per request without
+  materializing the whole task result; source and unregistered paths still use
+  the existing effective-result owner. Browser URL downloads
+  use the existing helper's streaming mode (HEAD then native browser download);
+  the launcher URL backend already streams. `downloadBlobViaHostBridge` shares
+  the existing bytes-save owner for an already-owned Blob or data/blob URL;
+  it never turns an HTTP response/stream into a Blob. Native result/cancellation
+  fields are preserved, and old launchers report unavailable saving explicitly.
+- Input authority keeps at most 25 rows inline and, when needed, an additive
+  `attachment_manifest_ref` in the existing source-handle store. Preserve its
+  count/size/SHA and resolve the complete set before child materialization,
+  mailbox inheritance, retry or copy-back; never fall back to the preview when
+  the source fails. Re-publish a new manifest after rebasing paths. Input files
+  remain inputs, outside deliverable inventories. Failed copy-back participates
+  in the existing pending-ref retry/GC contract rather than losing child bytes.
+  Accepted follow-up inputs retain their exact manifest sources separately from
+  the initial task contract. Copy failure retains the owner mailbox as the retry
+  source; successful retry releases it through normal terminal cleanup.
 - For argv-visible targets, the shell guard checks lexical Deliverables origin
   before generic workspace or executor roots, then the symlink-resolved
   destination; direct `cp`/`mv`/`ln` directory destinations derive their
@@ -1622,9 +1666,9 @@ or error otherwise, never failing on its own.
   writable scratch selects `task_drive` explicitly; long-running services in
   light use an explicit external/task/artifact cwd, and declared service
   `outputs` are copied when the service stops. Directory outputs become a
-  bounded manifest plus zip; hidden/control/credential-shaped files and
-  excessive counts/bytes fail closed. `run_script` stages its temporary
-  script under the active workspace (`.ouroboros/tmp_scripts`) for a
+  complete manifest plus streamed zip. Policy-rejected members are skipped
+  with explicit notes; missing or unreadable members fail the directory copy.
+  `run_script` stages its temporary script under the active workspace (`.ouroboros/tmp_scripts`) for a
   workspace-bound script and under the task drive otherwise — never the
   system-repo temp path — so relative imports, generated files and toolchain
   discovery observe the requested cwd (`ouroboros/tools/shell.py`;
@@ -1794,8 +1838,9 @@ both critical. The imperatives:
   deliverable. A genesis project starts without a `.gitignore`, so its small
   text build output (`dist/`, `build/`) rides the `workspace.patch` record
   until the project declares one — a disclosed residual, bounded only by the
-  per-file size cap and git's binary verdict, since there is no total-patch
-  cap. The canonical/replica terminal field-custody projection is
+  per-file source-patch size boundary and git's binary verdict; otherwise
+  eligible large/binary outputs are preserved as file artifacts with a full
+  manifest, independently of the source patch. There is no total source-patch cap. The canonical/replica terminal field-custody projection is
   ONE pure reducer reused by copy-back and effective reads — every change
   adds a stale-replica regression at BOTH seams
   (`tests/test_available_subagents_runtime_review_fixes.py`). Do not broaden
@@ -2170,10 +2215,13 @@ by "Provider Independence" above. Call-site imperatives:
   actual control reason through wait termination: owner Wrap up is distinct
   from deadline/budget finalization and still sends no new summary request.
 - The transport-wait episode's owner notes always pass `incident=` — the
-  typed `task_incident`/`toast_once` pair on an ephemeral turn's
+  typed `task_incident`/`toast_once` pair (plus the optional `toast_tone`
+  valence the call site stamps: warn/ok/error) on an ephemeral turn's
   episode-boundary notes (entry, recovery/closure, exhaustion), `None` on
   every other note — so any `emit_progress` callable handed to `run_llm_loop`
-  must accept the `incident=` keyword; `OuroborosAgent._emit_progress` is the
+  must accept the `incident=` keyword; the browser's `showTaskIncidentToast`
+  reads the tone through `normalizeTone` and keeps the alarm tone for a
+  frame without one — never parse `toast_once` or the text for it; `OuroborosAgent._emit_progress` is the
   production implementation and a test fake mirrors it
   (`lambda text, *, incident=None: ...`).
 - Timeout contract classes differ; keep the axes separate. A transport
@@ -2491,6 +2539,18 @@ commit review.
   the update transaction before mutation; reopen writers only after a
   verified abort/rollback or a healthy restart. Delayed evolution cleanup
   acquires the same update lock and honors the same admission owner.
+- Conversation admission is separate from repo-writing permission. The chat
+  lanes refuse turns only during destructive windows (apply/replace/rollback
+  prologue, materialization). While the ONE authorized assisted resolver holds
+  the repository (`assisted_resolution` / `committing_assisted`) Main keeps
+  answering, the registry guard still refuses repo tools to every other task,
+  and steering reaches the resolver through the ordinary `steer_task` mailbox
+  (`supervisor/worker_chat_lane.py::conversation_admitted_during_update`).
+  The server's first-party packages are discovered and imported BEFORE conflict
+  markers land in the live tree (`preload_owner_control_path`, called after the
+  resolver readiness proof and before a boot re-materialization). Discovery uses
+  the imported package paths; the packaged server runs embedded Python from the
+  materialized Git repository. Tool admission remains owned by the registry.
 - Dirty local work never enters merge history: the apply stashes it and
   restores it as uncommitted content; a conflicting restore keeps the stash
   and discloses the recovery command. The reviewed assisted resolver runs

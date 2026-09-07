@@ -1415,7 +1415,7 @@ def get_tools() -> List[ToolEntry]:
             "description": (
                 "Send an arbitrary document/file to the owner's chat (e.g. a report, .md/.csv/.html, "
                 "PDF, archive, or code file — anything that is not an image or video). "
-                "Requires a local file_path; max 50 MB. Use this to deliver a finished file result "
+                "Requires a local file_path; large files use a captured download reference. Deliver a finished file result "
                 "the owner can download, rather than only describing it or sending a screenshot."
             ),
             "parameters": {"type": "object", "properties": {

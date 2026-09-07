@@ -97,6 +97,14 @@ export function cancelTask(taskId, { cascade = false, stopPolicy = '' } = {}) {
     return Object.keys(body).length ? jsonPost(url, body) : fetchJson(url, { method: 'POST' });
 }
 
+/** Canonical task-file address shared by live delivery, replay and source links. */
+export function taskArtifactDownloadUrl(taskId, name) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(String(taskId || ''))
+        || typeof name !== 'string' || !name || name.startsWith('.') || /[/\\]/.test(name)) return '';
+    const encodedName = encodeURIComponent(name).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+    return `/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodedName}`;
+}
+
 /** URL for one published immutable source handle. */
 export function taskSourceDownloadUrl(taskId, ref) {
     const path = typeof ref?.path === 'string' ? ref.path : '';
@@ -105,7 +113,9 @@ export function taskSourceDownloadUrl(taskId, ref) {
         || !/^source_handles\/(tool_results|context_checkpoints)\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(path)
         || !Number.isSafeInteger(ref?.size) || ref.size < 0) return '';
     const name = path.split('/').at(-1);
-    return `/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(name)}?source=${encodeURIComponent(path)}`;
+    const url = taskArtifactDownloadUrl(taskId, name);
+    if (!url) return '';
+    return `${url}?source=${encodeURIComponent(path)}`;
 }
 
 export async function resumeTask(taskId) {

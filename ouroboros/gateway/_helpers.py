@@ -1,10 +1,13 @@
 """Shared Starlette HTTP-API helpers for thin route modules."""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import pathlib
 from typing import Any
 
+import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -16,6 +19,36 @@ _FALSE_LITERALS = frozenset({"0", "false", "no", "off"})
 
 
 _TAIL_WINDOW_START_BYTES = 512 * 1024
+
+
+async def run_sync_to_completion(function, /, *args, **kwargs):
+    """Run blocking request work without abandoning its custody on cancellation.
+
+    The caller's cancellation is re-raised only after the one worker settles.
+    Admission rollback/publication and materialization therefore retain their
+    existing synchronous ownership, even when the HTTP waiter disconnects.
+    """
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # Starlette streams use level cancellation; shield that scope while
+        # also tolerating repeated raw asyncio Task.cancel() calls.
+        with anyio.CancelScope(shield=True):
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    break
+            try:
+                worker.result()
+            except Exception:
+                logging.getLogger(__name__).debug(
+                    "Request worker failed while cancellation settled", exc_info=True,
+                )
+        raise
 
 
 def _read_jsonl_segment_with_gaps(
@@ -227,5 +260,5 @@ def stage_initial_task_attachments(
 __all__ = (
     "coerce_bool", "coerce_int", "iter_jsonl_objects", "json_error", "json_exception",
     "read_rotated_jsonl_entries", "request_json_or", "request_drive_root", "request_repo_dir",
-    "stage_initial_task_attachments",
+    "stage_initial_task_attachments", "run_sync_to_completion",
 )

@@ -1,7 +1,7 @@
 """Declared process outputs: resolution, fingerprints, and artifact registration.
 
 Owns the protected and credential-like refusals that keep a control-plane or
-secret path out of the deliverable store, the bounded file/directory
+secret path out of the deliverable store, the complete file/directory
 fingerprints that decide whether a declared output actually changed, and the
 copy into the task artifact store. The allowed artifact roots and the lexical
 audit that notices an undeclared user_files deliverable live with the upstream
@@ -14,13 +14,12 @@ from __future__ import annotations
 import logging
 
 import hashlib
-from hashlib import sha256
 import os
 import pathlib
 import stat
 from typing import Dict, List
 
-from ouroboros.artifacts import copy_directory_to_task_artifacts, copy_file_to_task_artifacts
+from ouroboros.artifacts import copy_directory_to_task_artifacts, copy_file_to_task_artifacts, iter_artifact_tree, stream_artifact_file
 from ouroboros.runtime_mode_policy import (
     is_protected_runtime_path,
 )
@@ -51,10 +50,6 @@ from ouroboros.workspace_executor import map_backend_path_lexical as executor_ma
 
 log = logging.getLogger(__name__)
 
-_OUTPUT_DIR_MAX_FILES = 1000
-
-
-_OUTPUT_DIR_MAX_BYTES = 50 * 1024 * 1024
 
 
 def _protected_output_source_reason(
@@ -265,16 +260,13 @@ def _directory_fingerprint_from_entries(root: pathlib.Path, entries: list[tuple[
     return digest.hexdigest()
 
 
-def _bounded_directory_fingerprint(path: pathlib.Path) -> tuple[bool, int, str]:
+def _directory_fingerprint(path: pathlib.Path) -> tuple[bool, int, str]:
     root = pathlib.Path(path).resolve(strict=False)
     total = 0
     entries: list[tuple[str, os.stat_result, pathlib.Path]] = []
     try:
-        for child in root.rglob("*"):
-            try:
-                st = child.lstat()
-            except OSError:
-                continue
+        for child in iter_artifact_tree(root):
+            st = child.lstat()
             try:
                 rel = child.resolve(strict=False).relative_to(root).as_posix()
             except ValueError:
@@ -282,10 +274,6 @@ def _bounded_directory_fingerprint(path: pathlib.Path) -> tuple[bool, int, str]:
             entries.append((rel, st, child))
             if child.is_file() and not child.is_symlink():
                 total += st.st_size
-            if len(entries) > _OUTPUT_DIR_MAX_FILES:
-                return True, total, f"too_many_entries:{_OUTPUT_DIR_MAX_FILES}"
-            if total > _OUTPUT_DIR_MAX_BYTES:
-                return True, total, f"too_many_bytes:{_OUTPUT_DIR_MAX_BYTES}"
         return True, total, _directory_fingerprint_from_entries(root, entries)
     except OSError:
         return False, -1, ""
@@ -294,11 +282,11 @@ def _bounded_directory_fingerprint(path: pathlib.Path) -> tuple[bool, int, str]:
 def _fingerprint_output(path: pathlib.Path) -> tuple[bool, int, str]:
     try:
         if path.is_dir():
-            return _bounded_directory_fingerprint(path)
+            return _directory_fingerprint(path)
         if not path.is_file():
             return False, -1, ""
-        raw = path.read_bytes()
-        return True, len(raw), sha256(raw).hexdigest()
+        measured = stream_artifact_file(path)
+        return True, measured["size"], measured["sha256"]
     except OSError:
         return False, -1, ""
 
@@ -338,15 +326,15 @@ def _scan_directory_output_members(
 
     D4 (capinv-447): a policy-rejected MEMBER is skipped with a receipt instead
     of failing the whole declared directory (one ``.env`` no longer discards an
-    otherwise-successful export). Structural failures — size/count caps and an
-    unreadable tree — still refuse the directory as a whole.
+    otherwise-successful export). Missing or unreadable members refuse the
+    directory as a whole; the complete member list has no inline byte/count cap.
     """
     root = pathlib.Path(source).resolve(strict=False)
     members: list[pathlib.Path] = []
     skipped: list[str] = []
     dir_size = 0
     try:
-        for child in root.rglob("*"):
+        for child in iter_artifact_tree(root):
             if child.is_symlink():
                 skipped.append(f"{child}: symlink members are not followed")
                 continue
@@ -367,14 +355,7 @@ def _scan_directory_output_members(
                 skipped.append(f"{child}: {reason}")
                 continue
             members.append(child)
-            try:
-                dir_size += child.stat().st_size
-            except OSError:
-                pass
-            if len(members) > _OUTPUT_DIR_MAX_FILES:
-                return [], dir_size, f"{source}: directory output has more than {_OUTPUT_DIR_MAX_FILES} files", skipped
-            if dir_size > _OUTPUT_DIR_MAX_BYTES:
-                return [], dir_size, f"{source}: directory output exceeds {_OUTPUT_DIR_MAX_BYTES} bytes", skipped
+            dir_size += child.stat().st_size
     except OSError as exc:
         return [], dir_size, f"{source}: {type(exc).__name__}: {exc}", skipped
     return sorted(members, key=lambda item: item.as_posix()), dir_size, "", skipped

@@ -39,6 +39,9 @@ class AttachmentManifestEntry(TypedDict, total=False):
     abs_path: str
     mime: str
     is_image: bool
+    size: int
+    sha256: str
+    rule: str
 
 
 class ChatInbound(TypedDict):
@@ -125,6 +128,10 @@ class ChatOutbound(TypedDict):
     # differs from the displayed (logical) task id.
     cancel_physical_task_id: NotRequired[str]
     toast_once: NotRequired[str]
+    # #628: the incident's valence for the one-shot toast (warn/ok/error),
+    # stamped by the producer that knows whether the boundary is a wait, a
+    # recovery or an exhaustion; absent = the browser keeps its alarm tone.
+    toast_tone: NotRequired[str]
     lifecycle: NotRequired[Dict[str, Any]]
     # C4 multi-chat dedupe: a duplicate lifecycle initiator's typed pointer to
     # the job that already owns the routing ({job_id, kind, target, status,
@@ -274,11 +281,7 @@ class VideoOutbound(TypedDict):
     # Durable task-artifact URL for the stored media, replayed by chat history
     # (the live frame carries the bytes inline instead).
     download_url: NotRequired[str]
-    # Second address for the SAME bytes on the long-shipped
-    # /api/files/download route, present only when the stored file resolves
-    # inside the current file-browser root. Packaged desktop launchers gate
-    # their file bridge to a URL allowlist that predates the artifact route,
-    # so the browser uses download_url and the host bridge prefers this one.
+    # Same dual-address contract as PhotoOutbound.download_url_compat above.
     download_url_compat: NotRequired[str]
     content: NotRequired[str]
     source: NotRequired[str]
@@ -288,8 +291,7 @@ class VideoOutbound(TypedDict):
     transport: NotRequired[TransportMetadata]
     chat_id: NotRequired[int]
     task_id: NotRequired[str]
-    # Server-stamped when chat_id is a reserved Project thread: Main never
-    # adopts it, even before the browser has learned the project.
+    # Same Project-thread stamp contract as PhotoOutbound.project_thread.
     project_thread: NotRequired[bool]
 
 
@@ -303,10 +305,10 @@ class DocumentOutbound(TypedDict):
     filename: str
     ts: str
     caption: NotRequired[str]
-    # Loopback /api/files/download?path=<root-relative> URL for the durable
-    # artifact copy, used by the desktop host-bridge download (WKWebView-safe)
-    # and to rebuild the bubble on reload without persisting base64.
+    # Canonical captured-file URL; replay never needs to persist inline bytes.
     download_url: NotRequired[str]
+    download_url_compat: NotRequired[str]
+    file_ref: NotRequired[Dict[str, Any]]
     content: NotRequired[str]
     source: NotRequired[str]
     sender_label: NotRequired[str]
@@ -393,6 +395,9 @@ class QuizStateOutbound(TypedDict):
     state: str
     ts: str
     answered_index: NotRequired[int]
+    # #471: the owner's recorded free-text answer rides the live frame (absent
+    # when empty) so the open card renders `Owner's answer:` as replay does.
+    comment: NotRequired[str]
     chat_id: NotRequired[int]
 
 
@@ -678,7 +683,7 @@ class ActiveDirectTurn(TypedDict):
     started_at: float
 
 
-class ActiveChatActivity(TypedDict):
+class ActiveChatActivity(ActiveDirectTurn):
     """One in-flight chat activity in ``StateResponse.active_chat_activities``.
 
     The combined snapshot: direct/ephemeral registry turns (same rows as
@@ -690,14 +695,6 @@ class ActiveChatActivity(TypedDict):
     Field shape mirrors ``ActiveDirectTurn`` so one client reducer hydrates
     both; managed rows carry an empty ``client_message_id``.
     """
-
-    activity_id: str
-    chat_id: int
-    project_id: str
-    client_message_id: str
-    kind: str
-    phase: str
-    started_at: float
 
 
 class StateResponse(TypedDict):
@@ -896,6 +893,7 @@ class UploadResponse(TypedDict):
     display_name: str
     path: str
     size: int
+    sha256: NotRequired[str]
     mime: str
 
 
@@ -1055,6 +1053,7 @@ class TaskCreateResponse(TypedDict, total=False):
     reason_code: str
     error: str
     attachment_manifest: list[AttachmentManifestEntry]
+    attachment_manifest_ref: Dict[str, Any]
 
 
 class TaskListResponse(TypedDict, total=False):

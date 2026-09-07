@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from ouroboros.artifacts import store_chat_media_bytes
+from ouroboros.cost_projection import carry_cost_meta
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.event_bus import CHAT_DOCUMENT, CHAT_LINKS, CHAT_OUTBOUND, CHAT_PHOTO, CHAT_QUIZ, CHAT_TYPING, CHAT_VIDEO, publish_event
 from supervisor.state import append_jsonl, load_state
@@ -337,8 +338,8 @@ class LocalChatBridge:
         image_b64 = str(image_base64 or "").strip()
         if not clean_text and caption_text:
             clean_text = caption_text
-        if not clean_text and not image_b64:
-            return
+        if not clean_text and not image_b64 and not (task_metadata or {}).get("chat_attachment_uploads"):
+            return  # nothing to say and nothing attached (a file-only message carries uploads)
         # Invariant: the default chat/user id is the web owner (1). External
         # transports (source != "web") MUST pass explicit ids — the Host Service
         # injects 0 for unidentified senders so they can never bind/own the web
@@ -703,10 +704,24 @@ class LocalChatBridge:
         mime: str = "application/octet-stream",
         download_url: str = "",
         task_id: str = "",
+        file_ref: Optional[Dict[str, Any]] = None,
+        download_url_compat: str = "",
     ) -> Tuple[bool, str]:
         """Send an arbitrary document/file to UI and host event subscribers."""
         if is_a2a_chat_id(chat_id):
             return True, "ok"
+        if file_ref is not None:
+            from ouroboros.gateway.files import resolve_task_file_reference
+            try:
+                resolve_task_file_reference(DATA_DIR, task_id or "interactive", file_ref)
+                if file_bytes:
+                    from hashlib import sha256
+                    if len(file_bytes) != file_ref["size"] or sha256(file_bytes).hexdigest() != file_ref["sha256"]:
+                        raise ValueError("inline document bytes disagree with the captured file")
+            except (OSError, ValueError, TypeError) as exc:
+                return False, f"Document source unavailable: {exc}"
+            download_url = f"/api/tasks/{quote(task_id or 'interactive', safe='')}/artifacts/{quote(str(file_ref['path']), safe='')}"
+        size_bytes = file_ref["size"] if file_ref is not None else len(file_bytes)
         b64_str = base64.b64encode(file_bytes).decode("ascii")
         safe_name = str(filename or "file")
         ts = utc_now_iso()
@@ -718,7 +733,9 @@ class LocalChatBridge:
             "filename": safe_name,
             "caption": caption,
             "download_url": str(download_url or ""),
-            "size_bytes": len(file_bytes),
+            "download_url_compat": str(download_url_compat or ""),
+            "file_ref": dict(file_ref or {}),
+            "size_bytes": size_bytes,
             "ts": ts,
             "chat_id": int(chat_id or 0),
             "task_id": str(task_id or ""),
@@ -735,6 +752,8 @@ class LocalChatBridge:
             "mime": str(mime or ""),
             "filename": safe_name,
             "download_url": str(download_url or ""),
+            "download_url_compat": str(download_url_compat or ""),
+            "file_ref": dict(file_ref or {}),
             "ts": ts,
         })
         # Persist a compact chat row (NO base64) so the delivered document is
@@ -755,7 +774,8 @@ class LocalChatBridge:
             mime=str(mime or ""),
             download_url=str(download_url or ""),
             caption=str(caption or ""),
-            size_bytes=len(file_bytes),
+            size_bytes=size_bytes,
+            download_url_compat=download_url_compat,
         )
         _advance_project_visible_revision(chat_id)
         return True, "ok"
@@ -889,6 +909,7 @@ class LocalChatBridge:
         state: str,
         answered_index: Optional[int] = None,
         chat_id: int = 0,
+        comment: Optional[str] = None,
     ) -> None:
         """Broadcast a quiz lifecycle update to already-rendered cards.
 
@@ -897,6 +918,8 @@ class LocalChatBridge:
         must never masquerade as a new card. Durability lives in the
         owner_quiz task-result projection (history replay merges it) — this
         frame is the live half only, so a lost broadcast heals on reload.
+        ``comment`` is the owner's recorded free-text answer (#471): the live
+        card renders it exactly as the replayed one does; absent when empty.
         """
         if not self._broadcast_fn:
             return
@@ -909,6 +932,8 @@ class LocalChatBridge:
         }
         if answered_index is not None:
             msg["answered_index"] = int(answered_index)
+        if str(comment or ""):
+            msg["comment"] = str(comment)
         if int(chat_id or 0):
             msg["chat_id"] = int(chat_id or 0)
         try:
@@ -1137,6 +1162,13 @@ def log_chat(
                     record[key] = meta[key]
         if "task_terminal_status" in meta:
             record["task_terminal_status"] = str(meta.get("task_terminal_status") or "")
+        if meta.get("ephemeral_decision"):
+            # A transient turn has no task_result: its final chat row carries
+            # the same outcome/accounting facts as the live terminal frame.
+            for key in ("ephemeral_decision", "outcome_axes", "reason_code"):
+                if key in meta:
+                    record[key] = meta[key]
+            record.update(carry_cost_meta(meta))
         if filename:
             record["filename"] = filename
         if mime:
