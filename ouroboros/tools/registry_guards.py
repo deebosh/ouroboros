@@ -530,7 +530,7 @@ def _payload_dispatch_constraint(
     if redirect_err and name in {"write_file", "edit_text"}:
         return None, ToolResult(
             status="blocked",
-            code="HEAL_MODE_BLOCKED",
+            code="SKILL_PAYLOAD_BLOCKED",
             text=f"⚠️ SKILL_REDIRECT_BLOCKED: {redirect_err}",
         )
     if task_constraint and task_constraint.has_selected_skill:

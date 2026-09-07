@@ -64,6 +64,41 @@ def _admit(registry, drive, payload):
                             base_content_hash=compute_content_hash(payload))
 
 
+@pytest.mark.parametrize("auto_grant", [False, True])
+def test_keyless_first_review_obeys_generic_auto_grant_policy(development, monkeypatch, auto_grant):
+    registry, _repo, drive, panels = development
+    registry._ctx.task_constraint = None
+    monkeypatch.setenv("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", str(auto_grant).lower())
+    payload = _write_ext_skill(drive / "skills" / "external", "demo", permissions=[],
+                              plugin_body="def register(api):\n    return None\n", extra_frontmatter='plugin_api: "2.0"\n')
+    _mark_self_authored(payload, drive)
+    result = run_skill_review_lifecycle_blocking(registry._ctx, "demo")
+    assert result["status"] == "clean" and result["auto_flow"] is auto_grant, result
+    assert load_enabled(drive, "demo") is auto_grant
+    assert len(panels) == 1
+
+
+def test_free_replay_refreshes_disabled_auto_flow_without_another_panel(development, monkeypatch):
+    registry, _repo, drive, panels = development
+    registry._ctx.task_constraint = None
+    monkeypatch.setenv("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "true")
+    payload = _write_ext_skill(drive / "skills" / "external", "demo", permissions=[],
+                              plugin_body="def register(api):\n    return None\n", extra_frontmatter='plugin_api: "2.0"\n')
+    _mark_self_authored(payload, drive)
+    phases = iter([("failed", "controlled dependency failure"), ("not_required", "")])
+    monkeypatch.setattr("ouroboros.skill_review_runner._reconcile_deps_after_pass_review", lambda *a, **k: next(phases))
+    first = run_skill_review_lifecycle_blocking(registry._ctx, "demo")
+    assert first["status"] == "clean" and first["auto_flow"] is True
+    assert not load_enabled(drive, "demo")
+    before = (drive / "state" / "skills" / "demo" / "review.json").read_bytes()
+    monkeypatch.setenv("OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS", "false")
+    second = run_skill_review_lifecycle_blocking(registry._ctx, "demo")
+    assert second["status"] == "clean" and second["deps_status"] == "not_required", second
+    assert second["auto_flow"] is False and not load_enabled(drive, "demo")
+    assert "FREE REPLAY" in second["convergence_hint"] and len(panels) == 1
+    assert (drive / "state" / "skills" / "demo" / "review.json").read_bytes() == before
+
+
 @pytest.mark.serial
 def test_installed_script_edit_review_execute_repeat_without_owner_click(development):
     registry, _repo, drive, panels = development

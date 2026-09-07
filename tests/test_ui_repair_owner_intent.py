@@ -28,7 +28,8 @@ def test_repair_button_records_owner_intent_and_runs_the_installed_skill(tmp_pat
     # clone_repo captures HEAD; this developer scenario exercises the complete
     # candidate, including an uncommitted fix, in a disposable clone only.
     patch = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=source)
-    subprocess.run(["git", "apply", "--binary", "-"], input=patch, cwd=clone, check=True)
+    if patch:
+        subprocess.run(["git", "apply", "--binary", "-"], input=patch, cwd=clone, check=True)
     name = "repair_owner_probe"
     evidence = Path(os.environ.get("OUROBOROS_UI_SCREENSHOT_DIR", str(tmp_path)))
     evidence.mkdir(parents=True, exist_ok=True)

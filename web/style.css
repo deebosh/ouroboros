@@ -4881,6 +4881,7 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     font-family: 'JetBrains Mono', monospace;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    white-space: nowrap;
 }
 
 .skills-badge-ok { background: var(--status-ok-bg); color: var(--status-ok-fg); }
@@ -5195,6 +5196,12 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+}
+
+.marketplace-secondary-actions > .muted {
+    font-size: var(--type-meta);
+    color: var(--text-meta);
+    line-height: var(--line-meta);
 }
 
 .marketplace-pagination {

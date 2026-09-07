@@ -13,7 +13,7 @@ import pathlib
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from ouroboros.config import adaptive_quorum
+from ouroboros.config import adaptive_quorum, get_auto_grant_enabled
 from ouroboros.reviewer_slot_config import commit_triad_delivery, reviewer_slot_config_error
 from ouroboros.skill_loader import (
     SkillReviewState,
@@ -150,9 +150,9 @@ def _apply_auto_grant_outcome(outcome: SkillReviewOutcome, skill: Any, auto_gran
     outcome.auto_granted_keys = list(getattr(auto_grant, "granted_keys", []) or [])
     outcome.requested_permissions = list(getattr(auto_grant, "requested_permissions", []) or [])
     outcome.auto_granted_permissions = list(getattr(auto_grant, "granted_permissions", []) or [])
-    # Eligibility for completing authored work is independent of key grants.
-    # The lifecycle separately verifies grants, dependencies and owner intent.
-    outcome.auto_flow = bool(getattr(skill, "is_self_authored", False))
+    # Refresh the policy even on free replay; explicit task-authorized toggles
+    # follow their own lifecycle path rather than this automatic first enable.
+    outcome.auto_flow = bool(getattr(skill, "is_self_authored", False) and get_auto_grant_enabled())
 
 
 # The accepted-rebuttal ledger and the Max-Review-Cycles machinery moved whole

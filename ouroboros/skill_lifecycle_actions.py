@@ -280,7 +280,10 @@ def run_skill_action(
             return None, _refusal("selected skill revision changed; inspect it before repeating the action")
         constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
         if constraint and constraint.has_selected_skill:
-            binding = build_resolved_resource_binding(ctx, root="skill_payload", operation="review", skill_name=skill_name)
+            try:
+                binding = build_resolved_resource_binding(ctx, root="skill_payload", operation="review", skill_name=skill_name)
+            except ValueError as exc:
+                return None, _refusal(str(exc), 403)
             if Path(loaded.skill_dir).resolve() != binding.base_path:
                 return None, _refusal("selected skill payload does not match this task", 403)
             if action == "enable" and not _owner_actor:

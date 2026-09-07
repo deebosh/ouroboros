@@ -44,6 +44,25 @@ def _owner_chat(ctx, *, chat_id=42, text="Grant demo the inject_chat permission.
     return {"kind": "chat", "ref": ref}
 
 
+def test_selected_cross_skill_toggle_returns_existing_refusal_without_effects(skill_actor):
+    from ouroboros.skill_loader import load_enabled, save_enabled
+    from ouroboros.tools.skill_exec import _handle_toggle_skill
+
+    ctx, _skill, _revision = skill_actor
+    _write_ext_skill(ctx.drive_root / "skills" / "external", "other", permissions=[],
+                     plugin_body="def register(api):\n    return None\n")
+    save_enabled(ctx.drive_root, "other", True, actor="owner_ui")
+    ctx.task_constraint = TaskConstraint(skill_name="demo", payload_root="skills/external/demo")
+    rendered = _handle_toggle_skill(ctx, skill="other", enabled=False)
+    assert rendered.startswith("⚠️ SKILL_TOGGLE_ERROR: "), rendered
+    result = json.loads(rendered.removeprefix("⚠️ SKILL_TOGGLE_ERROR: "))
+    assert result["ok"] is False and result["status_code"] == 403
+    assert result["error"].startswith("SKILL_REDIRECT_BLOCKED:")
+    assert load_enabled(ctx.drive_root, "other") is True
+    selected = run_skill_action(ctx, "demo", "disable")
+    assert selected["ok"] and not load_enabled(ctx.drive_root, "demo")
+
+
 @pytest.mark.parametrize("kind", ["chat", "quiz", "mailbox"])
 def test_owner_grant_uses_resolved_expressed_source(skill_actor, kind):
     ctx, _skill, revision = skill_actor

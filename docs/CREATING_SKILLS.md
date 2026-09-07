@@ -597,8 +597,9 @@ consent. The desktop launcher's owner-grant bridge records these grants.
 The Skills UI surfaces missing grants on the skill card. The agent
 can also call `toggle_skill enabled=true` only after grants are
 approved (the tool returns `SKILL_TOGGLE_ERROR: cannot enable until
-requested key and permission grants are approved`). Self-authored markers are
-provenance only; they do not auto-grant keys or auto-enable skills.
+requested key and permission grants are approved`). Self-authored markers alone
+do not authorize grants or enablement. Automatic grants and first enablement
+follow the setting below; an explicitly authorized task toggle remains separate.
 
 `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS` is enabled by default as of v6.10.0; the
 owner may disable it in Settings → Behavior → Skills (desktop asks for native

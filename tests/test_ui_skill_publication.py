@@ -122,6 +122,10 @@ def test_clear_submission_changes_real_receipt_and_refreshes_both_skill_views(di
             page.click('.skills-tab[data-tab="ouroboroshub"]')
             clear = page.locator(f'[data-oh-clear-publication="{name}"]')
             expect(clear).to_be_visible()
+            hint = page.locator('#oh-results .marketplace-secondary-actions > .muted')
+            assert hint.evaluate("node => getComputedStyle(node).fontSize === getComputedStyle(document.documentElement).getPropertyValue('--type-meta').trim()")
+            badge = page.locator('#oh-results .skills-badge').filter(has_text='Submitted PR #7')
+            assert badge.evaluate("node => { const range = document.createRange(); range.selectNodeContents(node); return range.getClientRects().length === 1; }")
             _screenshot(page, f'submission-waiting-{bucket}.png')
             # The visible old button cannot clear a concurrent newer publication.
             write_publication_record(data, name, receipt(8))

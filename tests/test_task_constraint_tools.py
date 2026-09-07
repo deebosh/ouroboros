@@ -156,6 +156,26 @@ def test_registry_rejects_mismatched_repair_payload_root(tmp_path):
     assert "HEAL_MODE_BLOCKED" in result or "SKILL_REDIRECT_BLOCKED" in result
 
 
+def test_cross_skill_writer_uses_payload_refusal_and_keeps_selected_write(tmp_path):
+    from ouroboros.tools.registry import ToolRegistry
+
+    ctx, skill = _ctx(tmp_path)
+    other = ctx.drive_root / "skills" / "external" / "beta"
+    other.mkdir()
+    (other / "SKILL.md").write_text("# beta\n", encoding="utf-8")
+    _admit_repair(ctx, skill)
+    registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
+    registry._ctx = ctx
+    blocked = registry.execute_result("write_file", {
+        "bucket": "external", "skill_name": "beta", "path": "notes.txt", "content": "wrong target",
+    })
+    assert blocked.status == "blocked" and blocked.code == "SKILL_PAYLOAD_BLOCKED"
+    assert "SKILL_REDIRECT_BLOCKED" in blocked.text
+    assert not (other / "notes.txt").exists()
+    allowed = registry.execute("write_file", {"root": "skill_payload", "path": "notes.txt", "content": "selected target"})
+    assert (skill / "notes.txt").read_text() == "selected target", allowed
+
+
 def test_light_mode_allows_constrained_str_replace_editor_payload_edit(tmp_path, monkeypatch):
     from ouroboros import config as cfg
     from ouroboros.tools.registry import ToolRegistry
