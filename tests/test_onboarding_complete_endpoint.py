@@ -361,7 +361,8 @@ def test_a_persist_wedged_past_the_writer_bound_answers_the_typed_unknown(onboar
             json={**WIZARD_PAYLOAD, "subscriptionsConnected": False},
         )
         elapsed = time.monotonic() - started
-        assert 2 * 0.2 <= elapsed < 5, elapsed
+        # asyncio timers may fire up to one monotonic-clock resolution early.
+        assert 2 * 0.2 - time.get_clock_info("monotonic").resolution <= elapsed < 5, elapsed
         assert not finished.is_set(), "the response must not wait for the wedged body"
         assert response.status_code == 503, response.text
         body = response.json()

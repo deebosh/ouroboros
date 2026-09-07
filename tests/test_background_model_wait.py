@@ -269,29 +269,32 @@ def test_background_wait_forwarding_and_reload_use_existing_owner(background):
 
     f = background
     thread = f.start()
-    until(lambda: waiting(f))
+    until(lambda: (waiting(f) or {}).get("revision"))
     owner = f.bc.live_model_wait()
-    row = deepcopy(waiting(f))
-    event = {"type": "task_model_wait", "task_id": "bg-consciousness", "ts": "2026-09-07T00:00:00Z", **row}
-    forwarded = []
-    ctx = SimpleNamespace(RUNNING={}, DRIVE_ROOT=f.root, consciousness=f.bc,
-                          append_jsonl=append_jsonl, bridge=SimpleNamespace(push_log=forwarded.append))
-    handle_task_model_wait(event, ctx)
-    assert len(forwarded) == 1 and forwarded[0]["chat_id"] == 1
-    handle_task_model_wait({**event, "model_wait_owner_id": "previous-cycle"}, ctx)
-    assert len(forwarded) == 1 and ctx.RUNNING == {}
-    append_jsonl(f.root / "logs" / "progress.jsonl", {"task_id": "bg-consciousness",
-                 "type": "send_message", "is_progress": True, "ts": "2026-09-07T00:00:00Z", "text": "Earlier thought"})
-    payload = json.loads(_assemble_history_response(f.root, 1, 10, 10, owner.snapshot()))
-    current = payload["messages"][-1]
-    assert current["model_wait_live"] and current["model_wait_owner_id"] == owner.owner_id
-    assert not any(row.get("task_terminal_status") for row in payload["messages"] if row.get("is_progress"))
-    f.bc._owner_chat_id_fn = lambda: 0
-    handle_task_model_wait(event, ctx)
-    assert forwarded[-1]["chat_id"] == 0
-    hidden = json.loads(_assemble_history_response(f.root, 1, 10, 10, {**owner.snapshot(), "chat_id": 0}))
-    assert not any(row.get("model_wait_live") for row in hidden["messages"])
-    assert any(row.get("task_terminal_status") == "done" for row in hidden["messages"] if row.get("is_progress"))
+    # Source metadata can publish a newer revision while the cycle waits.
+    # Keep this snapshot current throughout forwarding and reload assertions.
+    with owner.lock:
+        row = deepcopy(waiting(f))
+        event = {"type": "task_model_wait", "task_id": "bg-consciousness", "ts": "2026-09-07T00:00:00Z", **row}
+        forwarded = []
+        ctx = SimpleNamespace(RUNNING={}, DRIVE_ROOT=f.root, consciousness=f.bc,
+                              append_jsonl=append_jsonl, bridge=SimpleNamespace(push_log=forwarded.append))
+        handle_task_model_wait(event, ctx)
+        assert len(forwarded) == 1 and forwarded[0]["chat_id"] == 1
+        handle_task_model_wait({**event, "model_wait_owner_id": "previous-cycle"}, ctx)
+        assert len(forwarded) == 1 and ctx.RUNNING == {}
+        append_jsonl(f.root / "logs" / "progress.jsonl", {"task_id": "bg-consciousness",
+                     "type": "send_message", "is_progress": True, "ts": "2026-09-07T00:00:00Z", "text": "Earlier thought"})
+        payload = json.loads(_assemble_history_response(f.root, 1, 10, 10, owner.snapshot()))
+        current = payload["messages"][-1]
+        assert current["model_wait_live"] and current["model_wait_owner_id"] == owner.owner_id
+        assert not any(row.get("task_terminal_status") for row in payload["messages"] if row.get("is_progress"))
+        f.bc._owner_chat_id_fn = lambda: 0
+        handle_task_model_wait(event, ctx)
+        assert forwarded[-1]["chat_id"] == 0
+        hidden = json.loads(_assemble_history_response(f.root, 1, 10, 10, {**owner.snapshot(), "chat_id": 0}))
+        assert not any(row.get("model_wait_live") for row in hidden["messages"])
+        assert any(row.get("task_terminal_status") == "done" for row in hidden["messages"] if row.get("is_progress"))
     f.bc.stop()
     thread.join(5)
 
