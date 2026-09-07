@@ -83,16 +83,38 @@ def test_settings_wire_metadata_is_not_an_unknown_config_field():
     assert cfg.configuration_warnings == ('Fields retained but not applied: future_option',)
 
 
-@pytest.mark.parametrize('secret', ['!', 'synthetic-quote"\\tail\nvalue'])
-def test_mcp_reference_secrets_are_masked_without_a_length_floor(secret):
+@pytest.mark.parametrize('secret', ['!', 'synthetic-quote"\\tail\nvalue', 'synthetic-quote"\\tail\r\nvalue'])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+def test_mcp_reference_secrets_are_masked_without_a_length_floor(secret, newline):
     raw = {'id': 'local', 'transport': 'stdio', 'command': 'unused',
            'env': {'PORT': '8080'}, 'env_from_settings': {'PASSWORD': 'CUSTOM_KEY'}}
     cfg = mcp_client.normalize_server_config(raw, settings={'CUSTOM_KEY': secret})
     assert cfg is not None and cfg.env['PASSWORD'] == secret
-    diagnostic = 'port=8080 secret=' + secret + ' encoded=' + json.dumps(secret)[1:-1]
+    echo = secret.replace('\n', newline)
+    diagnostic = 'port=8080 secret=' + echo + ' encoded=' + json.dumps(echo)[1:-1]
     masked = mcp_client._redact_error_text(diagnostic, cfg)
-    assert secret not in masked and json.dumps(secret)[1:-1] not in masked
+    assert echo not in masked and json.dumps(echo)[1:-1] not in masked
     assert 'port=8080' in masked and '***' in masked
+    assert cfg.env['PASSWORD'] == secret and raw['env'] == {'PORT': '8080'}
+
+
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+def test_known_secret_newline_echoes_preserve_values_and_one_pass(newline):
+    import io
+    from ouroboros.secret_masking import redact_known_values
+
+    secret = 'selected-"\\é' + newline + 'private-fragment'
+    echoes = [secret, secret.replace('\r\n', '\n'), secret.replace('\n', '\r\n')]
+    # Full-log text reads also normalize output that the child already expanded.
+    with io.TextIOWrapper(io.BytesIO(echoes[-1].encode('utf-8')), encoding='utf-8') as stream:
+        echoes.append(stream.read())
+    payload = {'messages': [echo for raw in echoes for echo in (
+        raw, json.dumps(raw, ensure_ascii=True)[1:-1], json.dumps(raw, ensure_ascii=False)[1:-1],
+    )], 'PORT': '8080', 'EMPTY': '', 'count': 7, 'ready': True}
+    before = json.loads(json.dumps(payload))
+    result = redact_known_values(payload, (secret, '*'))
+    assert result == {**payload, 'messages': ['***'] * len(payload['messages'])}
+    assert payload == before
 
 
 def test_tool_argument_log_redacts_nested_keys_before_projection(tmp_path):
