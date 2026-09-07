@@ -106,7 +106,6 @@ import {
     subagentTwin,
     mergeStickyCostMeta,
     partitionLocalEchoJournal,
-    pendingAttachmentBytes,
     projectCollapsedActivity,
     positiveTaskTerminalFact,
     projectIdFromTask,
@@ -152,9 +151,7 @@ const PROJECT_ROW_TYPES = new Set(['project_started', 'project_completion_summar
 const CHAT_STORAGE_KEY = 'ouro_chat';
 const CHAT_DRAFT_KEY = 'ouro_chat_draft';
 const CHAT_INPUT_HISTORY_KEY = 'ouro_chat_input_history';
-const MAX_PENDING_ATTACHMENTS = 10;
-const MAX_ATTACHMENT_FILE_BYTES = 50 * 1024 * 1024;
-const MAX_PENDING_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+const ATTACHMENT_PREVIEW_COUNT = 25;
 
 export function initChat(ctx) {
     // Back-compat main-chat entry: one full-page instance bound to chat 1.
@@ -343,21 +340,6 @@ export function createChatInstance({
         if (!incoming.length) return;
         if (attachmentsUploading) {
             showToast('Wait for the current upload to finish before changing attachments.', 'error');
-            return;
-        }
-        if (pendingAttachments.length + incoming.length > MAX_PENDING_ATTACHMENTS) {
-            showToast(`Attach up to ${MAX_PENDING_ATTACHMENTS} files per message.`, 'error');
-            return;
-        }
-        const oversized = incoming.find((file) => Number(file.size || 0) > MAX_ATTACHMENT_FILE_BYTES);
-        if (oversized) {
-            showToast(`Each attachment must be ${Math.round(MAX_ATTACHMENT_FILE_BYTES / (1024 * 1024))} MB or smaller.`, 'error');
-            return;
-        }
-        const incomingBytes = incoming.reduce((total, file) => total + Number(file.size || 0), 0);
-        if (pendingAttachmentBytes(pendingAttachments) + incomingBytes > MAX_PENDING_ATTACHMENT_BYTES) {
-            const limitMb = Math.round(MAX_PENDING_ATTACHMENT_BYTES / (1024 * 1024));
-            showToast(`Attachments are limited to ${limitMb} MB total per message.`, 'error');
             return;
         }
         pendingAttachments = pendingAttachments.concat(incoming.map((file) => ({
@@ -3283,8 +3265,9 @@ export function createChatInstance({
                 }
                 if (ws.ws?.readyState !== WebSocket.OPEN) throw new Error('Connection closed after upload. Reconnect and try again.');
                 uploadedAttachments = uploaded;
-                const attachmentLines = uploaded
-                    .map((item) => `[Attached file: ${item.display_name} saved to ${item.path}]`)
+                const attachmentLines = uploaded.slice(0, ATTACHMENT_PREVIEW_COUNT)
+                    .map((item) => `[Attached file: ${item.display_name}]`)
+                    .concat(uploaded.length > ATTACHMENT_PREVIEW_COUNT ? [`[${uploaded.length - ATTACHMENT_PREVIEW_COUNT} more attached files]`] : [])
                     .join('\n');
                 text += (text ? '\n\n' : '') + attachmentLines;
                 // Structured attachment metadata rides the WS frame so the

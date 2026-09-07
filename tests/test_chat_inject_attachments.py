@@ -152,17 +152,21 @@ def test_inject_refuses_files_outside_the_skill_state_and_bad_shapes(tmp_path):
     assert not (tmp_path / "uploads").exists()
 
 
-def test_inject_refuses_oversize_attachments_with_413(tmp_path, monkeypatch):
-    import ouroboros.gateway.files as files
+def test_inject_captures_file_above_former_upload_cap(tmp_path):
+    from ouroboros.artifacts import stream_artifact_file
 
-    monkeypatch.setattr(files, "_CHAT_UPLOAD_MAX_BYTES", 4)
-    source = _skill_file(tmp_path, payload=b"12345")
+    source = _skill_file(tmp_path, payload=b"first bytes")
+    with source.open("ab") as handle:
+        handle.truncate(51 * 1024 * 1024)
+    expected = stream_artifact_file(source)
     bridge = FakeBridge()
     client = _client(tmp_path, bridge)
     response = client.post("/chat/inject", headers={"X-Skill-Token": "token"},
                            json={"text": "", "chat_id": 42, "attachments": [{"path": str(source)}]})
-    assert response.status_code == 413
-    assert bridge.messages == []
+    assert response.status_code == 202, response.json()
+    stored = pathlib.Path(bridge.messages[0]["task_metadata"]["chat_attachment_uploads"][0]["path"])
+    assert stream_artifact_file(stored) == expected
+    assert source.exists()
 
 
 def test_decision_route_requires_the_inject_grant(tmp_path):

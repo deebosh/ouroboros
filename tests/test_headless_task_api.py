@@ -684,3 +684,38 @@ def test_task_api_rejects_negative_depth_before_reservation_or_queue(tmp_path, m
         assert task_id not in queue_module.ADMISSION_RESERVATIONS
         assert not (data / "task_results" / f"{task_id}.json").exists()
     assert captured == []
+
+
+def test_large_input_manifest_survives_real_queue_snapshot_restore(tmp_path, monkeypatch):
+    from ouroboros.artifacts import resolve_attachment_manifest
+    from supervisor import queue
+
+    data, repo = tmp_path / "data", tmp_path / "repo"
+    repo.mkdir()
+    for name, value in {
+        "DRIVE_ROOT": data, "QUEUE_SNAPSHOT_PATH": data / "state" / "queue_snapshot.json",
+        "PENDING": [], "RUNNING": {}, "ACCEPTANCE_FENCES": {}, "BUDGET_ROOT_FENCES": {},
+        "ADMISSION_RESERVATIONS": {}, "QUEUE_SEQ_COUNTER_REF": {"value": 0},
+    }.items():
+        monkeypatch.setattr(queue, name, value)
+    paths = []
+    for index in range(28):
+        path = tmp_path / f"input-{index}.txt"
+        path.write_text(f"complete input {index}")
+        paths.append({"path": str(path)})
+    app = Starlette(routes=[Route("/api/tasks", endpoint=api_tasks_create, methods=["POST"])])
+    app.state.drive_root, app.state.repo_dir = data, repo
+    with TestClient(app) as client:
+        response = client.post("/api/tasks", json={"description": "Read all inputs", "attachments": paths})
+    assert response.status_code == 200, response.text
+    task_id = response.json()["task_id"]
+    assert len(queue.PENDING) == 1
+    expected = queue.PENDING[0]["task_contract"]["attachment_manifest_ref"]
+    snapshot = json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text())
+    assert snapshot["pending"][0]["task"]["task_contract"]["attachment_manifest_ref"] == expected
+    queue.PENDING.clear()
+    assert queue.restore_pending_from_snapshot() == 1
+    task = queue.PENDING[0]
+    assert task["task_contract"]["attachment_manifest_ref"] == expected
+    assert len(task["task_contract"]["attachment_manifest"]) == 25
+    assert len(resolve_attachment_manifest(task["drive_root"], task_id, task["task_contract"])) == 28

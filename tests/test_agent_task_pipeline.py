@@ -697,3 +697,24 @@ def test_requested_file_result_completes_without_committing_the_worktree(tmp_pat
     assert (repo / "answer.txt").read_text(encoding="utf-8") == "42\n"
     assert git("rev-parse", "HEAD") == base
     assert "+42" in git("diff", "--", "answer.txt")
+
+
+@pytest.mark.parametrize("artifact_status", ["failed", "missing"])
+def test_terminal_event_reports_failed_bundle_over_older_capture_status(tmp_path, monkeypatch, artifact_status):
+    monkeypatch.setattr(pipeline, "_store_task_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "_run_post_task_processing_async", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "load_task_result", lambda *args, **kwargs: {
+        "status": "completed", "artifact_status": "ready", "artifact_bundle": {"status": artifact_status},
+    })
+    pending = []
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    pipeline.emit_task_results(
+        env=SimpleNamespace(drive_root=tmp_path), memory=object(), llm=object(), pending_events=pending,
+        task={"id": "capture", "type": "task", "chat_id": 1, "text": "deliver"}, text="Finished work",
+        usage={"rounds": 1, "cost": 0.2}, llm_trace={"tool_calls": [], "reasoning_notes": []},
+        start_time=0.0, drive_logs=logs, ctx=SimpleNamespace(pending_restart_reason=""),
+    )
+    terminal = next(item for item in pending if item["type"] == "task_done")
+    assert terminal["artifact_status"] == artifact_status
+    assert terminal["status"] == "completed"

@@ -799,6 +799,7 @@ def _collect_chat_rows(
                 rec["filename"] = str(entry.get("filename") or "file")
                 rec["mime"] = str(entry.get("mime") or "application/octet-stream")
                 rec["download_url"] = str(entry.get("download_url") or "")
+                rec["download_url_compat"] = str(entry.get("download_url_compat") or "")
                 rec["caption"] = str(entry.get("caption") or "")
                 if "size_bytes" in entry:
                     rec["size_bytes"] = coerce_int(entry.get("size_bytes"), 0)

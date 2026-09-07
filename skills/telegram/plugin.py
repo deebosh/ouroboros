@@ -24,6 +24,7 @@ from .lib.telegram_api import (
     markdown_to_telegram_html,
     next_telegram_retry_delay,
     _LOCALIZED_TEXTS,
+    _MAX_TELEGRAM_UPLOAD_BYTES,
 )
 from .lib.telegram_state import (
     _state_file, _load_settings, _is_silent_mode_enabled,
@@ -1141,19 +1142,42 @@ def _make_video(api):
 
 def _make_document(api):
     async def handle(event: Dict[str, Any]) -> None:
+        file_handle = None
         try:
             protected_settings = api.get_settings(["TELEGRAM_BOT_TOKEN"])
             local_settings = _load_settings(api)
             client = TelegramClient(protected_settings.get("TELEGRAM_BOT_TOKEN", ""), trust_env=_HONOR_ENV_PROXIES)
             chat_id = _target_chat(local_settings, event)
             file_base64 = str(event.get("file_base64") or "").strip()
-            if chat_id and file_base64:
+            file_ref = event.get("file_ref") if isinstance(event.get("file_ref"), dict) else None
+            if chat_id and (file_base64 or file_ref):
                 # Media/files cannot replace a text bubble — reset silent tracking.
                 _clear_silent_msg(api, chat_id)
                 import base64 as _base64
                 filename = str(event.get("filename") or "file")
                 caption = str(event.get("caption") or "")
-                file_bytes = _base64.b64decode(file_base64)
+                if file_ref:
+                    from ouroboros.gateway.files import resolve_task_file_reference
+
+                    task_id = str(event.get("task_id") or file_ref.get("task_id") or "")
+                    source = await asyncio.to_thread(resolve_task_file_reference, _data_dir(api), task_id, file_ref)
+                    if file_ref["size"] > _MAX_TELEGRAM_UPLOAD_BYTES:
+                        notice = f"{filename} is saved in Ouroboros. This file exceeds the Telegram upload limit and cannot be mirrored here."
+                        status = await asyncio.to_thread(_read_status, api)
+                        if status.get("state") == "ready" and status.get("public_url"):
+                            try:
+                                await client.send_message_with_inline_keyboard(chat_id, notice,
+                                    [[{"text": "Open Ouroboros", "web_app": {"url": status["public_url"]}}]])
+                                return
+                            except TelegramRequestRejected as exc:
+                                if not exc.plain_retry_safe:
+                                    raise
+                        await client.send_message(chat_id, notice + " Open the app to download it.", parse_mode="")
+                        return
+                    file_handle = source.open("rb")
+                    file_bytes = file_handle
+                else:
+                    file_bytes = _base64.b64decode(file_base64)
                 mime = str(event.get("mime") or "application/octet-stream")
                 if _is_native_audio_document(filename, mime):
                     try:
@@ -1171,6 +1195,8 @@ def _make_document(api):
                         # upload there risks a duplicate delivery.
                         if exc.status_code != 400 or exc.transient:
                             raise
+                        if file_handle is not None:
+                            file_handle.seek(0)
                         await client.send_document(
                             chat_id,
                             file_bytes,
@@ -1186,6 +1212,9 @@ def _make_document(api):
                     )
         except Exception as exc:
             api.log("error", f"Telegram document error: {exc}")
+        finally:
+            if file_handle is not None:
+                file_handle.close()
     return handle
 
 

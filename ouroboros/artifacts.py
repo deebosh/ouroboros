@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
-import filecmp
 import json
 import logging
 import mimetypes
+import os
+import stat
 import pathlib
 import re
 import shutil
 import subprocess
 import uuid
 import zipfile
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 from ouroboros.utils import atomic_write_json, read_json_dict, update_json_locked, write_bytes_atomic
-from ouroboros.headless import ARTIFACT_STATUS_READY, SCRATCH_MANIFEST_NAME, task_artifacts_dir
+from ouroboros.headless import ARTIFACT_STATUS_FAILED, ARTIFACT_STATUS_READY, SCRATCH_MANIFEST_NAME, task_artifacts_dir
 from ouroboros.outcome_receipt_store import is_verification_receipts_path
 from ouroboros.task_results import validate_task_id
 
@@ -56,8 +58,8 @@ _MAX_SCRATCH_PATHS = 1000
 
 # Input-attachment staging (v6.52.0, P1 first-class attachment access): the
 # subdir under the task artifact store that holds STAGED INPUT files (never task
-# deliverables — collect_task_artifact_records excludes it). Bounds keep one task
-# from importing an unbounded amount of host data.
+# deliverables — collect_task_artifact_records excludes it). Only the inline
+# projection is bounded; complete captured inputs stay behind a manifest ref.
 _ATTACHMENTS_SUBDIR = "attachments"
 _CHAT_MEDIA_SUBDIR = "chat_media"
 _SOURCE_HANDLES_SUBDIR = "source_handles"
@@ -80,7 +82,6 @@ _CHAT_MEDIA_NAME_RE = re.compile(
     r"^chat-media-[0-9a-f]{64}\.(png|jpg|gif|webp|mp4|webm)$"
 )
 _MAX_STAGED_ATTACHMENTS = 25
-_MAX_STAGED_ATTACHMENT_BYTES = 50 * 1024 * 1024  # ~50 MB per file
 
 
 class _StagedAttachmentManifest(list):
@@ -162,18 +163,11 @@ def stage_task_attachments(
             "label": label,
         }
 
-    def _same_bytes(left: pathlib.Path, right: pathlib.Path) -> bool:
+    def _same_bytes(path: pathlib.Path, expected: Dict[str, Any]) -> bool:
         try:
-            return filecmp.cmp(left, right, shallow=False)
+            return not path.is_symlink() and stream_artifact_file(path) == expected
         except OSError:
             return False
-
-    def _content_key(path: pathlib.Path) -> str:
-        digest = sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()[:12]
 
     # SSOT secret detection: reuse the shared credential-shape vocabulary so a
     # credential SOURCE (e.g. ~/.ssh/id_rsa, credentials.json, *.pem) is never copied in.
@@ -233,7 +227,10 @@ def stage_task_attachments(
         return ""
 
     try:
-        attach_dir = task_artifact_dir_path(drive_root, task_id, create=False) / _ATTACHMENTS_SUBDIR
+        artifact_root = task_artifact_dir_path(drive_root, task_id, create=False).resolve(strict=False)
+        attach_dir = artifact_root / _ATTACHMENTS_SUBDIR
+        if not attach_dir.resolve(strict=False).is_relative_to(artifact_root):
+            raise ValueError("attachment directory escapes its task owner")
     except Exception:
         log.debug("stage_task_attachments: could not resolve attachment dir", exc_info=True)
         return [
@@ -256,9 +253,6 @@ def stage_task_attachments(
         else:
             raw_path = str(raw_item or "").strip()
         label = _display_label(raw_item, raw_path, ordinal)
-        if ordinal >= _MAX_STAGED_ATTACHMENTS:
-            manifest.append(_rejected(ordinal, label, "attachment_limit_exceeded"))
-            continue
         if not raw_path:
             manifest.append(_rejected(ordinal, label, "invalid_path"))
             continue
@@ -278,14 +272,7 @@ def stage_task_attachments(
                 row["rule"] = secret_rule
                 manifest.append(row)
                 continue
-            try:
-                if source.stat().st_size > _MAX_STAGED_ATTACHMENT_BYTES:
-                    log.info("stage_task_attachments: skipped oversized source %s", source.name)
-                    manifest.append(_rejected(ordinal, label, "file_too_large"))
-                    continue
-            except OSError:
-                manifest.append(_rejected(ordinal, label, "source_stat_failed"))
-                continue
+            source_identity = stream_artifact_file(source, expected=raw_item)
             attach_dir.mkdir(parents=True, exist_ok=True)
             # The stored filename derives from the SOURCE basename (it carries the
             # real extension, which mime detection needs); the human label is for
@@ -293,22 +280,22 @@ def stage_task_attachments(
             safe_name = _safe_attachment_name(source.name)
             dest = attach_dir / safe_name
             # Collision-safe destination: distinct sources never clobber each other.
-            if dest.exists() and dest.resolve(strict=False) != source.resolve(strict=False):
-                same_bytes = _same_bytes(dest, source)
+            if dest.is_symlink() or (dest.exists() and dest.resolve(strict=False) != source.resolve(strict=False)):
+                same_bytes = _same_bytes(dest, source_identity)
                 if not same_bytes:
                     suffix = pathlib.Path(safe_name).suffix
                     stem = safe_name[: -len(suffix)] if suffix else safe_name
-                    content_key = _content_key(source)
+                    content_key = source_identity["sha256"][:12]
                     dest = attach_dir / f"{stem}.{content_key}{suffix}"
                     collision = 1
-                    while dest.exists() and not _same_bytes(dest, source):
+                    while dest.exists() and not _same_bytes(dest, source_identity):
                         collision += 1
                         dest = attach_dir / f"{stem}.{content_key}.{collision}{suffix}"
             if dest.resolve(strict=False) != source.resolve(strict=False):
                 existed = dest.exists()
                 try:
-                    if not existed or not _same_bytes(dest, source):
-                        shutil.copy2(source, dest)
+                    if not existed or not _same_bytes(dest, source_identity) or dest.samefile(source):
+                        copy_artifact_file(source, dest, expected=source_identity)
                         if not existed:
                             manifest._cleanup_owned_paths.add(dest)
                 except OSError:
@@ -316,8 +303,10 @@ def stage_task_attachments(
                         dest.unlink(missing_ok=True)
                     manifest.append(_rejected(ordinal, label, "copy_failed"))
                     continue
+            measured = stream_artifact_file(dest, expected=source_identity)
             mime = mimetypes.guess_type(str(dest))[0] or "application/octet-stream"
             manifest.append({
+                **measured,
                 "ordinal": ordinal,
                 "status": "staged",
                 "reason": "",
@@ -338,6 +327,99 @@ def stage_task_attachments(
             log.debug("stage_task_attachments: rejected a file on error", exc_info=True)
             manifest.append(_rejected(ordinal, label, "copy_failed"))
     return manifest
+
+
+def attachment_manifest_projection(drive_root: Any, task_id: str, manifest: Any) -> Dict[str, Any]:
+    """Publish the complete input manifest, returning only its bounded inline view."""
+    from ouroboros.contracts.task_contract import normalize_attachment_manifest
+
+    rows = normalize_attachment_manifest(manifest)
+    projection = {"attachment_manifest": rows[:_MAX_STAGED_ATTACHMENTS]}
+    if len(rows) > _MAX_STAGED_ATTACHMENTS:
+        data = json.dumps({"schema_version": 1, "task_id": validate_task_id(task_id), "attachments": rows},
+                          ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        projection["attachment_manifest_ref"] = {
+            **store_actor_source_bytes(drive_root, task_id, category="context_checkpoints",
+                                       source_id="attachments", data=data, extension="json"),
+            "count": len(rows),
+        }
+    return projection
+
+
+def resolve_attachment_manifest(drive_root: Any, task_id: str, authority: Any) -> List[Dict[str, Any]]:
+    """Resolve complete captured inputs under the actual owner, never preview fallback.
+
+    Only old inline manifests retain their historical absolute-path contract.
+    Referenced rows resolve from this task's artifact root; serialized host paths
+    cannot redirect the reader. File bytes are verified by the materializer.
+    """
+    from ouroboros.contracts.task_contract import normalize_attachment_manifest
+
+    authority = authority if isinstance(authority, dict) else {}
+    ref = authority.get("attachment_manifest_ref")
+    if "attachment_manifest_ref" not in authority:
+        return normalize_attachment_manifest(authority.get("attachment_manifest"))
+    document = json.loads(read_actor_source_bytes(drive_root, task_id, ref))
+    if not isinstance(document, dict) or document.get("schema_version") != 1 or document.get("task_id") != task_id:
+        raise ValueError("attachment manifest owner does not match the task")
+    raw = document.get("attachments")
+    rows = normalize_attachment_manifest(raw)
+    if not isinstance(raw, list) or len(rows) != len(raw) or len(rows) != ref.get("count"):
+        raise ValueError("attachment manifest count is invalid")
+    root = task_artifact_dir_path(drive_root, task_id).resolve(strict=False)
+    for row in rows:
+        if row["status"] == "rejected":
+            row.pop("abs_path", None)
+            continue
+        rel = pathlib.PurePosixPath(str(row.get("relpath") or ""))
+        if rel.is_absolute() or len(rel.parts) != 2 or rel.parts[0] != _ATTACHMENTS_SUBDIR or ".." in rel.parts:
+            raise ValueError("attachment manifest contains an invalid file reference")
+        path = root.joinpath(*rel.parts)
+        if path.is_symlink() or not path.resolve(strict=False).is_relative_to(root):
+            raise ValueError("attachment manifest file escapes its task owner")
+        if row.get("root") != "artifact_store" or type(row.get("size")) is not int or not re.fullmatch(r"[0-9a-f]{64}", str(row.get("sha256") or "")):
+            raise ValueError("attachment manifest file has no captured identity")
+        row["abs_path"] = str(path)
+    return rows
+
+
+def promote_task_attachment_refs(parent: Any, child: Any, task_id: str, result: Dict[str, Any], state: Dict[str, Any]) -> None:
+    """Carry the full input closure under existing child-ref custody before GC."""
+    contract = result.get("task_contract")
+    if not isinstance(contract, dict):
+        return
+    rows = contract.get("attachment_manifest") or []
+    ref = contract.get("attachment_manifest_ref")
+    if not rows and "attachment_manifest_ref" not in contract:
+        return
+    try:
+        if "attachment_manifest_ref" in contract:
+            try:
+                rows = resolve_attachment_manifest(parent, task_id, contract)
+                # A previous successful publication is already entirely canonical.
+                for row in rows:
+                    if row["status"] == "staged":
+                        stream_artifact_file(pathlib.Path(row["abs_path"]), expected=row)
+            except (OSError, ValueError, TypeError):
+                rows = resolve_attachment_manifest(child, task_id, contract)
+        copied, error = materialize_inherited_attachment_manifest(rows, parent, task_id)
+        if error:
+            raise OSError(error)
+        authority = attachment_manifest_projection(parent, task_id, copied)
+        result["task_contract"] = {key: value for key, value in contract.items()
+                                   if key != "attachment_manifest_ref"} | authority
+        result.update(authority)
+        if isinstance(result.get("metadata"), dict) and isinstance(result["metadata"].get("task_contract"), dict):
+            result["metadata"] = {**result["metadata"], "task_contract": result["task_contract"]}
+    except (OSError, ValueError, TypeError) as exc:
+        paths = [str(row.get("abs_path") or "") for row in rows if isinstance(row, dict)]
+        state["unavailable_refs"].append({"kind": "task_attachment", "reason": f"{type(exc).__name__}: {exc}"})
+        if isinstance(ref, dict) and ref.get("path"):
+            paths.append(str(task_artifact_dir_path(child, task_id) / str(ref["path"])))
+        for path in paths:
+            if path:
+                state["pending_refs"].append({"kind": "task_attachment", "path": path,
+                                               "reason": f"{type(exc).__name__}: {exc}"})
 
 
 def attachment_manifest_all_rejected(manifest: Any) -> bool:
@@ -467,12 +549,18 @@ def materialize_inherited_attachment_manifest(
             target = target_dir / _safe_attachment_name(
                 pathlib.Path(str(row.get("relpath") or source.name)).name
             )
-            if not target.exists():
-                shutil.copy2(source, target)
-                copied._cleanup_owned_paths.add(target)
-            elif not filecmp.cmp(source, target, shallow=False):
+            if target.is_symlink():
                 raise OSError(f"inherited attachment collision at {target.name}")
+            if not target.exists():
+                measured = copy_artifact_file(source, target, expected=row)
+                copied._cleanup_owned_paths.add(target)
+            else:
+                measured = stream_artifact_file(source, expected=row)
+                stream_artifact_file(target, expected=measured)
+                if target.samefile(source):
+                    copy_artifact_file(source, target, expected=measured)
             row.update({
+                **measured,
                 "root": "artifact_store",
                 "relpath": f"{_ATTACHMENTS_SUBDIR}/{target.name}",
                 "abs_path": str(target),
@@ -495,19 +583,28 @@ def handoff_task_attachments_for_retry(
     old_dir = task_artifact_dir_path(drive_root, task_id) / _ATTACHMENTS_SUBDIR
     new_dir = task_artifact_dir_path(drive_root, retry_task_id) / _ATTACHMENTS_SUBDIR
     old_text, new_text = str(old_dir), str(new_dir)
+    contract = task.get("task_contract") or (task.get("metadata") or {}).get("task_contract") or {}
     if not old_dir.is_dir():
         serialized = json.dumps(task, ensure_ascii=False, default=str)
-        return ({}, "attachment store missing") if old_text in serialized else ({}, "")
+        return ({}, "attachment store missing") if old_text in serialized or "attachment_manifest_ref" in contract else ({}, "")
     created: list[pathlib.Path] = []
     try:
-        for source in sorted(path for path in old_dir.rglob("*") if path.is_file()):
+        from ouroboros.owner_mailbox import owner_attachment_manifest
+        initial = resolve_attachment_manifest(drive_root, task_id, contract)
+        declared = [*initial, *owner_attachment_manifest(pathlib.Path(drive_root), task_id)]
+        sources = {pathlib.Path(row["abs_path"]): row for row in declared
+                   if row.get("status") == "staged" and row.get("abs_path")}
+        for source in old_dir.rglob("*"):
+            if source.is_file():
+                sources.setdefault(source, {})  # Legacy staged files remain transferable.
+        for source, expected in sorted(sources.items()):
             target = new_dir / source.relative_to(old_dir)
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
-                if not filecmp.cmp(source, target, shallow=False):
-                    raise OSError(f"retry attachment collision at {target.name}")
+                measured = stream_artifact_file(source, expected=expected)
+                stream_artifact_file(target, expected=measured)
                 continue
-            shutil.copy2(source, target)
+            copy_artifact_file(source, target, expected=expected)
             created.append(target)
 
         def _rebase(value: Any) -> Any:
@@ -520,6 +617,14 @@ def handoff_task_attachments_for_retry(
             return value
 
         rebased = _rebase(task)
+        if initial or contract.get("attachment_manifest_ref"):
+            authority = attachment_manifest_projection(drive_root, retry_task_id, _rebase(initial))
+            rebased.update(authority)
+            rebased["attachments"] = authority["attachment_manifest"]
+            for owner in (rebased.get("task_contract"), (rebased.get("metadata") or {}).get("task_contract")):
+                if isinstance(owner, dict):
+                    owner.pop("attachment_manifest_ref", None)
+                    owner.update(authority)
         task.clear()
         task.update(rebased)
         return {old_text: new_text}, ""
@@ -916,15 +1021,9 @@ def delegated_capture_read_target(
 def task_id_for_artifacts(ctx: Any) -> str:
     """Return a stable task id for artifact storage."""
 
-    for value in (
-        getattr(ctx, "task_id", None),
-        (getattr(ctx, "task_metadata", {}) or {}).get("task_id")
-        if isinstance(getattr(ctx, "task_metadata", {}), dict)
-        else "",
-        (getattr(ctx, "task_metadata", {}) or {}).get("id")
-        if isinstance(getattr(ctx, "task_metadata", {}), dict)
-        else "",
-    ):
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    for value in (getattr(ctx, "task_id", None), metadata.get("task_id"), metadata.get("id")):
         try:
             return validate_task_id(value)
         except ValueError:
@@ -981,16 +1080,76 @@ def read_task_scratch_fingerprints(drive_root: Union[pathlib.Path, str], task_id
     return {str(k): str(v) for k, v in vals.items()} if isinstance(vals, dict) else {}
 
 
+def stream_artifact_file(path: Any, sink: Any = None, *, expected: Any = None) -> Dict[str, Any]:
+    """Hash/copy one stable regular file in bounded chunks, verifying declared bytes.
+
+    The observed descriptor and path must still identify the same unchanged file
+    after EOF. A changed/missing source is an explicit failure; callers publish
+    only after this function returns. ``expected`` pins an earlier capture when
+    inheritance or copy-back must preserve its exact bytes.
+
+    A borrowed binary regular-file handle (including a completed multipart spool)
+    is read from offset zero and remains open. Its descriptor is verified; there
+    is no claim about an original pathname. Network/pipe streams are not inputs.
+    """
+    source_path = pathlib.Path(path) if isinstance(path, (str, os.PathLike)) else None
+    digest, size = sha256(), 0
+    def identity(observation: os.stat_result) -> tuple:
+        return (observation.st_dev, observation.st_ino, observation.st_size,
+                observation.st_mtime_ns, observation.st_ctime_ns)
+    with source_path.open("rb") if source_path is not None else nullcontext(path) as handle:
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise OSError(f"artifact source is not a regular file: {path}")
+        if not isinstance(handle.read(0), bytes):
+            raise OSError("artifact source must be a binary file")
+        handle.seek(0)
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            if sink is not None:
+                sink.write(chunk)
+            digest.update(chunk)
+            size += len(chunk)
+            if size > before.st_size:
+                raise OSError(f"artifact source size changed during read: {path}")
+        if (identity(before) != identity(os.fstat(handle.fileno()))
+                or (source_path is not None and identity(before) != identity(source_path.stat()))):
+            raise OSError(f"artifact source changed during read: {path}")
+    result = {"size": size, "sha256": digest.hexdigest()}
+    if size != before.st_size:
+        raise OSError(f"artifact source size changed during read: {path}")
+    if isinstance(expected, dict) and expected.get("immutable") and (
+        not isinstance(expected.get("size"), int) or not expected.get("sha256")
+    ):
+        raise OSError(f"immutable artifact is missing its capture identity: {path}")
+    for key in ("size", "sha256"):
+        if isinstance(expected, dict) and expected.get(key) not in (None, "") and expected[key] != result[key]:
+            raise OSError(f"artifact source failed {key} verification: {path}")
+    return result
+
+
+def copy_artifact_file(source: Any, destination: pathlib.Path, *, expected: Any = None) -> Dict[str, Any]:
+    """Publish a verified file copy atomically; preserve any prior bytes on failure."""
+    source_path = pathlib.Path(source) if isinstance(source, (str, os.PathLike)) else None
+    destination = pathlib.Path(destination)
+    if source_path is not None and not destination.is_symlink() and source_path.resolve(strict=False) == destination.resolve(strict=False):
+        return stream_artifact_file(source, expected=expected)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as sink:
+            measured = stream_artifact_file(source, sink, expected=expected)
+        if source_path is not None:
+            shutil.copystat(source_path, temporary)
+        temporary.replace(destination)
+        return measured
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def artifact_record(path: pathlib.Path, *, kind: str = "task_artifact", source_path: str = "") -> Dict[str, Any]:
-    raw = pathlib.Path(path).read_bytes()
     record: Dict[str, Any] = {
-        "kind": kind,
-        "name": pathlib.Path(path).name,
-        "path": str(path),
-        "size": len(raw),
-        "sha256": sha256(raw).hexdigest(),
-        "status": ARTIFACT_STATUS_READY,
-        "errors": [],
+        "kind": kind, "name": pathlib.Path(path).name, "path": str(path),
+        **stream_artifact_file(path), "status": ARTIFACT_STATUS_READY, "errors": [],
     }
     if source_path:
         record["source_path"] = source_path
@@ -1025,7 +1184,7 @@ def store_task_artifact_bytes(
             raise ValueError(f"task artifact collision: {safe_name}")
     else:
         write_bytes_atomic(path, data)
-    record = artifact_record(path, kind=kind)
+    record = {**artifact_record(path, kind=kind), "immutable": True}
     _register_task_artifact_records(artifact_dir, [record])
     return {
         "root": "artifact_store",
@@ -1048,9 +1207,20 @@ def _register_task_artifact_records(artifact_dir: pathlib.Path, records: Iterabl
 
     def merge(current: Dict[str, Any]) -> Dict[str, Any]:
         previous = current.get("artifacts") if isinstance(current.get("artifacts"), dict) else {}
-        return {**current, "schema_version": 1, "artifacts": {**previous, **additions}}
+        merged = merge_artifact_records(previous.values(), additions.values())
+        return {**current, "schema_version": 1, "artifacts": {
+            pathlib.Path(str(row.get("path") or row.get("name") or "")).name: row for row in merged
+        }}
 
     update_json_locked(artifact_dir / _ARTIFACT_MANIFEST, merge)
+
+
+def registered_task_artifact(drive_root: Any, task_id: str, name: str) -> Optional[Dict[str, Any]]:
+    """Read one host registration, including an output published before task finality."""
+    root = task_artifact_dir_path(drive_root, task_id)
+    manifest = (read_json_dict(root / _ARTIFACT_MANIFEST) or {}).get("artifacts")
+    row = manifest.get(name) if isinstance(manifest, dict) else None
+    return dict(row) if isinstance(row, dict) else None
 
 
 def _artifact_versions_dir(drive_root: pathlib.Path, task_id: str, artifact_name: str) -> pathlib.Path:
@@ -1063,21 +1233,16 @@ def _artifact_versions_dir(drive_root: pathlib.Path, task_id: str, artifact_name
 def _archive_previous_artifact_version(drive_root: pathlib.Path, task_id: str, dest: pathlib.Path, source: pathlib.Path) -> None:
     if not dest.is_file() or not source.is_file():
         return
-    try:
-        previous = dest.read_bytes()
-        current = source.read_bytes()
-    except OSError:
-        return
-    if previous == current:
+    previous = stream_artifact_file(dest)
+    if previous == stream_artifact_file(source):
         return
     version_dir = _artifact_versions_dir(drive_root, task_id, dest.name)
     version_dir.mkdir(parents=True, exist_ok=True)
     suffix = dest.suffix
     stem = dest.name[: -len(suffix)] if suffix else dest.name
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    digest = sha256(previous).hexdigest()[:12]
-    version_path = version_dir / f"{stamp}.{digest}.{stem}{suffix}"
-    version_path.write_bytes(previous)
+    version_path = version_dir / f"{stamp}.{previous['sha256'][:12]}.{stem}{suffix}"
+    copy_artifact_file(dest, version_path, expected=previous)
     versions = sorted((p for p in version_dir.iterdir() if p.is_file()), key=lambda p: p.name)
     for stale in versions[:-_ARTIFACT_VERSION_RETENTION]:
         try:
@@ -1086,11 +1251,11 @@ def _archive_previous_artifact_version(drive_root: pathlib.Path, task_id: str, d
             continue
 
 
-def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str], *, kind: str = "user_file") -> Dict[str, Any] | None:
-    """Copy a generated file into this task's canonical artifact store."""
+def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str], *, kind: str = "user_file", immutable: bool = False, expected: Any = None) -> Dict[str, Any] | None:
+    """Copy a generated file, preserving an immutable rebase's original identity."""
 
     source = pathlib.Path(source_path).expanduser().resolve(strict=False)
-    if not source.is_file():
+    if not source.is_file() and not (immutable and isinstance(expected, dict) and expected.get("name")):
         return None
     task_id = task_id_for_artifacts(ctx)
     drive_root = pathlib.Path(getattr(ctx, "drive_root"))
@@ -1100,9 +1265,26 @@ def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str],
     data = read_json_dict(artifact_dir / _ARTIFACT_MANIFEST) or {}
     manifest = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
     manifest = {str(key): dict(value) for key, value in manifest.items() if isinstance(value, dict)}
+    captured = manifest.get(source.name) if source.parent == artifact_dir.resolve(strict=False) else None
+    if captured and captured.get("immutable"):
+        immutable, expected = True, expected or captured
     dest = artifact_dir / source.name
     reused_existing_source = False
-    for existing in manifest.values():
+    source_identity = expected
+    if immutable and isinstance(expected, dict) and expected.get("name"):
+        name = str(expected["name"])
+        if pathlib.Path(name).name != name or name in {".", ".."}:
+            raise ValueError("immutable artifact name must be a plain filename")
+        dest = artifact_dir / name
+    elif immutable:
+        source_identity = stream_artifact_file(source, expected=expected)
+        stem = _safe_attachment_name(source.stem).removesuffix("-" + source_identity["sha256"])
+        stem = stem.encode("utf-8")[:120].decode("utf-8", errors="ignore")
+        suffix = source.suffix.encode("utf-8")[:20].decode("utf-8", errors="ignore")
+        dest = artifact_dir / f"{stem}-{source_identity['sha256']}{suffix}"
+    for existing in ([] if immutable else manifest.values()):
+        if existing.get("immutable"):
+            continue
         existing_source = str(existing.get("source_path") or "")
         existing_path = str(existing.get("path") or "")
         if existing_source == str(source) and existing_path:
@@ -1119,7 +1301,7 @@ def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str],
         or (
             dest.exists()
             and dest.resolve(strict=False) != source.resolve(strict=False)
-            and not reused_existing_source
+            and not reused_existing_source and not immutable
         )
     ):
         suffix = source.suffix
@@ -1128,12 +1310,29 @@ def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str],
         dest = artifact_dir / f"{stem}.{digest}{suffix}"
     if kind == "user_file" and reused_existing_source and dest.resolve(strict=False) != source.resolve(strict=False):
         _archive_previous_artifact_version(pathlib.Path(getattr(ctx, "drive_root")), task_id, dest, source)
-    if dest.resolve(strict=False) != source.resolve(strict=False):
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
-    record = artifact_record(dest, kind=kind, source_path=str(source))
+    if immutable and dest.exists() and not dest.is_symlink() and (not source.exists() or not dest.samefile(source)):
+        measured = stream_artifact_file(dest, expected=source_identity)
+    elif dest.is_symlink() or dest.resolve(strict=False) != source.resolve(strict=False):
+        measured = copy_artifact_file(source, dest, expected=source_identity)
+    else:
+        measured = stream_artifact_file(dest, expected=source_identity)
+    record = {"kind": kind, "name": dest.name, "path": str(dest), **measured,
+              "status": ARTIFACT_STATUS_READY, "errors": [], "source_path": str(source),
+              **({"immutable": True} if immutable else {})}
     _register_task_artifact_records(artifact_dir, [record])
     return record
+
+
+def iter_artifact_tree(root: pathlib.Path) -> Iterable[pathlib.Path]:
+    """Enumerate the full tree without following directory links or hiding I/O failures."""
+    def failed(exc: OSError) -> None:
+        raise exc
+    for directory, dirs, files in os.walk(root, onerror=failed, followlinks=False):
+        dirs.sort()
+        for name in sorted([*dirs, *files]):
+            path = pathlib.Path(directory) / name
+            path.lstat()  # A disappearing or unreadable member is not an empty entry.
+            yield path
 
 
 def copy_directory_to_task_artifacts(
@@ -1142,53 +1341,42 @@ def copy_directory_to_task_artifacts(
     *,
     kind: str = "process_output_directory",
     member_paths: Iterable[pathlib.Path] | None = None,
+    artifact_dir: pathlib.Path | None = None,
 ) -> List[Dict[str, Any]]:
     """Package a generated directory as a manifest ledger plus zip artifact."""
 
     source = pathlib.Path(source_path).expanduser().resolve(strict=False)
     if not source.is_dir():
         return []
-    task_id = task_id_for_artifacts(ctx)
-    artifact_dir = task_artifact_dir_path(pathlib.Path(getattr(ctx, "drive_root")), task_id, create=True)
-    root = source.resolve(strict=False)
+    if artifact_dir is None:
+        artifact_dir = task_artifact_dir_path(ctx.drive_root, task_id_for_artifacts(ctx), create=True)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
     if member_paths is None:
-        members = sorted(p for p in source.rglob("*") if p.is_file() and not p.is_symlink())
+        members = sorted(p for p in iter_artifact_tree(source) if p.is_file() and not p.is_symlink())
     else:
-        members = sorted(pathlib.Path(p).resolve(strict=False) for p in member_paths)
+        members = sorted(pathlib.Path(p) for p in member_paths)
     file_records: List[Dict[str, Any]] = []
-    member_blobs: List[tuple[str, bytes, str]] = []
-    tree_hasher = sha256()
-    tree_hasher.update(str(source).encode("utf-8", errors="replace"))
-    tree_hasher.update(b"\0")
-    for path in members:
-        if not path.is_file() or path.is_symlink():
-            continue
-        try:
-            rel = path.resolve(strict=False).relative_to(root).as_posix()
-        except ValueError:
-            continue
-        raw = path.read_bytes()
-        digest = sha256(raw).hexdigest()
-        tree_hasher.update(rel.encode("utf-8", errors="replace"))
-        tree_hasher.update(b"\0")
-        tree_hasher.update(digest.encode("ascii"))
-        tree_hasher.update(b"\0")
-        member_blobs.append((rel, raw, digest))
-        file_records.append({
-            "path": rel,
-            "size": len(raw),
-            "sha256": digest,
-        })
-    safe_stem = source.name.replace("/", "_").replace("\\", "_") or "directory"
-    tree_digest = tree_hasher.hexdigest()[:8]
-    ledger_path = artifact_dir / f"{safe_stem}.{tree_digest}.manifest.json"
-    zip_path = artifact_dir / f"{safe_stem}.{tree_digest}.zip"
-    tmp_zip_path = artifact_dir / f".{zip_path.name}.{uuid.uuid4().hex}.tmp"
-    tmp_ledger_path = artifact_dir / f".{ledger_path.name}.{uuid.uuid4().hex}.tmp"
+    tree_hasher = sha256(str(source).encode("utf-8", errors="replace") + b"\0")
+    tmp_zip_path = artifact_dir / f".directory.{uuid.uuid4().hex}.tmp"
+    tmp_ledger_path = artifact_dir / f".directory.{uuid.uuid4().hex}.json.tmp"
     try:
         with zipfile.ZipFile(tmp_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for rel, raw, _digest in member_blobs:
-                archive.writestr(rel, raw)
+            for path in members:
+                if path.is_symlink() or not path.is_file():
+                    raise OSError(f"directory member is unavailable: {path}")
+                try:
+                    rel = path.resolve(strict=True).relative_to(source).as_posix()
+                except ValueError as exc:
+                    raise OSError(f"directory member escapes its source: {path}") from exc
+                with archive.open(rel, "w", force_zip64=True) as member:
+                    measured = stream_artifact_file(path, member)
+                tree_hasher.update(rel.encode("utf-8", errors="replace") + b"\0")
+                tree_hasher.update(measured["sha256"].encode("ascii") + b"\0")
+                file_records.append({"path": rel, **measured})
+        safe_stem = source.name.replace("/", "_").replace("\\", "_") or "directory"
+        tree_digest = tree_hasher.hexdigest()[:8]
+        ledger_path = artifact_dir / f"{safe_stem}.{tree_digest}.manifest.json"
+        zip_path = artifact_dir / f"{safe_stem}.{tree_digest}.zip"
         atomic_write_json(
             tmp_ledger_path,
             {
@@ -1260,11 +1448,7 @@ def collect_task_artifact_records(drive_root: Union[pathlib.Path, str], task_id:
         try:
             record = artifact_record(path)
             if manifest_record:
-                record.update({
-                    key: value
-                    for key, value in manifest_record.items()
-                    if key not in {"path", "size", "sha256", "status", "errors"} and value
-                })
+                record = merge_artifact_records([{**manifest_record, "path": str(path)}], [record])[0]
             records.append(record)
         except OSError:
             continue
@@ -1288,6 +1472,12 @@ def merge_artifact_records(*groups: Iterable[Dict[str, Any]]) -> List[Dict[str, 
             existing = merged[key]
             fresh = dict(item)
             merged[key] = {**existing, **fresh}
+            if existing.get("immutable"):
+                changed = any(fresh.get(field) not in (None, "") and fresh[field] != existing.get(field)
+                              for field in ("size", "sha256"))
+                merged[key].update({field: existing.get(field) for field in ("immutable", "size", "sha256")})
+                if changed:
+                    merged[key].update(status=ARTIFACT_STATUS_FAILED, errors=["immutable artifact bytes changed after capture"])
             if existing.get("kind") and fresh.get("kind") == "task_artifact" and existing.get("kind") != "task_artifact":
                 merged[key]["kind"] = existing["kind"]
             for meta_key in ("kind", "source_path", "name"):

@@ -314,23 +314,15 @@ def _complete_api_task_admission(
     """Publish one API admission or roll back only its token-owned queue row."""
     result_fields = {
         **({"created_at": task["created_at"]} if task.get("created_at") else {}),
-        "parent_task_id": task.get("parent_task_id"),
-        "root_task_id": task.get("root_task_id"),
-        "session_id": task.get("session_id"),
-        "actor_id": task.get("actor_id"),
-        "delegation_role": task.get("delegation_role"),
-        "chat_id": task.get("chat_id"),
-        "title": task.get("title"),
-        "suggested_name": task.get("suggested_name"),
+        **{key: task.get(key) for key in (
+            "parent_task_id", "root_task_id", "session_id", "actor_id", "delegation_role",
+            "chat_id", "title", "suggested_name", "context", "expected_output", "constraints",
+            "task_contract", "workspace_root",
+        )},
         "project_id": project_id,
         "description": description,
-        "context": task.get("context"),
-        "expected_output": task.get("expected_output"),
-        "constraints": task.get("constraints"),
         "allowed_resources": allowed_resources,
         "deadline_at": deadline_at,
-        "task_contract": task.get("task_contract"),
-        "workspace_root": task.get("workspace_root"),
         "workspace_mode": workspace_mode,
         "memory_mode": memory_mode,
         "child_drive_root": str(child_drive or ""),
@@ -338,7 +330,7 @@ def _complete_api_task_admission(
         "artifacts": artifacts,
         "artifact_status": ARTIFACT_STATUS_PENDING if workspace_root else "",
         "metadata": metadata,
-        "attachment_manifest": list(task.get("attachments") or []),
+        **{key: task[key] for key in ("attachment_manifest", "attachment_manifest_ref") if key in task},
         "result": "Task accepted and durably scheduled.",
     }
     try:
@@ -411,7 +403,7 @@ def _complete_api_task_admission(
         "ok": True,
         "task_id": task_id,
         "status": STATUS_SCHEDULED,
-        "attachment_manifest": list(task.get("attachments") or []),
+        **{key: task[key] for key in ("attachment_manifest", "attachment_manifest_ref") if key in task},
     })
 
 
@@ -636,11 +628,7 @@ async def api_tasks_create(request: Request) -> JSONResponse:
     if attachment_error is not None:
         _cleanup_api_admission_attempt(drive_root, task_id, admission_token, child_drive)
         return attachment_error
-    attachment_manifest = [dict(row) for row in attachment_manifest]
-    attachment_images = [
-        m for m in attachment_manifest
-        if str(m.get("status") or "staged") == "staged" and m.get("is_image")
-    ]
+    from ouroboros.artifacts import attachment_manifest_projection
     metadata.setdefault("session_id", str(body.get("session_id") or uuid.uuid4().hex))
     metadata.setdefault("actor_id", str(body.get("actor_id") or "cli"))
     metadata.setdefault("source", str(body.get("source") or "api_task"))
@@ -671,13 +659,14 @@ async def api_tasks_create(request: Request) -> JSONResponse:
             metadata["workspace_preflight"] = workspace_preflight_summary
 
     try:
+        attachment_authority = attachment_manifest_projection(effective_drive, task_id, attachment_manifest)
         task_text = _compose_task_text(
             description,
             workspace_root=workspace_root,
             workspace_mode=workspace_mode,
             memory_mode=memory_mode,
             workspace_preflight=workspace_preflight_summary,
-            attachments=attachment_manifest,
+            attachments=attachment_authority,
         )
     except Exception as exc:
         _cleanup_api_admission_attempt(
@@ -715,8 +704,10 @@ async def api_tasks_create(request: Request) -> JSONResponse:
         "metadata": metadata,
         # v6.52.0 (P1): the STAGED manifest (root/relpath/mime/is_image), not raw
         # host paths — relpaths resolve against task['drive_root'] at read time.
-        "attachments": attachment_manifest,
-        "attachment_images": attachment_images,
+        "attachments": attachment_authority["attachment_manifest"],
+        **attachment_authority,
+        "attachment_images": [m for m in attachment_manifest
+                              if str(m.get("status") or "staged") == "staged" and m.get("is_image")],
         # v6.52.0 (P1): record the effective drive (child when forked/empty, else the shared
         # drive) so build_user_content can resolve staged attachment IMAGES for EVERY task
         # shape — not just child-drive tasks. The child-drive block below re-affirms it.
@@ -981,7 +972,7 @@ async def api_task_get(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
-async def api_task_artifact(request: Request):
+def api_task_artifact(request: Request):
     try:
         task_id = validate_task_id(request.path_params.get("task_id"))
     except ValueError as exc:
@@ -992,15 +983,16 @@ async def api_task_artifact(request: Request):
     drive_root = request_drive_root(request)
     path = artifact_store.resolve_chat_media_path(drive_root, task_id, name)
     if path is None:
-        result = load_effective_task_result(drive_root, task_id)
-        if not result:
+        result = load_effective_task_result(drive_root, task_id) or {}
+        registered = artifact_store.registered_task_artifact(drive_root, task_id, name)
+        if not result and not registered:
             return json_error("task not found", 404)
         if source := request.query_params.get("source"):
             try:
                 return Response(artifact_store.read_task_result_source_bytes(drive_root, result, name, source), media_type="application/json")
             except (OSError, ValueError, RuntimeError):
                 return json_error("task source is unavailable or does not match its recorded identity", 404)
-        artifact = _artifact_by_name(result, name)
+        artifact = registered if registered and registered.get("immutable") else _artifact_by_name(result, name) or registered
         if artifact is None:
             return json_error("artifact not found", 404, task_id=task_id, artifact=name)
         base = task_artifacts_dir(drive_root, task_id).resolve(strict=False)
@@ -1013,6 +1005,11 @@ async def api_task_artifact(request: Request):
             return json_error("artifact path is outside task artifact directory", 500)
         if not path.is_file():
             return json_error("artifact file is missing", 404, task_id=task_id, artifact=name)
+        if artifact.get("immutable"):
+            try:
+                artifact_store.stream_artifact_file(path, expected=artifact)
+            except OSError:
+                return json_error("captured artifact failed byte verification", 404)
     return FileResponse(path)
 
 
@@ -1505,9 +1502,14 @@ def _render_attachment_lines(attachments: Any) -> str:
     manifest returned by ``stage_task_attachments``.  Legacy staged-only rows
     remain readable; new rows carry ordinal/status/reason and rejected rows are
     rendered without source paths or secret contents."""
+    ref = attachments.get("attachment_manifest_ref") if isinstance(attachments, dict) else None
+    if isinstance(attachments, dict):
+        attachments = attachments.get("attachment_manifest")
     if not isinstance(attachments, list):
         return ""
     lines: List[str] = []
+    if ref:
+        lines.append(f"Complete input manifest ({ref.get('count')} declarations): read_file(root='artifact_store', path='{ref.get('path')}'). Inline rows below are a preview.")
     for item in attachments:
         if not isinstance(item, dict):
             continue

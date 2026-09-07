@@ -704,10 +704,24 @@ class LocalChatBridge:
         mime: str = "application/octet-stream",
         download_url: str = "",
         task_id: str = "",
+        file_ref: Optional[Dict[str, Any]] = None,
+        download_url_compat: str = "",
     ) -> Tuple[bool, str]:
         """Send an arbitrary document/file to UI and host event subscribers."""
         if is_a2a_chat_id(chat_id):
             return True, "ok"
+        if file_ref is not None:
+            from ouroboros.gateway.files import resolve_task_file_reference
+            try:
+                resolve_task_file_reference(DATA_DIR, task_id or "interactive", file_ref)
+                if file_bytes:
+                    from hashlib import sha256
+                    if len(file_bytes) != file_ref["size"] or sha256(file_bytes).hexdigest() != file_ref["sha256"]:
+                        raise ValueError("inline document bytes disagree with the captured file")
+            except (OSError, ValueError, TypeError) as exc:
+                return False, f"Document source unavailable: {exc}"
+            download_url = f"/api/tasks/{quote(task_id or 'interactive', safe='')}/artifacts/{quote(str(file_ref['path']), safe='')}"
+        size_bytes = file_ref["size"] if file_ref is not None else len(file_bytes)
         b64_str = base64.b64encode(file_bytes).decode("ascii")
         safe_name = str(filename or "file")
         ts = utc_now_iso()
@@ -719,7 +733,9 @@ class LocalChatBridge:
             "filename": safe_name,
             "caption": caption,
             "download_url": str(download_url or ""),
-            "size_bytes": len(file_bytes),
+            "download_url_compat": str(download_url_compat or ""),
+            "file_ref": dict(file_ref or {}),
+            "size_bytes": size_bytes,
             "ts": ts,
             "chat_id": int(chat_id or 0),
             "task_id": str(task_id or ""),
@@ -736,6 +752,8 @@ class LocalChatBridge:
             "mime": str(mime or ""),
             "filename": safe_name,
             "download_url": str(download_url or ""),
+            "download_url_compat": str(download_url_compat or ""),
+            "file_ref": dict(file_ref or {}),
             "ts": ts,
         })
         # Persist a compact chat row (NO base64) so the delivered document is
@@ -756,7 +774,8 @@ class LocalChatBridge:
             mime=str(mime or ""),
             download_url=str(download_url or ""),
             caption=str(caption or ""),
-            size_bytes=len(file_bytes),
+            size_bytes=size_bytes,
+            download_url_compat=download_url_compat,
         )
         _advance_project_visible_revision(chat_id)
         return True, "ok"

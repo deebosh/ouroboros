@@ -21,7 +21,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ouroboros.contracts.chat_id_policy import A2A_CHAT_ID_MAX, A2A_CHAT_ID_MIN, is_a2a_chat_id
 from ouroboros.event_bus import get_global_event_bus
-from ouroboros.gateway.files import ChatUploadPayloadTooLarge, store_chat_upload
+from ouroboros.gateway.files import store_chat_upload
 from ouroboros.skill_loader import (
     find_skill,
     grant_status_for_skill,
@@ -329,8 +329,6 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 except Exception:
                     log.debug("Host upload failed while cancellation settled", exc_info=True)
                 raise
-        except ChatUploadPayloadTooLarge as exc:
-            return _json_error(str(exc), 413)
         except ValueError as exc:
             return _json_error(str(exc), 400)
         bridge = ctx.bridge_getter()
@@ -409,7 +407,7 @@ def _inject_attachment_uploads(
     Each ``{path, name?, mime?}`` must be a regular file under the calling
     skill's OWN state root (the ``staged_files`` confinement; a symlink that
     resolves outside is refused). The host copies it through the SAME store the
-    browser paperclip uses — ``data/uploads``, unique name, 50 MB cap — so the
+    browser paperclip uses — ``data/uploads``, unique name, verified bytes — so the
     worker's ``stage_task_attachments`` and the secret-name rule see one upload
     family. Returns ``chat_attachment_uploads`` specs (``{path, label, mime}``);
     the skill removes its parked copy afterwards.
