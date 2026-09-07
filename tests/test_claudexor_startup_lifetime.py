@@ -382,6 +382,40 @@ def test_crashed_startup_reports_current_pid_build_and_log_interval(startup):
     assert f"startup log interval={len(old)}.." in text
     assert "old runtime" not in text and str(startup.home / "daemon.log") in text
     assert manager._proc is None
+    assert manager._startup_attempt == {}
     assert _gone(elected["pid"])
     if sys.platform == "linux":
         assert not pathlib.Path(f"/proc/{elected['pid']}").exists(), "Popen.poll reaped the exited child"
+
+
+def test_stopped_manager_joins_peer_without_reusing_its_old_diagnostics(startup):
+    first, peer = owned.OwnedClaudexorDaemon(), owned.OwnedClaudexorDaemon()
+    processes = []
+    try:
+        with pytest.raises(ClaudexorUnavailable, match="daemon is still starting"):
+            first.ensure_running(startup_wait_sec=.1)
+        old = first._proc
+        processes.append(old)
+        _wait_for(lambda: _read_json(startup.home / "elected.json"))
+        assert first.stop() is True and old.poll() is not None
+        assert first._startup_attempt == {}
+        # The synthetic engine's election marker has no restart cleanup.
+        (startup.home / "writer").rmdir()
+        (startup.home / "elected.json").unlink()
+        with pytest.raises(ClaudexorUnavailable, match="daemon is still starting"):
+            peer.ensure_running(startup_wait_sec=.1)
+        current = peer._proc
+        processes.append(current)
+        _wait_for(lambda: _read_json(startup.home / "elected.json"))
+        with pytest.raises(ClaudexorUnavailable) as joined:
+            first.ensure_running(startup_wait_sec=.03)
+        detail = str(joined.value)
+        assert f"live_pids=[{current.pid}]" in detail
+        assert "joining another manager" in detail
+        assert "spawn_pid=" not in detail and "selected_build_sha=" not in detail
+        assert "startup log interval=" not in detail
+    finally:
+        first.stop()
+        peer.stop()
+        for process in processes:
+            process.wait(timeout=5)

@@ -453,6 +453,7 @@ class OwnedClaudexorDaemon:
             self._check_start_generation(generation)
             if self._proc is not None and self._proc.poll() is not None:
                 self._proc = None  # Popen.poll reaps an exited election contender.
+                self._startup_attempt = {}
             self._last_error = ""
         return endpoint
 
@@ -596,6 +597,7 @@ class OwnedClaudexorDaemon:
             self._check_start_generation(generation)
             if self._proc is not None and self._proc.poll() is not None:
                 self._proc = None
+                self._startup_attempt = {}
         self._last_error = f"daemon_spawn_failed: {detail}"
         raise ClaudexorUnavailable(
             "daemon_spawn_failed", f"no live owned startup or authenticated endpoint after {wait:.1f}s; {detail}",
@@ -604,8 +606,9 @@ class OwnedClaudexorDaemon:
 
     def _startup_diagnostic(self, pids: set[int]) -> str:
         """Name current process evidence and its log interval, never an old tail as cause."""
-        attempt = self._startup_attempt
-        proc = self._proc
+        with self._lock:
+            attempt = dict(self._startup_attempt)
+            proc = self._proc
         details = [f"stage=waiting_for_control; live_pids={sorted(pids)}"]
         log_path = owned_config_dir() / "daemon.log"
         if attempt:
@@ -635,6 +638,7 @@ class OwnedClaudexorDaemon:
             with self._lock:
                 if self._proc is proc:
                     self._proc = None
+                    self._startup_attempt = {}
             return False
         from ouroboros.platform_layer import kill_process_tree
 
@@ -647,6 +651,7 @@ class OwnedClaudexorDaemon:
         with self._lock:
             if self._proc is proc:
                 self._proc = None
+                self._startup_attempt = {}
         return True
 
     def reconcile_rotation(self, gateway: Any) -> None:
