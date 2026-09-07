@@ -2492,12 +2492,9 @@ class _UnpublishedChild:
         self.terminated += 1
 
 
-def test_a_spawn_that_never_publishes_a_descriptor_does_not_leave_the_child_running(
+def test_a_live_startup_survives_its_callers_wait_until_explicit_stop(
         monkeypatch, tmp_path):
-    """A failed startup cleans up its own child before a retry can spawn another.
-    The Popen fixture reports termination and wait like a real completed child;
-    signal failure and retained custody are covered in test_process_custody_stop.
-    """
+    """Wait expiry preserves the live child; explicit Stop owns termination."""
     import sys
 
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
@@ -2520,11 +2517,13 @@ def test_a_spawn_that_never_publishes_a_descriptor_does_not_leave_the_child_runn
     manager = owned.OwnedClaudexorDaemon()
     with pytest.raises(ClaudexorUnavailable) as err:
         manager.ensure_running()
-    assert err.value.code == "daemon_spawn_failed"
-
-    # The child we started is stopped, and the handle is forgotten so the next
-    # attempt starts ONE daemon rather than a second one beside a live orphan.
-    assert child.terminated == 1, "the spawned child was left running"
+    assert err.value.code == "daemon_starting"
+    assert child.terminated == 0
+    assert manager._proc is child
+    with pytest.raises(ClaudexorUnavailable, match="retry joins"):
+        manager.ensure_running(startup_wait_sec=0)
+    assert manager._proc is child
+    assert manager.stop() is True
     assert manager._proc is None
     assert manager.stop() is False
 
@@ -2671,7 +2670,8 @@ def test_exited_spawn_times_out_cleanly_with_bounded_liveness_probes(
         manager.ensure_running()
 
     assert err.value.code == "daemon_spawn_failed"
-    assert "writer lease lost" in str(err.value)
+    assert "exit_code=1" in str(err.value)
+    assert "startup log interval=0..18 bytes" in str(err.value)
     assert handshake_bounds
     assert clock.now == pytest.approx(owned._SPAWN_WAIT_SEC)
     assert all(started < owned._SPAWN_WAIT_SEC for started, _bound in handshake_bounds)
@@ -2970,7 +2970,7 @@ def test_staged_update_activates_only_at_the_next_natural_start(monkeypatch, tmp
         "spawn_supervised",
         lambda command, **_kwargs: spawns.append(list(command)) or _LiveChild(),
     )
-    monkeypatch.setattr(daemon, "_alive_endpoint", lambda **_kwargs: new_endpoint)
+    monkeypatch.setattr(daemon, "_alive_endpoint", lambda **_kwargs: new_endpoint if spawns else None)
 
     # Phase 1: the OLD endpoint keeps serving; the new target is only staged.
     assert daemon.ensure_running() is old_endpoint

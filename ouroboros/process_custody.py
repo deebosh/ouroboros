@@ -302,13 +302,19 @@ def _read_ledger_records(
     drive_root: pathlib.Path, *, strict: bool
 ) -> tuple[bool, List[Dict[str, Any]]]:
     path = ledger_path(drive_root)
-    if not path.exists():
+    try:
+        path.stat()
+    except FileNotFoundError:
+        if strict and path.is_symlink():
+            return False, []
         return True, []
+    except OSError:
+        return False, []
     entries: List[Dict[str, Any]] = []
     try:
         import json
 
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in path.read_text(encoding="utf-8", errors="strict" if strict else "replace").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -323,7 +329,7 @@ def _read_ledger_records(
                     return False, []
                 continue
             entries.append(obj)
-    except OSError:
+    except (OSError, UnicodeError):
         return False, []
     # Last record per pid wins (a pid may be re-registered by a newer spawn).
     by_pid: Dict[int, Dict[str, Any]] = {}
@@ -514,6 +520,7 @@ def live_kept_service_pids(drive_root: pathlib.Path) -> "set[int]":
 
 def live_daemon_root_pids(
     drive_root: pathlib.Path, *, retained_purposes: Optional[set[str]] = None,
+    purposes: Optional[set[str]] = None, strict: bool = False,
 ) -> "set[int]":
     """PIDs of still-alive installation-owned (``daemon``-scope) ledger roots.
 
@@ -524,11 +531,21 @@ def live_daemon_root_pids(
     live, fingerprint-matching ``daemon`` rows qualify; ``kill_pid_tree`` spares
     an excluded pid together with its own descendants, so the delegated harness
     runs under the daemon survive too. Sparing is the safe direction — a row the
-    reaper would keep is a row a worker teardown must not kill.
+    reaper would keep is a row a worker teardown must not kill. Lifecycle admission
+    may restrict ``purposes`` and require a readable ledger with ``strict=True``;
+    absence is empty, corruption is unknown. Neither form grants signal authority.
     """
     pids: set[int] = set()
     try:
-        for entry in _read_ledger(pathlib.Path(drive_root)):
+        if strict:
+            readable, entries = _read_ledger_strict(pathlib.Path(drive_root))
+            if not readable:
+                raise OSError("process custody ledger is unreadable or corrupt")
+        else:
+            entries = _read_ledger(pathlib.Path(drive_root))
+        for entry in entries:
+            if purposes is not None and entry.get("purpose") not in purposes:
+                continue
             retained = entry.get("purpose") in (retained_purposes or set())
             if (entry.get("scope") != "daemon" and not retained) or not _fingerprint_matches(entry):
                 continue
@@ -536,6 +553,8 @@ def live_daemon_root_pids(
             if pid > 0:
                 pids.add(pid)
     except Exception:
+        if strict:
+            raise
         return pids
     return pids
 
