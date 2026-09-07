@@ -27,7 +27,9 @@ from tests._workspace_executor_shared import _init_repo
 
 
 @pytest.mark.parametrize("executor_kind", [None, "local"])
-def test_real_service_observes_exact_selected_env_and_cwd(tmp_path, monkeypatch, executor_kind):
+@pytest.mark.parametrize("output_newline", [None, "\r\n"])
+@pytest.mark.parametrize("secret_newline", ["\n", "\r\n"])
+def test_real_service_observes_exact_selected_env_and_cwd(tmp_path, monkeypatch, executor_kind, output_newline, secret_newline):
     import gzip
     from ouroboros.tools import services
 
@@ -39,7 +41,8 @@ def test_real_service_observes_exact_selected_env_and_cwd(tmp_path, monkeypatch,
     cwd = workspace / "chosen cwd"
     cwd.mkdir()
     script = workspace / "observe.py"
-    script.write_text('''import json, os, pathlib, time
+    script.write_text('''import json, os, pathlib, sys, time
+sys.stdout.reconfigure(newline=OUTPUT_NEWLINE)
 observed = {"cwd": os.getcwd(), "token": os.environ["TOKEN"],
     "empty": os.environ["EMPTY"], "proxy": os.environ["HTTPS_PROXY"],
     "unselected": os.environ.get("UNSELECTED_660_SECRET")}
@@ -47,8 +50,8 @@ pathlib.Path("observed.json").write_text(json.dumps(observed))
 print("TOKEN=" + os.environ["TOKEN"], flush=True)
 print("READY", flush=True)
 time.sleep(30)
-''', encoding="utf-8")
-    env = {"TOKEN": 'synthetic-660-quote"\\tail\nprivate-fragment-660', "EMPTY": "",
+'''.replace("OUTPUT_NEWLINE", repr(output_newline)), encoding="utf-8")
+    env = {"TOKEN": 'synthetic-660-quote"\\tail' + secret_newline + 'private-fragment-660', "EMPTY": "",
            "HTTPS_PROXY": "http://synthetic-user:synthetic-pass@127.0.0.1:7777",
            "DEPLOYMENT_MODE": "running", "FIELD_NAME": "state"}
     monkeypatch.setattr(services, "load_settings", lambda: {"TEST_SERVICE_KEY": env["TOKEN"]})
@@ -57,7 +60,7 @@ time.sleep(30)
                       workspace_root=workspace, workspace_mode="external", task_id="selected-env")
     if executor_kind:
         ctx.executor_ref = {"type": "local", "workspace_host_path": str(workspace),
-                            "workspace_backend_path": str(workspace)}
+                            "workspace_backend_path": "/workspace"}
     registry.set_context(ctx)
     try:
         started = registry.execute("start_service", {"name": "selected", "cmd": [sys.executable, str(script)],

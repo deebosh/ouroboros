@@ -116,7 +116,7 @@ def _make_repo(tmp_path: pathlib.Path, files: dict[str, str]) -> pathlib.Path:
 
 
 @pytest.fixture
-def two_pass_env(monkeypatch):
+def two_pass_env(monkeypatch, preflight_timeout_diagnostics):
     """Deterministic env for the real-spawn two-pass tests."""
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("OUROBOROS_PREFLIGHT_SERIAL", raising=False)
