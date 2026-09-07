@@ -2234,7 +2234,7 @@ by "Provider Independence" above. Call-site imperatives:
   the one import surface. Register the env key; do not scatter magic wait
   numbers across call sites (`tests/test_timeout_policy.py`).
 - Worker readiness is its own bound, not a tuning knob: `WORKER_READY_WINDOW_SEC`
-  and `WORKER_READY_MAX_ATTEMPTS` sit in `config.py` beside the spawn grace as
+  and `WORKER_READY_MAX_ATTEMPTS` sit in `runtime_limits.py` (re-exported by `config.py`) beside the spawn grace as
   structural constants (a warm forkserver child confirms in ~3-4 s; the window is the
   pool's existing init budget). Never fold "the child confirmed ready" into
   process liveness (`proc.is_alive`) or the task idle rail: a child deadlocked

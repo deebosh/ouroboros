@@ -547,7 +547,7 @@ def test_documented_module_widget_recipe_creates_the_registered_tab(tmp_path, re
     from ouroboros.skill_loader import find_skill, save_enabled, save_review_state, SkillReviewState
     from tests._shared import clean_extension_runtime_state
 
-    text = (pathlib.Path(__file__).resolve().parents[1] / 'docs/CREATING_SKILLS.md').read_text()
+    text = (pathlib.Path(__file__).resolve().parents[1] / 'docs/CREATING_SKILLS.md').read_text(encoding='utf-8')
     section = text.split('### `kind: "module"` widgets', 1)[1].split('#### The in-frame bridge', 1)[0]
     declaration = re.search(r'```yaml\n(.*?)```', section, re.S).group(1)
     plugin = re.search(r'```python\n(.*?)```', section, re.S).group(1)
@@ -555,7 +555,9 @@ def test_documented_module_widget_recipe_creates_the_registered_tab(tmp_path, re
     skill_dir = _write_ext_skill(skills, 'recipe', permissions=['widget'],
         plugin_body=plugin if registration else 'def register(api):\n    pass\n',
         extra_frontmatter=declaration)
-    (skill_dir / 'widget.js').write_text("document.getElementById('root').textContent = 'Recipe widget';")
+    widget = "document.getElementById('root').textContent = 'Recipe widget ✓';"
+    (skill_dir / 'widget.js').write_text(widget, encoding='utf-8')
+    assert (skill_dir / 'widget.js').read_bytes() == widget.encode('utf-8')
     loaded = find_skill(root, 'recipe', repo_path=str(skills))
     save_enabled(root, 'recipe', True)
     save_review_state(root, 'recipe', SkillReviewState(status='pass', content_hash=loaded.content_hash))

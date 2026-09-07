@@ -993,6 +993,11 @@ def _operation_state(ctx: HostServiceContext, rows: list, inbound: Dict[str, Any
         })
         if status in SETTLED_STATUSES:
             state["text"] = str(stored.get("result") or "")
+            # A delivered result can precede post-task work or live descendants.
+            # Use the same ownership facts as the existing cancellation ingress.
+            state["cancel_supported"] = cancel_owner_matches and (
+                task_queue.task_has_live_ownership(target) or task_queue.task_subtree_is_live(target)
+            )
         else:
             state["cancel_supported"] = cancel_owner_matches
             if not cancel_owner_matches:
@@ -1045,7 +1050,7 @@ def _cancel_owned_operation(
     if state is None:
         return 404, {"ok": False, "error": "operation not found"}
     base = {key: state[key] for key in ("operation_ref", "task_id", "phase", "status") if key in state}
-    if state["status"] in SETTLED_STATUSES:
+    if state["status"] in SETTLED_STATUSES and not state.get("cancel_supported"):
         return 200, {"ok": True, "outcome": "already_terminal", **base}
     if not state.get("cancel_supported") or not state.get("task_id"):
         reason_code = state.get("reason") or {

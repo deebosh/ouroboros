@@ -187,26 +187,48 @@ def test_real_server_consumes_one_source_and_authors_only_its_operation_marker(t
 
 
 def test_rotation_during_source_read_cannot_turn_replay_into_new_work(tmp_path, monkeypatch):
+    import sys
     from ouroboros import utils
     from supervisor.state import rotate_chat_log_if_needed
 
     bridge = message_bus.LocalChatBridge()
     client = _client(tmp_path, bridge)
     body = {"chat_id": CHAT, "client_message_id": MSG, "text": "hello"}
-    client.post("/chat/inject", headers=_headers(), json=body)
+    accepted = client.post("/chat/inject", headers=_headers(), json=body)
+    assert accepted.status_code == 202
+    source = _origin_ref(tmp_path)
     original = utils.jsonl_archive_segments
-    rotated = []
+    outcomes = []
 
     def rotate_after_live_open(path, **kwargs):
-        if not rotated:
-            rotate_chat_log_if_needed(tmp_path, max_bytes=1)
-            rotated.append(True)
+        if not outcomes:
+            try:
+                rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+            except PermissionError:
+                # Windows can defer the independent rotator while the reader
+                # owns the live handle. Its failure is not a reader failure.
+                assert sys.platform == "win32"
+                assert (tmp_path / "logs/chat.jsonl").stat().st_size > 0
+                outcomes.append("open_handle")
+            else:
+                assert original(path)
+                outcomes.append("rotated")
         return original(path, **kwargs)
 
     monkeypatch.setattr(utils, "jsonl_archive_segments", rotate_after_live_open)
     replay = client.post("/chat/inject", headers=_headers(), json=body)
     assert replay.status_code == 202 and replay.json()["rejoined"]
-    assert bridge._inbox.qsize() == 1 and rotated
+    assert bridge._inbox.qsize() == 1 and _origin_ref(tmp_path) == source
+    assert outcomes in (["rotated"], ["open_handle"])
+    if sys.platform != "win32":
+        assert outcomes == ["rotated"]
+    # With all read handles closed, both platforms must really rotate and
+    # recover the same source from its archive without another enqueue.
+    rotate_chat_log_if_needed(tmp_path, max_bytes=1)
+    assert original(tmp_path / "logs/chat.jsonl")
+    archived_replay = client.post("/chat/inject", headers=_headers(), json=body)
+    assert archived_replay.status_code == 202 and archived_replay.json()["rejoined"]
+    assert bridge._inbox.qsize() == 1 and _origin_ref(tmp_path) == source
 
 
 def test_racing_named_upload_rejoin_keeps_only_the_accepted_copy(tmp_path, monkeypatch):

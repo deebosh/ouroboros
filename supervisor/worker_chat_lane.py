@@ -184,11 +184,10 @@ def _handle_chat_direct_locked(
 
 def _host_operation_failure(metadata: Optional[dict]) -> dict:
     """Optional terminal correlation for the host's preaccepted skill messages."""
-    from ouroboros.project_dialogue import owner_message_ref_is_valid
+    from ouroboros.task_finalization import host_operation_reply_kwargs
 
-    ref = (metadata or {}).get("origin_message_ref")
-    if (metadata or {}).get("_host_operation") and owner_message_ref_is_valid(ref):
-        return {"progress_meta": {"task_terminal_status": "failed", "origin_message_ref": dict(ref)}}
+    if (metadata or {}).get("_host_operation"):
+        return host_operation_reply_kwargs((metadata or {}).get("origin_message_ref"), "failed")
     return {}
 
 

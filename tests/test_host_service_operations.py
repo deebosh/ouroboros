@@ -363,6 +363,12 @@ def test_cancel_refuses_when_the_durable_intent_cannot_be_recorded(tmp_path, mon
 
 
 def test_ws_relay_burst_reserve_refuses_with_diagnostics_then_refills(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from ouroboros.gateway import host_service
+
+    clock = [0.0]
+    # Only this Host module's limiter sees the controlled clock; ASGI keeps time.
+    monkeypatch.setattr(host_service, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     _seed_token(tmp_path, skill="wsskill", token="tok", manifest_permissions=["ws_handler"])
     sent: list[dict] = []
     app = create_host_service_app(tmp_path, ws_broadcaster_getter=lambda: sent.append)
@@ -380,8 +386,7 @@ def test_ws_relay_burst_reserve_refuses_with_diagnostics_then_refills(tmp_path, 
     assert len(sent) == WS_RELAY_BURST, "a refused relay reaches no browser client"
     # One second later exactly one token exists again; the burst summary is
     # recorded ONCE, durably, with the aggregate dropped count.
-    limiter = app.state.host_service_context.rate_limiter
-    limiter._buckets["wsskill:ws"][1] -= 1.0
+    clock[0] += 1.0
     assert client.post("/ui/ws-message", headers={"X-Skill-Token": "tok"}, json=payload).status_code == 202
     assert client.post("/ui/ws-message", headers={"X-Skill-Token": "tok"}, json=payload).status_code == 429
     rows = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
