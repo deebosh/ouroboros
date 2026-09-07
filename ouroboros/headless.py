@@ -312,6 +312,8 @@ def prune_task_drives(
     report: Dict[str, Any] = {"retention_days": days, "scanned": 0, "pruned": [], "skipped": [], "errors": []}
     if not base.is_dir():
         return report
+    from ouroboros.observability import retry_pending_child_ref_promotions
+    retry_pending_child_ref_promotions(parent)
     for task_dir in sorted(base.iterdir()):
         if not task_dir.is_dir():
             continue
@@ -329,6 +331,9 @@ def prune_task_drives(
             status = str(result.get("status") or "").lower()
             if status not in _FINAL_STATUSES:
                 report["skipped"].append({"task_id": task_id, "reason": "task_not_terminal", "status": status})
+                continue
+            if _live_unpromoted_child_refs(result.get("child_ref_promotion"), task_dir):
+                report["skipped"].append({"task_id": task_id, "reason": "unpromoted_child_refs"})
                 continue
             if _timestamp_from_result(result, dir_mtime) > cutoff:
                 report["skipped"].append({"task_id": task_id, "reason": "younger_than_retention"})
@@ -427,7 +432,6 @@ def remove_subagent_task_drive(parent_drive_root: pathlib.Path, task_id: str) ->
 
 def copy_child_task_result(parent_drive_root: pathlib.Path, task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Copy a child-drive task result back to the parent data root."""
-
     task_id = str(task.get("id") or "")
     if not task_id:
         return None
@@ -471,12 +475,6 @@ def copy_child_task_result(parent_drive_root: pathlib.Path, task: Dict[str, Any]
     }
     payload["child_ref_promotion"] = ref_promotion
     if isinstance(payload.get("artifacts"), list):
-        payload["artifacts"] = _copy_child_artifacts_to_parent(
-            parent_drive_root,
-            task_id,
-            child_drive,
-            [item for item in payload.get("artifacts") or [] if isinstance(item, dict)],
-        )
         try:
             from ouroboros.outcomes import artifact_bundle_from_result
 
@@ -530,9 +528,10 @@ def _copy_child_artifacts_to_parent(
     task_id: str,
     child_drive: pathlib.Path,
     artifacts: List[Dict[str, Any]],
+    *, promotion: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Rebase child-drive artifact files into the parent task artifact store."""
-
+    """Verify/rebase files; failed copy-back shares the existing ref custody/GC."""
+    from ouroboros.artifacts import copy_artifact_file
     from ouroboros.outcome_receipt_store import is_verification_receipts_path
 
     parent_dir = task_artifacts_dir(parent_drive_root, task_id)
@@ -547,39 +546,34 @@ def _copy_child_artifacts_to_parent(
         if not src.is_absolute():
             src = (child_drive / raw_path).resolve(strict=False)
         if is_verification_receipts_path(child_drive, task_id, src):
-            # ``copy_child_task_result`` publishes this stream through the
-            # locked union immediately before rebasing ordinary artifacts.
-            # A stale generic copy would create a competing replica (or, on a
-            # reused destination, erase canonical-only lifecycle rows).
+            # Receipt union has its own locked writer; never replace its rows.
             continue
         try:
             src.resolve(strict=False).relative_to(parent_dir.resolve(strict=False))
-            rebased.append(item)
-            continue
+            dest = src
         except ValueError:
-            pass
-        if not src.is_file():
-            # The artifact path is relative/outside the child drive and the file is
-            # not present, so it cannot be rebased into the parent store. Surface the
-            # failure (flag + warn) instead of silently keeping an unreachable path
-            # that the parent UI/consumers cannot serve.
-            log.warning(
-                "Child artifact for task %s could not be rebased into the parent store: %r",
-                task_id, raw_path,
-            )
-            item["copy_status"] = "failed"
-            item["copy_error"] = "artifact file not found for rebase"
+            dest = parent_dir / src.name
+            if dest.exists() and dest.resolve(strict=False) != src.resolve(strict=False):
+                from ouroboros.artifacts import stream_artifact_file
+                try:
+                    if not item.get("sha256"):
+                        raise OSError("legacy artifact has no captured digest")
+                    stream_artifact_file(dest, expected=item)
+                    src = dest  # Exact canonical bytes already survive this copy-back.
+                except OSError:
+                    dest = parent_dir / f"{src.stem}_{sha256(str(src).encode('utf-8')).hexdigest()[:8]}{src.suffix}"
+        try:
+            measured = copy_artifact_file(src, dest, expected=item)
+        except OSError as exc:
+            item.update(copy_status="failed", copy_error=f"{type(exc).__name__}: {exc}")
+            if promotion is not None:
+                promotion["pending_refs"].append({"path": str(src), "kind": "task_artifact",
+                                                   "reason": item["copy_error"]})
             rebased.append(item)
             continue
-        dest = parent_dir / src.name
-        if dest.exists() and dest.resolve(strict=False) != src.resolve(strict=False):
-            dest = parent_dir / f"{src.stem}_{sha256(str(src).encode('utf-8')).hexdigest()[:8]}{src.suffix}"
-        shutil.copy2(src, dest)
-        data = dest.read_bytes()
-        item["path"] = str(dest)
-        item["name"] = str(item.get("name") or dest.name)
-        item["size"] = len(data)
-        item["sha256"] = sha256(data).hexdigest()
+        item.pop("copy_status", None)
+        item.pop("copy_error", None)
+        item.update(path=str(dest), name=str(item.get("name") or dest.name), **measured)
         rebased.append(item)
     return rebased
 
@@ -601,77 +595,43 @@ def task_is_readonly_subagent(task: Dict[str, Any]) -> bool:
     )
 
 
-_DELIVERABLE_MANIFEST_FILE_CAP = 10000
-_DELIVERABLE_MANIFEST_HASH_CHUNK = 1024 * 1024  # 1 MiB streaming chunks (bounded memory)
-# Files larger than this are recorded by size only (hash skipped) so a single huge
-# binary/media/build artifact cannot wedge or OOM genesis finalization.
-_DELIVERABLE_MANIFEST_HASH_BYTE_CAP = 64 * 1024 * 1024  # 64 MiB
-
-
 def _build_deliverable_manifest(
     workspace_root: pathlib.Path, task_id: str, project_id: str
 ) -> Dict[str, Any]:
-    """Typed content listing of a from-scratch (genesis) project's deliverables
-    (deferral 3): rel path + size + sha256 per file, surfaced on the artifact axis so a
-    genesis project's OUTPUT (not just its patch diff) is inspectable. Excludes VCS and
-    virtualenv junk. P1 fail-loud: if the tree exceeds the file cap, ``truncated`` is set
-    instead of silently dropping files. Hashing STREAMS in fixed chunks (never loads a
-    whole file into memory) and skips the hash for files over the byte cap, so a large
-    artifact can neither OOM nor wedge finalization."""
-    import hashlib
+    """Best-effort automatic genesis listing with explicit per-entry read gaps.
+
+    VCS/environment junk is excluded as before. Symlinks are recorded without
+    following them; missing/unreadable/changing files leave a gap, not a failed
+    delivery. This listing is not custody: actual artifact copies remain strict.
+    Hashing streams even for files above the old64MiB projection bound.
+    """
+    from ouroboros.artifacts import stream_artifact_file
 
     contents: List[Dict[str, Any]] = []
-    count = 0
-    truncated = False
-    for root, dirs, files in os.walk(workspace_root):
-        dirs[:] = [d for d in dirs if d not in _TOP_LEVEL_EXCLUDE_DIRS and d != ".git"]
+    def failed(exc: OSError) -> None:
+        path = pathlib.Path(exc.filename) if exc.filename else workspace_root
+        contents.append({"rel": path.relative_to(workspace_root).as_posix(), "type": "directory",
+                         "status": "unavailable", "error": f"{type(exc).__name__}: {exc}"})
+    for root, dirs, files in os.walk(workspace_root, onerror=failed):
+        dirs[:] = sorted(d for d in dirs if d not in _TOP_LEVEL_EXCLUDE_DIRS and d != ".git")
         for fname in sorted(files):
-            if count >= _DELIVERABLE_MANIFEST_FILE_CAP:
-                truncated = True
-                break
             fpath = pathlib.Path(root) / fname
-            if fpath.is_symlink():
-                # SECURITY: never follow a symlink out of the project — a genesis child
-                # could point one at an owner/runtime file outside workspace_root, and
-                # stat()/open() would then read/hash bytes outside the deliverable tree.
-                # Record it as a symlink WITHOUT reading the target.
-                contents.append({
-                    "rel": str(fpath.relative_to(workspace_root)),
-                    "symlink": True,
-                    "sha256": "",
-                })
-                count += 1
-                continue
+            entry = {"rel": fpath.relative_to(workspace_root).as_posix()}
             try:
-                size = fpath.stat().st_size
-            except OSError:
-                continue
-            entry: Dict[str, Any] = {"rel": str(fpath.relative_to(workspace_root)), "size": size}
-            if size > _DELIVERABLE_MANIFEST_HASH_BYTE_CAP:
-                entry["sha256"] = ""
-                entry["hash_skipped"] = "size_over_cap"
-            else:
-                try:
-                    h = hashlib.sha256()
-                    with open(fpath, "rb") as fh:
-                        for chunk in iter(lambda: fh.read(_DELIVERABLE_MANIFEST_HASH_CHUNK), b""):
-                            h.update(chunk)
-                    entry["sha256"] = h.hexdigest()
-                except Exception:
-                    continue
+                if fpath.is_symlink():
+                    entry.update(symlink=True, sha256="")
+                else:
+                    entry.update(stream_artifact_file(fpath))
+            except OSError as exc:
+                entry.update(status="unavailable", error=f"{type(exc).__name__}: {exc}")
             contents.append(entry)
-            count += 1
-        if truncated:
-            break
+    gap_count = sum(item.get("status") == "unavailable" for item in contents)
     return {
-        "schema_version": 1,
-        "task_id": task_id,
-        "project_id": project_id,
-        "project_root": str(workspace_root),
-        "created_at": utc_now_iso(),
-        "file_count": count,
-        "truncated": truncated,
-        "contents": contents,
+        "schema_version": 1, "task_id": task_id, "project_id": project_id,
+        "project_root": str(workspace_root), "created_at": utc_now_iso(),
+        "file_count": sum(item.get("type") != "directory" for item in contents),
+        "complete": gap_count == 0, "gap_count": gap_count,
+        "truncated": False, "contents": contents,
     }
 
 
@@ -770,15 +730,15 @@ def finalize_task_artifacts(parent_drive_root: pathlib.Path, task: Dict[str, Any
                 "size": manifest_path.stat().st_size if manifest_path.exists() else 0,
                 "file_count": int(dm.get("file_count") or 0),
                 "truncated": bool(dm.get("truncated")),
+                "complete": dm["complete"], "gap_count": dm["gap_count"],
+                "errors": ([f"Automatic workspace listing is partial: {dm['gap_count']} read gaps."]
+                           if dm["gap_count"] else []),
                 "workspace_root": str(workspace_root),
             })
-            if dm.get("truncated"):
-                log.warning(
-                    "deliverable_manifest truncated at cap %d for task %s",
-                    _DELIVERABLE_MANIFEST_FILE_CAP, task_id,
-                )
         except Exception as exc:
-            log.debug("deliverable_manifest build failed for %s: %s", task_id, exc, exc_info=True)
+            artifact_status = ARTIFACT_STATUS_FAILED
+            artifact_error = f"Deliverable manifest failed: {type(exc).__name__}: {exc}"
+            log.warning("deliverable_manifest build failed for %s", task_id, exc_info=True)
 
     if artifacts or workspace_root is not None:
         existing = load_task_result(parent_drive_root, task_id) or {}
@@ -916,6 +876,7 @@ def _merge_artifacts(
     *,
     drop_kinds: Optional[set[str]] = None,
 ) -> List[Dict[str, Any]]:
+
     merged: List[Dict[str, Any]] = []
     drop = drop_kinds or set()
     key_for = lambda item: (

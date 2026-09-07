@@ -83,14 +83,6 @@ from ouroboros.tool_access_user_files import (  # noqa: F401 — re-exported mov
 # resolve_shell_cwd candidates) and NEVER to acting/readonly subagents (a child must not
 # read sibling projects). operator_control is capped to read-only on these too.
 
-# v6.52.0 (P1): a SMALL allowlist of benign hidden (dot) project components. The dotfile guard
-# is DEFAULT-DENY: a credential blocklist can never be exhaustive (e.g. ~/.terraform.d,
-# ~/.cargo/credentials.toml, ~/.oci/config, ~/.pip/pip.conf, ~/.m2/settings.xml, ~/.*_history all
-# leak under enumeration), so a dotted component is blocked UNLESS it is one of these known-safe
-# project-config dirs/files. This serves the goal (read .github/.vscode/.idea project config)
-# without opening the whole in-home dotfile space.
-
-
 def summarize_subagent_profile(profile: ToolProfile, *, effective_lane: str = "") -> str:
     """Compact, human-readable summary of a subagent's EFFECTIVE tool profile
     (v6.57.0, 1.6): shell yes/no, writable roots, and model lane — derived from the
@@ -454,6 +446,13 @@ def _select_process_target(
     if decision is not None and not decision.allow:
         raise ValueError(decision.reason)
     include_skill = reserved_root == "skill_payload"
+    constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+    if include_skill and constraint and constraint.has_selected_skill:
+        from ouroboros.contracts.skill_payload_policy import constraint_bucket_skill
+
+        selected_bucket, selected_skill = constraint_bucket_skill(constraint)
+        bucket = bucket or selected_bucket
+        skill_name = skill_name or selected_skill
     if include_skill and (not str(bucket or "").strip() or not str(skill_name or "").strip()):
         raise ValueError("cwd=skill_payload[/subdir] requires bucket and skill_name")
     candidate_records = _process_root_candidates(
@@ -575,6 +574,43 @@ def _resolve_target_in_selected_base(
         path_text = normalize_runtime_data_path(resolved_base, path_text)
     elif root in {"active_workspace", "system_repo"}:
         path_text = normalize_root_relative(resolved_base, path_text)
+    if root == "active_workspace" and is_absolute_path_text(path_text):
+        # An admitted Docker workspace has a second, explicit address space.
+        # Map it through the executor owner, then apply the same confinement.
+        from ouroboros.workspace_executor import executor_ref_from_ctx, map_backend_path
+
+        executor = executor_ref_from_ctx(ctx)
+        if executor is not None and executor.kind == "docker_exec":
+            path_text = str(map_backend_path(executor, path_text))
+    if is_absolute_path_text(path_text):
+        candidate = pathlib.Path(path_text).expanduser()
+        # A foreign Windows absolute spelling has no native anchor on POSIX;
+        # joining it to cwd would invent a different physical file.
+        if candidate.anchor:
+            candidate = (resolved_base / candidate).resolve(strict=False)
+            try:
+                path_text = candidate.relative_to(resolved_base).as_posix()
+            except ValueError:
+                if root == "artifact_store" and operation in _READ_OPS:
+                    canonical = task_artifact_dir_path(
+                        canonical_data_root(ctx), task_id_for_artifacts(ctx), create=False,
+                    )
+                    try:
+                        relative = candidate.relative_to(canonical).as_posix()
+                    except ValueError:
+                        relative = ""
+                    if relative:
+                        anchored = delegated_capture_read_target(
+                            canonical_data_root(ctx), task_id_for_artifacts(ctx), relative, resolved_base,
+                        )
+                        if anchored is not None:
+                            return anchored
+        if is_absolute_path_text(path_text):
+            raise ValueError(
+                f"absolute path {path!r} is outside selected root={root} ({resolved_base}); "
+                "use a path inside that root or select the corresponding resource "
+                "(root='user_files' for authorized external files)"
+            )
     if root == "artifact_store" and operation in _READ_OPS:
         # C1 delegated captures (CR1-2): written on the CANONICAL drive, read from
         # a CHILD drive_root — re-anchor (see `delegated_capture_read_target`).
@@ -697,7 +733,7 @@ def build_resolved_resource_binding(
         selected_bucket = str(bucket or "").strip()
         selected_skill = str(skill_name or "").strip()
         constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
-        if constraint and constraint.mode == "skill_repair":
+        if constraint and constraint.has_selected_skill:
             from ouroboros.contracts.skill_payload_policy import constraint_bucket_skill
 
             expected_bucket, expected_skill = constraint_bucket_skill(constraint)
@@ -707,12 +743,9 @@ def build_resolved_resource_binding(
             ):
                 selected_bucket = expected_bucket
                 selected_skill = selected_skill or expected_skill
-            elif (selected_bucket, selected_skill) != (expected_bucket, expected_skill):
-                raise ValueError(
-                    "SKILL_REDIRECT_BLOCKED: active skill_repair payload is "
-                    f"{expected_bucket}/{expected_skill}; cannot select "
-                    f"{selected_bucket}/{selected_skill}"
-                )
+            # Physical identity is checked by resolve_skill_payload_base for
+            # file, legacy runtime-data and process selectors alike; logical
+            # external/native aliases must not look like a different payload.
         from ouroboros.contracts.skill_payload_policy import _is_skill_create_signal
 
         base, source, selected_name = _skill_payload_base(

@@ -9,6 +9,7 @@ from ouroboros.gateway.contracts import (
     WS_MESSAGE_TYPES,
     ActiveChatActivity,
     ActiveDirectTurn,
+    AttachmentManifestEntry,
     AvailableSubagentsSettingsMeta,
     ChatInbound,
     ChatOutbound,
@@ -45,6 +46,7 @@ from ouroboros.gateway.contracts import (
     SkillPublishPreflightResponse,
     StateResponse,
     TaskCostBreakdown,
+    TaskCreateResponse,
     TaskDetailResponse,
     TaskEvent,
     TaskEventCursor,
@@ -60,6 +62,7 @@ from ouroboros.gateway.contracts import (
     UpdatePreflightRequest,
     UpdatePreflightResponse,
     UpdateStatusReadyOutbound,
+    UploadResponse,
     VideoOutbound,
 )
 from ouroboros.gateway.router import collect_routes
@@ -246,6 +249,7 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     # loop above cannot see a new @property, so an ABI field added on the Python side would otherwise
     # never have to appear in the browser's typedef (ARCHITECTURE.md §11.3).
     for cls in (ChatInbound, ChatOutbound, PhotoOutbound, VideoOutbound, DocumentOutbound,
+                UploadResponse, TaskCreateResponse, AttachmentManifestEntry,
                 DecisionRequest, DecisionResponse, LinkAction, LinksOutbound, QuizOption, QuizOutbound, QuizStateOutbound,
                 # widgets-lifecycle W1b: the owner's per-card start-mode override is checked field by field.
                 UiPreferencesResponse,
@@ -366,8 +370,13 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
     assert _notrequired_fields(ActiveChatActivity) == set(), (
         "ActiveChatActivity snapshot rows always emit every field: keep them all required"
     )
-    assert ActiveChatActivity.__annotations__.keys() == ActiveDirectTurn.__annotations__.keys(), (
+    assert get_type_hints(ActiveChatActivity, include_extras=True) == get_type_hints(ActiveDirectTurn, include_extras=True), (
         "ActiveChatActivity must mirror ActiveDirectTurn's field shape so one client reducer hydrates both"
+    )
+    from ouroboros.gateway.schema import json_schema_for
+
+    assert json_schema_for(ActiveChatActivity) == json_schema_for(ActiveDirectTurn), (
+        "the shared activity shape must preserve flat keys, types and requiredness"
     )
     assert _notrequired_fields(TypingOutbound) == {
         "chat_id", "activity_id", "client_message_id", "phase", "kind",

@@ -57,7 +57,7 @@ _POPEN_ALLOWLIST = {
     # so /panic's tracked-subprocess sweep can never observe it alive but
     # untracked (isolated_deps._run template).
     "ouroboros/claudexor_daemon.py",
-    "ouroboros/extension_process_runner.py",  # waited extension child
+    "ouroboros/extension_process_runner.py",  # waited calls and session-owned response streams
     "ouroboros/workspace_executor.py",    # custody write-through added at spawn
     "ouroboros/local_model.py",           # custody record added at spawn
     "ouroboros/extension_companion.py",   # custody write-through added at spawn
@@ -240,9 +240,9 @@ def test_update_quiesce_kills_service_group_that_outlives_leader(tmp_path, monke
     rewritten = []
     killed = []
     group_alive = {456: True}
-    monkeypatch.setattr(process_custody, "_read_ledger_strict", lambda _root: (True, [entry]))
+    assert process_custody.append_jsonl(ledger_path(tmp_path), entry)
     monkeypatch.setattr(process_custody, "_fingerprint_matches", lambda _entry: False)
-    monkeypatch.setattr(process_custody, "process_group_is_alive", lambda pgid: group_alive.get(pgid, False))
+    monkeypatch.setattr(process_custody, "process_group_has_live_members", lambda pgid: group_alive.get(pgid, False))
     monkeypatch.setattr(
         process_custody,
         "kill_process_group_id",
@@ -251,7 +251,7 @@ def test_update_quiesce_kills_service_group_that_outlives_leader(tmp_path, monke
     monkeypatch.setattr(
         process_custody,
         "_rewrite_ledger",
-        lambda _root, entries: rewritten.extend(entries),
+        lambda _root, entries, **_kw: rewritten.extend(entries),
     )
 
     ok, blockers = process_custody.quiesce_custodied_services(tmp_path)
@@ -494,6 +494,8 @@ def test_lifeline_fires_on_supervisor_death_under_every_start_method(tmp_path, s
     the parent is the forkserver process, which outlives a SIGKILLed supervisor for as
     long as any worker holds its alive pipe, so a ppid watch never fires and the orphan
     would keep running LLM rounds until the next boot."""
+    from tests._shared import reap_test_process_group
+
     script = tmp_path / "supervisor.py"
     script.write_text(
         "import multiprocessing as mp, pathlib, sys, time\n"
@@ -511,7 +513,7 @@ def test_lifeline_fires_on_supervisor_death_under_every_start_method(tmp_path, s
     )
     pid_file, armed = tmp_path / "child_pid", tmp_path / "armed"
     # Own session: the lifeline's group-kill can only ever hit this tree, and the
-    # cleanup killpg below reaps the forkserver/resource-tracker helpers with it.
+    # cleanup census below also covers the forkserver/resource-tracker helpers.
     supervisor = subprocess.Popen([sys.executable, str(script), str(pid_file), str(armed)], start_new_session=True)
     try:
         deadline = time.time() + 60
@@ -526,12 +528,7 @@ def test_lifeline_fires_on_supervisor_death_under_every_start_method(tmp_path, s
             time.sleep(0.2)
         assert _process_gone(child_pid), f"{start_method} child outlived the dead supervisor"
     finally:
-        try:
-            os.killpg(supervisor.pid, 9)
-        except ProcessLookupError:
-            pass
-        if supervisor.poll() is None:
-            supervisor.wait(timeout=5)
+        reap_test_process_group(supervisor)
 
 
 # --- NW-10: custody session-id adoption + keep-service sparing ---
@@ -928,8 +925,8 @@ def test_start_time_match_matrix(tmp_path, monkeypatch, live, recorded, expected
 def test_reaper_skips_the_fingerprint_for_live_same_session_rows(tmp_path, monkeypatch, purpose):
     """A live same-session session row is kept either way, so the `ps` is pure cost.
 
-    The counter is the assertion: worker-pool members, the SyncManager, the claudexor
-    daemon, the local-model server and keep-services are ALL scope="session", so this is
+    The counter is the assertion: worker-pool members, the SyncManager, the
+    local-model server and keep-services are ALL scope="session", so this is
     the hot majority of the ledger on every 600s tick and startup sweep.
     """
     calls = []
@@ -967,14 +964,14 @@ def test_reaper_keeps_dead_leader_session_service_with_a_live_group(tmp_path, mo
         "fingerprint": {"start_time": "gone", "cmd_sha256": "gone"},
     }
     rewritten = []
-    monkeypatch.setattr(process_custody, "_read_ledger", lambda _root: [entry])
+    assert process_custody.append_jsonl(ledger_path(tmp_path), entry)
     monkeypatch.setattr(process_custody, "pid_is_alive", lambda _pid: False)  # leader is dead
-    monkeypatch.setattr(process_custody, "process_group_is_alive", lambda pgid: pgid == 456)
+    monkeypatch.setattr(process_custody, "process_group_has_live_members", lambda pgid: pgid == 456)
     monkeypatch.setattr(
         process_custody, "kill_process_group_id",
         lambda pgid: pytest.fail(f"a surviving service group must not be killed (pgid={pgid})"),
     )
-    monkeypatch.setattr(process_custody, "_rewrite_ledger", lambda _root, entries: rewritten.extend(entries))
+    monkeypatch.setattr(process_custody, "_rewrite_ledger", lambda _root, entries, **_kw: rewritten.extend(entries))
 
     assert reap_orphaned_processes(tmp_path) == []
     assert rewritten == [entry], "the dead-leader row must survive on its group evidence"

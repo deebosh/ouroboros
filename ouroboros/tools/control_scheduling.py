@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ouroboros.artifacts import attachment_manifest_projection, resolve_attachment_manifest
 from ouroboros.config import get_max_subagent_depth
 from ouroboros.depth_evidence import parse_task_depth
 from ouroboros.contracts.task_contract import (
@@ -527,7 +528,9 @@ def _build_child_subagent_contract(spec: Dict[str, Any]) -> Dict[str, Any]:
                 # requested child deadline whenever the parent carried one of its own.
                 "deadline_at": narrowed_deadline_at,
                 "delegation_budget": delegation_budget,
+                "resource_policy": spec.get("resource_policy", parent_contract.get("resource_policy", {})),
                 "attachment_manifest": spec.get("attachment_manifest") or [],
+                "attachment_manifest_ref": spec.get("attachment_manifest_ref"),
                 # Same lesson for the criteria carriers, re-stated even when EMPTY:
                 # without these, the parent's claims/criteria leak into every child and
                 # child verify receipts would "support" claims the child never owned.
@@ -535,8 +538,10 @@ def _build_child_subagent_contract(spec: Dict[str, Any]) -> Dict[str, Any]:
                 "success_criteria": [],
             } if isinstance(parent_contract, dict) else {
                 "delegation_budget": delegation_budget,
+                "resource_policy": spec.get("resource_policy", {}),
                 "acceptance_claims": child_claims,
                 "attachment_manifest": spec.get("attachment_manifest") or [],
+                "attachment_manifest_ref": spec.get("attachment_manifest_ref"),
             },
         },
     })
@@ -592,7 +597,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     if set(internal) - _INTERNAL_SCHEDULE_OPTIONS:
         raise TypeError(f"_schedule_task: unknown internal scheduling option(s): "
                         f"{sorted(set(internal) - _INTERNAL_SCHEDULE_OPTIONS)}")
-    fields, arg_error = _validated_schedule_fields(params)
+    fields, arg_error = _validated_schedule_fields(params, ctx=ctx)
     if arg_error:
         return _publish_scheduling_refusal(ctx, "error", "TOOL_ARG_ERROR", arg_error)
     deadline_at = fields["deadline_at"]
@@ -620,15 +625,10 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
 
     current_depth, depth_error = _context_task_depth(ctx)
     if depth_error:
-        return (
-            "⚠️ TOOL_ERROR (schedule_subagent): invalid_task_depth: "
-            f"{depth_error}"
-        )
+        return f"⚠️ TOOL_ERROR (schedule_subagent): invalid_task_depth: {depth_error}"
     new_depth = current_depth + 1
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
-    parent_contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}
-    if not parent_contract and isinstance(getattr(ctx, "task_contract", None), dict):
-        parent_contract = getattr(ctx, "task_contract")
+    parent_contract = fields["parent_contract"]
     max_depth = admitted_depth_cap(parent_contract, get_max_subagent_depth())
     if new_depth > max_depth:
         return record_depth_limit_refusal(
@@ -647,10 +647,6 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
             })
         except Exception:
             pass
-    # EMPTINESS decides, not type. `ToolContext.task_contract` defaults to `{}`, so testing
-    # only `isinstance(..., dict)` let that empty default win over a contract that really is
-    # in `task_metadata` — and the parent's `deadline_at` lives in the contract, so the miss
-    # silently un-narrowed every child deadline. Same precedence the registry already uses.
     current_task_id = str(getattr(ctx, "task_id", "") or "")
     parent_task_id = str(current_task_id or metadata.get("parent_task_id") or "").strip()
     root_task_id_seed = str(metadata.get("root_task_id") or current_task_id or "").strip()
@@ -659,7 +655,10 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     # destination now rather than a synonym for "unset".
     current_chat_id = _schedule_parent_chat(ctx)
     budget_drive_root = str(metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", "") or ctx.drive_root)
-    status_drive_root, root_cost_ceiling_usd = Path(budget_drive_root), getattr(getattr(ctx, "_cost_ceiling", None), "ceiling_usd", None)
+    status_drive_root = Path(budget_drive_root)
+    # Only the root authors this fact; a legacy child's local fallback is not it.
+    root_cost_ceiling_usd = (getattr(getattr(ctx, "_cost_ceiling", None), "ceiling_usd", None)
+                            if root_task_id_seed == current_task_id else metadata.get("root_cost_ceiling_usd"))
     if refusal := schedule_delegation_refusal(parent_contract, status_drive_root, parent_task_id):
         return refusal
     workspace_root = str(getattr(ctx, "workspace_root", "") or metadata.get("workspace_root") or "").strip()
@@ -717,7 +716,6 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     tid = uuid.uuid4().hex[:8]
     created_at = utc_now_iso()
     root_task_id = root_task_id_seed or tid
-    parent_model_lane = str(metadata.get("effective_model_lane") or "")
     parent_cognitive_route = {
         "model": str(getattr(ctx, "active_model", "") or metadata.get("model") or ""),
         "effort": str(getattr(ctx, "active_effort", "") or metadata.get("reasoning_effort") or ""),
@@ -727,7 +725,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         tid, status_drive_root, memory_mode, parent_project_id)
     if _drive_err:
         return _publish_scheduling_refusal(ctx, "error", "TOOL_ERROR", _drive_err)
-    child_attachment_manifest, attachment_error = _materialize_child_attachment_manifest(
+    child_attachment_authority, attachment_error = _materialize_child_attachment_manifest(
         parent_contract, child_drive or status_drive_root, tid,
         owner_drive=Path(ctx.drive_root), owner_task_id=parent_task_id,
     )
@@ -751,8 +749,8 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
         "allowed_resources": allowed_resources, "parent_contract": parent_contract,
         "parent_task_id": parent_task_id, "root_task_id": root_task_id, "session_id": session_id,
         "child_delegation_budget": child_delegation_budget, "deadline_at": str(deadline_at or ""),
-        "acceptance_claims": fields["acceptance_claims"],
-        "attachment_manifest": child_attachment_manifest,
+        "acceptance_claims": fields["acceptance_claims"], "resource_policy": fields["resource_policy"],
+        **child_attachment_authority,
     })
     # The requested-status envelope carries the REQUEST. Its derived half stays
     # empty until dispatch fills it, so a queued child's public description never
@@ -770,7 +768,7 @@ def _schedule_task(ctx: ToolContext, internal: Dict[str, Any] | None = None, /, 
     intent_fields = {
         "model_lane": requested_model_lane,
         "requested_model_lane": requested_model_lane,
-        "parent_model_lane": parent_model_lane,
+        "parent_model_lane": str(metadata.get("effective_model_lane") or ""),
         "requested_executor": requested_executor,
         "configured_subagent": configured_subagent,
         "parent_cognitive_route": parent_cognitive_route,
@@ -883,20 +881,27 @@ def _context_task_depth(ctx: ToolContext) -> tuple[int, str]:
 def _materialize_child_attachment_manifest(
     parent_contract: Dict[str, Any], target_root: Path, task_id: str,
     *, owner_drive: Optional[Path] = None, owner_task_id: str = "",
-) -> tuple[list[dict], str]:
+) -> tuple[dict, str]:
     """Copy inherited task inputs into the child's own artifact store."""
 
-    initial = parent_contract.get("attachment_manifest") if parent_contract else []
-    inherited = list(initial) if isinstance(initial, list) else []
-    if owner_drive is not None and owner_task_id:
-        from ouroboros.owner_mailbox import owner_attachment_manifest
+    from ouroboros.artifacts import materialize_inherited_attachment_manifest, remove_staged_attachments
 
-        inherited.extend(owner_attachment_manifest(owner_drive, owner_task_id))
-    if not inherited:
-        return [], ""
-    from ouroboros.artifacts import materialize_inherited_attachment_manifest
+    copied = []
+    try:
+        if parent_contract.get("attachment_manifest_ref") and (owner_drive is None or not owner_task_id):
+            return {}, "attachment manifest source owner is unavailable"
+        inherited = resolve_attachment_manifest(owner_drive, owner_task_id, parent_contract)
+        if owner_drive is not None and owner_task_id:
+            from ouroboros.owner_mailbox import owner_attachment_manifest
 
-    return materialize_inherited_attachment_manifest(inherited, target_root, task_id)
+            inherited.extend(owner_attachment_manifest(owner_drive, owner_task_id))
+        copied, error = materialize_inherited_attachment_manifest(inherited, target_root, task_id)
+        if error:
+            return {}, error
+        return attachment_manifest_projection(target_root, task_id, copied), ""
+    except (OSError, ValueError, TypeError) as exc:
+        remove_staged_attachments(copied)
+        return {}, f"{type(exc).__name__}: {exc}"
 
 
 def maybe_emit_delegated_run_fanout(ctx: ToolContext, *, run_id: str, route_id: str,

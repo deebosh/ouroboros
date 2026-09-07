@@ -97,6 +97,27 @@ export function cancelTask(taskId, { cascade = false, stopPolicy = '' } = {}) {
     return Object.keys(body).length ? jsonPost(url, body) : fetchJson(url, { method: 'POST' });
 }
 
+/** Canonical task-file address shared by live delivery, replay and source links. */
+export function taskArtifactDownloadUrl(taskId, name) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(String(taskId || ''))
+        || typeof name !== 'string' || !name || name.startsWith('.') || /[/\\]/.test(name)) return '';
+    const encodedName = encodeURIComponent(name).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+    return `/api/tasks/${encodeURIComponent(taskId)}/artifacts/${encodedName}`;
+}
+
+/** URL for one published immutable source handle. */
+export function taskSourceDownloadUrl(taskId, ref) {
+    const path = typeof ref?.path === 'string' ? ref.path : '';
+    if (!taskId || ref?.root !== 'artifact_store' || ref?.kind !== 'task_source'
+        || !/^[0-9a-f]{64}$/.test(ref?.sha256 || '')
+        || !/^source_handles\/(tool_results|context_checkpoints)\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(path)
+        || !Number.isSafeInteger(ref?.size) || ref.size < 0) return '';
+    const name = path.split('/').at(-1);
+    const url = taskArtifactDownloadUrl(taskId, name);
+    if (!url) return '';
+    return `${url}?source=${encodeURIComponent(path)}`;
+}
+
 export async function resumeTask(taskId) {
     return fetchJson(`/api/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST' });
 }
@@ -230,10 +251,13 @@ export const apiClient = {
     createTask,
     skillLifecycleQueue: () => fetchJson('/api/skills/lifecycle-queue', { cache: 'no-store' }),
     /** @returns {Promise<import('./api_types.js').SkillDeleteResponse>} */
-    deleteSkill: (skill, payloadRoot) => jsonPost(`/api/skills/${encodeURIComponent(skill)}/delete`, {
+    deleteSkill: (skill, payloadRoot, expectedContentHash = '') => jsonPost(`/api/skills/${encodeURIComponent(skill)}/delete`, {
         payload_root: payloadRoot,
+        ...(expectedContentHash ? { expected_content_hash: expectedContentHash } : {}),
     }),
-    skillGrants: (skill, items) => jsonPost(`/api/skills/${encodeURIComponent(skill)}/grants`, { items }),
+    skillGrants: (skill, items, expectedContentHash = '') => jsonPost(`/api/skills/${encodeURIComponent(skill)}/grants`, {
+        items, ...(expectedContentHash ? { expected_content_hash: expectedContentHash } : {}),
+    }),
     /**
      * @param {string} skill
      * @param {import('./api_types.js').OwnerSkillPresenceRuntimeRequest} payload

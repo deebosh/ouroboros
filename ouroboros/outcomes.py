@@ -911,6 +911,8 @@ def public_task_result(result: Dict[str, Any], *, include_outcome_axes: bool = T
         plan_state["legacy_v1_projection"] = legacy_plan_review_projection(plan_state)
     if include_outcome_axes:
         public["outcome_axes"] = normalize_outcome_axes(result)
+        if isinstance(public.get("artifact_bundle"), dict) and public["artifact_bundle"].get("status"):
+            public["artifact_status"] = public["outcome_axes"]["artifacts"]["status"]
     return public
 
 
@@ -1299,7 +1301,6 @@ def collect_trace_refs(usage: Dict[str, Any], llm_trace: Dict[str, Any]) -> Dict
 
 def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """Return v2 ArtifactBundle while preserving old artifact fields."""
-
     existing_bundle = result.get("artifact_bundle") if isinstance(result.get("artifact_bundle"), dict) else {}
     artifacts = list(result.get("artifacts") or []) if isinstance(result.get("artifacts"), list) else []
     bundle_status = str(existing_bundle.get("status") or "").strip()
@@ -1331,7 +1332,9 @@ def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
             continue
         path = str(item.get("path") or "")
         explicit_status = str(item.get("status") or "").strip()
-        if explicit_status:
+        if item.get("copy_status") == "failed":
+            artifact_status = "missing"
+        elif explicit_status:
             artifact_status = explicit_status
         elif path and pathlib.Path(path).exists():
             artifact_status = ARTIFACT_STATUS_READY
@@ -1348,10 +1351,13 @@ def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
             "size": int(item.get("size") or 0),
             "sha256": str(item.get("sha256") or ""),
             "status": artifact_status,
-            "errors": list(item.get("errors") or []) if isinstance(item.get("errors"), list) else [],
+            "errors": (list(item.get("errors") or []) if isinstance(item.get("errors"), list) else [])
+                      + ([str(item["copy_error"])] if item.get("copy_error") else []),
         }
         records.append(record)
-    if status != ARTIFACT_STATUS_FAILED and any(str(item.get("status") or "") == "missing" for item in records):
+    if old_status == ARTIFACT_STATUS_FAILED or any(item["status"] == ARTIFACT_STATUS_FAILED for item in records):
+        status = ARTIFACT_STATUS_FAILED
+    elif status != ARTIFACT_STATUS_FAILED and any(item["status"] == "missing" for item in records):
         status = "missing"
     errors = []
     if result.get("artifact_error"):

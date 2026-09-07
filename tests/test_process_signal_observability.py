@@ -137,12 +137,13 @@ def test_run_shell_missing_binary_publishes_duration_only(tmp_path, monkeypatch)
 
     monkeypatch.setattr("ouroboros.tools.shell._tracked_subprocess_run", raise_missing)
     result = _run_shell(_ctx(tmp_path), ["definitely-not-a-binary"])
-    assert result.startswith("⚠️ SHELL_ERROR")
+    assert result.startswith("⚠️ SHELL_ARG_ERROR")
     facts = consume_last_process_facts()
     assert "exit_code" not in facts and "signal" not in facts
     # The spawn never happened, and the platform's exception class is the typed
     # cause — not a synthesized exit code, and not silence.
     assert facts["pre_exec_failure"] == "FileNotFoundError"
+    assert not {"pid", "pgid", "process_start_identity"}.intersection(facts)
     assert "timed_out" not in facts and "killed_by_host" not in facts
     assert isinstance(facts["duration_ms"], int)
 
@@ -796,6 +797,7 @@ def _extension_proc(returncode):
         pid = 9001
 
         def __init__(self):
+            self.stdin = None  # Popen with DEVNULL has no parent-side input pipe.
             self.stdout = io.BytesIO(b"")
             self.stderr = io.BytesIO(b"")
             self.returncode = returncode
@@ -832,6 +834,7 @@ def test_extension_child_timeout_publishes_host_kill(tmp_path, monkeypatch):
         pid = 9002
 
         def __init__(self):
+            self.stdin = None  # Popen with DEVNULL has no parent-side input pipe.
             self.stdout = io.BytesIO(b"")
             self.stderr = io.BytesIO(b"")
             self.returncode = None

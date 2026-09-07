@@ -178,12 +178,21 @@ def test_the_public_loader_surface_is_unchanged():
 
 
 def test_extension_extraction_size_bounds_have_meaningful_headroom():
+    from ouroboros.review import BAND_MODULE_MAX_LINES, TARGET_MODULE_LINES
+    from ouroboros.size_ratchet_manifest import BAND_PATHS
+
     counts = {
         module.__name__: len(
             pathlib.Path(module.__file__).read_text(encoding="utf-8").splitlines()
         )
         for module in (extension_loader, *_LEAVES)
     }
-    assert counts["ouroboros.extension_loader"] <= 1000
-    assert all(count <= 1000 for count in counts.values())
-    assert 600 <= counts["ouroboros.extension_plugin_api"] <= 1000
+    assert counts["ouroboros.extension_loader"] <= TARGET_MODULE_LINES
+    for module, count in counts.items():
+        path = module.replace(".", "/") + ".py"
+        limit = TARGET_MODULE_LINES
+        if path in BAND_PATHS:
+            assert BAND_PATHS[path], f"new extension band entry needs its rationale: {path}"
+            limit = BAND_MODULE_MAX_LINES
+        assert count <= limit, f"{path}: {count} lines exceeds its {limit}-line bound"
+    assert counts["ouroboros.extension_plugin_api"] >= 600

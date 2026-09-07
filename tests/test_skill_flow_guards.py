@@ -6,16 +6,17 @@ import queue
 
 from ouroboros import loop as loop_mod
 from ouroboros.contracts.task_constraint import TaskConstraint, normalize_task_constraint
-from ouroboros.skill_review_runner import _heal_mode
+from ouroboros.tool_access import active_tool_profile
 from ouroboros.utils import sanitize_tool_args_for_log
 
 
-def test_task_constraint_controls_heal_mode_not_prompt_text():
+def test_selected_skill_is_resource_context_not_a_reduced_profile():
     messages = [{"role": "user", "content": "Please run tests for task_constraint handling"}]
-    assert not _heal_mode(SimpleNamespace(messages=messages, task_constraint=None))
+    plain = SimpleNamespace(messages=messages, task_constraint=None)
 
     constraint = TaskConstraint(mode="skill_repair", skill_name="target", payload_root="skills/external/target")
-    assert _heal_mode(SimpleNamespace(messages=messages, task_constraint=constraint))
+    assert constraint.has_selected_skill
+    assert active_tool_profile(SimpleNamespace(messages=messages, task_constraint=constraint)) == active_tool_profile(plain)
 
 
 def test_normalize_task_constraint_from_command_payload():
@@ -89,6 +90,7 @@ def test_skill_finalization_rearms_after_tool_round(monkeypatch, tmp_path):
         def __init__(self):
             self._ctx = SimpleNamespace(
                 event_queue=None,
+                drive_root=tmp_path,
                 task_id="task",
                 messages=[],
                 active_model_override=None,
@@ -174,6 +176,7 @@ def test_skill_action_and_effect_round_cannot_erase_complete_candidate(monkeypat
         def __init__(self):
             self._ctx = SimpleNamespace(
                 event_queue=None,
+                drive_root=tmp_path,
                 task_id="task",
                 messages=[],
                 active_model_override=None,
@@ -268,6 +271,7 @@ def test_skill_finalization_empty_text_does_not_append_empty_assistant(monkeypat
         def __init__(self):
             self._ctx = SimpleNamespace(
                 event_queue=None,
+                drive_root=tmp_path,
                 task_id="task",
                 messages=[],
                 active_model_override=None,

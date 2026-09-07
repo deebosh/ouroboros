@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import ouroboros.agent_task_pipeline as pipeline
+from ouroboros.cost_projection import carry_cost_meta
 
 
 def test_emit_task_results_queues_restart_after_final_events(tmp_path, monkeypatch):
@@ -249,8 +250,12 @@ def test_emit_task_results_ephemeral_turn_skips_all_durable_memory(tmp_path, mon
     )
     assert "send_message" in [evt["type"] for evt in pending_events]  # reply still delivered
     inline = next(evt for evt in pending_events if evt["type"] == "send_message")
+    done = next(evt for evt in pending_events if evt["type"] == "task_done")
     assert inline["progress_meta"] == {
         "ephemeral_decision": True, "task_terminal_status": "completed",
+        "outcome_axes": done["outcome_axes"], "reason_code": done["reason_code"],
+        **carry_cost_meta({key: value for key, value in done.items()
+                           if key not in {"accounted_upper_bound_usd_with_children", "cost_with_children_partial"}}),
     }
     assert memory_calls == []  # NO durable memory writes for an ephemeral turn
     assert store_calls == []  # CW3: no durable task_result for a transient decision turn
@@ -304,9 +309,11 @@ def test_ephemeral_typed_routing_delivers_nonempty_final_and_keeps_receipt_metad
         assert len(sends) == 1
         assert sends[0]["text"] == f"Receipt prose for {action}"
         assert sends[0]["log_text"] == f"Receipt prose for {action}"
-        assert sends[0]["progress_meta"] == {
-            "ephemeral_decision": True, "task_terminal_status": "completed",
-        }
+        done = next(evt for evt in pending_events if evt["type"] == "task_done")
+        assert sends[0]["progress_meta"]["ephemeral_decision"] is True
+        assert sends[0]["progress_meta"]["task_terminal_status"] == "completed"
+        assert sends[0]["progress_meta"]["outcome_axes"] == done["outcome_axes"]
+        assert sends[0]["progress_meta"]["reason_code"] == done["reason_code"]
         done = next(evt for evt in pending_events if evt["type"] == "task_done")
         assert pending_events.index(sends[0]) < pending_events.index(done)
         assert done["ephemeral_decision"] is True
@@ -652,3 +659,62 @@ def test_entry_marker_still_skips_every_paid_stage_and_seeds_no_checkpoint(tmp_p
     stored = pipeline.load_task_result(root, task_id) or {}
     assert "root_phase_checkpoint" not in stored, stored
     assert not (root / "logs" / "events.jsonl").exists() or _finalized_events(root, task_id) == []
+
+
+@pytest.mark.parametrize("role", ["root", "subagent"])
+def test_requested_file_result_completes_without_committing_the_worktree(tmp_path, role):
+    """An edited file is a valid requested result; dirty Git state adds no failure.
+
+    Retains the contributor's isolated tracked-diff fixture, while asserting the
+    owner-approved contract instead of universal commit-or-fail finalization.
+    """
+    import subprocess
+
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q")
+    (repo / "answer.txt").write_text("old\n", encoding="utf-8")
+    git("add", "answer.txt")
+    git("-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    (repo / "answer.txt").write_text("42\n", encoding="utf-8")
+    task = {"id": "file-result", "type": "task", "repo_dir": str(repo), "delegation_role": role,
+            "text": "Write 42 to answer.txt and leave the edited file for me.",
+            "expected_output": "The edited answer.txt file; no Git commit requested."}
+    pipeline._store_task_result(
+        env=SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path / "host_tree"), task=task,
+        text="answer.txt contains 42.", usage={"rounds": 1, "cost": 0},
+        llm_trace={"tool_calls": [{"tool": "write_file", "status": "ok",
+                                   "args": {"path": "answer.txt", "content": "42\n"}}]},
+    )
+    stored = pipeline.load_task_result(tmp_path, "file-result")
+    assert stored["status"] == "completed"
+    assert stored["reason_code"] != "work_uncommitted"
+    assert stored["result"] == "answer.txt contains 42."
+    assert (repo / "answer.txt").read_text(encoding="utf-8") == "42\n"
+    assert git("rev-parse", "HEAD") == base
+    assert "+42" in git("diff", "--", "answer.txt")
+
+
+@pytest.mark.parametrize("artifact_status", ["failed", "missing"])
+def test_terminal_event_reports_failed_bundle_over_older_capture_status(tmp_path, monkeypatch, artifact_status):
+    monkeypatch.setattr(pipeline, "_store_task_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "_run_post_task_processing_async", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "load_task_result", lambda *args, **kwargs: {
+        "status": "completed", "artifact_status": "ready", "artifact_bundle": {"status": artifact_status},
+    })
+    pending = []
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    pipeline.emit_task_results(
+        env=SimpleNamespace(drive_root=tmp_path), memory=object(), llm=object(), pending_events=pending,
+        task={"id": "capture", "type": "task", "chat_id": 1, "text": "deliver"}, text="Finished work",
+        usage={"rounds": 1, "cost": 0.2}, llm_trace={"tool_calls": [], "reasoning_notes": []},
+        start_time=0.0, drive_logs=logs, ctx=SimpleNamespace(pending_restart_reason=""),
+    )
+    terminal = next(item for item in pending if item["type"] == "task_done")
+    assert terminal["artifact_status"] == artifact_status
+    assert terminal["status"] == "completed"

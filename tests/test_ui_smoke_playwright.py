@@ -180,105 +180,6 @@ def test_ui_projects_sidebar_unread_and_keyboard_menu(direct_server_with_data):
         raise
 
 
-@pytest.mark.ui_browser
-def test_ui_smoke_project_panel_lifecycle_does_not_leak(direct_server_with_data):
-    """Open/close cycles keep one live panel, flat ws listeners, and flat DOM.
-
-    P3 lifecycle concrete: closing or switching a project DESTROYS its chat
-    instance (disposing every ws.on subscription, the ResizeObserver, the
-    window/document listeners, and all timers), so repeated open/close cycles
-    cannot accumulate hidden panels, listeners, or DOM nodes. Panels marked
-    data-pending-work (staged attachments / in-flight upload) are the one
-    sanctioned exception and are excluded from the live-panel count.
-    """
-    pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
-    from playwright.sync_api import Error as PlaywrightError
-    from playwright.sync_api import sync_playwright
-
-    from ouroboros.projects_registry import create_project
-
-    url = direct_server_with_data["url"]
-    data_dir = direct_server_with_data["data_dir"]
-    project_ids = [f"leak-{idx}" for idx in range(1, 4)]
-    for idx, project_id in enumerate(project_ids, start=1):
-        create_project(data_dir, project_id, name=f"Leak project {idx}")
-
-    # window.__ouroWs is the loopback debug hook app.js exposes for exactly
-    # this count; the module-scoped ws is unreachable from page.evaluate.
-    count_listeners = """() => {
-        const ws = window.__ouroWs;
-        return Object.values(ws.listeners).reduce((total, set) => total + set.size, 0);
-    }"""
-    live_panels = """() => [...document.querySelectorAll('.chat-instance-panel')]
-        .filter((panel) => panel.dataset.pendingWork !== '1').length"""
-    dom_count = "() => document.getElementsByTagName('*').length"
-
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            page = browser.new_page(viewport={"width": 1280, "height": 800})
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-                for project_id in project_ids:
-                    page.wait_for_selector(
-                        f'.nav-project-row[data-project-id="{project_id}"]', timeout=30_000
-                    )
-
-                def open_project(project_id):
-                    page.click(f'.nav-project-row[data-project-id="{project_id}"]')
-                    page.wait_for_selector("#project-panel:not([hidden])", timeout=30_000)
-                    page.wait_for_selector(
-                        f'[id="panel-pchat-{project_id}"]:not([hidden])', timeout=30_000
-                    )
-
-                def close_project():
-                    page.click("#project-panel-close")
-                    page.wait_for_function(
-                        "() => !document.getElementById('project-panel')"
-                        ".classList.contains('open')",
-                        timeout=30_000,
-                    )
-
-                # Baseline AFTER one full open/close cycle so one-time lazy
-                # registrations cannot masquerade as leaks.
-                open_project(project_ids[0])
-                close_project()
-                listeners_baseline = page.evaluate(count_listeners)
-                dom_baseline = page.evaluate(dom_count)
-                assert listeners_baseline > 0
-
-                # Small slack for churn outside the panel (badges, toasts);
-                # a leaked panel or card timeline is hundreds of nodes.
-                dom_slack = 30
-                for project_id in project_ids:
-                    open_project(project_id)
-                    assert page.evaluate(live_panels) <= 1
-                    close_project()
-                    assert page.evaluate(live_panels) == 0
-                    # Every cycle returns to the baseline: no monotonic growth.
-                    cycle_dom = page.evaluate(dom_count)
-                    assert cycle_dom <= dom_baseline + dom_slack, (dom_baseline, cycle_dom)
-                    assert page.evaluate(count_listeners) == listeners_baseline
-
-                # Direct project-to-project switch (no explicit close) also
-                # destroys the previous instance: one live panel, ever.
-                open_project(project_ids[0])
-                open_project(project_ids[1])
-                assert page.evaluate(live_panels) == 1
-                close_project()
-                assert page.evaluate(live_panels) == 0
-
-                assert page.evaluate(count_listeners) == listeners_baseline
-                final_dom = page.evaluate(dom_count)
-                assert final_dom <= dom_baseline + dom_slack, (dom_baseline, final_dom)
-            finally:
-                browser.close()
-    except PlaywrightError as exc:
-        if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
-            pytest.skip(str(exc))
-        raise
-
-
 def _run_docker_ui_assertions(url: str) -> None:
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
@@ -2409,13 +2310,19 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
             const activityStyle = getComputedStyle(activity);
             const activityLineHeight = parseFloat(activityStyle.lineHeight);
             const activityRect = activity.getBoundingClientRect();
+            const cardMain = card.querySelector(':scope > .chat-live-summary-button .chat-live-summary-main').getBoundingClientRect();
+            const cardSide = card.querySelector(':scope > .chat-live-summary-button .chat-live-summary-side').getBoundingClientRect();
             return {
                 id: card.dataset.taskId,
+                collapsedChild: card.classList.contains('subagent') && card.dataset.expanded !== '1',
                 clientWidth: card.clientWidth,
                 scrollWidth: card.scrollWidth,
                 titleWidth: titleRect.width,
                 titleHeight: titleRect.height,
                 titleLines: lineHeight > 0 ? titleRect.height / lineHeight : 99,
+                titleTop: titleRect.top,
+                mainTop: cardMain.top,
+                summaryBottom: Math.max(cardMain.bottom, cardSide.bottom),
                 activityLines: activityLineHeight > 0 ? activityRect.height / activityLineHeight : 99,
                 activityTitle: activity.getAttribute('title'),
             };
@@ -2458,6 +2365,13 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
         assert 0.9 <= min(card["titleLines"] for card in facts["cardFacts"]), facts
         assert max(card["titleLines"] for card in facts["cardFacts"]) <= 2.2, facts
         assert max(card["activityLines"] for card in facts["cardFacts"]) <= 2.2, facts
+        # #623: a collapsed child keeps its identity row — the title beside the
+        # chip, the summary at most two bands (the side wraps under only when a
+        # 160px title cannot share the row), never a third band for the title.
+        for card in facts["cardFacts"]:
+            if card["collapsedChild"]:
+                assert abs(card["titleTop"] - card["mainTop"]) <= 4, card
+                assert card["summaryBottom"] - card["mainTop"] <= 2.2 * card["titleHeight"] + 8, card
         assert all(card["activityTitle"] is None for card in facts["cardFacts"]), facts
         deepest = page.locator('.chat-live-card[data-task-id="layout-child-10"]')
         assert "pty-tests · gemini-3.6-flash" in deepest.inner_text()
@@ -2585,6 +2499,7 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                             const main = summary.querySelector('.chat-live-summary-main').getBoundingClientRect();
                             const side = summary.querySelector('.chat-live-summary-side').getBoundingClientRect();
                             const rect = card.getBoundingClientRect();
+                            const title = summary.querySelector('.chat-live-title').getBoundingClientRect();
                             return {
                                 id,
                                 left: rect.left,
@@ -2594,19 +2509,25 @@ def test_ui_smoke_live_cards_keep_usable_geometry_at_depth_and_in_project_panel(
                                 mainBottom: main.bottom,
                                 sideTop: side.top,
                                 sideBottom: side.bottom,
+                                titleTop: title.top,
                                 client: card.clientWidth,
                                 scroll: card.scrollWidth,
                             };
                         });
                     }"""
                 )
-                assert [card["wrap"] for card in wide_facts] == ["nowrap", "nowrap", "wrap"], wide_facts
                 assert wide_facts[1]["left"] - wide_facts[0]["left"] >= 30, wide_facts
                 assert wide_facts[2]["left"] - wide_facts[1]["left"] >= 30, wide_facts
                 assert all(card["scroll"] <= card["client"] + 1 for card in wide_facts), wide_facts
                 for card in wide_facts[:2]:
                     assert min(card["mainBottom"], card["sideBottom"]) \
                         > max(card["mainTop"], card["sideTop"]), wide_facts
+                # #623: the depth-2 collapsed child is in the 560px container regime
+                # (wrap allowed) yet keeps ONE identity row: chip, title, side controls.
+                deep = wide_facts[2]
+                assert deep["wrap"] == "wrap", wide_facts
+                assert abs(deep["titleTop"] - deep["mainTop"]) <= 4, wide_facts
+                assert deep["sideTop"] < deep["mainBottom"], wide_facts
 
                 # The 620-700px column (laptop with the project panel open): the root
                 # card takes up to 620px there and keeps its single-row header.

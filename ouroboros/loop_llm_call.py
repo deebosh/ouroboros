@@ -44,6 +44,7 @@ from ouroboros.utils import (
     emit_cognitive_operation_event,
     emit_main_llm_call_state_event,
     emit_log_event,
+    has_log_sink,
     sanitize_tool_result_for_log,
     truncate_review_artifact,
     utc_now_iso,
@@ -262,9 +263,7 @@ def _attempt_loop_budget(max_retries: int, attempt_cap: Optional[int]) -> int:
     to a small total so the chain tries a candidate a fixed couple of times then moves on.
     Applied only to candidates; the primary passes None and keeps its full budgets."""
     budget = transient_retry_max(max_retries)
-    if attempt_cap is not None:
-        budget = max(1, min(int(budget), int(attempt_cap)))
-    return budget
+    return budget if attempt_cap is None else max(1, min(int(budget), int(attempt_cap)))
 
 
 def _record_and_emit_empty_response(
@@ -345,14 +344,20 @@ def _retry_backoff_sec(
     return min(2.0 ** attempt * 4, _TRANSIENT_BACKOFF_CAP_SEC if is_transient else 30.0)
 
 
-def _sleep_within_deadline(seconds: float, deadline_ts: Optional[float]) -> bool:
+def _sleep_within_deadline(
+    seconds: float, deadline_ts: Optional[float], *, wake_check: Optional[Callable[[], bool]] = None,
+) -> bool:
     """Sleep ``seconds`` if the task deadline (epoch seconds) allows another
     attempt afterwards. Returns False — without sleeping — when the remaining
-    time budget cannot absorb the backoff, signalling the caller to stop."""
-    if deadline_ts:
-        remaining = float(deadline_ts) - time.time()
-        if remaining < float(seconds) + _DEADLINE_RETRY_FLOOR_SEC:
-            return False
+    time budget cannot absorb the backoff, signalling the caller to stop.
+    An optional typed-control wake also returns False after interrupting sleep;
+    only the paid transport-repeat caller opts into that control check."""
+    if deadline_ts and float(deadline_ts) - time.time() < float(seconds) + _DEADLINE_RETRY_FLOOR_SEC:
+        return False
+    if wake_check is not None:
+        from ouroboros.loop_transport import interruptible_wait_sleep
+
+        return not interruptible_wait_sleep(seconds, wake_check)
     time.sleep(float(seconds))
     return True
 
@@ -448,6 +453,7 @@ class _LlmErrorContext:
     transient_budget: int = 0
     transport_death_retries: int = 0
     transport_reserve_sec: Optional[float] = None
+    stop_retry_check: Optional[Callable[[], bool]] = None
 
 
 @dataclass(frozen=True)
@@ -474,7 +480,7 @@ def _emit_live_log(event_queue: Optional[queue.Queue], payload: Dict[str, Any]) 
 
 
 def _short_error_text(value: Any, limit: int = 220) -> str:
-    text = " ".join(str(value or "").split()).strip()
+    text = " ".join(sanitize_tool_result_for_log(str(value or "")).split()).strip()
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
@@ -967,12 +973,11 @@ def _record_llm_call_error(
         "llm_call_id": ctx.llm_call_id, "round": ctx.round_idx, "attempt": ctx.attempt + 1,
         "model": ctx.model,
     }
-    _emit_live_log(ctx.event_queue, {
-        "type": "llm_round_error", "task_type": ctx.task_type, **identity,
-        "task_attempt": ctx.task_attempt, "error": safe_error,
-        "error_kind": classification.kind, "retry_same_request": will_retry,
-    })
-    append_jsonl(ctx.drive_logs / "events.jsonl", {
+    # ONE error row (#355): a successful append's registered sink owns live
+    # delivery. Without that path, send the SAME evidence through the queue,
+    # preserving its identity for live/backfill dedupe. No llm_round_error
+    # sibling here; Background Consciousness keeps its own separate producer.
+    error_event = {
         "ts": utc_now_iso(), "type": "llm_api_error", **identity, "error": safe_error,
         "error_kind": classification.kind, "retry_same_request": will_retry,
         "status_code": classification.status_code, "provider_code": classification.provider_code,
@@ -980,7 +985,9 @@ def _record_llm_call_error(
         **custody_fields,
         **(ctx.context_fit_event_fields or {}),
         "request_ref": ctx.request_ref.get("manifest_ref") if ctx.request_ref else None,
-    })
+    }
+    if not append_jsonl(ctx.drive_logs / "events.jsonl", error_event) or not has_log_sink():
+        emit_log_event(ctx.event_queue, error_event, log_label="LLM call error")
     ctx.accumulated_usage.update(_last_llm_error=_short_error_text(safe_error),
                                  _last_llm_error_kind=classification.kind, _last_llm_retry_same_request=will_retry)
     if classification.retry_after_sec is not None:
@@ -1022,31 +1029,24 @@ def _stop_after_llm_error(ctx: _LlmErrorContext) -> bool:
         # redial pacing. NOT a spent wall — the transport-wait terminal owns this.
         return True
     if error_kind == "provider_outcome_unknown":
-        # Granted, counted and deadline-checked in _record_llm_call_error; only
-        # the recorded backoff (by death ordinal) is left before the loop sends
-        # a NEW physical attempt. Not a spent wall either — the unknown
-        # no-resend terminal outranks the wall.
-        backoff = (accumulated_usage.get(TRANSPORT_DEATHS_KEY) or {}).get("backoff_sec")
-    else:
-        is_transient = error_kind in _TRANSIENT_RETRY_KINDS
-        # Non-transient retryables: max_retries capped by the loop ceiling (primary: no-op).
-        attempt_budget = ctx.transient_budget if is_transient else min(ctx.max_retries, ctx.transient_budget)
-        backoff = (
-            _retry_backoff_sec(accumulated_usage, error_kind, ctx.attempt, is_transient)
-            if ctx.attempt < attempt_budget - 1 else None
-        )
+        from ouroboros.loop_transport import wait_transport_repeat
+        return wait_transport_repeat(ctx)
+    is_transient = error_kind in _TRANSIENT_RETRY_KINDS
+    # Non-transient retryables: max_retries capped by the loop ceiling (primary: no-op).
+    attempt_budget = ctx.transient_budget if is_transient else min(ctx.max_retries, ctx.transient_budget)
+    backoff = (
+        _retry_backoff_sec(accumulated_usage, error_kind, ctx.attempt, is_transient)
+        if ctx.attempt < attempt_budget - 1 else None
+    )
     if backoff is not None:
         if _sleep_within_deadline(backoff, ctx.deadline_ts):
             return False
-        if error_kind == "provider_outcome_unknown":
-            _uncount_transport_death(accumulated_usage)  # the granted repeat never left the host
         _emit_retry_deadline_exhausted(
             ctx.drive_logs, task_id=ctx.task_id, execution_id=ctx.execution_id,
             round_id=ctx.round_id, round_idx=ctx.round_idx, attempt=ctx.attempt,
             model=ctx.model, error_kind=error_kind,
         )
-    if error_kind != "provider_outcome_unknown":
-        accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
+    accumulated_usage[RETRY_WALL_EXHAUSTED_KEY] = True
     return True
 
 
@@ -1321,6 +1321,7 @@ def call_llm_with_retry(
     response_meta_out: Optional[Dict[str, Any]] = None,
     transport_reserve_sec: Optional[float] = None, transport_death_retries: int = 0,
     initial_messages: Optional[List[Dict[str, Any]]] = None,
+    stop_retry_check: Optional[Callable[[], bool]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[float]]:
     """Call one model with bounded retries and deadline-aware transport."""
     msg = None
@@ -1479,7 +1480,8 @@ def call_llm_with_retry(
                 event_queue,
                 task_id,
                 display_model,
-                usage,
+                {**usage, "llm_call_id": llm_call_id, "execution_id": execution_id,
+                 "round_id": round_id, "round": round_idx},
                 cost,
                 category,
                 provider=provider,
@@ -1589,6 +1591,7 @@ def call_llm_with_retry(
                     task_attempt=task_attempt, deadline_ts=deadline_ts,
                     max_retries=max_retries, transient_budget=transient_budget,
                     transport_death_retries=transport_death_retries, transport_reserve_sec=transport_reserve_sec,
+                    stop_retry_check=stop_retry_check,
                 ),
                 call_identity,
             ):

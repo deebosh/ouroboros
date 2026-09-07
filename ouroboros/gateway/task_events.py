@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
-from ouroboros.gateway._helpers import coerce_int, request_drive_root
+from ouroboros.gateway._helpers import coerce_int, request_drive_root, run_sync_to_completion
 from ouroboros.headless import ARTIFACT_STATUS_FINALIZING, ARTIFACT_STATUS_PENDING
 from ouroboros.outcomes import public_task_result
 from ouroboros.task_results import load_task_result, task_results_dir, validate_task_id
@@ -137,7 +137,7 @@ async def api_task_events(request: Request) -> StreamingResponse:
                             # must still deliver the artifact-bearing terminal
                             # payload (and run its read-repair rebase) exactly
                             # once per stream.
-                            full = await asyncio.to_thread(
+                            full = await run_sync_to_completion(
                                 _tasks_namespace().load_effective_task_result, drive_root, task_id
                             )
                             if full:
@@ -157,7 +157,9 @@ async def api_task_events(request: Request) -> StreamingResponse:
             if follower.result_is_final():
                 if not emitted_final:
                     result = public_task_result(
-                        _tasks_namespace().load_effective_task_result(drive_root, task_id)
+                        await run_sync_to_completion(
+                            _tasks_namespace().load_effective_task_result, drive_root, task_id,
+                        )
                     )
                     if result:
                         final_event = {
@@ -657,14 +659,7 @@ async def _api_task_events_v2(request: Request, task_id: str):
                 rows = follower.read_events()
                 try:
                     while True:
-                        read = asyncio.create_task(asyncio.to_thread(next, rows, None))
-                        try:
-                            event = await asyncio.shield(read)
-                        except asyncio.CancelledError:
-                            # A cancelled HTTP waiter does not stop its file
-                            # read thread. Settle it before closing the handles.
-                            await read
-                            raise
+                        event = await run_sync_to_completion(next, rows, None)
                         if event is None:
                             break
                         yield _sse(event, event_id=event["seq"])
@@ -674,7 +669,7 @@ async def _api_task_events_v2(request: Request, task_id: str):
                 if first or terminal:
                     result = follower.result
                     if terminal:
-                        result = await asyncio.to_thread(
+                        result = await run_sync_to_completion(
                             _tasks_namespace().load_effective_task_result, drive_root, task_id,
                         )
                     event = follower.envelope({"source": "task_result", "type": "task_result",

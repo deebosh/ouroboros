@@ -65,6 +65,10 @@ rules have no automated surface — review-only.
 - External workspace tasks keep governance bound to the system repository while
   contextual tools default through `ToolContext.active_repo_dir()`. Admission
   rejects overlap with the system repo/data and records a read-only preflight.
+- Physical file resolution must preserve the requested address. Normalize
+  in-root absolute paths for every resource; refuse an outside address before
+  relative-path sanitization. Keep repo-prefix and canonical artifact redirects
+  on the same resolver used by guards and handlers.
 - Project focus changes the default target, not the top-level tool surface.
   Generic VCS selects active/system explicitly; advisory, reviewed commit,
   rollback, promotion, restart, and runtime control keep their intrinsic
@@ -80,6 +84,37 @@ rules have no automated surface — review-only.
   not active authentication; discovery never logs in or probes the network.
 - Do not add a second scheduler for operator tooling or a generic CLI file
   manager. Use the task queue, attachments, logs, and artifact endpoints.
+- A process cwd determines relative paths, not the root task's entire write
+  authority. Reuse the resource binding for other authorized destinations;
+  preserve child write confinement and actual runtime/credential boundaries.
+  Only the filesystem writer lane excludes SSH remote payloads, retaining local
+  options and redirections. Other guards inspect the original command, as does
+  execution. Child, external-task and Light read checks share the physical paths
+  from `shell_guards.shell_inspection_paths`, including each row's effective cwd.
+  Remote commands can reach local files through configured SSH trust (including
+  loopback); this local inspection is not a remote-effect sandbox.
+  Positional GitHub policy inspects direct `gh` and shell-wrapper segments;
+  remote `ssh ... gh auth` is an inherited residual, not classified as local auth.
+- Do not infer credential authority from ordinary source/config directory
+  names. Restricted repository reads/searches use the existing byte masker with
+  `mask_opaque=False`: preserve ordinary long source while masking known token
+  formats and PEM keys. Keep owner-home opaque masking enabled. A runtime data
+  directory inside a project retains its actual secret/control path rules,
+  including a forked child's canonical parent (`core_secret_paths.restricted_data_roots`).
+  Prepare invariant credential/root locations once per list/search/query call
+  through `make_subagent_secret_target_check`; never retain that predicate across
+  calls. Target resolution and owner-state/file-identity checks remain per target.
+  Task/artifact source names and public PEM certificates carry no credential
+  authority. Restricted file readers mask complete private-key blocks before
+  selecting a window, preserving character positions and line breaks. The
+  owner credential fence covers the enumerated locations in
+  `credential_shapes.owner_credential_locations`, credential leaves and VCS
+  control directories. The exact SSH config exception does not permit key writes
+  under `.ssh`; unlisted stores such as `.cargo`, `.terraform.d` and `.kaggle`
+  are not protected by an arbitrary dotted-directory default-deny.
+- An unlaunchable sole cmd element gets an actionable argv/shell hint, never
+  automatic splitting or an implicit shell. Repo-only edit tools reject their
+  unsupported roots through their existing argument categories.
 
 Enforcement: `tests/test_headless_cli.py` (task-API admission, typed refusal
 terminality, attachment admission), `tests/test_cli_entrypoint.py` (the CLI
@@ -919,19 +954,23 @@ That required presence test is the enforcing surface; CHECKLISTS item 11
 
 ## Review & Commit Protocol
 
-Reviewed commits separate cheap improvement evidence from authoritative
-candidate-bound authority. The operator sequence: finish all edits, run focused
-tests, run the advisory when useful, then freeze and review the exact
-candidate — do not interleave edits with repeated review calls.
-`docs/CHECKLISTS.md` is the only reviewer-question, severity, and output SSOT;
-ARCHITECTURE "Review stack" owns the dataflow.
+Reviewed commits separate improvement evidence from candidate-bound authority.
+Finish the edits and focused tests, then call `commit_reviewed`; standalone
+`preflight_review` remains available when an earlier critique is useful.
+`docs/CHECKLISTS.md` owns reviewer questions, severity and output contracts;
+ARCHITECTURE "Review delivery" owns the dataflow.
 
-1. **Cheap advisory preflight.** After edits, `preflight_review` may find
-   omissions before the expensive gate. Without an explicit skip,
-   `commit_reviewed` requires fresh advisory coverage and no open advisory
-   obligations or commit-readiness debt; any edit makes coverage stale.
-   `skip_advisory_review=True` bypasses only these advisory admission checks;
-   the skip is chosen by LLM judgment and durably audited with its reason.
+1. **Prepared preflight.** Authorization and unresolved-work checks precede
+   mechanical file preparation, staging/classification/protection and the
+   fingerprint. Existing free-cycle/budget admission precedes any automatic
+   preflight. When needed, the same `preflight_review` runs inline with the full
+   `review_rebuttal` and the independently applicable test preflight. The
+   candidate must remain unchanged before triad/scope dispatch. Explicit
+   `skip_advisory_review=True`, disabled and unconfigured paths retain their
+   audited behavior. A free advisory replay reads freshness but buys neither
+   another preflight nor another triad/scope wave. Stale coverage still needs
+   the explicit audited skip; applicable compensating tests run even when the
+   reviewer backend is available. Explicit test skips are not green proof.
 2. **Authoritative gate.** Independently configured deterministic test policy,
    staged fingerprinting, triad review, applicable scope review, aggregation,
    and pre/post revalidation. The fingerprint binds `git write-tree`, ordered
@@ -942,6 +981,35 @@ ARCHITECTURE "Review stack" owns the dataflow.
    mutation, rebase, conflict resolution, or changed landing parent
    invalidates exact-candidate authority and requires the applicable final
    gate again.
+
+A technical review failure may permit continuing under owner-selected advisory
+enforcement on a known, independently bound candidate. The failure's phase,
+reason, received findings and full result stay recorded as failure, never PASS.
+Blocking enforcement still blocks. Candidate/ownership, unfinished custody,
+Stop/deadline and budget/admission errors remain independent. Diagnostic
+`repo_commit_ready` projects this permission only from an exact repo/hash match;
+it does not change the failed review's status or freshness.
+
+Pending triad/scope reconciliation retains the prepared index and never restages
+or reconstructs a lost index. Pending delegated preflight binds the existing
+`delegate_custody` invocation in `AdvisoryRunRecord.execution` before POST and
+replays its canonical request, without another prompt store or physical run.
+An explicit audited preflight skip releases only logical admission: retain the
+old invocation, source and unknown physical work. It neither cancels that work
+nor posts a replacement. A late result updates its original record without
+invalidating the newer bypass. Only the existing definite start-failure producer
+can automatically discharge a stranded checkpoint; elapsed time cannot.
+Both commit and review-only entry points forward the explicit skip. A subsequent
+standalone request can rejoin exact historical custody or check new evidence;
+released unrelated history is not a logical lock. Pending refusals explain the
+audited skip without claiming that it cancels physical work or its cost.
+Native preflight uses the existing executor's end/failure events and monetary
+ledger, without a new advisory operation checkpoint or exact-rejoin protocol.
+An ambiguous returned native outcome remains failed evidence; explicit skip
+does not erase its cost or custody. The external review wrapper uses
+the same cycle and retains its candidate
+checkout/index while custody remains unresolved; its existing outcome records
+the checkout, drive root, reason and invocation for reconciliation.
 
 Triad slots review the staged diff against `docs/CHECKLISTS.md`; duplicate
 model ids remain independent slots and `config.adaptive_quorum` owns quorum. A
@@ -1148,31 +1216,37 @@ memory/context decision.
 
 ### Skill repair and payload lanes
 
-- Skill repair uses structured `task_constraint.mode="skill_repair"`, not
-  prompt markers; edit paths are payload-relative. Use `edit_text` for one
-  exact replacement and `write_file` (with `root=skill_payload`) for new files
-  or intentional full rewrites; `edit_batch`/`apply_patch` are repo-lane tools
-  and do not accept `root=skill_payload`. Finish with `skill_preflight` and
-  `skill_review`; grants and enablement stay owner-controlled.
-- Repair mode is a stricter UI lane, not the only authoring path: in every
-  runtime mode, ordinary top-level tasks may mutate an exact user-managed
-  payload via `root=skill_payload`, `bucket`, and `skill_name`;
-  `skill_payload_binding.py` projects a markerless physical native payload as
-  logical `external` while retaining its physical confinement. Marker-present
-  launcher seeds, `data/state/skills/*`, marketplace/provenance/dependency
-  sidecars, and direct `run_command` writes to repo targets remain blocked;
-  the constrained `skill_repair` selector stays limited to
-  `{external,clawhub,ouroboroshub}`.
-- The direct `operator_control` and `local_readonly_subagent` profiles may
-  inspect a selected native payload with `read`/`list`/`search` only; native
-  mutation, owner state, grants/review/enablement, and acting-child selection
-  remain closed.
-- New path checks for skill edits use
-  `ouroboros.contracts.skill_payload_policy`, never reimplemented bucket/path
-  traversal logic.
+- Start Repair as ordinary managed development carrying the selected skill,
+  source request and admitted revision. The UI's Repair and run request is a real
+  owner message; its origin follows the ordinary task path. Resolve that source
+  when the model enables the repaired skill, never trust a client allow_enable
+  flag. Preserve a later direct owner disable; a load-error revert is not one.
+  Read existing `skill_repair` records as
+  selectors, never as a reduced profile. Preserve normal file, shell, browser
+  and delegation tools, with existing readonly/acting-child ceilings.
+- Keep installed payloads as ordinary directories; a delegated Git copy is an
+  optional existing capability. Check the known revision before an operation;
+  after opaque process work, record the observed revision without asserting
+  exclusive authorship. No long shell lock or automatic rollback belongs here.
+- Use the existing payload binding/policy owners for all path forms. Markerless
+  native-directory payloads remain logical external; launcher seeds and
+  provenance/review/grant/dependency control state keep their existing guards.
+- Review, grants, dependency readiness, desired enablement and actual execution
+  are independent facts. Resume an unchanged reviewed snapshot through its
+  existing free replay; a dependency or load failure never rewrites the review
+  verdict. Preserve explicit owner disable and the original automatic request.
+- UI, existing CLI commands and task tools call the shared operation owners.
+  Actor identity is host-derived; owner-only actions require a real member
+  chat/quiz/mailbox source and exact skill, revision and requested items. The
+  model interprets intent; no synthetic reference creates permission. Ordinary
+  Repair implies neither grant-all, attestation nor deletion.
+- Test the real installed script/tool/HTTP/widget/companion after review and
+  prerequisites, repeat after corrections, and inspect a widget screenshot.
+  Execution receipts name the actual dispatched revision; they are not PASS.
 
-Enforcement: `tests/test_skill_repair_hash_bind.py`; admission itself is the
-skill review gate (`skill_preflight` → `skill_review`).
+Enforcement: `tests/test_skill_development_revision.py`,
+`tests/test_skill_lifecycle_actions.py`, `tests/test_skill_development_execution.py`
+and the UI lane `tests/test_ui_smoke_skill_lifecycle.py`.
 
 ### Extension dispatch and isolated dependencies
 
@@ -1194,6 +1268,28 @@ skill review gate (`skill_preflight` → `skill_review`).
 Enforcement: `tests/test_extension_dispatch_threaded.py`,
 `tests/test_extension_isolated_deps.py`,
 `tests/test_extension_process_runner.py`.
+
+### Declared skill resources and builds
+
+- Reuse the isolated dependency owner for exact downloads and literal build/check
+  argv. New declarations must match a fresh executable review and hash-covered
+  specs; revalidate the pinned payload before launching their processes.
+- Keep verified resource/package caches outside the replaceable payload/env.
+  Record actual resolved versions, resource/output hashes and diagnostics in
+  the existing dependency records; package-manager success is not proof of the
+  requested function. Only an explicitly declared check establishes that fact.
+- Preserve wheel-only and npm ignore-scripts unless that entry opts into the
+  corresponding build action. Manual dependencies keep their existing contract.
+- Ordinary binary payload resources use the review classifier/descriptors during
+  delegated capture too; large downloaded/build resources belong to the isolated
+  dependency path, not a giant source patch.
+- Go compilation/execution share the existing child owner and timeout. Deno
+  flags express current script effects and task network constraints, not new
+  grants or a stronger claimed OS sandbox than the other reviewed scripts.
+
+Enforcement: `tests/test_skill_install_resources.py`,
+`tests/test_skill_runtime_commands.py`, `tests/test_skill_runtime_lifetime.py`
+and `tests/test_skill_payload_binary_transfer.py`.
 
 ### Task contract resource policy
 
@@ -1491,6 +1587,44 @@ or error otherwise, never failing on its own.
   non-manifest history with last-5 retention (history is for recovery, not a
   second deliverable list). The logical `root=deliverables` tool stays
   read/list/search-only and is not granted to children.
+- Large task files use `artifacts.stream_artifact_file` and atomic
+  `copy_artifact_file`; do not read complete datasets into a bytes object.
+  HTTP admission and materialization run their complete blocking operation off
+  the event loop through `gateway._helpers.run_sync_to_completion`. Cancellation
+  waits for that operation before releasing its reservation, input or iterator;
+  cancelling an HTTP waiter never means cancelling the admitted task. Multipart
+  spool copy and close belong to the same worker so cleanup cannot be cancelled.
+  Directory exports keep a complete relative member/size/SHA manifest and a
+  streamed ZIP, including outputs above 50 MiB. File changes and missing members
+  are explicit capture failures. Reject a read as soon as it exceeds the source's
+  initial regular-file size; do not wait for a growing file to reach EOF. A borrowed
+  completed multipart spool uses the same copy/hash/atomic owner and descriptor
+  checks, without claiming verification of an original pathname; its caller closes
+  it only after the copy worker settles, including cancellation. Host path uploads
+  retain source confinement and the existing Path return. Automatic genesis listing
+  is discovery: record unreadable/changing entries and incomplete coverage, while
+  actual capture/copy remains strict. `send_file` uses immutable captured names so
+  an earlier delivery URL never aliases a later rewrite. If capture is unavailable,
+  existing small-file inline delivery stays available without a fabricated URL
+  or reference; source-read refusals and the inline size boundary still apply.
+  Registered immutable downloads verify their bytes once per request without
+  materializing the whole task result; source and unregistered paths still use
+  the existing effective-result owner. Browser URL downloads
+  use the existing helper's streaming mode (HEAD then native browser download);
+  the launcher URL backend already streams. `downloadBlobViaHostBridge` shares
+  the existing bytes-save owner for an already-owned Blob or data/blob URL;
+  it never turns an HTTP response/stream into a Blob. Native result/cancellation
+  fields are preserved, and old launchers report unavailable saving explicitly.
+- Input authority keeps at most 25 rows inline and, when needed, an additive
+  `attachment_manifest_ref` in the existing source-handle store. Preserve its
+  count/size/SHA and resolve the complete set before child materialization,
+  mailbox inheritance, retry or copy-back; never fall back to the preview when
+  the source fails. Re-publish a new manifest after rebasing paths. Input files
+  remain inputs, outside deliverable inventories. Failed copy-back participates
+  in the existing pending-ref retry/GC contract rather than losing child bytes.
+  Accepted follow-up inputs retain their exact manifest sources separately from
+  the initial task contract. Copy failure retains the owner mailbox as the retry
+  source; successful retry releases it through normal terminal cleanup.
 - For argv-visible targets, the shell guard checks lexical Deliverables origin
   before generic workspace or executor roots, then the symlink-resolved
   destination; direct `cp`/`mv`/`ln` directory destinations derive their
@@ -1529,9 +1663,9 @@ or error otherwise, never failing on its own.
   writable scratch selects `task_drive` explicitly; long-running services in
   light use an explicit external/task/artifact cwd, and declared service
   `outputs` are copied when the service stops. Directory outputs become a
-  bounded manifest plus zip; hidden/control/credential-shaped files and
-  excessive counts/bytes fail closed. `run_script` stages its temporary
-  script under the active workspace (`.ouroboros/tmp_scripts`) for a
+  complete manifest plus streamed zip. Policy-rejected members are skipped
+  with explicit notes; missing or unreadable members fail the directory copy.
+  `run_script` stages its temporary script under the active workspace (`.ouroboros/tmp_scripts`) for a
   workspace-bound script and under the task drive otherwise — never the
   system-repo temp path — so relative imports, generated files and toolchain
   discovery observe the requested cwd (`ouroboros/tools/shell.py`;
@@ -1682,9 +1816,17 @@ both critical. The imperatives:
   tool-enable, skills lifecycle, and cognitive-memory writes blocked; only
   `schedule_subagent` may create subagents (forged `delegation_role`
   rejected at API/CLI ingress); live `memory_mode=shared` stays disabled
-  (`tests/test_acting_subagents.py`). The subagent browser boundary is DNS
-  fail-closed with the loopback control-plane carve-out
-  (`tests/test_browser_isolation.py`; full rules: CHECKLISTS item 18).
+  (`tests/test_acting_subagents.py`). The subagent browser boundary refuses a
+  target DNS cannot classify (a typed `BROWSER_POLICY_UNAVAILABLE` before
+  navigation), allows loopback except actual or expected Ouroboros
+  control-service endpoints by identity — an unverifiable expected endpoint is
+  refused, never treated as foreign, while other ports and reused pathnames
+  keep working — admits private origins only through host-established
+  `resource_policy.allowed_origins`, and re-checks every redirect hop before
+  returning page content (`tests/test_browser_url_policy.py`,
+  `tests/test_browser_isolation.py`, `tests/test_browser_redirect_chain.py`;
+  mechanism: ARCHITECTURE "Tool capability and execution"; full rules:
+  CHECKLISTS item 18).
 - The parent is the SOLE committer of the live body: acting children return
   a `workspace.patch`, the parent applies a chosen patch with
   `integrate_subagent_patch` and runs its own `commit_reviewed`. The shared
@@ -1693,8 +1835,9 @@ both critical. The imperatives:
   deliverable. A genesis project starts without a `.gitignore`, so its small
   text build output (`dist/`, `build/`) rides the `workspace.patch` record
   until the project declares one — a disclosed residual, bounded only by the
-  per-file size cap and git's binary verdict, since there is no total-patch
-  cap. The canonical/replica terminal field-custody projection is
+  per-file source-patch size boundary and git's binary verdict; otherwise
+  eligible large/binary outputs are preserved as file artifacts with a full
+  manifest, independently of the source patch. There is no total source-patch cap. The canonical/replica terminal field-custody projection is
   ONE pure reducer reused by copy-back and effective reads — every change
   adds a stale-replica regression at BOTH seams
   (`tests/test_available_subagents_runtime_review_fixes.py`). Do not broaden
@@ -1729,6 +1872,22 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   child-drive merge or terminality logic in gateways/tools. Task waits use
   `SETTLED_STATUSES` and structured facts plus queue-heartbeat freshness —
   never keyword matching.
+- `wait_task` and `wait_tasks` also peek the waiting actor's own mailbox through
+  the existing transport-wait reader. A pending message returns control without
+  acknowledging it or stopping children; the ordinary round-top drain delivers
+  and acknowledges it. Read the actor's execution drive, not its budget root.
+  One wait/transport episode may retain only a successfully proved empty mailbox:
+  compare both mailbox/ACK fingerprints before and after the existing full reader,
+  plus execution root, task, attempt and seen ids. Read/parse/stat failure or torn
+  data is not proof; never cache it. Check the in-memory incoming queue every tick.
+  A changed source re-enters the full revocation-aware reader; no TTL or ACK in peek.
+- Cancellation observations use `task_status.observe_cancellation_target` before
+  the existing intent write. They name the resolved physical target, separate
+  task-result update/start facts from queue freshness, and optionally include
+  recorded delegated execution. These are separate source observations, not an
+  atomic snapshot. Caller reason and request origin are distinct; an HTTP client
+  is not proof of personal owner intent. A later target mismatch is disclosed.
+  Keep cancellation authority and completion-wins independent of these observations.
 - Cancel INTENT is never a status value. Every cancel ingress writes a durable
   intent through `ouroboros/cancel_intents.request_cancel` and FAILS CLOSED
   when that write fails: a cancel without a durable, watchdog-replayable
@@ -1913,16 +2072,18 @@ by "Provider Independence" above. Call-site imperatives:
   admission and the transport bound cannot disagree.
 - Tree-spend pacing decides on root-subtree ledger spend including in-flight
   holds; own cost is a disclosed lower-bound fallback, and unavailable is
-  unknown, never `$0`. The root's deciding ceiling bounds every tree member;
-  each descendant intersects that root-cap component with its own current
-  global resolution, resolves once, and discloses the same object the loop later decides on, printed with its
-  binding bound named on every host cost surface. Refresh `usage_accounting.last_root_accounting` only
-  at rare cache-breaking decision surfaces, never per round or inside a
-  stable cached prefix (`tests/test_budget_limits.py`). Graceful
-  finalization precedes the ledger fence because the affordability rail
-  borrows the fence's own per-attempt reservation (cache-aware only from the
-  task's last settled same-provider normalized-route split), never a constant margin alone and never a
-  per-round ledger scan (`tests/test_tree_cost_ceiling.py`). Read the
+  unknown, never `$0`. Resolve the original early threshold at the root and
+  retain it across enabled descendants, forwarding the existing root carrier.
+  A legacy child's local fallback is not proof of the original root threshold.
+  Keep explicit disabled profiles and real monetary fences independent. Publish
+  the same CostCeiling object the loop decides on. Reuse the existing bounded-stale
+  tree snapshot; refresh at its bound or when final preparation requires it.
+  Price the final call with the fence's own cache-aware reservation and compare
+  every known root/global remainder, including tasks with only a global bound.
+  Read the current wallet once per priced phase through the existing cached
+  usage projection, reuse it across candidate probes, and leave final admission
+  to the atomic fence. A check reserves no share; other tasks can spend before
+  dispatch (`tests/test_network_budget_wallet.py`). Read the
   configured global budget through the one resolver rather than an
   inline default, so the loop axis, the bound scope and the ledger fence
   cannot disagree about the same install. Post-task
@@ -1986,7 +2147,10 @@ by "Provider Independence" above. Call-site imperatives:
   never folded into `quota_exhausted`, which is correctly permanent for a
   billing refusal and wrong for a window whose only cure is waiting
   (`tests/test_reviewer_slot_config.py`).
-- Classify provider failures before retrying the same request:
+- Classify provider failures before retrying the same request. The combined
+  Anthropic input-plus-max_tokens rejection is a context-window overflow;
+  preserve true output/body-size precedence in the shared context_budget
+  classifiers, without requiring the input alone to exceed the window.
   quota/auth/billing, hard bad-request, and request-too-large failures are
   non-retryable as-is (record the exact category and surface a recovery
   hint); a typed 408/429/5xx or a failure proven pre-dispatch may retry; a
@@ -1998,10 +2162,14 @@ by "Provider Independence" above. Call-site imperatives:
   and never a resend of the unresolved one, deciding the `retry_same_request`
   flag before the durable row is written
   (`tests/test_transport_death_retry.py`): the flag records that a repeat
-  was granted when the row was written, and exactly two refusal paths take a
-  never-sent repeat back off the round record, each recorded by its own
-  durable row — the admission gate (`llm_not_dispatched`) and the sleep gate
-  (`llm_retry_deadline_exhausted`). A budget refusal does NOT un-count: the
+  was granted when the row was written. Only a proven refusal takes a never-sent
+  grant back off the round record: deadline admission (`llm_not_dispatched`),
+  deadline backoff (`llm_retry_deadline_exhausted`), or a current typed finalization
+  control during the paid-repeat wait (`llm_not_dispatched`, `finalize_control_pending`).
+  Reuse the interruptible sleep and execution mailbox/current-intent readers;
+  peek without delivery or ACK, and leave ordinary input/hurry/revoked controls
+  alone. Generic transient/empty-response backoffs retain their own contract.
+  A budget refusal does NOT un-count: the
   budget rail cannot prove the repeat never left the host (`llm.chat` retries
   on the wire before a later reservation can be refused), so the record keeps
   the attempt booked and the budget terminal, not the provider terminal, ends
@@ -2034,11 +2202,23 @@ by "Provider Independence" above. Call-site imperatives:
   a keyword or regex over content (BIBLE P5). Fixed kill-timeouts (hard
   task/tool ceilings, watchdog) remain the outer safety bound; progress-aware
   waiting tunes the passive wait only.
+- Preserve raw terminal model/salvage bytes separately from the host-authored
+  `terminal_provider_notice`. Existing receipts and secondary notices consume
+  those same facts; a retained answer must not hide wait or unknown-attempt
+  evidence or invite a blind rerun. Ephemeral and message/deferred Presence
+  responses render one host-labelled status section; cached Presence output
+  is already rendered. Preserve silent/tool-delivered authority and never
+  promise task details for an ephemeral turn with no task result. Carry the
+  actual control reason through wait termination: owner Wrap up is distinct
+  from deadline/budget finalization and still sends no new summary request.
 - The transport-wait episode's owner notes always pass `incident=` — the
-  typed `task_incident`/`toast_once` pair on an ephemeral turn's
+  typed `task_incident`/`toast_once` pair (plus the optional `toast_tone`
+  valence the call site stamps: warn/ok/error) on an ephemeral turn's
   episode-boundary notes (entry, recovery/closure, exhaustion), `None` on
   every other note — so any `emit_progress` callable handed to `run_llm_loop`
-  must accept the `incident=` keyword; `OuroborosAgent._emit_progress` is the
+  must accept the `incident=` keyword; the browser's `showTaskIncidentToast`
+  reads the tone through `normalizeTone` and keeps the alarm tone for a
+  frame without one — never parse `toast_once` or the text for it; `OuroborosAgent._emit_progress` is the
   production implementation and a test fake mirrors it
   (`lambda text, *, incident=None: ...`).
 - Timeout contract classes differ; keep the axes separate. A transport
@@ -2060,7 +2240,7 @@ by "Provider Independence" above. Call-site imperatives:
   the one import surface. Register the env key; do not scatter magic wait
   numbers across call sites (`tests/test_timeout_policy.py`).
 - Worker readiness is its own bound, not a tuning knob: `WORKER_READY_WINDOW_SEC`
-  and `WORKER_READY_MAX_ATTEMPTS` sit in `config.py` beside the spawn grace as
+  and `WORKER_READY_MAX_ATTEMPTS` sit in `runtime_limits.py` (re-exported by `config.py`) beside the spawn grace as
   structural constants (a warm forkserver child confirms in ~3-4 s; the window is the
   pool's existing init budget). Never fold "the child confirmed ready" into
   process liveness (`proc.is_alive`) or the task idle rail: a child deadlocked
@@ -2187,6 +2367,50 @@ by "Provider Independence" above. Call-site imperatives:
   acceptance, atomically fence new descendants under the queue lock and
   prove recursive subtree quiescence from the task-status SSOT; a revision
   must explicitly reopen the fence, and terminal/degraded outcomes seal it.
+- Delivery-control JSON applies only to a final response with no tool calls.
+  Retaining an answer leaves tools available for further work; changed evidence
+  still requires the existing complete replacement. A requested file or diff
+  does not imply a universal commit-or-revert rule. Self-modification keeps its
+  reviewed-commit contract.
+- Post-task synthesis receives `completion_observations` from the existing
+  terminal result writer: per-send-tool counts and latest recorded returns,
+  task-related skill readiness plus coverage, and a full redacted artifact for
+  later readers. Counts come from `OWNER_DELIVERY_TOOL_NAMES`, not prose parsing.
+  Packet-only summary/reflection use the inline observations; a source reference
+  is not evidence they read. Tool success is not a chat/owner-receipt guarantee,
+  and empty or omitted material never proves that no delivery happened. Recovery
+  uses the stored snapshot; global skill state never attributes an owner click
+  to the task. Task-summary calls use the existing `chat_observed` custody seam.
+- Promoted tasks carry their host-minted root id and role on the queue payload.
+  RUNNING writes preserve the actual `_task_started_ts` as `started_at` and an
+  existing `queued_at`; terminal `ts` remains its own field. Missing historical
+  start facts stay missing. LLM usage carries the existing call/execution/round
+  ids so it can join the worker's round without duplicating that round event.
+  Delegated settlement/disposition/unread rows carry their existing root/parent
+  ids. Intrinsic pacing exposes the same `cost_ceiling_disclosure` its text uses;
+  tool error manifests carry their typed code and redacted reason preview.
+  These are observation links, not new accounting or zero-price rules.
+- Acceptance evidence identity hashes source facts before history-dependent
+  budgeting; recording a review must not change the facts it reviewed. Complete
+  applied host records (including resolved criteria, decisions and supersession)
+  are saved by `review_projection.publish_acceptance_checkpoint` through the
+  existing write-once source handles before compact publication. Ordinary artifact
+  registration keeps its short locked manifest merge; copying/hashing finishes
+  before that lock, which never acquires a task-result lock. The live
+  publication changes only `review_projection`, preserving lifecycle and other
+  writers' fields. Test delayed snapshots and child replicas through the same
+  central merge, and verify that the full source downloads while the task is
+  still running. Review/completion sources use `source_handles/context_checkpoints`,
+  outside deliverables and the acceptance artifact manifest. Canonical-first
+  persistence (`task.budget_drive_root or drive_root`) and the existing published-ref
+  closure preserve them before child cleanup. Give native readers an
+  executable get_task_result selector for that source task; reuse explicit character
+  ranges and complete-source hashes so a split or later task never resolves the
+  basename against its own artifact directory. Preserve that
+  distinction through effective reads and child copy-back; terminal references must
+  carry the task's chat id, including zero. A missing source is disclosed, never reconstructed from a
+  bounded preview. Source/capacity, publication order and paid identity are
+  separate contracts; changing history or presentation must not mint work.
 - The host buys one authoritative acceptance panel per PAID IDENTITY —
   `sha256(candidate_hash + the sorted set of nonempty (obligation_id,
   disposition, sha256(reason)) tuples)`; an empty disposition reason hashes
@@ -2312,6 +2536,18 @@ commit review.
   the update transaction before mutation; reopen writers only after a
   verified abort/rollback or a healthy restart. Delayed evolution cleanup
   acquires the same update lock and honors the same admission owner.
+- Conversation admission is separate from repo-writing permission. The chat
+  lanes refuse turns only during destructive windows (apply/replace/rollback
+  prologue, materialization). While the ONE authorized assisted resolver holds
+  the repository (`assisted_resolution` / `committing_assisted`) Main keeps
+  answering, the registry guard still refuses repo tools to every other task,
+  and steering reaches the resolver through the ordinary `steer_task` mailbox
+  (`supervisor/worker_chat_lane.py::conversation_admitted_during_update`).
+  The server's first-party packages are discovered and imported BEFORE conflict
+  markers land in the live tree (`preload_owner_control_path`, called after the
+  resolver readiness proof and before a boot re-materialization). Discovery uses
+  the imported package paths; the packaged server runs embedded Python from the
+  materialized Git repository. Tool admission remains owned by the registry.
 - Dirty local work never enters merge history: the apply stashes it and
   restores it as uncommitted content; a conflicting restore keeps the stash
   and discloses the recovery command. The reviewed assisted resolver runs
@@ -2405,6 +2641,62 @@ The reaper kills strictly by (pid, start_time, cmd_sha256) fingerprint —
 never add command-line-class matching, which would let a dev instance reap a
 packaged instance's processes. `tests/test_process_custody.py` enforces the
 chokepoint with an explicit allowlist for bounded synchronous helpers.
+An installation-owned daemon uses `daemon` scope, with legacy purpose retention
+provided by its lifecycle owner and checked against the existing ledger identity;
+server-generation changes alone must not kill it. A worker's process tree is
+killed only through `supervisor.worker_pool_lifecycle.kill_worker_tree` — pool
+shutdown and restart, the managed-update fence, unready-slot replacement, cancel
+and timeout custody alike — which spares the ledger's live `daemon`-scope roots
+(`process_custody.live_daemon_root_pids`, including the owner's retained legacy
+purposes) and, for one task's cancel or timeout only, the kept services; a direct `kill_pid_tree` on a worker anywhere else in
+`supervisor/` is a defect. The explicit stop (`OwnedClaudexorDaemon.stop`, which
+Panic calls before the worker tree-kill) requires the owned marker for attached
+roots, then matches the ledger against one set of live start-time and command
+observations. An authenticated endpoint or the gateway's typed HTTP transport
+failure permits that stop; a received refusal, protocol/malformed response, or
+invalid descriptor/token discovery never does. Preserve a received HTTP status
+before reading the body, so a later read timeout cannot erase an authentication
+refusal. Local protocol/configuration and response-decoding failures are not
+network-unavailability evidence. Keep transport provenance distinct from the
+public stale status; a matching error-code string is not transport proof.
+Only confirmed exit permits `process_stopped`
+and pruning; concurrent and unreadable ledger bytes remain intact under the append
+lock. Maintenance compacts the exact observed byte prefix while keeping the latest
+surviving row per PID and every concurrent append. A changed prefix defers compaction
+until a fresh sweep; opaque rows stay byte-for-byte intact.
+Each root gets its own exit window; partial success never means the whole
+daemon stop succeeded. Unconfirmed stop emits a critical diagnostic and existing
+supervisor-log row, including lock contention and unknown custody. The manager
+lock uses the short-poll bound separately from HTTP phase timeouts. Authenticated
+attach creates a missing owned marker only after validating the home again under
+the shared JSON publication lock. Atomic publication leaves absence or a complete
+marker after a write fault; existing malformed or foreign markers are never
+replaced. The reaper's permissive keep is never stop authority, and a daemon known
+only by name or port is never signalled.
+Explicit stop and next-start runtime selection remain separate contracts: a
+staged engine pin applies at the daemon's next start, and a planned restart
+reports it staged while the serving engine's atomic replacement predicate still
+omits setup jobs with unconfirmed termination. Service quiescence excludes
+zombie-only groups, but checks every member before releasing a writer fence
+(`tests/test_claudexor_custody_lifetime.py`, `tests/test_process_custody_liveness.py`).
+
+Out-of-process extension HTTP responses execute their standard Starlette ASGI
+response in the child. The runner owns staging, Popen registration and cleanup;
+`extension_route_stream` owns only portable pipe frames and ASGI delivery. Preserve
+ordered headers, HEAD/Range and background actions. Consumer backpressure is not
+an idle failure and no total/pre-header response deadline applies. Bind cancellation
+to the existing loaded bundle, before spawning, and detach on completion. A
+cancellation during startup retains the worker future and process context until
+it exits; move context entry/exit, spawn registration, pipe shutdown and termination
+off the ASGI event loop. Static captured module sources spawn no child. Chunk size
+and post-response cleanup grace come from the runtime-limits owner via config.py
+and are not stream deadlines. Bound each frame before reading its payload, not
+the cumulative response; retain sanitized bounded stderr and the actual exit
+code after draining a child that dies abnormally.
+Failed final sends remain delivery failures; background failure after a successful final
+body is a separate diagnostic. Widget pull credits bound transport buffering;
+large URL downloads use the existing native/browser file owner, never an automatic
+HTTP-stream-to-Blob conversion.
 
 ## Platform Abstraction Rule
 
@@ -2543,6 +2835,12 @@ selected from risk. Review-only: scored by CHECKLISTS items 2(i) and 30
 
 ### Browser dialogs
 
+For agent page readiness, use `browser_action(action="wait", selector=..., state=...)` on the current page, or `browse_page(wait_for=..., state=...)` after navigation. States are `attached`, `visible`, `hidden`, and `detached`; hidden also accepts an absent element. A timeout returns the requested state, URL, current match count and first-element visibility rather than navigating again. These observations do not decide whether the task should continue; bounded `evaluate` remains available to its existing profiles.
+
+Image-reader regressions must include a real PNG under a synthetic user home with distinct task and canonical skill roots. Exercise same-round auto-attachment, the durable local copy and the actual send-time image block; a placeholder PNG, a flat drive or a mocked attachment helper cannot prove that path. Keep secret/owner-state and protected-artifact denial controls.
+
+Browser-boundary regressions run the installed Chromium and WebKit (`PLAYWRIGHT_BROWSERS_PATH`; a test never installs a browser, and `OUROBOROS_EXPECT_BROWSER_ENGINES` turns a missing engine from a skip into a failure) against real loopback servers bound through `server_entrypoint.bound_service_socket`, so the control endpoint under test is an actual recorded binding rather than a fixed port. The redirect residual is one strict xfail (`tests/test_browser_private_service.py`, the server-side dispatch counter) beside the passing content-refusal proof (`tests/test_browser_redirect_chain.py`); do not turn either into the other. The private-service proof takes its LAN target from `OUROBOROS_TEST_PRIVATE_BROWSER_HOST`/`_ADDRESS` (`OUROBOROS_EXPECT_PRIVATE_BROWSER=1` fails instead of skipping) and writes the images it viewed to `OUROBOROS_BROWSER_EVIDENCE_OUT`.
+
 `window.prompt`, `window.confirm`, and `window.alert` are forbidden in
 `web/modules`: PyWebView shells implement them inconsistently, native
 dialogs bypass the design system and browser tests, and the macOS shell has
@@ -2597,13 +2895,45 @@ ARCHITECTURE "MCP and browser-facing external tools";
 `ouroboros/mcp_client.py`). MCP descriptions and results are untrusted data,
 not policy: configuration trust must not turn remote prose into policy.
 Enabled tools join the initial capability envelope, still pass runtime
-safety, and remain unavailable in repair/heal contexts; discovery failure
+safety and the caller's ordinary capability ceiling; discovery failure
 becomes a visible capability omission. Stdio accepts one executable command
-and an exact string argument list — no shell, custom environment, or custom
-working directory. Tokens never appear in status responses
-(`ouroboros/secret_masking.py` owns the shared placeholders). Resources,
-prompts, and MCP server behavior remain separate architecture changes.
-Enforcement: `tests/test_mcp_client.py`.
+and an exact string argument list without a shell. Optional `cwd`, literal
+`env`, and `env_from_settings` (environment names mapped to existing string-valued
+setting keys) apply to listing and calling through the same manager configuration.
+References override matching literal names. The owner chooses MCP references in
+Settings; a caller's existing MCP tool grant does not authorize new references.
+Unknown fields remain saved and show a not-applied warning without disabling a
+valid server. Invalid known fields, missing references and incompatible transport
+fields produce `MCP_CONFIG_ERROR`. Response-only `auth_configured` is discarded at
+the configuration boundary. Omission preserves SDK environment/cwd defaults.
+Settings' existing built-in/custom-secret classification determines masking:
+ordinary selected values remain readable, while exact secret values (including
+short values and JSON-escaped echoes) are masked in descriptions/results/stderr.
+Executable schema properties, required fields, enum and default values stay intact.
+Resources, prompts, and MCP server behavior remain separate architecture changes.
+Enforcement: `tests/test_mcp_client.py`, `tests/test_process_environment.py`.
+
+`start_service` overlays ordinary literal `env` on the existing minimal host
+baseline; root tasks can additionally choose `env_from_settings` through their
+host-resolved process authority. Restricted and Presence tasks receive no new
+Settings-selection authority, while their previous literal env and configured MCP
+access remain available. Skill grants do not authorize an unrelated service.
+Both service backends and MCP reuse `workspace_executor.resolve_process_env`;
+referenced Settings fields retain the same secret/ordinary classification.
+Cwd still uses the host-owned resource binding; local import scrubbing and
+interpreter defaults remain. Docker forwards values through inert CLI environment
+aliases and restores the selected names inside the container, preserving host CLI
+configuration. Values do not enter host argv or generated shell source.
+Service diagnostics and finalized log blobs mask referenced secrets; ordinary
+PORT/PATH/DEBUG values, protocol identity/state and executable schema stay intact.
+The executor's record-stop owner finalizes local logs through the existing service
+log owner before forgetting the in-memory selections, including task/global cleanup
+and replacement after exit. Unconfirmed termination retains the existing record;
+a later cleanup can settle it. Live child logs and logs surviving worker loss keep
+the existing private raw-log contract until successful finalization; oversized or
+uncapturable logs retain their existing explicit omission/error report. No secret
+values are added to the durable process ledger. Enforcement:
+`tests/test_process_environment.py`, `tests/test_workspace_executor_services.py`.
 
 ## Gateway Boundary Pattern
 
@@ -2617,6 +2947,23 @@ no domain policy — do not copy policy into an adapter, promote the
 or require a class where established function owners already preserve the
 boundary. Enforcement: CHECKLISTS item 17 (`gateway_parity`) and
 `tests/test_gateway_parity.py`.
+
+Named skill chat ingress uses the existing message-bus canonical writer before
+enqueue. Its internal callback retains request-owned upload copies once the
+canonical write is attempted, even if that write fails with an unknown outcome;
+replays do not adopt new copies. The existing settled HTTP-worker wait retains
+copy/admission until completion under cancellation, and a local cleanup stack
+removes only unaccepted destinations. Accepted attachments remain through an
+unknown write/queue outcome or disconnect. Such failure may retain an unused
+copy but never claims acceptance. Cancellation support and intent writes must
+address the same installation root as the operation being read. The server consumes that internal accepted source without logging a
+second row. Operation reads/cancel verify the complete source against actual
+task or direct-turn ownership; presentation annotations are discovery hints.
+Named waits use that operation's state, while unnamed legacy waits retain their
+chat callback. Tests: `test_host_service_operation_identity.py` and
+`test_host_service_operations.py`. Successful child WS relay failures travel as
+bounded counters through the existing process-facts channel, preserving the
+producer result and best-effort `None` API (`test_extension_ws_diagnostics.py`).
 
 ## Build & CI
 
@@ -2757,8 +3104,12 @@ Contributor rules:
 - Process containment is unconditional, including after a green pass:
   Windows uses a kill-on-close Job Object; POSIX uses an environment
   membership token plus a process-group enumeration backstop and promises
-  honest detection with a fail-closed verdict, not guaranteed teardown of
-  an arbitrary detached process. A crashed worker, a timeout-killed
+  honest detection with a fail-closed verdict for attributed members, not
+  guaranteed teardown of an arbitrary detached process. A same-uid unreadable
+  stranger is a warning, never membership proof; an unobserved descendant
+  that detached and hid its token remains a disclosed detection gap. Known
+  roots, groups and the retained set of observed members still fail closed when unreadable
+  (`tests/test_preflight_process_containment.py`). A crashed worker, a timeout-killed
   worker, a missing plugin, containment failure, and ordinary test failure
   keep distinct diagnostics.
 - Mark process/port/global-state tests `serial`; make a merely slow test

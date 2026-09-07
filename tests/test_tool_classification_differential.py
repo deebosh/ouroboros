@@ -138,7 +138,6 @@ APPROVED_DELTAS: Mapping[str, Delta] = MappingProxyType({
     "native:CAPABILITY_UNAVAILABLE:CAPABILITY_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
     "native:CAPABILITY_UNAVAILABLE:MANAGED_UPDATE_STATE_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
     "native:CAPABILITY_UNAVAILABLE:PYTHON_INTERPRETER_UNAVAILABLE": Delta(True, "error", True, "unavailable", "A.18", "unavailability gets its own status name; the report bucket is unchanged"),
-    "native:HEAL_MODE_BLOCKED:SKILL_REDIRECT_BLOCKED": Delta(True, "skill_payload_blocked", True, "heal_mode_blocked", "A.18", "the publisher's code wins over its text; both statuses are policy denials"),
     # Not a new owner decision: the identical move is already approved above for the
     # `TOOL_ARG_ERROR` identifier, and the root-argument refusal in
     # `core_file_tools._access_or_block` now publishes the code the adapter already

@@ -794,7 +794,10 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
 
     outcome_axes = normalize_outcome_axes({**evt, **(final_task_result if isinstance(final_task_result, dict) else {})})
     reason_code = final_task_result.get("reason_code") or evt.get("reason_code")
-    artifact_status = final_task_result.get("artifact_status") or evt.get("artifact_status")
+    artifact_bundle = final_task_result.get("artifact_bundle") if isinstance(final_task_result, dict) else None
+    if not isinstance(artifact_bundle, dict):
+        artifact_bundle = evt.get("artifact_bundle")
+    artifact_status = (artifact_bundle.get("status") if isinstance(artifact_bundle, dict) else "") or final_task_result.get("artifact_status") or evt.get("artifact_status")
     terminal_cost = _events()._authoritative_terminal_cost(
         str(task_id or ""), task,
         final_task_result if isinstance(final_task_result, dict) else {}, evt,
@@ -827,9 +830,6 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
         task_done_event["ephemeral_decision"] = True
     if str(evt.get("typed_routing_action") or "").strip():
         task_done_event["typed_routing_action"] = str(evt.get("typed_routing_action") or "").strip()
-    artifact_bundle = final_task_result.get("artifact_bundle") if isinstance(final_task_result, dict) else None
-    if not isinstance(artifact_bundle, dict):
-        artifact_bundle = evt.get("artifact_bundle")
     if isinstance(artifact_bundle, dict):
         task_done_event["artifact_bundle"] = artifact_bundle
     review_status = final_task_result.get("review_status") if isinstance(final_task_result, dict) else None

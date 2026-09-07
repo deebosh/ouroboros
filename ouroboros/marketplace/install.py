@@ -89,14 +89,54 @@ class UninstallResult:
 
 @dataclass
 class PayloadRollbackSnapshot:
-    """Rollback handle for marketplace payload/provenance/deps state."""
+    """Rollback handle for payload, its environment, and affected lifecycle state."""
 
     drive_root: pathlib.Path
     skill_name: str
     target_dir: pathlib.Path
     backup_dir: Optional[pathlib.Path] = None
     state_provenance: Optional[Dict[str, Any]] = None
-    deps_state: Optional[Dict[str, Any]] = None
+    lifecycle_state: Dict[str, Optional[bytes]] = field(default_factory=dict)
+    payload_restored: bool = False
+
+
+# Only state that install/review/dependency reconciliation may replace. Owner
+# enable/disable intent and append-only history are never rolled back.
+LIFECYCLE_SNAPSHOT_FILENAMES = (
+    "review.json", "review_job.json", "deps.json", "grants.json", "accepted_rebuttals.json",
+)
+
+
+def snapshot_lifecycle_state(drive_root: pathlib.Path, skill_name: str) -> Dict[str, Optional[bytes]]:
+    from ouroboros.skill_loader import skill_state_dir
+
+    state_dir = skill_state_dir(drive_root, skill_name)
+    return {
+        name: path.read_bytes() if path.is_file() else None
+        for name in LIFECYCLE_SNAPSHOT_FILENAMES
+        for path in (state_dir / name,)
+    }
+
+
+def restore_lifecycle_state(drive_root: pathlib.Path, skill_name: str, snapshot: Dict[str, Optional[bytes]]) -> List[str]:
+    """Byte-restore affected state, reporting each failure independently."""
+    from ouroboros.skill_loader import skill_state_dir
+
+    errors: List[str] = []
+    state_dir = skill_state_dir(drive_root, skill_name)
+    for filename, blob in snapshot.items():
+        path = state_dir / filename
+        try:
+            if blob is None:
+                path.unlink(missing_ok=True)
+            else:
+                tmp = path.with_name(path.name + ".restore.tmp")
+                tmp.write_bytes(blob)
+                tmp.replace(path)
+        except OSError as exc:
+            log.error("rollback could not restore %s for %s", filename, skill_name, exc_info=True)
+            errors.append(f"state:{filename}: {type(exc).__name__}: {exc}")
+    return errors
 
 
 def snapshot_payload_state(
@@ -110,21 +150,20 @@ def snapshot_payload_state(
 
     drive_root = pathlib.Path(drive_root)
     target_dir = pathlib.Path(target_dir)
+    lifecycle_state = snapshot_lifecycle_state(drive_root, skill_name)
     backup_dir: Optional[pathlib.Path] = None
     if target_dir.exists():
         rollback_root = target_dir.parent / ".rollback"
         rollback_root.mkdir(parents=True, exist_ok=True)
         backup_dir = rollback_root / f"{target_dir.name}.{uuid.uuid4().hex}"
         shutil.copytree(target_dir, backup_dir)
-    deps_path = _deps_state_path(drive_root, skill_name)
-    deps_state = read_json_dict(deps_path) if deps_path.is_file() else None
     return PayloadRollbackSnapshot(
         drive_root=drive_root,
         skill_name=skill_name,
         target_dir=target_dir,
         backup_dir=backup_dir,
         state_provenance=read_provenance(drive_root, skill_name) if include_state_provenance else None,
-        deps_state=deps_state if isinstance(deps_state, dict) else None,
+        lifecycle_state=lifecycle_state,
     )
 
 
@@ -177,16 +216,19 @@ def restore_payload_state(snapshot: PayloadRollbackSnapshot, *, restore_state_pr
     """Restore or remove the live payload plus deps/provenance after a failed transaction."""
 
     target_dir = pathlib.Path(snapshot.target_dir)
-    if target_dir.exists():
-        shutil.rmtree(target_dir, ignore_errors=True)
-    if snapshot.backup_dir is not None and snapshot.backup_dir.exists():
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.backup_dir.rename(target_dir)
-    deps_path = _deps_state_path(snapshot.drive_root, snapshot.skill_name)
-    if snapshot.deps_state is None:
-        deps_path.unlink(missing_ok=True)
-    else:
-        atomic_write_json(deps_path, snapshot.deps_state, trailing_newline=True)
+    if not snapshot.payload_restored:
+        if snapshot.backup_dir is not None and not snapshot.backup_dir.is_dir():
+            raise OSError(f"rollback payload is missing: {snapshot.backup_dir}")
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        if snapshot.backup_dir is not None:
+            target_dir.parent.mkdir(parents=True, exist_ok=True)
+            snapshot.backup_dir.rename(target_dir)
+        # A later state-write failure must never make a retry delete this tree.
+        snapshot.payload_restored = True
+    errors = restore_lifecycle_state(snapshot.drive_root, snapshot.skill_name, snapshot.lifecycle_state)
+    if errors:
+        raise OSError("; ".join(errors))
     if restore_state_provenance:
         if snapshot.state_provenance is None:
             delete_provenance(snapshot.drive_root, snapshot.skill_name)

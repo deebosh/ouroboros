@@ -173,7 +173,7 @@ Used by `commit_reviewed` for all changes to the Ouroboros repository.
 | 15 | cross_platform | Does the diff use platform-specific APIs (`os.kill`, `os.setsid`, `os.killpg`, `os.getpgid`, `fcntl`, `msvcrt`, `signal.SIGKILL`, `signal.SIGTERM`, `subprocess` with `start_new_session`/`creationflags`, hardcoded `/` or `\\` in filesystem paths) outside of `ouroboros/platform_layer.py`? Does it import Unix-only or Windows-only modules (`fcntl`, `msvcrt`, `winreg`, `resource`) at any level without a platform guard (`sys.platform`/`IS_WINDOWS` check)? | critical |
 | 16 | changelog_accuracy | Do the exact wording, test counts, and minor description details in the README Version History row match what the diff actually does? Wording drift, off-by-one test counts, minor inaccuracies in descriptive prose — these belong here, NOT in `self_consistency` or `changelog_and_badge`. This item exists so reviewers have a dedicated advisory bucket for prose-level changelog imprecision that does not affect release metadata, runtime behavior, or safety contracts. | advisory |
 | 17 | gateway_parity | If the diff changes any browser-facing endpoint, WebSocket message, or frontend API call, are `ouroboros/gateway/contracts.py`, `ouroboros/gateway/router.py`, `web/modules/api_client.js`, `web/modules/api_types.js`, and `tests/test_gateway_parity.py` still aligned? Missing alignment is advisory unless it also breaks a frozen contract, safety guard, release metadata, or runtime behavior. | advisory |
-| 18 | subagent_isolation | If the diff changes `schedule_subagent`, child-task queueing, task constraints, tool discovery/execution, data reads, or memory handoff, does it preserve the accepted live-subagent contract: strict `subagent_id` + `objective` + `expected_output` schema, inferred lineage/workspace/contract/deadline/resource inheritance, `local_readonly_subagent` schema and execute-time allowlist, subagent-scoped secret/control-file denial for data tools, nested readonly delegation only within configured depth/cap limits (depth bounds how deep delegation NESTS, never actor strength; every new call names `subagent_id`, the scheduler snapshots the exact normalized `ConfiguredSubagent` route at task start, and an `agent_session` snapshot executes on the harness by construction — the host starts that exact leaf before the child's first model round without waiting on it, a definite typed start refusal ends the child unrun and typed at $0, and ambiguous start evidence wakes the model rather than terminaling; the model-visible schema must not expose `model_lane`/`executor`, while hidden legacy selectors map deterministically to one migrated row or return `subagent_selection_required`), no arbitrary local writes/commits/review/runtime/tool-expansion/skills-lifecycle/shell (bounded media projection such as `extract_video_frames` may write derived outputs only under `artifact_store/video_frames` through a host-owned command shape), enabled external tools allowed only by owner policy and inherited resources, the subagent browser boundary (external HTTP(S) + `file://` scoped to `workspace_root` + loopback EXCEPT Ouroboros control-plane ports; private/link-local/reserved/DNS-rebind still blocked; `evaluate` JS unavailable to `local_readonly_subagent`, available to a valid `acting_subagent` on its current page; `vlm_query`/`analyze_screenshot` available), full task-result handoff, new/changed wait/timeout paths for cognitive work using progress-aware/re-decidable waiting rather than a fixed cutoff that discards in-flight work (P5), and tests for both allowed and blocked paths? | critical |
+| 18 | subagent_isolation | If the diff changes `schedule_subagent`, child-task queueing, task constraints, tool discovery/execution, data reads, or memory handoff, does it preserve the accepted live-subagent contract: strict `subagent_id` + `objective` + `expected_output` schema, inferred lineage/workspace/contract/deadline/resource inheritance, `local_readonly_subagent` schema and execute-time allowlist, subagent-scoped secret/control-file denial for data tools, nested readonly delegation only within configured depth/cap limits (depth bounds how deep delegation NESTS, never actor strength; every new call names `subagent_id`, the scheduler snapshots the exact normalized `ConfiguredSubagent` route at task start, and an `agent_session` snapshot executes on the harness by construction — the host starts that exact leaf before the child's first model round without waiting on it, a definite typed start refusal ends the child unrun and typed at $0, and ambiguous start evidence wakes the model rather than terminaling; the model-visible schema must not expose `model_lane`/`executor`, while hidden legacy selectors map deterministically to one migrated row or return `subagent_selection_required`), no arbitrary local writes/commits/review/runtime/tool-expansion/skills-lifecycle/shell (bounded media projection such as `extract_video_frames` may write derived outputs only under `artifact_store/video_frames` through a host-owned command shape), enabled external tools allowed only by owner policy and inherited resources, the subagent browser boundary (external HTTP(S) + `file://` scoped to `workspace_root` + loopback except actual Ouroboros control-service endpoints; concrete private origins require host-established `resource_policy.allowed_origins` with exact scheme/host/port and inherited/subset authority; unavailable identity for a matching recorded endpoint must not become foreign-service permission; apply the same target checks to direct navigation, actions and intercepted subresources, and validate every available redirect hop before returning page content; native browser redirects may send a request before post-navigation validation, so this is not a pre-request isolation or DNS-rebinding guarantee; metadata/link-local and reserved targets remain refused by the existing URL policy; `evaluate` JS unavailable to `local_readonly_subagent`, available to a valid `acting_subagent` on its current page; `vlm_query`/`analyze_screenshot` available), full task-result handoff, new/changed wait/timeout paths for cognitive work using progress-aware/re-decidable waiting rather than a fixed cutoff that discards in-flight work (P5), and tests for both allowed and blocked paths? | critical |
 | 19 | evolution_durability | If the diff touches `supervisor/git_ops.py`, `launcher.py`, `server.py`, `ouroboros/preflight_runner.py`, `ouroboros/tools/review_helpers.py`, `ouroboros/tools/git.py`, tests, review gates, or evolution code, does it preserve hermetic preflight, live repo/data mutation fuses, remote-optional local commit success, and transaction/rescue evidence for interrupted self-modification? | critical |
 | 20 | context_budget_ssot | If the diff changes context-size budgets/constants (`ouroboros/context_budget.py`), the context layout/manifest, a section's tier/policy, or the typed ContextFit deficit/reclaim contract: does it keep the low/max context split coherent (single SSOT + both profiles + docs + drift-guard tests in sync), preserve the tier-0 always-full core (BIBLE/SYSTEM/identity/scratchpad/knowledge-index/recent-dialogue) in EVERY mode, use a visible on-demand pointer instead of silent truncation (P1), and leave the blocking scope-reviewer >=1M floor untouched wherever scope review applies? Since v6.80.0 the owner-only `OUROBOROS_CONTEXT_MODE` ALSO decides scope-review applicability (`max`: blocking ≥1M gate; `low`: declaredly not performed with a typed skip row), so any change that widens what `low` mode implies, or that lets the AGENT reach that setting, is an immune-system change under P3 — not a context-budget tweak. (PASS with "Not applicable" if no context-budget/layout change.) | critical |
 | 21 | capability_regression | Does the diff REMOVE or NARROW a previously-supported user-facing behavior or capability — a tool/flag/mode/path that worked before now errors or is gated tighter (e.g. a new `is_dir`/existence guard that blocks a legitimate create, a tightened allowlist that drops a real path, a removed fallback)? If so, is it INTENTIONAL and disclosed as a breaking/capability change in the commit message + changelog? Accidental capability removal is the failure class this item names. Ask whether a golden "from zero" test would have caught it. **Guard-change trigger (executable requirements, not an essay):** ADDING or TIGHTENING a guard, filter, allowlist, or deny rule IS a capability change and fires this item. For such a diff the reviewer must verify two things: (a) the diff STAGES A POSITIVE TEST that exercises a legitimate flow THROUGH the new guard and proves it still succeeds — a negative "it blocks X" test alone is insufficient (a gate can pass its own probe while breaking every real run); (b) the diff or its disclosure NAMES THE SURVIVING POSITIVE PATH — the concrete actor and flow that still work after the change. A guard change that stages no surviving-path test is a capability-regression finding, not a safety improvement. **Owner acceptance:** a narrowing counts as OWNER-ACCEPTED only when a GREEN plan review explicitly names that narrowing; owner acceptance makes the finding advisory (disclosed, non-blocking). Intent wording, a commit-message disclosure, or a changelog row alone is disclosure, NOT acceptance. Severity follows the `Critical surface whitelist` below — silently removing a documented capability or a safety/release contract is critical; an owner-accepted narrowing or an internal-only refactor is advisory. **Standing disclosures for this item live in `docs/CHECKLISTS_ARCHIVE.md`** (owner-accepted removals/narrowings and standing notes); they remain binding on every reviewer — consult that file before raising a removal/narrowing finding on a surface it covers, and do not re-raise anything recorded there. | advisory |
@@ -503,42 +503,57 @@ OuroborosHub payloads are not attestable. The DETERMINISTIC preflight floor stil
 (409 on failure); only the LLM phase is skipped. The result is a durable `clean` verdict
 with `review_profile=owner_attested`, `reviewer_models=[owner_attestation]`, bound to
 `content_hash` (a content edit stales it) and valid only while the owner-issued
-`owner_attestation.json` marker is present. The AGENT can NEVER trigger this — the
-marker is an owner-state file (agent-write-blocked) and the endpoint is blocked from
-agent self-call on shell/CLI/browser channels (`prompts/SAFETY.md` DANGEROUS rule).
-This is the only owner-issued review-bypass.
+`owner_attestation.json` marker is present. The marker remains owner state, blocked from generic agent file writes and raw
+shell/CLI/browser endpoint self-calls. An ordinary task may carry an already
+expressed owner instruction through `skill_owner_action`; the shared host owner
+checks the actual caller, resolved member source, selected revision and source
+eligibility before invoking this same attestation. The model interprets the
+owner's words; a formatted reference alone grants nothing. This remains the
+only owner-issued review bypass.
 `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS` is default-on as of v6.10.0 (the owner
 may disable it), in which case a fresh executable review grants only
 manifest-declared settings keys and host permissions for that exact content
 hash; when disabled, key and permission grants remain explicit.
 
-The Skills UI Repair affordance is only a task starter: it asks Ouroboros
-to edit payload files and rerun `skill_review`. It must not write
-trust/control-plane state directly, auto-enable a repaired skill, or
-grant keys. Repair tasks carry the legacy `task_constraint.mode="skill_repair"` marker so deterministic
-tool guards allow `list_skills`, payload-oriented `read_file`/`list_files`/
-`write_file`/`edit_text` with `root=skill_payload`, `skill_review`, and
-`skill_preflight` for cheap offline syntax/manifest/widget
-validation, and block `toggle_skill`, `skill_exec`, shell/browser
-indirection, extension tools, broad repo mutation, and subtask delegation
-while the repair task is active.
-Payload data access is scoped to the selected non-native skill under
-`data/skills/external/<skill>/`, `data/skills/clawhub/<skill>/`, or
-`data/skills/ouroboroshub/<skill>/`. Marketplace/official provenance
-sidecars inside those payload roots (`.clawhub.json`, `.ouroboroshub.json`)
-remain control-plane state and are not writable from Repair mode. User-managed
-payloads physically left under `data/skills/native/` without `.seed-origin` are
-classified as logical `external` in place for ordinary top-level
-read/write/edit/shell/delegation in every runtime mode; no migration is needed.
-The constrained Repair contract itself remains non-native and does not gain
-that alias. A marker-present launcher seed stays read/review-only, and generic
-tools still cannot mutate `.seed-origin`, review/grant state, marketplace
-provenance, dependency sidecars, or other control state.
+The Skills UI Repair affordance and automatic repair both start ordinary managed
+development tasks. Keep the selected skill, source request and admitted payload
+revision; a legacy `task_constraint.mode="skill_repair"` record remains readable
+as a selected-resource binding, never a reduced execution profile. Ordinary file,
+shell, browser, delegation and functional skill operations remain available
+through their existing guards. Review must not force-unload a skill because the
+caller is repairing it. Preserve readonly and acting-child ceilings independently.
 
-The direct/read-only inspection profiles may read, list, and search a selected
-native payload, including ordinary payload markers and dependency directories;
-that read contract does not extend to native mutation, owner state, grants,
-review/enablement, acting selection, or the constrained Repair lane.
+Before a selected payload operation, verify the task's known revision. File-tool
+effects retain their existing attribution; after opaque process work, persist the
+observed payload revision without claiming exclusive authorship. A known foreign
+change refuses overwrite. No long shell lock, mandatory private Git copy, new
+patch pipeline or automatic rollback is implied. Native seeds with `.seed-origin`
+retain their existing protections. Ordinary user-managed native-directory payloads
+without that marker retain the existing logical-external binding. Generic tools
+cannot write provenance, review, grants, dependencies or other control state.
+
+UI, CLI and task calls share each existing lifecycle effect owner. An owner-only
+action names its exact action, selected skill and revision, requested grant items,
+and source of expressed owner intent. The host validates actual caller identity,
+source membership/provenance and current manifest/review/dependency restrictions;
+the acting model interprets the source's meaning. A formatted reference or an
+automatically generated repair request is not owner permission. Ordinary repair
+does not grant all permissions, self-attest or authorize deletion. Preserve the
+configured auto-grant policy, ClawHub no-Skip rule, and explicit owner disable/Stop.
+Do not require repeated owner clicks for operations already covered by the task.
+
+Keep review, grants, desired enablement, dependency readiness and loaded/tested
+revision as separate facts. A dependency or load failure does not rewrite a review
+verdict, and a functional test is not independent review PASS. Reconcile supported
+owner attestation through the same post-review lifecycle. Project the actual
+blocking phase and available next action; repeat review only when it addresses
+that blocker. Verify the real installed script/tool/HTTP/widget/companion flow
+and preserve an honest partial result if a required permission or runtime is
+unavailable.
+
+The direct/read-only inspection profiles retain their existing native read/list/
+search contract; ordinary Repair does not grant owner-state access or widen
+unrelated child/Presence authority.
 
 A selected `skill_publish` task may recover one exact known manifestless
 `user_repo` leaf through the existing selected-candidate binding: omitted
@@ -665,11 +680,17 @@ two manifests as part of items 2 (`permissions_honesty`) and 5
 3. **Install spec policy (v5.7.0+)** — the adapter NORMALISES
    `metadata.openclaw.install` specs into Ouroboros's isolated
    per-skill dependency lane. ``pip``/``pipx``/``uv``/``npm``/``node``
-   specs land in `data/skills/<bucket>/<skill>/.ouroboros_env/` and
-   are invoked with `--ignore-scripts` for npm + `--only-binary=:all:`
-   for pip. Specs with global side effects (``brew``, ``apt``,
-   ``cargo``, ``go``, ``download``) are translated into manual setup
-   warnings instead. Reviewers should confirm the auto-installed
+   specs land in `data/skills/<bucket>/<skill>/.ouroboros_env/`; npm
+   defaults to `--ignore-scripts` and pip to `--only-binary=:all:`.
+   A reviewed entry may explicitly opt into source builds/install scripts
+   with a concrete executable check. Exact ``download`` entries bind URL,
+   digest, size and relative target; any literal build steps also declare
+   outputs and a check. These declarations must match the fresh reviewed
+   payload at process launch; package-manager exit zero alone is not a
+   functional verdict. Verified caches stay outside replaceable payload/env,
+   and actual resource/package/output facts and diagnostics stay in deps.json.
+   Global-manager specs (``brew``, ``apt``, ``cargo``, ``go``) remain manual
+   setup warnings. Reviewers should confirm the auto-installed
    packages match the skill's stated purpose; an unjustified `pip
    install <package>` for a skill that doesn't import it is a FAIL of
    item 2 (`permissions_honesty`). The adapter still rejects Node/TS

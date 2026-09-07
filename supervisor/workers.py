@@ -435,8 +435,10 @@ def _stage_promoted_initial_attachments(
 
     uploads = evt.get("attachment_uploads")
     uploads = uploads if isinstance(uploads, list) else []
-    inherited = inherited_manifest if isinstance(inherited_manifest, list) else []
-    if not uploads and not inherited:
+    inherited_authority = inherited_manifest if isinstance(inherited_manifest, dict) else {}
+    inherited = inherited_authority.get("attachment_manifest") if inherited_authority else inherited_manifest
+    inherited = inherited if isinstance(inherited, list) else []
+    if not uploads and not inherited and "attachment_manifest_ref" not in inherited_authority:
         return [], None
     manifest: list[dict] = []
     try:
@@ -448,6 +450,10 @@ def _stage_promoted_initial_attachments(
         )
         from ouroboros.gateway.tasks import _render_attachment_lines
 
+        if "attachment_manifest_ref" in inherited_authority:
+            from ouroboros.artifacts import resolve_attachment_manifest
+            source_task_id = str((inherited_authority.get("lineage") or {}).get("root_task_id") or "")
+            inherited = resolve_attachment_manifest(DRIVE_ROOT, source_task_id, inherited_authority)
         inherited_rows, inherited_error = materialize_inherited_attachment_manifest(
             inherited, DRIVE_ROOT, tid,
         )
@@ -555,7 +561,7 @@ def _reject_promoted_after_attachment_stage(
 
 def _apply_presence_promotion_authority(
     evt: dict, task: dict, *, objective: str, expected_output: str,
-) -> list[dict]:
+) -> list[dict] | dict:
     """Preserve inherited Presence authority while rebinding the new root."""
 
     presence = evt.get("presence") if isinstance(evt.get("presence"), dict) else None
@@ -577,8 +583,9 @@ def _apply_presence_promotion_authority(
         "attachment_manifest": [],
     })
     promoted_contract.pop("lineage", None)
+    promoted_contract.pop("attachment_manifest_ref", None)
     task["task_contract"] = promoted_contract
-    return inherited_manifest
+    return contract if "attachment_manifest_ref" in contract else inherited_manifest
 
 
 def _relocate_promoted_attachments(task: dict, tid: str, manifest: list[dict]) -> bool:
@@ -1188,10 +1195,9 @@ def kill_workers(
                 log.error("Worker shutdown blocked: disable fence was not durable")
                 return False
         cleared_running = len(RUNNING)
-        from ouroboros.platform_layer import kill_pid_tree
         for w in WORKERS.values():
             if w.proc.pid:
-                kill_pid_tree(w.proc.pid)
+                kill_worker_tree(w.proc.pid)
             elif w.proc.is_alive():
                 w.proc.terminate()
         for w in WORKERS.values():
@@ -2155,6 +2161,7 @@ from supervisor.worker_pool_lifecycle import (  # noqa: E402, F401 -- intentiona
     _worker_pids_path,
     _write_failure_result,
     events_log_cursor,
+    kill_worker_tree,
     kill_workers_for_update,
     reap_orphaned_workers,
     respawn_worker,

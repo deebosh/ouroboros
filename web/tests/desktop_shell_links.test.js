@@ -6,6 +6,7 @@ import {
     classifyShellUrl,
     copyTextWithToast,
     downloadViaHostBridge,
+    downloadBlobViaHostBridge,
     installDesktopShellLinkInterceptor,
     openViaHostBridge,
 } from '../modules/ui_helpers.js';
@@ -511,4 +512,75 @@ test('without a bridge the download fetches the canonical URL, not the compat fo
         globalThis.fetch = priorFetch;
         globalThis.URL = priorURL;
     }
+});
+
+test('file-backed browser download checks HEAD then lets the browser stream the body', async () => {
+    const prior = { window: globalThis.window, document: globalThis.document, fetch: globalThis.fetch };
+    const calls = [];
+    const link = { click() { calls.push(['download', this.href, this.download]); }, remove() {} };
+    globalThis.window = { location: { href: BASE } };
+    globalThis.document = { createElement: () => link, body: { appendChild() {} } };
+    globalThis.fetch = async (url, options) => {
+        calls.push(['request', url, options.method]);
+        return { ok: true, blob() { throw new Error('file body must not become a JS Blob'); } };
+    };
+    try {
+        await downloadViaHostBridge('/api/files/download?path=old', 'dataset.bin', {
+            browserUrl: '/api/tasks/task/artifacts/captured.bin', streaming: true,
+        });
+        assert.deepEqual(calls, [
+            ['request', '/api/tasks/task/artifacts/captured.bin', 'HEAD'],
+            ['download', '/api/tasks/task/artifacts/captured.bin', 'dataset.bin'],
+        ]);
+    } finally {
+        Object.assign(globalThis, prior);
+    }
+});
+
+test('owned Blob and legacy data URL share the native bytes save owner', async () => {
+    const saves = [];
+    const win = { pywebview: { api: { save_bytes_to_downloads: async (name, data) => {
+        saves.push([name, data]);
+        return { ok: true, path: '/private/Downloads/actual.txt' };
+    } } } };
+    const blob = new Blob(['owned bytes'], { type: 'text/plain' });
+    const result = await downloadBlobViaHostBridge(blob, 'requested.txt', { win, doc: {} });
+    assert.deepEqual(saves, [['requested.txt', 'b3duZWQgYnl0ZXM=']]);
+    assert.equal(result.filename, 'actual.txt');
+    assert.equal(result.native, true);
+    await downloadBlobViaHostBridge('data:text/plain;base64,aGk=', '', { win, doc: {} });
+    assert.deepEqual(saves[1], ['download.txt', 'aGk=']);
+    win.pywebview.api.save_bytes_to_downloads = async () => ({ ok: false, cancelled: true, error: 'cancelled by owner' });
+    assert.equal((await downloadBlobViaHostBridge(blob, 'x', { win, doc: {} })).cancelled, true);
+    await assert.rejects(() => downloadBlobViaHostBridge(new Response('network body'), 'x', { win, doc: {} }), /Expected a Blob/);
+    await assert.rejects(() => downloadBlobViaHostBridge('https://example.com/data', 'x', { win, doc: {} }), /Expected a Blob/);
+});
+
+for (const streaming of [false, true]) {
+    test(`direct download from an old desktop bridge reports copy-link (streaming=${streaming})`, async () => {
+        const prior = { window: globalThis.window, document: globalThis.document, fetch: globalThis.fetch };
+        const copied = [];
+        try {
+            globalThis.window = bridgeRefusalWindow({}, copied);
+            const host = toastDocument();
+            globalThis.document = host.doc;
+            globalThis.fetch = async () => { throw new Error('old shell must not fall into browser download'); };
+            const result = await downloadViaHostBridge('/api/files/download?path=compat', 'data.bin', {
+                browserUrl: '/api/tasks/task/artifacts/data.bin', streaming,
+            });
+            assert.deepEqual(result, { ok: false, native: false, degraded: 'copy-link' });
+            assert.deepEqual(copied, [`${BASE}api/tasks/task/artifacts/data.bin`]);
+            assert.deepEqual(host.toasts, ['Link copied — open it in your browser.']);
+        } finally { Object.assign(globalThis, prior); }
+    });
+}
+
+test('direct old-shell download propagates an unavailable copy fallback', async () => {
+    const prior = { window: globalThis.window, document: globalThis.document, fetch: globalThis.fetch };
+    try {
+        globalThis.window = { location: { href: BASE }, navigator: {}, pywebview: { api: {} } };
+        globalThis.document = { createElement: () => ({ setAttribute() {}, select() {}, remove() {} }), body: { appendChild() {} } };
+        globalThis.fetch = async () => { throw new Error('must not fetch'); };
+        await assert.rejects(() => downloadViaHostBridge('/api/tasks/task/artifacts/data.bin', 'data.bin', { streaming: true }), /Desktop file download is unavailable/);
+    } finally { Object.assign(globalThis, prior); }
 });

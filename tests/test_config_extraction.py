@@ -21,6 +21,20 @@ PACKAGE = REPO / "ouroboros"
 _LEAVES = (settings_defaults, settings_scales, model_slots, review_model_routes, runtime_limits)
 
 _MOVED_OWNERS = {
+    "WORKER_SPAWN_GRACE_SEC": runtime_limits,
+    "WORKER_READY_WINDOW_SEC": runtime_limits,
+    "WORKER_READY_MAX_ATTEMPTS": runtime_limits,
+    "EXTENSION_STREAM_CHUNK_BYTES": runtime_limits,
+    "EXTENSION_CHILD_CLEANUP_GRACE_SEC": runtime_limits,
+    "NESTED_SETTLEMENT_MARGIN_SEC": runtime_limits,
+    "NETWORK_WAIT_NOTE_INTERVAL_SEC": runtime_limits,
+    "NETWORK_WAIT_BACKOFF_START_SEC": runtime_limits,
+    "TCP_KEEPALIVE_IDLE_SEC": runtime_limits,
+    "TCP_KEEPALIVE_INTERVAL_SEC": runtime_limits,
+    "TCP_KEEPALIVE_PROBE_COUNT": runtime_limits,
+    "EXTENSION_STREAM_METADATA_BYTES": runtime_limits,
+    "WS_RELAY_BURST": runtime_limits,
+    "WS_RELAY_REFILL_PER_SEC": runtime_limits,
     "ENDPOINT_AUTHORED_SETTINGS": settings_defaults,
     # v6.104.0 upstream: the OpenRouter shipped-model defaults arrive in the
     # vocabulary leaf the v7 split created for exactly this class of fact.

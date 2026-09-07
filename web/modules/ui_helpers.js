@@ -227,8 +227,9 @@ export async function openViaHostBridge(url, filename = 'file', { browserUrl = '
     return { ok: true, native: false };
 }
 
-export async function downloadViaHostBridge(url, filename = 'download', { openExternal = false, fetchOptions = {}, browserUrl = '' } = {}) {
-    const bridge = shellBridgeApi(window)?.download_file_to_downloads;
+export async function downloadViaHostBridge(url, filename = 'download', { openExternal = false, fetchOptions = {}, browserUrl = '', streaming = false } = {}) {
+    const api = shellBridgeApi(window);
+    const bridge = api?.download_file_to_downloads;
     if (bridge) {
         const result = await bridge(url, filename, Boolean(openExternal));
         if (!result?.ok) {
@@ -236,9 +237,23 @@ export async function downloadViaHostBridge(url, filename = 'download', { openEx
         }
         return { ...result, native: true };
     }
+    if (api) {
+        return bridgeRefusalFallback(url, new Error('Desktop file download is unavailable'), browserUrl);
+    }
     // Browser fallback fetches the canonical address when the caller carries
     // both: the compat form depends on the CURRENT file-browser root and may
     // dangle after the owner re-roots it, while the artifact URL stays valid.
+    if (streaming) {
+        const source = browserUrl || url;
+        const response = await apiFetch(source, { ...fetchOptions, method: 'HEAD' });
+        if (!response.ok) throw new Error(`download failed: HTTP ${response.status}`);
+        const link = document.createElement('a');
+        Object.assign(link, { href: source, download: filename, rel: 'noopener' });
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        return { ok: true, native: false };
+    }
     const resp = await apiFetch(browserUrl || url, fetchOptions);
     if (!resp.ok) throw new Error(`download failed: HTTP ${resp.status}`);
     const blobUrl = URL.createObjectURL(await resp.blob());
@@ -356,6 +371,38 @@ async function shellBytesPayload(url, filename, win) {
     };
 }
 
+/** Save an already-owned Blob or data/blob URL through the existing bytes owner.
+ * HTTP responses/streams stay on the URL download path and are never buffered here.
+ */
+export async function downloadBlobViaHostBridge(source, filename = '', { win = window, doc = document } = {}) {
+    const isBlob = typeof Blob !== 'undefined' && source instanceof Blob;
+    if (!isBlob && (typeof source !== 'string' || !/^(data|blob):/i.test(source))) {
+        throw new TypeError('Expected a Blob or data/blob URL');
+    }
+    const api = shellBridgeApi(win);
+    if (api) {
+        if (!api.save_bytes_to_downloads) return { ok: false, native: true, unavailable: true,
+            error: "Saving isn't available in the app — open in a browser." };
+        const payload = isBlob
+            ? { name: filename || filenameForMime(source.type), b64: base64FromArrayBuffer(await source.arrayBuffer()) }
+            : await shellBytesPayload(source, filename, win);
+        const result = await api.save_bytes_to_downloads(payload.name, payload.b64);
+        const name = String(result?.path || '').split(/[\\/]/).pop() || payload.name;
+        return { ...result, ok: result?.ok === true, native: true, filename: name };
+    }
+    const mime = isBlob ? source.type : (/^data:([^;,]*)/i.exec(source)?.[1] || '');
+    const name = filename || filenameForMime(mime);
+    const url = isBlob ? URL.createObjectURL(source) : source;
+    const link = doc.createElement('a');
+    Object.assign(link, { href: url, download: name, rel: 'noopener' });
+    doc.body.appendChild(link);
+    try { link.click(); } finally {
+        link.remove();
+        if (isBlob) setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    return { ok: true, native: false, filename: name };
+}
+
 /**
  * Clipboard write with the execCommand-textarea fallback. Non-secure origins
  * and the desktop shell have no async clipboard, so a bare
@@ -442,15 +489,10 @@ async function routeShellUrl(kind, url, deps) {
             const result = api?.open_external_url ? await api.open_external_url(url) : null;
             if (!result?.ok) await copyShellLinkWithToast(url, win, doc, toast);
         } else if (kind === 'bytes') {
-            if (!api?.save_bytes_to_downloads) {
-                toast("Saving isn't available in the app — open in a browser.", 'warn');
-                return;
-            }
-            const payload = await shellBytesPayload(url, filename, win);
-            const result = await api.save_bytes_to_downloads(payload.name, payload.b64);
-            if (!result?.ok) throw new Error(result?.error || 'save failed');
-            const saved = String(result.path || '').split(/[\\/]/).pop() || payload.name;
-            toast(`Saved to Downloads: ${saved}`, 'ok');
+            const result = await downloadBlobViaHostBridge(url, filename, { win, doc });
+            if (result.unavailable) { toast(result.error, 'warn'); return; }
+            if (!result.ok) throw new Error(result.error || 'save failed');
+            toast(`Saved to Downloads: ${result.filename}`, 'ok');
         }
     } catch (error) {
         const verb = kind === 'bytes' ? 'save file'

@@ -57,7 +57,7 @@ class PresenceTurnResult:
     work_ref: str = ""
 
 
-def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any) -> dict[str, Any]:
+def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any, *, provider_notice: str = "") -> dict[str, Any]:
     """Freeze typed delivery metadata before the ordinary durable result write."""
 
     completion = getattr(ctx, "_presence_completion", None)
@@ -75,6 +75,10 @@ def build_presence_result_event(task: dict[str, Any], text: str, ctx: Any) -> di
     if outcome == "deferred" and not work_ref:
         outcome = "message"
     result_text = str(completion.get("message") or text or "")
+    if outcome in {"message", "deferred"} and provider_notice:
+        from ouroboros.task_finalization import provider_terminal_body
+
+        result_text = provider_terminal_body(result_text, provider_notice)
     metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     metadata["presence_outcome"] = outcome
     if outcome in {"message", "deferred"}:
@@ -352,12 +356,15 @@ def _build_task(
         # every staged/rejected declaration on the canonical carrier before the
         # task contract is normalized so a later promotion or child can inherit
         # and materialize the exact inputs.
-        task["attachments"] = [dict(item) for item in manifest]
+        from ouroboros.artifacts import attachment_manifest_projection
+        authority = attachment_manifest_projection(drive_root, task_id, manifest)
+        task.update(authority)
+        task["attachments"] = authority["attachment_manifest"]
         task["attachment_images"] = [
             dict(item) for item in manifest
             if str(item.get("status") or "staged") == "staged" and item.get("is_image")
         ]
-        rendered = _render_attachment_lines(manifest)
+        rendered = _render_attachment_lines(authority)
         if rendered:
             task["text"] = f"{task['text']}\n\n[ATTACHMENTS]\n{rendered}\n[END_ATTACHMENTS]".strip()
     if not task["text"]:

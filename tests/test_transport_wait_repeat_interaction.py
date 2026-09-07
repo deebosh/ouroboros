@@ -51,7 +51,7 @@ def no_sleep(monkeypatch):
     """The repeat rail's backoff sleeps, recorded instead of slept (as in the
     transport-death suite; a fixture is defined where it is used)."""
     sleeps = []
-    monkeypatch.setattr(call_mod, "_sleep_within_deadline", lambda sec, _dl: (sleeps.append(sec), True)[1])
+    monkeypatch.setattr(call_mod, "_sleep_within_deadline", lambda sec, _dl, **_kw: (sleeps.append(sec), True)[1])
     return sleeps
 
 
@@ -144,7 +144,9 @@ def test_wait_episode_exhausted_on_a_round_holding_a_repeat_record_takes_the_unk
         assert usage[TRANSPORT_DEATHS_KEY]["count"] == 1
         assert "1 earlier physical attempt(s) of the last dispatched round" in result
         assert "unresolved at their upper bound" in result
-        assert result == base + loop_transport.provider_recovery_hint(usage)
+        assert "Retry when connectivity returns" not in result
+        assert "Inspect the preserved facts before starting another run." in result
+        assert result.endswith(loop_transport.provider_recovery_hint(usage))
     else:
         assert trace["forced_finalization"]["source"] == "transport_unavailable_no_resend"
         assert TRANSPORT_DEATHS_KEY not in usage
@@ -175,10 +177,10 @@ def test_deadline_refused_redial_still_names_the_class_the_repeat_was_released_w
         datetime.now(timezone.utc) + timedelta(seconds=get_finalization_grace_sec() + 8)
     ).isoformat()}
     kwargs["tools"]._ctx.task_metadata = metadata
-    waits = []
+    clock = _FakeClock(monkeypatch)
 
     def _window_closes_while_waiting(sec, _wake):
-        waits.append(sec)
+        clock.sleep(sec, _wake)
         metadata["deadline_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
         return False
 
@@ -186,7 +188,7 @@ def test_deadline_refused_redial_still_names_the_class_the_repeat_was_released_w
     result, usage, trace = run_llm_loop(**kwargs)
 
     assert llm.calls == 2  # the primary send and its granted repeat; the redial never dispatched
-    assert no_sleep == [4.0] and len(waits) == 1
+    assert no_sleep == [4.0] and len(clock.sleeps) == 1
     assert [row["reason_code"] for row in _events(tmp_path, "llm_not_dispatched")] == ["deadline_exhausted"]
     ended = [row["detail"] for row in _events(tmp_path, "network_wait") if row["phase"] == "ended"]
     assert ended == ["deadline_refused_dispatch"]

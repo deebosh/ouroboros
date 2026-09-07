@@ -41,15 +41,12 @@ def test_registry_core_extraction_preserves_only_proven_facades():
     guard_names = {
         "_EPHEMERAL_ALLOWED_TOOLS",
         "_GITHUB_TOKEN_TOOLS",
-        "_HEAL_MODE_ALLOWED_TOOLS",
         "_WEB_TOOLS",
         "_authorized_managed_update_resolver",
         "_builtin_tool_availability",
         "_disabled_tools",
-        "_heal_protected_payload_sidecar",
         "_managed_update_code_tool_block",
         "_resource_allowed",
-        "_task_constraint_path_allowed",
     }
     private_resolution_names = {
         "_DispatchPathNormalization",
@@ -89,9 +86,9 @@ def test_registry_core_extraction_preserves_only_proven_facades():
         *guard_names,
     }
 
-    # 31 since #447: `_binding_state_drive_root` went with the deleted post-hoc
-    # owner-state restore organ, so the facade no longer proves it.
-    assert len(proven) == 31
+    # Reduced Repair guards are gone; ordinary development keeps the same
+    # registry authority as the other top-level tasks.
+    assert len(proven) == 28
     # Tip adaptation of the reference pin: this tree's facade deliberately keeps
     # the broad HISTORICAL import surface (importers and monkeypatch targets are
     # not migrated in this window), so the reference's exact-32-name equality

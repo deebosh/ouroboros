@@ -476,11 +476,13 @@ _PUBLISHED_CHILD_REF_FIELDS = frozenset(
         "loop_outcome",
         "review_evidence",
         "review_projection",
+        "completion_observations",
         "verification_ledger",
         "root_phase_checkpoint",
         "plan_review_state",
         "artifacts",
         "artifact_bundle",
+        "task_contract", "attachment_manifest", "attachment_manifest_ref",
     }
 )
 _SOURCE_HANDLES_SUBDIR = "source_handles"
@@ -836,6 +838,7 @@ def promote_child_task_refs(
     child_drive_root: pathlib.Path,
     task_id: str,
     child_result: Dict[str, Any],
+    *, retry_only: bool = False,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Promote the bounded, task-owned ref closure published by child copy-back."""
     parent_root = pathlib.Path(parent_drive_root)
@@ -849,11 +852,35 @@ def promote_child_task_refs(
         "pending_refs": [],
         "unavailable_refs": [],
     }
+    from ouroboros.artifacts import promote_task_attachment_refs
+    pending_inputs = any(row.get("kind") == "task_attachment" for row in
+                         (child_result.get("child_ref_promotion") or {}).get("pending_refs", []) if isinstance(row, dict))
+    if not retry_only or pending_inputs:
+        promote_task_attachment_refs(parent_root, child_root, task_id, rewritten, state)
     for key in _PUBLISHED_CHILD_REF_FIELDS:
+        if key in {"task_contract", "attachment_manifest", "attachment_manifest_ref"}:
+            continue  # Input JSON and its file closure have one attachment-aware owner.
         if key in rewritten:
             rewritten[key] = _rewrite_child_ref_tree(
                 rewritten[key], parent_root, child_root, task_id, state,
             )
+    artifacts = rewritten.get("artifacts")
+    if isinstance(artifacts, list):
+        from ouroboros.headless import _copy_child_artifacts_to_parent
+        from ouroboros.outcomes import artifact_bundle_from_result
+
+        pending = {str(row.get("path") or "") for row in
+                   (child_result.get("child_ref_promotion") or {}).get("pending_refs", [])
+                   if isinstance(row, dict) and row.get("kind") == "task_artifact"}
+        selected = [row for row in artifacts if isinstance(row, dict)
+                    and (not retry_only or str(row.get("path") or "") in pending)]
+        if selected:
+            copied = _copy_child_artifacts_to_parent(parent_root, task_id, child_root, selected, promotion=state)
+            iterator = iter(copied)
+            rewritten["artifacts"] = ([next(iterator) if row in selected else row for row in artifacts]
+                                      if retry_only else copied)
+            rewritten.pop("artifact_bundle", None)
+            rewritten["artifact_bundle"] = artifact_bundle_from_result(rewritten)
     if state["pending_refs"]:
         state["status"] = "incomplete"
     return rewritten, state
@@ -871,7 +898,7 @@ def promote_child_task_ref_patch(
         parent_drive_root,
         child_drive_root,
         task_id,
-        canonical_result,
+        canonical_result, retry_only=True,
     )
     patch = {
         key: rewritten[key]
@@ -879,6 +906,8 @@ def promote_child_task_ref_patch(
         if key in rewritten
     }
     patch["child_ref_promotion"] = state
+    if rewritten.get("metadata") != canonical_result.get("metadata"):
+        patch["metadata"] = rewritten["metadata"]
     return patch
 
 
@@ -915,12 +944,16 @@ def _retry_pending_child_ref_promotion(
         patch["status"] = current_status
         return patch
 
-    return write_task_result(
+    settled = write_task_result(
         parent,
         task_id,
         str(loaded_result.get("status") or ""),
         _field_projector=_project,
     )
+    from supervisor.terminal_delivery import cleanup_settled_owner_mailbox
+
+    cleanup_settled_owner_mailbox(parent, task_id, {"drive_root": str(child)})
+    return settled
 
 
 def retry_pending_child_ref_promotions(
@@ -928,12 +961,11 @@ def retry_pending_child_ref_promotions(
 ) -> Dict[str, Any]:
     """Retry only newly ledgered pending refs, never the stale child result."""
 
-    from ouroboros.headless import HEADLESS_TASKS_DIR
+    from ouroboros.headless import HEADLESS_TASKS_DIR, TASK_DRIVES_DIR
     from ouroboros.task_status import SETTLED_STATUSES
     from ouroboros.task_results import load_task_result, validate_task_id
 
     parent = pathlib.Path(parent_drive_root)
-    base = parent / HEADLESS_TASKS_DIR
     report: Dict[str, Any] = {
         "scanned": 0,
         "retried": [],
@@ -941,11 +973,10 @@ def retry_pending_child_ref_promotions(
         "pending": [],
         "errors": [],
     }
-    if not base.is_dir():
-        return report
-    for task_dir in sorted(base.iterdir()):
-        if not task_dir.is_dir():
-            continue
+    directories = [(path, path / suffix) for base, suffix in
+                   ((parent / HEADLESS_TASKS_DIR, "data"), (parent / TASK_DRIVES_DIR, ""))
+                   if base.is_dir() for path in sorted(base.iterdir()) if path.is_dir()]
+    for task_dir, child_root in directories:
         task_id = task_dir.name
         report["scanned"] += 1
         try:
@@ -956,7 +987,7 @@ def retry_pending_child_ref_promotions(
             if not _has_pending_ref_promotion(result.get("child_ref_promotion")):
                 continue
             settled = _retry_pending_child_ref_promotion(
-                parent, task_dir / "data", task_id, result
+                parent, child_root, task_id, result
             )
             report["retried"].append(task_id)
             promotion = settled.get("child_ref_promotion") or {}

@@ -468,12 +468,11 @@ def emit_task_results(
     _presence = is_presence_task(task)
     _typed_routing_action = (
         str(getattr(ctx, "_typed_routing_action_emitted", "") or "").strip()
-        if ctx is not None else ""
     )
-    _has_typed_routing_action = bool(_ephemeral and _typed_routing_action)
     _message_meta = subagent_message_meta(task, task_id=str(task.get("id") or ""))
     if _ephemeral:
-        _message_meta["ephemeral_decision"] = True
+        _message_meta.update(ephemeral_decision=True, outcome_axes=outcome_axes,
+                             reason_code=reason_code)
     send_event = {
         "type": "send_message", "chat_id": task["chat_id"],
         "text": text or "\u200b", "log_text": text or "",
@@ -485,7 +484,7 @@ def emit_task_results(
         # on a nearby progress row that may age out independently.
         send_event["progress_meta"] = dict(_message_meta)
     send_event = prepare_terminal_send_event(env.drive_root, task, text, usage, send_event, ephemeral=_ephemeral, presence=_presence)
-    pending_events.append(build_presence_result_event(task, text, ctx) if _presence else send_event)
+    pending_events.append(build_presence_result_event(task, text, ctx, provider_notice=str(usage.get("terminal_provider_notice") or "")) if _presence else send_event)
     duration_sec = round(time.time() - start_time, 3)
     n_tool_calls = len(llm_trace.get("tool_calls", []))
     n_tool_errors = sum(1 for tc in llm_trace.get("tool_calls", [])
@@ -509,11 +508,14 @@ def emit_task_results(
         }
     # SSOT cost naming (C2/ABI-3): the honest names on every terminal frame
     # this pipeline emits; the seam also strips any legacy alias spelling.
-    from ouroboros.cost_projection import with_cost_aliases
+    from ouroboros.cost_projection import carry_cost_meta, with_cost_aliases
 
     task_cost_fields = with_cost_aliases(task_cost_fields)
-    if _is_root_post_task(task) and not _root_post_task_already_completed(env, task):
+    if not _ephemeral and _is_root_post_task(task) and not _root_post_task_already_completed(env, task):
         task_cost_fields["cost_final"] = False
+    if _ephemeral:
+        # Chat retains the terminal facts: this turn has no task_result or synthesis.
+        send_event["progress_meta"].update(carry_cost_meta(task_cost_fields))
     if not _ephemeral:
         try:
             append_jsonl(drive_logs / "events.jsonl", {
@@ -600,16 +602,16 @@ def emit_task_results(
         # missing-result task_result for a transient decision turn (which has none).
         "_ephemeral": _ephemeral,
         # Presentation marker only. The supervisor's typed routing event remains
-        # the action/receipt authority; this keeps a transient decision task from
-        # becoming a visible task card (and a bogus "Turn into project" target).
+        # the action/receipt authority; the visible transient card gets no
+        # managed-task controls (including "Turn into project").
         "ephemeral_decision": _ephemeral,
-        **({"typed_routing_action": _typed_routing_action} if _has_typed_routing_action else {}),
+        **({"typed_routing_action": _typed_routing_action} if _ephemeral and _typed_routing_action else {}),
         # Carry the thread so the terminal card finalizes in its project panel
         # (per-thread fan-out), not just the main chat.
         "chat_id": int(task.get("chat_id") or 0),
         "outcome_axes": outcome_axes,
         "reason_code": reason_code,
-        "artifact_status": stored_result.get("artifact_status") or artifact_bundle.get("status") or "",
+        "artifact_status": artifact_bundle.get("status") or stored_result.get("artifact_status") or "",
         "artifact_bundle": artifact_bundle,
         "review_status": stored_result.get("review_status") if isinstance(stored_result.get("review_status"), dict) else {},
         **({"review_projection": review_projection} if review_projection.get("panels") else {}),
@@ -822,6 +824,10 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
     do not derive/flag a second time. It is only re-derived here when called without one.
     """
     try:
+        from ouroboros.review_projection import publish_acceptance_checkpoint
+
+        publish_acceptance_checkpoint(env, llm_trace, task_id=str(task.get("id") or ""),
+                                      drive_root=env.drive_root, chat_id=task.get("chat_id"))
         trace_summary = build_trace_summary(llm_trace)
         from ouroboros.cost_projection import with_cost_aliases
 
@@ -847,6 +853,11 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
         execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
         reason_code = str(loop_outcome.get("reason_code") or "")
         status = _durable_terminal_status(env, task, execution_status, existing=existing)
+        from ouroboros.task_finalization import build_completion_observations
+
+        observations = build_completion_observations(
+            env.drive_root, {**task, "started_at": existing.get("started_at")}, llm_trace,
+        )
         task_contract = build_task_contract(task)
         task = {**task, "task_contract": task_contract}
         artifact_bundle_for_ledger = artifact_bundle_from_result(existing)
@@ -988,6 +999,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             trace_refs=loop_outcome.get("trace_refs") or {},
             **cost_fields,
             review_evidence=review_evidence or {},
+            completion_observations=observations,
             **({"review_projection": review_projection} if review_projection.get("panels") else {}),
             verification_ledger=verification_refs.get("inline"),
             artifact_bundle=artifact_bundle,
@@ -1052,6 +1064,7 @@ def build_review_context(env: Any) -> str:
         repo_commit_ready = advisory_commit_ready(
             current_run is not None and current_run.status in ("fresh", "bypassed", "skipped"),
             open_obs, open_debts,
+            matching_run=current_run if getattr(current_run, "repo_key", None) == repo_key else None,
         )
         lines.append(f"- repo_key={repo_key}")
         lines.append(f"- snapshot_hash={snapshot_hash[:12] or '(empty)'}")

@@ -531,6 +531,14 @@
    "is_error": true,
    "status": "blocked"
   },
+  "ident:BROWSER_ORIGIN_NOT_GRANTED:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:BROWSER_ORIGIN_NOT_GRANTED:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
   "ident:BROWSER_SESSION_RETIRED:named": {
    "is_error": false,
    "status": "ok"
@@ -1026,14 +1034,6 @@
   "ident:GIT_WARNING:plain": {
    "is_error": false,
    "status": "ok"
-  },
-  "ident:HEAL_MODE_BLOCKED:named": {
-   "is_error": true,
-   "status": "heal_mode_blocked"
-  },
-  "ident:HEAL_MODE_BLOCKED:plain": {
-   "is_error": true,
-   "status": "heal_mode_blocked"
   },
   "ident:IDENTICAL_DIFF_REFUSED:named": {
    "is_error": false,
@@ -1963,6 +1963,14 @@
    "is_error": true,
    "status": "error"
   },
+  "ident:REVIEW_STOPPED:named": {
+   "is_error": false,
+   "status": "ok"
+  },
+  "ident:REVIEW_STOPPED:plain": {
+   "is_error": false,
+   "status": "ok"
+  },
   "ident:ROLLBACK_ERROR:named": {
    "is_error": true,
    "status": "error"
@@ -2179,6 +2187,14 @@
    "is_error": false,
    "status": "ok"
   },
+  "ident:SERVICE_ENV_REFERENCE_BLOCKED:named": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "ident:SERVICE_ENV_REFERENCE_BLOCKED:plain": {
+   "is_error": true,
+   "status": "blocked"
+  },
   "ident:SERVICE_NOT_FOUND:named": {
    "is_error": false,
    "status": "ok"
@@ -2266,6 +2282,14 @@
   "ident:SKILLS_UNAVAILABLE:plain": {
    "is_error": true,
    "status": "error"
+  },
+  "ident:SKILL_ACTION_BLOCKED:named": {
+   "is_error": true,
+   "status": "blocked"
+  },
+  "ident:SKILL_ACTION_BLOCKED:plain": {
+   "is_error": true,
+   "status": "blocked"
   },
   "ident:SKILL_EXEC_ARGV_TOO_LARGE:named": {
    "is_error": false,
@@ -2843,6 +2867,10 @@
    "is_error": false,
    "status": "ok"
   },
+  "native:ACCESS_BLOCKED:SERVICE_ENV_REFERENCE_BLOCKED": {
+   "is_error": true,
+   "status": "blocked"
+  },
   "native:ACCESS_BLOCKED:TOOL_ACCESS_BLOCKED": {
    "is_error": true,
    "status": "blocked"
@@ -2878,14 +2906,6 @@
   "native:GIT_VIA_SHELL_BLOCKED:GIT_VIA_SHELL_BLOCKED": {
    "is_error": true,
    "status": "git_via_shell_blocked"
-  },
-  "native:HEAL_MODE_BLOCKED:HEAL_MODE_BLOCKED": {
-   "is_error": true,
-   "status": "heal_mode_blocked"
-  },
-  "native:HEAL_MODE_BLOCKED:SKILL_REDIRECT_BLOCKED": {
-   "is_error": true,
-   "status": "skill_payload_blocked"
   },
   "native:LEGACY_BLOCKED:REPO_LIST_BLOCKED": {
    "is_error": true,
@@ -2932,6 +2952,10 @@
    "status": "safety_violation"
   },
   "native:SKILL_PAYLOAD_BLOCKED:SKILL_PAYLOAD_ARG_ERROR": {
+   "is_error": true,
+   "status": "skill_payload_blocked"
+  },
+  "native:SKILL_PAYLOAD_BLOCKED:SKILL_REDIRECT_BLOCKED": {
    "is_error": true,
    "status": "skill_payload_blocked"
   },

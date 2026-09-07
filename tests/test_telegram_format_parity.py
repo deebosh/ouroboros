@@ -467,6 +467,105 @@ def test_send_audio_non_format_rejection_never_double_sends(tmp_path, monkeypatc
     assert any(level == "error" for level, _message in api.logs)
 
 
+def _captured_document(tmp_path, size):
+    from types import SimpleNamespace
+    from ouroboros.artifacts import copy_file_to_task_artifacts
+
+    data = tmp_path / "data"
+    state = data / "state/skills/telegram"
+    state.mkdir(parents=True)
+    api = _configured_api(state)
+    source = tmp_path / "source.bin"
+    with source.open("wb") as handle:
+        handle.write(b"complete-prefix")
+        handle.truncate(size)
+    item = copy_file_to_task_artifacts(SimpleNamespace(drive_root=data, task_id="delivery"), source, immutable=True)
+    ref = {"kind": "task_artifact", "root": "artifact_store", "task_id": "delivery",
+           "path": item["name"], "size": item["size"], "sha256": item["sha256"]}
+    return api, {"chat_id": 42, "filename": "report.bin", "file_base64": "", "file_ref": ref}, Path(item["path"])
+
+
+def test_ref_document_uses_real_multipart_file_above_inbound_limit(tmp_path, monkeypatch):
+    import httpx
+    from email.parser import BytesParser
+    from email.policy import default
+    from hashlib import sha256
+
+    plugin, telegram_api = _load_skill()
+    api, event, captured = _captured_document(tmp_path, 12 * 1024 * 1024)
+    assert event["file_ref"]["size"] > telegram_api._MAX_TELEGRAM_DOWNLOAD_BYTES
+    observed, handles = [], []
+    real_client, real_send = httpx.AsyncClient, telegram_api.TelegramClient.send_document
+
+    async def receive(request):
+        message = BytesParser(policy=default).parsebytes(
+            b"Content-Type: " + request.headers["content-type"].encode() + b"\r\n\r\n" + request.content)
+        document = next(part for part in message.iter_parts() if part.get_filename())
+        body = document.get_payload(decode=True)
+        observed.append((request.url.path, document.get_filename(), len(body), sha256(body).hexdigest()))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    async def send(client, chat_id, source, filename, **kwargs):
+        assert hasattr(source, "read") and not isinstance(source, bytes)
+        handles.append(source)
+        return await real_send(client, chat_id, source, filename, **kwargs)
+
+    monkeypatch.setattr(telegram_api.TelegramClient, "send_document", send)
+    monkeypatch.setattr(telegram_api.httpx, "AsyncClient",
+                        lambda **kwargs: real_client(transport=httpx.MockTransport(receive), **kwargs))
+    original_read = Path.read_bytes
+    def no_whole_file(path):
+        if path == captured:
+            pytest.fail("captured document must remain a file, not a base64 allocation")
+        return original_read(path)
+    monkeypatch.setattr(Path, "read_bytes", no_whole_file)
+    asyncio.run(plugin._make_document(api)(event))
+    assert api.logs == []
+    assert observed == [("/bottoken/sendDocument", "report.bin", event["file_ref"]["size"], event["file_ref"]["sha256"])]
+    assert handles and all(handle.closed for handle in handles)
+    assert captured.is_file()
+
+
+@pytest.mark.parametrize("ready", [False, True])
+def test_oversized_ref_document_discloses_saved_app_result(tmp_path, monkeypatch, ready):
+    plugin, telegram_api = _load_skill()
+    api, event, captured = _captured_document(tmp_path, 51 * 1024 * 1024)
+    assert event["file_ref"]["size"] > telegram_api._MAX_TELEGRAM_UPLOAD_BYTES
+    client = _Client()
+    monkeypatch.setattr(plugin, "TelegramClient", lambda *args, **kwargs: client)
+    url = "https://already-running.trycloudflare.com/"
+    monkeypatch.setattr(plugin, "_read_status", lambda api: {"state": "ready", "public_url": url} if ready else {"state": "disabled"})
+    monkeypatch.setattr(plugin, "register_miniapp", lambda *args: pytest.fail("delivery must not start a tunnel"))
+    asyncio.run(plugin._make_document(api)(event))
+    assert captured.is_file() and client.documents == client.audio == []
+    if ready:
+        chat_id, notice, keyboard = client.keyboards[0]
+        assert chat_id == 42 and "cannot be mirrored here" in notice
+        assert keyboard == [[{"text": "Open Ouroboros", "web_app": {"url": url}}]]
+        assert client.messages == []
+    else:
+        assert client.keyboards == []
+        assert len(client.messages) == 1 and "saved in Ouroboros" in client.messages[0][1]
+        assert "cannot be mirrored here" in client.messages[0][1]
+    assert api.logs == []
+
+
+@pytest.mark.parametrize("mismatch", ["task", "bytes"])
+def test_invalid_document_reference_never_uses_legacy_bytes_as_fallback(tmp_path, monkeypatch, mismatch):
+    plugin, _ = _load_skill()
+    api, event, captured = _captured_document(tmp_path, 100)
+    if mismatch == "task":
+        event["task_id"] = "other-task"
+    else:
+        captured.write_bytes(b"changed")
+    event["file_base64"] = base64.b64encode(b"old inline bytes").decode()
+    client = _Client()
+    monkeypatch.setattr(plugin, "TelegramClient", lambda *args, **kwargs: client)
+    asyncio.run(plugin._make_document(api)(event))
+    assert client.documents == client.audio == client.messages == client.keyboards == []
+    assert len(api.logs) == 1 and api.logs[0][0] == "error"
+
+
 def test_links_event_renders_at_most_twelve_url_buttons(tmp_path, monkeypatch):
     plugin, _telegram_api = _load_skill()
     client = _Client()

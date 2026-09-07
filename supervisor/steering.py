@@ -219,7 +219,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
         attachment_note = ""
         uploads = evt.get("attachment_uploads") if isinstance(evt.get("attachment_uploads"), list) else []
         if uploads:
-            from ouroboros.artifacts import stage_task_attachments
+            from ouroboros.artifacts import attachment_manifest_projection, stage_task_attachments
             from ouroboros.gateway.tasks import _render_attachment_lines
 
             # Staging runs after the up-front cancel check (top of this handler)
@@ -228,7 +228,7 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
             # (GR2-9) instead of leaving orphaned files in the artifact store
             # of a task the supervisor is tearing down.
             staged_manifest = stage_task_attachments(drive, target, uploads)
-            rendered = _render_attachment_lines(staged_manifest)
+            rendered = _render_attachment_lines(attachment_manifest_projection(drive, target, staged_manifest))
             if rendered:
                 attachment_report = rendered
                 attachment_note = f"\n\n[ATTACHMENTS]\n{rendered}\n[END_ATTACHMENTS]"

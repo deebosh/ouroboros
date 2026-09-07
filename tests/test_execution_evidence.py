@@ -385,7 +385,8 @@ class TestEvidenceReadHonesty:
         log_path = custody.event_log_path(tmp_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.mkdir()
-        ctx = SimpleNamespace(_nanny_route_dispatched=True, _nanny_finalization_injected=False)
+        ctx = SimpleNamespace(_nanny_route_dispatched=True, _nanny_finalization_injected=False,
+                              drive_root=tmp_path)
         tools = SimpleNamespace(_ctx=ctx, available_tools=lambda: ["delegate_start"])
         msgs: list = []
         assert _maybe_inject_finalization_nudges(

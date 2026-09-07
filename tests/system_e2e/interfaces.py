@@ -453,6 +453,17 @@ class FakeClaudexorDaemon:
             "pendingInteractions": [json.loads(json.dumps(row)) for row in run["pending"]],
         }
         if terminal:
+            if run["run_dir"]:
+                final = pathlib.Path(run["run_dir"]) / "final"
+                final.mkdir(parents=True, exist_ok=True)
+                # Final-attempt telemetry owns observed identity; summary.model
+                # remains a request/projection field, not proof of execution.
+                (final / "telemetry.yaml").write_text(json.dumps({
+                    "schema_version": 2, "run_id": run["id"], "final_attempt_id": "a01",
+                    "attempts": [{"attempt_id": "a01", "harness_id": self.harness_id,
+                                  "observed_model": self.applied_model,
+                                  "profile_id": self.applied_profile}],
+                }), encoding="utf-8")
             summary.update({
                 "spendUsd": 0.0, "spendEstimated": False,
                 "inputTokens": 120, "outputTokens": 40, "cachedInputTokens": 0,
