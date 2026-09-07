@@ -1558,6 +1558,11 @@ or error otherwise, never failing on its own.
   read/list/search-only and is not granted to children.
 - Large task files use `artifacts.stream_artifact_file` and atomic
   `copy_artifact_file`; do not read complete datasets into a bytes object.
+  HTTP admission and materialization run their complete blocking operation off
+  the event loop through `gateway._helpers.run_sync_to_completion`. Cancellation
+  waits for that operation before releasing its reservation, input or iterator;
+  cancelling an HTTP waiter never means cancelling the admitted task. Multipart
+  spool copy and close belong to the same worker so cleanup cannot be cancelled.
   Directory exports keep a complete relative member/size/SHA manifest and a
   streamed ZIP, including outputs above50 MiB. File changes and missing members
   are explicit capture failures. Reject a read as soon as it exceeds the source's
@@ -1619,9 +1624,9 @@ or error otherwise, never failing on its own.
   writable scratch selects `task_drive` explicitly; long-running services in
   light use an explicit external/task/artifact cwd, and declared service
   `outputs` are copied when the service stops. Directory outputs become a
-  bounded manifest plus zip; hidden/control/credential-shaped files and
-  excessive counts/bytes fail closed. `run_script` stages its temporary
-  script under the active workspace (`.ouroboros/tmp_scripts`) for a
+  complete manifest plus streamed zip. Policy-rejected members are skipped
+  with explicit notes; missing or unreadable members fail the directory copy.
+  `run_script` stages its temporary script under the active workspace (`.ouroboros/tmp_scripts`) for a
   workspace-bound script and under the task drive otherwise — never the
   system-repo temp path — so relative imports, generated files and toolchain
   discovery observe the requested cwd (`ouroboros/tools/shell.py`;

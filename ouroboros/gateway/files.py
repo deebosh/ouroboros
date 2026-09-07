@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import asyncio
 import mimetypes
 import os
 import pathlib
@@ -19,7 +18,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
-from ouroboros.gateway._helpers import json_error
+from ouroboros.gateway._helpers import json_error, run_sync_to_completion
 from ouroboros.server_auth import is_loopback_host
 from ouroboros.utils import safe_relpath
 from ouroboros.contracts.skill_payload_policy import (
@@ -863,26 +862,15 @@ async def api_chat_upload(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "No valid file field"}, status_code=400)
 
     safe_base = _safe_upload_basename(getattr(upload, "filename", "") or "upload")
-    copying = asyncio.create_task(asyncio.to_thread(_store_chat_upload, upload.file, safe_base))
-    try:
-        dest, measured = await asyncio.shield(copying)
-    except asyncio.CancelledError:
-        # A cancelled await cannot stop disk I/O. Keep the request's spool open
-        # until its one worker settles, including repeated cancellation.
-        while not copying.done():
-            try:
-                await asyncio.shield(copying)
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                break
+    def copy_and_close():
+        # The worker owns the completed spool through copy AND close. Cleanup
+        # cannot itself be cancelled at an async thread-pool checkpoint.
         try:
-            copying.result()
-        except Exception:
-            log.debug("Chat upload failed while cancellation settled", exc_info=True)
-        raise
-    finally:
-        await upload.close()
+            return _store_chat_upload(upload.file, safe_base)
+        finally:
+            upload.file.close()
+
+    dest, measured = await run_sync_to_completion(copy_and_close)
 
     mime = mimetypes.guess_type(safe_base)[0] or "application/octet-stream"
     return JSONResponse({

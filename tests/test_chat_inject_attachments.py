@@ -70,7 +70,9 @@ def test_inject_without_attachments_keeps_the_historical_kwargs(tmp_path):
 
 
 @pytest.mark.parametrize("copy_fails", [False, True])
-def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(tmp_path, monkeypatch, copy_fails):
+@pytest.mark.parametrize("cancel_mode", ["asyncio", "anyio"])
+def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(tmp_path, monkeypatch, copy_fails, cancel_mode):
+    import anyio
     import asyncio
     import threading
     from types import SimpleNamespace
@@ -104,21 +106,36 @@ def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(tmp_pat
     monkeypatch.setattr(host_service, "store_chat_upload", copy)
     monkeypatch.setattr(ctx, "_leave_inflight", leave)
     request = SimpleNamespace(app=client.app, headers={"x-skill-token": "token"}, json=payload)
+    scopes = []
+    cancelled = []
+
+    async def call():
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            try:
+                await host_service._api_chat_inject(request)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
 
     async def run():
-        task = asyncio.create_task(host_service._api_chat_inject(request))
+        task = asyncio.create_task(call())
         try:
             assert await asyncio.to_thread(entered.wait, 5)
-            task.cancel()
+            scopes[0].cancel() if cancel_mode == "anyio" else task.cancel()
             await asyncio.sleep(0)
-            task.cancel()
+            if cancel_mode == "asyncio":
+                task.cancel()
             await asyncio.sleep(0)
             assert not task.done() and ctx._inflight["telegram"] == 1
             assert left == [] and not finished.is_set()
         finally:
             release.set()
-            with pytest.raises(asyncio.CancelledError):
+            try:
                 await task
+            except asyncio.CancelledError:
+                assert cancel_mode == "asyncio"
+        assert cancelled == [True]
         assert finished.is_set() and ctx._inflight["telegram"] == 0
         assert left == ["telegram"] and bridge.messages == []
         assert source.is_file()

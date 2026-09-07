@@ -254,7 +254,9 @@ def test_upload_parse_error_returns_400(client, monkeypatch):
 
 
 @pytest.mark.parametrize("copy_fails", [False, True])
-def test_cancelled_upload_waits_for_its_copy_before_closing_spool(tmp_path, monkeypatch, copy_fails):
+@pytest.mark.parametrize("cancel_mode", ["asyncio", "anyio"])
+def test_cancelled_upload_waits_for_its_copy_before_closing_spool(tmp_path, monkeypatch, copy_fails, cancel_mode):
+    import anyio
     import asyncio
     import tempfile
     import threading
@@ -280,18 +282,40 @@ def test_cancelled_upload_waits_for_its_copy_before_closing_spool(tmp_path, monk
     monkeypatch.setattr(files, "_store_chat_upload", held_copy)
     async def form():
         return {"file": upload}
+    scopes = []
+    cancelled = []
+    async def request():
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            try:
+                await files.api_chat_upload(SimpleNamespace(form=form))
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
     async def run():
-        copying = asyncio.create_task(files.api_chat_upload(SimpleNamespace(form=form)))
+        copying = asyncio.create_task(request())
         try:
             assert await asyncio.to_thread(entered.wait, 5)
-            copying.cancel()
+            scopes[0].cancel() if cancel_mode == "anyio" else copying.cancel()
             await asyncio.sleep(0)
-            copying.cancel()
+            if cancel_mode == "asyncio":
+                copying.cancel()
             await asyncio.sleep(0)
             assert not copying.done() and not spool.closed
         finally:
             release.set()
-            with pytest.raises(asyncio.CancelledError):
+            try:
                 await copying
-        assert finished.is_set() and spool.closed
-    asyncio.run(run())
+            except asyncio.CancelledError:
+                assert cancel_mode == "asyncio"
+        assert cancelled == [True] and finished.is_set() and spool.closed
+        saved = list((tmp_path / "uploads").glob("*"))
+        assert len(saved) == (0 if copy_fails else 1)
+        if saved:
+            assert saved[0].name.endswith("_cancelled.bin")
+            assert saved[0].read_bytes() == b"complete file"
+        assert not list((tmp_path / "uploads").glob(".*.tmp"))
+    try:
+        asyncio.run(run())
+    finally:
+        spool.close()

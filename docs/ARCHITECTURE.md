@@ -358,9 +358,9 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   ├── claudexor_quota.py ← Explicit owner quota-refresh transport: POST /api/claudexor/quota/refresh discovers the already-owned daemon, performs the mandatory handshake (ordinary 60 s control-plane read bound), and delegates exactly once to the engine's quota POST (90 s foreground bound); the envelope returns verbatim; no lifecycle start, cached status composition, quota policy, retry, or daemon token crosses this boundary; GET /api/claudexor/status stays passive
       │   ├── host_service.py  ← Loopback-only Host Service API (§12)
       │   ├── history.py       ← Chat history + cost breakdown factories
-      │   ├── cost_breakdown.py ← Ledger-derived `/api/cost-breakdown` (compat buckets/groups over the physical-attempt ledger, accounting envelope); split from `history.py`, which keeps the historical import path
+      │   ├── cost_breakdown.py ← Ledger-derived dashboard buckets and root-task detail breakdown over the same physical-attempt authority; `history.py` and `tasks.py` keep their historical import seams
       │   ├── projects.py      ← GET/POST /api/projects, /from-task, /update, /delete
-      │   └── _helpers.py      ← Shared request-root/coercion/JSON error envelope
+      │   └── _helpers.py      ← Shared request-root/coercion/JSON error envelope and `run_sync_to_completion`, the settled worker wait for request-owned blocking work
       ├── tools/               ← Auto-discovered tool plugins (registry.py owns discovery; frozen module list for packaged builds)
       │   ├── registry.py      ← Tool registry SSOT: loads tool modules, exposes schemas, executes safely; owns the shell-guard/process-tool membership sets
       │   ├── core.py          ← File/data tools (read_file, write_file, list_files) + code search and digest helpers
@@ -465,7 +465,7 @@ Frontend calls go through `web/modules/api_client.js` with the JSDoc mirror `web
 
 `ouroboros.cli` is a client of the same gateway/queue — no second task engine. Its parser is the command-surface SSOT (server, run, tasks, chat, logs, evolve, schedule, settings, skills, marketplace, local-model, MCP); streaming commands reserve stdout for the final answer/patch/result/JSONL and send progress to stderr.
 
-`POST /api/tasks` creates an ordinary managed root; `GET /api/tasks` is a non-materializing list; `GET /api/tasks/<id>` returns the effective durable result; `/events` is the archive-aware SSE stream (§3 Chat); `/artifacts/<name>` serves simple filenames confined to `data/task_results/artifacts/<task_id>/` — a stored arbitrary path is not a download capability. The CLI refuses any `delegation_role` other than `root`, the gateway rejects caller lineage/subagent labels, and only `schedule_subagent` creates children. Reserved service metadata is written after caller metadata. Admission reserves the task id plus a worker-pool slot under one queue lock; a failure rolls back only the token-owned row with a loud typed refusal. Attachments are copied into the effective task drive before enqueue; artifact-store references are not host-path authority.
+`POST /api/tasks` creates an ordinary managed root; `GET /api/tasks` is a non-materializing list; `GET /api/tasks/<id>` returns the effective durable result; `/events` is the archive-aware SSE stream (§3 Chat); `/artifacts/<name>` serves simple filenames confined to `data/task_results/artifacts/<task_id>/` — a stored arbitrary path is not a download capability. The CLI refuses any `delegation_role` other than `root`, the gateway rejects caller lineage/subagent labels, and only `schedule_subagent` creates children. Reserved service metadata is written after caller metadata. Admission reserves the task id plus a worker-pool slot under one queue lock; a failure rolls back only the token-owned row with a loud typed refusal. The parsed request's complete admission and attachment staging run off the HTTP event loop through `gateway._helpers.run_sync_to_completion`; a cancelled HTTP waiter retains that worker until durable admission or rollback settles, without cancelling the admitted task. Detail reads and SSE terminal materialization use the same settled wait, and v2 closes its row iterator only after the outstanding read finishes. Attachments are copied into the effective task drive before enqueue; artifact-store references are not host-path authority.
 
 Workspace tasks default `memory_mode=forked`; `shared` is rejected for an external workspace and materialized on a forked child drive for project scope — the stored `memory_mode` reports what was requested while `drive_root` reports where the task executes, so isolation does not depend on relabelling the request.
 
@@ -1872,8 +1872,11 @@ The Host Service is a loopback, authenticated callback boundary for reviewed ski
 
 Chat uploads have one `gateway.files` storage owner for Host-confined paths and
 completed multipart spools. It uses the artifact substrate's streaming hash and
-atomic copy; borrowed spools promise descriptor identity, not an original pathname,
-and remain request-owned until the copy worker settles. `store_chat_upload` keeps
+atomic copy; borrowed spools promise descriptor identity, not an original pathname.
+The multipart request's worker owns both copying and closing its spool, so HTTP
+cancellation waits for both and cannot interrupt cleanup. Host uploads use the
+same settled wait before releasing their existing in-flight slot; the skill keeps
+ownership of its source. `store_chat_upload` keeps
 its Path return. The old 50 MiB chat upload rejection is removed on both ingresses;
 Host's existing 25-file request count and the separate Files-browser upload policy
 retain their own contracts.
