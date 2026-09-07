@@ -74,13 +74,11 @@ from ouroboros.tools.shell_effects import (  # noqa: F401
     _user_files_run_had_effect,
 )
 from ouroboros.tools.shell_outputs import (  # noqa: F401
-    _OUTPUT_DIR_MAX_BYTES,
-    _OUTPUT_DIR_MAX_FILES,
     _SENSITIVE_OUTPUT_COMPONENT_NAMES,
     _SENSITIVE_OUTPUT_MARKERS,
     _SENSITIVE_OUTPUT_NAMES,
     _SENSITIVE_OUTPUT_SUFFIXES,
-    _bounded_directory_fingerprint,
+    _directory_fingerprint,
     _changed_path_covers,
     _directory_fingerprint_from_entries,
     _fingerprint_output,
@@ -534,27 +532,15 @@ def _run_shell(
     except Exception as e:
         _publish_unfinished_process_facts(ctx, _command_start_ts, spawn_error=e)
         _record_scratch_fingerprints(ctx, scratch_abs)
+        if isinstance(e, FileNotFoundError) and len(cmd) == 1:
+            return (
+                "⚠️ SHELL_ARG_ERROR: the sole cmd element was treated as ONE executable name, "
+                "and that executable was not found. Pass the program and each argument as "
+                'separate array elements, e.g. ["git", "status", "--porcelain"]. For pipes, '
+                'redirects or chaining, explicitly use ["sh", "-c", "..."] or run_script. '
+                f"No command was started. root={binding.root}, cwd={work_dir}"
+            )
         return f"⚠️ SHELL_ERROR: {e}. root={binding.root}, cwd={work_dir}"
-
-
-def _load_project_context(repo_dir: pathlib.Path) -> str:
-    """Load governance docs for Claude Code system_prompt injection."""
-    docs = [
-        ("BIBLE.md", "CONSTITUTION"),
-        ("docs/DEVELOPMENT.md", "DEVELOPMENT GUIDE"),
-        ("docs/CHECKLISTS.md", "REVIEW CHECKLISTS"),
-        ("docs/ARCHITECTURE.md", "ARCHITECTURE"),
-    ]
-    parts: list = []
-    for relpath, label in docs:
-        fpath = repo_dir / relpath
-        if fpath.is_file():
-            try:
-                content = fpath.read_text(encoding="utf-8", errors="replace")
-                parts.append(f"## {label}\n\n{content}")
-            except Exception:
-                pass
-    return "\n\n---\n\n".join(parts)
 
 
 # The run_script interpreter VALIDATOR (SSOT; the schema enum below is the

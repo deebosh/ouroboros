@@ -128,10 +128,35 @@ def live_wait(setup, monkeypatch):
                                                             sleep=lambda _seconds: None))
     write_task_result(root, "task-one", "running")
     events = queue.Queue()
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(drive_root=root)))
     with model_wait.task_model_wait_scope(task=task, drive_root=root, event_queue=events,
                                           worker_slot_held=True) as controller:
-        yield root, transport, client, controller, events, lambda body: gateway._decide(request, body)
+        yield root, transport, client, controller, events, lambda body: gateway._decide(root, body)
+
+
+def _decision_clients(root, get_background_model_wait=None):
+    """Real Web/Host ingress sharing one root and the installation's live getter."""
+    from contextlib import ExitStack, contextmanager
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+    from ouroboros.gateway.host_service import create_host_service_app
+    from ouroboros.gateway.task_decision import api_decision_answer
+    from tests.test_host_service_api import _seed_token
+
+    @contextmanager
+    def clients():
+        _seed_token(root, permissions=["inject_chat"])
+        web = Starlette(routes=[Route("/api/decisions", api_decision_answer, methods=["POST"])])
+        web.state.drive_root = root
+        host = create_host_service_app(root)
+        for app in (web, host):
+            app.state.get_background_model_wait = get_background_model_wait
+        with ExitStack() as stack:
+            web_client = stack.enter_context(TestClient(web))
+            host_client = stack.enter_context(TestClient(host, headers={"x-skill-token": "token"}))
+            yield {"web": lambda body: web_client.post("/api/decisions", json=body),
+                   "host": lambda body: host_client.post("/chat/decision", json=body)}
+    return clients()
 
 
 @pytest.fixture

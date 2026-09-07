@@ -10,6 +10,7 @@ import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { bridgeChunkBuffer, moduleBridgeScript, moduleResizeScript } from './widget_frame.js';
 import { boundedNumber, WIDGET_DISPOSE_ACK_TIMEOUT_MS, WIDGET_REQUEST_TIMEOUT_MS } from './widget_job.js';
 import { setWidgetCardFault } from './widget_card.js';
+import { downloadViaHostBridge, downloadBlobViaHostBridge } from './ui_helpers.js';
 
 export const WIDGET_FRAME_DEFAULT_HEIGHT = 320;
 export const WIDGET_FRAME_MAX_HEIGHT = 8192;
@@ -136,7 +137,7 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
         .replace(/<!--/g, '<\\!--');
     const autoHeight = render.height === undefined || render.height === null;
     const maxHeight = frameMaxHeight(render);
-    const bridge = moduleBridgeScript(nonce);
+    const bridge = moduleBridgeScript(nonce, `${window.location.origin}${expectedPrefix}`);
     const resizeBridge = autoHeight
         ? moduleResizeScript(
             nonce, WIDGET_FRAME_DEFAULT_HEIGHT, maxHeight, WIDGET_FRAME_BORDER_RESERVE,
@@ -176,6 +177,22 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
         const id = msg.id;
         const init = msg.init || {};
         const controller = new AbortController();
+        let credit = false;
+        let wake = null;
+        controller.pull = () => { credit = true; wake?.(); };
+        const waitForPull = async () => {
+            if (!credit) await new Promise((resolve, reject) => {
+                const abort = () => { wake = null; reject(new DOMException('Aborted', 'AbortError')); };
+                wake = () => {
+                    wake = null;
+                    controller.signal.removeEventListener('abort', abort);
+                    resolve();
+                };
+                if (controller.signal.aborted) abort();
+                else controller.signal.addEventListener('abort', abort, { once: true });
+            });
+            credit = false;
+        };
         pendingRequests.set(id, controller);
         let timedOut = false;
         const timeoutMs = Number(init.timeoutMs);
@@ -208,6 +225,7 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
             const reader = r.body?.getReader();
             while (reader) {
                 if (!iframe.isConnected) controller.abort();
+                await waitForPull();
                 const { done, value } = await reader.read();
                 if (done) break;
                 const chunk = bridgeChunkBuffer(value);
@@ -220,6 +238,25 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
             clearTimeout(timer);
             pendingRequests.delete(id);
         }
+    };
+    const relayDownload = async (msg) => {
+        let result;
+        try {
+            const source = msg.source;
+            const name = String(msg.name || 'download');
+            if (source instanceof Blob || (typeof source === 'string' && source.startsWith('data:'))) {
+                result = await downloadBlobViaHostBridge(source, name);
+            } else {
+                const parsed = new URL(String(source || ''), window.location.origin);
+                if (parsed.origin !== window.location.origin || !parsed.pathname.startsWith(expectedPrefix)) {
+                    throw new Error('module widget download outside extension route prefix');
+                }
+                result = await downloadViaHostBridge(parsed.pathname + parsed.search, name, { streaming: true });
+            }
+        } catch (error) {
+            result = { ok: false, error: error?.message || String(error) };
+        }
+        post({ type: 'ouro-widget-download-result', id: msg.id, result });
     };
     const onMessage = (event) => {
         if (disposed || !iframe || event.source !== iframe.contentWindow) return;
@@ -253,6 +290,14 @@ export async function mountModuleWidget(mount, tab, render, mountSignal = null, 
         if (msg.type === 'ouro-widget-events') {
             if (msg.op === 'subscribe') messageHandlers?.add(onWsMessage);
             else if (msg.op === 'unsubscribe') messageHandlers?.delete(onWsMessage);
+            return;
+        }
+        if (msg.type === 'ouro-widget-download') {
+            relayDownload(msg);
+            return;
+        }
+        if (msg.type === 'ouro-widget-fetch-pull') {
+            pendingRequests.get(msg.id)?.pull();
             return;
         }
         if (msg.type === 'ouro-widget-fetch-abort') {

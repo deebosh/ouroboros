@@ -23,6 +23,7 @@ _LEAVES = (settings_defaults, settings_scales, model_slots, review_model_routes,
 # New subscription capabilities belong to the same leaves, but did not exist on
 # the historical extraction's facade and need not add compatibility re-exports.
 _ADDED_OWNERS = {
+    "NETWORK_WAIT_BACKOFF_MAX_SEC": runtime_limits,
     "MODEL_ACCOUNTS_KEY": model_slots,
     "MODEL_CONTEXT_WINDOWS_KEY": model_slots,
     "MODEL_ROLE_SETTINGS": model_slots,
@@ -34,6 +35,20 @@ _ADDED_OWNERS = {
 }
 
 _MOVED_OWNERS = {
+    "WORKER_SPAWN_GRACE_SEC": runtime_limits,
+    "WORKER_READY_WINDOW_SEC": runtime_limits,
+    "WORKER_READY_MAX_ATTEMPTS": runtime_limits,
+    "EXTENSION_STREAM_CHUNK_BYTES": runtime_limits,
+    "EXTENSION_CHILD_CLEANUP_GRACE_SEC": runtime_limits,
+    "NESTED_SETTLEMENT_MARGIN_SEC": runtime_limits,
+    "NETWORK_WAIT_NOTE_INTERVAL_SEC": runtime_limits,
+    "NETWORK_WAIT_BACKOFF_START_SEC": runtime_limits,
+    "TCP_KEEPALIVE_IDLE_SEC": runtime_limits,
+    "TCP_KEEPALIVE_INTERVAL_SEC": runtime_limits,
+    "TCP_KEEPALIVE_PROBE_COUNT": runtime_limits,
+    "EXTENSION_STREAM_METADATA_BYTES": runtime_limits,
+    "WS_RELAY_BURST": runtime_limits,
+    "WS_RELAY_REFILL_PER_SEC": runtime_limits,
     "ENDPOINT_AUTHORED_SETTINGS": settings_defaults,
     # v6.104.0 upstream: the OpenRouter shipped-model defaults arrive in the
     # vocabulary leaf the v7 split created for exactly this class of fact.

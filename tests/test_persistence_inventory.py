@@ -70,6 +70,10 @@ TOP_LEVEL = frozenset({
 # recognizable root expressions, and an alias is a human promise, not a fact
 # the scan re-derives.
 SUBROOT_ALIASES = {
+    # _run_go_skill's only caller passes skill_state_dir(drive_root, loaded.name).
+    # These are per-skill caches, not directories at the canonical data root.
+    "go": "state/skills/*/go",
+    "go-cache": "state/skills/*/go-cache",
     # mint_skill_token(state_dir=...): all three call sites (extension_process_
     # runner.py:291, extension_plugin_api.py:870/959 via PluginAPI._state_dir)
     # pass a skill_state_dir(drive_root, name).
@@ -528,7 +532,7 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # root-task projection with its gaps ledger (``state/skill_review_root_tasks*``)
 # and the per-project retirement locks (``state/delegate_project_retirements/``)
 # — while the retired acceptance api-fallback record left the population.
-EXPECTED_SCAN_PATHS = 286  # +state/update_letter.json (upstream PR #614, absorbed 2026-09-04)
+EXPECTED_SCAN_PATHS = 286  # Combined Artifact, Skills and Host path owners.
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
@@ -697,6 +701,12 @@ def test_scan_is_populated_and_pinned():
         "A new/removed writer path must land together with its PERSISTENCE.md "
         f"row and this pin. Full set:\n" + "\n".join(sorted(paths))
     )
+
+
+def test_skill_cache_paths_keep_their_actual_state_owner():
+    paths = scan_data_paths()
+    assert {"state/skills/*/go", "state/skills/*/go-cache", "state/skills/*/dependency_cache"} <= paths
+    assert "go" not in paths and "go-cache" not in paths
 
 
 def test_every_scanned_path_has_an_inventory_row():

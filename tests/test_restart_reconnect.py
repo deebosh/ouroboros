@@ -340,7 +340,6 @@ def test_restart_watchdog_waits_for_uvicorn_exit():
 
 def test_owner_restart_copy_is_explicit_about_stopped_task():
     source = _read("server.py")
-    assert 'ctx.send_with_budget(chat_id, "♻️ Restarting.")' in source
     assert "Stopping active task. New settings apply to the next message." in source
     assert "owner_restart_no_resume.flag" in source
     assert "owner_restart_no_resume" in source

@@ -40,6 +40,7 @@ from ouroboros.onboarding_wizard import build_onboarding_html
 from ouroboros.platform_layer import is_container_env
 from ouroboros.provider_models import MINIMAX_REGION_ENDPOINTS, resolve_minimax_base_url
 from ouroboros.secret_masking import (
+    MCP_RESPONSE_ONLY_FIELDS,
     is_custom_secret_setting_key,
     looks_masked_mcp_secret,
     looks_masked_settings_secret,
@@ -170,8 +171,7 @@ def _rehydrate_mcp_servers_payload(incoming: Any, current: Any) -> list:
     for entry in incoming:
         if not isinstance(entry, dict):
             continue
-        clone = dict(entry)
-        clone.pop("auth_configured", None)
+        clone = {key: value for key, value in entry.items() if key not in MCP_RESPONSE_ONLY_FIELDS}
         if clone.get("id"):
             clone["id"] = _mcp_canonical_id(clone.get("id"))
         token = str(clone.get("auth_token") or "")
@@ -378,7 +378,7 @@ def _has_started_agent_tasks() -> bool:
         return False
 
 
-async def _run_settings_writer(fn: Any, request: Request, body: Any) -> JSONResponse:
+async def _run_settings_writer(fn: Any, context: Any, body: Any) -> JSONResponse:
     """Run one settings WRITER endpoint body off the event loop, bounded.
 
     Every writer serializes on the bounded in-process document lock
@@ -401,7 +401,7 @@ async def _run_settings_writer(fn: Any, request: Request, body: Any) -> JSONResp
     bound_sec = get_settings_document_lock_timeout_sec()
     # The body runs in its own task so a timeout of the WAIT can be told apart from a
     # TimeoutError raised BY the body (asyncio.TimeoutError is the builtin on 3.11+).
-    episode = asyncio.ensure_future(asyncio.to_thread(fn, request, body))
+    episode = asyncio.ensure_future(asyncio.to_thread(fn, context, body))
     try:
         return await asyncio.wait_for(asyncio.shield(episode), timeout=2 * bound_sec)
     except SettingsDocumentBusy as exc:

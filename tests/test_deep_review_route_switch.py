@@ -70,14 +70,13 @@ def packed(monkeypatch, tmp_path):
     monkeypatch.setenv("TOTAL_BUDGET", "100")
     monkeypatch.setattr(client, "claudexor_model_sources", lambda: {
         "sources": [{"id": "codex", "credentialHarness": "codex"}]})
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(drive_root=root)))
 
     with usage_scope(UsageScope(drive_root=root, task_id=task["id"], root_task_id=task["id"])):
         with model_wait.task_model_wait_scope(task=task, drive_root=root,
                 event_queue=None, worker_slot_held=True) as owner:
             def switch(*_args, **_kwargs):
                 current = next(value for value in owner.waits.values() if value["state"] == "waiting")
-                response = wait_gateway._decide(request, {
+                response = wait_gateway._decide(root, {
                     "decision_id": f'model_wait:packed-deep:{current["wait_id"]}',
                     "request_id": "switch-deep-model", "revision": current["revision"],
                     "action": "switch", "model": state.switch_model,

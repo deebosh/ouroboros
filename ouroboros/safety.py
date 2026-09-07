@@ -156,6 +156,7 @@ TOOL_POLICY: Dict[str, str] = {
     "toggle_skill": POLICY_SKIP,
     # skill_exec enforces fresh executable review/enabled/hash; recheck per call.
     "skill_exec": POLICY_CHECK,
+    "skill_owner_action": POLICY_CHECK,
     # Read-only argv-only syntax validator with scrubbed env and per-file caps.
     "skill_preflight": POLICY_SKIP,
 

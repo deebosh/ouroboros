@@ -24,13 +24,13 @@ harness exit code) and synchronizes by durable-event polling:
   blocks the commit (repo HEAD does not move), a byte-identical resubmission is
   refused FREE with the typed ``IDENTICAL_DIFF_REFUSED`` (no reviewer paid
   twice for the same bytes), and a fixed diff passes clean review and lands.
-  Plus the freshness stale-rejection contracts — the ACTUAL mechanics of this
+  Plus the freshness refresh and revalidation contracts — the mechanics of this
   tree, both pinned live:
     (a) advisory freshness: a fresh ``preflight_review`` verdict is invalidated
         by a later worktree edit (``invalidate_advisory_after_mutation``:
         snapshot-hash + stale-from-edit mark), and ``commit_reviewed`` without
-        the audited skip refreshes the prepared candidate inline before triad
-        review — the stale verdict is retained, never reused for the new bytes;
+        the audited skip automatically obtains a fresh verdict before triad;
+        the stale episode remains recorded and cannot authorize the new bytes;
     (b) post-verdict revalidation: the staged material is mutated WHILE the
         paid triad+scope wave is in flight (after the pre-dispatch fingerprint,
         before settlement) — verdicts come back all-clean and the commit is
@@ -557,7 +557,7 @@ def test_s16_blocking_class_red_blocks_identical_refused_free_then_green_lands(
             server.stop()
 
 
-# --- S16 freshness stale-rejection (private clone: the scenario mutates the
+# --- S16 stale-advisory refresh (private clone: the scenario mutates the
 # staged index mid-review, which must never leak into the shared session clone).
 
 S13B_DOC = "docs/notes/system_e2e_w3a_freshness.md"
@@ -595,13 +595,13 @@ S13B_SCRIPT = [
         "root": "system_repo", "path": S13B_DOC,
         "content": "# w3a freshness smoke\n\nEDITED AFTER the advisory verdict — advisory is stale.\n",
     }},
-    _s13b_commit_step(skip_advisory=False),  # -> inline refresh, then revalidation_failed
+    _s13b_commit_step(skip_advisory=False),  # -> fresh advisory, then post-verdict revalidation_failed
 ]
 
 
 @pytest.mark.integration
 @pytest.mark.serial
-def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
+def test_s16_freshness_refreshes_advisory_then_rejects_post_verdict_mutation(
         tmp_path_factory):
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s13b")
@@ -645,15 +645,15 @@ def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
             preflight_result = str(preflight_rows[0].get("result_preview") or "")
             assert '"status": "fresh"' in preflight_result, preflight_result
 
-            # Contract (a): the edit AFTER the verdict invalidated the advisory
-            # — the un-skipped commit refreshes that candidate inline rather
-            # than carrying the old verdict into the triad/scope wave.
+            # Contract (a): an edit invalidates the earlier advisory. The
+            # un-skipped commit now refreshes it automatically before triad;
+            # the original stale verdict cannot authorize the edited bytes.
             commit_rows = _tool_rows(task_drive, "commit_reviewed")
             assert len(commit_rows) == 1, commit_rows
 
-            # The old run survives as stale and the inline refresh has a new
-            # snapshot identity. The separate post-verdict gate below still
-            # rejects drifted staged material even with clean verdicts.
+            # The durable advisory ledger shows the fresh run demoted to stale.
+            # The automatic refresh adds a fresh row without erasing the
+            # previous stale episode.
             advisory_state = task_drive.advisory_review()
             runs = advisory_state.get("advisory_runs") or []
             assert len(runs) == 2, advisory_state
@@ -680,8 +680,8 @@ def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
             assert _head(clone) == head_before
             assert S13B_MSG not in _git_log_subjects(clone)
 
-            # Call accounting: the explicit and refreshed advisory episodes
-            # both precede exactly one triad wave and the hooked scope call.
+            # Call accounting: explicit advisory plus its automatic refresh;
+            # exactly one triad wave and the hooked scope call.
             kinds = stub.kinds()
             assert kinds.count("advisory_review") == 2, kinds
             assert kinds.count("triad_review") == 3, kinds

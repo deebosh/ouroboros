@@ -355,3 +355,84 @@ def test_pre_round_terminal_order_keeps_cost_after_stop_and_deadline(monkeypatch
         SimpleNamespace(), None, {"finalize_now": "deadline"} if stop else {},
         cost_ceiling=object(), transport_episode=object() if transport else None)
     assert result_value_actual == result_value and calls == expected
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("first", ["web", "host"])
+@pytest.mark.parametrize("persist_role", [False, True])
+def test_web_and_host_wait_decisions_share_saved_replay_and_attempt_fences(live_wait, monkeypatch, first, persist_role):
+    from ouroboros import config
+    from supervisor import queue as task_queue
+    from tests.test_model_wait import _decision_clients
+
+    root, _gateway, _client, owner, _events, _decide = live_wait
+    monkeypatch.setattr(config, "SETTINGS_PATH", root / "settings.json")
+    row = {"wait_id": "wait-one", "revision": 1, "task_attempt": 1, "state": "waiting", "role": "light"}
+    model_wait.mutate_wait(root, "task-one", "wait-one", lambda _: row)
+    owner.waits["wait-one"] = dict(row)
+    owner.revision = 1
+    body = {"request_id": "cross-surface", "decision_id": "model_wait:task-one:wait-one", "revision": 1,
+            "action": "switch", "model": MODEL, "credential_profile_id": "account-b",
+            "use_local": False, "persist_role": persist_role}
+    with _decision_clients(root) as clients:
+        response = clients[first](body)
+        assert response.status_code == 202 and response.json()["saved"] is persist_role
+        path = root / "settings.json"
+        saved_bytes = path.read_bytes() if path.exists() else None
+        saved_stamp = path.stat().st_mtime_ns if path.exists() else None
+        other = "host" if first == "web" else "web"
+        replay = clients[other](body)
+        assert replay.status_code == 200 and replay.json()["duplicate"] is True
+        assert replay.json()["saved"] is persist_role
+        assert (path.read_bytes() if path.exists() else None) == saved_bytes
+        assert (path.stat().st_mtime_ns if path.exists() else None) == saved_stamp
+        owner._drain_controls()
+        assert owner.waits["wait-one"]["_action"]["credential_profile_id"] == "account-b"
+        task_queue.RUNNING["task-one"]["attempt"] = 2
+        stale = clients[other]({**body, "request_id": "stale-attempt"})
+        assert stale.status_code == 409 and stale.json()["reason_code"] == "stale_model_wait"
+        if persist_role:
+            settings = json.loads(saved_bytes)
+            assert settings["OUROBOROS_MODEL_LIGHT"] == MODEL
+            assert json.loads(settings[MODEL_ACCOUNTS_KEY])["light"] == "account-b"
+        else:
+            assert saved_bytes is None
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("surface", ["web", "host"])
+def test_wait_decision_preserves_existing_settings_timeout_receipt(live_wait, monkeypatch, surface):
+    import threading
+    from ouroboros import config
+    from ouroboros.gateway import task_model_wait as gateway
+    from tests.test_model_wait import _decision_clients
+
+    root, _gateway, _client, _owner, _events, _decide = live_wait
+    monkeypatch.setattr(config, "SETTINGS_PATH", root / "settings.json")
+    monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 0.02)
+    row = {"wait_id": "wait-one", "revision": 1, "task_attempt": 1, "state": "waiting", "role": "light"}
+    model_wait.mutate_wait(root, "task-one", "wait-one", lambda _: row)
+    release, completed = threading.Event(), threading.Event()
+    decide = gateway._decide
+
+    def held(*args, **kwargs):
+        try:
+            response = decide(*args, **kwargs)
+            assert release.wait(5)
+            return response
+        finally:
+            completed.set()
+
+    monkeypatch.setattr(gateway, "_decide", held)
+    body = {"request_id": "slow-save", "decision_id": "model_wait:task-one:wait-one", "revision": 1,
+            "action": "switch", "model": MODEL, "credential_profile_id": "account-b",
+            "use_local": False, "persist_role": True}
+    with _decision_clients(root) as clients:
+        try:
+            response = clients[surface](body)
+            assert response.status_code == 503
+            assert response.json()["code"] == "settings_save_timeout"
+            assert response.json()["saved"] is None
+        finally:
+            release.set()
+            assert completed.wait(5)

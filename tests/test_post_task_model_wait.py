@@ -142,7 +142,6 @@ def test_detached_decision_mailbox_and_activity_remain_live_after_task_done(phas
     until(lambda: active(f))
     owner = active(f)
     row = deepcopy(next(row for row in owner.waits.values() if row["state"] == "waiting"))
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(drive_root=f.root)))
     action = {"request_id": "post-switch", "decision_id": f"model_wait:{f.task['id']}:{row['wait_id']}",
               "revision": row["revision"], "action": "switch", "model": MODEL,
               "credential_profile_id": "replacement", "use_local": False, "persist_role": False}
@@ -156,12 +155,12 @@ def test_detached_decision_mailbox_and_activity_remain_live_after_task_done(phas
                           bridge=SimpleNamespace(push_log=forwarded.append))
     handle_task_model_wait({"type": "task_model_wait", "task_id": f.task["id"], **row}, ctx)
     assert len(forwarded) == 1 and forwarded[0]["chat_id"] == 1
-    response = gateway._decide(request, action)
+    response = gateway._decide(f.root, action)
     assert response.status_code == 202
     assert f.done.wait(5)
     until(lambda: not _mailbox_path(f.root, f.task["id"]).exists())
     assert f.engine.uploads[-1][0]["account"] == {"mode": "pin", "profileId": "replacement"}
-    assert gateway._decide(request, action).status_code == 409
+    assert gateway._decide(f.root, action).status_code == 409
     handle_task_model_wait({"type": "task_model_wait", "task_id": f.task["id"], **row}, ctx)
     assert len(forwarded) == 1  # An ended post owner cannot be resurrected.
 
@@ -368,3 +367,32 @@ def test_real_pooled_process_does_not_dequeue_next_task_during_post_wait(tmp_pat
         outgoing.close()
         incoming.join_thread()
         outgoing.join_thread()
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("first_settled", ["attachments", "post_work"])
+def test_mailbox_survives_until_both_attachment_and_post_work_custody_settle(tmp_path, first_settled):
+    from ouroboros.owner_mailbox import _mailbox_path, write_owner_message
+    from supervisor.terminal_delivery import cleanup_settled_owner_mailbox
+
+    task = {"id": "retained-input", "drive_root": str(tmp_path)}
+    pending = [{"kind": "task_attachment", "source_task_id": task["id"]}]
+    post = "running"
+    write_owner_message(tmp_path, "Accepted owner input", task["id"], msg_id="accepted-owner")
+    path = _mailbox_path(tmp_path, task["id"])
+    original = path.read_bytes()
+    for step in range(3):
+        write_task_result(tmp_path, task["id"], "completed",
+                          child_ref_promotion={"pending_refs": pending},
+                          root_phase_checkpoint={"post_task_synthesis": post})
+        cleanup_settled_owner_mailbox(tmp_path, task["id"], task)
+        if step < 2:
+            assert path.read_bytes() == original
+        else:
+            assert not path.exists()
+        if step == 0 and first_settled == "attachments":
+            pending = []
+        elif step == 0:
+            post = "completed"
+        else:
+            pending, post = [], "completed"

@@ -124,6 +124,7 @@ def test_fake_daemon_run_replay_refusals_and_cancel(tmp_path):
         ClaudexorGateway,
         ClaudexorUnavailable,
         discover_daemon_at,
+        final_attempt_facts,
     )
 
     with FakeClaudexorDaemon(runs_dir=tmp_path / "runs") as daemon:
@@ -172,6 +173,10 @@ def test_fake_daemon_run_replay_refusals_and_cancel(tmp_path):
             }
             assert summary.get("spendUsd") == 0.0 and summary.get("spendEstimated") is False
             assert (summary.get("authRoute") or {}).get("profileId") == daemon.applied_profile
+            assert final_attempt_facts(detail, run_id) == {
+                "attempt_id": "a01", "harness_id": daemon.harness_id,
+                "model": daemon.applied_model, "profile_id": daemon.applied_profile,
+            }
             assert detail.get("primaryOutput", {}).get("truncated") is False
             # A hung run stays live until cancelled; cancel flips it terminal.
             hung = gateway.start_run({**request, "prompt": FAKE_HANG_MARKER + " go"},

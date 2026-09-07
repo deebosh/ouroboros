@@ -140,6 +140,20 @@ execute), and required for `script` / `extension`. Allowed values are
 `shutil.which` at exec time, so the operator's host must ship the
 runtime; otherwise `skill_exec` fails closed with a clear error.
 
+Go scripts are compiled into a private temporary executable and then run with
+the caller's arguments unchanged, including arguments ending in `.go`. The
+compiler and program share the invocation timeout; `runtime_phase` distinguishes
+a compilation failure from the program's own exit status. Cleanup uses the same
+tracked-process path as the other script runtimes.
+
+Deno receives `run --no-prompt` and permissions before the script operand.
+Ordinary reads remain available; `fs` permits writes outside the existing skill
+state directory, `net` permits network calls unless the task disables network,
+and `subprocess` permits child processes. Environment access names only the keys
+actually forwarded after grants. A task with network disabled also requires
+cached imports. These are the existing reviewed script effects, not a new OS
+sandbox: in particular, an allowed child process has ordinary host privileges.
+
 `conflicts` is an optional list of canonical skill names (letters, numbers,
 dash, underscore, or dot; at most 32 entries). If either enabled skill names
 the other, both readiness and extension loading fail closed with a typed
@@ -187,7 +201,9 @@ flowchart LR
   in `data/state/skills/<name>/deps.json`.
 - **Enable** flips `enabled.json` after a fresh executable review + grants + deps. The
   Skills UI surfaces a toggle; agents can also call `toggle_skill`.
-  Self-authored provenance does not change the enablement path.
+  A self-authored skill's first enablement can follow
+  `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS`; otherwise enabling requires the owner
+  toggle or an agent acting on the owner's expressed instruction.
 - **Execute**: `skill_exec` runs `type: script` skills as
   subprocess. `type: extension` skills without isolated deps normally run
   through the in-process loader; extensions with reviewed isolated deps are
@@ -237,8 +253,50 @@ install:
 Bare `dependencies` entries are treated as Python packages. `pip`,
 `pipx`, `uv`, `npm`, and `node` specs are installed only after a fresh
 executable review and only under the skill's `.ouroboros_env` directory.
-Global package-manager or arbitrary-download specs remain manual setup
-guidance.
+Global package-manager specs remain manual setup guidance. Exact resources and
+explicit build actions use the same isolated install owner:
+
+```yaml
+install_specs:
+  - kind: download
+    url: https://example.org/application/disk.img
+    # Replace both with the publisher's exact artifact facts.
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    size_bytes: 9437184
+    version: application-data-1
+    target: resources/disk.img
+    platforms: [linux, darwin, win32]
+```
+
+`target`, step `cwd`, and `outputs` are relative to `.ouroboros_env` and must
+remain inside it. Platform names are `sys.platform`, optionally followed by
+`-` and the lowercase `platform.machine()` value (for example,
+`linux-x86_64` or `darwin-arm64`); omitted `platforms` applies everywhere.
+An inapplicable entry is recorded as skipped. Resources are verified by size
+and digest before landing; no package-size cap is borrowed for this file path.
+The content-addressed resource and package caches live under
+`state/skills/<name>/dependency_cache/`, outside the replaceable payload/env.
+Replacing the environment or retrying therefore reuses verified downloaded
+bytes; a different digest selects a different cache entry.
+
+An entry may also declare `steps: [{argv: [...], cwd: "."}]`, `outputs:
+["bin/helper"]`, and `check: {argv: ["helper", "--version"]}`. Arguments stay
+literal; no shell interpolation is performed. Steps require outputs and a
+concrete successful check; declared `bins` must resolve after installation.
+Build tools use the existing process tracking, timeout and cancellation path.
+The normal installer invokes new downloads/build declarations only against
+their fresh executable review and hash-covered specs, rechecking the pinned
+payload before each build/check process.
+
+Python `allow_source_build: true` and npm `allow_install_scripts: true` opt in
+per entry, each with a declared `check`. Without those flags pip remains
+wheel-only and npm keeps `--ignore-scripts`. An already installed npm package
+can be rebuilt explicitly on retry without rebuilding unrelated packages.
+`deps.json` records resource digests, actual resolved package metadata,
+output hashes and build diagnostics. `installed` records delivery;
+`executable_ready` is unknown without a declared check and true only after
+that check succeeds. A failed check stays failed, even if the package manager
+returned zero. Manual dependencies do not acquire a new universal probe gate.
 
 For `type: extension`, any reviewed isolated dependency env is kept out of
 `server.py`: `plugin.py` cataloging and tool/route/WS handlers run in a
@@ -266,8 +324,13 @@ Out-of-process caveats: (1) `register()` and `on_unload` run for **each per-call
 child** (every tool/route/WS dispatch and catalog), so `on_unload` fires per call,
 not once per disable — keep it cheap and idempotent and put durable/once-per-session
 teardown in a `companion_process` shutdown. (2) `send_ws_message` relays through the
-loopback Host Service and is best-effort and rate-limited (~60/min per skill), so a
-progress-heavy job should throttle updates or rely on poll-based status. (3) A
+loopback Host Service and is best-effort: the relay lane holds a 60-message burst
+reserve per skill that refills one message per second, the excess is refused (a 429
+with `retry_after_sec`; the host records each refused burst once with its dropped
+count), so a progress-heavy job should throttle updates or rely on poll-based
+status. Successful children also return aggregate transport/HTTP refusal counts
+through their normal result/process diagnostics; `send_ws_message` still returns
+`None`, and acceptance does not prove browser delivery. (3) A
 `companion_process` is spawned and supervised by the host **server** process: enabling
 a companion skill from the agent's `toggle_skill` tool or via post-review auto-enable
 records it in the worker process and writes a durable
@@ -375,7 +438,7 @@ dropped in silence.
 
 ## The `skill_preflight` tool
 
-When you are writing a skill (or repairing one in heal mode),
+When you are writing or repairing a skill,
 `skill_preflight` runs cheap, offline syntax validators on the
 payload — in-process Python `compile()` for `.py` files (no
 `__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs` (a
@@ -409,9 +472,12 @@ skill_preflight(skill="weather", paths=["plugin.py"])
 
 ## Repair task path scheme and edit tools
 
-Skills repaired from the Skills or Marketplace UI run under a structured
-`task_constraint.mode="skill_repair"`. The constraint identifies the selected
-skill and payload root, so repair tools use payload-relative paths:
+**Repair and run** from the Skills or Marketplace UI starts an ordinary managed
+development task. The confirmed request is retained as a real owner message, not
+a presentation-only acknowledgement. Its normal task constraint records the selected skill and physical payload
+root; the task also retains the request source and initial content revision.
+Persisted `mode="skill_repair"` task records remain readable with the same ordinary
+tool capabilities. Payload-relative paths address the selected installation:
 
 | Tool | Repair path example | Use when |
 |------|---------------------|----------|
@@ -419,12 +485,27 @@ skill and payload root, so repair tools use payload-relative paths:
 | `edit_text` with `root=skill_payload` | `plugin.py` | One exact replacement in an existing file. |
 | `write_file` with `root=skill_payload` | `new_module.py` | New files or intentional full-file rewrites. |
 | `skill_preflight` | `skill="weather"` | Cheap read-only syntax/schema check before LLM review. |
-| `skill_review` | `skill="weather"` | Required final reviewer-slot review. |
+| `skill_review` | `skill="weather"` | Review the changed payload before execution. |
 
-Repair mode blocks shell, browser/search, scheduling, skill execution,
-repo commits, extension tools, key grants, and enable/disable flows. Finish
-with `skill_preflight` and `skill_review`; the owner enables or grants access
-after a fresh executable review.
+The task retains ordinary shell, browser, search, delegation and execution tools.
+The installed payload is usually a normal directory; an isolated Git copy through
+delegation is optional. Selected payload operations check the known revision;
+after an opaque shell command the task records the observed revision without
+claiming every concurrent change as its own.
+
+Test the repaired installation through its real script, extension tool, HTTP
+route, widget or companion after the normal review, dependencies and permissions
+checks. Review does not forcibly unload a working extension. Inspect widget
+screenshots and repeat the edit/review/execution cycle when fixes are needed.
+
+Repair and run authorizes enabling and testing the repaired installation, leaving
+it working. After review, the model calls `toggle_skill`; the host resolves the
+task's actual original owner message by default. A later direct owner disable
+requires a newer owner instruction. Repair does not authorize granting all
+permissions, attestation or deletion. Existing auto-grant policy still applies. `skill_owner_action` uses the shared lifecycle owners only with the
+specific action, revision and existing owner-intent source; a source reference
+alone is not permission. An automatic edit-and-review request retains
+`allow_enable=False` and does not gain enablement authority from being a Repair.
 
 ### Top-level short-form authoring (including light mode)
 
@@ -439,9 +520,9 @@ one returns a clear
 `bucket and skill_name must be supplied together` error instead of silently
 writing into the drive root.
 
-The constrained Skills UI Repair lane is intentionally narrower and unchanged:
-it still selects only its declared non-native payload and has no shell or
-delegation capability.
+The selected-skill constraint keeps payload-relative calls attached to their
+declared physical skill. Ordinary development capabilities remain available;
+selecting another payload is not an implicit redirect of this task's target.
 
 To **create a new skill** the payload directory need not pre-exist: writing the
 manifest at the payload root (`path="SKILL.md"` or `path="skill.json"`) is the
@@ -501,7 +582,7 @@ calls and runtime behaviours:
 | `supervised_task` | The skill may register an in-process host-supervised async task. |
 | `companion_process` | The skill may register a manifest-declared companion subprocess supervised by the host. |
 | `subscribe_event` | The skill may subscribe to manifest-declared host event topics such as `chat.outbound` or `skill.lifecycle`. Chat topics require owner permission grants; `skill.lifecycle` does not. |
-| `inject_chat` | The skill may request Host Service chat injection after an explicit owner permission grant. |
+| `inject_chat` | The skill may request Host Service chat injection after an explicit owner permission grant: `POST /chat/inject` carries text, an inline image, or `attachments` (`[{path, name?, mime?}]` — regular files under the skill's own state root, at most 25 per message, which the host copies without the former 50 MiB upload cap into the shared `data/uploads` chat-upload store and stages for the task; a file-only message needs no text). The same grant lets the skill relay the owner's decision-card answer through `POST /chat/decision` (`{request_id, decision_id, option_index?, comment?}`, the `POST /api/decisions` contract). A message that carries a `client_message_id` becomes an addressable operation: the host answers with its `operation_ref` (`<chat_id>:<client_message_id>`) on 202, 200 and 504; a repeated delivery of the same message rejoins it instead of enqueueing again (a different message under a reused id is refused with 409); `GET /chat/operations/{operation_ref}` reports the skill's own accepted message (`pending`, `running` with its task or turn, the durable answer, a terminal task status, or `lost` after a host restart); and `POST /chat/cancel` (`{operation_ref, reason?}`) runs the existing cancellation owner on work that message started, answering `cancelled`, `already_terminal`, `unresolved` or `cancel_unsupported` — never a cancellation that did not happen. |
 | `presence` | A reviewed transport skill may submit authenticated non-owner conversation events to the Host Service Presence boundary and poll only their correlated late work. Requires an explicit content-hash-bound owner grant. |
 
 A missing permission causes the matching `register_*` call to raise
@@ -523,8 +604,9 @@ consent. The desktop launcher's owner-grant bridge records these grants.
 The Skills UI surfaces missing grants on the skill card. The agent
 can also call `toggle_skill enabled=true` only after grants are
 approved (the tool returns `SKILL_TOGGLE_ERROR: cannot enable until
-requested key and permission grants are approved`). Self-authored markers are
-provenance only; they do not auto-grant keys or auto-enable skills.
+requested key and permission grants are approved`). Self-authored markers alone
+do not authorize grants or enablement. Automatic grants and first enablement
+follow the setting below; an explicitly authorized task toggle remains separate.
 
 `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS` is enabled by default as of v6.10.0; the
 owner may disable it in Settings → Behavior → Skills (desktop asks for native
@@ -796,6 +878,20 @@ ui_tab:
     start: manual                   # auto | manual | retain — see "Launch policy" below
 ```
 
+The manifest declaration is checked during preflight and review; it does not
+create a live tab. With `permissions: [widget]` in your extension manifest,
+register the same surface in `plugin.py`:
+
+```python
+def register(api):
+    api.register_ui_tab("editor", "Editor", render={
+        "kind": "module", "entry": "widget.js", "start": "manual",
+    })
+```
+
+`register_ui_tab` creates the tab on the Widgets page after the extension loads.
+Keep `widget.js` beside `plugin.py`; it renders into the provided `#root` element.
+
 The host fetches reviewed JS through `GET /api/extensions/<skill>/module/<entry>`,
 embeds it in an opaque-origin iframe (`sandbox="allow-scripts allow-pointer-lock
 allow-downloads"`, never `allow-same-origin`; see "What the frame may do"
@@ -836,7 +932,7 @@ The frame has no scriptable network of its own: `connect-src` stays closed, so
 `XMLHttpRequest`, `WebSocket`, `EventSource` and beacons are refused by the
 document policy, and every request goes through the parent over one nonce-bound
 message grammar (passive image, media and font loads from your own route prefix
-are the one exception — "What the frame may do" below). Two calls cover it:
+are the one exception — "What the frame may do" below). The bridge exposes:
 
 - **`OuroborosWidget.fetch(url, init)`** (also installed as the frame's
   `fetch`). `url` must resolve under `/api/extensions/<skill>/...`; anything
@@ -848,7 +944,8 @@ are the one exception — "What the frame may do" below). Two calls cover it:
   answers with a redirect rejects instead of being followed; it streams the
   answer back, so you get a
   real `Response`: `status`, `statusText`, **every** response header, and a
-  body that is binary by default — `.text()`, `.json()`, `.arrayBuffer()`,
+  body that is binary by default. Each next chunk is read only when your
+  consumer requests it — `.text()`, `.json()`, `.arrayBuffer()`,
   `.blob()` and incremental `body.getReader()` reads all work. Server-sent
   events are a plain streaming `GET` with `Accept: text/event-stream` read
   through `body.getReader()` (there is no `EventSource` polyfill); NDJSON works
@@ -866,13 +963,29 @@ are the one exception — "What the frame may do" below). Two calls cover it:
   host strips its own namespace prefix. The first listener subscribes the frame,
   the last unsubscribe stops delivery, and other skills' events never reach it.
 
-Two limits are disclosed rather than hidden: a route served by the
-out-of-process runner (isolated dependencies) is buffered whole before the frame
-sees it and capped at about 380 KiB of body (the same ceiling as the
-out-of-process module-bytes route below) — only an in-process route's `StreamingResponse` streams chunk by
-chunk; and the out-of-process / companion WS push (`POST /ui/ws-message`) is
-capped at 60 messages per 60 seconds per skill, so throttle progress events or
-fall back to poll-based status for bursts.
+- **`OuroborosWidget.download(name, source)`** saves an existing `Blob`, a
+  `data:` URL, or a URL under this skill's extension route prefix. It resolves
+  to the host's delivery result or rejects with a visible error. In the desktop
+  app it uses the same native Downloads owner as other file controls; in a
+  browser success means the download was started, not that disk writing was
+  confirmed. Large backend files should be passed as route URLs so the host
+  does not turn an HTTP stream into a Blob. Ordinary `<a download>` controls
+  using these routes, `data:` URLs or frame-created Blob URLs use this same path.
+
+Out-of-process routes execute standard Starlette responses in the child and
+stream their ordered headers and body to the host, including `FileResponse`
+HEAD/Range behavior and background actions. There is no total or pre-header
+request timer: finish, abort, disconnect or unloading that skill instance ends
+its response. Slow consumption is backpressure, not a timeout. A body failure
+breaks the stream; cleanup failure after the complete body is logged separately.
+The incoming request body retains its 512 KiB cap, and one-shot tool/catalog/WS
+results retain their existing caps and timeouts.
+
+The out-of-process / companion WS push (`POST /ui/ws-message`) admits
+a 60-message burst per skill and then one message per second (the excess gets a
+429 with `retry_after_sec`, and the host logs each refused burst once with its
+dropped count), so throttle sustained progress streams or fall back to
+poll-based status.
 
 #### What the frame may do
 
@@ -910,15 +1023,12 @@ What that gives you, verified on Chromium and WebKit through
   `data:` / `blob:` URLs — "Assets" below, including the CORS rule for fonts.
 - **Clipboard write** (`navigator.clipboard.writeText`) from a user click; the
   clipboard is never readable from the frame.
-- **Downloads**: an `<a download>` or `blob:` link clicked by the owner
-  downloads in browsers (`allow-downloads`). The desktop shell's link
-  interceptor runs in the parent document only and the frame cannot reach the
-  shell bridge, so a download started inside the frame may be ignored there.
-  A download that must also work in the desktop shell stays host-side today:
-  serve the file from a skill route and let a declarative widget's `file`
-  component or a chat-delivered file offer it — both go through the host's
-  `downloadViaHostBridge` path. A module-frame download call over the bridge
-  is not built yet (disclosed).
+- **Downloads**: module widgets use `OuroborosWidget.download` or ordinary
+  `<a download>` controls for their own route files, data URLs and frame-created
+  Blobs; the existing host save path supports both the desktop app and browsers.
+  A legacy `kind: iframe` route page has no module bridge: its downloads still
+  depend on the embedding engine. Use a module widget or a host-side declarative
+  `file` component when a native Downloads handoff is required.
 - **Pointer lock** (`allow-pointer-lock`) and **fullscreen**
   (`allowfullscreen` + `allow="fullscreen"`) for games and emulators. Both need
   a user gesture and a focused window; feature-detect with
@@ -1037,12 +1147,9 @@ review blockers. Reviewers judge the JavaScript that instantiates the module
 and the module's provenance instead of its bytes.
 
 Ship and load it through your own route: register a route that returns the
-module bytes (an in-process handler may return a Starlette `Response` or
-`FileResponse` of any size; an out-of-process handler's body is buffered by the
-host and capped at about 380 KiB of body — `_RESULT_CAP` = 512 KiB in
-`ouroboros/extension_process_runner.py` bounds the base64-encoded result — so a
-larger module needs an in-process skill or the runtime-download path described
-under assets below), then in the widget:
+module bytes with a Starlette `Response` or `FileResponse`. The same response
+runs in an isolated child for dependency-bearing skills and streams without the
+old serialized-result body cap. Then in the widget:
 
 ```js
 const bytes = await (await OuroborosWidget.fetch('/api/extensions/<skill>/core.wasm')).arrayBuffer();
@@ -1059,8 +1166,8 @@ routes. The frame CSP admits this with `'wasm-unsafe-eval'` — there is no plai
 #### Assets: fonts, audio, video, images
 
 Widget assets are ordinary payload files and travel the same way as
-WebAssembly: your own routes serve them (`register_route` returning the bytes;
-an out-of-process handler answers about 380 KiB of body per response, as above), the
+WebAssembly: your own routes serve them (`register_route` returning a standard
+response, streamed from an isolated child when required), the
 widget references them by `/api/extensions/<skill>/...` URL, and review
 sees each non-text asset as a content-hash-bound descriptor. The module
 endpoint stays JavaScript-only. Hub packages admit `.png .jpg .jpeg .gif .webp
@@ -1069,8 +1176,12 @@ ClawHub archives are capped at 8 MiB per file, 50 MiB uncompressed in total,
 and 200 files (`ouroboros/marketplace/fetcher.py`); OuroborosHub catalog files
 at 5 MiB each (`ouroboros/marketplace/ouroboroshub.py`). A large runtime image
 — a v86 disk image of several megabytes and up — does not fit a package: have
-the skill download it at runtime (with the `net` permission) into its state
-directory (`state_dir` from `api.get_runtime_info()`) and serve it from there.
+the installer fetch it through an exact `download` spec and serve it from
+`<skill_dir>/.ouroboros_env/resources/` (`skill_dir` comes from
+`api.get_runtime_info()`). The existing runtime-download path into the skill
+state directory remains available for dynamic data. Declared automatic
+dependencies select the existing process executor; persistent subscriptions
+and long-lived work still use the documented companion facilities.
 Locally installed skills have no per-file cap; the review pack budget is the
 only bound. The frame's `img-src`/`media-src`/`font-src` admit your skill's
 route prefix, so `<img src="/api/extensions/<skill>/logo.png">`,
@@ -1304,6 +1415,17 @@ the tool result and never cancels the real PR. The Skills UI reads it for the
 "Submitted PR #N" badge and the adopt confirmation copy; it survives
 uninstall and adopt, and a republish overwrites it.
 
+If a submission is no longer being pursued, **Clear local submission** on its
+OuroborosHub card removes that local waiting state. The action preserves the
+installed files, review and grants, and does not close or change the GitHub PR.
+It clears the receipt shown on the card; if another publication replaced it,
+refresh the card first. Returning to My skills refreshes the submission badge.
+
+For a catalog update, the tool result and PR body name both the current catalog
+version and the proposed version. Versions are opaque strings: an older-looking
+or non-semantic version is allowed, while an identical version still needs to
+change before publishing an update.
+
 Publication succeeds only when the task records a validated pull-request
 receipt in the configured Hub repository for this exact skill. A branch,
 commit, refusal report, or unfinished attempt is partial progress, not
@@ -1344,7 +1466,7 @@ def register(api):
 | `SKILL_EXEC_BLOCKED: review status is 'pending'` | Run `skill_review` for this skill. |
 | `SKILL_TOGGLE_ERROR: dependency fingerprint is stale` | Re-run `skill_review`; post-review deps reconciliation will reinstall. |
 | `EXTENSION_NOT_LIVE` on tool dispatch | The skill is disabled or the loader had a load_error — check the Skills UI. |
-| `HEAL_MODE_BLOCKED: ...` | The Repair task tried to call a tool the internal heal-mode allowlist does not permit; finish the Repair flow with `skill_review` and exit. |
+| `SKILL_REPAIR_STALE: ...` | The selected payload or its admission revision changed; inspect the current state and the reported conflict before continuing. |
 | `PluginAPI.register_*` raises `ExtensionRegistrationError` | Usually the skill is missing the matching permission in its manifest. For `register_companion_process` the name must also be alnum/underscore and declared under `companion_processes` — see "Declaring a companion process". |
 | Reviewer marks `widget_module_safety: FAIL` | `widget.js` fetches outside `/api/extensions/<skill>/`, talks to the parent through its own `postMessage` protocol, declares a `start` mode heavier than the widget needs, or keeps state only inside the frame. Move data through your own routes and save it from `__ouroWidgetOnDispose` (autosave while running until the host's dispose acknowledgement ships). |
 

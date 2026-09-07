@@ -74,10 +74,8 @@ def active_tool_profile(ctx: Any) -> ToolProfile:
         if surface in _tool_access().VALID_WRITE_SURFACES:
             return "acting_subagent"
         return "local_readonly_subagent"
-    if mode == "skill_repair":
-        return "skill_repair"
     # Fail-closed floor (BIBLE P3), checked BEFORE workspace/direct-chat: a
-    # delegated subagent without a valid readonly/acting/skill constraint is
+    # delegated subagent without a valid readonly/acting constraint is
     # read-only and must never inherit workspace_task / operator_control /
     # self_modification. The parent remains the sole local writer/committer.
     if _is_subagent_ctx(ctx):

@@ -61,14 +61,21 @@ def _skill_finalization_message(drive_root: pathlib.Path, llm_trace: Dict[str, A
         if not ready:
             blockers.append(
                 f"{skill.name}: status={skill.review.status!r}, "
-                f"blockers={readiness.blockers}"
+                f"blockers={readiness.blockers}, "
+                f"agent_fixable={readiness.agent_fixable_blockers}, "
+                f"owner_action={readiness.owner_action_blockers}, "
+                f"next_actions={readiness.next_actions}"
             )
     if not blockers:
         return ""
     return (
-        "⚠️ SKILL_NOT_FINALIZED: You edited self-authored skill payloads but "
-        "they are not ready yet. Call skill_review for each skill before "
-        "declaring the task done. Current blockers: " + "; ".join(blockers)
+        "⚠️ SKILL_NOT_FINALIZED: Selected self-authored skills have execution "
+        "prerequisites to consider against the actual requested outcome. Address "
+        "the listed phase with its available action; a fresh review does not supply "
+        "missing owner grants or override intentional disablement. Use only actions "
+        "covered by the owner's request. If the requested result is blocked, preserve "
+        "an honest partial result and name the missing permission or runtime. "
+        "An intentionally disabled skill may satisfy the task. Current facts: " + "; ".join(blockers)
     )
 
 
@@ -642,7 +649,9 @@ def _maybe_inject_finalization_nudges(
             record_nanny_nudge_stamp(tools._ctx, task_id, _code)
             llm_trace["reasoning_notes"].append(_nanny_msg)
             return True
-    finalization_msg = _loop()._skill_finalization_message(drive_root, llm_trace)
+    from ouroboros.tool_access import canonical_data_root
+
+    finalization_msg = _loop()._skill_finalization_message(canonical_data_root(tools._ctx), llm_trace)
     if finalization_msg and not getattr(tools._ctx, "_skill_finalization_injected", False):
         tools._ctx._skill_finalization_injected = True
         return _inject(finalization_msg, finalization_msg)

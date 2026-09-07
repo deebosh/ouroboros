@@ -70,6 +70,7 @@ PROCESS_FACT_KEYS = (
     "timed_out",
     "killed_by_host",
     "pre_exec_failure",
+    "ws_relay_failures",
 )
 
 
@@ -92,7 +93,7 @@ def active_resolved_runtime(ctx) -> str:
 def publish_process_facts(
     *, returncode=None, started_ts: float, resolved_runtime: str = "",
     timed_out: bool = False, killed_by_host: bool = False,
-    pre_exec_failure: str = "",
+    pre_exec_failure: str = "", ws_relay_failures=None,
 ) -> Dict[str, object]:
     """Publish this thread's typed process facts for the in-flight process tool.
 
@@ -126,6 +127,18 @@ def publish_process_facts(
                 facts["signal"] = name
     if resolved_runtime:
         facts["resolved_runtime"] = resolved_runtime
+    # Child-reported delivery diagnostics cannot author measured exit/kill facts.
+    # Only fixed categories and positive integer counts cross this boundary;
+    # message text, URLs, tokens and arbitrary child metadata never do.
+    if isinstance(ws_relay_failures, dict):
+        failures = {
+            key: ws_relay_failures[key]
+            for key in ("missing_transport", "rate_limited", "http_client_error",
+                        "http_server_error", "http_error", "transport_error")
+            if type(ws_relay_failures.get(key)) is int and ws_relay_failures[key] > 0
+        }
+        if failures:
+            facts["ws_relay_failures"] = failures
     _process_facts_tls.facts = facts
     # Returned so a producer that ALSO discloses these facts elsewhere (the
     # verify_and_record receipt) copies the published ones instead of deriving

@@ -22,6 +22,7 @@ from ouroboros.tools.registry import ToolContext, ToolEntry, active_repo_dir_for
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     build_resolved_resource_binding,  # noqa: F401
+    canonical_data_root,
     decide_tool_access,  # noqa: F401
     active_tool_profile,  # noqa: F401
     normalize_root,  # noqa: F401
@@ -66,6 +67,7 @@ from ouroboros.tools.core_file_tools import (  # noqa: F401
     _is_subagent_secret_data_path,
     _is_subagent_secret_repo_path,
     _is_subagent_secret_repo_target,
+    make_subagent_secret_target_check,
     _list_dir,
     _list_files,
     _list_user_files_dir,
@@ -295,8 +297,8 @@ def _data_write(
     redirect_err = cross_skill_redirect_error(existing_tc, synth)
     if redirect_err:
         return f"⚠️ SKILL_REDIRECT_BLOCKED: {redirect_err}"
-    # Real skill_repair confinement wins over synthesized short-form context.
-    if existing_tc and existing_tc.mode == "skill_repair":
+    # The task's selected resource wins over a synthesized short-form selector.
+    if existing_tc and existing_tc.has_selected_skill:
         task_constraint = existing_tc
     else:
         task_constraint = synth or existing_tc
@@ -307,7 +309,7 @@ def _data_write(
     _skill_target = None
     if _resolved_binding is not None:
         p = _resolved_binding.target_path
-    elif task_constraint and task_constraint.mode == "skill_repair" and task_constraint.payload_root:
+    elif task_constraint and task_constraint.has_selected_skill and task_constraint.payload_root:
         try:
             p = resolve_payload_path(pathlib.Path(ctx.drive_root), task_constraint, path)
         except ValueError as e:
@@ -333,7 +335,7 @@ def _data_write(
     ctx_data_root = pathlib.Path(ctx.drive_root).resolve(strict=False)
     if _resolved_binding is not None:
         lexical_target = pathlib.Path(p).resolve(strict=False)
-    elif task_constraint and task_constraint.mode == "skill_repair" and task_constraint.payload_root:
+    elif task_constraint and task_constraint.has_selected_skill and task_constraint.payload_root:
         lexical_target = pathlib.Path(p).resolve(strict=False)
     else:
         lexical_target = pathlib.Path(ctx.drive_root).resolve(strict=False) / safe_relpath(write_path)
@@ -469,7 +471,8 @@ def _data_write(
     # the payload exactly like an overwrite). Foreign lanes pass through.
     _repair_cas_constraint = (
         task_constraint
-        if task_constraint and task_constraint.mode == "skill_repair"
+        if task_constraint and task_constraint.has_selected_skill
+        and (_resolved_binding is None or _resolved_binding.skill_name)
         and str(getattr(task_constraint, "skill_name", "") or "")
         else None
     )
@@ -477,13 +480,13 @@ def _data_write(
         from ouroboros.skill_repair_admission import repair_write_cas_error
 
         _cas = repair_write_cas_error(
-            pathlib.Path(ctx.drive_root), _repair_cas_constraint,
+            canonical_data_root(ctx), _repair_cas_constraint,
             task_id=str(getattr(ctx, "task_id", "") or ""),
             # The TASK's own constraint decides whether the binding is mandatory:
             # a short-form `bucket`+`skill_name` selector synthesizes the same
             # constraint shape for an ordinary payload edit, and that lane must
             # not need a repair admission.
-            repair_task=bool(existing_tc and existing_tc.mode == "skill_repair"))
+            repair_task=bool(existing_tc and existing_tc.has_selected_skill))
         if _cas:
             return _cas
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -500,7 +503,7 @@ def _data_write(
         from ouroboros.skill_repair_admission import advance_repair_expected_hash
 
         advance_repair_expected_hash(
-            pathlib.Path(ctx.drive_root), _repair_cas_constraint,
+            canonical_data_root(ctx), _repair_cas_constraint,
             task_id=str(getattr(ctx, "task_id", "") or ""))
     if should_mark_self_authored and marker_path is not None:
         from ouroboros.skill_loader import compute_content_hash
@@ -789,49 +792,18 @@ def _edit_text(
         if short_form.ignored_reason:
             result += f"\n⚠️ SKILL_SHORT_FORM_IGNORED: {short_form.ignored_reason}."
         return result
-    if normalized == "skill_payload" or bound_skill_payload:
-        try:
-            target = binding.target_path
-            if (
-                _binding_skill_control_plane_path(binding)
-                or is_skill_control_plane_path(target, binding.state_drive_root)
-            ):
-                return (
-                    "⚠️ STR_REPLACE_BLOCKED: skill provenance, launcher seed, "
-                    "marketplace, dependency, and self-authored markers are "
-                    "control-plane state. Edit user-authored payload files instead."
-                )
-            text = target.read_text(encoding="utf-8")
-            new_text, match_error = _str_match_replace(
-                text, old_str, new_str, _root_display_path(normalized, path), "EDIT_TEXT_ERROR",
-            )
-            if match_error:
-                return match_error
-            if (shrink := _check_data_shrink_guard(target, new_text, force)):
-                return shrink
-            write_text_atomic(target, new_text)
-            replacement_line = new_text[:new_text.index(new_str)].count("\n") + 1
-            context_start = max(0, replacement_line - 3)
-            context_lines = new_text.splitlines()[
-                context_start:replacement_line + len(new_str.splitlines()) + 2
-            ]
-            context_preview = "\n".join(
-                f"{context_start + index + 1:>4}| {line}"
-                for index, line in enumerate(context_lines)
-            )
-            return (
-                f"✅ Replaced in {_root_display_path(normalized, path)} "
-                f"(line {replacement_line}; resolved_root={binding.base_path}; "
-                f"source={binding.source}).\nContext:\n{context_preview}\n\n"
-                "File is on disk but NOT committed.\n"
-                "Run skill_review for this skill before enabling or declaring it ready."
-            )
-        except FileNotFoundError:
-            return f"⚠️ EDIT_TEXT_ERROR: file not found: {_root_display_path(normalized, path)}"
-        except Exception as exc:
-            return f"⚠️ EDIT_TEXT_ERROR: {type(exc).__name__}: {exc}"
+    selected_payload = normalized == "skill_payload" or bound_skill_payload
     try:
         target = binding.target_path
+        if selected_payload and (
+            _binding_skill_control_plane_path(binding)
+            or is_skill_control_plane_path(target, binding.state_drive_root)
+        ):
+            return (
+                "⚠️ STR_REPLACE_BLOCKED: skill provenance, launcher seed, "
+                "marketplace, dependency, and self-authored markers are "
+                "control-plane state. Edit user-authored payload files instead."
+            )
         if normalized == "runtime_data":
             if is_skill_control_plane_path(target, binding.state_drive_root):
                 return (
@@ -851,23 +823,50 @@ def _edit_text(
                     "tools instead of editing state/workspace_executor_processes directly."
                 )
         if normalized == "artifact_store":
-            block_reason = artifact_store_path_block_reason(
-                target, base_path=binding.base_path,
-            )
+            block_reason = artifact_store_path_block_reason(target, base_path=binding.base_path)
             if block_reason:
                 return f"⚠️ EDIT_TEXT_BLOCKED: artifact_store path blocked: {block_reason}"
         text = target.read_text(encoding="utf-8")
-        new_text, _match_err = _str_match_replace(
+        new_text, match_error = _str_match_replace(
             text, old_str, new_str, _root_display_path(normalized, path), "EDIT_TEXT_ERROR"
         )
-        if _match_err:
-            return _match_err  # count==0 preview / count>1 positional hints (deferral 4)
-        # Deferral 5: an exact replace that shrinks an existing data-plane file >30% is
-        # likely accidental truncation — block unless force=true (matches the overwrite
-        # paths; force lets a deliberate large surgical deletion through).
+        if match_error:
+            return match_error
+        # Exact replace and full overwrite share the intentional-shrink contract.
         if (shrink := _check_data_shrink_guard(target, new_text, force)):
             return shrink
-        write_text_atomic(target, new_text)  # crash-safe edit (G)
+        constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+        repair = selected_payload and constraint and constraint.has_selected_skill
+        if repair:
+            from ouroboros.skill_repair_admission import repair_write_cas_error
+
+            refusal = repair_write_cas_error(
+                binding.state_drive_root, constraint, task_id=ctx.task_id, repair_task=True,
+            )
+            if refusal:
+                return refusal
+        write_text_atomic(target, new_text)
+        if repair:
+            from ouroboros.skill_repair_admission import advance_repair_expected_hash
+
+            advance_repair_expected_hash(binding.state_drive_root, constraint, task_id=ctx.task_id)
+        if selected_payload:
+            replacement_line = new_text[:new_text.index(new_str)].count("\n") + 1
+            context_start = max(0, replacement_line - 3)
+            context_lines = new_text.splitlines()[
+                context_start:replacement_line + len(new_str.splitlines()) + 2
+            ]
+            context_preview = "\n".join(
+                f"{context_start + index + 1:>4}| {line}"
+                for index, line in enumerate(context_lines)
+            )
+            return (
+                f"✅ Replaced in {_root_display_path(normalized, path)} "
+                f"(line {replacement_line}; resolved_root={binding.base_path}; "
+                f"source={binding.source}).\nContext:\n{context_preview}\n\n"
+                "File is on disk but NOT committed.\n"
+                "Run skill_review for this skill before enabling or declaring it ready."
+            )
         result = (
             f"OK: edited {_root_display_path(normalized, path)} "
             f"(resolved_root={binding.base_path}; source={binding.source})"
@@ -918,7 +917,8 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
 
     max_results = min(max(1, max_results), _MAX_SEARCH_RESULTS)
     root_path = binding.base_path
-    display_search_path = _root_display_path(normalized, path)
+    display_path = binding.target_path.relative_to(root_path).as_posix() if normalized in {"active_workspace", "system_repo"} else path
+    display_search_path = _root_display_path(normalized, display_path)
     search_root = binding.target_path
     if not search_root.exists():
         return f"⚠️ SEARCH_ERROR: path not found: {display_search_path}"
@@ -941,8 +941,11 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
     if protected_root_read_block and search_root.is_file():
         return protected_root_read_block
     subagent_readonly = is_restricted_subagent_profile(ctx)
+    secret_check = None
     if subagent_readonly:
-        block_msg = _local_readonly_resource_block(ctx, normalized, search_root, root_path, action="SEARCH")
+        secret_repo = root_path if normalized in {"active_workspace", "system_repo"} else active_repo_dir_for(ctx)
+        secret_check = make_subagent_secret_target_check(secret_repo, ctx=ctx)
+        block_msg = _local_readonly_resource_block(ctx, normalized, search_root, root_path, action="SEARCH", secret_check=secret_check)
         if block_msg:
             return block_msg
     root_resolved = root_path.resolve(strict=False)
@@ -967,7 +970,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         # runtime_data per-project store is reachable only via scoped knowledge tools.
         if normalized == "runtime_data" and rel_parts and str(rel_parts[0]).casefold() == "projects":
             return _drop("project_store_scoped")
-        if subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH"):
+        if subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH", secret_check=secret_check):
             return _drop("restricted_subagent")
         if normalized == "user_files" and user_files_path_block_reason(ctx, fp, operation="search"):
             return _drop("user_files_policy")
@@ -983,9 +986,11 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         # home surfaces file CONTENT in the match lines, so raw credential
         # bytes must be masked here too — on BOTH the rg path and the Python
         # fallback. Names/paths stay; values become ***.
-        if normalized != "user_files":
+        if normalized != "user_files" and not subagent_readonly:
             return result_text
-        masked_text, masked = mask_secret_bytes(result_text)
+        masked_text, masked = mask_secret_bytes(
+            result_text, mask_opaque=normalized not in {"active_workspace", "system_repo"},
+        )
         if masked:
             masked_text += (
                 f"\n⚠️ SECRET_BYTES_MASKED: {masked} secret-shaped span(s) in these "
@@ -1083,7 +1088,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
         if subagent_readonly:
             kept_dirs = []
             for d in dirnames:
-                if _local_readonly_resource_block(ctx, normalized, pathlib.Path(dirpath) / d, root_path, action="SEARCH"):
+                if _local_readonly_resource_block(ctx, normalized, pathlib.Path(dirpath) / d, root_path, action="SEARCH", secret_check=secret_check):
                     _drop("restricted_subagent")
                 else:
                     kept_dirs.append(d)
@@ -1095,7 +1100,7 @@ def _code_search(ctx: ToolContext, query: str, path: str = ".",
             if include and not fnmatch.fnmatch(fname, include):
                 continue
 
-            if subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH"):
+            if subagent_readonly and _local_readonly_resource_block(ctx, normalized, fp, root_path, action="SEARCH", secret_check=secret_check):
                 _drop("restricted_subagent")
                 continue
             if normalized == "user_files" and user_files_path_block_reason(ctx, fp, operation="search"):
@@ -1410,7 +1415,7 @@ def get_tools() -> List[ToolEntry]:
             "description": (
                 "Send an arbitrary document/file to the owner's chat (e.g. a report, .md/.csv/.html, "
                 "PDF, archive, or code file — anything that is not an image or video). "
-                "Requires a local file_path; max 50 MB. Use this to deliver a finished file result "
+                "Requires a local file_path; large files use a captured download reference. Deliver a finished file result "
                 "the owner can download, rather than only describing it or sending a screenshot."
             ),
             "parameters": {"type": "object", "properties": {

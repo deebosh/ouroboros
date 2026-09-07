@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from functools import partial
 from typing import Any
 
 from starlette.responses import JSONResponse
 
-from ouroboros.gateway._helpers import json_error, request_drive_root
+from ouroboros.gateway._helpers import json_error
 from ouroboros.model_wait import mutate_wait
 from ouroboros.task_results import validate_task_id
 
@@ -107,7 +108,7 @@ def _live_task(task_id: str) -> dict:
         return task
 
 
-def _decide(request: Any, body: dict) -> JSONResponse:
+def _decide(root: Any, body: dict, *, get_background_model_wait: Any = None) -> JSONResponse:
     from ouroboros.gateway.owner_settings import CommitBoundary
     from ouroboros.owner_mailbox import KIND_MODEL_WAIT, write_owner_message
     from supervisor.queue import _task_drive_for_task
@@ -123,10 +124,9 @@ def _decide(request: Any, body: dict) -> JSONResponse:
 
     def phase_owner():
         if task_id == "bg-consciousness":
-            reader = getattr(getattr(getattr(request, "app", None), "state", None), "get_background_model_wait", None)
-            return reader() if callable(reader) else None
+            return get_background_model_wait() if callable(get_background_model_wait) else None
         from ouroboros.post_task_checkpoint import post_task_model_wait
-        return post_task_model_wait(request_drive_root(request), task_id)
+        return post_task_model_wait(root, task_id)
 
     def live_task():
         if owner is None:
@@ -161,7 +161,6 @@ def _decide(request: Any, body: dict) -> JSONResponse:
             raise WaitDecisionRefused("task_not_live")
         task = live_task()
         attempt = int(task.get("_attempt") or 1)
-        root = request_drive_root(request)
 
         def claim(previous):
             nonlocal duplicate
@@ -237,9 +236,15 @@ def _decide(request: Any, body: dict) -> JSONResponse:
                           saved=saved())
 
 
-async def api_model_wait_decision(request: Any, body: dict) -> JSONResponse:
+async def answer_model_wait_decision(
+    root: Any, body: dict, *, get_background_model_wait: Any = None,
+) -> tuple[int, dict]:
+    """Share the existing wait effect and settings-writer receipts across transports."""
+    decide = partial(_decide, get_background_model_wait=get_background_model_wait)
     if body.get("persist_role") is True:
         from ouroboros.gateway.settings import _run_settings_writer
 
-        return await _run_settings_writer(_decide, request, body)
-    return await asyncio.to_thread(_decide, request, body)
+        response = await _run_settings_writer(decide, root, body)
+    else:
+        response = await asyncio.to_thread(decide, root, body)
+    return response.status_code, json.loads(response.body)

@@ -1,9 +1,9 @@
 """Ouroboros — the numeric runtime knobs and their clamps.
 
 Worker count, task liveness windows, per-call ceilings, reviewer and acceptance
-budgets, subagent caps and delegation windows. Every one of them is an
-environment-or-default scalar clamped into a documented band, so a typo falls
-back to the shipped value instead of disabling a rail.
+budgets, subagent caps and delegation windows, plus fixed process and transport
+bounds. Environment-or-default getters clamp into documented bands, so a typo
+falls back to the shipped value instead of disabling a rail.
 """
 
 from __future__ import annotations
@@ -19,6 +19,40 @@ from ouroboros.settings_defaults import (
 
 # Local model-operation status polling; not a provider deadline or quota timer.
 CLAUDEXOR_MODEL_POLL_INTERVAL_SEC = 0.25
+
+
+EXTENSION_STREAM_CHUNK_BYTES = 64 * 1024
+# Exit/pipe-drain grace after a response ends; never a response lifetime timer.
+EXTENSION_CHILD_CLEANUP_GRACE_SEC = 2
+NESTED_SETTLEMENT_MARGIN_SEC = 30  # Structural ordering margin, not a cognition timeout.
+# Owner-note cadence while a task waits out a provider-connection outage; the effective interval is min(this, idle_timeout/2) so the notes also keep the idle rail alive.
+NETWORK_WAIT_NOTE_INTERVAL_SEC = 300
+# First free-redial pause of a transport-wait episode; doubles per wait iteration up to the existing 60s transient backoff cap (Q10: an existing bound, not a new knob).
+NETWORK_WAIT_BACKOFF_START_SEC = 4.0
+NETWORK_WAIT_BACKOFF_MAX_SEC = 60.0
+# TCP keepalive for long-lived remote LLM sockets (idle threshold, probe interval, probe count): kernel probes
+# detect a silently dropped NAT/VPN mapping instead of hanging to the read timeout; platform_layer builds the options.
+TCP_KEEPALIVE_IDLE_SEC = 60
+TCP_KEEPALIVE_INTERVAL_SEC = 60
+TCP_KEEPALIVE_PROBE_COUNT = 5
+# One response frame may carry metadata or a body chunk; never a total response cap.
+EXTENSION_STREAM_METADATA_BYTES = 512 * 1024
+# Only the out-of-process WS relay is limited: the existing reserve refills gradually.
+WS_RELAY_BURST = 60
+WS_RELAY_REFILL_PER_SEC = 1.0
+
+
+# Worker-pool spawn bounds (structural constants, not env knobs). Grace after a full-pool spawn before the crash
+# detector counts dead workers (up to ~60s to init: spawn + pip); workers.py binds it as `_SPAWN_GRACE_SEC`, the extension import-staging sweep reads it too.
+WORKER_SPAWN_GRACE_SEC = 90.0
+# Readiness window for ONE spawned/respawned slot: unassignable until the child's own `worker_ready` row lands; alive
+# but silent past this = torn down and replaced. Sized to the spawn grace (the pool's existing init budget): a warm
+# forkserver child boots in ~3-4s (G13 mock lane: 3.5-4.9s startup, 2.5-3.2s respawn), a cold 4-vCPU CI runner well under 60s (its 21-scenario mock lane runs in ~80s), and the E2E
+# scenarios wait 240s per task, so a wedged child is a fast, named failure. A contract distinct from process liveness
+# (`proc.is_alive`, worker_health.py) and from the task idle rail (queue_timeouts.py): a deadlocked child is alive.
+WORKER_READY_WINDOW_SEC = 90.0
+# Consecutive readiness failures of one slot before it is parked and reported (three strikes, like the crash-storm fence).
+WORKER_READY_MAX_ATTEMPTS = 3
 
 
 def _clamped_number_setting(key: str, *, low, high=float("inf"), cast=float):

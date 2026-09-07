@@ -74,6 +74,7 @@ D20 = "Presence"
 "ouroboros/argv_budget.py" = "D13"
 "ouroboros/artifacts.py" = "D05"
 "ouroboros/betterleaks_runtime.py" = "D14"
+"ouroboros/browser_policy.py" = "D05"
 "ouroboros/cancel_intents.py" = "D09"
 "ouroboros/model_wait.py" = "D09"
 "ouroboros/capability_evidence.py" = "D03"
@@ -152,6 +153,7 @@ D20 = "Presence"
 "ouroboros/extension_registry_state.py" = "D14"
 "ouroboros/extension_surface_names.py" = "D14"
 "ouroboros/extension_process_runner.py" = "D14"
+"ouroboros/extension_route_stream.py" = "D14"
 "ouroboros/extension_reconcile_queue.py" = "D14"
 "ouroboros/extension_ui_validation.py" = "D14"
 "ouroboros/fallback_cooldown.py" = "D02"
@@ -340,6 +342,7 @@ D20 = "Presence"
 "ouroboros/shell_parse.py" = "D13"
 "ouroboros/size_ratchet_manifest.py" = "D10"
 "ouroboros/skill_dependencies.py" = "D14"
+"ouroboros/skill_lifecycle_actions.py" = "D14"
 "ouroboros/skill_lifecycle_queue.py" = "D14"
 "ouroboros/skill_loader.py" = "D14"
 "ouroboros/skill_uninstall_state.py" = "D14"
@@ -500,6 +503,7 @@ D20 = "Presence"
 "ouroboros/usage_legacy_import.py" = "D16"
 "ouroboros/usage_ledger.py" = "D16"
 "ouroboros/utils.py" = "D18"
+"ouroboros/verified_download.py" = "D18"
 "ouroboros/version.py" = "D10"
 "ouroboros/vision_routing.py" = "D02"
 "ouroboros/workspace_admission.py" = "D17"
@@ -790,6 +794,7 @@ lazy_only = [
   "D01->D08",
   "D01->D10",
   "D01->D11",
+  "D02->D11",
   "D03->D05",
   "D03->D06",
   "D03->D07",
@@ -808,6 +813,7 @@ lazy_only = [
   "D05->D06",
   "D05->D07",
   "D05->D14",
+  "D05->D20",
   "D06->D05",
   "D06->D08",
   "D06->D15",
@@ -844,6 +850,7 @@ lazy_only = [
   "D13->D06",
   "D13->D08",
   "D13->D15",
+  "D14->D01",
   "D14->D08",
   "D14->D13",
   "D14->D17",
@@ -853,8 +860,10 @@ lazy_only = [
   "D15->D08",
   "D15->D10",
   "D15->D17",
+  "D16->D01",
   "D16->D03",
   "D16->D05",
+  "D16->D09",
   "D16->D17",
   "D17->D02",
   "D17->D03",

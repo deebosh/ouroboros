@@ -321,14 +321,19 @@ class ClaudexorGateway:
                     connect=min(_CONNECT_TIMEOUT_SEC, bounded),
                 )
             }
+        response = None
         try:
+            # Preserve received headers even when decoding or reading the body
+            # fails. In particular, a 401/403 must survive a later read timeout.
             payload = {"content": content_body} if content_body is not None else {"json": json_body}
-            response = self._client.request(method, path, **payload,
-                                            headers=headers or None, **bound)
+            with self._client.stream(method, path, **payload,
+                                     headers=headers or None, **bound) as response:
+                response.read()
         except httpx.HTTPError as exc:
             raise ClaudexorUnavailable(
                 "daemon_unreachable",
                 f"Claudexor daemon unreachable: {type(exc).__name__}: {exc}",
+                status_code=response.status_code if response is not None else 0,
             ) from exc
         if response.status_code >= 400:
             raise self._problem(response)

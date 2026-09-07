@@ -75,11 +75,9 @@ def background(tmp_path, monkeypatch):
         bc._thread.start()
         return bc._thread
 
-    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
-        drive_root=root, get_background_model_wait=bc.live_model_wait)))
     yield SimpleNamespace(bc=bc, engine=engine, ready=ready, events=events, tools=tools,
                           outcomes=outcomes, failures=failures, root=root, start=start,
-                          decide=lambda body: gateway._decide(request, body))
+                          decide=lambda body: gateway._decide(root, body, get_background_model_wait=bc.live_model_wait))
     bc._stop_event.set()
     bc._wakeup_event.set()
     if bc._thread:
@@ -338,3 +336,25 @@ def test_auth_wait_profile_hint_preserves_intent_without_inventing_route(tmp_pat
     row, = waiter.waits.values()
     assert row["credential_profile_id"] == expected
     assert error.route == {}  # The UI hint is not claimed as an actual provider route.
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("surface", ["web", "host"])
+def test_real_background_owner_is_shared_by_both_decision_transports(background, surface):
+    from tests.test_model_wait import _decision_clients
+
+    f = background
+    thread = f.start()
+    until(lambda: waiting(f))
+    row = deepcopy(waiting(f))
+    owner = f.bc.live_model_wait()
+    with _decision_clients(f.root, f.bc.live_model_wait) as clients:
+        response = clients[surface](decision(row, "switch", model=MODEL,
+            credential_profile_id="replacement", use_local=False, persist_role=False))
+        assert response.status_code == 202 and response.json()["saved"] is False
+        thread.join(5)
+        assert f.failures == [] and f.outcomes == [True] and owner.closed
+        assert f.engine.uploads[-1][0]["account"] == {"mode": "pin", "profileId": "replacement"}
+        stale = clients[surface](decision(row))
+        assert stale.status_code == 409 and stale.json()["reason_code"] == "task_not_live"
+    assert not (f.root / "task_results" / "bg-consciousness.json").exists()

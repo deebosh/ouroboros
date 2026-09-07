@@ -128,7 +128,13 @@ def waiting_ui(subscription_ui):
 
     ui.update(rows=rows, controls=controls, logins=logins, emit=emit, apply=apply, wait_status=status,
               sockets=sockets, history=history)
+    # The state snapshot can render waits before initial history rebuilds the
+    # card. Anchor the fixture in an actual history row before measuring DOM
+    # identity, focus or computed styles on that presentation generation.
+    ui["wait_chat_messages"] = [{"role": "assistant", "is_progress": True, "task_id": TASK,
+                                 "text": "Preparing the model request", "ts": "2026-09-06T21:59:59Z"}]
     page.goto(ui["url"] + "/")
+    page.wait_for_selector(f'.chat-live-card[data-task-id="{TASK}"][data-ts]')
     page.wait_for_selector('[data-wait-id="light-wait"]')
     yield ui
 
@@ -340,3 +346,41 @@ def test_wait_reconnect_preserves_unsubmitted_form_without_context_or_animation(
         "credential_profile_id", "use_local", "persist_role",
     }
     capture(page, "waiting-reconnected-draft-preserved")
+
+
+def test_ephemeral_progress_keeps_its_wait_card_and_settles_only_its_controls(waiting_ui):
+    ui, page = waiting_ui, waiting_ui["page"]
+    task = "ephemeral-choice"
+
+    def emit(frame):
+        before = page.evaluate("window.waitFrames")
+        ui["sockets"][-1].send(json.dumps(frame))
+        page.wait_for_function("before => window.waitFrames > before", arg=before)
+
+    progress = {"type": "chat", "role": "assistant", "chat_id": 1, "task_id": task,
+                "ephemeral_decision": True, "is_progress": True, "content": "Checking the request",
+                "ts": "2026-09-06T22:02:00Z"}
+    emit(progress)
+    card = page.locator(f'.chat-live-card[data-task-id="{task}"]')
+    card.wait_for(state="visible")
+    card.evaluate("el => { window.ephemeralWaitCard = el; }")
+    wait = {**ui["rows"]["light-wait"], "wait_id": "ephemeral-wait", "worker_slot_held": False}
+    event = {"type": "task_model_wait", "task_id": task, "chat_id": 1,
+             "ephemeral_decision": True, "ts": "2026-09-06T22:02:01Z", **wait}
+    emit({"type": "log", "chat_id": 1, "data": event})
+    card.locator('[data-wait-id="ephemeral-wait"]').wait_for()
+    emit({**progress, "content": "The same request is still waiting", "ts": "2026-09-06T22:02:02Z"})
+    assert card.evaluate("el => el === window.ephemeralWaitCard")
+    assert card.locator('[data-wait-id="ephemeral-wait"]').is_visible()
+    assert card.locator('[data-turn-into-project], [data-cancel-run]').count() == 0
+    assert page.locator(f'.chat-live-card[data-task-id="{TASK}"] .model-wait-row').count() == 2
+    capture(page, "ephemeral-with-model-wait")
+    terminal = {"type": "task_done", "task_id": task, "ephemeral_decision": True,
+                "ts": "2026-09-06T22:02:03Z"}
+    emit({"type": "log", "chat_id": 1, "data": terminal})
+    page.wait_for_selector(f'.chat-live-card[data-task-id="{task}"][data-finished="1"]')
+    assert card.locator('.model-wait-row').count() == 0
+    emit({"type": "log", "chat_id": 1, "data": {**event, "revision": 99}})
+    assert card.locator('.model-wait-row').count() == 0
+    assert page.locator(f'.chat-live-card[data-task-id="{TASK}"] .model-wait-row').count() == 2
+    capture(page, "ephemeral-settled-sibling-waits-retained")

@@ -412,7 +412,7 @@ def test_non_top_level_profiles_may_not_dispose_an_orphan(tmp_path, monkeypatch)
 
     second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
     for constraint, direct_chat in (
-            (TaskConstraint(mode="skill_repair"), False),
+            (TaskConstraint(mode="local_readonly_subagent"), False),
             (TaskConstraint(mode="acting_subagent", surface="worktree"), False),
             (None, True),                       # direct chat = operator_control
     ):

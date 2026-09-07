@@ -241,3 +241,47 @@ test('the fault channel caps at 10 posts per frame and is removed on dispose', a
         assert.equal(listeners.has(type), false, type);
     }
 });
+
+
+test('body pull grants one next chunk only when the consumer reads', async () => {
+    const { window, posted, chunk, flush } = bridgeHarness();
+    const pending = window.fetch('/api/extensions/s/stream');
+    chunk(1, 'headers', { status: 200, headers: [] });
+    const response = await pending;
+    const pulls = () => posted.filter((message) => message.type === 'ouro-widget-fetch-pull');
+    await flush();
+    assert.equal(pulls().length, 0);
+    const reader = response.body.getReader();
+    const first = reader.read();
+    await flush();
+    assert.equal(pulls().length, 1);
+    chunk(1, 'data', { chunk: bytes(1, 2) });
+    assert.deepEqual(Array.from((await first).value), [1, 2]);
+    await flush();
+    assert.equal(pulls().length, 1);
+    const last = reader.read();
+    await flush();
+    assert.equal(pulls().length, 2);
+    chunk(1, 'end');
+    assert.equal((await last).done, true);
+});
+
+test('download uses the nonce bridge and settles from the actual host outcome', async () => {
+    const { window, posted, deliver, listeners, flush } = bridgeHarness();
+    const blob = new Blob(['report'], { type: 'text/plain' });
+    let settled = false;
+    const pending = window.OuroborosWidget.download('report.txt', blob).then((result) => { settled = true; return result; });
+    assert.equal(posted[0].type, 'ouro-widget-download');
+    assert.equal(posted[0].source, blob);
+    assert.equal(posted[0].name, 'report.txt');
+    listeners.get('message')({ source: window.parent, data: {
+        nonce: 'foreign', type: 'ouro-widget-download-result', id: 1, result: { ok: true },
+    } });
+    await flush();
+    assert.equal(settled, false);
+    deliver({ type: 'ouro-widget-download-result', id: 1, result: { ok: true, native: true, filename: 'report.txt' } });
+    assert.deepEqual(await pending, { ok: true, native: true, filename: 'report.txt' });
+    const failure = window.OuroborosWidget.download('bad.txt', blob);
+    deliver({ type: 'ouro-widget-download-result', id: 2, result: { ok: false, error: 'disk full' } });
+    await assert.rejects(failure, /disk full/);
+});

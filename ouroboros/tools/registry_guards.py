@@ -102,7 +102,7 @@ def _stray_skill_payload_failsoft(root_arg: str, workspace_mode: bool, task_cons
     skill-authoring (or an explicit root=skill_payload / skill_repair) the specific
     error is the intended helpful signal."""
     skill_payload_intent = root_arg == "skill_payload" or bool(
-        task_constraint and getattr(task_constraint, "mode", "") == "skill_repair"
+        task_constraint and task_constraint.has_selected_skill
     )
     return bool(workspace_mode and not skill_payload_intent)
 
@@ -236,16 +236,6 @@ def _authorized_managed_update_resolver(ctx: Any) -> bool:
         return False
 
 
-def _task_constraint_path_allowed(path_text: str, constraint: Optional[TaskConstraint], drive_root: pathlib.Path) -> bool:
-    return _registry().is_skill_payload_path(
-        drive_root,
-        path_text or "",
-        constraint=constraint,
-        allow_short_relative=True,
-        allow_control_plane=True,
-    )
-
-
 def _light_mode_payload_mutation_allowed(
     *,
     ctx: Any,
@@ -289,158 +279,6 @@ def _light_mode_payload_mutation_allowed(
         allow_short_relative=allow_short_relative,
         allow_control_plane=False,
     )
-
-
-_HEAL_MODE_ALLOWED_TOOLS = frozenset({
-    "read_file",
-    "list_files",
-    "write_file",
-    "edit_text",
-    "list_skills",
-    "skill_review", "skill_preflight",
-})
-
-
-def _heal_protected_payload_sidecar(path_text: str) -> bool:
-    return _registry().is_skill_payload_control_filename(path_text)
-
-
-def _heal_mode_guard_result(
-    ctx: Any,
-    name: str,
-    args: dict[str, Any],
-    task_constraint: TaskConstraint | None,
-    ext_tool: Any,
-    is_mcp: bool,
-) -> ToolResult | None:
-    """Apply skill-repair confinement in the established pre-dispatch order."""
-    heal_skill = task_constraint.skill_name if task_constraint else ""
-    if (
-        name in {"read_file", "list_files", "write_file", "edit_text"}
-        and str(args.get("root", "") or "") == "skill_payload"
-    ):
-        expected_bucket, expected_skill = _registry().constraint_bucket_skill(task_constraint)
-        requested_bucket = str(args.get("bucket", "") or "").strip()
-        requested_skill = str(args.get("skill_name", "") or "").strip()
-        if (
-            (requested_bucket and requested_bucket != expected_bucket)
-            or (requested_skill and requested_skill != expected_skill)
-        ):
-            if name in {"write_file", "edit_text"}:
-                return ToolResult(
-                    status="blocked",
-                    code="HEAL_MODE_BLOCKED",
-                    text=(
-                        "⚠️ SKILL_REDIRECT_BLOCKED: active skill_repair "
-                        "task is scoped to the selected skill payload."
-                    ),
-                )
-            return ToolResult(
-                status="blocked",
-                code="HEAL_MODE_BLOCKED",
-                text=(
-                    "⚠️ HEAL_MODE_BLOCKED: Repair payload access is limited "
-                    "to the selected skill payload."
-                ),
-            )
-    if name in {"read_file", "write_file"} and str(args.get("root", "") or "") == "skill_payload":
-        payload_paths = []
-        maybe_path = str(args.get("path", "") or "")
-        if maybe_path:
-            payload_paths.append(maybe_path)
-        for f_entry in args.get("files") or []:
-            if isinstance(f_entry, dict):
-                payload_paths.append(str(f_entry.get("path", "") or ""))
-        for payload_path in payload_paths or ["."]:
-            if not _task_constraint_path_allowed(
-                payload_path,
-                task_constraint,
-                pathlib.Path(ctx.drive_root),
-            ):
-                return ToolResult(
-                    status="blocked",
-                    code="HEAL_MODE_BLOCKED",
-                    text=(
-                        "⚠️ HEAL_MODE_BLOCKED: Repair data access is limited "
-                        "to the selected skill payload under data/skills/external "
-                        "data/skills/clawhub, or data/skills/ouroboroshub."
-                    ),
-                )
-            if name == "write_file" and _heal_protected_payload_sidecar(payload_path):
-                return ToolResult(
-                    status="blocked",
-                    code="HEAL_MODE_BLOCKED",
-                    text=(
-                        "⚠️ HEAL_MODE_BLOCKED: Repair may not edit marketplace "
-                        "or official provenance sidecars (.clawhub.json, "
-                        ".ouroboroshub.json, SKILL.openclaw.md, .seed-origin). "
-                        "Edit the user-authored payload files instead."
-                    ),
-                )
-    if name == "list_files" and str(args.get("root", "") or "") == "skill_payload":
-        data_dir = str(args.get("path", "") or "")
-        if not _task_constraint_path_allowed(
-            data_dir,
-            task_constraint,
-            pathlib.Path(ctx.drive_root),
-        ):
-            return ToolResult(
-                status="blocked",
-                code="HEAL_MODE_BLOCKED",
-                text=(
-                    "⚠️ HEAL_MODE_BLOCKED: Repair data listing is limited "
-                    "to the selected skill payload under data/skills/external "
-                    "data/skills/clawhub, or data/skills/ouroboroshub."
-                ),
-            )
-    if name == "edit_text":
-        edit_path = str(args.get("path", "") or "")
-        if not _task_constraint_path_allowed(
-            edit_path,
-            task_constraint,
-            pathlib.Path(ctx.drive_root),
-        ):
-            return ToolResult(
-                status="blocked",
-                code="HEAL_MODE_BLOCKED",
-                text="⚠️ HEAL_MODE_BLOCKED: Repair edit_text is limited to the selected skill payload.",
-            )
-        if _heal_protected_payload_sidecar(edit_path):
-            return ToolResult(
-                status="blocked",
-                code="HEAL_MODE_BLOCKED",
-                text=(
-                    "⚠️ HEAL_MODE_BLOCKED: Repair may not edit marketplace "
-                    "or official provenance sidecars (.clawhub.json, "
-                    ".ouroboroshub.json, SKILL.openclaw.md, .seed-origin). "
-                    "Edit the user-authored payload files instead."
-                ),
-            )
-    if name == "skill_review" and str(args.get("skill", "") or "").strip() != heal_skill:
-        return ToolResult(
-            status="blocked",
-            code="HEAL_MODE_BLOCKED",
-            text="⚠️ HEAL_MODE_BLOCKED: Repair may only review the selected skill.",
-        )
-    if name == "skill_preflight" and str(args.get("skill", "") or "").strip() != heal_skill:
-        return ToolResult(
-            status="blocked",
-            code="HEAL_MODE_BLOCKED",
-            text="⚠️ HEAL_MODE_BLOCKED: Repair may only preflight the selected skill.",
-        )
-    if ext_tool or is_mcp or name not in _HEAL_MODE_ALLOWED_TOOLS:
-        return ToolResult(
-            status="blocked",
-            code="HEAL_MODE_BLOCKED",
-            text=(
-                "⚠️ HEAL_MODE_BLOCKED: Repair tasks may inspect/edit skill "
-                "payloads and run skill_review only. Shell, browser automation, "
-                "repo mutation, skill execution, extension tools, MCP tools, "
-                "delegation, and enable/disable flows are unavailable. Use "
-                "the Skills UI after a fresh executable review."
-            ),
-        )
-    return None
 
 
 _WEB_TOOLS = frozenset({"web_search", "browse_page", "browser_action", "youtube_transcript"})
@@ -656,7 +494,7 @@ def _payload_dispatch_constraint(
             short_form_decision.constraint
             if short_form_decision is not None
             and task_constraint
-            and task_constraint.mode == "skill_repair"
+            and task_constraint.has_selected_skill
             else None
         )
 
@@ -692,10 +530,10 @@ def _payload_dispatch_constraint(
     if redirect_err and name in {"write_file", "edit_text"}:
         return None, ToolResult(
             status="blocked",
-            code="HEAL_MODE_BLOCKED",
+            code="SKILL_PAYLOAD_BLOCKED",
             text=f"⚠️ SKILL_REDIRECT_BLOCKED: {redirect_err}",
         )
-    if task_constraint and task_constraint.mode == "skill_repair":
+    if task_constraint and task_constraint.has_selected_skill:
         return task_constraint, None
     return synthesized or task_constraint, None
 
@@ -923,17 +761,17 @@ def _external_runtime_protected_paths(
             protected_values.append(meta.get(_dk))
     # Owner/runtime credential locations, as ABSOLUTE paths. Blocking by
     # absolute containment (not a substring marker) means the OWNER's personal
-    # secrets (~/.ssh/id_rsa, ~/.aws, ~/file1.txt) are off-limits while a
+    # secrets (~/.ssh/id_rsa, ~/.aws) are off-limits while a
     # project-relative file merely NAMED like a credential (site/.ssh/config, a
     # project .env) stays the task's own — and a non-path token like
     # "os.environ" can never spuriously match.
     try:
-        _home = pathlib.Path.home()
-        for _rel in (".ssh", ".aws", ".gnupg", ".netrc", ".pgpass", ".config/gcloud",
-                     ".docker/config.json", ".kube/config", ".npmrc", "file1.txt"):
-            protected_values.append(_home / _rel)
+        from ouroboros.credential_shapes import owner_credential_locations
+
+        owner_paths, owner_configs = owner_credential_locations(pathlib.Path.home())
+        protected_values.extend(owner_paths)
     except Exception:
-        pass
+        owner_configs = []
     def _text_forms(value: Any) -> list:
         # Both the as-given and the symlink-resolved form, so a command using
         # /var/... matches a root resolved to /private/var/... (macOS) and vice
@@ -968,8 +806,8 @@ def _external_runtime_protected_paths(
         rp = _resolved(v)
         if rp is not None and rp not in protected_paths:
             protected_paths.append(rp)
-    allowed_texts: list = []
-    allowed_paths: list = []
+    allowed_texts = [text for path in owner_configs for text in _text_forms(path)]
+    allowed_paths: list = []  # owner_configs are exact files, not allowed subtrees
     task_id = task_id_for_artifacts(self._ctx)
     for data_root in (getattr(self._ctx, "drive_root", None), meta.get("drive_root"), meta.get("budget_drive_root")):
         if not data_root:
@@ -1003,77 +841,39 @@ def _external_shell_runtime_or_secret_block(
     work_dir: Optional[pathlib.Path] = None,
     binding: Any = None,
 ) -> ToolResult | None:
-    """External-workspace shell guard for READ and write commands alike: block any
-    command that targets the Ouroboros runtime (system repo / any data drive) or an
-    owner credential path. read_file/user_files already enforce this; raw shell
-    (cat, python -c open(...), etc.) would otherwise bypass it. Two layers, because
-    string matching alone is bypassable by relative paths and symlinks:
-      (1) embedded-string boundary match of ABSOLUTE protected roots (catches a path
-          literal inside e.g. python -c "open('/abs/data/settings.json')");
-      (2) path-token RESOLUTION — every path-like arg is expanduser'd, joined to the
-          command cwd when relative, and resolve()'d (canonicalizing symlinks + ..),
-          then containment-checked. This closes a relative path passed as its own
-          argv token (`cat ../../data/settings.json`) and a workspace-internal symlink
-          to the data drive (round-2 review).
-    Both layers are best-effort DEFENSE-IN-DEPTH, not the primary control: a relative
-    path hidden INSIDE an interpreter one-liner string (e.g. node -e
-    "readFileSync('../../data/settings.json')") is not a standalone token, so it is
-    not extracted here — and that residual is deliberately NOT chased with a regex
-    over code strings (an unwinnable arms race; BIBLE P5 / no-string-gate doctrine).
-    The PRIMARY control is the gated read_file/user_files path, which fully resolves
-    and containment-checks every read against the protected drives, plus the LLM
-    safety supervisor judging intent on each shell call."""
-    _BLOCK = ToolResult(
-        status="blocked",
-        code="WORKSPACE_BLOCKED",
-        text=(
-        "⚠️ WORKSPACE_SHELL_BLOCKED: shell command targets the Ouroboros runtime "
-        "(system repo / data drive) or an owner credential path. External-workspace "
-        "tasks may not read or write those; use the gated read_file tool for any "
-        "inspection you need. Run your command against the task's own surfaces "
-        "instead: the active workspace root (e.g. /app) or scratch such as /tmp."
-        ),
-    )
-    protected_texts, allowed_texts, protected_paths, allowed_paths = (
-        _external_runtime_protected_paths(self, binding)
-    )
-    # (1) embedded-string boundary match (absolute roots only — no substring secret
-    # markers, which would false-block the task's own project files / "os.environ").
-    for pt in protected_texts:
-        if _command_mentions_protected_root(cmd_path_lower, pt) and not any(
-            _command_mentions_protected_root(cmd_path_lower, t) for t in allowed_texts
-        ):
-            return _BLOCK
-    # (2) path-token resolution (relative -> cwd, ~ -> home, symlinks canonicalized).
-    # The cwd is resolved ONCE per safety check by the caller (D1); resolve here
-    # only when this guard is used standalone.
+    """Apply the external-task boundary to shared physical inspection targets.
+
+    File tools remain the primary resolved access path. Shell inspection is
+    best-effort over explicit operands/literals; it cannot prove arbitrary
+    computed paths. All shell lanes agree about cwd, wrappers and symlinks,
+    while external tasks retain their own allowed/protected resource roots.
+    """
+    from ouroboros.tools.shell_guards import shell_inspection_paths
+
+    _, allowed_texts, protected_paths, allowed_paths = _external_runtime_protected_paths(self, binding)
     if work_dir is None:
-        resolved_cwd = _resolved_shell_cwd(self, args, binding)
-        if isinstance(resolved_cwd, ToolResult):
-            return resolved_cwd
-        work_dir = pathlib.Path(resolved_cwd)
-    work_dir = pathlib.Path(work_dir)
-
-    def _within(child: pathlib.Path, parent: pathlib.Path) -> bool:
-        try:
-            child.relative_to(parent)
-            return True
-        except ValueError:
-            return False
-
-    for tok in _registry().shell_argv_with_path_tokens(raw_cmd):
-        tok_text = str(tok or "").strip()
-        if not tok_text or tok_text.startswith("-") or tok_text in {"|", "&&", "||", ";", ">", ">>", "<", "<<", "&"}:
+        work_dir = _resolved_shell_cwd(self, args, binding)
+        if isinstance(work_dir, ToolResult):
+            return work_dir
+    for target in shell_inspection_paths(
+        raw_cmd, work_dir=pathlib.Path(work_dir), drive_root=self._ctx.drive_root,
+    ):
+        if str(target).replace("\\", "/").lower() in allowed_texts:
             continue
-        try:
-            p = pathlib.Path(tok_text).expanduser()
-            resolved = p.resolve(strict=False) if p.is_absolute() else (work_dir / p).resolve(strict=False)
-        except Exception:
+        if any(target.is_relative_to(root) for root in allowed_paths):
             continue
-        if any(_within(resolved, ap) for ap in allowed_paths):
-            continue
-        if any(_within(resolved, pp) for pp in protected_paths):
-            return _BLOCK
+        if any(target.is_relative_to(root) for root in protected_paths):
+            return ToolResult(
+                status="blocked",
+                code="WORKSPACE_BLOCKED",
+                text=(
+                    "⚠️ WORKSPACE_SHELL_BLOCKED: shell command targets the Ouroboros runtime "
+                    "(system repo / data drive) or an owner credential path. External-workspace "
+                    "tasks may not read or write those; use the gated read_file tool for any "
+                    "inspection you need. Run your command against the task's own surfaces "
+                    "instead: the active workspace root (e.g. /app) or scratch such as /tmp."
+                ),
+            )
     return None
 
 
@@ -1149,7 +949,7 @@ def _workspace_shell_write_block(
     acting_subagent: bool,
     binding: Any,
 ) -> ToolResult | None:
-    """Keep workspace writes inside the selected target plus task custody roots."""
+    """Authorize root writes by resource; keep children inside their write surface."""
 
     items = _registry()._binding_items(binding)
     if not items:
@@ -1266,8 +1066,9 @@ def _workspace_shell_write_block(
             text=direct_target_block,
         )
 
-    # Acting subagents must write ONLY inside their isolated surface, so pro
-    # mode does NOT grant them the outside-workspace absolute-path passthrough.
+    allowed_write_roots = [*allowed_relative_roots, *allowed_data_roots]
+    # The root's existing user_files authority is independent of cwd.
+    # Acting children retain their isolated write surface in every mode.
     pro_workspace_passthrough = (
         str(runtime_mode or "").strip().lower() == "pro" and not acting_subagent
     )
@@ -1331,6 +1132,16 @@ def _workspace_shell_write_block(
         ):
             candidates.append(token_text)
         for candidate in candidates:
+            root_write_allowed = pro_workspace_passthrough
+            if is_write and not acting_subagent and not root_write_allowed:
+                try:
+                    _registry().build_resolved_resource_binding(
+                        self._ctx, root="user_files", operation="write",
+                        path=str((candidate_cwd / pathlib.Path(candidate)).resolve(strict=False)),
+                    )
+                    root_write_allowed = True
+                except (OSError, ValueError, RuntimeError):
+                    pass
             if candidate == "/dev/null":
                 continue
             if _registry().is_absolute_path_text(candidate):
@@ -1342,9 +1153,7 @@ def _workspace_shell_write_block(
                         if deliverables_decision:
                             continue
                         return deliverables_block
-                    if any(mapped_executor.is_relative_to(root) for root in allowed_relative_roots):
-                        continue
-                    if any(mapped_executor.is_relative_to(root) for root in allowed_data_roots):
+                    if any(mapped_executor.is_relative_to(root) for root in allowed_write_roots):
                         continue
                     for protected_path in protected_paths:
                         try:
@@ -1355,7 +1164,7 @@ def _workspace_shell_write_block(
                 if _executor_backend_candidate_allowed(
                     self._ctx,
                     candidate,
-                    [*allowed_relative_roots, *allowed_data_roots],
+                    allowed_write_roots,
                 ):
                     continue
                 windows_drive_path = bool(re.match(r"^[A-Za-z]:[\\/]", candidate))
@@ -1382,9 +1191,7 @@ def _workspace_shell_write_block(
                         if deliverables_decision:
                             continue
                         return deliverables_block
-                    if any(resolved.is_relative_to(root) for root in allowed_relative_roots):
-                        continue
-                    if any(resolved.is_relative_to(root) for root in allowed_data_roots):
+                    if any(resolved.is_relative_to(root) for root in allowed_write_roots):
                         continue
                     for protected_path in protected_paths:
                         try:
@@ -1392,7 +1199,7 @@ def _workspace_shell_write_block(
                             return _workspace_write_block_runtime_result(resolved, candidate)
                         except Exception:
                             pass
-                    if is_write and not pro_workspace_passthrough:
+                    if is_write and not root_write_allowed:
                         return _workspace_write_block_outside_root_result(resolved, work_dir, candidate)
                     continue
                 deliverables_decision = decide_deliverables(pathlib.Path(candidate))
@@ -1400,14 +1207,12 @@ def _workspace_shell_write_block(
                     if deliverables_decision:
                         continue
                     return deliverables_block
-                if any(_registry().path_text_is_inside(candidate, root) for root in allowed_relative_roots):
-                    continue
-                if any(_registry().path_text_is_inside(candidate, root) for root in allowed_data_roots):
+                if any(_registry().path_text_is_inside(candidate, root) for root in allowed_write_roots):
                     continue
                 for protected_path in protected_paths:
                     if _registry().path_text_is_inside(candidate, protected_path):
                         return _workspace_write_block_runtime_result(candidate)
-                if is_write and not pro_workspace_passthrough:
+                if is_write and not root_write_allowed:
                     return _workspace_write_block_outside_root_result(candidate, work_dir)
                 continue
             resolved = (candidate_cwd / pathlib.Path(candidate)).resolve(strict=False)
@@ -1421,9 +1226,7 @@ def _workspace_shell_write_block(
                 if deliverables_decision:
                     continue
                 return deliverables_block
-            if any(resolved.is_relative_to(root) for root in allowed_relative_roots):
-                continue
-            if any(resolved.is_relative_to(root) for root in allowed_data_roots):
+            if any(resolved.is_relative_to(root) for root in allowed_write_roots):
                 continue
             for protected_path in protected_paths:
                 try:
@@ -1431,7 +1234,7 @@ def _workspace_shell_write_block(
                     return _workspace_write_block_runtime_result(resolved, candidate)
                 except Exception:
                     pass
-            if is_write and not pro_workspace_passthrough:
+            if is_write and not root_write_allowed:
                 return _workspace_write_block_outside_root_result(resolved, work_dir, candidate)
     return None
 
