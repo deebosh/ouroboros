@@ -35,6 +35,10 @@ _MOVED_OWNERS = {
     "EXTENSION_STREAM_METADATA_BYTES": runtime_limits,
     "WS_RELAY_BURST": runtime_limits,
     "WS_RELAY_REFILL_PER_SEC": runtime_limits,
+    "CLAUDEXOR_STARTUP_WAIT_SEC": settings_defaults,
+    "CLAUDEXOR_STARTUP_POLL_SEC": settings_defaults,
+    "CLAUDEXOR_ADMISSION_WAIT_SEC": settings_defaults,
+    "CLAUDEXOR_ADMISSION_POLL_SEC": settings_defaults,
     "ENDPOINT_AUTHORED_SETTINGS": settings_defaults,
     # v6.104.0 upstream: the OpenRouter shipped-model defaults arrive in the
     # vocabulary leaf the v7 split created for exactly this class of fact.
@@ -223,8 +227,7 @@ def test_settings_file_lifecycle_and_path_roots_stay_with_the_parent():
 
 
 def test_settings_extraction_owner_inventory_is_exact():
-    """Every moved name is owned by exactly one leaf, and no leaf grew a name the
-    parent never had (a new symbol would be a redesign, not an extraction)."""
+    """Every shared name has exactly one declared leaf owner and facade binding."""
     seen: dict[str, str] = {}
     for module in _LEAVES:
         for name in _top_level_names(pathlib.Path(module.__file__)):

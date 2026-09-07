@@ -2652,9 +2652,10 @@ purposes) and, for one task's cancel or timeout only, the kept services; a direc
 `supervisor/` is a defect. The explicit stop (`OwnedClaudexorDaemon.stop`, which
 Panic calls before the worker tree-kill) requires the owned marker for attached
 roots, then matches the ledger against one set of live start-time and command
-observations. An authenticated endpoint or the gateway's typed HTTP transport
-failure permits that stop; a received refusal, protocol/malformed response, or
-invalid descriptor/token discovery never does. Preserve a received HTTP status
+observations. An authenticated endpoint, the gateway's typed HTTP transport failure, or a
+positively absent descriptor for a marked own startup permits that stop; a
+received refusal, protocol/malformed response, or invalid existing descriptor/token
+never does. Preserve a received HTTP status
 before reading the body, so a later read timeout cannot erase an authentication
 refusal. Local protocol/configuration and response-decoding failures are not
 network-unavailability evidence. Keep transport provenance distinct from the
@@ -2666,10 +2667,17 @@ surviving row per PID and every concurrent append. A changed prefix defers compa
 until a fresh sweep; opaque rows stay byte-for-byte intact.
 Each root gets its own exit window; partial success never means the whole
 daemon stop succeeded. Unconfirmed stop emits a critical diagnostic and existing
-supervisor-log row, including lock contention and unknown custody. The manager
-lock uses the short-poll bound separately from HTTP phase timeouts. Authenticated
-attach creates a missing owned marker only after validating the home again under
-the shared JSON publication lock. Atomic publication leaves absence or a complete
+supervisor-log row, including lock contention and unknown custody. The manager lock uses the short-poll bound and never covers runtime preparation,
+network or exit waits. Stop retires in-flight callers before delayed preparation
+can spawn. A caller wait expiry never kills a live startup: join this lifecycle's
+purpose-filtered custody, recheck it after runtime preparation, and keep engine
+writer election authoritative. Strict admission reads distinguish an absent ledger
+from unreadable/corrupt state; the existing conservative sparing selector stays
+unchanged for teardown. Keep startup and normal-admission waits independent, with
+unchanged defaults in the settings leaf re-exported by config. Diagnostics identify
+the current PID/build and shared-log interval; do not present an old tail as cause.
+Authenticated attach and own spawn create a missing marker only after validating
+the home again under the shared JSON publication lock. Atomic publication leaves absence or a complete
 marker after a write fault; existing malformed or foreign markers are never
 replaced. The reaper's permissive keep is never stop authority, and a daemon known
 only by name or port is never signalled.

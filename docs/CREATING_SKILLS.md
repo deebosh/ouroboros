@@ -1390,6 +1390,10 @@ manifest exists, ordinary discovery, preflight, and fresh review resume.
 Grouping directories, unknown or colliding identities, nested manifests, and
 path escapes are still refused; no parallel `external` payload is created.
 
+An ordinary `.env.example` is included in the payload hash, review and publication
+snapshot, including after ClawHub archive import. Its name does not exempt its
+contents from the existing publication scan.
+
 Only literal Betterleaks `high` confidence blocks an outbound publication call.
 `medium`, `low`, missing, and unknown confidence remain redacted warnings. For
 an intentional provider-shaped fixture, Ouroboros may add Betterleaks's
