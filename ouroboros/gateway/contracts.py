@@ -107,6 +107,7 @@ class ChatOutbound(TypedDict):
     markdown: NotRequired[bool]
     is_progress: NotRequired[bool]
     task_id: NotRequired[str]
+    origin_message_ref: NotRequired[Dict[str, Any]]
     # X3: a repair receipt whose managed task id does not exist yet (the router
     # mints it at promotion). Typed truth instead of an invented id.
     task_id_pending: NotRequired[bool]
@@ -307,10 +308,10 @@ class DocumentOutbound(TypedDict):
     filename: str
     ts: str
     caption: NotRequired[str]
-    # Loopback /api/files/download?path=<root-relative> URL for the durable
-    # artifact copy, used by the desktop host-bridge download (WKWebView-safe)
-    # and to rebuild the bubble on reload without persisting base64.
+    # Canonical captured-file URL; replay never needs to persist inline bytes.
     download_url: NotRequired[str]
+    download_url_compat: NotRequired[str]
+    file_ref: NotRequired[Dict[str, Any]]
     content: NotRequired[str]
     source: NotRequired[str]
     sender_label: NotRequired[str]

@@ -464,7 +464,7 @@ def test_real_presence_promotion_rebases_root_and_materializes_all_attachments(
         "tid": "presence-child", "objective": "Inspect both inputs",
         "expected_output": "Report", "parent_contract": contract,
         "root_task_id": promoted["id"], "parent_task_id": promoted["id"],
-        "attachment_manifest": child_manifest,
+        **child_manifest,
     })
     work_order = compile_external_work_order({
         "id": "presence-child", "objective": "Inspect both inputs",

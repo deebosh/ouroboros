@@ -159,6 +159,9 @@ SettingsIntegrityError = _settings_integrity.SettingsIntegrityError
 RESTART_EXIT_CODE = 42
 PANIC_EXIT_CODE = 99
 AGENT_SERVER_PORT = 8765
+EXTENSION_STREAM_CHUNK_BYTES = 64 * 1024
+# Exit/pipe-drain grace after a response ends; never a response lifetime timer.
+EXTENSION_CHILD_CLEANUP_GRACE_SEC = 2
 NESTED_SETTLEMENT_MARGIN_SEC = 30  # Structural ordering margin, not a cognition timeout.
 # Owner-note cadence while a task waits out a provider-connection outage; the effective interval is min(this, idle_timeout/2) so the notes also keep the idle rail alive.
 NETWORK_WAIT_NOTE_INTERVAL_SEC = 300

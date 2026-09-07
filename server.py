@@ -264,14 +264,12 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
         user_id = coerce_chat_identity((msg.get("from") or {}).get("id"), chat_id or 1)
         text = str(msg.get("text") or "")
         source = str(msg.get("source") or "web")
-        sender_label = str(msg.get("sender_label") or "")
         sender_session_id = str(msg.get("sender_session_id") or "")
         client_message_id = str(msg.get("client_message_id") or "")
         transport = msg.get("transport") if isinstance(msg.get("transport"), dict) else {}
         image_base64 = str(msg.get("image_base64") or "")
         image_mime = str(msg.get("image_mime") or "image/jpeg")
         image_caption = str(msg.get("image_caption") or "")
-        suppress_chat_log = bool(msg.get("suppress_chat_log"))
         task_constraint = msg.get("task_constraint") if isinstance(msg.get("task_constraint"), dict) else None
         task_metadata = msg.get("task_metadata") if isinstance(msg.get("task_metadata"), dict) else None
         image_data = (image_base64, image_mime, image_caption) if image_base64 else None
@@ -310,55 +308,20 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
         if owner_id is None and external_identity_present:
             owner_id = user_id
 
-        from supervisor.message_bus import log_chat
+        from supervisor.message_bus import record_inbound_message
 
-        # Origin identity is captured HERE, where the host writes the canonical
-        # row (BIBLE P2: identity by value, never re-derived from content
-        # downstream). Only a row that is actually logged mints a ref — a
-        # suppressed message must not reference a non-existent canonical row.
-        origin_message_ref: Optional[Dict[str, Any]] = None
-        if not suppress_chat_log:
-            log_chat(
-                "in",
-                chat_id,
-                user_id,
-                log_text,
-                ts=now_iso,
-                source=source,
-                sender_label=sender_label,
-                sender_session_id=sender_session_id,
-                client_message_id=client_message_id,
-                transport=transport,
-                client_surface=(
-                    task_metadata.get("client_surface")
-                    if isinstance(task_metadata, dict) and isinstance(task_metadata.get("client_surface"), dict)
-                    else None
-                ),
-            )
-            from ouroboros.project_dialogue import build_owner_message_ref
-
-            origin_message_ref = build_owner_message_ref(
-                chat_id=chat_id,
-                client_message_id=client_message_id,
-                ts=now_iso,
-                text=log_text,
-            )
-            if source != "web":
-                bridge.broadcast({
-                    "type": "photo" if image_base64 else "chat",
-                    "role": "user",
-                    "content": text,
-                    "caption": image_caption,
-                    "image_base64": image_base64,
-                    "mime": image_mime,
-                    "ts": now_iso,
-                    "source": source,
-                    "sender_label": sender_label,
-                    "sender_session_id": sender_session_id,
-                    "client_message_id": client_message_id,
-                    "transport": transport,
-                    "chat_id": chat_id,
-                })
+        # The same writer mints ordinary ingress and validates preaccepted
+        # skill deliveries; the latter already have their one canonical row.
+        origin_message_ref = record_inbound_message(
+            bridge, msg, chat_id=chat_id, user_id=user_id,
+            client_message_id=client_message_id, text=log_text, ts=now_iso,
+        )
+        if task_metadata:
+            task_metadata = dict(task_metadata)
+            task_metadata.pop("_host_operation", None)
+        if msg.get("accepted_source_ref"):
+            task_metadata = dict(task_metadata or {})
+            task_metadata["_host_operation"] = True
         def _stamp_owner_activity(live: dict) -> None:
             if live.get("owner_id") is None and external_identity_present:
                 live["owner_id"] = user_id

@@ -1581,6 +1581,31 @@ or error otherwise, never failing on its own.
   non-manifest history with last-5 retention (history is for recovery, not a
   second deliverable list). The logical `root=deliverables` tool stays
   read/list/search-only and is not granted to children.
+- Large task files use `artifacts.stream_artifact_file` and atomic
+  `copy_artifact_file`; do not read complete datasets into a bytes object.
+  Directory exports keep a complete relative member/size/SHA manifest and a
+  streamed ZIP, including outputs above50 MiB. File changes and missing members
+  are explicit capture failures. Reject a read as soon as it exceeds the source's
+  initial regular-file size; do not wait for a growing file to reach EOF. A borrowed
+  completed multipart spool uses the same copy/hash/atomic owner and descriptor
+  checks, without claiming verification of an original pathname; its caller closes
+  it only after the copy worker settles, including cancellation. Host path uploads
+  retain source confinement and the existing Path return. Automatic genesis listing
+  is discovery: record unreadable/changing entries and incomplete coverage, while
+  actual capture/copy remains strict. `send_file` uses immutable captured names so
+  an earlier delivery URL never aliases a later rewrite. Browser URL downloads
+  use the existing helper's streaming mode (HEAD then native browser download);
+  the launcher URL backend already streams. `downloadBlobViaHostBridge` shares
+  the existing bytes-save owner for an already-owned Blob or data/blob URL;
+  it never turns an HTTP response/stream into a Blob. Native result/cancellation
+  fields are preserved, and old launchers report unavailable saving explicitly.
+- Input authority keeps at most25 rows inline and, when needed, an additive
+  `attachment_manifest_ref` in the existing source-handle store. Preserve its
+  count/size/SHA and resolve the complete set before child materialization,
+  mailbox inheritance, retry or copy-back; never fall back to the preview when
+  the source fails. Re-publish a new manifest after rebasing paths. Input files
+  remain inputs, outside deliverable inventories. Failed copy-back participates
+  in the existing pending-ref retry/GC contract rather than losing child bytes.
 - For argv-visible targets, the shell guard checks lexical Deliverables origin
   before generic workspace or executor roots, then the symlink-resolved
   destination; direct `cp`/`mv`/`ln` directory destinations derive their
@@ -1791,8 +1816,9 @@ both critical. The imperatives:
   deliverable. A genesis project starts without a `.gitignore`, so its small
   text build output (`dist/`, `build/`) rides the `workspace.patch` record
   until the project declares one — a disclosed residual, bounded only by the
-  per-file size cap and git's binary verdict, since there is no total-patch
-  cap. The canonical/replica terminal field-custody projection is
+  per-file source-patch size boundary and git's binary verdict; otherwise
+  eligible large/binary outputs are preserved as file artifacts with a full
+  manifest, independently of the source patch. There is no total source-patch cap. The canonical/replica terminal field-custody projection is
   ONE pure reducer reused by copy-back and effective reads — every change
   adds a stale-replica regression at BOTH seams
   (`tests/test_available_subagents_runtime_review_fixes.py`). Do not broaden
@@ -2630,6 +2656,21 @@ omits setup jobs with unconfirmed termination. Service quiescence excludes
 zombie-only groups, but checks every member before releasing a writer fence
 (`tests/test_claudexor_custody_lifetime.py`, `tests/test_process_custody_liveness.py`).
 
+Out-of-process extension HTTP responses execute their standard Starlette ASGI
+response in the child. The runner owns staging, Popen registration and cleanup;
+`extension_route_stream` owns only portable pipe frames and ASGI delivery. Preserve
+ordered headers, HEAD/Range and background actions. Consumer backpressure is not
+an idle failure and no total/pre-header response deadline applies. Bind cancellation
+to the existing loaded bundle, before spawning, and detach on completion. A
+cancellation during startup retains the worker future and process context until
+it exits; move context entry/exit, spawn registration, pipe shutdown and termination
+off the ASGI event loop. Static captured module sources spawn no child. Chunk size
+and post-response cleanup grace come from config.py and are not stream deadlines.
+Failed final sends remain delivery failures; background failure after a successful final
+body is a separate diagnostic. Widget pull credits bound transport buffering;
+large URL downloads use the existing native/browser file owner, never an automatic
+HTTP-stream-to-Blob conversion.
+
 ## Platform Abstraction Rule
 
 Platform-specific code goes through `ouroboros/platform_layer.py`: platform
@@ -2879,6 +2920,16 @@ no domain policy — do not copy policy into an adapter, promote the
 or require a class where established function owners already preserve the
 boundary. Enforcement: CHECKLISTS item 17 (`gateway_parity`) and
 `tests/test_gateway_parity.py`.
+
+Named skill chat ingress uses the existing message-bus canonical writer before
+enqueue. The server consumes that internal accepted source without logging a
+second row. Operation reads/cancel verify the complete source against actual
+task or direct-turn ownership; presentation annotations are discovery hints.
+Named waits use that operation's state, while unnamed legacy waits retain their
+chat callback. Tests: `test_host_service_operation_identity.py` and
+`test_host_service_operations.py`. Successful child WS relay failures travel as
+bounded counters through the existing process-facts channel, preserving the
+producer result and best-effort `None` API (`test_extension_ws_diagnostics.py`).
 
 ## Build & CI
 

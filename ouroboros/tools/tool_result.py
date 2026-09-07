@@ -385,7 +385,7 @@ TOOL_CODE_SPECS: Mapping[str, ToolCodeSpec] = MappingProxyType(
             "timeout",
             "timeout",
             "error",
-            "inspect MCP health before retrying",
+            "reconcile the remote outcome before retrying",
         ),
         "EXTENSION_TIMEOUT": _code_spec(
             "timeout",

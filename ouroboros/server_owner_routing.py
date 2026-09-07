@@ -63,11 +63,11 @@ def _stage_mailbox_attachments(
     try:
         if not uploads:
             return "", [], ""
-        from ouroboros.artifacts import stage_task_attachments
+        from ouroboros.artifacts import attachment_manifest_projection, stage_task_attachments
         from ouroboros.gateway.tasks import _render_attachment_lines
 
         manifest = stage_task_attachments(task_drive, task_id, uploads)
-        rendered = _render_attachment_lines(manifest)
+        rendered = _render_attachment_lines(attachment_manifest_projection(task_drive, task_id, manifest))
         note = f"\n\n[ATTACHMENTS]\n{rendered}\n[END_ATTACHMENTS]" if rendered else ""
         return note, manifest, rendered
     finally:

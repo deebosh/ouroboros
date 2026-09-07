@@ -11,6 +11,7 @@ export function bridgeChunkBuffer(view) {
 
 // Child side of the one bridge grammar (nonce-bound, parent ⇄ frame):
 //   child → parent  ouro-widget-fetch {id, url, init} · ouro-widget-fetch-abort {id}
+//                   ouro-widget-fetch-pull {id} · ouro-widget-download {id, name, source}
 //                   ouro-widget-events {op: subscribe | unsubscribe} · ouro-widget-disposed
 //                   ouro-widget-error {kind: error | rejection | csp, message, source, line}
 //   parent → child  ouro-widget-fetch-chunk {id, phase: headers | data | end | error, …}
@@ -19,16 +20,18 @@ export function bridgeChunkBuffer(view) {
 // ReadableStream fed by `data` frames (binary by default), so text/json/blob
 // and incremental body reads all work. No default timeout — `init.timeoutMs`
 // is the author's opt-in bound; `init.signal` aborts through the parent.
-export function moduleBridgeScript(nonce) {
+export function moduleBridgeScript(nonce, routeBase = '') {
     return `
         (() => {
             const nonce = ${JSON.stringify(nonce)};
+            const routeBase = ${JSON.stringify(routeBase)};
             let seq = 0;
             let disposing = false;
             let disposed = false;
             // id → in-flight bridged fetch: settles its Response on the headers
             // frame, then feeds, ends or errors that Response's body stream.
             const pending = new Map();
+            const downloads = new Map();
             const cleanup = new Set();
             const eventListeners = new Set();
             const post = (message) => window.parent.postMessage({ ...message, nonce }, '*');
@@ -49,10 +52,16 @@ export function moduleBridgeScript(nonce) {
                 const hooks = Array.from(cleanup);
                 cleanup.clear();
                 await Promise.allSettled(hooks.map((fn) => Promise.resolve().then(fn)));
+                window.document?.removeEventListener('click', clickDownload);
+                blobUrls.clear();
+                if (createUrl) urlApi.createObjectURL = createUrl;
+                if (revokeUrl) urlApi.revokeObjectURL = revokeUrl;
                 post({ type: 'ouro-widget-disposed' });
                 disposed = true;
                 pending.forEach((item) => item.fail(new Error('widget disposed')));
                 pending.clear();
+                downloads.forEach(({ reject }) => reject(new Error('widget disposed')));
+                downloads.clear();
                 eventListeners.clear();
                 window.removeEventListener('message', onMessage);
                 window.removeEventListener('error', onError);
@@ -76,6 +85,14 @@ export function moduleBridgeScript(nonce) {
                     });
                     return;
                 }
+                if (msg.type === 'ouro-widget-download-result') {
+                    const item = downloads.get(msg.id);
+                    if (!item) return;
+                    downloads.delete(msg.id);
+                    if (msg.result?.ok) item.resolve(msg.result);
+                    else item.reject(new Error(msg.result?.error || 'widget download failed'));
+                    return;
+                }
                 if (msg.type !== 'ouro-widget-fetch-chunk') return;
                 pending.get(msg.id)?.frame(msg);
             };
@@ -93,9 +110,12 @@ export function moduleBridgeScript(nonce) {
                 const method = String(init.method || 'GET').toUpperCase();
                 let settled = false;
                 let body = null;
+                let pulled = null;
                 const finish = () => {
                     pending.delete(id);
                     signal?.removeEventListener('abort', onAbort);
+                    pulled?.();
+                    pulled = null;
                 };
                 const fail = (error) => {
                     finish();
@@ -122,8 +142,14 @@ export function moduleBridgeScript(nonce) {
                         const nullBody = method === 'HEAD' || [204, 205, 304].includes(Number(msg.status));
                         const stream = nullBody ? null : new ReadableStream({
                             start(controller) { body = controller; },
+                            pull() {
+                                return new Promise((done) => {
+                                    pulled = done;
+                                    post({ type: 'ouro-widget-fetch-pull', id });
+                                });
+                            },
                             cancel,
-                        });
+                        }, { highWaterMark: 0 });
                         try {
                             resolve(new Response(stream, {
                                 status: Number(msg.status) || 200,
@@ -140,6 +166,8 @@ export function moduleBridgeScript(nonce) {
                     }
                     if (msg.phase === 'data') {
                         try { body?.enqueue(new Uint8Array(msg.chunk)); } catch {}
+                        pulled?.();
+                        pulled = null;
                         return;
                     }
                     if (msg.phase === 'end') {
@@ -203,7 +231,40 @@ export function moduleBridgeScript(nonce) {
             window.addEventListener('message', onMessage);
             window.__ouroWidgetOnDispose = onDispose;
             window.fetch = request;
-            window.OuroborosWidget = { fetch: request, onEvent };
+            const download = (name, source) => new Promise((resolve, reject) => {
+                if (disposed) { reject(new Error('widget disposed')); return; }
+                const id = ++seq;
+                downloads.set(id, { resolve, reject });
+                try { post({ type: 'ouro-widget-download', id, name: String(name || 'download'), source: typeof source === 'string' ? (blobUrls.get(source) || source) : source }); }
+                catch (error) { downloads.delete(id); reject(error); }
+            });
+            // Remember the Blob behind a frame-owned URL: the opaque frame's
+            // URL cannot be fetched by the host, and its CSP forbids script IO.
+            const blobUrls = new Map();
+            const urlApi = window.URL;
+            const createUrl = urlApi?.createObjectURL?.bind(urlApi);
+            const revokeUrl = urlApi?.revokeObjectURL?.bind(urlApi);
+            if (createUrl) urlApi.createObjectURL = (source) => {
+                const url = createUrl(source);
+                if (source instanceof Blob) blobUrls.set(url, source);
+                return url;
+            };
+            if (revokeUrl) urlApi.revokeObjectURL = (url) => {
+                blobUrls.delete(String(url));
+                return revokeUrl(url);
+            };
+            const clickDownload = (event) => {
+                if (event.defaultPrevented || event.button > 0) return;
+                const anchor = event.target?.closest?.('a[download]');
+                if (!anchor) return;
+                const href = String(anchor.href || '');
+                const source = blobUrls.get(href) || href;
+                if (!blobUrls.has(href) && !href.startsWith('data:') && !(routeBase && href.startsWith(routeBase))) return;
+                event.preventDefault();
+                download(anchor.download, source).catch((error) => fault('error', error.message, '', 0));
+            };
+            window.document?.addEventListener('click', clickDownload);
+            window.OuroborosWidget = { fetch: request, onEvent, download };
         })();
     `;
 }

@@ -797,6 +797,7 @@ def _extension_proc(returncode):
         pid = 9001
 
         def __init__(self):
+            self.stdin = None  # Popen with DEVNULL has no parent-side input pipe.
             self.stdout = io.BytesIO(b"")
             self.stderr = io.BytesIO(b"")
             self.returncode = returncode
@@ -833,6 +834,7 @@ def test_extension_child_timeout_publishes_host_kill(tmp_path, monkeypatch):
         pid = 9002
 
         def __init__(self):
+            self.stdin = None  # Popen with DEVNULL has no parent-side input pipe.
             self.stdout = io.BytesIO(b"")
             self.stderr = io.BytesIO(b"")
             self.returncode = None

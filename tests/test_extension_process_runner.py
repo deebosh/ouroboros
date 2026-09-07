@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import pathlib
 import sys
 import time
@@ -31,6 +32,7 @@ def _payload(result) -> str:
     return head if sep else text
 
 from tests._shared import clean_extension_runtime_state
+from tests.test_extension_route_streaming import collect_response
 from tests.test_extension_loader import (
     _add_fake_native_dep,
     _isolated_site_packages_dir,
@@ -318,8 +320,9 @@ def test_native_risk_extension_route_dispatches_out_of_process(tmp_path):
         repo_dir=pathlib.Path(__file__).resolve().parents[1],
     )
 
-    assert result["route"]["kind"] == "json"
-    assert result["route"]["data"] == {
+    events = asyncio.run(collect_response(result, method="POST"))
+    assert events[0]["status"] == 200
+    assert json.loads(b"".join(event.get("body", b"") for event in events)) == {
         "value": "isolated-native-risk",
         "name": "anton",
         "skill": "native_route",
@@ -328,7 +331,7 @@ def test_native_risk_extension_route_dispatches_out_of_process(tmp_path):
     assert pathlib.Path(spec["skills_repo_path"]) == repo_root
 
 
-def test_native_risk_extension_streaming_route_is_materialized_out_of_process(tmp_path):
+def test_native_risk_extension_streaming_route_streams_out_of_process(tmp_path):
     from ouroboros.extension_process_runner import dispatch_extension_route_subprocess
 
     plugin = (
@@ -366,8 +369,9 @@ def test_native_risk_extension_streaming_route_is_materialized_out_of_process(tm
         repo_dir=pathlib.Path(__file__).resolve().parents[1],
     )
 
-    assert result["route"]["kind"] == "response"
-    assert base64.b64decode(result["route"]["body_b64"]) == b"chunk-a-chunk-b"
+    events = asyncio.run(collect_response(result))
+    assert events[0]["status"] == 200
+    assert b"".join(event.get("body", b"") for event in events) == b"chunk-a-chunk-b"
 
 
 def test_native_risk_extension_gateway_route_child_failure_returns_502(tmp_path, monkeypatch):
@@ -421,8 +425,9 @@ def test_native_risk_extension_gateway_route_child_failure_returns_502(tmp_path,
 
     response = asyncio.run(api_extension_dispatch(request))
 
-    assert response.status_code == 502
-    assert b"route-child-boom" in response.body
+    events = asyncio.run(collect_response(response))
+    assert events[0]["status"] == 502
+    assert b"route-child-boom" in b"".join(event.get("body", b"") for event in events)
 
 
 def test_native_risk_extension_gateway_route_rejects_oversized_body_before_child(tmp_path, monkeypatch):

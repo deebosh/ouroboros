@@ -118,14 +118,17 @@ BAND_PATHS = {
     "ouroboros/claudexor_daemon.py": "Installation daemon lifecycle owns marker and authenticated endpoint stop authority, confirmed self-started handles, and duplicate-start refusal; process signal and ledger mechanics remain in process_custody. No new lifecycle store or scheduler.",
     "ouroboros/claudexor_runtime.py": "Exact byte verification and delivery now have a shared owner for engine and skill resources; this module retains engine pin, archive installation and platform-specific contracts.",
     "ouroboros/cli.py": "The existing command-line transport keeps task-event negotiation, bounded replay deduplication and result rendering together; the additive cursor does not introduce a second CLI or task engine.",
+    "ouroboros/config.py": "Public configuration and numeric-constant authority, including extension response chunks and post-response child cleanup grace; no new settings owner.",
     "ouroboros/consciousness.py": "Durable Background Consciousness observation inbox and bounded truthful replay",
     "ouroboros/context.py": "Entered the band from the 1501-1600 zone (1590 lines) by the v7 D03 extraction of the runtime-section fact builders into ouroboros/context_runtime_facts.py; shrink-only residue of the split, not new growth.",
     "ouroboros/deep_self_review.py": "Deep self-review moved from one packed call to the three reviewer-row deliveries inside ONE surface module: the packed Atlas assembler and the retrieving runner (route-aware availability, provenance header, mandatory-read coverage, typed failures) share the memory whitelist, the prompt constants and the failure typing, so a split would separate the surface from its own pack contract; shrink next touch.",
     "ouroboros/delegate_custody.py": "D07 DEL1 split brought the custody monolith DOWN from the 1600 hard cap into the band (1600->1305); reconcile family extracted to delegate_custody_reconcile.py, shrink-only direction",
+    "ouroboros/extension_plugin_api.py": "The PluginAPI transport owner retains per-child best-effort WS failure aggregation beside the relay that observes failures; the existing process-result channel carries that aggregate without a separate diagnostic service.",
     "ouroboros/extension_process_runner.py": None,
     "ouroboros/gateway/control.py": "Entered the band from 966 lines: the update-flow redesign added the shared stash-first prologue (_stash_local_work_fenced/_unwind_stashed_update) and the review-wave affordability floor to the update apply orchestration (update-flow-redesign sprint, Q9/Q10 owner decisions).",
     "ouroboros/gateway/extensions.py": "Extensions HTTP surface re-entered the band when the module endpoint moved to the in-memory reviewed bundle (widgets lifecycle 1a); shrink next touch.",
     "ouroboros/gateway/history.py": "Shrank into the band by extracting the ledger-derived cost-breakdown endpoint family (compat buckets/groups + /api/cost-breakdown) to gateway/cost_breakdown.py; the chat-history window and its lineage/quota machinery stay here.",
+    "ouroboros/gateway/host_service.py": "The one loopback callback boundary for reviewed skills: token auth, the chat/decision/presence/WS-relay routes and, with #667, the operation read/cancel that joins existing chat, routing, turn and task records; one trust boundary, one module.",
     "ouroboros/gateway/settings.py": "Retiring persistent auto-Low removed the former giant debt; the remaining owner and reviewer settings endpoints stay centralized while tracked in the shrinking band.",
     "ouroboros/loop_acceptance_review.py": "F6 upstream sync: the A-material acceptance family (paid identity, free replay, identical-refusal terminal, dialogue history) folded into the campaign review leaf per the sync principle (upstream leaf acceptance_dialogue.py retired)",
     "ouroboros/loop_delivery.py": "F6 upstream sync: the delivery-protocol upstream deltas (hold-control literals, trailing-object/fence-aware protocol parsers) folded into the campaign delivery leaf (upstream leaf delivery_protocol.py retired)",
@@ -244,5 +247,5 @@ BYTE_BASELINE_DEBT = {
 
 BYTE_DEBT = {
     "tests/test_devtools_benchmarks.py": 327840,
-    "web/modules/chat.js": 206885,
+    "web/modules/chat.js": 206001,
 }

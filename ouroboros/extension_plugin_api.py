@@ -20,6 +20,7 @@ import pathlib
 import secrets
 import sys
 import threading
+import urllib.error
 import urllib.request
 import uuid
 from typing import Any, Callable, Dict, Optional, Sequence
@@ -181,6 +182,21 @@ def mint_skill_token(state_dir: pathlib.Path, skill_name: str, skill_dir: Option
 
 
 _ws_broadcaster: Optional[Callable[[dict], None]] = None
+_child_ws_relay_failures: Dict[str, int] = {}
+
+
+def take_child_ws_relay_failures() -> Dict[str, int]:
+    """Drain this per-call child's fixed-category aggregate, including its threads."""
+    with _lock:
+        failures = dict(_child_ws_relay_failures)
+        _child_ws_relay_failures.clear()
+        return failures
+
+
+def _record_ws_relay_failure(reason: str) -> None:
+    # The per-call child owns this aggregate; no message/URL/exception text is kept.
+    with _lock:
+        _child_ws_relay_failures[reason] = _child_ws_relay_failures.get(reason, 0) + 1
 
 
 def set_ws_broadcaster(broadcaster: Callable[[dict], None] | None) -> None:
@@ -646,7 +662,7 @@ class PluginAPIImpl:
         base_url = (os.environ.get("HOST_SERVICE_URL") or "").strip()
         token = (os.environ.get("HOST_SERVICE_TOKEN") or "").strip()
         if not base_url or not token:
-            log.debug("extension %s dropped WS message %s: no host bridge env", self._skill, short)
+            _record_ws_relay_failure("missing_transport")
             return
         body = json.dumps({"message_type": short, "data": data}).encode("utf-8")
         request = urllib.request.Request(
@@ -658,8 +674,17 @@ class PluginAPIImpl:
         try:
             with urllib.request.urlopen(request, timeout=2):  # noqa: S310 - loopback Host Service
                 return
+        except urllib.error.HTTPError as exc:
+            reason = "rate_limited" if exc.code == 429 else (
+                "http_client_error" if 400 <= exc.code < 500 else
+                "http_server_error" if 500 <= exc.code < 600 else "http_error")
+            _record_ws_relay_failure(reason)
+            try:
+                exc.close()
+            except OSError:
+                pass
         except Exception:
-            log.debug("extension %s host WS relay failed for %s", self._skill, short, exc_info=True)
+            _record_ws_relay_failure("transport_error")
 
     def on_unload(self, callback: Callable[[], Any]) -> None:
         _reject_extension_child_side_effect("on_unload")

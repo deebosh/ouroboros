@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import logging
+import math
 import os
 import pathlib
 import threading
@@ -21,14 +22,14 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ouroboros.contracts.chat_id_policy import A2A_CHAT_ID_MAX, A2A_CHAT_ID_MIN, is_a2a_chat_id
 from ouroboros.event_bus import get_global_event_bus
-from ouroboros.gateway.files import ChatUploadPayloadTooLarge, store_chat_upload
+from ouroboros.gateway.files import store_chat_upload
 from ouroboros.skill_loader import (
     find_skill,
     grant_status_for_skill,
     load_enabled,
     review_status_allows_execution,
 )
-from ouroboros.utils import atomic_write_json, read_json_dict, utc_now_iso
+from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc_now_iso
 
 log = logging.getLogger(__name__)
 _json_error = lambda message, status=500: JSONResponse({"ok": False, "error": message}, status_code=status)
@@ -37,26 +38,55 @@ DEFAULT_HOST_SERVICE_HOST = "127.0.0.1"
 DEFAULT_HOST_SERVICE_PORT = 8767
 AUTH_TOKEN_FILENAME = "auth_token.json"
 
+# The out-of-process WS progress relay (``POST /ui/ws-message``) is the one
+# token-bucket lane: a 60-message burst reserve that refills one message per
+# second (owner decision 2026-09-06: a burst must not silence a widget for the
+# rest of a minute). Every other Host Service lane keeps the sliding window.
+WS_RELAY_BURST = 60
+WS_RELAY_REFILL_PER_SEC = 1.0
+
 
 class HostServiceAuthError(Exception):
     """Raised when a skill token cannot be authenticated."""
 
 
 class _RateLimiter:
-    def __init__(self, limit: int = 60, window_sec: float = 60.0):
+    """The one Host Service admission limiter, two policies under one lock.
+
+    ``allow(key)`` is the sliding window (``limit`` hits per ``window_sec``) the
+    chat/presence/decision/tools lanes keep unchanged. ``allow_burst(key)`` is a
+    token bucket for the WS relay lane only: it also AGGREGATES its refusals per
+    key so a burst is reported once (first refusal, then one summary when the
+    lane admits again or the bucket goes idle) instead of one log line per
+    dropped message; ``on_burst_end(key, dropped, duration_sec)`` is the sink.
+    """
+
+    def __init__(
+        self,
+        limit: int = 60,
+        window_sec: float = 60.0,
+        *,
+        on_burst_end: Optional[Callable[[str, int, float], None]] = None,
+    ):
         self.limit = limit
         self.window_sec = window_sec
         self._hits: Dict[str, Deque[float]] = defaultdict(deque)
+        # Token buckets: key -> [tokens, last_refill, capacity, refill_per_sec].
+        self._buckets: Dict[str, list] = {}
+        # Refusals since the last admit: key -> {"dropped", "since", "last"}.
+        self._refused: Dict[str, Dict[str, float]] = {}
+        self._on_burst_end = on_burst_end
         self._lock = threading.Lock()
         self._last_sweep = time.monotonic()
 
-    def _sweep(self, now: float) -> None:
+    def _sweep(self, now: float) -> list:
         # Drop keys idle past the window so _hits does not grow unbounded as
         # distinct skill keys ({skill}:{endpoint}) churn over the process
         # lifetime. Must pop each key's stale timestamps FIRST, then delete the
         # ones left empty (an idle key still holds stale, un-popped entries).
         # Collect-then-delete avoids mutating the dict during iteration.
-        # Caller holds self._lock.
+        # Caller holds self._lock. Returns the refusal bursts whose bucket went
+        # idle without a later admit, for the caller to report off the lock.
         stale = []
         for key, hits in self._hits.items():
             while hits and now - hits[0] > self.window_sec:
@@ -65,21 +95,87 @@ class _RateLimiter:
                 stale.append(key)
         for key in stale:
             del self._hits[key]
+        ended = []
+        for key, bucket in list(self._buckets.items()):
+            tokens, last, capacity, rate = bucket
+            if min(capacity, tokens + (now - last) * rate) >= capacity:
+                del self._buckets[key]
+                burst = self._refused.pop(key, None)
+                if burst:
+                    ended.append((key, burst))
+        return ended
+
+    def _report(self, ended: list) -> None:
+        for key, burst in ended:
+            if self._on_burst_end is None:
+                continue
+            try:
+                self._on_burst_end(key, int(burst["dropped"]), float(burst["last"] - burst["since"]))
+            except Exception:
+                log.debug("Rate-limiter burst sink failed for %s", key, exc_info=True)
 
     def allow(self, key: str) -> bool:
         now = time.monotonic()
+        ended: list = []
         with self._lock:
             # Amortized cleanup: at most once per window, under the existing lock.
             if now - self._last_sweep > self.window_sec:
-                self._sweep(now)
+                ended = self._sweep(now)
                 self._last_sweep = now
             hits = self._hits[key]
             while hits and now - hits[0] > self.window_sec:
                 hits.popleft()
             if len(hits) >= self.limit:
-                return False
-            hits.append(now)
-            return True
+                admitted = False
+            else:
+                hits.append(now)
+                admitted = True
+        self._report(ended)
+        return admitted
+
+    def allow_burst(
+        self,
+        key: str,
+        *,
+        capacity: int = WS_RELAY_BURST,
+        refill_per_sec: float = WS_RELAY_REFILL_PER_SEC,
+    ) -> Dict[str, Any]:
+        """Token-bucket admission for one key.
+
+        Returns ``{"allowed", "retry_after_sec", "dropped_in_burst"}``: on a
+        refusal ``retry_after_sec`` is the wait until one token exists and
+        ``dropped_in_burst`` counts this refusal and every earlier one since the
+        last admit (``1`` marks the first refusal of a burst).
+        """
+        now = time.monotonic()
+        ended: list = []
+        with self._lock:
+            if now - self._last_sweep > self.window_sec:
+                ended = self._sweep(now)
+                self._last_sweep = now
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                bucket = self._buckets[key] = [float(capacity), now, float(capacity), float(refill_per_sec)]
+            tokens = min(bucket[2], bucket[0] + (now - bucket[1]) * bucket[3])
+            bucket[1] = now
+            if tokens >= 1.0:
+                bucket[0] = tokens - 1.0
+                burst = self._refused.pop(key, None)
+                if burst:
+                    ended.append((key, burst))
+                verdict = {"allowed": True, "retry_after_sec": 0.0, "dropped_in_burst": 0}
+            else:
+                bucket[0] = tokens
+                burst = self._refused.setdefault(key, {"dropped": 0, "since": now, "last": now})
+                burst["dropped"] += 1
+                burst["last"] = now
+                verdict = {
+                    "allowed": False,
+                    "retry_after_sec": (1.0 - tokens) / bucket[3],
+                    "dropped_in_burst": int(burst["dropped"]),
+                }
+        self._report(ended)
+        return verdict
 
 
 class HostServiceContext:
@@ -99,10 +195,31 @@ class HostServiceContext:
         self.tool_schemas_getter = tool_schemas_getter or self._default_tool_schemas
         self.ws_broadcaster_getter = ws_broadcaster_getter or self._default_ws_broadcaster
         self.presence_runner = presence_runner or self._default_presence_runner
-        self.rate_limiter = _RateLimiter()
+        self.rate_limiter = _RateLimiter(on_burst_end=self._ws_relay_burst_ended)
         self._inflight: Dict[str, int] = defaultdict(int)
         self._inflight_lock = threading.Lock()
         self._counter_lock = threading.Lock()
+
+    def _ws_relay_burst_ended(self, key: str, dropped: int, duration_sec: float) -> None:
+        """Report one aggregated WS relay refusal burst: a warning plus one
+        durable ``host_service_ws_relay_dropped`` row (the ``broadcast_partial_failure``
+        precedent in ``gateway/ws.py``), never one line per dropped message."""
+        skill = key.rsplit(":", 1)[0]
+        log.warning(
+            "Host Service WS relay for skill %r dropped %d message(s) over %.1fs "
+            "(burst reserve %d, refill %.0f/s)",
+            skill, dropped, duration_sec, WS_RELAY_BURST, WS_RELAY_REFILL_PER_SEC,
+        )
+        try:
+            append_jsonl(self.data_dir / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "host_service_ws_relay_dropped",
+                "skill": skill,
+                "dropped": int(dropped),
+                "duration_sec": round(float(duration_sec), 3),
+            })
+        except Exception:
+            log.debug("Failed to record host_service_ws_relay_dropped event", exc_info=True)
 
     def _default_bridge(self) -> Any:
         from supervisor.message_bus import try_get_bridge
@@ -289,6 +406,16 @@ async def _api_allocate_internal(request: Request) -> JSONResponse:
 
 
 async def _api_chat_inject(request: Request) -> JSONResponse:
+    """Inject one owner-channel message; correlate it when the caller names it.
+
+    ``client_message_id`` is the inbound message identity (#667): the host keeps
+    it on the canonical inbound row it already writes, answers with the
+    correlated ``operation_ref`` on 202/200/504, and a repeated delivery of the
+    SAME message (same id, same text, same skill) REJOINS the accepted operation
+    instead of enqueueing a second one; a different message under a reused id
+    is refused (409), never mistaken for a replay. Without an id the historical
+    envelope is byte-identical.
+    """
     ctx: HostServiceContext = request.app.state.host_service_context
     try:
         skill_name, token_payload = ctx.authenticate_token_payload(request.headers.get("x-skill-token", ""))
@@ -308,32 +435,6 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
         text = str(payload.get("text") or "")
         image_caption = str(payload.get("image_caption") or "")
         client_message_id = str(payload.get("client_message_id") or "").strip()[:128]
-        try:
-            copying = asyncio.create_task(asyncio.to_thread(
-                _inject_attachment_uploads, ctx, skill_name, payload.get("attachments"),
-            ))
-            try:
-                uploads = await asyncio.shield(copying)
-            except asyncio.CancelledError:
-                # Keep the admitted copy and its in-flight slot until the
-                # worker settles; the skill still owns its source files.
-                while not copying.done():
-                    try:
-                        await asyncio.shield(copying)
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        break
-                try:
-                    copying.result()
-                except Exception:
-                    log.debug("Host upload failed while cancellation settled", exc_info=True)
-                raise
-        except ChatUploadPayloadTooLarge as exc:
-            return _json_error(str(exc), 413)
-        except ValueError as exc:
-            return _json_error(str(exc), 400)
-        bridge = ctx.bridge_getter()
         chat_id = int(payload.get("chat_id") or 0)
         wait_for_response = bool(payload.get("wait_for_response", False))
         if wait_for_response and not is_a2a_chat_id(chat_id):
@@ -346,9 +447,61 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 "wait_for_response requires an A2A-allocated chat_id "
                 "(allocate one via /chat/allocate-internal)", 400,
             )
+        correlated = {"operation_ref": operation_ref(chat_id, client_message_id)} if client_message_id else {}
+        rejoined = False
+        if client_message_id:
+            rows = await asyncio.to_thread(_chat_rows, ctx, chat_id)
+            inbound = _inbound_row(rows, client_message_id)
+            if inbound is not None:
+                from ouroboros.project_dialogue import _text_sha256
+                from ouroboros.task_status import SETTLED_STATUSES
+
+                if str(inbound.get("source") or "") != f"skill:{skill_name}":
+                    return _json_error("client_message_id is already bound to another source", 409)
+                logged = text.strip() or image_caption.strip() or (
+                    "(image attached)" if str(payload.get("image_base64") or "").strip()
+                    else "(file attached)" if payload.get("attachments") else ""
+                )
+                if _text_sha256(inbound.get("text")) != _text_sha256(logged):
+                    return _json_error("client_message_id was already used for a different message", 409)
+                state = _operation_state(ctx, rows, inbound)
+                if state["status"] in SETTLED_STATUSES:
+                    return JSONResponse({
+                        "ok": True, "response": str(state.get("text") or ""),
+                        "status": state["status"], "rejoined": True, **correlated,
+                    })
+                if not wait_for_response:
+                    return JSONResponse({"ok": True, "status": "accepted", "rejoined": True, **correlated}, status_code=202)
+                rejoined = True
+        uploads: list[dict[str, str]] = []
+        if not rejoined:
+            try:
+                copying = asyncio.create_task(asyncio.to_thread(
+                    _inject_attachment_uploads, ctx, skill_name, payload.get("attachments"),
+                ))
+                try:
+                    uploads = await asyncio.shield(copying)
+                except asyncio.CancelledError:
+                    # Keep the admitted copy and its in-flight slot until the
+                    # worker settles; the skill still owns its source files.
+                    while not copying.done():
+                        try:
+                            await asyncio.shield(copying)
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            break
+                    try:
+                        copying.result()
+                    except Exception:
+                        log.debug("Host upload failed while cancellation settled", exc_info=True)
+                    raise
+            except ValueError as exc:
+                return _json_error(str(exc), 400)
+        bridge = ctx.bridge_getter()
         response_event: asyncio.Event = asyncio.Event()
         response_holder: dict[str, str] = {}
-        if wait_for_response:
+        if wait_for_response and not client_message_id:
             loop = asyncio.get_running_loop()
 
             def on_response(response_text: str) -> None:
@@ -356,34 +509,57 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 loop.call_soon_threadsafe(response_event.set)
 
             subscription_id = bridge.subscribe_response(chat_id, on_response)
-        bridge.enqueue_local_message(
-            text,
-            chat_id=chat_id,
-            user_id=int(payload.get("user_id") or 0),
-            source=f"skill:{skill_name}",
-            sender_label=str(payload.get("sender_label") or skill_name),
-            image_base64=str(payload.get("image_base64") or ""),
-            image_mime=str(payload.get("image_mime") or ""),
-            image_caption=image_caption,
-            transport=payload.get("transport") if isinstance(payload.get("transport"), dict) else {},
-            **({"task_metadata": {"chat_attachment_uploads": uploads}} if uploads else {}),
-            **({"client_message_id": client_message_id} if client_message_id else {}),
-        )
+        if not rejoined:
+            message = dict(
+                chat_id=chat_id,
+                user_id=int(payload.get("user_id") or 0),
+                source=f"skill:{skill_name}",
+                sender_label=str(payload.get("sender_label") or skill_name),
+                image_base64=str(payload.get("image_base64") or ""),
+                image_mime=str(payload.get("image_mime") or ""),
+                image_caption=image_caption,
+                transport=payload.get("transport") if isinstance(payload.get("transport"), dict) else {},
+                **({"task_metadata": {"chat_attachment_uploads": uploads}} if uploads else {}),
+                **({"client_message_id": client_message_id} if client_message_id else {}),
+            )
+            if client_message_id:
+                from supervisor.message_bus import accept_local_message
+
+                try:
+                    _, rejoined = await asyncio.to_thread(accept_local_message, bridge, ctx.data_dir, text, **message)
+                except ValueError as exc:
+                    return _json_error(str(exc), 409)
+            else:
+                bridge.enqueue_local_message(text, **message)
         if not wait_for_response:
-            return JSONResponse({"ok": True, "status": "queued"}, status_code=202)
+            if rejoined:
+                return JSONResponse({"ok": True, "status": "accepted", "rejoined": True, **correlated}, status_code=202)
+            return JSONResponse({"ok": True, "status": "queued", **correlated}, status_code=202)
         timeout = max(1, min(int(payload.get("timeout_sec") or 1800), 1800))
         deadline = time.monotonic() + timeout
         while not response_event.is_set():
+            if client_message_id:
+                from ouroboros.task_status import SETTLED_STATUSES
+
+                state = await asyncio.to_thread(_owned_operation_state, ctx, skill_name, chat_id, client_message_id)
+                if state and state["status"] in {*SETTLED_STATUSES, "lost"}:
+                    return JSONResponse({"ok": True, "response": str(state.get("text") or ""),
+                                         "status": state["status"], "rejoined": rejoined, **correlated})
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return _json_error("timed out waiting for response", 504)
+                # The work keeps running; the ref lets the caller recover its
+                # late answer through /chat/operations (#667).
+                return JSONResponse(
+                    {"ok": False, "error": "timed out waiting for response", **correlated},
+                    status_code=504,
+                )
             try:
                 if await request.is_disconnected():
-                    return _json_error("client disconnected", 499)
+                    return JSONResponse({"ok": False, "error": "client disconnected", **correlated}, status_code=499)
                 await asyncio.wait_for(response_event.wait(), timeout=min(1.0, remaining))
             except asyncio.TimeoutError:
                 continue
-        return JSONResponse({"ok": True, "response": response_holder.get("text", "")})
+        return JSONResponse({"ok": True, "response": response_holder.get("text", ""), **correlated})
     except json.JSONDecodeError:
         return _json_error("invalid json", 400)
     except Exception as exc:
@@ -409,7 +585,7 @@ def _inject_attachment_uploads(
     Each ``{path, name?, mime?}`` must be a regular file under the calling
     skill's OWN state root (the ``staged_files`` confinement; a symlink that
     resolves outside is refused). The host copies it through the SAME store the
-    browser paperclip uses — ``data/uploads``, unique name, 50 MB cap — so the
+    browser paperclip uses — ``data/uploads``, unique name, verified bytes — so the
     worker's ``stage_task_attachments`` and the secret-name rule see one upload
     family. Returns ``chat_attachment_uploads`` specs (``{path, label, mime}``);
     the skill removes its parked copy afterwards.
@@ -670,8 +846,30 @@ async def _api_ws_message(request: Request) -> JSONResponse:
         return _json_error(f"skill {skill_name!r} is not installed", 403)
     if "ws_handler" not in {str(p).strip() for p in (loaded.manifest.permissions or [])}:
         return _json_error(f"skill {skill_name!r} lacks ws_handler permission", 403)
-    if not ctx.rate_limiter.allow(f"{skill_name}:ws"):
-        return _json_error("rate limit exceeded", 429)
+    verdict = ctx.rate_limiter.allow_burst(f"{skill_name}:ws")
+    if not verdict["allowed"]:
+        # Visible at the host, aggregated per burst: the first refusal logs once,
+        # the rest ride the counter until the bucket admits again (then the
+        # context's sink reports the dropped total). The child keeps its
+        # best-effort ``None``; ``Retry-After`` says when one token exists.
+        if verdict["dropped_in_burst"] == 1:
+            log.warning(
+                "Host Service WS relay for skill %r refused: burst reserve of %d "
+                "messages is empty (refills %.0f/s); further refusals in this burst "
+                "are aggregated",
+                skill_name, WS_RELAY_BURST, WS_RELAY_REFILL_PER_SEC,
+            )
+        retry_after = float(verdict["retry_after_sec"])
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "rate limit exceeded",
+                "retry_after_sec": round(retry_after, 3),
+                "dropped_in_burst": int(verdict["dropped_in_burst"]),
+            },
+            status_code=429,
+            headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+        )
     try:
         payload = await request.json()
     except Exception:
@@ -691,6 +889,285 @@ async def _api_ws_message(request: Request) -> JSONResponse:
         log.debug("Host service WS relay broadcast failed", exc_info=True)
         return _json_error("broadcast failed", 500)
     return JSONResponse({"ok": True, "type": full}, status_code=202)
+
+
+# --- A2A operation correlation (#667) ---------------------------------------
+#
+# An accepted inbound message is identified by the (chat_id, client_message_id)
+# pair the caller supplied; ``operation_ref`` is that pair spelled
+# ``"<chat_id>:<client_message_id>"``, so a caller can address the operation
+# before its own inject wait has returned. The host keeps NO new record: the
+# canonical inbound source, actual task origin and in-flight turn registry
+# are the authorities. Annotation/outbound ids only help discover candidates.
+
+
+def operation_ref(chat_id: int, client_message_id: str) -> str:
+    return f"{int(chat_id)}:{client_message_id}"
+
+
+def _parse_operation_ref(value: Any) -> tuple[int, str]:
+    head, sep, tail = str(value or "").partition(":")
+    if not sep or not tail.strip():
+        raise ValueError("operation_ref must be '<chat_id>:<client_message_id>'")
+    return int(head), tail.strip()[:128]
+
+
+def _chat_rows(ctx: HostServiceContext, chat_id: int) -> list:
+    """Read retained canonical sources; a display tail cannot prove absence."""
+    from ouroboros.utils import iter_jsonl_objects, jsonl_chain_handles
+
+    with jsonl_chain_handles(ctx.data_dir / "logs" / "chat.jsonl", strict=True) as handles:
+        return [row for path, handle in handles for row in iter_jsonl_objects(path, _handle=handle)
+                if row.get("chat_id") == chat_id]
+
+
+def _inbound_row(rows: list, client_message_id: str) -> Optional[Dict[str, Any]]:
+    return next(
+        (
+            row for row in rows
+            if str(row.get("direction") or "") == "in"
+            and str(row.get("client_message_id") or "") == client_message_id
+        ),
+        None,
+    )
+
+
+def _operation_state(ctx: HostServiceContext, rows: list, inbound: Dict[str, Any]) -> Dict[str, Any]:
+    """Join the existing records into one typed view of an accepted message.
+
+    Authority is the task/turn's complete ingress origin matched to the skill's
+    canonical source, then that task's effective retry-aware status; otherwise
+    ``pending`` — or ``lost``
+    when the host session that accepted the message is gone and nothing else
+    answers. ``cancel_supported`` is true only for work THIS message started
+    that the cancellation owner can address: a promoted task or a live direct
+    turn; an ephemeral decision turn (pre-promotion) and a message steered into
+    a pre-existing task are disclosed, not cancelled.
+    """
+    from ouroboros.project_dialogue import latest_chat_annotations, entry_matches_source_ref, owner_message_ref_is_valid
+    from ouroboros.task_results import load_task_result
+    from ouroboros.task_status import SETTLED_STATUSES, load_effective_task_result
+    from supervisor.active_activity import get_direct_activity_registry
+    from supervisor import queue as task_queue
+
+    chat_id = int(inbound.get("chat_id") or 0)
+    client_message_id = str(inbound.get("client_message_id") or "")
+    state: Dict[str, Any] = {
+        "operation_ref": operation_ref(chat_id, client_message_id),
+        "chat_id": chat_id,
+        "client_message_id": client_message_id,
+        "accepted_at": str(inbound.get("ts") or ""),
+        "status": "pending",
+        "cancel_supported": False,
+    }
+    def owns(record: dict) -> bool:
+        ref = record.get("origin_message_ref")
+        return bool(owner_message_ref_is_valid(ref) and entry_matches_source_ref(inbound, [ref]))
+
+    # An annotation is only a discovery hint. The actual task's complete
+    # ingress origin, already scoped to the authenticated skill's row, is the
+    # authority. Live queue payloads cover tasks not yet persisted by a worker.
+    queued = {}
+    if task_queue.DRIVE_ROOT is not None and pathlib.Path(task_queue.DRIVE_ROOT).resolve() == ctx.data_dir.resolve():
+        with task_queue._queue_lock:
+            for task in [*task_queue.PENDING, *(meta.get("task") or {} for meta in task_queue.RUNNING.values())]:
+                if owns(task):
+                    queued[str(task.get("id") or "")] = dict(task)
+    receipt = latest_chat_annotations(ctx.data_dir).get(client_message_id) or {}
+    targets = dict.fromkeys([*queued, str(receipt.get("target") or ""),
+                            *(str(row.get("task_id") or "") for row in reversed(rows))])
+    for target in targets:
+        if not target:
+            continue
+        try:
+            raw = queued.get(target) or load_task_result(ctx.data_dir, target, strict=True) or {}
+        except ValueError:
+            continue  # An unreadable/disallowed discovery hint carries no authority.
+        if not owns(raw):
+            continue
+        stored = load_effective_task_result(ctx.data_dir, target, materialize_artifacts=False) or {}
+        status = str(stored.get("status") or "")
+        state.update({
+            "task_id": target,
+            "phase": "managed_task",
+            "status": status or "pending",
+        })
+        if status in SETTLED_STATUSES:
+            state["text"] = str(stored.get("result") or "")
+        else:
+            state["cancel_supported"] = True
+            if stored.get("cancel_state"):
+                state["cancel_state"] = str(stored.get("cancel_state"))
+        return state
+    for entry in get_direct_activity_registry().snapshot(chat_id):
+        activity = get_direct_activity_registry().get(str(entry.get("activity_id") or ""))
+        if activity is not None and owns({"origin_message_ref": activity.origin_message_ref}):
+            kind = str(entry.get("kind") or "direct_chat")
+            state.update({
+                "status": "running",
+                "phase": kind,
+                "task_id": str(entry.get("activity_id") or ""),
+                "cancel_supported": kind == "direct_chat",
+            })
+            return state
+    for row in reversed(rows):
+        terminal = str(row.get("task_terminal_status") or "")
+        if row.get("direction") == "out" and terminal in SETTLED_STATUSES and owns(row):
+            state.update({"status": terminal, "text": str(row.get("text") or "")})
+            return state
+    accepted_session = str(inbound.get("session_id") or "")
+    live_session = str((read_json_dict(ctx.data_dir / "state" / "state.json") or {}).get("session_id") or "")
+    if accepted_session and live_session and accepted_session != live_session:
+        state.update({"status": "lost", "reason": "host_restarted_before_answer"})
+    return state
+
+
+def _owned_operation_state(
+    ctx: HostServiceContext, skill_name: str, chat_id: int, client_message_id: str,
+) -> Optional[Dict[str, Any]]:
+    """The operation view, or None unless THIS skill injected the message."""
+    rows = _chat_rows(ctx, chat_id)
+    inbound = _inbound_row(rows, client_message_id)
+    if inbound is None or str(inbound.get("source") or "") != f"skill:{skill_name}":
+        return None
+    return _operation_state(ctx, rows, inbound)
+
+
+def _cancel_owned_operation(
+    ctx: HostServiceContext, skill_name: str, chat_id: int, client_message_id: str, reason: str,
+) -> tuple[int, Dict[str, Any]]:
+    from ouroboros.task_status import SETTLED_STATUSES
+
+    state = _owned_operation_state(ctx, skill_name, chat_id, client_message_id)
+    if state is None:
+        return 404, {"ok": False, "error": "operation not found"}
+    base = {key: state[key] for key in ("operation_ref", "task_id", "phase", "status") if key in state}
+    if state["status"] in SETTLED_STATUSES:
+        return 200, {"ok": True, "outcome": "already_terminal", **base}
+    if not state.get("cancel_supported") or not state.get("task_id"):
+        reason_code = {
+            "ephemeral_decision": "decision_turn_in_flight",
+            "lost": "host_restarted_before_answer",
+        }.get(str(state.get("phase") or state["status"]), "not_started")
+        return 409, {"ok": False, "outcome": "cancel_unsupported", "reason": reason_code, **base}
+    return _cancel_task_through_owner(skill_name, str(state["task_id"]), reason, base)
+
+
+def _cancel_task_through_owner(
+    skill_name: str, task_id: str, reason: str, base: Dict[str, Any],
+) -> tuple[int, Dict[str, Any]]:
+    """The existing cancel ingress shape: durable intent first (fail-closed),
+    then the same cascade custody path the browser Stop uses; the typed outcome
+    is read back from the effective result, never assumed."""
+    from ouroboros.cancel_intents import (
+        CancelIntentProjectionCorrupt,
+        SCOPE_CASCADE,
+        STOP_POLICY_IMMEDIATE,
+        request_cancel,
+    )
+    from ouroboros.gateway.tasks import _run_cascade_cancel
+    from ouroboros.task_results import STATUS_CANCELLED
+    from ouroboros.task_status import SETTLED_STATUSES, load_effective_task_result
+    from supervisor.queue import DRIVE_ROOT, task_has_live_ownership, task_subtree_is_live
+
+    def _status() -> str:
+        stored = load_effective_task_result(pathlib.Path(DRIVE_ROOT), task_id, materialize_artifacts=False) or {}
+        return str(stored.get("status") or "")
+
+    if not task_has_live_ownership(task_id) and not task_subtree_is_live(task_id):
+        return 200, {"ok": True, "outcome": "already_terminal", **base, "status": _status()}
+    try:
+        request_cancel(
+            DRIVE_ROOT, task_id, reason=reason, source=f"skill:{skill_name}",
+            scope=SCOPE_CASCADE, allow_settled_target=True,
+            requested_stop_policy=STOP_POLICY_IMMEDIATE,
+        )
+    except CancelIntentProjectionCorrupt:
+        log.error("Host Service cancel refused for %s: intent projection corrupt", task_id)
+        return 503, {"ok": False, "outcome": "refused", "reason": "cancel_intent_projection_corrupt", **base}
+    except Exception:
+        log.warning("Host Service cancel-intent write failed for %s", task_id, exc_info=True)
+        return 503, {"ok": False, "outcome": "refused", "reason": "cancel_intent_write_failed", **base}
+    settled = _run_cascade_cancel(task_id)
+    status = _status()
+    if not settled or status not in SETTLED_STATUSES:
+        return 503, {"ok": False, "outcome": "unresolved", "reason": "cancellation_did_not_settle", **base, "status": status}
+    return 200, {
+        "ok": True,
+        "outcome": "cancelled" if status == STATUS_CANCELLED else "already_terminal",
+        **base,
+        "status": status,
+    }
+
+
+async def _api_chat_operation(request: Request) -> JSONResponse:
+    """Read ONE accepted message this skill injected (#667).
+
+    Scoped by source provenance: the canonical inbound row must carry this
+    skill's ``source``; anything else is not found. No task id is accepted from
+    the caller, so this stays a callback boundary, not a general task API.
+    """
+    ctx: HostServiceContext = request.app.state.host_service_context
+    try:
+        skill_name, token_payload = ctx.authenticate_token_payload(request.headers.get("x-skill-token", ""))
+        ctx.require_permission(skill_name, token_payload, "inject_chat")
+    except HostServiceAuthError as exc:
+        return _json_error(str(exc), 403)
+    if not ctx.rate_limiter.allow(f"{skill_name}:operations"):
+        return _json_error("rate limit exceeded", 429)
+    try:
+        chat_id, client_message_id = _parse_operation_ref(request.path_params.get("operation_ref"))
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    try:
+        state = await asyncio.to_thread(_owned_operation_state, ctx, skill_name, chat_id, client_message_id)
+    except Exception as exc:
+        log.debug("Host service operation lookup failed", exc_info=True)
+        return _json_error(str(exc), 500)
+    if state is None:
+        return _json_error("operation not found", 404)
+    return JSONResponse({"ok": True, **state})
+
+
+async def _api_chat_cancel(request: Request) -> JSONResponse:
+    """Cancel the host work ONE accepted message of this skill started (#667).
+
+    The cancellation owner does the work — durable intent first
+    (``cancel_intents.request_cancel``), then custody through the cascade path
+    the browser Stop uses — and the answer is its typed outcome: ``cancelled``,
+    ``already_terminal``, ``unresolved`` (custody did not settle; the work is
+    still live) or ``cancel_unsupported`` (nothing this request started is
+    addressable yet: still queued, an ephemeral decision turn in flight, or a
+    message the decision lane delivered into a pre-existing task). Never a
+    ``cancelled`` that did not happen.
+    """
+    ctx: HostServiceContext = request.app.state.host_service_context
+    try:
+        skill_name, token_payload = ctx.authenticate_token_payload(request.headers.get("x-skill-token", ""))
+        ctx.require_permission(skill_name, token_payload, "inject_chat")
+    except HostServiceAuthError as exc:
+        return _json_error(str(exc), 403)
+    if not ctx.rate_limiter.allow(f"{skill_name}:cancel"):
+        return _json_error("rate limit exceeded", 429)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error("invalid json", 400)
+    if not isinstance(body, dict):
+        return _json_error("request body must be a JSON object", 400)
+    try:
+        chat_id, client_message_id = _parse_operation_ref(body.get("operation_ref"))
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    reason = " ".join(str(body.get("reason") or "").split())[:500]
+    try:
+        status, payload = await asyncio.to_thread(
+            _cancel_owned_operation, ctx, skill_name, chat_id, client_message_id, reason,
+        )
+    except Exception as exc:
+        log.warning("Host service operation cancel failed", exc_info=True)
+        return _json_error(str(exc), 503)
+    return JSONResponse(payload, status_code=status)
 
 
 async def _ws_events(websocket: WebSocket) -> None:
@@ -753,6 +1230,8 @@ def create_host_service_app(
             Route("/tools/schemas", _api_tool_schemas, methods=["GET"]),
             Route("/chat/allocate-internal", _api_allocate_internal, methods=["POST"]),
             Route("/chat/inject", _api_chat_inject, methods=["POST"]),
+            Route("/chat/operations/{operation_ref:path}", _api_chat_operation, methods=["GET"]),
+            Route("/chat/cancel", _api_chat_cancel, methods=["POST"]),
             Route("/chat/decision", _api_chat_decision, methods=["POST"]),
             Route("/presence/turn", _api_presence_turn, methods=["POST"]),
             Route("/presence/work/{work_ref}", _api_presence_work, methods=["GET"]),
