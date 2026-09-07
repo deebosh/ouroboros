@@ -325,6 +325,12 @@ class BackgroundConsciousness:
                 state = self._read_observation_state(force=True)
                 if identifier in state["rows"]:
                     return False
+                # A caller's retryable ID needs a complete deduplication read.
+                # Newly minted IDs can still preserve fresh observations while
+                # an older source gap is awaiting repair.
+                if observation_id and state.get("gap_reasons"):
+                    log.error("Cannot deduplicate observation %s from an incomplete inbox", identifier)
+                    return False
                 if not self._append_observation_line_locked(path, {"op": "enqueue", **row}):
                     log.error("Failed to durably enqueue background observation %s", identifier)
                     return False
