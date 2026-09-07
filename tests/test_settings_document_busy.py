@@ -133,7 +133,9 @@ def test_the_initiating_writer_returns_within_the_same_bound(monkeypatch):
             _run_settings_writer(wedged_writer, SimpleNamespace(), {})
         )
         elapsed = time.monotonic() - started
-        assert 2 * 0.2 <= elapsed < 5, elapsed   # exactly the 2x bound, then the typed answer
+        # asyncio timers may fire up to one monotonic-clock resolution early.
+        resolution = time.get_clock_info("monotonic").resolution
+        assert 2 * 0.2 - resolution <= elapsed < 5, elapsed
         assert not finished.is_set(), "the response must not wait for the wedged body"
         release.set()
         assert finished.wait(10), "the abandoned body must still run to completion in its thread"
