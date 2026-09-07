@@ -535,3 +535,119 @@ def test_input_copy_failure_protects_each_existing_gc_root(tmp_path, monkeypatch
     assert result["child_ref_promotion"]["status"] == "complete"
     assert headless.remove_subagent_task_drive(parent, "inputs")
     assert len(artifacts.resolve_attachment_manifest(parent, "inputs", result["task_contract"])) == 28
+
+
+@pytest.mark.parametrize("immutable", [False, True])
+def test_materialization_preserves_capture_identity_without_freezing_mutable_outputs(tmp_path, immutable):
+    from ouroboros.task_results import write_task_result
+    from ouroboros.task_status import load_effective_task_result
+
+    source = tmp_path / "report.txt"
+    source.write_text("original report")
+    ctx = SimpleNamespace(drive_root=tmp_path / "data", task_id="capture")
+    captured = artifacts.copy_file_to_task_artifacts(ctx, source, immutable=immutable)
+    write_task_result(ctx.drive_root, ctx.task_id, "completed", artifacts=[captured])
+    Path(captured["path"]).write_text("later changed report")
+    projected = load_effective_task_result(ctx.drive_root, ctx.task_id)["artifacts"][0]
+    if immutable:
+        assert projected["immutable"] is True
+        assert projected["sha256"] == captured["sha256"]
+        assert projected["size"] == captured["size"]
+        assert projected["status"] == "failed" and projected["errors"]
+        with pytest.raises(OSError, match="verification"):
+            artifacts.copy_file_to_task_artifacts(ctx, Path(captured["path"]))
+        registered = artifacts.registered_task_artifact(ctx.drive_root, ctx.task_id, captured["name"])
+        assert registered["sha256"] == captured["sha256"]
+    else:
+        assert projected["sha256"] == sha256(b"later changed report").hexdigest()
+        assert projected["status"] == "ready"
+
+
+def test_immutable_child_materialization_retains_name_bytes_and_original_identity(tmp_path):
+    from ouroboros.headless import prepare_task_drive, copy_child_task_result
+    from ouroboros.task_results import write_task_result
+    from ouroboros.task_status import load_effective_task_result
+
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "capture", "empty")
+    source = child / "report.txt"
+    source.write_text("original report")
+    record = artifacts.copy_file_to_task_artifacts(
+        SimpleNamespace(drive_root=child, task_id="capture"), source, immutable=True)
+    write_task_result(child, "capture", "completed", artifacts=[record], artifact_status="ready")
+    write_task_result(parent, "capture", "running", headless_child_drive_root=str(child))
+    projected = load_effective_task_result(parent, "capture")
+    rebased = projected["artifacts"][0]
+    assert rebased["name"] == record["name"] and rebased["sha256"] == record["sha256"]
+    assert rebased["immutable"] is True
+    assert Path(rebased["path"]).parent == artifacts.task_artifact_dir_path(parent, "capture")
+    assert Path(rebased["path"]).read_text() == "original report"
+    Path(record["path"]).write_text("changed child bytes")
+    # Neither effective reads nor physical copy-back may replace captured parent bytes.
+    load_effective_task_result(parent, "capture")
+    copied = copy_child_task_result(parent, {"id": "capture", "drive_root": str(child)})
+    assert Path(rebased["path"]).read_text() == "original report"
+    assert copied["artifacts"][0]["sha256"] == record["sha256"]
+    with pytest.raises(OSError, match="verification"):
+        artifacts.copy_file_to_task_artifacts(
+            SimpleNamespace(drive_root=tmp_path / "other", task_id="capture"),
+            record["path"], immutable=True, expected=record)
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_file_verification_does_not_run_on_the_asgi_loop(tmp_path, monkeypatch, method):
+    import asyncio
+    import socket
+    import threading
+    import time
+    import httpx
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from ouroboros.gateway import tasks
+    from ouroboros.task_results import write_task_result
+
+    api_task_artifact = tasks.api_task_artifact
+    source = tmp_path / 'report.txt'
+    source.write_bytes(b'captured download bytes')
+    data = tmp_path / 'data'
+    record = artifacts.copy_file_to_task_artifacts(SimpleNamespace(drive_root=data, task_id='download'), source, immutable=True)
+    write_task_result(data, "download", "completed", artifacts=[record])
+    calls = []
+    materialization_calls = []
+    materialize = tasks.load_effective_task_result
+    def observe_materialization(*args, **kwargs):
+        materialization_calls.append(threading.get_ident())
+        return materialize(*args, **kwargs)
+    monkeypatch.setattr(tasks, "load_effective_task_result", observe_materialization)
+    original = artifacts.stream_artifact_file
+    def observed(*args, **kwargs):
+        calls.append(threading.get_ident())
+        return original(*args, **kwargs)
+    monkeypatch.setattr(artifacts, 'stream_artifact_file', observed)
+    app = Starlette(routes=[Route('/api/tasks/{task_id}/artifacts/{name}', api_task_artifact, methods=['GET', 'HEAD'])])
+    app.state.drive_root = data
+    sock = socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    server = uvicorn.Server(uvicorn.Config(app, log_level='warning'))
+    thread = threading.Thread(target=server.run, kwargs={'sockets':[sock]}, daemon=True)
+    thread.start()
+    try:
+        end = time.monotonic() + 10
+        while not server.started and thread.is_alive() and time.monotonic() < end:
+            time.sleep(.01)
+        assert server.started
+        async def request():
+            async with httpx.AsyncClient(timeout=10) as client:
+                reply = await client.request(method, f'http://127.0.0.1:{sock.getsockname()[1]}/api/tasks/download/artifacts/{record["name"]}')
+                assert reply.status_code == 200, reply.text
+                assert reply.content == (source.read_bytes() if method == 'GET' else b'')
+        asyncio.run(request())
+        assert materialization_calls and all(identity != thread.ident for identity in materialization_calls)
+        assert calls and all(identity != thread.ident for identity in calls), 'whole-file hashing ran synchronously on the ASGI event loop'
+    finally:
+        server.should_exit = True
+        thread.join(10)
+        sock.close()
+        assert not thread.is_alive()

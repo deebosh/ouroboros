@@ -501,6 +501,8 @@ The two router continuation tools require an explicit `predecessor_task_id` (`""
 
 System self-modification, external workspace, and genesis remain distinct task classes; a genesis child gets an inspectable `deliverable_manifest.json` listing with streamed sizes and hashes for readable, stable regular files and explicit gap rows otherwise; symlinks stay un-followed. Listing gaps do not fail the task, while actual artifact copies still require verified stable bytes. Global/system installs stay runtime-policy reviewed, and `sudo` is always non-interactive (`sudo -n`).
 
+Immutable artifact identity is owned by the existing artifact-record merge: collection, effective results and manifest refresh retain the captured size/SHA and disclose changed bytes. Rebased immutable files preserve that identity and name; mutable outputs retain their normal refresh/version behavior. The task-artifact endpoint is a synchronous Starlette route so materialization, private-source reads and full-file verification run in its existing worker pool, including HEAD requests.
+
 Startup GC removes a headless child drive only when the canonical parent is terminal, artifact finalization is terminal, retention has elapsed, and the recorded child path matches the expected directory — everything needed after child-drive deletion must cross the canonical handoff before a task is presented as settled; canonical results, artifacts, genesis repos, and memory exports survive.
 
 ### Runtime topology
