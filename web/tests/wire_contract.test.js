@@ -250,7 +250,7 @@ test('live structured delivery frames keep additive grouping and size fields', (
     }
     assert.match(bus, /"type": "photo",[\s\S]*?"task_id": str\(task_id or ""\)/);
     assert.match(bus, /"type": "video",[\s\S]*?"task_id": str\(task_id or ""\)/);
-    assert.match(bus, /"type": "document",[\s\S]*?"size_bytes": len\(file_bytes\),[\s\S]*?"task_id": str\(task_id or ""\)/);
+    assert.match(bus, /"type": "document",[\s\S]*?"size_bytes": size_bytes,[\s\S]*?"task_id": str\(task_id or ""\)/);
     assert.match(bus, /"type": "links",[\s\S]*?"actions": validated,[\s\S]*?"task_id": str\(task_id or ""\)/);
     assert.match(bus, /"type": "quiz",[\s\S]*?"quiz_id": qid,[\s\S]*?"task_id": str\(task_id or ""\)/);
     // Replay: the quiz row joins the non-terminal delivery family in chat.js

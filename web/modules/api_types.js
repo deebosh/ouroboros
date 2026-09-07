@@ -237,6 +237,8 @@
  * @property {boolean=} markdown
  * @property {boolean=} is_progress
  * @property {string=} task_id
+ * @property {Object=} origin_message_ref
+ *   Host-captured inbound identity for a correlated operation's terminal reply.
  * @property {boolean=} ephemeral_decision
  * @property {string=} task_phase
  *   "finalizing" on a root's early final answer: post-task synthesis still
@@ -249,6 +251,9 @@
  *   A cancellation fault names the physical task it could not settle when that
  *   differs from the displayed task id.
  * @property {string=} toast_once
+ * @property {string=} toast_tone
+ *   The incident's valence for the one-shot toast (warn/ok/error); absent =
+ *   the alarm tone.
  * @property {boolean=} task_id_pending
  *   X3: a repair receipt whose managed task id does not exist yet (minted at
  *   promotion) — typed truth instead of an invented id.
@@ -467,6 +472,8 @@
  * @property {string} state
  * @property {string} ts
  * @property {number=} answered_index
+ * @property {string=} comment
+ *   The owner's recorded free-text answer, when one was recorded.
  * @property {number=} chat_id
  */
 
@@ -511,6 +518,8 @@
  * @property {string} ts
  * @property {string=} caption
  * @property {string=} download_url
+ * @property {string=} download_url_compat
+ * @property {Object=} file_ref
  * @property {string=} content
  * @property {string=} source
  * @property {string=} sender_label
@@ -676,6 +685,7 @@
  * @property {string} display_name
  * @property {string} path
  * @property {number} size
+ * @property {string=} sha256
  * @property {string} mime
  */
 
@@ -831,6 +841,8 @@
  * @property {string=} extension_reason
  * @property {string=} extension_process
  * @property {string=} extension_server_reconcile
+ * @property {string|null=} extension_load_error
+ * @property {boolean|null=} extension_live_loaded
  */
 
 /**
@@ -911,6 +923,7 @@
  * @property {string=} reason_code
  * @property {string=} error
  * @property {AttachmentManifestEntry[]=} attachment_manifest
+ * @property {Object=} attachment_manifest_ref
  */
 
 /**
@@ -924,6 +937,9 @@
  * @property {string=} abs_path
  * @property {string=} mime
  * @property {boolean=} is_image
+ * @property {number=} size
+ * @property {string=} sha256
+ * @property {string=} rule
  */
 
 /**

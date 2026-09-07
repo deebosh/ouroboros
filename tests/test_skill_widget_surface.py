@@ -482,7 +482,17 @@ def test_api_skill_toggle_records_the_owner_ui_actor(tmp_path, monkeypatch):
     assert rows, "the owner toggle left no enablement row"
     assert rows[-1]["actor"] == "owner_ui"
     assert rows[-1]["enabled"] is True
-    assert rows[-1]["reason"].startswith("client_host=")
+    # Shared lifecycle owner keeps transport provenance in its structured
+    # owner_api_action row; skill_enabled_changed remains the state-change fact.
+    action_rows = [json.loads(line) for line in (drive_root / "logs" / "events.jsonl").read_text().splitlines()
+                   if line.strip()]
+    action_rows = [row for row in action_rows if row.get("type") == "owner_api_action"
+                   and row.get("skill") == "ext_actor" and row.get("action") == "skill_enable"]
+    assert len(action_rows) == 1
+    assert {key: action_rows[0][key] for key in ("actor", "skill", "action", "client_host", "ok")} == {
+        "actor": "owner_ui", "skill": "ext_actor", "action": "skill_enable",
+        "client_host": "testclient", "ok": True,
+    }
 
 
 def test_summarize_skills_projects_live_extension_facts(tmp_path, monkeypatch):
@@ -526,3 +536,39 @@ def test_skill_exec_extension_message_reports_typed_liveness(tmp_path, monkeypat
     assert "SKILL_EXEC_EXTENSION" in out
     assert "live_loaded=False" in out
     assert "has already been called" not in out
+
+
+@pytest.mark.parametrize('registration', [True, False])
+def test_documented_module_widget_recipe_creates_the_registered_tab(tmp_path, registration):
+    """Execute the documentation example; manifest metadata alone stays metadata."""
+    import re
+    from tests._extension_loader_shared import _write_ext_skill
+    from ouroboros import extension_loader
+    from ouroboros.skill_loader import find_skill, save_enabled, save_review_state, SkillReviewState
+    from tests._shared import clean_extension_runtime_state
+
+    text = (pathlib.Path(__file__).resolve().parents[1] / 'docs/CREATING_SKILLS.md').read_text(encoding='utf-8')
+    section = text.split('### `kind: "module"` widgets', 1)[1].split('#### The in-frame bridge', 1)[0]
+    declaration = re.search(r'```yaml\n(.*?)```', section, re.S).group(1)
+    plugin = re.search(r'```python\n(.*?)```', section, re.S).group(1)
+    root, skills = tmp_path / 'drive', tmp_path / 'skills'
+    skill_dir = _write_ext_skill(skills, 'recipe', permissions=['widget'],
+        plugin_body=plugin if registration else 'def register(api):\n    pass\n',
+        extra_frontmatter=declaration)
+    widget = "document.getElementById('root').textContent = 'Recipe widget ✓';"
+    (skill_dir / 'widget.js').write_text(widget, encoding='utf-8')
+    assert (skill_dir / 'widget.js').read_bytes() == widget.encode('utf-8')
+    loaded = find_skill(root, 'recipe', repo_path=str(skills))
+    save_enabled(root, 'recipe', True)
+    save_review_state(root, 'recipe', SkillReviewState(status='pass', content_hash=loaded.content_hash))
+    loaded = find_skill(root, 'recipe', repo_path=str(skills))
+    clean_extension_runtime_state()
+    try:
+        assert extension_loader.load_extension(loaded, lambda: {}, drive_root=root, repo_path=str(skills)) is None
+        rows = extension_loader.live_widget_projection('recipe')
+        assert len(rows) == (1 if registration else 0)
+        if registration:
+            assert rows[0]['tab']['render']['entry'] == 'widget.js'
+            assert rows[0]['tab']['title'] == 'Editor'
+    finally:
+        clean_extension_runtime_state()

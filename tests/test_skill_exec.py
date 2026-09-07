@@ -86,7 +86,7 @@ def _make_ctx(tmp_path: pathlib.Path) -> ToolContext:
 
 
 def _set_skill_repair(ctx: ToolContext, name: str = "alpha", payload_root: str = "skills/external/alpha") -> None:
-    ctx.task_constraint = TaskConstraint(mode="skill_repair", skill_name=name, payload_root=payload_root, allow_enable=False, allow_review=True)
+    ctx.task_constraint = TaskConstraint(skill_name=name, payload_root=payload_root, allow_enable=False, allow_review=True)
 
 
 def _admit_repair(ctx: ToolContext, name: str, payload_root: str) -> None:
@@ -94,12 +94,12 @@ def _admit_repair(ctx: ToolContext, name: str, payload_root: str) -> None:
 
     A repair TASK now writes only under its admission record: the promote seam
     records it for every real repair, and a task without one is typed STALE
-    rather than silently unverified. These heal-mode tests drive the constraint
+    rather than silently unverified. These selected-skill tests drive the constraint
     directly, so they mint the same binding the promote seam would.
     """
     from ouroboros.skill_repair_admission import record_repair_admission
 
-    ctx.task_id = ctx.task_id or "repair-heal-test"
+    ctx.task_id = ctx.task_id or "repair-selected-test"
     record_repair_admission(
         ctx.drive_root, name, task_id=ctx.task_id,
         base_content_hash=compute_content_hash(ctx.drive_root / payload_root),
@@ -989,7 +989,7 @@ def test_toggle_skill_blocks_stale_dependency_fingerprint(tmp_path, monkeypatch)
 
     resp = skill_exec_mod._handle_toggle_skill(ctx, skill="alpha", enabled=True)
 
-    assert "dependency fingerprint is stale" in resp
+    assert json.loads(resp.split(": ", 1)[1])["deps_status"] == "stale"
     assert not (state_dir / "enabled.json").exists()
 
 
@@ -1047,7 +1047,9 @@ def test_toggle_skill_reports_missing_manifest_permission_grant(tmp_path, monkey
     assert "inject_chat" in resp
 
 
-def test_toggle_skill_blocked_in_heal_context(tmp_path, monkeypatch):
+def test_generated_repair_enable_requires_expressed_owner_source(tmp_path, monkeypatch):
+    from ouroboros.skill_loader import load_enabled
+
     skills_root = tmp_path / "skills"
     skill_dir = _build_skill(skills_root, "alpha")
     ctx = _make_ctx(tmp_path)
@@ -1059,32 +1061,37 @@ def test_toggle_skill_blocked_in_heal_context(tmp_path, monkeypatch):
 
     result = registry.execute("toggle_skill", {"skill": "alpha", "enabled": True})
 
-    assert "HEAL_MODE_BLOCKED" in result or "SKILL_REDIRECT_BLOCKED" in result
+    assert "SKILL_TOGGLE_ERROR" in result and "owner" in result
+    assert not load_enabled(ctx.drive_root, "alpha")
 
 
 @pytest.mark.parametrize("tool_name,args", [
-    ("run_command", {"cmd": ["python", "-c", "print('x')"]}),
-    ("browse_page", {"url": "http://127.0.0.1"}),
-    ("browser_action", {"action": "evaluate", "value": "fetch('/api/skills/x/toggle')"}),
-    ("schedule_subagent", {
-        "objective": "enable skill",
-        "expected_output": "skill enabled",
-    }),
-    ("skill_exec", {"skill": "alpha", "script": "hello.py"}),
-    ("write_file", {"root": "skill_payload", "bucket": "external", "skill_name": "alpha", "path": ".self_authored.json", "content": "{}"}),
+    ("run_command", {"cwd": "skill_payload", "cmd": ["python", "-c", "print('x')"]}),
+    ("browse_page", {"url": "https://example.invalid"}),
+    ("browser_action", {"action": "evaluate", "value": "1 + 1"}),
+    ("schedule_subagent", {"objective": "inspect skill", "expected_output": "findings"}),
+    ("skill_exec", {"skill": "alpha", "script": "run.py"}),
 ])
-def test_heal_context_blocks_indirect_enable_paths(tool_name, args, tmp_path):
+def test_skill_development_keeps_normal_capabilities(tool_name, args, tmp_path, monkeypatch):
     ctx = _make_ctx(tmp_path)
+    _build_skill(ctx.drive_root / "skills" / "external", "alpha")
     _set_skill_repair(ctx, "alpha", "skills/external/alpha")
+    _admit_repair(ctx, "alpha", "skills/external/alpha")
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
+    calls = []
 
+    def controlled_backend(_ctx, *, _resolved_binding=None, **kwargs):
+        calls.append(kwargs)
+        return "controlled backend reached"
+
+    registry.override_handler(tool_name, controlled_backend)
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **k: (True, ""))
     result = registry.execute(tool_name, args)
+    assert calls and "controlled backend reached" in result, result
 
-    assert "HEAL_MODE_BLOCKED" in result or "SKILL_REDIRECT_BLOCKED" in result
 
-
-def test_heal_context_allows_payload_tools_and_review(tmp_path):
+def test_selected_skill_writes_its_payload(tmp_path):
     ctx = _make_ctx(tmp_path)
     _set_skill_repair(ctx, "alpha", "skills/external/alpha")
     _build_skill(ctx.drive_root / "skills" / "external", "alpha")
@@ -1103,11 +1110,11 @@ def test_heal_context_allows_payload_tools_and_review(tmp_path):
         },
     )
 
-    assert "HEAL_MODE_BLOCKED" not in result
-    assert "OK" in result
+    assert "OK:" in result, result
+    assert (ctx.drive_root / "skills/external/alpha/notes.txt").read_text() == "x"
 
 
-def test_heal_context_allows_ouroboroshub_payload_tools(tmp_path):
+def test_selected_hub_skill_writes_its_payload(tmp_path):
     ctx = _make_ctx(tmp_path)
     _set_skill_repair(ctx, "nanobanana", "skills/ouroboroshub/nanobanana")
     _build_skill(ctx.drive_root / "skills" / "ouroboroshub", "nanobanana")
@@ -1126,14 +1133,16 @@ def test_heal_context_allows_ouroboroshub_payload_tools(tmp_path):
         },
     )
 
-    assert "HEAL_MODE_BLOCKED" not in result
-    assert "OK" in result
+    assert "OK:" in result, result
+    assert (ctx.drive_root / "skills/ouroboroshub/nanobanana/plugin.py").read_text() == "# fixed"
 
 
 @pytest.mark.parametrize("sidecar", [".ouroboroshub.json", ".clawhub.json"])
-def test_heal_context_blocks_marketplace_sidecar_writes(sidecar, tmp_path):
+def test_selected_skill_blocks_marketplace_sidecar_writes(sidecar, tmp_path):
     ctx = _make_ctx(tmp_path)
+    payload = _build_skill(ctx.drive_root / "skills" / "ouroboroshub", "nanobanana")
     _set_skill_repair(ctx, "nanobanana", "skills/ouroboroshub/nanobanana")
+    _admit_repair(ctx, "nanobanana", "skills/ouroboroshub/nanobanana")
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
 
@@ -1148,8 +1157,12 @@ def test_heal_context_blocks_marketplace_sidecar_writes(sidecar, tmp_path):
         },
     )
 
-    assert "HEAL_MODE_BLOCKED" in result or "SKILL_REDIRECT_BLOCKED" in result
-    assert "provenance sidecars" in result
+    assert "DATA_WRITE_BLOCKED: marketplace provenance" in result, result
+    assert not (payload / sidecar).exists()
+    written = registry.execute("write_file", {
+        "root": "skill_payload", "path": "notes.txt", "content": "ordinary payload file",
+    })
+    assert "OK:" in written and (payload / "notes.txt").read_text() == "ordinary payload file", written
 
 
 @pytest.mark.parametrize("tool_name,args", [
@@ -1159,23 +1172,31 @@ def test_heal_context_blocks_marketplace_sidecar_writes(sidecar, tmp_path):
     ("skill_review", {"skill": "beta"}),
     ("skill_preflight", {"skill": "beta"}),
 ])
-def test_heal_context_blocks_out_of_scope_data_access(tool_name, args, tmp_path):
+def test_selected_skill_cannot_redirect_payload_tools(tool_name, args, tmp_path, monkeypatch):
     ctx = _make_ctx(tmp_path)
+    alpha = _build_skill(ctx.drive_root / "skills" / "external", "alpha")
+    beta = _build_skill(ctx.drive_root / "skills" / "external", "beta")
     _set_skill_repair(ctx, "alpha", "skills/external/alpha")
+    _admit_repair(ctx, "alpha", "skills/external/alpha")
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
+    # A broken selector must fail this test before reaching a paid review.
+    if tool_name == "skill_review":
+        monkeypatch.setattr(skill_exec_mod, "_review_skill_impl", lambda *_a, **_kw: pytest.fail("redirected review dispatched"))
+    assert "Simple greeter" in registry.execute("read_file", {"root": "skill_payload", "path": "SKILL.md"})
+    before = {path: compute_content_hash(path) for path in (alpha, beta)}
 
     result = registry.execute(tool_name, args)
 
-    assert "HEAL_MODE_BLOCKED" in result or "SKILL_REDIRECT_BLOCKED" in result
+    assert result.startswith("⚠️ SKILL_REDIRECT_BLOCKED:"), result
+    assert {path: compute_content_hash(path) for path in before} == before
 
 
-def test_heal_context_blocks_symlink_escape_from_selected_skill(tmp_path):
+def test_selected_skill_blocks_symlink_escape(tmp_path):
     ctx = _make_ctx(tmp_path)
     _set_skill_repair(ctx, "alpha", "skills/external/alpha")
-    skill_root = pathlib.Path(ctx.drive_root) / "skills" / "external" / "alpha"
+    skill_root = _build_skill(ctx.drive_root / "skills" / "external", "alpha")
     memory_root = pathlib.Path(ctx.drive_root) / "memory"
-    skill_root.mkdir(parents=True)
     memory_root.mkdir()
     (memory_root / "identity.md").write_text("secret-ish", encoding="utf-8")
     try:
@@ -1190,11 +1211,14 @@ def test_heal_context_blocks_symlink_escape_from_selected_skill(tmp_path):
         {"root": "skill_payload", "bucket": "external", "skill_name": "alpha", "path": "escape"},
     )
 
-    assert "HEAL_MODE_BLOCKED" in result or "SKILL_REDIRECT_BLOCKED" in result
+    assert "READ_FILE_ERROR: ValueError: path escapes" in result, result
+    assert "secret-ish" not in result
+    assert "Simple greeter" in registry.execute("read_file", {"root": "skill_payload", "path": "SKILL.md"})
 
 
-def test_heal_context_blocks_wrong_source_root(tmp_path):
+def test_selected_skill_rejects_wrong_physical_source(tmp_path):
     ctx = _make_ctx(tmp_path)
+    payload = _build_skill(ctx.drive_root / "skills" / "external", "alpha")
     _set_skill_repair(ctx, "alpha", "skills/clawhub/alpha")
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
@@ -1210,25 +1234,37 @@ def test_heal_context_blocks_wrong_source_root(tmp_path):
         },
     )
 
-    assert "HEAL_MODE_BLOCKED" in result or "SKILL_REDIRECT_BLOCKED" in result
+    assert "SKILL_REDIRECT_BLOCKED: this task selected a different skill payload" in result, result
+    assert not (payload / "notes.txt").exists()
 
 
-def test_heal_context_blocks_native_payload_root_marker(tmp_path):
+@pytest.mark.parametrize("seeded", [False, True])
+def test_normal_selected_skill_preserves_native_marker_ownership(tmp_path, seeded):
     ctx = _make_ctx(tmp_path)
+    payload = _build_skill(ctx.drive_root / "skills" / "native", "alpha")
+    if seeded:
+        (payload / ".seed-origin").write_text("launcher-seed\n")
     _set_skill_repair(ctx, "alpha", "skills/native/alpha")
+    _admit_repair(ctx, "alpha", "skills/native/alpha")
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
 
-    result = registry.execute(
-        "read_file",
-        {"root": "skill_payload", "bucket": "native", "skill_name": "alpha", "path": "SKILL.md"},
-    )
+    selector = {"root": "skill_payload", "bucket": "native" if seeded else "external", "skill_name": "alpha"}
+    read = registry.execute("read_file", {**selector, "path": "SKILL.md"})
+    assert "Simple greeter" in read, read
+    result = registry.execute("write_file", {**selector, "path": "notes.txt", "content": "owner task edit"})
+    if seeded:
+        assert "SKILL_PAYLOAD_ARG_ERROR: installed native skills are read/review only" in result, result
+        assert not (payload / "notes.txt").exists()
+        assert (payload / ".seed-origin").read_text() == "launcher-seed\n"
+    else:
+        assert "OK:" in result and (payload / "notes.txt").read_text() == "owner task edit", result
+        assert not (ctx.drive_root / "skills" / "external" / "alpha").exists()
 
-    assert "HEAL_MODE_BLOCKED" in result
 
-
-def test_heal_context_rejects_traversal_skill_marker(tmp_path):
+def test_selected_skill_rejects_traversal_skill_marker(tmp_path):
     ctx = _make_ctx(tmp_path)
+    _build_skill(ctx.drive_root / "skills" / "external", "alpha")
     _set_skill_repair(ctx, "../..", "../../")
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
@@ -1238,11 +1274,12 @@ def test_heal_context_rejects_traversal_skill_marker(tmp_path):
         {"root": "skill_payload", "bucket": "external", "skill_name": "alpha", "path": "settings.json"},
     )
 
-    assert "HEAL_MODE_BLOCKED" in result
+    assert "READ_FILE_ERROR: ValueError: Path traversal is not allowed." in result, result
 
 
-def test_heal_context_rejects_traversal_payload_root_marker(tmp_path):
+def test_selected_skill_rejects_traversal_payload_root_marker(tmp_path):
     ctx = _make_ctx(tmp_path)
+    _build_skill(ctx.drive_root / "skills" / "external", "alpha")
     _set_skill_repair(ctx, "alpha", "skills/external/alpha/../../memory")
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
@@ -1252,14 +1289,14 @@ def test_heal_context_rejects_traversal_payload_root_marker(tmp_path):
         {"root": "skill_payload", "bucket": "external", "skill_name": "alpha", "path": "memory/identity.md"},
     )
 
-    assert "HEAL_MODE_BLOCKED" in result
+    assert "READ_FILE_ERROR: ValueError: Path traversal is not allowed." in result, result
 
 
-def test_heal_context_blocks_self_authored_marker_write(tmp_path):
+def test_selected_skill_blocks_self_authored_marker_write(tmp_path):
     ctx = _make_ctx(tmp_path)
-    payload = ctx.drive_root / "skills" / "external" / "alpha"
-    payload.mkdir(parents=True)
+    payload = _build_skill(ctx.drive_root / "skills" / "external", "alpha")
     _set_skill_repair(ctx, "alpha", "skills/external/alpha")
+    _admit_repair(ctx, "alpha", "skills/external/alpha")
     registry = ToolRegistry(repo_dir=ctx.repo_dir, drive_root=ctx.drive_root)
     registry._ctx = ctx
 
@@ -1274,10 +1311,11 @@ def test_heal_context_blocks_self_authored_marker_write(tmp_path):
         },
     )
 
-    assert "HEAL_MODE_BLOCKED" in result
+    assert "DATA_WRITE_BLOCKED: marketplace provenance" in result, result
+    assert not (payload / ".self_authored.json").exists()
 
 
-def test_heal_review_does_not_reconcile_live_extension(tmp_path, monkeypatch):
+def test_skill_development_review_uses_ordinary_extension_reconciliation(tmp_path, monkeypatch):
     import types
 
     ctx = _make_ctx(tmp_path)
@@ -1313,8 +1351,8 @@ def test_heal_review_does_not_reconcile_live_extension(tmp_path, monkeypatch):
         review_impl=lambda rc, rn: skill_exec_mod._review_skill_impl(rc, rn),
     )
 
-    assert calls == []
-    assert result["extension_reason"] == "heal_review_only"
+    assert len(calls) == 1
+    assert result["extension_action"] == "extension_loaded"
 
 
 def test_review_skill_tool_records_lifecycle_job_state_and_events(tmp_path, monkeypatch):
@@ -1843,7 +1881,7 @@ def test_toggle_skill_refuses_when_load_error_set(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
     result = skill_exec_mod._handle_toggle_skill(ctx, skill="hello_world", enabled=True)
     assert "SKILL_TOGGLE_ERROR" in result
-    assert "loader rejected" in result
+    assert "collision" in result.lower()
     # enabled.json must NOT have been written under the collision key.
     state_file = ctx.drive_root / "state" / "skills" / "hello_world" / "enabled.json"
     assert not state_file.exists()
@@ -1857,11 +1895,11 @@ def test_toggle_skill_disable_collision_does_not_write_shared_state(tmp_path, mo
     monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", str(skills_root))
 
     result = json.loads(
-        skill_exec_mod._handle_toggle_skill(ctx, skill="hello_world", enabled=False)
+        skill_exec_mod._handle_toggle_skill(ctx, skill="hello_world", enabled=False).split(": ", 1)[1]
     )
-    assert result["enabled"] is False
+    assert result["ok"] is False
     assert result["extension_reason"] == "name_collision"
-    assert "not persisted as disabled" in result["message"]
+    assert "cannot persist disable" in result["error"]
     state_file = ctx.drive_root / "state" / "skills" / "hello_world" / "enabled.json"
     assert not state_file.exists()
 

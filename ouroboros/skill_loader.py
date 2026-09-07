@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import pathlib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ouroboros.contracts.skill_manifest import SkillManifest, SkillManifestError, canonical_skill_name, parse_skill_manifest_text
@@ -516,9 +516,10 @@ def save_enabled(
 ) -> None:
     """Persist enablement and best-effort append one typed disclosure row.
 
-    ``actor`` is a data label, never a gate: no branch reads it, and an
-    unlabelled writer records an empty actor rather than nothing at all. An
-    append failure is logged and never blocks the enablement change.
+    The host-derived ``actor`` also rides the state snapshot so a selected
+    development task can distinguish a later owner disable from a load-error
+    revert without replaying the event log. Missing actors remain unknown.
+    An append failure is logged and never blocks the enablement change.
     """
     previous = load_enabled(drive_root, name)
     atomic_write_json(
@@ -527,6 +528,7 @@ def save_enabled(
             {
                 "enabled": bool(enabled),
                 "updated_at": utc_now_iso(),
+                "actor": str(actor or ""),
             },
             SKILL_OWNER_STATE_SCHEMA_VERSION,
         ),
@@ -1526,6 +1528,8 @@ def summarize_skills(drive_root: pathlib.Path) -> Dict[str, Any]:
             "model_experience": s.manifest.model_experience,
             "type": s.manifest.type,
             "version": s.manifest.version,
+            "content_hash": s.content_hash,
+            "readiness": asdict(readiness) if readiness is not None else None,
             "enabled": s.enabled,
             "review_status": s.review.status,
             "review_stale": stale,

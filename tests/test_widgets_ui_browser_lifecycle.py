@@ -733,11 +733,13 @@ def test_ui_smoke_widget_retain_keeps_running_across_pages(direct_server_with_da
                 page.screenshot(path=str(evidence_dir / f"widget-retain-{browser_name}.png"), full_page=True)
 
                 # Leave: the auto frame goes, the kept frame stays and keeps working.
-                before = counters(page)
-                page.evaluate("window.__hostFetchLog.length = 0")
                 _click_nav(page, "dashboard")
                 wait_active(page, False)
                 wait_frame(page, "auto", False, timeout=5_000)
+                # Start the hidden interval after navigation settles; a tick
+                # before the click still legitimately belongs to the visible page.
+                before = counters(page)
+                page.evaluate("window.__hostFetchLog.length = 0")
                 page.wait_for_timeout(1_500)
                 assert frame_count(page, "kept") == 1
                 assert same_frame(page)

@@ -14,6 +14,7 @@ import hashlib
 import json
 import pathlib
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any, Callable, Dict, List, Optional, Sequence
@@ -280,10 +281,12 @@ def get_tool_with_generation(name: str) -> tuple[Optional[Dict[str, Any]], str]:
         if not raw:
             return None, ""
         tool = dict(raw)
+        bundle = _extensions.get(str(tool.get("skill") or ""))
         digest = str(tool.get("extension_generation") or "")
         if not digest:
-            bundle = _extensions.get(str(tool.get("skill") or ""))
             digest = str(bundle.generation_digest or "") if bundle is not None else ""
+        if bundle is not None and digest == bundle.generation_digest and not tool.get("content_hash"):
+            tool["content_hash"] = str(bundle.content_hash or "")
         return tool, digest
 
 
@@ -300,3 +303,24 @@ def get_tool_stamped(name: str) -> Optional[Dict[str, Any]]:
 def _record_companion_name(bundle: _ExtensionRegistrations, name: str) -> None:
     if name not in bundle.companion_names:
         bundle.companion_names.append(name)
+
+
+@contextmanager
+def extension_work_scope(spec: Dict[str, Any], work: Any):
+    """Attach cancellable work to the exact publication already owning dispatch."""
+    from ouroboros.contracts.plugin_api import ExtensionRegistrationError
+
+    name = str(spec.get("skill") or "")
+    generation = str(spec.get("extension_generation") or "")
+    with _lock:
+        bundle = _extensions.get(name)
+        if bundle is None or name in _unloading or bundle.generation_digest != generation:
+            raise ExtensionRegistrationError("extension generation changed before response dispatch")
+        bundle.supervised_futures.append(work)
+    try:
+        yield
+    finally:
+        with _lock:
+            # Captured bundle identity: completing old work cannot detach a new
+            # generation's resource after unload/reload replaced the registry row.
+            bundle.supervised_futures[:] = [item for item in bundle.supervised_futures if item is not work]

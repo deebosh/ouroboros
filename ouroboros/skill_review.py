@@ -150,8 +150,9 @@ def _apply_auto_grant_outcome(outcome: SkillReviewOutcome, skill: Any, auto_gran
     outcome.auto_granted_keys = list(getattr(auto_grant, "granted_keys", []) or [])
     outcome.requested_permissions = list(getattr(auto_grant, "requested_permissions", []) or [])
     outcome.auto_granted_permissions = list(getattr(auto_grant, "granted_permissions", []) or [])
-    if bool(getattr(skill, "is_self_authored", False)) and get_auto_grant_enabled():
-        outcome.auto_flow = True
+    # Refresh the policy even on free replay; explicit task-authorized toggles
+    # follow their own lifecycle path rather than this automatic first enable.
+    outcome.auto_flow = bool(getattr(skill, "is_self_authored", False) and get_auto_grant_enabled())
 
 
 # The accepted-rebuttal ledger and the Max-Review-Cycles machinery moved whole
@@ -405,6 +406,8 @@ def _skill_cycles_gate(
     delivery: Dict[str, Any],
     review_rebuttal: str,
     content_hash: str,
+    *,
+    persist: bool = True,
 ) -> tuple[Optional["SkillReviewOutcome"], str, str, str]:
     """Max Review Cycles on the skill gate (Q17/Q23), run BEFORE any paid
     panel: a byte-identical snapshot with a recorded substantive verdict under
@@ -433,6 +436,18 @@ def _skill_cycles_gate(
         contract_fingerprint=contract_fp, rebuttal_sha256=rebuttal_sha,
     )
     if replayed is not None:
+        allowed = persist
+        if allowed and getattr(ctx, "_skill_review_lifecycle_guard", False):
+            from ouroboros.skill_review_runner import _can_persist_review_outcome
+
+            allowed = _can_persist_review_outcome(
+                drive_root, skill.name, content_hash,
+                expected_job_id=str(getattr(ctx, "_skill_review_lifecycle_job_id", "") or ""),
+            )
+        if allowed:
+            # Reuse the existing verdict while reconciling current grant policy
+            # and authored-work eligibility; no new panel or review-state write.
+            _apply_auto_grant_outcome(replayed, skill, auto_grant_if_enabled(drive_root, skill))
         return replayed, contract_fp, rebuttal_sha, review_profile
     refusal = skill_review_cycles_refusal(
         ctx, skill.name, drive_root=drive_root, group_id=group_id, models=models,
@@ -650,7 +665,7 @@ def review_skill(
             error=f"invalid reviewer-slot configuration blocks skill review: {exc}")
     models = list(delivery["models"])
     early_outcome, contract_fp, rebuttal_sha, review_profile = _skill_cycles_gate(
-        ctx, skill, drive_root, models, delivery, review_rebuttal, content_hash,
+        ctx, skill, drive_root, models, delivery, review_rebuttal, content_hash, persist=persist,
     )
     if early_outcome is not None:
         return early_outcome

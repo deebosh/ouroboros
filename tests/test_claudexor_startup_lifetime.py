@@ -300,21 +300,26 @@ def test_stop_does_not_wait_for_the_same_managers_control_window(startup):
     assert _gone(elected["child"])
 
 
-@pytest.mark.parametrize("damage", ["corrupt", "unreadable", "dangling"])
+@pytest.mark.parametrize("damage", ["corrupt", "unreadable", "stat_unreadable", "invalid_utf8", "dangling"])
 def test_unknown_custody_refuses_a_new_spawn(startup, monkeypatch, damage):
     ledger = process_custody.ledger_path(startup.root)
     ledger.parent.mkdir(parents=True, exist_ok=True)
     if damage == "dangling":
         ledger.symlink_to(ledger.parent / "missing")
-    else:
+    elif damage == "corrupt":
         ledger.write_bytes(b"{broken\n")
-    if damage == "unreadable":
-        original = pathlib.Path.read_text
+    elif damage == "invalid_utf8":
+        ledger.write_bytes(b'{"pid":1,"purpose":"\xff"}\n')
+    else:
+        ledger.write_bytes(b'{"pid":1}\n')
+    if damage in {"unreadable", "stat_unreadable"}:
+        operation = "read_bytes" if damage == "unreadable" else "stat"
+        original = getattr(pathlib.Path, operation)
         def read(path, *args, **kwargs):
             if path == ledger:
                 raise PermissionError("fixture ledger read refused")
             return original(path, *args, **kwargs)
-        monkeypatch.setattr(pathlib.Path, "read_text", read)
+        monkeypatch.setattr(pathlib.Path, operation, read)
     with pytest.raises(ClaudexorUnavailable) as refused:
         owned.OwnedClaudexorDaemon().ensure_running(startup_wait_sec=0)
     assert refused.value.code == "daemon_startup_unknown"

@@ -1,5 +1,6 @@
 """Confirmed stop retains failed signals and concurrent ledger evidence."""
 import json
+import os
 import subprocess
 import sys
 from unittest.mock import Mock
@@ -8,6 +9,89 @@ import pytest
 
 from ouroboros import process_custody as custody
 from ouroboros import claudexor_daemon as daemon
+
+
+def test_reaper_prunes_superseded_pid_rows_in_one_sweep(tmp_path):
+    pid = 2**31 - 1
+    assert not custody.pid_is_alive(pid)
+    first = {"pid": pid, "pgid": 0, "scope": "session", "purpose": "old"}
+    latest = {**first, "purpose": "latest"}
+    path = custody.ledger_path(tmp_path)
+    assert custody.append_jsonl(path, first)
+    assert custody.append_jsonl(path, latest)
+    assert custody._read_ledger(tmp_path) == [latest]
+    assert custody.reap_orphaned_processes(tmp_path) == []
+    assert path.read_bytes() == b""
+
+
+@pytest.mark.parametrize("purpose", ["latest", "service:\u0085name", "service:\u2028name", "service:\u2029name"])
+def test_reaper_compacts_duplicate_rows_without_losing_live_survivor(tmp_path, purpose):
+    first = {"pid": os.getpid(), "pgid": 0, "scope": "session", "purpose": "old",
+             "session_id": custody.current_custody_session_id()}
+    latest = {**first, "purpose": purpose}
+    path = custody.ledger_path(tmp_path)
+    for row in (first, latest, latest):
+        assert custody.append_jsonl(path, row)
+    assert custody._read_ledger_strict(tmp_path) == (True, [latest])
+    assert custody.reap_orphaned_processes(tmp_path) == []
+    assert [json.loads(line) for line in path.read_bytes().splitlines()] == [latest]
+    assert custody._read_ledger(tmp_path) == [latest]
+
+
+@pytest.mark.parametrize("identical", [False, True])
+def test_reaper_preserves_same_pid_append_and_opaque_bytes(tmp_path, monkeypatch, identical):
+    pid = 2**31 - 1
+    assert not custody.pid_is_alive(pid)
+    first = {"pid": pid, "pgid": 0, "scope": "session", "purpose": "old"}
+    latest = {**first, "purpose": "latest"}
+    appended = latest if identical else {**latest, "purpose": "concurrent"}
+    path = custody.ledger_path(tmp_path)
+    for row in (first, latest):
+        assert custody.append_jsonl(path, row)
+    opaque = b'{"unfinished":\xff\n[]\n{"pid":"not-a-pid"}\n'
+    with path.open("ab") as stream:
+        stream.write(opaque)
+    observed_end = path.stat().st_size
+    original = custody._fingerprint_matches
+    appended_bytes = []
+
+    def check_and_append(entry):
+        assert entry == latest
+        assert custody.append_jsonl(path, appended)
+        appended_bytes.append(path.read_bytes()[observed_end:])
+        return original(entry)
+
+    monkeypatch.setattr(custody, "_fingerprint_matches", check_and_append)
+    before = path.read_bytes()
+    assert custody.reap_orphaned_processes(tmp_path) == []
+    # Preserve the writer's actual bytes, including native text-mode newlines.
+    expected_tail, = appended_bytes
+    assert json.loads(expected_tail) == appended
+    assert len(before) == observed_end
+    assert path.read_bytes() == opaque + expected_tail
+    assert custody._read_ledger(tmp_path) == [appended]
+
+
+def test_reaper_defers_compaction_after_a_concurrent_prefix_rewrite(tmp_path, monkeypatch):
+    pid = 2**31 - 1
+    assert not custody.pid_is_alive(pid)
+    first = {"pid": pid, "pgid": 0, "scope": "session", "purpose": "old"}
+    latest = {**first, "purpose": "latest"}
+    path = custody.ledger_path(tmp_path)
+    for row in (first, latest):
+        assert custody.append_jsonl(path, row)
+    original = custody._fingerprint_matches
+    rewritten = []
+
+    def check_and_rewrite(entry):
+        custody._rewrite_ledger(tmp_path, [latest])
+        rewritten.append(path.read_bytes())
+        return original(entry)
+
+    monkeypatch.setattr(custody, "_fingerprint_matches", check_and_rewrite)
+    assert custody.reap_orphaned_processes(tmp_path) == []
+    assert path.read_bytes() == rewritten[0]
+    assert custody._read_ledger(tmp_path) == [latest]
 
 
 def test_strict_identity_does_not_substitute_later_measurements(monkeypatch):
@@ -31,9 +115,10 @@ def test_rewrite_preserves_concurrent_registration_and_opaque_bytes(tmp_path):
     path = custody.ledger_path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_bytes(json.dumps(first).encode() + b"\n" + opaque)
+    previous = path.read_bytes()
     assert custody.append_jsonl(path, successor)
     assert custody.append_jsonl(path, unrelated)
-    custody._rewrite_ledger(tmp_path, [], previous=[first])
+    custody._rewrite_ledger(tmp_path, [], previous=previous)
     raw = path.read_bytes()
     assert opaque in raw
     assert b'"purpose": "old"' not in raw
@@ -47,7 +132,7 @@ def test_rewrite_without_append_lock_preserves_every_byte(tmp_path, monkeypatch)
     raw = json.dumps(row).encode() + b"\n"
     path.write_bytes(raw)
     monkeypatch.setattr("ouroboros.platform_layer.acquire_exclusive_file_lock", lambda *_a, **_kw: None)
-    custody._rewrite_ledger(tmp_path, [], previous=[row])
+    custody._rewrite_ledger(tmp_path, [], previous=raw)
     assert path.read_bytes() == raw
 
 

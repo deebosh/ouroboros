@@ -1,21 +1,23 @@
-"""X3 (owner 11=B): hash-bound skill repair — CAS on every payload write.
+"""Selected skill revision admission for ordinary managed development tasks.
 
 A repair is admitted AGAINST one exact payload state: ``base_content_hash``,
 captured immutably at admission (the promoted managed-task seam canonicalizes
 every skill_repair constraint, so both the marketplace auto-repair prompt and a
 manual repair pass through it). Every payload write by the ADMITTED repair task
-then CAS-checks the payload against the last state this repair itself produced
-(``expected_content_hash``, advanced after each own write). A hash the repair
-did not produce means a CONCURRENT actor changed the payload mid-repair: the
-repair is STALE and must terminalize, typed.
+then checks the payload against its last known revision
+(``expected_content_hash``). File-tool effects retain their attribution; after
+opaque process work the record advances to an OBSERVED revision, without claiming
+exclusive authorship. A different hash before the next operation is known drift
+and makes the repair STALE. This is observation, not an atomic transaction
+against arbitrary editors or a lock held around a long shell command.
 
 No restore is promised — ``last_known_good`` carries version/sha/ts only, never
 payload bytes, so there is nothing to restore FROM; the honest fix is a fresh
 repair admitted against the new state. No staged machinery (owner 11=B).
 
-Foreign writers (the owner's own light-mode edit lane, another task) are NOT
-blocked here — the repair verifies ITS OWN chain, and a foreign write surfaces
-as drift on the repair's next CAS instead of gating everyone else's authority
+Other writers (the owner's own light-mode edit lane, another task) are NOT
+blocked here — the repair verifies its known frontier, and later drift surfaces
+on its next check instead of gating everyone else's authority
 (AGENTS.md proportionality).
 """
 
@@ -146,7 +148,13 @@ def repair_write_cas_error(drive_root: Any, constraint: Any, *, task_id: str = "
             "Finalize — do not write blind."
         )
     expected = str(record.get("expected_content_hash") or "")
-    if expected and current != expected:
+    if not expected:
+        return (
+            f"⚠️ SKILL_REPAIR_STALE: the admission record for {skill_name!r} has no "
+            "known revision. Finalize with your findings; a fresh repair must be "
+            "admitted against the current payload."
+        )
+    if current != expected:
         record["status"] = STATUS_STALE
         record["drift_observed_hash"] = current
         record["drift_expected_hash"] = expected
@@ -156,9 +164,9 @@ def repair_write_cas_error(drive_root: Any, constraint: Any, *, task_id: str = "
             log.warning("Failed to persist stale repair admission for %s", skill_name,
                         exc_info=True)
         return (
-            f"⚠️ SKILL_REPAIR_STALE: the payload of {skill_name!r} changed OUTSIDE this "
-            f"repair (expected {expected[:12]}, found {current[:12]}) since the state "
-            "this repair last verified. The repair is STALE: terminalize now with your "
+            f"⚠️ SKILL_REPAIR_STALE: the payload of {skill_name!r} changed since this "
+            f"task's last observation (expected {expected[:12]}, found {current[:12]}). "
+            "The repair is STALE: terminalize now with your "
             "findings. No restore is possible — last_known_good holds no payload bytes "
             "— and no further writes from this repair will be accepted; a fresh repair "
             "must be admitted against the current state."
@@ -166,8 +174,10 @@ def repair_write_cas_error(drive_root: Any, constraint: Any, *, task_id: str = "
     return ""
 
 
-def advance_repair_expected_hash(drive_root: Any, constraint: Any, *, task_id: str = "") -> None:
-    """After the admitted repair's OWN successful write: re-pin the chain."""
+def advance_repair_expected_hash(
+    drive_root: Any, constraint: Any, *, task_id: str = "", attribution: str = "file_tool",
+) -> None:
+    """Record the observed frontier, retaining how the operation was observed."""
     skill_name = str(getattr(constraint, "skill_name", "") or "")
     record = load_repair_admission(drive_root, skill_name)
     if record is None or str(record.get("status") or "") == STATUS_STALE:
@@ -177,6 +187,7 @@ def advance_repair_expected_hash(drive_root: Any, constraint: Any, *, task_id: s
         return
     try:
         record["expected_content_hash"] = _payload_hash(_payload_dir(drive_root, constraint))
+        record["revision_attribution"] = attribution
     except Exception:
         log.warning("Failed to advance repair hash chain for %s", skill_name, exc_info=True)
         return

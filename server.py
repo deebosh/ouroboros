@@ -32,6 +32,7 @@ from ouroboros.server_auth import (
 from ouroboros.server_entrypoint import bound_service_socket, find_free_port, parse_server_args, write_port_file
 from ouroboros.server_web import NoCacheStaticFiles, make_index_page, resolve_web_dir
 from ouroboros.usage_accounting import ensure_legacy_imported
+from ouroboros.task_finalization import host_operation_reply_kwargs
 from ouroboros.gateway import collect_routes
 from ouroboros.gateway import settings as _gateway_settings
 from ouroboros.gateway.ws import (
@@ -264,18 +265,16 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
         user_id = coerce_chat_identity((msg.get("from") or {}).get("id"), chat_id or 1)
         text = str(msg.get("text") or "")
         source = str(msg.get("source") or "web")
-        sender_label = str(msg.get("sender_label") or "")
         sender_session_id = str(msg.get("sender_session_id") or "")
         client_message_id = str(msg.get("client_message_id") or "")
         transport = msg.get("transport") if isinstance(msg.get("transport"), dict) else {}
         image_base64 = str(msg.get("image_base64") or "")
         image_mime = str(msg.get("image_mime") or "image/jpeg")
         image_caption = str(msg.get("image_caption") or "")
-        suppress_chat_log = bool(msg.get("suppress_chat_log"))
         task_constraint = msg.get("task_constraint") if isinstance(msg.get("task_constraint"), dict) else None
         task_metadata = msg.get("task_metadata") if isinstance(msg.get("task_metadata"), dict) else None
         image_data = (image_base64, image_mime, image_caption) if image_base64 else None
-        log_text = text or image_caption or ("(image attached)" if image_base64 else "")
+        log_text = text or image_caption or ("(image attached)" if image_base64 else "(file attached)" if (task_metadata or {}).get("chat_attachment_uploads") else "")
         now_iso = utc_now_iso()
         if not client_message_id:
             # Some owner transports have no client-generated id.  Give the
@@ -310,55 +309,21 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
         if owner_id is None and external_identity_present:
             owner_id = user_id
 
-        from supervisor.message_bus import log_chat
+        from supervisor.message_bus import record_inbound_message
 
-        # Origin identity is captured HERE, where the host writes the canonical
-        # row (BIBLE P2: identity by value, never re-derived from content
-        # downstream). Only a row that is actually logged mints a ref — a
-        # suppressed message must not reference a non-existent canonical row.
-        origin_message_ref: Optional[Dict[str, Any]] = None
-        if not suppress_chat_log:
-            log_chat(
-                "in",
-                chat_id,
-                user_id,
-                log_text,
-                ts=now_iso,
-                source=source,
-                sender_label=sender_label,
-                sender_session_id=sender_session_id,
-                client_message_id=client_message_id,
-                transport=transport,
-                client_surface=(
-                    task_metadata.get("client_surface")
-                    if isinstance(task_metadata, dict) and isinstance(task_metadata.get("client_surface"), dict)
-                    else None
-                ),
-            )
-            from ouroboros.project_dialogue import build_owner_message_ref
-
-            origin_message_ref = build_owner_message_ref(
-                chat_id=chat_id,
-                client_message_id=client_message_id,
-                ts=now_iso,
-                text=log_text,
-            )
-            if source != "web":
-                bridge.broadcast({
-                    "type": "photo" if image_base64 else "chat",
-                    "role": "user",
-                    "content": text,
-                    "caption": image_caption,
-                    "image_base64": image_base64,
-                    "mime": image_mime,
-                    "ts": now_iso,
-                    "source": source,
-                    "sender_label": sender_label,
-                    "sender_session_id": sender_session_id,
-                    "client_message_id": client_message_id,
-                    "transport": transport,
-                    "chat_id": chat_id,
-                })
+        # The same writer mints ordinary ingress and validates preaccepted
+        # skill deliveries; the latter already have their one canonical row.
+        origin_message_ref = record_inbound_message(
+            bridge, msg, chat_id=chat_id, user_id=user_id,
+            client_message_id=client_message_id, text=log_text, ts=now_iso,
+        )
+        if task_metadata or msg.get("accepted_source_ref"):
+            task_metadata = {k: v for k, v in (task_metadata or {}).items() if k != "_host_operation"}
+            if msg.get("accepted_source_ref"):
+                task_metadata["_host_operation"] = True
+        reply_source = origin_message_ref if msg.get("accepted_source_ref") else None
+        def reply(body: str, status: str = "completed") -> None:
+            ctx.send_with_budget(chat_id, body, **host_operation_reply_kwargs(reply_source, status))
         def _stamp_owner_activity(live: dict) -> None:
             if live.get("owner_id") is None and external_identity_present:
                 live["owner_id"] = user_id
@@ -367,12 +332,12 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
 
         ctx.update_state(_stamp_owner_activity)
 
-        if not text and not image_base64:
+        if not text and not image_base64 and not (task_metadata or {}).get("chat_attachment_uploads"):
             continue
 
         if is_external_transport and is_slash_command:
             if not external_identity_present:
-                ctx.send_with_budget(chat_id, "⚠️ Command ignored: this transport did not provide owner identity.")
+                reply("⚠️ Command ignored: this transport did not provide owner identity.", "failed")
                 continue
             owner_ext_id = st.get("owner_external_id")
             owner_ext_chat_id = st.get("owner_external_chat_id")
@@ -384,7 +349,7 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                         live["owner_external_bound_at"] = now_iso
 
                 ctx.update_state(_bind_external_owner)
-                ctx.send_with_budget(chat_id, "✅ Owner chat registered. Send the command again to execute it.")
+                reply("✅ Owner chat registered. Send the command again to execute it.")
                 continue
             try:
                 owner_ext_id_int = int(owner_ext_id or 0)
@@ -393,21 +358,21 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 owner_ext_id_int = 0
                 owner_ext_chat_id_int = 0
             if owner_ext_id_int != user_id or owner_ext_chat_id_int != chat_id:
-                ctx.send_with_budget(chat_id, "⚠️ Command ignored: this transport is not the bound owner chat.")
+                reply("⚠️ Command ignored: this transport is not the bound owner chat.", "failed")
                 continue
 
         if lowered.startswith("/panic"):
-            ctx.send_with_budget(chat_id, "🛑 PANIC: killing everything. App will close.")
+            reply("🛑 PANIC: killing everything. App will close.", "")
             _execute_panic_stop(ctx.consciousness, ctx.kill_workers)
         elif lowered.startswith("/restart"):
-            ctx.send_with_budget(chat_id, "♻️ Restarting.")
+            reply("♻️ Restarting.", "")
             ok, restart_msg = _safe_restart_serialized(
                 ctx.safe_restart,
                 reason="owner_restart",
                 unsynced_policy="rescue_and_reset",
             )
             if not ok:
-                ctx.send_with_budget(chat_id, f"⚠️ Restart cancelled: {restart_msg}")
+                reply(f"⚠️ Restart cancelled: {restart_msg}", "failed")
                 continue
             state_dir = DATA_DIR / "state"
             owner_restart_flag = state_dir / "owner_restart_no_resume.flag"
@@ -421,7 +386,7 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 owner_restart_flag.unlink(missing_ok=True)
                 stable_skip_flag.unlink(missing_ok=True)
                 log.warning("Failed to write owner restart no-resume flag", exc_info=True)
-                ctx.send_with_budget(chat_id, "⚠️ Restart cancelled: could not write restart state.")
+                reply("⚠️ Restart cancelled: could not write restart state.", "failed")
                 continue
             try:
                 ctx.kill_workers(
@@ -435,12 +400,12 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 stable_skip_flag.unlink(missing_ok=True)
                 log.warning("Restart cancelled because worker shutdown failed", exc_info=True)
                 try:
-                    ctx.send_with_budget(chat_id, "⚠️ Restart cancelled: failed to stop workers.")
+                    reply("⚠️ Restart cancelled: failed to stop workers.", "failed")
                 except Exception:
                     pass
                 continue
             try:
-                ctx.send_with_budget(chat_id, "Stopping active task. New settings apply to the next message.")
+                reply("Stopping active task. New settings apply to the next message.", "")
             except Exception:
                 log.warning("Failed to send owner restart stop notice; continuing restart", exc_info=True)
             _request_restart_exit(owner=True)
@@ -461,7 +426,7 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
 
                 block = evolution_block_reason()
                 if block:
-                    ctx.send_with_budget(chat_id, block)
+                    reply(block, "failed")
                     continue
                 # GR4-6: clear the durable owner-stop flag BEFORE the campaign is
                 # minted — the old order (campaign first, flag cleared in the later
@@ -485,7 +450,7 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                     # an unconditional True would invent a stop that never happened.
                     _evo_update_state(lambda live, _v=_prior_owner_stop: live.__setitem__(
                         "evolution_owner_stopped", _v))
-                    ctx.send_with_budget(chat_id, "⚠️ Evolution stayed OFF: campaign state could not be created.")
+                    reply("⚠️ Evolution stayed OFF: campaign state could not be created.", "failed")
                     continue
             st2 = ctx.load_state()
             st2["evolution_mode_enabled"] = bool(turn_on)
@@ -500,10 +465,7 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
             # autostop, which would disable the owner's campaign after one cycle.
             st2["post_task_autostop"] = False
             ctx.save_state(st2)
-            ctx.send_with_budget(
-                chat_id,
-                f"🧬 Evolution campaign: {'ON' if turn_on else _owner_evolution_stop(ctx, chat_id)}",
-            )
+            reply(f"🧬 Evolution campaign: {'ON' if turn_on else _owner_evolution_stop(ctx, chat_id)}")
         elif lowered.startswith("/bg"):
             parts = lowered.split()
             action = parts[1] if len(parts) > 1 else "status"
@@ -512,21 +474,21 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 _bg_s = ctx.load_state()
                 _bg_s["bg_consciousness_enabled"] = True
                 ctx.save_state(_bg_s)
-                ctx.send_with_budget(chat_id, f"🧠 {result}")
+                reply(f"🧠 {result}")
             elif action in ("stop", "off", "0"):
                 result = ctx.consciousness.stop()
                 _bg_s = ctx.load_state()
                 _bg_s["bg_consciousness_enabled"] = False
                 ctx.save_state(_bg_s)
-                ctx.send_with_budget(chat_id, f"🧠 {result}")
+                reply(f"🧠 {result}")
             else:
                 bg_status = "running" if ctx.consciousness.is_running else "stopped"
-                ctx.send_with_budget(chat_id, f"🧠 Background consciousness: {bg_status}")
+                reply(f"🧠 Background consciousness: {bg_status}")
         elif lowered.startswith("/status"):
             from supervisor.state import status_text
 
             status = status_text(ctx.WORKERS, ctx.PENDING, ctx.RUNNING)
-            ctx.send_with_budget(chat_id, status)
+            reply(status)
         else:
             _route_owner_message(
                 bridge,

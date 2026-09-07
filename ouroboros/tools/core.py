@@ -22,6 +22,7 @@ from ouroboros.tools.registry import ToolContext, ToolEntry, active_repo_dir_for
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     build_resolved_resource_binding,  # noqa: F401
+    canonical_data_root,
     decide_tool_access,  # noqa: F401
     active_tool_profile,  # noqa: F401
     normalize_root,  # noqa: F401
@@ -296,8 +297,8 @@ def _data_write(
     redirect_err = cross_skill_redirect_error(existing_tc, synth)
     if redirect_err:
         return f"⚠️ SKILL_REDIRECT_BLOCKED: {redirect_err}"
-    # Real skill_repair confinement wins over synthesized short-form context.
-    if existing_tc and existing_tc.mode == "skill_repair":
+    # The task's selected resource wins over a synthesized short-form selector.
+    if existing_tc and existing_tc.has_selected_skill:
         task_constraint = existing_tc
     else:
         task_constraint = synth or existing_tc
@@ -308,7 +309,7 @@ def _data_write(
     _skill_target = None
     if _resolved_binding is not None:
         p = _resolved_binding.target_path
-    elif task_constraint and task_constraint.mode == "skill_repair" and task_constraint.payload_root:
+    elif task_constraint and task_constraint.has_selected_skill and task_constraint.payload_root:
         try:
             p = resolve_payload_path(pathlib.Path(ctx.drive_root), task_constraint, path)
         except ValueError as e:
@@ -334,7 +335,7 @@ def _data_write(
     ctx_data_root = pathlib.Path(ctx.drive_root).resolve(strict=False)
     if _resolved_binding is not None:
         lexical_target = pathlib.Path(p).resolve(strict=False)
-    elif task_constraint and task_constraint.mode == "skill_repair" and task_constraint.payload_root:
+    elif task_constraint and task_constraint.has_selected_skill and task_constraint.payload_root:
         lexical_target = pathlib.Path(p).resolve(strict=False)
     else:
         lexical_target = pathlib.Path(ctx.drive_root).resolve(strict=False) / safe_relpath(write_path)
@@ -470,7 +471,8 @@ def _data_write(
     # the payload exactly like an overwrite). Foreign lanes pass through.
     _repair_cas_constraint = (
         task_constraint
-        if task_constraint and task_constraint.mode == "skill_repair"
+        if task_constraint and task_constraint.has_selected_skill
+        and (_resolved_binding is None or _resolved_binding.skill_name)
         and str(getattr(task_constraint, "skill_name", "") or "")
         else None
     )
@@ -478,13 +480,13 @@ def _data_write(
         from ouroboros.skill_repair_admission import repair_write_cas_error
 
         _cas = repair_write_cas_error(
-            pathlib.Path(ctx.drive_root), _repair_cas_constraint,
+            canonical_data_root(ctx), _repair_cas_constraint,
             task_id=str(getattr(ctx, "task_id", "") or ""),
             # The TASK's own constraint decides whether the binding is mandatory:
             # a short-form `bucket`+`skill_name` selector synthesizes the same
             # constraint shape for an ordinary payload edit, and that lane must
             # not need a repair admission.
-            repair_task=bool(existing_tc and existing_tc.mode == "skill_repair"))
+            repair_task=bool(existing_tc and existing_tc.has_selected_skill))
         if _cas:
             return _cas
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -501,7 +503,7 @@ def _data_write(
         from ouroboros.skill_repair_admission import advance_repair_expected_hash
 
         advance_repair_expected_hash(
-            pathlib.Path(ctx.drive_root), _repair_cas_constraint,
+            canonical_data_root(ctx), _repair_cas_constraint,
             task_id=str(getattr(ctx, "task_id", "") or ""))
     if should_mark_self_authored and marker_path is not None:
         from ouroboros.skill_loader import compute_content_hash
@@ -790,49 +792,18 @@ def _edit_text(
         if short_form.ignored_reason:
             result += f"\n⚠️ SKILL_SHORT_FORM_IGNORED: {short_form.ignored_reason}."
         return result
-    if normalized == "skill_payload" or bound_skill_payload:
-        try:
-            target = binding.target_path
-            if (
-                _binding_skill_control_plane_path(binding)
-                or is_skill_control_plane_path(target, binding.state_drive_root)
-            ):
-                return (
-                    "⚠️ STR_REPLACE_BLOCKED: skill provenance, launcher seed, "
-                    "marketplace, dependency, and self-authored markers are "
-                    "control-plane state. Edit user-authored payload files instead."
-                )
-            text = target.read_text(encoding="utf-8")
-            new_text, match_error = _str_match_replace(
-                text, old_str, new_str, _root_display_path(normalized, path), "EDIT_TEXT_ERROR",
-            )
-            if match_error:
-                return match_error
-            if (shrink := _check_data_shrink_guard(target, new_text, force)):
-                return shrink
-            write_text_atomic(target, new_text)
-            replacement_line = new_text[:new_text.index(new_str)].count("\n") + 1
-            context_start = max(0, replacement_line - 3)
-            context_lines = new_text.splitlines()[
-                context_start:replacement_line + len(new_str.splitlines()) + 2
-            ]
-            context_preview = "\n".join(
-                f"{context_start + index + 1:>4}| {line}"
-                for index, line in enumerate(context_lines)
-            )
-            return (
-                f"✅ Replaced in {_root_display_path(normalized, path)} "
-                f"(line {replacement_line}; resolved_root={binding.base_path}; "
-                f"source={binding.source}).\nContext:\n{context_preview}\n\n"
-                "File is on disk but NOT committed.\n"
-                "Run skill_review for this skill before enabling or declaring it ready."
-            )
-        except FileNotFoundError:
-            return f"⚠️ EDIT_TEXT_ERROR: file not found: {_root_display_path(normalized, path)}"
-        except Exception as exc:
-            return f"⚠️ EDIT_TEXT_ERROR: {type(exc).__name__}: {exc}"
+    selected_payload = normalized == "skill_payload" or bound_skill_payload
     try:
         target = binding.target_path
+        if selected_payload and (
+            _binding_skill_control_plane_path(binding)
+            or is_skill_control_plane_path(target, binding.state_drive_root)
+        ):
+            return (
+                "⚠️ STR_REPLACE_BLOCKED: skill provenance, launcher seed, "
+                "marketplace, dependency, and self-authored markers are "
+                "control-plane state. Edit user-authored payload files instead."
+            )
         if normalized == "runtime_data":
             if is_skill_control_plane_path(target, binding.state_drive_root):
                 return (
@@ -852,23 +823,50 @@ def _edit_text(
                     "tools instead of editing state/workspace_executor_processes directly."
                 )
         if normalized == "artifact_store":
-            block_reason = artifact_store_path_block_reason(
-                target, base_path=binding.base_path,
-            )
+            block_reason = artifact_store_path_block_reason(target, base_path=binding.base_path)
             if block_reason:
                 return f"⚠️ EDIT_TEXT_BLOCKED: artifact_store path blocked: {block_reason}"
         text = target.read_text(encoding="utf-8")
-        new_text, _match_err = _str_match_replace(
+        new_text, match_error = _str_match_replace(
             text, old_str, new_str, _root_display_path(normalized, path), "EDIT_TEXT_ERROR"
         )
-        if _match_err:
-            return _match_err  # count==0 preview / count>1 positional hints (deferral 4)
-        # Deferral 5: an exact replace that shrinks an existing data-plane file >30% is
-        # likely accidental truncation — block unless force=true (matches the overwrite
-        # paths; force lets a deliberate large surgical deletion through).
+        if match_error:
+            return match_error
+        # Exact replace and full overwrite share the intentional-shrink contract.
         if (shrink := _check_data_shrink_guard(target, new_text, force)):
             return shrink
-        write_text_atomic(target, new_text)  # crash-safe edit (G)
+        constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+        repair = selected_payload and constraint and constraint.has_selected_skill
+        if repair:
+            from ouroboros.skill_repair_admission import repair_write_cas_error
+
+            refusal = repair_write_cas_error(
+                binding.state_drive_root, constraint, task_id=ctx.task_id, repair_task=True,
+            )
+            if refusal:
+                return refusal
+        write_text_atomic(target, new_text)
+        if repair:
+            from ouroboros.skill_repair_admission import advance_repair_expected_hash
+
+            advance_repair_expected_hash(binding.state_drive_root, constraint, task_id=ctx.task_id)
+        if selected_payload:
+            replacement_line = new_text[:new_text.index(new_str)].count("\n") + 1
+            context_start = max(0, replacement_line - 3)
+            context_lines = new_text.splitlines()[
+                context_start:replacement_line + len(new_str.splitlines()) + 2
+            ]
+            context_preview = "\n".join(
+                f"{context_start + index + 1:>4}| {line}"
+                for index, line in enumerate(context_lines)
+            )
+            return (
+                f"✅ Replaced in {_root_display_path(normalized, path)} "
+                f"(line {replacement_line}; resolved_root={binding.base_path}; "
+                f"source={binding.source}).\nContext:\n{context_preview}\n\n"
+                "File is on disk but NOT committed.\n"
+                "Run skill_review for this skill before enabling or declaring it ready."
+            )
         result = (
             f"OK: edited {_root_display_path(normalized, path)} "
             f"(resolved_root={binding.base_path}; source={binding.source})"
@@ -1417,7 +1415,7 @@ def get_tools() -> List[ToolEntry]:
             "description": (
                 "Send an arbitrary document/file to the owner's chat (e.g. a report, .md/.csv/.html, "
                 "PDF, archive, or code file — anything that is not an image or video). "
-                "Requires a local file_path; max 50 MB. Use this to deliver a finished file result "
+                "Requires a local file_path; large files use a captured download reference. Deliver a finished file result "
                 "the owner can download, rather than only describing it or sending a screenshot."
             ),
             "parameters": {"type": "object", "properties": {

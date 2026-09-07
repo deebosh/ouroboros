@@ -145,11 +145,17 @@ def _build_attachment_image_blocks(task: Dict[str, Any]) -> List[Dict[str, Any]]
     live; the rest stay manifest-readable via read_file(root='artifact_store', ...).
     Never raises — a per-file error skips just that image."""
     entries = task.get("attachment_images")
-    if not isinstance(entries, list) or not entries:
-        return []
-    drive_root = task.get("drive_root")
-    task_id = task.get("id")
+    drive_root, task_id = task.get("drive_root"), task.get("id")
     if not drive_root or not task_id:
+        return []
+    contract = task.get("task_contract") or {}
+    if "attachment_manifest_ref" in contract:
+        from ouroboros.artifacts import resolve_attachment_manifest
+        try:
+            entries = resolve_attachment_manifest(drive_root, str(task_id), contract)
+        except (OSError, ValueError, TypeError) as exc:
+            return [{"type": "text", "text": f"Attachment source unavailable: {exc}. The inline rows are not the complete input set."}]
+    if not isinstance(entries, list) or not entries:
         return []
     import base64 as _b64
 

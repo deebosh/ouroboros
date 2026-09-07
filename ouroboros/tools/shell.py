@@ -74,13 +74,11 @@ from ouroboros.tools.shell_effects import (  # noqa: F401
     _user_files_run_had_effect,
 )
 from ouroboros.tools.shell_outputs import (  # noqa: F401
-    _OUTPUT_DIR_MAX_BYTES,
-    _OUTPUT_DIR_MAX_FILES,
     _SENSITIVE_OUTPUT_COMPONENT_NAMES,
     _SENSITIVE_OUTPUT_MARKERS,
     _SENSITIVE_OUTPUT_NAMES,
     _SENSITIVE_OUTPUT_SUFFIXES,
-    _bounded_directory_fingerprint,
+    _directory_fingerprint,
     _changed_path_covers,
     _directory_fingerprint_from_entries,
     _fingerprint_output,

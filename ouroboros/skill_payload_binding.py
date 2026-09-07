@@ -173,6 +173,10 @@ def resolve_skill_payload_base(
     allow_missing: bool = False,
 ) -> tuple[pathlib.Path, str, str]:
     """Resolve one Tool API selector to its physical payload root."""
+    from ouroboros.contracts.task_constraint import normalize_task_constraint
+    from ouroboros.contracts.skill_payload_policy import resolve_constrained_payload_path
+
+    constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
     requested = str(location or "").strip().lower()
     canonical_name = _sanitize_skill_name(skill_name)
     if not str(skill_name or "").strip() or canonical_name == "_unnamed":
@@ -207,6 +211,10 @@ def resolve_skill_payload_base(
         selected_manifestless_name=selected_manifestless,
     )
     if selected is not None:
+        if constraint and constraint.has_selected_skill:
+            expected = resolve_constrained_payload_path(drive_root, constraint, ".")
+            if selected.skill_dir.resolve(strict=False) != expected:
+                raise ValueError("SKILL_REDIRECT_BLOCKED: this task selected a different skill payload")
         if (
             selected.location in {"native", "user_repo"}
             and not top_level
@@ -223,6 +231,8 @@ def resolve_skill_payload_base(
         if source == "native" and operation in {"write", "edit", "shell"}:
             raise ValueError("installed native skills are read/review only; edit their seed via root=system_repo")
         return selected.skill_dir.resolve(strict=False), source, selected.name
+    if constraint and constraint.has_selected_skill:
+        raise ValueError("SKILL_REDIRECT_BLOCKED: the selected installed skill payload was not found")
     if not requested and operation == "review":
         raise ValueError(f"skill {canonical_name!r} was not found")
     if requested == "native" and operation in {"write", "edit", "shell"}:

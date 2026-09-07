@@ -1,4 +1,4 @@
-"""Read-only skill payload syntax/contract preflight for heal-mode agents.
+"""Read-only skill payload syntax/contract preflight for skill development.
 
 Tri-model review remains authoritative. Preflight uses argv-only subprocesses,
 cwd=skill_dir, scrubbed env, 30s timeout, in-process Python compile(), and no
@@ -985,7 +985,7 @@ _PREFLIGHT_SCHEMA = {
         "compile() (no __pycache__), bash -n, and node syntax checks (a declared module-widget "
         "entry gets classic-script grammar) on every reviewable file, or just `paths`, plus a manifest "
         "parse, module-widget entry existence, and static render-schema validation. Cheap and offline (no LLM, no review.json mutation, "
-        "no review status change). Heal-mode agents use this before "
+        "no review status change). Skill-development tasks use this before "
         "calling skill_review so silly syntax errors are caught "
         "without spending tri-model review tokens. Argv-only "
         "subprocess invocation, cwd=skill_dir, scrubbed env, 30s "

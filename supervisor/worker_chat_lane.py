@@ -1,8 +1,16 @@
 """The direct and ephemeral chat lanes, and the resume after a restart.
 
 A chat turn runs on the single long-lived agent under its own lock; an ephemeral
-turn gets a throwaway one. Both are refused while the repo-writer gate is closed,
-so a managed update never races a turn that could write to the repo.
+turn gets a throwaway one. Both are refused while the repo-writer gate is closed
+for a DESTRUCTIVE update window (apply/replace prologue, materialization,
+rollback), so a managed update never races a turn that could touch the checkout
+mid-reset. While the ONE authorized assisted resolver holds the repository
+(``assisted_resolution`` / ``committing_assisted``) the lanes stay open:
+conversation admission is not repo-writing permission — the registry's
+managed-update guard refuses every repo-mutating tool to any task but that
+resolver — and an owner line reaches the resolver through the ordinary
+``steer_task`` mailbox path (#283). The server's own owner-control path is
+imported BEFORE conflict markers land in the live tree (``preload_owner_control_path``).
 """
 
 from __future__ import annotations
@@ -39,6 +47,95 @@ def _pool():
     return workers
 
 
+# Update phases during which the repository is held by the ONE authorized
+# assisted resolver and nothing else moves the tree: conversation stays open.
+_CONVERSATION_ADMITTED_PHASES = frozenset({"assisted_resolution", "committing_assisted"})
+
+
+def conversation_admitted_during_update(gate_reason: str) -> bool:
+    """Whether a chat turn may run while ``gate_reason`` closes the repo-writer gate.
+
+    True only while the durable update transaction is VALID and held by the
+    authorized assisted resolver — phase ``assisted_resolution`` or
+    ``committing_assisted`` — and the process-local latch is either absent (a
+    post-restart resume: only the durable marker closes the gate) or the assisted
+    latch of that same transaction. Every other closure is a destructive window
+    (the apply/replace/rollback prologue, materialization, a corrupt or future
+    marker) and keeps refusing. Conversation admission is not repo-writing
+    permission: the registry guard still refuses repo tools to a non-resolver.
+    """
+    from supervisor.update_merge import assisted_writer_gate_reason, read_update_tx_strict
+
+    reason = str(gate_reason or "")
+    if not reason:
+        return True
+    try:
+        status, tx = read_update_tx_strict()
+    except Exception:
+        return False
+    if status != "valid" or str(tx.get("phase") or "") not in _CONVERSATION_ADMITTED_PHASES:
+        return False
+    if reason.startswith("managed_update_tx:"):
+        return True
+    return reason == assisted_writer_gate_reason(tx)
+
+
+def owner_conversation_admitted(chat_id: int) -> bool:
+    """Admit one owner chat turn: open gate, or a resolver-held update.
+
+    A refused turn gets the pool's existing lock notice (``_repo_writer_turn_allowed``).
+    """
+    reason = _pool().repo_writer_admission_closed()
+    if not reason or conversation_admitted_during_update(reason):
+        return True
+    return bool(_pool()._repo_writer_turn_allowed(chat_id))
+
+
+def preload_owner_control_path() -> list[str]:
+    """Import the server's owner-control path while the live tree is still clean.
+
+    The assisted merge is about to write conflict markers into the checkout this
+    process imports from. A module already in ``sys.modules`` keeps working; a
+    function-local import that first runs AFTER the markers land raises
+    SyntaxError on a conflicted file — the late receipt-wait import that broke
+    the update conversation (#283). Called right after the resolver readiness
+    proof and before a boot re-materialization. Best effort: a failure is logged
+    and returned, never a reason to refuse the update (it would degrade the
+    conversation, not the update). First-party packages are discovered so newly
+    added function-local imports do not escape a manually maintained list.
+    The tool catalog still loads through the chat agent's registry, preserving
+    its admission rules and module-failure diagnostics.
+    """
+    import importlib
+    import pkgutil
+
+    failed: list[str] = []
+    pending = ["ouroboros", "supervisor"]
+    while pending:
+        name = pending.pop()
+        try:
+            module = importlib.import_module(name)
+            # Discover from the imported package's own path, including nested
+            # packages. The packaged server runs embedded Python against the
+            # materialized repo; this never depends on the process cwd or a
+            # hand-maintained frozen module list.
+            if hasattr(module, "__path__"):
+                pending.extend(info.name for info in pkgutil.iter_modules(
+                    module.__path__, module.__name__ + ".",
+                ))
+        except Exception:
+            log.warning("owner control path preload: %s failed", name, exc_info=True)
+            failed.append(name)
+    try:
+        from ouroboros.tools.registry import ToolRegistry
+
+        ToolRegistry(pathlib.Path(_pool().REPO_DIR), pathlib.Path(_pool().DRIVE_ROOT))
+    except Exception:
+        log.warning("owner control path preload: tool catalog failed", exc_info=True)
+        failed.append("ouroboros.tools.*")
+    return failed
+
+
 def handle_chat_direct(
     chat_id: int,
     text: str,
@@ -47,7 +144,7 @@ def handle_chat_direct(
     task_metadata: Optional[dict] = None,
 ) -> None:
     with _pool()._chat_agent_lock:
-        if not _pool()._repo_writer_turn_allowed(chat_id):
+        if not owner_conversation_admitted(chat_id):
             return
         _handle_chat_direct_locked(
             chat_id,
@@ -66,14 +163,15 @@ def _handle_chat_direct_locked(
     task_metadata: Optional[dict] = None,
 ) -> None:
     from supervisor.state import budget_remaining, load_state
+    failure_meta = _host_operation_failure(task_metadata)
     try:
         remaining = budget_remaining(load_state(), strict=True)
     except Exception:
-        _pool().send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.")
+        _pool().send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.", **failure_meta)
         return
     if remaining <= 0:
         try:
-            _pool().send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.")
+            _pool().send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.", **failure_meta)
         except Exception:
             pass
         return
@@ -82,6 +180,15 @@ def _handle_chat_direct_locked(
         _pool()._get_chat_agent(), chat_id, text, image_data,
         task_constraint=task_constraint, task_metadata=task_metadata, ephemeral=False,
     )
+
+
+def _host_operation_failure(metadata: Optional[dict]) -> dict:
+    """Optional terminal correlation for the host's preaccepted skill messages."""
+    from ouroboros.task_finalization import host_operation_reply_kwargs
+
+    if (metadata or {}).get("_host_operation"):
+        return host_operation_reply_kwargs((metadata or {}).get("origin_message_ref"), "failed")
+    return {}
 
 
 def _broadcast_task_named(msg: dict) -> None:
@@ -188,8 +295,12 @@ def _run_chat_task(
                 _pool().send_with_budget(
                     chat_id,
                     f"⚠️ Task not started: every attachment was rejected.\n{rendered}",
+                    **_host_operation_failure(task_metadata),
                 )
                 return
+            from ouroboros.artifacts import attachment_manifest_projection
+            authority = attachment_manifest_projection(_pool().DRIVE_ROOT, str(task["id"]), manifest)
+            rendered = _render_attachment_lines(authority)
             if attachment_manifest_has_rejections(manifest):
                 _pool().send_with_budget(
                     chat_id,
@@ -199,7 +310,8 @@ def _run_chat_task(
             if manifest:
                 manifest = [dict(row) for row in manifest]
                 task["drive_root"] = str(_pool().DRIVE_ROOT)
-                task["attachments"] = manifest
+                task.update(authority)
+                task["attachments"] = authority["attachment_manifest"]
                 task["attachment_images"] = [
                     m for m in manifest
                     if str(m.get("status") or "staged") == "staged" and m.get("is_image")
@@ -247,6 +359,7 @@ def _run_chat_task(
             project_id=pid,
             kind=kind,
             phase="thinking",
+            origin_message_ref=task.get("origin_message_ref"),
         ):
             # Announce the authoritative start immediately (owner decision 2A):
             # the client's `Sending...` retires on this frame, not on a socket
@@ -316,11 +429,15 @@ def _run_chat_task(
                     )
                 except Exception:
                     log.debug("Failed-turn typing announce failed", exc_info=True)
+            failure_meta = _host_operation_failure(task_metadata)
+            progress_meta = {"task_terminal_status": "failed"}
+            if failure_meta:
+                progress_meta["origin_message_ref"] = failure_meta["progress_meta"]["origin_message_ref"]
             _pool().send_with_budget(
                 chat_id,
                 err_msg,
                 task_id=failed_task_id,
-                progress_meta={"task_terminal_status": "failed"},
+                progress_meta=progress_meta,
             )
         except Exception:
             log.debug("Suppressed exception", exc_info=True)
@@ -340,14 +457,15 @@ def handle_chat_ephemeral(
     mode / effort, not a cheaper lane). Ephemeral turns are serialized among
     themselves and are barred from long-term memory/reflection/evolution writes."""
     from supervisor.state import budget_remaining, load_state
+    failure_meta = _host_operation_failure(task_metadata)
     try:
         remaining = budget_remaining(load_state(), strict=True)
     except Exception:
-        _pool().send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.")
+        _pool().send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.", **failure_meta)
         return
     if remaining <= 0:
         try:
-            _pool().send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.")
+            _pool().send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.", **failure_meta)
         except Exception:
             pass
         return
@@ -356,7 +474,7 @@ def handle_chat_ephemeral(
     from ouroboros.agent import make_agent
 
     with _pool()._ephemeral_chat_lock:
-        if not _pool()._repo_writer_turn_allowed(chat_id):
+        if not owner_conversation_admitted(chat_id):
             return
         agent = make_agent(repo_dir=str(_pool().REPO_DIR), drive_root=str(_pool().DRIVE_ROOT), event_queue=_pool().get_event_q())
         _run_chat_task(

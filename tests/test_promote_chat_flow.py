@@ -464,7 +464,7 @@ def test_real_presence_promotion_rebases_root_and_materializes_all_attachments(
         "tid": "presence-child", "objective": "Inspect both inputs",
         "expected_output": "Report", "parent_contract": contract,
         "root_task_id": promoted["id"], "parent_task_id": promoted["id"],
-        "attachment_manifest": child_manifest,
+        **child_manifest,
     })
     work_order = compile_external_work_order({
         "id": "presence-child", "objective": "Inspect both inputs",
@@ -1300,7 +1300,7 @@ def test_route_to_project_event_emits_route_receipt_action(tmp_path, monkeypatch
     assert receipts[-1][1]["status"] == "scheduled"
 
 
-def test_promoted_skill_repair_is_canonical_confined_managed_task(tmp_path, monkeypatch):
+def test_promoted_skill_repair_is_ordinary_managed_task_with_selected_resource(tmp_path, monkeypatch):
     import supervisor.workers as workers
 
     payload = tmp_path / "skills" / "external" / "alpha"
@@ -1337,7 +1337,7 @@ def test_promoted_skill_repair_is_canonical_confined_managed_task(tmp_path, monk
     task = enqueued[0]
     assert task.get("_ephemeral_turn") is None
     assert task["task_constraint"] == {
-        "mode": "skill_repair",
+        "mode": "normal",
         "skill_name": "alpha",
         "payload_root": "skills/external/alpha",
         "allow_enable": False,

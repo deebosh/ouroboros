@@ -93,12 +93,17 @@ def _canonical_promoted_repair_constraint(value: Any) -> tuple[Optional[dict], s
     from ouroboros.contracts.task_constraint import TaskConstraint, normalize_task_constraint
 
     constraint = normalize_task_constraint(value)
-    if constraint is None or constraint.mode != "skill_repair":
+    if constraint is None or not (
+        constraint.mode == "skill_repair"
+        or (constraint.mode == "normal" and (constraint.skill_name or constraint.payload_root))
+    ):
         return None, ""
     canonical = TaskConstraint(
-        mode="skill_repair",
+        mode="normal",
         skill_name=constraint.skill_name,
         payload_root=constraint.payload_root,
+        # Selection is not enable authority. The task resolves its real owner
+        # source when it chooses to enable the repaired installation.
         allow_enable=False,
         allow_review=True,
     )
@@ -121,7 +126,7 @@ def _canonical_promoted_repair_constraint(value: Any) -> tuple[Optional[dict], s
         "mode": canonical.mode,
         "skill_name": canonical.skill_name,
         "payload_root": canonical.payload_root,
-        "allow_enable": False,
+        "allow_enable": canonical.allow_enable,
         "allow_review": True,
         "_base_content_hash": base_content_hash,
     }, ""
@@ -252,8 +257,8 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
                 "reason": "skill_repair_admission_unwritable",
                 "task_id": tid,
             }, attachment_manifest)
-        # Must be present before attach_task_contract so the managed root task
-        # enters execution with its confined repair profile, never ephemeral.
+        # Bind the selected resource before attach_task_contract. This remains
+        # an ordinary managed task; the selection is not a reduced tool profile.
         task["task_constraint"] = repair_constraint
     # Ingress-captured origin identity rides the task record (post-hoc UI convert
     # reads it from the persisted result — never re-derived from content).
@@ -395,13 +400,14 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
     if attachment_manifest:
         from ouroboros.gateway.tasks import _render_attachment_lines
 
-        rendered = _render_attachment_lines(attachment_manifest)
-        task["text"] = f"{task['text']}\n\n[ATTACHMENTS]\n{rendered}\n[END_ATTACHMENTS]"
-        public_manifest = [dict(row) for row in attachment_manifest]
-        task["attachments"] = public_manifest
-        task["attachment_images"] = [row for row in public_manifest if row.get("is_image")]
+        from ouroboros.artifacts import attachment_manifest_projection
+        authority = attachment_manifest_projection(task.get("drive_root") or _pool().DRIVE_ROOT, tid, attachment_manifest)
+        task.update(authority)
+        task["text"] = f"{task['text']}\n\n[ATTACHMENTS]\n{_render_attachment_lines(authority)}\n[END_ATTACHMENTS]"
+        task["attachments"] = authority["attachment_manifest"]
+        task["attachment_images"] = [row for row in attachment_manifest if row.get("is_image")]
         if isinstance(task.get("task_contract"), dict):
-            task["task_contract"]["attachment_manifest"] = public_manifest
+            task["task_contract"].update(authority)
     attach_task_contract(task)
     admitted = ctx.enqueue_task(task)
     if isinstance(admitted, dict) and admitted.get("_admission_blocked"):
@@ -450,7 +456,7 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
     # result therefore receives this admitted contract before worker startup.
     outcome = _pool()._promoted_scheduled_outcome(task, admitted, tid)
     if attachment_manifest:
-        outcome["attachment_manifest"] = [dict(row) for row in attachment_manifest]
+        outcome.update(authority)
     if effective_pid:
         outcome["project_id"] = effective_pid
     if source_note:

@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from ouroboros.artifacts import store_chat_media_bytes
+from ouroboros.cost_projection import carry_cost_meta
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.event_bus import CHAT_DOCUMENT, CHAT_LINKS, CHAT_OUTBOUND, CHAT_PHOTO, CHAT_QUIZ, CHAT_TYPING, CHAT_VIDEO, publish_event
 from supervisor.state import append_jsonl, load_state
@@ -30,6 +31,111 @@ DATA_DIR = None  # pathlib.Path
 TOTAL_BUDGET_LIMIT: float = 0.0
 BUDGET_REPORT_EVERY_MESSAGES: int = 10
 _BRIDGE: Optional["LocalChatBridge"] = None
+_INGRESS_LOCK = threading.Lock()
+
+
+def accepted_chat_message(drive_root, chat_id: int, client_message_id: str) -> Optional[dict]:
+    """Read a named canonical source across its retained generation chain."""
+    from pathlib import Path
+    from ouroboros.utils import iter_jsonl_objects, jsonl_chain_handles
+
+    with jsonl_chain_handles(Path(drive_root) / "logs" / "chat.jsonl", strict=True) as handles:
+        for path, handle in reversed(handles):
+            for row in iter_jsonl_objects(path, _handle=handle):
+                if (row.get("direction") == "in" and row.get("chat_id") == chat_id
+                        and row.get("client_message_id") == client_message_id):
+                    return row
+    return None
+
+
+def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, **message) -> tuple[dict, bool]:
+    """Accept a named skill delivery once, then hand its exact source to the queue.
+
+    The canonical row is the acceptance record, written by this existing owner
+    BEFORE enqueue. A crash after acceptance never authorizes another enqueue;
+    operation reads disclose a lost host session instead. The single host's
+    ingress lock covers check/write/enqueue, including simultaneous HTTP calls.
+    """
+    from ouroboros.project_dialogue import _text_sha256, build_owner_message_ref
+
+    chat_id = int(message["chat_id"])
+    message_id = str(message["client_message_id"])
+    source = str(message["source"])
+    logged = text.strip() or str(message.get("image_caption") or "").strip() or (
+        "(image attached)" if message.get("image_base64")
+        else "(file attached)" if (message.get("task_metadata") or {}).get("chat_attachment_uploads") else ""
+    )
+    if not logged:
+        raise ValueError("message is empty")
+    with _INGRESS_LOCK:
+        previous = accepted_chat_message(drive_root, chat_id, message_id)
+        if previous is not None:
+            if previous.get("source") != source:
+                raise ValueError("client_message_id is already bound to another source")
+            if _text_sha256(previous.get("text")) != _text_sha256(logged):
+                raise ValueError("client_message_id was already used for a different message")
+            return previous, True
+        ts = utc_now_iso()
+        try:
+            row = log_chat(
+                "in", chat_id, int(message.get("user_id") or 0), logged, ts=ts,
+                source=source, client_message_id=message_id,
+                sender_label=str(message.get("sender_label") or ""),
+                transport=message.get("transport"), drive_root=drive_root, require_write=True,
+            )
+        finally:
+            # Once this write is attempted, failure can leave canonical bytes.
+            # Transfer input custody without claiming acceptance or queue success;
+            # a replay/pre-write refusal never adopts this request's fresh copies.
+            if retain_inputs is not None:
+                retain_inputs()
+        ref = build_owner_message_ref(chat_id=chat_id, client_message_id=message_id, ts=ts, text=logged)
+        bridge.enqueue_local_message(text, **message, accepted_source_ref=ref)
+        return row, False
+
+
+def record_inbound_message(bridge, message: dict, *, chat_id: int, user_id: int,
+                           client_message_id: str, text: str, ts: str) -> Optional[dict]:
+    """Keep one canonical ingress writer for dequeued and preaccepted messages."""
+    from ouroboros.project_dialogue import (
+        _text_sha256, build_owner_message_ref, entry_matches_source_ref, owner_message_ref_is_valid,
+    )
+
+    source = str(message.get("source") or "web")
+    ref = message.get("accepted_source_ref")
+    if ref:
+        row = accepted_chat_message(DATA_DIR, chat_id, client_message_id) if owner_message_ref_is_valid(ref) else None
+        if (not row or row.get("source") != source or row.get("chat_id") != chat_id
+                or row.get("client_message_id") != client_message_id or not entry_matches_source_ref(row, [ref])
+                or ref["text_sha256"] != _text_sha256(text)):
+            raise ValueError("accepted source does not match the queued message")
+        ref = dict(ref)
+        ts = ref["ts"]
+    elif message.get("suppress_chat_log"):
+        return None
+    else:
+        metadata = message.get("task_metadata") or {}
+        log_chat(
+            "in", chat_id, user_id, text, ts=ts, source=source,
+            sender_label=str(message.get("sender_label") or ""),
+            sender_session_id=str(message.get("sender_session_id") or ""),
+            client_message_id=client_message_id, transport=message.get("transport"),
+            client_surface=(metadata.get("client_surface") if isinstance(metadata, dict)
+                            and isinstance(metadata.get("client_surface"), dict) else None),
+        )
+        ref = build_owner_message_ref(chat_id=chat_id, client_message_id=client_message_id, ts=ts, text=text)
+    if source != "web":
+        bridge.broadcast({
+            "type": "photo" if message.get("image_base64") else "chat", "role": "user",
+            "content": str(message.get("text") or ""), "caption": str(message.get("image_caption") or ""),
+            "image_base64": str(message.get("image_base64") or ""),
+            "mime": str(message.get("image_mime") or "image/jpeg"), "ts": ts, "source": source,
+            "sender_label": str(message.get("sender_label") or ""),
+            "sender_session_id": str(message.get("sender_session_id") or ""),
+            "client_message_id": client_message_id, "transport": message.get("transport") or {},
+            "chat_id": chat_id,
+        })
+    return ref
 
 
 def _chat_media_download_url(task_id: str, data: bytes, mime: str) -> Tuple[str, str]:
@@ -224,6 +330,7 @@ class LocalChatBridge:
                 "suppress_chat_log",
                 "task_constraint",
                 "task_metadata",
+                "accepted_source_ref",
             ):
                 value = msg.get(key)
                 if value not in (None, "", 0):
@@ -331,14 +438,15 @@ class LocalChatBridge:
         suppress_chat_log: bool = False,
         task_constraint: Optional[Dict[str, Any]] = None,
         task_metadata: Optional[Dict[str, Any]] = None,
+        accepted_source_ref: Optional[Dict[str, Any]] = None,
     ) -> None:
         clean_text = str(text or "").strip()
         caption_text = str(image_caption or "").strip()
         image_b64 = str(image_base64 or "").strip()
         if not clean_text and caption_text:
             clean_text = caption_text
-        if not clean_text and not image_b64:
-            return
+        if not clean_text and not image_b64 and not (task_metadata or {}).get("chat_attachment_uploads"):
+            return  # nothing to say and nothing attached (a file-only message carries uploads)
         # Invariant: the default chat/user id is the web owner (1). External
         # transports (source != "web") MUST pass explicit ids — the Host Service
         # injects 0 for unidentified senders so they can never bind/own the web
@@ -358,6 +466,7 @@ class LocalChatBridge:
             "suppress_chat_log": bool(suppress_chat_log),
             "task_constraint": dict(task_constraint or {}),
             "task_metadata": dict(task_metadata or {}),
+            "accepted_source_ref": dict(accepted_source_ref or {}),
         })
 
     def send_message(
@@ -703,10 +812,24 @@ class LocalChatBridge:
         mime: str = "application/octet-stream",
         download_url: str = "",
         task_id: str = "",
+        file_ref: Optional[Dict[str, Any]] = None,
+        download_url_compat: str = "",
     ) -> Tuple[bool, str]:
         """Send an arbitrary document/file to UI and host event subscribers."""
         if is_a2a_chat_id(chat_id):
             return True, "ok"
+        if file_ref is not None:
+            from ouroboros.gateway.files import resolve_task_file_reference
+            try:
+                resolve_task_file_reference(DATA_DIR, task_id or "interactive", file_ref)
+                if file_bytes:
+                    from hashlib import sha256
+                    if len(file_bytes) != file_ref["size"] or sha256(file_bytes).hexdigest() != file_ref["sha256"]:
+                        raise ValueError("inline document bytes disagree with the captured file")
+            except (OSError, ValueError, TypeError) as exc:
+                return False, f"Document source unavailable: {exc}"
+            download_url = f"/api/tasks/{quote(task_id or 'interactive', safe='')}/artifacts/{quote(str(file_ref['path']), safe='')}"
+        size_bytes = file_ref["size"] if file_ref is not None else len(file_bytes)
         b64_str = base64.b64encode(file_bytes).decode("ascii")
         safe_name = str(filename or "file")
         ts = utc_now_iso()
@@ -718,7 +841,9 @@ class LocalChatBridge:
             "filename": safe_name,
             "caption": caption,
             "download_url": str(download_url or ""),
-            "size_bytes": len(file_bytes),
+            "download_url_compat": str(download_url_compat or ""),
+            "file_ref": dict(file_ref or {}),
+            "size_bytes": size_bytes,
             "ts": ts,
             "chat_id": int(chat_id or 0),
             "task_id": str(task_id or ""),
@@ -735,6 +860,8 @@ class LocalChatBridge:
             "mime": str(mime or ""),
             "filename": safe_name,
             "download_url": str(download_url or ""),
+            "download_url_compat": str(download_url_compat or ""),
+            "file_ref": dict(file_ref or {}),
             "ts": ts,
         })
         # Persist a compact chat row (NO base64) so the delivered document is
@@ -755,7 +882,8 @@ class LocalChatBridge:
             mime=str(mime or ""),
             download_url=str(download_url or ""),
             caption=str(caption or ""),
-            size_bytes=len(file_bytes),
+            size_bytes=size_bytes,
+            download_url_compat=download_url_compat,
         )
         _advance_project_visible_revision(chat_id)
         return True, "ok"
@@ -889,6 +1017,7 @@ class LocalChatBridge:
         state: str,
         answered_index: Optional[int] = None,
         chat_id: int = 0,
+        comment: Optional[str] = None,
     ) -> None:
         """Broadcast a quiz lifecycle update to already-rendered cards.
 
@@ -897,6 +1026,8 @@ class LocalChatBridge:
         must never masquerade as a new card. Durability lives in the
         owner_quiz task-result projection (history replay merges it) — this
         frame is the live half only, so a lost broadcast heals on reload.
+        ``comment`` is the owner's recorded free-text answer (#471): the live
+        card renders it exactly as the replayed one does; absent when empty.
         """
         if not self._broadcast_fn:
             return
@@ -909,6 +1040,8 @@ class LocalChatBridge:
         }
         if answered_index is not None:
             msg["answered_index"] = int(answered_index)
+        if str(comment or ""):
+            msg["comment"] = str(comment)
         if int(chat_id or 0):
             msg["chat_id"] = int(chat_id or 0)
         try:
@@ -1097,11 +1230,19 @@ def log_chat(
     size_bytes: Optional[int] = None,
     client_surface: Optional[Dict[str, Any]] = None,
     message_meta: Optional[Dict[str, Any]] = None,
-) -> None:
-    if DATA_DIR:
+    drive_root=None,
+    require_write: bool = False,
+) -> Optional[dict]:
+    root = drive_root if drive_root is not None else DATA_DIR
+    if root:
+        from pathlib import Path
+        from ouroboros.utils import read_json_dict
+
+        root = Path(root)
         record = {
             "ts": ts or utc_now_iso(),
-            "session_id": load_state().get("session_id"),
+            "session_id": ((read_json_dict(root / "state" / "state.json") or {})
+                           if drive_root is not None else load_state()).get("session_id"),
             "direction": direction,
             "chat_id": chat_id,
             "user_id": user_id,
@@ -1137,6 +1278,15 @@ def log_chat(
                     record[key] = meta[key]
         if "task_terminal_status" in meta:
             record["task_terminal_status"] = str(meta.get("task_terminal_status") or "")
+        if meta.get("ephemeral_decision"):
+            # A transient turn has no task_result: its final chat row carries
+            # the same outcome/accounting facts as the live terminal frame.
+            for key in ("ephemeral_decision", "outcome_axes", "reason_code"):
+                if key in meta:
+                    record[key] = meta[key]
+            record.update(carry_cost_meta(meta))
+        if isinstance(meta.get("origin_message_ref"), dict):
+            record["origin_message_ref"] = dict(meta["origin_message_ref"])
         if filename:
             record["filename"] = filename
         if mime:
@@ -1158,7 +1308,13 @@ def log_chat(
             record["quiz"] = dict(quiz)
         if size_bytes is not None:
             record["size_bytes"] = int(size_bytes)
-        append_jsonl(DATA_DIR / "logs" / "chat.jsonl", record)
+        written = append_jsonl(root / "logs" / "chat.jsonl", record, require_lock=require_write)
+        if require_write:
+            if not written:
+                raise RuntimeError("canonical message acceptance could not be persisted")
+            return record
+    elif require_write:
+        raise RuntimeError("canonical message acceptance requires a data root")
 
 
 def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,

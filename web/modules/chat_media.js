@@ -1,8 +1,8 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
 import { showToast } from './toast.js';
-import { downloadViaHostBridge, openViaHostBridge } from './ui_helpers.js';
+import { downloadViaHostBridge, normalizeTone, openViaHostBridge } from './ui_helpers.js';
 import { MAX_LINK_ACTIONS } from './api_types.js';
-import { apiFetch } from './api_client.js';
+import { apiFetch, taskArtifactDownloadUrl } from './api_client.js';
 
 const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 const BASE64_RE = /^[A-Za-z0-9+/=\s]+$/;
@@ -62,15 +62,19 @@ const shownIncidentToastKeys = new Set();
 
 export function showTaskIncidentToast(msg) {
     const incident = String(msg?.task_incident || '').trim();
-    if (!incident) return;
+    if (!incident) return null;
     const key = String(msg?.toast_once || `${msg?.task_id || ''}:${incident}`).trim();
-    if (!key || shownIncidentToastKeys.has(key)) return;
+    if (!key || shownIncidentToastKeys.has(key)) return null;
     shownIncidentToastKeys.add(key);
     if (shownIncidentToastKeys.size > 500) {
         const oldest = shownIncidentToastKeys.values().next().value;
         shownIncidentToastKeys.delete(oldest);
     }
-    showToast(String(msg?.content || msg?.text || incident), 'error');
+    // The incident's valence rides the frame (#628): a recovery is good news,
+    // a wait is a warning, an exhaustion or a cancellation fault is the alarm.
+    // No tone on the frame (older producers, cancellation_fault) keeps the
+    // alarm tone; the text is never parsed for it.
+    return showToast(String(msg?.content || msg?.text || incident), normalizeTone(msg?.toast_tone || 'error', 'error'));
 }
 
 // Best-effort teardown of temporary uploads after a failed send; lives with
@@ -214,14 +218,14 @@ export function createChatMedia({
 
     function fileSource(msg, mime) {
         const base64 = cleanBase64(msg.file_base64);
-        const durable = FILE_URL_RE.test(String(msg.download_url || ''))
-            ? String(msg.download_url)
-            : '';
+        const raw = String(msg.download_url || '');
+        let canonical = '';
+        try { canonical = taskArtifactDownloadUrl(msg.task_id, decodeURIComponent(raw.split('/').at(-1))); } catch {}
+        const durable = raw && (raw === canonical || FILE_URL_RE.test(raw)) ? raw : '';
         return {
             base64,
             durable,
-            // Documents already ship on the files route the gate admits.
-            bridge: durable,
+            bridge: compatMediaUrl(msg?.download_url_compat) || durable,
             src: base64 ? `data:${mime};base64,${base64}` : durable,
         };
     }
@@ -253,7 +257,7 @@ export function createChatMedia({
 
     async function downloadSource(source, filename, mime) {
         if (source.durable) {
-            await downloadViaHostBridge(source.bridge || source.durable, filename, { browserUrl: source.durable });
+            await downloadViaHostBridge(source.bridge || source.durable, filename, { browserUrl: source.durable, streaming: true });
             return;
         }
         downloadBlob(await sourceBlob(source, mime), filename);

@@ -102,7 +102,7 @@ def normalize_attachment_manifest(value: Any) -> list[Dict[str, Any]]:
     rows: list[Dict[str, Any]] = []
     allowed = (
         "ordinal", "status", "reason", "label", "root", "relpath",
-        "abs_path", "mime", "is_image",
+        "abs_path", "mime", "is_image", "size", "sha256", "rule",
     )
     for index, item in enumerate(value):
         if not isinstance(item, Mapping):
@@ -619,6 +619,14 @@ def build_task_contract(task: Mapping[str, Any] | None) -> Dict[str, Any]:
             else (task.get("answer_protocol") or metadata.get("answer_protocol"))
         ),
     }
+    attachment_ref = merged.get("attachment_manifest_ref", task.get("attachment_manifest_ref"))
+    if attachment_ref is not None:
+        if not isinstance(attachment_ref, Mapping):
+            raise ValueError("attachment_manifest_ref must be a file reference")
+        contract["attachment_manifest_ref"] = {
+            key: copy.deepcopy(attachment_ref[key]) for key in
+            ("kind", "root", "path", "size", "sha256", "read", "count") if key in attachment_ref
+        }
     predecessor_authority = (
         merged.get("predecessor_authority")
         if isinstance(merged.get("predecessor_authority"), Mapping)

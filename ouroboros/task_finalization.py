@@ -90,6 +90,22 @@ def provider_terminal_body(text: str, notice: str) -> str:
     return (text + "\n\n" if text else "") + "[Host status]\n" + notice
 
 
+def host_operation_reply_kwargs(source_ref: Any, terminal_status: str = "") -> Dict[str, Any]:
+    """Correlate a host-accepted reply without inventing a durable task result.
+
+    Callers supply the host-captured source, never a transport's arbitrary
+    metadata. An empty status marks an acknowledgement, not completion.
+    """
+    from ouroboros.project_dialogue import owner_message_ref_is_valid
+
+    if not owner_message_ref_is_valid(source_ref):
+        return {}
+    meta = {"origin_message_ref": dict(source_ref)}
+    if terminal_status:
+        meta["task_terminal_status"] = terminal_status
+    return {"progress_meta": meta}
+
+
 def stamp_root_final_phase(
     send_event: Dict[str, Any], task: Dict[str, Any], *, post_task_open: bool, terminal_status: str,
 ) -> None:
@@ -117,14 +133,15 @@ def prepare_terminal_send_event(
     *, ephemeral: bool, presence: bool,
 ) -> Dict[str, Any]:
     """Preserve raw host salvage, then build the one live/replay projection."""
+    if not presence and task.get("_is_direct_chat") and (task.get("metadata") or {}).get("_host_operation"):
+        correlation = host_operation_reply_kwargs(task.get("origin_message_ref"))
+        send_event.setdefault("progress_meta", {}).update(correlation.get("progress_meta", {}))
     origin = str(usage.get("terminal_origin") or "")
     notice = str(usage.get("terminal_provider_notice") or "")
     if ephemeral and not presence:
-        # #369: an ephemeral decision's task_done frame is dropped at the
-        # client's log-event entry by design, so this final is the turn's
-        # ONLY conclusion vehicle. The typed fact mirrors the direct-error
-        # branch (supervisor/workers.py stamps task_terminal_status="failed")
-        # and lets the live concludesTurn gate settle the activity.
+        # This final concludes the transient activity even if task_done is
+        # missed. emit_task_results adds its computed outcome/accounting facts
+        # before dispatch: completed means the turn ended, not that it succeeded.
         send_event.setdefault("progress_meta", {})["task_terminal_status"] = "completed"
     if origin not in _STAMPED_TERMINAL_ORIGINS:
         return send_event

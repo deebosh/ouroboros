@@ -1133,7 +1133,12 @@ class MCPManager:
             if not isinstance(result, ToolResult):
                 raise TypeError("MCP transport returned a non-ToolResult outcome")
         except asyncio.TimeoutError:
-            text = f"⚠️ MCP_TOOL_TIMEOUT: server {cfg.id!r} did not respond in {timeout}s"
+            text = (
+                f"⚠️ MCP_TOOL_TIMEOUT: server {cfg.id!r} did not respond in {timeout}s. "
+                "The remote outcome is unknown: side effects may already have happened, "
+                "and remote cancellation is not confirmed. Use the server-specific status/read "
+                "tool, if available, to reconcile the operation before retrying."
+            )
             return ToolResult(status="timeout", code="MCP_TIMEOUT", text=text)
         except BaseException as exc:  # noqa: BLE001 - any failure is reported
             body = f"⚠️ MCP_TOOL_ERROR: {type(exc).__name__}: {_redact_error_text(exc, cfg)}"
