@@ -240,7 +240,7 @@ def test_update_quiesce_kills_service_group_that_outlives_leader(tmp_path, monke
     rewritten = []
     killed = []
     group_alive = {456: True}
-    monkeypatch.setattr(process_custody, "_read_ledger_strict", lambda _root: (True, [entry]))
+    assert process_custody.append_jsonl(ledger_path(tmp_path), entry)
     monkeypatch.setattr(process_custody, "_fingerprint_matches", lambda _entry: False)
     monkeypatch.setattr(process_custody, "process_group_has_live_members", lambda pgid: group_alive.get(pgid, False))
     monkeypatch.setattr(
@@ -964,7 +964,7 @@ def test_reaper_keeps_dead_leader_session_service_with_a_live_group(tmp_path, mo
         "fingerprint": {"start_time": "gone", "cmd_sha256": "gone"},
     }
     rewritten = []
-    monkeypatch.setattr(process_custody, "_read_ledger", lambda _root: [entry])
+    assert process_custody.append_jsonl(ledger_path(tmp_path), entry)
     monkeypatch.setattr(process_custody, "pid_is_alive", lambda _pid: False)  # leader is dead
     monkeypatch.setattr(process_custody, "process_group_has_live_members", lambda pgid: pgid == 456)
     monkeypatch.setattr(
