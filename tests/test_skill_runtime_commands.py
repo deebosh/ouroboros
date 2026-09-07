@@ -15,13 +15,13 @@ from ouroboros.tools.registry import ToolContext
 pytestmark = pytest.mark.serial
 
 PROGRAMS = {
-    'python': ('py', "import os,sys\nprint(os.getcwd())\nprint(*sys.argv[1:],sep='\\n')\nprint('diagnostic',file=sys.stderr)\nsys.exit(7)\n"),
-    'python3': ('py', "import os,sys\nprint(os.getcwd())\nprint(*sys.argv[1:],sep='\\n')\nprint('diagnostic',file=sys.stderr)\nsys.exit(7)\n"),
-    'node': ('js', "console.log(process.cwd()); for(const x of process.argv.slice(2))console.log(x); console.error('diagnostic'); process.exit(7);"),
-    'deno': ('ts', "console.log(Deno.cwd()); for(const x of Deno.args)console.log(x); console.error('diagnostic'); Deno.exit(7);"),
-    'go': ('go', 'package main\nimport("fmt";"os")\nfunc main(){cwd,_:=os.Getwd();fmt.Println(cwd);for _,a:=range os.Args[1:]{fmt.Println(a)};fmt.Fprintln(os.Stderr,"diagnostic");os.Exit(7)}\n'),
-    'bash': ('sh', 'printf "%s\\n" "$PWD" "$@"\nprintf "diagnostic\\n" >&2\nexit 7\n'),
-    'ruby': ('rb', 'puts Dir.pwd; puts ARGV; STDERR.puts "diagnostic"; exit 7\n'),
+    'python': ('py', "import sys\nfrom pathlib import Path\nprint(Path('cwd-proof.txt').read_text(encoding='utf-8'))\nprint(*sys.argv[1:],sep='\\n')\nprint('diagnostic',file=sys.stderr)\nsys.exit(7)\n"),
+    'python3': ('py', "import sys\nfrom pathlib import Path\nprint(Path('cwd-proof.txt').read_text(encoding='utf-8'))\nprint(*sys.argv[1:],sep='\\n')\nprint('diagnostic',file=sys.stderr)\nsys.exit(7)\n"),
+    'node': ('js', "console.log(require('node:fs').readFileSync('cwd-proof.txt','utf8')); for(const x of process.argv.slice(2))console.log(x); console.error('diagnostic'); process.exit(7);"),
+    'deno': ('ts', "console.log(Deno.readTextFileSync('cwd-proof.txt')); for(const x of Deno.args)console.log(x); console.error('diagnostic'); Deno.exit(7);"),
+    'go': ('go', 'package main\nimport("fmt";"os")\nfunc main(){cwd,_:=os.ReadFile("cwd-proof.txt");fmt.Println(string(cwd));for _,a:=range os.Args[1:]{fmt.Println(a)};fmt.Fprintln(os.Stderr,"diagnostic");os.Exit(7)}\n'),
+    'bash': ('sh', 'printf "%s\\n" "$(cat cwd-proof.txt)" "$@"\nprintf "diagnostic\\n" >&2\nexit 7\n'),
+    'ruby': ('rb', 'puts File.read("cwd-proof.txt", encoding: "UTF-8"); puts ARGV; STDERR.puts "diagnostic"; exit 7\n'),
 }
 
 
@@ -31,6 +31,8 @@ def installed_script(tmp_path, monkeypatch, *, runtime='python3', body="print('o
     data = tmp_path / 'drive, with space'
     payload = data / 'skills/external/runtime_fixture'
     (payload / 'scripts').mkdir(parents=True, exist_ok=True)
+    # A unique relative file proves cwd without comparing each runtime's path spelling.
+    (payload / 'cwd-proof.txt').write_text(f'cwd marker {payload}', encoding='utf-8')
     suffix = PROGRAMS[runtime][0]
     script = payload / f'scripts/main.{suffix}'
     script.write_text(body)
@@ -62,7 +64,7 @@ def test_advertised_runtime_preserves_args_cwd_stderr_and_exit(tmp_path, monkeyp
     assert result.startswith('⚠️ SKILL_EXEC_FAILED'), result
     facts = json.loads(result[result.index('{'):])
     assert facts['exit_code'] == 7 and facts['runtime_phase'] == 'execute', facts
-    assert facts['stdout'].splitlines() == [str(payload), *args], facts
+    assert facts['stdout'].splitlines() == [(payload / 'cwd-proof.txt').read_text(encoding='utf-8'), *args], facts
     assert facts['stderr'].strip() == 'diagnostic'
     assert not list((ctx.drive_root / 'state/skills/runtime_fixture').glob('go-exec-*'))
 
