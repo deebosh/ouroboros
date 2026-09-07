@@ -81,3 +81,51 @@ def test_same_generation_zombie_record_is_pruned(monkeypatch, tmp_path):
     monkeypatch.setattr(process_custody, "_rewrite_ledger", lambda _, rows, **_kw: survivors.extend(rows))
     assert process_custody.reap_orphaned_processes(tmp_path) == []
     assert survivors == []
+
+
+@pytest.mark.parametrize("live_or_unknown", [False, True])
+def test_test_group_cleanup_requires_positive_quiet_census(monkeypatch, live_or_unknown):
+    from ouroboros import platform_layer
+    from tests._shared import reap_test_process_group
+
+    signals, waits, inspected = [], [], []
+    # The existing best-effort primitive has no success result, including on
+    # EPERM. Model that contract without replacing the host's os.killpg.
+    monkeypatch.setattr(platform_layer, "kill_process_group_id", signals.append)
+    def census(pgid):
+        inspected.append(pgid)
+        return live_or_unknown
+    monkeypatch.setattr(process_containment, "process_group_has_live_members", census)
+    supervisor = SimpleNamespace(pid=123, wait=lambda **kw: waits.append(kw))
+    if live_or_unknown:
+        with pytest.raises(AssertionError, match="live or unknown members"):
+            reap_test_process_group(supervisor, timeout_sec=0)
+    else:
+        reap_test_process_group(supervisor, timeout_sec=0)
+    assert signals == inspected == [123]
+    assert waits == [{"timeout": 0}]
+
+
+@pytest.mark.serial
+@pytest.mark.skipif(os.name == "nt", reason="test-owned POSIX process group")
+def test_test_group_cleanup_reaps_live_helper(tmp_path):
+    from tests._shared import reap_test_process_group
+
+    # The helper shares the new session/group but is not our direct child.
+    script = (
+        "import subprocess,sys,time\n"
+        "helper=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'])\n"
+        "print(helper.pid,flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    supervisor = subprocess.Popen([sys.executable, "-c", script], start_new_session=True,
+                                  stdout=subprocess.PIPE, text=True)
+    try:
+        helper_pid = int(supervisor.stdout.readline())
+        assert process_containment.process_group_has_live_members(supervisor.pid)
+        reap_test_process_group(supervisor)
+        assert not process_containment.process_group_has_live_members(supervisor.pid)
+        assert not process_custody.pid_is_alive(helper_pid) or process_containment.pid_is_zombie(helper_pid)
+    finally:
+        reap_test_process_group(supervisor)
+        supervisor.stdout.close()
