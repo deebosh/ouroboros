@@ -73,7 +73,7 @@ def test_update_quiesces_zombie_leader_without_losing_live_child(tmp_path, live_
 def test_same_generation_zombie_record_is_pruned(monkeypatch, tmp_path):
     entry = {"pid": 123, "pgid": 123, "purpose": "service:exited", "scope": "session",
              "session_id": process_custody.current_custody_session_id()}
-    monkeypatch.setattr(process_custody, "_read_ledger", lambda _: [entry])
+    assert process_custody.append_jsonl(process_custody.ledger_path(tmp_path), entry)
     monkeypatch.setattr(process_custody, "pid_is_alive", lambda _: True)
     monkeypatch.setattr(process_custody, "pid_is_zombie", lambda _: True)
     monkeypatch.setattr(process_custody, "process_group_has_live_members", lambda _: False)

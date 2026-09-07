@@ -278,7 +278,7 @@ def test_every_supervisor_worker_tree_kill_is_the_shared_one():
 def test_retained_purpose_never_rescues_a_stale_identity(tmp_path, monkeypatch):
     row = {"pid": 123, "purpose": claudexor_daemon.CUSTODY_PURPOSE, "scope": "session",
            "session_id": "old-generation"}
-    monkeypatch.setattr(process_custody, "_read_ledger", lambda _: [row])
+    assert process_custody.append_jsonl(process_custody.ledger_path(tmp_path), row)
     monkeypatch.setattr(process_custody, "_fingerprint_matches", lambda _: False)
     kept = []
     monkeypatch.setattr(process_custody, "_rewrite_ledger", lambda _, entries, **_kw: kept.extend(entries))
