@@ -53,16 +53,20 @@ def test_reaper_preserves_same_pid_append_and_opaque_bytes(tmp_path, monkeypatch
         stream.write(opaque)
     observed_end = path.stat().st_size
     original = custody._fingerprint_matches
+    appended_bytes = []
 
     def check_and_append(entry):
         assert entry == latest
         assert custody.append_jsonl(path, appended)
+        appended_bytes.append(path.read_bytes()[observed_end:])
         return original(entry)
 
     monkeypatch.setattr(custody, "_fingerprint_matches", check_and_append)
     before = path.read_bytes()
     assert custody.reap_orphaned_processes(tmp_path) == []
-    expected_tail = json.dumps(appended, ensure_ascii=False).encode() + b"\n"
+    # Preserve the writer's actual bytes, including native text-mode newlines.
+    expected_tail, = appended_bytes
+    assert json.loads(expected_tail) == appended
     assert len(before) == observed_end
     assert path.read_bytes() == opaque + expected_tail
     assert custody._read_ledger(tmp_path) == [appended]
