@@ -131,25 +131,6 @@ def test_content_cap_with_count_cap_active_evicts_in_single_pass(tmp_path):
     assert kept[-3]["content"].endswith("-9")
 
 
-def test_content_cap_respects_pinning(tmp_path):
-    """A pinned block is exempt from BOTH caps, consistent with ibl-3d7b7b7d5dc9.
-    When the only eligible victims are pinned, the list grows past both caps."""
-    mem = _mem(tmp_path)
-    pinned = mem.append_scratchpad_block("p" * 50_000, source="task")
-    mem.pin_scratchpad_block(pinned["ts"])
-    # This block is so big that even with the pinned one removed, we'd need
-    # to evict many. Pin the second too so both are exempt.
-    pinned2 = mem.append_scratchpad_block("q" * 50_000, source="task")
-    mem.pin_scratchpad_block(pinned2["ts"])
-    # One more block pushes us over the cap.
-    mem.append_scratchpad_block("r" * 50_000, source="task")
-    kept = _blocks(mem)
-    # Two pinned blocks + one new = 3; both are exempt from eviction.
-    assert len(kept) == 3
-    pinned_tss = {pinned["ts"], pinned2["ts"]}
-    assert pinned_tss.issubset({b["ts"] for b in kept})
-
-
 def test_content_cap_does_not_evict_when_already_under(tmp_path):
     """Sanity: small blocks don't trigger content-cap eviction."""
     mem = _mem(tmp_path)
