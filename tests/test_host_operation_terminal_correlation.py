@@ -146,6 +146,7 @@ def test_restart_acknowledgement_does_not_claim_the_operation_finished(tmp_path,
     server._process_bridge_updates(bridge, 0, ctx)
     inbound, acknowledgement, refused = list(iter_jsonl_objects(tmp_path / "logs/chat.jsonl"))
     assert inbound["direction"] == "in"
+    assert acknowledgement["text"] == "♻️ Restarting."
     assert acknowledgement["origin_message_ref"] == refused["origin_message_ref"]
     assert "task_terminal_status" not in acknowledgement
     assert refused["task_terminal_status"] == "failed" and "controlled refusal" in refused["text"]
