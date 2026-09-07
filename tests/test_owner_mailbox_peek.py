@@ -183,7 +183,8 @@ def test_acknowledged_owner_source_and_wait_completeness_remain_distinct(tmp_pat
     if ack_state != "missing":
         assert mailbox.acknowledge_task_messages(tmp_path, "parent", ["owner"], wake_id="delivered")
     if ack_state == "torn":
-        ack.write_bytes(ack.read_bytes().rstrip(b"\n"))
+        ack.write_bytes(ack.read_bytes().rstrip(b"\r\n"))
+        assert not ack.read_bytes().endswith((b"\r", b"\n"))
     elif ack_state == "malformed":
         with ack.open("ab") as stream:
             stream.write(b"not-json\n")
