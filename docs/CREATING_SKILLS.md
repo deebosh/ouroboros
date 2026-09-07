@@ -140,6 +140,20 @@ execute), and required for `script` / `extension`. Allowed values are
 `shutil.which` at exec time, so the operator's host must ship the
 runtime; otherwise `skill_exec` fails closed with a clear error.
 
+Go scripts are compiled into a private temporary executable and then run with
+the caller's arguments unchanged, including arguments ending in `.go`. The
+compiler and program share the invocation timeout; `runtime_phase` distinguishes
+a compilation failure from the program's own exit status. Cleanup uses the same
+tracked-process path as the other script runtimes.
+
+Deno receives `run --no-prompt` and permissions before the script operand.
+Ordinary reads remain available; `fs` permits writes outside the existing skill
+state directory, `net` permits network calls unless the task disables network,
+and `subprocess` permits child processes. Environment access names only the keys
+actually forwarded after grants. A task with network disabled also requires
+cached imports. These are the existing reviewed script effects, not a new OS
+sandbox: in particular, an allowed child process has ordinary host privileges.
+
 `conflicts` is an optional list of canonical skill names (letters, numbers,
 dash, underscore, or dot; at most 32 entries). If either enabled skill names
 the other, both readiness and extension loading fail closed with a typed
@@ -187,7 +201,9 @@ flowchart LR
   in `data/state/skills/<name>/deps.json`.
 - **Enable** flips `enabled.json` after a fresh executable review + grants + deps. The
   Skills UI surfaces a toggle; agents can also call `toggle_skill`.
-  Self-authored provenance does not change the enablement path.
+  A self-authored skill's first enablement can follow
+  `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS`; otherwise enabling requires the owner
+  toggle or an agent acting on the owner's expressed instruction.
 - **Execute**: `skill_exec` runs `type: script` skills as
   subprocess. `type: extension` skills without isolated deps normally run
   through the in-process loader; extensions with reviewed isolated deps are
@@ -237,8 +253,50 @@ install:
 Bare `dependencies` entries are treated as Python packages. `pip`,
 `pipx`, `uv`, `npm`, and `node` specs are installed only after a fresh
 executable review and only under the skill's `.ouroboros_env` directory.
-Global package-manager or arbitrary-download specs remain manual setup
-guidance.
+Global package-manager specs remain manual setup guidance. Exact resources and
+explicit build actions use the same isolated install owner:
+
+```yaml
+install_specs:
+  - kind: download
+    url: https://example.org/application/disk.img
+    # Replace both with the publisher's exact artifact facts.
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    size_bytes: 9437184
+    version: application-data-1
+    target: resources/disk.img
+    platforms: [linux, darwin, win32]
+```
+
+`target`, step `cwd`, and `outputs` are relative to `.ouroboros_env` and must
+remain inside it. Platform names are `sys.platform`, optionally followed by
+`-` and the lowercase `platform.machine()` value (for example,
+`linux-x86_64` or `darwin-arm64`); omitted `platforms` applies everywhere.
+An inapplicable entry is recorded as skipped. Resources are verified by size
+and digest before landing; no package-size cap is borrowed for this file path.
+The content-addressed resource and package caches live under
+`state/skills/<name>/dependency_cache/`, outside the replaceable payload/env.
+Replacing the environment or retrying therefore reuses verified downloaded
+bytes; a different digest selects a different cache entry.
+
+An entry may also declare `steps: [{argv: [...], cwd: "."}]`, `outputs:
+["bin/helper"]`, and `check: {argv: ["helper", "--version"]}`. Arguments stay
+literal; no shell interpolation is performed. Steps require outputs and a
+concrete successful check; declared `bins` must resolve after installation.
+Build tools use the existing process tracking, timeout and cancellation path.
+The normal installer invokes new downloads/build declarations only against
+their fresh executable review and hash-covered specs, rechecking the pinned
+payload before each build/check process.
+
+Python `allow_source_build: true` and npm `allow_install_scripts: true` opt in
+per entry, each with a declared `check`. Without those flags pip remains
+wheel-only and npm keeps `--ignore-scripts`. An already installed npm package
+can be rebuilt explicitly on retry without rebuilding unrelated packages.
+`deps.json` records resource digests, actual resolved package metadata,
+output hashes and build diagnostics. `installed` records delivery;
+`executable_ready` is unknown without a declared check and true only after
+that check succeeds. A failed check stays failed, even if the package manager
+returned zero. Manual dependencies do not acquire a new universal probe gate.
 
 For `type: extension`, any reviewed isolated dependency env is kept out of
 `server.py`: `plugin.py` cataloging and tool/route/WS handlers run in a
@@ -375,7 +433,7 @@ dropped in silence.
 
 ## The `skill_preflight` tool
 
-When you are writing a skill (or repairing one in heal mode),
+When you are writing or repairing a skill,
 `skill_preflight` runs cheap, offline syntax validators on the
 payload — in-process Python `compile()` for `.py` files (no
 `__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs` (a
@@ -409,9 +467,12 @@ skill_preflight(skill="weather", paths=["plugin.py"])
 
 ## Repair task path scheme and edit tools
 
-Skills repaired from the Skills or Marketplace UI run under a structured
-`task_constraint.mode="skill_repair"`. The constraint identifies the selected
-skill and payload root, so repair tools use payload-relative paths:
+**Repair and run** from the Skills or Marketplace UI starts an ordinary managed
+development task. The confirmed request is retained as a real owner message, not
+a presentation-only acknowledgement. Its normal task constraint records the selected skill and physical payload
+root; the task also retains the request source and initial content revision.
+Persisted `mode="skill_repair"` task records remain readable with the same ordinary
+tool capabilities. Payload-relative paths address the selected installation:
 
 | Tool | Repair path example | Use when |
 |------|---------------------|----------|
@@ -419,12 +480,27 @@ skill and payload root, so repair tools use payload-relative paths:
 | `edit_text` with `root=skill_payload` | `plugin.py` | One exact replacement in an existing file. |
 | `write_file` with `root=skill_payload` | `new_module.py` | New files or intentional full-file rewrites. |
 | `skill_preflight` | `skill="weather"` | Cheap read-only syntax/schema check before LLM review. |
-| `skill_review` | `skill="weather"` | Required final reviewer-slot review. |
+| `skill_review` | `skill="weather"` | Review the changed payload before execution. |
 
-Repair mode blocks shell, browser/search, scheduling, skill execution,
-repo commits, extension tools, key grants, and enable/disable flows. Finish
-with `skill_preflight` and `skill_review`; the owner enables or grants access
-after a fresh executable review.
+The task retains ordinary shell, browser, search, delegation and execution tools.
+The installed payload is usually a normal directory; an isolated Git copy through
+delegation is optional. Selected payload operations check the known revision;
+after an opaque shell command the task records the observed revision without
+claiming every concurrent change as its own.
+
+Test the repaired installation through its real script, extension tool, HTTP
+route, widget or companion after the normal review, dependencies and permissions
+checks. Review does not forcibly unload a working extension. Inspect widget
+screenshots and repeat the edit/review/execution cycle when fixes are needed.
+
+Repair and run authorizes enabling and testing the repaired installation, leaving
+it working. After review, the model calls `toggle_skill`; the host resolves the
+task's actual original owner message by default. A later direct owner disable
+requires a newer owner instruction. Repair does not authorize granting all
+permissions, attestation or deletion. Existing auto-grant policy still applies. `skill_owner_action` uses the shared lifecycle owners only with the
+specific action, revision and existing owner-intent source; a source reference
+alone is not permission. An automatic edit-and-review request retains
+`allow_enable=False` and does not gain enablement authority from being a Repair.
 
 ### Top-level short-form authoring (including light mode)
 
@@ -439,9 +515,9 @@ one returns a clear
 `bucket and skill_name must be supplied together` error instead of silently
 writing into the drive root.
 
-The constrained Skills UI Repair lane is intentionally narrower and unchanged:
-it still selects only its declared non-native payload and has no shell or
-delegation capability.
+The selected-skill constraint keeps payload-relative calls attached to their
+declared physical skill. Ordinary development capabilities remain available;
+selecting another payload is not an implicit redirect of this task's target.
 
 To **create a new skill** the payload directory need not pre-exist: writing the
 manifest at the payload root (`path="SKILL.md"` or `path="skill.json"`) is the
@@ -523,8 +599,9 @@ consent. The desktop launcher's owner-grant bridge records these grants.
 The Skills UI surfaces missing grants on the skill card. The agent
 can also call `toggle_skill enabled=true` only after grants are
 approved (the tool returns `SKILL_TOGGLE_ERROR: cannot enable until
-requested key and permission grants are approved`). Self-authored markers are
-provenance only; they do not auto-grant keys or auto-enable skills.
+requested key and permission grants are approved`). Self-authored markers alone
+do not authorize grants or enablement. Automatic grants and first enablement
+follow the setting below; an explicitly authorized task toggle remains separate.
 
 `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS` is enabled by default as of v6.10.0; the
 owner may disable it in Settings → Behavior → Skills (desktop asks for native
@@ -1069,8 +1146,12 @@ ClawHub archives are capped at 8 MiB per file, 50 MiB uncompressed in total,
 and 200 files (`ouroboros/marketplace/fetcher.py`); OuroborosHub catalog files
 at 5 MiB each (`ouroboros/marketplace/ouroboroshub.py`). A large runtime image
 — a v86 disk image of several megabytes and up — does not fit a package: have
-the skill download it at runtime (with the `net` permission) into its state
-directory (`state_dir` from `api.get_runtime_info()`) and serve it from there.
+the installer fetch it through an exact `download` spec and serve it from
+`<skill_dir>/.ouroboros_env/resources/` (`skill_dir` comes from
+`api.get_runtime_info()`). The existing runtime-download path into the skill
+state directory remains available for dynamic data. Declared automatic
+dependencies select the existing process executor; persistent subscriptions
+and long-lived work still use the documented companion facilities.
 Locally installed skills have no per-file cap; the review pack budget is the
 only bound. The frame's `img-src`/`media-src`/`font-src` admit your skill's
 route prefix, so `<img src="/api/extensions/<skill>/logo.png">`,
@@ -1304,6 +1385,17 @@ the tool result and never cancels the real PR. The Skills UI reads it for the
 "Submitted PR #N" badge and the adopt confirmation copy; it survives
 uninstall and adopt, and a republish overwrites it.
 
+If a submission is no longer being pursued, **Clear local submission** on its
+OuroborosHub card removes that local waiting state. The action preserves the
+installed files, review and grants, and does not close or change the GitHub PR.
+It clears the receipt shown on the card; if another publication replaced it,
+refresh the card first. Returning to My skills refreshes the submission badge.
+
+For a catalog update, the tool result and PR body name both the current catalog
+version and the proposed version. Versions are opaque strings: an older-looking
+or non-semantic version is allowed, while an identical version still needs to
+change before publishing an update.
+
 Publication succeeds only when the task records a validated pull-request
 receipt in the configured Hub repository for this exact skill. A branch,
 commit, refusal report, or unfinished attempt is partial progress, not
@@ -1344,7 +1436,7 @@ def register(api):
 | `SKILL_EXEC_BLOCKED: review status is 'pending'` | Run `skill_review` for this skill. |
 | `SKILL_TOGGLE_ERROR: dependency fingerprint is stale` | Re-run `skill_review`; post-review deps reconciliation will reinstall. |
 | `EXTENSION_NOT_LIVE` on tool dispatch | The skill is disabled or the loader had a load_error — check the Skills UI. |
-| `HEAL_MODE_BLOCKED: ...` | The Repair task tried to call a tool the internal heal-mode allowlist does not permit; finish the Repair flow with `skill_review` and exit. |
+| `SKILL_REPAIR_STALE: ...` | The selected payload or its admission revision changed; inspect the current state and the reported conflict before continuing. |
 | `PluginAPI.register_*` raises `ExtensionRegistrationError` | Usually the skill is missing the matching permission in its manifest. For `register_companion_process` the name must also be alnum/underscore and declared under `companion_processes` — see "Declaring a companion process". |
 | Reviewer marks `widget_module_safety: FAIL` | `widget.js` fetches outside `/api/extensions/<skill>/`, talks to the parent through its own `postMessage` protocol, declares a `start` mode heavier than the widget needs, or keeps state only inside the frame. Move data through your own routes and save it from `__ouroWidgetOnDispose` (autosave while running until the host's dispose acknowledgement ships). |
 

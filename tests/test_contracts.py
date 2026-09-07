@@ -56,6 +56,39 @@ from ouroboros.contracts import (
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
+@pytest.mark.parametrize("mode", ["normal", "skill_repair"])
+def test_selected_skill_constraint_survives_serialized_task_recovery(mode):
+    from dataclasses import asdict
+    from ouroboros.contracts.task_constraint import normalize_task_constraint, resolve_payload_path
+
+    constraint = normalize_task_constraint({
+        "mode": mode, "skill_name": "weather", "payload_root": "skills\\external\\weather",
+        "allow_enable": False, "allow_review": True,
+    })
+    recovered = normalize_task_constraint(json.loads(json.dumps(asdict(constraint))))
+    assert recovered == constraint and recovered.mode == mode
+    assert recovered.has_selected_skill
+    assert not recovered.allow_enable and recovered.allow_review
+    with tempfile.TemporaryDirectory() as directory:
+        data = pathlib.Path(directory).resolve()
+        assert resolve_payload_path(data, recovered, "scripts/main.py") == data / "skills/external/weather/scripts/main.py"
+
+
+@pytest.mark.parametrize("payload", [
+    {}, {"skill_name": "weather"}, {"payload_root": "skills/external/weather"},
+    {"mode": "acting_subagent", "skill_name": "weather", "payload_root": "skills/external/weather"},
+    {"mode": "local_readonly_subagent", "skill_name": "weather", "payload_root": "skills/external/weather"},
+    {"mode": "unknown", "skill_name": "weather", "payload_root": "skills/external/weather"},
+])
+def test_selected_skill_is_not_implied_by_partial_or_child_task_metadata(payload):
+    from ouroboros.contracts.task_constraint import normalize_task_constraint
+
+    constraint = normalize_task_constraint(payload)
+    assert not constraint.has_selected_skill
+    if constraint.mode in {"acting_subagent", "local_readonly_subagent"}:
+        assert not constraint.allow_enable and not constraint.allow_review
+
+
 # ---------------------------------------------------------------------------
 # Public surface
 # ---------------------------------------------------------------------------

@@ -31,6 +31,10 @@ PUBLICATION_FILENAME = "ouroboroshub.json"
 _CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
+class PublicationRecordChanged(ValueError):
+    """The displayed publication is no longer the current local receipt."""
+
+
 def write_provenance(
     drive_root: pathlib.Path,
     skill_name: str,
@@ -127,6 +131,8 @@ def _publication_diagnostic(record: Optional[Dict[str, Any]]) -> Optional[str]:
     schema_version = record.get("schema_version")
     if isinstance(schema_version, bool) or schema_version != _SCHEMA_VERSION:
         return "publication record has an unsupported schema_version"
+    if "published" in record and record["published"] is None:
+        return None  # Explicit owner clear; absent/malformed objects still fail below.
     published = record.get("published")
     if not isinstance(published, dict):
         return "publication record is missing a published object"
@@ -151,7 +157,7 @@ def read_publication_record(
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Return ``(published, diagnostic)`` for the publication receipt.
 
-    * ``(None, None)`` — no record file on disk (never published from here).
+    * ``(None, None)`` — no active receipt (absent or explicitly cleared).
     * ``(dict, None)`` — the validated ``published`` section, as stored.
     * ``(None, str)`` — the file exists but is malformed or fails the
       schema-v1 validation contract; the string is a typed diagnostic.
@@ -165,12 +171,47 @@ def read_publication_record(
     diagnostic = _publication_diagnostic(record)
     if diagnostic is not None:
         return None, diagnostic
-    return dict(record["published"]), None
+    return dict(record["published"]) if record["published"] is not None else None, None
+
+
+def clear_publication_record(
+    drive_root: pathlib.Path, skill_name: str, expected: Mapping[str, Any],
+) -> bool:
+    """Clear only the shown publication under the existing section-writer lock.
+
+    Unknown sibling sections survive. This is a local receipt operation; the
+    public pull request and the installed payload are not modified.
+    """
+    wanted = dict(expected)
+    if problem := _publication_diagnostic({"schema_version": _SCHEMA_VERSION, "published": wanted}):
+        raise ValueError(problem)
+    target = skill_state_dir(drive_root, skill_name) / PUBLICATION_FILENAME
+    changed = False
+
+    def clear(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        nonlocal changed
+        if not current and not target.exists():
+            return None
+        if problem := _publication_diagnostic(current):
+            raise ValueError(problem)
+        if current["published"] is None:
+            return None
+        if current["published"] != wanted:
+            raise PublicationRecordChanged("Local publication changed; refresh the card before clearing it.")
+        changed = True
+        return {**current, "published": None}
+
+    update_json_locked(
+        target, clear, strict_existing_dict=True,
+    )
+    return changed
 
 
 __all__ = [
     "PROVENANCE_FILENAME",
     "PUBLICATION_FILENAME",
+    "PublicationRecordChanged",
+    "clear_publication_record",
     "delete_provenance",
     "merge_state_record",
     "read_provenance",

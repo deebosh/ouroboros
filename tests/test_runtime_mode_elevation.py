@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import types
 
 import pytest
 
@@ -1339,271 +1338,117 @@ def test_launcher_auto_grant_bridge_disables_truthy_alias(monkeypatch):
     assert saved["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] == "false"
 
 
+def _launcher_grant_skill(tmp_path, monkeypatch, *, name="demo", skill_type="script", permissions=(), keys=("OPENROUTER_API_KEY",)):
+    import launcher
+    from ouroboros.skill_loader import SkillReviewState, load_skill, save_review_state
+
+    drive = tmp_path / "data"
+    payload = drive / "skills" / "external" / name
+    payload.mkdir(parents=True)
+    declaration = {
+        "script": "runtime: python3\nscripts:\n  - name: run.py\n",
+        "extension": "entry: plugin.py\nplugin_api: '2.0'\n",
+        "instruction": "",
+    }[skill_type]
+    (payload / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Launcher grant fixture.\nversion: 1.0.0\ntype: {skill_type}\n"
+        f"permissions: {json.dumps(list(permissions))}\nenv_from_settings: {json.dumps(list(keys))}\n"
+        "subscribe_events: [chat.outbound]\n" + declaration + "---\n"
+    )
+    if skill_type == "script":
+        (payload / "scripts").mkdir()
+        (payload / "scripts" / "run.py").write_text("print('ok')\n")
+    if skill_type == "extension":
+        (payload / "plugin.py").write_text("def register(api):\n    return None\n")
+    loaded = load_skill(payload, drive)
+    save_review_state(drive, name, SkillReviewState(status="clean", content_hash=loaded.content_hash))
+    monkeypatch.setattr(launcher, "DATA_DIR", drive)
+    monkeypatch.setattr(launcher, "REPO_DIR", tmp_path / "repo")
+    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
+    monkeypatch.setattr(launcher, "_read_port_file", lambda: 8765)
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", "")
+    return loaded, drive
+
+
 def test_launcher_skill_key_grant_validates_review_and_manifest(monkeypatch, tmp_path):
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = ["OPENROUTER_API_KEY"]
-        def is_script(self):
-            return True
-        def is_extension(self):
-            return False
-
-    class _Review:
-        status = "advisory_pass"
-        def is_stale_for(self, _hash):
-            return False
-
-    loaded = types.SimpleNamespace(
-        name="demo",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="hash-a",
-    )
-    captured = {}
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-    monkeypatch.setattr(
-        "ouroboros.skill_loader.save_skill_grants",
-        lambda drive, name, keys, **kw: captured.update(
-            {"drive": drive, "name": name, "keys": keys, **kw}
-        ),
-    )
-
-    result = launcher._request_skill_key_grant(
-        "demo",
-        ["OPENROUTER_API_KEY"],
-        lambda _title, _message: True,
-    )
-
+    loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch)
+    result = launcher._request_skill_key_grant("demo", ["OPENROUTER_API_KEY"], lambda *a: True)
     assert result["ok"] is True
-    assert captured["name"] == "demo"
-    assert captured["keys"] == ["OPENROUTER_API_KEY"]
-    assert captured["content_hash"] == "hash-a"
-    assert captured["requested_keys"] == ["OPENROUTER_API_KEY"]
-    # v5.2.2: scripts pick up grants on next ``_scrub_env`` call so no
-    # server reconcile is invoked. ``extension_action`` and
-    # ``extension_reason`` therefore stay ``None`` for script-type
-    # skills.
+    grants = load_skill_grants(drive, "demo")
+    assert grants["granted_keys"] == ["OPENROUTER_API_KEY"]
+    assert grants["requested_keys"] == ["OPENROUTER_API_KEY"]
+    assert grants["content_hash"] == loaded.content_hash
     assert result.get("extension_action") is None
     assert result.get("extension_reason") is None
 
 
 def test_launcher_skill_grant_supports_permission_grants(monkeypatch, tmp_path):
+    import io
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = []
-        permissions = ["inject_chat", "subscribe_event"]
-        subscribe_events = ["chat.outbound"]
-        def is_script(self):
-            return False
-        def is_extension(self):
-            return True
-
-    class _Review:
-        status = "pass"
-        def is_stale_for(self, _hash):
-            return False
-
-    loaded = types.SimpleNamespace(
-        name="bridge",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="hash-a",
-    )
-    captured = {}
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-    monkeypatch.setattr(
-        "ouroboros.skill_loader.save_skill_grants",
-        lambda drive, name, keys, **kw: captured.update(
-            {"drive": drive, "name": name, "keys": keys, **kw}
-        ),
-    )
-    monkeypatch.setattr("urllib.request.urlopen", lambda *_a, **_kw: types.SimpleNamespace(read=lambda: b'{"ok": true}'))
-
-    result = launcher._request_skill_key_grant(
-        "bridge",
-        ["inject_chat", "subscribe_event:chat.outbound"],
-        lambda _title, _message: True,
-    )
-
+    _loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch, name="bridge", skill_type="extension",
+                                         keys=(), permissions=("inject_chat", "subscribe_event"))
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: io.BytesIO(b'{"ok":true}'))
+    result = launcher._request_skill_key_grant("bridge", ["inject_chat", "subscribe_event:chat.outbound"], lambda *a: True)
     assert result["ok"] is True
-    assert captured["keys"] == []
-    assert captured["granted_permissions"] == ["inject_chat", "subscribe_event:chat.outbound"]
-    assert captured["requested_permissions"] == ["inject_chat", "subscribe_event:chat.outbound"]
+    assert result["granted_permissions"] == ["inject_chat", "subscribe_event:chat.outbound"]
+    grants = load_skill_grants(drive, "bridge")
+    assert grants["granted_keys"] == []
+    assert grants["granted_permissions"] == result["granted_permissions"]
 
 
 def test_launcher_skill_key_grant_supports_extensions(monkeypatch, tmp_path):
-    """v5.2.2 dual-track grants: ``type: extension`` skills can be
-    granted core keys and the launcher posts to the agent server's
-    /api/skills/<name>/reconcile so the new grant reaches the live
-    plugin without forcing a manual disable/enable.
-
-    The launcher and server are independent OS processes — this test
-    verifies the cross-process contract by stubbing ``urllib.request.urlopen``
-    instead of stubbing ``reconcile_extension`` directly (which only
-    runs in the launcher process and would not affect the server).
-    """
+    """The launcher grants locally, then reconciles in the real server process."""
+    import io
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = ["OPENROUTER_API_KEY"]
-        def is_script(self):
-            return False
-        def is_extension(self):
-            return True
+    _loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch, name="demo_ext", skill_type="extension")
+    calls = []
 
-    class _Review:
-        status = "pass"
-        def is_stale_for(self, _hash):
-            return False
+    def response(request, timeout=10):
+        calls.append((request.full_url, request.get_method()))
+        assert load_skill_grants(drive, "demo_ext")["granted_keys"] == ["OPENROUTER_API_KEY"]
+        return io.BytesIO(b'{"extension_action":"extension_loaded","extension_reason":"ready","live_loaded":true}')
 
-    loaded = types.SimpleNamespace(
-        name="demo_ext",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="ext-hash",
-    )
-    captured: dict = {}
-    reconcile_calls: list = []
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr(launcher, "_read_port_file", lambda: 8765)
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-    monkeypatch.setattr(
-        "ouroboros.skill_loader.save_skill_grants",
-        lambda drive, name, keys, **kw: captured.update(
-            {"drive": drive, "name": name, "keys": keys, **kw}
-        ),
-    )
-
-    class _FakeResponse:
-        def __init__(self, body: bytes):
-            self._body = body
-        def read(self):
-            return self._body
-        def __enter__(self):
-            return self
-        def __exit__(self, *_):
-            return False
-
-    def _fake_urlopen(req, timeout=10):
-        reconcile_calls.append({
-            "url": req.full_url,
-            "method": req.get_method(),
-            "data": req.data,
-        })
-        return _FakeResponse(
-            b'{"skill":"demo_ext","extension_action":"extension_loaded",'
-            b'"extension_reason":"ready","live_loaded":true,"load_error":null}'
-        )
-
-    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
-
-    result = launcher._request_skill_key_grant(
-        "demo_ext",
-        ["OPENROUTER_API_KEY"],
-        lambda _title, _message: True,
-    )
-
+    monkeypatch.setattr("urllib.request.urlopen", response)
+    result = launcher._request_skill_key_grant("demo_ext", ["OPENROUTER_API_KEY"], lambda *a: True)
     assert result["ok"] is True
-    assert captured["name"] == "demo_ext"
-    assert captured["keys"] == ["OPENROUTER_API_KEY"]
-    assert len(reconcile_calls) == 1
-    call = reconcile_calls[0]
-    assert call["url"] == "http://127.0.0.1:8765/api/skills/demo_ext/reconcile"
-    assert call["method"] == "POST"
-    assert result.get("extension_action") == "extension_loaded"
+    assert calls == [("http://127.0.0.1:8765/api/skills/demo_ext/reconcile", "POST")]
+    assert result["extension_action"] == "extension_loaded"
 
 
 def test_launcher_skill_key_grant_handles_reconcile_http_error(monkeypatch, tmp_path):
-    """If the server-side reconcile HTTP call fails, the grant write
-    succeeded but the response carries ``extension_reason='reconcile_call_failed'``
-    so the UI can warn the user without throwing away the persisted grant."""
+    """A failed reconcile does not undo a grant already persisted by its owner."""
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = ["OPENROUTER_API_KEY"]
-        def is_script(self):
-            return False
-        def is_extension(self):
-            return True
+    _loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch, name="demo_ext", skill_type="extension")
 
-    class _Review:
-        status = "pass"
-        def is_stale_for(self, _hash):
-            return False
-
-    loaded = types.SimpleNamespace(
-        name="demo_ext",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="ext-hash",
-    )
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr(launcher, "_read_port_file", lambda: 8765)
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-    monkeypatch.setattr(
-        "ouroboros.skill_loader.save_skill_grants",
-        lambda *_a, **_kw: None,
-    )
-
-    def _broken_urlopen(*_a, **_kw):
+    def unavailable(*a, **k):
         raise ConnectionError("server not reachable")
 
-    monkeypatch.setattr("urllib.request.urlopen", _broken_urlopen)
-
-    result = launcher._request_skill_key_grant(
-        "demo_ext",
-        ["OPENROUTER_API_KEY"],
-        lambda _title, _message: True,
-    )
-
-    # Grant itself succeeded (file persisted)
+    monkeypatch.setattr("urllib.request.urlopen", unavailable)
+    result = launcher._request_skill_key_grant("demo_ext", ["OPENROUTER_API_KEY"], lambda *a: True)
     assert result["ok"] is True
-    assert result.get("granted_keys") == ["OPENROUTER_API_KEY"]
-    # But the server reconcile failed and the UI is told
-    assert result.get("extension_reason") == "reconcile_call_failed"
-    assert result.get("extension_action") is None
+    assert load_skill_grants(drive, "demo_ext")["granted_keys"] == ["OPENROUTER_API_KEY"]
+    assert result["extension_reason"] == "reconcile_call_failed"
+    assert result["extension_action"] is None
 
 
 def test_launcher_skill_key_grant_rejects_instruction_skill(monkeypatch, tmp_path):
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = ["OPENROUTER_API_KEY"]
-        def is_script(self):
-            return False
-        def is_extension(self):
-            return False
-
-    class _Review:
-        status = "pass"
-        def is_stale_for(self, _hash):
-            return False
-
-    loaded = types.SimpleNamespace(
-        name="instr",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="instr-hash",
-    )
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-
-    result = launcher._request_skill_key_grant(
-        "instr",
-        ["OPENROUTER_API_KEY"],
-        lambda _title, _message: True,
-    )
+    _loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch, name="instr", skill_type="instruction")
+    result = launcher._request_skill_key_grant("instr", ["OPENROUTER_API_KEY"], lambda *a: True)
     assert result["ok"] is False
     assert "script and extension" in result["error"]
+    assert load_skill_grants(drive, "instr")["granted_keys"] == []
 
 
 # ---------------------------------------------------------------------------

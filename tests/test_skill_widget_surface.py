@@ -482,7 +482,17 @@ def test_api_skill_toggle_records_the_owner_ui_actor(tmp_path, monkeypatch):
     assert rows, "the owner toggle left no enablement row"
     assert rows[-1]["actor"] == "owner_ui"
     assert rows[-1]["enabled"] is True
-    assert rows[-1]["reason"].startswith("client_host=")
+    # Shared lifecycle owner keeps transport provenance in its structured
+    # owner_api_action row; skill_enabled_changed remains the state-change fact.
+    action_rows = [json.loads(line) for line in (drive_root / "logs" / "events.jsonl").read_text().splitlines()
+                   if line.strip()]
+    action_rows = [row for row in action_rows if row.get("type") == "owner_api_action"
+                   and row.get("skill") == "ext_actor" and row.get("action") == "skill_enable"]
+    assert len(action_rows) == 1
+    assert {key: action_rows[0][key] for key in ("actor", "skill", "action", "client_host", "ok")} == {
+        "actor": "owner_ui", "skill": "ext_actor", "action": "skill_enable",
+        "client_host": "testclient", "ok": True,
+    }
 
 
 def test_summarize_skills_projects_live_extension_facts(tmp_path, monkeypatch):

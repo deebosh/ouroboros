@@ -363,7 +363,7 @@ def test_artifact_observation_reconciliation_clears_the_red_nudge(tmp_path, monk
         for receipt in receipts:
             append_verification_receipt(drive, "t", receipt)
         return loop_mod._maybe_inject_finalization_nudges(
-            SimpleNamespace(_ctx=SimpleNamespace()), drive, "t",
+            SimpleNamespace(_ctx=SimpleNamespace(drive_root=drive)), drive, "t",
             {"reasoning_notes": [], "tool_calls": []}, "answer", [], lambda *_: None,
         )
 
@@ -533,7 +533,7 @@ def test_red_verification_nudge_one_shot_and_before_receipt_absent(monkeypatch):
     monkeypatch.setattr(L, "_skill_finalization_message", lambda *a, **k: "")
     dr = Path(tempfile.mkdtemp())
     O.append_verification_receipt(dr, "redt", {"status": "fail", "check": "pytest", "returncode": 1})
-    ctx = _t.SimpleNamespace(task_contract={}, task_metadata={})
+    ctx = _t.SimpleNamespace(task_contract={}, task_metadata={}, drive_root=dr)
     tools = _t.SimpleNamespace(_ctx=ctx)
     # a turn WITH reviewable effects + a red receipt: BOTH the red gate and the FR3 gate qualify.
     trace = {"reasoning_notes": [], "tool_calls": [{"tool": "commit_reviewed", "status": "ok"}]}

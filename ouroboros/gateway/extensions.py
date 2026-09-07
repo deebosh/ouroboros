@@ -7,7 +7,6 @@ import base64
 import inspect
 import logging
 import pathlib
-import shutil
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -26,19 +25,13 @@ from ouroboros.gateway._helpers import (
 )
 from ouroboros.gateway.extension_receipts import extension_process_receipt, extension_reconcile_receipt
 from ouroboros.skill_lifecycle_queue import (
-    LifecycleJobOptions,
     queue_snapshot,
     run_blocking_preserving_cancellation,
-    run_lifecycle_job,
 )
 from ouroboros.skill_loader import (
     discover_skills,
     find_skill,
     grant_status_for_skill,
-    requested_core_setting_keys,
-    requested_skill_permissions,
-    review_status_allows_execution,
-    save_skill_grants,
     skill_conflict_status,
     skill_review_gate,
     _sanitize_skill_name,
@@ -47,7 +40,6 @@ from ouroboros.skill_review_usage import (
     skill_review_attempt_coverage,
     skill_review_usage_markdown,
 )
-from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
 _CHILD_DISPATCH_HEADER_DENYLIST = {
@@ -201,27 +193,6 @@ def _broadcast_extension_lifecycle(request: Request, skill: str, action: Any, re
         "action": str(action or ""),
         "reason": str(reason or ""),
     })
-
-
-def _owner_grant_audit(drive_root: pathlib.Path, request: Request, payload: Dict[str, Any]) -> None:
-    try:
-        client = getattr(request, "client", None)
-        append_jsonl(
-            pathlib.Path(drive_root) / "logs" / "events.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "type": "owner_api_action",
-                "action": "skill_grant",
-                "client_host": str(getattr(client, "host", "") or ""),
-                "skill": str(payload.get("skill") or ""),
-                "granted_key_count": int(payload.get("granted_key_count") or 0),
-                "granted_permission_count": int(payload.get("granted_permission_count") or 0),
-                "extension_action": str(payload.get("extension_action") or ""),
-                "extension_reason": str(payload.get("extension_reason") or ""),
-            },
-        )
-    except Exception:
-        log.debug("Failed to write owner grant audit event", exc_info=True)
 
 
 def _grant_items_from_body(body: Dict[str, Any]) -> list[str]:
@@ -714,207 +685,27 @@ async def api_extension_dispatch(request: Request) -> Response:
 
 
 async def api_skill_toggle(request: Request) -> JSONResponse:
-    """Toggle a skill from the UI and run extension load/unload reconciliation."""
-    from ouroboros.config import get_skills_repo_path, load_settings
-    from ouroboros.skill_loader import find_skill, grant_status_for_skill, save_enabled
-    from ouroboros import extension_loader
-
+    """Toggle through the shared owner of grant/review/dependency preconditions."""
     skill_name = str(request.path_params.get("skill") or "").strip()
     if not skill_name:
         return json_error("missing skill name", 400)
     body = await request_json_or(request, {}, exceptions=(Exception,))
-    bool_sentinel = object()
-    enabled = coerce_bool(body.get("enabled"), default=bool_sentinel)
-    if enabled is bool_sentinel:
+    if not isinstance(body, dict):
+        return json_error("request body must be a JSON object", 400)
+    sentinel = object()
+    enabled = coerce_bool(body.get("enabled"), default=sentinel)
+    if enabled is sentinel:
         return json_error("'enabled' must be a boolean", 400)
-
-    drive_root = _request_drive_root(request)
-    repo_path = get_skills_repo_path()
-
-    initial = await asyncio.to_thread(find_skill, drive_root, skill_name, repo_path=repo_path)
-    if initial is None:
-        return json_error("skill not found", 404)
-    def _run_toggle_sync() -> dict[str, Any]:
-        loaded = find_skill(drive_root, skill_name, repo_path=repo_path)
-        if loaded is None:
-            return {"error": "skill not found", "status_code": 404}
-        collision_load_error = loaded.load_error.lower().startswith("skill name collision:")
-        if enabled and loaded.load_error:
-            return {"error": f"cannot enable: {loaded.load_error}", "status_code": 400}
-        if enabled:
-            conflict = skill_conflict_status(
-                loaded,
-                discover_skills(drive_root, repo_path=repo_path),
-            )
-            if conflict:
-                names = list(conflict.get("skills") or [])
-                return {
-                    "error": (
-                        "cannot enable while conflicting skills are enabled: "
-                        + ", ".join(names)
-                    ),
-                    "status_code": 409,
-                    "conflict": conflict,
-                }
-            stale = loaded.review.is_stale_for(loaded.content_hash)
-            grants = grant_status_for_skill(drive_root, loaded)
-            gate = skill_review_gate(loaded.review.status, stale=stale, findings=loaded.review.findings)
-            if not gate["executable_review"]:
-                return {
-                    "error": "cannot enable until review status is a fresh executable review",
-                    "status_code": 409,
-                    **_review_fields(loaded, stale=stale, gate=gate),
-                    "grants": grants,
-                }
-            if not grants.get("all_granted", True):
-                return {
-                    "error": "cannot enable until requested key and permission grants are approved",
-                    "status_code": 409,
-                    **_review_fields(loaded, stale=stale, gate=gate),
-                    "grants": grants,
-                }
-            # Mirror toggle_skill's isolated-dependency enable guard for the UI.
-            try:
-                from ouroboros.marketplace.install_specs import install_specs_hash
-                from ouroboros.marketplace.isolated_deps import read_deps_state
-                from ouroboros.skill_dependencies import auto_install_specs_for_skill
-
-                auto_specs = auto_install_specs_for_skill(drive_root, loaded)
-                if auto_specs:
-                    deps_state = read_deps_state(drive_root, loaded.name, loaded.skill_dir)
-                    deps_status = str(deps_state.get("status") or "pending")
-                    expected_hash = install_specs_hash(auto_specs)
-                    actual_hash = str(deps_state.get("specs_hash") or "")
-                    if deps_status != "installed":
-                        return {
-                            "error": "cannot enable until isolated dependencies are installed",
-                            "status_code": 409,
-                            "deps_status": deps_status,
-                            "deps_error": deps_state.get("error", ""),
-                            **_review_fields(loaded, stale=stale, gate=gate),
-                            "grants": grants,
-                        }
-                    if actual_hash != expected_hash:
-                        return {
-                            "error": "cannot enable until isolated dependency fingerprint is refreshed",
-                            "status_code": 409,
-                            "deps_status": "stale",
-                            **_review_fields(loaded, stale=stale, gate=gate),
-                            "grants": grants,
-                        }
-            except Exception:
-                log.debug("api_skill_toggle deps probe failed", exc_info=True)
-        if not enabled and collision_load_error:
-            action = None
-            if loaded.name in extension_loader.snapshot()["extensions"]:
-                extension_loader.unload_extension(loaded.name)
-                action = "extension_unloaded"
-            return {
-                "error": (
-                    "cannot persist disable because this skill's sanitized "
-                    "name collides with another skill directory; rename one "
-                    "of the directories first"
-                ),
-                "status_code": 400,
-                "extension_action": action,
-                "extension_reason": "name_collision",
-            }
-        save_enabled(drive_root, loaded.name, enabled, actor="owner_ui", reason=f"client_host={getattr(getattr(request, 'client', None), 'host', '') or ''}")
-        try:
-            from supervisor.queue import sync_skill_schedules
-
-            sync_skill_schedules(discover_skills(drive_root, repo_path=repo_path), drive_root=drive_root)
-        except Exception:
-            log.debug("api_skill_toggle schedule sync failed", exc_info=True)
-        action = None
-        live_reason = "not_extension"
-        process_receipt = extension_process_receipt(None)
-        if loaded.manifest.is_extension() or loaded.name in extension_loader.snapshot()["extensions"]:
-            state = extension_loader.reconcile_extension(
-                loaded.name,
-                drive_root,
-                load_settings,
-                repo_path=repo_path,
-                retry_load_error=True,
-                revert_enabled_on_error=enabled,
-            )
-            action = state.get("action")
-            live_reason = str(state.get("reason") or "")
-            process_receipt = extension_process_receipt(state)
-            if enabled and action == "extension_load_error":
-                # Atomic enable: reconcile already reverted enabled.json after the real
-                # out-of-process catalog/register dry-run failed, so the skill is never
-                # left enabled-but-broken. Re-sync schedules to the reverted state and
-                # surface the concrete load error.
-                try:
-                    from supervisor.queue import sync_skill_schedules
-                    sync_skill_schedules(discover_skills(drive_root, repo_path=repo_path), drive_root=drive_root)
-                except Exception:
-                    log.debug("api_skill_toggle revert schedule sync failed", exc_info=True)
-                return {
-                    "error": f"cannot enable: {state.get('load_error') or 'extension failed to load'}",
-                    "status_code": 409,
-                    "skill": loaded.name,
-                    "source": loaded.source,
-                    **_review_fields(loaded),
-                    "grants": grant_status_for_skill(drive_root, loaded),
-                    "extension_action": action,
-                    "extension_reason": live_reason,
-                    **process_receipt,
-                }
-        return {
-            "skill": loaded.name,
-            "source": loaded.source,
-            **_review_fields(loaded),
-            "grants": grant_status_for_skill(drive_root, loaded),
-            "action": action,
-            "live_reason": live_reason,
-            **process_receipt,
-        }
-
-    async def _run_toggle() -> dict[str, Any]:
-        return await run_blocking_preserving_cancellation(
-            _run_toggle_sync,
-            log_label="skill toggle lifecycle operation",
-        )
-
-    queued = await run_lifecycle_job(
-        kind="enable" if enabled else "disable",
-        target=initial.name,
-        source=initial.source,
-        message=("Enabling" if enabled else "Disabling") + f" {initial.name}",
-        runner=_run_toggle,
-        options=LifecycleJobOptions(
-            drive_root=drive_root,
-            result_message=lambda item: (
-                item.get("error", "")
-                or (("Enabled" if enabled else "Disabled") + f" {item.get('skill', initial.name)}")
-            ),
-            result_error=lambda item: item.get("error", ""),
-        ),
-    )
-    if queued.get("error"):
-        return JSONResponse(queued, status_code=int(queued.get("status_code") or 400))
-    _broadcast_extension_lifecycle(
-        request,
-        str(queued.get("skill") or initial.name),
-        queued.get("action"),
-        queued.get("live_reason"),
-    )
-    return JSONResponse(
-        {
-            "skill": queued.get("skill", initial.name),
-            "enabled": enabled,
-            "review_status": queued.get("review_status"),
-            "review_stale": queued.get("review_stale"),
-            "review_gate": queued.get("review_gate"),
-            "executable_review": queued.get("executable_review"),
-            "grants": queued.get("grants", {}),
-            "extension_action": queued.get("action"),
-            "extension_reason": queued.get("live_reason"),
-            **extension_process_receipt(queued),
-        }
-    )
+    payload = await _run_owner_skill_action(request, skill_name, "enable" if enabled else "disable", body)
+    if payload.get("error"):
+        return JSONResponse(payload, status_code=int(payload.get("status_code") or 400))
+    return JSONResponse({
+        "skill": payload.get("skill", skill_name), "enabled": payload.get("enabled", False),
+        "review_status": payload.get("review_status"), "review_stale": payload.get("review_stale"),
+        "review_gate": payload.get("review_gate"), "executable_review": payload.get("executable_review"),
+        "grants": payload.get("grants", {}), "extension_action": payload.get("extension_action"),
+        "extension_reason": payload.get("extension_reason"), **extension_process_receipt(payload),
+    })
 
 
 class _ApiReviewCtx:
@@ -929,6 +720,25 @@ class _ApiReviewCtx:
         self.emit_progress_fn = None
         self.event_queue = None  # _emit_usage_event falls back to pending_events
         self.messages: list = []
+
+
+async def _run_owner_skill_action(request: Request, skill_name: str, action: str, body: dict) -> dict:
+    from ouroboros.config import get_skills_repo_path
+    from ouroboros.skill_lifecycle_actions import run_skill_action
+
+    ctx = _ApiReviewCtx(_request_drive_root(request), _request_repo_dir(request))
+    ctx.task_id = ""  # A UI lifecycle action is not a managed task.
+    ctx._skill_owner_client_host = str(getattr(getattr(request, "client", None), "host", "") or "")
+    payload = await run_blocking_preserving_cancellation(
+        run_skill_action, ctx, skill_name, action,
+        expected_content_hash=str(body.get("expected_content_hash") or ""),
+        items=_grant_items_from_body(body) if action == "grant" else None,
+        payload_root=str(body.get("payload_root") or ""),
+        repo_path=get_skills_repo_path(), _owner_actor="owner_ui",
+        log_label=f"skill {action} lifecycle operation",
+    )
+    _broadcast_extension_lifecycle(request, skill_name, payload.get("extension_action"), payload.get("extension_reason"))
+    return payload
 
 
 async def api_skill_review(request: Request) -> JSONResponse:
@@ -953,47 +763,15 @@ async def api_skill_review(request: Request) -> JSONResponse:
 
 
 async def api_owner_skill_attest_review(request: Request) -> JSONResponse:
-    """POST /api/owner/skills/{skill}/attest-review — OWNER-ONLY (C1, v6.39): skip the
-    EXPENSIVE LLM review for the owner's own external/self-authored skill or for a freshly
-    hash-verified official OuroborosHub payload. The DETERMINISTIC preflight floor still runs
-    (409 if it fails); only the costly LLM phase is skipped. Loudly audited. The agent can
-    never reach this — the owner_attestation marker is an agent-write-protected owner-state
-    file, so this is owner-issued only."""
+    """Owner-requested, preflight-floored attestation through the common lifecycle."""
     skill_name = str(request.path_params.get("skill") or "").strip()
     if not skill_name:
         return json_error("missing skill name", 400)
-    drive_root = _request_drive_root(request)
-    repo_dir = _request_repo_dir(request)
-    ctx = _ApiReviewCtx(drive_root, repo_dir)
-    from ouroboros.skill_review_runner import run_skill_review_lifecycle
-    from ouroboros.skill_owner_attestation import review_skill_owner_attest
-
-    # Route through the SAME lifecycle as api_skill_review so a clean attestation gets the
-    # post-pass deps/extension reconcile + schedule resync (otherwise an attested skill with
-    # isolated dependencies stays blocked by skill_readiness). The lifecycle just calls our
-    # attest impl instead of the LLM review.
-    payload = await run_skill_review_lifecycle(
-        ctx, skill_name, source="skills", review_impl=review_skill_owner_attest,
-    )
-    status = str(payload.get("status") or "")
-    try:
-        append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
-            "ts": utc_now_iso(),
-            "type": "owner_api_action",
-            "action": "skill_owner_attest",
-            "client_host": str(getattr(getattr(request, "client", None), "host", "") or ""),
-            "skill": skill_name,
-            "status": status,
-            "content_hash": str(payload.get("content_hash") or ""),
-        })
-    except Exception:
-        log.debug("Failed to write owner attestation audit event", exc_info=True)
-    if status != "clean":
-        # Deterministic preflight floor failed, the skill is not owner-own, or it could not
-        # be loaded/hashed: 409 — not attestable. A failed preflight persists as the recorded
-        # review result when review.json was absent/stale; a fresh valid verdict stays untouched.
-        return JSONResponse(payload, status_code=409)
-    return JSONResponse(payload)
+    body = await request_json_or(request, {}, exceptions=(Exception,))
+    if not isinstance(body, dict):
+        return json_error("request body must be a JSON object", 400)
+    payload = await _run_owner_skill_action(request, skill_name, "attest", body)
+    return JSONResponse(payload, status_code=200 if payload.get("ok") else int(payload.get("status_code") or 409))
 
 
 async def api_skill_lifecycle_queue(request: Request) -> JSONResponse:
@@ -1209,141 +987,15 @@ async def api_skill_review_history_detail(request: Request) -> JSONResponse:
 
 
 async def api_skill_grants(request: Request) -> JSONResponse:
-    """Owner grant path for reviewed skill settings keys and host permissions."""
-    from ouroboros import extension_loader
-    from ouroboros.config import get_skills_repo_path, load_settings
-
+    """Grant only current manifest items through the shared lifecycle owner."""
     skill_name = str(request.path_params.get("skill") or "").strip()
     if not skill_name:
         return json_error("missing skill name", 400)
     body = await request_json_or(request, {}, exceptions=(Exception,))
     if not isinstance(body, dict):
         return json_error("request body must be a JSON object", 400)
-
-    drive_root = _request_drive_root(request)
-    repo_path = get_skills_repo_path()
-
-    def _save_grants_sync() -> dict[str, Any]:
-        loaded = find_skill(drive_root, skill_name, repo_path=repo_path)
-        if loaded is None:
-            return {"error": "skill not found", "status_code": 404}
-        if not (loaded.manifest.is_script() or loaded.manifest.is_extension()):
-            return {
-                "error": "key and permission grants are supported for script and extension skills",
-                "status_code": 400,
-            }
-        stale = loaded.review.is_stale_for(loaded.content_hash)
-        gate = skill_review_gate(loaded.review.status, stale=stale, findings=loaded.review.findings)
-        if not review_status_allows_execution(loaded.review.status) or stale:
-            return {
-                "error": "key and permission grants require a fresh executable review",
-                "status_code": 409,
-                **_review_fields(loaded, stale=stale, gate=gate),
-                "grants": grant_status_for_skill(drive_root, loaded),
-            }
-        allowed_keys = requested_core_setting_keys(list(loaded.manifest.env_from_settings or []))
-        allowed_permissions = requested_skill_permissions(
-            list(getattr(loaded.manifest, "permissions", []) or []),
-            list(getattr(loaded.manifest, "subscribe_events", []) or []),
-        )
-        permission_map = {permission.lower(): permission for permission in allowed_permissions}
-        requested_raw = _grant_items_from_body(body)
-        requested_keys: list[str] = []
-        requested_permissions: list[str] = []
-        rejected: list[str] = []
-        for item in requested_raw:
-            key = item.upper()
-            permission = permission_map.get(item.lower())
-            if key in allowed_keys:
-                if key not in requested_keys:
-                    requested_keys.append(key)
-            elif permission:
-                if permission not in requested_permissions:
-                    requested_permissions.append(permission)
-            else:
-                rejected.append(item)
-        if not requested_raw or rejected or (not requested_keys and not requested_permissions):
-            return {
-                "error": (
-                    "grant items must be requested by the current manifest; "
-                    f"allowed keys={allowed_keys}, permissions={allowed_permissions}"
-                ),
-                "status_code": 400,
-                "allowed_keys": allowed_keys,
-                "allowed_permissions": allowed_permissions,
-                "rejected_items": rejected,
-            }
-        save_skill_grants(
-            drive_root,
-            loaded.name,
-            requested_keys,
-            content_hash=loaded.content_hash,
-            requested_keys=allowed_keys,
-            granted_permissions=requested_permissions,
-            requested_permissions=allowed_permissions,
-        )
-        extension_action = None
-        extension_reason = None
-        extension_load_error = None
-        if loaded.manifest.is_extension():
-            try:
-                state = extension_loader.reconcile_extension(
-                    loaded.name,
-                    drive_root,
-                    load_settings,
-                    repo_path=repo_path,
-                    retry_load_error=True,
-                )
-                extension_action = state.get("action")
-                extension_reason = state.get("reason")
-                extension_load_error = state.get("load_error")
-            except Exception as exc:
-                log.warning(
-                    "Skill grant saved but extension reconcile failed for %s: %s",
-                    loaded.name,
-                    exc,
-                    exc_info=True,
-                )
-                extension_reason = "reconcile_call_failed"
-                extension_load_error = str(exc)
-        try:
-            from supervisor.queue import sync_skill_schedules
-            sync_skill_schedules(discover_skills(drive_root, repo_path=repo_path), drive_root=drive_root)
-        except Exception:
-            log.debug("api_skill_grants schedule sync failed", exc_info=True)
-        refreshed = find_skill(drive_root, loaded.name, repo_path=repo_path) or loaded
-        return {
-            "ok": True,
-            "skill": loaded.name,
-            "granted_keys": requested_keys,
-            "granted_permissions": requested_permissions,
-            "extension_action": extension_action,
-            "extension_reason": extension_reason,
-            "load_error": extension_load_error,
-            "grants": grant_status_for_skill(drive_root, refreshed),
-        }
-
-    result = await asyncio.to_thread(_save_grants_sync)
-    if result.get("error"):
-        return JSONResponse(result, status_code=int(result.get("status_code") or 400))
-    _owner_grant_audit(
-        drive_root,
-        request,
-        {
-            "skill": result.get("skill"),
-            "granted_key_count": len(result.get("granted_keys") or []),
-            "granted_permission_count": len(result.get("granted_permissions") or []),
-            "extension_action": result.get("extension_action"),
-            "extension_reason": result.get("extension_reason"),
-        },
-    )
-    _broadcast_extension_lifecycle(
-        request,
-        str(result.get("skill") or skill_name),
-        result.get("extension_action"),
-        result.get("extension_reason"),
-    )
-    return JSONResponse(result)
+    payload = await _run_owner_skill_action(request, skill_name, "grant", body)
+    return JSONResponse(payload, status_code=int(payload.get("status_code") or 200))
 
 
 async def api_skill_reconcile(request: Request) -> JSONResponse:
@@ -1382,101 +1034,15 @@ async def api_skill_reconcile(request: Request) -> JSONResponse:
 
 
 async def api_skill_delete(request: Request) -> JSONResponse:
-    """Delete a local data-plane skill payload and its durable state."""
-    from ouroboros.config import get_skills_repo_path
-    from ouroboros import extension_loader
-
+    """Delete an explicitly selected local payload through its existing owner."""
     skill_name = _sanitize_skill_name(str(request.path_params.get("skill") or "").strip())
     if not skill_name or skill_name == "_unnamed":
         return json_error("missing skill name", 400)
     body = await request_json_or(request, {}, exceptions=(Exception,))
-
-    drive_root = _request_drive_root(request)
-    repo_path = get_skills_repo_path()
-
-    def _run_delete_sync() -> dict[str, Any]:
-        requested_root = str(body.get("payload_root") or f"skills/external/{skill_name}").strip()
-        root_parts = pathlib.PurePosixPath(requested_root).parts
-        if len(root_parts) != 3 or root_parts[:2] != ("skills", "external"):
-            return {"error": "local skill delete requires payload_root=skills/external/<name>", "status_code": 403}
-
-        drive_root_path = pathlib.Path(drive_root).absolute()
-        skills_root = drive_root_path / "skills"
-        external_root = skills_root / "external"
-        payload_dir = external_root / root_parts[2]
-        if skills_root.is_symlink() or external_root.is_symlink() or payload_dir.is_symlink():
-            return {"error": "local skill delete refuses symlinked data/skills/external payloads", "status_code": 403}
-
-        skills = discover_skills(drive_root, repo_path=repo_path)
-        loaded = next((item for item in skills if pathlib.Path(item.skill_dir).absolute() == payload_dir), None)
-        if loaded is None:
-            return {"error": f"skill {skill_name!r} not found at {requested_root}", "status_code": 404}
-        if loaded.name != skill_name or loaded.source not in {"self_authored", "external"}:
-            return {"error": "local skill delete is limited to self-authored/external skills", "status_code": 403}
-        if any(item.name == skill_name and pathlib.Path(item.skill_dir).absolute() != payload_dir for item in skills):
-            return {
-                "error": (
-                    "refusing to delete a local skill while another skill uses the same sanitized name; "
-                    "rename one of the colliding skills first"
-                ),
-                "status_code": 409,
-            }
-
-        state_root = (drive_root_path / "state" / "skills").absolute()
-        state_dir = state_root / loaded.name
-        if state_root.is_symlink() or state_dir.is_symlink():
-            return {"error": f"refusing to delete unsafe state path for {loaded.name!r}", "status_code": 500}
-        try:
-            state_dir.relative_to(state_root)
-        except ValueError:
-            return {"error": f"refusing to delete unsafe state path for {loaded.name!r}", "status_code": 500}
-
-        extension_loader.unload_extension(loaded.name)
-        shutil.rmtree(payload_dir)
-        deleted_state = state_dir.exists()
-        if deleted_state:
-            shutil.rmtree(state_dir)
-        try:
-            from supervisor.queue import sync_skill_schedules
-            sync_skill_schedules(discover_skills(drive_root, repo_path=repo_path), drive_root=drive_root)
-        except Exception:
-            log.debug("api_skill_delete schedule sync failed", exc_info=True)
-        if payload_dir.exists() or state_dir.exists():
-            return {"error": f"failed to fully delete local skill {loaded.name!r}", "status_code": 500}
-        return {
-            "ok": True,
-            "skill": loaded.name,
-            "source": loaded.source,
-            "deleted_payload_root": f"skills/external/{root_parts[2]}",
-            "deleted_state": deleted_state,
-            "extension_action": "extension_unloaded",
-            "extension_reason": "deleted",
-        }
-
-    queued = await run_lifecycle_job(
-        kind="delete",
-        target=skill_name,
-        source="external",
-        message=f"Deleting {skill_name}",
-        runner=lambda: run_blocking_preserving_cancellation(
-            _run_delete_sync,
-            log_label="local skill delete lifecycle operation",
-        ),
-        options=LifecycleJobOptions(
-            drive_root=drive_root,
-            result_message=lambda item: item.get("error", "") or f"Deleted {item.get('skill', skill_name)}",
-            result_error=lambda item: item.get("error", ""),
-        ),
-    )
-    if queued.get("error"):
-        return JSONResponse(queued, status_code=int(queued.get("status_code") or 400))
-    _broadcast_extension_lifecycle(
-        request,
-        str(queued.get("skill") or skill_name),
-        queued.get("extension_action"),
-        queued.get("extension_reason"),
-    )
-    return JSONResponse(queued)
+    if not isinstance(body, dict):
+        return json_error("request body must be a JSON object", 400)
+    payload = await _run_owner_skill_action(request, skill_name, "delete", body)
+    return JSONResponse(payload, status_code=int(payload.get("status_code") or 200))
 
 
 __all__ = [

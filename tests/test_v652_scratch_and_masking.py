@@ -482,6 +482,7 @@ def test_masked_verification_nudge_one_shot_advisory_and_ordering(tmp_path):
     })
 
     def _run(ctx_obj, msgs):
+        ctx_obj.drive_root = drive
         return _maybe_inject_finalization_nudges(
             SimpleNamespace(_ctx=ctx_obj), drive, "t",
             {"reasoning_notes": [], "tool_calls": []}, "done", msgs, lambda *_: None,
@@ -507,7 +508,7 @@ def test_masked_verification_nudge_one_shot_advisory_and_ordering(tmp_path):
     append_verification_receipt(drive2, "t", {"status": "fail", "returncode": 1, "check": "pytest -q"})
     msgs2: list = []
     fired = _maybe_inject_finalization_nudges(
-        SimpleNamespace(_ctx=SimpleNamespace()), drive2, "t",
+        SimpleNamespace(_ctx=SimpleNamespace(drive_root=drive2)), drive2, "t",
         {"reasoning_notes": [], "tool_calls": []}, "done", msgs2, lambda *_: None,
     )
     assert fired is True

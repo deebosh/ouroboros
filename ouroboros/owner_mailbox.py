@@ -514,6 +514,7 @@ def drain_owner_entries(
     seen_ids: Optional[set] = None,
     attempt_key: Any = None,
     *,
+    include_acknowledged: bool = False,
     _read_status: Optional[Dict[str, bool]] = None,
 ) -> List[dict]:
     """Read unseen mailbox entries without mutating the append-only mailbox.
@@ -521,7 +522,8 @@ def drain_owner_entries(
     Revocations are resolved over the WHOLE mailbox before anything is yielded,
     so a control retracted by a later line is never delivered even if the reader
     had not drained it yet; the revocation lines themselves are protocol and are
-    never returned as content.
+    never returned as content. ``include_acknowledged`` supports exact owner-source
+    lookup after transcript delivery; it writes no acknowledgement or mailbox row.
     ``_read_status`` distinguishes successful emptiness from failed/torn reads
     for wait-local peeks without changing the normal delivery projection.
     """
@@ -534,13 +536,14 @@ def drain_owner_entries(
         return []
     if seen_ids is None:
         seen_ids = set()
-    ack_status: Dict[str, bool] = {}
-    seen_ids.update(
-        acknowledged_task_message_ids(
-            drive_root, task_id, attempt_key=attempt_key,
-            **({"_read_status": ack_status} if _read_status is not None else {}),
+    ack_status: Dict[str, bool] = {"complete": True}
+    if not include_acknowledged:
+        seen_ids.update(
+            acknowledged_task_message_ids(
+                drive_root, task_id, attempt_key=attempt_key,
+                **({"_read_status": ack_status} if _read_status is not None else {}),
+            )
         )
-    )
     try:
         content = path.read_text(encoding="utf-8")
         complete = ack_status.get("complete", False) and (not content or content.endswith("\n"))
