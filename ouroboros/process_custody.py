@@ -310,8 +310,10 @@ def _read_ledger_records(
         import json
 
         snapshot = path.read_bytes()
-        for line in snapshot.decode("utf-8", errors="replace").splitlines():
-            line = line.strip()
+        # Match the compactor's physical JSONL boundaries. Unicode separators
+        # inside JSON strings are payload bytes, not new ledger records.
+        for raw_line in snapshot.splitlines():
+            line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
             try:

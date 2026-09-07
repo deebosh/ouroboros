@@ -24,13 +24,15 @@ def test_reaper_prunes_superseded_pid_rows_in_one_sweep(tmp_path):
     assert path.read_bytes() == b""
 
 
-def test_reaper_compacts_duplicate_rows_without_losing_live_survivor(tmp_path):
+@pytest.mark.parametrize("purpose", ["latest", "service:\u0085name", "service:\u2028name", "service:\u2029name"])
+def test_reaper_compacts_duplicate_rows_without_losing_live_survivor(tmp_path, purpose):
     first = {"pid": os.getpid(), "pgid": 0, "scope": "session", "purpose": "old",
              "session_id": custody.current_custody_session_id()}
-    latest = {**first, "purpose": "latest"}
+    latest = {**first, "purpose": purpose}
     path = custody.ledger_path(tmp_path)
     for row in (first, latest, latest):
         assert custody.append_jsonl(path, row)
+    assert custody._read_ledger_strict(tmp_path) == (True, [latest])
     assert custody.reap_orphaned_processes(tmp_path) == []
     assert [json.loads(line) for line in path.read_bytes().splitlines()] == [latest]
     assert custody._read_ledger(tmp_path) == [latest]
