@@ -853,6 +853,7 @@ def effective_task_result(
                     parent_artifact_ctx,
                     source,
                     kind=str(child_artifact.get("kind") or "child_artifact"),
+                    **({"immutable": True, "expected": child_artifact} if child_artifact.get("immutable") else {}),
                 )
                 if copied:
                     rebased_child_artifacts.append(copied)

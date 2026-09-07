@@ -972,7 +972,7 @@ async def api_task_get(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
-async def api_task_artifact(request: Request):
+def api_task_artifact(request: Request):
     try:
         task_id = validate_task_id(request.path_params.get("task_id"))
     except ValueError as exc:
@@ -992,7 +992,7 @@ async def api_task_artifact(request: Request):
                 return Response(artifact_store.read_task_result_source_bytes(drive_root, result, name, source), media_type="application/json")
             except (OSError, ValueError, RuntimeError):
                 return json_error("task source is unavailable or does not match its recorded identity", 404)
-        artifact = _artifact_by_name(result, name) or registered
+        artifact = registered if registered and registered.get("immutable") else _artifact_by_name(result, name) or registered
         if artifact is None:
             return json_error("artifact not found", 404, task_id=task_id, artifact=name)
         base = task_artifacts_dir(drive_root, task_id).resolve(strict=False)

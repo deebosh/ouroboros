@@ -168,7 +168,7 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
         canonical = pathlib.Path(getattr(ctx, "budget_drive_root", None) or metadata.get("budget_drive_root") or ctx.drive_root)
         if canonical.resolve() != pathlib.Path(ctx.drive_root).resolve():
             record = copy_file_to_task_artifacts(SimpleNamespace(drive_root=canonical, task_id=task_id),
-                                                 pathlib.Path(record["path"]), kind="user_file", immutable=True)
+                                                 pathlib.Path(record["path"]), kind="user_file", immutable=True, expected=record)
         durable = pathlib.Path(record["path"])
         file_ref = {"kind": "task_artifact", "root": "artifact_store", "task_id": task_id,
                     "path": record["name"], "size": record["size"], "sha256": record["sha256"]}

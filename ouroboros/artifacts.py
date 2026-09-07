@@ -19,7 +19,7 @@ from hashlib import sha256
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 from ouroboros.utils import atomic_write_json, read_json_dict, update_json_locked, write_bytes_atomic
-from ouroboros.headless import ARTIFACT_STATUS_READY, SCRATCH_MANIFEST_NAME, task_artifacts_dir
+from ouroboros.headless import ARTIFACT_STATUS_FAILED, ARTIFACT_STATUS_READY, SCRATCH_MANIFEST_NAME, task_artifacts_dir
 from ouroboros.outcome_receipt_store import is_verification_receipts_path
 from ouroboros.task_results import validate_task_id
 
@@ -1117,6 +1117,10 @@ def stream_artifact_file(path: Any, sink: Any = None, *, expected: Any = None) -
     result = {"size": size, "sha256": digest.hexdigest()}
     if size != before.st_size:
         raise OSError(f"artifact source size changed during read: {path}")
+    if isinstance(expected, dict) and expected.get("immutable") and (
+        not isinstance(expected.get("size"), int) or not expected.get("sha256")
+    ):
+        raise OSError(f"immutable artifact is missing its capture identity: {path}")
     for key in ("size", "sha256"):
         if isinstance(expected, dict) and expected.get(key) not in (None, "") and expected[key] != result[key]:
             raise OSError(f"artifact source failed {key} verification: {path}")
@@ -1180,7 +1184,7 @@ def store_task_artifact_bytes(
             raise ValueError(f"task artifact collision: {safe_name}")
     else:
         write_bytes_atomic(path, data)
-    record = artifact_record(path, kind=kind)
+    record = {**artifact_record(path, kind=kind), "immutable": True}
     _register_task_artifact_records(artifact_dir, [record])
     return {
         "root": "artifact_store",
@@ -1203,7 +1207,10 @@ def _register_task_artifact_records(artifact_dir: pathlib.Path, records: Iterabl
 
     def merge(current: Dict[str, Any]) -> Dict[str, Any]:
         previous = current.get("artifacts") if isinstance(current.get("artifacts"), dict) else {}
-        return {**current, "schema_version": 1, "artifacts": {**previous, **additions}}
+        merged = merge_artifact_records(previous.values(), additions.values())
+        return {**current, "schema_version": 1, "artifacts": {
+            pathlib.Path(str(row.get("path") or row.get("name") or "")).name: row for row in merged
+        }}
 
     update_json_locked(artifact_dir / _ARTIFACT_MANIFEST, merge)
 
@@ -1244,8 +1251,8 @@ def _archive_previous_artifact_version(drive_root: pathlib.Path, task_id: str, d
             continue
 
 
-def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str], *, kind: str = "user_file", immutable: bool = False) -> Dict[str, Any] | None:
-    """Copy a generated file into this task's canonical artifact store."""
+def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str], *, kind: str = "user_file", immutable: bool = False, expected: Any = None) -> Dict[str, Any] | None:
+    """Copy a generated file, preserving an immutable rebase's original identity."""
 
     source = pathlib.Path(source_path).expanduser().resolve(strict=False)
     if not source.is_file():
@@ -1258,15 +1265,25 @@ def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str],
     data = read_json_dict(artifact_dir / _ARTIFACT_MANIFEST) or {}
     manifest = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
     manifest = {str(key): dict(value) for key, value in manifest.items() if isinstance(value, dict)}
+    captured = manifest.get(source.name) if source.parent == artifact_dir.resolve(strict=False) else None
+    if captured and captured.get("immutable"):
+        immutable, expected = True, expected or captured
     dest = artifact_dir / source.name
     reused_existing_source = False
-    source_identity = stream_artifact_file(source) if immutable else None
-    if immutable:
+    source_identity = stream_artifact_file(source, expected=expected) if immutable or expected is not None else None
+    if immutable and isinstance(expected, dict) and expected.get("name"):
+        name = str(expected["name"])
+        if pathlib.Path(name).name != name or name in {".", ".."}:
+            raise ValueError("immutable artifact name must be a plain filename")
+        dest = artifact_dir / name
+    elif immutable:
         stem = _safe_attachment_name(source.stem).removesuffix("-" + source_identity["sha256"])
         stem = stem.encode("utf-8")[:120].decode("utf-8", errors="ignore")
         suffix = source.suffix.encode("utf-8")[:20].decode("utf-8", errors="ignore")
         dest = artifact_dir / f"{stem}-{source_identity['sha256']}{suffix}"
     for existing in ([] if immutable else manifest.values()):
+        if existing.get("immutable"):
+            continue
         existing_source = str(existing.get("source_path") or "")
         existing_path = str(existing.get("path") or "")
         if existing_source == str(source) and existing_path:
@@ -1297,7 +1314,7 @@ def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str],
     elif dest.is_symlink() or dest.resolve(strict=False) != source.resolve(strict=False):
         measured = copy_artifact_file(source, dest, expected=source_identity)
     else:
-        measured = stream_artifact_file(dest)
+        measured = stream_artifact_file(dest, expected=source_identity)
     record = {"kind": kind, "name": dest.name, "path": str(dest), **measured,
               "status": ARTIFACT_STATUS_READY, "errors": [], "source_path": str(source),
               **({"immutable": True} if immutable else {})}
@@ -1430,11 +1447,7 @@ def collect_task_artifact_records(drive_root: Union[pathlib.Path, str], task_id:
         try:
             record = artifact_record(path)
             if manifest_record:
-                record.update({
-                    key: value
-                    for key, value in manifest_record.items()
-                    if key not in {"path", "size", "sha256", "status", "errors"} and value
-                })
+                record = merge_artifact_records([{**manifest_record, "path": str(path)}], [record])[0]
             records.append(record)
         except OSError:
             continue
@@ -1458,6 +1471,12 @@ def merge_artifact_records(*groups: Iterable[Dict[str, Any]]) -> List[Dict[str, 
             existing = merged[key]
             fresh = dict(item)
             merged[key] = {**existing, **fresh}
+            if existing.get("immutable"):
+                changed = any(fresh.get(field) not in (None, "") and fresh[field] != existing.get(field)
+                              for field in ("size", "sha256"))
+                merged[key].update({field: existing.get(field) for field in ("immutable", "size", "sha256")})
+                if changed:
+                    merged[key].update(status=ARTIFACT_STATUS_FAILED, errors=["immutable artifact bytes changed after capture"])
             if existing.get("kind") and fresh.get("kind") == "task_artifact" and existing.get("kind") != "task_artifact":
                 merged[key]["kind"] = existing["kind"]
             for meta_key in ("kind", "source_path", "name"):

@@ -1075,7 +1075,10 @@ def _cancel_task_through_owner(
         return str(stored.get("status") or "")
 
     if not task_has_live_ownership(task_id) and not task_subtree_is_live(task_id):
-        return 200, {"ok": True, "outcome": "already_terminal", **base, "status": _status()}
+        status = _status()
+        if status in SETTLED_STATUSES:
+            return 200, {"ok": True, "outcome": "already_terminal", **base, "status": status}
+        return 503, {"ok": False, "outcome": "unresolved", "reason": "cancellation_did_not_settle", **base, "status": status}
     try:
         request_cancel(
             DRIVE_ROOT, task_id, reason=reason, source=f"skill:{skill_name}",

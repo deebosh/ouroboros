@@ -417,3 +417,30 @@ def test_operation_ref_parsing_rejects_malformed_refs(value):
 
     with pytest.raises(ValueError):
         _parse_operation_ref(value)
+
+
+@pytest.mark.parametrize("status", ["running", "scheduled", "completed", "cancelled"])
+def test_unowned_cancel_reports_only_the_observed_terminal_state(tmp_path, monkeypatch, status):
+    from ouroboros import cancel_intents
+    from ouroboros.task_results import write_task_result, load_task_result
+    from ouroboros.task_status import SETTLED_STATUSES
+
+    _isolate_queue(monkeypatch, tmp_path, [])
+    client = _client(tmp_path)
+    _inbound(tmp_path, "accepted work")
+    _receipt(tmp_path, "promote_chat_to_task", "scheduled", "unowned")
+    write_task_result(tmp_path, "unowned", status, origin_message_ref=_origin_ref(tmp_path))
+    def no_new_cancel(*args, **kwargs):
+        pytest.fail("absent physical ownership must not mint a second cancellation attempt")
+    monkeypatch.setattr(cancel_intents, "request_cancel", no_new_cancel)
+    response = client.post("/chat/cancel", headers=_headers(),
+                           json={"operation_ref": operation_ref(CHAT, MSG)})
+    body = response.json()
+    assert body["status"] == load_task_result(tmp_path, "unowned")["status"] == status
+    if status in SETTLED_STATUSES:
+        assert response.status_code == 200 and body["ok"] is True
+        assert body["outcome"] == "already_terminal"
+    else:
+        assert response.status_code == 503 and body["ok"] is False
+        assert body["outcome"] == "unresolved"
+        assert body["reason"] == "cancellation_did_not_settle"
