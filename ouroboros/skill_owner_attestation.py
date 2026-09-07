@@ -42,8 +42,10 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
     hash/provenance check. On a clean preflight, persist a durable CLEAN verdict bound to the content_hash
     (review_profile='owner_attested', reviewer_models=['owner_attestation'], one explicit
     PASS finding so the status serializes) and drop the owner-issued marker that
-    load_review_state requires for the verdict to stay valid. Owner intent is checked by the shared lifecycle action owner; generic
-    agent file writes cannot forge the owner-state marker."""
+    load_review_state requires for the verdict to stay valid. The acting model
+    interprets owner intent; the shared lifecycle action owner validates source
+    provenance, caller and selected revision. Generic agent file writes cannot
+    forge the owner-state marker."""
     # A FAILED attestation preflight persists as a normal review result (so the gate's
     # fresh ``preflight_failed`` fact and the Repair affordance appear) — but ONLY when
     # persisting cannot clobber a FRESH valid verdict: review.json absent, or its recorded
