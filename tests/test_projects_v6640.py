@@ -614,25 +614,34 @@ def test_ephemeral_decision_web_frames_render_activity_without_task_claim_or_sec
     ]
     assert "!ephemeralDecisionTaskIds.has(normalizedGroupId)" in card_factory
 
-    # Every consumer still registers the marker BEFORE it resolves the card,
-    # and none of them returns early on it: tool telemetry reaches the ordinary
-    # reveal gate, progress rows reach the ordinary progress path.
+    # The shared reference handler remembers the marker BEFORE model-wait or
+    # review references can create a card. Ordinary frames then continue to
+    # the same telemetry/progress paths without an ephemeral suppression gate.
+    reference = chat[
+        chat.index("function handleCardReference"):
+        chat.index("function createLiveCardRecord")
+    ]
+    assert reference.index("registerEphemeralDecisionFrame(row);") < reference.index(
+        "isModelWaitReference(row)"
+    ) < reference.index("reviewReferenceFromRow(row)")
     logs = chat[
         chat.index("function updateLiveCardFromLogEvent"):
         chat.index("function addMessage")
     ]
-    assert logs.index("registerEphemeralDecisionFrame(evt)") < logs.index(
+    assert logs.index("handleCardReference(evt)") < logs.index(
         "const taskId = getLogTaskGroupId(evt)"
     )
-    assert logs.index("registerEphemeralDecisionFrame(evt)") < logs.index("applyEventTelemetry")
-    for fn in ("function updateLiveCardFromProgressMessage", "function appendTaskSummaryToLiveCard"):
-        body = chat[chat.index(fn):chat.index("\n    }\n", chat.index(fn))]
-        assert "registerEphemeralDecisionFrame(msg);" in body, fn
+    assert logs.index("handleCardReference(evt)") < logs.index("applyEventTelemetry")
+    history = chat[chat.index("async function syncHistory"):chat.index("function cancelHistoryPaint")]
+    assert history.index("handleCardReference(msg)") < history.index("updateLiveCardFromProgressMessage(msg,")
+    summary = chat[chat.index("function appendTaskSummaryToLiveCard"):chat.index("function setSubagentParent")]
+    assert summary.index("registerEphemeralDecisionFrame(msg);") < summary.index("getTaskUiState(")
 
     fanout = chat[
         chat.index("onWs('chat'"):
         chat.index("onWs('message_annotation'")
     ]
+    assert fanout.index("handleCardReference(msg)") < fanout.index("updateLiveCardFromProgressMessage(msg,")
     assert "ephemeralDecisionTaskIds.has(explicitTaskId)" in fanout
     assert "kind: 'ephemeral_decision'" in fanout
     assert "if (isEphemeral) return" not in fanout

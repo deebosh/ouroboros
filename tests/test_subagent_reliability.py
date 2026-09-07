@@ -57,8 +57,13 @@ def test_replay_clears_and_rebuilds_subagent_lineage():
     # One helper learns lineage from both replay rows and live final frames.
     assert "function learnSubagentLineage(msg)" in src
     assert "for (const msg of messages) learnSubagentLineage(msg);" in src
+    history = src[src.index("async function syncHistory"):src.index("function cancelHistoryPaint")]
+    assert history.index("for (const msg of messages) learnSubagentLineage(msg);") < history.index("handleCardReference(msg)")
     fanout = src[src.index("onWs('chat'"):src.index("onWs('message_annotation'")]
-    assert fanout.index("learnSubagentLineage(msg);") < fanout.index("registerEphemeralDecisionFrame(msg);")
+    # Live lineage must be known before progress or a final can resolve a
+    # child card; ephemeral registration now lives in the early reference seam.
+    assert fanout.index("learnSubagentLineage(msg);") < fanout.index("updateLiveCardFromProgressMessage(msg,")
+    assert fanout.index("learnSubagentLineage(msg);") < fanout.index("routeSubagentFinalMessageToCard(explicitTaskId, msg)")
     assert "forceTaskCard(childId, rawTs);" in src
     # A child is locked terminal from EITHER a terminal subagent event OR a
     # genuinely-settled server task_terminal_status; interrupted stays retryable.
