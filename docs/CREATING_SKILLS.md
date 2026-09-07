@@ -201,7 +201,9 @@ flowchart LR
   in `data/state/skills/<name>/deps.json`.
 - **Enable** flips `enabled.json` after a fresh executable review + grants + deps. The
   Skills UI surfaces a toggle; agents can also call `toggle_skill`.
-  Self-authored provenance does not change the enablement path.
+  A self-authored skill's first enablement can follow
+  `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS`; otherwise enabling requires the owner
+  toggle or an agent acting on the owner's expressed instruction.
 - **Execute**: `skill_exec` runs `type: script` skills as
   subprocess. `type: extension` skills without isolated deps normally run
   through the in-process loader; extensions with reviewed isolated deps are

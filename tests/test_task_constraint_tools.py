@@ -153,7 +153,7 @@ def test_registry_rejects_mismatched_repair_payload_root(tmp_path):
         },
     )
 
-    assert "HEAL_MODE_BLOCKED" in result or "SKILL_REDIRECT_BLOCKED" in result
+    assert "SKILL_REDIRECT_BLOCKED" in result
 
 
 def test_cross_skill_writer_uses_payload_refusal_and_keeps_selected_write(tmp_path):

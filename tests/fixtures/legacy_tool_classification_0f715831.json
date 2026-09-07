@@ -1035,14 +1035,6 @@
    "is_error": false,
    "status": "ok"
   },
-  "ident:HEAL_MODE_BLOCKED:named": {
-   "is_error": true,
-   "status": "heal_mode_blocked"
-  },
-  "ident:HEAL_MODE_BLOCKED:plain": {
-   "is_error": true,
-   "status": "heal_mode_blocked"
-  },
   "ident:IDENTICAL_DIFF_REFUSED:named": {
    "is_error": false,
    "status": "ok"
@@ -2915,14 +2907,6 @@
    "is_error": true,
    "status": "git_via_shell_blocked"
   },
-  "native:HEAL_MODE_BLOCKED:HEAL_MODE_BLOCKED": {
-   "is_error": true,
-   "status": "heal_mode_blocked"
-  },
-  "native:HEAL_MODE_BLOCKED:SKILL_REDIRECT_BLOCKED": {
-   "is_error": true,
-   "status": "skill_payload_blocked"
-  },
   "native:LEGACY_BLOCKED:REPO_LIST_BLOCKED": {
    "is_error": true,
    "status": "blocked"
@@ -2968,6 +2952,10 @@
    "status": "safety_violation"
   },
   "native:SKILL_PAYLOAD_BLOCKED:SKILL_PAYLOAD_ARG_ERROR": {
+   "is_error": true,
+   "status": "skill_payload_blocked"
+  },
+  "native:SKILL_PAYLOAD_BLOCKED:SKILL_REDIRECT_BLOCKED": {
    "is_error": true,
    "status": "skill_payload_blocked"
   },
