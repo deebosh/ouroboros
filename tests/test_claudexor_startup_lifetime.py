@@ -22,7 +22,7 @@ from ouroboros.platform_layer import kill_process_tree, pid_is_alive, subprocess
 pytestmark = [pytest.mark.serial, pytest.mark.skipif(os.name == "nt", reason="POSIX measured process custody")]
 
 _ENGINE = '''
-import http.server, json, os, pathlib, subprocess, sys, time
+import http.server, json, os, pathlib, socketserver, subprocess, sys, time
 root = pathlib.Path(os.environ["CLAUDEXOR_CONFIG_DIR"])
 with (root / "spawned.jsonl").open("a") as out:
     out.write(json.dumps({"pid": os.getpid()}) + "\\n")
@@ -52,12 +52,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"compatible": True, "protocolMajor": 3,
             "engine": {"version": "9.9.9", "sha": "c" * 40},
             "servingMode": "normal" if (root / "normal").exists() else "recovery_only"}).encode())
-server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+# HTTPServer.server_bind resolves reverse DNS before listen; this numeric loopback fixture needs none.
+server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
 descriptor = root / "daemon" / "control-api.json"
 descriptor.parent.mkdir(parents=True, exist_ok=True)
 token = descriptor.parent / "token"
 token.write_text("fixture-startup-token")
-descriptor.write_text(json.dumps({"host": "127.0.0.1", "port": server.server_port,
+descriptor.write_text(json.dumps({"host": "127.0.0.1", "port": server.server_address[1],
     "tokenPath": str(token)}))
 server.serve_forever()
 '''
