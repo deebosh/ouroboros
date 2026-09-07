@@ -44,6 +44,7 @@ from ouroboros.utils import (
     emit_cognitive_operation_event,
     emit_main_llm_call_state_event,
     emit_log_event,
+    has_log_sink,
     sanitize_tool_result_for_log,
     truncate_review_artifact,
     utc_now_iso,
@@ -972,11 +973,11 @@ def _record_llm_call_error(
         "llm_call_id": ctx.llm_call_id, "round": ctx.round_idx, "attempt": ctx.attempt + 1,
         "model": ctx.model,
     }
-    # ONE durable row per failure (#355): the events.jsonl append below is
-    # forwarded live by the worker's events tail, so a second live-only
-    # `llm_round_error` sibling was the same failure delivered twice to the
-    # Logs tab. Background Consciousness keeps its own live `llm_round_error`.
-    append_jsonl(ctx.drive_logs / "events.jsonl", {
+    # ONE error row (#355): a successful append's registered sink owns live
+    # delivery. Without that path, send the SAME evidence through the queue,
+    # preserving its identity for live/backfill dedupe. No llm_round_error
+    # sibling here; Background Consciousness keeps its own separate producer.
+    error_event = {
         "ts": utc_now_iso(), "type": "llm_api_error", **identity, "error": safe_error,
         "error_kind": classification.kind, "retry_same_request": will_retry,
         "status_code": classification.status_code, "provider_code": classification.provider_code,
@@ -984,7 +985,9 @@ def _record_llm_call_error(
         **custody_fields,
         **(ctx.context_fit_event_fields or {}),
         "request_ref": ctx.request_ref.get("manifest_ref") if ctx.request_ref else None,
-    })
+    }
+    if not append_jsonl(ctx.drive_logs / "events.jsonl", error_event) or not has_log_sink():
+        emit_log_event(ctx.event_queue, error_event, log_label="LLM call error")
     ctx.accumulated_usage.update(_last_llm_error=_short_error_text(safe_error),
                                  _last_llm_error_kind=classification.kind, _last_llm_retry_same_request=will_retry)
     if classification.retry_after_sec is not None:
