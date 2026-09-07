@@ -73,10 +73,19 @@ def redact_known_values(value: Any, secrets: Collection[str]) -> Any:
     retain their exact values. Replace in one pass so one secret cannot alter
     another's replacement, and preserve non-string payload types.
     """
-    variants = {variant for secret in secrets if secret for variant in (
-        secret, json.dumps(secret, ensure_ascii=True)[1:-1],
-        json.dumps(secret, ensure_ascii=False)[1:-1],
-    )}
+    # Text streams may expand LF to CRLF (including an existing CRLF), while
+    # universal-newline readers fold CRLF and CR back to LF, including after
+    # expansion. Match complete echoes: splitting a secret into lines would
+    # also erase unrelated ordinary values.
+    variants = {
+        variant for secret in secrets if secret
+        for raw_echo in (secret, secret.replace("\n", "\r\n"))
+        for echo in (raw_echo, raw_echo.replace("\r\n", "\n").replace("\r", "\n"))
+        for variant in (
+            echo, json.dumps(echo, ensure_ascii=True)[1:-1],
+            json.dumps(echo, ensure_ascii=False)[1:-1],
+        )
+    }
     if not variants:
         return value
     pattern = re.compile("|".join(re.escape(item) for item in sorted(variants, key=len, reverse=True)))
