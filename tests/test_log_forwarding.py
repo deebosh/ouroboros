@@ -553,44 +553,74 @@ def test_logs_js_backfills_all_streams_and_dedupes_without_dropping_preconnect()
     assert "loadStart" not in src
 
 
-def test_llm_call_failure_reaches_the_live_log_exactly_once(tmp_path, production_sink):
-    """#355: one LLM failure was two Logs rows — the durable `llm_api_error`
-    append (forwarded live by the events tail) plus a live-only
-    `llm_round_error` sibling from the same producer. The producer now writes
-    the durable row only; through the production sink that is ONE frame."""
-    import inspect
-    import json
-    import queue as queue_mod
+@pytest.mark.parametrize("write_succeeds", [True, False])
+@pytest.mark.parametrize("sink_installed", [True, False])
+def test_llm_call_failure_reaches_the_live_log_exactly_once(
+    tmp_path, production_sink, monkeypatch, write_succeeds, sink_installed,
+):
+    """#355: one failure remains visible with or without its durable write/sink.
 
+    A successful append with the production sink sends the only live frame.
+    A failed append or absent sink falls back to the existing live queue, with
+    the same timestamp and complete evidence, without inventing persistence.
+    """
+    import queue as queue_mod
+    from ouroboros import loop_llm_call, utils
     from ouroboros.loop_llm_call import _LlmErrorContext, _record_llm_call_error
+    from supervisor.events import _handle_log_event
 
     src = inspect.getsource(_record_llm_call_error)
     assert '"llm_round_error"' not in src
     assert '"type": "llm_api_error"' in src
-
+    if not sink_installed:
+        utils.set_log_sink(None)
+    monkeypatch.setattr(loop_llm_call, "utc_now_iso", lambda: "2026-09-07T13:05:00Z")
+    production_sink.running["m1"] = {"task": {"id": "m1", "chat_id": 42}}
     live = queue_mod.Queue()
+    events_file = tmp_path / "logs/events.jsonl"
+    attempted_rows = []
+    append = loop_llm_call.append_jsonl
+
+    def append_observed(path, row):
+        attempted_rows.append(dict(row))
+        return append(path, row)
+
+    monkeypatch.setattr(loop_llm_call, "append_jsonl", append_observed)
+    if not write_succeeds:
+        write = utils._write_fd_fully
+
+        def refuse_event_write(fd, data, path):
+            if pathlib.Path(path) == events_file:
+                raise OSError("controlled journal write refusal")
+            return write(fd, data, path)
+
+        monkeypatch.setattr(utils, "_write_fd_fully", refuse_event_write)
     ctx = _LlmErrorContext(
         task_id="m1", task_type="task", execution_id="exec-1", round_id="round-1",
         llm_call_id="call-1", round_idx=1, attempt=0, model="provider/model",
-        request_ref=None, drive_logs=tmp_path / "logs", event_queue=live,
-        accumulated_usage={}, context_fit_event_fields={},
+        request_ref={"manifest_ref": {"path": "request/ref"}},
+        drive_logs=tmp_path / "logs", event_queue=live,
+        accumulated_usage={}, context_fit_event_fields={"selected_context_mode": "test-context"},
     )
-    (tmp_path / "logs").mkdir()
 
-    class _ProviderError(RuntimeError):
+    class ProviderError(RuntimeError):
         status_code = 503
 
-    _record_llm_call_error(_ProviderError("upstream unavailable"), ctx)
-
-    rows = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text().splitlines()]
-    assert [row["type"] for row in rows if row["type"].startswith("llm_")] == ["llm_api_error"]
-    # The producer's live queue carries no second copy of the same failure.
-    live_items = []
+    _record_llm_call_error(ProviderError("upstream unavailable"), ctx)
+    [error_row] = attempted_rows
+    assert error_row["type"] == "llm_api_error"
+    queued = []
     while not live.empty():
-        live_items.append(live.get_nowait())
-    assert not any(
-        str((item.get("data") or item).get("type") or "") == "llm_round_error"
-        for item in live_items if isinstance(item, dict)
-    ), live_items
-    # Through the production sink the durable append is the one live frame.
-    assert [f["type"] for f in production_sink.frames if str(f.get("type", "")).startswith("llm_")] == ["llm_api_error"]
+        queued.append(live.get_nowait())
+    assert len(queued) == (0 if write_succeeds and sink_installed else 1)
+    if queued:
+        assert queued[0] == {"type": "log_event", "data": error_row}
+        _handle_log_event(queued[0], _ctx(production_sink))
+    [frame] = production_sink.frames
+    assert frame == {**error_row, "chat_id": 42}
+    assert frame["ts"] == "2026-09-07T13:05:00Z"
+    assert frame["execution_id"] == "exec-1" and frame["llm_call_id"] == "call-1"
+    assert frame["status_code"] == 503 and frame["request_ref"] == {"path": "request/ref"}
+    assert frame["selected_context_mode"] == "test-context"
+    rows = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
+    assert rows == ([error_row] if write_succeeds else [])
