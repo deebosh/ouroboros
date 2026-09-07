@@ -45,8 +45,14 @@ def kernel32(monkeypatch):
 
     api = SimpleNamespace(OpenProcess=Function(open_process), GetProcessTimes=Function(times),
                           CloseHandle=Function(lambda handle: facts["calls"].append(("close", handle))))
+    if os.name == "nt":
+        # Only process identity is fake; binding persistence still takes real
+        # kernel locks through the same DLL loader on Windows.
+        native = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.LockFileEx, api.UnlockFileEx = native.LockFileEx, native.UnlockFileEx
+    else:
+        monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
     monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_k: api, raising=False)
-    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
     return facts
 
 

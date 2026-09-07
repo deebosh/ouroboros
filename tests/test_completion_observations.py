@@ -153,11 +153,11 @@ def test_packet_summary_receives_inline_facts_and_custodies_its_prompt(tmp_path,
     assert len(prompts) == 1 and "LATE_TRACE_FACT" in prompts[0]
     assert "send_photo" in prompts[0] and "not a chat receipt" in prompts[0]
     calls_root = tmp_path / OBSERVABILITY_DIR / "calls"
-    manifests = [json.loads(path.read_text()) for path in calls_root.glob("*/*.json")]
+    manifests = [json.loads(path.read_text(encoding="utf-8")) for path in calls_root.glob("*/*.json")]
     observed = [row for row in manifests if row.get("call_type") == "task_summary"]
     request = next(row for row in observed if row["call_id"].endswith("_request"))
     response = next(row for row in observed if row["call_id"].endswith("_response"))
-    with gzip.open(request["full_payload_ref"]["path"], "rt") as source:
+    with gzip.open(request["full_payload_ref"]["path"], "rt", encoding="utf-8") as source:
         assert json.load(source)["kwargs"]["messages"][0]["content"] == prompts[0]
-    with gzip.open(response["full_payload_ref"]["path"], "rt") as source:
+    with gzip.open(response["full_payload_ref"]["path"], "rt", encoding="utf-8") as source:
         assert "owner receipt is unknown" in json.load(source)["message"]["content"]

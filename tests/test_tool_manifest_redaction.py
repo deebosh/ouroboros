@@ -37,10 +37,10 @@ def test_manifest_redacts_full_result_before_url_or_assignment_boundary(tmp_path
     assert raw[292:300] == canary
     # The old composition loses either the URL terminator or the rest of the value.
     assert canary in sanitize_tool_result_for_log(truncate_for_log(raw, 600))
-    manifest = json.loads(Path(result["trace_ref"]["manifest_ref"]["path"]).read_text())
+    manifest = json.loads(Path(result["trace_ref"]["manifest_ref"]["path"]).read_text(encoding="utf-8"))
     assert manifest["error_preview"] == truncate_for_log(sanitize_tool_result_for_log(raw), 600)
     assert canary not in manifest["error_preview"]
     assert manifest["tool_code"] == {"argument_error": "TOOL_ARG_ERROR", "tool_error": "EXECUTOR_ERROR",
                                       "timeout": "TOOL_TIMEOUT"}[writer]
-    with gzip.open(manifest["full_payload_ref"]["path"], "rt") as source:
+    with gzip.open(manifest["full_payload_ref"]["path"], "rt", encoding="utf-8") as source:
         assert canary not in json.load(source)["result"]

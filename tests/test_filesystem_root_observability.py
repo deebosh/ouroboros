@@ -7,7 +7,9 @@ task-drive, and skill-payload paths.
 from __future__ import annotations
 
 import os
+import pathlib
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,6 +58,17 @@ def test_write_file_outputs_use_normalized_root_paths(tmp_path, monkeypatch):
     assert "runtime_data:tmp/tool.txt" in runtime
     assert "task_drive:artifact.txt" in task_drive
     assert "user_files:Desktop/tool.txt" in user_file
+
+
+def test_runtime_data_absolute_windows_spelling_is_root_relative(monkeypatch):
+    from ouroboros import tool_access_paths
+
+    # Exercise native Windows grammar without requiring a Windows filesystem.
+    monkeypatch.setattr(tool_access_paths, "pathlib", SimpleNamespace(Path=pathlib.PureWindowsPath))
+    root = pathlib.PureWindowsPath(r"C:\Users\owner\data")
+    for path in (str(root / "tmp" / "tool.txt"), (root / "tmp" / "tool.txt").as_posix()):
+        assert tool_access_paths.normalize_runtime_data_path(root, path) == "tmp/tool.txt"
+    assert tool_access_paths.normalize_runtime_data_path(root, "C:/other/tool.txt") == "C:/other/tool.txt"
 
 
 def test_edit_text_and_search_outputs_are_root_qualified(tmp_path):

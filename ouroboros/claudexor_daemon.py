@@ -124,14 +124,23 @@ def ownership_marker_path() -> pathlib.Path:
     return owned_config_dir() / OWNERSHIP_MARKER
 
 
-def read_ownership_marker() -> Dict[str, Any]:
+def read_ownership_marker(*, strict: bool = False) -> Dict[str, Any]:
     """The durable claim that THIS data plane provisioned the home ({} = none)."""
     import json
 
+    path = ownership_marker_path()
     try:
-        raw = json.loads(ownership_marker_path().read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if strict and (not isinstance(raw, dict) or not raw):
+            raise ValueError("ownership marker is not a nonempty object")
         return raw if isinstance(raw, dict) else {}
+    except FileNotFoundError:
+        if strict and path.is_symlink():
+            raise ValueError("ownership marker is a dangling symlink")
+        return {}
     except (OSError, ValueError):
+        if strict:
+            raise
         return {}
 
 
@@ -153,10 +162,14 @@ def verify_owned_home(*, require_marker: bool = False) -> str:
         config_dir.resolve().relative_to(data_dir)
     except ValueError:
         return f"config dir {config_dir} is outside the data plane {data_dir}"
-    marker = read_ownership_marker()
+    # Judge the read itself: a publisher may create a complete marker between
+    # an absent read and a later exists() check. That is not malformed data.
+    try:
+        marker = read_ownership_marker(strict=True)
+    except (OSError, ValueError):
+        return "owned daemon marker is missing or invalid; stop ownership is unconfirmed"
     marked = str(marker.get("data_dir") or "")
-    path = ownership_marker_path()
-    if (require_marker or path.exists() or path.is_symlink()) and (
+    if (require_marker or marker) and (
         marker.get("owner") != "ouroboros" or not marked
     ):
         return "owned daemon marker is missing or invalid; stop ownership is unconfirmed"

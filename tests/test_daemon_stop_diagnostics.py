@@ -167,6 +167,30 @@ def test_concurrent_marker_publication_preserves_one_complete_record(tmp_path, m
     assert not path.with_name(path.name + ".lock").exists()
 
 
+def test_marker_published_after_absent_read_is_not_misreported_as_invalid(tmp_path, monkeypatch):
+    from ouroboros.utils import atomic_write_json
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    path = daemon.ownership_marker_path()
+    path.parent.mkdir(parents=True)
+    original = pathlib.Path.read_text
+    published = []
+
+    def read_then_publish(target, *args, **kwargs):
+        try:
+            return original(target, *args, **kwargs)
+        except FileNotFoundError:
+            if target == path and not published:
+                atomic_write_json(path, {"owner": "ouroboros", "data_dir": str(tmp_path.resolve())})
+                published.append(True)
+            raise
+
+    monkeypatch.setattr(pathlib.Path, "read_text", read_then_publish)
+    assert daemon.verify_owned_home() == ""
+    assert published == [True]
+    assert daemon.verify_owned_home(require_marker=True) == ""
+
+
 @pytest.mark.serial
 @pytest.mark.skipif(os.name == "nt", reason="POSIX measured custody fixture")
 def test_panic_reports_missing_marker_and_preserves_live_process(tmp_path, monkeypatch, caplog):

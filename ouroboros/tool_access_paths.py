@@ -204,7 +204,7 @@ def normalize_runtime_data_path(data_root: pathlib.Path, path: str) -> str:
     norm = str(path or ".").strip().replace("\\", "/")
     norm = norm[2:] if norm.startswith("./") else norm
     stripped = norm.lstrip("/")
-    root_text = str(pathlib.Path(data_root)).rstrip("/").lstrip("/")
+    root_text = pathlib.Path(data_root).as_posix().rstrip("/").lstrip("/")
     if root_text and (stripped == root_text or stripped.startswith(root_text + "/")):
         return stripped[len(root_text):].lstrip("/") or "."
     if not _tool_access().is_absolute_path_text(norm) and stripped.startswith(".tmp-data-"):
