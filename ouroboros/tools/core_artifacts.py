@@ -152,6 +152,7 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
     fp = pathlib.Path(file_path).expanduser().resolve()
     if not fp.exists() or not fp.is_file():
         return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ File not found: {file_path}"))
+    mime = _detect_document_mime(str(fp))
     # Capture immutable, task-owned bytes before publishing a link. File delivery
     # stays available above the old inline limit without placing the file in RAM.
     try:
@@ -160,10 +161,12 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
         from ouroboros.artifacts import copy_file_to_task_artifacts, task_id_for_artifacts
         from ouroboros.gateway.files import download_url_for_local_file
 
+        if getattr(ctx, "drive_root", None) is None:
+            raise OSError("artifact context is unavailable")
         task_id = task_id_for_artifacts(ctx)
         record = copy_file_to_task_artifacts(ctx, fp, kind="user_file", immutable=True)
         if not record:
-            raise OSError("file could not be captured in the artifact store")
+            raise ValueError("file was refused by the artifact store")
         metadata = getattr(ctx, "task_metadata", {}) or {}
         canonical = pathlib.Path(getattr(ctx, "budget_drive_root", None) or metadata.get("budget_drive_root") or ctx.drive_root)
         if canonical.resolve() != pathlib.Path(ctx.drive_root).resolve():
@@ -174,10 +177,22 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
                     "path": record["name"], "size": record["size"], "sha256": record["sha256"]}
         download_url = f"/api/tasks/{quote(task_id, safe='')}/artifacts/{quote(record['name'], safe='')}"
         compat_url = download_url_for_local_file(durable)
-        mime = _detect_document_mime(str(fp))
         # Existing transport subscribers can keep consuming bounded inline files.
         actual_b64 = base64.b64encode(durable.read_bytes()).decode() if record["size"] <= _MAX_DOCUMENT_FILE_BYTES else ""
-    except (OSError, ValueError, TypeError) as exc:
+    except (OSError, TypeError) as exc:
+        # Preserve the historical bounded inline delivery when storage or an
+        # older caller's artifact context is unavailable. No uncaptured URL or
+        # reference is published, and source-read failures still refuse delivery.
+        try:
+            with fp.open("rb") as source:
+                raw = source.read(_MAX_DOCUMENT_FILE_BYTES + 1)
+            if len(raw) > _MAX_DOCUMENT_FILE_BYTES:
+                raise OSError(f"large file requires artifact capture: {exc}")
+            actual_b64 = base64.b64encode(raw).decode()
+            file_ref, download_url, compat_url = {}, "", ""
+        except OSError as read_error:
+            return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ Failed to read or capture file: {read_error}"))
+    except ValueError as exc:
         return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ Failed to capture file: {exc}"))
 
     from ouroboros.tools.owner_delivery import deliver_owner_event

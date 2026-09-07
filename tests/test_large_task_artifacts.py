@@ -596,7 +596,8 @@ def test_immutable_child_materialization_retains_name_bytes_and_original_identit
 
 @pytest.mark.serial
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
-def test_file_verification_does_not_run_on_the_asgi_loop(tmp_path, monkeypatch, method):
+@pytest.mark.parametrize("registered", [True, False])
+def test_file_verification_does_not_run_on_the_asgi_loop(tmp_path, monkeypatch, method, registered):
     import asyncio
     import socket
     import threading
@@ -621,6 +622,8 @@ def test_file_verification_does_not_run_on_the_asgi_loop(tmp_path, monkeypatch, 
         materialization_calls.append(threading.get_ident())
         return materialize(*args, **kwargs)
     monkeypatch.setattr(tasks, "load_effective_task_result", observe_materialization)
+    if not registered:
+        monkeypatch.setattr(artifacts, "registered_task_artifact", lambda *args: None)
     original = artifacts.stream_artifact_file
     def observed(*args, **kwargs):
         calls.append(threading.get_ident())
@@ -644,7 +647,10 @@ def test_file_verification_does_not_run_on_the_asgi_loop(tmp_path, monkeypatch, 
                 assert reply.status_code == 200, reply.text
                 assert reply.content == (source.read_bytes() if method == 'GET' else b'')
         asyncio.run(request())
-        assert materialization_calls and all(identity != thread.ident for identity in materialization_calls)
+        assert bool(materialization_calls) is (not registered)
+        assert all(identity != thread.ident for identity in materialization_calls)
+        if registered:
+            assert len(calls) == 1, "registered downloads verify once per request"
         assert calls and all(identity != thread.ident for identity in calls), 'whole-file hashing ran synchronously on the ASGI event loop'
     finally:
         server.should_exit = True
@@ -759,3 +765,52 @@ def test_first_materialization_copy_failure_keeps_each_gc_root(tmp_path, monkeyp
     assert copied["child_ref_promotion"]["status"] == "complete"
     assert prune(parent, retention_days=7, now=later)["pruned"]
     assert Path(copied["artifacts"][0]["path"]).read_bytes() == b"complete report"
+
+
+@pytest.mark.parametrize("context", ["missing", "none", "storage_failure"])
+def test_small_document_keeps_inline_delivery_when_capture_is_unavailable(tmp_path, monkeypatch, context):
+    import base64
+    from ouroboros.tools import core_artifacts
+    from ouroboros.tools.registry import ToolContext
+
+    source = tmp_path / "report.txt"
+    source.write_bytes(b"complete report")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path / "data", task_id="send", current_chat_id=1)
+    if context == "missing":
+        ctx = SimpleNamespace(current_chat_id=1, pending_events=[], task_id="send", task_metadata={})
+    elif context == "none":
+        ctx.drive_root = None
+    else:
+        def unavailable(*args, **kwargs):
+            raise OSError("controlled artifact-store failure")
+        monkeypatch.setattr(artifacts, "copy_file_to_task_artifacts", unavailable)
+    assert core_artifacts._send_file(ctx, str(source)).startswith("OK")
+    event, = ctx.pending_events
+    assert base64.b64decode(event["file_base64"]) == source.read_bytes()
+    assert event["file_ref"] == {} and event["download_url"] == event["download_url_compat"] == ""
+
+
+@pytest.mark.parametrize("failure", ["large_uncaptured", "source_unreadable", "capture_refused"])
+def test_inline_fallback_keeps_the_source_and_capture_boundaries(tmp_path, monkeypatch, failure):
+    from ouroboros.tools import core_artifacts
+    from ouroboros.tools.registry import ToolContext
+
+    source = tmp_path / "report.txt"
+    source.write_bytes(b"complete report")
+    ctx = ToolContext(repo_dir=tmp_path, drive_root=tmp_path / "data", task_id="send", current_chat_id=1)
+    def unavailable(*args, **kwargs):
+        if failure == "capture_refused":
+            return None
+        raise OSError("controlled artifact-store failure")
+    monkeypatch.setattr(artifacts, "copy_file_to_task_artifacts", unavailable)
+    if failure == "large_uncaptured":
+        monkeypatch.setattr(core_artifacts, "_MAX_DOCUMENT_FILE_BYTES", 4)
+    elif failure == "source_unreadable":
+        original = Path.open
+        def refuse_source(path, *args, **kwargs):
+            if path == source:
+                raise PermissionError("controlled source permission refusal")
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "open", refuse_source)
+    assert not core_artifacts._send_file(ctx, str(source)).startswith("OK")
+    assert ctx.pending_events == []

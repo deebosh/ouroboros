@@ -925,11 +925,15 @@ def api_task_artifact(request: Request):
     drive_root = request_drive_root(request)
     path = artifact_store.resolve_chat_media_path(drive_root, task_id, name)
     if path is None:
-        result = load_effective_task_result(drive_root, task_id) or {}
         registered = artifact_store.registered_task_artifact(drive_root, task_id, name)
+        source = request.query_params.get("source")
+        # Registered immutable bytes need one identity check below, not a
+        # materialization/hash of the whole result before that same check.
+        result = (load_effective_task_result(drive_root, task_id) or {}
+                  if source or not registered or not registered.get("immutable") else {})
         if not result and not registered:
             return json_error("task not found", 404)
-        if source := request.query_params.get("source"):
+        if source:
             try:
                 return Response(artifact_store.read_task_result_source_bytes(drive_root, result, name, source), media_type="application/json")
             except (OSError, ValueError, RuntimeError):

@@ -1573,7 +1573,12 @@ or error otherwise, never failing on its own.
   retain source confinement and the existing Path return. Automatic genesis listing
   is discovery: record unreadable/changing entries and incomplete coverage, while
   actual capture/copy remains strict. `send_file` uses immutable captured names so
-  an earlier delivery URL never aliases a later rewrite. Browser URL downloads
+  an earlier delivery URL never aliases a later rewrite. If capture is unavailable,
+  existing small-file inline delivery stays available without a fabricated URL
+  or reference; source-read refusals and the inline size boundary still apply.
+  Registered immutable downloads verify their bytes once per request without
+  materializing the whole task result; source and unregistered paths still use
+  the existing effective-result owner. Browser URL downloads
   use the existing helper's streaming mode (HEAD then native browser download);
   the launcher URL backend already streams. `downloadBlobViaHostBridge` shares
   the existing bytes-save owner for an already-owned Blob or data/blob URL;
