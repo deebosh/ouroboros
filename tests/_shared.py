@@ -13,6 +13,25 @@ import pathlib
 import re
 from unittest.mock import MagicMock
 
+
+def reap_test_process_group(proc, *, timeout_sec: float = 5.0) -> None:
+    """Reap a test child started in its own session; prove its helpers are gone.
+
+    A best-effort signal can be refused for an already-exited group. Only the
+    existing fresh member census decides cleanup success; unknown stays live.
+    """
+    import time
+    from ouroboros.platform_layer import kill_process_group_id
+    from ouroboros.process_containment import process_group_has_live_members
+
+    kill_process_group_id(proc.pid)
+    proc.wait(timeout=timeout_sec)
+    deadline = time.monotonic() + timeout_sec
+    while process_group_has_live_members(proc.pid):
+        assert time.monotonic() < deadline, f"test process group {proc.pid} still has live or unknown members"
+        time.sleep(0.05)
+
+
 # Every function in the tree that persists a settings document, as (repo-relative POSIX
 # path, function name). Three route through `config.prepare_settings_for_persist`; the
 # context-pair migration and the Colab generator are exempt from it by design and carry
