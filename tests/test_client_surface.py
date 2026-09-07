@@ -428,19 +428,33 @@ def test_steering_and_project_mailbox_writers_pass_client_surface():
     # exercised via write_owner_message round-trip; these pins catch a dropped
     # kwarg at the two forwarding call sites).
     steering = (REPO / "supervisor" / "steering.py").read_text(encoding="utf-8")
-    # v7 split: the project-mailbox write moved to the owner-routing leaf while the
-    # log_chat forwarding stayed in server.py, so the pin reads BOTH owners as one
-    # surface — the point is that neither call site loses the kwarg.
-    server_src = ((REPO / "server.py").read_text(encoding="utf-8")
-                  + (REPO / "ouroboros" / "server_owner_routing.py").read_text(encoding="utf-8"))
+    # The project mailbox belongs to owner routing; the ordinary inbound log
+    # now belongs to message_bus.record_inbound_message. Pin each actual owner
+    # separately so an unrelated extra forwarding site cannot hide a dropped one.
+    writers = {
+        "project mailbox": REPO / "ouroboros" / "server_owner_routing.py",
+        "inbound chat journal": REPO / "supervisor" / "message_bus.py",
+    }
     assert "client_surface=" in steering, "steer mailbox write dropped client_surface"
-    # BOTH server call sites (project-mailbox write AND log_chat forwarding)
-    # must carry the kwarg — a single-substring pin went false-green when one
-    # of the two was dropped (final code review MAJOR).
-    assert server_src.count("client_surface=(") >= 2, (
-        "a server client_surface forwarding call site was dropped "
-        f"(found {server_src.count('client_surface=(')}, expected >= 2)"
+    for owner, path in writers.items():
+        assert "client_surface=(" in path.read_text(encoding="utf-8"), f"{owner} dropped client_surface"
+
+
+def test_inbound_message_owner_persists_the_original_client_surface(tmp_path, monkeypatch):
+    from supervisor import message_bus
+
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(message_bus, "load_state", lambda: {"session_id": "surface-fixture"})
+    surface = {"pywebview": False, "ua": "Phone/1.0"}
+    message = {"source": "web", "task_metadata": {"client_surface": surface}}
+    ref = message_bus.record_inbound_message(
+        SimpleNamespace(), message, chat_id=1, user_id=1,
+        client_message_id="surface-message", text="owner input", ts="2026-09-07T00:00:00Z",
     )
+    row = json.loads((tmp_path / "logs" / "chat.jsonl").read_text(encoding="utf-8"))
+    assert row["client_surface"] == surface
+    assert row["client_message_id"] == ref["client_message_id"] == "surface-message"
+    assert row["text"] == "owner input" and row["direction"] == "in"
 
 
 def test_presentation_env_is_stripped_by_benchmark_server_runner():

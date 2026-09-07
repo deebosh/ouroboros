@@ -1894,8 +1894,11 @@ Add the field to the active frozen owner — `ouroboros/contracts/` for the pack
 
 Chat uploads have one `gateway.files` storage owner for Host-confined paths and
 completed multipart spools. It uses the artifact substrate's streaming hash and
-atomic copy; borrowed spools promise descriptor identity, not an original pathname,
-and remain request-owned until the copy worker settles. `store_chat_upload` keeps
+atomic copy; borrowed spools promise descriptor identity, not an original pathname.
+The multipart request's worker owns both copying and closing its spool, so HTTP
+cancellation waits for both and cannot interrupt cleanup. Host uploads use the
+same settled wait before releasing their existing in-flight slot; the skill keeps
+ownership of its source. `store_chat_upload` keeps
 its Path return. The old 50 MiB chat upload rejection is removed on both ingresses;
 Host's existing 25-file request count and the separate Files-browser upload policy
 retain their own contracts.
@@ -1923,34 +1926,6 @@ may retain an unused copy; no new reconciliation or transaction log is introduce
 Operation correlation (#667): a named injected message has `operation_ref=<chat_id>:<client_message_id>` on 202, 200, 504 and disconnect responses. `supervisor.message_bus.accept_local_message` serializes check, canonical inbound-row acceptance and enqueue; its existing `log_chat` writer must succeed before work is queued. The host-minted full origin is carried internally to `record_inbound_message`, which verifies the source and consumes it without writing a second row. Repeated same-id, same-text, same-skill delivery rejoins even before supervisor dequeue; changed content or source is refused with 409. This preserves the existing in-memory queue: a crash after acceptance can lose delivery and reads honestly as `lost`, never authorizing a second enqueue. Reads span retained canonical chat generations. Routing annotations and outbound task ids are discovery hints only: task reads and cancellation require the actual queue/task record's complete `origin_message_ref` to match the authenticated skill's canonical source. `DirectActivityRegistry` carries that same origin. Named response waits poll this exact operation and its retry-aware effective task result; chat ordering alone never proves a reply. Cancel enters the existing durable intent and cascade-custody owner only for work with that origin and the same installation root. A different or unavailable owner root is disclosed as cancel_unsupported before any intent is written. Unaddressable/foreign work remains `cancel_unsupported`; unresolved custody remains explicit and never becomes a false `cancelled`.
 
 Successful extension children also carry a bounded `ws_relay_failures` count map from the existing PluginAPI transport owner through their result envelope and process facts. Missing transport, network errors and HTTP refusals remain visible without changing `send_ws_message -> None` or the producer's success. One host warning reports the aggregate; diagnostics contain no message bodies, URLs or credentials. A child that dies before its final envelope may lose this aggregate; the existing measured death/timeout facts remain authoritative. The separate streaming route implementation carries the same aggregate in completion X after body/background work.
-
-Host chat attachment copies remain request-owned until enqueue succeeds. The
-existing synchronous copy runs through `gateway._helpers.run_sync_to_completion`,
-which waits for it even under HTTP cancellation before releasing the in-flight
-slot. A request-local cleanup stack removes only newly created destinations on
-cancellation or partial admission failure; accepted message attachments survive
-later disconnects. The skill retains its original files throughout.
-
-Chat uploads have one `gateway.files` storage owner for Host-confined paths and
-completed multipart spools. It uses the artifact substrate's streaming hash and
-atomic copy; borrowed spools promise descriptor identity, not an original pathname.
-The multipart request's worker owns both copying and closing its spool, so HTTP
-cancellation waits for both and cannot interrupt cleanup. Host uploads use the
-same settled wait before releasing their existing in-flight slot; the skill keeps
-ownership of its source. `store_chat_upload` keeps
-its Path return. The old 50 MiB chat upload rejection is removed on both ingresses;
-Host's existing 25-file request count and the separate Files-browser upload policy
-retain their own contracts.
-
-Telegram document mirroring resolves the captured `file_ref` and streams an owned
-file handle through its existing multipart client, with legacy inline bytes still
-accepted. Its outgoing 50 MiB boundary is separate from the integration's inbound
-10 MiB download limit. Oversized files stay saved in the application: a ready,
-already-running owner-authenticated Mini App can be opened through its existing
-entry button; otherwise the message explicitly says it cannot mirror the file and
-directs the owner to the app. Delivery never starts a tunnel or publishes a new
-public/token-bearing artifact URL, and this notice does not claim the bytes were
-uploaded to Telegram.
 
 Presence flow: `POST /presence/turn` requires the content-hash-bound `presence` permission, one `binding_id`, one exact transport event, and optionally staged files confined to the skill's state root; the binding resolves from `state/presence_bindings.json` with exact provider/account/conversation/thread origin verification; cross-process locks enforce the installation-wide cap and serialize one `conversation_key`; a stable event-derived task id makes transport retries idempotent; input and output join ordinary dialogue history with full transport/actor provenance. The one typed outcome is message/silent/tool_delivered/deferred — `deferred` only with a correlated `work_ref`, because an unanchored "deferred" would be an unanchored promise — and `GET /presence/work/{work_ref}` polls the bound late result without exposing the general task API. Promotion of Presence work into a managed task clears requested Project/workspace/source widening: a public conversation may promote long work but cannot choose new authority, and the cost ceiling plus return destination follow the promoted root by value. `presence_cancel_work` acts only on a `work_ref` whose stored binding and conversation match the current turn; owner chat and Background Consciousness may `initiate_presence` on an existing enabled binding.
 
