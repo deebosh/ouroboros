@@ -300,31 +300,35 @@ def _service_group_survives_leader(entry: Dict[str, Any]) -> bool:
 
 def _read_ledger_records(
     drive_root: pathlib.Path, *, strict: bool
-) -> tuple[bool, List[Dict[str, Any]]]:
+) -> tuple[bool, List[Dict[str, Any]], bytes]:
+    """Return the latest-per-PID view and the exact bytes that produced it."""
     path = ledger_path(drive_root)
     if not path.exists():
-        return True, []
+        return True, [], b""
     entries: List[Dict[str, Any]] = []
     try:
         import json
 
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
+        snapshot = path.read_bytes()
+        # Match the compactor's physical JSONL boundaries. Unicode separators
+        # inside JSON strings are payload bytes, not new ledger records.
+        for raw_line in snapshot.splitlines():
+            line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
             try:
                 obj = json.loads(line)
             except ValueError:
                 if strict:
-                    return False, []
+                    return False, [], snapshot
                 continue
             if not isinstance(obj, dict) or not obj.get("pid"):
                 if strict:
-                    return False, []
+                    return False, [], snapshot
                 continue
             entries.append(obj)
     except OSError:
-        return False, []
+        return False, [], b""
     # Last record per pid wins (a pid may be re-registered by a newer spawn).
     by_pid: Dict[int, Dict[str, Any]] = {}
     for entry in entries:
@@ -332,14 +336,14 @@ def _read_ledger_records(
             by_pid[int(entry.get("pid") or 0)] = entry
         except (TypeError, ValueError):
             if strict:
-                return False, []
+                return False, [], snapshot
             continue
     by_pid.pop(0, None)
-    return True, list(by_pid.values())
+    return True, list(by_pid.values()), snapshot
 
 
 def _read_ledger_strict(drive_root: pathlib.Path) -> tuple[bool, List[Dict[str, Any]]]:
-    return _read_ledger_records(drive_root, strict=True)
+    return _read_ledger_records(drive_root, strict=True)[:2]
 
 
 def _read_ledger(drive_root: pathlib.Path) -> List[Dict[str, Any]]:
@@ -348,13 +352,14 @@ def _read_ledger(drive_root: pathlib.Path) -> List[Dict[str, Any]]:
 
 def _rewrite_ledger(
     drive_root: pathlib.Path, entries: List[Dict[str, Any]], *,
-    previous: Optional[List[Dict[str, Any]]] = None,
+    previous: Optional[bytes] = None,
 ) -> None:
-    """Prune only exact observed rows under the append lock, preserving new/opaque bytes.
+    """Compact only the observed prefix, preserving concurrent and opaque bytes.
 
     ``previous=None`` is the explicit replacement form used by isolated fixtures.
-    Lifecycle callers pass their read snapshot; signals and waits stay outside
-    this short transaction, so a new spawn can always enter durable custody.
+    Lifecycle callers pass their raw read snapshot, not the deduplicated view.
+    If another rewrite changed that prefix, defer to a fresh sweep. Signals and
+    waits stay outside this short transaction so new spawns can enter custody.
     """
     import json
 
@@ -372,16 +377,22 @@ def _rewrite_ledger(
             if previous is None:
                 payload = "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries).encode("utf-8")
             else:
-                removed = [entry for entry in previous if entry not in entries]
+                current = path.read_bytes()
+                if not current.startswith(previous):
+                    return
+                survivors = {int(entry.get("pid") or 0): entry for entry in entries}
                 kept = []
-                for line in path.read_bytes().splitlines(keepends=True):
+                for line in reversed(previous.splitlines(keepends=True)):
                     try:
                         row = json.loads(line)
-                    except (ValueError, UnicodeError):
-                        row = None
-                    if row not in removed:
+                        pid = int(row.get("pid") or 0) if isinstance(row, dict) else 0
+                    except (TypeError, ValueError, UnicodeError):
+                        pid = 0
+                    # Only the last observed row can survive for this PID.
+                    # Unparseable rows remain literal bytes, never deletion authority.
+                    if not pid or survivors.pop(pid, None) == row:
                         kept.append(line)
-                payload = b"".join(kept)
+                payload = b"".join(reversed(kept)) + current[len(previous):]
             tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
             tmp.write_bytes(payload)
             replace_atomic(tmp, path)
@@ -574,7 +585,7 @@ def stop_ledgered_processes(
     drive_root = pathlib.Path(drive_root)
     stopped: List[int] = []
     survivors: List[Dict[str, Any]] = []
-    entries = _read_ledger(drive_root)
+    _, entries, previous = _read_ledger_records(drive_root, strict=False)
     failures = unconfirmed if unconfirmed is not None else []
     for entry in entries:
         purpose = str(entry.get("purpose") or "")
@@ -623,7 +634,7 @@ def stop_ledgered_processes(
             "reason": "owner_stop",
         })
     if stopped:
-        _rewrite_ledger(drive_root, survivors, previous=entries)
+        _rewrite_ledger(drive_root, survivors, previous=previous)
     return stopped
 
 
@@ -632,7 +643,7 @@ def quiesce_custodied_services(
 ) -> tuple[bool, List[str]]:
     """Kill and verify every ledgered task/session service before repo replacement."""
     drive_root = pathlib.Path(drive_root)
-    readable, entries = _read_ledger_strict(drive_root)
+    readable, entries, previous = _read_ledger_records(drive_root, strict=True)
     if not readable:
         return False, ["custody_ledger:unreadable"]
     targets: List[Dict[str, Any]] = []
@@ -680,7 +691,7 @@ def quiesce_custodied_services(
                 "pgid": int(entry.get("pgid") or 0),
                 "purpose": entry.get("purpose"),
             })
-    _rewrite_ledger(drive_root, survivors, previous=entries)
+    _rewrite_ledger(drive_root, survivors, previous=previous)
     return not blockers, blockers
 
 
@@ -729,7 +740,7 @@ def reap_orphaned_processes(
     # companion mass-reap by handing in an empty set.
     if live_owner_skills is not None and not live_owner_skills:
         live_owner_skills = None
-    entries = _read_ledger(drive_root)
+    _, entries, previous = _read_ledger_records(drive_root, strict=False)
     if not entries:
         return []
     reaped: List[int] = []
@@ -842,5 +853,5 @@ def reap_orphaned_processes(
         except Exception:
             log.warning("Failed to reap ledgered process %s", pid, exc_info=True)
             survivors.append(entry)
-    _rewrite_ledger(drive_root, survivors, previous=entries)
+    _rewrite_ledger(drive_root, survivors, previous=previous)
     return reaped

@@ -2604,7 +2604,10 @@ network-unavailability evidence. Keep transport provenance distinct from the
 public stale status; a matching error-code string is not transport proof.
 Only confirmed exit permits `process_stopped`
 and pruning; concurrent and unreadable ledger bytes remain intact under the append
-lock. Each root gets its own exit window; partial success never means the whole
+lock. Maintenance compacts the exact observed byte prefix while keeping the latest
+surviving row per PID and every concurrent append. A changed prefix defers compaction
+until a fresh sweep; opaque rows stay byte-for-byte intact.
+Each root gets its own exit window; partial success never means the whole
 daemon stop succeeded. Unconfirmed stop emits a critical diagnostic and existing
 supervisor-log row, including lock contention and unknown custody. The manager
 lock uses the short-poll bound separately from HTTP phase timeouts. Authenticated

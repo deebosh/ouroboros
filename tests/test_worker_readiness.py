@@ -256,13 +256,17 @@ def test_no_worker_ready_inside_the_window_tears_down_replaces_and_types_the_row
     assert _rows(seam.supervisor, "worker_sha_verify") == []
 
 
-def test_the_window_and_the_reported_wait_count_from_the_spawn_instant(pool, seam):
+def test_the_window_and_the_reported_wait_count_from_the_spawn_instant(pool, seam, monkeypatch):
     slot = _booting_slot(pool, 4, 5040)
 
-    started = time.time()
+    # Observe the readiness wait itself; journal writes and CI scheduling can
+    # take longer than a polling interval without opening a fresh wait window.
+    started = 100_000.0
+    clock = SimpleNamespace(time=lambda: started, sleep=MagicMock(side_effect=AssertionError("unexpected readiness wait")))
+    monkeypatch.setattr(pool.lifecycle, "time", clock)
     seam.run({4: slot}, seam.cursor, 1, started - 10.0)
 
-    assert time.time() - started < 0.25, "a window already spent at hand-off does not wait again"
+    clock.sleep.assert_not_called()
     row = _rows(seam.supervisor, "worker_ready_timeout")[0]
     assert row["waited_sec"] >= 10.0 and seam.killed == [5040]
 
