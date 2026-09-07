@@ -124,7 +124,7 @@ def _usage(result: dict) -> tuple[dict, float | None, bool]:
 
 
 def _request(target: dict, messages: list, tools: list | None, parameters: dict) -> dict:
-    from ouroboros.llm import LLMClient
+    from ouroboros.llm_messages import _MessageShapingMixin
 
     for name in ("response_format", "allow_server_web_search", "bypass_response_cache"):
         if parameters.get(name) or (name == "response_format" and parameters.get(name) is not None):
@@ -132,7 +132,7 @@ def _request(target: dict, messages: list, tools: list | None, parameters: dict)
                                        "context": {"parameter": name}}, model_role=parameters.get("model_role", ""))
     # Only known host and foreign-provider metadata leave the send copy. Native
     # Claudexor payloads and tool schemas are opaque here and are never walked.
-    prepared = scrub_native_custody(LLMClient._normalize_system_message_placement(messages))
+    prepared = scrub_native_custody(_MessageShapingMixin._normalize_system_message_placement(messages))
     for message in prepared:
         for name in ("_context_capsule", "reasoning", "reasoning_details", "reasoning_content", "response_id", "stop_reason"):
             message.pop(name, None)

@@ -801,15 +801,21 @@ class AccountedFakeLLM(FakeLLM):
         )
         return ua.execute_physical_attempt(request, lambda: FakeLLM.chat(self, **kwargs))
 
-def test_unset_session_window_uses_task_absolute_ceiling(tmp_path, fake_route, monkeypatch):
+@pytest.mark.parametrize("elapsed_before_dispatch", [0, 2])
+def test_unset_session_window_uses_task_absolute_ceiling(tmp_path, fake_route, monkeypatch, elapsed_before_dispatch):
+    import time
+
+    started = time.monotonic()
     monkeypatch.setattr("ouroboros.config.get_task_abs_ceiling_sec", lambda: 21_600)
+    monkeypatch.setattr("ouroboros.review_custody.monotonic_now", lambda *_args: started)
+    monkeypatch.setattr("ouroboros.review_execution.monotonic_now", lambda: started + elapsed_before_dispatch)
 
     run_review_request(
         _agent_request(), slots=[_agent_slot(timeout_sec=None)],
         drive_root=tmp_path, llm=FakeLLM(),
     )
 
-    assert fake_route.instances[0].start_requests[0]["maxSeconds"] == 21_600
+    assert fake_route.instances[0].start_requests[0]["maxSeconds"] == 21_600 - elapsed_before_dispatch
 
 def test_task_metadata_deadline_narrows_session_engine_horizon(
     tmp_path, fake_route, monkeypatch,

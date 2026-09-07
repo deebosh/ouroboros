@@ -68,7 +68,7 @@ def test_torn_mailbox_read_cannot_apply_or_consume_a_parsed_control(live_wait):
     root, owner, _body, _decide = _accepted_switch(live_wait)
     path = owner_mailbox._mailbox_path(root, "task-one")
     complete = path.read_bytes()
-    path.write_bytes(complete.rstrip(b"\n"))
+    path.write_bytes(complete.rstrip(b"\r\n"))
     owner._drain_controls()
     assert not owner.seen_controls and owner.mailbox_stamp is None
     assert "_action" not in owner.waits["wait-one"]

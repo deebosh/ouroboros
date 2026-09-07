@@ -74,6 +74,8 @@ def test_answered_direct_task_waits_through_task_done_and_reload(subscription_ui
     if main_status == "failed":
         assert page.get_by_text("Failed", exact=True).first.is_visible()
         assert detail()["outcome_axes"]["execution"]["status"] == "failed"
+    # The wait card can rejoin before the independent history request finishes.
+    page.get_by_text("final answer", exact=True).wait_for(state="visible")
     assert page.get_by_text("final answer", exact=True).is_visible()
     ui_fixture.capture(page, f"post-task-{main_status}-light-wait-after-reload")
     state["post_task_synthesis"] = "completed"

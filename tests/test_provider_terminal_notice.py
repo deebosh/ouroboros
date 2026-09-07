@@ -59,7 +59,7 @@ def test_pipeline_delivery_and_rebuild_keep_raw_bytes_and_known_wait_custody(tmp
     notice = usage["terminal_provider_notice"]
     if mode == "ephemeral":
         assert load_task_result(tmp_path, "parent1") is None
-        assert Path(usage["terminal_salvage_path"]).read_text() == RAW
+        assert Path(usage["terminal_salvage_path"]).read_text(encoding="utf-8") == RAW
         assert RAW in sent["text"] and sent["text"].count("[Host status]") == 1
         assert notice in sent["text"] and "task details" not in sent["text"]
         assert sent["log_text"] == sent["text"]
@@ -71,7 +71,7 @@ def test_pipeline_delivery_and_rebuild_keep_raw_bytes_and_known_wait_custody(tmp
         assert sent["text"] == RAW
     else:
         assert RAW not in sent["text"] and notice in sent["text"]
-        assert Path(stored["terminal_salvage_path"]).read_text() == RAW
+        assert Path(stored["terminal_salvage_path"]).read_text(encoding="utf-8") == RAW
     replay = build_completed_result_event(tmp_path, task, "parent1", stored)
     assert replay["text"] == sent["text"] and replay["delivery_id"] == sent["delivery_id"]
     assert pending_deliveries(tmp_path)[0]["text"] == sent["text"]

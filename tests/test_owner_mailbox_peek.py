@@ -137,7 +137,7 @@ def test_failed_or_incomplete_read_is_never_a_cached_empty_result(tmp_path, monk
     path, ack = acknowledged_history(tmp_path, 2)
     target = path if source == "mailbox" else ack
     if fault == "torn":
-        target.write_bytes(target.read_bytes().rstrip(b"\n"))
+        target.write_bytes(target.read_bytes().rstrip(b"\r\n"))
     elif fault == "malformed":
         with target.open("ab") as handle:
             handle.write(b"not-json\n")

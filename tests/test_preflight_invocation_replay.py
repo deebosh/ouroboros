@@ -213,12 +213,12 @@ def test_unreadable_pending_authority_never_dispatches(preflight, shape):
     FakeGateway.start_error = ClaudexorUnavailable("daemon_unreachable", "unknown", status_code=0)
     assert _run(preflight)["status"] == "error"
     path = preflight.drive_root / "state" / "advisory_review.json"
-    state = json.loads(path.read_text())
+    state = json.loads(path.read_text(encoding="utf-8"))
     if shape == "execution":
         state["advisory_runs"][0]["execution"]["pending_invocation_id"] = []
     else:
         state["advisory_runs"] = {"hidden": state["advisory_runs"][0]}
-    path.write_text(json.dumps(state))
+    path.write_text(json.dumps(state), encoding="utf-8")
     before = path.read_bytes()
     assert _run(preflight)["status"] == "pending"
     assert len(_posts()) == 1 and path.read_bytes() == before
@@ -323,7 +323,7 @@ def test_native_preflight_uses_existing_episode_and_monetary_custody(preflight, 
     else:
         assert _run(preflight)["status"] == ("fresh" if end == "success" else "error")
     rows = load_state(preflight.drive_root).advisory_runs
-    events = [json.loads(line) for line in delegate_custody.event_log_path(preflight.drive_root).read_text().splitlines()]
+    events = [json.loads(line) for line in delegate_custody.event_log_path(preflight.drive_root).read_text(encoding="utf-8").splitlines()]
     episodes = [row for row in events if row.get("type") == "review_native_episode"]
     assert len(episodes) == 1 and episodes[0]["native_rounds"] == 1
     assert episodes[0]["task_id"] == preflight.task_id
