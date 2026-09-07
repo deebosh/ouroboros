@@ -177,10 +177,10 @@ def test_deadline_refused_redial_still_names_the_class_the_repeat_was_released_w
         datetime.now(timezone.utc) + timedelta(seconds=get_finalization_grace_sec() + 8)
     ).isoformat()}
     kwargs["tools"]._ctx.task_metadata = metadata
-    waits = []
+    clock = _FakeClock(monkeypatch)
 
     def _window_closes_while_waiting(sec, _wake):
-        waits.append(sec)
+        clock.sleep(sec, _wake)
         metadata["deadline_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
         return False
 
@@ -188,7 +188,7 @@ def test_deadline_refused_redial_still_names_the_class_the_repeat_was_released_w
     result, usage, trace = run_llm_loop(**kwargs)
 
     assert llm.calls == 2  # the primary send and its granted repeat; the redial never dispatched
-    assert no_sleep == [4.0] and len(waits) == 1
+    assert no_sleep == [4.0] and len(clock.sleeps) == 1
     assert [row["reason_code"] for row in _events(tmp_path, "llm_not_dispatched")] == ["deadline_exhausted"]
     ended = [row["detail"] for row in _events(tmp_path, "network_wait") if row["phase"] == "ended"]
     assert ended == ["deadline_refused_dispatch"]
