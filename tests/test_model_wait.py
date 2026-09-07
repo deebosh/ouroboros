@@ -134,6 +134,22 @@ def live_wait(setup, monkeypatch):
         yield root, transport, client, controller, events, lambda body: gateway._decide(request, body)
 
 
+@pytest.fixture
+def elapsed_quota_wait(live_wait, monkeypatch):
+    """Advance catalog time explicitly; an immediate lookup may share one OS tick."""
+    _root, _transport, client, controller, _events, _decide = live_wait
+    clock = SimpleNamespace(now=controller.started_monotonic)
+    monkeypatch.setattr(model_wait.time, "monotonic", lambda: clock.now)
+    catalog = client.claudexor_model_catalog
+
+    def elapsed_catalog(*args, **kwargs):
+        clock.now += 2.5
+        return catalog(*args, **kwargs)
+
+    monkeypatch.setattr(client, "claudexor_model_catalog", elapsed_catalog)
+    return live_wait
+
+
 def _refusal(code="subscription_window_exhausted"):
     return result(outcome="failed", problem={"code": code, "message": "fixture resource refusal",
                                              "context": {"resetsAt": "2099-01-01T00:00:00Z"}})
@@ -144,8 +160,8 @@ def _action_for(event, action, **fields):
             "revision": event["revision"], "action": action, **fields}
 
 
-def test_quota_wait_rejoins_call_without_replaying_tools_and_keeps_ledger(live_wait):
-    root, transport, client, controller, events, _decide = live_wait
+def test_quota_wait_rejoins_call_without_replaying_tools_and_keeps_ledger(elapsed_quota_wait):
+    root, transport, client, controller, events, _decide = elapsed_quota_wait
     transport.results = [_refusal(), result()]
     transport.dispatch = ["not_started", "response_received"]
     messages = [{"role": "user", "content": "request"}, result()["message"],
@@ -162,7 +178,7 @@ def test_quota_wait_rejoins_call_without_replaying_tools_and_keeps_ledger(live_w
     assert rows[-1]["revision"] > rows[0]["revision"]
     assert all(row["worker_slot_held"] is True and row["is_progress"] is False for row in rows)
     assert load_task_result(root, "task-one")["model_waits"][rows[0]["wait_id"]]["state"] == "resolved"
-    assert controller.paused_seconds() > 0
+    assert controller.paused_seconds() == 2.5
 
 
 def test_auto_wait_requests_its_model_and_resumes_when_compatible_second_account_recovers(live_wait, monkeypatch):
@@ -546,8 +562,8 @@ def test_history_preserves_typed_wait_map_without_counting_progress_or_human_row
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("dispatch", ["not_started", "response_received"])
-def test_confirmed_mixed_pool_waits_and_heals_on_the_same_live_call(live_wait, dispatch, asynchronous):
-    root, transport, client, controller, events, _decide = live_wait
+def test_confirmed_mixed_pool_waits_and_heals_on_the_same_live_call(elapsed_quota_wait, dispatch, asynchronous):
+    root, transport, client, controller, events, _decide = elapsed_quota_wait
     transport.results = [result(outcome="failed", problem={
         "code": "credential_pool_exhausted", "retryable": False,
         "message": "No account can serve this model request",
@@ -565,7 +581,7 @@ def test_confirmed_mixed_pool_waits_and_heals_on_the_same_live_call(live_wait, d
     assert rows[0]["credential_profile_id"] == "", "A mixed pool has no single login target"
     assert rows[0]["quota_clock"]["active"] is True
     assert rows[-1]["state"] == "resolved" and rows[-1]["resolution"] == "resource_available"
-    assert rows[-1]["quota_clock"]["active"] is False and controller.paused_seconds() > 0
+    assert rows[-1]["quota_clock"]["active"] is False and controller.paused_seconds() == 2.5
     assert load_task_result(root, "task-one")["model_waits"][rows[0]["wait_id"]]["reason"] == "auth_quota"
 
 

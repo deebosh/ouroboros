@@ -50,8 +50,10 @@ def test_background_wait_reload_pause_and_new_cycle_use_one_card(subscription_ui
            "state": "waiting", "worker_slot_held": False, "model_wait_owner_id": "cycle-a"}
     snapshot = {"model_wait_owner_id": "cycle-a", "chat_id": 1, "model_waits": {row["wait_id"]: row},
                 "running": True, "paused": False, "detail": "Waiting for model access"}
+    # test_background_wait_forwarding_and_reload_use_existing_owner pins that
+    # active-owner history never terminal-stamps the old background progress.
     history_rows = [{"role": "system", "text": "Earlier background thought", "task_id": "bg-consciousness",
-                     "is_progress": True, "task_terminal_status": "done", "ts": "2026-09-07T00:00:00Z"}]
+                     "is_progress": True, "ts": "2026-09-07T00:00:00Z"}]
     actions = []
 
     def reply(route, body):
