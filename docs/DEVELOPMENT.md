@@ -2665,7 +2665,10 @@ to the existing loaded bundle, before spawning, and detach on completion. A
 cancellation during startup retains the worker future and process context until
 it exits; move context entry/exit, spawn registration, pipe shutdown and termination
 off the ASGI event loop. Static captured module sources spawn no child. Chunk size
-and post-response cleanup grace come from config.py and are not stream deadlines.
+and post-response cleanup grace come from the runtime-limits owner via config.py
+and are not stream deadlines. Bound each frame before reading its payload, not
+the cumulative response; retain sanitized bounded stderr and the actual exit
+code after draining a child that dies abnormally.
 Failed final sends remain delivery failures; background failure after a successful final
 body is a separate diagnostic. Widget pull credits bound transport buffering;
 large URL downloads use the existing native/browser file owner, never an automatic
@@ -2922,7 +2925,14 @@ boundary. Enforcement: CHECKLISTS item 17 (`gateway_parity`) and
 `tests/test_gateway_parity.py`.
 
 Named skill chat ingress uses the existing message-bus canonical writer before
-enqueue. The server consumes that internal accepted source without logging a
+enqueue. Its internal callback retains request-owned upload copies once the
+canonical write is attempted, even if that write fails with an unknown outcome;
+replays do not adopt new copies. The existing settled HTTP-worker wait retains
+copy/admission until completion under cancellation, and a local cleanup stack
+removes only unaccepted destinations. Accepted attachments remain through an
+unknown write/queue outcome or disconnect. Such failure may retain an unused
+copy but never claims acceptance. Cancellation support and intent writes must
+address the same installation root as the operation being read. The server consumes that internal accepted source without logging a
 second row. Operation reads/cancel verify the complete source against actual
 task or direct-turn ownership; presentation annotations are discovery hints.
 Named waits use that operation's state, while unnamed legacy waits retain their

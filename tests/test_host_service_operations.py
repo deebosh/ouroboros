@@ -185,7 +185,8 @@ def test_operation_read_reports_pending_then_the_durable_answer(tmp_path):
     assert done["status"] == "completed" and done["text"] == "the answer" and done["task_id"] == "40cc86d9"
 
 
-def test_operation_read_reports_a_live_direct_or_ephemeral_turn(tmp_path):
+def test_operation_read_reports_a_live_direct_or_ephemeral_turn(tmp_path, monkeypatch):
+    _isolate_queue(monkeypatch, tmp_path, [])
     from supervisor.active_activity import get_direct_activity_registry
 
     client = _client(tmp_path)
@@ -205,7 +206,8 @@ def test_operation_read_reports_a_live_direct_or_ephemeral_turn(tmp_path):
         registry.clear()
 
 
-def test_operation_read_follows_the_routing_receipt_to_the_promoted_task(tmp_path):
+def test_operation_read_follows_the_routing_receipt_to_the_promoted_task(tmp_path, monkeypatch):
+    _isolate_queue(monkeypatch, tmp_path, [])
     from ouroboros.task_results import STATUS_COMPLETED, STATUS_SCHEDULED, write_task_result
 
     client = _client(tmp_path)
@@ -444,3 +446,42 @@ def test_unowned_cancel_reports_only_the_observed_terminal_state(tmp_path, monke
         assert response.status_code == 503 and body["ok"] is False
         assert body["outcome"] == "unresolved"
         assert body["reason"] == "cancellation_did_not_settle"
+
+
+def test_cancel_never_targets_a_different_queue_root(tmp_path, monkeypatch):
+    from ouroboros.task_results import write_task_result
+    from ouroboros.gateway import tasks
+    host, other = tmp_path / "host", tmp_path / "other"
+    client = _client(host)
+    _inbound(host, "own request")
+    _receipt(host, "promote_chat_to_task", "scheduled", "same-id")
+    write_task_result(host, "same-id", "scheduled", origin_message_ref=_origin_ref(host))
+    write_task_result(other, "same-id", "scheduled", description="unrelated")
+    _isolate_queue(monkeypatch, other, [{"id": "same-id", "chat_id": 1}])
+    monkeypatch.setattr(tasks, "_run_cascade_cancel", lambda *_a: pytest.fail("foreign cancellation"))
+    view = client.get(f"/chat/operations/{CHAT}:{MSG}", headers=_headers()).json()
+    assert view["task_id"] == "same-id" and view["cancel_supported"] is False
+    response = client.post("/chat/cancel", headers=_headers(), json={"operation_ref": f"{CHAT}:{MSG}"})
+    assert response.status_code == 409
+    assert response.json()["reason"] == "cancel_owner_unavailable"
+    assert not (host / "state/cancel_intents.json").exists()
+    assert not (other / "state/cancel_intents.json").exists()
+
+
+def test_direct_operation_with_a_different_cancel_owner_is_explicit(tmp_path, monkeypatch):
+    from supervisor.active_activity import get_direct_activity_registry
+    host, other = tmp_path / "host", tmp_path / "other"
+    client = _client(host)
+    _inbound(host, "own request")
+    _isolate_queue(monkeypatch, other, [])
+    registry = get_direct_activity_registry()
+    registry.clear()
+    try:
+        registry.register("direct", CHAT, client_message_id=MSG, kind="direct_chat", origin_message_ref=_origin_ref(host))
+        state = client.get(f"/chat/operations/{CHAT}:{MSG}", headers=_headers()).json()
+        assert state["phase"] == "direct_chat" and state["cancel_supported"] is False
+        assert state["reason"] == "cancel_owner_unavailable"
+        response = client.post("/chat/cancel", headers=_headers(), json={"operation_ref": f"{CHAT}:{MSG}"})
+        assert response.status_code == 409 and response.json()["reason"] == "cancel_owner_unavailable"
+    finally:
+        registry.clear()

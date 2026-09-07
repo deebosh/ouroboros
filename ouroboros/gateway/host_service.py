@@ -12,6 +12,7 @@ import pathlib
 import threading
 import time
 from collections import defaultdict, deque
+from contextlib import ExitStack
 from typing import Any, Callable, Deque, Dict, Optional
 
 from starlette.applications import Starlette
@@ -22,6 +23,8 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ouroboros.contracts.chat_id_policy import A2A_CHAT_ID_MAX, A2A_CHAT_ID_MIN, is_a2a_chat_id
 from ouroboros.event_bus import get_global_event_bus
+from ouroboros.config import WS_RELAY_BURST, WS_RELAY_REFILL_PER_SEC
+from ouroboros.gateway._helpers import run_sync_to_completion
 from ouroboros.gateway.files import store_chat_upload
 from ouroboros.skill_loader import (
     find_skill,
@@ -42,8 +45,6 @@ AUTH_TOKEN_FILENAME = "auth_token.json"
 # token-bucket lane: a 60-message burst reserve that refills one message per
 # second (owner decision 2026-09-06: a burst must not silence a widget for the
 # rest of a minute). Every other Host Service lane keeps the sliding window.
-WS_RELAY_BURST = 60
-WS_RELAY_REFILL_PER_SEC = 1.0
 
 
 class HostServiceAuthError(Exception):
@@ -430,6 +431,7 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
     if not ctx._enter_inflight(skill_name):
         return _json_error("too many in-flight inject requests", 429)
     subscription_id = ""
+    pending_uploads = ExitStack()
     try:
         payload = await request.json()
         text = str(payload.get("text") or "")
@@ -447,6 +449,7 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 "wait_for_response requires an A2A-allocated chat_id "
                 "(allocate one via /chat/allocate-internal)", 400,
             )
+        timeout = max(1, min(int(payload.get("timeout_sec") or 1800), 1800)) if wait_for_response else 1800
         correlated = {"operation_ref": operation_ref(chat_id, client_message_id)} if client_message_id else {}
         rejoined = False
         if client_message_id:
@@ -476,26 +479,9 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
         uploads: list[dict[str, str]] = []
         if not rejoined:
             try:
-                copying = asyncio.create_task(asyncio.to_thread(
-                    _inject_attachment_uploads, ctx, skill_name, payload.get("attachments"),
-                ))
-                try:
-                    uploads = await asyncio.shield(copying)
-                except asyncio.CancelledError:
-                    # Keep the admitted copy and its in-flight slot until the
-                    # worker settles; the skill still owns its source files.
-                    while not copying.done():
-                        try:
-                            await asyncio.shield(copying)
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception:
-                            break
-                    try:
-                        copying.result()
-                    except Exception:
-                        log.debug("Host upload failed while cancellation settled", exc_info=True)
-                    raise
+                uploads = await run_sync_to_completion(
+                    _inject_attachment_uploads, ctx, skill_name, payload.get("attachments"), pending_uploads,
+                )
             except ValueError as exc:
                 return _json_error(str(exc), 400)
         bridge = ctx.bridge_getter()
@@ -526,16 +512,19 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 from supervisor.message_bus import accept_local_message
 
                 try:
-                    _, rejoined = await asyncio.to_thread(accept_local_message, bridge, ctx.data_dir, text, **message)
+                    _, rejoined = await run_sync_to_completion(
+                        accept_local_message, bridge, ctx.data_dir, text,
+                        retain_inputs=pending_uploads.pop_all, **message,
+                    )
                 except ValueError as exc:
                     return _json_error(str(exc), 409)
             else:
                 bridge.enqueue_local_message(text, **message)
+                pending_uploads.pop_all()
         if not wait_for_response:
             if rejoined:
                 return JSONResponse({"ok": True, "status": "accepted", "rejoined": True, **correlated}, status_code=202)
             return JSONResponse({"ok": True, "status": "queued", **correlated}, status_code=202)
-        timeout = max(1, min(int(payload.get("timeout_sec") or 1800), 1800))
         deadline = time.monotonic() + timeout
         while not response_event.is_set():
             if client_message_id:
@@ -571,14 +560,19 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 ctx.bridge_getter().unsubscribe_response(subscription_id)
             except Exception:
                 log.debug("Failed to unsubscribe host-service response callback", exc_info=True)
-        ctx._leave_inflight(skill_name)
+        try:
+            pending_uploads.close()
+        except OSError:
+            log.warning("Could not remove an unaccepted chat upload", exc_info=True)
+        finally:
+            ctx._leave_inflight(skill_name)
 
 
 _INJECT_ATTACHMENT_MAX = 25
 
 
 def _inject_attachment_uploads(
-    ctx: HostServiceContext, skill_name: str, value: Any,
+    ctx: HostServiceContext, skill_name: str, value: Any, cleanup: ExitStack,
 ) -> list[dict[str, str]]:
     """Copy a skill's inbound files into the shared chat-upload store (#668).
 
@@ -588,7 +582,9 @@ def _inject_attachment_uploads(
     browser paperclip uses — ``data/uploads``, unique name, verified bytes — so the
     worker's ``stage_task_attachments`` and the secret-name rule see one upload
     family. Returns ``chat_attachment_uploads`` specs (``{path, label, mime}``);
-    the skill removes its parked copy afterwards.
+    the skill removes its parked copy afterwards. Each new destination belongs
+    to the request cleanup stack until its message is accepted; partial batches
+    and cancelled copy waits therefore cannot orphan successful earlier copies.
     """
     if value in (None, []):
         return []
@@ -610,6 +606,7 @@ def _inject_attachment_uploads(
             raise ValueError(f"attachments[{index}] is not a regular file")
         name = os.path.basename(str(item.get("name") or "").strip()) or source.name
         stored = store_chat_upload(source, name, data_dir=ctx.data_dir)
+        cleanup.callback(stored.unlink, missing_ok=True)
         specs.append({"path": str(stored), "label": name, "mime": str(item.get("mime") or "")})
     return specs
 
@@ -968,7 +965,9 @@ def _operation_state(ctx: HostServiceContext, rows: list, inbound: Dict[str, Any
     # ingress origin, already scoped to the authenticated skill's row, is the
     # authority. Live queue payloads cover tasks not yet persisted by a worker.
     queued = {}
-    if task_queue.DRIVE_ROOT is not None and pathlib.Path(task_queue.DRIVE_ROOT).resolve() == ctx.data_dir.resolve():
+    cancel_owner_matches = (task_queue.DRIVE_ROOT is not None
+                            and pathlib.Path(task_queue.DRIVE_ROOT).resolve() == ctx.data_dir.resolve())
+    if cancel_owner_matches:
         with task_queue._queue_lock:
             for task in [*task_queue.PENDING, *(meta.get("task") or {} for meta in task_queue.RUNNING.values())]:
                 if owns(task):
@@ -995,7 +994,9 @@ def _operation_state(ctx: HostServiceContext, rows: list, inbound: Dict[str, Any
         if status in SETTLED_STATUSES:
             state["text"] = str(stored.get("result") or "")
         else:
-            state["cancel_supported"] = True
+            state["cancel_supported"] = cancel_owner_matches
+            if not cancel_owner_matches:
+                state["reason"] = "cancel_owner_unavailable"
             if stored.get("cancel_state"):
                 state["cancel_state"] = str(stored.get("cancel_state"))
         return state
@@ -1007,8 +1008,10 @@ def _operation_state(ctx: HostServiceContext, rows: list, inbound: Dict[str, Any
                 "status": "running",
                 "phase": kind,
                 "task_id": str(entry.get("activity_id") or ""),
-                "cancel_supported": kind == "direct_chat",
+                "cancel_supported": kind == "direct_chat" and cancel_owner_matches,
             })
+            if kind == "direct_chat" and not cancel_owner_matches:
+                state["reason"] = "cancel_owner_unavailable"
             return state
     for row in reversed(rows):
         terminal = str(row.get("task_terminal_status") or "")
@@ -1045,16 +1048,16 @@ def _cancel_owned_operation(
     if state["status"] in SETTLED_STATUSES:
         return 200, {"ok": True, "outcome": "already_terminal", **base}
     if not state.get("cancel_supported") or not state.get("task_id"):
-        reason_code = {
+        reason_code = state.get("reason") or {
             "ephemeral_decision": "decision_turn_in_flight",
             "lost": "host_restarted_before_answer",
         }.get(str(state.get("phase") or state["status"]), "not_started")
         return 409, {"ok": False, "outcome": "cancel_unsupported", "reason": reason_code, **base}
-    return _cancel_task_through_owner(skill_name, str(state["task_id"]), reason, base)
+    return _cancel_task_through_owner(skill_name, str(state["task_id"]), reason, base, ctx.data_dir)
 
 
 def _cancel_task_through_owner(
-    skill_name: str, task_id: str, reason: str, base: Dict[str, Any],
+    skill_name: str, task_id: str, reason: str, base: Dict[str, Any], drive_root: pathlib.Path,
 ) -> tuple[int, Dict[str, Any]]:
     """The existing cancel ingress shape: durable intent first (fail-closed),
     then the same cascade custody path the browser Stop uses; the typed outcome
@@ -1069,6 +1072,9 @@ def _cancel_task_through_owner(
     from ouroboros.task_results import STATUS_CANCELLED
     from ouroboros.task_status import SETTLED_STATUSES, load_effective_task_result
     from supervisor.queue import DRIVE_ROOT, task_has_live_ownership, task_subtree_is_live
+
+    if DRIVE_ROOT is None or pathlib.Path(DRIVE_ROOT).resolve() != drive_root.resolve():
+        return 409, {"ok": False, "outcome": "cancel_unsupported", "reason": "cancel_owner_unavailable", **base}
 
     def _status() -> str:
         stored = load_effective_task_result(pathlib.Path(DRIVE_ROOT), task_id, materialize_artifacts=False) or {}

@@ -441,6 +441,20 @@ def test_real_http_second_route_and_module_respond_during_child_startup(widget_s
     from ouroboros import process_custody
     from ouroboros.tools.shell import _active_subprocesses
 
+    from ouroboros.extension_route_stream import RouteStreamResponse
+
+    settled = threading.Event()
+    completed = 0
+    original_response = RouteStreamResponse.__call__
+    async def observe_completion(self, *args):
+        nonlocal completed
+        try:
+            return await original_response(self, *args)
+        finally:
+            completed += 1
+            if completed == 2:
+                settled.set()
+    monkeypatch.setattr(RouteStreamResponse, "__call__", observe_completion)
     entered, release = threading.Event(), threading.Event()
     calls = []
     original = process_custody.record_process
@@ -472,6 +486,8 @@ def test_real_http_second_route_and_module_respond_during_child_startup(widget_s
                 result = await first
             assert result.status_code == 200 and result.content == b"firstlast"
     asyncio.run(run())
+    # Receiving the final HTTP byte precedes the permitted child/background cleanup.
+    assert settled.wait(10), "both actual response handles must finish cleanup"
     assert not _active_subprocesses
 
 
@@ -530,3 +546,52 @@ def test_real_http_startup_cancel_retains_spawned_child_until_cleanup(widget_ser
             calls_dir = widget_server["root"] / "state/skills/export_widget/extension_calls"
             assert list(calls_dir.iterdir()) == []
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("kind,limit", [(b"B", "body"), (b"S", "metadata")])
+def test_stream_frame_allocation_is_bounded_without_limiting_response_length(kind, limit):
+    import io
+    import struct
+    from ouroboros.config import EXTENSION_STREAM_CHUNK_BYTES, EXTENSION_STREAM_METADATA_BYTES
+    from ouroboros.extension_route_stream import _read_frame
+
+    bound = EXTENSION_STREAM_CHUNK_BYTES + 1 if limit == "body" else EXTENSION_STREAM_METADATA_BYTES
+    class Observed(io.BytesIO):
+        def __init__(self, value):
+            super().__init__(value)
+            self.read_sizes = []
+        def read(self, size=-1):
+            self.read_sizes.append(size)
+            return super().read(size)
+    over = Observed(struct.pack("!I", bound + 2) + kind)
+    with pytest.raises(ValueError, match="channel bound"):
+        _read_frame(over)
+    assert over.read_sizes == [4, 1], "oversized payload must be refused before allocation"
+    huge = Observed(struct.pack("!I", 0xffffffff) + kind)
+    with pytest.raises(ValueError, match="channel bound"):
+        _read_frame(huge)
+    assert huge.read_sizes == [4, 1]
+    # Multiple legal frames remain readable; there is no cumulative body cap.
+    frame = struct.pack("!I", bound + 1) + kind + b"x" * bound
+    valid = Observed(frame * 3)
+    for _ in range(3):
+        assert _read_frame(valid) == (kind, b"x" * bound)
+
+
+def test_native_route_crash_retains_drained_stderr_and_exit_code(tmp_path, caplog):
+    import logging
+    from ouroboros.tools.shell import _active_subprocesses
+
+    _, spec, drive = prepare_route(tmp_path, """import os, sys
+def stream(request):
+    sys.stderr.write('CONTROLLED_NATIVE_CRASH\\n')
+    sys.stderr.flush()
+    os._exit(7)
+def register(api):
+    api.register_route('stream', stream)
+""")
+    with caplog.at_level(logging.WARNING, logger="ouroboros.extension_route_stream"):
+        messages = asyncio.run(collect_response(route_response(spec, drive)))
+    assert messages[0]["status"] == 502
+    assert "CONTROLLED_NATIVE_CRASH" in caplog.text and "returncode=7" in caplog.text
+    assert not _active_subprocesses

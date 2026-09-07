@@ -207,3 +207,112 @@ def test_rotation_during_source_read_cannot_turn_replay_into_new_work(tmp_path, 
     replay = client.post("/chat/inject", headers=_headers(), json=body)
     assert replay.status_code == 202 and replay.json()["rejoined"]
     assert bridge._inbox.qsize() == 1 and rotated
+
+
+def test_racing_named_upload_rejoin_keeps_only_the_accepted_copy(tmp_path, monkeypatch):
+    import pathlib
+    import threading
+    from ouroboros.gateway import host_service
+
+    bridge = message_bus.LocalChatBridge()
+    client = _client(tmp_path, bridge)
+    source = tmp_path / "state/skills/a2a/input.pdf"
+    source.write_bytes(b"complete attachment")
+    barrier = threading.Barrier(2)
+    original = host_service.store_chat_upload
+    def copy(*args, **kwargs):
+        result = original(*args, **kwargs)
+        barrier.wait(timeout=5)
+        return result
+    monkeypatch.setattr(host_service, "store_chat_upload", copy)
+    body = {"chat_id": CHAT, "client_message_id": MSG, "text": "one message",
+            "attachments": [{"path": str(source)}]}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: client.post("/chat/inject", headers=_headers(), json=body), range(2)))
+    assert all(response.status_code == 202 for response in responses)
+    assert sum(response.json().get("rejoined", False) for response in responses) == 1
+    updates = bridge.get_updates(0, timeout=0)
+    assert len(updates) == 1 and bridge._inbox.empty()
+    stored = pathlib.Path(updates[0]["message"]["task_metadata"]["chat_attachment_uploads"][0]["path"])
+    assert list((tmp_path / "uploads").iterdir()) == [stored]
+    assert stored.read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("failure", ["write_unknown_empty", "write_unknown_landed", "queue_unknown"])
+def test_named_upload_custody_survives_unknown_write_or_queue_outcome(tmp_path, monkeypatch, failure):
+    bridge = message_bus.LocalChatBridge()
+    client = _client(tmp_path, bridge)
+    source = tmp_path / "state/skills/a2a/input.pdf"
+    source.write_bytes(b"complete attachment")
+    original = message_bus.log_chat
+    def fail(*args, **kwargs):
+        if failure == "write_unknown_landed":
+            original(*args, **kwargs)
+        raise OSError("controlled admission failure")
+    if failure.startswith("write_unknown"):
+        monkeypatch.setattr(message_bus, "log_chat", fail)
+    else:
+        monkeypatch.setattr(bridge, "enqueue_local_message", fail)
+    response = client.post("/chat/inject", headers=_headers(), json={
+        "chat_id": CHAT, "client_message_id": MSG, "text": "one message",
+        "attachments": [{"path": str(source)}],
+    })
+    assert response.status_code == 500 and bridge._inbox.empty()
+    copies = list((tmp_path / "uploads").iterdir())
+    assert len(copies) == 1
+    assert copies[0].read_bytes() == source.read_bytes()
+    row = message_bus.accepted_chat_message(tmp_path, CHAT, MSG)
+    assert bool(row) is (failure != "write_unknown_empty")
+    assert source.read_bytes() == b"complete attachment"
+
+
+@pytest.mark.parametrize("cancel_mode", ["asyncio", "anyio"])
+def test_cancelled_named_acceptance_settles_before_upload_cleanup(tmp_path, monkeypatch, cancel_mode):
+    import asyncio
+    import threading
+    import anyio
+    from types import SimpleNamespace
+    from ouroboros.gateway import host_service
+
+    bridge = message_bus.LocalChatBridge()
+    client = _client(tmp_path, bridge)
+    source = tmp_path / "state/skills/a2a/input.pdf"
+    source.write_bytes(b"complete attachment")
+    entered, release = threading.Event(), threading.Event()
+    original = message_bus.log_chat
+    def held(*args, **kwargs):
+        row = original(*args, **kwargs)
+        entered.set()
+        assert release.wait(5)
+        return row
+    monkeypatch.setattr(message_bus, "log_chat", held)
+    async def body():
+        return {"chat_id": CHAT, "client_message_id": MSG, "text": "one message",
+                "attachments": [{"path": str(source)}]}
+    request = SimpleNamespace(app=client.app, headers={k.lower(): v for k, v in _headers().items()}, json=body)
+    ctx = client.app.state.host_service_context
+    async def run():
+        scope = anyio.CancelScope()
+        async def call():
+            with scope:
+                return await host_service._api_chat_inject(request)
+        task = asyncio.create_task(call())
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            scope.cancel() if cancel_mode == "anyio" else task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done() and ctx._inflight["a2a"] == 1
+        finally:
+            release.set()
+            if cancel_mode == "anyio":
+                await task
+                assert scope.cancelled_caught
+            else:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        assert ctx._inflight["a2a"] == 0
+    asyncio.run(run())
+    message = bridge.get_updates(0, timeout=0)[0]["message"]
+    from pathlib import Path
+    stored = Path(message["task_metadata"]["chat_attachment_uploads"][0]["path"])
+    assert stored.read_bytes() == source.read_bytes()

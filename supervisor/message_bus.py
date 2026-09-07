@@ -48,7 +48,7 @@ def accepted_chat_message(drive_root, chat_id: int, client_message_id: str) -> O
     return None
 
 
-def accept_local_message(bridge, drive_root, text: str, **message) -> tuple[dict, bool]:
+def accept_local_message(bridge, drive_root, text: str, *, retain_inputs=None, **message) -> tuple[dict, bool]:
     """Accept a named skill delivery once, then hand its exact source to the queue.
 
     The canonical row is the acceptance record, written by this existing owner
@@ -76,12 +76,19 @@ def accept_local_message(bridge, drive_root, text: str, **message) -> tuple[dict
                 raise ValueError("client_message_id was already used for a different message")
             return previous, True
         ts = utc_now_iso()
-        row = log_chat(
-            "in", chat_id, int(message.get("user_id") or 0), logged, ts=ts,
-            source=source, client_message_id=message_id,
-            sender_label=str(message.get("sender_label") or ""),
-            transport=message.get("transport"), drive_root=drive_root, require_write=True,
-        )
+        try:
+            row = log_chat(
+                "in", chat_id, int(message.get("user_id") or 0), logged, ts=ts,
+                source=source, client_message_id=message_id,
+                sender_label=str(message.get("sender_label") or ""),
+                transport=message.get("transport"), drive_root=drive_root, require_write=True,
+            )
+        finally:
+            # Once this write is attempted, failure can leave canonical bytes.
+            # Transfer input custody without claiming acceptance or queue success;
+            # a replay/pre-write refusal never adopts this request's fresh copies.
+            if retain_inputs is not None:
+                retain_inputs()
         ref = build_owner_message_ref(chat_id=chat_id, client_message_id=message_id, ts=ts, text=logged)
         bridge.enqueue_local_message(text, **message, accepted_source_ref=ref)
         return row, False

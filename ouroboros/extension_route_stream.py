@@ -18,7 +18,10 @@ import threading
 from starlette.responses import JSONResponse, Response
 
 from ouroboros.utils import sanitize_tool_result_for_log
-from ouroboros.config import EXTENSION_STREAM_CHUNK_BYTES, EXTENSION_CHILD_CLEANUP_GRACE_SEC
+from ouroboros.config import (
+    EXTENSION_STREAM_CHUNK_BYTES, EXTENSION_STREAM_METADATA_BYTES,
+    EXTENSION_CHILD_CLEANUP_GRACE_SEC,
+)
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +52,11 @@ def _read_frame(stream):
     size = struct.unpack("!I", _read_exact(stream, 4))[0]
     if size < 1:
         raise ValueError("empty extension response frame")
-    frame = _read_exact(stream, size)
-    return frame[:1], frame[1:]
+    kind = _read_exact(stream, 1)
+    payload_limit = EXTENSION_STREAM_CHUNK_BYTES + 1 if kind == b"B" else EXTENSION_STREAM_METADATA_BYTES
+    if size - 1 > payload_limit:
+        raise ValueError("extension response frame exceeds its channel bound")
+    return kind, _read_exact(stream, size - 1)
 
 
 class ChildResponseChannel:
@@ -259,7 +265,7 @@ class RouteStreamResponse(Response):
 
     async def __call__(self, scope, receive, send):
         from ouroboros.extension_process_runner import (
-            _drain, _STDERR_CAP, _publish_child_facts,
+            _drain, _STDERR_CAP, _publish_child_facts, _format_child_returncode,
         )
 
         self.loop, self.task = asyncio.get_running_loop(), asyncio.current_task()
@@ -348,6 +354,10 @@ class RouteStreamResponse(Response):
                         _publish_child_facts(proc, child.started_ts, killed_by_host=killed_by_host,
                                              ws_relay_failures=self.ws_relay_failures,
                                              skill_name=str(self.spec.get("skill") or ""))
+                    if proc.returncode not in (None, 0) and not killed_by_host:
+                        detail = sanitize_tool_result_for_log(stderr.decode("utf-8", errors="replace").strip())[-2000:]
+                        log.warning("extension route child exited abnormally: %s; %s",
+                                    _format_child_returncode(proc.returncode), detail)
                     if overflow["stderr"]:
                         log.warning("extension route diagnostic output was truncated")
         except asyncio.CancelledError:
