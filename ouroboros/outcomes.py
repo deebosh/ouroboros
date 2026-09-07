@@ -1330,7 +1330,9 @@ def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
             continue
         path = str(item.get("path") or "")
         explicit_status = str(item.get("status") or "").strip()
-        if explicit_status:
+        if item.get("copy_status") == "failed":
+            artifact_status = "missing"
+        elif explicit_status:
             artifact_status = explicit_status
         elif path and pathlib.Path(path).exists():
             artifact_status = ARTIFACT_STATUS_READY
@@ -1347,7 +1349,8 @@ def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
             "size": int(item.get("size") or 0),
             "sha256": str(item.get("sha256") or ""),
             "status": artifact_status,
-            "errors": list(item.get("errors") or []) if isinstance(item.get("errors"), list) else [],
+            "errors": (list(item.get("errors") or []) if isinstance(item.get("errors"), list) else [])
+                      + ([str(item["copy_error"])] if item.get("copy_error") else []),
         }
         records.append(record)
     if status != ARTIFACT_STATUS_FAILED and any(str(item.get("status") or "") == "missing" for item in records):

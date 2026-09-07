@@ -516,6 +516,8 @@
  * @property {string} ts
  * @property {string=} caption
  * @property {string=} download_url
+ * @property {string=} download_url_compat
+ * @property {Object=} file_ref
  * @property {string=} content
  * @property {string=} source
  * @property {string=} sender_label

@@ -188,11 +188,10 @@ def write_owner_message(
         # Owner Surface Fact (additive, like ``ts``): which client surface sent
         # this follow-up, so the loop can note a mid-task device change.
         entry["client_surface"] = dict(client_surface)
-    if isinstance(attachment_manifest, list):
-        entry["attachment_manifest"] = [
-            dict(item) for item in attachment_manifest if isinstance(item, dict)
-        ]
     try:
+        if isinstance(attachment_manifest, list):
+            from ouroboros.artifacts import attachment_manifest_projection
+            entry.update(attachment_manifest_projection(drive_root, task_id, attachment_manifest))
         if not append_jsonl(path, entry):
             log.warning("Failed to durably append owner message for task %s", task_id)
             return False
@@ -256,11 +255,11 @@ def owner_attachment_manifest(drive_root: pathlib.Path, task_id: str) -> List[Di
                 continue
             if msg_id:
                 seen_ids.add(msg_id)
-            manifest = entry.get("attachment_manifest")
-            if isinstance(manifest, list):
-                manifests.extend(dict(item) for item in manifest if isinstance(item, dict))
+            from ouroboros.artifacts import resolve_attachment_manifest
+            manifests.extend(resolve_attachment_manifest(drive_root, task_id, entry))
     except OSError:
         log.warning("Failed to read owner attachment manifest for %s", task_id, exc_info=True)
+        raise  # A partial inherited input set is not a successful mailbox read.
     return manifests
 
 
@@ -439,6 +438,14 @@ def copy_owner_mailbox_for_retry(
             if not isinstance(row, dict):
                 continue
             copied = dict(row)
+            if "attachment_manifest_ref" in copied:
+                from ouroboros.artifacts import attachment_manifest_projection, resolve_attachment_manifest
+                try:
+                    full = resolve_attachment_manifest(drive_root, task_id, copied)
+                    copied.update(attachment_manifest_projection(drive_root, retry_task_id, _rebase(full)))
+                except (OSError, ValueError, TypeError):
+                    log.warning("Attachment manifest retry publication failed", exc_info=True)
+                    return False
             if "task_id" in copied:
                 copied["task_id"] = retry_task_id
             normalized.append(_rebase(copied))
@@ -546,6 +553,8 @@ def drain_owner_entries(
                         dict(item) for item in entry["attachment_manifest"]
                         if isinstance(item, dict)
                     ]
+                if entry.get("attachment_manifest_ref"):
+                    drained["attachment_manifest_ref"] = dict(entry["attachment_manifest_ref"])
                 if attempt_key is not None and kind == KIND_OWNER_TEXT:
                     drained["_owner_attempt_key"] = attempt_key
                 if kind == KIND_TASK_MESSAGE:

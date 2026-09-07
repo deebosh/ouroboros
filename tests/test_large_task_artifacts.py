@@ -1,0 +1,537 @@
+"""Large ordinary file custody must stay streaming, complete and verifiable."""
+from hashlib import sha256
+import json
+from pathlib import Path
+from types import SimpleNamespace
+import zipfile
+
+import pytest
+
+from ouroboros import artifacts
+
+
+def _large_file(path):
+    block = b"ordinary dataset\x00" * 65536
+    digest = sha256()
+    with path.open("wb") as handle:
+        for _ in range(52):
+            handle.write(block)
+            digest.update(block)
+    return {"size": len(block) * 52, "sha256": digest.hexdigest()}
+
+
+def test_large_copy_version_and_directory_are_streamed(tmp_path, monkeypatch):
+    source = tmp_path / "dataset"
+    source.mkdir()
+    large = source / "large.bin"
+    expected = _large_file(large)
+    assert expected["size"] > 50 * 1024 * 1024
+    (source / "notes.txt").write_text("dataset explanation")
+    ctx = SimpleNamespace(drive_root=tmp_path / "data", task_id="large")
+    original = Path.read_bytes
+
+    def no_large_read(path):
+        if path.stat().st_size > 50 * 1024 * 1024:
+            pytest.fail("large artifact was read into RAM as one bytes object")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", no_large_read)
+    copied = artifacts.copy_file_to_task_artifacts(ctx, large)
+    assert {key: copied[key] for key in expected} == expected
+    with large.open("ab") as handle:
+        handle.write(b"new version")
+    artifacts.copy_file_to_task_artifacts(ctx, large)
+    versions = list(artifacts._artifact_versions_dir(ctx.drive_root, ctx.task_id, copied["name"]).iterdir())
+    assert len(versions) == 1
+    assert artifacts.stream_artifact_file(versions[0]) == expected
+    records = artifacts.copy_directory_to_task_artifacts(ctx, source)
+    manifest = json.loads(Path(records[0]["path"]).read_text())
+    assert manifest["file_count"] == 2
+    with zipfile.ZipFile(records[1]["path"]) as archive:
+        assert set(archive.namelist()) == {"large.bin", "notes.txt"}
+        for row in manifest["files"]:
+            digest, size = sha256(), 0
+            with archive.open(row["path"]) as member:
+                for chunk in iter(lambda: member.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    size += len(chunk)
+            assert (size, digest.hexdigest()) == (row["size"], row["sha256"])
+
+
+def test_changed_source_never_overwrites_previous_destination(tmp_path, monkeypatch):
+    source, target = tmp_path / "source.bin", tmp_path / "durable.bin"
+    source.write_bytes(b"old source")
+    target.write_bytes(b"kept destination")
+    expected = artifacts.stream_artifact_file(source)
+    source.write_bytes(b"new source")
+    with pytest.raises(OSError, match="verification"):
+        artifacts.copy_artifact_file(source, target, expected=expected)
+    assert target.read_bytes() == b"kept destination"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_source_change_during_stream_is_explicit(tmp_path):
+    source = tmp_path / "mutable.bin"
+    source.write_bytes(b"first")
+
+    class ChangingSink:
+        def write(self, chunk):
+            source.write_bytes(b"second")
+
+    with pytest.raises(OSError, match="changed"):
+        artifacts.stream_artifact_file(source, ChangingSink())
+
+
+@pytest.mark.parametrize("replace_link", [False, True])
+def test_source_replacement_keeps_previous_destination(tmp_path, monkeypatch, replace_link):
+    source, target = tmp_path / "source.bin", tmp_path / "durable.bin"
+    source.write_bytes(b"original")
+    target.write_bytes(b"previous durable")
+    replacement = tmp_path / "replacement.bin"
+    replacement.write_bytes(b"different")
+    if replace_link:
+        link = tmp_path / "source-link.bin"
+        try:
+            link.symlink_to(source)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+        source = link
+    original_stream = artifacts.stream_artifact_file
+
+    def replaced_during_copy(path, sink=None, **kwargs):
+        class ReplacingSink:
+            def write(self, chunk):
+                if replace_link:
+                    source.unlink()
+                    source.symlink_to(replacement)
+                else:
+                    replacement.replace(source)
+                return sink.write(chunk)
+        return original_stream(path, ReplacingSink(), **kwargs)
+
+    monkeypatch.setattr(artifacts, "stream_artifact_file", replaced_during_copy)
+    with pytest.raises(OSError, match="changed"):
+        artifacts.copy_artifact_file(source, target)
+    assert target.read_bytes() == b"previous durable"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_borrowed_completed_spool_copies_prefix_and_retains_caller_ownership(tmp_path):
+    import tempfile
+
+    payload = b"prefix\x00" + b"content" * 10000
+    with tempfile.SpooledTemporaryFile(max_size=100) as spool:
+        spool.write(payload)
+        spool.seek(7)
+        target = tmp_path / "spooled.bin"
+        measured = artifacts.copy_artifact_file(spool, target)
+        assert measured == {"size": len(payload), "sha256": sha256(payload).hexdigest()}
+        assert target.read_bytes() == payload
+        assert not spool.closed
+    assert spool.closed
+
+
+@pytest.mark.parametrize("gap_kind", ["walk", "changing"])
+def test_automatic_genesis_listing_gaps_do_not_fail_completed_capture(tmp_path, monkeypatch, gap_kind):
+    import errno
+    from ouroboros import headless
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    root, workspace = tmp_path / "data", tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "answer.txt").write_text("delivered answer")
+    changing = workspace / "growing.log"
+    changing.write_bytes(b"before")
+    task = {"id": "genesis", "workspace_root": str(workspace),
+            "task_constraint": {"surface": "genesis"}}
+    write_task_result(root, task["id"], "completed", result="delivered answer")
+    # Isolate the automatic listing from the independently tested strict patch
+    # capture. A listing gap must not rewrite an already successful capture axis.
+    monkeypatch.setattr(headless, "write_workspace_patch_artifacts",
+                        lambda *args, **kwargs: ([], {"status": "ready_no_changes"}))
+    if gap_kind == "walk":
+        original_walk = headless.os.walk
+        def walk(path, *, onerror):
+            onerror(PermissionError(errno.EACCES, "controlled unreadable directory", str(workspace / "private")))
+            yield from original_walk(path, onerror=onerror)
+        monkeypatch.setattr(headless.os, "walk", walk)
+    else:
+        original_stream = artifacts.stream_artifact_file
+        writes = []
+        def stream(path, sink=None, **kwargs):
+            if Path(path) == changing:
+                class GrowingSink:
+                    def write(self, chunk):
+                        # A finite writer keeps a regression bounded; the reader
+                        # must reject the initial-size breach before this ends.
+                        if len(writes) < 64:
+                            with changing.open("ab") as handle:
+                                handle.write(b"more")
+                            writes.append(len(chunk))
+                return original_stream(path, GrowingSink(), **kwargs)
+            return original_stream(path, sink, **kwargs)
+        monkeypatch.setattr(artifacts, "stream_artifact_file", stream)
+    returned = headless.finalize_task_artifacts(root, task)
+    entry = next(item for item in returned if item["kind"] == "deliverable_manifest")
+    manifest = json.loads(Path(entry["path"]).read_text())
+    assert manifest["complete"] is False and manifest["gap_count"] == 1
+    assert manifest["truncated"] is False
+    if gap_kind == "changing":
+        assert len(writes) <= 2, "do not wait for an actively growing file to reach EOF"
+    gaps = [item for item in manifest["contents"] if item.get("status") == "unavailable"]
+    assert len(gaps) == 1 and "sha256" not in gaps[0]
+    assert next(item for item in manifest["contents"] if item["rel"] == "answer.txt")["sha256"] == sha256(b"delivered answer").hexdigest()
+    result = load_task_result(root, task["id"])
+    assert result["status"] == "completed"
+    assert result["artifact_status"] == result["artifact_bundle"]["status"] == "ready_no_changes"
+    bundle_entry = next(item for item in result["artifact_bundle"]["artifacts"] if item["kind"] == "deliverable_manifest")
+    assert bundle_entry["errors"] == ["Automatic workspace listing is partial: 1 read gaps."]
+
+
+def test_missing_directory_member_is_not_silently_omitted(tmp_path):
+    directory = tmp_path / "output"
+    directory.mkdir()
+    good, missing = directory / "good.txt", directory / "gone.txt"
+    good.write_text("kept")
+    ctx = SimpleNamespace(drive_root=tmp_path / "data", task_id="directory")
+    with pytest.raises(OSError, match="unavailable"):
+        artifacts.copy_directory_to_task_artifacts(ctx, directory, member_paths=[good, missing])
+    root = artifacts.task_artifact_dir_path(ctx.drive_root, ctx.task_id)
+    assert not list(root.iterdir())
+
+
+def test_copyback_failure_retains_child_until_existing_retry_finishes(tmp_path, monkeypatch):
+    from ouroboros.headless import copy_child_task_result, prepare_task_drive, remove_subagent_task_drive
+    from ouroboros.observability import retry_pending_child_ref_promotions
+    from ouroboros.task_results import write_task_result, load_task_result
+
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "custody", "empty")
+    source = child / "generated.bin"
+    source.write_bytes(b"complete generated artifact")
+    record = artifacts.copy_file_to_task_artifacts(SimpleNamespace(drive_root=child, task_id="custody"), source)
+    write_task_result(child, "custody", "completed", result="done", artifacts=[record], artifact_status="ready")
+    original = artifacts.copy_artifact_file
+
+    def fail_canonical(src, dst, **kwargs):
+        if Path(dst).is_relative_to(parent / "task_results"):
+            raise OSError("injected destination failure")
+        return original(src, dst, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(artifacts, "copy_artifact_file", fail_canonical)
+        copied = copy_child_task_result(parent, {"id": "custody", "drive_root": str(child)})
+    assert copied["artifact_bundle"]["status"] == "missing"
+    assert copied["child_ref_promotion"]["status"] == "incomplete"
+    assert not remove_subagent_task_drive(parent, "custody")
+    assert Path(record["path"]).is_file()
+    assert retry_pending_child_ref_promotions(parent)["completed"] == ["custody"]
+    result = load_task_result(parent, "custody")
+    assert result["child_ref_promotion"]["status"] == "complete"
+    assert result["artifact_bundle"]["status"] == "ready"
+    assert remove_subagent_task_drive(parent, "custody")
+    assert Path(result["artifacts"][0]["path"]).read_bytes() == b"complete generated artifact"
+
+
+def _many_inputs(tmp_path, drive, task_id, count=28):
+    source = tmp_path / (task_id + "-inputs")
+    source.mkdir()
+    paths = []
+    for index in range(count):
+        path = source / f"input-{index:02}.txt"
+        path.write_text(f"complete input {index}")
+        paths.append({"path": str(path)})
+    rows = artifacts.stage_task_attachments(drive, task_id, paths)
+    assert len(rows) == count and all(row["status"] == "staged" for row in rows)
+    return artifacts.attachment_manifest_projection(drive, task_id, rows)
+
+
+def test_full_input_contract_inheritance_retry_and_mailbox(tmp_path):
+    from ouroboros.contracts.task_contract import build_task_contract
+    from ouroboros.owner_mailbox import write_owner_message, copy_owner_mailbox_for_retry, owner_attachment_manifest
+    from ouroboros.tools.control_scheduling import _materialize_child_attachment_manifest, _build_child_subagent_contract
+    import shutil
+
+    drive = tmp_path / "data"
+    authority = _many_inputs(tmp_path, drive, "parent")
+    contract = build_task_contract({"id": "parent", "task_contract": authority})
+    assert contract["attachment_manifest_ref"] == authority["attachment_manifest_ref"]
+    assert len(contract["attachment_manifest"]) == 25
+    mailbox = _many_inputs(tmp_path, drive, "mailbox")
+    mailbox_rows = artifacts.resolve_attachment_manifest(drive, "mailbox", mailbox)
+    captured, error = artifacts.materialize_inherited_attachment_manifest(mailbox_rows, drive, "parent")
+    assert not error
+    assert write_owner_message(drive, "use every attached input", "parent", attachment_manifest=captured)
+    child_authority, error = _materialize_child_attachment_manifest(contract, drive, "child", owner_drive=drive, owner_task_id="parent")
+    assert not error
+    assert len(artifacts.resolve_attachment_manifest(drive, "child", child_authority)) == 56
+    child_contract = _build_child_subagent_contract({"tid": "child", "parent_contract": contract, **child_authority})
+    assert child_contract["attachment_manifest_ref"] == child_authority["attachment_manifest_ref"]
+    assert child_contract["attachment_manifest_ref"] != contract["attachment_manifest_ref"]
+    task = {"id": "retry", "task_contract": contract, "metadata": {"task_contract": contract}}
+    replacements, error = artifacts.handoff_task_attachments_for_retry(drive, "parent", "retry", task)
+    assert not error
+    assert copy_owner_mailbox_for_retry(drive, "parent", "retry", path_replacements=replacements)
+    shutil.rmtree(artifacts.task_artifact_dir_path(drive, "parent"))
+    assert len(artifacts.resolve_attachment_manifest(drive, "retry", task["task_contract"])) == 28
+    assert len(owner_attachment_manifest(drive, "retry")) == 28
+    for row in artifacts.resolve_attachment_manifest(drive, "retry", task["task_contract"]):
+        assert artifacts.stream_artifact_file(Path(row["abs_path"]), expected=row)["sha256"] == row["sha256"]
+
+
+def test_input_manifest_tamper_and_changed_file_never_fall_back_to_preview(tmp_path):
+    from ouroboros.tools.control_scheduling import _materialize_child_attachment_manifest
+
+    drive = tmp_path / "data"
+    authority = _many_inputs(tmp_path, drive, "original")
+    rows = artifacts.resolve_attachment_manifest(drive, "original", authority)
+    Path(rows[-1]["abs_path"]).write_text("changed input")
+    copied, error = _materialize_child_attachment_manifest(authority, drive, "child", owner_drive=drive, owner_task_id="original")
+    assert not copied and "verification" in error
+    ref = authority["attachment_manifest_ref"]
+    path = artifacts.task_artifact_dir_path(drive, "original") / ref["path"]
+    path.write_bytes(b"[]")
+    with pytest.raises(ValueError, match="verification"):
+        artifacts.resolve_attachment_manifest(drive, "original", authority)
+
+
+def test_full_inputs_survive_copyback_and_child_gc(tmp_path):
+    from ouroboros.headless import copy_child_task_result, prepare_task_drive, remove_subagent_task_drive
+    from ouroboros.task_results import write_task_result
+
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "inputs", "empty")
+    authority = _many_inputs(tmp_path, child, "inputs")
+    write_task_result(child, "inputs", "completed", result="done", task_contract=authority)
+    result = copy_child_task_result(parent, {"id": "inputs", "drive_root": str(child)})
+    assert result["child_ref_promotion"]["status"] == "complete"
+    assert remove_subagent_task_drive(parent, "inputs")
+    rows = artifacts.resolve_attachment_manifest(parent, "inputs", result["task_contract"])
+    assert len(rows) == 28
+    for row in rows:
+        assert artifacts.stream_artifact_file(Path(row["abs_path"]), expected=row)
+
+
+def test_large_workspace_output_is_a_file_reference_not_a_git_patch(tmp_path):
+    import subprocess
+    from ouroboros.workspace_patch_capture import write_workspace_patch_artifacts
+
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    git("init")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base")
+    expected = _large_file(repo / "dataset.bin")
+    output, manifest = write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
+    assert not manifest["errors"]
+    assert manifest["patch_size"] == 0
+    assert len(manifest["file_outputs"]) == 2
+    captured = next(row for row in output if row["kind"] == "workspace_file_outputs_manifest")
+    contents = json.loads(Path(captured["path"]).read_text())
+    assert contents["files"] == [{"path": "dataset.bin", **expected}]
+
+
+def test_document_bridge_rejects_foreign_task_and_changed_capture(tmp_path, monkeypatch):
+    from ouroboros.tools.core_artifacts import _send_file
+    from supervisor import message_bus
+
+    source = tmp_path / "report.txt"
+    source.write_text("original delivered bytes")
+    ctx = SimpleNamespace(drive_root=tmp_path / "data", task_id="document", task_metadata={},
+                          current_chat_id=1, pending_events=[])
+    assert _send_file(ctx, str(source)).startswith("OK")
+    first = ctx.pending_events[0]
+    monkeypatch.setattr(message_bus, "DATA_DIR", ctx.drive_root)
+    monkeypatch.setattr(message_bus, "load_state", lambda: {})
+    published = []
+    monkeypatch.setattr(message_bus, "publish_event", lambda kind, event: published.append(event))
+    bridge = message_bus.LocalChatBridge({})
+    assert bridge.send_document(1, b"", task_id=ctx.task_id, file_ref=first["file_ref"])[0]
+    assert published[-1]["file_ref"] == first["file_ref"]
+    assert not bridge.send_document(1, b"", task_id="other", file_ref=first["file_ref"])[0]
+    source.write_text("later delivered bytes")
+    assert _send_file(ctx, str(source)).startswith("OK")
+    second = ctx.pending_events[-1]
+    assert second["file_ref"]["path"] != first["file_ref"]["path"]
+    from ouroboros.gateway.files import resolve_task_file_reference
+    original = resolve_task_file_reference(ctx.drive_root, ctx.task_id, first["file_ref"])
+    assert original.read_text() == "original delivered bytes"
+    original.write_text("tampered")
+    assert not bridge.send_document(1, b"", task_id=ctx.task_id, file_ref=first["file_ref"])[0]
+
+
+@pytest.mark.parametrize("ref", [{}, "", False, {"kind": "task_source"}])
+def test_malformed_full_reference_cannot_become_a_complete_preview(tmp_path, ref):
+    authority = {"attachment_manifest": [{"status": "staged", "label": "only a preview"}],
+                 "attachment_manifest_ref": ref}
+    with pytest.raises((ValueError, TypeError)):
+        artifacts.resolve_attachment_manifest(tmp_path, "invalid", authority)
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_capture_does_not_reuse_mutable_external_file_alias(tmp_path, link_kind):
+    import os
+    source = tmp_path / "input.txt"
+    source.write_text("captured bytes")
+    drive = tmp_path / "data"
+    store = artifacts.task_artifact_dir_path(drive, "alias", create=True)
+    attachments = store / "attachments"
+    attachments.mkdir()
+    identity = artifacts.stream_artifact_file(source)
+    immutable = store / f"input-{identity['sha256']}.txt"
+    try:
+        for target in (attachments / source.name, immutable):
+            if link_kind == "symlink":
+                target.symlink_to(source)
+            else:
+                os.link(source, target)
+    except OSError as exc:
+        pytest.skip(f"link creation unavailable: {exc}")
+    rows = artifacts.stage_task_attachments(drive, "alias", [{"path": str(source)}])
+    assert rows[0]["status"] == "staged"
+    captured_input = Path(rows[0]["abs_path"])
+    assert not captured_input.is_symlink() and not captured_input.samefile(source)
+    output = artifacts.copy_file_to_task_artifacts(SimpleNamespace(drive_root=drive, task_id="alias"), source, immutable=True)
+    captured_output = Path(output["path"])
+    assert not captured_output.is_symlink() and not captured_output.samefile(source)
+    source.write_text("later external mutation")
+    assert captured_input.read_text() == captured_output.read_text() == "captured bytes"
+
+
+def test_native_image_beyond_inline_preview_remains_visible(tmp_path):
+    import base64
+    from ouroboros.context import _build_attachment_image_blocks
+
+    drive = tmp_path / "data"
+    authority = _many_inputs(tmp_path, drive, "images", count=28)
+    original = artifacts.resolve_attachment_manifest(drive, "images", authority)
+    image = tmp_path / "last.png"
+    image.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="))
+    image_rows = artifacts.stage_task_attachments(drive, "images", [{"path": str(image)}])
+    authority = artifacts.attachment_manifest_projection(drive, "images", [*original, *image_rows])
+    blocks = _build_attachment_image_blocks({"id": "images", "drive_root": str(drive), "task_contract": authority})
+    assert any(block["type"] == "image_url" for block in blocks)
+    assert blocks[-1]["_source_path"].endswith("last.png")
+
+
+def test_staging_reads_fresh_bytes_when_source_preserves_its_mtime(tmp_path):
+    import os
+    source = tmp_path / "updated.txt"
+    source.write_text("first")
+    drive = tmp_path / "data"
+    first = artifacts.stage_task_attachments(drive, "fresh", [{"path": str(source)}])[0]
+    artifacts.stage_task_attachments(drive, "fresh", [{"path": str(source)}])
+    observed = source.stat()
+    source.write_text("later")
+    os.utime(source, ns=(observed.st_atime_ns, observed.st_mtime_ns))
+    latest = artifacts.stage_task_attachments(drive, "fresh", [{"path": str(source)}])[0]
+    assert latest["abs_path"] != first["abs_path"]
+    assert Path(first["abs_path"]).read_text() == "first"
+    assert Path(latest["abs_path"]).read_text() == "later"
+
+
+def test_large_tracked_symlink_replacement_is_not_misreported_as_deletion(tmp_path, monkeypatch):
+    import subprocess
+    from ouroboros import workspace_patch_capture as capture
+
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    def git(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    git("init")
+    (repo / "dataset.bin").write_bytes(b"old large content")
+    (repo / "target.txt").write_text("target")
+    git("add", ".")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "base")
+    (repo / "dataset.bin").unlink()
+    try:
+        (repo / "dataset.bin").symlink_to("target.txt")
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    monkeypatch.setattr(capture, "_PATCH_FILE_REFERENCE_BYTES", 8)
+    _, manifest = capture.write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
+    row = next(row for row in manifest["tracked_excluded"] if row["path"] == "dataset.bin")
+    assert row["symlink"] and row["link_target"] == "target.txt" and not row["deleted"]
+    assert not manifest["errors"]
+
+
+def test_large_staged_rename_keeps_both_paths_out_of_the_git_patch(tmp_path, monkeypatch):
+    import subprocess
+    from ouroboros import workspace_patch_capture as capture
+
+    repo = tmp_path / "workspace"
+    repo.mkdir()
+    def git(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    git("init")
+    (repo / "dataset.bin").write_bytes(b"large captured contents")
+    git("add", ".")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "base")
+    git("mv", "dataset.bin", "renamed.bin")
+    monkeypatch.setattr(capture, "_PATCH_FILE_REFERENCE_BYTES", 8)
+    _, manifest = capture.write_workspace_patch_artifacts(repo, tmp_path / "capture", task={})
+    assert not manifest["errors"] and manifest["patch_size"] == 0
+    assert {row["path"] for row in manifest["tracked_excluded"]} == {"dataset.bin", "renamed.bin"}
+    assert len(manifest["file_outputs"]) == 2
+
+
+def test_complete_directory_manifest_has_no_old_member_count_cutoff(tmp_path):
+    from ouroboros.tools.shell_outputs import _directory_fingerprint
+    directory = tmp_path / "many-members"
+    directory.mkdir()
+    for index in range(1002):
+        (directory / f"member-{index:04}.txt").write_text(str(index))
+    before = _directory_fingerprint(directory)
+    (directory / "member-1001.txt").write_text("changed beyond the former bound")
+    assert _directory_fingerprint(directory) != before
+    ctx = SimpleNamespace(drive_root=tmp_path / "data", task_id="many")
+    records = artifacts.copy_directory_to_task_artifacts(ctx, directory)
+    manifest = json.loads(Path(records[0]["path"]).read_text())
+    assert manifest["file_count"] == 1002
+    assert {row["path"] for row in manifest["files"]} == {p.name for p in directory.iterdir()}
+    with zipfile.ZipFile(records[1]["path"]) as archive:
+        assert len(archive.namelist()) == 1002
+        assert archive.read("member-1001.txt") == b"changed beyond the former bound"
+
+
+def test_retry_rejects_missing_input_outside_inline_preview(tmp_path):
+    drive = tmp_path / "data"
+    authority = _many_inputs(tmp_path, drive, "missing")
+    rows = artifacts.resolve_attachment_manifest(drive, "missing", authority)
+    Path(rows[-1]["abs_path"]).unlink()
+    task = {"id": "retry", "task_contract": authority}
+    _, error = artifacts.handoff_task_attachments_for_retry(drive, "missing", "retry", task)
+    assert error and task["task_contract"] == authority
+
+
+@pytest.mark.parametrize("drive_kind", ["headless", "direct"])
+def test_input_copy_failure_protects_each_existing_gc_root(tmp_path, monkeypatch, drive_kind):
+    from ouroboros import headless
+    from ouroboros.observability import retry_pending_child_ref_promotions
+    from ouroboros.task_results import write_task_result, load_task_result
+    parent = tmp_path / "canonical"
+    child = (headless.prepare_task_drive(parent, "inputs", "empty") if drive_kind == "headless"
+             else parent / headless.TASK_DRIVES_DIR / "inputs")
+    child.mkdir(parents=True, exist_ok=True)
+    authority = _many_inputs(tmp_path, child, "inputs")
+    write_task_result(child, "inputs", "completed", result="answer", task_contract=authority,
+                      completed_at="2000-01-01T00:00:00Z")
+    original = artifacts.copy_artifact_file
+    def unavailable(src, dst, **kwargs):
+        if Path(dst).is_relative_to(parent / "task_results"):
+            raise OSError("canonical storage interrupted")
+        return original(src, dst, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(artifacts, "copy_artifact_file", unavailable)
+        result = headless.copy_child_task_result(parent, {"id": "inputs", "drive_root": str(child)})
+        assert result["child_ref_promotion"]["status"] == "incomplete"
+        prune = headless.prune_headless_task_drives if drive_kind == "headless" else headless.prune_task_drives
+        assert not prune(parent, retention_days=1, now=4_000_000_000)["pruned"]
+        assert not headless.remove_subagent_task_drive(parent, "inputs")
+        assert child.is_dir()
+    assert retry_pending_child_ref_promotions(parent)["completed"] == ["inputs"]
+    result = load_task_result(parent, "inputs")
+    assert result["child_ref_promotion"]["status"] == "complete"
+    assert headless.remove_subagent_task_drive(parent, "inputs")
+    assert len(artifacts.resolve_attachment_manifest(parent, "inputs", result["task_contract"])) == 28

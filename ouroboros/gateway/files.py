@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import mimetypes
 import os
 import pathlib
@@ -54,10 +55,6 @@ class FileBrowserPayloadTooLarge(ValueError):
     """Upload exceeded the configured limit."""
 
 
-class ChatUploadPayloadTooLarge(ValueError):
-    """Chat upload exceeded the configured limit."""
-
-
 def _request_is_local(request: Request) -> bool:
     host = request.client.host if request.client else None
     return is_loopback_host(host)
@@ -107,6 +104,25 @@ def download_url_for_local_file(abs_path: pathlib.Path | str) -> str:
     except (ValueError, OSError):
         return ""
     return "/api/files/download?path=" + quote(rel.as_posix())
+
+
+def resolve_task_file_reference(drive_root: Any, task_id: str, ref: Any) -> pathlib.Path:
+    """Resolve a captured document under its actual task, with exact byte identity."""
+    from ouroboros.artifacts import artifact_store_path_block_reason, stream_artifact_file, task_artifact_dir_path
+
+    if not isinstance(ref, dict) or ref.get("kind") != "task_artifact" or ref.get("root") != "artifact_store" or ref.get("task_id") != task_id:
+        raise ValueError("document reference has no matching task owner")
+    name = str(ref.get("path") or "")
+    if not name or pathlib.PurePosixPath(name).name != name or "\\" in name or artifact_store_path_block_reason(pathlib.Path(name)):
+        raise ValueError("document reference has an invalid artifact name")
+    root = task_artifact_dir_path(drive_root, task_id).resolve(strict=False)
+    path = root / name
+    if path.is_symlink() or not path.resolve(strict=False).is_relative_to(root):
+        raise ValueError("document reference escapes its task owner")
+    if type(ref.get("size")) is not int or not isinstance(ref.get("sha256"), str) or len(ref["sha256"]) != 64:
+        raise ValueError("document reference has no captured byte identity")
+    stream_artifact_file(path, expected=ref)
+    return path
 
 
 def _resolve_target(request: Request, rel_path: str) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
@@ -792,10 +808,6 @@ def file_browser_routes() -> list[Route]:
 
 import uuid
 
-_CHAT_UPLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
-_CHUNK = 64 * 1024  # 64 KB
-
-
 def _data_dir() -> pathlib.Path:
     return pathlib.Path(os.environ.get(
         "OUROBOROS_DATA_DIR",
@@ -821,102 +833,64 @@ def store_chat_upload(
 ) -> pathlib.Path:
     """Copy an already-local file into ``data/uploads`` as a chat upload.
 
-    Same store, naming and 50 MB cap as ``api_chat_upload`` (the browser
-    paperclip); the Host Service uses it when a transport skill relays an
-    inbound file (#668), so the worker sees ONE upload family. Raises
-    ``ChatUploadPayloadTooLarge`` or ``OSError``; never publishes a partial copy."""
+    The Host Service owns source confinement; this shared store owns naming,
+    stable byte capture and atomic publication. Its historical return is a Path.
+    """
     source = pathlib.Path(source)
-    if source.stat().st_size > _CHAT_UPLOAD_MAX_BYTES:
-        raise ChatUploadPayloadTooLarge("File exceeds 50 MB limit")
+    return _store_chat_upload(source, display_name or source.name, data_dir=data_dir)[0]
+
+
+def _store_chat_upload(source: Any, display_name: str, *, data_dir=None) -> tuple[pathlib.Path, dict]:
+    """Store a confined path or completed borrowed multipart spool with measured facts."""
+    from ouroboros.artifacts import copy_artifact_file
+
     upload_dir = (pathlib.Path(data_dir) if data_dir is not None else _data_dir()) / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    dest = upload_dir / _unique_upload_name(display_name or source.name)
-    tmp_dest = upload_dir / f".{uuid.uuid4().hex}.uploading"
-    try:
-        shutil.copyfile(source, tmp_dest)
-        tmp_dest.replace(dest)
-    finally:
-        with suppress(OSError):
-            tmp_dest.unlink()
-    return dest
+    dest = upload_dir / _unique_upload_name(display_name)
+    return dest, copy_artifact_file(source, dest)
 
 
 async def api_chat_upload(request: Request) -> JSONResponse:
     """Upload a chat attachment to data/uploads/ with a unique name."""
-    # Quick Content-Length reject before multipart parsing.
-    try:
-        cl = int(request.headers.get("content-length", 0) or 0)
-    except (ValueError, TypeError):
-        cl = 0
-    if cl > _CHAT_UPLOAD_MAX_BYTES + 4096:
-        return JSONResponse({"ok": False, "error": "File exceeds 50 MB limit"}, status_code=413)
-
-    # Enforce size while Starlette receives multipart bytes.
-    _original_receive = request._receive
-    _body_bytes = 0
-
-    async def _size_limited_receive():
-        nonlocal _body_bytes
-        msg = await _original_receive()
-        _body_bytes += len(msg.get("body", b""))
-        if _body_bytes > _CHAT_UPLOAD_MAX_BYTES + 8192:
-            raise ChatUploadPayloadTooLarge("File exceeds 50 MB limit")
-        return msg
-
-    request._receive = _size_limited_receive
+    # Multipart files spool to disk in Starlette; copy them in bounded chunks.
+    # File custody is independent of downstream transport and prompt limits.
     try:
         form = await request.form()
-    except Exception as e:
-        request._receive = _original_receive
-        if isinstance(e, ChatUploadPayloadTooLarge):
-            return JSONResponse({"ok": False, "error": str(e)}, status_code=413)
-        return JSONResponse({"ok": False, "error": f"Upload failed: {str(e)}"}, status_code=400)
-    finally:
-        request._receive = _original_receive
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Upload failed: {exc}"}, status_code=400)
 
     upload = form.get("file")
     if not isinstance(upload, UploadFile):
         return JSONResponse({"ok": False, "error": "No valid file field"}, status_code=400)
 
     safe_base = _safe_upload_basename(getattr(upload, "filename", "") or "upload")
-    # Unique stored names avoid repeated-upload conflicts.
-    unique_name = f"{uuid.uuid4().hex}_{safe_base}"
-
-    upload_dir = _data_dir() / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    dest = upload_dir / unique_name
-
-    # Per-request temp file keeps publish atomic under concurrent uploads.
-    tmp_dest = upload_dir / f".{uuid.uuid4().hex}.uploading"
-    bytes_written = 0
-    too_large = False
+    copying = asyncio.create_task(asyncio.to_thread(_store_chat_upload, upload.file, safe_base))
     try:
-        with tmp_dest.open("wb") as fh:
-            while True:
-                chunk = await upload.read(_CHUNK)
-                if not chunk:
-                    break
-                bytes_written += len(chunk)
-                if bytes_written > _CHAT_UPLOAD_MAX_BYTES:
-                    too_large = True
-                    break
-                fh.write(chunk)
-        if too_large:
-            tmp_dest.unlink(missing_ok=True)
-            return JSONResponse({"ok": False, "error": "File exceeds 50 MB limit"}, status_code=413)
-        tmp_dest.replace(dest)  # atomic; unique name has no collision
+        dest, measured = await asyncio.shield(copying)
+    except asyncio.CancelledError:
+        # A cancelled await cannot stop disk I/O. Keep the request's spool open
+        # until its one worker settles, including repeated cancellation.
+        while not copying.done():
+            try:
+                await asyncio.shield(copying)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                break
+        try:
+            copying.result()
+        except Exception:
+            log.debug("Chat upload failed while cancellation settled", exc_info=True)
+        raise
     finally:
         await upload.close()
-        if tmp_dest.exists():
-            tmp_dest.unlink(missing_ok=True)
 
     mime = mimetypes.guess_type(safe_base)[0] or "application/octet-stream"
     return JSONResponse({
         "ok": True,
-        "filename": unique_name,
+        "filename": dest.name,
         "display_name": safe_base,
         "path": str(dest),
-        "size": bytes_written,
+        **measured,
         "mime": mime,
     })
 

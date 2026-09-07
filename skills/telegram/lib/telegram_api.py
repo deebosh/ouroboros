@@ -4,7 +4,7 @@ import base64
 import html as html_lib
 import mimetypes
 import re
-from typing import Any, Dict, Optional
+from typing import Any, BinaryIO, Dict, Optional
 
 import httpx
 
@@ -15,6 +15,8 @@ _TABLE_MAX_COLUMNS = 6
 _TABLE_MAX_CELL_CHARS = 24
 # Match Ouroboros's existing per-photo transfer ceiling for every Telegram download.
 _MAX_TELEGRAM_DOWNLOAD_BYTES = 10 * 1024 * 1024
+# Outgoing document transport is independent of this integration's inbound cap.
+_MAX_TELEGRAM_UPLOAD_BYTES = 50 * 1024 * 1024
 _NOT_MODIFIED_PREFIX = "bad request: message is not modified"
 
 
@@ -723,9 +725,9 @@ class TelegramClient:
         await self.call("sendPhoto", data=data, files=files, timeout=30)
 
     async def send_document(
-        self, chat_id: int, file_bytes: bytes, filename: str = "file", *, caption: str = "", parse_mode: str = "HTML"
+        self, chat_id: int, file_bytes: bytes | BinaryIO, filename: str = "file", *, caption: str = "", parse_mode: str = "HTML"
     ) -> None:
-        """Send an arbitrary document/file to a chat via sendDocument."""
+        """Send bytes or a borrowed binary file through the existing multipart call."""
         safe_name = (str(filename or "file").replace("\r", " ").replace("\n", " ").strip() or "file")
         files = {"document": (safe_name, file_bytes, "application/octet-stream")}
         formatted = markdown_to_telegram_html(caption) if (caption and parse_mode == "HTML") else caption
@@ -739,7 +741,7 @@ class TelegramClient:
     async def send_audio(
         self,
         chat_id: int,
-        file_bytes: bytes,
+        file_bytes: bytes | BinaryIO,
         filename: str,
         *,
         caption: str = "",

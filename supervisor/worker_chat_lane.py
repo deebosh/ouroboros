@@ -312,6 +312,9 @@ def _run_chat_task(
                     f"⚠️ Task not started: every attachment was rejected.\n{rendered}",
                 )
                 return
+            from ouroboros.artifacts import attachment_manifest_projection
+            authority = attachment_manifest_projection(_pool().DRIVE_ROOT, str(task["id"]), manifest)
+            rendered = _render_attachment_lines(authority)
             if attachment_manifest_has_rejections(manifest):
                 _pool().send_with_budget(
                     chat_id,
@@ -321,7 +324,8 @@ def _run_chat_task(
             if manifest:
                 manifest = [dict(row) for row in manifest]
                 task["drive_root"] = str(_pool().DRIVE_ROOT)
-                task["attachments"] = manifest
+                task.update(authority)
+                task["attachments"] = authority["attachment_manifest"]
                 task["attachment_images"] = [
                     m for m in manifest
                     if str(m.get("status") or "staged") == "staged" and m.get("is_image")
