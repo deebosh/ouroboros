@@ -215,7 +215,7 @@ def test_atlas_devtools_manifest_only_unless_touched(tmp_path):
 
 
 def test_atlas_marks_sensitive_binary_oversized_and_vendored_files(tmp_path):
-    _write(tmp_path / ".env.example", "TOKEN=secret\n")
+    _write(tmp_path / ".env.production", "TOKEN=secret\n")
     (tmp_path / "image.png").write_bytes(b"\x89PNG\r\n\x00")
     _write(tmp_path / "script.min.js", "minified();\n")
     (tmp_path / "huge.py").write_bytes(b"x" * (1_048_576 + 1))
@@ -227,7 +227,7 @@ def test_atlas_marks_sensitive_binary_oversized_and_vendored_files(tmp_path):
     pack = compile_review_context_atlas(
         ReviewContextAtlasRequest(
             repo_dir=tmp_path,
-            tracked_paths=(".env.example", "image.png", "script.min.js", "huge.py", "normal.py"),
+            tracked_paths=(".env.production", "image.png", "script.min.js", "huge.py", "normal.py"),
             fixed_prompt_tokens=100,
             target_total_tokens=20_000,
             hard_total_tokens=25_000,
@@ -235,9 +235,9 @@ def test_atlas_marks_sensitive_binary_oversized_and_vendored_files(tmp_path):
     )
 
     coverage = _coverage(pack)
-    assert coverage[".env.example"]["disposition"] == "sensitive"
-    assert coverage[".env.example"]["sha256"] == ""
-    assert coverage[".env.example"]["size"] == 0
+    assert coverage[".env.production"]["disposition"] == "sensitive"
+    assert coverage[".env.production"]["sha256"] == ""
+    assert coverage[".env.production"]["size"] == 0
     assert coverage["image.png"]["disposition"] == "binary_media"
     assert coverage["script.min.js"]["disposition"] == "vendored_minified"
     assert coverage["huge.py"]["disposition"] == "oversized"
