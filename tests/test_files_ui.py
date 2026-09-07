@@ -93,7 +93,7 @@ def test_chat_document_card_uses_dialog_and_safe_download_fallbacks():
     # bytes and fall back to the canonical one; the browser keeps the canonical.
     assert "dialogFile.source.bridge || dialogFile.source.durable," in chat
     assert 'data-file-action="download"' in chat
-    assert "await downloadViaHostBridge(source.bridge || source.durable, filename, { browserUrl: source.durable });" in chat
+    assert "await downloadViaHostBridge(source.bridge || source.durable, filename, { browserUrl: source.durable, streaming: true });" in chat
     assert "URL.createObjectURL(blob)" in chat
     assert ".chat-file-dialog {" in css
 
@@ -146,7 +146,8 @@ def test_desktop_bridge_version_skew_fallback_chain():
 
     assert "api?.open_external_url" in helper
     assert "'Link copied — open it in your browser.'" in helper
-    assert "api?.save_bytes_to_downloads" in helper
+    assert "api.save_bytes_to_downloads(payload.name, payload.b64)" in helper
+    assert "downloadBlobViaHostBridge(url, filename, { win, doc })" in helper
     assert '"Saving isn\'t available in the app — open in a browser."' in helper
     # Existing file-method chain stays intact for the interceptor to reuse.
     assert "api?.open_file_with_default_app" in helper

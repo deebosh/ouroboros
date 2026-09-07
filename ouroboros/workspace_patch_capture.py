@@ -45,6 +45,7 @@ from ouroboros.workspace_patch_rules import (
 # imports this (headless is the lower-level module).
 SCRATCH_MANIFEST_NAME = ".scratch_manifest.json"
 _GIT_UNBORN_HEAD = "(unborn)"
+_PATCH_FILE_REFERENCE_BYTES = 50 * 1024 * 1024
 
 
 def build_workspace_patch(workspace_root: pathlib.Path) -> str:
@@ -83,6 +84,7 @@ def write_workspace_patch_artifacts(
     tracked_excluded: List[Dict[str, str]] = []
     sensitive: List[Dict[str, str]] = []
     included_untracked: List[str] = []
+    file_output_paths: List[str] = []
     acting_constraint = _acting_constraint_from_task(task)
     task_base_sha = str(acting_constraint.base_sha or "").strip() if acting_constraint else ""
     preflight_head = _preflight_head_from_task(task)
@@ -94,7 +96,7 @@ def write_workspace_patch_artifacts(
         expected_base_sha=task_base_sha or preflight_head,
     )
     changed_tracked = _git_path_list(
-        ["git", "diff", "--name-only", "-z", "--no-ext-diff", "--no-color", base_ref, "--"],
+        ["git", "diff", "--name-only", "--no-renames", "-z", "--no-ext-diff", "--no-color", base_ref, "--"],
         root,
         errors,
     )
@@ -138,7 +140,7 @@ def write_workspace_patch_artifacts(
         if reason:
             excluded.append({"path": rel, "reason": reason})
             continue
-        blob_reason = _untracked_blob_exclude_reason(root, rel)
+        blob_reason = _untracked_blob_exclude_reason(root, rel, file_outputs=file_output_paths)
         if blob_reason:
             excluded.append({"path": rel, "reason": blob_reason})
             continue
@@ -159,16 +161,47 @@ def write_workspace_patch_artifacts(
     # (untracked_capture_veto_reason → provision_execution_snapshot) always
     # treated the same hit as a per-file skip; the patch now matches it (#447).
 
+    # Large generated data rides a file artifact, never a giant binary Git patch.
+    base_sizes: Dict[str, int] = {}
+    for row in _git_bytes(["git", "ls-tree", "-r", "-l", "-z", base_ref, "--"], root, errors=errors).split(b"\0"):
+        header, separator, raw_path = row.partition(b"\t")
+        fields = header.split()
+        if separator and len(fields) == 4 and fields[3].isdigit():
+            base_sizes[raw_path.decode("utf-8", errors="replace")] = int(fields[3])
+    large_tracked = []
+    for rel in changed_tracked:
+        path = root / rel
+        present = path.is_file() and not path.is_symlink()
+        size = path.stat().st_size if present else 0
+        if max(size, base_sizes.get(rel, 0)) > _PATCH_FILE_REFERENCE_BYTES:
+            large_tracked.append(rel)
+            if present:
+                file_output_paths.append(rel)
+            tracked_excluded.append({"path": rel, "reason": "captured as file-reference artifact",
+                                     "size": size, "base_size": base_sizes.get(rel, 0),
+                                     "deleted": not path.exists() and not path.is_symlink(),
+                                     "symlink": path.is_symlink(),
+                                     "link_target": os.readlink(path) if path.is_symlink() else ""})
+    file_outputs: List[Dict[str, Any]] = []
+    if file_output_paths and not errors:
+        from ouroboros.artifacts import copy_directory_to_task_artifacts
+        try:
+            file_outputs = copy_directory_to_task_artifacts(
+                None, root, kind="workspace_file_outputs", artifact_dir=artifact_dir,
+                member_paths=[root / rel for rel in file_output_paths],
+            )
+        except (OSError, ValueError) as exc:
+            errors.append({"type": "file_capture_failed", "message": f"{type(exc).__name__}: {exc}"})
     hasher = sha256()
     total_size = 0
     with patch_path.open("wb") as fh:
         if not errors:
             tracked_lock_excludes = sorted(set(changed_tracked) & incidental_lock_excludes)
             tracked_pathspec = ["--"]
-            if tracked_lock_excludes:
-                tracked_pathspec += ["."] + [f":(exclude){rel}" for rel in tracked_lock_excludes]
-                for rel in tracked_lock_excludes:
-                    tracked_excluded.append({"path": rel, "reason": "incidental lockfile without sibling manifest change"})
+            if tracked_lock_excludes or large_tracked:
+                tracked_pathspec += ["."] + [f":(exclude,literal){rel}" for rel in [*tracked_lock_excludes, *large_tracked]]
+            for rel in tracked_lock_excludes:
+                tracked_excluded.append({"path": rel, "reason": "incidental lockfile without sibling manifest change"})
             diffstat = _git_stdout(
                 ["git", "diff", "--stat", "--no-ext-diff", "--no-color", base_ref, *tracked_pathspec],
                 root,
@@ -275,6 +308,7 @@ def write_workspace_patch_artifacts(
             "untracked_excluded": len(excluded),
             "sensitive_blocked": len(sensitive),
         },
+        "file_outputs": file_outputs,
         "tracked_changed": changed_tracked,
         "tracked_excluded": tracked_excluded,
         "untracked_included": included_untracked,
@@ -303,7 +337,7 @@ def write_workspace_patch_artifacts(
             "sha256": digest,
             "workspace_root": str(root),
         })
-    return artifacts, manifest
+    return [*artifacts, *file_outputs], manifest
 
 
 def _git_stdout(
@@ -569,7 +603,7 @@ _PEM_PRIVATE_KEY_RE = re.compile(rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 _PEM_HEAD_READ_BYTES = 4096
 
 
-def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str) -> str:
+def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str, *, file_outputs: Optional[List[str]] = None) -> str:
     """Reason to drop an untracked file from the workspace patch when it is a
     build/runtime BINARY, exceeds the per-file size cap, or carries a PEM
     private-key header in its head bytes. Keeps real-usage patches
@@ -581,8 +615,6 @@ def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str) -> str:
         size = (root / rel).lstat().st_size
     except OSError:
         return ""  # unreadable/symlink races: include and let git decide
-    if size > _PATCH_MAX_UNTRACKED_FILE_BYTES:
-        return f"untracked file exceeds size cap ({size}B > {_PATCH_MAX_UNTRACKED_FILE_BYTES}B)"
     try:
         with (root / rel).open("rb") as fh:
             head = fh.read(_PEM_HEAD_READ_BYTES)
@@ -590,6 +622,10 @@ def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str) -> str:
         head = b""
     if _PEM_PRIVATE_KEY_RE.search(head):
         return "private key material (PEM private-key header)"
+    if size > _PATCH_MAX_UNTRACKED_FILE_BYTES:
+        if file_outputs is not None:
+            file_outputs.append(rel)
+        return f"untracked file exceeds size cap ({size}B > {_PATCH_MAX_UNTRACKED_FILE_BYTES}B)"
     numstat = _git_stdout(
         ["git", "diff", "--no-index", "--numstat", "--no-ext-diff", "--no-color", "--", os.devnull, rel],
         root,
@@ -598,6 +634,8 @@ def _untracked_blob_exclude_reason(root: pathlib.Path, rel: str) -> str:
     )
     first = numstat.strip().splitlines()[0] if numstat.strip() else ""
     if first.startswith("-\t-"):
+        if file_outputs is not None:
+            file_outputs.append(rel)
         return "binary file"
     return ""
 

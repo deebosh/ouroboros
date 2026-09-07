@@ -402,7 +402,7 @@ def _inject_attachment_uploads(
     Each ``{path, name?, mime?}`` must be a regular file under the calling
     skill's OWN state root (the ``staged_files`` confinement; a symlink that
     resolves outside is refused). The host copies it through the SAME store the
-    browser paperclip uses — ``data/uploads``, unique name, 50 MB cap — so the
+    browser paperclip uses — ``data/uploads``, unique name, verified bytes — so the
     worker's ``stage_task_attachments`` and the secret-name rule see one upload
     family. Returns ``chat_attachment_uploads`` specs (``{path, label, mime}``);
     the skill removes its parked copy afterwards. Each new destination belongs

@@ -146,7 +146,7 @@ def _task_result_ground_truth(row: Dict[str, Any]) -> Dict[str, Any]:
         "reason_code": str(row.get("reason_code") or ""),
         "workspace_root": str(row.get("workspace_root") or ""),
         "workspace_mode": str(row.get("workspace_mode") or ""),
-        "artifact_status": str(row.get("artifact_status") or ""),
+        "artifact_status": str(bundle.get("status") or row.get("artifact_status") or ""),
         "artifact_refs": [
             str(item.get("path") or item.get("name") or "")
             for item in artifacts[:8] if isinstance(item, dict)

@@ -307,10 +307,10 @@ class DocumentOutbound(TypedDict):
     filename: str
     ts: str
     caption: NotRequired[str]
-    # Loopback /api/files/download?path=<root-relative> URL for the durable
-    # artifact copy, used by the desktop host-bridge download (WKWebView-safe)
-    # and to rebuild the bubble on reload without persisting base64.
+    # Canonical captured-file URL; replay never needs to persist inline bytes.
     download_url: NotRequired[str]
+    download_url_compat: NotRequired[str]
+    file_ref: NotRequired[Dict[str, Any]]
     content: NotRequired[str]
     source: NotRequired[str]
     sender_label: NotRequired[str]
