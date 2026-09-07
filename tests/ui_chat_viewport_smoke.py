@@ -306,8 +306,8 @@ def run_chat_viewport_smoke(
                 assert state["remaining"] <= 6 and state["dotHidden"], state
                 assert button.evaluate("node => document.activeElement === node")
 
-                # Duplicate and intentionally hidden decision frames are no-ops,
-                # not new visible activity.
+                # A duplicate is a no-op. Transient work is visible activity
+                # under #691 and keeps the reader's history position.
                 duplicate = {
                     "type": "chat", "role": "user", "chat_id": 1,
                     "client_message_id": "vp-duplicate-user",
@@ -322,18 +322,23 @@ def run_chat_viewport_smoke(
                 _emit_ws_frame(page, duplicate)
                 state = jump_state(page)
                 assert state["remaining"] > 48 and state["dotHidden"], state
+                before_transient = state["scrollTop"]
                 _emit_ws_frame(page, {
                     "type": "chat", "role": "assistant", "is_progress": True,
                     "ephemeral_decision": True, "chat_id": 1,
-                    "task_id": "vp-hidden-decision", "content": "Hidden decision",
+                    "task_id": "vp-transient-decision", "content": "Transient work",
                     "ts": "2026-08-03T10:02:23+00:00",
                 })
-                assert jump_state(page)["dotHidden"]
+                transient = page.locator('[data-task-id="vp-transient-decision"]')
+                assert transient.count() == 1
+                state = jump_state(page)
+                assert not state["dotHidden"] and state["dotCount"] == 1, state
+                assert abs(state["scrollTop"] - before_transient) <= 6, state
                 _emit_ws_frame(page, {
                     "type": "chat", "role": "assistant", "is_progress": True, "chat_id": 1,
-                    "task_id": "vp-hidden-decision", "content": "Late hidden decision",
+                    "task_id": "vp-transient-decision", "content": "More transient work",
                 })
-                assert page.locator('[data-task-id="vp-hidden-decision"]').count() == 0 and jump_state(page)["dotHidden"]
+                assert transient.count() == 1 and not jump_state(page)["dotHidden"]
 
                 # Browser visibility is a lifecycle seam. A hidden pinned
                 # reader re-follows; a hidden history reader keeps its saved
@@ -996,7 +1001,7 @@ def run_chat_viewport_smoke(
                     "chat_id": 1, "task_id": "vp-threshold-freeze-0", "content": "Late decision marker",
                 })
                 assert abs(card_top(page, healing_anchor["id"]) - healing_anchor["top"]) <= 6
-                assert page.locator('[data-task-id="vp-threshold-freeze-0"]').count() == 0 and not jump_state(page)["dotHidden"]
+                assert page.locator('[data-task-id="vp-threshold-freeze-0"]').count() == 1 and not jump_state(page)["dotHidden"]
             finally:
                 browser.close()
     except PlaywrightError as exc:
