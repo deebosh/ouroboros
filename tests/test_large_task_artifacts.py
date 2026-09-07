@@ -97,6 +97,7 @@ def test_source_replacement_keeps_previous_destination(tmp_path, monkeypatch, re
             pytest.skip("symlinks unavailable")
         source = link
     original_stream = artifacts.stream_artifact_file
+    replacement_refusals = []
 
     def replaced_during_copy(path, sink=None, **kwargs):
         class ReplacingSink:
@@ -105,13 +106,26 @@ def test_source_replacement_keeps_previous_destination(tmp_path, monkeypatch, re
                     source.unlink()
                     source.symlink_to(replacement)
                 else:
-                    replacement.replace(source)
+                    try:
+                        replacement.replace(source)
+                    except PermissionError as exc:
+                        replacement_refusals.append(exc)
+                        raise
                 return sink.write(chunk)
         return original_stream(path, ReplacingSink(), **kwargs)
 
     monkeypatch.setattr(artifacts, "stream_artifact_file", replaced_during_copy)
-    with pytest.raises(OSError, match="changed"):
+    with pytest.raises(OSError) as caught:
         artifacts.copy_artifact_file(source, target)
+    if replacement_refusals:
+        # Windows may refuse replacing an open source. Prove that exact OS
+        # refusal propagated and neither source file was replaced or consumed.
+        assert caught.value is replacement_refusals[0]
+        assert source.read_bytes() == b"original"
+        assert replacement.read_bytes() == b"different"
+    else:
+        assert "changed" in str(caught.value)
+        assert source.read_bytes() == b"different"  # replacement really happened
     assert target.read_bytes() == b"previous durable"
     assert not list(tmp_path.glob(".*.tmp"))
 
@@ -767,7 +781,7 @@ def test_first_materialization_copy_failure_keeps_each_gc_root(tmp_path, monkeyp
     assert Path(copied["artifacts"][0]["path"]).read_bytes() == b"complete report"
 
 
-@pytest.mark.parametrize("context", ["missing", "none", "storage_failure"])
+@pytest.mark.parametrize("context", ["healthy", "missing", "none", "storage_failure"])
 def test_small_document_keeps_inline_delivery_when_capture_is_unavailable(tmp_path, monkeypatch, context):
     import base64
     from ouroboros.tools import core_artifacts
@@ -780,14 +794,34 @@ def test_small_document_keeps_inline_delivery_when_capture_is_unavailable(tmp_pa
         ctx = SimpleNamespace(current_chat_id=1, pending_events=[], task_id="send", task_metadata={})
     elif context == "none":
         ctx.drive_root = None
-    else:
+    elif context == "storage_failure":
         def unavailable(*args, **kwargs):
             raise OSError("controlled artifact-store failure")
         monkeypatch.setattr(artifacts, "copy_file_to_task_artifacts", unavailable)
     assert core_artifacts._send_file(ctx, str(source)).startswith("OK")
     event, = ctx.pending_events
     assert base64.b64decode(event["file_base64"]) == source.read_bytes()
-    assert event["file_ref"] == {} and event["download_url"] == event["download_url_compat"] == ""
+    if context != "healthy":
+        assert event["file_ref"] is None
+        assert event["download_url"] == event["download_url_compat"] == ""
+    from supervisor import events_chat_delivery, message_bus
+
+    frames, host_events, errors = [], [], []
+    monkeypatch.setattr(message_bus, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(message_bus, "load_state", lambda: {})
+    monkeypatch.setattr(message_bus, "log_chat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(message_bus, "_advance_project_visible_revision", lambda *args: None)
+    monkeypatch.setattr(message_bus, "publish_event", lambda kind, payload: host_events.append(payload))
+    monkeypatch.setattr(events_chat_delivery, "_bound_project_chat_id", lambda *args: None)
+    bridge = message_bus.LocalChatBridge()
+    bridge._broadcast_fn = frames.append
+    events_chat_delivery._handle_send_document(event, SimpleNamespace(
+        DRIVE_ROOT=tmp_path / "data", bridge=bridge,
+        append_jsonl=lambda path, row: errors.append(row),
+    ))
+    assert errors == []
+    assert len(frames) == len(host_events) == 1
+    assert frames[0]["file_base64"] == host_events[0]["file_base64"] == event["file_base64"]
 
 
 @pytest.mark.parametrize("failure", ["large_uncaptured", "source_unreadable", "capture_refused"])
@@ -814,3 +848,82 @@ def test_inline_fallback_keeps_the_source_and_capture_boundaries(tmp_path, monke
         monkeypatch.setattr(Path, "open", refuse_source)
     assert not core_artifacts._send_file(ctx, str(source)).startswith("OK")
     assert ctx.pending_events == []
+
+
+@pytest.mark.parametrize("initial_input", [False, True])
+@pytest.mark.parametrize("count,failure", [(1, ""), (28, ""), (28, "file"), (28, "manifest"), (28, "mailbox")])
+def test_acknowledged_owner_inputs_survive_copyback_retry_mailbox_cleanup_and_gc(
+    tmp_path, monkeypatch, initial_input, count, failure,
+):
+    import time
+    from ouroboros import headless, observability, owner_mailbox
+    from ouroboros.task_results import load_task_result, write_task_result
+    from supervisor.terminal_delivery import cleanup_settled_owner_mailbox
+
+    parent, task_id = tmp_path / "canonical", "owner-inputs"
+    child = headless.prepare_task_drive(parent, task_id, "empty")
+    initial = []
+    if initial_input:
+        source = tmp_path / "initial.txt"
+        source.write_bytes(b"initial input")
+        initial = artifacts.stage_task_attachments(child, task_id, [{"path": str(source)}])
+    contract = artifacts.attachment_manifest_projection(child, task_id, initial)
+    sources = []
+    for index in range(count):
+        source = tmp_path / f"late-{index}.txt"
+        source.write_bytes(f"late input {index}".encode())
+        sources.append({"path": str(source)})
+    rows = artifacts.stage_task_attachments(child, task_id, sources)
+    assert owner_mailbox.write_owner_message(
+        child, "Use these additional inputs", task_id, msg_id="owner-more", attachment_manifest=rows,
+    )
+    mailbox = owner_mailbox._mailbox_path(child, task_id)
+    entry = json.loads(mailbox.read_text(encoding="utf-8"))
+    ref = entry.get("attachment_manifest_ref")
+    full_body = artifacts.read_actor_source_bytes(child, task_id, ref) if ref else None
+    assert owner_mailbox.acknowledge_task_messages(child, task_id, ["owner-more"], wake_id="test")
+    assert owner_mailbox.drain_owner_entries(child, task_id) == []
+    write_task_result(child, task_id, "completed", result="done", task_contract=contract, artifact_status="ready")
+    task = {"id": task_id, "drive_root": str(child)}
+    original_copy = artifacts.copy_artifact_file
+
+    def unavailable_copy(source, destination, **kwargs):
+        path = Path(source)
+        if ((failure == "file" and path.name == "late-0.txt")
+                or (failure == "manifest" and path.suffix == ".json")):
+            raise OSError("controlled owner input copy failure")
+        return original_copy(source, destination, **kwargs)
+
+    with monkeypatch.context() as patch:
+        if failure in {"file", "manifest"}:
+            patch.setattr(artifacts, "copy_artifact_file", unavailable_copy)
+        elif failure == "mailbox":
+            def unreadable(*args, **kwargs):
+                raise PermissionError("controlled mailbox read failure")
+            patch.setattr(owner_mailbox, "owner_attachment_manifest", unreadable)
+        result = headless.copy_child_task_result(parent, task)
+    if failure:
+        assert result["child_ref_promotion"]["status"] == "incomplete"
+        assert any(row["path"] == str(mailbox) for row in result["child_ref_promotion"]["pending_refs"])
+        cleanup_settled_owner_mailbox(parent, task_id, task)
+        assert mailbox.is_file()
+        assert not headless.remove_subagent_task_drive(parent, task_id)
+        assert observability.retry_pending_child_ref_promotions(parent)["completed"] == [task_id]
+        result = load_task_result(parent, task_id)
+        assert not mailbox.exists(), "successful retry releases retained mail through its existing owner"
+    else:
+        cleanup_settled_owner_mailbox(parent, task_id, task)
+        assert not mailbox.exists()
+    assert result["child_ref_promotion"]["status"] == "complete"
+    assert result["child_ref_promotion"]["pending_refs"] == []
+    assert len(artifacts.resolve_attachment_manifest(parent, task_id, result["task_contract"])) == len(initial)
+    gc = headless.prune_headless_task_drives(parent, retention_days=1, now=time.time() + 90 * 86400)
+    assert [row["task_id"] for row in gc["pruned"]] == [task_id]
+    assert not child.exists()
+    if ref:
+        assert artifacts.read_actor_source_bytes(parent, task_id, ref) == full_body
+        assert len(artifacts.resolve_attachment_manifest(parent, task_id, entry)) == count
+    for row in rows:
+        captured = artifacts.task_artifact_dir_path(parent, task_id) / row["relpath"]
+        assert artifacts.stream_artifact_file(captured, expected=row)["sha256"] == row["sha256"]
+    assert artifacts.collect_task_artifact_records(parent, task_id) == []

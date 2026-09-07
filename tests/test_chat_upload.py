@@ -80,6 +80,29 @@ def test_upload_spaces_in_filename(client, tmp_path):
     assert " " not in resp.json()["display_name"]
 
 
+@pytest.mark.parametrize("name", ["a" * 196 + ".txt", "ж" * 100 + ".txt"], ids=["ascii200", "utf8"])
+def test_valid_long_upload_names_keep_exact_bytes_on_both_ingresses(client, tmp_path, name):
+    from hashlib import sha256
+    from typing import get_type_hints
+    from ouroboros.gateway.contracts import UploadResponse
+    from ouroboros.gateway.files import store_chat_upload
+
+    payload = b"complete uploaded content"
+    source = tmp_path / name
+    source.write_bytes(payload)
+    host_copy = store_chat_upload(source, data_dir=tmp_path / "host")
+    assert host_copy.name.endswith("_" + name)
+    assert host_copy.read_bytes() == payload
+    response = client.post("/api/chat/upload", files={"file": (name, io.BytesIO(payload), "text/plain")})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["display_name"] == name
+    assert body["sha256"] == sha256(payload).hexdigest()
+    assert set(body) == set(get_type_hints(UploadResponse))
+    assert (tmp_path / "uploads" / body["filename"]).read_bytes() == payload
+    assert not list((tmp_path / "uploads").glob(".*.tmp"))
+
+
 def test_upload_invalid_content_length(client):
     """Non-numeric Content-Length should not cause a 500; treated as 0 (unknown)."""
     import io

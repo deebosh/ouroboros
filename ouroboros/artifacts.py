@@ -385,6 +385,9 @@ def resolve_attachment_manifest(drive_root: Any, task_id: str, authority: Any) -
 
 def promote_task_attachment_refs(parent: Any, child: Any, task_id: str, result: Dict[str, Any], state: Dict[str, Any]) -> None:
     """Carry the full input closure under existing child-ref custody before GC."""
+    from ouroboros.owner_mailbox import promote_owner_attachments
+
+    promote_owner_attachments(parent, child, task_id, state)
     contract = result.get("task_contract")
     if not isinstance(contract, dict):
         return
@@ -1134,7 +1137,7 @@ def copy_artifact_file(source: Any, destination: pathlib.Path, *, expected: Any 
     if source_path is not None and not destination.is_symlink() and source_path.resolve(strict=False) == destination.resolve(strict=False):
         return stream_artifact_file(source, expected=expected)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    temporary = destination.with_name(f".{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("xb") as sink:
             measured = stream_artifact_file(source, sink, expected=expected)

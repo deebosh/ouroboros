@@ -944,12 +944,16 @@ def _retry_pending_child_ref_promotion(
         patch["status"] = current_status
         return patch
 
-    return write_task_result(
+    settled = write_task_result(
         parent,
         task_id,
         str(loaded_result.get("status") or ""),
         _field_projector=_project,
     )
+    from supervisor.terminal_delivery import cleanup_settled_owner_mailbox
+
+    cleanup_settled_owner_mailbox(parent, task_id, {"drive_root": str(child)})
+    return settled
 
 
 def retry_pending_child_ref_promotions(
