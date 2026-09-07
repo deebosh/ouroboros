@@ -65,7 +65,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
 
 ## Hidden coupling (classified out of the strict graph)
 
-- lazy-only cross-domain pairs: **98**
+- lazy-only cross-domain pairs: **99**
   - D01->D08
   - D01->D10
   - D01->D11
@@ -142,6 +142,7 @@ Rows may import columns (`[graph].allowed`). `·` = forbidden direction.
   - D16->D01
   - D16->D03
   - D16->D05
+  - D16->D09
   - D16->D17
   - D17->D02
   - D17->D03
