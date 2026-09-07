@@ -524,7 +524,7 @@ def run_llm_loop(
             try:
                 msg, cost, active_context_mode = _call_round_model(model_call)
             except ModelWaitInterrupted as error:
-                controlled = _handle_model_wait_control(limit_ctx, error)
+                controlled = _handle_model_wait_control(limit_ctx, error, transport_episode=transport_wait)
                 if controlled is not None:
                     text, accumulated_usage, forced_trace = controlled
                     _merge_finalization_trace(llm_trace, forced_trace)

@@ -399,7 +399,7 @@ def _handle_provider_unavailable(
 
 
 def _handle_model_wait_control(
-    ctx: _RoundLimitContext, error: Any,
+    ctx: _RoundLimitContext, error: Any, *, transport_episode: Optional[TransportWaitEpisode] = None,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
     """Rejoin the existing terminal rails after a model call yields to control.
 
@@ -444,6 +444,15 @@ def _handle_model_wait_control(
         # A revoked control cannot stop a still-unstarted call. A provider
         # already interrupted in flight keeps the ordinary unknown no-resend rail.
         return _handle_provider_unavailable(ctx, error_kind="provider_outcome_unknown") if unknown else None
+    if (reason == "finalize_requested" and first_line == REASON_OWNER_REQUESTED_FINALIZATION
+            and getattr(error, "previous_error", None) is None and capture is None):
+        # A fresh Wrap up can arrive after this round's mailbox drain but before
+        # the model call. Rejoin its existing bounded finalizer; no provider wait
+        # was interrupted, and the real drain above consumed this control. Older
+        # transport episodes and unresolved wire attempts keep their no-call rails.
+        no_call_source, _ = _loop().provider_no_call_source(ctx.accumulated_usage, False)
+        if transport_episode is not None or not no_call_source:
+            return _maybe_early_finalize(ctx, ctx.tools, controls, transport_episode=transport_episode)
     reason_code = (REASON_OWNER_REQUESTED_FINALIZATION
                    if first_line == REASON_OWNER_REQUESTED_FINALIZATION else
                    "deadline_local" if reason == "deadline" else "finalization_grace")

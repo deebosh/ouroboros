@@ -55,10 +55,17 @@ def background(tmp_path, monkeypatch):
     engine.dispatch = ["response_received", "not_started", "response_received"]
     monkeypatch.setattr(transport, "ensure_owned_gateway", lambda: engine)
     ready = threading.Event()
+    metadata_ready = threading.Event()
     monkeypatch.setattr(bc._llm, "claudexor_model_sources", lambda: {
         "sources": [{"id": "codex", "credentialHarness": "fixture"}]})
-    monkeypatch.setattr(bc._llm, "claudexor_model_catalog", lambda *_, **_kw: {
-        "source": "codex", "models": [{"id": "exact-model"}] if ready.is_set() else []})
+
+    def catalog(*_, **_kw):
+        # Source discovery publishes a second revision before this read. Tests
+        # need that stable snapshot before exercising the real decision ingress.
+        metadata_ready.set()
+        return {"source": "codex", "models": [{"id": "exact-model"}] if ready.is_set() else []}
+
+    monkeypatch.setattr(bc._llm, "claudexor_model_catalog", catalog)
     bc.inject_observation("one pending observation", observation_id="one")
     outcomes, failures = [], []
 
@@ -71,11 +78,12 @@ def background(tmp_path, monkeypatch):
     def start():
         bc._running = True
         bc._stop_event.clear()
+        metadata_ready.clear()
         bc._thread = threading.Thread(target=run)
         bc._thread.start()
         return bc._thread
 
-    yield SimpleNamespace(bc=bc, engine=engine, ready=ready, events=events, tools=tools,
+    yield SimpleNamespace(bc=bc, engine=engine, ready=ready, metadata_ready=metadata_ready, events=events, tools=tools,
                           outcomes=outcomes, failures=failures, root=root, start=start,
                           decide=lambda body: gateway._decide(root, body, get_background_model_wait=bc.live_model_wait))
     bc._stop_event.set()
@@ -87,6 +95,8 @@ def background(tmp_path, monkeypatch):
 
 
 def waiting(fixture):
+    if not fixture.metadata_ready.is_set():
+        return None
     rows = fixture.bc.model_wait_snapshot()["model_waits"]
     return next((row for row in rows.values() if row["state"] == "waiting"), None)
 

@@ -205,6 +205,128 @@ def test_graceful_intent_waits_for_current_control_and_never_looks_like_hard_can
     assert owner.control_reason() == "cancelled"
 
 
+def test_pre_call_graceful_control_after_round_drain_runs_one_final_turn(main_call, monkeypatch):
+    """Wrap up arriving between the round drain and model admission keeps its final turn."""
+    from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
+    from supervisor.owner_stop import owner_stop_control_id
+
+    ctx, gateway, owner, events, _decide, _observations = main_call
+    tools = _loop_tools(ctx, owner)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    final = result()
+    final["message"] = {"role": "assistant", "content": "Verified work summarized after owner stop"}
+    gateway.results = [final]
+    gateway.dispatch = ["response_received"]
+    call = loop._call_round_model
+    injected = []
+
+    def after_drain(model_call):
+        assert not injected
+        injected.append(True)
+        intent = cancel_intents.request_cancel(ctx.drive_root, "task-one",
+            requested_stop_policy=cancel_intents.STOP_POLICY_FINALIZE)
+        assert owner_mailbox.write_owner_message(ctx.drive_root,
+            REASON_OWNER_REQUESTED_FINALIZATION, "task-one",
+            msg_id=owner_stop_control_id(intent), kind=owner_mailbox.KIND_FINALIZE_NOW)
+        return call(model_call)
+
+    monkeypatch.setattr(loop, "_call_round_model", after_drain)
+    text, usage, trace = loop.run_llm_loop(ctx.messages, tools, ctx.llm, ctx.drive_logs,
+        lambda *_args, **_kwargs: None, queue.Queue(), task_id="task-one",
+        drive_root=ctx.drive_root, event_queue=events)
+    assert text == final["message"]["content"] and len(gateway.creates) == 1
+    assert usage["reason_code"] == REASON_OWNER_REQUESTED_FINALIZATION
+    assert usage["terminal_origin"] == "model_final"
+    assert trace["forced_finalization"]["source"] == "model"
+    assert owner.control_reason() is None  # The final call did not re-read its own stop control.
+    assert any(message.get("content") == "verified read A" for message in gateway.uploads[0][0]["messages"])
+
+
+def test_pre_call_wrap_keeps_the_existing_transport_episode_no_call(main_call, monkeypatch):
+    from ouroboros import loop_transport
+    from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
+    from supervisor.owner_stop import owner_stop_control_id
+
+    ctx, gateway, owner, events, _decide, _observations = main_call
+    tools = _loop_tools(ctx, owner)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.delenv("USE_LOCAL_FALLBACK", raising=False)
+    monkeypatch.setattr(loop_transport, "interruptible_wait_sleep", lambda *_args: False)
+    call, reconcile = loop._call_round_model, loop._reconcile_transport_wait
+    passes, episodes = [], []
+
+    def observe_episode(*args, **kwargs):
+        episode = reconcile(*args, **kwargs)
+        if episode is not None:
+            episodes.append(episode)
+        return episode
+
+    def before_redial(model_call):
+        passes.append(True)
+        if len(passes) == 1:
+            model_call.accumulated_usage["_last_llm_error_kind"] = "transport_unavailable"
+            model_call.accumulated_usage["_last_llm_error"] = "Controlled connection refusal"
+            return None, 0.0, model_call.active_context_mode
+        assert len(passes) == 2 and isinstance(episodes[0], loop_transport.TransportWaitEpisode)
+        intent = cancel_intents.request_cancel(ctx.drive_root, "task-one",
+            requested_stop_policy=cancel_intents.STOP_POLICY_FINALIZE)
+        assert owner_mailbox.write_owner_message(ctx.drive_root,
+            REASON_OWNER_REQUESTED_FINALIZATION, "task-one",
+            msg_id=owner_stop_control_id(intent), kind=owner_mailbox.KIND_FINALIZE_NOW)
+        return call(model_call)
+
+    monkeypatch.setattr(loop, "_reconcile_transport_wait", observe_episode)
+    monkeypatch.setattr(loop, "_call_round_model", before_redial)
+    _text, _usage, trace = loop.run_llm_loop(ctx.messages, tools, ctx.llm, ctx.drive_logs,
+        lambda *_args, **_kwargs: None, queue.Queue(), task_id="task-one",
+        drive_root=ctx.drive_root, event_queue=events)
+    assert not gateway.creates
+    assert trace["forced_finalization"]["source"] == "transport_unavailable_no_resend"
+
+
+def test_pre_call_wrap_keeps_older_wire_death_custody_without_summary(tmp_path, monkeypatch):
+    import httpx
+    from ouroboros import loop_llm_call
+    from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
+    from supervisor.owner_stop import owner_stop_control_id
+    from tests.test_transport_death_retry import _LedgerLLM, _ledger, _loop_kwargs, _no_chain
+
+    llm = _LedgerLLM(tmp_path, lambda: httpx.ReadError("controlled wire death"))
+
+    class ControlledLLM:
+        def default_model(self):
+            return llm.default_model()
+
+        @model_wait.model_waitable
+        def chat(self, **kwargs):
+            return llm.chat(**kwargs)
+
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setattr(loop, "_run_cross_model_fallback_chain", _no_chain)
+    posted = []
+
+    def release_repeat_after_control_check(_seconds, _deadline, **kwargs):
+        assert not kwargs["wake_check"]() and not posted
+        posted.append(True)
+        intent = cancel_intents.request_cancel(tmp_path, "t-death",
+            requested_stop_policy=cancel_intents.STOP_POLICY_FINALIZE)
+        assert owner_mailbox.write_owner_message(tmp_path,
+            REASON_OWNER_REQUESTED_FINALIZATION, "t-death",
+            msg_id=owner_stop_control_id(intent), kind=owner_mailbox.KIND_FINALIZE_NOW)
+        return True
+
+    monkeypatch.setattr(loop_llm_call, "_sleep_within_deadline", release_repeat_after_control_check)
+    kwargs = _loop_kwargs(tmp_path, ControlledLLM(), [])
+    with model_wait.task_model_wait_scope(task={"id": "t-death"}, drive_root=tmp_path,
+            event_queue=None, worker_slot_held=True) as owner:
+        owner.tool_context = kwargs["tools"]._ctx
+        _text, usage, trace = loop.run_llm_loop(**kwargs)
+    assert posted and llm.calls == 1
+    assert [row["state"] for row in _ledger(tmp_path)] == ["reserved", "dispatched", "unresolved"]
+    assert loop_llm_call.provider_no_call_source(usage, False)[0] == "provider_outcome_unknown_no_resend"
+    assert trace["forced_finalization"]["control_reason"] == "finalize_requested"
+
+
 @pytest.mark.parametrize("stop,expected_reason", [
     ("wrap", "owner_requested_finalization"), ("deadline", "deadline_local"),
     ("ceiling", "finalization_grace"), ("wrap_unknown", "owner_requested_finalization"),
