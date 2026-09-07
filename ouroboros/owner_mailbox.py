@@ -234,8 +234,10 @@ def write_task_message(
         return False
 
 
-def owner_attachment_manifest(drive_root: pathlib.Path, task_id: str) -> List[Dict[str, Any]]:
-    """Return every durable owner-text attachment row, including acknowledged mail."""
+def owner_attachment_manifest(
+    drive_root: pathlib.Path, task_id: str, *, _source_refs: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Read all owner input history, including ACKed rows, with optional exact refs."""
 
     path = _mailbox_path(drive_root, task_id)
     if not path.exists():
@@ -257,10 +259,51 @@ def owner_attachment_manifest(drive_root: pathlib.Path, task_id: str) -> List[Di
                 seen_ids.add(msg_id)
             from ouroboros.artifacts import resolve_attachment_manifest
             manifests.extend(resolve_attachment_manifest(drive_root, task_id, entry))
+            if _source_refs is not None and isinstance(entry.get("attachment_manifest_ref"), dict):
+                _source_refs.append(dict(entry["attachment_manifest_ref"]))
     except OSError:
         log.warning("Failed to read owner attachment manifest for %s", task_id, exc_info=True)
         raise  # A partial inherited input set is not a successful mailbox read.
     return manifests
+
+
+def promote_owner_attachments(parent: Any, child: Any, task_id: str, state: Dict[str, Any]) -> None:
+    """Keep accepted follow-up inputs and their exact source refs after mailbox GC.
+
+    The initial task contract stays separate from later owner messages. Failed
+    promotion retains the mailbox through existing child-ref custody, so retry
+    can read every source again even after its transcript acknowledgement.
+    """
+    from ouroboros.artifacts import (
+        copy_artifact_file,
+        materialize_inherited_attachment_manifest,
+        task_artifact_dir_path,
+    )
+
+    refs: List[Dict[str, Any]] = []
+    try:
+        rows = owner_attachment_manifest(pathlib.Path(child), task_id, _source_refs=refs)
+        if not rows and not refs:
+            return
+        _copied, error = materialize_inherited_attachment_manifest(rows, parent, task_id)
+        if error:
+            raise OSError(error)
+        for ref in refs:
+            # The reader verified the exact body and confined its path.
+            # Keep that body byte-identical: existing references survive.
+            copy_artifact_file(
+                task_artifact_dir_path(child, task_id) / ref["path"],
+                task_artifact_dir_path(parent, task_id) / ref["path"],
+                expected=ref,
+            )
+            state["promoted_source_handle_count"] += 1
+    except (OSError, ValueError, TypeError) as exc:
+        failure = {
+            "kind": "task_attachment", "path": str(_mailbox_path(child, task_id)),
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+        state["pending_refs"].append(failure)
+        state["unavailable_refs"].append(dict(failure))
 
 
 def deliver_task_message(

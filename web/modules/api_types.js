@@ -685,6 +685,7 @@
  * @property {string} display_name
  * @property {string} path
  * @property {number} size
+ * @property {string=} sha256
  * @property {string} mime
  */
 
@@ -922,6 +923,7 @@
  * @property {string=} reason_code
  * @property {string=} error
  * @property {AttachmentManifestEntry[]=} attachment_manifest
+ * @property {Object=} attachment_manifest_ref
  */
 
 /**
@@ -935,6 +937,9 @@
  * @property {string=} abs_path
  * @property {string=} mime
  * @property {boolean=} is_image
+ * @property {number=} size
+ * @property {string=} sha256
+ * @property {string=} rule
  */
 
 /**

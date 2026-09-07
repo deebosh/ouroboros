@@ -189,7 +189,7 @@ def _send_file(ctx: ToolContext, file_path: str = "", caption: str = "") -> str:
             if len(raw) > _MAX_DOCUMENT_FILE_BYTES:
                 raise OSError(f"large file requires artifact capture: {exc}")
             actual_b64 = base64.b64encode(raw).decode()
-            file_ref, download_url, compat_url = {}, "", ""
+            file_ref, download_url, compat_url = None, "", ""
         except OSError as read_error:
             return _publish_tool_result(ctx, ToolResult(status="error", code="LEGACY_TOOL_ERROR", text=f"⚠️ Failed to read or capture file: {read_error}"))
     except ValueError as exc:

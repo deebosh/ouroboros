@@ -1592,7 +1592,7 @@ or error otherwise, never failing on its own.
   cancelling an HTTP waiter never means cancelling the admitted task. Multipart
   spool copy and close belong to the same worker so cleanup cannot be cancelled.
   Directory exports keep a complete relative member/size/SHA manifest and a
-  streamed ZIP, including outputs above50 MiB. File changes and missing members
+  streamed ZIP, including outputs above 50 MiB. File changes and missing members
   are explicit capture failures. Reject a read as soon as it exceeds the source's
   initial regular-file size; do not wait for a growing file to reach EOF. A borrowed
   completed multipart spool uses the same copy/hash/atomic owner and descriptor
@@ -1612,13 +1612,16 @@ or error otherwise, never failing on its own.
   the existing bytes-save owner for an already-owned Blob or data/blob URL;
   it never turns an HTTP response/stream into a Blob. Native result/cancellation
   fields are preserved, and old launchers report unavailable saving explicitly.
-- Input authority keeps at most25 rows inline and, when needed, an additive
+- Input authority keeps at most 25 rows inline and, when needed, an additive
   `attachment_manifest_ref` in the existing source-handle store. Preserve its
   count/size/SHA and resolve the complete set before child materialization,
   mailbox inheritance, retry or copy-back; never fall back to the preview when
   the source fails. Re-publish a new manifest after rebasing paths. Input files
   remain inputs, outside deliverable inventories. Failed copy-back participates
   in the existing pending-ref retry/GC contract rather than losing child bytes.
+  Accepted follow-up inputs retain their exact manifest sources separately from
+  the initial task contract. Copy failure retains the owner mailbox as the retry
+  source; successful retry releases it through normal terminal cleanup.
 - For argv-visible targets, the shell guard checks lexical Deliverables origin
   before generic workspace or executor roots, then the symlink-resolved
   destination; direct `cp`/`mv`/`ln` directory destinations derive their

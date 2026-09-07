@@ -39,6 +39,9 @@ class AttachmentManifestEntry(TypedDict, total=False):
     abs_path: str
     mime: str
     is_image: bool
+    size: int
+    sha256: str
+    rule: str
 
 
 class ChatInbound(TypedDict):
@@ -279,11 +282,7 @@ class VideoOutbound(TypedDict):
     # Durable task-artifact URL for the stored media, replayed by chat history
     # (the live frame carries the bytes inline instead).
     download_url: NotRequired[str]
-    # Second address for the SAME bytes on the long-shipped
-    # /api/files/download route, present only when the stored file resolves
-    # inside the current file-browser root. Packaged desktop launchers gate
-    # their file bridge to a URL allowlist that predates the artifact route,
-    # so the browser uses download_url and the host bridge prefers this one.
+    # Same dual-address contract as PhotoOutbound.download_url_compat above.
     download_url_compat: NotRequired[str]
     content: NotRequired[str]
     source: NotRequired[str]
@@ -293,8 +292,7 @@ class VideoOutbound(TypedDict):
     transport: NotRequired[TransportMetadata]
     chat_id: NotRequired[int]
     task_id: NotRequired[str]
-    # Server-stamped when chat_id is a reserved Project thread: Main never
-    # adopts it, even before the browser has learned the project.
+    # Same Project-thread stamp contract as PhotoOutbound.project_thread.
     project_thread: NotRequired[bool]
 
 
@@ -896,6 +894,7 @@ class UploadResponse(TypedDict):
     display_name: str
     path: str
     size: int
+    sha256: NotRequired[str]
     mime: str
 
 
@@ -1055,6 +1054,7 @@ class TaskCreateResponse(TypedDict, total=False):
     reason_code: str
     error: str
     attachment_manifest: list[AttachmentManifestEntry]
+    attachment_manifest_ref: Dict[str, Any]
 
 
 class TaskListResponse(TypedDict, total=False):
