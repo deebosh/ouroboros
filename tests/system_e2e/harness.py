@@ -94,7 +94,7 @@ SCENARIOS = {
     # integration: the parallel wave-3b lane claimed S11-S13 first.
     "S14": ("plan review: scripted REVISE->ACCEPT cycle, honest durable chronicle, cycle-cap refusal", LANE_MOCK),
     "S15": ("commit triad+scope, ADVISORY class: red verdicts recorded + waved through with durable override, commit lands", LANE_MOCK),
-    "S16": ("commit triad+scope, BLOCKING class: red blocks (HEAD unmoved), identical resubmit refused free, green lands; freshness stale-rejection", LANE_MOCK),
+    "S16": ("commit triad+scope, BLOCKING class: red blocks (HEAD unmoved), identical resubmit refused free, green lands; stale advisory refresh and post-verdict revalidation", LANE_MOCK),
     "S17": ("acceptance loop (required+blocking): reject -> rework -> accept; paid-identity / free-replay invariants", LANE_MOCK),
     # Ф4 wave 4 (plan §8 remainder: update variations, chat-lineage cancel,
     # absorb kill-recovery, delegated interactive answer).

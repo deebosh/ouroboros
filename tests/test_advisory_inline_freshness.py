@@ -16,7 +16,10 @@ def candidate(tmp_path, monkeypatch):
     repo, drive = tmp_path / "repo", tmp_path / "data"
     repo.mkdir()
     drive.mkdir()
-    for args in (("init",), ("config", "user.name", "Test"), ("config", "user.email", "test@example.invalid")):
+    # Match the frozen-checkout fixture's EOL contract before the first index
+    # write; custody tests must reach the review cycle on Windows as well.
+    for args in (("init",), ("config", "user.name", "Test"), ("config", "user.email", "test@example.invalid"),
+                 ("config", "core.autocrlf", "false")):
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
     (repo / "change.py").write_text("value = 1\n")
     subprocess.run(["git", "add", "change.py"], cwd=repo, check=True)

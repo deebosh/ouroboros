@@ -19,6 +19,84 @@ pytest.register_assert_rewrite("tests.ui_media_delivery_smoke")
 
 
 _PYTEST_DATA_DIR = None
+
+
+@pytest.fixture
+def preflight_timeout_diagnostics(request, monkeypatch, tmp_path):
+    """Observe the Windows nested-pytest timeout without changing its gate."""
+    import faulthandler
+    import json
+    from ouroboros import preflight_runner
+    from ouroboros.platform_layer import collect_descendant_pids
+
+    trace_dir = tmp_path / "preflight-diagnostics"
+
+    def install(*, dump_after=90):
+        trace_dir.mkdir()
+        original_probe = preflight_runner._install_worker_probe
+        original_kill = preflight_runner._terminate_preflight_tree
+
+        def probe(temp_root):
+            module = original_probe(temp_root)
+            path = preflight_runner._probe_dir(temp_root) / (module + ".py")
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(f'''
+import atexit, faulthandler, json, sys, time
+_trace = open({str(trace_dir)!r} + "/" + str(os.getpid()) + ".log", "a", encoding="utf-8")
+def _trace_event(event, **facts):
+    _trace.write(json.dumps(dict(event=event, pid=os.getpid(), ppid=os.getppid(),
+        worker=os.environ.get("PYTEST_XDIST_WORKER", "controller"),
+        monotonic=time.monotonic(), **facts)) + "\\n")
+    _trace.flush()
+_trace_event("probe_import", stdout_fd=sys.stdout.fileno(), stderr_fd=sys.stderr.fileno())
+faulthandler.dump_traceback_later({dump_after!r}, repeat=True, file=_trace)
+def _trace_exit():
+    _trace_event("atexit")
+    faulthandler.cancel_dump_traceback_later()
+atexit.register(_trace_exit)
+def pytest_sessionstart(session):
+    _trace_event("sessionstart")
+def pytest_sessionfinish(session, exitstatus):
+    _trace_event("sessionfinish", exitstatus=int(exitstatus))
+def pytest_unconfigure(config):
+    _trace_event("unconfigure")
+def pytest_testnodedown(node, error):
+    _trace_event("worker_down", gateway=node.gateway.id, error_type=type(error).__name__)
+''')
+            return module
+
+        def before_kill(proc, temp_root):
+            try:
+                facts = {"event": "before_kill", "pid": proc.pid,
+                         "monotonic": time.monotonic(), "returncode": proc.poll(),
+                         "descendant_pids": collect_descendant_pids(proc.pid)}
+                for name in ("stdout", "stderr"):
+                    stream = getattr(proc, name)
+                    reader = getattr(proc, name + "_thread", None)
+                    facts[name] = {"closed": stream.closed if stream else None,
+                                   "fd": stream.fileno() if stream and not stream.closed else None,
+                                   "reader_alive": reader.is_alive() if reader else None}
+                with (trace_dir / "parent.log").open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(facts) + "\n")
+                    stream.flush()
+                    faulthandler.dump_traceback(file=stream)
+            except Exception as exc:
+                print(f"preflight diagnostic capture failed: {type(exc).__name__}")
+            finally:
+                original_kill(proc, temp_root)
+
+        monkeypatch.setattr(preflight_runner, "_install_worker_probe", probe)
+        monkeypatch.setattr(preflight_runner, "_terminate_preflight_tree", before_kill)
+        return trace_dir
+
+    if sys.platform == "win32" and request.node.name == "test_hermetic_pytest_applies_candidate_diff_and_scrubs_live_env":
+        install()
+    yield install
+    if trace_dir.exists():
+        for path in sorted(trace_dir.glob("*.log")):
+            print(f"\npreflight diagnostic {path.name}:\n{path.read_text(encoding='utf-8')}")
+
+
 # Repo root for a live-DATA run, which has no pytest data dir to hang it off. Created lazily
 # so the hermetic lane never leaves an unused temp dir behind (see pytest_sessionfinish).
 _PYTEST_REPO_FALLBACK = None
