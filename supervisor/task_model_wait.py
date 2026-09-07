@@ -66,8 +66,12 @@ def handle_task_model_wait(event: dict, ctx: Any) -> None:
             from supervisor.workers import direct_chat_turn
 
             if direct_chat_turn(task_id) is None:
+                from supervisor.active_activity import get_direct_activity_registry
+
                 consciousness = getattr(ctx, "consciousness", None)
-                owner = consciousness.live_model_wait() if consciousness and task_id == "bg-consciousness" else None
+                owner = get_direct_activity_registry().ephemeral_model_wait(ctx.DRIVE_ROOT, task_id)
+                if owner is None and consciousness and task_id == "bg-consciousness":
+                    owner = consciousness.live_model_wait()
                 if owner is None:
                     from ouroboros.post_task_checkpoint import post_task_model_wait
                     owner = post_task_model_wait(ctx.DRIVE_ROOT, task_id)
@@ -75,7 +79,7 @@ def handle_task_model_wait(event: dict, ctx: Any) -> None:
                     return
                 with owner.lock:
                     current = owner.waits.get(wait_id) or {}
-                    if attempt != owner.attempt or current.get("revision") != revision:
+                    if owner.closed or attempt != owner.attempt or current.get("revision") != revision:
                         return
                 payload["chat_id"] = consciousness._owner_chat_id_fn() if task_id == "bg-consciousness" else owner.task.get("chat_id")
     address_ctx_event(ctx, payload)

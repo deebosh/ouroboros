@@ -2060,6 +2060,9 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   typed errors through the tracked image child. The shared waiting card has
   revision fences and distinguishes accepted, applied and saved; a browser fixture
   must not invent a different acknowledgement protocol than the real ingress.
+  Cover ephemeral waits through the real turn/scope producer and both decision
+  transports. Preserve no-task-record cleanup and the separate control-only
+  activity identity through live delivery and fresh/reloaded browser hydration.
 
 Accounting and transport mechanism — attempt lifecycle, pricing lookup, lock
 discipline, snapshots, projections — lives in ARCHITECTURE "Budget tracking"

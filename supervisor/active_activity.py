@@ -8,6 +8,7 @@ thread-safe visibility into in-progress work without creating spurious queue rec
 from __future__ import annotations
 
 import logging
+import pathlib
 import threading
 import time
 from contextlib import contextmanager
@@ -27,9 +28,10 @@ class DirectActivityEntry:
     phase: str = "thinking"
     started_at: float = field(default_factory=time.time)
     origin_message_ref: Dict[str, Any] = field(default_factory=dict)
+    model_wait_owner: Any = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        row = {
             "activity_id": self.activity_id,
             "chat_id": self.chat_id,
             "project_id": self.project_id,
@@ -38,6 +40,10 @@ class DirectActivityEntry:
             "phase": self.phase,
             "started_at": self.started_at,
         }
+        owner = self.model_wait_owner
+        if owner is not None and not owner.closed:
+            row.update(model_waits=owner.snapshot()["model_waits"], task_attempt=owner.attempt)
+        return row
 
 
 class DirectActivityRegistry:
@@ -86,10 +92,32 @@ class DirectActivityRegistry:
 
     def snapshot(self, chat_id: Optional[int] = None) -> List[Dict[str, Any]]:
         with self._lock:
-            if chat_id is not None:
-                cid = int(chat_id)
-                return [e.to_dict() for e in self._activities.values() if e.chat_id == cid]
-            return [e.to_dict() for e in self._activities.values()]
+            entries = list(self._activities.values())
+        # Wait snapshots take the owner's lock; never nest it inside this lock.
+        return [e.to_dict() for e in entries if chat_id is None or e.chat_id == int(chat_id)]
+
+    @contextmanager
+    def bind_model_wait(self, owner: Any) -> Iterator[None]:
+        """Attach a turn's existing wait owner without minting another activity."""
+        with self._lock:
+            entry = self._activities.get(owner.task_id)
+            if entry is not None and entry.kind == "ephemeral_decision":
+                entry.model_wait_owner = owner
+        try:
+            yield
+        finally:
+            with self._lock:
+                if entry is not None and entry.model_wait_owner is owner:
+                    entry.model_wait_owner = None
+
+    def ephemeral_model_wait(self, drive_root: Any, task_id: str) -> Any:
+        """A live ephemeral call, not ordinary task/cancel/Project authority."""
+        entry = self.get(task_id)
+        owner = entry.model_wait_owner if entry is not None and entry.kind == "ephemeral_decision" else None
+        if (owner is not None and not owner.closed and owner.task_id == str(task_id)
+                and pathlib.Path(owner.canonical_root).resolve() == pathlib.Path(drive_root).resolve()):
+            return owner
+        return None
 
     def get(self, activity_id: str) -> Optional[DirectActivityEntry]:
         aid = str(activity_id or "").strip()

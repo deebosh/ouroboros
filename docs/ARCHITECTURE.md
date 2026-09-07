@@ -1325,6 +1325,12 @@ getter; no synthetic HTTP request or parallel owner registry is needed.
 `supervisor/task_model_wait.py` projects worker events and quota clocks through
 the existing supervisor. Shared wire types remain exported by gateway contracts;
 `ouroboros/gateway/decision_contracts.py` owns their decision-family vocabulary.
+An ephemeral turn binds its live wait to its existing `DirectActivityRegistry`
+entry. Both event forwarding and decision ingress resolve that same owner;
+wait rows remain in memory, with no durable task record. Scope close fences
+late decisions and cleans its control mailbox. The activity snapshot and retained
+wait events preserve ephemeral identity, so a fresh or reloaded card offers
+model-wait controls without Cancel or Turn into project.
 
 Quota pauses use union duration across simultaneous waits: they do not consume
 internal execution time, while explicit calendar deadlines remain fixed. The

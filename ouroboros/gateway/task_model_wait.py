@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from contextlib import nullcontext
 from functools import partial
 from typing import Any
 
@@ -23,7 +24,8 @@ def history_wait_row(entry: dict) -> dict | None:
            if key not in {"type", "ts", "task_id", "quota_clock", "is_progress"} and not key.startswith("_")}
     return {"text": "", "role": "system", "ts": str(entry.get("ts") or ""), "is_progress": False,
             "system_type": "task_model_wait", "task_id": str(entry["task_id"]),
-            "model_waits": {str(entry["wait_id"]): row}}
+            "model_waits": {str(entry["wait_id"]): row},
+            **({"ephemeral_decision": True} if entry.get("ephemeral_decision") else {})}
 
 
 def history_wait_overlay(messages: list[dict], owner_limit: int) -> tuple[list[dict], list[dict], bool]:
@@ -125,14 +127,22 @@ def _decide(root: Any, body: dict, *, get_background_model_wait: Any = None) -> 
     def phase_owner():
         if task_id == "bg-consciousness":
             return get_background_model_wait() if callable(get_background_model_wait) else None
+        from supervisor.active_activity import get_direct_activity_registry
         from ouroboros.post_task_checkpoint import post_task_model_wait
-        return post_task_model_wait(root, task_id)
+
+        return (get_direct_activity_registry().ephemeral_model_wait(root, task_id)
+                or post_task_model_wait(root, task_id))
 
     def live_task():
         if owner is None:
             return _live_task(task_id)
         if owner.closed or phase_owner() is not owner:
             raise WaitDecisionRefused("task_not_live")
+        if owner.task.get("_ephemeral_turn"):
+            from ouroboros.cancel_intents import cancel_pending
+
+            if cancel_pending(owner.canonical_root, task_id):
+                raise WaitDecisionRefused("cancel_pending")
         return owner.task
 
     def mutate(wait_id, transform):
@@ -216,12 +226,13 @@ def _decide(root: Any, body: dict, *, get_background_model_wait: Any = None) -> 
                                       lambda previous: {**previous, "saved_request_id": action["request_id"]})
             # Re-check after the optional settings write. A persistent owner
             # choice may have landed even when cancellation now fences the task.
-            task = live_task()
-            control = {**action, "wait_id": wait_id, "task_attempt": attempt}
-            mailbox_attempted = True
-            if not write_owner_message(owner.drive_root if owner is not None else _task_drive_for_task(task, task_id), json.dumps(control), task_id,
-                                       msg_id=f"model_wait:{wait_id}:{action['request_id']}", kind=KIND_MODEL_WAIT):
-                raise WaitDecisionRefused("mailbox_write_failed", row, 503)
+            with owner.lock if owner is not None else nullcontext():
+                task = live_task()
+                control = {**action, "wait_id": wait_id, "task_attempt": attempt}
+                mailbox_attempted = True
+                if not write_owner_message(owner.drive_root if owner is not None else _task_drive_for_task(task, task_id), json.dumps(control), task_id,
+                                           msg_id=f"model_wait:{wait_id}:{action['request_id']}", kind=KIND_MODEL_WAIT):
+                    raise WaitDecisionRefused("mailbox_write_failed", row, 503)
         return JSONResponse({"ok": True, "decision_id": body["decision_id"], "request_id": action["request_id"],
                              "state": row["state"], "wait": row, "duplicate": duplicate, "applied": applied,
                              "saved": saved()},

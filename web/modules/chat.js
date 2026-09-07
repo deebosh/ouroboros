@@ -1354,6 +1354,7 @@ export function createChatInstance({
     }
 
     function handleCardReference(row) {
+        registerEphemeralDecisionFrame(row);
         if (isModelWaitReference(row)) {
             const changed = modelWaits.observe(row.task_id, row);
             return row.outcome_axes ? appendTaskSummaryToLiveCard(row) || changed : changed;
@@ -1399,6 +1400,7 @@ export function createChatInstance({
             && !options.isSubagent
             && !alreadyBound
             && !ephemeralDecisionTaskIds.has(normalizedGroupId)
+            && activeDirectActivities.get(normalizedGroupId)?.kind !== 'ephemeral_decision'
         )
             ? `<div class="chat-live-actions"><button type="button" class="btn btn-xs btn-default" data-turn-into-project>Turn into project</button></div>`
             : '';
@@ -2194,7 +2196,6 @@ export function createChatInstance({
     function updateLiveCardFromProgressMessage(msg, { grantCancelAuthority = true } = {}) {
         const taskId = msg?.task_id || activeLiveGroupId || '';
         const rawTs = msg?.ts || new Date().toISOString();
-        registerEphemeralDecisionFrame(msg);
         const review = attachReviewFromRow(msg, rawTs);
         if (review !== undefined) return review;
         if (!taskId) return false;
@@ -2396,7 +2397,6 @@ export function createChatInstance({
         const reference = handleCardReference(evt);
         if (reference !== undefined) return reference;
         if (!isGroupedTaskEvent(evt)) return false;
-        registerEphemeralDecisionFrame(evt);
         const taskId = getLogTaskGroupId(evt) || activeLiveGroupId || '';
         if (!taskId) return false;
         const rawTs = evt.ts || evt.timestamp || new Date().toISOString();
@@ -3978,7 +3978,6 @@ export function createChatInstance({
                 return Boolean(added);
             }
             learnSubagentLineage(msg);
-            registerEphemeralDecisionFrame(msg);
             const isEphemeral = Boolean(explicitTaskId) && ephemeralDecisionTaskIds.has(explicitTaskId);
             // Late duplicate progress cannot resurrect a concluded activity.
             if (isEphemeral && !concludedDirectActivities.has(explicitTaskId)) {
