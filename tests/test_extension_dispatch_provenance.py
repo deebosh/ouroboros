@@ -185,6 +185,7 @@ def test_run_child_marks_only_post_popen_exceptions(tmp_path, monkeypatch):
     class _FakeProc:
         pid = 4242
         returncode = 0
+        stdin = None
         stdout = io.BytesIO(b"")
         stderr = io.BytesIO(b"")
 
@@ -214,6 +215,7 @@ def _fake_proc_cls():
         returncode = 0
 
         def __init__(self):
+            self.stdin = None
             self.stdout = io.BytesIO(b"")
             self.stderr = io.BytesIO(b"")
 

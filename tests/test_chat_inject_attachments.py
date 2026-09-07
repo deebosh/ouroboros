@@ -146,6 +146,7 @@ def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(tmp_pat
     asyncio.run(run())
 
 
+
 def test_inject_refuses_files_outside_the_skill_state_and_bad_shapes(tmp_path):
     bridge = FakeBridge()
     client = _client(tmp_path, bridge)

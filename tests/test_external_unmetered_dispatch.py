@@ -277,6 +277,13 @@ def test_extension_dispatch_surfaces_disclose_once(kind, tmp_path, monkeypatch):
         return {"result": "ok"}
 
     monkeypatch.setattr(extension_runner, "_run_child", fake_run)
+    if kind == "route":
+        from contextlib import contextmanager
+        @contextmanager
+        def fake_child(payload, **kwargs):
+            fake_run(payload, **kwargs)
+            yield None
+        monkeypatch.setattr(extension_runner, "_child_process", fake_child)
     expected_task = "extension:alpha"
     expected_root = "extension:alpha"
     expected_parent = ""
@@ -304,12 +311,15 @@ def test_extension_dispatch_surfaces_disclose_once(kind, tmp_path, monkeypatch):
         expected_task, expected_root, expected_parent = "child-task", "root-task", "parent-task"
         expected_source = "extension_tool:alpha:echo"
     elif kind == "route":
-        extension_runner.dispatch_extension_route_subprocess(
+        response = extension_runner.dispatch_extension_route_subprocess(
             {"skill": "alpha", "path": "/hello", "skills_repo_path": str(tmp_path)},
             {},
             drive_root=drive_root,
             repo_dir=repo_dir,
         )
+        assert _external_rows(drive_root) == [], "preparing a response is not a physical dispatch"
+        with response.child_factory():
+            pass
         ledger_root = drive_root
         expected_source = "extension_route:alpha:/hello"
     else:
@@ -623,6 +633,7 @@ def test_extension_child_spawn_failure_records_nothing(tmp_path, monkeypatch):
 def test_extension_child_timeout_keeps_one_post_spawn_disclosure(tmp_path, monkeypatch):
     class HangingProcess:
         def __init__(self):
+            self.stdin = None
             self.stdout = io.BytesIO()
             self.stderr = io.BytesIO()
             self.returncode = None

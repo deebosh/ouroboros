@@ -163,14 +163,15 @@ def _handle_chat_direct_locked(
     task_metadata: Optional[dict] = None,
 ) -> None:
     from supervisor.state import budget_remaining, load_state
+    failure_meta = _host_operation_failure(task_metadata)
     try:
         remaining = budget_remaining(load_state(), strict=True)
     except Exception:
-        _pool().send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.")
+        _pool().send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.", **failure_meta)
         return
     if remaining <= 0:
         try:
-            _pool().send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.")
+            _pool().send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.", **failure_meta)
         except Exception:
             pass
         return
@@ -179,6 +180,16 @@ def _handle_chat_direct_locked(
         _pool()._get_chat_agent(), chat_id, text, image_data,
         task_constraint=task_constraint, task_metadata=task_metadata, ephemeral=False,
     )
+
+
+def _host_operation_failure(metadata: Optional[dict]) -> dict:
+    """Optional terminal correlation for the host's preaccepted skill messages."""
+    from ouroboros.project_dialogue import owner_message_ref_is_valid
+
+    ref = (metadata or {}).get("origin_message_ref")
+    if (metadata or {}).get("_host_operation") and owner_message_ref_is_valid(ref):
+        return {"progress_meta": {"task_terminal_status": "failed", "origin_message_ref": dict(ref)}}
+    return {}
 
 
 def _broadcast_task_named(msg: dict) -> None:
@@ -285,6 +296,7 @@ def _run_chat_task(
                 _pool().send_with_budget(
                     chat_id,
                     f"⚠️ Task not started: every attachment was rejected.\n{rendered}",
+                    **_host_operation_failure(task_metadata),
                 )
                 return
             from ouroboros.artifacts import attachment_manifest_projection
@@ -348,6 +360,7 @@ def _run_chat_task(
             project_id=pid,
             kind=kind,
             phase="thinking",
+            origin_message_ref=task.get("origin_message_ref"),
         ):
             # Announce the authoritative start immediately (owner decision 2A):
             # the client's `Sending...` retires on this frame, not on a socket
@@ -417,11 +430,15 @@ def _run_chat_task(
                     )
                 except Exception:
                     log.debug("Failed-turn typing announce failed", exc_info=True)
+            failure_meta = _host_operation_failure(task_metadata)
+            progress_meta = {"task_terminal_status": "failed"}
+            if failure_meta:
+                progress_meta["origin_message_ref"] = failure_meta["progress_meta"]["origin_message_ref"]
             _pool().send_with_budget(
                 chat_id,
                 err_msg,
                 task_id=failed_task_id,
-                progress_meta={"task_terminal_status": "failed"},
+                progress_meta=progress_meta,
             )
         except Exception:
             log.debug("Suppressed exception", exc_info=True)
@@ -441,14 +458,15 @@ def handle_chat_ephemeral(
     mode / effort, not a cheaper lane). Ephemeral turns are serialized among
     themselves and are barred from long-term memory/reflection/evolution writes."""
     from supervisor.state import budget_remaining, load_state
+    failure_meta = _host_operation_failure(task_metadata)
     try:
         remaining = budget_remaining(load_state(), strict=True)
     except Exception:
-        _pool().send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.")
+        _pool().send_with_budget(chat_id, "⚠️ Cost accounting is unavailable. Task was not dispatched; retry after ledger recovery.", **failure_meta)
         return
     if remaining <= 0:
         try:
-            _pool().send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.")
+            _pool().send_with_budget(chat_id, "🚫 Budget exhausted. Task rejected. Please increase TOTAL_BUDGET in settings.", **failure_meta)
         except Exception:
             pass
         return

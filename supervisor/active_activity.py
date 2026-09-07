@@ -26,6 +26,7 @@ class DirectActivityEntry:
     kind: str = "direct_chat"  # "direct_chat" | "ephemeral_decision"
     phase: str = "thinking"
     started_at: float = field(default_factory=time.time)
+    origin_message_ref: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -55,6 +56,7 @@ class DirectActivityRegistry:
         project_id: str = "",
         kind: str = "direct_chat",
         phase: str = "thinking",
+        origin_message_ref: Optional[Dict[str, Any]] = None,
     ) -> DirectActivityEntry:
         aid = str(activity_id or "").strip()
         if not aid:
@@ -67,6 +69,7 @@ class DirectActivityRegistry:
             kind=str(kind or "direct_chat"),
             phase=str(phase or "thinking"),
             started_at=time.time(),
+            origin_message_ref=dict(origin_message_ref or {}),
         )
         with self._lock:
             self._activities[aid] = entry
@@ -116,6 +119,7 @@ def track_direct_activity(
     project_id: str = "",
     kind: str = "direct_chat",
     phase: str = "thinking",
+    origin_message_ref: Optional[Dict[str, Any]] = None,
 ) -> Iterator[DirectActivityEntry]:
     registry = get_direct_activity_registry()
     entry = registry.register(
@@ -125,6 +129,7 @@ def track_direct_activity(
         project_id=project_id,
         kind=kind,
         phase=phase,
+        origin_message_ref=origin_message_ref,
     )
     try:
         yield entry

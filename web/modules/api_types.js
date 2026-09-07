@@ -237,6 +237,8 @@
  * @property {boolean=} markdown
  * @property {boolean=} is_progress
  * @property {string=} task_id
+ * @property {Object=} origin_message_ref
+ *   Host-captured inbound identity for a correlated operation's terminal reply.
  * @property {boolean=} ephemeral_decision
  * @property {string=} task_phase
  *   "finalizing" on a root's early final answer: post-task synthesis still
