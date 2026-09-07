@@ -24,13 +24,13 @@ harness exit code) and synchronizes by durable-event polling:
   blocks the commit (repo HEAD does not move), a byte-identical resubmission is
   refused FREE with the typed ``IDENTICAL_DIFF_REFUSED`` (no reviewer paid
   twice for the same bytes), and a fixed diff passes clean review and lands.
-  Plus the freshness stale-rejection contracts — the ACTUAL mechanics of this
+  Plus the freshness refresh and revalidation contracts — the mechanics of this
   tree, both pinned live:
     (a) advisory freshness: a fresh ``preflight_review`` verdict is invalidated
         by a later worktree edit (``invalidate_advisory_after_mutation``:
         snapshot-hash + stale-from-edit mark), and ``commit_reviewed`` without
-        the audited skip refuses with ``ADVISORY_PRE_REVIEW_REQUIRED`` naming
-        the edit — $0, nothing dispatched;
+        the audited skip automatically obtains a fresh verdict before triad;
+        the stale episode remains recorded and cannot authorize the new bytes;
     (b) post-verdict revalidation: the staged material is mutated WHILE the
         paid triad+scope wave is in flight (after the pre-dispatch fingerprint,
         before settlement) — verdicts come back all-clean and the commit is
@@ -557,7 +557,7 @@ def test_s16_blocking_class_red_blocks_identical_refused_free_then_green_lands(
             server.stop()
 
 
-# --- S16 freshness stale-rejection (private clone: the scenario mutates the
+# --- S16 stale-advisory refresh (private clone: the scenario mutates the
 # staged index mid-review, which must never leak into the shared session clone).
 
 S13B_DOC = "docs/notes/system_e2e_w3a_freshness.md"
@@ -595,14 +595,13 @@ S13B_SCRIPT = [
         "root": "system_repo", "path": S13B_DOC,
         "content": "# w3a freshness smoke\n\nEDITED AFTER the advisory verdict — advisory is stale.\n",
     }},
-    _s13b_commit_step(skip_advisory=False),  # -> ADVISORY_PRE_REVIEW_REQUIRED (stale from edit)
-    _s13b_commit_step(skip_advisory=True),   # -> clean verdicts, then revalidation_failed
+    _s13b_commit_step(skip_advisory=False),  # -> fresh advisory, then post-verdict revalidation_failed
 ]
 
 
 @pytest.mark.integration
 @pytest.mark.serial
-def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
+def test_s16_freshness_refreshes_advisory_then_rejects_post_verdict_mutation(
         tmp_path_factory):
     require_lane(LANE_MOCK)
     root = tmp_path_factory.mktemp("s13b")
@@ -646,19 +645,15 @@ def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
             preflight_result = str(preflight_rows[0].get("result_preview") or "")
             assert '"status": "fresh"' in preflight_result, preflight_result
 
-            # Contract (a): the edit AFTER the verdict invalidated the advisory
-            # — the un-skipped commit is refused with the typed stale message
-            # naming the worktree edit, and NO reviewer was paid for it.
+            # Contract (a): an edit invalidates the earlier advisory. The
+            # un-skipped commit now refreshes it automatically before triad;
+            # the original stale verdict cannot authorize the edited bytes.
             commit_rows = _tool_rows(task_drive, "commit_reviewed")
-            assert len(commit_rows) == 2, commit_rows
-            stale_refusal = json.dumps(commit_rows[0])
-            assert "ADVISORY_PRE_REVIEW_REQUIRED" in stale_refusal, commit_rows[0]
-            assert "worktree edit" in stale_refusal, commit_rows[0]
+            assert len(commit_rows) == 1, commit_rows
 
             # The durable advisory ledger shows the fresh run demoted to stale.
-            # (The transient last_stale_from_edit mark is consumed by the later
-            # audited-bypass run of step 5; the refusal text above and the
-            # stale-status run row are the durable contract.)
+            # The automatic refresh adds a fresh row without erasing the
+            # previous stale episode.
             advisory_state = task_drive.advisory_review()
             runs = advisory_state.get("advisory_runs") or []
             assert runs, advisory_state
@@ -667,8 +662,8 @@ def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
 
             # Contract (b): all-clean verdicts for OTHER bytes are rejected —
             # the typed revalidation refusal, mismatch fingerprint status.
-            reval_refusal = json.dumps(commit_rows[1])
-            assert "REVIEW_REVALIDATION_FAILED" in reval_refusal, commit_rows[1]
+            reval_refusal = json.dumps(commit_rows[0])
+            assert "REVIEW_REVALIDATION_FAILED" in reval_refusal, commit_rows[0]
             attempts = advisory_state.get("attempts") or []
             reval = [a for a in attempts if isinstance(a, dict)
                      and a.get("block_reason") == "revalidation_failed"]
@@ -681,10 +676,10 @@ def test_s16_freshness_stale_rejection_advisory_edit_and_post_verdict_mutation(
             assert _head(clone) == head_before
             assert S13B_MSG not in _git_log_subjects(clone)
 
-            # Call accounting: one advisory episode; exactly one paid triad
-            # wave + the hooked scope call (the stale refusal was $0).
+            # Call accounting: explicit advisory plus its automatic refresh;
+            # exactly one triad wave and the hooked scope call.
             kinds = stub.kinds()
-            assert kinds.count("advisory_review") == 1, kinds
+            assert kinds.count("advisory_review") == 2, kinds
             assert kinds.count("triad_review") == 3, kinds
             assert kinds.count("scope_review") == 1, kinds
             assert kinds.index("advisory_review") < kinds.index("triad_review"), kinds
