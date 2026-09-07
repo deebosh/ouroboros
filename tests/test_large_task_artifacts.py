@@ -651,3 +651,111 @@ def test_file_verification_does_not_run_on_the_asgi_loop(tmp_path, monkeypatch, 
         thread.join(10)
         sock.close()
         assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("canonical_exists", [False, True])
+def test_failed_child_capture_is_explicit_and_other_files_still_materialize(tmp_path, canonical_exists):
+    from ouroboros.headless import prepare_task_drive, copy_child_task_result, remove_subagent_task_drive
+    from ouroboros.observability import retry_pending_child_ref_promotions
+    from ouroboros.task_results import write_task_result
+    from ouroboros.task_status import load_effective_task_result
+
+    parent = tmp_path / "canonical"
+    child = prepare_task_drive(parent, "capture", "empty")
+    child_ctx = SimpleNamespace(drive_root=child, task_id="capture")
+    records = []
+    for name in ("a-report.txt", "z-neighbor.txt"):
+        source = child / name
+        source.write_bytes(name.encode())
+        records.append(artifacts.copy_file_to_task_artifacts(child_ctx, source, immutable=True))
+    axes = {"execution": {"status": "ok"}, "objective": {"status": "pass", "source": "task_acceptance_review"}}
+    write_task_result(child, "capture", "completed", artifacts=records, artifact_status="ready",
+                      outcome_axes=axes, accounted_upper_bound_usd=3.5, cost_final=True)
+    write_task_result(parent, "capture", "running", headless_child_drive_root=str(child))
+    if canonical_exists:
+        assert load_effective_task_result(parent, "capture")["artifact_bundle"]["status"] == "ready"
+    bad = records[0]
+    Path(bad["path"]).write_bytes(b"changed child bytes before copy")
+    result = load_effective_task_result(parent, "capture")
+    row = next(item for item in result["artifacts"] if item["name"] == bad["name"])
+    assert result["status"] == "completed" and result["outcome_axes"] == axes
+    assert result["accounted_upper_bound_usd"] == 3.5 and result["cost_final"] is True
+    assert (row["name"], row["sha256"], row["size"]) == (bad["name"], bad["sha256"], bad["size"])
+    neighbor = next(item for item in result["artifacts"] if item["name"] == records[1]["name"])
+    assert neighbor["status"] == "ready" and Path(neighbor["path"]).read_bytes() == b"z-neighbor.txt"
+    assert Path(neighbor["path"]).parent == artifacts.task_artifact_dir_path(parent, "capture")
+    if canonical_exists:
+        assert row["status"] == result["artifact_status"] == result["artifact_bundle"]["status"] == "ready"
+        assert Path(row["path"]).read_bytes() == b"a-report.txt"
+        Path(bad["path"]).unlink()
+        reused = artifacts.copy_file_to_task_artifacts(
+            SimpleNamespace(drive_root=parent, task_id="capture"), bad["path"], immutable=True, expected=bad)
+        assert reused["path"] == row["path"] and reused["sha256"] == bad["sha256"]
+    else:
+        assert row["status"] == "failed" and row["copy_status"] == "failed" and row["copy_error"]
+        assert result["artifact_status"] == result["artifact_bundle"]["status"] == "missing"
+        copied = copy_child_task_result(parent, {"id": "capture", "drive_root": str(child)})
+        assert copied["child_ref_promotion"]["status"] == "incomplete"
+        assert not remove_subagent_task_drive(parent, "capture")
+        Path(bad["path"]).write_bytes(b"a-report.txt")
+        assert retry_pending_child_ref_promotions(parent)["completed"] == ["capture"]
+        recovered = load_effective_task_result(parent, "capture")
+        assert recovered["artifact_status"] == recovered["artifact_bundle"]["status"] == "ready"
+        assert recovered["status"] == "completed" and recovered["accounted_upper_bound_usd"] == 3.5
+
+
+@pytest.mark.parametrize("copy_failure", [False, True])
+def test_failed_artifact_bundle_drives_public_and_routing_status_without_mutating_capture(tmp_path, copy_failure):
+    from ouroboros.outcomes import artifact_bundle_from_result, public_task_result
+    from ouroboros.server_routing_context import _task_result_ground_truth
+    from ouroboros.task_status import effective_task_result
+
+    row = {"name": "report.txt", "path": str(tmp_path / "report.txt"), "status": "failed", "errors": ["capture failed"]}
+    if copy_failure:
+        row.update(status="ready", copy_status="failed", copy_error="copy failed")
+    result = {"task_id": "capture", "status": "completed", "artifacts": [row], "artifact_status": "ready"}
+    result["artifact_bundle"] = artifact_bundle_from_result(result)
+    expected = "missing" if copy_failure else "failed"
+    assert result["artifact_bundle"]["status"] == expected
+    assert public_task_result(result)["artifact_status"] == expected
+    assert _task_result_ground_truth(result)["artifact_status"] == expected
+    assert effective_task_result(tmp_path, result, materialize_artifacts=False)["artifact_status"] == expected
+    assert result["artifact_status"] == "ready" and result["status"] == "completed"
+    # A capture-level failure is independent of an earlier ready bundle.
+    assert artifact_bundle_from_result({"artifact_status": "failed", "artifact_bundle": {"status": "ready"}})["status"] == "failed"
+
+
+@pytest.mark.parametrize("drive_kind", ["headless", "direct"])
+def test_first_materialization_copy_failure_keeps_each_gc_root(tmp_path, monkeypatch, drive_kind):
+    import time
+    from ouroboros import headless
+    from ouroboros.task_results import write_task_result
+
+    parent = tmp_path / "canonical"
+    child = (headless.prepare_task_drive(parent, "capture", "empty") if drive_kind == "headless"
+             else parent / headless.TASK_DRIVES_DIR / "capture")
+    child.mkdir(parents=True, exist_ok=True)
+    source = child / "report.txt"
+    source.write_bytes(b"complete report")
+    record = artifacts.copy_file_to_task_artifacts(
+        SimpleNamespace(drive_root=child, task_id="capture"), source, immutable=True)
+    write_task_result(child, "capture", "completed", artifacts=[record], artifact_status="ready")
+    write_task_result(parent, "capture", "completed", artifacts=[record], artifact_status="ready",
+                      headless_child_drive_root=str(child))
+    original = artifacts.copy_artifact_file
+    canonical_files = artifacts.task_artifact_dir_path(parent, "capture")
+    def fail_copy(src, dst, **kwargs):
+        if Path(dst).is_relative_to(canonical_files):
+            raise OSError("controlled canonical copy failure")
+        return original(src, dst, **kwargs)
+    prune = headless.prune_headless_task_drives if drive_kind == "headless" else headless.prune_task_drives
+    later = time.time() + 14 * 86400
+    with monkeypatch.context() as patch:
+        patch.setattr(artifacts, "copy_artifact_file", fail_copy)
+        refused = prune(parent, retention_days=7, now=later)
+    assert not refused["pruned"] and child.is_dir(), refused
+    assert Path(record["path"]).read_bytes() == b"complete report"
+    copied = headless.copy_child_task_result(parent, {"id": "capture", "drive_root": str(child)})
+    assert copied["child_ref_promotion"]["status"] == "complete"
+    assert prune(parent, retention_days=7, now=later)["pruned"]
+    assert Path(copied["artifacts"][0]["path"]).read_bytes() == b"complete report"
