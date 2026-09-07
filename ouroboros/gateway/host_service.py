@@ -11,6 +11,7 @@ import pathlib
 import threading
 import time
 from collections import defaultdict, deque
+from contextlib import ExitStack
 from typing import Any, Callable, Deque, Dict, Optional
 
 from starlette.applications import Starlette
@@ -21,6 +22,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ouroboros.contracts.chat_id_policy import A2A_CHAT_ID_MAX, A2A_CHAT_ID_MIN, is_a2a_chat_id
 from ouroboros.event_bus import get_global_event_bus
+from ouroboros.gateway._helpers import run_sync_to_completion
 from ouroboros.gateway.files import ChatUploadPayloadTooLarge, store_chat_upload
 from ouroboros.skill_loader import (
     find_skill,
@@ -303,37 +305,12 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
     if not ctx._enter_inflight(skill_name):
         return _json_error("too many in-flight inject requests", 429)
     subscription_id = ""
+    pending_uploads = ExitStack()
     try:
         payload = await request.json()
         text = str(payload.get("text") or "")
         image_caption = str(payload.get("image_caption") or "")
         client_message_id = str(payload.get("client_message_id") or "").strip()[:128]
-        try:
-            copying = asyncio.create_task(asyncio.to_thread(
-                _inject_attachment_uploads, ctx, skill_name, payload.get("attachments"),
-            ))
-            try:
-                uploads = await asyncio.shield(copying)
-            except asyncio.CancelledError:
-                # Keep the admitted copy and its in-flight slot until the
-                # worker settles; the skill still owns its source files.
-                while not copying.done():
-                    try:
-                        await asyncio.shield(copying)
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        break
-                try:
-                    copying.result()
-                except Exception:
-                    log.debug("Host upload failed while cancellation settled", exc_info=True)
-                raise
-        except ChatUploadPayloadTooLarge as exc:
-            return _json_error(str(exc), 413)
-        except ValueError as exc:
-            return _json_error(str(exc), 400)
-        bridge = ctx.bridge_getter()
         chat_id = int(payload.get("chat_id") or 0)
         wait_for_response = bool(payload.get("wait_for_response", False))
         if wait_for_response and not is_a2a_chat_id(chat_id):
@@ -346,6 +323,16 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 "wait_for_response requires an A2A-allocated chat_id "
                 "(allocate one via /chat/allocate-internal)", 400,
             )
+        timeout = max(1, min(int(payload.get("timeout_sec") or 1800), 1800)) if wait_for_response else 1800
+        try:
+            uploads = await run_sync_to_completion(
+                _inject_attachment_uploads, ctx, skill_name, payload.get("attachments"), pending_uploads,
+            )
+        except ChatUploadPayloadTooLarge as exc:
+            return _json_error(str(exc), 413)
+        except ValueError as exc:
+            return _json_error(str(exc), 400)
+        bridge = ctx.bridge_getter()
         response_event: asyncio.Event = asyncio.Event()
         response_holder: dict[str, str] = {}
         if wait_for_response:
@@ -369,9 +356,10 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
             **({"task_metadata": {"chat_attachment_uploads": uploads}} if uploads else {}),
             **({"client_message_id": client_message_id} if client_message_id else {}),
         )
+        # The accepted message now owns its copies, including on disconnect.
+        pending_uploads.pop_all()
         if not wait_for_response:
             return JSONResponse({"ok": True, "status": "queued"}, status_code=202)
-        timeout = max(1, min(int(payload.get("timeout_sec") or 1800), 1800))
         deadline = time.monotonic() + timeout
         while not response_event.is_set():
             remaining = deadline - time.monotonic()
@@ -395,14 +383,19 @@ async def _api_chat_inject(request: Request) -> JSONResponse:
                 ctx.bridge_getter().unsubscribe_response(subscription_id)
             except Exception:
                 log.debug("Failed to unsubscribe host-service response callback", exc_info=True)
-        ctx._leave_inflight(skill_name)
+        try:
+            pending_uploads.close()
+        except OSError:
+            log.warning("Could not remove an unaccepted chat upload", exc_info=True)
+        finally:
+            ctx._leave_inflight(skill_name)
 
 
 _INJECT_ATTACHMENT_MAX = 25
 
 
 def _inject_attachment_uploads(
-    ctx: HostServiceContext, skill_name: str, value: Any,
+    ctx: HostServiceContext, skill_name: str, value: Any, cleanup: ExitStack,
 ) -> list[dict[str, str]]:
     """Copy a skill's inbound files into the shared chat-upload store (#668).
 
@@ -412,7 +405,9 @@ def _inject_attachment_uploads(
     browser paperclip uses — ``data/uploads``, unique name, 50 MB cap — so the
     worker's ``stage_task_attachments`` and the secret-name rule see one upload
     family. Returns ``chat_attachment_uploads`` specs (``{path, label, mime}``);
-    the skill removes its parked copy afterwards.
+    the skill removes its parked copy afterwards. Each new destination belongs
+    to the request cleanup stack until its message is accepted; partial batches
+    and cancelled copy waits therefore cannot orphan successful earlier copies.
     """
     if value in (None, []):
         return []
@@ -434,6 +429,7 @@ def _inject_attachment_uploads(
             raise ValueError(f"attachments[{index}] is not a regular file")
         name = os.path.basename(str(item.get("name") or "").strip()) or source.name
         stored = store_chat_upload(source, name, data_dir=ctx.data_dir)
+        cleanup.callback(stored.unlink, missing_ok=True)
         specs.append({"path": str(stored), "label": name, "mime": str(item.get("mime") or "")})
     return specs
 

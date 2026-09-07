@@ -70,7 +70,10 @@ def test_inject_without_attachments_keeps_the_historical_kwargs(tmp_path):
 
 
 @pytest.mark.parametrize("copy_fails", [False, True])
-def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(tmp_path, monkeypatch, copy_fails):
+@pytest.mark.parametrize("cancel_mode", ["asyncio", "anyio"])
+def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(
+    tmp_path, monkeypatch, copy_fails, cancel_mode,
+):
     import asyncio
     import threading
     from types import SimpleNamespace
@@ -106,22 +109,38 @@ def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(tmp_pat
     request = SimpleNamespace(app=client.app, headers={"x-skill-token": "token"}, json=payload)
 
     async def run():
-        task = asyncio.create_task(host_service._api_chat_inject(request))
+        import anyio
+        scope = anyio.CancelScope()
+
+        async def call():
+            with scope:
+                return await host_service._api_chat_inject(request)
+
+        task = asyncio.create_task(call())
         try:
             assert await asyncio.to_thread(entered.wait, 5)
-            task.cancel()
+            if cancel_mode == "anyio":
+                scope.cancel()
+            else:
+                task.cancel()
             await asyncio.sleep(0)
-            task.cancel()
+            if cancel_mode == "asyncio":
+                task.cancel()
             await asyncio.sleep(0)
             assert not task.done() and ctx._inflight["telegram"] == 1
             assert left == [] and not finished.is_set()
         finally:
             release.set()
-            with pytest.raises(asyncio.CancelledError):
+            if cancel_mode == "anyio":
                 await task
+                assert scope.cancelled_caught
+            else:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
         assert finished.is_set() and ctx._inflight["telegram"] == 0
         assert left == ["telegram"] and bridge.messages == []
         assert source.is_file()
+        assert list((tmp_path / "uploads").glob("*")) == []
 
     asyncio.run(run())
 
@@ -261,3 +280,77 @@ def test_server_routes_a_file_only_owner_message(monkeypatch):
     assert routed[0]["text"] == ""
     assert routed[0]["log_text"] == "(file attached)"
     assert routed[0]["task_metadata"] == {"chat_attachment_uploads": uploads}
+
+
+@pytest.mark.parametrize("failure", ["missing_second", "bad_shape_second", "copy_second", "invalid_wait", "invalid_user"])
+def test_unaccepted_inject_removes_only_its_new_copies(tmp_path, monkeypatch, failure):
+    from ouroboros.gateway import host_service
+
+    source = _skill_file(tmp_path)
+    second = _skill_file(tmp_path, "second.pdf")
+    bridge = FakeBridge()
+    client = _client(tmp_path, bridge)
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    existing = uploads / "earlier-accepted.pdf"
+    existing.write_bytes(b"already owned")
+    body = {"text": "file", "chat_id": 42, "attachments": [{"path": str(source)}]}
+    if failure == "missing_second":
+        body["attachments"].append({"path": str(source.parent / "missing.pdf")})
+    elif failure == "bad_shape_second":
+        body["attachments"].append("not an object")
+    elif failure == "copy_second":
+        original = host_service.store_chat_upload
+        def fail_second(path, *args, **kwargs):
+            if path == second:
+                raise OSError("controlled second-copy failure")
+            return original(path, *args, **kwargs)
+        monkeypatch.setattr(host_service, "store_chat_upload", fail_second)
+        body["attachments"].append({"path": str(second)})
+    elif failure == "invalid_wait":
+        body["wait_for_response"] = True
+    else:
+        body["user_id"] = "invalid"
+    response = client.post("/chat/inject", headers={"X-Skill-Token": "token"}, json=body)
+    assert response.status_code == (500 if failure in {"copy_second", "invalid_user"} else 400)
+    assert bridge.messages == []
+    assert list(uploads.iterdir()) == [existing]
+    assert existing.read_bytes() == b"already owned"
+    assert source.is_file() and second.is_file()
+    assert client.app.state.host_service_context._inflight["telegram"] == 0
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_accepted_inject_keeps_attachment_after_disconnect(tmp_path, cancel):
+    import asyncio
+    from types import SimpleNamespace
+    from ouroboros.gateway import host_service
+    from ouroboros.contracts.chat_id_policy import A2A_CHAT_ID_MAX
+
+    source = _skill_file(tmp_path)
+    bridge = FakeBridge()
+    # The response stays pending; the message itself is already accepted.
+    bridge.enqueue_local_message = lambda text, **kwargs: bridge.messages.append({"text": text, **kwargs})
+    client = _client(tmp_path, bridge)
+    async def body():
+        return {"text": "file", "chat_id": A2A_CHAT_ID_MAX, "wait_for_response": True,
+                "attachments": [{"path": str(source)}]}
+    async def disconnected():
+        assert len(bridge.messages) == 1
+        if cancel:
+            raise asyncio.CancelledError()
+        return True
+    request = SimpleNamespace(app=client.app, headers={"x-skill-token": "token"},
+                              json=body, is_disconnected=disconnected)
+    async def run():
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await host_service._api_chat_inject(request)
+        else:
+            response = await host_service._api_chat_inject(request)
+            assert response.status_code == 499
+    asyncio.run(run())
+    stored = pathlib.Path(bridge.messages[0]["task_metadata"]["chat_attachment_uploads"][0]["path"])
+    assert stored.read_bytes() == source.read_bytes()
+    assert bridge._subs == {}
+    assert client.app.state.host_service_context._inflight["telegram"] == 0

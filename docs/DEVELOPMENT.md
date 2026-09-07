@@ -1556,6 +1556,11 @@ or error otherwise, never failing on its own.
   non-manifest history with last-5 retention (history is for recovery, not a
   second deliverable list). The logical `root=deliverables` tool stays
   read/list/search-only and is not granted to children.
+- Host chat attachment admission owns its new upload copies until enqueue succeeds.
+  Keep copying under the shared settled HTTP-worker wait; cancelling the waiter
+  first settles copying, then cleans its unaccepted destinations. Accepted inputs
+  and the skill's original files survive cancellation; do not treat disconnect
+  as task cancellation.
 - For argv-visible targets, the shell guard checks lexical Deliverables origin
   before generic workspace or executor roots, then the symlink-resolved
   destination; direct `cp`/`mv`/`ln` directory destinations derive their
