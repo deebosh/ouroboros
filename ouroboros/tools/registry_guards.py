@@ -102,7 +102,7 @@ def _stray_skill_payload_failsoft(root_arg: str, workspace_mode: bool, task_cons
     skill-authoring (or an explicit root=skill_payload / skill_repair) the specific
     error is the intended helpful signal."""
     skill_payload_intent = root_arg == "skill_payload" or bool(
-        task_constraint and getattr(task_constraint, "mode", "") == "skill_repair"
+        task_constraint and task_constraint.has_selected_skill
     )
     return bool(workspace_mode and not skill_payload_intent)
 
@@ -236,16 +236,6 @@ def _authorized_managed_update_resolver(ctx: Any) -> bool:
         return False
 
 
-def _task_constraint_path_allowed(path_text: str, constraint: Optional[TaskConstraint], drive_root: pathlib.Path) -> bool:
-    return _registry().is_skill_payload_path(
-        drive_root,
-        path_text or "",
-        constraint=constraint,
-        allow_short_relative=True,
-        allow_control_plane=True,
-    )
-
-
 def _light_mode_payload_mutation_allowed(
     *,
     ctx: Any,
@@ -289,158 +279,6 @@ def _light_mode_payload_mutation_allowed(
         allow_short_relative=allow_short_relative,
         allow_control_plane=False,
     )
-
-
-_HEAL_MODE_ALLOWED_TOOLS = frozenset({
-    "read_file",
-    "list_files",
-    "write_file",
-    "edit_text",
-    "list_skills",
-    "skill_review", "skill_preflight",
-})
-
-
-def _heal_protected_payload_sidecar(path_text: str) -> bool:
-    return _registry().is_skill_payload_control_filename(path_text)
-
-
-def _heal_mode_guard_result(
-    ctx: Any,
-    name: str,
-    args: dict[str, Any],
-    task_constraint: TaskConstraint | None,
-    ext_tool: Any,
-    is_mcp: bool,
-) -> ToolResult | None:
-    """Apply skill-repair confinement in the established pre-dispatch order."""
-    heal_skill = task_constraint.skill_name if task_constraint else ""
-    if (
-        name in {"read_file", "list_files", "write_file", "edit_text"}
-        and str(args.get("root", "") or "") == "skill_payload"
-    ):
-        expected_bucket, expected_skill = _registry().constraint_bucket_skill(task_constraint)
-        requested_bucket = str(args.get("bucket", "") or "").strip()
-        requested_skill = str(args.get("skill_name", "") or "").strip()
-        if (
-            (requested_bucket and requested_bucket != expected_bucket)
-            or (requested_skill and requested_skill != expected_skill)
-        ):
-            if name in {"write_file", "edit_text"}:
-                return ToolResult(
-                    status="blocked",
-                    code="HEAL_MODE_BLOCKED",
-                    text=(
-                        "⚠️ SKILL_REDIRECT_BLOCKED: active skill_repair "
-                        "task is scoped to the selected skill payload."
-                    ),
-                )
-            return ToolResult(
-                status="blocked",
-                code="HEAL_MODE_BLOCKED",
-                text=(
-                    "⚠️ HEAL_MODE_BLOCKED: Repair payload access is limited "
-                    "to the selected skill payload."
-                ),
-            )
-    if name in {"read_file", "write_file"} and str(args.get("root", "") or "") == "skill_payload":
-        payload_paths = []
-        maybe_path = str(args.get("path", "") or "")
-        if maybe_path:
-            payload_paths.append(maybe_path)
-        for f_entry in args.get("files") or []:
-            if isinstance(f_entry, dict):
-                payload_paths.append(str(f_entry.get("path", "") or ""))
-        for payload_path in payload_paths or ["."]:
-            if not _task_constraint_path_allowed(
-                payload_path,
-                task_constraint,
-                pathlib.Path(ctx.drive_root),
-            ):
-                return ToolResult(
-                    status="blocked",
-                    code="HEAL_MODE_BLOCKED",
-                    text=(
-                        "⚠️ HEAL_MODE_BLOCKED: Repair data access is limited "
-                        "to the selected skill payload under data/skills/external "
-                        "data/skills/clawhub, or data/skills/ouroboroshub."
-                    ),
-                )
-            if name == "write_file" and _heal_protected_payload_sidecar(payload_path):
-                return ToolResult(
-                    status="blocked",
-                    code="HEAL_MODE_BLOCKED",
-                    text=(
-                        "⚠️ HEAL_MODE_BLOCKED: Repair may not edit marketplace "
-                        "or official provenance sidecars (.clawhub.json, "
-                        ".ouroboroshub.json, SKILL.openclaw.md, .seed-origin). "
-                        "Edit the user-authored payload files instead."
-                    ),
-                )
-    if name == "list_files" and str(args.get("root", "") or "") == "skill_payload":
-        data_dir = str(args.get("path", "") or "")
-        if not _task_constraint_path_allowed(
-            data_dir,
-            task_constraint,
-            pathlib.Path(ctx.drive_root),
-        ):
-            return ToolResult(
-                status="blocked",
-                code="HEAL_MODE_BLOCKED",
-                text=(
-                    "⚠️ HEAL_MODE_BLOCKED: Repair data listing is limited "
-                    "to the selected skill payload under data/skills/external "
-                    "data/skills/clawhub, or data/skills/ouroboroshub."
-                ),
-            )
-    if name == "edit_text":
-        edit_path = str(args.get("path", "") or "")
-        if not _task_constraint_path_allowed(
-            edit_path,
-            task_constraint,
-            pathlib.Path(ctx.drive_root),
-        ):
-            return ToolResult(
-                status="blocked",
-                code="HEAL_MODE_BLOCKED",
-                text="⚠️ HEAL_MODE_BLOCKED: Repair edit_text is limited to the selected skill payload.",
-            )
-        if _heal_protected_payload_sidecar(edit_path):
-            return ToolResult(
-                status="blocked",
-                code="HEAL_MODE_BLOCKED",
-                text=(
-                    "⚠️ HEAL_MODE_BLOCKED: Repair may not edit marketplace "
-                    "or official provenance sidecars (.clawhub.json, "
-                    ".ouroboroshub.json, SKILL.openclaw.md, .seed-origin). "
-                    "Edit the user-authored payload files instead."
-                ),
-            )
-    if name == "skill_review" and str(args.get("skill", "") or "").strip() != heal_skill:
-        return ToolResult(
-            status="blocked",
-            code="HEAL_MODE_BLOCKED",
-            text="⚠️ HEAL_MODE_BLOCKED: Repair may only review the selected skill.",
-        )
-    if name == "skill_preflight" and str(args.get("skill", "") or "").strip() != heal_skill:
-        return ToolResult(
-            status="blocked",
-            code="HEAL_MODE_BLOCKED",
-            text="⚠️ HEAL_MODE_BLOCKED: Repair may only preflight the selected skill.",
-        )
-    if ext_tool or is_mcp or name not in _HEAL_MODE_ALLOWED_TOOLS:
-        return ToolResult(
-            status="blocked",
-            code="HEAL_MODE_BLOCKED",
-            text=(
-                "⚠️ HEAL_MODE_BLOCKED: Repair tasks may inspect/edit skill "
-                "payloads and run skill_review only. Shell, browser automation, "
-                "repo mutation, skill execution, extension tools, MCP tools, "
-                "delegation, and enable/disable flows are unavailable. Use "
-                "the Skills UI after a fresh executable review."
-            ),
-        )
-    return None
 
 
 _WEB_TOOLS = frozenset({"web_search", "browse_page", "browser_action", "youtube_transcript"})
@@ -656,7 +494,7 @@ def _payload_dispatch_constraint(
             short_form_decision.constraint
             if short_form_decision is not None
             and task_constraint
-            and task_constraint.mode == "skill_repair"
+            and task_constraint.has_selected_skill
             else None
         )
 
@@ -692,10 +530,10 @@ def _payload_dispatch_constraint(
     if redirect_err and name in {"write_file", "edit_text"}:
         return None, ToolResult(
             status="blocked",
-            code="HEAL_MODE_BLOCKED",
+            code="SKILL_PAYLOAD_BLOCKED",
             text=f"⚠️ SKILL_REDIRECT_BLOCKED: {redirect_err}",
         )
-    if task_constraint and task_constraint.mode == "skill_repair":
+    if task_constraint and task_constraint.has_selected_skill:
         return task_constraint, None
     return synthesized or task_constraint, None
 

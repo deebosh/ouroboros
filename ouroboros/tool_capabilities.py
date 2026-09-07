@@ -50,7 +50,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "switch_model",
     "request_restart", "promote_to_stable",
     "preflight_review", "advisory_review", "review_status", "task_acceptance_review", "verify_and_record",
-    # Heal mode blocks enable_tools, so repair/review tools must be core.
+    # Skill discovery and review are core authoring capabilities.
     "list_skills", "skill_review", "skill_preflight",
     "submit_skill_to_hub",
 })
@@ -160,6 +160,7 @@ UNTRUNCATED_TOOL_RESULTS: frozenset[str] = frozenset({
     "preflight_review",
     "advisory_review",
     "skill_review",
+    "skill_owner_action",
     "review_status",
     "get_task_result",
     "wait_task",

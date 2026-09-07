@@ -176,6 +176,40 @@ def test_stat_error_does_not_make_fail_soft_empty_sticky(tmp_path, monkeypatch):
     assert counts == {path: 2, ack: 1}
 
 
+@pytest.mark.parametrize("ack_state", ["missing", "valid", "torn", "malformed", "unreadable"])
+def test_acknowledged_owner_source_and_wait_completeness_remain_distinct(tmp_path, monkeypatch, ack_state):
+    assert mailbox.write_owner_message(tmp_path, "Enable the repaired skill", "parent", msg_id="owner")
+    ack = mailbox._ack_path(tmp_path, "parent")
+    if ack_state != "missing":
+        assert mailbox.acknowledge_task_messages(tmp_path, "parent", ["owner"], wake_id="delivered")
+    if ack_state == "torn":
+        ack.write_bytes(ack.read_bytes().rstrip(b"\n"))
+    elif ack_state == "malformed":
+        with ack.open("ab") as stream:
+            stream.write(b"not-json\n")
+    original = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path == ack and ack_state == "unreadable":
+            raise PermissionError("controlled ACK read failure")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    delivery_status = {}
+    normal = mailbox.drain_owner_entries(tmp_path, "parent", _read_status=delivery_status)
+    assert delivery_status["complete"] is (ack_state in {"missing", "valid"})
+    assert bool(normal) is (ack_state in {"missing", "unreadable"})
+    # Exact owner-source lookup reads acknowledged content without requiring
+    # the ACK projection; it still resolves all mailbox revocations.
+    source_status = {}
+    source = mailbox.drain_owner_entries(tmp_path, "parent", include_acknowledged=True, _read_status=source_status)
+    assert source_status == {"complete": True}
+    assert [row["msg_id"] for row in source] == ["owner"]
+    assert mailbox.revoke_owner_control(tmp_path, "parent", "owner")
+    source = mailbox.drain_owner_entries(tmp_path, "parent", include_acknowledged=True, _read_status=source_status)
+    assert source == [] and source_status == {"complete": True}
+
+
 def test_append_between_read_and_final_stat_is_not_cached_as_empty(tmp_path, monkeypatch):
     path, _ack = acknowledged_history(tmp_path, 2)
     original = Path.read_text

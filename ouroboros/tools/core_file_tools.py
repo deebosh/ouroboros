@@ -360,7 +360,7 @@ def _data_read(
         return b
     if _resolved_binding is not None:
         target = _resolved_binding.target_path
-    elif task_constraint and task_constraint.mode == "skill_repair" and task_constraint.payload_root:
+    elif task_constraint and task_constraint.has_selected_skill and task_constraint.payload_root:
         try:
             target = resolve_payload_path(pathlib.Path(ctx.drive_root), task_constraint, norm)
         except ValueError as e:
@@ -478,7 +478,7 @@ def _data_list(
         if secret_check:
             items = _filter_subagent_secret_listing(items, root, ctx=ctx, secret_check=secret_check)
         return json.dumps(items, ensure_ascii=False, indent=2)
-    if task_constraint and task_constraint.mode == "skill_repair" and task_constraint.payload_root:
+    if task_constraint and task_constraint.has_selected_skill and task_constraint.payload_root:
         try:
             root = resolve_payload_path(pathlib.Path(ctx.drive_root), task_constraint, dir)
         except ValueError as e:
