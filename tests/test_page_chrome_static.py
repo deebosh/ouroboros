@@ -211,9 +211,8 @@ def test_server_navigation_and_chat_static_contracts():
     assert "data?.evolution_state?.detail" in chat_source
     assert "data?.bg_consciousness_state?.detail" in chat_source
     assert re.search(r'<input[^>]+id="chat-file-input"[^>]+multiple', chat_source)
-    assert "MAX_PENDING_ATTACHMENTS = 10" in chat_source
-    assert "MAX_ATTACHMENT_FILE_BYTES = 50 * 1024 * 1024" in chat_source
-    assert "MAX_PENDING_ATTACHMENT_BYTES = 100 * 1024 * 1024" in chat_source
+    assert "uploaded.slice(0, ATTACHMENT_PREVIEW_COUNT)" in chat_source
+    assert "for (const stagedItem of staged)" in chat_source
     assert "pendingAttachments" in chat_source
     assert "attachmentsUploading" in chat_source
     assert "setAttachmentUploadState" in chat_source

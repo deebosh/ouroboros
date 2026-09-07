@@ -188,11 +188,10 @@ def write_owner_message(
         # Owner Surface Fact (additive, like ``ts``): which client surface sent
         # this follow-up, so the loop can note a mid-task device change.
         entry["client_surface"] = dict(client_surface)
-    if isinstance(attachment_manifest, list):
-        entry["attachment_manifest"] = [
-            dict(item) for item in attachment_manifest if isinstance(item, dict)
-        ]
     try:
+        if isinstance(attachment_manifest, list):
+            from ouroboros.artifacts import attachment_manifest_projection
+            entry.update(attachment_manifest_projection(drive_root, task_id, attachment_manifest))
         if not append_jsonl(path, entry):
             log.warning("Failed to durably append owner message for task %s", task_id)
             return False
@@ -235,8 +234,10 @@ def write_task_message(
         return False
 
 
-def owner_attachment_manifest(drive_root: pathlib.Path, task_id: str) -> List[Dict[str, Any]]:
-    """Return every durable owner-text attachment row, including acknowledged mail."""
+def owner_attachment_manifest(
+    drive_root: pathlib.Path, task_id: str, *, _source_refs: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Read all owner input history, including ACKed rows, with optional exact refs."""
 
     path = _mailbox_path(drive_root, task_id)
     if not path.exists():
@@ -256,12 +257,53 @@ def owner_attachment_manifest(drive_root: pathlib.Path, task_id: str) -> List[Di
                 continue
             if msg_id:
                 seen_ids.add(msg_id)
-            manifest = entry.get("attachment_manifest")
-            if isinstance(manifest, list):
-                manifests.extend(dict(item) for item in manifest if isinstance(item, dict))
+            from ouroboros.artifacts import resolve_attachment_manifest
+            manifests.extend(resolve_attachment_manifest(drive_root, task_id, entry))
+            if _source_refs is not None and isinstance(entry.get("attachment_manifest_ref"), dict):
+                _source_refs.append(dict(entry["attachment_manifest_ref"]))
     except OSError:
         log.warning("Failed to read owner attachment manifest for %s", task_id, exc_info=True)
+        raise  # A partial inherited input set is not a successful mailbox read.
     return manifests
+
+
+def promote_owner_attachments(parent: Any, child: Any, task_id: str, state: Dict[str, Any]) -> None:
+    """Keep accepted follow-up inputs and their exact source refs after mailbox GC.
+
+    The initial task contract stays separate from later owner messages. Failed
+    promotion retains the mailbox through existing child-ref custody, so retry
+    can read every source again even after its transcript acknowledgement.
+    """
+    from ouroboros.artifacts import (
+        copy_artifact_file,
+        materialize_inherited_attachment_manifest,
+        task_artifact_dir_path,
+    )
+
+    refs: List[Dict[str, Any]] = []
+    try:
+        rows = owner_attachment_manifest(pathlib.Path(child), task_id, _source_refs=refs)
+        if not rows and not refs:
+            return
+        _copied, error = materialize_inherited_attachment_manifest(rows, parent, task_id)
+        if error:
+            raise OSError(error)
+        for ref in refs:
+            # The reader verified the exact body and confined its path.
+            # Keep that body byte-identical: existing references survive.
+            copy_artifact_file(
+                task_artifact_dir_path(child, task_id) / ref["path"],
+                task_artifact_dir_path(parent, task_id) / ref["path"],
+                expected=ref,
+            )
+            state["promoted_source_handle_count"] += 1
+    except (OSError, ValueError, TypeError) as exc:
+        failure = {
+            "kind": "task_attachment", "path": str(_mailbox_path(child, task_id)),
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+        state["pending_refs"].append(failure)
+        state["unavailable_refs"].append(dict(failure))
 
 
 def deliver_task_message(
@@ -439,6 +481,14 @@ def copy_owner_mailbox_for_retry(
             if not isinstance(row, dict):
                 continue
             copied = dict(row)
+            if "attachment_manifest_ref" in copied:
+                from ouroboros.artifacts import attachment_manifest_projection, resolve_attachment_manifest
+                try:
+                    full = resolve_attachment_manifest(drive_root, task_id, copied)
+                    copied.update(attachment_manifest_projection(drive_root, retry_task_id, _rebase(full)))
+                except (OSError, ValueError, TypeError):
+                    log.warning("Attachment manifest retry publication failed", exc_info=True)
+                    return False
             if "task_id" in copied:
                 copied["task_id"] = retry_task_id
             normalized.append(_rebase(copied))
@@ -546,6 +596,8 @@ def drain_owner_entries(
                         dict(item) for item in entry["attachment_manifest"]
                         if isinstance(item, dict)
                     ]
+                if entry.get("attachment_manifest_ref"):
+                    drained["attachment_manifest_ref"] = dict(entry["attachment_manifest_ref"])
                 if attempt_key is not None and kind == KIND_OWNER_TEXT:
                     drained["_owner_attempt_key"] = attempt_key
                 if kind == KIND_TASK_MESSAGE:

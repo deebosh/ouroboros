@@ -71,9 +71,8 @@ def test_inject_without_attachments_keeps_the_historical_kwargs(tmp_path):
 
 @pytest.mark.parametrize("copy_fails", [False, True])
 @pytest.mark.parametrize("cancel_mode", ["asyncio", "anyio"])
-def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(
-    tmp_path, monkeypatch, copy_fails, cancel_mode,
-):
+def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(tmp_path, monkeypatch, copy_fails, cancel_mode):
+    import anyio
     import asyncio
     import threading
     from types import SimpleNamespace
@@ -107,22 +106,23 @@ def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(
     monkeypatch.setattr(host_service, "store_chat_upload", copy)
     monkeypatch.setattr(ctx, "_leave_inflight", leave)
     request = SimpleNamespace(app=client.app, headers={"x-skill-token": "token"}, json=payload)
+    scopes = []
+    cancelled = []
+
+    async def call():
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            try:
+                await host_service._api_chat_inject(request)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
 
     async def run():
-        import anyio
-        scope = anyio.CancelScope()
-
-        async def call():
-            with scope:
-                return await host_service._api_chat_inject(request)
-
         task = asyncio.create_task(call())
         try:
             assert await asyncio.to_thread(entered.wait, 5)
-            if cancel_mode == "anyio":
-                scope.cancel()
-            else:
-                task.cancel()
+            scopes[0].cancel() if cancel_mode == "anyio" else task.cancel()
             await asyncio.sleep(0)
             if cancel_mode == "asyncio":
                 task.cancel()
@@ -131,12 +131,13 @@ def test_cancelled_inject_retains_copy_and_inflight_until_worker_settles(
             assert left == [] and not finished.is_set()
         finally:
             release.set()
-            if cancel_mode == "anyio":
+            try:
                 await task
-                assert scope.cancelled_caught
-            else:
-                with pytest.raises(asyncio.CancelledError):
-                    await task
+            except asyncio.CancelledError:
+                assert cancel_mode == "asyncio"
+        assert cancelled == [True]
+        if cancel_mode == "anyio":
+            assert scopes[0].cancelled_caught
         assert finished.is_set() and ctx._inflight["telegram"] == 0
         assert left == ["telegram"] and bridge.messages == []
         assert source.is_file()
@@ -171,17 +172,21 @@ def test_inject_refuses_files_outside_the_skill_state_and_bad_shapes(tmp_path):
     assert not (tmp_path / "uploads").exists()
 
 
-def test_inject_refuses_oversize_attachments_with_413(tmp_path, monkeypatch):
-    import ouroboros.gateway.files as files
+def test_inject_captures_file_above_former_upload_cap(tmp_path):
+    from ouroboros.artifacts import stream_artifact_file
 
-    monkeypatch.setattr(files, "_CHAT_UPLOAD_MAX_BYTES", 4)
-    source = _skill_file(tmp_path, payload=b"12345")
+    source = _skill_file(tmp_path, payload=b"first bytes")
+    with source.open("ab") as handle:
+        handle.truncate(51 * 1024 * 1024)
+    expected = stream_artifact_file(source)
     bridge = FakeBridge()
     client = _client(tmp_path, bridge)
     response = client.post("/chat/inject", headers={"X-Skill-Token": "token"},
                            json={"text": "", "chat_id": 42, "attachments": [{"path": str(source)}]})
-    assert response.status_code == 413
-    assert bridge.messages == []
+    assert response.status_code == 202, response.json()
+    stored = pathlib.Path(bridge.messages[0]["task_metadata"]["chat_attachment_uploads"][0]["path"])
+    assert stream_artifact_file(stored) == expected
+    assert source.exists()
 
 
 def test_decision_route_requires_the_inject_grant(tmp_path):

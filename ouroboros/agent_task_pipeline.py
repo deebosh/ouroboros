@@ -611,7 +611,7 @@ def emit_task_results(
         "chat_id": int(task.get("chat_id") or 0),
         "outcome_axes": outcome_axes,
         "reason_code": reason_code,
-        "artifact_status": stored_result.get("artifact_status") or artifact_bundle.get("status") or "",
+        "artifact_status": artifact_bundle.get("status") or stored_result.get("artifact_status") or "",
         "artifact_bundle": artifact_bundle,
         "review_status": stored_result.get("review_status") if isinstance(stored_result.get("review_status"), dict) else {},
         **({"review_projection": review_projection} if review_projection.get("panels") else {}),

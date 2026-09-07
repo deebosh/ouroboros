@@ -15,7 +15,8 @@ from typing import Any, Dict, List, Optional
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 
-from ouroboros.gateway._helpers import coerce_int, json_error, json_exception, request_drive_root, request_json_or, request_repo_dir, stage_initial_task_attachments
+from ouroboros.gateway._helpers import coerce_int, json_error, json_exception, request_drive_root, request_json_or, request_repo_dir, run_sync_to_completion, stage_initial_task_attachments
+from ouroboros.gateway.cost_breakdown import _task_cost_breakdown_view  # noqa: F401
 from ouroboros.gateway.contracts import TaskCreateRequest
 from ouroboros.gateway.schema import validate_ingress
 from ouroboros.depth_evidence import parse_task_depth
@@ -314,23 +315,15 @@ def _complete_api_task_admission(
     """Publish one API admission or roll back only its token-owned queue row."""
     result_fields = {
         **({"created_at": task["created_at"]} if task.get("created_at") else {}),
-        "parent_task_id": task.get("parent_task_id"),
-        "root_task_id": task.get("root_task_id"),
-        "session_id": task.get("session_id"),
-        "actor_id": task.get("actor_id"),
-        "delegation_role": task.get("delegation_role"),
-        "chat_id": task.get("chat_id"),
-        "title": task.get("title"),
-        "suggested_name": task.get("suggested_name"),
+        **{key: task.get(key) for key in (
+            "parent_task_id", "root_task_id", "session_id", "actor_id", "delegation_role",
+            "chat_id", "title", "suggested_name", "context", "expected_output", "constraints",
+            "task_contract", "workspace_root",
+        )},
         "project_id": project_id,
         "description": description,
-        "context": task.get("context"),
-        "expected_output": task.get("expected_output"),
-        "constraints": task.get("constraints"),
         "allowed_resources": allowed_resources,
         "deadline_at": deadline_at,
-        "task_contract": task.get("task_contract"),
-        "workspace_root": task.get("workspace_root"),
         "workspace_mode": workspace_mode,
         "memory_mode": memory_mode,
         "child_drive_root": str(child_drive or ""),
@@ -338,7 +331,7 @@ def _complete_api_task_admission(
         "artifacts": artifacts,
         "artifact_status": ARTIFACT_STATUS_PENDING if workspace_root else "",
         "metadata": metadata,
-        "attachment_manifest": list(task.get("attachments") or []),
+        **{key: task[key] for key in ("attachment_manifest", "attachment_manifest_ref") if key in task},
         "result": "Task accepted and durably scheduled.",
     }
     try:
@@ -411,7 +404,7 @@ def _complete_api_task_admission(
         "ok": True,
         "task_id": task_id,
         "status": STATUS_SCHEDULED,
-        "attachment_manifest": list(task.get("attachments") or []),
+        **{key: task[key] for key in ("attachment_manifest", "attachment_manifest_ref") if key in task},
     })
 
 
@@ -458,6 +451,11 @@ async def api_tasks_create(request: Request) -> JSONResponse:
     """POST /api/tasks — enqueue a managed headless task."""
 
     body = await request_json_or(request, {})
+    return await run_sync_to_completion(_create_task_from_body, request, body)
+
+
+def _create_task_from_body(request: Request, body: Any) -> JSONResponse:
+    """Settle the existing reservation, staging and durable admission as one unit."""
     if not isinstance(body, dict):
         return json_error("request body must be a JSON object", 400)
     if schema_errors := validate_ingress(body, TaskCreateRequest):  # executable gateway ABI (ABI-3, Q7=A): derived-schema ingress gate
@@ -636,11 +634,7 @@ async def api_tasks_create(request: Request) -> JSONResponse:
     if attachment_error is not None:
         _cleanup_api_admission_attempt(drive_root, task_id, admission_token, child_drive)
         return attachment_error
-    attachment_manifest = [dict(row) for row in attachment_manifest]
-    attachment_images = [
-        m for m in attachment_manifest
-        if str(m.get("status") or "staged") == "staged" and m.get("is_image")
-    ]
+    from ouroboros.artifacts import attachment_manifest_projection
     metadata.setdefault("session_id", str(body.get("session_id") or uuid.uuid4().hex))
     metadata.setdefault("actor_id", str(body.get("actor_id") or "cli"))
     metadata.setdefault("source", str(body.get("source") or "api_task"))
@@ -671,13 +665,14 @@ async def api_tasks_create(request: Request) -> JSONResponse:
             metadata["workspace_preflight"] = workspace_preflight_summary
 
     try:
+        attachment_authority = attachment_manifest_projection(effective_drive, task_id, attachment_manifest)
         task_text = _compose_task_text(
             description,
             workspace_root=workspace_root,
             workspace_mode=workspace_mode,
             memory_mode=memory_mode,
             workspace_preflight=workspace_preflight_summary,
-            attachments=attachment_manifest,
+            attachments=attachment_authority,
         )
     except Exception as exc:
         _cleanup_api_admission_attempt(
@@ -715,8 +710,10 @@ async def api_tasks_create(request: Request) -> JSONResponse:
         "metadata": metadata,
         # v6.52.0 (P1): the STAGED manifest (root/relpath/mime/is_image), not raw
         # host paths — relpaths resolve against task['drive_root'] at read time.
-        "attachments": attachment_manifest,
-        "attachment_images": attachment_images,
+        "attachments": attachment_authority["attachment_manifest"],
+        **attachment_authority,
+        "attachment_images": [m for m in attachment_manifest
+                              if str(m.get("status") or "staged") == "staged" and m.get("is_image")],
         # v6.52.0 (P1): record the effective drive (child when forked/empty, else the shared
         # drive) so build_user_content can resolve staged attachment IMAGES for EVERY task
         # shape — not just child-drive tasks. The child-drive block below re-affirms it.
@@ -896,76 +893,12 @@ async def api_tasks_list(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
-def _task_cost_breakdown_view(drive_root: pathlib.Path, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Read-side "where did the money go" projection for a ROOT task's detail.
-
-    Computed from the physical-attempt ledger AT READ TIME and never persisted
-    into the task result — the ledger stays the single monetary authority (P7);
-    the stored envelope keeps only its existing own/subtree projections.
-    ``children_usd`` is subtree − own − unattributed (the subtraction every
-    reader had to do by hand); ``delegated`` is a filter over the execution
-    axis (subscription sessions), not a third sum. Unavailable accounting
-    returns None — the field is simply absent, never a confident $0. That
-    covers BOTH an unreadable ledger and a readable one that holds no
-    attributable row for this subtree (empty or legacy-only): ``_summary()``
-    always returns a float for ``accounted_usd``, so "no accounting happened"
-    is decided on the ROW COUNTS, never on the dollar sum being 0.0."""
-    task_id = str(result.get("task_id") or "")
-    root_id = str(result.get("root_task_id") or "") or task_id
-    # Subtree math is ledger-attributable only at the root (child rows carry
-    # the ROOT's id, not every ancestor's); non-root details omit the view.
-    if not task_id or root_id != task_id:
-        return None
-    try:
-        from ouroboros.cost_projection import honest_accounted_amount
-        from ouroboros.usage_accounting import usage_breakdown
-
-        breakdown = usage_breakdown(drive_root, root_task_id=root_id)
-    except Exception:
-        log.debug("cost breakdown view unavailable for %s", task_id, exc_info=True)
-        return None
-    subtree = honest_accounted_amount(breakdown)
-    counts = breakdown.get("attempt_counts")
-    counts = counts if isinstance(counts, dict) else {}
-    # `metadata_only` is a count of AMBIGUOUS legacy calls carrying no money, so
-    # it can never make a $0 measured; only priced attempt rows or subscription
-    # sessions can. With neither, nothing was accounted for this subtree and the
-    # view is ABSENT — the empty/legacy-ledger case that a `0.0 == measured zero`
-    # reading would have published as `own 0 / children 0 / cost_final true`.
-    priced_rows = sum(int(value or 0) for key, value in counts.items() if key != "metadata_only")
-    sessions = int(breakdown.get("subscription_sessions") or 0)
-    if subtree is None or (priced_rows <= 0 and sessions <= 0):
-        return None
-    own_bucket = (breakdown.get("by_task") or {}).get(task_id)
-    # No rows attributed to the root itself is a MEASURED zero (all spend was
-    # children's), not an unknown — unknowns ride `unknown_unmetered` below.
-    own = float(own_bucket.get("accounted_usd") or 0.0) if isinstance(own_bucket, dict) else 0.0
-    # Money inside this subtree that no task id claims (legacy/blank-task rows)
-    # is DISCLOSED on its own axis instead of being silently folded into the
-    # children's share: own + children + unattributed == subtree.
-    unattributed_bucket = (breakdown.get("unattributed") or {}).get("task")
-    unattributed = (
-        float(unattributed_bucket.get("accounted_usd") or 0.0)
-        if isinstance(unattributed_bucket, dict) else 0.0
-    )
-    delegated = breakdown.get("delegated") if isinstance(breakdown.get("delegated"), dict) else {}
-    return {
-        "own_usd": round(own, 6),
-        "children_usd": round(max(0.0, float(subtree) - own - unattributed), 6),
-        "unattributed_usd": round(unattributed, 6),
-        "delegated_disclosed_usd": round(float(delegated.get("settled_usd") or 0.0), 6),
-        # C2: the explicit subtree total under its honest name — an accounted
-        # UPPER BOUND (own + children + unattributed), not a settled receipt.
-        "accounted_upper_bound_usd": round(float(subtree), 6),
-        "subscription_sessions": sessions,
-        "unknown_unmetered": breakdown.get("unknown_unmetered"),
-        "non_final_rows": breakdown.get("non_final_rows"),
-        "cost_final": bool(breakdown.get("cost_final")),
-        "authority": "physical_attempt_ledger",
-    }
-
-
 async def api_task_get(request: Request) -> JSONResponse:
+    return await run_sync_to_completion(_task_get_response, request)
+
+
+def _task_get_response(request: Request) -> JSONResponse:
+    """Materialize the complete detail and ledger projection off the HTTP loop."""
     try:
         task_id = validate_task_id(request.path_params.get("task_id"))
     except ValueError as exc:
@@ -981,7 +914,7 @@ async def api_task_get(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
-async def api_task_artifact(request: Request):
+def api_task_artifact(request: Request):
     try:
         task_id = validate_task_id(request.path_params.get("task_id"))
     except ValueError as exc:
@@ -992,15 +925,20 @@ async def api_task_artifact(request: Request):
     drive_root = request_drive_root(request)
     path = artifact_store.resolve_chat_media_path(drive_root, task_id, name)
     if path is None:
-        result = load_effective_task_result(drive_root, task_id)
-        if not result:
+        registered = artifact_store.registered_task_artifact(drive_root, task_id, name)
+        source = request.query_params.get("source")
+        # Registered immutable bytes need one identity check below, not a
+        # materialization/hash of the whole result before that same check.
+        result = (load_effective_task_result(drive_root, task_id) or {}
+                  if source or not registered or not registered.get("immutable") else {})
+        if not result and not registered:
             return json_error("task not found", 404)
-        if source := request.query_params.get("source"):
+        if source:
             try:
                 return Response(artifact_store.read_task_result_source_bytes(drive_root, result, name, source), media_type="application/json")
             except (OSError, ValueError, RuntimeError):
                 return json_error("task source is unavailable or does not match its recorded identity", 404)
-        artifact = _artifact_by_name(result, name)
+        artifact = registered if registered and registered.get("immutable") else _artifact_by_name(result, name) or registered
         if artifact is None:
             return json_error("artifact not found", 404, task_id=task_id, artifact=name)
         base = task_artifacts_dir(drive_root, task_id).resolve(strict=False)
@@ -1013,6 +951,11 @@ async def api_task_artifact(request: Request):
             return json_error("artifact path is outside task artifact directory", 500)
         if not path.is_file():
             return json_error("artifact file is missing", 404, task_id=task_id, artifact=name)
+        if artifact.get("immutable"):
+            try:
+                artifact_store.stream_artifact_file(path, expected=artifact)
+            except OSError:
+                return json_error("captured artifact failed byte verification", 404)
     return FileResponse(path)
 
 
@@ -1505,9 +1448,14 @@ def _render_attachment_lines(attachments: Any) -> str:
     manifest returned by ``stage_task_attachments``.  Legacy staged-only rows
     remain readable; new rows carry ordinal/status/reason and rejected rows are
     rendered without source paths or secret contents."""
+    ref = attachments.get("attachment_manifest_ref") if isinstance(attachments, dict) else None
+    if isinstance(attachments, dict):
+        attachments = attachments.get("attachment_manifest")
     if not isinstance(attachments, list):
         return ""
     lines: List[str] = []
+    if ref:
+        lines.append(f"Complete input manifest ({ref.get('count')} declarations): read_file(root='artifact_store', path='{ref.get('path')}'). Inline rows below are a preview.")
     for item in attachments:
         if not isinstance(item, dict):
             continue

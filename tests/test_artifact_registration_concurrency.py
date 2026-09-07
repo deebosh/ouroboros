@@ -17,16 +17,15 @@ def test_review_file_and_directory_registration_preserve_concurrent_records(tmp_
     (directory / "part.txt").write_text("directory member")
     ready = threading.Barrier(3, timeout=10)
     local = threading.local()
-    original = artifacts.artifact_record
+    original = artifacts._register_task_artifact_records
 
     def prepared(*args, **kwargs):
-        record = original(*args, **kwargs)
         if not getattr(local, "prepared", False):
             local.prepared = True
             ready.wait()  # all producers have finished bytes before registration
-        return record
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(artifacts, "artifact_record", prepared)
+    monkeypatch.setattr(artifacts, "_register_task_artifact_records", prepared)
     with ThreadPoolExecutor(max_workers=3) as workers:
         review = workers.submit(
             artifacts.store_task_artifact_bytes, ctx.drive_root, ctx.task_id,

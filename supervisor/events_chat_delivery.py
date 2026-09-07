@@ -311,7 +311,8 @@ def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
     try:
         chat_id = _delivery_chat_id(evt, ctx)
         file_b64 = str(evt.get("file_base64") or "")
-        if chat_id is None or not file_b64:
+        file_ref = evt.get("file_ref") if isinstance(evt.get("file_ref"), dict) else None
+        if chat_id is None or not (file_b64 or file_ref):
             return
         ok, err = ctx.bridge.send_document(
             chat_id,
@@ -321,6 +322,8 @@ def _handle_send_document(evt: Dict[str, Any], ctx: Any) -> None:
             mime=str(evt.get("mime") or "application/octet-stream"),
             download_url=str(evt.get("download_url") or ""),
             task_id=str(evt.get("task_id") or ""),
+            file_ref=file_ref,
+            download_url_compat=str(evt.get("download_url_compat") or ""),
         )
         if not ok:
             _log_error(ctx, "send_document_error", chat_id=chat_id, error=err)
