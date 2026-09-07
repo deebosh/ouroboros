@@ -1038,11 +1038,16 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     # Packet rows only: a configured-subagent api row is the RETRIEVES class —
     # it neither constrains the fit ladder nor counts as an api seat for the
     # Q28-A yield arithmetic below.
-    api_models = [
-        m for i, (m, r) in enumerate(zip(models, row_routes))
+    api_indices = [
+        i for i, (m, r) in enumerate(zip(models, row_routes))
         if r is ReviewRouteKind.API_CHAT
         and not (i < len(_row_actors) and _row_actors[i])
     ]
+    api_models = [models[i] for i in api_indices]
+    from ouroboros.review_records import ReviewSlot
+    api_slots = [ReviewSlot(slot_id=row_plan["slot_ids"][i], model=models[i],
+                           session_profile=row_plan["session_profiles"][i], use_local=row_plan["use_local"][i])
+                 for i in api_indices]
 
     goal_section = build_goal_section(goal, scope, commit_message)
     scope_section = build_scope_section(scope)
@@ -1080,7 +1085,11 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         prompt, stable_prefix_len, fit_error = _fit_triad_prompt(
             api_models, _assemble_prompt, current_files_section, diff_text,
             review_changed, target_repo, ctx=ctx, subject=subject,
+            slots=api_slots,
         )
+        for i, slot in zip(api_indices, api_slots):
+            models[i], row_plan["session_profiles"][i], row_plan["use_local"][i] = slot.model, slot.session_profile, slot.use_local
+        ctx._last_triad_models = list(models)
         if fit_error:
             session_count = len(models) - len(api_models)
             if session_count >= _cfg.adaptive_quorum(len(models)):

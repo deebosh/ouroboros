@@ -358,8 +358,8 @@ def test_nonblocking_post_task_snapshot_precedes_worker_dispatch(tmp_path, monke
     assert order == ["snapshot", "thread_start"]
     assert len(worker_targets) == 1
     with pipeline._POST_TASK_SYNTHESIS_LOCK:
-        pipeline._POST_TASK_SYNTHESIS_INFLIGHT.discard(
-            (str(tmp_path.resolve(strict=False)), "async-root")
+        pipeline._POST_TASK_SYNTHESIS_INFLIGHT.pop(
+            (str(tmp_path.resolve(strict=False)), "async-root"), None
         )
 
 

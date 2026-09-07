@@ -115,8 +115,9 @@ def test_run_reflection_returns_entry_when_generated(tmp_path):
     captured = {}
 
     class FakeLlm:
-        def chat(self, *, messages, model, reasoning_effort, max_tokens):
+        def chat(self, *, messages, model, reasoning_effort, max_tokens, model_role):
             captured["prompt"] = messages[0]["content"]
+            captured["model_role"] = model_role
             return {
                 "content": (
                     "Reflection text.\n"
@@ -141,6 +142,7 @@ def test_run_reflection_returns_entry_when_generated(tmp_path):
     )
 
     assert entry is not None
+    assert captured["model_role"] == "light"
     assert entry["task_id"] == "task-reflect"
     assert entry["reflection"] == "Reflection text."
     assert len(entry["backlog_candidates"]) == 1

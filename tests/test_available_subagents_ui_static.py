@@ -92,7 +92,11 @@ def test_heavy_card_is_gone_but_provider_test_contract_and_controls_remain() -> 
     assert "s-model-heavy" not in ui
     assert "OUROBOROS_MODEL_HEAVY" not in host
     light_copy = "Fast summaries, lightweight internal work, reflections, and the default Fast scout. Empty uses Main."
-    assert light_copy in ui
+    # Role labels and copy come from the shared setup contract, not a second
+    # hand-maintained card table in Settings.
+    assert "modelRolesHost('settings-model-roles')" in ui
+    assert "modelRoles.load(s," in host
+    assert "slot.note" in _read(MODULES / "model_roles.js")
     assert light_copy in setup
     assert "all deep subagents" not in ui
     assert "all deep subagents" not in setup

@@ -622,6 +622,18 @@ def _unrecognised_review_models(models: Any) -> list:
         return []
 
 
+def _candidate_reviewer_rows(settings: Dict[str, Any], family: str) -> list:
+    """Resolve candidate rows once with their candidate roster, retaining account identity."""
+    from ouroboros.reviewer_slot_config import _default_config, parse_reviewer_slots, roster_env_override
+    raw = str(settings.get("OUROBOROS_REVIEWER_SLOTS") or "").strip()
+    try:
+        with roster_env_override(str(settings.get("OUROBOROS_SUBAGENTS") or "")):
+            config = parse_reviewer_slots(raw) if raw else _default_config()
+        return list(getattr(config, family))
+    except ValueError:
+        return []  # Refused at the API boundary already; never probe garbage.
+
+
 def _candidate_scope_models(settings: Dict[str, Any]) -> list:
     """Scope-review API model candidates from CANDIDATE settings (6.1-aware).
 
@@ -631,18 +643,7 @@ def _candidate_scope_models(settings: Dict[str, Any]) -> list:
     its own >=200K floor and its own ack route are handled by
     ``_candidate_scope_session_targets``. Otherwise the live derived config
     (ABI 7.0/ABI-10: the comma settings keys are retired)."""
-    from ouroboros.config import get_scope_review_models
-
-    raw_structured = str(settings.get("OUROBOROS_REVIEWER_SLOTS") or "").strip()
-    if raw_structured:
-        try:
-            from ouroboros.reviewer_slot_config import parse_reviewer_slots
-
-            return [r.target_id for r in parse_reviewer_slots(raw_structured).scope
-                    if not r.is_session]
-        except ValueError:
-            return []  # refused at the API boundary already; never probe garbage
-    return list(get_scope_review_models() or [])
+    return [r.target_id for r in _candidate_reviewer_rows(settings, "scope") if not r.is_session]
 
 
 def _candidate_scope_session_targets(settings: Dict[str, Any]) -> list:
@@ -654,35 +655,15 @@ def _candidate_scope_session_targets(settings: Dict[str, Any]) -> list:
     can ever be reached by. Leaving these rows out of the notice made the floor
     decorative: the mode could not reach `asserted` through any product path, so
     every retrieving row stayed advisory-only forever by construction."""
-    raw_structured = str(settings.get("OUROBOROS_REVIEWER_SLOTS") or "").strip()
-    if not raw_structured:
-        return []  # legacy rows share ONE session route with no per-row target
-    try:
-        from ouroboros.reviewer_slot_config import parse_reviewer_slots
-
-        return [r.target_id for r in parse_reviewer_slots(raw_structured).scope
-                if r.is_session and r.target_id]
-    except ValueError:
-        return []
+    return [r.target_id for r in _candidate_reviewer_rows(settings, "scope") if r.is_session and r.target_id]
 
 
 def _candidate_triad_models(settings: Dict[str, Any]) -> list:
     """Triad api-row candidates from CANDIDATE settings (6.1-aware mirror of
     ``_candidate_scope_models``; session rows are never provider model ids)."""
-    raw_structured = str(settings.get("OUROBOROS_REVIEWER_SLOTS") or "").strip()
-    if raw_structured:
-        try:
-            from ouroboros.reviewer_slot_config import parse_reviewer_slots
-
-            return [r.target_id for r in parse_reviewer_slots(raw_structured).triad
-                    if not r.is_session]
-        except ValueError:
-            return []
     # ABI 7.0 (ABI-10): no comma settings key to read — without a structured
     # value the candidate set is the live derived triad.
-    from ouroboros.config import get_review_models
-
-    return list(get_review_models() or [])
+    return [r.target_id for r in _candidate_reviewer_rows(settings, "triad") if not r.is_session]
 
 
 def _review_capability_notices(settings: Dict[str, Any]) -> list:
@@ -714,24 +695,33 @@ def _review_capability_notices(settings: Dict[str, Any]) -> list:
     could describe the outgoing route instead of the incoming one."""
     notices: list = []
     try:
-        from ouroboros.capability_evidence import ONE_MILLION, confirms_at_least, probe
+        from ouroboros.capability_evidence import ONE_MILLION, confirms_at_least, model_account_options, probe
         from ouroboros.config import DATA_DIR
         from ouroboros.tools.scope_review_session import SESSION_WINDOW_FLOOR
 
-        candidates = [(str(m), False, ONE_MILLION) for m in _candidate_scope_models(settings)]
-        candidates += [(str(t), True, SESSION_WINDOW_FLOOR)
-                       for t in _candidate_scope_session_targets(settings)]
+        candidates = _candidate_reviewer_rows(settings, "scope")
         seen: set = set()
-        for model, session, floor in candidates:
-            if (model, session) in seen:
-                continue
-            seen.add((model, session))
+        for row in candidates:
+            model, session = row.target_id, row.is_session
+            floor = SESSION_WINDOW_FLOOR if row.retrieves else ONE_MILLION
             route = _review_slot_route(settings, model, session=session)
+            options = model_account_options(model, role=f"reviewer:{row.slot_id}",
+                        credential_profile_id=row.profile_id) if route["provider"] == "claudexor" else None
             ev = probe(
                 DATA_DIR, provider=route["provider"], model=route["model"],
                 base_url=route["base_url"], use_local=route["use_local"],
                 allow_fetch=True, allow_generative=False,
+                options=options,
             )
+            if ev.route_fp in seen:
+                continue
+            seen.add(ev.route_fp)
+            bound = route["provider"] != "claudexor" or bool(
+                ev.source_id and ev.credential_profile_id and ev.account_fingerprint
+                and (ev.source == "owner_ack" or ev.provenance and not ev.stale))
+            if options is not None and bound:
+                route["options"] = {**options, "credential_profile_id": ev.credential_profile_id,
+                                    "account_fingerprint": ev.account_fingerprint}
             # SAME freshness policy the scope gate applies at review time
             # (`reviewer_window.ReviewerWindow.blocking_authority_allowed`): an expired
             # or outage-carried record will NOT authorise a blocking verdict, so the
@@ -740,7 +730,8 @@ def _review_capability_notices(settings: Dict[str, Any]) -> list:
             if not confirms_at_least(ev, floor, require_fresh=True):
                 notices.append({
                     "surface": "scope_review_session" if session else "scope_review",
-                    "needs_ack": {**route, "route_fp": ev.route_fp, "evidence": ev.to_json()},
+                    "needs_ack": {**route, "route_fp": ev.route_fp, "evidence": ev.to_json()} if bound else None,
+                    "role": f"reviewer:{row.slot_id}", "binding_known": bound,
                     "window_tokens": int(ev.window_tokens or 0),
                     "floor_tokens": int(floor),
                     "verified": int(ev.window_tokens or 0) > 0,
@@ -897,7 +888,7 @@ async def api_acknowledge_capability(request: Request) -> JSONResponse:
         return json_error("'window_tokens' must be a positive integer", 400)
     try:
         from ouroboros.capability_evidence import record_owner_ack
-        record = record_owner_ack(
+        record = await asyncio.to_thread(record_owner_ack,
             request_drive_root(request),
             provider=provider, model=model,
             base_url=str((body or {}).get("base_url") or ""),
@@ -905,9 +896,12 @@ async def api_acknowledge_capability(request: Request) -> JSONResponse:
             headers=(body or {}).get("headers") if isinstance((body or {}).get("headers"), dict) else None,
             options=(body or {}).get("options") if isinstance((body or {}).get("options"), dict) else None,
             note=str((body or {}).get("note") or ""),
+            expected_route_fp=str((body or {}).get("route_fp") or ""),
         )
         _owner_audit(request, "capability_ack", {"route_fp": record.get("route_fp"), "window_tokens": window_tokens, "model": model})
         return JSONResponse({"ok": True, "ack": record})
+    except ValueError as exc:
+        return json_error(str(exc), 400)
     except Exception as exc:
         return json_exception(exc)
 

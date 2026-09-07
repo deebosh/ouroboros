@@ -6,6 +6,7 @@ split); loop.py re-exports every name."""
 from __future__ import annotations
 
 import logging
+import contextlib
 import os
 import pathlib
 import queue
@@ -63,6 +64,7 @@ def _adopt_fallback_route(
     to this exact route, so adoption makes that tested projection canonical.
     Returns ``(active_model, active_use_local, context_fit_plan, context_mode)``."""
     ctx.active_model = fallback_model
+    ctx.active_use_local = fallback_use_local
     messages[:] = fallback_messages
     if context_fit_plan is not None:
         tools._ctx.context_fit_plan = context_fit_plan
@@ -96,6 +98,7 @@ def _run_cross_model_fallback_chain(
     """Try fallbacks; unknown dispatch stops the chain."""
     from ouroboros import fallback_cooldown as _fcd
     from ouroboros.config import fallback_candidate_targets
+    from ouroboros.model_slots import parse_fallback_chain
     from ouroboros.loop_llm_call import _COOLDOWN_ERROR_KINDS as _cooldown_kinds
 
     def _cooled(model: str, use_local: bool) -> None:
@@ -106,6 +109,7 @@ def _run_cross_model_fallback_chain(
     primary_context_usage = _snapshot_context_fit_usage(accumulated_usage)
     fallback_use_local = os.environ.get("USE_LOCAL_FALLBACK", "").lower() in ("true", "1")
     attempt_cap = _fcd.attempts_per_model()
+    configured_chain = parse_fallback_chain()
     msg = None
     # ABI-4: the candidate ladder arrives as typed ResolvedModelTarget values;
     # `.model_id` is read once here and crosses to strings only at the LLM
@@ -115,6 +119,9 @@ def _run_cross_model_fallback_chain(
     # sentinel rather than fabricating a per-candidate fact nothing consumes.
     for candidate in fallback_candidate_targets(active_model):
         fallback_model = candidate.model_id
+        # The role belongs to the configured row, before active-model removal
+        # and deduplication. Those filters must not shift its account binding.
+        fallback_role = f"fallback:{configured_chain.index(fallback_model)}"
         if _fcd.is_cooling_down(fallback_model, fallback_use_local):
             continue
         deadline = _loop()._task_deadline_epoch(tools)
@@ -141,9 +148,10 @@ def _run_cross_model_fallback_chain(
                 getattr(context_fit_plan, "preferred_mode", "") or active_context_mode
             ),
             tool_schemas=tool_schemas,
+            model_role=fallback_role,
+            model_route={},
         )
-        msg, _cost, candidate_mode = _loop()._call_round_model(
-            _loop()._RoundModelCallContext(
+        candidate_call = _loop()._RoundModelCallContext(
                 llm=llm,
                 messages=fallback_messages,
                 tools=tools,
@@ -162,8 +170,9 @@ def _run_cross_model_fallback_chain(
                 active_context_mode=candidate_mode,
                 drive_root=pathlib.Path(drive_logs).parent,
                 attempt_cap=attempt_cap,
+                model_role=fallback_role,
             )
-        )
+        msg, _cost, candidate_mode = _loop()._call_round_model(candidate_call)
         if msg is not None:
             (
                 active_model,
@@ -173,11 +182,11 @@ def _run_cross_model_fallback_chain(
             ) = _adopt_fallback_route(
                 ctx,
                 tools,
-                fallback_model,
-                fallback_use_local,
+                candidate_call.active_model,
+                candidate_call.active_use_local,
                 messages,
                 fallback_messages,
-                candidate_plan,
+                candidate_call.context_fit_plan,
                 candidate_mode,
                 tool_schemas,
                 accumulated_usage,
@@ -208,6 +217,9 @@ def _rebind_context_fit_plan(
     use_local: bool,
     preferred_mode: str,
     tool_schemas: List[Dict[str, Any]],
+    model_role: str = "",
+    model_route: Optional[Dict[str, Any]] = None,
+    credential_profile_id: Optional[str] = None,
 ) -> Tuple[Any, str]:
     if plan is None or not all(
         hasattr(plan, name) for name in ("max_projection", "low_projection", "core_sha256")
@@ -218,6 +230,7 @@ def _rebind_context_fit_plan(
     from ouroboros.capability_evidence import is_known
     from ouroboros.context import _context_fit_route
     from ouroboros.context_fit import _failed_route_evidence, _route_calibration_ratio
+    from ouroboros.provider_models import parse_claudexor_model
 
     metadata = getattr(tools._ctx, "task_metadata", {})
     metadata = metadata if isinstance(metadata, dict) else {}
@@ -226,6 +239,9 @@ def _rebind_context_fit_plan(
         "use_local_model": use_local,
         "task_metadata": metadata,
         "delegation_role": metadata.get("delegation_role"),
+        "model_role": model_role or getattr(plan, "model_role", "main"),
+        "model_route": model_route if model_route is not None else getattr(plan, "model_route", {}),
+        "credential_profile_id": credential_profile_id,
     }
     is_subagent = str(metadata.get("delegation_role") or "").lower() == "subagent"
     try:
@@ -270,6 +286,14 @@ def _rebind_context_fit_plan(
         window_tokens=window_tokens,
         max_projection=max_projection,
         low_projection=low_projection,
+        model_role=task["model_role"],
+        model_route={
+            "source": str(getattr(evidence, "source_id", "") or ""),
+            "model": parse_claudexor_model(str(route.get("model") or model))[1],
+            "credentialProfileId": str(getattr(evidence, "credential_profile_id", "") or ""),
+            "accountFingerprint": str(getattr(evidence, "account_fingerprint", "") or ""),
+        } if route.get("provider") == "claudexor" else {},
+        evidence_source=str(getattr(evidence, "source", "") or ""),
     )
     mode = initial_mode
     projected_prompt_tokens = rebound.projected_tokens_with_tools(mode, tool_schemas)
@@ -320,6 +344,7 @@ class _RoundModelCallContext:
     active_context_mode: str
     drive_root: Optional[pathlib.Path]
     attempt_cap: Optional[int] = None
+    model_role: str = ""
 
 
 def _context_fit_round_id(ctx: _RoundModelCallContext) -> str:
@@ -406,37 +431,82 @@ def _dispatch_round_model(
     attempt_cap: Optional[int],
     candidate_predicate: Optional[Callable[[Any], Any]] = None,
 ) -> Tuple[Any, float]:
+    from ouroboros.model_wait import current_model_wait
     from ouroboros.loop_transport import transport_repeat_stop_requested
     from ouroboros.owner_mailbox import OwnerMailboxPeek
 
     mailbox_peek = OwnerMailboxPeek()
     ctx.tools._ctx._transport_repeat_control_reason = ""
 
-    return _loop().call_llm_with_retry(
-        ctx.llm,
-        ctx.messages,
-        ctx.active_model,
-        ctx.tool_schemas,
-        ctx.active_effort,
-        ctx.max_retries,
-        ctx.drive_logs,
-        ctx.task_id,
-        ctx.round_idx,
-        ctx.event_queue,
-        ctx.accumulated_usage,
-        ctx.task_type,
-        use_local=ctx.active_use_local,
-        deadline_ts=_loop()._task_deadline_epoch(ctx.tools),
-        transport_reserve_sec=task_pacing.get_finalization_grace_sec(),
-        attempt_cap=attempt_cap,
-        transport_death_retries=_TRANSPORT_DEATH_RETRIES if attempt_cap is None else 0,
-        stop_retry_check=(lambda: transport_repeat_stop_requested(ctx.tools._ctx, mailbox_peek=mailbox_peek)) if attempt_cap is None else None,
-        allow_server_web_search=_loop()._server_web_allowed_by_task(ctx.tools._ctx),
-        physical_context=(
-            _physical_context_for_fit(disposition) if disposition is not None else None
-        ),
-        candidate_predicate=candidate_predicate,
-    )
+    waiter = current_model_wait()
+    plan = getattr(ctx, "context_fit_plan", None) or getattr(ctx.tools._ctx, "context_fit_plan", None)
+    from ouroboros.model_slots import task_model_binding
+    role, account = task_model_binding({
+        "model_role": getattr(ctx, "model_role", ""),
+        "task_metadata": getattr(ctx.tools._ctx, "task_metadata", {})},
+        context_fit_plan=plan, overrides=waiter.overrides if waiter else None)
+    binding = (waiter.register_reprepare(role, lambda kwargs: _reprepare_waiting_main(ctx, kwargs))
+               if waiter is not None else contextlib.nullcontext())
+    with binding:
+        result = _loop().call_llm_with_retry(
+            ctx.llm, ctx.messages, ctx.active_model, ctx.tool_schemas,
+            ctx.active_effort, ctx.max_retries, ctx.drive_logs, ctx.task_id,
+            ctx.round_idx, ctx.event_queue, ctx.accumulated_usage, ctx.task_type,
+            use_local=ctx.active_use_local,
+            deadline_ts=_loop()._task_deadline_epoch(ctx.tools),
+            transport_reserve_sec=task_pacing.get_finalization_grace_sec(),
+            attempt_cap=attempt_cap,
+            transport_death_retries=_TRANSPORT_DEATH_RETRIES if attempt_cap is None else 0,
+            stop_retry_check=(lambda: transport_repeat_stop_requested(ctx.tools._ctx, mailbox_peek=mailbox_peek)) if attempt_cap is None else None,
+            allow_server_web_search=_loop()._server_web_allowed_by_task(ctx.tools._ctx),
+            physical_context=(_physical_context_for_fit(disposition) if disposition is not None else None),
+            candidate_predicate=candidate_predicate, model_role=role, model_account_override=account,
+        )
+    observed = ctx.accumulated_usage.get("_model_route")
+    if (plan is not None and isinstance(observed, dict)
+            and observed != getattr(plan, "model_route", {})):
+        # A response/error may expose an Auto rotation after preparation. Withdraw
+        # the prior account's capacity before another physical call is prepared.
+        ctx.context_fit_plan, ctx.active_context_mode = _loop()._rebind_context_fit_plan(
+            ctx.context_fit_plan, ctx.tools, ctx.messages, model=ctx.active_model,
+            use_local=ctx.active_use_local, preferred_mode=ctx.active_context_mode,
+            tool_schemas=ctx.tool_schemas, model_role=role, model_route=observed,
+            credential_profile_id=(waiter.overrides.get(role, {}).get("model_account_override") if waiter else None))
+    return result
+
+
+def _reprepare_waiting_main(ctx: _RoundModelCallContext, kwargs: dict):
+    """Rebuild from the same immutable core; never replay completed tools/review."""
+    from ouroboros.model_wait import PreparedModelCall
+    from ouroboros.usage_accounting import current_physical_attempt_predicate, bind_physical_attempt_context
+
+    model, use_local = kwargs["model"], kwargs.get("use_local", False)
+    role = kwargs["model_role"]
+    observed = kwargs.pop("_model_observed_route", None)
+    prepared = LLMClient.sanitize_reasoning_on_model_switch(kwargs["messages"], ctx.active_model, model)
+    ctx.messages[:] = prepared
+    ctx.context_fit_plan, ctx.active_context_mode = _loop()._rebind_context_fit_plan(
+        ctx.context_fit_plan, ctx.tools, ctx.messages, model=model, use_local=use_local,
+        preferred_mode=ctx.active_context_mode, tool_schemas=ctx.tool_schemas,
+        model_role=role, model_route=observed or {},
+        credential_profile_id=kwargs.get("model_account_override"))
+    ctx.active_model, ctx.active_use_local = model, use_local
+    ctx.tools._ctx.active_model = model
+    ctx.tools._ctx.active_use_local = use_local
+    disposition = _loop()._measure_round_main_fit(ctx, automatic_pass_used=False)
+    if disposition is not None and disposition.action == "reclaim_once":
+        if _fit_key(disposition) not in _loop()._context_reclaim_passes(ctx.tools._ctx):
+            with bind_physical_attempt_context(None):
+                _loop()._run_main_reclaim(ctx, disposition)
+        disposition = _measure_after_reclaim(ctx)
+    kwargs["messages"] = ctx.messages
+    from ouroboros.provider_models import provider_for_model
+    kwargs["allow_server_web_search"] = (_loop()._server_web_allowed_by_task(ctx.tools._ctx)
+                                         and not use_local and provider_for_model(model) != "claudexor")
+    if provider_for_model(model) == "claudexor":
+        kwargs["bypass_response_cache"] = False
+    return PreparedModelCall(kwargs, _physical_context_for_fit(disposition) if disposition else None,
+                             current_physical_attempt_predicate())
 
 
 def _run_main_reclaim(

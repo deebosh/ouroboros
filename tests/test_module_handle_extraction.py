@@ -466,9 +466,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_append_or_merge_user_message", "_current_delivery_candidate",
         "_emit_checkpoint_event", "_finalize_forced_services",
         "_forced_fallback_result", "_forced_final_answer",
-        "_handle_forced_finalization", "_owner_marked_content",
+        "_handle_forced_finalization", "_last_assistant_text", "_owner_marked_content",
         "_provider_unavailable_result", "_record_owner_directive",
-        "_task_deadline_epoch", "compact_tool_history_llm", "utc_now",
+        "_soft_land_exhausted_ceiling", "_task_deadline_epoch", "compact_tool_history_llm", "utc_now",
     })),
 }
 

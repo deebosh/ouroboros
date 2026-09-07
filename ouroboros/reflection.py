@@ -434,6 +434,7 @@ def generate_reflection(
             drive_root=pathlib.Path(str(task.get("drive_root") or "../data")),
             task_id=str(task.get("id") or task.get("task_id") or "reflection"),
             call_type="task_reflection",
+            model_role="light",
             messages=[{"role": "user", "content": prompt}],
             model=light_model,
             reasoning_effort="low",
@@ -490,6 +491,8 @@ def generate_reflection(
             except Exception:
                 pass
     except Exception as e:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(e)
         log.warning("Reflection LLM call failed: %s", e)
         reflection_text = f"(reflection generation failed: {e})"
         backlog_candidates = []
@@ -708,6 +711,7 @@ def _update_patterns(drive_root: pathlib.Path, entry: Dict[str, Any]) -> None:
         drive_root=drive_root,
         task_id=str(entry.get("task_id") or entry.get("id") or "patterns"),
         call_type="pattern_register_update",
+        model_role="light",
         messages=[{"role": "user", "content": prompt}],
         model=light_model,
         reasoning_effort="low",

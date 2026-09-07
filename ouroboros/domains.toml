@@ -25,6 +25,11 @@
 # The seven package __init__.py files go with their package (DOMAIN_MAP Method note);
 # ouroboros/gateways/__init__.py is placed with D07 (its residents split D06/D07 —
 # claude_code.py is D06 transport, claudexor.py is D07).
+# The subscription model transport reuses D07's owned engine from D02. Its live
+# quota/auth continuation belongs to D09: LLM, media, review and memory callers
+# share that owner (D02/D05/D06/D15 -> D09), which reads D16's existing usage
+# context instead of adding an attempt ledger (D09 -> D16). These dependencies
+# implement the accepted shared-wait contract; they add no cycle group.
 
 [meta]
 reference_tree = "ouroboros_v7_wip @ 9f691656e7e756c483f72ef549418c0e7a1b8054 (frozen)"
@@ -70,6 +75,7 @@ D20 = "Presence"
 "ouroboros/artifacts.py" = "D05"
 "ouroboros/betterleaks_runtime.py" = "D14"
 "ouroboros/cancel_intents.py" = "D09"
+"ouroboros/model_wait.py" = "D09"
 "ouroboros/capability_evidence.py" = "D03"
 "ouroboros/claudexor_daemon.py" = "D07"
 "ouroboros/claudexor_runtime.py" = "D07"
@@ -185,6 +191,7 @@ D20 = "Presence"
 "ouroboros/gateway/ws.py" = "D11"
 "ouroboros/gateways/__init__.py" = "D07"
 "ouroboros/gateways/claudexor.py" = "D07"
+"ouroboros/llm_claudexor.py" = "D02"
 "ouroboros/git_shell_policy.py" = "D13"
 "ouroboros/headless.py" = "D17"
 "ouroboros/headless_status.py" = "D17"
@@ -481,6 +488,7 @@ D20 = "Presence"
 "ouroboros/tools/tool_discovery.py" = "D04"
 "ouroboros/tools/verify.py" = "D05"
 "ouroboros/tools/vision.py" = "D05"
+"ouroboros/tools/vision_process.py" = "D05"
 "ouroboros/tools/write_shape.py" = "D13"
 "ouroboros/transport_custody.py" = "D02"
 "ouroboros/triad_review.py" = "D06"
@@ -534,6 +542,7 @@ D20 = "Presence"
 "supervisor/queue.py" = "D08"
 "supervisor/queue_snapshot.py" = "D08"
 "supervisor/queue_timeouts.py" = "D08"
+"supervisor/task_model_wait.py" = "D08"
 "supervisor/queue_schedules.py" = "D08"
 "supervisor/queue_transitions.py" = "D08"
 "supervisor/schedule_time.py" = "D08"
@@ -566,6 +575,8 @@ D20 = "Presence"
 "ouroboros/gateway/endpoint_index.py" = "D11"
 "ouroboros/gateway/routing_decision.py" = "D11"
 "ouroboros/gateway/task_decision.py" = "D11"
+"ouroboros/gateway/task_model_wait.py" = "D11"
+"ouroboros/gateway/decision_contracts.py" = "D11"
 "ouroboros/node_runtime.py" = "D18"
 "ouroboros/routing_wait.py" = "D17"
 "ouroboros/tools/owner_delivery.py" = "D05"
@@ -615,6 +626,8 @@ allowed = [
   "D01->D20",
   "D02->D01",
   "D02->D03",
+  "D02->D07",
+  "D02->D09",
   "D02->D12",
   "D02->D16",
   "D02->D18",
@@ -633,6 +646,7 @@ allowed = [
   "D05->D01",
   "D05->D02",
   "D05->D04",
+  "D05->D09",
   "D05->D10",
   "D05->D11",
   "D05->D12",
@@ -647,6 +661,7 @@ allowed = [
   "D06->D03",
   "D06->D04",
   "D06->D07",
+  "D06->D09",
   "D06->D10",
   "D06->D12",
   "D06->D13",
@@ -683,6 +698,7 @@ allowed = [
   "D09->D01",
   "D09->D06",
   "D09->D08",
+  "D09->D16",
   "D09->D18",
   "D10->D04",
   "D10->D05",
@@ -735,6 +751,7 @@ allowed = [
   "D15->D02",
   "D15->D03",
   "D15->D04",
+  "D15->D09",
   "D15->D12",
   "D15->D16",
   "D15->D18",
@@ -773,7 +790,6 @@ lazy_only = [
   "D01->D08",
   "D01->D10",
   "D01->D11",
-  "D02->D09",
   "D03->D05",
   "D03->D06",
   "D03->D07",
@@ -791,11 +807,9 @@ lazy_only = [
   "D04->D20",
   "D05->D06",
   "D05->D07",
-  "D05->D09",
   "D05->D14",
   "D06->D05",
   "D06->D08",
-  "D06->D09",
   "D06->D15",
   "D07->D09",
   "D07->D10",
@@ -813,7 +827,6 @@ lazy_only = [
   "D09->D12",
   "D09->D14",
   "D09->D15",
-  "D09->D16",
   "D09->D17",
   "D10->D01",
   "D10->D14",
@@ -838,7 +851,6 @@ lazy_only = [
   "D15->D06",
   "D15->D07",
   "D15->D08",
-  "D15->D09",
   "D15->D10",
   "D15->D17",
   "D16->D03",

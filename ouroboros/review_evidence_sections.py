@@ -158,8 +158,13 @@ def acceptance_packet_budget_chars(slots: Any) -> AcceptancePacketBudget:
         per_slot_input_token_limits,
         quorum_input_token_limit,
     )
+    from ouroboros.review_records import apply_review_model_override
+    from ouroboros.model_wait import current_model_wait
 
-    rows = [s for s in (slots or []) if not getattr(s, "retrieves", False)]
+    waiter = current_model_wait()
+    slots = [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter else slots
+
+    rows = [s for s in (slots or []) if not getattr(s, "retrieves", False) and str(getattr(s, "model", "") or "")]
     models = [str(getattr(s, "model", "") or "") for s in rows]
     models = [m for m in models if m]
     if not models:
@@ -170,8 +175,9 @@ def acceptance_packet_budget_chars(slots: Any) -> AcceptancePacketBudget:
     try:
         limits = per_slot_input_token_limits(
             models, output_reserve=output_reserve, tokenizer_margin=50_000,
+            slots=rows,
         )
-        tokens = int(quorum_input_token_limit(models, limits))
+        tokens = int(quorum_input_token_limit([str(s.slot_id) for s in rows], limits))
     except Exception:
         log.debug("acceptance packet budget calibration failed; using the floor", exc_info=True)
         return AcceptancePacketBudget(_ACCEPT_TOTAL_BUDGET)

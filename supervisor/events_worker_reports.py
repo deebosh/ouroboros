@@ -35,6 +35,9 @@ def _handle_task_heartbeat(evt: Dict[str, Any], ctx: Any) -> None:
         task = meta.get("task") if isinstance(meta.get("task"), dict) else {}
         started_at = float(meta.get("started_at") or 0.0)
         runtime_sec = round(max(0.0, time.time() - started_at), 1) if started_at > 0 else None
+        from supervisor.task_model_wait import quota_waited_seconds
+
+        quota_wait_sec = quota_waited_seconds(meta, time.time())
         # Stamp the project thread so the live heartbeat routes to the project
         # panel (and not default-to-main); post-hoc bound tasks fall back to the
         # binding. Heartbeats themselves carry no chat_id from the worker. A
@@ -54,6 +57,9 @@ def _handle_task_heartbeat(evt: Dict[str, Any], ctx: Any) -> None:
                 "chat_id": _hb_chat_id,
                 "phase": phase or meta.get("heartbeat_phase") or "running",
                 "runtime_sec": runtime_sec,
+                "execution_sec": max(0.0, runtime_sec - quota_wait_sec) if runtime_sec is not None else None,
+                "quota_wait_sec": quota_wait_sec,
+                **({"model_waits": task["model_waits"]} if task.get("model_waits") else {}),
                 "subagent_event": evt.get("subagent_event", ""),
                 "subagent_task_id": evt.get("subagent_task_id", ""),
                 "root_task_id": evt.get("root_task_id", ""),

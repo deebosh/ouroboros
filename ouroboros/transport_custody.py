@@ -11,6 +11,14 @@ from urllib.parse import urlsplit
 log = logging.getLogger(__name__)
 
 
+class ProviderNotDispatched(RuntimeError):
+    """A transport owner's positive receipt that generation never started.
+
+    A local control-plane HTTP failure cannot mint this fact: an accepted
+    remote operation may already have sent its provider request.
+    """
+
+
 def is_loopback_base_url(base_url: Any) -> bool:
     """True when the configured route targets this very host.
 
@@ -49,6 +57,8 @@ def is_loopback_base_url(base_url: Any) -> bool:
 
 def is_pre_dispatch_transport_failure(exc: BaseException) -> bool:
     """Return true only for exceptions raised before request bytes can be sent."""
+    if isinstance(exc, ProviderNotDispatched):
+        return True
     try:
         import httpx
 

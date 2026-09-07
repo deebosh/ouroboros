@@ -194,42 +194,29 @@ _consciousness: Any = None
 
 def _describe_bg_consciousness_state(requested_enabled: bool) -> dict:
     snapshot = _consciousness.status_snapshot() if _consciousness else {}
-    running = bool(snapshot.get("running"))
-    paused = bool(snapshot.get("paused"))
-    next_wakeup_sec = int(snapshot.get("next_wakeup_sec") or 0)
-    idle_reason = str(snapshot.get("last_idle_reason") or "")
-    detail = "Background consciousness is off."
-    status = "disabled"
-
-    if requested_enabled and running and paused:
-        status = "paused"
-        detail = "Paused while another foreground task is active."
-    elif requested_enabled and running and idle_reason == "thinking":
-        status = "running"
-        detail = "Background consciousness is thinking now."
-    elif requested_enabled and running and idle_reason == "budget_blocked":
-        status = "budget_blocked"
-        detail = "Background consciousness hit its budget allocation and is waiting."
-    elif requested_enabled and running:
-        status = "running"
-        detail = (
-            "Background consciousness is idle between wakeups."
-            + (f" Next wakeup in {next_wakeup_sec}s." if next_wakeup_sec > 0 else "")
-        )
-    elif requested_enabled:
-        status = "stopped"
-        detail = "Enabled in state, but the background thread is not running."
-
+    idle_reason = snapshot.get("last_idle_reason")
+    if not requested_enabled:
+        status, detail = "disabled", "Background consciousness is off."
+    elif not snapshot.get("running"):
+        status, detail = "stopped", "Enabled in state, but the background thread is not running."
+    elif snapshot.get("paused"):
+        status, detail = "paused", "Paused while another foreground task is active."
+    elif any(row.get("state") == "waiting" for row in snapshot.get("model_waits", {}).values()):
+        status, detail = "model_wait", "Model access wait; no worker slot held."
+    elif idle_reason == "thinking":
+        status, detail = "running", "Background consciousness is thinking now."
+    elif idle_reason == "budget_blocked":
+        status, detail = "budget_blocked", "Background consciousness hit its budget allocation and is waiting."
+    else:
+        status, detail = "running", "Background consciousness is idle between wakeups."
+        wakeup = int(snapshot.get("next_wakeup_sec") or 0)
+        if wakeup > 0:
+            detail += f" Next wakeup in {wakeup}s."
     if idle_reason == "error_backoff" and snapshot.get("last_error"):
         status = "error_backoff"
         detail = f"Waiting to retry after an internal error: {snapshot['last_error']}"
 
-    return {
-        "enabled": requested_enabled,
-        "status": status,
-        "detail": detail,
-        **snapshot,
-    }
+    return {"enabled": requested_enabled, "status": status, "detail": detail, **snapshot}
 
 
 def _start_supervisor_if_needed(settings: dict) -> bool:
@@ -1491,6 +1478,7 @@ app.app.state.app_start = APP_START  # type: ignore[attr-defined]
 app.app.state.supervisor_ready_event = _supervisor_ready  # type: ignore[attr-defined]
 app.app.state.get_supervisor_error = lambda: _supervisor_error  # type: ignore[attr-defined]
 app.app.state.describe_bg_consciousness_state = _describe_bg_consciousness_state  # type: ignore[attr-defined]
+app.app.state.get_background_model_wait = lambda: _consciousness.live_model_wait() if _consciousness else None
 app.app.state.request_restart = _request_restart_exit  # type: ignore[attr-defined]
 app.app.state.runtime_branch_defaults = _runtime_branch_defaults  # type: ignore[attr-defined]
 app.app.state.bind_host = _BIND_HOST  # type: ignore[attr-defined]

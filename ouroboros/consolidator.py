@@ -364,6 +364,7 @@ def _call_consolidation_llm(llm_client: Any, prompt: str, label: str) -> Tuple[s
         msg, usage = llm_client.chat(
             messages=[{"role": "user", "content": prompt}],
             model=model,
+            model_role="light",
             tools=None,
             reasoning_effort="low",
             max_tokens=16384,
@@ -371,6 +372,8 @@ def _call_consolidation_llm(llm_client: Any, prompt: str, label: str) -> Tuple[s
         )
         return msg.get("content", ""), usage
     except Exception as e:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(e)
         log.error("%s failed: %s", label, e, exc_info=True)
         return "", {"cost": 0}
 
@@ -749,6 +752,7 @@ Respond with JSON only (no fences):
         msg, usage = llm_client.chat(
             messages=[{"role": "user", "content": prompt}],
             model=model,
+            model_role="light",
             reasoning_effort="low",
             max_tokens=16384,
             use_local=use_local,
@@ -817,6 +821,8 @@ Respond with JSON only (no fences):
         return usage
 
     except Exception as e:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(e)
         log.error("Scratchpad block consolidation failed: %s", e, exc_info=True)
         return None
 

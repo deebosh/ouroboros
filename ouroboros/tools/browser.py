@@ -965,7 +965,13 @@ def _inject_native_screenshot(ctx: ToolContext, b64: str) -> str:
             or str(getattr(ctx, "task_model_override", "") or "")
             or str(os.environ.get("OUROBOROS_MODEL", "") or "")
         )
-        if not supports_vision(active_model):
+        from ouroboros.model_slots import task_model_binding
+        from ouroboros.model_wait import current_model_wait
+        waiter = current_model_wait()
+        role, account = task_model_binding({"task_metadata": getattr(ctx, "task_metadata", {})},
+            context_fit_plan=getattr(ctx, "context_fit_plan", None),
+            overrides=waiter.overrides if waiter else None)
+        if supports_vision(active_model, model_role=role, model_account_override=account) is False:
             return ""
         messages = getattr(ctx, "messages", None)
         if not isinstance(messages, list):

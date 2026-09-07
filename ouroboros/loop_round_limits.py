@@ -398,6 +398,72 @@ def _handle_provider_unavailable(
     return text, usage, llm_trace
 
 
+def _handle_model_wait_control(
+    ctx: _RoundLimitContext, error: Any,
+) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    """Rejoin the existing terminal rails after a model call yields to control.
+
+    The interrupted provider is not a new summary opportunity. Retain the
+    candidate through the common no-call recorder; hard pooled cancellation
+    remains the supervisor's death-then-settlement transaction.
+    """
+    from ouroboros.cancel_intents import STOP_POLICY_IMMEDIATE, active_intent, stop_policy
+    from ouroboros.model_wait import ModelWaitInterrupted, current_model_wait
+
+    reason = error.control_reason
+    if reason not in {"cancelled", "finalize_requested", "deadline", "execution_deadline", "absolute_ceiling"}:
+        raise error
+    owner = current_model_wait()
+    root = ctx.status_drive_root or ctx.drive_root
+    intent = active_intent(root, ctx.task_id) if root is not None else None
+    hard_stop = isinstance(intent, dict) and stop_policy(intent) == STOP_POLICY_IMMEDIATE
+    if hard_stop and owner is not None and owner.worker_slot_held:
+        raise ModelWaitInterrupted("cancelled", role=error.model_role, cause=error) from error
+
+    controls = _drain_incoming_messages(
+        ctx.messages, ctx.incoming_messages or queue.Queue(), ctx.drive_root,
+        ctx.task_id, ctx.event_queue, ctx.owner_msg_seen if ctx.owner_msg_seen is not None else set(),
+        owner_ctx=getattr(ctx.tools, "_ctx", None),
+    )
+    capture = getattr(error, "physical_attempt_capture", None)
+    unknown = getattr(capture, "state", "") in {"dispatched", "unresolved"}
+    ctx.accumulated_usage["ledger_attempt_ids"] = list(dict.fromkeys([
+        *ctx.accumulated_usage.get("ledger_attempt_ids", []),
+        *getattr(error, "ledger_attempt_ids", []),
+        *([capture.attempt_id] if capture is not None else []),
+    ]))
+    if unknown:
+        ctx.accumulated_usage["_last_llm_error_kind"] = "provider_outcome_unknown"
+    control_text = str(controls.get("finalize_now") or "")
+    first_line = control_text.splitlines()[0].strip() if control_text else ""
+    if hard_stop or first_line == REASON_OWNER_STOPPED_DIRECT_TURN:
+        return _handle_direct_turn_hard_stop(ctx)
+    if reason == "cancelled":
+        raise error
+    if reason == "finalize_requested" and not control_text:
+        # A revoked control cannot stop a still-unstarted call. A provider
+        # already interrupted in flight keeps the ordinary unknown no-resend rail.
+        return _handle_provider_unavailable(ctx, error_kind="provider_outcome_unknown") if unknown else None
+    reason_code = (REASON_OWNER_REQUESTED_FINALIZATION
+                   if first_line == REASON_OWNER_REQUESTED_FINALIZATION else
+                   "deadline_local" if reason == "deadline" else "finalization_grace")
+    trace = ctx.llm_trace if isinstance(ctx.llm_trace, dict) else {}
+    _loop()._finalize_forced_services(ctx, trace)
+    ctx.accumulated_usage.update(execution_status="failed", reason_code=reason_code)
+    fallback = _loop()._last_assistant_text(ctx.messages) or (
+        "⚠️ The model wait ended on the task's stop or deadline; no further model call was made."
+    )
+    result = _loop()._forced_fallback_result(
+        ctx, trace, fallback, reason_code, source="model_wait_control",
+        retained_source="model_wait_retained_candidate",
+    )
+    result[2].setdefault("forced_finalization", {}).update(
+        control_reason=reason, operation_id=str(getattr(error, "operation_id", "") or ""),
+        physical_attempt_state=str(getattr(capture, "state", "") or ""),
+    )
+    return result
+
+
 def _maybe_deadline_local_finalize(
     ctx: _RoundLimitContext, tools: ToolRegistry
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
@@ -433,8 +499,9 @@ def _maybe_deadline_local_finalize(
 def _maybe_early_finalize(
     limit_ctx: _RoundLimitContext, tools: ToolRegistry, controls: Dict[str, Any],
     *, transport_episode: Optional[TransportWaitEpisode] = None,
+    cost_ceiling: Optional[task_pacing.CostCeiling] = None,
 ) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """Consume supervisor grace first, then a local deadline."""
+    """Consume supervisor grace, then local deadline, then the round's cost rail."""
     if controls.get("finalize_now"):
         # The owner's "Stop now" on a direct turn costs no call, so it is
         # honest whatever the transport is doing — never reported to the owner
@@ -458,11 +525,15 @@ def _maybe_early_finalize(
                 limit_ctx, controls["finalize_deadline_ts"],
             )
         return _loop()._handle_forced_finalization(limit_ctx, str(controls["finalize_now"]))
-    if transport_episode is not None:
-        # An active episode owns the deadline sliver: its last free redial +
-        # no-resend terminal replace the paid deadline_local finalize call.
-        return None
-    return _maybe_deadline_local_finalize(limit_ctx, tools)
+    # An active episode owns the deadline sliver: its last free redial +
+    # no-resend terminal replace the paid deadline_local finalize call.
+    if transport_episode is None:
+        deadline_result = _maybe_deadline_local_finalize(limit_ctx, tools)
+        if deadline_result is not None:
+            return deadline_result
+    # Typed soft landing: the ledger fence stays the untouched backstop;
+    # an exhausted ceiling wraps up BEFORE spending a round, even in an outage.
+    return _loop()._soft_land_exhausted_ceiling(limit_ctx, cost_ceiling) if cost_ceiling is not None else None
 
 
 def _finalize_limit_ctx(

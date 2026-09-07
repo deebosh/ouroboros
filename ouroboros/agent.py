@@ -600,6 +600,11 @@ class OuroborosAgent:
         # The REAL attempt identity for attempt-scoped owner controls (hurry):
         # task["_attempt"] — timeout_retry_from is NOT an attempt key.
         ctx.task_attempt = task.get("_attempt")
+        from ouroboros.model_wait import current_model_wait
+
+        ctx.model_wait_context = current_model_wait()
+        if ctx.model_wait_context is not None:
+            ctx.model_wait_context.tool_context = ctx
         if self._event_queue is not None:
             # Optional runtime seam consumed by loop.py.  Unit/direct contexts
             # remain compatible, while production queued tasks establish the
@@ -734,6 +739,8 @@ class OuroborosAgent:
             str(task.get("id") or ""), self._emit_live_log)
 
         from ouroboros.usage_accounting import UsageScope, usage_scope
+        from ouroboros.model_wait import task_model_wait_scope
+        from ouroboros.utils import in_worker_process
 
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
         task_id = str(task.get("id") or metadata.get("task_id") or "")
@@ -756,7 +763,10 @@ class OuroborosAgent:
             root_limit_usd=root_limit if root_limit > 0 else None,
             root_cost_ceiling_usd=task.get("root_cost_ceiling_usd") or metadata.get("root_cost_ceiling_usd"),
         )
-        with usage_scope(scope):
+        with usage_scope(scope), task_model_wait_scope(
+            task=task, drive_root=self.env.drive_root, event_queue=self._event_queue,
+            worker_slot_held=in_worker_process(),
+        ):
             return self._handle_task_scoped(task)
 
     def _handle_task_scoped(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -895,6 +905,17 @@ class OuroborosAgent:
                 except BudgetExceeded:
                     raise
                 except Exception as e:
+                    from ouroboros.cancel_intents import STOP_POLICY_IMMEDIATE, active_intent, stop_policy
+                    from ouroboros.model_wait import ModelWaitInterrupted, current_model_wait
+
+                    waiter = current_model_wait()
+                    if isinstance(e, ModelWaitInterrupted) and e.control_reason == "cancelled" and waiter is not None and waiter.worker_slot_held:
+                        intent = active_intent(waiter.canonical_root, waiter.task_id)
+                        if isinstance(intent, dict) and stop_policy(intent) == STOP_POLICY_IMMEDIATE:
+                            # No worker-authored terminal before confirmed death.
+                            # Empty events leave its queue slot/project owned until
+                            # supervisor cancellation kills and settles this task.
+                            return []
                     tb = traceback.format_exc()
                     append_jsonl(drive_logs / "events.jsonl", {
                         "ts": utc_now_iso(), "type": "task_error",

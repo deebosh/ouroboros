@@ -448,16 +448,17 @@ def _annotate_terminal_task_truth(
             # task is FINALIZING, not terminal. This covers the plain root
             # (status already "completed") AND the split-drive project root,
             # whose canonical status stays scheduled/running until copy-back.
-            # A failed/cancelled record stays terminal immediately, and a
+            # A cancelled record stays terminal immediately, and a
             # record without a checkpoint keeps the legacy terminal semantics.
             checkpoint_open = post_task_synthesis_is_open(synthesis)
-            if checkpoint_open and (status == "completed" or status not in FINAL_STATUSES):
+            if checkpoint_open and (status in {"completed", "failed"} or status not in FINAL_STATUSES):
                 finalizing_tasks.add(task_id)
             elif status in FINAL_STATUSES:
                 terminal_status_by_task[task_id] = status
+            if task_id in finalizing_tasks or task_id in terminal_status_by_task:
                 terminal_truth: Dict[str, Any] = {
                     "outcome_axes": normalize_outcome_axes(result),
-                    "outcome_phase": outcome_phase(result, {}), "outcome_final": True,
+                    "outcome_phase": outcome_phase(result, {}), "outcome_final": task_id not in finalizing_tasks,
                 }
                 if result.get("reason_code"):
                     terminal_truth["reason_code"] = str(result.get("reason_code") or "")
@@ -508,6 +509,12 @@ def _annotate_terminal_task_truth(
             task_id = str(message.get("task_id") or "")
             if not task_id:
                 continue
+            if message.get("system_type") == "task_model_wait":
+                if task_id in terminal_status_by_task:
+                    message["task_terminal_status"] = terminal_status_by_task[task_id]
+                waits = cache.get(task_id, {}).get("model_waits")
+                if isinstance(waits, dict):
+                    message["model_waits"] = waits
             if str(message.get("system_type") or "") != "skill_review":
                 for key, value in legacy_child_meta_by_task.get(task_id, {}).items():
                     message.setdefault(key, value)
@@ -516,6 +523,7 @@ def _annotate_terminal_task_truth(
             # on "Finalizing…" instead of resolving it as done.
             if task_id in finalizing_tasks:
                 message["task_phase"] = "finalizing"
+                message.update(terminal_truth_by_task[task_id])
             if message.get("is_progress") and task_id in terminal_status_by_task:
                 message["task_terminal_status"] = terminal_status_by_task[task_id]
                 if latest_progress_by_task.get(task_id) is message:
@@ -841,7 +849,7 @@ def _collect_progress_rows(
         # the window holds n_progress ordinary telemetry rows.
         if not isinstance(entry, dict):
             return False
-        if str(entry.get("type") or "") == "review_reference":
+        if str(entry.get("type") or "") in {"review_reference", "task_model_wait"}:
             return False
         if is_a2a_chat_id(entry.get("chat_id", 1)):
             return False
@@ -883,6 +891,12 @@ def _collect_progress_rows(
                 continue
             entry_chat = _stored_chat_id(entry.get("chat_id"), 1)
             if not row_matches_thread(entry_chat, {"is_progress": True, **entry}):
+                continue
+            if entry.get("type") == "task_model_wait":
+                from ouroboros.gateway.task_model_wait import history_wait_row
+                reference = history_wait_row(entry)
+                if reference is not None:
+                    combined.append(reference)
                 continue
             text = str(entry.get("content", entry.get("text", "")))
             is_review_reference = str(entry.get("type") or "") == "review_reference"
@@ -1073,6 +1087,9 @@ def _apply_window_quotas(
     window metadata (the last two feed the chat-final lineage strip in
     ``_annotate_terminal_task_truth``).
     """
+    from ouroboros.gateway.task_model_wait import history_wait_overlay
+
+    combined, model_wait_rows, model_wait_truncated = history_wait_overlay(combined, n_progress)
     # Tail human conversation and progress telemetry with SEPARATE quotas so a
     # burst of progress messages can never push the user's real conversation out
     # (the previous single combined[-limit:] tail). Subagent lineage is kept on
@@ -1171,7 +1188,7 @@ def _apply_window_quotas(
     )
     review_references_truncated = len(review_references) > n_progress
     review_overlays_truncated = (
-        folded_reviews_truncated or review_references_truncated
+        folded_reviews_truncated or review_references_truncated or model_wait_truncated
     )
     review_references = review_references[-n_progress:] if n_progress > 0 else []
     other = [
@@ -1244,7 +1261,7 @@ def _apply_window_quotas(
                     str(checkpoint.get("post_task_synthesis") or "")
                     if isinstance(checkpoint, dict) else ""
                 )
-                if post_task_synthesis_is_open(synthesis) and status not in {"failed", "cancelled"}:
+                if post_task_synthesis_is_open(synthesis) and status != "cancelled":
                     return True
                 return bool(status) and status not in FINAL_STATUSES
 
@@ -1288,7 +1305,7 @@ def _apply_window_quotas(
         lineage = lineage[-_LINEAGE_CAP:]  # keep the most recent lineage events
     progress_tail = lineage + other_tail + review_references
     messages = sorted(
-        human_tail + folded_reviews + progress_tail,
+        human_tail + folded_reviews + progress_tail + model_wait_rows,
         key=lambda m: m.get("ts", ""),
     )
     return (
@@ -1346,6 +1363,7 @@ def _assemble_history_response(
     thread_id: int,
     n_human: int,
     n_progress: int,
+    background: Optional[dict] = None,
 ) -> bytes:
     """Assemble the complete /api/chat/history payload as serialized JSON bytes.
 
@@ -1403,16 +1421,23 @@ def _assemble_history_response(
     # most recent IN-WINDOW progress entry terminal; a fresh live event
     # re-activates the card if a new cycle starts. (Structured signal,
     # consumed by log_events.js.)
+    background_chat = (background or {}).get("chat_id")
+    background_visible = background_chat is not None and row_matches_thread(int(background_chat), {"task_id": "bg-consciousness"})
     try:
         bg_msgs = [
             m for m in messages
             if m.get("is_progress") and str(m.get("task_id") or "") == "bg-consciousness"
         ]
-        if bg_msgs:
+        if bg_msgs and not (background_visible and (background or {}).get("model_wait_owner_id")):
             latest = max(bg_msgs, key=lambda m: str(m.get("ts") or ""))
             latest["task_terminal_status"] = "done"
     except Exception as exc:
         log.debug("Failed to annotate bg-consciousness terminal status: %s", exc)
+
+    if background is not None and background_visible:
+        messages.append({"text": "", "role": "system", "system_type": "task_model_wait",
+                         "task_id": "bg-consciousness", "is_progress": False,
+                         "model_wait_live": True, **background})
 
     payload = {
         "messages": messages,
@@ -1457,9 +1482,14 @@ def make_chat_history_endpoint(data_dir: pathlib.Path):
         thread_id = _int_param("chat_id", 1, 2**31 - 1) or 1
         # ONE thread hop for the whole assembly (perf2 P3): reads, transforms,
         # slicing, annotation, and the JSON encode all run off the event loop.
-        body = await asyncio.to_thread(
-            _assemble_history_response, data_dir, thread_id, n_human, n_progress
-        )
+        app_state = getattr(getattr(request, "app", None), "state", None)
+        reader = getattr(app_state, "get_background_model_wait", None)
+        owner = reader() if callable(reader) else None
+        background = owner.snapshot() if owner else {"model_wait_owner_id": "", "model_waits": {}}
+        describe = getattr(app_state, "describe_bg_consciousness_state", None)
+        if owner and callable(describe):
+            background["paused"] = bool(describe(True).get("paused"))
+        body = await asyncio.to_thread(_assemble_history_response, data_dir, thread_id, n_human, n_progress, background)
         return Response(content=body, media_type="application/json")
 
     return api_chat_history

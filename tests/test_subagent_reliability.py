@@ -63,7 +63,7 @@ def test_replay_clears_and_rebuilds_subagent_lineage():
     # A child is locked terminal from EITHER a terminal subagent event OR a
     # genuinely-settled server task_terminal_status; interrupted stays retryable.
     assert "const replayTerminal = msg.task_terminal_status" in src
-    assert "? taskDoneIsTerminal({ ...msg, status: String(msg.task_terminal_status) })" in src
+    assert "const replayTerminal = msg.task_terminal_status && taskDoneIsTerminal(msg);" in src
     assert "if (replayTerminal || ['completed', 'completed_warn', 'failed', 'cancelled', 'rejected'].includes(event)) {" in src
     assert "subagentTerminalChildren.add(childId);" in src
 

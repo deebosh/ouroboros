@@ -20,6 +20,8 @@ from ouroboros.secret_masking import (
     MASKED_SECRET_SETTING_KEYS as SECRET_SETTING_KEYS,
 )
 from ouroboros.task_pacing import COST_PLANNING_MARGIN_USD
+from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY, normalize_model_role_options
+from ouroboros.provider_models import parse_claudexor_model, provider_for_model
 
 
 
@@ -82,16 +84,10 @@ for _profile_defaults in _MODEL_DEFAULTS.values():
     _profile_defaults.setdefault("vision", "")
 
 _STEPS = _rows(("id", "title", "railCopy", "copy", "footer"), (
-    ("providers", "Add your access", "Keys + local", "Fill at least one remote key or a local model source. The next step adapts to what you configured here.", "Paste only what you already have. OpenRouter, direct provider keys, and an optional local model can coexist."),
-    # SKIPPABLE by design and placed right after access, because it is the step
-    # that explains what the access already bought and what an agent plan adds
-    # on top of it. It never blocks completion (D-1). Named "agents", never
-    # "coding agents" (D-10): these agents build presentations and run ordinary
-    # tasks too.
-    ("agents", "Connect your agents", "Optional", "Optional. Ouroboros already runs on the access you just added. Signing in to an agent plan moves delegated subagents and commit review onto that plan instead of per-call API spend.", "Skippable. Connect, add, or change agent accounts any time in Settings → Agents."),
+    ("accounts", "Connect your accounts", "Subscriptions + API", "Connect Codex to start without an API key, or add an API key or local model. The same account can serve models and agents.", "Add more subscriptions or API access later in Settings → Accounts. Subscription limits and optional provider credits still apply."),
     ("models", "Choose models", "model slots", "Review the visible model defaults derived from your current setup, then edit anything you want before launch.", "Plain openai/... or anthropic/... remains router-style. Direct values use openai::... and anthropic::...."),
     ("review_mode", "Choose review mode", "Advisory vs blocking", "Decide how strict pre-commit review should be before Ouroboros starts modifying itself.", "Pick both review enforcement and the initial runtime mode before Ouroboros starts."),
-    ("budget", "Set your budget", "Session limits", "Budget is its own step because it directly shapes how far Ouroboros can go in one session and in a single task.", "Total budget is global. Per-task cost cap is a hard cap over one task's whole tree, subagents included: the task wraps up gracefully just before the ledger fence force-stops it."),
+    ("budget", "Review limits", "Quota + API budget", "Review subscription quotas and optional API spending limits.", "When subscription quota is exhausted, work waits for renewal or your choice of another account or model. This integration does not enable paid provider credits."),
     ("summary", "Review before launch", "Final check", "Check the final provider, model, review, and budget picture. Ouroboros will save these onboarding values before starting.", "The same onboarding values remain editable later in Settings."),
 ))
 _STEP_ORDER = [step["id"] for step in _STEPS]
@@ -407,6 +403,8 @@ def build_initial_setup_state(settings: dict, host_mode: str = "desktop") -> dic
         for field in _PROVIDER_FIELDS
     })
     state.update(budget_state)
+    state["modelAccounts"] = normalize_model_role_options(MODEL_ACCOUNTS_KEY, settings.get(MODEL_ACCOUNTS_KEY))[0]
+    state["modelContextWindows"] = normalize_model_role_options(MODEL_CONTEXT_WINDOWS_KEY, settings.get(MODEL_CONTEXT_WINDOWS_KEY))[0]
     state.update({slot["stateKey"]: _string(settings.get(slot["settingKey"])) or defaults[slot["slot"]] for slot in _MODEL_SLOTS})
     return state
 
@@ -446,6 +444,14 @@ def wizard_authors_safety_light() -> bool:
 
 
 def validate_setup_payload(data: dict, current_settings: dict) -> Tuple[dict, str | None]:
+    subscriptions_connected, skip_presets = parse_subscription_intent(data)
+    pending_subscription = subscriptions_connected and not skip_presets
+    selected_subscription = provider_for_model(_string(data.get("OUROBOROS_MODEL"))) == "claudexor"
+    if selected_subscription:
+        try:
+            parse_claudexor_model(_string(data.get("OUROBOROS_MODEL")))
+        except ValueError as exc:
+            return {}, str(exc)
     secret_keys = secret_provider_setting_keys()
     keys: Dict[str, str] = {}
     for field in _PROVIDER_FIELDS:
@@ -499,8 +505,8 @@ def validate_setup_payload(data: dict, current_settings: dict) -> Tuple[dict, st
         if setting_key not in {"OPENAI_COMPATIBLE_API_KEY", "MINIMAX_REGION"}
     )
     has_local = bool(local_source)
-    if not has_remote and not has_local:
-        return {}, "Configure OpenRouter, OpenAI, OpenAI-compatible, Cloud.ru, MiniMax, DeepSeek, Anthropic, or a local model before continuing."
+    if not has_remote and not has_local and not (pending_subscription or selected_subscription):
+        return {}, "Connect Codex, an API provider, or a local model before continuing."
     minimax_region = keys.get("MINIMAX_REGION", "").lower()
     if minimax_region and minimax_region not in MINIMAX_REGION_ENDPOINTS:
         return {}, "MiniMax Region must be global_en or cn_zh."
@@ -517,7 +523,7 @@ def validate_setup_payload(data: dict, current_settings: dict) -> Tuple[dict, st
     # Main when empty, and Fallbacks carries a resilience default (empty = no cross-model
     # fallback) — so the owner is not forced to fill every slot. Mirrors the relaxed
     # onboarding-wizard validateModelsStep.
-    if not models.get("OUROBOROS_MODEL"):
+    if not models.get("OUROBOROS_MODEL") and not pending_subscription:
         return {}, "Confirm the Main model before starting Ouroboros."
 
     parsed_budget: dict[str, float] = {}
@@ -539,6 +545,12 @@ def validate_setup_payload(data: dict, current_settings: dict) -> Tuple[dict, st
         return {}, "Local-only setups must route at least one model to the local runtime."
 
     prepared = dict(current_settings)
+    for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+        if key in data:
+            try:
+                prepared[key] = normalize_model_role_options(key, data[key])[1]
+            except ValueError as exc:
+                return {}, str(exc)
     prepared.update(models)
     prepared.update(keys)
     prepared.update(parsed_budget)

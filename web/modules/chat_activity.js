@@ -652,6 +652,7 @@ export function computeDerivedChatStatus({
     activeManagedCount = 0,
     queuedManagedCount = 0,
     pausedManagedCount = 0,
+    waitingModelCount = 0,
     pendingSubmissionsCount = 0,
 } = {}) {
     if (!isConnected) {
@@ -670,8 +671,10 @@ export function computeDerivedChatStatus({
         return { kind: 'thinking', text: 'Sending...', showDots: true };
     }
     if (queuedManagedCount > 0) {
+        if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
         return { kind: 'thinking', text: 'Queued...', showDots: true };
     }
+    if (waitingModelCount > 0) return { kind: 'online', text: 'Waiting for access', showDots: false };
     if (pausedManagedCount > 0) {
         // Budget-paused work is NOT running and will not start by itself:
         // never dress it up as Working or Queued.

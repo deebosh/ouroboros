@@ -596,7 +596,9 @@ def test_ephemeral_decision_web_frames_never_create_task_card_or_second_receipt(
         chat.index("function readPendingReconnectBanner")
     ]
     assert "ephemeralDecisionTaskIds.add(taskId);" in register
-    assert "record.root?.remove();" in register
+    assert "if (record) disposeLiveCard(taskId);" in register
+    disposal = chat[chat.index("function disposeLiveCard("):chat.index("function registerEphemeralDecisionFrame")]
+    assert "liveCardRecords.get(id)?.root?.remove();" in disposal
 
     card_factory = chat[
         chat.index("function createLiveCardRecord"):

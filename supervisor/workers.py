@@ -662,7 +662,7 @@ from supervisor.worker_process import WORKER_LOG_SINK_SUPPRESSED_TYPES  # noqa: 
 SERVER_LOG_SINK_SUPPRESSED_TYPES = WORKER_LOG_SINK_SUPPRESSED_TYPES | frozenset({
     "budget_scope_paused", "task_metrics_event", "review_late_result",
     "task_cost_finalized", "skill_exec_finished", "skill_exec_failed",
-    "task_cancel_cascade_noop", "task_cancel_cascade_error",
+    "task_cancel_cascade_noop", "task_cancel_cascade_error", "task_model_wait",
 })
 
 

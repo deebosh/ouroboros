@@ -653,6 +653,23 @@ def get_owned_daemon() -> OwnedClaudexorDaemon:
         return _MANAGER
 
 
+def read_owned_gateway() -> Any:
+    """Connect to the owned engine for metadata, without starting or repairing it.
+
+    Discovery is explicitly owned-only, including on unprovisioned installs.
+    Callers own close(); discovery/handshake failures retain their typed refusal.
+    """
+    from ouroboros.gateways.claudexor import ClaudexorGateway, discover_daemon_at
+
+    gateway = ClaudexorGateway(discover_daemon_at(owned_config_dir()))
+    try:
+        gateway.handshake()
+    except Exception:
+        gateway.close()
+        raise
+    return gateway
+
+
 def ensure_owned_gateway(*, admission_wait_sec: Optional[float] = None) -> Any:
     """Return an authenticated gateway to the lazily ensured owned daemon.
 
@@ -744,6 +761,7 @@ __all__ = [
     "attach_login_shell",
     "resolve_attach_login_argv",
     "ensure_owned_gateway",
+    "read_owned_gateway",
     "get_owned_daemon",
     "owned_config_dir",
     "owned_daemon_provisioned",

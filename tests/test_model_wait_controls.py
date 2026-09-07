@@ -1,0 +1,357 @@
+"""Live model waits retain their owner, accepted controls and terminal rails."""
+
+import asyncio
+from copy import deepcopy
+import json
+import pathlib
+import queue
+from types import SimpleNamespace
+
+import pytest
+
+from ouroboros import cancel_intents, loop, model_wait, owner_mailbox, usage_accounting as ua
+from ouroboros.model_slots import MODEL_ACCOUNTS_KEY
+from ouroboros.task_results import load_task_result
+from tests.test_llm_claudexor import MODEL, result, setup as gateway_fixture
+from tests.test_model_wait import live_wait as wait_fixture
+from tests.test_subscription_main_wait import main_call as main_fixture
+
+setup = gateway_fixture
+live_wait = wait_fixture
+main_call = main_fixture
+
+
+def _accepted_switch(live_wait):
+    root, _gateway, _client, owner, _events, decide = live_wait
+    row = {"wait_id": "wait-one", "revision": 1, "task_attempt": 1, "state": "waiting", "role": "light"}
+    model_wait.mutate_wait(root, "task-one", "wait-one", lambda _: row)
+    owner.waits["wait-one"] = dict(row)
+    body = {"request_id": "switch-one", "decision_id": "model_wait:task-one:wait-one", "revision": 1,
+            "action": "switch", "model": MODEL, "credential_profile_id": "account-b", "use_local": False}
+    assert decide(body).status_code == 202
+    return root, owner, body, decide
+
+
+def test_failed_mailbox_read_retries_accepted_switch_without_another_post(live_wait, monkeypatch):
+    root, owner, _body, _decide = _accepted_switch(live_wait)
+    mailbox = owner_mailbox._mailbox_path(root, "task-one")
+    read = pathlib.Path.read_text
+    failed = False
+
+    def fail_once(path, *args, **kwargs):
+        nonlocal failed
+        if path == mailbox and not failed:
+            failed = True
+            raise OSError("one failed read")
+        return read(path, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", fail_once)
+    owner._drain_controls()
+    assert not owner.seen_controls and owner.mailbox_stamp is None
+    owner._drain_controls()
+    assert owner.waits["wait-one"]["_action"]["credential_profile_id"] == "account-b"
+
+
+def test_failed_canonical_read_does_not_consume_accepted_control(live_wait, monkeypatch):
+    _root, owner, _body, _decide = _accepted_switch(live_wait)
+    reader = owner.read_rows
+    monkeypatch.setattr(owner, "read_rows", lambda: (_ for _ in ()).throw(ValueError("unreadable authority")))
+    with pytest.raises(ValueError, match="unreadable authority"):
+        owner._drain_controls()
+    assert not owner.seen_controls and owner.mailbox_stamp is None
+    monkeypatch.setattr(owner, "read_rows", reader)
+    owner._drain_controls()
+    assert owner.waits["wait-one"]["_action"]["request_id"] == "switch-one"
+
+
+def test_torn_mailbox_read_cannot_apply_or_consume_a_parsed_control(live_wait):
+    root, owner, _body, _decide = _accepted_switch(live_wait)
+    path = owner_mailbox._mailbox_path(root, "task-one")
+    complete = path.read_bytes()
+    path.write_bytes(complete.rstrip(b"\n"))
+    owner._drain_controls()
+    assert not owner.seen_controls and owner.mailbox_stamp is None
+    assert "_action" not in owner.waits["wait-one"]
+    path.write_bytes(complete)
+    owner._drain_controls()
+    assert owner.waits["wait-one"]["_action"]["request_id"] == "switch-one"
+
+
+@pytest.mark.parametrize("attempt,state,expected", [(1, "waiting", False), (2, "waiting", True), (2, "resolved", False)])
+def test_supervisor_wait_belongs_to_current_retry_attempt(attempt, state, expected):
+    from supervisor.task_model_wait import model_waiting
+
+    task = {"_attempt": 1, "model_waits": {"wait": {"state": state, "task_attempt": attempt}}}
+    retried = dict(task)
+    retried["_attempt"] = 2
+    assert model_waiting({"task": retried, "attempt": 2}) is expected
+    assert task["model_waits"] == retried["model_waits"]  # History is retained.
+
+
+def test_plan_executor_carries_wait_and_admitted_wallet_without_main_capture(tmp_path, monkeypatch):
+    from ouroboros import review_substrate
+    from ouroboros.tools import plan_review_runtime
+
+    observed = []
+    wallet = ua.UsageScope(drive_root=tmp_path, task_id="plan", root_task_id="root", root_limit_usd=17)
+    physical = ua.PhysicalAttemptContext("owner_max", "max", "cold_estimate", "main-route", "round", None, 872000, False, False)
+
+    def review(*args, **kwargs):
+        observed.append((model_wait.current_model_wait(), ua.current_usage_scope(),
+                         ua.current_physical_attempt_context(), ua.current_physical_attempt_predicate()))
+        return SimpleNamespace(actors=[])
+
+    monkeypatch.setattr(review_substrate, "run_review_request", review)
+    with ua.usage_scope(wallet), ua.bind_physical_attempt_context(physical, lambda _candidate: False):
+        with model_wait.task_model_wait_scope(task={"id": "plan"}, drive_root=tmp_path,
+                                              event_queue=None, worker_slot_held=True) as owner:
+            asyncio.run(plan_review_runtime.run_plan_review_slots(
+                SimpleNamespace(drive_root=tmp_path, task_id="plan"), [], system_prompt="Review", user_content="Plan"))
+    assert observed == [(owner, wallet, None, None)]
+
+
+def test_pinned_wait_rejects_other_catalog_account_before_new_generation(live_wait, monkeypatch):
+    _root, gateway, client, _owner, _events, _decide = live_wait
+    monkeypatch.setenv(MODEL_ACCOUNTS_KEY, json.dumps({"light": "account-a"}))
+    monkeypatch.setattr(model_wait.time, "sleep", lambda _seconds: None)
+    from ouroboros import config
+    monkeypatch.setattr(config, "NETWORK_WAIT_BACKOFF_START_SEC", 0)
+    gateway.results = [result(outcome="failed", problem={"code": "subscription_window_exhausted", "message": "quota"}), result()]
+    gateway.dispatch = ["not_started", "response_received"]
+    polls = []
+
+    def catalog(source, profile=None, **kwargs):
+        assert profile == "account-a" and len(gateway.operations) == 1
+        polls.append(profile)
+        return {"source": source, "credentialProfileId": "account-b" if len(polls) == 1 else "account-a",
+                "models": [{"id": "exact-model"}]}
+
+    monkeypatch.setattr(client, "claudexor_model_catalog", catalog)
+    client.chat([], MODEL, model_role="light")
+    assert len(polls) == 2 and len(gateway.operations) == 2
+    assert all(payload["account"] == {"mode": "pin", "profileId": "account-a"} for payload, _key in gateway.uploads)
+
+
+def _loop_tools(ctx, owner):
+    from ouroboros.tools.registry import ToolRegistry
+
+    tools = ToolRegistry(repo_dir=ctx.drive_root, drive_root=ctx.drive_root)
+    tools._ctx.context_fit_plan = ctx.context_fit_plan
+    tools._ctx.task_model_override = MODEL
+    tools._ctx.task_attempt = 1
+    tools._ctx.task_metadata = {}
+    owner.tool_context = tools._ctx
+    return tools
+
+
+def test_main_wait_does_not_call_configured_api_fallback_before_owner_switch(main_call, monkeypatch):
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.llm_attempt import _attempt_request, _candidate_before_dispatch
+
+    ctx, gateway, owner, events, decide, _observations = main_call
+    tools = _loop_tools(ctx, owner)
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "openai::alternate")
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    gateway.results = [result(outcome="failed", problem={"code": "subscription_window_exhausted", "message": "quota"})]
+    gateway.dispatch = ["not_started"]
+    api_calls = []
+    remote = ctx.llm._chat_remote
+
+    def send(target, messages, schemas, *args, **kwargs):
+        if target["provider"] == "claudexor":
+            return remote(target, messages, schemas, *args, **kwargs)
+        api_calls.append(target["provider"])
+        request_body = {"messages": deepcopy(messages), "tools": schemas or [], "model": "alternate"}
+        request = _attempt_request(target, request_body)
+        usage = {"prompt_tokens": 10, "completion_tokens": 2, "cost": 0.1, "provider": "openai",
+                 "resolved_model": "alternate", "cost_final": True}
+        return ua.execute_physical_attempt(request, lambda: ({"role": "assistant", "content": "Finished"}, usage),
+                                           extractor=lambda value: (value[1], 0.1, True),
+                                           before_dispatch=_candidate_before_dispatch(request_body, request))
+
+    def catalog(*args, **kwargs):
+        assert api_calls == [] and len(gateway.operations) == 1
+        row = next(event for event in reversed(list(events.queue)) if event.get("type") == "task_model_wait")
+        response = decide({"request_id": "switch-api", "decision_id": f"model_wait:task-one:{row['wait_id']}",
+                           "revision": row["revision"], "action": "switch", "model": "openai::alternate",
+                           "credential_profile_id": "", "use_local": False, "persist_role": False})
+        assert response.status_code == 202
+        raise ClaudexorUnavailable("subscription_window_exhausted", "still waiting")
+
+    monkeypatch.setattr(ctx.llm, "_chat_remote", send)
+    monkeypatch.setattr(ctx.llm, "claudexor_model_catalog", catalog)
+    text, usage, _trace = loop.run_llm_loop(
+        ctx.messages, tools, ctx.llm, ctx.drive_logs, lambda *_args, **_kwargs: None, queue.Queue(),
+        task_id="task-one", drive_root=ctx.drive_root, event_queue=events)
+    assert text == "Finished" and api_calls == ["openai"]
+    assert usage["_model_route"] == {} and len(gateway.operations) == 1
+    assert any(message.get("content") == "verified read A" for message in ctx.messages)
+    assert any(message.get("content") == "completed review B" for message in ctx.messages)
+
+
+def test_graceful_intent_waits_for_current_control_and_never_looks_like_hard_cancel(live_wait):
+    from supervisor.owner_stop import owner_stop_control_id
+    from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
+
+    root, _gateway, _client, owner, _events, _decide = live_wait
+    intent = cancel_intents.request_cancel(root, "task-one", requested_stop_policy=cancel_intents.STOP_POLICY_FINALIZE)
+    assert owner.control_reason() is None
+    owner_mailbox.write_owner_message(root, REASON_OWNER_REQUESTED_FINALIZATION, "task-one",
+                                     msg_id=owner_stop_control_id(intent), kind=owner_mailbox.KIND_FINALIZE_NOW)
+    assert owner.control_reason() == "finalize_requested"
+    owner.tool_context = SimpleNamespace(_loop_mailbox_seen_ids={owner_stop_control_id(intent)})
+    assert owner.control_reason() is None
+    cancel_intents.request_cancel(root, "task-one", requested_stop_policy=cancel_intents.STOP_POLICY_IMMEDIATE)
+    assert owner.control_reason() == "cancelled"
+
+
+@pytest.mark.parametrize("stop,expected_reason", [
+    ("wrap", "owner_requested_finalization"), ("deadline", "deadline_local"),
+    ("ceiling", "finalization_grace"), ("wrap_unknown", "owner_requested_finalization"),
+])
+def test_real_main_control_preserves_candidate_without_new_summary(main_call, monkeypatch, stop, expected_reason):
+    from ouroboros import config
+    from ouroboros.gateways.claudexor import ClaudexorUnavailable
+    from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
+    from supervisor.owner_stop import owner_stop_control_id
+
+    ctx, gateway, owner, events, _decide, _observations = main_call
+    tools = _loop_tools(ctx, owner)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    completed = result()
+    completed["message"] = {"role": "assistant", "content": "Verified answer retained before the wait"}
+    refused = result(outcome="failed", problem={"code": "subscription_window_exhausted", "message": "quota"})
+    gateway.results = [completed, refused]
+    gateway.dispatch = ["response_received", "not_started"]
+    held = []
+
+    def hold(content, limit, trace, actual_tools, *_args):
+        held.append(loop._replace_delivery_candidate(actual_tools, limit, trace, content, control="hold_for_verification"))
+        if stop == "wrap_unknown":
+            gateway.pending = True
+        return None
+
+    def request_stop():
+        if stop == "deadline":
+            owner.task["deadline_at"] = "2000-01-01T00:00:00Z"
+            tools._ctx.task_metadata["deadline_at"] = owner.task["deadline_at"]
+        elif stop == "ceiling":
+            monkeypatch.setattr(config, "get_task_abs_ceiling_sec", lambda: 0)
+        else:
+            intent = cancel_intents.request_cancel(ctx.drive_root, "task-one", requested_stop_policy=cancel_intents.STOP_POLICY_FINALIZE)
+            owner_mailbox.write_owner_message(ctx.drive_root, REASON_OWNER_REQUESTED_FINALIZATION, "task-one",
+                                             msg_id=owner_stop_control_id(intent), kind=owner_mailbox.KIND_FINALIZE_NOW)
+
+    def catalog(*args, **kwargs):
+        request_stop()
+        raise ClaudexorUnavailable("subscription_window_exhausted", "still waiting")
+
+    read = gateway.get_model_operation
+
+    def pending_read(*args, **kwargs):
+        request_stop()
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(loop, "_no_tool_final_answer", hold)
+    monkeypatch.setattr(ctx.llm, "claudexor_model_catalog", catalog)
+    if stop == "wrap_unknown":
+        monkeypatch.setattr(gateway, "get_model_operation", pending_read)
+    text, usage, trace = loop.run_llm_loop(
+        ctx.messages, tools, ctx.llm, ctx.drive_logs, lambda *_args, **_kwargs: None, queue.Queue(),
+        task_id="task-one", drive_root=ctx.drive_root, event_queue=events)
+    assert len(held) == 1 and text == completed["message"]["content"]
+    assert usage["reason_code"] == trace["forced_finalization"]["reason_code"] == expected_reason
+    assert len(gateway.operations) == 2  # Paid answer + interrupted call, never a summary retry.
+    assert trace["forced_finalization"]["source"].startswith("model_wait_retained_candidate")
+    if stop == "wrap_unknown":
+        assert usage["_last_llm_error_kind"] == "provider_outcome_unknown"
+        assert trace["forced_finalization"]["physical_attempt_state"] == "unresolved"
+        assert len(gateway.cancels) == 1
+    else:
+        assert trace["forced_finalization"]["physical_attempt_state"] == "released"
+
+
+def test_hard_cancel_returns_empty_events_to_real_worker_loop_and_keeps_queue_owner(main_call, monkeypatch):
+    import sys
+    from ouroboros import agent as agent_module, config, extension_loader, platform_layer, process_custody, subagent_runtime, utils
+    from supervisor import queue as task_queue, worker_process
+    from tests.test_llm_claudexor import ledger
+
+    ctx, gateway, _owner, events, _decide, _observations = main_call
+    monkeypatch.setenv("OUROBOROS_IN_WORKER", "1")
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    monkeypatch.setattr(agent_module.OuroborosAgent, "_log_worker_boot_once", lambda *_args: None)
+    actual = agent_module.OuroborosAgent(agent_module.Env(ctx.drive_root, ctx.drive_root), event_queue=events)
+    actual.llm = ctx.llm
+    actual.tools._ctx.context_fit_plan = ctx.context_fit_plan
+    actual.tools._ctx.task_model_override = MODEL
+    actual.tools._ctx.task_attempt = 1
+    actual.tools._ctx.task_metadata = {}
+
+    def prepare(task, _refusal):
+        model_wait.current_model_wait().tool_context = actual.tools._ctx
+        actual._persist_running_record(task)
+        return actual.tools._ctx, ctx.messages, {"budget_remaining": 100}
+
+    monkeypatch.setattr(actual, "_prepare_task_context", prepare)
+    monkeypatch.setattr(actual, "_start_task_heartbeat_loop", lambda *_args: None)
+    monkeypatch.setattr(subagent_runtime, "apply_task_start_settings_or_disclose", lambda *_args: None)
+    monkeypatch.setattr(agent_module, "make_agent", lambda **_kwargs: actual)
+    monkeypatch.setattr(worker_process, "_bind_worker_repo_root", lambda *_args: None)
+    monkeypatch.setattr(worker_process, "_prepare_worker_task_runtime", lambda: None)
+    monkeypatch.setattr(worker_process, "_adopt_published_extensions", lambda *_args: None)
+    monkeypatch.setattr(platform_layer, "create_new_session", lambda: None)
+    monkeypatch.setattr(process_custody, "start_parent_lifeline", lambda **_kwargs: None)
+    monkeypatch.setattr(extension_loader, "reload_all", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(config, "initialize_runtime_mode_baseline", lambda: None)
+    monkeypatch.setattr(utils, "set_log_sink", lambda *_args: None)
+    monkeypatch.setattr(utils, "get_git_info", lambda *_args: ("fixture", "fixture"))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    crashes = []
+    monkeypatch.setattr(worker_process, "_log_worker_crash", lambda *args: crashes.append(args))
+    gateway.pending = True
+    read = gateway.get_model_operation
+
+    def cancel_during_read(*args, **kwargs):
+        cancel_intents.request_cancel(ctx.drive_root, "task-one", requested_stop_policy=cancel_intents.STOP_POLICY_IMMEDIATE)
+        return read(*args, **kwargs)
+
+    monkeypatch.setattr(gateway, "get_model_operation", cancel_during_read)
+    task = task_queue.RUNNING["task-one"]["task"]
+    task.update(type="task", text="Continue verified work")
+    reads = []
+
+    class Input:
+        def get(self):
+            reads.append(True)
+            if len(reads) == 1:
+                return task
+            assert "task-one" in task_queue.RUNNING
+            assert load_task_result(ctx.drive_root, "task-one")["status"] == "running"
+            assert cancel_intents.cancel_pending(ctx.drive_root, "task-one")
+            assert not any(row.get("type") == "task_done" for row in list(events.queue))
+            assert not crashes
+            return None  # End the test's worker only after verifying retained ownership.
+
+    worker_process.worker_main(1, Input(), events, str(ctx.drive_root), str(ctx.drive_root))
+    assert len(reads) == 2 and len(gateway.operations) == 1 and not crashes
+    assert ledger(ctx.drive_root)[-1]["state"] == "unresolved"
+
+
+@pytest.mark.parametrize("stop,deadline,transport,expected", [
+    (True, True, False, ["stop"]), (False, True, False, ["deadline"]),
+    (False, False, False, ["deadline", "cost"]), (False, True, True, ["cost"]),
+])
+def test_pre_round_terminal_order_keeps_cost_after_stop_and_deadline(monkeypatch, stop, deadline, transport, expected):
+    from ouroboros import loop_round_limits
+
+    calls = []
+    result_value = ("finished", {}, {})
+    monkeypatch.setattr(loop, "_handle_forced_finalization", lambda *_args: calls.append("stop") or result_value)
+    monkeypatch.setattr(loop_round_limits, "_maybe_deadline_local_finalize",
+                        lambda *_args: calls.append("deadline") or (result_value if deadline else None))
+    monkeypatch.setattr(loop, "_soft_land_exhausted_ceiling", lambda *_args: calls.append("cost") or result_value)
+    result_value_actual = loop_round_limits._maybe_early_finalize(
+        SimpleNamespace(), None, {"finalize_now": "deadline"} if stop else {},
+        cost_ceiling=object(), transport_episode=object() if transport else None)
+    assert result_value_actual == result_value and calls == expected

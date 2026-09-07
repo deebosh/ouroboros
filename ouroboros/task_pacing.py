@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional, Tuple
 
 from ouroboros.config import (
@@ -634,6 +634,7 @@ def prospective_wrapup_attempt_request(
     *, llm: Any, messages: list[Dict[str, Any]], model: str,
     reasoning_effort: str, tools: Optional[list[Dict[str, Any]]] = None,
     allow_server_web_search: bool = False, prompt_tokens: int = 0,
+    model_role: str = "main", model_account_override: Optional[str] = None,
 ) -> Any:
     """Build the conservative request facts from the prospective wire payload."""
     from ouroboros.llm import _attempt_request, _finalized_physical_candidate
@@ -650,6 +651,13 @@ def prospective_wrapup_attempt_request(
         ))[0]
 
     target = llm._resolve_remote_target(model)
+    if target.get("provider") == "claudexor":
+        from ouroboros.llm_claudexor import _request
+
+        candidate = _request(target, messages, tools, {"reasoning_effort": reasoning_effort,
+            "model_role": model_role, "model_account_override": model_account_override})
+        return _merge_scope(replace(_attempt_request(target, candidate),
+            force_unknown_reservation=True, max_completion_tokens=MAIN_LOOP_MAX_TOKENS))[0]
     with request_wire_call_scope():
         candidate = llm._build_remote_candidate(
             target, messages, reasoning_effort, MAIN_LOOP_MAX_TOKENS, "auto", None, tools,
@@ -669,6 +677,15 @@ def prepared_wrapup_candidate(
 ) -> Tuple[Any, list[Dict[str, Any]]]:
     """Prepare the exact first-send transcript and price that same payload."""
     from ouroboros.loop_llm_call import _prepare_main_messages
+    from ouroboros.model_slots import task_model_binding
+    from ouroboros.model_wait import current_model_wait
+
+    owner_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+    waiter = current_model_wait()
+    role, account = task_model_binding({"model_role": getattr(ctx, "model_role", ""),
+        "task_metadata": getattr(owner_ctx, "task_metadata", {})},
+        context_fit_plan=getattr(owner_ctx, "context_fit_plan", None),
+        overrides=waiter.overrides if waiter else None)
 
     send_messages = _prepare_main_messages(
         messages, model=ctx.active_model, llm=ctx.llm,
@@ -678,12 +695,16 @@ def prepared_wrapup_candidate(
         use_local=ctx.active_use_local,
         task_attempt=ctx.accumulated_usage.get("_task_attempt"),
         deadline_ts=ctx.deadline_ts,
+        model_role=role,
+        model_account_override=account,
     )
     request = prospective_wrapup_attempt_request(
         llm=ctx.llm, messages=send_messages, model=ctx.active_model,
         reasoning_effort=ctx.active_effort, tools=ctx.tool_schemas,
         allow_server_web_search=allow_server_web_search,
         prompt_tokens=int(ctx.accumulated_usage.get("_context_prompt_estimate") or 0),
+        model_role=role,
+        model_account_override=account,
     )
     return request, send_messages
 

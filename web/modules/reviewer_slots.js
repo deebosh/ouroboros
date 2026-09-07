@@ -87,8 +87,8 @@ export function splitSessionTarget(target) {
 // owner's saved value is almost certainly still there. The two facets are
 // INDEPENDENT: a failed account read must not silence the catalog's own honest
 // verdict.
-export function routeChoiceGroups({ harnesses = [], currentChoice = '', catalogKnown = true, apiLabel } = {}) {
-    return routeEditor.routeChoiceGroups({ harnesses, currentChoice, catalogKnown, apiLabel });
+export function routeChoiceGroups({ harnesses = [], modelSources = [], currentChoice = '', catalogKnown = true, apiLabel } = {}) {
+    return routeEditor.routeChoiceGroups({ harnesses, modelSources, currentChoice, catalogKnown, apiLabel });
 }
 
 export function indexProfilesByHarness(payload) {
@@ -141,14 +141,12 @@ export function buildReviewerSlotsSetting(state) {
         // spellings) still parses server-side but is never WRITTEN again.
         advisoryOut = {
             enabled: advisory.enabled !== false,
-            route: { kind: advisory.route?.kind === ROUTE_KIND_SESSION ? ROUTE_KIND_SESSION : ROUTE_KIND_API,
-                     target_id: String(advisory.route?.target_id || '') },
+            route: routeEditor.serializeRouteSpec(advisory.route, {
+                apiKind: ROUTE_KIND_API, credentialField: 'profile_id',
+            }),
             effort: advisory.route?.kind === ROUTE_KIND_SESSION
                 ? String(advisory.effort || '') : (advisory.effort || 'low'),
         };
-        if (advisoryOut.route.kind === ROUTE_KIND_SESSION && advisory.route?.profile_id) {
-            advisoryOut.route.profile_id = String(advisory.route.profile_id);
-        }
     }
     const setting = {
         triad: (state.triad || []).map(rowOut),
@@ -232,7 +230,7 @@ export function encodeReviewerChoice(row) {
 }
 
 export function reviewerChoiceGroups({
-    roster = [], rosterKnown = true, row = {}, harnesses = [],
+    roster = [], rosterKnown = true, row = {}, harnesses = [], modelSources = [],
     catalogKnown = true, apiLabel,
 } = {}) {
     // Decision 1=B: ONE flat picker — the Available-subagents references lead
@@ -248,7 +246,7 @@ export function reviewerChoiceGroups({
         groups.push({ label: 'Available subagents', options: rosterOptions });
     }
     const currentChoice = savedId ? '' : encodeRouteChoice(row);
-    groups.push(...routeChoiceGroups({ harnesses, currentChoice, catalogKnown, apiLabel }));
+    groups.push(...routeChoiceGroups({ harnesses, modelSources, currentChoice, catalogKnown, apiLabel }));
     return groups;
 }
 
@@ -260,8 +258,9 @@ export function subagentOptionLabel(row) {
         parts.push(split.harness || 'agent session');
         if (split.model) parts.push(split.model);
     } else {
-        parts.push('API');
-        if (route.target_id) parts.push(route.target_id);
+        const fields = routeEditor.routeModelFields(route);
+        parts.push(fields.subscription ? `${fields.source} model` : 'API');
+        if (fields.model) parts.push(fields.model);
     }
     if (row?.effort) parts.push(row.effort);
     // Free text is a caption, never identity: one line, bounded, with the
@@ -318,10 +317,12 @@ export function describeSubagentReference(subagentId, roster, { rosterKnown = tr
         const split = splitSessionTarget(route.target_id);
         parts.push(split.harness ? `${split.harness} session` : 'agent session');
         if (split.model) parts.push(split.model);
-        if (route.credential_profile_id) parts.push(`account ${route.credential_profile_id}`);
     } else {
-        parts.push(route.target_id ? `API model ${route.target_id}` : 'API model (unset)');
+        const fields = routeEditor.routeModelFields(route);
+        parts.push(fields.subscription ? `${fields.source} model · ${fields.model}`
+            : (route.target_id ? `API model ${route.target_id}` : 'API model (unset)'));
     }
+    if (routeEditor.routeSupportsAccount(route) && route.credential_profile_id) parts.push(`account ${route.credential_profile_id}`);
     if (row.effort) parts.push(`effort ${row.effort}`);
     return `Runs as ${parts.join(' · ')} — from its roster row under Available subagents`;
 }
@@ -408,7 +409,7 @@ export function profileOptionsFor(profiles, savedPin, { accountsKnown = true } =
 }
 
 export function pinnedAccountWarning({ triad = [], scope = [], advisory = null, deepReview = null,
-                                       profilesByHarness = {}, accountsKnown = false } = {}) {
+                                       profilesByHarness = {}, modelSources = [], accountsKnown = false } = {}) {
     // A removed (or signed-out) account must not silently reroute the row that
     // pinned it. `profileOptionsFor` already keeps such a pin selectable, so
     // the row itself never changes under the owner — this is the ONE actionable
@@ -426,10 +427,11 @@ export function pinnedAccountWarning({ triad = [], scope = [], advisory = null, 
         // roster row is that route's SSOT, checked on its own surface.
         if (row?.subagent_id) continue;
         const route = row?.route || {};
-        if (route.kind !== ROUTE_KIND_SESSION) continue;
+        if (!routeEditor.routeSupportsAccount(route)) continue;
         const pin = String(route.profile_id || '');
         if (!pin) continue;
-        const harness = splitSessionTarget(route.target_id).harness;
+        const { harness } = routeEditor.routeModelFields(route, modelSources);
+        if (!harness) continue;
         if ((profilesByHarness[harness] || []).some((entry) => profileEntry(entry).id === pin)) continue;
         const label = `${harness} · ${pin}`;
         if (!missing.includes(label)) missing.push(label);
@@ -452,35 +454,22 @@ export function capabilityBadge(row, harnessesById, { catalogKnown = true } = {}
         const status = harness ? (harness.status || 'unknown') : 'not discovered';
         return `agent session — retrieves context with its own tools · route ${status}`;
     }
-    return 'API delivery';
+    return routeEditor.routeSupportsAccount(row.route) ? 'Model call through subscription' : 'API delivery';
 }
 
 export function advisoryRouteTransition(prev, decoded, memory = {}) {
-    // Route-kind switching must not WIPE a stored target (finding #7c): the
-    // old handler wrote target_id:'' on every change, so flipping to a
-    // session and back — or just touching the select — silently discarded the
-    // saved advisory target on the next Save. Each kind remembers the last
-    // route it held; a kind the user returns to is restored, and the stored
-    // route only changes when the user actually picks something else.
+    // Restore each source's own model/account when the owner returns to it.
+    // A new source starts empty; it must not inherit another source's pin.
+    // Legacy api/session memory remains readable for existing callers.
     const current = (prev && typeof prev === 'object' && prev.kind)
         ? prev : { kind: ROUTE_KIND_API, target_id: '' };
-    const next = { ...memory };
-    if (decoded.kind === ROUTE_KIND_SESSION) {
-        const prevHarness = current.kind === ROUTE_KIND_SESSION
-            ? splitSessionTarget(current.target_id).harness : '';
-        if (prevHarness === decoded.harness) return { route: current, memory: next };
-        if (current.kind === ROUTE_KIND_SESSION) next.session = { ...current };
-        else next.api = { ...current };
-        const stash = next.session;
-        const route = (stash && splitSessionTarget(stash.target_id).harness === decoded.harness)
-            ? { ...stash }
-            : { kind: ROUTE_KIND_SESSION, target_id: decoded.harness };
-        return { route, memory: next };
-    }
-    if (current.kind !== ROUTE_KIND_SESSION) return { route: current, memory: next };
-    next.session = { ...current };
+    const choice = decoded.kind === ROUTE_KIND_SESSION ? `session:${decoded.harness}`
+        : decoded.source ? `subscription:${decoded.source}` : API_ROUTE_CHOICE;
+    const next = { ...memory, [encodeRouteChoice({ route: current })]: { ...current } };
+    const stash = next[choice] || next[decoded.kind === ROUTE_KIND_SESSION ? 'session' : 'api'];
     return {
-        route: next.api ? { ...next.api } : { kind: ROUTE_KIND_API, target_id: '' },
+        route: stash && encodeRouteChoice({ route: stash }) === choice ? { ...stash }
+            : routeEditor.changeRouteChoice(current, choice, { apiKind: ROUTE_KIND_API }),
         memory: next,
     };
 }
@@ -503,6 +492,7 @@ const state = {
     limits: { triad: 10, scope: 4, advisory: 1, deep_review: 1 },
     lastExecutions: {},
     catalogModels: [],
+    modelSources: [],
     harnesses: [],
     profilesByHarness: {},
     // The configured-subagent roster (OUROBOROS_SUBAGENTS items) the reference
@@ -597,7 +587,6 @@ export function renderReviewerSlotsSection() {
             </div>
             <div id="reviewer-slots-error" class="ui-status" data-tone="error" hidden></div>
             <div id="reviewer-slots-pins" class="settings-inline-status" data-tone="warn" hidden></div>
-            <datalist id="reviewer-api-model-catalog"></datalist>
             <div class="reviewer-slots-group">
                 <div class="reviewer-slots-head">
                     <h4 class="reviewer-slots-heading">Triad slots <span class="muted" id="reviewer-triad-limit" title="The commit gate's real ceiling"></span></h4>
@@ -660,8 +649,12 @@ function effortSelectHtml(attrs, selected, surfaceDefault) {
 }
 
 export function reviewerRouteIdentityMarkup(route, harnesses = {}, {
-    catalogKnown = false,
+    catalogKnown = false, modelSources = [],
 } = {}) {
+    const fields = routeEditor.routeModelFields(route, modelSources);
+    if (fields.subscription) return harnessIdentityMarkup(fields.harness || fields.source, {
+        label: `${fields.sourceLabel} model`, className: 'reviewer-slot-route-identity',
+    });
     if (route?.kind !== ROUTE_KIND_SESSION) {
         return harnessIdentityMarkup('api', {
             channel: 'api',
@@ -684,6 +677,7 @@ function reviewerPickerHtml(attrs, row, { apiLabel } = {}) {
         rosterKnown: state.rosterKnown,
         row,
         harnesses: state.harnesses,
+        modelSources: state.modelSources,
         catalogKnown: state.catalogKnown,
         apiLabel,
     });
@@ -691,14 +685,11 @@ function reviewerPickerHtml(attrs, row, { apiLabel } = {}) {
 }
 
 function subagentIdentityMarkup(row) {
-    // Identity follows the DERIVED roster route: a session reference shows its
-    // harness, anything else the API channel — same shared markup direct rows use.
+    // Identity follows the DERIVED roster route without changing its delivery.
     const rosterRow = (state.roster || []).find(
         (item) => String(item.subagent_id || '') === String(row.subagent_id || ''));
-    const route = rosterRow?.route?.kind === ROUTE_KIND_SESSION
-        ? { kind: ROUTE_KIND_SESSION, target_id: rosterRow.route.target_id }
-        : { kind: ROUTE_KIND_API, target_id: '' };
-    return reviewerRouteIdentityMarkup(route, harnessesById(), { catalogKnown: state.catalogKnown });
+    const route = rosterRow?.route || { kind: ROUTE_KIND_API, target_id: '' };
+    return reviewerRouteIdentityMarkup(route, harnessesById(), { catalogKnown: state.catalogKnown, modelSources: state.modelSources });
 }
 
 function rowHtml(row, group) {
@@ -721,11 +712,11 @@ function rowHtml(row, group) {
     `;
     }
     const session = row.route.kind === ROUTE_KIND_SESSION;
-    const split = session ? splitSessionTarget(row.route.target_id) : { harness: '', model: '' };
+    const split = routeEditor.routeModelFields(row.route, state.modelSources);
     const harness = session ? harnessesById()[split.harness] : null;
     const modelOptions = sessionModelOptions(harness, split.model, { catalogKnown });
-    const profiles = session ? (state.profilesByHarness[split.harness] || []) : [];
-    const profileOptions = profileOptionsFor(profiles, row.route.profile_id, { accountsKnown });
+    const profiles = state.profilesByHarness[split.harness] || [];
+    const profileOptions = profileOptionsFor(profiles, row.route.profile_id, { accountsKnown: accountsKnown && Boolean(split.harness) });
     const last = state.lastExecutions[row.slot_id];
     const lastText = last ? describeLastExecution(last) : '';
     // ONE quiet meta line per row (owner feedback): the delivery badge and the
@@ -738,12 +729,12 @@ function rowHtml(row, group) {
     const surfaceDefault = CATEGORIES[group]?.surfaceDefault || 'review effort';
     return `
         <div class="reviewer-slot-row" data-slot-group="${group}" data-slot-id="${escapeHtml(row.slot_id)}">
-            ${reviewerRouteIdentityMarkup(row.route, harnessesById(), { catalogKnown })}
+            ${reviewerRouteIdentityMarkup(row.route, harnessesById(), { catalogKnown, modelSources: state.modelSources })}
             <div class="reviewer-slot-controls">
                 ${reviewerPickerHtml('data-slot-route aria-label="Reviewer"', row)}
-                ${session ? '' : `<input data-slot-custom-api list="reviewer-api-model-catalog" placeholder="provider/model-id" value="${escapeHtml(row.route.target_id || '')}" spellcheck="false" aria-label="API model id">`}
+                ${session ? '' : routeEditor.routeModelInputHtml('data-slot-custom-api aria-label="Model"', row.route, state.catalogModels, `reviewer-${row.slot_id}-models`)}
                 ${session ? selectHtml('data-slot-model aria-label="Harness model"', [{ label: '', options: modelOptions }], split.model) : ''}
-                ${session && profileOptions.length > 1 ? selectHtml('data-slot-profile aria-label="Credential account"', [{ label: '', options: profileOptions }], row.route.profile_id || '') : ''}
+                ${routeEditor.routeSupportsAccount(row.route) ? selectHtml('data-slot-profile aria-label="Credential account"', [{ label: '', options: profileOptions }], row.route.profile_id || '') : ''}
                 ${effortSelectHtml('data-slot-effort aria-label="Reasoning effort"', row.effort, surfaceDefault)}
                 <button type="button" class="btn btn-default" data-slot-remove title="Remove this slot">Remove</button>
             </div>
@@ -789,30 +780,29 @@ function singletonHtml(spec) {
     // agent_session), labeled neutrally, never a vendor name (the retired
     // Claude-SDK 'api' kind is parse-only migration now).
     const session = row.route?.kind === ROUTE_KIND_SESSION;
-    const split = session ? splitSessionTarget(row.route.target_id) : { harness: '', model: '' };
+    const split = routeEditor.routeModelFields(row.route, state.modelSources);
     // Session branch: the SAME model-options fragment the triad rows use —
     // rewriting it here would lose the "(not in discovery)" guard and let a
     // Save with the daemon down erase the owner's model. Api branch: the same
     // catalog-assisted free-text entry the triad rows use.
     const modelOptions = session
         ? sessionModelOptions(harnessesById()[split.harness], split.model, { catalogKnown }) : [];
-    const profiles = session ? (state.profilesByHarness[split.harness] || []) : [];
-    const profileOptions = session
-        ? profileOptionsFor(profiles, row.route?.profile_id, { accountsKnown }) : [];
+    const profiles = state.profilesByHarness[split.harness] || [];
+    const profileOptions = profileOptionsFor(profiles, row.route?.profile_id, { accountsKnown: accountsKnown && Boolean(split.harness) });
     const metaParts = [spec.badge(row), ...spec.extraMeta(row)];
     const modelsGap = session ? modelsGapNote(harnessesById()[split.harness], catalogKnown) : '';
     if (modelsGap) metaParts.push(modelsGap);
     if (lastText) metaParts.push(`Last run: ${lastText}`);
     return `
         <div class="reviewer-slot-row" data-${a}-row>
-            ${reviewerRouteIdentityMarkup(row.route, harnessesById(), { catalogKnown })}
+            ${reviewerRouteIdentityMarkup(row.route, harnessesById(), { catalogKnown, modelSources: state.modelSources })}
             <div class="reviewer-slot-controls">
                 ${enabled}
                 ${reviewerPickerHtml(`data-${a}-route aria-label="${spec.ariaName} reviewer"`, row, { apiLabel: spec.apiLabel })}
                 ${session
                     ? selectHtml(`data-${a}-model aria-label="${spec.ariaName} harness model"`, [{ label: '', options: modelOptions }], split.model)
-                    : `<input data-${a}-api-model list="reviewer-api-model-catalog" placeholder="${spec.apiPlaceholder}" value="${escapeHtml(row.route?.target_id || '')}" spellcheck="false" aria-label="${spec.ariaName} model id">`}
-                ${session && profileOptions.length > 1 ? selectHtml(`data-${a}-profile aria-label="${spec.ariaName} credential account"`, [{ label: '', options: profileOptions }], row.route?.profile_id || '') : ''}
+                    : routeEditor.routeModelInputHtml(`data-${a}-api-model aria-label="${spec.ariaName} model id"`, row.route, state.catalogModels, `${a}-models`, { placeholder: split.subscription ? 'Choose a model' : spec.apiPlaceholder })}
+                ${routeEditor.routeSupportsAccount(row.route) ? selectHtml(`data-${a}-profile aria-label="${spec.ariaName} credential account"`, [{ label: '', options: profileOptions }], row.route?.profile_id || '') : ''}
                 ${effortSelectHtml(
                     `data-${a}-effort aria-label="${spec.ariaName} effort"`,
                     session ? row.effort : (row.effort === spec.apiEffortDefault ? '' : row.effort),
@@ -825,6 +815,12 @@ function singletonHtml(spec) {
 }
 
 function renderRows() {
+    const active = document.activeElement;
+    const owner = active?.closest?.('.reviewer-slot-row');
+    const marker = owner && active.getAttributeNames().find((name) => name.startsWith('data-'));
+    const rowAttrs = owner ? [...owner.attributes].filter((attr) => attr.name.startsWith('data-')) : [];
+    const selection = marker && typeof active.selectionStart === 'number'
+        ? [active.selectionStart, active.selectionEnd] : null;
     const errorBox = document.getElementById('reviewer-slots-error');
     if (errorBox) {
         errorBox.hidden = !(state.configError || state.loadError);
@@ -859,12 +855,14 @@ function renderRows() {
         if (addEl) addEl.disabled = categoryRows(group).length >= state.limits[cat.limitKey];
     }
     for (const [spec, box] of singles) box.innerHTML = singletonHtml(spec);
-    const datalist = document.getElementById('reviewer-api-model-catalog');
-    if (datalist) {
-        datalist.innerHTML = state.catalogModels
-            .map((id) => `<option value="${escapeHtml(id)}"></option>`).join('');
-    }
     bindRowEvents();
+    if (marker) {
+        const row = [...document.querySelectorAll('.reviewer-slot-row')]
+            .find((element) => rowAttrs.every((attr) => element.getAttribute(attr.name) === attr.value));
+        const field = row?.querySelector(`[${marker}]`);
+        field?.focus({ preventScroll: true });
+        if (selection && field?.setSelectionRange) field.setSelectionRange(...selection);
+    }
 }
 
 function findRow(group, slotId) {
@@ -890,23 +888,19 @@ function bindRowEvents() {
             }
             row.subagent_id = '';
             if (!row.route?.kind) row.route = { kind: ROUTE_KIND_API, target_id: '' };
-            const decoded = decodeRouteChoice(value);
-            if (decoded.kind === ROUTE_KIND_SESSION) {
-                const prevHarness = row.route.kind === ROUTE_KIND_SESSION
-                    ? splitSessionTarget(row.route.target_id).harness : '';
-                if (prevHarness !== decoded.harness) {
-                    row.route = { kind: ROUTE_KIND_SESSION, target_id: decoded.harness, profile_id: '' };
-                }
-            } else if (row.route.kind !== ROUTE_KIND_API) {
-                // A session spec is not an API model id: the input starts
-                // empty (placeholder visible), display matching state.
-                row.route = { kind: ROUTE_KIND_API, target_id: '' };
-            }
+            const next = advisoryRouteTransition(row.route, decodeRouteChoice(value), row.routeMemory);
+            row.route = next.route;
+            row.routeMemory = next.memory;
             renderRows();
             state.onChange();
         });
         rowEl.querySelector('[data-slot-custom-api]')?.addEventListener('input', (event) => {
-            row.route.target_id = String(event.target.value || '').trim();
+            const previous = encodeRouteChoice(row);
+            row.route.target_id = routeEditor.routeTargetFromModel(row.route, event.target.value);
+            if (previous !== encodeRouteChoice(row)) {
+                delete row.route.profile_id;
+                renderRows();
+            }
             state.onChange();
         });
         rowEl.querySelector('[data-slot-model]')?.addEventListener('change', (event) => {
@@ -983,7 +977,12 @@ function bindSingletonEvents(section, spec) {
         edited();
     });
     el.querySelector(`[data-${a}-api-model]`)?.addEventListener('input', (event) => {
-        row.route.target_id = String(event.target.value || '').trim();
+        const previous = encodeRouteChoice(row);
+            row.route.target_id = routeEditor.routeTargetFromModel(row.route, event.target.value);
+            if (previous !== encodeRouteChoice(row)) {
+                delete row.route.profile_id;
+                renderRows();
+            }
         edited();
     });
     el.querySelector(`[data-${a}-profile]`)?.addEventListener('change', (event) => {
@@ -1022,54 +1021,61 @@ function addRow(group) {
     state.onChange();
 }
 
+// One projection for both persisted settings and the unsaved setup compiler.
+export function applyReviewerSlotsDraft(data) {
+    state.loadError = '';
+    state.configError = String(data.config_error || '');
+    state.source = String(data.source || '');
+    state.limits = data.limits || state.limits;
+    state.lastExecutions = data.last_executions || {};
+    // Rows spread as-is so a subagent_id reference rides along; a direct
+    // route gets its own object. The advisory's non-session kind is
+    // normalized to the shared api_chat spelling here — the retired legacy
+    // 'api' (Claude-SDK) kind is parse-only server-side and this UI never
+    // writes it again.
+    const rowIn = (row) => ({ ...row, route: { ...(row.route || {}) } });
+    state.triad = Array.isArray(data.triad) ? data.triad.map(rowIn) : [];
+    state.scope = Array.isArray(data.scope) ? data.scope.map(rowIn) : [];
+    state.advisory = data.advisory ? rowIn(data.advisory) : state.advisory;
+    if (state.advisory.route?.kind !== ROUTE_KIND_SESSION) {
+        state.advisory.route = { ...(state.advisory.route || {}), kind: ROUTE_KIND_API };
+    }
+    // The deep self-review singleton: the server answers with the saved row
+    // or, unsaved, the row synthesized from the legacy model key (labeled
+    // so); beside a config_error that synthesized row is a legacy-derived
+    // REPAIR PLACEHOLDER — no row is effective until the setting is repaired.
+    // The label rides the state, never the saved bytes.
+    const deep = data.deep_review ? rowIn(data.deep_review) : {};
+    state.deepReview = {
+        route: deep.route?.kind === ROUTE_KIND_SESSION ? deep.route : { ...(deep.route || {}), kind: ROUTE_KIND_API },
+        effort: String(deep.effort || ''),
+        subagent_id: String(deep.subagent_id || ''),
+        synthesizedFrom: String(deep.synthesized_from || ''),
+        // Only a SAVED row is materialized on load; a synthesized one (or
+        // no row at all, e.g. beside a config_error on an older server)
+        // stays an omitted placeholder until the owner edits it.
+        materialized: Boolean(data.deep_review) && !deep.synthesized_from,
+    };
+    // Reload is an explicit discard: source drafts belong to this loaded form,
+    // never to a previous Settings document or a different account's choice.
+    for (const spec of Object.values(SINGLETONS)) {
+        for (const key of Object.keys(spec.memory)) delete spec.memory[key];
+        const route = state[spec.stateKey].route;
+        spec.memory[encodeRouteChoice({ route })] = { ...route };
+    }
+    // The VIEW loaded even when the saved value is invalid — that is exactly the
+    // state the owner repairs from, and treating it as "not loaded" made the
+    // save drop the repair (see collectReviewerSlots).
+    state.loaded = true;
+    renderRows();
+}
+
 export async function reloadReviewerSlots() {
     try {
         const resp = await apiFetch('/api/reviewer-slots', { cache: 'no-store' });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-        state.loadError = '';
-        state.configError = String(data.config_error || '');
-        state.source = String(data.source || '');
-        state.limits = data.limits || state.limits;
-        state.lastExecutions = data.last_executions || {};
-        // Rows spread as-is so a subagent_id reference rides along; a direct
-        // route gets its own object. The advisory's non-session kind is
-        // normalized to the shared api_chat spelling here — the retired legacy
-        // 'api' (Claude-SDK) kind is parse-only server-side and this UI never
-        // writes it again.
-        const rowIn = (row) => ({ ...row, route: { ...(row.route || {}) } });
-        state.triad = Array.isArray(data.triad) ? data.triad.map(rowIn) : [];
-        state.scope = Array.isArray(data.scope) ? data.scope.map(rowIn) : [];
-        state.advisory = data.advisory ? rowIn(data.advisory) : state.advisory;
-        if (state.advisory.route?.kind !== ROUTE_KIND_SESSION) {
-            state.advisory.route = { ...(state.advisory.route || {}), kind: ROUTE_KIND_API };
-        }
-        // Seed the per-kind route memory with the SAVED route, so switching
-        // the advisory select away and back restores it (finding #7c).
-        advisoryRouteMemory[state.advisory.route?.kind === ROUTE_KIND_SESSION ? 'session' : 'api']
-            = { ...(state.advisory.route || {}) };
-        // The deep self-review singleton: the server answers with the saved row
-        // or, unsaved, the row synthesized from the legacy model key (labeled
-        // so); beside a config_error that synthesized row is a legacy-derived
-        // REPAIR PLACEHOLDER — no row is effective until the setting is repaired.
-        // The label rides the state, never the saved bytes.
-        const deep = data.deep_review ? rowIn(data.deep_review) : {};
-        state.deepReview = {
-            route: deep.route?.kind === ROUTE_KIND_SESSION ? deep.route : { ...(deep.route || {}), kind: ROUTE_KIND_API },
-            effort: String(deep.effort || ''),
-            subagent_id: String(deep.subagent_id || ''),
-            synthesizedFrom: String(deep.synthesized_from || ''),
-            // Only a SAVED row is materialized on load; a synthesized one (or
-            // no row at all, e.g. beside a config_error on an older server)
-            // stays an omitted placeholder until the owner edits it.
-            materialized: Boolean(data.deep_review) && !deep.synthesized_from,
-        };
-        deepReviewRouteMemory[state.deepReview.route?.kind === ROUTE_KIND_SESSION ? 'session' : 'api']
-            = { ...(state.deepReview.route || {}) };
-        // The VIEW loaded even when the saved value is invalid — that is exactly the
-        // state the owner repairs from, and treating it as "not loaded" made the
-        // save drop the repair (see collectReviewerSlots).
-        state.loaded = true;
+        applyReviewerSlotsDraft(data);
     } catch (error) {
         // A transport failure is NOT a verdict on the saved configuration: the
         // config-error banner accuses the owner's settings of blocking review, and
@@ -1149,6 +1155,7 @@ export function initReviewerSlots({ onChange, store = claudexorStatus } = {}) {
     }
     const onCatalog = (event) => {
         const items = event?.detail?.items || [];
+        state.modelSources = event?.detail?.model_sources || [];
         state.catalogModels = items.map((item) => String(item.value || item.id || '')).filter(Boolean);
         renderRows();
     };

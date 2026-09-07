@@ -818,6 +818,7 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
             default=HIDDEN_CHAT_ID,
         ),
         "status": str(final_task_result.get("status") or evt.get("status") or ""),
+        "root_phase_checkpoint": final_task_result.get("root_phase_checkpoint") or {},
         "outcome_axes": outcome_axes,
         "reason_code": reason_code,
         "artifact_status": artifact_status,

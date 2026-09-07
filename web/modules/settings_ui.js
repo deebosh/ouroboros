@@ -3,13 +3,14 @@ import { PAGE_ICONS } from './page_icons.js';
 import { renderAgentAccountsSection, renderAgentsServiceBanner } from './harness_accounts.js';
 import { renderReviewerSlotsSection } from './reviewer_slots.js';
 import { renderSubagentsSection } from './subagents_settings.js';
+import { modelRolesHost } from './model_roles.js';
 
 // Reads as a sequence: keys → secrets → which API models → who among the agents
 // does what → behavior → technical. "Agents", not "Coding agents" (D-10): the
 // same subscriptions build presentations and run arbitrary tasks, so the
 // narrower word named only one of their uses.
 const SETTINGS_TABS = [
-    { value: 'providers', label: 'Providers' },
+    { value: 'providers', label: 'Accounts' },
     { value: 'secrets', label: 'Secrets' },
     { value: 'models', label: 'Models' },
     { value: 'agents', label: 'Agents' },
@@ -18,14 +19,6 @@ const SETTINGS_TABS = [
     { value: 'about', label: 'About' },
 ];
 // Guard markers: renderTabStrip emits behavior/advanced tabs at runtime.
-
-const MODEL_CARDS = [
-    ['Main', 'Primary reasoning model.', 's-model', 's-local-main', 'google/gemini-3.8-flash'],
-    ['Light', 'Fast summaries, lightweight internal work, reflections, and the default Fast scout. Empty uses Main.', 's-model-light', 's-local-light', 'openai/gpt-5.6-luna'],
-    ['Vision', 'Caption and VLM lane. Empty uses Main.', 's-model-vision', '', ''],
-    ['Consciousness', 'High-horizon background consciousness. Empty uses Main.', 's-model-consciousness', 's-local-consciousness', ''],
-    ['Fallback', 'Resilience and degraded path (comma-separated chain).', 's-model-fallback', 's-local-fallback', 'openai/gpt-5.6-luna'],
-];
 
 // 6.3: Review and Scope Review efforts moved to per-slot dropdowns in
 // Agents → Review lanes. Behavior keeps the surface-level lanes.
@@ -186,30 +179,6 @@ function providerSettingsCard(spec) {
     });
 }
 
-function modelCard({ title, copy, inputId, toggleId, defaultValue }) {
-    const toggle = toggleId ? `<label class="local-toggle"><input type="checkbox" id="${toggleId}"> Local</label>` : '';
-    return `
-        <div class="settings-model-card">
-            <div class="settings-model-header">
-                <div>
-                    <h4>${title}</h4>
-                    <p>${copy}</p>
-                </div>
-                ${toggle}
-            </div>
-            <div class="model-picker" data-model-picker>
-                <input
-                    id="${inputId}"
-                    value="${defaultValue}"
-                    autocomplete="off"
-                    spellcheck="false"
-                >
-                <div class="model-picker-results" hidden></div>
-            </div>
-        </div>
-    `;
-}
-
 // The owner-facing subset of ouroboros/config.py EFFORT_SCALE: `minimal` is a
 // valid runtime tier (bench adapters / agent-side switch_model use it) but is
 // deliberately NOT offered as an owner slot default — sub-`low` thinking is a
@@ -317,9 +286,12 @@ export function renderSettingsPage() {
             <div class="settings-scroll scroll-fade-y">
                 <section class="settings-panel active" data-settings-panel="providers">
                     <div class="settings-section-copy">
-                        Configure remote providers and the optional network gate. Secret fields now have explicit
-                        <code>Clear</code> actions so masked values can be removed intentionally.
+                        Connect subscriptions and API keys here, then choose their roles in Models and Agents.
+                        Adding an account keeps your existing assignments.
                     </div>
+                    ${renderAgentsServiceBanner()}
+                    ${renderAgentAccountsSection()}
+                    <h3>API keys</h3>
                     ${PROVIDER_CARDS.filter((card) => !card.advanced).map(providerSettingsCard).join('')}
                     <details class="settings-more-providers" id="settings-more-providers">
                         <summary>
@@ -330,9 +302,6 @@ export function renderSettingsPage() {
                             ${PROVIDER_CARDS.filter((card) => card.advanced).map(providerSettingsCard).join('')}
                         </div>
                     </details>
-                    <!-- Agent accounts moved to the Agents tab (D-10): they are
-                         not a remote API provider, and the owner had to hunt for
-                         the Add-account button under an unrelated row. -->
                     <div class="form-section compact">
                         <h3>Legacy Compatibility</h3>
                         <div class="form-row">
@@ -371,16 +340,14 @@ export function renderSettingsPage() {
                     <div class="form-section">
                         <h3>Model Routing</h3>
                         <div class="settings-section-copy">
-                            These fields are cloud model IDs. Enable <code>Local</code> to route that model
-                            through the GGUF server configured in Advanced.
+                            Choose a source, model, and subscription account for each role. Auto rotates
+                            compatible accounts. Local uses the runtime configured in Advanced.
                         </div>
                         <div class="settings-action-row">
                             <span id="settings-model-catalog-status" class="settings-inline-status" role="status" aria-live="polite" aria-atomic="true">Model catalog is optional and failure-tolerant.</span>
                             <button type="button" class="btn btn-default" id="btn-refresh-model-catalog">Refresh Model Catalog</button>
                         </div>
-                        <div class="settings-model-grid">
-                            ${MODEL_CARDS.map(([title, copy, inputId, toggleId, defaultValue]) => modelCard({ title, copy, inputId, toggleId, defaultValue })).join('')}
-                        </div>
+                        ${modelRolesHost('settings-model-roles')}
                     </div>
 
                     <!-- Review lanes and Delegation moved to the Agents tab
@@ -405,17 +372,12 @@ export function renderSettingsPage() {
 
                 <section class="settings-panel" data-settings-panel="agents">
                     <div class="settings-section-copy">
-                        The agents Ouroboros delegates to, in dependency order: the subscription
-                        accounts they run on, the Available subagents built from those accounts
-                        and API routes, and the review lanes that reference those subagents.
-                        API keys stay in Providers; global model lanes stay in Models, while
-                        each Available subagent owns its route here.
+                        Configure the subagents and reviewers Ouroboros works with. Subscriptions and
+                        API keys are in Accounts; global model roles are in Models.
                     </div>
                     <!-- ONE service banner for the whole tab: the single place a
                          daemon or runtime problem is explained, instead of the
                          scattering of "(not in discovery)" the owner reported. -->
-                    ${renderAgentsServiceBanner()}
-                    ${renderAgentAccountsSection()}
                     ${renderSubagentsSection()}
                     ${renderReviewerSlotsSection()}
                 </section>
@@ -943,6 +905,7 @@ export function bindSettingsTabs(root, options = {}) {
         tabs.forEach((button) => {
             const isActive = button.dataset.settingsTab === tabName;
             button.classList.toggle('active', isActive);
+            button.setAttribute('aria-selected', String(isActive));
             if (isActive) activeButton = button;
         });
         panels.forEach((panel) => {

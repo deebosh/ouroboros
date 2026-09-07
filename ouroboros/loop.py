@@ -22,6 +22,7 @@ from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, ACCEPTANCE_BYPASS_REASON_BY_
 from ouroboros.observability import new_execution_id  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.tool_policy import CAPABILITY_OMISSION_HEADER, format_capability_omissions, initial_tool_schemas, list_non_core_tools, swarm_router_turn  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.tools.registry import ToolRegistry
+from ouroboros.model_wait import ModelWaitInterrupted
 from ouroboros.context import build_user_content  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.context_budget import ContextReclaimRequest  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
 from ouroboros.context_compaction import compact_tool_history_llm, context_reclaim_transcript_sha256  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
@@ -336,14 +337,6 @@ def _apply_runtime_overrides(
     return active_model, active_use_local, active_effort
 
 
-def _apply_overrides_and_regate_mode(ctx, active_model, active_use_local, active_effort, active_context_mode):
-    """Apply per-round overrides; route rebind never predicts a mode change."""
-    active_model, active_use_local, active_effort = _apply_runtime_overrides(
-        ctx, active_model, active_use_local, active_effort,
-    )
-    return active_model, active_use_local, active_effort, active_context_mode
-
-
 def _resolve_loop_max_rounds() -> int:
     from ouroboros.config import SETTINGS_DEFAULTS
 
@@ -392,7 +385,7 @@ def run_llm_loop(
         active_context_mode = _preferred_context_mode
     llm_trace: Dict[str, Any] = {"reasoning_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {"_task_attempt": getattr(ctx, "task_attempt", None)}
-    tools._ctx._accumulated_usage = ctx._accumulated_usage = accumulated_usage
+    ctx._accumulated_usage = accumulated_usage
     invalidate_task_cache_splits(task_id or getattr(ctx, "task_id", ""))  # rebuilt attempt = new prefix
     max_retries = 3
     cost_ceiling = _resolve_task_cost_ceiling(ctx, budget_remaining_usd)
@@ -403,8 +396,7 @@ def run_llm_loop(
     from ouroboros.tools import tool_discovery as _td
     _td.set_registry(tools)
 
-    tool_schemas = initial_tool_schemas(tools)
-    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, messages)
+    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, initial_tool_schemas(tools), messages)
     tools._ctx.event_queue = event_queue
     tools._ctx.task_id = task_id
     tools._ctx.messages = messages
@@ -429,9 +421,8 @@ def run_llm_loop(
 
             ctx = tools._ctx
             _prev_active_route = (active_model, active_use_local)
-            _prev_active_model = active_model
-            active_model, active_use_local, active_effort, active_context_mode = _apply_overrides_and_regate_mode(
-                ctx, active_model, active_use_local, active_effort, active_context_mode,
+            active_model, active_use_local, active_effort = _apply_runtime_overrides(
+                ctx, active_model, active_use_local, active_effort,
             )
             if (active_model, active_use_local) != _prev_active_route:
                 context_fit_plan, active_context_mode = _rebind_context_fit_plan(
@@ -439,11 +430,11 @@ def run_llm_loop(
                     use_local=active_use_local, preferred_mode=_preferred_context_mode,
                     tool_schemas=tool_schemas,
                 )
-            if active_model != _prev_active_model:
+            if active_model != _prev_active_route[0]:
                 # Cross-FAMILY switch_model / per-task override: strip the prior
                 # family's provider-private reasoning blocks so the new family
                 # does not 400 on a foreign signature (same family = no-op).
-                _sanitized = LLMClient.sanitize_reasoning_on_model_switch(messages, _prev_active_model, active_model)
+                _sanitized = LLMClient.sanitize_reasoning_on_model_switch(messages, _prev_active_route[0], active_model)
                 if _sanitized is not messages:
                     messages[:] = _sanitized
             ctx.active_context_mode = active_context_mode
@@ -485,23 +476,15 @@ def run_llm_loop(
                     limit_ctx, error_kind="provider_outcome_unknown")
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
-            # Per-round early exit: supervisor finalize_now, else loop-local real-deadline finalize.
+            # The ordered pre-round exit owns supervisor grace, deadline and cost.
             _early_final = _maybe_early_finalize(
-                limit_ctx, tools, _controls, transport_episode=transport_wait)
+                limit_ctx, tools, _controls, transport_episode=transport_wait, cost_ceiling=cost_ceiling)
             if _early_final is not None:
                 text, accumulated_usage, forced_trace = _early_final
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
 
-            # Typed soft landing (v6.91): the ledger fence stays the untouched
-            # backstop; an exhausted ceiling wraps up BEFORE spending a round.
-            _soft_land = _soft_land_exhausted_ceiling(limit_ctx, cost_ceiling)
-            if _soft_land is not None:
-                text, accumulated_usage, forced_trace = _soft_land
-                _merge_finalization_trace(llm_trace, forced_trace)
-                return text, accumulated_usage, llm_trace
-
-            _checkpoint_injected = _inject_round_checkpoints(
+            _inject_round_checkpoints(
                 round_idx=round_idx, max_rounds=MAX_ROUNDS, messages=messages, accumulated_usage=accumulated_usage,
                 emit_progress=emit_progress, tools=tools, event_queue=event_queue, task_id=task_id,
                 drive_logs=drive_logs, budget_remaining_usd=budget_remaining_usd, cost_ceiling=cost_ceiling)
@@ -512,16 +495,14 @@ def run_llm_loop(
                     tools=tools, drive_root=drive_root, drive_logs=drive_logs,
                     task_id=task_id, round_idx=round_idx,
                     event_queue=event_queue, emit_progress=emit_progress))
-            if tools._ctx.messages is not messages:
-                tools._ctx.messages = messages
+            tools._ctx.messages = messages
             limit_ctx.messages = messages  # WA2: provider-death finalize must salvage the COMPACTED transcript
             if _compaction_usage:
                 _account_compaction_usage(accumulated_usage, _compaction_usage, event_queue, task_id)
 
             seal_task_transcript(messages)
 
-            msg, cost, active_context_mode = _call_round_model(
-                _RoundModelCallContext(
+            model_call = _RoundModelCallContext(
                     llm=llm,
                     messages=messages,
                     tools=tools,
@@ -540,7 +521,18 @@ def run_llm_loop(
                     active_context_mode=active_context_mode,
                     drive_root=drive_root,
                 )
-            )
+            try:
+                msg, cost, active_context_mode = _call_round_model(model_call)
+            except ModelWaitInterrupted as error:
+                controlled = _handle_model_wait_control(limit_ctx, error)
+                if controlled is not None:
+                    text, accumulated_usage, forced_trace = controlled
+                    _merge_finalization_trace(llm_trace, forced_trace)
+                    return text, accumulated_usage, llm_trace
+                free_redial = True
+                continue
+            active_model, active_use_local = model_call.active_model, model_call.active_use_local
+            context_fit_plan = model_call.context_fit_plan
             tools._ctx._current_llm_call_meta = dict(accumulated_usage.get("_last_llm_call_meta") or {})
 
             last_error_kind = str(accumulated_usage.get("_last_llm_error_kind") or "")
@@ -569,6 +561,10 @@ def run_llm_loop(
                     error_kind=str(accumulated_usage.get("_last_llm_error_kind") or ""),
                     drive_logs=drive_logs, task_id=task_id, model=active_model,
                     emit_progress=emit_progress, after_local_pass=_episode_before_chain)
+            # A wait-card switch can change the route within this very call.
+            # Delivery/finalization in the same round must use that applied route.
+            limit_ctx.active_model = ctx.active_model = active_model
+            limit_ctx.active_use_local = ctx.active_use_local = active_use_local
             if msg is None and transport_wait is not None and _transport_wait_step(
                 transport_wait, tools=tools,
                 error_kind=str(accumulated_usage.get("_last_llm_error_kind") or ""),
@@ -737,6 +733,7 @@ from ouroboros.loop_round_limits import (  # noqa: E402, F401 -- intentional pub
     _handle_forced_finalization,
     _handle_owner_stop_finalization,
     _handle_provider_unavailable,
+    _handle_model_wait_control,
     _maybe_deadline_local_finalize,
     _maybe_early_finalize,
     _finalize_limit_ctx,

@@ -21,6 +21,7 @@ from ouroboros.task_results import (
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection, with_cost_aliases  # noqa: F401
 from ouroboros.subagent_messages import subagent_message_meta  # noqa: F401
 from supervisor.cognitive_operations import EVENT_HANDLERS as _CEH, _handle_cognitive_operation  # noqa: F401
+from supervisor.task_model_wait import EVENT_HANDLERS as _MWH
 from supervisor.task_dispatch import (  # noqa: F401 -- facade name tests import
     build_scheduled_task_payload as _build_scheduled_task_payload,
 )
@@ -257,6 +258,7 @@ EVENT_HANDLERS = {
     "llm_usage": _handle_llm_usage,
     "external_wait_lease": _handle_external_wait_lease,
     **_CEH,
+    **_MWH,
     **_CDE,
     "main_llm_call_state": _handle_main_llm_call_state,
     "budget_pause": _handle_budget_pause,

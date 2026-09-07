@@ -139,6 +139,10 @@ async def api_decision_answer(request: Request) -> JSONResponse:
             400, reason_code="request_id_required",
         )
     decision_id = str(body.get("decision_id") or "").strip()
+    if decision_id.split(":", 1)[0] == "model_wait":
+        from ouroboros.gateway.task_model_wait import api_model_wait_decision
+
+        return await api_model_wait_decision(request, body)
     raw_comment = body.get("comment")
     if raw_comment is not None and not isinstance(raw_comment, str):
         return json_error("comment must be a string", 400, reason_code="comment_invalid")

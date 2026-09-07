@@ -306,7 +306,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None) -
             running_rows = [
                 (
                     str(task_id),
-                    dict(meta.get("task") or {}) if isinstance(meta, dict) else {},
+                    {**(meta.get("task") or {}), "_attempt": int(meta.get("attempt")
+                        or (meta.get("task") or {}).get("_attempt") or 1)} if isinstance(meta, dict) else {},
                     _epoch_or_zero(meta.get("started_at")) if isinstance(meta, dict) else 0.0,
                 )
                 for task_id, meta in queue_mod.RUNNING.items()
@@ -336,6 +337,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None) -
                 "kind": "managed_task",
                 "phase": phase,
                 "started_at": started_at,
+                "task_attempt": int(row.get("_attempt") or 1),
+                **({"model_waits": row["model_waits"]} if row.get("model_waits") else {}),
             }
 
         from supervisor.queue_transitions import budget_pause_fact
@@ -351,6 +354,12 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None) -
             if task_id and _is_root(task_id, row):
                 phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
                 activities.append(_activity(task_id, row, phase, started_at))
+        from ouroboros.post_task_checkpoint import post_task_model_waits
+        visible = {row["activity_id"] for row in activities}
+        for owner in post_task_model_waits(drive_root):
+            if owner.task_id not in visible:
+                row = {**owner.task, "model_waits": owner.snapshot()["model_waits"]}
+                activities.append(_activity(owner.task_id, row, "finalizing", _epoch_or_zero(row.get("queued_at"))))
     except Exception:
         log.debug("Managed-activity snapshot unavailable for /api/state", exc_info=True)
     return activities

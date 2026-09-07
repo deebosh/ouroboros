@@ -875,7 +875,7 @@ def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypa
     # Real registry preparation may outlive a sub-second window on a busy host;
     # that is a valid pre-dispatch refusal, not the retained-draft case below.
     clock = SimpleNamespace(now=1000.0)
-    monkeypatch.setattr(native_episode, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(native_episode, "monotonic_now", lambda: clock.now)
 
     llm = _ScriptedLLM([
         {"tool_calls": [_tool_call("read_file", {"path": "greeting.txt"}, "c1")]},
@@ -911,7 +911,7 @@ def test_slot_logical_window_bounds_the_episode(subject_repo, tmp_path, monkeypa
     # The window expiring between the round's admission check and dispatch
     # takes the deadline path — no send with a floored timeout.
     ticks = iter([1000.0])  # the admission check sees 1000; every later reading (the clamp) sees 1002
-    monkeypatch.setattr(native_episode, "time", SimpleNamespace(monotonic=lambda: next(ticks, 1002.0)))
+    monkeypatch.setattr(native_episode, "monotonic_now", lambda: next(ticks, 1002.0))
     llm = _ScriptedLLM([{"content": _VERDICT}])
     executor = NativeToolRoundReviewExecutor(_assignment(subject_repo, llm), llm=llm)
     executor._logical_deadline_monotonic = 1001.0

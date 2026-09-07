@@ -62,6 +62,10 @@ def calibrated_input_token_limit(
     densest fresh EXACT-MODEL witness with its safety factor (it may undercut the
     cold 1.65 floor), else the floor — never another model's witness; the
     absolute-margin form remains an independent upper bound."""
+    if context_window <= 0:
+        # Unknown provider capacity leaves the caller's existing input budget
+        # intact. Zero is absence of evidence, not a zero-token provider limit.
+        return int(budget_cap)
     from ouroboros.capability_evidence import resolve_review_token_density
 
     density, _ = resolve_review_token_density(
@@ -663,17 +667,9 @@ def check_worktree_readiness(
     # 3. Core Python changes without test changes (reuses the check-1 git status).
     try:
         if status_result is not None and status_result.returncode == 0:
-            changed_lines = (status_result.stdout or "").splitlines()
             has_py_in_core = False
             has_test_change = False
-            for line in changed_lines:
-                paths = paths_from_porcelain_line(
-                    line,
-                    include_sources_for_renames=False,
-                )
-                if not paths:
-                    continue
-                fpath = paths[0]
+            for fpath in parse_changed_paths_from_porcelain(status_result.stdout or ""):
                 if fpath.endswith(".py") and (
                     fpath.startswith("ouroboros/") or fpath.startswith("supervisor/")
                 ):

@@ -17,6 +17,9 @@ from ouroboros.settings_defaults import (
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,
 )
 
+# Local model-operation status polling; not a provider deadline or quota timer.
+CLAUDEXOR_MODEL_POLL_INTERVAL_SEC = 0.25
+
 
 def _clamped_number_setting(key: str, *, low, high=float("inf"), cast=float):
     """Env-or-default numeric setting clamped to [low, high]; a typo falls back to the

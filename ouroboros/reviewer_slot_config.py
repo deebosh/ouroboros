@@ -110,14 +110,14 @@ class ConfiguredReviewerSlot:
     # their target here; api rows carry ''. Legacy session rows resolve the
     # same shared route once into this row so delivery/fingerprint see one fact.
     session_target: str = ""
-    # Optional manual credential pin (Q2-в): '' = the daemon's rotation policy
-    # (D28 default). Meaningful on agent_session rows only.
+    # Optional managed account pin for session or raw-model delivery; '' = Auto.
     profile_id: str = ""
     # Optional configured-subagent reference (OUROBOROS_SUBAGENTS row id).
     # Mutually exclusive with an inline route in the STORED form; when set, the
     # execution fields above were resolved from the frozen roster row at load
     # time and the roster stays their SSOT. '' = ordinary direct row.
     subagent_id: str = ""
+    use_local: Optional[bool] = None  # Runtime task override only; never a second settings policy.
 
     @property
     def is_session(self) -> bool:
@@ -179,6 +179,11 @@ class AdvisorySlotConfig:
     # Non-empty ⇒ the row was force-disabled at parse with this typed reason
     # (currently only the unmapped legacy Claude-SDK target migration).
     disabled_reason: str = ""
+    use_local: Optional[bool] = None  # Runtime task override, not serialized configuration.
+
+    @property
+    def slot_id(self) -> str:
+        return "advisory_slot_1"  # The existing single advisory actor identity.
 
 
 @dataclass(frozen=True)
@@ -308,7 +313,7 @@ def _resolve_actor_slot(
         )
     return ConfiguredReviewerSlot(
         slot_id=slot_id, kind=ROUTE_KIND_API, target_id=target,
-        effort=chosen_effort, subagent_id=subagent_id,
+        effort=chosen_effort, subagent_id=subagent_id, profile_id=pin,
     )
 
 
@@ -377,7 +382,7 @@ def _parse_slot(row: Any, where: str, seen_ids: set) -> ConfiguredReviewerSlot:
         slot_id=slot_id, kind=kind, target_id=route.target_id,
         effort=effort,
         session_target=route.target_id if kind == ROUTE_KIND_SESSION else "",
-        profile_id=route.credential_profile_id if kind == ROUTE_KIND_SESSION else "",
+        profile_id=route.credential_profile_id,
     )
 
 
@@ -728,7 +733,7 @@ def _delivery_slot(
         model=row.target_id,
         effort=row_effort(row, effort_surface, default=default_effort),
         role_hint=role_hint,
-        use_local=(resolved_review_model_target(row.target_id).provider_route == "local"),
+        use_local=(row.use_local if row.use_local is not None else resolved_review_model_target(row.target_id).provider_route == "local"),
         route=(ReviewRouteKind.AGENT_SESSION if row.is_session
                else ReviewRouteKind.API_CHAT),
         session_target=row.session_target,
@@ -821,9 +826,13 @@ def commit_triad_delivery() -> Dict[str, Any]:
     configuration — the caller turns that into its typed infra block.
     """
     from ouroboros.review_execution import ReviewRouteKind
+    from ouroboros.review_records import apply_review_model_override
+    from ouroboros.model_wait import current_model_wait
 
     config = load_reviewer_slot_config()
     slots = triad_delivery_slots(config=config, role_hint="multi-model review")
+    waiter = current_model_wait()
+    slots = [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter else slots
     return {
         "models": [slot.model for slot in slots],
         "routes": [slot.route for slot in slots],
@@ -832,6 +841,7 @@ def commit_triad_delivery() -> Dict[str, Any]:
         "session_profiles": [slot.session_profile for slot in slots],
         "slot_ids": [slot.slot_id for slot in slots],
         "subagent_ids": [slot.subagent_id for slot in slots],
+        "use_local": [slot.use_local for slot in slots],
         # The historical fingerprint identity survives for the UNCONFIGURED
         # panel (source="default", all api rows): a 7.0 upgrade must not lapse
         # every install's skill-review replay authority. ABI-10 retired the

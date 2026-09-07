@@ -594,6 +594,15 @@ def _drain_forced_owner_directives(
 def _call_forced_model_once(
     ctx: _RoundLimitContext, *, initial_messages: Any = None, admitted_request: Any = None,
 ) -> str:
+    from ouroboros.model_slots import task_model_binding
+    from ouroboros.model_wait import current_model_wait
+
+    owner_ctx = getattr(getattr(ctx, "tools", None), "_ctx", None)
+    waiter = current_model_wait()
+    role, account = task_model_binding({"model_role": getattr(ctx, "model_role", ""),
+        "task_metadata": getattr(owner_ctx, "task_metadata", {})},
+        context_fit_plan=getattr(owner_ctx, "context_fit_plan", None),
+        overrides=waiter.overrides if waiter else None)
     response_meta: Dict[str, Any] = {}
     identity = (
         "model", "provider", "candidate_raw_sha256", "candidate_raw_size_bytes",
@@ -624,6 +633,8 @@ def _call_forced_model_once(
         ),
         initial_messages=initial_messages,
         candidate_predicate=candidate_predicate,
+        model_role=role,
+        model_account_override=account,
     )
     ctx.accumulated_usage["_forced_response_meta"] = response_meta
     return str((final_msg or {}).get("content") or "").strip()

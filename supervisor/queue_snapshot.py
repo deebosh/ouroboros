@@ -141,6 +141,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
             },
         })
     running_rows = []
+    from supervisor.task_model_wait import quota_waited_seconds
     now = time.time()
     for task_id, meta in running_items:
         task = meta.get("task") if isinstance(meta, dict) else {}
@@ -150,6 +151,8 @@ def persist_queue_snapshot(reason: str = "") -> bool:
             "id": task_id, "type": task.get("type"), "priority": task.get("priority"),
             "attempt": meta.get("attempt"), "worker_id": meta.get("worker_id"),
             "runtime_sec": round(max(0.0, now - started), 2) if started > 0 else 0.0,
+            "quota_wait_sec": quota_waited_seconds(meta, now),
+            "execution_sec": max(0.0, now - started - quota_waited_seconds(meta, now)) if started > 0 else 0.0,
             "heartbeat_lag_sec": round(max(0.0, now - hb), 2) if hb > 0 else None,
             "soft_sent": bool(meta.get("soft_sent")), "task": task,
         })

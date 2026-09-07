@@ -273,7 +273,7 @@ def plan_review_slots() -> list:
     return triad_delivery_slots(
         role_hint="plan reviewer", default_effort=PLAN_REVIEW_EFFORT,
         timeout_sec=PLAN_REVIEW_SLOT_TIMEOUT_SEC, max_tokens=PLAN_REVIEW_MAX_TOKENS,
-        temperature=0.2,
+        default_temperature=0.2,
     )
 
 
@@ -313,8 +313,10 @@ async def run_plan_review_slots(
     the substrate RAN under, its route, text/error, refs, usage and the
     ``host_file_read_attestation`` fact."""
     from ouroboros.review_substrate import ReviewRequest, run_review_request
+    from ouroboros.model_wait import copy_wait_context
     from ouroboros.tools.plan_packet import plan_user_stable_len
     from ouroboros.tools.review_synthesis import build_plan_review_messages
+    from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
     request = ReviewRequest(
         surface="plan_review",
@@ -326,7 +328,7 @@ async def run_plan_review_slots(
         task_id=str(getattr(ctx, "task_id", "") or "plan_review"),
         call_type="plan_review",
         max_tokens=PLAN_REVIEW_MAX_TOKENS,
-        temperature=0.2,
+        default_temperature=0.2,
         no_proxy=True,
         session_task=session_task,
         session_root=session_root,
@@ -338,16 +340,19 @@ async def run_plan_review_slots(
         policy={"output_contract": output_contract} if output_contract else {},
     )
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: run_review_request(
-            request,
-            slots=list(slots),
-            drive_root=pathlib.Path(ctx.drive_root),
-            llm=LLMClient(),
-            usage_ctx=ctx,
-        ),
-    )
+    wait_context = copy_wait_context()
+    parent_usage = current_usage_scope() or UsageScope()
+
+    def run():
+        # Carry the admitted root wallet and live wait owner, but no parent
+        # Main physical capture/context into the reviewer's separate attempts.
+        with usage_scope(parent_usage):
+            return run_review_request(
+                request, slots=list(slots), drive_root=pathlib.Path(ctx.drive_root),
+                llm=LLMClient(), usage_ctx=ctx,
+            )
+
+    result = await loop.run_in_executor(None, wait_context.run, run)
     by_id = {str(slot.slot_id): slot for slot in slots}
     rows = [_plan_row_from_actor(actor, by_id.get(str(actor.get("slot_id") or ""))) for actor in result.actors]
     answered = {row["slot_id"] for row in rows}
@@ -1119,18 +1124,24 @@ def plan_slot_fit(slots: list, *, prompt_chars: int, quorum: int) -> tuple[list,
     (ok=False, $0) so it is REPORTED as not participating; fewer callable slots than the
     review quorum is a loud typed refusal, never a silent absence of review."""
     from ouroboros.tools.review_synthesis import per_slot_input_token_limits
+    from ouroboros.review_records import apply_review_model_override
+    from ouroboros.model_wait import current_model_wait
+
+    waiter = current_model_wait()
+    slots = [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter else slots
 
     # Only api_chat rows are sized: a RETRIEVING (agent_session) row's model id is an opaque
     # harness target, not a provider route (`reviewer_window.reviewer_route(session=True)`), and
     # the review organ's convention (triad: "session rows are not constrained by this pack")
     # is that such a row is never fit-excluded — it retrieves with its own tools.
-    api_models = [str(getattr(slot, "model", "") or "") for slot in slots if not slot_retrieves(slot)]
+    api_slots = [slot for slot in slots if not slot_retrieves(slot)]
+    api_models = [str(getattr(slot, "model", "") or "") for slot in api_slots]
     limits = per_slot_input_token_limits(
-        api_models, output_reserve=PLAN_REVIEW_MAX_TOKENS, tokenizer_margin=155_000)
+        api_models, output_reserve=PLAN_REVIEW_MAX_TOKENS, tokenizer_margin=155_000, slots=api_slots)
     estimated = max(1, (max(0, int(prompt_chars)) + 3) // 4)  # utils.estimate_tokens on the packet
     callable_slots, oversize = [], []
     for slot in slots:
-        cap = int(limits.get(str(getattr(slot, "model", "") or ""), 0) or 0)
+        cap = 0 if slot_retrieves(slot) else int(limits[str(slot.slot_id)])
         if slot_retrieves(slot) or estimated <= cap:
             callable_slots.append(slot)
             continue
@@ -1149,7 +1160,7 @@ def plan_slot_fit(slots: list, *, prompt_chars: int, quorum: int) -> tuple[list,
         error = (
             "⚠️ PLAN_REVIEW_DEGRADED_PREFLIGHT_OVERSIZE: the assembled packet "
             f"(~{estimated:,} estimated tokens) exceeds the calibrated input cap of too many reviewer "
-            "slots (" + ", ".join(f"{m}<={int(limits.get(m, 0) or 0):,}" for m in api_models)
+            "slots (" + ", ".join(f"{slot.slot_id}:{slot.model}<={int(limits[slot.slot_id]):,}" for slot in api_slots)
             + "), so fewer than the review quorum remain callable and NO reviewer was called. "
             "A constitutional plan carries BIBLE.md and ARCHITECTURE.md in full (W3): configure "
             "reviewer slots with a larger context window, or shrink the declared evidence."
@@ -1176,6 +1187,10 @@ def plan_fanout_inputs(
             "oversize_rows": [], "health_evidence": resume.get("health_evidence") or {},
             "error": "",
         }
+    from ouroboros.review_records import apply_review_model_override
+    from ouroboros.model_wait import current_model_wait
+    waiter = current_model_wait()
+    slots = [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter else slots
     health_evidence = (
         plan_panel_health_snapshot(slots)
         if replay_snapshot is PLAN_NO_SNAPSHOT else replay_snapshot

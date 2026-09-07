@@ -14,6 +14,8 @@ import threading  # noqa: F401  (prior import surface)
 import time  # noqa: F401  (prior import surface)
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ouroboros.model_wait import model_waitable
+
 from ouroboros.anthropic_native_custody import (  # noqa: F401  (prior import surface)
     anthropic_replay_scoped,
     custody_private_key,
@@ -169,6 +171,7 @@ class LLMClient(
         self._async_remote_clients: Dict[Tuple[str, str, str, Tuple[Tuple[str, str], ...]], Any] = {}
         self._gigachat_clients: Dict[Tuple[str, str, str, str, str, bool], Any] = {}
 
+    @model_waitable
     def chat(
         self,
         messages: List[Dict[str, Any]],
@@ -185,13 +188,22 @@ class LLMClient(
         response_format: Optional[Dict[str, Any]] = None,
         cache_affinity: str = "",
         bypass_response_cache: bool = False,
+        model_role: str = "",
+        model_poll_control: Any = None,
+        model_operation_observer: Any = None,
+        model_account_override: str | None = None,
+        default_temperature: Optional[float] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call returning (message, usage); no_proxy avoids macOS fork proxy crashes.
 
         ``response_format`` (e.g. ``{"type": "json_object"}``) is optional request
         intent on the OpenAI-compatible/OpenRouter lanes: local, Anthropic-native,
         and GigaChat routes ignore it, and a provider rejection strips it via the
-        optional-parameter retry — callers must keep a text-parse fallback."""
+        optional-parameter retry — callers must keep a text-parse fallback.
+
+        ``default_temperature`` is a host hint, unlike explicit ``temperature``.
+        Resolve it on this invocation's effective route after any model wait:
+        raw model operations defer to provider defaults; explicit values win."""
         messages = self._normalize_system_message_placement(messages)
         with capture_attempt_ids() as attempt_ids:
             if use_local:
@@ -203,6 +215,8 @@ class LLMClient(
                 # system proxy lookup without every caller remembering a flag.
                 no_proxy = no_proxy or in_worker_process()
                 target = self._resolve_remote_target(model)
+                if temperature is None and target.get("provider") != "claudexor":
+                    temperature = default_temperature
                 message, usage = self._chat_remote(
                     target, messages, tools, reasoning_effort, max_tokens, tool_choice, temperature,
                     no_proxy=no_proxy,
@@ -211,11 +225,16 @@ class LLMClient(
                     response_format=response_format,
                     cache_affinity=cache_affinity,
                     bypass_response_cache=bypass_response_cache,
+                    model_role=model_role,
+                    model_poll_control=model_poll_control,
+                    model_operation_observer=model_operation_observer,
+                    model_account_override=model_account_override,
                 )
             usage["ledger_attempt_ids"] = list(attempt_ids)
             return message, usage
 
     @request_wire_scoped
+    @model_waitable
     async def chat_async(
         self,
         messages: List[Dict[str, Any]],
@@ -229,13 +248,55 @@ class LLMClient(
         timeout: Optional[float] = None,
         allow_server_web_search: bool = False,
         cache_affinity: str = "",
+        model_role: str = "",
+        model_poll_control: Any = None,
+        model_operation_observer: Any = None,
+        model_account_override: str | None = None,
+        use_local: bool = False,
+        default_temperature: Optional[float] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Async remote chat; no_proxy keeps forked macOS workers off OS proxy APIs."""
+        """Async remote chat; no_proxy keeps forked macOS workers off OS proxy APIs.
+
+        Host temperature hints follow ``chat``'s effective-route contract."""
         messages = self._normalize_system_message_placement(messages)
         no_proxy = no_proxy or in_worker_process()
+        if use_local:
+            from ouroboros.usage_accounting import adopt_physical_attempt_capture, last_physical_attempt_capture
+
+            def local_call():
+                adopt_physical_attempt_capture(None)
+                result = self._chat_local(messages, tools, max_tokens, tool_choice, timeout=timeout)
+                return result, last_physical_attempt_capture()
+
+            with capture_attempt_ids() as attempt_ids:
+                try:
+                    result, capture = await asyncio.to_thread(local_call)
+                except BaseException as exc:
+                    adopt_physical_attempt_capture(getattr(exc, "physical_attempt_capture", None))
+                    raise
+                adopt_physical_attempt_capture(capture)
+            result[1]["ledger_attempt_ids"] = list(attempt_ids)
+            return result
+        target = self._resolve_remote_target(model)
+        if temperature is None and target.get("provider") != "claudexor":
+            temperature = default_temperature
+        if target.get("provider") == "claudexor":
+            from ouroboros.llm_claudexor import chat_claudexor_async
+
+            with capture_attempt_ids() as attempt_ids:
+                result = await chat_claudexor_async(
+                    target, messages, tools, reasoning_effort=reasoning_effort,
+                    max_tokens=max_tokens, tool_choice=tool_choice, temperature=temperature,
+                    timeout=timeout, allow_server_web_search=allow_server_web_search,
+                    cache_affinity=cache_affinity, model_role=model_role,
+                    model_poll_control=model_poll_control,
+                    model_operation_observer=model_operation_observer,
+                    model_account_override=model_account_override,
+                )
+            result[1]["ledger_attempt_ids"] = list(attempt_ids)
+            return result
         if tools:
             raise ValueError("chat_async does not support tool calls")
-        target = self._resolve_remote_target(model)
         if target.get("provider") == "anthropic":
             with capture_attempt_ids() as attempt_ids:
                 result = await asyncio.to_thread(
@@ -505,94 +566,6 @@ class LLMClient(
             functions.append(entry)
         return functions
 
-    @request_wire_scoped
-    def _chat_remote(
-        self,
-        target: Dict[str, Any],
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]],
-        reasoning_effort: str,
-        max_tokens: int,
-        tool_choice: str,
-        temperature: Optional[float] = None,
-        no_proxy: bool = False,
-        timeout: Optional[float] = None,
-        allow_server_web_search: bool = False,
-        response_format: Optional[Dict[str, Any]] = None,
-        cache_affinity: str = "",
-        bypass_response_cache: bool = False,
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Send remote chat; no_proxy uses a one-shot client and skips OS proxy lookup."""
-        if target.get("provider") == "anthropic":
-            return self._chat_anthropic(
-                target, messages, tools, reasoning_effort, max_tokens, tool_choice, temperature,
-                no_proxy=no_proxy,
-                timeout=timeout,
-            )
-
-        if target.get("provider") == "gigachat":
-            return self._chat_gigachat(
-                target, messages, tools, reasoning_effort, max_tokens, tool_choice, temperature,
-                no_proxy=no_proxy,
-                timeout=timeout,
-            )
-
-        if no_proxy:
-            _oa_client, _http_client = self._make_no_proxy_client(target, timeout=timeout)
-            try:
-                kwargs = self._build_remote_kwargs(
-                    target, messages, reasoning_effort, max_tokens, tool_choice, temperature, tools,
-                    skip_capability_fetch=True,
-                    allow_server_web_search=allow_server_web_search,
-                    response_format=response_format,
-                    cache_affinity=cache_affinity,
-                    bypass_response_cache=bypass_response_cache,
-                )
-                prompt_cache_ttl = self._normalize_payload_cache_ttl(target, kwargs)
-                resp = self._create_chat_completion_with_retries(
-                    _oa_client.chat.completions.create,
-                    kwargs,
-                    target,
-                )
-                # Skip cost fetch here; it would re-enter OS proxy lookup.
-                return self._normalize_remote_response(
-                    resp.model_dump(),
-                    target,
-                    skip_cost_fetch=True,
-                    prompt_cache_ttl=prompt_cache_ttl,
-                    wire_completion=resp,
-                )
-            finally:
-                try:
-                    _http_client.close()
-                except Exception:
-                    pass
-
-        client = self._get_remote_client(target)
-        kwargs = self._build_remote_kwargs(
-            target, messages, reasoning_effort, max_tokens, tool_choice, temperature, tools,
-            allow_server_web_search=allow_server_web_search,
-            response_format=response_format,
-            cache_affinity=cache_affinity,
-            bypass_response_cache=bypass_response_cache,
-        )
-        if timeout and timeout > 0:
-            # Cached clients are built without a timeout; honor the caller's
-            # per-request timeout instead of silently using the SDK default.
-            kwargs["timeout"] = float(timeout)
-        prompt_cache_ttl = self._normalize_payload_cache_ttl(target, kwargs)
-        resp = self._create_chat_completion_with_retries(
-            client.chat.completions.create,
-            kwargs,
-            target,
-        )
-        return self._normalize_remote_response(
-            resp.model_dump(),
-            target,
-            prompt_cache_ttl=prompt_cache_ttl,
-            wire_completion=resp,
-        )
-
     def vision_query(
         self,
         prompt: str,
@@ -601,6 +574,12 @@ class LLMClient(
         max_tokens: int = 32768,
         reasoning_effort: str = "medium",
         timeout: float = 90.0,
+        *,
+        model_role: str = "vision",
+        use_local: bool = False,
+        model_poll_control: Any = None,
+        model_operation_observer: Any = None,
+        model_account_override: str | None = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Run a lightweight vision query; image dicts use url or base64+mime."""
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -628,6 +607,11 @@ class LLMClient(
             max_tokens=max_tokens,
             no_proxy=True,
             timeout=timeout,
+            use_local=use_local,
+            model_role=model_role,
+            model_poll_control=model_poll_control,
+            model_operation_observer=model_operation_observer,
+            model_account_override=model_account_override,
         )
         text = response_msg.get("content") or ""
         return text, usage

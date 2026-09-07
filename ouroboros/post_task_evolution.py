@@ -268,6 +268,7 @@ def _decide_promotion(env: Any, task: Dict[str, Any], reflection_entry: Optional
             drive_root=drive_root,
             task_id=str(task.get("id") or "post_task_evolution"),
             call_type="post_task_evolution_decision",
+            model_role="main",
             messages=[{"role": "user", "content": prompt}],
             model=chooser_model,
             reasoning_effort="medium",
@@ -290,7 +291,9 @@ def _decide_promotion(env: Any, task: Dict[str, Any], reflection_entry: Optional
             "requires_plan_review": bool(obj.get("requires_plan_review", True)),
             "backlog_id": str(obj.get("backlog_id") or "").strip(),
         }
-    except Exception:
+    except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         log.debug("post_task_evolution: decision LLM call failed", exc_info=True)
         return None
 
@@ -353,7 +356,9 @@ def maybe_promote(env: Any, task: Dict[str, Any], reflection_entry: Optional[Dic
         log.info("post_task_evolution: durable promotion signal written (origin task=%s)",
                  str(task.get("id") or ""))
         return decision
-    except Exception:
+    except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         log.debug("post_task_evolution.maybe_promote failed", exc_info=True)
         return None
 

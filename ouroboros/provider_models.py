@@ -57,6 +57,7 @@ def normalize_deepseek_reasoning_effort(value: str) -> str:
 # Direct-provider prefix → canonical provider name. Un-prefixed models route
 # through OpenRouter. Order matters only for readability; prefixes are disjoint.
 PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("claudexor::", "claudexor"),
     ("openai::", "openai"),
     ("anthropic::", "anthropic"),
     ("minimax::", "minimax"),
@@ -109,6 +110,8 @@ PROVIDER_CREDENTIAL_GROUPS: dict[str, tuple[str, ...]] = {
         "OPENAI_API_KEY", "OPENAI_BASE_URL",
     ),
     "local": (),
+    # The owned engine holds credentials; no control token reaches model settings/env.
+    "claudexor": (),
 }
 
 # Active settings keys that hold a ROUTED model identity (prefix -> provider via
@@ -146,6 +149,16 @@ def provider_for_model(model: str) -> str:
         if name.startswith(prefix):
             return provider
     return "openrouter"
+
+
+def parse_claudexor_model(model: str) -> tuple[str, str]:
+    """Split the model transport's opaque source and model, never an account pin."""
+    if not str(model).startswith("claudexor::"):
+        raise ValueError("Not a Claudexor model identity")
+    source, separator, native_model = str(model)[len("claudexor::"):].partition("=")
+    if not separator or not source.strip() or not native_model.strip():
+        raise ValueError("Claudexor models use claudexor::<source>=<model>")
+    return source.strip(), native_model.strip()
 
 
 def resolve_model_target(
@@ -194,7 +207,9 @@ def fallback_candidate_targets(active_model: str = "") -> tuple[ResolvedModelTar
 
 
 def provider_has_credentials(provider: str) -> bool:
-    """Return True when the environment carries usable credentials for a provider."""
+    """Whether a route is configured; a managed engine's live readiness is separate."""
+    if provider == "claudexor":
+        return True  # A selected engine route needs no API key in Ouroboros.
     if provider == "local":
         return True
     if provider == "openai-compatible":
@@ -215,6 +230,9 @@ def provider_has_credentials_in_settings(provider: str, settings: dict) -> bool:
     """Mapping-based twin used by pure config/default compilers (no ambient env)."""
     def get(key: str) -> str:
         return str((settings or {}).get(key, "") or "").strip()
+
+    if provider == "claudexor":
+        return True  # Selection declares the route; never persist a synthetic healthy bit.
 
     if provider == "local":
         return bool(get("LOCAL_MODEL_SOURCE"))
@@ -581,12 +599,41 @@ def update_vision_overlay(model_id: str, supports: bool) -> None:
         _VISION_OVERLAY[normalized] = bool(supports)
 
 
-def supports_vision(model_id: str) -> bool:
-    """True when the model accepts native image input blocks."""
+def supports_vision(model_id: str, *, model_role: str = "",
+                    model_account_override: str | None = None) -> bool | None:
+    """Image capability; None means unavailable subscription metadata, not blindness.
+
+    Subscription metadata belongs to this call's role/account, never the global
+    model-id overlay. Image senders preserve input when that fact is unknown;
+    the actual call can start the engine and return its normal typed refusal.
+    Metadata discovery itself must not start it or buy a model generation.
+    """
     # Local lanes have no vision regardless of family name; check the RAW id —
     # normalize_model_identity strips the " (local)" suffix.
     if str(model_id or "").strip().endswith(" (local)"):
         return False
+    if provider_for_model(model_id) == "claudexor":
+        from ouroboros.gateways.claudexor import ClaudexorUnavailable
+        from ouroboros.llm import LLMClient
+        from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
+        from ouroboros.model_wait import current_model_wait
+
+        source, native_model = parse_claudexor_model(model_id)
+        wait = current_model_wait()
+        if model_account_override is None and wait is not None:
+            model_account_override = wait.overrides.get(model_role, {}).get("model_account_override")
+        account = (model_account_override if model_account_override is not None
+                   else model_role_option(MODEL_ACCOUNTS_KEY, model_role))
+        try:
+            catalog = LLMClient.claudexor_model_catalog(
+                source, account or None, requested_model=native_model)
+        except ClaudexorUnavailable:
+            return None
+        if catalog.get("source") != source or (account and catalog.get("credentialProfileId") != account):
+            return None
+        item = next((row for row in catalog.get("models", []) if row.get("id") == native_model), {})
+        modalities = item.get("inputModalities")
+        return "image" in modalities if isinstance(modalities, list) and modalities else None
     normalized = normalize_model_identity(model_id)
     if not normalized:
         return False
