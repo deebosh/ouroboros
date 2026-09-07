@@ -911,6 +911,8 @@ def public_task_result(result: Dict[str, Any], *, include_outcome_axes: bool = T
         plan_state["legacy_v1_projection"] = legacy_plan_review_projection(plan_state)
     if include_outcome_axes:
         public["outcome_axes"] = normalize_outcome_axes(result)
+        if isinstance(public.get("artifact_bundle"), dict) and public["artifact_bundle"].get("status"):
+            public["artifact_status"] = public["outcome_axes"]["artifacts"]["status"]
     return public
 
 
@@ -1353,7 +1355,9 @@ def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
                       + ([str(item["copy_error"])] if item.get("copy_error") else []),
         }
         records.append(record)
-    if status != ARTIFACT_STATUS_FAILED and any(str(item.get("status") or "") == "missing" for item in records):
+    if old_status == ARTIFACT_STATUS_FAILED or any(item["status"] == ARTIFACT_STATUS_FAILED for item in records):
+        status = ARTIFACT_STATUS_FAILED
+    elif status != ARTIFACT_STATUS_FAILED and any(item["status"] == "missing" for item in records):
         status = "missing"
     errors = []
     if result.get("artifact_error"):

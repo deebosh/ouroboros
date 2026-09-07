@@ -1255,7 +1255,7 @@ def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str],
     """Copy a generated file, preserving an immutable rebase's original identity."""
 
     source = pathlib.Path(source_path).expanduser().resolve(strict=False)
-    if not source.is_file():
+    if not source.is_file() and not (immutable and isinstance(expected, dict) and expected.get("name")):
         return None
     task_id = task_id_for_artifacts(ctx)
     drive_root = pathlib.Path(getattr(ctx, "drive_root"))
@@ -1270,13 +1270,14 @@ def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str],
         immutable, expected = True, expected or captured
     dest = artifact_dir / source.name
     reused_existing_source = False
-    source_identity = stream_artifact_file(source, expected=expected) if immutable or expected is not None else None
+    source_identity = expected
     if immutable and isinstance(expected, dict) and expected.get("name"):
         name = str(expected["name"])
         if pathlib.Path(name).name != name or name in {".", ".."}:
             raise ValueError("immutable artifact name must be a plain filename")
         dest = artifact_dir / name
     elif immutable:
+        source_identity = stream_artifact_file(source, expected=expected)
         stem = _safe_attachment_name(source.stem).removesuffix("-" + source_identity["sha256"])
         stem = stem.encode("utf-8")[:120].decode("utf-8", errors="ignore")
         suffix = source.suffix.encode("utf-8")[:20].decode("utf-8", errors="ignore")
@@ -1309,7 +1310,7 @@ def copy_file_to_task_artifacts(ctx: Any, source_path: Union[pathlib.Path, str],
         dest = artifact_dir / f"{stem}.{digest}{suffix}"
     if kind == "user_file" and reused_existing_source and dest.resolve(strict=False) != source.resolve(strict=False):
         _archive_previous_artifact_version(pathlib.Path(getattr(ctx, "drive_root")), task_id, dest, source)
-    if immutable and dest.exists() and not dest.is_symlink() and not dest.samefile(source):
+    if immutable and dest.exists() and not dest.is_symlink() and (not source.exists() or not dest.samefile(source)):
         measured = stream_artifact_file(dest, expected=source_identity)
     elif dest.is_symlink() or dest.resolve(strict=False) != source.resolve(strict=False):
         measured = copy_artifact_file(source, dest, expected=source_identity)

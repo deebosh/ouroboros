@@ -807,6 +807,8 @@ def effective_task_result(
         projected = dict(merged)
         for field in _CHILD_DISPOSITION_FIELDS:
             projected.pop(field, None)
+        if isinstance(projected.get("artifact_bundle"), dict) and projected["artifact_bundle"].get("status"):
+            projected["artifact_status"] = normalize_outcome_axes(projected)["artifacts"]["status"]
         return projected
     try:
         from ouroboros.artifacts import (
@@ -839,8 +841,6 @@ def effective_task_result(
                 if not source_text:
                     continue
                 source = pathlib.Path(source_text).expanduser().resolve(strict=False)
-                if not source.is_file():
-                    continue
                 if is_verification_receipts_path(child_text, task_id, source):
                     # Historical child results may already list the receipt
                     # stream as a generic artifact.  Reconcile it through its
@@ -849,14 +849,25 @@ def effective_task_result(
                         pathlib.Path(drive_root), task_id, pathlib.Path(child_text),
                     )
                     continue
-                copied = copy_file_to_task_artifacts(
-                    parent_artifact_ctx,
-                    source,
-                    kind=str(child_artifact.get("kind") or "child_artifact"),
-                    **({"immutable": True, "expected": child_artifact} if child_artifact.get("immutable") else {}),
-                )
-                if copied:
-                    rebased_child_artifacts.append(copied)
+                try:
+                    copied = copy_file_to_task_artifacts(
+                        parent_artifact_ctx, source,
+                        kind=str(child_artifact.get("kind") or "child_artifact"),
+                        **({"immutable": True, "expected": child_artifact} if child_artifact.get("immutable") else {}),
+                    )
+                    if copied is None:
+                        raise OSError("child artifact file is missing")
+                except (OSError, ValueError) as exc:
+                    copied = {**child_artifact, "status": ARTIFACT_STATUS_FAILED,
+                              "copy_status": "failed", "copy_error": f"{type(exc).__name__}: {exc}"}
+                    promotion = merged.get("child_ref_promotion")
+                    promotion = dict(promotion) if isinstance(promotion, dict) else {}
+                    merged["child_ref_promotion"] = {
+                        **promotion, "schema_version": 1, "status": "incomplete",
+                        "pending_refs": [*(promotion.get("pending_refs") or []),
+                                         {"path": str(source), "kind": "task_artifact", "reason": copied["copy_error"]}],
+                    }
+                rebased_child_artifacts.append(copied)
 
         collected_artifacts = collect_task_artifact_records(drive_root, task_id)
         if collected_artifacts or rebased_child_artifacts:
@@ -875,8 +886,7 @@ def effective_task_result(
                 collected_artifacts = collect_task_artifact_records(drive_root, task_id)
             merged["artifacts"] = merge_artifact_records(existing_artifacts, rebased_child_artifacts, collected_artifacts)
             merged["artifact_bundle"] = artifact_bundle_from_result(merged)
-            if not merged.get("artifact_status"):
-                merged["artifact_status"] = merged["artifact_bundle"].get("status")
+            merged["artifact_status"] = merged["artifact_bundle"].get("status")
     except Exception:
         pass
     return _project_child_result_disposition(pathlib.Path(drive_root), merged)
