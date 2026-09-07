@@ -538,7 +538,7 @@ def test_child_known_root_credential_reads_are_blocked(environment, monkeypatch,
     assert command == original
 
 
-@pytest.mark.parametrize('name', ['file1.txt', 'notes.txt'])
+@pytest.mark.parametrize('name', ['draft-notes.txt', 'notes.txt'])
 def test_ordinary_home_text_file_keeps_native_read_and_write(environment, name):
     reg, _ctx, home, _work, _data = environment
     target = home / name
