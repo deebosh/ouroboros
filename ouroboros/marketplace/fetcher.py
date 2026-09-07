@@ -33,7 +33,7 @@ _ALLOWED_EXTENSIONS = frozenset({
 
 _ALLOWED_BARE_BASENAMES = frozenset({
     "LICENSE", "COPYING", "NOTICE", "README", "CHANGELOG", "AUTHORS", "CONTRIBUTORS", "AGENTS",
-    ".gitignore", ".npmignore", ".editorconfig", ".gitattributes", ".eslintrc", ".prettierrc", ".nvmrc",
+    ".gitignore", ".npmignore", ".editorconfig", ".gitattributes", ".eslintrc", ".prettierrc", ".nvmrc", ".env.example",
 })
 
 

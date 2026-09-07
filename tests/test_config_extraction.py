@@ -49,6 +49,10 @@ _MOVED_OWNERS = {
     "EXTENSION_STREAM_METADATA_BYTES": runtime_limits,
     "WS_RELAY_BURST": runtime_limits,
     "WS_RELAY_REFILL_PER_SEC": runtime_limits,
+    "CLAUDEXOR_STARTUP_WAIT_SEC": settings_defaults,
+    "CLAUDEXOR_STARTUP_POLL_SEC": settings_defaults,
+    "CLAUDEXOR_ADMISSION_WAIT_SEC": settings_defaults,
+    "CLAUDEXOR_ADMISSION_POLL_SEC": settings_defaults,
     "ENDPOINT_AUTHORED_SETTINGS": settings_defaults,
     # v6.104.0 upstream: the OpenRouter shipped-model defaults arrive in the
     # vocabulary leaf the v7 split created for exactly this class of fact.

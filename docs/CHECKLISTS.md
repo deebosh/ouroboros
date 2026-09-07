@@ -406,7 +406,8 @@ review pack:
   `.idea`, `.vscode`, `.tox`, `__pycache__`, `node_modules`, `.DS_Store`
   (silently excluded — a byte-flip in a cache file does not
   invalidate a PASS review).
-- **Sensitive file shapes HARD-BLOCK the skill**: `.env*`, `.pem`,
+- **Sensitive file shapes HARD-BLOCK the skill**: `.env` and its explicitly
+  listed runtime variants in the shared `_SENSITIVE_NAMES` policy, `.pem`,
   `.key`, `.p12`, `.pfx`, `.jks`, `.keystore`, `credentials.json`,
   `service-account.json`, `secrets.yaml`, `secrets.json`,
   `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`. (Allowlist
@@ -418,6 +419,8 @@ review pack:
   tree. Rationale: silently excluding the file would leave it
   runtime-reachable via `open('.env').read()`, so a reviewed skill
   could still exfiltrate credentials the reviewer never saw.
+  `.env.example` is ordinary reviewed payload: its bytes remain in the
+  freshness hash and the existing publication scan.
 - Symlinks whose targets resolve outside `skill_dir` (confinement
   guard — otherwise a symlink to `/etc/passwd` would leak into the
   review pack sent to external reviewer models).

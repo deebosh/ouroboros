@@ -18,6 +18,12 @@ PACING_INTERVAL_DEFAULT_SEC = 600
 # Supervisor-loop liveness deadline (WS3, v6.34.0): a watchdog thread flags the main supervisor loop STALLED if it has not ticked within this many seconds (healthy tick ~0.5s, real wedges only). 0 disables.
 SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC = 90
 
+# Caller wait windows, not process lifetime or permission to terminate a startup.
+CLAUDEXOR_STARTUP_WAIT_SEC = 20.0
+CLAUDEXOR_STARTUP_POLL_SEC = 0.25
+CLAUDEXOR_ADMISSION_WAIT_SEC = 5.0
+CLAUDEXOR_ADMISSION_POLL_SEC = 0.15
+
 
 # Shipped router profile. Keeping the root-loop role policy beside the direct
 # provider profiles gives onboarding, runtime defaults, and tests one vocabulary
