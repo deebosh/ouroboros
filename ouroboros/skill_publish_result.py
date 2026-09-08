@@ -460,8 +460,10 @@ def extract_skill_publish_result_metadata(result: Any) -> Dict[str, Any]:
 
     if not isinstance(result, str) or not result.lstrip().startswith("{"):
         return {}
+    from ouroboros.tools.tool_result import _HOST_NOTE_SEPARATOR
+
     try:
-        payload = _loads_unique(result)
+        payload = _loads_unique(result.partition(_HOST_NOTE_SEPARATOR)[0])
         if not isinstance(payload, dict) or payload.get("operation") != SKILL_PUBLISH_OPERATION:
             return {}
         if type(payload.get("ok")) is not bool:

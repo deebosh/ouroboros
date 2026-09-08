@@ -118,6 +118,63 @@ def _trace_call(result: str, *, is_error: bool = False):
     }
 
 
+@pytest.mark.parametrize("safety_note", ["", "⚠️ SAFETY_WARNING: allowed with a warning."])
+@pytest.mark.parametrize("success", [False, True])
+def test_registry_notes_preserve_publication_trace_metadata(tmp_path, monkeypatch, safety_note, success):
+    from ouroboros import safety
+    from ouroboros.loop_tool_execution import _typed_result_metadata
+    from ouroboros.tools.registry import ToolRegistry
+
+    payload = json.loads(_success_result() if success else _failed_result(status="partial"))
+    if not success:
+        payload.update(
+            reason_code="fork_sync_failed", completed_stage="fork_ready",
+            error_detail="⚠️ GH_ERROR: denied (HTTP 403)",
+            github_status=403, github_operation="merge-upstream",
+        )
+    # JSON escapes this literal boundary inside a value; it remains producer data.
+    payload["repair_hint"] = "Read the cause, including quoted text:\n\n⚠️ not a host note."
+    encoded = json.dumps(payload)
+    skill_dir = tmp_path / "skills" / "external" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\nversion: 1.0.0\ndescription: fixture\n---\nFixture.\n",
+        encoding="utf-8",
+    )
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    monkeypatch.setattr(safety, "check_safety", lambda *_a, **_kw: (True, safety_note))
+    registry.override_handler(
+        "submit_skill_to_hub", lambda _ctx, _resolved_binding=None, **_args: encoded,
+    )
+
+    result = registry.execute_result("submit_skill_to_hub", {
+        "skill": "demo", "confirm_public_submission": True,
+    })
+    assert result.text == encoded + ("\n\n" + safety_note if safety_note else "")
+    trace = _typed_result_metadata(
+        "submit_skill_to_hub", result.text, is_error=not success, tool_result=result,
+    )
+    assert trace["skill_publish_attempt"] == extract_skill_publish_result_metadata(encoded)["skill_publish_attempt"]
+    if success:
+        assert trace["skill_publish_receipt"] == _receipt()
+    else:
+        assert trace["skill_publish_attempt"]["github_status"] == 403
+        assert trace["skill_publish_attempt"]["github_operation"] == "merge-upstream"
+        assert trace["skill_publish_attempt"]["error_detail"] == payload["error_detail"]
+        assert "skill_publish_receipt" not in trace
+
+
+@pytest.mark.parametrize("corrupt", [
+    lambda text: text[:-1] + ',"ok":false}',
+    lambda text: text.replace('"engine":"betterleaks"', '"engine":"betterleaks","engine":"other"'),
+    lambda text: text + " trailing junk",
+])
+def test_host_note_does_not_make_invalid_publication_json_valid(corrupt):
+    assert extract_skill_publish_result_metadata(
+        corrupt(_success_result()) + "\n\n⚠️ SAFETY_WARNING: allowed with a warning."
+    ) == {}
+
+
 def test_bounded_result_is_deterministic_parseable_and_exact_about_omissions():
     candidate = "candidate-value-must-never-be-visible"
     findings = [
