@@ -88,6 +88,18 @@ def test_evidence_as_list_is_wrapped_not_dropped(monkeypatch, tmp_path):
     assert captured["agent_evidence"]["raw_evidence"] == "['a', 'b']"
 
 
+def test_oversized_non_dict_evidence_is_disclosed_not_silently_cut(monkeypatch, tmp_path):
+    """A large non-dict payload is bounded with an explicit OMISSION NOTE,
+    never hard-sliced: the reviewer sees the prefix AND that it was cut."""
+    handler, captured = _stub_review(monkeypatch)
+    ctx = _ctx(tmp_path)
+    handler(ctx, claim="done", goal="g", evidence=list(range(3000)))
+    forwarded = captured["agent_evidence"]["raw_evidence"]
+    assert forwarded.startswith("[0, 1, 2")
+    assert "⚠️ OMISSION NOTE" in forwarded
+    assert "original length" in forwarded
+
+
 def test_absent_evidence_stays_empty(monkeypatch, tmp_path):
     """Only a genuinely absent evidence argument yields an empty packet —
     the wrapper must not invent a raw_evidence entry for None."""

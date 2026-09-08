@@ -186,7 +186,7 @@ def _handle_task_acceptance_review(
     # of an empty dict. Only a genuinely absent evidence argument yields {}.
     agent_evidence = (
         dict(evidence) if isinstance(evidence, dict)
-        else ({} if evidence is None else {"raw_evidence": repr(evidence)[:2000]})
+        else ({} if evidence is None else {"raw_evidence": truncate_review_artifact(repr(evidence), limit=2000)})
     )
     # Bind the cheap evidence revision to the agent's actual acceptance claim,
     # goal, and checklist as well as its supporting references.  Otherwise two
