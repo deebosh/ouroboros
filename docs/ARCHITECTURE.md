@@ -585,7 +585,7 @@ Extension children, delegated runtimes, services, the local model, and companion
 │   ├── claudexor/                 ← Ouroboros-owned Claudexor home (CLAUDEXOR_CONFIG_DIR): daemon descriptor/token, credential profiles, runs, ouroboros-owned.json, daemon.log; never the operator's ~/.claudexor
 │   ├── memory/
 │   │   ├── identity.md            ← durable identity
-│   │   ├── scratchpad.md          ← auto-generated from scratchpad_blocks.json (FIFO, max 10 blocks)
+│   │   ├── scratchpad.md          ← auto-generated from scratchpad_blocks.json (rendered newest-first; FIFO eviction of the oldest blocks until BOTH the 10-block count cap and the SCRATCHPAD_MAX_CONTENT_CHARS content cap hold)
 │   │   ├── dialogue_blocks.json   ← consolidated dialogue memory blocks (dialogue_summary.md remains a read-only legacy fallback when present)
 │   │   ├── dialogue_meta.json     ← consolidation cursor/metadata for the dialogue blocks
 │   │   ├── WORLD.md               ← host profile generated on first run

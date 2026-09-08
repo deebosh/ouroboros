@@ -6,9 +6,11 @@ Two layers covered:
    SCRATCHPAD_MAX_CONTENT_CHARS (60_000, declared in ouroboros/context_budget.py
    alongside the existing scratchpad thresholds) bounds total block content.
    The cap is AND'd with the count cap (_SCRATCHPAD_MAX_BLOCKS=10) in a single
-   pass: while EITHER cap is violated, evict the oldest ELIGIBLE (non-pinned)
-   block. Each eviction is journaled as ``block_evicted`` and FAILS HARD on
-   journal-write failure (existing ibl-3d7b7b7d5dc9 contract preserved).
+   pass: while EITHER cap is violated, evict the oldest block. The block just
+   appended is never an eviction target; there is no other exemption (the
+   scratchpad has no pinning concept). Each eviction is journaled as
+   ``block_evicted`` and FAILS HARD on journal-write failure (existing
+   ibl-3d7b7b7d5dc9 contract preserved).
 
 2. **Consumer-side degradation**
    (ouroboros/context.py::_render_scratchpad_for_context).
@@ -18,7 +20,9 @@ Two layers covered:
    (even if it alone exceeds), and append an in-band gap marker (BIBLE P1
    — omission is never silent). When scratchpad_blocks.json is absent /
    empty (legacy flat scratchpad), return raw unmodified (legacy fallback
-   so the source switch introduces no silent amnesia).
+   so the source switch introduces no silent amnesia). The kept slice is
+   rendered by the writer's own ouroboros.memory.render_scratchpad_markdown,
+   so the degraded body keeps the file's newest-first block order.
 """
 from __future__ import annotations
 
@@ -29,7 +33,11 @@ from ouroboros.context_budget import (
     SCRATCHPAD_MAX_CONTENT_CHARS,
     SCRATCHPAD_SECTION_BUDGET_CHARS,
 )
-from ouroboros.memory import Memory, _SCRATCHPAD_MAX_BLOCKS
+from ouroboros.memory import (
+    Memory,
+    _SCRATCHPAD_MAX_BLOCKS,
+    render_scratchpad_markdown,
+)
 
 
 # ---------- helpers ----------------------------------------------------------
@@ -81,6 +89,24 @@ def _force_oversized_via_json(tmp_path, n_blocks=4, each_chars=20_000):
     # Regenerate the scratchpad.md so load_scratchpad returns the oversized file.
     mem._write_scratchpad_markdown(blocks)
     return mem
+
+
+def _force_oversized_labelled(tmp_path, n_blocks=4, each_chars=25_000):
+    """Like _force_oversized_via_json, but each block carries a unique leading
+    label so the RENDER ORDER is observable by offset in the output."""
+    mem = _mem(tmp_path)
+    bp = mem.scratchpad_blocks_path()
+    blocks = [
+        {
+            "ts": f"2026-09-01T12:0{i}:00+00:00",
+            "source": "forced",
+            "content": f"BLOCK{i}-" + "x" * (each_chars - 8),
+        }
+        for i in range(n_blocks)
+    ]
+    bp.write_text(json.dumps(blocks), encoding="utf-8")
+    mem._write_scratchpad_markdown(blocks)
+    return mem, blocks
 
 
 # ---------- source-side content cap ------------------------------------------
@@ -230,6 +256,49 @@ def test_render_scratchpad_no_mid_string_truncation(tmp_path):
     assert long_x is not None
     # The gap marker should be present (some blocks omitted).
     assert "budget gap" in body
+
+
+# ---------- degraded render order --------------------------------------------
+
+
+def test_degraded_body_renders_newest_first_like_the_file(tmp_path):
+    """A degraded build must read in the SAME order as scratchpad.md itself.
+
+    Measurement: take the offset of every block's label in the persisted file
+    and in the degraded body, and compare the two orderings. scratchpad.md is
+    written newest-first; a consumer-side renderer that emitted the kept slice
+    in storage (oldest-first) order would make the model read its own working
+    memory backwards, silently, only when the section is trimmed.
+    """
+    mem, _ = _force_oversized_labelled(tmp_path, n_blocks=4, each_chars=25_000)
+    raw = mem.load_scratchpad()
+    assert len(raw) > SCRATCHPAD_SECTION_BUDGET_CHARS
+
+    body = _render_scratchpad_for_context(mem, budget=SCRATCHPAD_SECTION_BUDGET_CHARS)
+    labels = [f"BLOCK{i}-" for i in range(4)]
+    file_order = sorted([lbl for lbl in labels if lbl in raw], key=raw.index)
+    body_order = sorted([lbl for lbl in labels if lbl in body], key=body.index)
+
+    # The file holds all four, newest-first.
+    assert file_order == ["BLOCK3-", "BLOCK2-", "BLOCK1-", "BLOCK0-"]
+    # The degraded body dropped the oldest and kept the file's relative order.
+    assert body_order == ["BLOCK3-", "BLOCK2-", "BLOCK1-"]
+    assert body_order == [lbl for lbl in file_order if lbl in body_order]
+    # The first rendered block is the NEWEST one, not the oldest.
+    first_heading = body.index("### [")
+    assert body[first_heading:].startswith("### [2026-09-01T12:03 — forced]")
+
+
+def test_degraded_body_is_the_writers_rendering_of_the_kept_slice(tmp_path):
+    """The degraded body, minus the in-band gap marker, is byte-identical to
+    what the writer would persist for that slice — one renderer, one order."""
+    mem, blocks = _force_oversized_labelled(tmp_path, n_blocks=4, each_chars=25_000)
+    body = _render_scratchpad_for_context(mem, budget=SCRATCHPAD_SECTION_BUDGET_CHARS)
+    marker_at = body.index("\n⚠️ [budget gap:")
+    expected = render_scratchpad_markdown(
+        blocks[-3:], journal_pointer=mem.journal_path().exists(),
+    )
+    assert body[:marker_at] == expected
 
 
 # ---------- ordering invariant -----------------------------------------------

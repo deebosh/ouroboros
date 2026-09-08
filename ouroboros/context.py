@@ -15,7 +15,6 @@ from ouroboros.context_budget import (
     MAX_RECENT_CHAT_TAIL,
     SCRATCHPAD_SECTION_BUDGET_CHARS,
 )
-from ouroboros.memory import _SCRATCHPAD_MAX_BLOCKS
 from ouroboros.context_fit import (
     ContextCore as _ContextCore,
 )
@@ -52,7 +51,7 @@ from ouroboros.context_health import (
 )
 from ouroboros.context_layout import architecture_context_section
 from ouroboros.contracts.task_contract import normalize_bool
-from ouroboros.memory import Memory
+from ouroboros.memory import Memory, render_scratchpad_markdown
 from ouroboros.update_letter import official_update_projection  # contract: never raises
 from ouroboros.utils import (
     get_git_info,
@@ -770,6 +769,11 @@ def _render_scratchpad_for_context(memory: "Memory", budget: int) -> str:
     silent amnesia. Block-boundary cuts only — never mid-block, never
     mid-string. The caller wraps the returned body with the section header
     ("## Scratchpad (from `memory/scratchpad.md` ...)") inline, same as before.
+
+    The kept slice is rendered by the writer's own
+    ouroboros.memory.render_scratchpad_markdown, so the degraded body is the
+    same markdown, in the same newest-first order, as the prefix of
+    scratchpad.md it stands in for.
     """
     raw = memory.load_scratchpad()
     if len(raw) <= budget:
@@ -783,50 +787,25 @@ def _render_scratchpad_for_context(memory: "Memory", budget: int) -> str:
         # already prevents NEW writes on this state.
         return raw
 
-    # Render each block the way _write_scratchpad_markdown would
-    # (ouroboros/memory.py:_write_scratchpad_markdown).
-    def _render_block(b: Dict[str, Any]) -> str:
-        ts = str(b.get("ts", ""))[:16]
-        source = b.get("source", "?")
-        content = b.get("content", "")
-        out = f"### [{ts} — {source}]\n{content}\n\n---\n"
-        metadata = b.get("metadata") if isinstance(b.get("metadata"), dict) else {}
-        source_ref = metadata.get("source_ref") if isinstance(metadata.get("source_ref"), dict) else {}
-        entry_id = str(source_ref.get("entry_id") or "")
-        if entry_id:
-            out += (
-                "Exact replaced blocks: `read_file(root='runtime_data', "
-                "path='memory/scratchpad_journal.jsonl', start_line=1)`; "
-                f"locate `entry_id={entry_id}`.\n\n"
-            )
-        return out
+    # Render through the writer's own renderer so a degraded build reads in
+    # the SAME order (newest-first) as the scratchpad.md it stands in for.
+    journal_pointer = memory.journal_path().exists()
 
-    rendered_blocks = [_render_block(b) for b in blocks]
+    def _build(kept: List[Dict[str, Any]]) -> str:
+        return render_scratchpad_markdown(kept, journal_pointer=journal_pointer)
+
     n_total = len(blocks)
-
-    def _build(kept_rendered: List[str]) -> str:
-        n = len(kept_rendered)
-        parts = [f"## Scratchpad (working memory — {n}/{_SCRATCHPAD_MAX_BLOCKS} blocks)\n\n"]
-        if memory.journal_path().exists():
-            parts.append(
-                "Exact retired/replaced source blocks remain readable with "
-                "`read_file(root='runtime_data', "
-                "path='memory/scratchpad_journal.jsonl', start_line=1)`.\n\n"
-            )
-        parts.extend(kept_rendered)
-        return "".join(parts)
-
     # Find the largest k (newest-first kept) such that the section fits.
     n_kept = n_total
     while n_kept > 1:
-        section = _build(rendered_blocks[-n_kept:])
+        section = _build(blocks[-n_kept:])
         if len(section) <= budget:
             break
         n_kept -= 1
     # Always retain at least the single newest, even if it alone exceeds
     # budget (BIBLE P1 — never silent, paired with the gap marker below).
     n_kept = max(1, n_kept)
-    section = _build(rendered_blocks[-n_kept:])
+    section = _build(blocks[-n_kept:])
     omitted = n_total - n_kept
     # Fire the gap marker whenever older blocks were dropped OR the retained
     # newest block(s) alone still exceed budget (n_kept forced to 1 above) —

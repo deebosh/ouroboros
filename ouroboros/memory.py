@@ -25,6 +25,48 @@ _AUTOMATIC_CHAT_MAX_SCAN_ROWS = 5_000
 _SCRATCHPAD_MAX_BLOCKS = 10
 
 
+def render_scratchpad_markdown(
+    blocks: List[Dict[str, Any]], *, journal_pointer: bool = False,
+) -> str:
+    """Render scratchpad blocks the one way the runtime renders them.
+
+    SINGLE SOURCE OF TRUTH for the block markdown. Both the writer
+    (Memory._write_scratchpad_markdown, which persists memory/scratchpad.md)
+    and the consumer-side degradation path
+    (ouroboros/context.py::_render_scratchpad_for_context, which re-renders a
+    kept slice when the section exceeds its context budget) call this, so a
+    degraded context build reads in the SAME order as the file it stands in
+    for. Blocks arrive oldest-first (storage order) and are rendered
+    newest-first, which is the order the model has always read.
+
+    ``journal_pointer`` adds the retired/replaced-blocks pointer line; the
+    writer passes ``Memory.journal_path().exists()`` for it.
+    """
+    n = len(blocks)
+    parts = [f"## Scratchpad (working memory — {n}/{_SCRATCHPAD_MAX_BLOCKS} blocks)\n"]
+    if journal_pointer:
+        parts.append(
+            "Exact retired/replaced source blocks remain readable with "
+            "`read_file(root='runtime_data', "
+            "path='memory/scratchpad_journal.jsonl', start_line=1)`.\n\n"
+        )
+    for block in reversed(blocks):
+        ts = str(block.get("ts", ""))[:16]
+        source = block.get("source", "?")
+        content = block.get("content", "")
+        parts.append(f"### [{ts} — {source}]\n{content}\n\n---\n")
+        metadata = block.get("metadata") if isinstance(block.get("metadata"), dict) else {}
+        source_ref = metadata.get("source_ref") if isinstance(metadata.get("source_ref"), dict) else {}
+        entry_id = str(source_ref.get("entry_id") or "")
+        if entry_id:
+            parts.append(
+                "Exact replaced blocks: `read_file(root='runtime_data', "
+                "path='memory/scratchpad_journal.jsonl', start_line=1)`; "
+                f"locate `entry_id={entry_id}`.\n\n"
+            )
+    return "\n".join(parts)
+
+
 def _history_timestamp(value: Any, *, field: str = "ts") -> datetime:
     text = str(value or "").strip()
     if not text:
@@ -364,30 +406,12 @@ class Memory:
             write_text(self.scratchpad_path(), self._default_scratchpad())
             return
 
-        n = len(blocks)
-        parts = [f"## Scratchpad (working memory — {n}/{_SCRATCHPAD_MAX_BLOCKS} blocks)\n"]
-        if self.journal_path().exists():
-            parts.append(
-                "Exact retired/replaced source blocks remain readable with "
-                "`read_file(root='runtime_data', "
-                "path='memory/scratchpad_journal.jsonl', start_line=1)`.\n\n"
-            )
-        for block in reversed(blocks):
-            ts = str(block.get("ts", ""))[:16]
-            source = block.get("source", "?")
-            content = block.get("content", "")
-            parts.append(f"### [{ts} — {source}]\n{content}\n\n---\n")
-            metadata = block.get("metadata") if isinstance(block.get("metadata"), dict) else {}
-            source_ref = metadata.get("source_ref") if isinstance(metadata.get("source_ref"), dict) else {}
-            entry_id = str(source_ref.get("entry_id") or "")
-            if entry_id:
-                parts.append(
-                    "Exact replaced blocks: `read_file(root='runtime_data', "
-                    "path='memory/scratchpad_journal.jsonl', start_line=1)`; "
-                    f"locate `entry_id={entry_id}`.\n\n"
-                )
-
-        write_text(self.scratchpad_path(), "\n".join(parts))
+        write_text(
+            self.scratchpad_path(),
+            render_scratchpad_markdown(
+                blocks, journal_pointer=self.journal_path().exists(),
+            ),
+        )
 
     def load_dialogue_blocks(self) -> List[Dict[str, Any]]:
         path = self.drive_root / "memory" / "dialogue_blocks.json"
