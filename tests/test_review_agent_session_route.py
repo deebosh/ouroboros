@@ -803,9 +803,9 @@ class AccountedFakeLLM(FakeLLM):
 
 @pytest.mark.parametrize("elapsed_before_dispatch", [0, 2])
 def test_unset_session_window_uses_task_absolute_ceiling(tmp_path, fake_route, monkeypatch, elapsed_before_dispatch):
-    import time
-
-    started = time.monotonic()
+    # Exact clock origins keep ceil() of the integer wire horizon independent
+    # of floating-point cancellation at an arbitrary host-uptime offset.
+    started = 1_000.0
     monkeypatch.setattr("ouroboros.config.get_task_abs_ceiling_sec", lambda: 21_600)
     monkeypatch.setattr("ouroboros.review_custody.monotonic_now", lambda *_args: started)
     monkeypatch.setattr("ouroboros.review_execution.monotonic_now", lambda: started + elapsed_before_dispatch)

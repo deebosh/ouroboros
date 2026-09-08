@@ -286,7 +286,9 @@ def test_project_single_active_direct_root_gets_zero_call_mailbox_delivery(tmp_p
         ephemeral=lambda *_a, **_k: calls.append("ephemeral"),
         direct=lambda *_a, **_k: calls.append("direct"),
     )
-    ctx.get_chat_agent = lambda: direct_agent
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(direct_agent._current_task_id, chat_id, actor=direct_agent)
 
     class Bridge:
         def get_updates(self, offset=0, timeout=1):
@@ -357,7 +359,9 @@ def test_project_direct_stale_race_releases_admission_lock_once(tmp_path):
     lock = RacingLock()
     direct_agent._owner_message_admission_lock = lock
     ctx = _ctx(tmp_path)
-    ctx.get_chat_agent = lambda: direct_agent
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(direct_agent._current_task_id, chat_id, actor=direct_agent)
 
     assert server._route_project_chat_to_running_task(ctx, chat_id, "late follow-up") == ""
     # One release belongs to the manifest snapshot and one to the routing
@@ -375,8 +379,8 @@ def test_main_inline_decision_has_no_predecision_annotation(tmp_path, monkeypatc
     calls = []
     ctx = _ctx(
         tmp_path,
-        ephemeral=lambda cid, text, image, **kwargs: calls.append((cid, text, image, kwargs)),
-        direct=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("direct lane bypassed router")),
+        direct=lambda cid, text, image, **kwargs: calls.append((cid, text, image, kwargs)),
+        ephemeral=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("ordinary routing became ephemeral")),
     )
 
     broadcasts = []
@@ -711,7 +715,7 @@ def test_transport_without_client_id_gets_stable_host_owned_routing_id(tmp_path,
     calls = []
     ctx = _ctx(
         tmp_path,
-        ephemeral=lambda cid, text, image, **kwargs: calls.append((cid, kwargs)),
+        direct=lambda cid, text, image, **kwargs: calls.append((cid, kwargs)),
     )
     logged = []
     broadcasts = []

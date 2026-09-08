@@ -488,10 +488,15 @@ def test_v2_wave_without_exact_artifact_can_close_by_disposition(harness):
     sub = harness.install({"s1": json.dumps([_finding("n1", "note")]), "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()
     _call(ctx)
-    fp = _state(harness)["waves"][-1]["request_fingerprint"]
+    inline_wave = _state(harness)["waves"][-1]
+    fp = inline_wave["request_fingerprint"]
     result_path = harness.drive / "task_results" / "task-1.json"
     result = json.loads(result_path.read_text(encoding="utf-8"))
     result["plan_review_state"]["waves"][-1].pop("wave_artifact")
+    # A historical pre-artifact wave retained its complete inline spec.
+    result["plan_review_state"]["waves"][-1].pop("spec_in_artifact", None)
+    result["plan_review_state"]["waves"][-1].pop("spec_source_ref", None)
+    result["plan_review_state"]["waves"][-1]["spec"] = inline_wave["spec"]
     result_path.write_text(json.dumps(result), encoding="utf-8")
 
     closed = pr._handle_plan_task(ctx, review_disposition={
@@ -1560,5 +1565,3 @@ def test_epoch_replay_free_while_unchanged_transient_keeps_it_healed_repays(harn
     assert len(sub.calls) == 2
     assert [s.slot_id for s in sub.calls[1]["slots"]] == ["s1", "s2", "s3"]
     assert _state(harness)["cycles_paid"] == 2
-
-

@@ -108,6 +108,12 @@ def task_result_authority_projection(
     receipts = _authority_verification_receipts(row, drive_root)
     if receipts:
         authority["verification_receipts"] = copy.deepcopy(receipts)
+    if isinstance(authority.get("plan_review_state"), dict):
+        from ouroboros.tools.plan_review_artifacts import authority_state
+
+        authority["plan_review_state"] = authority_state(
+            drive_root, str(row.get("task_id") or row.get("id") or ""), authority["plan_review_state"],
+        )
     return authority
 
 

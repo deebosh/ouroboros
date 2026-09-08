@@ -121,7 +121,7 @@ def test_repair_ui_copy_does_not_promise_a_removed_decision_round():
         assert "visible_text:" not in text
 
 
-def test_ordinary_busy_message_still_uses_ephemeral_lane(monkeypatch):
+def test_ordinary_busy_message_uses_native_lane(monkeypatch):
     calls = {"ephemeral": [], "direct": []}
     bridge = FakeBridge()
     bridge.get_updates = lambda offset, timeout=1: [{
@@ -156,8 +156,8 @@ def test_ordinary_busy_message_still_uses_ephemeral_lane(monkeypatch):
 
     server._process_bridge_updates(bridge, 0, ctx)
 
-    assert calls["direct"] == []
-    assert len(calls["ephemeral"]) == 1
+    assert calls["ephemeral"] == []
+    assert len(calls["direct"]) == 1
 
 
 def test_visible_repair_command_is_deduped(monkeypatch):

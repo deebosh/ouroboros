@@ -52,7 +52,7 @@ from ouroboros.server_process import (  # noqa: F401
     log,
 )
 from ouroboros.server_routing_context import (  # noqa: F401
-    _active_direct_root,
+    _active_direct_roots,
     _addressable_root_tasks,
     _chat_running_tasks,
     _clip_marked,
@@ -564,20 +564,13 @@ def _run_supervisor(settings: dict) -> None:
 
     _apply_settings_to_env(settings)
 
-    # Revival must drop the prior consciousness and cached event-queue binding.
+    # Revival must drop the prior consciousness. Native turns own fresh agents.
     if _consciousness is not None:
         try:
             _consciousness.stop()
         except Exception:
             log.debug("Failed to stop previous consciousness instance", exc_info=True)
         _consciousness = None
-    try:
-        from supervisor import workers as _workers_mod
-
-        _workers_mod._chat_agent = None
-    except Exception:
-        log.debug("Failed to reset cached chat agent", exc_info=True)
-
     try:
         ensure_legacy_imported(pathlib.Path(DATA_DIR))
 
@@ -617,7 +610,7 @@ def _run_supervisor(settings: dict) -> None:
         from supervisor.workers import (
             init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
             spawn_workers, kill_workers, assign_tasks, ensure_workers_healthy,
-            handle_chat_direct, handle_chat_ephemeral, _get_chat_agent, auto_resume_after_restart,
+            handle_chat_direct, handle_chat_ephemeral, auto_resume_after_restart,
         )
 
         max_workers = int(settings.get("OUROBOROS_MAX_WORKERS", 10))
@@ -720,7 +713,7 @@ def _run_supervisor(settings: dict) -> None:
             queue_deep_self_review_task=queue_deep_self_review_task, persist_queue_snapshot=persist_queue_snapshot,
             safe_restart=safe_restart, kill_workers=kill_workers, spawn_workers=spawn_workers,
             sort_pending=sort_pending, consciousness=_consciousness,
-            get_chat_agent=_get_chat_agent, handle_chat_direct=handle_chat_direct,
+            handle_chat_direct=handle_chat_direct,
             handle_chat_ephemeral=handle_chat_ephemeral, request_restart=_request_restart_exit,
         )
     except Exception as exc:

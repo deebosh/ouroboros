@@ -220,12 +220,9 @@ def ensure_worker_pool_started(n: int = 0, *, allow_disabled_restart: bool = Fal
     return True
 
 
-_chat_agent = None
-# Serializes every direct-chat caller; _chat_agent has mutable per-call state.
 import threading as _threading
-_chat_agent_lock = _threading.Lock()
-_ephemeral_chat_lock = _threading.Lock()
-_repo_writer_gate_lock = _threading.Lock()
+# Admission and activity registration share this short lock; execution never holds it.
+_repo_writer_gate_lock = _threading.RLock()
 _repo_writer_gate_reason = ""
 
 
@@ -281,16 +278,10 @@ def repo_writer_task_allowed(task: Dict[str, Any]) -> bool:
 
 
 def drain_repo_writers(timeout: float = 30.0) -> List[str]:
-    """Wait for the two existing in-process writer lanes after admission closes."""
-    deadline = time.monotonic() + max(0.0, float(timeout))
-    blocked: List[str] = []
-    for label, lock in (("direct_chat", _chat_agent_lock), ("ephemeral_chat", _ephemeral_chat_lock)):
-        remaining = max(0.0, deadline - time.monotonic())
-        if not lock.acquire(timeout=remaining):
-            blocked.append(label)
-            continue
-        lock.release()
-    return blocked
+    """Wait for every registered execution after closing writer admission."""
+    from supervisor.active_activity import get_direct_activity_registry
+
+    return get_direct_activity_registry().wait_until_empty(float(timeout))
 
 
 def _repo_writer_turn_allowed(chat_id: int) -> bool:
@@ -308,48 +299,46 @@ def _repo_writer_turn_allowed(chat_id: int) -> bool:
 
 
 def _get_chat_agent():
-    global _chat_agent
-    if _chat_agent is None:
-        if not getattr(sys, 'frozen', False):
-            sys.path.insert(0, str(REPO_DIR))
-        from ouroboros.agent import make_agent
-        _chat_agent = make_agent(
-            repo_dir=str(REPO_DIR),
-            drive_root=str(DRIVE_ROOT),
-            event_queue=get_event_q(),
-        )
-    return _chat_agent
+    """Construct a fresh native actor; each turn owns its mutable state."""
+    if not getattr(sys, 'frozen', False) and str(REPO_DIR) not in sys.path:
+        sys.path.insert(0, str(REPO_DIR))
+    from ouroboros.agent import make_agent
+    return make_agent(
+        repo_dir=str(REPO_DIR), drive_root=str(DRIVE_ROOT), event_queue=get_event_q(),
+    )
+
+
+def get_direct_chat_agent(task_id: str):
+    from supervisor.active_activity import get_direct_activity_registry
+
+    entry = get_direct_activity_registry().get(task_id)
+    return entry.actor if entry is not None else None
 
 
 def chat_turn_liveness():
-    """(busy, task_id, last_activity_ts) of the in-process direct-chat turn — read
-    WITHOUT taking _chat_agent_lock (a wedged turn holds that lock for its whole
-    duration, so the watchdog must never block on it). The supervisor liveness
-    watchdog (WS3) reads this to spot a heartbeat-silent direct turn, which is
-    in-process and therefore invisible to the worker RUNNING heartbeat table."""
-    agent = _chat_agent
-    if agent is None or not getattr(agent, "_busy", False):
-        return (False, None, None)
-    return (True, getattr(agent, "_current_task_id", None), getattr(agent, "_last_activity_ts", None))
+    """All in-process actors, read without taking any execution/admission lock."""
+    from supervisor.active_activity import get_direct_activity_registry
+
+    return [
+        (str(entry.activity_id), getattr(entry.actor, "_last_activity_ts", None))
+        for entry in get_direct_activity_registry().actors()
+        if getattr(entry.actor, "_busy", False)
+    ]
+
+
+def direct_chat_turns() -> List[Dict[str, Any]]:
+    from supervisor.active_activity import get_direct_activity_registry
+
+    return [turn for entry in get_direct_activity_registry().actors()
+            if (turn := direct_chat_turn(entry.activity_id)) is not None]
 
 
 def direct_chat_turn(task_id: str = "") -> Optional[Dict[str, Any]]:
-    """The in-process direct-chat turn as a queue-shaped task record, or None.
-
-    The ownership predicate (``task_has_live_ownership``), the owner-control
-    ingresses (cancel, hurry, decisions) and the graceful-stop episode resolve
-    a live direct turn through THIS one reader, so the durable running mirror
-    and the owner controls can never disagree about it again: a turn the
-    task list shows as running is addressable, and a turn that is not
-    addressable is not shown as live (the class the rc.7 QA regress hit —
-    ``running`` + cancel 404 + spend still growing). Read WITHOUT the
-    chat-agent lock, like ``chat_turn_liveness``: a wedged turn holds that
-    lock for its whole duration. ``task_id`` narrows the answer to that turn;
-    empty answers whichever direct turn is live. An ephemeral decision turn
-    (not ``_accepting_owner_messages``) is transport control, never an
-    owner-addressable task, and writes no durable running row either.
-    """
-    agent = _chat_agent
+    """Read one addressable actor through the same owner used by routing/controls."""
+    if not task_id:
+        turns = direct_chat_turns()
+        return turns[0] if len(turns) == 1 else None
+    agent = get_direct_chat_agent(task_id)
     if agent is None or not getattr(agent, "_busy", False):
         return None
     current = str(getattr(agent, "_current_task_id", "") or "")
@@ -396,7 +385,7 @@ def arm_direct_chat_turn(
     stamp the control's msg_id lands under (the immediate stop and the
     graceful owner-stop episode keep separate latches, so one never hides
     the other); ``extra_stamps`` ride along under the same lock."""
-    agent = _chat_agent
+    agent = get_direct_chat_agent(task_id)
     if agent is None:
         return None
     lock = getattr(agent, "_owner_message_admission_lock", None)
@@ -417,7 +406,7 @@ def stamp_direct_chat_turn(task_id: str, **fields: Any) -> bool:
     armed owner-stop control id, so a sweep tick re-arms idempotently instead
     of re-toasting). Stamps belong to ONE turn id and vanish with it. Returns
     False when that turn is not live (nothing to stamp)."""
-    agent = _chat_agent
+    agent = get_direct_chat_agent(task_id)
     if agent is None or direct_chat_turn(task_id) is None:
         return False
     stamps = getattr(agent, "_direct_turn_stamps", None)

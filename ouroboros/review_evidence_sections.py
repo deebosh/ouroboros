@@ -500,8 +500,9 @@ def _accept_effective_claims(
     (contracts.task_contract.effective_acceptance_claims): ingress-contract
     claims first, the CLOSED plan wave's frozen claims only when ingress is
     empty. The plan-state lookup mirrors plan_task's own state location
-    (budget_drive_root first) and is FAIL-SOFT — a claims lookup must never
-    break packet building.
+    (budget_drive_root first). Generic lookup failures remain fail-soft; a
+    recorded full source that cannot be read reaches acceptance's existing
+    infrastructure-failure path instead of discarding known claims.
 
     A reviewed-and-frozen but never-closed wave binds NOTHING, and until now it
     was indistinguishable in the packet from a task that never had claims. It is
@@ -509,6 +510,7 @@ def _accept_effective_claims(
     reads ``none_open_plan_wave``. The exhibit sits in
     ``DECLARED_INTENT_SECTIONS``, so citing it can never resolve a criterion."""
     from ouroboros.contracts.task_contract import effective_acceptance_claims
+    from ouroboros.tools.plan_review_artifacts import PlanReviewSourceUnavailable
 
     claims, source = effective_acceptance_claims(contract)
     if claims:
@@ -525,6 +527,10 @@ def _accept_effective_claims(
 
         state = load_plan_review_state(pathlib.Path(str(root)), str(task_id))
         wave = closed_plan_review_wave(state)
+    except PlanReviewSourceUnavailable:
+        # The recorded claims exist. An unavailable full source must reach the
+        # existing acceptance infrastructure-failure path, never become no claims.
+        raise
     except Exception:
         return [], "", {}
     frozen, frozen_source = effective_acceptance_claims(contract, wave)

@@ -1,4 +1,4 @@
-"""Production-shaped custody and acceptance checks for over-budget work orders."""
+"""Custody and acceptance checks for historical partial-source work orders."""
 
 from __future__ import annotations
 
@@ -9,8 +9,6 @@ from types import SimpleNamespace
 
 def _fixture(tmp_path):
     from ouroboros.subagent_work_order import (
-        WorkOrderBudgetExceeded,
-        build_work_order_source_request,
         canonical_work_order_source,
         compile_external_work_order,
     )
@@ -31,15 +29,22 @@ def _fixture(tmp_path):
         "workspace_root": str(repo),
         "workspace_mode": "external_workspace",
     }
-    overflow = None
-    try:
-        compile_external_work_order(task)
-    except WorkOrderBudgetExceeded as exc:
-        overflow = exc
-    else:  # pragma: no cover - the fixture must exercise the over-budget branch
-        raise AssertionError("fixture unexpectedly fits the work-order budget")
-    assert overflow is not None
-    prompt, request = build_work_order_source_request(task, overflow)
+    # Historical rows remain readable after new work stopped producing partial
+    # source lenses. Build the stored shape directly, without a live size policy.
+    rendered = compile_external_work_order(task)
+    request = {
+        "schema": 1, "kind": "complete_work_order", "coverage": "partial",
+        "complete_chars": len(rendered),
+        "complete_sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+        "wire_budget_chars": 250_000,
+        "source": {
+            "kind": "task_result", "task_id": task["id"], "tool": "get_task_result",
+            "arguments": {"task_id": task["id"], "include_authority": True,
+                          "include_work_order_source": True},
+            "projection": "canonical_work_order",
+        },
+    }
+    prompt = "WORK ORDER SOURCE REQUEST\n" + json.dumps(request)
     ctx = ToolContext(
         repo_dir=repo,
         drive_root=tmp_path,
@@ -55,7 +60,7 @@ def _fixture(tmp_path):
     )
     full_text, reason = canonical_work_order_source(ctx, request)
     assert not reason
-    assert len(full_text) == overflow.chars
+    assert full_text == rendered
     return ctx, request, full_text, prompt
 
 
@@ -92,33 +97,15 @@ def _source_response(request, text, start, end):
     }
 
 
-def test_route_source_request_channel_fails_closed_on_unknown_manifest():
-    from ouroboros.subagent_work_order import route_source_request_channel
-
-    class Gateway:
-        def harnesses(self):
-            return [{"id": "route", "manifest": {"capabilities": {}}}]
-
-    assert route_source_request_channel(Gateway(), "route") == {
-        "status": "unverified",
-        "reason": "interactive_capability_missing",
-        "route": "route",
-    }
-
-
-def test_actor_first_coordination_appendix_refuses_without_truncation(monkeypatch):
+def test_actor_first_coordination_appendix_preserves_complete_text():
     import ouroboros.tools.delegate as delegate
 
     authority = SimpleNamespace(delegated=False)
-    monkeypatch.setattr(delegate, "_host_instructions", lambda *_a, **_k: "base")
-    monkeypatch.setattr(delegate, "_ASSIGNMENT_FIELD_CHARS", 32)
-    instructions, refusal = delegate._build_start_instructions(
-        authority, coordination_context="x" * 100,
-    )
-    assert instructions == ""
-    payload = json.loads(refusal)
-    assert payload["reason"] == "coordination_context_over_budget"
-    assert payload["coordination_context_chars"] == 100
+    context = " \n" + "яё𐍈🚀\n" * 55_000 + "DECISIVE_TAIL\n "
+    instructions = delegate._build_start_instructions(authority, coordination_context=context)
+    assert instructions.endswith(context)
+    assert "git commit" in instructions
+    assert "OMISSION NOTE" not in instructions
 
 
 def test_started_replay_keeps_partial_request_and_verified_ranges(tmp_path):

@@ -1095,13 +1095,18 @@ def _validated_plan_review_state(value: Any) -> Dict[str, Any]:
 
 
 def load_plan_review_state(results_drive_root: Any, task_id: str) -> Dict[str, Any]:
+    """Read bounded state, then resolve the full specs used by decision consumers."""
     path = task_result_path(results_drive_root, task_id, create=False)
     if not path.is_file():
         return _empty_plan_review_state()
     result = read_json_dict(path)
     if result is None:
         raise ValueError("PLAN_REVIEW_STATE_INVALID: parent task result JSON is malformed")
-    return _validated_plan_review_state(result.get(PLAN_REVIEW_STATE_KEY))
+    from ouroboros.tools.plan_review_artifacts import authority_state
+
+    return authority_state(
+        results_drive_root, task_id, _validated_plan_review_state(result.get(PLAN_REVIEW_STATE_KEY)),
+    )
 
 
 def plan_review_wave(state: Dict[str, Any], fingerprint: str) -> Optional[Dict[str, Any]]:
@@ -1413,6 +1418,7 @@ def _compact_plan_review_wave(wave: Dict[str, Any]) -> Dict[str, Any]:
         "closed": bool(wave.get("closed")),
         "paid": bool(wave.get("paid")),
         "wave_artifact": copy.deepcopy(wave.get("wave_artifact") or {}),
+        **({"spec_source_ref": copy.deepcopy(wave["spec_source_ref"])} if wave.get("spec_source_ref") else {}),
         **({"reviewed_at": str(wave["reviewed_at"])} if wave.get("reviewed_at") else {}),
     }
 
@@ -1432,6 +1438,7 @@ _PLAN_REVIEW_IDENTITY_KEYS = frozenset({
     "previous_fingerprint", "spec_hash", "evidence_manifest_hash", "plan_prose_hash", "sha256",
     "model", "request_model", "route", "host_file_read_attestation", "reason", "decision", "kind",
     "goal", "acceptance_claims", "cycle_index", "series_id", "schema_version", "retry_key",
+    "wave_artifact", "spec_source_ref",
 })
 
 

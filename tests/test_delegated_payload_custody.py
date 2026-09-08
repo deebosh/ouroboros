@@ -12,6 +12,7 @@ disposed by a live top-level task holding the same target.
 from __future__ import annotations
 
 import json
+import pytest
 import pathlib
 import subprocess
 
@@ -307,12 +308,14 @@ def _disposed_rows(tmp_path):
     return [r for r in rows if str(r.get("type") or "") == custody.PATCH_DISPOSED]
 
 
+@pytest.mark.parametrize("direct_chat", [False, True])
 def test_top_level_task_may_reject_a_terminal_owners_payload_orphan(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, direct_chat):
     from ouroboros.subagent_worktrees import find_execution_snapshot
     from ouroboros.tools.subagent_integration import _integrate_delegated_patch
 
     second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
+    second.is_direct_chat = direct_chat
     out = _integrate_delegated_patch(second, "run-p1", "reject", "not wanted")
     assert "🚫 Rejected" in out, out
     assert "orphan of terminal task t-payload" in out, out
@@ -325,11 +328,13 @@ def test_top_level_task_may_reject_a_terminal_owners_payload_orphan(
     custody._CUSTODY.clear()
 
 
+@pytest.mark.parametrize("direct_chat", [False, True])
 def test_top_level_task_may_apply_a_terminal_owners_payload_orphan(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, direct_chat):
     from ouroboros.tools.subagent_integration import _integrate_delegated_patch
 
     second, skill, entry, capture = _payload_orphan(tmp_path, monkeypatch)
+    second.is_direct_chat = direct_chat
     out = _integrate_delegated_patch(second, "run-p1", "apply", "looks good")
     assert "✅ Integrated" in out, out
     assert "orphan of terminal task t-payload" in out, out
@@ -414,7 +419,6 @@ def test_non_top_level_profiles_may_not_dispose_an_orphan(tmp_path, monkeypatch)
     for constraint, direct_chat in (
             (TaskConstraint(mode="local_readonly_subagent"), False),
             (TaskConstraint(mode="acting_subagent", surface="worktree"), False),
-            (None, True),                       # direct chat = operator_control
     ):
         second.task_constraint = constraint
         second.is_direct_chat = direct_chat

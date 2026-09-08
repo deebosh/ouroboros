@@ -228,6 +228,11 @@ def _repo_write(ctx: ToolContext, path: str = "", content: str = "",
             f"✅ Written {len(written)} file(s): {summary}\n"
             "Files are on disk in the active workspace. Do not commit; the headless runner will emit a patch artifact."
         )
+    elif not system_target:
+        result = (
+            f"✅ Written {len(written)} file(s): {summary}\n"
+            "Files are on disk in the active workspace."
+        )
     else:
         result = (
             f"✅ Written {len(written)} file(s): {summary}\n"
@@ -429,9 +434,9 @@ def _str_replace_editor(
         result += f"\n⚠️ SKILL_SHORT_FORM_IGNORED: {short_form.ignored_reason}."
     if data_skill_target is None and ctx.is_workspace_mode() and not system_target:
         result += "\nDo not commit; the headless runner will emit a patch artifact."
-    elif data_skill_target is None:
+    elif system_target:
         result += "\nRun commit_reviewed when ready.\n⚠️ Advisory pre-review is now stale — run preflight_review before commit_reviewed."
-    else:
+    elif data_skill_target is not None:
         result += "\nRun skill_review for this skill before enabling or declaring it ready."
     if system_target and pathlib.PurePosixPath(rel_path).parts[:1] == ("skills",):
         result += (

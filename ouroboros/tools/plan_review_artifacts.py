@@ -19,6 +19,10 @@ from ouroboros.usage_accounting import (
 )
 
 
+class PlanReviewSourceUnavailable(ValueError):
+    """A recorded plan names full authority that this reader cannot resolve."""
+
+
 def persist_wave(drive_root: Any, task_id: str, wave: Dict[str, Any]) -> Dict[str, Any]:
     from ouroboros.artifacts import store_task_artifact_bytes
     from ouroboros.observability import redact_projection
@@ -78,9 +82,64 @@ def authority_wave(drive_root: Any, task_id: str, hot_wave: Optional[dict]) -> O
         return None
     ref = hot_wave.get("wave_artifact") if isinstance(hot_wave.get("wave_artifact"), dict) else {}
     if not ref:
+        if hot_wave.get("spec_in_artifact") or hot_wave.get("spec_body_truncated"):
+            raise PlanReviewSourceUnavailable("PLAN_REVIEW_SOURCE_UNAVAILABLE: full spec has no artifact reference")
         return hot_wave
-    exact = read_wave(drive_root, task_id, ref)
-    return {**exact, **hot_wave, "findings": list(exact.get("findings") or [])}
+    if not drive_root or not task_id:
+        raise PlanReviewSourceUnavailable("PLAN_REVIEW_SOURCE_UNAVAILABLE: artifact owner is unknown")
+    try:
+        exact = read_wave(drive_root, task_id, ref)
+    except (OSError, ValueError) as exc:
+        raise PlanReviewSourceUnavailable(
+            f"PLAN_REVIEW_SOURCE_UNAVAILABLE: task {task_id}, artifact {ref.get('path')}: {exc}"
+        ) from exc
+    source = hot_wave.get("spec_source_ref") or exact.get("spec_source_ref")
+    if source:
+        from ouroboros.artifacts import read_actor_source_bytes
+        from ouroboros.tools.plan_spec import spec_hash
+
+        try:
+            spec = json.loads(read_actor_source_bytes(drive_root, task_id, source))
+            if not isinstance(spec, dict) or spec_hash(spec) != hot_wave.get("spec_hash", exact.get("spec_hash")):
+                raise ValueError("operative spec hash mismatch")
+        except (OSError, ValueError) as exc:
+            raise PlanReviewSourceUnavailable(f"PLAN_REVIEW_SOURCE_UNAVAILABLE: {exc}") from exc
+    elif hot_wave.get("spec_in_artifact"):
+        raise PlanReviewSourceUnavailable("PLAN_REVIEW_SOURCE_UNAVAILABLE: operative spec reference is missing")
+    elif not hot_wave.get("spec_body_truncated") and isinstance(hot_wave.get("spec"), dict):
+        spec = hot_wave["spec"]  # Legacy inline authority predates the source handle.
+    else:
+        from ouroboros.tools.plan_spec import spec_hash
+
+        spec = exact.get("spec")
+        if (not isinstance(spec, dict) or exact.get("spec_body_truncated")
+                or spec_hash(spec) != exact.get("spec_hash")):
+            raise PlanReviewSourceUnavailable("PLAN_REVIEW_SOURCE_UNAVAILABLE: artifact has no complete spec")
+    restored = {
+        **exact, **hot_wave,
+        "spec": copy.deepcopy(spec), "goal": spec.get("goal") or "",
+        "findings": list(exact.get("findings") or []),
+    }
+    restored.pop("spec_in_artifact", None)
+    restored.pop("spec_body_truncated", None)
+    return restored
+
+
+def authority_state(drive_root: Any, task_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve the current spec; historical consumers resolve their selected wave."""
+    from ouroboros.task_results import current_plan_review_wave
+
+    current = current_plan_review_wave(state)
+    if not current or current.get("compact") or not (
+        current.get("spec_source_ref") or current.get("spec_in_artifact")
+        or (current.get("spec_body_truncated") and current.get("wave_artifact"))
+    ):
+        return state
+    resolved = authority_wave(drive_root, task_id, current)
+    return {**state, "waves": [
+        resolved if wave.get("request_fingerprint") == current.get("request_fingerprint") else wave
+        for wave in state.get("waves") or []
+    ]}
 
 
 _PLAN_REVIEW_TRANSPORT_KEYS = frozenset({
@@ -271,6 +330,12 @@ def in_flight_resume_inputs(
 
 def hot_index_wave(wave: dict, *, page_size: int) -> dict:
     """Keep a bounded per-slot page; exact authority stays in ``wave_artifact``."""
+    if wave.get("spec_source_ref"):
+        # The operative spec has no size limit. Its exact source already exists;
+        # never duplicate it inside the bounded task-result index.
+        wave = {**wave, "spec": {}, "spec_in_artifact": True}
+        wave.pop("goal", None)
+        wave.pop("evidence_manifest", None)  # Already preserved by wave_artifact.
     findings = [dict(row) for row in wave.get("findings") or [] if isinstance(row, dict)]
     counts: Dict[str, int] = {}
     page = []
@@ -309,13 +374,24 @@ def record_exact_wave(
     *, need_evidence_seen: List[str], page_size: int,
 ) -> dict:
     """Persist exact bytes first, then publish their bounded hot index."""
+    from ouroboros.artifacts import store_actor_source_bytes
     from ouroboros.task_results import record_plan_review_wave
 
+    # Raw operative authority already lived in the task result. Keep it exact
+    # under the existing source handle; wave evidence/output redaction stays on.
+    source = store_actor_source_bytes(
+        state_root, task_id, category="context_checkpoints", source_id="plan-spec",
+        data=json.dumps(wave["spec"], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        extension="json",
+    )
+    wave["spec_source_ref"] = source
+    exact = {**exact, "spec_source_ref": source}
     wave["wave_artifact"] = persist_wave(state_root, task_id, exact)
-    return record_plan_review_wave(
+    stored = record_plan_review_wave(
         state_root, task_id, hot_index_wave(wave, page_size=page_size),
         need_evidence_seen=need_evidence_seen,
     )
+    return authority_wave(state_root, task_id, stored)
 
 
 def slot_row(slot: Any) -> dict:

@@ -9,20 +9,11 @@ it never interprets the domain. Everything here works identically for a code
 change, a slide deck, a literature review, a GUI flow or a trip plan — a spec
 with ZERO file paths is first-class.
 
-Bounds (every cut is disclosed, never silent — DEVELOPMENT.md "No silent
-truncation"; list bounds record an omission entry, string bounds go through the
-SSOT ``utils.truncate_review_artifact`` marker):
+Operative specs are normalized without size cuts: every chosen requirement
+participates in identity and reaches the current reviewer packet. Bounds below
+apply only to findings, reviewer-request memory, and historical/display views;
+those cuts retain their existing disclosures.
 
-* ``MAX_LIST_ITEMS`` — items kept per spec list (in_scope, non_goals,
-  invariants, decisions, deferred, affected_resources, evidence,
-  acceptance_claims); ``MAX_REJECTED_PER_DECISION`` — nested ``decision.rejected``.
-* ``MAX_ITEM_CHARS`` / ``MAX_GOAL_CHARS`` — per-string bounds (same 600-char
-  default as ``task_contract._bounded_claim_text``).
-* ``MAX_FINDINGS_PER_SLOT`` is the rendered page size, never an authority or
-  aggregation cap; ``MAX_FINDING_TEXT_CHARS`` bounds each finding string.
-* ``PACKET_*_CHARS`` — reviewer-packet section bounds (objective, plan prose,
-  root exploration log; SPEC and prior cycles are bounded STRUCTURALLY by
-  ``bounded_json`` — whole items with disclosed counts + full-set hash).
 """
 
 from __future__ import annotations
@@ -39,20 +30,16 @@ from ouroboros.tool_access import path_is_relative_to
 from ouroboros.triad_review import empty_array_is_verified_clean, extract_json_array
 from ouroboros.utils import truncate_review_artifact
 
+# Reviewer-request memory/attachment bounds, not limits on an operative spec.
 MAX_LIST_ITEMS = 40
-MAX_REJECTED_PER_DECISION = 8
 MAX_ITEM_CHARS = 600
-MAX_GOAL_CHARS = 2000
 MAX_FINDINGS_PER_SLOT = 32
 # Per-task `need_evidence` memory: reviewers' requests the host remembers (and, W3, attaches).
 # Bounded so the durable review state stays bounded whatever the panel asks for; a request past
 # the cap is demoted (never remembered), disclosed `need_evidence_memory_full`.
 MAX_NEED_EVIDENCE_MEMORY = 4 * MAX_LIST_ITEMS
 MAX_FINDING_TEXT_CHARS = 2000
-PACKET_OBJECTIVE_CHARS = 8_000
-PACKET_SPEC_CHARS = 120_000
 PACKET_PRIOR_FINDING_SUMMARY_CHARS = 400
-PACKET_PROSE_CHARS = 40_000
 PACKET_EXPLORATION_CHARS = 12_000
 PACKET_PRIOR_CYCLES_CHARS = 60_000
 
@@ -95,21 +82,13 @@ def _unique_id(candidate: str, seen: set[str]) -> str:
     return out
 
 
-def _cap_list(items: list, label: str, omissions: list[str], *, bound: int = MAX_LIST_ITEMS) -> list:
-    """Bound a list at ``bound`` and RECORD the cut (P1) — never a silent slice."""
-    if len(items) <= bound:
-        return items
-    omissions.append(f"{label}: {len(items)} items declared, kept the first {bound} (bound {bound})")
-    return items[:bound]
-
-
 def _is_scalar(value: Any) -> bool:
     """str/int/float are tolerated as text; bool is not (``True`` is not a spec item)."""
     return isinstance(value, (str, int, float)) and not isinstance(value, bool)
 
 
 def _string_list(raw: Any, label: str, errors: list[str], omissions: list[str]) -> list[str]:
-    """Tolerant string list: bare string → one item; blanks dropped; bounded with disclosure."""
+    """Tolerant complete string list: bare string → one item; blank drops disclosed."""
     if raw is None:
         return []
     items = [raw] if _is_scalar(raw) else raw
@@ -124,7 +103,7 @@ def _string_list(raw: Any, label: str, errors: list[str], omissions: list[str]) 
         if not _is_scalar(item):
             errors.append(f"{label}[{index}]: must be a string")
             continue
-        text = bounded_text(item, MAX_ITEM_CHARS)
+        text = str(item).strip()
         if text:
             out.append(text)
         else:
@@ -133,7 +112,7 @@ def _string_list(raw: Any, label: str, errors: list[str], omissions: list[str]) 
             blank += 1
     if blank:
         omissions.append(f"{label}: {blank} blank item(s) dropped")
-    return _cap_list(out, label, omissions)
+    return out
 
 
 def _object_list(raw: Any, label: str, text_key: str, errors: list[str]) -> list[dict]:
@@ -170,7 +149,6 @@ def _normalize_claims(raw: Any, errors: list[str], omissions: list[str], seen: s
             f"acceptance_claims: {dropped} item(s) dropped as empty/invalid by the "
             "task_contract acceptance-claims normalizer"
         )
-    claims = _cap_list(claims, "acceptance_claims", omissions)
     for index, claim in enumerate(claims, start=1):
         # Ids are HOST-MINTED positionally (claim_1..N) because they are the only valid
         # `breaks` targets a reviewer may name: a caller-chosen id could shadow another
@@ -186,9 +164,9 @@ def _normalize_claims(raw: Any, errors: list[str], omissions: list[str], seen: s
 
 def _normalize_decisions(raw: Any, errors: list[str], omissions: list[str], seen: set[str]) -> list[dict]:
     out: list[dict] = []
-    items = _cap_list(_object_list(raw, "decisions", "choice", errors), "decisions", omissions)
+    items = _object_list(raw, "decisions", "choice", errors)
     for index, item in enumerate(items, start=1):
-        choice = bounded_text(item.get("choice"), MAX_ITEM_CHARS)
+        choice = str(item.get("choice") or "").strip()
         if not choice:
             errors.append(f"decisions[{index - 1}]: choice is required")
             continue
@@ -197,20 +175,19 @@ def _normalize_decisions(raw: Any, errors: list[str], omissions: list[str], seen
             # id or move between cycles, and these ids are what a blocking finding names.
             "id": _unique_id(f"decision_{index}", seen),
             "choice": choice,
-            "rejected": _cap_list(
-                _string_list(item.get("rejected"), f"decisions[{index - 1}].rejected", errors, omissions),
-                f"decisions[{index - 1}].rejected", omissions, bound=MAX_REJECTED_PER_DECISION,
+            "rejected": _string_list(
+                item.get("rejected"), f"decisions[{index - 1}].rejected", errors, omissions,
             ),
-            "why": bounded_text(item.get("why"), MAX_ITEM_CHARS),
+            "why": str(item.get("why") or "").strip(),
         })
     return out
 
 
 def _normalize_deferred(raw: Any, errors: list[str], omissions: list[str], seen: set[str]) -> list[dict]:
     out: list[dict] = []
-    items = _cap_list(_object_list(raw, "deferred", "what", errors), "deferred", omissions)
+    items = _object_list(raw, "deferred", "what", errors)
     for index, item in enumerate(items, start=1):
-        what = bounded_text(item.get("what"), MAX_ITEM_CHARS)
+        what = str(item.get("what") or "").strip()
         if not what:
             errors.append(f"deferred[{index - 1}]: what is required")
             continue
@@ -219,7 +196,7 @@ def _normalize_deferred(raw: Any, errors: list[str], omissions: list[str], seen:
             # id or move between cycles, and these ids are what a blocking finding names.
             "id": _unique_id(f"deferred_{index}", seen),
             "what": what,
-            "why_safe_to_defer": bounded_text(item.get("why_safe_to_defer"), MAX_ITEM_CHARS),
+            "why_safe_to_defer": str(item.get("why_safe_to_defer") or "").strip(),
         })
     return out
 
@@ -228,9 +205,9 @@ def normalize_spec(raw: Mapping[str, Any] | None) -> tuple[dict, list[str]]:
     """Normalize a plan spec (plan §9.2 schema) → ``(spec, errors)``.
 
     Tolerant of strings-vs-dicts, mints stable ids (claim_N / invariant_N /
-    decision_N / deferred_N the declared id, when different, is kept beside it as `declared_id`), trims, and bounds
-    every list at ``MAX_LIST_ITEMS`` — the excess is RECORDED under
-    ``spec["normalization_omissions"]`` (P1), never silently dropped. Genuinely
+    decision_N / deferred_N; a differing declared claim id stays as `declared_id`),
+    trims edges, and preserves every operative string and list item. Empty/invalid
+    dropped claims and blank list items are disclosed in ``normalization_omissions``. Genuinely
     malformed input (missing goal, unknown field, wrong container type, decision
     without choice) yields typed error strings; on any error the returned spec
     is best-effort and NOT authoritative — the caller must refuse it.
@@ -245,7 +222,7 @@ def normalize_spec(raw: Mapping[str, Any] | None) -> tuple[dict, list[str]]:
     unknown = sorted(str(key) for key in raw if key not in _SPEC_KEYS)
     if unknown:
         errors.append("spec: unknown fields: " + ", ".join(unknown))
-    goal = bounded_text(raw.get("goal"), MAX_GOAL_CHARS) if isinstance(raw.get("goal"), str) else ""
+    goal = raw["goal"].strip() if isinstance(raw.get("goal"), str) else ""
     if not goal:
         errors.append(
             "goal: must be a string" if raw.get("goal") is not None and not isinstance(raw.get("goal"), str)

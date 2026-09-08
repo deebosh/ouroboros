@@ -71,7 +71,6 @@ def _write_snapshot(tmp_path, running_ids=()):
 def _live_chat_agent(monkeypatch, task_id=TURN_ID, *, accepting=True):
     """The chat agent mid-turn, shaped exactly as agent.py leaves it (the
     fields steering.py and workers.chat_turn_liveness read)."""
-    from supervisor import workers
 
     import threading
 
@@ -83,7 +82,9 @@ def _live_chat_agent(monkeypatch, task_id=TURN_ID, *, accepting=True):
         _task_started_ts=1000.0, _last_activity_ts=1000.0,
         _owner_message_admission_lock=threading.Lock(),
     )
-    monkeypatch.setattr(workers, "_chat_agent", agent, raising=False)
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(task_id, chat_id=agent._current_chat_id, actor=agent)
     return agent
 
 

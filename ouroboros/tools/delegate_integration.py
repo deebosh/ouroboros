@@ -53,9 +53,8 @@ def _mutation_authority(ctx: ToolContext, authority: "DelegatedRunShape") -> tup
     ``acting_constraint`` (an acting child's ``task_constraint.write_root``,
     which must equal the genuinely ACTIVE workspace root — `active_repo_dir_for`
     falls back to the LIVE repo when `is_workspace_mode()` is false) and
-    ``external_workspace_root`` (the ROOT of an external-workspace task, whose
-    authority derives from its own VALIDATED active workspace; owner 2=A — the
-    root already holds write+shell there, the prior gap was provenance).
+    ``external_workspace_root`` (an ordinary root's selected external workspace
+    or Project room, where it already holds write+shell authority).
     Read-only runs return the ordinary active root with ``capture_mode: "none"``.
     Disagreement anywhere is a typed refusal, never a best-effort guess.
     """
@@ -110,17 +109,19 @@ def _mutation_authority(ctx: ToolContext, authority: "DelegatedRunShape") -> tup
             )
         return {"target_root": root, "source": "acting_constraint",
                 "capture_mode": _CAPTURE_DELEGATED_SNAPSHOT}, ""
-    # ROOT branch (B5): no acting constraint. The mutating shape can only have come
-    # from the external-workspace-root profile, and the workspace contract is the
-    # authority: workspace genuinely active, mode external, and the declared
-    # workspace root must BE the active root.
-    if not workspace_active:
+    # An ordinary room uses the same selected-target authority without becoming
+    # a pooled workspace task or requiring Git merely for native file operations.
+    from ouroboros.tool_access import _TOP_LEVEL_PRINCIPAL_PROFILES, active_tool_profile, project_room_lens_dir
+
+    room = (project_room_lens_dir(ctx)
+            if active_tool_profile(ctx) in _TOP_LEVEL_PRINCIPAL_PROFILES else None)
+    if not workspace_active and room is None:
         return {}, _fail(
             "delegate_start", "workspace_not_active",
             "A delegated run may only WRITE inside an ACTIVE workspace, and this task "
             "has none. Refusing rather than falling back to the repository root.",
         )
-    ws_mode = str(getattr(ctx, "workspace_mode", "") or "").strip().lower()
+    ws_mode = "external" if room is not None else str(getattr(ctx, "workspace_mode", "") or "").strip().lower()
     if ws_mode not in {"external", "external_workspace"}:
         return {}, _fail(
             "delegate_start", "write_root_missing",
@@ -128,14 +129,15 @@ def _mutation_authority(ctx: ToolContext, authority: "DelegatedRunShape") -> tup
             "external workspace contract names the tree it may write. Refusing rather "
             "than guessing a target.",
         )
-    declared = _resolved(getattr(ctx, "workspace_root", None))
+    selected_root = room if room is not None else getattr(ctx, "workspace_root", None)
+    declared = _resolved(selected_root)
     resolved_root = _resolved(root)
     if resolved_root is None or declared is None or resolved_root != declared:
         return {}, _fail(
             "delegate_start", "write_root_mismatch",
             "The active root does not resolve to this task's declared external "
             "workspace, so the run would write somewhere this task was never given.",
-            active_root=root, declared_workspace_root=str(getattr(ctx, "workspace_root", "") or ""),
+            active_root=root, declared_workspace_root=str(selected_root or ""),
         )
     return {"target_root": root, "source": "external_workspace_root",
             "capture_mode": _CAPTURE_DELEGATED_SNAPSHOT}, ""

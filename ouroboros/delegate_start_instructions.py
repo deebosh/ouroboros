@@ -1,10 +1,8 @@
-"""Stable host instructions and bounded actor-first coordination appendix."""
+"""Stable host instructions and complete actor-first coordination appendix."""
 
 from __future__ import annotations
 
 from hashlib import sha256
-
-from ouroboros.delegate_shared import _fail
 
 
 HOST_INSTRUCTIONS = (
@@ -39,32 +37,15 @@ UNPROVEN_BOUNDARY_INSTRUCTION = (
 def append_coordination_context(
     base_instructions: str,
     coordination_context: str,
-    *,
-    instruction_budget_chars: int,
-) -> tuple[str, str]:
-    """Append the exact advisory context or refuse before physical start."""
+) -> str:
+    """Append the exact advisory context without changing instruction roles."""
 
-    context = str(coordination_context or "").strip()
+    context = str(coordination_context or "")
     if not context:
-        return base_instructions, ""
+        return base_instructions
     coordination_sha = sha256(context.encode("utf-8")).hexdigest()
     appendix = (
         "\n\nHOST COORDINATION CONTEXT (advisory appendix; canonical work-order "
         f"authority remains unchanged; sha256={coordination_sha}):\n{context}"
     )
-    required_chars = len(base_instructions) + len(appendix)
-    if required_chars > instruction_budget_chars:
-        return "", _fail(
-            "delegate_start",
-            "coordination_context_over_budget",
-            "The complete coordination appendix does not fit the existing host "
-            "instruction-field budget; it was not truncated and the physical leaf "
-            "was not started. Retry with a shorter coordination context or preserve "
-            "the details in a host artifact/tree note.",
-            coordination_context_chars=len(context),
-            required_instruction_chars=required_chars,
-            instruction_budget_chars=instruction_budget_chars,
-            coordination_context_sha256=coordination_sha,
-            host_fallback=False,
-        )
-    return base_instructions + appendix, ""
+    return base_instructions + appendix

@@ -115,6 +115,11 @@ class ToolContext:
     def active_repo_dir(self) -> pathlib.Path:
         if self.is_workspace_mode():
             return pathlib.Path(self.workspace_root)
+        from ouroboros.tool_access import project_room_lens_dir
+
+        room = project_room_lens_dir(self)
+        if room is not None:
+            return room
         return pathlib.Path(self.repo_dir)
 
     def is_workspace_mode(self) -> bool:

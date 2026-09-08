@@ -22,22 +22,12 @@ log = logging.getLogger(__name__)
 
 
 def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The project-room working-folder FACT for a room turn, or None.
+    """The room's active folder and ordinary tool target, or None.
 
-    Extracted verbatim from ``build_runtime_section`` (v6.90.x submarine unwind)
-    to keep that builder under the hard method gate; the resolution and the
-    stated rule are unchanged.
+    Conversation keeps its own lifecycle; selecting a room changes the physical
+    target without requiring a managed workspace or Git repository. Promotion
+    continues to use its separate workspace admission contract.
     """
-    # v6.58.0 (2.2): a conversation/decision turn in a project ROOM sees the room's
-    # working folder as a structural FACT — it can promote work into that folder
-    # without ITSELF becoming a workspace task (decision turns deliberately keep the
-    # promote/steer/route toolset, which workspace profiles exclude). The default
-    # transport: promote_chat_to_task from this room inherits working_dir unless
-    # workspace='none'. Registry read is anchored at the canonical DATA_DIR.
-    # v6.61.3 room lens: the rule now states the REAL chat-lane affordances (reads +
-    # default shell cwd resolve to the folder; writes go through promoted tasks) —
-    # the robot-room incident was exactly a fact/affordance split. A set-but-broken
-    # working_dir is disclosed loudly instead of a silent system-repo fallback.
     try:
         _room_pid = str(task.get("project_id") or "").strip()
         if _room_pid and not str(task.get("workspace_root") or "").strip():
@@ -57,13 +47,12 @@ def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                     "working_dir": _room_wd,
                     "rule": (
                         (
-                            "This room's chat lane LOOKS AT the project folder: read_file/"
-                            "list_files/search_code/query_code with root=active_workspace and "
-                            "the DEFAULT shell cwd resolve to working_dir. The Ouroboros "
-                            "system repo needs explicit root=\"system_repo\" (reads) or an "
-                            "explicit cwd (shell). File WRITES here go through "
-                            "promote_chat_to_task — the promoted task inherits this folder as "
-                            "its workspace (workspace='none' opts out)."
+                            "This room's active_workspace is working_dir for file reads, "
+                            "writes and edits, the default shell cwd, VCS and selected "
+                            "delegation. The tools retain their own requirements and "
+                            "explicit task constraints. Ouroboros governance remains at "
+                            "system_repo; select that root explicitly to work on the body. "
+                            "Direct work and promotion are both available."
                         )
                         if _lens_active
                         else (

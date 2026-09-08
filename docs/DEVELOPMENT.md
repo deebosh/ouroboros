@@ -1775,11 +1775,17 @@ both critical. The imperatives:
   self-report); a substrate swap is a disclosed incomplete execution, never
   a silent vendor/API fallback
   (`tests/test_configured_session_prestart.py`).
-- Work orders: one total 250,000-character wire limit, byte-complete or —
-  only on a route whose live manifest declares a question channel — a
-  compact source-request lens. Reader and validator share one renderer so
-  the bytes the actor sees are exactly the bytes the host verifies; the
-  manifest observation is a preflight, not a lease. `subagents.route_health`
+- Work orders carry the complete chosen assignment and host authority without
+  a compiler-size cutoff or compulsory question/file transport. Preserve the
+  instruction roles and avoid duplicating objective/output inside the host
+  authority. Real transport/provider refusals retain their cause, original
+  input and execution custody; recovery is the model's choice. Legacy partial
+  runs keep their exact renderer, source-range validation and stored-body retry.
+  Operative plan text and canonical identity remain complete. Keep full specs
+  in existing task source handles and only their references in the bounded
+  review-state index; restore them for acceptance and plan comparisons.
+  Redacted review evidence never substitutes for the original requirement text.
+  `subagents.route_health`
   is the ONE route reader for every consumer; quota readers project one
   `ClaudexorGateway.quota_state()` envelope
   (`tests/test_available_subagents_runtime.py`). A fully-used ratio without a

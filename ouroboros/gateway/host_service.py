@@ -232,9 +232,10 @@ class HostServiceContext:
 
     def _default_tool_schemas(self) -> list[dict[str, Any]]:
         try:
-            from supervisor.workers import _get_chat_agent
+            from supervisor.workers import REPO_DIR
+            from ouroboros.tools.registry import ToolRegistry
 
-            return list(_get_chat_agent().tools.schemas())
+            return list(ToolRegistry(pathlib.Path(REPO_DIR), self.data_dir).schemas())
         except Exception:
             log.debug("Host service could not read tool schemas", exc_info=True)
             return []

@@ -28,36 +28,27 @@ def _task_belongs_to_chat(ctx: Any, task_id: str, task_obj: Dict[str, Any], chat
         return False
 
 
-def _active_direct_root(ctx: Any) -> Dict[str, Any]:
-    """Snapshot the one in-process direct root without creating queue state."""
-    try:
-        agent = ctx.get_chat_agent()
-        lock = getattr(agent, "_owner_message_admission_lock", None)
+def _active_direct_roots(ctx: Any) -> list:
+    """All addressable native actors, without constructing agents or queue state."""
+    from supervisor.active_activity import get_direct_activity_registry
+    from supervisor.workers import direct_chat_turn
+
+    roots = []
+    for entry in get_direct_activity_registry().actors():
+        lock = getattr(entry.actor, "_owner_message_admission_lock", None)
         if lock is None:
-            return {}
+            continue
         with lock:
-            task_id = str(getattr(agent, "_current_task_id", "") or "").strip()
-            if (
-                not getattr(agent, "_busy", False)
-                or not getattr(agent, "_accepting_owner_messages", False)
-                or not task_id
-            ):
-                return {}
-            metadata = getattr(agent, "_current_task_metadata", {})
-            metadata = metadata if isinstance(metadata, dict) else {}
-            return {
-                "task_id": task_id,
-                "status": "running",
-                "title": _clip_marked(metadata.get("title"), 120),
-                "objective": _clip_marked(getattr(agent, "_current_task_text", ""), 600),
-                "project_id": str(metadata.get("project_id") or ""),
-                "chat_id": int(getattr(agent, "_current_chat_id", 0) or 0),
-                "started_at": float(getattr(agent, "_task_started_ts", 0.0) or 0.0),
-                "steerable": True,
-                "direct_chat": True,
-            }
-    except Exception:
-        return {}
+            turn = direct_chat_turn(entry.activity_id)
+            if turn is not None:
+                roots.append({
+                    "task_id": turn["id"], "status": "running",
+                    "title": _clip_marked(turn.get("title"), 120),
+                    "objective": _clip_marked(turn.get("text"), 600),
+                    "project_id": turn["project_id"], "chat_id": turn["chat_id"],
+                    "started_at": turn["_started_at"], "steerable": True, "direct_chat": True,
+                })
+    return roots
 
 
 def _addressable_root_tasks(ctx: Any, chat_id: Optional[int] = None) -> list:
@@ -95,9 +86,10 @@ def _addressable_root_tasks(ctx: Any, chat_id: Optional[int] = None) -> list:
     for pending in list(getattr(ctx, "PENDING", []) or []):
         if isinstance(pending, dict):
             _add(pending.get("id"), pending, "pending", pending.get("queued_at"))
-    direct = _active_direct_root(ctx)
-    if direct and str(direct.get("task_id") or "") not in seen:
-        if chat_id is None or int(direct.get("chat_id") or 0) == int(chat_id or 0):
+    for direct in _active_direct_roots(ctx):
+        if direct["task_id"] not in seen and (
+            chat_id is None or _task_belongs_to_chat(ctx, direct["task_id"], direct, chat_id)
+        ):
             out.append(direct)
     return out
 
@@ -117,8 +109,8 @@ def _chat_running_tasks(ctx: Any, chat_id: int) -> list:
     """Structural snapshot of the owner's RUNNING root tasks in THIS chat (id +
     objective + recency). The decision turn reads this from runtime context to
     pick a steer_task target by its own judgment — code only exposes the state,
-    it never auto-chooses (BIBLE P5). Direct in-process turns and subagents are
-    not pooled RUNNING tasks and are excluded."""
+    it never auto-chooses (BIBLE P5). Direct native roots are included;
+    delegated subagents are not owner roots."""
     return [row for row in _addressable_root_tasks(ctx, chat_id) if row.get("status") == "running"]
 
 
