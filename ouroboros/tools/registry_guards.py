@@ -556,12 +556,14 @@ def _ephemeral_block_result(
 ) -> ToolResult | None:
     """CW3: a short ephemeral decision turn may call ONLY the allowlisted read/decision
     tools (_EPHEMERAL_ALLOWED_TOOLS); every other built-in (durable/control/review/skill
-    mutator, run_command) AND all extension/MCP tools fail closed. Default-deny, so a new
-    mutator can never silently become reachable. It answers inline or promote_chat_to_task's
-    the durable work into a supervised task."""
-    if not getattr(ctx, "is_ephemeral_turn", False):
+    mutator, run_command) AND all extension tools fail closed. Default-deny, so a new
+    mutator can never silently become reachable. Owner-configured MCP tools are not
+    gated here (issue #722, owner-approved 2026-09-08): they ride every lane behind the
+    network resource guard, exactly as on a managed task. The turn answers inline or
+    promote_chat_to_task's the durable work into a supervised task."""
+    if not getattr(ctx, "is_ephemeral_turn", False) or is_mcp:
         return None
-    if ext_tool or is_mcp:
+    if ext_tool:
         text = (
             f"⚠️ EPHEMERAL_TURN_RESTRICTED: external tool '{name}' can have durable side "
             "effects, which a short same-route decision turn must not do. Answer inline, "

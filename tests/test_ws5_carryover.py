@@ -249,21 +249,52 @@ def test_switch_model_does_not_blanket_gate_on_context_window(monkeypatch, tmp_p
     assert "SWITCH_BLOCKED" not in out
     assert ctx.active_model_override == "small-model"
 
-# --- CW3 (claudexor): the ephemeral turn is barred from extension/MCP tools too ---
+# --- CW3: the ephemeral turn is barred from extension tools; configured MCP tools ride it ---
+# --- (issue #722, owner-approved 2026-09-08: a Main/project chat message on an install ---
+# --- with Projects always takes this lane, so hiding MCP there hid the owner's servers) ---
 
-def test_ephemeral_blocks_extension_and_mcp_tools(tmp_path):
+class _FakeMCPManager:
+    """Minimal manager surface schemas()/get_schema_by_name() consult."""
+
+    def __init__(self, *names):
+        self._tools = [
+            {"name": name, "description": f"fake {name}", "schema": {"type": "object", "properties": {}},
+             "server_id": "demo", "raw_name": name.split("__", 1)[1]}
+            for name in names
+        ]
+
+    def list_tools_for_registry(self):
+        return list(self._tools)
+
+    def get_tool(self, name):
+        return next((dict(t) for t in self._tools if t["name"] == name), None)
+
+    def tool_name_collisions(self):
+        return []
+
+    def enabled_servers_without_tools(self):
+        return []
+
+
+def _wire_fake_mcp(monkeypatch, *names):
+    from ouroboros import mcp_client
+
+    monkeypatch.setattr(mcp_client, "ensure_configured_from_settings", lambda **_kwargs: None)
+    monkeypatch.setattr(mcp_client, "get_manager", lambda: _FakeMCPManager(*names))
+
+
+def test_ephemeral_blocks_extension_tools_and_admits_mcp(tmp_path):
     from ouroboros.tools.registry import ToolContext, ToolRegistry
+    from ouroboros.tools.registry_guards import _ephemeral_block_result
 
     reg = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     reg.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, is_ephemeral_turn=True))
-    # an extension tool (resolved ext_tool) and an MCP tool both fail closed at execute()
-    from ouroboros.tools.registry_guards import _ephemeral_block_result
+    # an extension tool (resolved ext_tool) still fails closed at execute()...
     assert "EPHEMERAL_TURN_RESTRICTED" in _ephemeral_block_result(
         reg._ctx, "skill__do", ext_tool={"name": "skill__do"}
     ).text
-    assert "EPHEMERAL_TURN_RESTRICTED" in _ephemeral_block_result(
-        reg._ctx, "mcp__srv__x", is_mcp=True
-    ).text
+    # ...while an MCP tool is not this gate's business on any lane (network gate stays).
+    assert _ephemeral_block_result(reg._ctx, "mcp_srv__x", is_mcp=True) is None
     # a normal turn does not block external tools
     reg.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, is_ephemeral_turn=False))
     assert _ephemeral_block_result(
@@ -271,16 +302,59 @@ def test_ephemeral_blocks_extension_and_mcp_tools(tmp_path):
     ) is None
 
 
-def test_ephemeral_schemas_omit_extension_and_mcp_surfaces(tmp_path, monkeypatch):
+def test_ephemeral_schemas_omit_extensions_with_detail_and_expose_mcp(tmp_path, monkeypatch):
     monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    from ouroboros.tool_policy import format_capability_omissions
     from ouroboros.tools.registry import ToolContext, ToolRegistry
 
+    _wire_fake_mcp(monkeypatch, "mcp_demo__ping")
     reg = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     reg.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, is_ephemeral_turn=True))
-    reg.schemas()  # populates capability_omissions
+    names = {(s.get("function") or {}).get("name") for s in reg.schemas()}
+    assert "mcp_demo__ping" in names
     omissions = {(o.get("surface"), o.get("reason")) for o in reg.capability_omissions()}
+    assert ("mcp", "ephemeral_turn") not in omissions
     assert ("extensions", "ephemeral_turn") in omissions
-    assert ("mcp", "ephemeral_turn") in omissions
+    # The surviving extensions row names the working next step instead of "(no detail)"
+    # (the bare row read to the model as a disconnected server, issue #722).
+    rendered = "\n".join(format_capability_omissions(reg.capability_omissions()))
+    assert "- extensions: ephemeral_turn (" in rendered
+    assert "promote_chat_to_task" in rendered
+    assert "(no detail)" not in rendered
+
+
+def test_ephemeral_discovery_and_dispatch_agree_for_both_dynamic_surfaces(tmp_path, monkeypatch):
+    """(iii) get_schema_by_name / execute tell ONE story per surface on an ephemeral
+    turn: extensions hidden + blocked (handler never runs), MCP visible + dispatchable.
+    (policy_hidden_reason keeps its disclosed residual: unregistered dynamic names
+    answer None — not grown here.)"""
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    import ouroboros.tools.extension_dispatch as extension_dispatch
+    from ouroboros.tools.registry import ToolContext, ToolRegistry
+
+    _wire_fake_mcp(monkeypatch, "mcp_demo__ping")
+    ext_name = "ext_4_demo_do"  # a syntactically valid extension surface name
+    calls = []
+    ext_tool = {"name": ext_name, "skill": "demo", "handler": lambda ctx, **kw: calls.append(kw) or "ran"}
+    monkeypatch.setattr(
+        extension_dispatch, "_extension_dispatch_candidate",
+        lambda ctx, name: (ext_tool, False) if name == ext_name else (None, False),
+    )
+    reg = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    reg.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, is_ephemeral_turn=True))
+
+    # extensions: hidden from discovery (enable_tools cannot surface it), blocked at dispatch
+    assert reg.get_schema_by_name(ext_name) is None
+    assert "EPHEMERAL_TURN_RESTRICTED" in reg.execute(ext_name, {})
+    assert calls == []
+    # MCP: discoverable and execute() passes the ephemeral gate
+    # (it reaches the MCP call path; the fake manager has no transport, which is the
+    # ordinary provider-side error, NOT the lane refusal)
+    assert reg.get_schema_by_name("mcp_demo__ping")["function"]["name"] == "mcp_demo__ping"
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **kw: (True, ""))
+    out = reg.execute("mcp_demo__ping", {})
+    assert "EPHEMERAL_TURN_RESTRICTED" not in out
+    assert "TOOL_ERROR" in out  # fake manager: no _call_tool_result — the call path was reached
 
 
 # --- running_tasks routing context never silently truncates (codex no-[:N] rule) ---

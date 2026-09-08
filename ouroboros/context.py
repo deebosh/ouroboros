@@ -303,7 +303,8 @@ def _scheduled_tasks_digest(env: Any, *, limit: int = 8) -> Optional[Dict[str, A
 # existed — the owner watched a placebo. State the rule where the decision is
 # made instead of policing prose afterwards.
 _DECISION_TURN_OUTCOME_RULE = (
-    "This is a short DECISION turn with read/inspect tools only. A request "
+    "This is a short DECISION turn: built-in tools are read/inspect only; the "
+    "owner's configured MCP tools are callable here. A request "
     "carrying an external side effect (submit/publish/repair/commit/install/"
     "write) MUST either become a real supervised task via promote_chat_to_task "
     "or be explicitly declined in the answer. Ending this turn with a promise "

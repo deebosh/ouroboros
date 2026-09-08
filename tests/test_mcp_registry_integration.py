@@ -317,3 +317,43 @@ def test_disabled_manager_hides_tools(registry):
     mcp_client.reconfigure_from_settings(_settings(_good_server(id="svc"), enabled=False))
     names = {schema["function"]["name"] for schema in registry.schemas()}
     assert "mcp_svc__ping" not in names
+
+
+def test_ephemeral_decision_turn_exposes_and_executes_configured_mcp_tools(registry, monkeypatch):
+    """Issue #722 (owner-approved 2026-09-08): a Main/project chat message on an
+    install with Projects rides the ephemeral decision lane, which withheld every
+    configured MCP tool (``mcp: ephemeral_turn``) — the owner saw "cannot see the
+    tools" for a healthy server. Discovery and dispatch agree on that lane now:
+    the schema is present, get_schema_by_name answers it, and execute() reaches
+    the MCP call path (fake transport), while the network resource gate stays
+    the lane's only MCP filter — on discovery AND dispatch."""
+    fake = _FakeTransport(
+        [{"name": "ping", "description": "Ping", "input_schema": {"type": "object", "properties": {}}}]
+    )
+    _wire_singleton(fake)
+    mcp_client.reconfigure_from_settings(_settings(_good_server(id="svc")))
+    assert mcp_client.get_manager().refresh_server("svc")["ok"]
+    monkeypatch.setattr("ouroboros.safety.check_safety", lambda *a, **kw: (True, ""))
+    repo_dir, drive_root = registry._ctx.repo_dir, registry._ctx.drive_root
+
+    registry.set_context(ToolContext(repo_dir=repo_dir, drive_root=drive_root, is_ephemeral_turn=True))
+    names = {schema["function"]["name"] for schema in registry.schemas()}
+    assert "mcp_svc__ping" in names
+    omissions = {(o.get("surface"), o.get("reason")) for o in registry.capability_omissions()}
+    assert ("mcp", "ephemeral_turn") not in omissions
+    assert ("extensions", "ephemeral_turn") in omissions  # extensions stay lane-restricted
+    assert registry.get_schema_by_name("mcp_svc__ping")["function"]["name"] == "mcp_svc__ping"
+    assert registry.policy_hidden_reason("mcp_svc__ping") is None
+    assert "echo(svc/ping)" in registry.execute("mcp_svc__ping", {})
+    assert fake.call_calls == [("svc", "ping", {}, 60)]
+
+    contract = build_task_contract({"allowed_resources": {"network": False}})
+    registry.set_context(ToolContext(
+        repo_dir=repo_dir, drive_root=drive_root, is_ephemeral_turn=True,
+        task_contract=contract, task_metadata={"task_contract": contract},
+    ))
+    assert registry.get_schema_by_name("mcp_svc__ping") is None
+    assert "echo(svc/ping)" not in registry.execute("mcp_svc__ping", {})
+    assert len(fake.call_calls) == 1
+    assert any(item.get("surface") == "mcp" and item.get("reason") == "resource_blocked"
+               for item in registry.capability_omissions())
