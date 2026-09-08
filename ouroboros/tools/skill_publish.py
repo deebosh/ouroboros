@@ -981,6 +981,11 @@ def _submit_skill_to_hub(
             reason_code=exc.reason_code,
             repair_hint=exc.repair_hint,
             expected_repository=expected_repository,
+            extra_fields={key: value for key, value in {
+                "error_detail": getattr(exc, "detail", ""),
+                "github_status": getattr(exc, "http_status", None),
+                "github_operation": getattr(exc, "operation", ""),
+            }.items() if value},
         )
     except Exception:
         return attempt.result(

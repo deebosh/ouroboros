@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
 import types
 
 import pytest
 
 from ouroboros import skill_publish_github as github
+from ouroboros.tools import github as transport
+from ouroboros.tools.github import GhResult
 
 BASE_SHA = "1" * 40
 COMMIT_SHA = "2" * 40
 SNAPSHOT_SHA = "a" * 64
 RULESET_SHA = "b" * 64
+
+
+@pytest.fixture(autouse=True)
+def synthetic_github_credentials(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_SYNTHETIC1234567890")
 
 
 def _attempt():
@@ -110,7 +118,7 @@ def test_upstream_catalog_is_read_from_the_exact_resolved_base_sha(monkeypatch):
 def test_owner_actor_skips_fork_and_sync(monkeypatch):
     monkeypatch.setattr(
         github,
-        "_gh_cmd",
+        "_gh_run",
         lambda *_args, **_kwargs: pytest.fail("owner path must issue no fork command"),
     )
     attempt = _attempt()
@@ -131,10 +139,10 @@ def test_non_owner_sync_failure_is_typed(monkeypatch):
     def fake_gh(args, _ctx, **_kwargs):
         calls.append(args)
         if args[:2] == ["repo", "view"]:
-            return '{"name":"project"}'
-        return "⚠️ GH_ERROR: synthetic"
+            return GhResult(True, '{"name":"project"}', 0, None, "")
+        return GhResult(False, "⚠️ GH_ERROR: synthetic", 1, None, "exit")
 
-    monkeypatch.setattr(github, "_gh_cmd", fake_gh)
+    monkeypatch.setattr(github, "_gh_run", fake_gh)
     with pytest.raises(github.SkillPublishGitHubError) as caught:
         github.prepare_publish_repository(
             types.SimpleNamespace(),
@@ -153,9 +161,9 @@ def test_direct_pr_url_yields_validated_receipt_without_lookup(monkeypatch):
 
     def fake_gh(args, _ctx, **_kwargs):
         calls.append(args)
-        return "https://github.com/hub/project/pull/7"
+        return GhResult(True, "https://github.com/hub/project/pull/7", 0, None, "")
 
-    monkeypatch.setattr(github, "_gh_cmd", fake_gh)
+    monkeypatch.setattr(github, "_gh_run", fake_gh)
     monkeypatch.setattr(
         github,
         "_json_value",
@@ -185,13 +193,13 @@ def test_ambiguous_create_uses_one_exact_read_only_settlement(monkeypatch):
 
     def fake_gh(args, _ctx, **_kwargs):
         create_calls.append(args)
-        return "⚠️ GH_TIMEOUT: synthetic"
+        return GhResult(False, "⚠️ GH_TIMEOUT: synthetic", None, None, "timeout")
 
     def fake_json(_ctx, args, **_kwargs):
         lookup_calls.append(args)
         return [_pull_row()]
 
-    monkeypatch.setattr(github, "_gh_cmd", fake_gh)
+    monkeypatch.setattr(github, "_gh_run", fake_gh)
     monkeypatch.setattr(github, "_json_value", fake_json)
     receipt = github.create_pr_receipt(
         types.SimpleNamespace(),
@@ -224,7 +232,7 @@ def test_ambiguous_create_uses_one_exact_read_only_settlement(monkeypatch):
     ],
 )
 def test_ambiguous_settlement_never_claims_wrong_or_nonunique_pr(monkeypatch, rows):
-    monkeypatch.setattr(github, "_gh_cmd", lambda *_args, **_kwargs: "garbage")
+    monkeypatch.setattr(github, "_gh_run", lambda *_args, **_kwargs: GhResult(True, "garbage", 0, None, ""))
     monkeypatch.setattr(github, "_json_value", lambda *_args, **_kwargs: rows)
     receipt = github.create_pr_receipt(
         types.SimpleNamespace(),
@@ -242,7 +250,7 @@ def test_ambiguous_settlement_never_claims_wrong_or_nonunique_pr(monkeypatch, ro
 
 
 def test_existing_branch_is_never_overwritten(monkeypatch):
-    monkeypatch.setattr(github, "_gh_cmd", lambda *_args, **_kwargs: '{"ref":"exists"}')
+    monkeypatch.setattr(github, "_gh_run", lambda *_args, **_kwargs: GhResult(True, '{"ref":"exists"}', 0, None, ""))
     with pytest.raises(github.SkillPublishGitHubError) as caught:
         github.ensure_branch(
             types.SimpleNamespace(),
@@ -252,3 +260,219 @@ def test_existing_branch_is_never_overwritten(monkeypatch):
             BASE_SHA,
         )
     assert caught.value.reason_code == "submission_branch_exists"
+
+
+@pytest.mark.parametrize(
+    "failure,stderr,http_status,hint",
+    [
+        ("exit", "gh: Resource not accessible by personal access token (HTTP 403)", 403, "Settings → Secrets"),
+        ("exit", "gh: Conflict (HTTP 409)", 409, "conflict (HTTP 409)"),
+        ("timeout", "", None, "the outcome may be unknown"),
+        ("cli_missing", "", None, "Install the GitHub CLI (gh)"),
+        ("exit", "gh: ghp_SYNTHETIC1234567890 refused (HTTP 403)", 403, "Settings → Secrets"),
+    ],
+)
+def test_sync_failure_preserves_process_evidence_and_stops(
+    monkeypatch, tmp_path, failure, stderr, http_status, hint,
+):
+    calls = []
+
+    def run(cmd, *, cwd, capture_output, text, timeout, input, env):
+        calls.append(cmd)
+        assert cwd == str(tmp_path)
+        assert capture_output is True and text is True and input is None
+        assert env["GH_TOKEN"] == "ghp_SYNTHETIC1234567890"
+        if cmd[1:3] == ["repo", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, '{"name":"project"}', "")
+        assert cmd == ["gh", "api", "-X", "POST", "/repos/alice/project/merge-upstream", "-f", "branch=main"]
+        assert timeout == 45
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        if failure == "cli_missing":
+            raise FileNotFoundError("synthetic missing CLI")
+        return subprocess.CompletedProcess(cmd, 1, "", stderr)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    attempt = _attempt()
+    with pytest.raises(github.SkillPublishGitHubError) as caught:
+        github.prepare_publish_repository(
+            types.SimpleNamespace(repo_dir=tmp_path), attempt,
+            owner="hub", repo="project", base_branch="main", login="alice",
+        )
+    error = caught.value
+    assert error.reason_code == "fork_sync_failed"
+    assert error.http_status == http_status
+    assert error.operation == "merge-upstream"
+    assert hint in error.repair_hint
+    assert [stage for stage, _ in attempt.marks] == ["fork_ready"]
+    assert len(calls) == 2  # Exactly one merge-upstream; never retry a mutation.
+    assert "ghp_SYNTHETIC1234567890" not in error.detail
+    if "ghp_SYNTHETIC" in stderr:
+        assert "***" in error.detail
+    if http_status:
+        assert str(http_status) in error.detail
+    if failure == "cli_missing":
+        assert "token" not in error.repair_hint.lower()
+    if failure == "timeout":
+        assert error.detail == "⚠️ GH_TIMEOUT: exceeded 45s."
+
+
+def test_sync_success_marks_fork_synced(monkeypatch, tmp_path):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, '{}', "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    attempt = _attempt()
+    github.prepare_publish_repository(
+        types.SimpleNamespace(repo_dir=tmp_path), attempt,
+        owner="hub", repo="project", base_branch="main", login="alice",
+    )
+    assert [stage for stage, _ in attempt.marks] == ["fork_ready", "fork_synced"]
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "stderr,expected_status,expected_text",
+    [
+        # the FIRST gh marker wins; the bounded head keeps three non-empty lines
+        ("\n first\n\n second (HTTP 401)\n third\n ignored (HTTP 403)", 401,
+         "⚠️ GH_ERROR: first | second (HTTP 401) | third"),
+        # a bare number is prose, never a status
+        ("permission denied, status 403", None, "⚠️ GH_ERROR: permission denied, status 403"),
+        # the status is read from the WHOLE redacted stderr, before the head is cut
+        ("first\nsecond\nthird\nlater line (HTTP 403)", 403, "⚠️ GH_ERROR: first | second | third"),
+        ("x" * 700 + " (HTTP 403)", 403, None),
+        ("", None, "⚠️ GH_ERROR: "),
+    ],
+)
+def test_transport_bounds_stderr_and_only_reads_gh_http_marker(
+    monkeypatch, tmp_path, stderr, expected_status, expected_text,
+):
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 7, "ignored stdout", stderr),
+    )
+    result = transport._gh_run(["api", "/user"], types.SimpleNamespace(repo_dir=tmp_path))
+    assert (result.ok, result.exit_code, result.http_status, result.failure) == (False, 7, expected_status, "exit")
+    assert result.text.startswith("⚠️ GH_ERROR: ")
+    assert len(result.text.removeprefix("⚠️ GH_ERROR: ")) <= 600
+    assert "ignored" not in result.text
+    if expected_text is not None:
+        assert result.text == expected_text
+
+
+@pytest.mark.parametrize("failure", ["cli_missing", "timeout", "exit", "exception"])
+def test_transport_never_publishes_a_sidecar(monkeypatch, tmp_path, failure):
+    sentinel = object()
+    ctx = types.SimpleNamespace(repo_dir=tmp_path, _active_builtin_tool_result=sentinel)
+
+    def run(cmd, **kwargs):
+        if failure == "cli_missing":
+            raise FileNotFoundError()
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        if failure == "exception":
+            raise RuntimeError("synthetic ghp_SYNTHETIC1234567890")
+        return subprocess.CompletedProcess(cmd, 1, "", "synthetic")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = transport._gh_run(["api", "/user"], ctx)
+    assert result.failure == failure
+    assert ctx._active_builtin_tool_result is sentinel
+    assert transport._gh_cmd(["api", "/user"], ctx) == result.text
+    assert ctx._active_builtin_tool_result is sentinel
+    assert "ghp_SYNTHETIC1234567890" not in result.text
+
+
+def test_unconfigured_credentials_hint_uses_settings(monkeypatch):
+    monkeypatch.setattr(github, "github_cli_configured", lambda: False)
+    result = GhResult(False, "⚠️ GH_ERROR: synthetic", 1, None, "exit")
+    assert github.github_repair_hint(result, operation="repo view", repository="alice/project", default="default") == (
+        "No GitHub credential is configured; add GITHUB_TOKEN in Settings → Secrets, then retry."
+    )
+
+
+@pytest.mark.parametrize("handler,kwargs", [
+    (transport._get_issue, {}),
+    (transport._comment_on_issue, {"body": "comment"}),
+    (transport._close_issue, {}),
+])
+def test_nonpositive_issue_number_publishes_typed_argument_error(handler, kwargs):
+    ctx = types.SimpleNamespace(_active_builtin_tool_result=None)
+    text = handler(ctx, number=0, **kwargs)
+    result = ctx._active_builtin_tool_result
+    assert (result.status, result.code) == ("error", "TOOL_ARG_ERROR")
+    assert result.text == text == "⚠️ TOOL_ARG_ERROR: issue number must be positive"
+
+
+@pytest.mark.parametrize("create_failed", [True, False])
+def test_failed_pr_settlement_keeps_producer_evidence_without_retry(monkeypatch, tmp_path, create_failed):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1:3] == ["pr", "create"]:
+            if create_failed:
+                raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+            return subprocess.CompletedProcess(cmd, 0, "malformed URL", "")
+        assert cmd[1:4] == ["api", "--method", "GET"]
+        return subprocess.CompletedProcess(cmd, 1, "", "gh: read refused (HTTP 403)")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    attempt = _attempt()
+    with pytest.raises(github.SkillPublishGitHubError) as caught:
+        github.create_pr_receipt(
+            types.SimpleNamespace(repo_dir=tmp_path), attempt,
+            owner="hub", repo="project", base_branch="main", login="alice",
+            branch="submit/demo-v1.0.0", title="Add demo", body="body", commit_sha=COMMIT_SHA,
+        )
+    error = caught.value
+    assert error.reason_code == "pr_open_indeterminate"
+    assert len(calls) == 2
+    assert [stage for stage, _ in attempt.marks] == ["pr_create_attempted"]
+    assert error.operation == ("pr create" if create_failed else "pulls")
+    assert error.http_status == (None if create_failed else 403)
+    assert ("GH_TIMEOUT" if create_failed else "403") in error.detail
+
+
+@pytest.mark.parametrize("stdout", ['["wrong shape"]', 'invalid ghp_SYNTHETIC1234567890 ' + 'x' * 1000])
+def test_malformed_json_keeps_bounded_redacted_detail(monkeypatch, tmp_path, stdout):
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, stdout, ""),
+    )
+    with pytest.raises(github.SkillPublishGitHubError) as caught:
+        github.fetch_upstream_catalog(types.SimpleNamespace(repo_dir=tmp_path), "hub", "project", "main")
+    error = caught.value
+    assert error.reason_code == "upstream_read_failed"
+    assert error.http_status is None
+    assert error.operation == "git/refs"
+    assert error.detail
+    assert len(error.detail) <= 640
+    assert "ghp_SYNTHETIC1234567890" not in error.detail
+
+
+@pytest.mark.parametrize("returncode,stdout,stderr", [
+    (1, "", "gh: mutation refused (HTTP 403)"),
+    (0, '{"errors":[{"message":"synthetic GraphQL rejection"}]}', ""),
+])
+def test_commit_failure_keeps_graphql_cause(monkeypatch, tmp_path, returncode, stdout, stderr):
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(github.SkillPublishGitHubError) as caught:
+        github.commit_payload(
+            types.SimpleNamespace(repo_dir=tmp_path), "alice", "project", "submit/demo-v1.0.0",
+            BASE_SHA, "Add demo", [],
+        )
+    error = caught.value
+    assert error.reason_code == "commit_create_failed"
+    assert error.operation == "graphql"
+    assert error.http_status == (403 if returncode else None)
+    assert ("403" if returncode else "synthetic GraphQL rejection") in error.detail
+    assert len(calls) == 1

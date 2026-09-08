@@ -18,6 +18,7 @@ from ouroboros.config import (
 )
 from ouroboros.deadline_utils import owner_deadline_exhausted, transport_timeout_with_deadline
 from ouroboros.tools.registry import ToolContext, ToolEntry
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
 from ouroboros.usage_accounting import current_usage_scope
 from ouroboros.utils import emit_cognitive_operation_event
 from ouroboros.observability import new_call_id
@@ -59,13 +60,31 @@ def _get_llm_client():
     return LLMClient()
 
 
+def _refuse(ctx: Any, message: str, code: str = "TOOL_ARG_ERROR") -> str:
+    """Publish a refusal this module AUTHORS as a typed result; text unchanged.
+
+    The registry types a string result by its first-line ``⚠️ IDENTIFIER``
+    marker, so identifier-less prose (``⚠️ File not found: x.png``) was recorded
+    as ``status=ok`` even though the producer already knew it had failed. Both
+    codes used here carry ``status="error"``. Refusal text authored by a POLICY
+    owner (``_read_file_parity_block``, ``protected_artifacts``) is NOT routed
+    here: it already carries its own typed marker and the adapter types it
+    ``blocked``. Outside a registry invocation — the host's same-round
+    auto-attach caller in ``loop_tool_execution`` — there is no active sidecar
+    slot and no sidecar attribute on the ctx, so this publish is a no-op there.
+    """
+    return _publish_tool_result(ctx, ToolResult(status="error", code=code, text=message))
+
+
 def _analyze_screenshot(ctx: ToolContext, prompt: str = "Describe what you see in this screenshot. Note any important UI elements, text, errors, or visual issues.", model: str = "") -> str:
     """Analyze the last browser screenshot via VLM."""
     b64 = ctx.browser_state.last_screenshot_b64
     if not b64:
-        return (
+        return _refuse(
+            ctx,
             "⚠️ No screenshot available. "
-            "First call browse_page(output='screenshot') or browser_action(action='screenshot')."
+            "First call browse_page(output='screenshot') or browser_action(action='screenshot').",
+            "TOOL_ERROR",
         )
 
     try:
@@ -543,15 +562,15 @@ def _load_local_image_payload(ctx: ToolContext, file_path: str) -> Tuple[Optiona
     import pathlib
     fp = pathlib.Path(file_path).expanduser().resolve()
     if not fp.exists():
-        return None, f"⚠️ File not found: {file_path}"
+        return None, _refuse(ctx, f"⚠️ File not found: {file_path}")
     allowed = _allowed_file_roots(ctx)
     if not any(_path_is_under(fp, root) for root in allowed):
-        return None, (
+        return None, _refuse(ctx, (
             f"⚠️ file_path must be inside the uploads directory, the skill-state tree "
             f"(state/skills), or a resource root this profile can read "
             f"(workspace / artifact_store / task_drive / subagent_projects / "
             f"deliverables / user files). Resolved path: {fp}. Use read_file for other paths."
-        )
+        ))
     _pp_block = _read_file_parity_block(ctx, fp)
     if _pp_block:
         return None, _pp_block
@@ -566,28 +585,30 @@ def _load_local_image_payload(ctx: ToolContext, file_path: str) -> Tuple[Optiona
     if _artifact_block:
         return None, _artifact_block
     if fp.stat().st_size > _VLM_MAX_FILE_BYTES:
-        return None, f"⚠️ File too large ({fp.stat().st_size} bytes). Max {_VLM_MAX_FILE_BYTES} bytes."
+        return None, _refuse(
+            ctx, f"⚠️ File too large ({fp.stat().st_size} bytes). Max {_VLM_MAX_FILE_BYTES} bytes."
+        )
     try:
         raw = fp.read_bytes()
     except Exception as e:
-        return None, f"⚠️ Failed to read image file: {e}"
+        return None, _refuse(ctx, f"⚠️ Failed to read image file: {e}")
     # Fail closed: only recognized image bytes may be used.
     mime = _detect_image_mime_for_vlm(raw)
     if not mime:
-        return None, (
+        return None, _refuse(ctx, (
             "⚠️ File does not appear to be a supported image (PNG/JPEG/GIF/WEBP). "
             "Only image files are accepted."
-        )
+        ))
     try:
         return _image_payload_from_bytes(raw, mime), ""
     except ValueError as e:
-        return None, str(e)
+        return None, _refuse(ctx, str(e))
 
 
 def _vlm_query(ctx: ToolContext, prompt: str, image_url: str = "", image_base64: str = "", image_mime: str = "image/png", file_path: str = "", model: str = "") -> str:
     """Analyze one image from uploads file_path, public URL, or base64."""
     if not image_url and not image_base64 and not file_path:
-        return "⚠️ Provide one of: file_path, image_url, or image_base64."
+        return _refuse(ctx, "⚠️ Provide one of: file_path, image_url, or image_base64.")
 
     images: List[Dict[str, Any]] = []
     try:
@@ -680,7 +701,7 @@ def attach_local_image_to_context(ctx: ToolContext, path: str) -> Tuple[bool, st
     never raises. Blind/local routes need no guard here — send-time routing
     captions/omits image blocks for routes that cannot see them."""
     if not path:
-        return False, "⚠️ Provide a local image file path."
+        return False, _refuse(ctx, "⚠️ Provide a local image file path.")
     payload, err = _load_local_image_payload(ctx, path)
     if err:
         return False, err

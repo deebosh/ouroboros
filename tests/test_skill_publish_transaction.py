@@ -558,6 +558,7 @@ def test_confirmation_failure_is_parseable_and_calls_nothing(tmp_path):
     assert result["ok"] is False
     assert result["reason_code"] == "confirmation_required"
     assert result["completed_effects"] == []
+    assert not {"error_detail", "github_status", "github_operation"} & result.keys()
 
 
 def test_later_scanner_error_does_not_erase_known_scanner_identity():
@@ -575,3 +576,39 @@ def test_publisher_has_no_legacy_regex_secret_gate():
     source = pathlib.Path(skill_publish.__file__).read_text(encoding="utf-8")
     assert "contains_real_secret_value" not in source
     assert "permission_statement" not in source
+
+
+@pytest.mark.parametrize("http_status", [403, None])
+def test_github_failure_envelope_keeps_cause_and_last_completed_stage(monkeypatch, tmp_path, http_status):
+    ctx, events, _captured = _install_transaction_fakes(monkeypatch, tmp_path, snapshot=_snapshot())
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_SYNTHETIC1234567890")
+    detail = "⚠️ GH_ERROR: gh: Resource not accessible by personal access token (HTTP 403)"
+
+    def prepare(_ctx, attempt, **kwargs):
+        attempt.mark("fork_ready", repository="alice/project", actor="alice")
+        raise skill_publish.SkillPublishGitHubError(
+            "fork_sync_failed", "Update GITHUB_TOKEN in Settings → Secrets, then retry.",
+            detail=detail, http_status=http_status, operation="merge-upstream",
+        )
+
+    monkeypatch.setattr(skill_publish, "prepare_publish_repository", prepare)
+    result = _submit(ctx)
+    assert result["ok"] is False
+    assert result["reason_code"] == "fork_sync_failed"
+    assert result["completed_stage"] == "fork_ready"
+    assert result["completed_effects"][-1]["stage"] == "fork_ready"
+    assert result["error_detail"] == detail
+    if http_status is None:
+        assert "github_status" not in result
+    else:
+        assert result["github_status"] == http_status
+    assert result["github_operation"] == "merge-upstream"
+    from ouroboros.skill_publish_result import extract_skill_publish_result_metadata
+
+    projected = extract_skill_publish_result_metadata(json.dumps(result))["skill_publish_attempt"]
+    assert projected["error_detail"] == detail
+    assert projected["github_operation"] == "merge-upstream"
+    assert projected.get("github_status") == http_status
+    assert "receipt" not in result
+    assert not any(row[0] == "mutation" for row in events)
+    assert not (tmp_path / "state" / "skills" / "demo" / "ouroboroshub.json").exists()

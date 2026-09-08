@@ -177,9 +177,23 @@ integrity and authority boundaries plus truthful receipts; do not add
 task-specific auto-retry, fallback, cleanup, resume, or terminal-flow state
 machines.
 
+A producer that already knows its call failed publishes that fact typed: a
+`ToolResult` through `tool_result._publish_tool_result`, or a first-line
+`⚠️ IDENTIFIER` marker the legacy adapter maps to a status. Identifier-less
+`⚠️ prose` and a bare `ERROR: ...` string are recorded by the registry — in
+`tools.jsonl`, the outcome classifier and the acceptance packet — as a successful
+call, so the failure the producer saw is lost exactly where the next decision
+reads it. A wrapper over an inner producer (`view_image` over the local image
+loader, the publication transaction over the GitHub transport) carries the inner
+failure and its safe cause forward instead of a stage-only word.
+
 Enforcement: the prompt-edit discipline is scored by CHECKLISTS item 13(b)
 (a prompt edit never restates a tool schema and is never an incident patch);
-the recoverable-failure boundary has no automated surface — review-only.
+the recoverable-failure boundary has no automated surface — review-only; the
+typed-refusal rule is ratcheted by `tests/test_typed_tool_refusals.py`, a
+source lint over returned literals in `ouroboros/tools/` whose allowlist is the
+residual disclosure — a failure text that travels through a variable, a tuple
+or a helper is outside its reach and is pinned by the producer's own tests.
 
 ### Documentation contract
 
@@ -811,7 +825,10 @@ separate `plan_task` call containing `review_disposition` only —
 `{review_fingerprint, items: [{finding_id, decision, rationale}]}` — covering
 every finding exactly once; duplicates, contradictions, unknown, stale, or
 incomplete dispositions fail closed, and mixed or vacuous calls fail before an
-attempt is recorded. Never replay the plan envelope with the disposition.
+attempt is recorded as typed argument errors — a schema-equivalent empty
+optional field (`""`, `{}`, a list or dict whose members are all empty) beside a
+disposition is ignored, never mistaken for a second operation. Never replay the
+plan envelope with the disposition.
 Blocking `REVISE_PLAN` requires changed plan text and another panel; advisory
 may proceed only under loud host disclosure and the agent's rationale.
 Reviewers are findings-only — they never author a competing plan — a blocking
