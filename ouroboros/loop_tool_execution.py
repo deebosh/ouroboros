@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from ouroboros.model_wait import execution_deadline_scope, future_result, monotonic_now
+
 import concurrent.futures
+import contextlib
 import contextvars
 import json
 import logging
@@ -247,6 +250,10 @@ def _get_tool_timeout(
                 pass
     per_tool = tools.get_timeout(tool_name)
     base = max(settings_val, per_tool) if settings_val > 0 else per_tool
+    if tool_name in {"analyze_screenshot", "vlm_query"}:
+        from ouroboros.tools.vision import _vision_tool_timeout
+
+        base = max(base, _vision_tool_timeout(tools._ctx, tool_args or {}))
     if tool_name in _PER_CALL_TIMEOUT_TOOLS and isinstance(tool_args, dict):
         raw = tool_args.get("timeout_sec", tool_args.get("timeout"))
         try:
@@ -939,12 +946,12 @@ def _execute_with_timeout(
         # reaches the tool body, the wrapper refuses instead of letting the
         # abandoned call build a session in the NEXT command's state.
         submit_generation = getattr(tool_ctx, "browser_state", None)
-        future = stateful_executor.submit(
-            _execute_browser_tool_bound, tools, tc, drive_logs, task_id,
-            submit_generation,
-        )
+        with execution_deadline_scope(monotonic_now() + timeout_sec):
+            future = stateful_executor.submit(
+                _execute_browser_tool_bound, tools, tc, drive_logs, task_id, submit_generation,
+            )
         try:
-            result = future.result(timeout=timeout_sec)
+            result = future_result(future, timeout_sec)
             result_meta = result.get("result_meta") or {}
             _emit_live_log(tools, _with_correlation({
                 "type": "tool_call_finished",
@@ -1018,12 +1025,13 @@ def _execute_with_timeout(
     else:
         executor = ThreadPoolExecutor(max_workers=1)
         try:
-            context = contextvars.copy_context()
+            with (contextlib.nullcontext() if is_reviewed_mutative else execution_deadline_scope(monotonic_now() + timeout_sec)):
+                context = contextvars.copy_context()
             future = executor.submit(
                 context.run, _execute_single_tool, tools, tc, drive_logs, task_id,
             )
             try:
-                result = future.result() if is_reviewed_mutative else future.result(timeout=timeout_sec)
+                result = future.result() if is_reviewed_mutative else future_result(future, timeout_sec)
                 result_meta = result.get("result_meta") or {}
                 _emit_live_log(tools, _with_correlation({
                     "type": "tool_call_finished",

@@ -99,6 +99,8 @@ from ouroboros.server_restart import (  # noqa: F401
     _safe_restart_serialized,
     _shutdown_supervisor_event_bus,
     _shutdown_task_cleanup_args,
+    _stop_owned_daemon_for_new_pin,
+    _stop_owned_work,
 )
 
 REPO_DIR = pathlib.Path(os.environ.get("OUROBOROS_REPO_DIR", pathlib.Path(__file__).parent))
@@ -194,42 +196,29 @@ _consciousness: Any = None
 
 def _describe_bg_consciousness_state(requested_enabled: bool) -> dict:
     snapshot = _consciousness.status_snapshot() if _consciousness else {}
-    running = bool(snapshot.get("running"))
-    paused = bool(snapshot.get("paused"))
-    next_wakeup_sec = int(snapshot.get("next_wakeup_sec") or 0)
-    idle_reason = str(snapshot.get("last_idle_reason") or "")
-    detail = "Background consciousness is off."
-    status = "disabled"
-
-    if requested_enabled and running and paused:
-        status = "paused"
-        detail = "Paused while another foreground task is active."
-    elif requested_enabled and running and idle_reason == "thinking":
-        status = "running"
-        detail = "Background consciousness is thinking now."
-    elif requested_enabled and running and idle_reason == "budget_blocked":
-        status = "budget_blocked"
-        detail = "Background consciousness hit its budget allocation and is waiting."
-    elif requested_enabled and running:
-        status = "running"
-        detail = (
-            "Background consciousness is idle between wakeups."
-            + (f" Next wakeup in {next_wakeup_sec}s." if next_wakeup_sec > 0 else "")
-        )
-    elif requested_enabled:
-        status = "stopped"
-        detail = "Enabled in state, but the background thread is not running."
-
+    idle_reason = snapshot.get("last_idle_reason")
+    if not requested_enabled:
+        status, detail = "disabled", "Background consciousness is off."
+    elif not snapshot.get("running"):
+        status, detail = "stopped", "Enabled in state, but the background thread is not running."
+    elif snapshot.get("paused"):
+        status, detail = "paused", "Paused while another foreground task is active."
+    elif any(row.get("state") == "waiting" for row in snapshot.get("model_waits", {}).values()):
+        status, detail = "model_wait", "Model access wait; no worker slot held."
+    elif idle_reason == "thinking":
+        status, detail = "running", "Background consciousness is thinking now."
+    elif idle_reason == "budget_blocked":
+        status, detail = "budget_blocked", "Background consciousness hit its budget allocation and is waiting."
+    else:
+        status, detail = "running", "Background consciousness is idle between wakeups."
+        wakeup = int(snapshot.get("next_wakeup_sec") or 0)
+        if wakeup > 0:
+            detail += f" Next wakeup in {wakeup}s."
     if idle_reason == "error_backoff" and snapshot.get("last_error"):
         status = "error_backoff"
         detail = f"Waiting to retry after an internal error: {snapshot['last_error']}"
 
-    return {
-        "enabled": requested_enabled,
-        "status": status,
-        "detail": detail,
-        **snapshot,
-    }
+    return {"enabled": requested_enabled, "status": status, "detail": detail, **snapshot}
 
 
 def _start_supervisor_if_needed(settings: dict) -> bool:
@@ -388,22 +377,10 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 log.warning("Failed to write owner restart no-resume flag", exc_info=True)
                 reply("⚠️ Restart cancelled: could not write restart state.", "failed")
                 continue
-            try:
-                ctx.kill_workers(
-                    force=True,
-                    terminal_status="cancelled",
-                    result_reason="Owner restart stopped this task before process restart.",
-                    **_managed_update_pending_kwargs(),
-                )
-            except Exception:
-                owner_restart_flag.unlink(missing_ok=True)
-                stable_skip_flag.unlink(missing_ok=True)
-                log.warning("Restart cancelled because worker shutdown failed", exc_info=True)
-                try:
-                    reply("⚠️ Restart cancelled: failed to stop workers.", "failed")
-                except Exception:
-                    pass
-                continue
+            # Everything reversible is behind us (checkout landed, no-resume
+            # intent durable): from here the restart always follows, and every
+            # unconfirmed stop is a critical diagnostic, never a deferral.
+            _stop_owned_work(ctx)
             try:
                 reply("Stopping active task. New settings apply to the next message.", "")
             except Exception:
@@ -1241,6 +1218,10 @@ async def lifespan(app):
         target=_boot_managed_update_tasks, daemon=True, name="boot-managed-update",
     ).start()
 
+    if not pytest_default_real_data_dir:
+        from ouroboros.claudexor_daemon import warm_owned_daemon
+        warm_owned_daemon()  # provisioned homes only; one background ensure, off the startup path
+
     host_service_task = None
     host_service_server = None
     host_service_listener = ExitStack()
@@ -1257,6 +1238,7 @@ async def lifespan(app):
         init_global_event_bus().set_loop(_event_loop)
         init_global_supervisor(lifespan_drive_root)
         host_service_app = create_host_service_app(lifespan_drive_root)
+        host_service_app.state.get_background_model_wait = getattr(app.state, "get_background_model_wait", None)
         host_port = host_service_port()
         # Bind before starting the asyncio task: uvicorn's bind-error SystemExit
         # otherwise escapes run_forever and kills the main server. Keep that
@@ -1429,10 +1411,19 @@ async def lifespan(app):
                 force=True,
                 terminal_status=cleanup_status,
                 result_reason=cleanup_reason,
+                **_restart_cleanup_kwargs(),
                 **_managed_update_pending_kwargs(),
             )
         except Exception:
             pass
+        if _restart_requested.is_set():
+            try:
+                # A planned restart whose landed checkout pins another engine ends
+                # the owned daemon here so the next generation starts on that pin.
+                _stop_owned_daemon_for_new_pin()
+            except Exception:
+                log.critical("Planned restart: engine pin check raised; the owned daemon is left serving",
+                             exc_info=True)
         try:
             from supervisor.message_bus import get_bridge
             get_bridge().shutdown()
@@ -1449,6 +1440,7 @@ app.app.state.app_start = APP_START  # type: ignore[attr-defined]
 app.app.state.supervisor_ready_event = _supervisor_ready  # type: ignore[attr-defined]
 app.app.state.get_supervisor_error = lambda: _supervisor_error  # type: ignore[attr-defined]
 app.app.state.describe_bg_consciousness_state = _describe_bg_consciousness_state  # type: ignore[attr-defined]
+app.app.state.get_background_model_wait = lambda: _consciousness.live_model_wait() if _consciousness else None
 app.app.state.request_restart = _request_restart_exit  # type: ignore[attr-defined]
 app.app.state.runtime_branch_defaults = _runtime_branch_defaults  # type: ignore[attr-defined]
 app.app.state.bind_host = _BIND_HOST  # type: ignore[attr-defined]
@@ -1463,6 +1455,13 @@ _ACTUAL_BOUND_PORT: Optional[int] = None
 def _actual_bound_port() -> int:
     """Port the server actually bound (set in main(); DEFAULT_PORT before that)."""
     return _ACTUAL_BOUND_PORT if _ACTUAL_BOUND_PORT else DEFAULT_PORT
+
+
+def _restart_cleanup_kwargs() -> dict:
+    """Keep owner Restart from re-opening daemon custody after its stop."""
+    if _owner_restart_requested.is_set():
+        return {"reconcile_delegate_custody": False}
+    return {}
 
 
 def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
@@ -1484,6 +1483,7 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
         pass
     try:
         from supervisor.workers import kill_workers
+        cleanup_kwargs = _restart_cleanup_kwargs()
         if _restart_requested.is_set():
             # A restart that hung past the uvicorn shutdown timeout still reaches
             # here; finalize running tasks as an honest interrupted-by-restart,
@@ -1494,12 +1494,14 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
                 archive_service_logs=False,
                 terminal_status=cleanup_status,
                 result_reason=cleanup_reason,
+                **cleanup_kwargs,
                 **_managed_update_pending_kwargs(),
             )
         else:
             kill_workers(
                 force=True,
                 archive_service_logs=False,
+                **cleanup_kwargs,
                 **_managed_update_pending_kwargs(),
             )
     except Exception:

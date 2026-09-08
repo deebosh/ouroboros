@@ -17,6 +17,9 @@ from ouroboros.settings_defaults import (
     SUPERVISOR_LIVENESS_DEADLINE_DEFAULT_SEC,
 )
 
+# Local model-operation status polling; not a provider deadline or quota timer.
+CLAUDEXOR_MODEL_POLL_INTERVAL_SEC = 0.25
+
 
 EXTENSION_STREAM_CHUNK_BYTES = 64 * 1024
 # Exit/pipe-drain grace after a response ends; never a response lifetime timer.
@@ -26,6 +29,7 @@ NESTED_SETTLEMENT_MARGIN_SEC = 30  # Structural ordering margin, not a cognition
 NETWORK_WAIT_NOTE_INTERVAL_SEC = 300
 # First free-redial pause of a transport-wait episode; doubles per wait iteration up to the existing 60s transient backoff cap (Q10: an existing bound, not a new knob).
 NETWORK_WAIT_BACKOFF_START_SEC = 4.0
+NETWORK_WAIT_BACKOFF_MAX_SEC = 60.0
 # TCP keepalive for long-lived remote LLM sockets (idle threshold, probe interval, probe count): kernel probes
 # detect a silently dropped NAT/VPN mapping instead of hanging to the read timeout; platform_layer builds the options.
 TCP_KEEPALIVE_IDLE_SEC = 60

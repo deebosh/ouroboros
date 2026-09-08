@@ -1022,9 +1022,14 @@ def _safety_model_call(
                     model=light_model, use_local=use_local,
                     max_tokens=get_safety_max_tokens(), reasoning_effort="low",
                     timeout=get_safety_call_timeout_sec(),
-                    response_format={"type": "json_object"},
+                    model_role="light",
+                    response_format=({"type": "json_object"}
+                                     if LLMClient.supports_response_format(light_model, use_local=use_local)
+                                     else None),
                 )
         except Exception as e:
+            from ouroboros.llm_claudexor import propagate_model_error
+            propagate_model_error(e)
             exc = e
         safe_error = sanitize_tool_result_for_log(f"{type(exc).__name__}: {exc}") if exc else ""
         rate_limited = _safety_rate_limit_reason(exc, usage, safe_error)
@@ -1129,6 +1134,8 @@ def _run_llm_check(
             attempts=getattr(e, "attempts", 2),
         )
     except Exception as e:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(e)
         safe_error = sanitize_tool_result_for_log(f"{type(e).__name__}: {e}")
         # Fallback local outage warns instead of blocking all unknown tools.
         if _use_local_light and _is_local_fallback:
@@ -1180,6 +1187,8 @@ def _run_llm_check(
                 attempts=getattr(e, "attempts", 2),
             )
         except Exception as exc:
+            from ouroboros.llm_claudexor import propagate_model_error
+            propagate_model_error(exc)
             log.warning("Safety repair retry failed for %s: %s", tool_name, exc, exc_info=True)
         if result is None:
             log.error(f"Safety check returned invalid JSON for {tool_name} (class={failure_class}): {raw_content}")

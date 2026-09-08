@@ -290,6 +290,7 @@ def _find_duplicate_task(
             resp_msg, _usage = client.chat(
                 messages=[{"role": "user", "content": prompt}],
                 model=light_model,
+                model_role="light",
                 reasoning_effort="low",
                 max_tokens=50,
             )

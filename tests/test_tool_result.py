@@ -27,11 +27,6 @@ _EPHEMERAL_BUILTIN_TEXT = (
     "not do durable/control/review/skill work or run shell. Answer inline, or "
     "promote_chat_to_task to do it in a supervised task."
 )
-_EPHEMERAL_EXTERNAL_TEXT = (
-    "⚠️ EPHEMERAL_TURN_RESTRICTED: external tool 'ext_4_demo_ping' can have durable side "
-    "effects, which a short same-route decision turn must not do. Answer inline, "
-    "or promote_chat_to_task to do that work in a supervised task."
-)
 _LOCAL_READONLY_TEXT = (
     "⚠️ LOCAL_READONLY_SUBAGENT_BLOCKED: this subagent may inspect "
     "local repo/data/history plus web/browser surfaces and enabled "
@@ -435,7 +430,6 @@ def test_registry_guard_owner_facades_preserve_identity() -> None:
     "scenario",
     (
         "ephemeral_builtin",
-        "ephemeral_external",
         "local_readonly",
         "acting_builtin",
         "acting_external",
@@ -466,9 +460,6 @@ def test_registry_guard_native_outcomes_preserve_exact_text(
     if scenario == "ephemeral_builtin":
         result = _ephemeral_block_result(ctx, "update_identity")
         expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_EPHEMERAL_BUILTIN_TEXT)
-    elif scenario == "ephemeral_external":
-        result = _ephemeral_block_result(ctx, "ext_4_demo_ping", ext_tool={"name": "ext_4_demo_ping"})
-        expected = ToolResult(status="blocked", code="ACCESS_BLOCKED", text=_EPHEMERAL_EXTERNAL_TEXT)
     else:
         kwargs = {
             "entry": object()
@@ -524,6 +515,12 @@ def test_registry_guard_allow_paths_return_no_result(monkeypatch) -> None:
         _readonly_tool_allowed=lambda name: name in LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
     )
     assert _ephemeral_block_result(ctx, "read_file") is None
+    # Issue #722 (owner decision 2026-09-08): the owner's dynamic surfaces are not this
+    # gate's business on any lane — a live extension, a dead one (it answers
+    # EXTENSION_UNAVAILABLE downstream) and an MCP name all pass.
+    assert _ephemeral_block_result(ctx, "ext_4_demo_ping", ext_tool={"name": "ext_4_demo_ping"}) is None
+    assert _ephemeral_block_result(ctx, "ext_4_demo_ping", extension_unavailable=True) is None
+    assert _ephemeral_block_result(ctx, "mcp_srv__x", is_mcp=True) is None
     assert _subagent_and_update_guard_result(
         registry,
         "ext_4_demo_ping",
@@ -574,12 +571,32 @@ def test_registry_native_guards_precede_safety_and_physical_dispatch(
     )
     monkeypatch.setattr("ouroboros.extension_loader.is_extension_live", lambda *_args, **_kwargs: True)
 
-    ephemeral = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
-    ephemeral.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, is_ephemeral_turn=True))
-    assert ephemeral.execute_result("ext_4_demo_ping", {}) == ToolResult(
+    # Issue #722 (owner decision 2026-09-08): the ephemeral lane no longer denies the
+    # owner's extension tools, so the native guard that keeps this extension away from
+    # safety/handler here is the acting child's missing external_tool_grant; the
+    # lane's own built-in allowlist denial is pinned on a built-in.
+    from ouroboros.contracts.task_constraint import TaskConstraint
+
+    acting = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    acting.set_context(ToolContext(
+        repo_dir=tmp_path, drive_root=tmp_path,
+        task_constraint=TaskConstraint(mode="acting_subagent", allow_enable=False, surface="external_workspace"),
+    ))
+    assert acting.execute_result("ext_4_demo_ping", {}) == ToolResult(
         status="blocked",
         code="ACCESS_BLOCKED",
-        text=_EPHEMERAL_EXTERNAL_TEXT,
+        text=_ACTING_EXTERNAL_TEXT,
+    )
+
+    ephemeral = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    ephemeral.override_handler(
+        "update_identity", lambda _ctx, **_kwargs: handler_calls.append("handler") or "unreachable",
+    )
+    ephemeral.set_context(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, is_ephemeral_turn=True))
+    assert ephemeral.execute_result("update_identity", {}) == ToolResult(
+        status="blocked",
+        code="ACCESS_BLOCKED",
+        text=_EPHEMERAL_BUILTIN_TEXT,
     )
 
     managed = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)

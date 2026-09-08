@@ -193,7 +193,7 @@ def test_oversize_slots_are_typed_rows_and_below_quorum_is_a_typed_refusal(harne
 
     caps = {"m/a": 10, "m/b": 10_000_000, "m/c": 10_000_000}
     monkeypatch.setattr(review_synthesis, "per_slot_input_token_limits",
-                        lambda models, **kw: {str(m): caps[str(m)] for m in models})
+                        lambda models, **kw: {slot.slot_id: caps[str(m)] for m, slot in zip(models, kw["slots"])})
     sub = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
     out = _call(harness.make_ctx())
     assert _control(out) == {"outcome": "GREEN", "closed": True}
@@ -244,7 +244,7 @@ def test_session_slot_is_never_fit_excluded_and_budget_is_priced_on_callable_slo
     harness.state["slots"] = _slots(("s1", "m/a"), ("s2", "m/b"), ("s3", "cursor=grok", "session"))
     caps = {"m/a": 10, "m/b": 10_000_000}
     monkeypatch.setattr(review_synthesis, "per_slot_input_token_limits",
-                        lambda models, **kw: {str(m): caps[str(m)] for m in models})
+                        lambda models, **kw: {slot.slot_id: caps[str(m)] for m, slot in zip(models, kw["slots"])})
     priced: list = []
     monkeypatch.setattr(pr_mod, "review_wave_budget_gate",
                         lambda ctx, **kw: priced.append(list(kw["models"])) or None)

@@ -336,7 +336,7 @@ def append_chat_annotation(
     path = pathlib.Path(drive_root) / "logs" / _ANNOTATIONS_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = jsonl_append_lock_path(path)
-    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0)
+    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0, owner_aware_stale=True)
     if lock_fd is None:
         return False
     try:

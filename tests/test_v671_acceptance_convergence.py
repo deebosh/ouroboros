@@ -353,7 +353,7 @@ def test_acceptance_packet_budget_uses_the_quorum_window_and_dense_chars(monkeyp
     caps = {"wide-1": 900_000, "wide-2": 800_000, "narrow": 120_000}
     monkeypatch.setattr(
         review_synthesis, "per_slot_input_token_limits",
-        lambda models, **kwargs: {str(m): caps.get(str(m), 0) for m in models},
+        lambda models, **kwargs: {slot.slot_id: caps[str(m)] for m, slot in zip(models, kwargs["slots"])},
     )
     slots = [
         ReviewSlot(slot_id="slot_1", model="wide-1", effort="high"),

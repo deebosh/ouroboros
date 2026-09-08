@@ -14,6 +14,8 @@ import {
 import {
     isTerminalTaskDetail,
     summarizeChatLiveEvent,
+    summarizeLogEvent,
+    taskDoneIsTerminal,
     taskOutcomeSeverity,
     taskTerminalPhase,
 } from '../modules/log_events.js';
@@ -158,10 +160,15 @@ test('durable detail terminality is narrow and outcome labels stay unchanged', (
         assert.equal(isTerminalTaskDetail({ status }), true, status);
     }
     for (const post_task_synthesis of ['pending_once', 'running']) {
-        assert.equal(isTerminalTaskDetail({
-            status: 'completed',
-            root_phase_checkpoint: { post_task_synthesis },
-        }), false, `completed/${post_task_synthesis}`);
+        for (const status of ['completed', 'failed']) {
+            const record = { type: 'task_done', status, root_phase_checkpoint: { post_task_synthesis } };
+            assert.equal(isTerminalTaskDetail(record), false, `${status}/${post_task_synthesis}`);
+            assert.equal(taskDoneIsTerminal(record), false);
+            assert.equal(summarizeChatLiveEvent(record).terminal, false);
+            const headline = status === 'failed' ? 'Failed' : 'Working';
+            assert.equal(summarizeChatLiveEvent(record).headline, headline);
+            assert.equal(summarizeLogEvent(record).headline, headline);
+        }
     }
     assert.equal(isTerminalTaskDetail({
         status: 'completed',
@@ -169,8 +176,8 @@ test('durable detail terminality is narrow and outcome labels stay unchanged', (
     }), true, 'completed/completed');
     assert.equal(isTerminalTaskDetail({
         status: 'failed',
-        root_phase_checkpoint: { post_task_synthesis: 'running' },
-    }), true, 'failed/running');
+        root_phase_checkpoint: { post_task_synthesis: 'degraded' },
+    }), true, 'failed/degraded');
     assert.equal(taskTerminalPhase({ status: 'completed' }), 'done');
     assert.equal(taskTerminalPhase({ status: 'cancelled' }), 'cancelled');
     assert.equal(taskTerminalPhase({ status: 'failed' }), 'error');

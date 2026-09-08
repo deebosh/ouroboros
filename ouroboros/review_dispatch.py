@@ -95,9 +95,13 @@ def acceptance_slot_fit(
     """
     from ouroboros.review_evidence import _ACCEPT_DENSE_CHARS_PER_TOKEN
 
+    caps = slot_input_caps or {}
+    slot_id = str(getattr(slot, "slot_id", "") or "")
+    if caps and slot_id not in caps and slot.model not in caps:
+        raise ValueError("Acceptance capacity has no entry for the frozen reviewer slot")
     try:
         chars = int(executor.prompt_chars())
-        cap = int((slot_input_caps or {}).get(slot.model, 0) or 0)
+        cap = int(caps.get(slot_id, caps.get(slot.model, 0)) or 0)
         return cap, math.ceil(
             chars / _ACCEPT_DENSE_CHARS_PER_TOKEN
         )

@@ -8,6 +8,8 @@ reviewer slots.
 
 from __future__ import annotations
 
+from ouroboros.model_wait import monotonic_now
+
 from dataclasses import asdict, replace
 import logging
 import os
@@ -226,6 +228,16 @@ class ReviewCoordinator:
         )
 
     def run(self, request: ReviewRequest, slots: List[ReviewSlot]) -> ReviewRunResult:
+        from ouroboros.review_records import apply_review_model_override
+        from ouroboros.model_wait import current_model_wait
+
+        waiter = current_model_wait()
+        if waiter and not request.reconcile_only:
+            effective_slots = [apply_review_model_override(slot, waiter.overrides) for slot in slots]
+            if effective_slots != slots and request.surface == "task_acceptance":
+                from ouroboros.review_evidence_sections import acceptance_packet_budget_chars
+                request.policy = {**request.policy, "slot_input_caps": acceptance_packet_budget_chars(effective_slots).slot_input_caps}
+            slots = effective_slots
         if not slots:
             return ReviewRunResult(
                 request=asdict(request),
@@ -578,7 +590,7 @@ class ReviewCoordinator:
                         )
                     if (
                         actor_attempt and logical_deadline_monotonic is not None
-                        and time.monotonic() >= logical_deadline_monotonic
+                        and monotonic_now() >= logical_deadline_monotonic
                     ):
                         if _has_prior:
                             msg, usage, raw_text = _last_msg, _last_usage, _last_text
@@ -615,7 +627,7 @@ class ReviewCoordinator:
                         if actor_attempt + 1 < actor_attempts:
                             if (
                                 logical_deadline_monotonic is not None
-                                and time.monotonic() >= logical_deadline_monotonic
+                                and monotonic_now() >= logical_deadline_monotonic
                             ):
                                 raise
                             continue

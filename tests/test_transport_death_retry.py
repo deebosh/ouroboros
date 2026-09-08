@@ -637,7 +637,7 @@ def test_background_consciousness_never_enters_the_paid_repeat_rail(tmp_path):
         calls = 0
 
         def _resolve_remote_target(self, _model):
-            return None  # no projected-size probe: the send itself is what dies
+            return {"provider": "openrouter"}  # Real route shape; local sizing makes no provider call.
 
         def chat(self, **_kwargs):
             self.calls += 1

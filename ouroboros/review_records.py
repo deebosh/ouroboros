@@ -11,10 +11,29 @@ review_substrate.py re-exports every name.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from ouroboros.review_execution import ReviewRouteKind, delivery_retrieves
+
+
+def apply_review_model_override(slot: Any, overrides: Dict[str, dict], *, slot_id: str = "") -> Any:
+    """Project an explicit owner model choice onto one frozen reviewer row.
+
+    Identity, effort and delivery are immutable here. A referenced native actor
+    remains native, and an agent-session row never becomes a raw model call.
+    Settings and the original row are untouched; empty profile means Auto.
+    """
+    identity = slot_id or str(getattr(slot, "slot_id", "") or "")
+    value = overrides.get(f"reviewer:{identity}")
+    route = getattr(slot, "kind", getattr(slot, "route", ""))
+    if not value or str(getattr(route, "value", route)) == "agent_session":
+        return slot
+    configured = hasattr(slot, "target_id")
+    changes = {"target_id" if configured else "model": value["model"],
+               "profile_id" if configured else "session_profile": value["model_account_override"],
+               "use_local": bool(value["use_local"])}
+    return replace(slot, **changes)
 
 
 @dataclass(frozen=True)
@@ -39,6 +58,8 @@ class ReviewSlot:
     transport_timeout_sec: Optional[float] = None
     # Optional configured-subagent binding (resolved at admission; '' = direct).
     subagent_id: str = ""
+    # Host sampling hint, resolved at dispatch; an explicit temperature wins.
+    default_temperature: float | None = None
 
     @property
     def native_retrieval(self) -> bool:
@@ -79,6 +100,7 @@ class ReviewRequest:
     retry_key: str = ""
     reconcile_only: bool = False
     task_attempt: Any = None
+    default_temperature: float | None = None
 
 
 @dataclass

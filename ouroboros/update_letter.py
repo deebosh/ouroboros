@@ -503,6 +503,7 @@ def write_letter(
                               error_text="the update-letter ceiling was spent waiting for a model slot")
                 return record
             call = dict(drive_root=data_root, model=model, tools=None, reasoning_effort="low",
+                        model_role="light",
                         max_tokens=UPDATE_LETTER_MAX_TOKENS, use_local=use_local)
             low_retries = 0
 

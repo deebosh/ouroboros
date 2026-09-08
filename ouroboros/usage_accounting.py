@@ -201,6 +201,7 @@ class PhysicalAttemptPreconditionFailed(PhysicalAttemptPreparationFailed):
 class _AttemptLimit:
     maximum: int
     used: int = 0
+    claimed_ids: set[str] = field(default_factory=set)
     lock: threading.Lock = field(default_factory=threading.Lock)
 @dataclass(frozen=True)
 class UsageScope:
@@ -336,6 +337,17 @@ def last_physical_attempt_capture() -> Optional[PhysicalAttemptCapture]:
     return _LAST_PHYSICAL_ATTEMPT.get()
 
 
+def adopt_physical_attempt_capture(capture: Optional[PhysicalAttemptCapture]) -> None:
+    """Carry an accounted worker-thread result into its awaiting caller context.
+
+    This projects an existing receipt; it cannot reserve, settle or forgive an
+    attempt. None withdraws a prior capture instead of misattributing the result.
+    """
+    if capture is not None and not isinstance(capture, PhysicalAttemptCapture):
+        raise TypeError("Expected a physical attempt capture")
+    _LAST_PHYSICAL_ATTEMPT.set(capture)
+
+
 def physical_attempt_capture_from_exception(exc: BaseException) -> Optional[PhysicalAttemptCapture]:
     capture = getattr(exc, "physical_attempt_capture", None)
     return capture if isinstance(capture, PhysicalAttemptCapture) else last_physical_attempt_capture()
@@ -363,7 +375,7 @@ def physical_attempt_limit(maximum: int) -> Iterator[None]:
         yield
     finally:
         _PHYSICAL_LIMIT.reset(token)
-def _claim_physical_dispatch() -> None:
+def _claim_physical_dispatch(attempt_id: str = "") -> None:
     state = _PHYSICAL_LIMIT.get()
     if state is None:
         return
@@ -371,6 +383,18 @@ def _claim_physical_dispatch() -> None:
         if state.used >= state.maximum:
             raise PhysicalAttemptLimitExceeded(f"physical attempt limit exhausted ({state.used}/{state.maximum})")
         state.used += 1
+        if attempt_id:
+            state.claimed_ids.add(attempt_id)
+
+
+def _release_physical_dispatch_claim(attempt_id: str) -> None:
+    """Return only this context's positively never-sent claim, at most once."""
+    state = _PHYSICAL_LIMIT.get()
+    if state is not None:
+        with state.lock:
+            if attempt_id in state.claimed_ids:
+                state.claimed_ids.remove(attempt_id)
+                state.used -= 1
 def _merge_scope(request: AttemptRequest) -> Tuple[AttemptRequest, UsageScope]:
     bound = _CURRENT_SCOPE.get() or UsageScope()
     scope = UsageScope(
@@ -1075,7 +1099,7 @@ def mark_dispatched(
 ) -> None:
     invoke_bound_api_review_paid_stamp(fail_closed=True)
     try:
-        _claim_physical_dispatch()
+        _claim_physical_dispatch(reservation.attempt_id)
     except PhysicalAttemptLimitExceeded:
         release_attempt(
             reservation,
@@ -1222,6 +1246,7 @@ def _is_tos_rejection(exc: BaseException) -> bool:
 def _terminalize_failed_attempt(reservation: AttemptReservation, exc: BaseException) -> str:
     """Route a raised provider send to its honest terminal ledger state."""
     if release_pre_dispatch_attempt(reservation, exc):
+        _release_physical_dispatch_claim(reservation.attempt_id)
         return "released"
     provider = str(reservation.provider or "").strip().lower()
     if provider == "openrouter" and _is_pre_routing_rejection(exc):
@@ -1421,9 +1446,8 @@ async def execute_physical_attempt_async(
     manifest_ref = None
     try:
         if before_dispatch is not None:
-            manifest_ref = before_dispatch(reservation)
-            if hasattr(manifest_ref, "__await__"):
-                manifest_ref = await manifest_ref
+            pending_manifest = before_dispatch(reservation)
+            manifest_ref = await pending_manifest if hasattr(pending_manifest, "__await__") else pending_manifest
         if manifest_ref is not None and not isinstance(manifest_ref, dict):
             raise TypeError("before_dispatch must return a manifest ref object or None")
         mark_dispatched(reservation, candidate_manifest_ref=manifest_ref)

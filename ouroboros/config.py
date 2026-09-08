@@ -62,6 +62,9 @@ from ouroboros.settings_scales import (
     resolve_prompt_cache_ttl,  # noqa: F401
 )
 from ouroboros.model_slots import (
+    MODEL_ACCOUNTS_KEY,
+    MODEL_CONTEXT_WINDOWS_KEY,
+    normalize_model_role_options,
     _LEGACY_SLOT_RENAMES,  # noqa: F401
     ResolvedModelTarget,  # noqa: F401
     _main_model,  # noqa: F401
@@ -97,12 +100,14 @@ from ouroboros.runtime_limits import (
     NESTED_SETTLEMENT_MARGIN_SEC,  # noqa: F401
     NETWORK_WAIT_NOTE_INTERVAL_SEC,  # noqa: F401
     NETWORK_WAIT_BACKOFF_START_SEC,  # noqa: F401
+    NETWORK_WAIT_BACKOFF_MAX_SEC,  # noqa: F401
     TCP_KEEPALIVE_IDLE_SEC,  # noqa: F401
     TCP_KEEPALIVE_INTERVAL_SEC,  # noqa: F401
     TCP_KEEPALIVE_PROBE_COUNT,  # noqa: F401
     EXTENSION_STREAM_METADATA_BYTES,  # noqa: F401
     WS_RELAY_BURST,  # noqa: F401
     WS_RELAY_REFILL_PER_SEC,  # noqa: F401
+    CLAUDEXOR_MODEL_POLL_INTERVAL_SEC,  # noqa: F401
     DELEGATE_WAIT_CEILING_SEC,  # noqa: F401
     DELEGATE_WAIT_WINDOW_MAX_SEC,  # noqa: F401
     MAX_ACTIVE_SUBAGENTS_HARD_CAP,  # noqa: F401
@@ -503,6 +508,9 @@ def prepare_settings_for_persist(settings: dict, *, authored_keys: Sequence[str]
         and str(v) == str(SETTINGS_DEFAULTS.get(k, "")))}
     _guard_context_mode_lowering(prepared, allow_context_lowering=allow_context_lowering)
     _guard_safety_mode_lowering(prepared, allow_safety_lowering=allow_safety_lowering)
+    for key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+        if key in prepared:
+            prepared[key] = normalize_model_role_options(key, prepared[key])[1]
     return strip_masked_secrets(prepared, known_setting_keys=SETTINGS_DEFAULTS)
 
 
@@ -649,6 +657,8 @@ def _release_settings_lock(fd: Optional[int]) -> None:
 
 def _coerce_setting_value(key: str, value):
     default = SETTINGS_DEFAULTS.get(key)
+    if key in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+        return normalize_model_role_options(key, value)[1]
     # Normalize runtime mode on read so all consumers see the closed enum.
     if key == "OUROBOROS_RUNTIME_MODE":
         return normalize_runtime_mode(value)
@@ -660,31 +670,20 @@ def _coerce_setting_value(key: str, value):
     if key == "OUROBOROS_SKILLS_REPO_PATH":
         return str(value or "").strip()
     if key == "MCP_SERVERS":
-        if isinstance(value, list):
-            return [dict(item) for item in value if isinstance(item, dict)]
         if isinstance(value, str):
-            text = value.strip()
-            if not text:
-                return []
             try:
-                parsed = json.loads(text)
+                value = json.loads(value)
             except (TypeError, ValueError):
                 return []
-            if isinstance(parsed, list):
-                return [dict(item) for item in parsed if isinstance(item, dict)]
-        return []
+        return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
     if isinstance(default, bool):
         if isinstance(value, bool):
             return value
         return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-    if isinstance(default, int) and not isinstance(default, bool):
+    if isinstance(default, (int, float)):
+        cast = int if isinstance(default, int) else float
         try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-    if isinstance(default, float):
-        try:
-            return float(value)
+            return cast(value)
         except (TypeError, ValueError):
             return default
     return str(value or "")

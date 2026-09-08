@@ -27,7 +27,8 @@ from ouroboros.utils import append_jsonl, utc_now_iso
 log = logging.getLogger(__name__)
 
 POST_TASK_SYNTHESIS_LOCK = threading.Lock()
-POST_TASK_SYNTHESIS_INFLIGHT: set[tuple[str, str]] = set()
+# None reserves dispatch before the thread binds its live model-wait owner.
+POST_TASK_SYNTHESIS_INFLIGHT: dict[tuple[str, str], Any] = {}
 POST_TASK_SYNTHESIS_OPEN_STATUSES = frozenset({"pending_once", "running"})
 POST_TASK_SYNTHESIS_TERMINAL_STATUSES = frozenset({"completed", "degraded"})
 _TERMINAL_ACCOUNTING_FIELDS = (
@@ -75,6 +76,21 @@ def post_task_synthesis_in_flight(drive_root: Any, task_id: str) -> bool:
         return False
     with POST_TASK_SYNTHESIS_LOCK:
         return (root_key, tid) in POST_TASK_SYNTHESIS_INFLIGHT
+
+
+def post_task_model_wait(drive_root: Any, task_id: str):
+    """The existing process-local synthesis owner, never a durable liveness guess."""
+    key = (str(pathlib.Path(drive_root).resolve(strict=False)), str(task_id))
+    with POST_TASK_SYNTHESIS_LOCK:
+        owner = POST_TASK_SYNTHESIS_INFLIGHT.get(key)
+    return owner if owner is not None and not owner.closed else None
+
+
+def post_task_model_waits(drive_root: Any) -> list:
+    root = str(pathlib.Path(drive_root).resolve(strict=False))
+    with POST_TASK_SYNTHESIS_LOCK:
+        owners = [owner for (path, _task), owner in POST_TASK_SYNTHESIS_INFLIGHT.items() if path == root]
+    return [owner for owner in owners if owner is not None and not owner.closed]
 
 
 def _parse_updated_at(value: Any) -> datetime | None:

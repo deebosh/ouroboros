@@ -36,6 +36,8 @@
 
 /**
  * @typedef {Object} ActiveDirectTurn
+ * @property {Object.<string,Object>=} model_waits
+ * @property {number=} task_attempt
  * @property {string} activity_id
  * @property {number} chat_id
  * @property {string} project_id
@@ -47,6 +49,8 @@
 
 /**
  * @typedef {Object} ActiveChatActivity
+ * @property {Object.<string,Object>=} model_waits
+ * @property {number=} task_attempt
  * @property {string} activity_id
  * @property {number} chat_id
  * @property {string} project_id
@@ -479,21 +483,33 @@
 
 /**
  * POST /api/decisions body — the ONE answer ingress for owner decision cards
- * (decision families quiz:/routing:/interaction:). request_id is the
+ * (decision families quiz:/routing:/interaction:/model_wait:). request_id is the
  * idempotency key; a replay returns the recorded confirmation. option_index is
- * optional for the quiz family only: an owner who takes none of the offered
- * options sends a non-empty comment and no index.
+ * optional for a quiz free answer and for typed model_wait actions. A quiz
+ * free answer sends a non-empty comment; model_wait sends revision and action.
  * @typedef {Object} DecisionRequest
  * @property {string} request_id
  * @property {string} decision_id
  * @property {number=} option_index
  * @property {string=} comment
+ * @property {number=} revision
+ * @property {string=} action
+ * @property {boolean=} auto_continue
+ * @property {string=} model
+ * @property {string=} credential_profile_id
+ * @property {boolean=} use_local
+ * @property {boolean=} persist_role
  */
 
 /**
  * Answer-ingress reply; 409 carries the card's truthful lifecycle state so a
  * late click settles the card instead of inviting retries.
  * @typedef {Object} DecisionResponse
+ * @property {string=} request_id
+ * @property {boolean=} applied
+ * @property {(boolean|null)=} saved
+ * @property {Object=} wait
+ * @property {string=} reason_code
  * @property {boolean=} ok
  * @property {string=} decision_id
  * @property {string=} state
@@ -1017,6 +1033,7 @@
  * intent is the SOFT stop ("finalize_then_cancel") — the UI shows
  * "Finalizing…" and offers the hard escalation; absent on immediate intents.
  * @typedef {Object} TaskDetailResponse
+ * @property {Object.<string,Object>=} model_waits
  * @property {TaskCostBreakdown=} cost_breakdown
  * @property {string=} cancel_state
  * @property {string=} cancel_reason

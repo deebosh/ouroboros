@@ -23,13 +23,18 @@ the session executor.
 
 from __future__ import annotations
 
+from ouroboros.model_wait import monotonic_now
+from dataclasses import replace
+
 import bisect
 import contextlib
-import time
+import functools
 import hashlib
 import json
 import logging
 import math
+import shutil
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from ouroboros.config import get_finalization_grace_sec
@@ -87,6 +92,8 @@ NATIVE_MANDATORY_READ_EXCEEDS_BOUND = "native_mandatory_read_exceeds_bound"
 def review_native_transcript_bound(
     model_id: str, *, output_reserve: int, use_local: Optional[bool] = None,
     mandatory_read_chars: int = 0,
+    model_role: str = "", credential_profile_id: Optional[str] = None,
+    model_route: Optional[dict] = None,
 ) -> int:
     """The episode's SEND bound in chars, derived from the reviewer's window.
 
@@ -110,7 +117,13 @@ def review_native_transcript_bound(
     from ouroboros.tools.review_helpers import calibrated_input_token_limit
 
     ceiling = review_native_max_transcript_chars()
-    window = int(reviewer_context_window(str(model_id or ""), use_local=use_local))
+    window = int(reviewer_context_window(str(model_id or ""), use_local=use_local,
+                                         model_role=model_role, credential_profile_id=credential_profile_id,
+                                         model_route=model_route))
+    if window <= 0:
+        # No provider capacity is known: the existing owner transcript ceiling
+        # still bounds this episode, without asserting a model window.
+        return ceiling
     reserve, margin = window_scaled_reserves(
         window, output_reserve=int(output_reserve or 0), tokenizer_margin=window // 8)
     capacity = _CHARS_PER_ESTIMATED_TOKEN * max(0, int(calibrated_input_token_limit(
@@ -150,13 +163,15 @@ def native_mandatory_read_chars(request: Any) -> int:
     return int((getattr(request, "policy", None) or {}).get("native_mandatory_read_chars") or 0)
 
 
-def native_episode_transcript_bound(request: Any, slot: Any) -> int:
+def native_episode_transcript_bound(request: Any, slot: Any, *, model_route: Optional[dict] = None) -> int:
     """THE bound of one episode from its assignment — the one computation the
     episode applies, which a surface may preview before dispatch (the advisory
     names it in its prompt's MANDATORY READ budget)."""
     return review_native_transcript_bound(
         slot.model, output_reserve=int(request.max_tokens or slot.max_tokens),
-        use_local=bool(slot.use_local), mandatory_read_chars=native_mandatory_read_chars(request))
+        use_local=bool(slot.use_local), mandatory_read_chars=native_mandatory_read_chars(request),
+        model_role=f"reviewer:{slot.slot_id}", credential_profile_id=slot.session_profile,
+        **({"model_route": model_route} if model_route else {}))
 
 
 def native_mandatory_read_facts(request: Any, bound: int) -> Dict[str, Any]:
@@ -354,7 +369,14 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
     route = ReviewRouteKind.API_CHAT
 
     def __init__(self, assignment: ReviewAssignment, *, llm: Any = None):
+        from ouroboros.model_wait import current_model_wait
+        from ouroboros.review_records import apply_review_model_override
+
+        self._waiter = current_model_wait()
+        if self._waiter:
+            assignment = replace(assignment, slot=apply_review_model_override(assignment.slot, self._waiter.overrides))
         super().__init__(assignment, llm=llm)
+        self._transcript_bound = self._refused_chars = 0
         self._episode_prompt: Optional[str] = None
         self._raw_transcript: Optional[str] = None
         self._episode_usage: Dict[str, Any] = {}
@@ -437,23 +459,39 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
             root, drive_root, str(self.assignment.request.task_id or ""))
         return registry, schemas
 
-    def _run_episode(self) -> None:
-        import shutil
-        import tempfile
+    def _reprepare_model_call(self, values: dict, *, messages: list) -> dict:
+        """Continue one frozen episode on a new route, with a fresh send bound.
 
+        Only routing and provider-private continuation state change. The same
+        inspection schemas and completed tool results remain on the call.
+        """
+        from ouroboros.llm import LLMClient
+        from ouroboros.review_records import apply_review_model_override
+
+        slot = self.assignment.slot
+        updated = apply_review_model_override(slot, {f"reviewer:{slot.slot_id}": {
+            "model": values["model"], "use_local": values.get("use_local", False),
+            "model_account_override": values.get("model_account_override", slot.session_profile)}})
+        values["messages"] = LLMClient.sanitize_reasoning_on_model_switch(values["messages"], slot.model, updated.model)
+        messages[:] = values["messages"]
+        values["messages"] = messages
+        self._transcript_bound = native_episode_transcript_bound(
+            self.assignment.request, updated, model_route=values.pop("_model_observed_route", None))
+        self.assignment = replace(self.assignment, slot=updated)
+        size = _wire_size(values["messages"], values.get("tools") or [])
+        if size > self._transcript_bound:
+            self._refused_chars = size
+            raise ReviewRouteUnavailable(
+                f"native review transcript ({size} chars) exceeds the changed route bound ({self._transcript_bound} chars)",
+                code="native_transcript_cap_exceeded")
+        return values
+
+    def _run_episode(self) -> None:
         from ouroboros.llm import add_usage
-        from ouroboros.openai_chat_dispatch import (
-            custom_validation_by_call_id,
-            pop_custom_validation_receipts,
-        )
+        from ouroboros.openai_chat_dispatch import custom_validation_by_call_id, pop_custom_validation_receipts
 
         request, slot = self.assignment.request, self.assignment.slot
         root = str(request.session_root or "").strip()
-        if not root:
-            raise ReviewRouteUnavailable(
-                "native tool-round slot has no session root: the surface must name "
-                "the repository root the reviewer episode runs in",
-                code="session_root_missing")
         chat = getattr(self.llm, "chat", None)
         if not callable(chat):
             raise ReviewRouteUnavailable(
@@ -461,9 +499,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 code="api_chat_unavailable")
         deadline_at = str(getattr(request, "deadline_at", "") or "")
         max_tokens = int(request.max_tokens or slot.max_tokens)
-        transcript_cap = native_episode_transcript_bound(request, slot)
-        mandatory_read_facts = native_mandatory_read_facts(request, transcript_cap)
-        landing_at = native_landing_at(transcript_cap)
+        self._transcript_bound = native_episode_transcript_bound(request, slot)
         shape = review_output_shape(request.surface)
         # The data plane is opt-in per surface (policy["native_data_root"]):
         # the default is an empty scratch directory so a repository review
@@ -482,18 +518,20 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         transcript_chars = last_send_chars = refused_chars = 0  # live list size / last send / refused next send
         episode: Dict[str, Any] = {}
         messages: List[Dict[str, Any]] = []
+        observed_route: dict = {}
+
         try:
             end_reason = "registry_unavailable"
             registry, schemas, messages, transcript_chars = self._open_episode(root, data_root or scratch)
             end_reason = "transcript_bound"
-            if transcript_chars >= landing_at:
+            if transcript_chars >= native_landing_at(self._transcript_bound):
                 # FLOOR: a bound that lands before the first send leaves no
                 # room to read anything — a review with zero reads is not a
                 # review, and the landing notice must never be the first
                 # thing the reviewer hears.
                 end_reason = "bound_below_first_send"
                 raise ReviewRouteUnavailable(
-                    f"native review episode bound ({transcript_cap} chars) leaves no "
+                    f"native review episode bound ({self._transcript_bound} chars) leaves no "
                     f"room to read: the first send alone carries {transcript_chars} "
                     "chars; the episode fails closed", code="native_bound_below_first_send")
             logical_deadline = getattr(self, "_logical_deadline_monotonic", None)
@@ -504,19 +542,19 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 # fact are never preempted by a clock expiring in the same instant.
                 # A final content-only answer past the number is accepted: no
                 # further send exists for it to poison.
-                if refused_chars or transcript_chars > transcript_cap:
+                if refused_chars or transcript_chars > self._transcript_bound:
                     refused_chars = refused_chars or transcript_chars  # the next send this bound refused
                     break
-                if not landed and transcript_chars >= landing_at:
+                if not landed and transcript_chars >= native_landing_at(self._transcript_bound):
                     # Once: the host's budget fact, so the reviewer lands on
                     # the next send instead of walking into the bound.
                     landed = True
                     notice = _LANDING_NOTICE.format(
-                        pct=int(100 * transcript_chars / max(1, transcript_cap)),
-                        used=transcript_chars, bound=transcript_cap)
+                        pct=int(100 * transcript_chars / max(1, self._transcript_bound)),
+                        used=transcript_chars, bound=self._transcript_bound)
                     messages.append({"role": "user", "content": notice})
                     transcript_chars = _wire_size(messages, schemas)
-                    if transcript_chars > transcript_cap:
+                    if transcript_chars > self._transcript_bound:
                         refused_chars = transcript_chars  # even the notice would not fit: the bound has landed
                         break
                 # Two clocks bound an episode that could still send (its landing
@@ -525,7 +563,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 # window — past either, a paid round buys an unusable answer.
                 if owner_deadline_exhausted(
                     deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec(),
-                ) or (logical_deadline is not None and time.monotonic() >= float(logical_deadline)):
+                ) or (logical_deadline is not None and monotonic_now() >= float(logical_deadline)):
                     end_reason = "deadline_exhausted"
                     if shape == "report" and last_content:
                         break  # a report keeps its draft (marked incomplete below)
@@ -540,7 +578,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     # expired since the round's admission check takes the
                     # deadline path (a report keeps its draft), and a positive
                     # remainder bounds the send with NO floor.
-                    remaining = float(logical_deadline) - time.monotonic()
+                    remaining = float(logical_deadline) - monotonic_now()
                     if remaining <= 0:
                         end_reason = "deadline_exhausted"
                         if shape == "report" and last_content:
@@ -549,13 +587,17 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     transport = remaining if transport is None else min(float(transport), remaining)
                 if transport is not None:
                     chat_kwargs["timeout"] = transport
-                with bind_api_review_paid_stamp(self.assignment.dispatch_stamp):
+                preparation_scope = (self._waiter.register_reprepare(f"reviewer:{slot.slot_id}", functools.partial(self._reprepare_model_call, messages=messages))
+                                     if self._waiter else contextlib.nullcontext())
+                with bind_api_review_paid_stamp(self.assignment.dispatch_stamp), preparation_scope:
                     try:
                         msg, usage = chat(**chat_kwargs)
                     except BaseException as exc:
+                        refused_chars = self._refused_chars or refused_chars
                         # The paid ledger refusing the NEXT send is the money
                         # floor landing, not a transport fault: name it.
-                        end_reason = "budget_exhausted" if isinstance(exc, BudgetExceeded) else "transport_error"
+                        end_reason = ("transcript_bound" if getattr(exc, "code", "") == "native_transcript_cap_exceeded"
+                                      else "budget_exhausted" if isinstance(exc, BudgetExceeded) else "transport_error")
                         capture = getattr(exc, "physical_attempt_capture", None)
                         if str(getattr(capture, "state", "") or "") in POSITIVE_PHYSICAL_ATTEMPT_STATES:
                             # A send that was physically dispatched IS a round
@@ -570,11 +612,16 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                             break  # nothing was sent; a report keeps its draft
                         raise
                 self._rounds_used, last_send_chars = round_idx, transcript_chars  # a returned send is the last physical send
+                slot = self.assignment.slot
                 landing_sent = landing_sent or landed  # a returned send carried the notice
                 raw_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
                 # absent = no calls; a list = calls; ANY other value (falsy too) = one malformed entry
                 tool_calls = [] if raw_calls is None else (raw_calls if isinstance(raw_calls, list) else [raw_calls])
                 usage = dict(usage or {})
+                route_fact = (usage.get("claudexor") or {}).get("route") or {}
+                if route_fact and route_fact != observed_route:
+                    observed_route = route_fact
+                    self._transcript_bound = native_episode_transcript_bound(request, slot, model_route=route_fact)
                 self._observe_usage(usage)
                 # Pop the wire-validation sidecar BEFORE accumulation (receipts are per-round facts, not usage).
                 wire_validation = pop_custom_validation_receipts(usage, tool_calls)
@@ -586,7 +633,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 # dressed as resolved and lose its physical attempt ids.
                 for _attempt_id in (usage.get("ledger_attempt_ids") or []):
                     total_usage.setdefault("ledger_attempt_ids", []).append(_attempt_id)
-                for _fact in ("resolved_model", "provider"):
+                for _fact in ("resolved_model", "provider", "claudexor", "model_role_route"):
                     if usage.get(_fact):
                         total_usage[_fact] = usage[_fact]
                 content = str(msg.get("content") or "") if isinstance(msg, dict) else ""
@@ -637,10 +684,10 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     # text) and the recompute below decides the bound.
                     tool_message = self._execute_inspection_call(
                         registry, tc, validation_by_id, round_idx=round_idx,
-                        room=transcript_cap - _LANDING_RESERVE_CHARS - transcript_chars,
+                        room=self._transcript_bound - _LANDING_RESERVE_CHARS - transcript_chars,
                     )
                     with_result = _wire_size(messages + [tool_message], schemas)
-                    if with_result > transcript_cap:
+                    if with_result > self._transcript_bound:
                         # Even the mandatory envelope (the provider's exact call
                         # id must be echoed) no longer fits under the bound: the
                         # round cannot be answered within it, so the episode
@@ -690,8 +737,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 "native_rounds": self._rounds_used,
                 "native_tool_calls": self._tool_calls_total,
                 "native_transcript_chars": last_send_chars,  # the wire size of the LAST physical send
-                "native_transcript_bound": transcript_cap,
-                **mandatory_read_facts,  # a declared mandatory reading and its typed shortfall
+                "native_transcript_bound": self._transcript_bound,
+                **native_mandatory_read_facts(request, self._transcript_bound),  # a declared mandatory reading and its typed shortfall
                 **({"native_transcript_refused_chars": refused_chars} if refused_chars else {}),
                 "native_landing_notified": landed,  # posted to the transcript
                 "native_landing_sent": landing_sent,  # a provider send carried it
@@ -722,7 +769,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                     code="native_round_without_progress")
             raise ReviewRouteUnavailable(
                 f"native review episode transcript ({refused_chars or transcript_chars} chars) "
-                f"exceeded its bound ({transcript_cap}) before a final answer; "
+                f"exceeded its bound ({self._transcript_bound}) before a final answer; "
                 "the episode fails closed — compaction would review a "
                 "fabricated cut", code="native_transcript_cap_exceeded")
         if episode.get("native_incomplete"):
@@ -732,7 +779,7 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
                 "effective": (
                     f"the reviewer's last draft ({len(final_answer)} chars) — "
                     f"{end_reason} after {self._rounds_used} rounds without a final "
-                    f"answer (transcript {transcript_chars} of {transcript_cap} chars)"
+                    f"answer (transcript {transcript_chars} of {self._transcript_bound} chars)"
                 ),
                 "reason": f"native_{end_reason}_before_final_answer",
             })
@@ -748,6 +795,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         that every later append recomputes. Counting raw text understated an
         escape-heavy first send; summing bare envelopes drifted from the list.
         Units are CHARS throughout — same as the cap."""
+        if not root:
+            raise ReviewRouteUnavailable(
+                "native tool-round slot has no session root: the surface must name "
+                "the repository root the reviewer episode runs in",
+                code="session_root_missing")
         registry, schemas = self._inspection_registry(root, drive_root)
         messages = native_first_send_messages(self.episode_prompt)
         return registry, schemas, messages, _wire_size(messages, schemas)
@@ -758,6 +810,8 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         kwargs: Dict[str, Any] = {
             "messages": messages,
             "model": slot.model,
+            "model_role": f"reviewer:{slot.slot_id}",
+            "model_account_override": slot.session_profile,
             "tools": schemas,
             "tool_choice": "auto",
             "reasoning_effort": slot.effort,
@@ -768,6 +822,11 @@ class NativeToolRoundReviewExecutor(ReviewSlotExecutor):
         }
         if request.temperature is not None or slot.temperature is not None:
             kwargs["temperature"] = request.temperature if request.temperature is not None else slot.temperature
+        default_temperature = getattr(request, "default_temperature", None)
+        if default_temperature is None:
+            default_temperature = getattr(slot, "default_temperature", None)
+        if default_temperature is not None:
+            kwargs["default_temperature"] = default_temperature
         return kwargs
 
     def _execute_inspection_call(

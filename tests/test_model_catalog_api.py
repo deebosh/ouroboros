@@ -210,13 +210,16 @@ def test_model_catalog_classifies_httpx_error_stage(monkeypatch):
     assert payload["errors"][0]["stage"] == "connect"
 
 
-def test_model_catalog_no_longer_uses_requests_or_to_thread():
+def test_direct_api_catalog_loaders_keep_the_native_async_transport():
+    # The owned Claudexor gateway is synchronous and is explicitly offloaded
+    # at the endpoint boundary. Direct API fetchers must remain natively async.
     source = "\n".join(
         inspect.getsource(obj)
         for obj in (
-            model_catalog_api.api_model_catalog,
             model_catalog_api._provider_specs,
             model_catalog_api._load_provider,
+            model_catalog_api._fetch_openai_compatible_model_catalog,
+            model_catalog_api._fetch_openrouter_model_catalog,
         )
     )
     assert "import requests" not in source

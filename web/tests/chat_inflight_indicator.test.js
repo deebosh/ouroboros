@@ -26,7 +26,7 @@ test('unkeyed terminal incidents do not clear unrelated live turns', () => {
     // The cleanup guard also requires positive terminal evidence. Keep this
     // source contract resilient to the guard's explicit conjunction while
     // still checking the incident carve-out below it.
-    const cleanupStart = chatSource.indexOf('if (!finalizing && concludesTurn)');
+    const cleanupStart = chatSource.indexOf('if (!finalizing && (!explicitTaskId || typedTerminal))');
     const finalCleanup = chatSource.slice(
         cleanupStart,
         chatSource.indexOf("if (msg.system_type === 'task_summary')", cleanupStart),

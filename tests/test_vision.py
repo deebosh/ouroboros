@@ -54,7 +54,11 @@ def test_vlm_child_settlement_window_is_above_provider_bound(monkeypatch):
         captured["child_timeout"] = kwargs["timeout"]
         return types.SimpleNamespace(
             returncode=0,
-            stdout='{"ok": true, "text": "done", "usage": {}}\n',
+            stdout=json.dumps({"receipt_id": captured["payload"]["_receipt_id"],
+                               "custody": None, "capture": None, "kind": "success", "text": "done", "usage": {},
+                               "ledger_attempt_ids": [], "error": "", "problem": {}, "operation_id": "",
+                               "model_role": "vision", "route": {}, "unknown": False, "control_reason": "",
+                               "model_result": None}),
             stderr="",
         )
 

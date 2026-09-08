@@ -166,7 +166,28 @@ def _handle_task_acceptance_review(
                 exc_info=True,
             )
 
-    agent_evidence = dict(evidence or {})
+    # ibl-329e1741d5f9: some providers occasionally emit `evidence` as a
+    # JSON-encoded string instead of a nested object (or some other non-dict
+    # type). `dict(some_str)` iterates the string char-by-char and raises
+    # "dictionary update sequence element #0 has length 1; 2 is required" —
+    # crashing the tool entirely instead of degrading. Coerce defensively,
+    # matching the `evidence if isinstance(evidence, dict) else {}` guard
+    # used everywhere else this field is consumed (e.g. review_dispatch.py,
+    # subagents.py, mutation_attribution.py).
+    if isinstance(evidence, str):
+        try:
+            parsed_evidence = json.loads(evidence)
+        except (TypeError, ValueError):
+            parsed_evidence = None
+        evidence = parsed_evidence if isinstance(parsed_evidence, dict) else {"raw_evidence": evidence}
+    # A non-dict, non-string payload (list, number, bool) is still the agent's
+    # supporting evidence: wrap it the same way the string branch does rather
+    # than dropping it, so the reviewer sees what was actually claimed instead
+    # of an empty dict. Only a genuinely absent evidence argument yields {}.
+    agent_evidence = (
+        dict(evidence) if isinstance(evidence, dict)
+        else ({} if evidence is None else {"raw_evidence": truncate_review_artifact(repr(evidence), limit=2000)})
+    )
     # Bind the cheap evidence revision to the agent's actual acceptance claim,
     # goal, and checklist as well as its supporting references.  Otherwise two
     # materially different claims over the same evidence dict would share a
@@ -1038,11 +1059,16 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
     # Packet rows only: a configured-subagent api row is the RETRIEVES class —
     # it neither constrains the fit ladder nor counts as an api seat for the
     # Q28-A yield arithmetic below.
-    api_models = [
-        m for i, (m, r) in enumerate(zip(models, row_routes))
+    api_indices = [
+        i for i, (m, r) in enumerate(zip(models, row_routes))
         if r is ReviewRouteKind.API_CHAT
         and not (i < len(_row_actors) and _row_actors[i])
     ]
+    api_models = [models[i] for i in api_indices]
+    from ouroboros.review_records import ReviewSlot
+    api_slots = [ReviewSlot(slot_id=row_plan["slot_ids"][i], model=models[i],
+                           session_profile=row_plan["session_profiles"][i], use_local=row_plan["use_local"][i])
+                 for i in api_indices]
 
     goal_section = build_goal_section(goal, scope, commit_message)
     scope_section = build_scope_section(scope)
@@ -1080,7 +1106,11 @@ def _prepare_unified_review(ctx: ToolContext, commit_message: str,
         prompt, stable_prefix_len, fit_error = _fit_triad_prompt(
             api_models, _assemble_prompt, current_files_section, diff_text,
             review_changed, target_repo, ctx=ctx, subject=subject,
+            slots=api_slots,
         )
+        for i, slot in zip(api_indices, api_slots):
+            models[i], row_plan["session_profiles"][i], row_plan["use_local"][i] = slot.model, slot.session_profile, slot.use_local
+        ctx._last_triad_models = list(models)
         if fit_error:
             session_count = len(models) - len(api_models)
             if session_count >= _cfg.adaptive_quorum(len(models)):

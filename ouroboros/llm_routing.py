@@ -17,12 +17,14 @@ import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from ouroboros.request_wire_recovery import request_wire_scoped
 from ouroboros.openrouter_attribution import OPENROUTER_APP_HEADERS
 from ouroboros.provider_models import (
     DEEPSEEK_BASE_URL,
     PROVIDER_PREFIXES,
     normalize_anthropic_model_id,
     normalize_model_identity,
+    parse_claudexor_model,
     resolve_minimax_base_url,
 )
 
@@ -52,6 +54,136 @@ def _resolve_or_provider() -> Dict[str, Any]:
 
 class _ProviderRoutingMixin:
     """Provider targets, client factories, affinity keys and the window probe."""
+
+    @staticmethod
+    def claudexor_model_sources() -> dict:
+        from ouroboros.llm_claudexor import model_sources
+
+        return model_sources()
+
+    @staticmethod
+    def claudexor_model_catalog(source: str, credential_profile_id: str | None = None, *,
+                               requested_model: str | None = None) -> dict:
+        """Read the owned model route's catalog; evidence interpretation stays with its caller."""
+        from ouroboros.llm_claudexor import model_catalog
+
+        hint = {"requested_model": requested_model} if requested_model is not None else {}
+        return model_catalog(source, credential_profile_id, **hint)
+
+    @classmethod
+    def supports_response_format(cls, model: str, *, use_local: bool = False) -> bool:
+        """Whether this transport carries the caller's optional structured-output hint.
+
+        This is a wire capability, not a claim that a particular upstream model
+        accepts every format. Explicit unsupported Claudexor intent still refuses.
+        """
+        provider, _model = cls._parse_provider_model(model)
+        return not use_local and provider not in {"claudexor", "anthropic", "gigachat"}
+
+    @request_wire_scoped
+    def _chat_remote(
+        self,
+        target: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        reasoning_effort: str,
+        max_tokens: int,
+        tool_choice: str,
+        temperature: Optional[float] = None,
+        no_proxy: bool = False,
+        timeout: Optional[float] = None,
+        allow_server_web_search: bool = False,
+        response_format: Optional[Dict[str, Any]] = None,
+        cache_affinity: str = "",
+        bypass_response_cache: bool = False,
+        model_role: str = "",
+        model_poll_control: Any = None,
+        model_operation_observer: Any = None,
+        model_account_override: str | None = None,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Send remote chat; no_proxy uses a one-shot client and skips OS proxy lookup."""
+        if target.get("provider") == "claudexor":
+            from ouroboros.llm_claudexor import chat_claudexor
+
+            return chat_claudexor(
+                target, messages, tools, reasoning_effort=reasoning_effort,
+                max_tokens=max_tokens, tool_choice=tool_choice, temperature=temperature,
+                timeout=timeout, allow_server_web_search=allow_server_web_search,
+                response_format=response_format, cache_affinity=cache_affinity,
+                bypass_response_cache=bypass_response_cache, model_role=model_role,
+                model_poll_control=model_poll_control,
+                model_operation_observer=model_operation_observer,
+                model_account_override=model_account_override,
+            )
+        if target.get("provider") == "anthropic":
+            return self._chat_anthropic(
+                target, messages, tools, reasoning_effort, max_tokens, tool_choice, temperature,
+                no_proxy=no_proxy,
+                timeout=timeout,
+            )
+
+        if target.get("provider") == "gigachat":
+            return self._chat_gigachat(
+                target, messages, tools, reasoning_effort, max_tokens, tool_choice, temperature,
+                no_proxy=no_proxy,
+                timeout=timeout,
+            )
+
+        if no_proxy:
+            _oa_client, _http_client = self._make_no_proxy_client(target, timeout=timeout)
+            try:
+                kwargs = self._build_remote_kwargs(
+                    target, messages, reasoning_effort, max_tokens, tool_choice, temperature, tools,
+                    skip_capability_fetch=True,
+                    allow_server_web_search=allow_server_web_search,
+                    response_format=response_format,
+                    cache_affinity=cache_affinity,
+                    bypass_response_cache=bypass_response_cache,
+                )
+                prompt_cache_ttl = self._normalize_payload_cache_ttl(target, kwargs)
+                resp = self._create_chat_completion_with_retries(
+                    _oa_client.chat.completions.create,
+                    kwargs,
+                    target,
+                )
+                # Skip cost fetch here; it would re-enter OS proxy lookup.
+                return self._normalize_remote_response(
+                    resp.model_dump(),
+                    target,
+                    skip_cost_fetch=True,
+                    prompt_cache_ttl=prompt_cache_ttl,
+                    wire_completion=resp,
+                )
+            finally:
+                try:
+                    _http_client.close()
+                except Exception:
+                    pass
+
+        client = self._get_remote_client(target)
+        kwargs = self._build_remote_kwargs(
+            target, messages, reasoning_effort, max_tokens, tool_choice, temperature, tools,
+            allow_server_web_search=allow_server_web_search,
+            response_format=response_format,
+            cache_affinity=cache_affinity,
+            bypass_response_cache=bypass_response_cache,
+        )
+        if timeout and timeout > 0:
+            # Cached clients are built without a timeout; honor the caller's
+            # per-request timeout instead of silently using the SDK default.
+            kwargs["timeout"] = float(timeout)
+        prompt_cache_ttl = self._normalize_payload_cache_ttl(target, kwargs)
+        resp = self._create_chat_completion_with_retries(
+            client.chat.completions.create,
+            kwargs,
+            target,
+        )
+        return self._normalize_remote_response(
+            resp.model_dump(),
+            target,
+            prompt_cache_ttl=prompt_cache_ttl,
+            wire_completion=resp,
+        )
 
     @staticmethod
     def _prompt_cache_identity(model_id: str, messages: List[Dict[str, Any]]) -> str:
@@ -152,6 +284,8 @@ class _ProviderRoutingMixin:
             return f"minimax/{resolved_model}"
         if provider == "deepseek":
             return f"deepseek/{resolved_model}"
+        if provider == "claudexor":
+            return f"claudexor::{resolved_model}"
         return f"openai-compatible/{resolved_model}"
 
     def _resolve_remote_target(
@@ -168,6 +302,16 @@ class _ProviderRoutingMixin:
 
         provider, resolved_model = self._parse_provider_model(model)
         usage_model = self._qualified_model_name(provider, resolved_model)
+
+        if provider == "claudexor":
+            source, native_model = parse_claudexor_model(model)
+            return {
+                "provider": provider, "source": source, "resolved_model": native_model,
+                "usage_model": usage_model, "api_key": "", "default_headers": {},
+                # A locality fact only; real daemon discovery never uses this URL.
+                "base_url": "http://127.0.0.1", "supports_openrouter_extensions": False,
+                "supports_generation_cost": False,
+            }
 
         if provider == "openai":
             return {

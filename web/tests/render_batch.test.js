@@ -365,18 +365,18 @@ test('chat.js wires the replay flag around the replay and keeps live callsites i
     assert.match(replaySection, /if \(rebuildAll\) \{/);
     assert.match(replaySection, /applySyncedMessages\(\);/);
     assert.doesNotMatch(replaySection, /await /);
-    // The LIVE path is untouched: both finished-transition callsites (the
-    // task_done frame in applyLiveCardStateMutation and finishLiveCardMutation)
-    // plus a terminal task-bound review lifecycle call scheduleHistorySync()
-    // unconditionally — the replay decision lives ONLY behind the scheduler's
-    // gate.
-    // Three LIVE callsites call scheduleHistorySync() unconditionally. The fourth
-    // occurrence is the scheduler re-arming itself when a run settles with the bound
+    // Both finished-transition paths share settleLiveCard; the task-bound
+    // review lifecycle keeps its own trigger. The replay decision stays ONLY
+    // behind the scheduler's gate, so sharing cleanup cannot mute either path.
+    assert.match(chatSource, /settleLiveCard\(record, summary\.phase \|\| 'done', wasFinished\);/);
+    assert.match(chatSource, /settleLiveCard\(record, activePhase, wasFinished\);/);
+    assert.match(chatSource, /if \(!wasFinished\) scheduleHistorySync\(\);/);
+    // The third occurrence is the scheduler re-arming when a run settles with the bound
     // still armed, which is how a run that only JOINED an older in-flight fetch (and
     // spent its timer on a window fetched before the arm) keeps the deadline alive.
     // It is gated on !destroyed: a joined sync that settles after teardown must not
     // install a fresh timer on a dead instance (the disposer invariant).
-    assert.equal((chatSource.match(/scheduleHistorySync\(\);/g) || []).length, 4);
+    assert.equal((chatSource.match(/scheduleHistorySync\(\);/g) || []).length, 3);
     assert.match(
         chatSource,
         /if \(!destroyed && lastHistorySyncSucceeded && liveCardBound\.isArmed\(\)\) scheduleHistorySync\(\);/,

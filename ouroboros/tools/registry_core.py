@@ -686,13 +686,12 @@ class ToolRegistry:
                 "tools": sorted(unavailable_tools),
                 "details": {name: unavailable_tools[name] for name in sorted(unavailable_tools)},
             })
-        # Include live extension tool schemas in normal tool discovery.
+        # Live (enabled, granted, reviewed) extension tool schemas join normal tool
+        # discovery on every lane, the ephemeral decision turn included (issue #722,
+        # owner-approved 2026-09-08): liveness, acting-child grants and the network
+        # resource gate are their only filters, exactly as on a managed task.
         extension_schemas: List[Dict[str, Any]] = []
-        if ephemeral_turn:
-            # CW3: a short decision turn answers/routes/spawns/steers only — it gets no
-            # extension surfaces, which can have durable/reviewed side effects.
-            self._capability_omissions.append({"surface": "extensions", "reason": "ephemeral_turn"})
-        elif not _resource_allowed(self._ctx, "network"):
+        if not _resource_allowed(self._ctx, "network"):
             self._capability_omissions.append({"surface": "extensions", "reason": "resource_blocked", "resource": "network=false"})
         else:
             try:
@@ -728,10 +727,10 @@ class ToolRegistry:
 
         if not core_only:
             mcp_schemas = []
-            if ephemeral_turn:
-                # CW3: MCP tools can have durable side effects — not for a decision turn.
-                self._capability_omissions.append({"surface": "mcp", "reason": "ephemeral_turn"})
-            elif not _resource_allowed(self._ctx, "network"):
+            # Owner-configured MCP tools ride every lane, the ephemeral decision turn
+            # included (issue #722, owner-approved 2026-09-08): the network resource
+            # gate is their only lane filter, exactly as on a managed task.
+            if not _resource_allowed(self._ctx, "network"):
                 self._capability_omissions.append({"surface": "mcp", "reason": "resource_blocked", "resource": "network=false"})
             else:
                 try:
@@ -1097,7 +1096,8 @@ class ToolRegistry:
             except Exception:
                 _mcp_is_name = None
         is_mcp = bool(_mcp_is_name and _mcp_is_name(name))
-        _eph = registry_guards._ephemeral_block_result(self._ctx, name, ext_tool, is_mcp)  # CW3: built-in deny set + extension/MCP
+        _eph = registry_guards._ephemeral_block_result(  # CW3: built-in allowlist; extension/MCP tools ride every lane
+            self._ctx, name, ext_tool, is_mcp, extension_unavailable=extension_unavailable)
         if _eph is not None:
             return _eph
         _resource_gate = registry_guards._capability_resource_guard_result(

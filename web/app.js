@@ -113,10 +113,11 @@ async function showPage(name, options = {}) {
 }
 
 async function openSettingsTab(tabName) {
-    await showPage('settings');
+    if (!await showPage('settings')) return false;
     if (settingsControls && typeof settingsControls.activateTab === 'function') {
         settingsControls.activateTab(tabName);
     }
+    return true;
 }
 
 async function openDashboardTab(tabName) {

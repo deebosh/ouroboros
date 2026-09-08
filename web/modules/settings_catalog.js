@@ -1,19 +1,19 @@
 import { apiFetch } from './api_client.js';
 import { setInlineStatus } from './ui_helpers.js';
-const MODEL_CATALOG_TIMEOUT_MS = 25000;
+export const MODEL_CATALOG_TIMEOUT_MS = 25000;
 let catalogRefreshSeq = 0;
 
 function setCatalogStatus(statusEl, text, tone = 'muted') {
     setInlineStatus(statusEl, text, tone);
 }
 
-function broadcastCatalog(items) {
+function broadcastCatalog(items, modelSources) {
     document.dispatchEvent(new CustomEvent('settings-model-catalog:updated', {
-        detail: { items },
+        detail: { items, model_sources: modelSources },
     }));
 }
 
-function fillCatalogDatalist(items) {
+function fillCatalogDatalist(items, modelSources) {
     const list = document.getElementById('settings-model-catalog');
     if (list) {
         list.innerHTML = '';
@@ -24,7 +24,7 @@ function fillCatalogDatalist(items) {
             list.appendChild(option);
         }
     }
-    broadcastCatalog(items);
+    broadcastCatalog(items, modelSources);
 }
 
 export async function refreshModelCatalog({ button } = {}) {
@@ -51,7 +51,7 @@ export async function refreshModelCatalog({ button } = {}) {
         if (refreshSeq !== catalogRefreshSeq) {
             return { items, errors, stale: true };
         }
-        fillCatalogDatalist(items);
+        fillCatalogDatalist(items, data.model_sources);
 
         if (errors.length && items.length) {
             setCatalogStatus(

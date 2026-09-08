@@ -267,6 +267,8 @@
 .settings-shell .available-subagent-row input,
 .settings-shell .available-subagent-row select,
 .settings-shell .available-subagent-row textarea,
+.settings-shell .model-role-row input,
+.settings-shell .model-role-row select,
 .model-picker input {
     width: 100%;
     min-width: 0;
@@ -296,6 +298,8 @@
 .settings-shell .available-subagent-row input:focus,
 .settings-shell .available-subagent-row select:focus,
 .settings-shell .available-subagent-row textarea:focus,
+.settings-shell .model-role-row input:focus,
+.settings-shell .model-role-row select:focus,
 .model-picker input:focus {
     border-color: var(--focus-accent-border);
     box-shadow: 0 0 0 3px var(--focus-accent-ring);

@@ -475,7 +475,7 @@ def test_acceptance_slot_fit_reuses_packet_budget_caps(monkeypatch):
 
     def _caps(models, **_kwargs):
         calls.append(list(models))
-        return {model: caps[model] for model in models}
+        return {slot.slot_id: caps[model] for model, slot in zip(models, _kwargs["slots"])}
 
     monkeypatch.setattr(review_synthesis, "per_slot_input_token_limits", _caps)
     slots = [

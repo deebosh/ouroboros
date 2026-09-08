@@ -20,6 +20,20 @@ PACKAGE = REPO / "ouroboros"
 
 _LEAVES = (settings_defaults, settings_scales, model_slots, review_model_routes, runtime_limits)
 
+# New subscription capabilities belong to the same leaves, but did not exist on
+# the historical extraction's facade and need not add compatibility re-exports.
+_ADDED_OWNERS = {
+    "NETWORK_WAIT_BACKOFF_MAX_SEC": runtime_limits,
+    "MODEL_ACCOUNTS_KEY": model_slots,
+    "MODEL_CONTEXT_WINDOWS_KEY": model_slots,
+    "MODEL_ROLE_SETTINGS": model_slots,
+    "normalize_model_role_options": model_slots,
+    "model_role_option": model_slots,
+    "task_model_binding": model_slots,
+    "apply_model_role_override": model_slots,
+    "CLAUDEXOR_MODEL_POLL_INTERVAL_SEC": runtime_limits,
+}
+
 _MOVED_OWNERS = {
     "WORKER_SPAWN_GRACE_SEC": runtime_limits,
     "WORKER_READY_WINDOW_SEC": runtime_limits,
@@ -227,14 +241,15 @@ def test_settings_file_lifecycle_and_path_roots_stay_with_the_parent():
 
 
 def test_settings_extraction_owner_inventory_is_exact():
-    """Every shared name has exactly one declared leaf owner and facade binding."""
+    """Every extracted or explicitly added name has exactly one declared owner."""
+    owners = {**_MOVED_OWNERS, **_ADDED_OWNERS}
     seen: dict[str, str] = {}
     for module in _LEAVES:
         for name in _top_level_names(pathlib.Path(module.__file__)):
             assert name not in seen, f"{name} owned by {seen.get(name)} and {module.__name__}"
             seen[name] = module.__name__
-            assert name in _MOVED_OWNERS, f"{module.__name__} owns an unmapped name: {name}"
-    assert set(seen) == set(_MOVED_OWNERS)
+            assert owners.get(name) is module, f"{module.__name__} owns an unmapped name: {name}"
+    assert set(seen) == set(owners)
 
 
 def test_settings_extraction_size_bounds_have_meaningful_headroom():

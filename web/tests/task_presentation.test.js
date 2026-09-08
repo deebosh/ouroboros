@@ -65,7 +65,7 @@ test('live task_done and replay/log task truth have phase and headline parity', 
     }
     assert.match(
         chatSource,
-        /const presentation = taskPresentation\(finalizing \? 'working' : taskTerminalPhase\(msg \|\| \{\}\)\);/,
+        /const presentation = taskPresentation\(finalizing && outcome !== 'error' \? 'working' : outcome\);/,
     );
 });
 
@@ -78,6 +78,15 @@ test('typed terminal status drives an error phase on live and replay cards', () 
         /finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(taskState, record\)\);/,
     );
     assert.match(chatSource, /appendTaskSummaryToLiveCard\(msg\) \|\| changed;/);
+});
+
+test('canonical replay status wins over a stale row without erasing open post-work', () => {
+    const record = { status: 'running', task_terminal_status: 'failed' };
+    assert.equal(taskDoneIsTerminal(record), true);
+    assert.equal(taskTerminalPhase(record), 'error');
+    const waiting = { ...record, root_phase_checkpoint: { post_task_synthesis: 'running' } };
+    assert.equal(taskDoneIsTerminal(waiting), false);
+    assert.equal(taskTerminalPhase(waiting), 'error');
 });
 
 test('interrupted task_done remains retryable and cannot finish a root card', () => {

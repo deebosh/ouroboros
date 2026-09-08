@@ -18,6 +18,7 @@ import pathlib
 from dataclasses import replace
 from typing import Any, Dict
 from ouroboros.dialogue_provenance import presence_provenance_fields
+from ouroboros.llm_claudexor import propagate_model_error
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.synthesis_cost_text import _summary_row_cost_fields, _synthesis_cost_text, _synthesis_cost_usd, _synthesis_usage_snapshot_text
 from ouroboros.task_finalization import sealed_final_prompt_section
@@ -140,10 +141,12 @@ def _update_improvement_backlog(
             from ouroboros.improvement_backlog import groom_backlog
 
             groom_backlog(env.drive_root)  # size-triggered; no-op while small
-        except Exception:
+        except Exception as error:
+            propagate_model_error(error)
             log.debug("Backlog grooming failed", exc_info=True)
         return added
-    except Exception:
+    except Exception as error:
+        propagate_model_error(error)
         log.debug("Improvement backlog update failed", exc_info=True)
         return 0
 
@@ -345,6 +348,7 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
             msg, _usage = chat_observed(llm, drive_root=canonical_root, task_id=task_id,
                                    call_type="task_summary", messages=[{"role": "user", "content": prompt}],
                                    model=summary_model,
+                                   model_role="light",
                                    reasoning_effort=CONSOLIDATION_REASONING_EFFORT,
                                    max_tokens=16384,
                                    use_local=summary_use_local)
@@ -355,7 +359,8 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
                     update_budget_from_usage(_usage)
                 except Exception:
                     pass
-        except Exception:
+        except Exception as exc:
+            propagate_model_error(exc)
             log.warning("Task summary LLM call failed, using fallback", exc_info=True)
             summary_text = (
                 f"Task {task_id} ({task.get('type', 'user')}): "
@@ -364,7 +369,8 @@ def _run_task_summary(env, llm, task, usage, llm_trace, drive_logs, review_evide
         if summary_text:
             summary_text += project_thread_note_for_task(task)
             _append_summary(summary_text)
-    except Exception:
+    except Exception as exc:
+        propagate_model_error(exc)
         log.debug("Task summary generation failed (non-critical)", exc_info=True)
 
 
@@ -409,7 +415,8 @@ def _run_chat_consolidation(env, memory, llm, task, drive_logs):
                 if u.get("cost") or u.get("prompt_tokens"):
                     from supervisor.state import update_budget_from_usage
                     update_budget_from_usage(u)
-    except Exception:
+    except Exception as error:
+        propagate_model_error(error)
         log.warning("Chat block consolidation setup failed", exc_info=True)
 
 
@@ -441,7 +448,8 @@ def _run_scratchpad_consolidation(env: Any, memory: Any, llm: Any) -> None:
             if u and (u.get("cost") or u.get("prompt_tokens")):
                 from supervisor.state import update_budget_from_usage
                 update_budget_from_usage(u)
-    except Exception:
+    except Exception as error:
+        propagate_model_error(error)
         log.debug("Scratchpad consolidation setup failed", exc_info=True)
 
 
@@ -479,9 +487,11 @@ def _run_reflection(env: Any, llm: Any, task: Dict[str, Any],
                 entry = {**entry, **presence_provenance_fields(task)}
                 append_reflection_routed(env, task, entry)
                 return entry
-            except Exception:
+            except Exception as error:
+                propagate_model_error(error)
                 log.warning("Execution reflection failed (non-critical)", exc_info=True)
-    except Exception:
+    except Exception as error:
+        propagate_model_error(error)
         log.debug("Execution reflection setup failed", exc_info=True)
     return None
 

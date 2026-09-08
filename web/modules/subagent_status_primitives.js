@@ -11,6 +11,7 @@ import {
     describeExecutionEvidence,
     harnessModelsKnown,
     modelsGapNote,
+    routeSupportsAccount,
     splitSessionTarget,
 } from './route_editor_primitives.js';
 
@@ -149,7 +150,7 @@ export function rowStatus(row, state) {
         return {
             label: `${intent.word} · Checked at start`,
             tone: worseTone(intent.tone, 'neutral'),
-            text: `${intent.text} · API model · availability is checked when a child starts`,
+            text: `${intent.text} · ${routeSupportsAccount(row.route) ? 'Subscription model' : 'API model'} · availability is checked when a child starts`,
         };
     }
     const live = sessionRouteVerdict(row, state);

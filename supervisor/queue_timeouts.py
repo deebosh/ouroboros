@@ -16,6 +16,7 @@ import uuid
 from typing import Any, Dict
 
 from supervisor.cognitive_operations import _active_operation_progressing
+from supervisor.task_model_wait import model_waiting, quota_waited_seconds
 from supervisor.task_reaper import (
     resolve_grace_episode_for_spared_task as _resolve_grace_episode_for_spared_task,
 )
@@ -201,7 +202,7 @@ def _enforce_task_timeouts_locked(
         if started_at <= 0:
             continue
         last_hb = float(meta.get("last_heartbeat_at") or started_at)
-        runtime_sec = max(0.0, now - started_at)
+        runtime_sec = max(0.0, now - started_at - quota_waited_seconds(meta, now))
         hb_lag_sec = max(0.0, now - last_hb)
         hb_stale = hb_lag_sec >= _queue().HEARTBEAT_STALE_SEC
         _wid = meta.get("worker_id")
@@ -238,6 +239,7 @@ def _enforce_task_timeouts_locked(
         progressing = (own_progress or subtree_progressing or _queue()._has_pending_descendant(task_id)
                        or (isinstance(lease_ts, (int, float)) and float(lease_ts) > now)
                        or llm_call_in_flight
+                       or model_waiting(meta)
                        or _active_operation_progressing(meta, now))
         ceiling_reached = runtime_sec >= abs_ceiling
 

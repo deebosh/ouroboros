@@ -610,8 +610,12 @@ def test_frontend_evolution_and_consciousness_controls_are_present():
     # Start button is hard-disabled in light mode (self-modification gate).
     assert "runtime.runtime_mode" in evolution
     assert "startBtn.disabled = isLightMode" in evolution
-    assert "s-model-consciousness" in settings_ui
-    assert "s-local-consciousness" in settings_ui
+    from ouroboros.settings_setup_contract import build_setup_contract
+    consciousness = next(row for row in build_setup_contract()["modelSlots"] if row["slot"] == "consciousness")
+    assert consciousness["settingKey"] == "OUROBOROS_MODEL_CONSCIOUSNESS"
+    assert consciousness["settingsToggleId"] == "s-local-consciousness"
+    assert "modelRolesHost('settings-model-roles')" in settings_ui
+    assert "modelRoles.load(s," in settings
     assert "OUROBOROS_EFFORT_CONSCIOUSNESS', 'high'" in settings
 
 

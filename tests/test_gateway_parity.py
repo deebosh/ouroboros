@@ -360,15 +360,15 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
 
     assert UpdatePreflightResponse.__required_keys__ == frozenset({"merge_plan"})
     # In-flight turn ABI: field-set parity alone would accept requiredness
-    # drift. Snapshot rows always emit every field (required); typing frames
+    # drift. Snapshot rows always emit the base fields (required); typing frames
     # stamp the typed fields only for registry-tracked turns (optional).
     # (__required_keys__ ignores NotRequired on some 3.10 setups, so inspect
     # the declared annotations instead.)
-    assert _notrequired_fields(ActiveDirectTurn) == set(), (
-        "ActiveDirectTurn snapshot rows always emit every field: keep them all required"
+    assert _notrequired_fields(ActiveDirectTurn) == {"model_waits", "task_attempt"}, (
+        "ActiveDirectTurn keeps its required base; waits and attempt are optional live-owner facts"
     )
-    assert _notrequired_fields(ActiveChatActivity) == set(), (
-        "ActiveChatActivity snapshot rows always emit every field: keep them all required"
+    assert _notrequired_fields(ActiveChatActivity) == {"model_waits", "task_attempt"}, (
+        "ActiveChatActivity keeps the same required base and optional wait/attempt facts"
     )
     assert get_type_hints(ActiveChatActivity, include_extras=True) == get_type_hints(ActiveDirectTurn, include_extras=True), (
         "ActiveChatActivity must mirror ActiveDirectTurn's field shape so one client reducer hydrates both"
@@ -383,8 +383,10 @@ def test_gateway_contract_endpoint_index_matches_router_and_types(tmp_path):
         "project_thread",
     }, "TypingOutbound typed fields are stamped only for registry-tracked turns: keep them optional"
     turn_decl = re.search(r"@typedef \{Object\} ActiveDirectTurn\b([\s\S]*?)\*/", text)
-    assert turn_decl and not re.search(r"@property \{[^}]*=\}", turn_decl.group(1)), (
-        "ActiveDirectTurn browser mirror must declare every field required"
+    assert turn_decl and set(re.findall(
+        r"@property \{[^}]*=\} (\w+)", turn_decl.group(1)
+    )) == {"model_waits", "task_attempt"}, (
+        "ActiveDirectTurn browser mirror keeps wait/attempt facts optional"
     )
     typing_decl = re.search(r"@typedef \{Object\} TypingOutbound\b([\s\S]*?)\*/", text)
     assert typing_decl
@@ -618,7 +620,8 @@ def test_decision_comment_limit_and_optional_index_pinned_across_python_and_js()
         name for name, annotation in DecisionRequest.__annotations__.items()
         if (getattr(annotation, "__forward_arg__", None) or str(annotation)).startswith("NotRequired[")
     }
-    assert optional == {"option_index", "comment"}
+    assert optional == {"option_index", "comment", "revision", "action", "auto_continue",
+                        "model", "credential_profile_id", "use_local", "persist_role"}
     request_decl = re.search(r"@typedef \{Object\} DecisionRequest\b([\s\S]*?)\*/", text)
     assert request_decl
     assert "@property {number=} option_index" in request_decl.group(1)

@@ -795,7 +795,7 @@ async def _api_presence_work(request: Request) -> JSONResponse:
 
 
 async def _api_chat_decision(request: Request) -> JSONResponse:
-    """Relay the owner's answer to a decision card (a quiz option or free answer).
+    """Relay the owner's answer through the shared owner-decision ingress.
 
     The SAME ingress as ``POST /api/decisions`` (``task_decision.answer_decision``):
     idempotent per ``request_id``, first answer wins, typed 404/409 refusals.
@@ -817,7 +817,10 @@ async def _api_chat_decision(request: Request) -> JSONResponse:
     from ouroboros.gateway.task_decision import answer_decision
 
     try:
-        status, payload = await answer_decision(ctx.data_dir, body)
+        status, payload = await answer_decision(
+            ctx.data_dir, body,
+            get_background_model_wait=getattr(request.app.state, "get_background_model_wait", None),
+        )
     except Exception as exc:
         log.debug("Host service decision relay failed", exc_info=True)
         return _json_error(str(exc), 500)

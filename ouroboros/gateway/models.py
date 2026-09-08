@@ -381,10 +381,76 @@ async def _load_provider(
         return provider_id, [], str(exc), stage, duration_ms
 
 
+def _subscription_model_catalog(source_id: str = "", profile_id: str = "") -> dict:
+    """Read raw transport catalogs from the owned engine, never CLI model inventory.
+
+    Each returned catalog names the exact account that produced it. An omitted
+    account delegates selection to Claudexor; this layer never merges accounts.
+    API-only installs do not provision a daemon while browsing model settings.
+    """
+    from ouroboros.claudexor_daemon import read_owned_gateway, owned_daemon_provisioned
+
+    result = {"items": [], "errors": [], "model_sources": []}
+    if not source_id and not owned_daemon_provisioned():
+        return result
+    try:
+        with read_owned_gateway() as gateway:
+            sources = gateway.list_model_sources().get("sources", [])
+            result["model_sources"] = sources
+            for source in sources:
+                identifier = str(source.get("id") or "")
+                if source_id and identifier != source_id:
+                    continue
+                try:
+                    catalog = gateway.list_source_models(identifier, credential_profile_id=profile_id or None)
+                except Exception as exc:
+                    result["errors"].append({"provider_id": "claudexor", "source_id": identifier,
+                        "code": str(getattr(exc, "code", "catalog_unavailable")), "error": str(exc)})
+                    continue
+                for model in catalog.get("models", []):
+                    model_id = str(model.get("id") or "")
+                    if not model_id:
+                        continue
+                    entry = _build_model_catalog_entry("claudexor", str(source.get("label") or identifier),
+                        model_id, str(model.get("label") or model_id), source="Claudexor")
+                    entry.update({
+                        "source_id": identifier,
+                        "value": f"claudexor::{identifier}={model_id}",
+                        "credential_profile_id": catalog.get("credentialProfileId"),
+                        "account_fingerprint": catalog.get("accountFingerprint"),
+                        "context_window": model.get("contextWindow"),
+                        "max_context_window": model.get("maxContextWindow"),
+                        "max_output_tokens": model.get("maxOutputTokens"),
+                        "is_default": model.get("isDefault", False),
+                        "supported_options": model.get("supportedOptions", []),
+                        "reasoning_efforts": model.get("reasoningEfforts", []),
+                        "default_reasoning_effort": model.get("defaultReasoningEffort"),
+                        "input_modalities": model.get("inputModalities", []),
+                        "provenance": catalog.get("provenance"),
+                        "observed_at": catalog.get("observedAt"),
+                    })
+                    result["items"].append(entry)
+            if source_id and not any(str(source.get("id") or "") == source_id for source in sources):
+                result["errors"].append({"provider_id": "claudexor", "source_id": source_id,
+                    "code": "model_source_unavailable", "error": "This engine does not provide the selected model transport."})
+    except Exception as exc:
+        result["errors"].append({"provider_id": "claudexor", "source_id": source_id,
+            "code": str(getattr(exc, "code", "catalog_unavailable")), "error": str(exc)})
+    return result
+
+
 async def api_model_catalog(_request: Request) -> JSONResponse:
+    query = _request.query_params if _request is not None else {}
+    source_id = str(query.get("source_id") or "").strip()
+    profile_id = str(query.get("credential_profile_id") or "").strip()
+    if profile_id and not source_id:
+        return json_error("credential_profile_id requires source_id", 400)
+    subscription = await asyncio.to_thread(_subscription_model_catalog, source_id, profile_id)
+    if source_id:
+        return JSONResponse(subscription)
     settings = load_settings()
-    items: list[dict[str, str]] = []
-    errors: list[dict[str, str]] = []
+    items = list(subscription["items"])
+    errors = list(subscription["errors"])
     seen_values: set[str] = set()
     specs = _provider_specs(settings)
 
@@ -415,6 +481,7 @@ async def api_model_catalog(_request: Request) -> JSONResponse:
     return JSONResponse({
         "items": items,
         "errors": errors,
+        "model_sources": subscription["model_sources"],
     })
 
 

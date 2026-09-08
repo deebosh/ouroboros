@@ -1951,6 +1951,17 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
 
 ### Onboarding and Settings surfaces
 
+- One five-step wizard serves subscriptions, API keys and mixed installs:
+  Accounts → Models → Review → Budget → Summary. Quick Review & start runs the
+  same proposal compiler for skipped steps; Finish atomically commits the visible
+  draft. Accounts is shared, while Models and Agents edit roles. Only declared
+  raw-model sources can supply Main; an Agent-only connection cannot invent one.
+  Subscription copy says "without an API key", never guaranteed free. Provider
+  credits/spend settings are not enabled or changed by connecting an account.
+- Models, actors and reviewers share source/model/account controls. Preserve
+  exact pins on ordinary save/reload and catalog failure; a source's credential
+  harness comes from its metadata, never an assumed equal name. A referenced
+  reviewer stays a native-inspection actor, not an inline packed review.
 - One capability, one section: the task-actor story lives in Agents →
   Available subagents (`web/modules/subagents_settings.js`), editing one
   canonical `OUROBOROS_SUBAGENTS` object (list-level Enabled, at most ten
@@ -1962,7 +1973,7 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   pool). Share only neutral route/model/account/effort/status primitives with
   reviewer rows (`route_editor_primitives.js`); task routes serialize
   `api_model` + `credential_profile_id`, reviewer routes `api_chat` +
-  `profile_id`; an empty session pin means engine rotation;
+  `profile_id`; an empty managed-model/session pin means engine rotation;
   saved-but-undiscovered choices stay visible and editable; a compound effort
   slug plus a conflicting separate effort is a validation error, never two
   applied efforts.
@@ -2055,6 +2066,31 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   (Claude Code, Codex, Cursor) are trademarks and stay as they are.
 
 ### LLM call rules
+
+- Claudexor model calls are a transport, not delegated reasoning. Keep model
+  content and native continuation byte-faithful through the purpose-bound engine
+  operation; never inject its credentials, run its tools, compact inside the
+  adapter or silently repeat a generation. Recover a local connection loss using
+  the same operation ID; record unknown outcomes as unknown. ACK only after the
+  existing private CAS owns the exact result. Optional host hints must be chosen
+  by their caller according to transport capability; explicit unsupported options
+  refuse, rather than being silently removed and retried.
+- Pass model_role and the captured account explicitly at every helper/reviewer
+  seam. Main and Light may have identical model names and different pins. Account
+  context evidence stays source/profile/fingerprint-bound. Manual context sizing
+  is not scope authority; an explicit scope ACK must bind the actual route.
+  Never promote a changed model's token-density observation into the old model's
+  evidence. Physical attempt limits may return a claim only after a successful,
+  positive never-dispatched release; unknown or dispatched claims remain charged.
+- Resource refusals wait inside the live call before helper catch-all blocks.
+  Use the existing task owner, mailbox, clocks and settings writer; no parked
+  rounds, compensation processes or replay of completed tools/reviews. Preserve
+  typed errors through the tracked image child. The shared waiting card has
+  revision fences and distinguishes accepted, applied and saved; a browser fixture
+  must not invent a different acknowledgement protocol than the real ingress.
+  Cover ephemeral waits through the real turn/scope producer and both decision
+  transports. Preserve no-task-record cleanup and the separate control-only
+  activity identity through live delivery and fresh/reloaded browser hydration.
 
 Accounting and transport mechanism — attempt lifecycle, pricing lookup, lock
 discipline, snapshots, projections — lives in ARCHITECTURE "Budget tracking"
@@ -2707,11 +2743,28 @@ marker after a write fault; existing malformed or foreign markers are never
 replaced. The reaper's permissive keep is never stop authority, and a daemon known
 only by name or port is never signalled.
 Explicit stop and next-start runtime selection remain separate contracts: a
-staged engine pin applies at the daemon's next start, and a planned restart
-reports it staged while the serving engine's atomic replacement predicate still
-omits setup jobs with unconfirmed termination. Service quiescence excludes
+newer engine pin is never hot-swapped and the daemon's next start selects it; a
+planned restart whose landed checkout pins another engine version or build ends
+the serving daemon in the lifespan teardown through
+`server_restart._stop_owned_daemon_for_new_pin` (`load_runtime_pin` from the
+checkout against `read_owned_gateway`, then the shared attested stop — never a
+veto), while an unchanged, unreadable or unpublished pin and an unreachable daemon
+leave the handoff untouched (`tests/test_planned_restart_engine_pin.py`). Service quiescence excludes
 zombie-only groups, but checks every member before releasing a writer fence
 (`tests/test_claudexor_custody_lifetime.py`, `tests/test_process_custody_liveness.py`).
+The owner's manual Restart keeps its checkout-first order: the update gate and
+`safe_restart` refuse before anything is stopped, and `server_restart._stop_owned_work`
+runs only after the durable no-resume flags. Reuse the `request_cancel` ingress,
+`kill_workers` with `reconcile_delegate_custody=False`, `reconcile_orphaned_runs` over
+`read_owned_gateway`, and the typed `OwnedClaudexorDaemon.stop_outcome`; never call
+`ensure_owned_gateway` between the cancel intents and the daemon stop, and never read
+the manager's private error state to tell "nothing to stop" from "unconfirmed".
+Past the gate an unconfirmed step is a critical diagnostic with custody retained,
+never a deferral or a veto — do not add a "deferred" state, a drain, a lease, a
+census or a new custody event kind for it; the next generation's startup sweep is
+the recovery. The lifespan warmup is one background `ensure_owned_gateway` for a
+provisioned home and needs no invalidation of its own: a Stop retires it through the
+start generation (`tests/test_manual_restart_execution.py`).
 
 Out-of-process extension HTTP responses execute their standard Starlette ASGI
 response in the child. The runner owns staging, Popen registration and cleanup;

@@ -483,6 +483,7 @@ def _call_summarizer(
         "drive_root": drive_root,
         "task_id": task_id,
         "call_type": f"context_compaction_{phase}",
+        "model_role": "light",
         "model": str(spec.get("model") or ""),
         "reasoning_effort": str(spec.get("effort") or "low"),
         "max_tokens": int(spec.get("output_budget") or _SUMMARY_OUTPUT_TOKENS),
@@ -511,6 +512,8 @@ def _call_summarizer(
         except Exception as exc:
             if _typed_context_overflow(exc):
                 raise SummarizerContextOverflow(str(exc)) from exc
+            from ouroboros.llm_claudexor import propagate_model_error
+            propagate_model_error(exc)
             log.warning("Structured context summary failed; trying JSON response", exc_info=True)
 
     prompt = (_SUMMARY_GUIDANCE
@@ -527,6 +530,8 @@ def _call_summarizer(
     except Exception as exc:
         if _typed_context_overflow(exc):
             raise SummarizerContextOverflow(str(exc)) from exc
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         raise _UnitSummaryFailure(
             f"summary call failed: {type(exc).__name__}: {exc}",
         ) from exc
