@@ -373,10 +373,9 @@ def run_llm_loop(
     task_model_override = str(getattr(ctx, "task_model_override", "") or "").strip()
     active_model = task_model_override or llm.default_model()
     active_effort = initial_effort
-    if getattr(ctx, "task_use_local_override", None) is not None:
-        active_use_local = bool(ctx.task_use_local_override)
-    else:
-        active_use_local = os.environ.get("USE_LOCAL_MAIN", "").lower() in ("true", "1")
+    local_override = getattr(ctx, "task_use_local_override", None)
+    active_use_local = (bool(local_override) if local_override is not None else
+                        os.environ.get("USE_LOCAL_MAIN", "").lower() in ("true", "1"))
     # Unknown routes get one honest call; no synthetic short-window capacity.
     _preferred_context_mode = get_context_mode()
     context_fit_plan = getattr(ctx, "context_fit_plan", None)
@@ -416,15 +415,16 @@ def run_llm_loop(
         if saved:
             active_model, active_effort, active_use_local, active_context_mode, round_idx, context_fit_plan = resume_native_loop(
                 tools, saved, messages, llm_trace, accumulated_usage, _owner_msg_seen)
+        pending_tool_budget, pending_tool_calls = bool(saved), None
         while True:
-            if free_redial or saved:
-                # A cold tool tail and a transport redial retain their logical round.
+            if free_redial or pending_tool_budget:
+                # Warm/cold tool tails and transport redials retain their logical round.
                 free_redial = False
             else:
                 round_idx += 1
 
             ctx = tools._ctx
-            if not saved:
+            if not pending_tool_budget:
                 _prev_active_route = (active_model, active_use_local)
                 active_model, active_use_local, active_effort = _apply_runtime_overrides(
                     ctx, active_model, active_use_local, active_effort,
@@ -488,10 +488,11 @@ def run_llm_loop(
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
 
-            if saved:
-                saved = {}
+            if pending_tool_budget:
+                pending_tool_budget = False
                 budget_result = _finish_tool_round_budget(
-                    limit_ctx, budget_remaining_usd, cost_ceiling, active_model, active_use_local, active_effort)
+                    limit_ctx, budget_remaining_usd, cost_ceiling, active_model, active_use_local, active_effort, pending_tool_calls)
+                pending_tool_calls = None
                 if budget_result is not None:
                     return budget_result
                 continue
@@ -633,11 +634,8 @@ def run_llm_loop(
             )
             wait_after_tools(ctx, messages, llm_trace, accumulated_usage,
                              round_idx, tool_schemas, _owner_msg_seen)
-
-            budget_result = _finish_tool_round_budget(
-                limit_ctx, budget_remaining_usd, cost_ceiling, active_model, active_use_local, active_effort, tool_calls)
-            if budget_result is not None:
-                return budget_result
+            # Every completed batch rejoins one control/budget tail, warm or cold.
+            pending_tool_budget, pending_tool_calls = True, tool_calls
 
     except BudgetExceeded as exc:
         _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="budget")

@@ -213,6 +213,71 @@ def test_changed_notice_reopens_parent_disposition_and_automatic_handoff(tmp_pat
     assert loop._compute_subagent_handoff(tools, tmp_path, "parent1", "") == ""
 
 
+@pytest.mark.parametrize("mode", ["all_terminal", "any_terminal"])
+@pytest.mark.parametrize("answer", [ANSWER, ANSWER + "\n" + "model detail " * 1500, ""],
+                         ids=["short_answer", "long_answer", "no_answer"])
+@pytest.mark.parametrize("notice", [NOTICE, NOTICE + "\n" + "retained host evidence " * 1500 + "\nEND NOTICE"],
+                         ids=["short_notice", "long_notice"])
+def test_batch_wait_delivers_notice_before_current_hash_disposition(tmp_path, monkeypatch, mode, answer, notice):
+    """The real batch reader must deliver the warning before disposition hides handoff."""
+    from ouroboros.task_status import load_effective_task_result
+    from ouroboros.tools.join_ledger import _child_result_sha256, _current_child_result_disposition
+    from ouroboros.tools.registry import ToolRegistry
+    from tests.test_child_result_disposition import _payload
+
+    task, _event = _emit_terminal(tmp_path, monkeypatch, child=True, answer=answer, notice=notice)
+    stored = load_task_result(tmp_path, task["id"])
+    tools = ToolRegistry(tmp_path / "repo", tmp_path / "parent-execution")
+    tools._ctx.task_id = "parent1"
+    tools._ctx.task_metadata = {"budget_drive_root": str(tmp_path), "root_task_id": "parent1"}
+    args = {"task_ids": [task["id"]], "timeout_sec": 0, "mode": mode}
+    result = tools.execute_result("wait_tasks", args)
+    assert result.status == "ok"
+    batch = json.loads(result.text)
+    assert batch["all_terminal"] is True
+    shown = batch["tasks"][task["id"]]
+    assert shown["result"] == answer
+    assert shown["terminal_host_notice"] == notice
+    assert notice not in shown["result"]
+    assert shown["child_result_sha256"] == _child_result_sha256(load_effective_task_result(tmp_path, task["id"]))
+    assert "get_task_result" in batch["tasks_note"]
+    assert not {"trace_refs", "loop_outcome", "verification_ledger"} & shown.keys()
+
+    disposition = tools.execute("tree_note", {
+        "kind": "decision", "text": "Absorbed the answer and its separately authored host limitation.",
+        "payload": _payload(task["id"], "integrated", shown["child_result_sha256"]),
+    })
+    assert disposition.startswith("OK:")
+    assert _current_child_result_disposition(load_effective_task_result(tmp_path, task["id"])) == "integrated"
+    assert loop._compute_subagent_handoff(tools, tmp_path, "parent1", "") == ""
+    assert json.loads(tools.execute("wait_tasks", args))["tasks"][task["id"]] == shown
+    assert tools.execute("get_task_result", {"task_id": task["id"]}).endswith("[Host status]\n" + notice)
+    assert load_task_result(tmp_path, task["id"]) == stored
+
+
+def test_batch_wait_without_notice_keeps_the_original_projection(tmp_path, monkeypatch):
+    from ouroboros.outcomes import normalize_outcome_axes
+    from ouroboros.task_status import load_effective_task_result
+    from ouroboros.tools.control_task_results import _wait_for_tasks
+    from ouroboros.tools.join_ledger import _child_result_sha256
+    from tests.test_child_result_disposition import _parent_ctx
+
+    task, _event = _emit_terminal(tmp_path, monkeypatch, child=True, notice="")
+    stored = load_task_result(tmp_path, task["id"])
+    current = load_effective_task_result(tmp_path, task["id"])
+    assert "terminal_host_notice" not in current
+    batch = json.loads(_wait_for_tasks(_parent_ctx(tmp_path), [task["id"]], timeout_sec=0))
+    assert batch["tasks"][task["id"]] == {
+        "task_id": task["id"], "status": current["status"],
+        "accounted_upper_bound_usd": current["accounted_upper_bound_usd"],
+        "cost_final": current.get("cost_final"),
+        "child_result_sha256": _child_result_sha256(current),
+        "outcome_axes": normalize_outcome_axes(current),
+        "result": ANSWER, "trace_summary": current.get("trace_summary"),
+    }
+    assert load_task_result(tmp_path, task["id"]) == stored
+
+
 def test_child_notice_hash_extension_preserves_legacy_hash_and_telemetry_exclusions():
     from ouroboros.tools.join_ledger import _child_result_sha256
 

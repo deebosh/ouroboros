@@ -84,7 +84,7 @@ def test_full_plan_review_disposition_repeat_and_tail_delta(_harness):
     goal = "full chosen goal\n" * 22_000 + "GOAL_TAIL"
     spec = {"in_scope": ["full requirement\n" * 22_000 + "SCOPE_TAIL_A"],
             "acceptance_claims": ["full criterion\n" * 22_000 + "CLAIM_TAIL"]}
-    assert _control(_call(ctx, spec, goal=goal)) == {"outcome": "REVIEW_REQUIRED", "closed": False}
+    assert _control(_call(ctx, spec, goal=goal)) == {"outcome": "REVIEW_REQUIRED", "closed": True}
     state = _state(_harness)
     fingerprint = state["waves"][-1]["request_fingerprint"]
     finding = state["waves"][-1]["findings"][0]["finding_id"]

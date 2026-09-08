@@ -1265,7 +1265,8 @@ def run_custodied_review_slots(
         if calendar_remaining is not None and pending & waiting_slots:
             remaining = min(remaining, calendar_remaining)
         try:
-            actor = result_queue.get(timeout=remaining)
+            # A slot can expire between the expiry check and the clock reread.
+            actor = result_queue.get(timeout=max(0.0, remaining))
         except queue.Empty:
             continue
         if actor.slot_id in pending:

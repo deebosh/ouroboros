@@ -1443,7 +1443,7 @@ def get_tools() -> List[ToolEntry]:
                 "a subagent asks its PARENT task (a typed mailbox frame the parent "
                 "answers with forward_to_worker or escalates higher, verbatim). "
                 "For optional clarification, state an assumption and continue independent work. "
-                "A managed root may set wait_for_answer=true when the answer is necessary: "
+                "A live root, including ordinary Main or Project conversation, may set wait_for_answer=true when the answer is necessary: "
                 "after the current tool batch it waits without model calls, preserving its browser "
                 "and freeing active worker capacity. Addressed owner text resumes your judgment. "
                 "Stop and existing task deadlines remain effective; questions expire only at task end."
@@ -1456,7 +1456,7 @@ def get_tools() -> List[ToolEntry]:
                 }, "required": ["label"]}, "description": "2-6 mutually exclusive options"},
                 "stake": {"type": "string", "description": "What depends on this decision (optional, max 500)"},
                 "assumption": {"type": "string", "description": "For optional clarification, the assumption you continue under (max 500); may be empty for required waiting."},
-                "wait_for_answer": {"type": "boolean", "default": False, "description": "Managed roots only: wait for addressed owner input before another model round."},
+                "wait_for_answer": {"type": "boolean", "default": False, "description": "Live roots: wait for addressed owner input before another model round."},
             }, "required": ["question", "options"]},
         }, _escalate),
         ToolEntry("forward_to_worker", {

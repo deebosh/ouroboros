@@ -418,16 +418,17 @@ def _escalate(
     task_id = str(getattr(ctx, "task_id", "") or "").strip()
     if not task_id:
         return "⚠️ ESCALATE_UNAVAILABLE: escalate requires an active task context."
-    if bool(getattr(ctx, "is_direct_chat", False)):
-        # A direct chat turn IS the owner conversation: it is not a queue
-        # task the answer ingress can address, and a card would be a dead
-        # end — ask the question directly in the reply instead.
+    if bool(getattr(ctx, "is_direct_chat", False)) and (
+            bool(getattr(ctx, "is_ephemeral_turn", False))
+            or not callable(getattr(ctx, "owner_wait_callback", None))):
+        # Native conversations with a live continuation owner are addressable
+        # through the same decision ingress. Transient control turns are not.
         return ("⚠️ ESCALATE_UNAVAILABLE: this is a live owner conversation — "
                 "ask the question directly in your reply instead of a card.")
     parent_task_id = str(meta.get("parent_task_id") or "").strip()
     delegation_role = str(meta.get("delegation_role") or "").strip()
     if wait_for_answer and (parent_task_id or not callable(getattr(ctx, "owner_wait_callback", None))):
-        return "⚠️ ESCALATE_UNAVAILABLE: required owner waiting needs a managed root task."
+        return "⚠️ ESCALATE_UNAVAILABLE: required owner waiting needs a root task with a live continuation owner."
     if wait_for_answer:
         from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 

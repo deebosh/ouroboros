@@ -300,8 +300,10 @@ def test_failed_publication_writes_no_receipt_and_no_flag(monkeypatch, tmp_path)
 def test_publish_failure_projection_uses_confirmed_transport_progress(monkeypatch, tmp_path, failure):
     from ouroboros import skill_publish_github as github
     from ouroboros.skill_publish_result import apply_skill_publish_receipt_veto, extract_skill_publish_result_metadata
+    from ouroboros.tools.github import GhResult
 
     ctx, _events, _captured = _install_transaction_fakes(monkeypatch, tmp_path, snapshot=_snapshot())
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_SYNTHETIC1234567890")
     monkeypatch.setattr(skill_publish, "prepare_publish_repository", github.prepare_publish_repository)
     monkeypatch.setattr(skill_publish, "ensure_branch", github.ensure_branch)
     requests = []
@@ -309,15 +311,16 @@ def test_publish_failure_projection_uses_confirmed_transport_progress(monkeypatc
     def transport(args, _ctx, **_kwargs):
         requests.append(args)
         if args[:2] == ["repo", "view"]:
-            return '{"name":"project"}'
+            return GhResult(True, '{"name":"project"}', 0, None, "")
         if "/repos/alice/project/merge-upstream" in args:
-            return "⚠️ sync rejected" if failure == "fork_sync" else "{}"
+            return (GhResult(False, "⚠️ GH_ERROR: sync rejected", 1, None, "exit")
+                    if failure == "fork_sync" else GhResult(True, "{}", 0, None, ""))
         if args[1] == "/repos/alice/project/git/ref/heads/submit/demo-v1.0.0":
-            return "⚠️ not found"
+            return GhResult(False, "⚠️ GH_ERROR: not found", 1, 404, "exit")
         assert args[3] == "/repos/alice/project/git/refs"
-        return "⚠️ response lost after request"
+        return GhResult(False, "⚠️ GH_TIMEOUT: exceeded 30s.", None, None, "timeout")
 
-    monkeypatch.setattr(github, "_gh_cmd", transport)
+    monkeypatch.setattr(github, "_gh_run", transport)
     result = _submit(ctx)
     assert result["ok"] is False
     expected_stage = "fork_ready" if failure == "fork_sync" else "fork_synced"

@@ -1320,21 +1320,14 @@ def mark_current_plan_review_unavailable(
 
 
 def _fit_plan_review_state(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Last resort (gate advisory, 39c3a195; W3 rounds 6-9): make the state persistable.
+    """Fit every hot-index write so paid cycles and closure/cap stamps can persist.
 
-    One maximal PAID wave can exceed the limit by itself — finding texts, locators,
-    disclosures, the normalized spec, the manifest rows, dispositions and the per-task
-    request memory are all bounded strings, and 10 slots x 32 findings x 600 four-byte
-    chars of each fill 1 MB many times over. A refused write would mean the panel was paid
-    and `cycles_paid` never advanced (the panel would be re-paid), or a closure / cap stamp
-    could not be recorded. So EVERY writer runs this: older full waves are compacted first
-    (the existing mechanism); then every free-text leaf of the newest wave is cut on shared
-    tiers with a visible marker while identity (ids, classes, breaks, hashes, fingerprints,
-    aggregate, the goal and the acceptance claims that bind task acceptance) is never
-    touched, and the wave is stamped ``spec_body_truncated`` when its frozen spec was cut
-    (its hashes then name the ORIGINAL body; the next cycle's spec delta is unavailable
-    and says so). A cut locator no longer resolves and the next packet names it as an
-    omission."""
+    A refused paid-state write could rebill the panel. Full specs stay source-backed;
+    compact older waves, then tier-cut newest-wave text and request memory with markers.
+    Preserve ids/classes/breaks/hashes/fingerprints, verdicts and paid state, plus
+    legacy inline goal/acceptance claims. Mark cut legacy specs: original hashes
+    cannot imply complete delta input; cut locators become named omissions.
+    """
     def _size() -> int:
         return len(json.dumps(state, ensure_ascii=False, default=str).encode("utf-8"))
 

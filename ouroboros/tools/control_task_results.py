@@ -726,6 +726,10 @@ def _wait_for_tasks(
                 "result": data.get("result"),
                 "trace_summary": data.get("trace_summary"),
             }
+            # The result hash binds this limitation too; keep its host authorship
+            # separate from the unchanged model answer, including an empty answer.
+            if "terminal_host_notice" in data:
+                projected["terminal_host_notice"] = data["terminal_host_notice"]
             if data.get("duplicate_of"):
                 projected["duplicate_of"] = str(data.get("duplicate_of"))
             # A capability reduction is a SEMANTIC handoff fact, not forensics: it is

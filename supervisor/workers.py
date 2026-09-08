@@ -305,9 +305,13 @@ def _get_chat_agent():
     if not getattr(sys, 'frozen', False) and str(REPO_DIR) not in sys.path:
         sys.path.insert(0, str(REPO_DIR))
     from ouroboros.agent import make_agent
-    return make_agent(
+    from ouroboros.owner_wait import direct_owner_wait
+
+    agent = make_agent(
         repo_dir=str(REPO_DIR), drive_root=str(DRIVE_ROOT), event_queue=get_event_q(),
     )
+    agent.owner_wait_callback = direct_owner_wait
+    return agent
 
 
 def get_direct_chat_agent(task_id: str):

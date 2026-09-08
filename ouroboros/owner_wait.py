@@ -1,8 +1,9 @@
 """Same-task owner waiting at a completed-tool boundary.
 
 The queue owns admission and active worker capacity. This module preserves the
-native continuation through the existing source store, and waits on the worker's
-existing command queue. A warm wake continues the original stack and browser;
+native continuation through the existing source store. Pooled workers wait on
+their command queue; direct actors use the same mailbox and task controls without
+holding pooled capacity. A warm wake continues the original stack and browser;
 only a confirmed planned-restart handoff may load a cold continuation. Source
 bytes outlive their one-use resume authority in the ordinary task result.
 """
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 import pathlib
 import queue
+import time
 import uuid
 from dataclasses import asdict
 from typing import Any
@@ -23,7 +25,7 @@ from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
 
 def set_owner_wait(root: Any, task_id: str, wait: dict,
                    expected_wait_id: str | None = None) -> dict:
-    """Update only the queue-owned continuation projection, preserving siblings."""
+    """Update only the existing continuation projection, preserving siblings."""
     from ouroboros.task_results import (
         require_writable_task_result_schema,
         stamp_task_result_schema, task_result_path,
@@ -185,6 +187,27 @@ def worker_owner_wait(wid: int, in_q: Any, out_q: Any, ctx: Any,
                 set(getattr(ctx, "_loop_mailbox_seen_ids", set())), ctx.task_attempt or 1):
             out_q.put({**identity, "phase": "resume"})
             resume_requested = True
+
+
+def direct_owner_wait(ctx: Any, checkpoint: dict) -> None:
+    """Retain a registered chat actor's stack; it holds no pooled capacity.
+
+    The existing mailbox still owns input and its loop still owns delivery.
+    TaskModelWait supplies the same Stop/deadline clocks as native model calls;
+    this owner wait does not enter a quota pause or grant cold restart authority.
+    """
+    control = ctx.model_wait_context
+    root = pathlib.Path(ctx.budget_drive_root or ctx.drive_root)
+    while ctx.pending_events:
+        ctx.event_queue.put(dict(ctx.pending_events[0]))
+        del ctx.pending_events[0]
+    wait = set_owner_wait(root, ctx.task_id, {**checkpoint, "state": "waiting"})
+    peek = OwnerMailboxPeek()
+    while not control.control_reason() and not peek.pending(
+            pathlib.Path(ctx.drive_root), ctx.task_id,
+            set(getattr(ctx, "_loop_mailbox_seen_ids", set())), ctx.task_attempt or 1):
+        time.sleep(1.0)
+    set_owner_wait(root, ctx.task_id, {**wait, "state": "resumed"}, wait["wait_id"])
 
 
 def wait_after_tools(ctx: Any, messages: list, trace: dict, usage: dict,

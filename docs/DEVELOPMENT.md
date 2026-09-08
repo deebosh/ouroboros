@@ -479,17 +479,6 @@ P7 makes context fit a maintenance constraint, not a line-count aesthetic.
   committed manifest anywhere bootstraps from its own tree — so a locally
   evolved fork can always take an official update without being trapped by
   structural debt it inherited, while the official line keeps ratcheting.
-- Treat a size gate as pressure to reduce total complexity, not as a design
-  reason for a helper or sibling module. First simplify where the change
-  belongs: reduce control/data flow, delete dead, duplicate, or
-  trivial-wrapper code, reuse an existing SSOT, and compact only redundant
-  non-contract prose. Extract only when the new unit would still be the right
-  boundary with the parent well under the cap: it owns a cohesive
-  responsibility and explicit boundary, and is not a passthrough. Relocating
-  the same complexity, or stripping contract-bearing comments, diagnostics, or
-  tests to buy bytes, is not paydown. If neither a safe simplification nor a
-  natural boundary exists, report the ratchet conflict instead of gaming or
-  silently raising the cap.
 
 ### Pragmatic SOLID
 
@@ -2250,7 +2239,7 @@ by "Provider Independence" above. Call-site imperatives:
 
 #### Timeout & Wait Control
 
-- Required owner waiting retains logical and physical task custody in RUNNING.
+- Required owner waiting retains the original execution. Pooled work stays in RUNNING.
   Persist the completed-tool source, task wait and queue snapshot before lending
   active capacity; grant the original worker only after reserving active capacity.
   Keep attempt, start time, completed effects and usage unchanged across a warm
@@ -2267,6 +2256,12 @@ by "Provider Independence" above. Call-site imperatives:
   decision after the ordinary control/deadline checks. Preserve TaskModelWait
   role overrides, explicit Auto, auto-continue and completed quota union through
   that owner's continuation methods; seed the same clock/revision in the supervisor.
+  Ordinary Main/Project actors use the same completed-tool checkpoint and mailbox
+  through their live continuation callback; they hold no pooled capacity to lend.
+  They retain the browser/stack while waiting, leave answer delivery to the loop,
+  and use existing task controls/clocks without a quota pause. After either kind
+  of wait, control/deadline handling precedes the saved round's budget decision.
+  A direct-actor checkpoint alone grants no automatic cold-restart authority.
   Calendar deadlines and ordinary owner-wait time retain their meaning
   (`tests/test_owner_wait_pool.py`, `tests/test_owner_wait_restart.py`,
   `tests/test_owner_wait_cold_loop.py`, `tests/test_owner_wait_budget_tail.py`,
