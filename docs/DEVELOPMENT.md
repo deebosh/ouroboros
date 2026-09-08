@@ -2718,11 +2718,28 @@ marker after a write fault; existing malformed or foreign markers are never
 replaced. The reaper's permissive keep is never stop authority, and a daemon known
 only by name or port is never signalled.
 Explicit stop and next-start runtime selection remain separate contracts: a
-staged engine pin applies at the daemon's next start, and a planned restart
-reports it staged while the serving engine's atomic replacement predicate still
-omits setup jobs with unconfirmed termination. Service quiescence excludes
+newer engine pin is never hot-swapped and the daemon's next start selects it; a
+planned restart whose landed checkout pins another engine version or build ends
+the serving daemon in the lifespan teardown through
+`server_restart._stop_owned_daemon_for_new_pin` (`load_runtime_pin` from the
+checkout against `read_owned_gateway`, then the shared attested stop — never a
+veto), while an unchanged, unreadable or unpublished pin and an unreachable daemon
+leave the handoff untouched (`tests/test_planned_restart_engine_pin.py`). Service quiescence excludes
 zombie-only groups, but checks every member before releasing a writer fence
 (`tests/test_claudexor_custody_lifetime.py`, `tests/test_process_custody_liveness.py`).
+The owner's manual Restart keeps its checkout-first order: the update gate and
+`safe_restart` refuse before anything is stopped, and `server_restart._stop_owned_work`
+runs only after the durable no-resume flags. Reuse the `request_cancel` ingress,
+`kill_workers` with `reconcile_delegate_custody=False`, `reconcile_orphaned_runs` over
+`read_owned_gateway`, and the typed `OwnedClaudexorDaemon.stop_outcome`; never call
+`ensure_owned_gateway` between the cancel intents and the daemon stop, and never read
+the manager's private error state to tell "nothing to stop" from "unconfirmed".
+Past the gate an unconfirmed step is a critical diagnostic with custody retained,
+never a deferral or a veto — do not add a "deferred" state, a drain, a lease, a
+census or a new custody event kind for it; the next generation's startup sweep is
+the recovery. The lifespan warmup is one background `ensure_owned_gateway` for a
+provisioned home and needs no invalidation of its own: a Stop retires it through the
+start generation (`tests/test_manual_restart_execution.py`).
 
 Out-of-process extension HTTP responses execute their standard Starlette ASGI
 response in the child. The runner owns staging, Popen registration and cleanup;

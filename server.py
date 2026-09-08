@@ -99,6 +99,8 @@ from ouroboros.server_restart import (  # noqa: F401
     _safe_restart_serialized,
     _shutdown_supervisor_event_bus,
     _shutdown_task_cleanup_args,
+    _stop_owned_daemon_for_new_pin,
+    _stop_owned_work,
 )
 
 REPO_DIR = pathlib.Path(os.environ.get("OUROBOROS_REPO_DIR", pathlib.Path(__file__).parent))
@@ -375,22 +377,10 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 log.warning("Failed to write owner restart no-resume flag", exc_info=True)
                 reply("⚠️ Restart cancelled: could not write restart state.", "failed")
                 continue
-            try:
-                ctx.kill_workers(
-                    force=True,
-                    terminal_status="cancelled",
-                    result_reason="Owner restart stopped this task before process restart.",
-                    **_managed_update_pending_kwargs(),
-                )
-            except Exception:
-                owner_restart_flag.unlink(missing_ok=True)
-                stable_skip_flag.unlink(missing_ok=True)
-                log.warning("Restart cancelled because worker shutdown failed", exc_info=True)
-                try:
-                    reply("⚠️ Restart cancelled: failed to stop workers.", "failed")
-                except Exception:
-                    pass
-                continue
+            # Everything reversible is behind us (checkout landed, no-resume
+            # intent durable): from here the restart always follows, and every
+            # unconfirmed stop is a critical diagnostic, never a deferral.
+            _stop_owned_work(ctx)
             try:
                 reply("Stopping active task. New settings apply to the next message.", "")
             except Exception:
@@ -1228,6 +1218,10 @@ async def lifespan(app):
         target=_boot_managed_update_tasks, daemon=True, name="boot-managed-update",
     ).start()
 
+    if not pytest_default_real_data_dir:
+        from ouroboros.claudexor_daemon import warm_owned_daemon
+        warm_owned_daemon()  # provisioned homes only; one background ensure, off the startup path
+
     host_service_task = None
     host_service_server = None
     host_service_listener = ExitStack()
@@ -1417,10 +1411,19 @@ async def lifespan(app):
                 force=True,
                 terminal_status=cleanup_status,
                 result_reason=cleanup_reason,
+                **_restart_cleanup_kwargs(),
                 **_managed_update_pending_kwargs(),
             )
         except Exception:
             pass
+        if _restart_requested.is_set():
+            try:
+                # A planned restart whose landed checkout pins another engine ends
+                # the owned daemon here so the next generation starts on that pin.
+                _stop_owned_daemon_for_new_pin()
+            except Exception:
+                log.critical("Planned restart: engine pin check raised; the owned daemon is left serving",
+                             exc_info=True)
         try:
             from supervisor.message_bus import get_bridge
             get_bridge().shutdown()
@@ -1454,6 +1457,13 @@ def _actual_bound_port() -> int:
     return _ACTUAL_BOUND_PORT if _ACTUAL_BOUND_PORT else DEFAULT_PORT
 
 
+def _restart_cleanup_kwargs() -> dict:
+    """Keep owner Restart from re-opening daemon custody after its stop."""
+    if _owner_restart_requested.is_set():
+        return {"reconcile_delegate_custody": False}
+    return {}
+
+
 def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
     """Kill child processes, workers, companions, and runtime port holders."""
     try:
@@ -1473,6 +1483,7 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
         pass
     try:
         from supervisor.workers import kill_workers
+        cleanup_kwargs = _restart_cleanup_kwargs()
         if _restart_requested.is_set():
             # A restart that hung past the uvicorn shutdown timeout still reaches
             # here; finalize running tasks as an honest interrupted-by-restart,
@@ -1483,12 +1494,14 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
                 archive_service_logs=False,
                 terminal_status=cleanup_status,
                 result_reason=cleanup_reason,
+                **cleanup_kwargs,
                 **_managed_update_pending_kwargs(),
             )
         else:
             kill_workers(
                 force=True,
                 archive_service_logs=False,
+                **cleanup_kwargs,
                 **_managed_update_pending_kwargs(),
             )
     except Exception:
