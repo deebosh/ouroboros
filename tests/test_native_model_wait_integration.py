@@ -83,7 +83,7 @@ def test_native_wait_controls_and_manual_restart_address_all_registered_actors(t
 
 
 @pytest.mark.parametrize("project_id", ["", "room"])
-@pytest.mark.parametrize("action", ["switch", "stop"])
+@pytest.mark.parametrize("action", ["switch", "stop", "stop_settled"])
 def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, monkeypatch, project_id, action):
     from ouroboros import agent_task_pipeline as pipeline, project_naming
     from ouroboros.gateway.state import _chat_activities_snapshot_safe
@@ -128,6 +128,7 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
     thread = threading.Thread(target=workers._run_chat_task, args=(actor, 7 if project_id else 1, "Already answered"), kwargs={
         "task_metadata": {"project_id": project_id, "origin_suppressed": True},
     })
+    release_stop, stop_observed = threading.Event(), threading.Event()
     thread.start()
     try:
         until(lambda: "owner" in observed and any(row.get("credential_harness") for row in observed["owner"].waits.values()))
@@ -151,9 +152,50 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
                 response = clients["web"](body)
                 assert response.status_code == 202, response.json()
         else:
+            if action == "stop":
+                real_control_reason = owner.control_reason
+
+                def hold_observed_stop():
+                    reason = real_control_reason()
+                    if reason == "cancelled":
+                        stop_observed.set()
+                        assert release_stop.wait(5), "test did not release the observed Stop"
+                    return reason
+
+                # Keep paid post-task custody alive until HTTP reports its
+                # existing still-live response; this is a schedule, not a fake stop.
+                monkeypatch.setattr(owner, "control_reason", hold_observed_stop)
+            else:
+                real_request_cancel = cancel_intents.request_cancel
+
+                def settle_after_durable_stop(*args, **kwargs):
+                    assert post_task_model_wait(f.root, task_id) is owner
+                    intent = real_request_cancel(*args, **kwargs)
+                    assert intent["request_id"] and intent["state"] == "requested"
+                    assert intent["source"] == "http_single"
+                    assert not intent.get("already_settled")
+                    assert f.done.wait(5)
+                    until(lambda: owner.closed and post_task_model_wait(f.root, task_id) is None)
+                    assert row["resolution"] == "cancelled"
+                    observed["accepted_stop"] = intent["request_id"]
+                    return intent
+
+                # The real wait can consume the durable intent before the next
+                # custody call. A finished post phase has the legacy 404 envelope.
+                monkeypatch.setattr(cancel_intents, "request_cancel", settle_after_durable_stop)
             with _client(f.root) as client:
                 response = client.post(f"/api/tasks/{task_id}/cancel", json={"stop_policy": "immediate"})
-                assert response.status_code in (200, 503), response.json()
+                assert response.status_code == (503 if action == "stop" else 404), response.json()
+            if action == "stop":
+                assert stop_observed.wait(5)
+                assert post_task_model_wait(f.root, task_id) is owner and not owner.closed
+                intent = cancel_intents.active_intent(f.root, task_id)
+                assert intent["source"] == "http_single" and intent["state"] == "requested"
+                assert load_task_result(f.root, task_id)["root_phase_checkpoint"]["post_task_synthesis"] == "running"
+                release_stop.set()
+            else:
+                assert observed["accepted_stop"]
+                assert not cancel_intents.active_intent(f.root, task_id)
         thread.join(5)
         assert not thread.is_alive() and owner.closed
         stored = load_task_result(f.root, task_id)
@@ -162,9 +204,13 @@ def test_native_post_task_wait_remains_addressable_after_dialogue_closes(phase, 
         assert len(f.engine.creates) == (2 if action == "switch" else 1)
         if action == "switch":
             assert f.engine.uploads[-1][0]["account"] == {"mode": "pin", "profileId": "replacement"}
+        else:
+            assert row["resolution"] == "cancelled"
+            assert f.stages == ["chat", "scratch", "summary", "reflection"]
         assert workers.drain_repo_writers(0) == []
         assert post_task_model_wait(f.root, task_id) is None
     finally:
+        release_stop.set()
         f.task["_skip_post_task_synthesis"] = True
         f.ready.set()
         thread.join(5)

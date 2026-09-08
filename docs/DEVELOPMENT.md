@@ -1863,12 +1863,10 @@ both critical. The imperatives:
   open the delivery candidate is HELD, and the delivery-control instruction
   never rides the reminder round, which would contradict the required
   disposition tool call (`tests/test_v6570_swarm_honesty.py`). `wait_tasks`
-  stays batch-compact (`task_id, status, accounted_upper_bound_usd` — the
-  honest name; the `cost_usd` spelling is read-only tolerance for stored rows
-  and is never emitted again — plus `cost_final`, `child_result_sha256`,
-  `outcome_axes`, `result`,
-  `trace_summary, capability_delta when disclosable, duplicate_of`); full
-  untruncated handoff belongs to `get_task_result` and `wait_task`; no
+  stays batch-compact; `control_task_results._wait_for_tasks` owns its
+  projection, documented under ARCHITECTURE's "Waiting on children".
+  The model result and optional `terminal_host_notice` remain separate;
+  full untruncated handoff belongs to `get_task_result` and `wait_task`; no
   shared ledgers, automatic memory merges, or new settings/endpoints unless
   the accepted plan calls for them. Push/live events are wakeups, not
   terminal authority — lifecycle changes must exercise lost/reordered
