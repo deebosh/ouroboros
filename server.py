@@ -1411,6 +1411,7 @@ async def lifespan(app):
                 force=True,
                 terminal_status=cleanup_status,
                 result_reason=cleanup_reason,
+                **_restart_cleanup_kwargs(),
                 **_managed_update_pending_kwargs(),
             )
         except Exception:
@@ -1456,6 +1457,13 @@ def _actual_bound_port() -> int:
     return _ACTUAL_BOUND_PORT if _ACTUAL_BOUND_PORT else DEFAULT_PORT
 
 
+def _restart_cleanup_kwargs() -> dict:
+    """Keep owner Restart from re-opening daemon custody after its stop."""
+    if _owner_restart_requested.is_set():
+        return {"reconcile_delegate_custody": False}
+    return {}
+
+
 def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
     """Kill child processes, workers, companions, and runtime port holders."""
     try:
@@ -1475,6 +1483,7 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
         pass
     try:
         from supervisor.workers import kill_workers
+        cleanup_kwargs = _restart_cleanup_kwargs()
         if _restart_requested.is_set():
             # A restart that hung past the uvicorn shutdown timeout still reaches
             # here; finalize running tasks as an honest interrupted-by-restart,
@@ -1485,12 +1494,14 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
                 archive_service_logs=False,
                 terminal_status=cleanup_status,
                 result_reason=cleanup_reason,
+                **cleanup_kwargs,
                 **_managed_update_pending_kwargs(),
             )
         else:
             kill_workers(
                 force=True,
                 archive_service_logs=False,
+                **cleanup_kwargs,
                 **_managed_update_pending_kwargs(),
             )
     except Exception:

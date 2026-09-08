@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+import inspect
 
 REPO = pathlib.Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -354,6 +355,17 @@ def test_owner_restart_copy_is_explicit_about_stopped_task():
     stop = _read("ouroboros/server_restart.py").split("def _stop_owned_work", 1)[1]
     assert (stop.index("request_cancel(") < stop.index("ctx.kill_workers(")
             < stop.index("reconcile_orphaned_runs(") < stop.index("stop_outcome()"))
+
+
+def test_owner_restart_cleanup_disables_second_custody_reconcile(monkeypatch):
+    import server
+
+    monkeypatch.setattr(server._owner_restart_requested, "is_set", lambda: True)
+    assert server._restart_cleanup_kwargs() == {"reconcile_delegate_custody": False}
+    source = inspect.getsource(server._emergency_process_cleanup)
+    assert source.count("**cleanup_kwargs") == 2
+    lifespan = inspect.getsource(server.lifespan)
+    assert "**_restart_cleanup_kwargs()" in lifespan
 
 
 def test_auto_resume_skips_owner_restart_no_resume_flag(tmp_path, monkeypatch):
