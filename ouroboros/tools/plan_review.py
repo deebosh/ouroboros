@@ -49,6 +49,7 @@ from ouroboros.review_cycles import emit_review_cycles_exhausted, review_max_cyc
 from ouroboros.task_results import (
     load_plan_review_state, load_task_result, mark_current_plan_review_unavailable,
     plan_review_wave, current_plan_review_wave, record_plan_review_dispositions,
+    plan_review_notes_are_annotatable,
 )
 from ouroboros.tools import plan_evidence, plan_spec
 from ouroboros.tools.plan_render import _next_step, _quote_control_lines, _render_wave  # noqa: F401 — engine renderers
@@ -889,7 +890,7 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
             f"claimed={fingerprint}). Re-call plan_task with the spec you want reviewed. "
             "No plan attempt was recorded."
         )
-    if wave.get("closed"):
+    if wave.get("closed") and not plan_review_notes_are_annotatable(wave):
         return _publish_rendered_wave(ctx, wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
                                       cached=True,
                                       notes=["already_closed: this wave is closed; the disposition is not re-applied"])

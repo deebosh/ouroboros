@@ -117,9 +117,13 @@ def test_host_notice_does_not_replace_or_supersede_an_unchanged_answer(tmp_path,
     assert trace["review_runs"][0]["superseded_by_revision"] is True
 
 
-def _emit_terminal(tmp_path, monkeypatch, *, ephemeral=False, project=False):
+def _emit_terminal(tmp_path, monkeypatch, *, ephemeral=False, project=False, child=False, notice=NOTICE, answer=ANSWER):
+    from ouroboros.task_finalization import set_terminal_host_notice
+
     monkeypatch.setattr(pipeline, "_run_post_task_processing_async", lambda *_a, **_kw: None)
     task = {"id": "notice-root", "type": "task", "chat_id": 1, "text": "Produce the report."}
+    if child:
+        task.update(id="child1", parent_task_id="parent1", root_task_id="parent1", delegation_role="subagent")
     if project:
         from ouroboros.projects_registry import bind_task_to_project, create_project
 
@@ -128,14 +132,102 @@ def _emit_terminal(tmp_path, monkeypatch, *, ephemeral=False, project=False):
         task.update(project_id=row["id"], chat_id=row["chat_id"])
     if ephemeral:
         task.update(_ephemeral_turn=True, _is_direct_chat=True)
-    usage = {"terminal_origin": "model_final", "terminal_host_notice": NOTICE}
+    usage = {"terminal_origin": "model_final"}
+    set_terminal_host_notice(usage, notice)
     pending = []
     pipeline.emit_task_results(
         SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path), None, None,
-        pending, task, ANSWER, usage, {"tool_calls": [], "reasoning_notes": []},
+        pending, task, answer, usage, {"tool_calls": [], "reasoning_notes": []},
         start_time=0.0, drive_logs=tmp_path / "logs",
     )
     return task, next(row for row in pending if row["type"] == "send_message")
+
+
+@pytest.mark.parametrize("answer", [ANSWER, ""], ids=["answer", "no_answer"])
+@pytest.mark.parametrize("notice", [NOTICE, NOTICE + "\n" + "retained host evidence " * 1500 + "\nEND NOTICE"],
+                         ids=["short_notice", "long_notice"])
+def test_parent_readers_receive_full_notice_and_budget_the_complete_body(tmp_path, monkeypatch, answer, notice):
+    from ouroboros.task_finalization import provider_terminal_body
+    from ouroboros.task_status import format_subagent_absorption_message
+    from ouroboros.tools.control_task_results import _get_task_result, _wait_for_task
+    from tests.test_child_result_disposition import _parent_ctx
+
+    task, _event = _emit_terminal(tmp_path, monkeypatch, child=True, answer=answer, notice=notice)
+    stored = load_task_result(tmp_path, task["id"])
+    assert stored["result"] == answer and stored["terminal_host_notice"] == notice
+    model_hash = hashlib.sha256(stored["result"].encode()).hexdigest()
+    parent = _parent_ctx(tmp_path)
+    for output in (_get_task_result(parent, task["id"]), _wait_for_task(parent, task["id"], timeout_sec=0)):
+        if answer:
+            assert f"[BEGIN_SUBTASK_OUTPUT]\n{answer}\n[END_SUBTASK_OUTPUT]" in output
+        else:
+            assert stored["status"] == "failed" and "No details available." in output
+        assert output.endswith("[Host status]\n" + notice)
+        assert output.count(notice) == 1
+
+    body = provider_terminal_body(answer, notice)
+    full = format_subagent_absorption_message([stored], parent_task_id="parent1", budget_chars=len(body))
+    assert body in full and "FULL RESULT OMITTED" not in full
+    omitted = format_subagent_absorption_message([stored], parent_task_id="parent1", budget_chars=len(body) - 1)
+    assert f"{len(body)} chars" in omitted and 'get_task_result("child1")' in omitted
+    assert notice not in omitted and (not answer or answer not in omitted)
+    combined = format_subagent_absorption_message(
+        [stored, {**stored, "task_id": "child2"}], parent_task_id="parent1", budget_chars=2 * len(body) - 1,
+    )
+    assert combined.count(body) == 1 and 'get_task_result("child2")' in combined
+    assert hashlib.sha256(load_task_result(tmp_path, task["id"])["result"].encode()).hexdigest() == model_hash
+
+
+def test_changed_notice_reopens_parent_disposition_and_automatic_handoff(tmp_path, monkeypatch):
+    from ouroboros.task_finalization import set_terminal_host_notice, terminal_result_fields
+    from ouroboros.task_status import load_effective_task_result
+    from ouroboros.tools.join_ledger import _child_result_sha256, _current_child_result_disposition
+    from ouroboros.tools.task_tree import _tree_note
+    from tests.test_child_result_disposition import _parent_ctx, _payload
+
+    task, _event = _emit_terminal(tmp_path, monkeypatch, child=True)
+    ctx = _parent_ctx(tmp_path)
+    tools = SimpleNamespace(_ctx=ctx)
+    first = load_effective_task_result(tmp_path, task["id"])
+    old_hash = _child_result_sha256(first)
+    model_hash = hashlib.sha256(first["result"].encode()).hexdigest()
+    assert NOTICE in loop._compute_subagent_handoff(tools, tmp_path, "parent1", "")
+    payload = _payload(task["id"], "integrated", old_hash)
+    assert _tree_note(ctx, "decision", "absorbed answer and host notice", payload=payload).startswith("OK:")
+    assert _current_child_result_disposition(load_effective_task_result(tmp_path, task["id"])) == "integrated"
+    assert loop._compute_subagent_handoff(tools, tmp_path, "parent1", "") == ""
+
+    notice = "The child result was preserved before newer evidence arrived."
+    usage = {}
+    set_terminal_host_notice(usage, notice)
+    write_task_result(tmp_path, task["id"], first["status"], **terminal_result_fields(usage))
+    changed = load_effective_task_result(tmp_path, task["id"])
+    assert changed["result"] == first["result"] == ANSWER
+    assert hashlib.sha256(changed["result"].encode()).hexdigest() == model_hash
+    assert _child_result_sha256(changed) != old_hash
+    assert _current_child_result_disposition(changed) == ""
+    assert "CHILD_RESULT_STALE" in _tree_note(ctx, "decision", "old consumption", payload=payload)
+    handoff = loop._compute_subagent_handoff(tools, tmp_path, "parent1", "")
+    assert ANSWER + "\n\n[Host status]\n" + notice in handoff
+    assert _child_result_sha256(changed) in handoff
+    assert loop._compute_subagent_handoff(tools, tmp_path, "parent1", "") == ""
+
+
+def test_child_notice_hash_extension_preserves_legacy_hash_and_telemetry_exclusions():
+    from ouroboros.tools.join_ledger import _child_result_sha256
+
+    legacy = {"status": "completed", "result": "legacy answer", "trace_summary": "trace",
+              "artifact_status": "ready", "artifacts": []}
+    assert _child_result_sha256(legacy) == "cc3314bd27a9639006ccfafe9500bf25cfe5c3c6746b47c4d40736768b8b5985"
+    current = {**legacy, "terminal_host_notice": NOTICE}
+    assert _child_result_sha256(current) != _child_result_sha256(legacy)
+    assert _child_result_sha256({**current, "terminal_host_notice": "changed"}) != _child_result_sha256(current)
+    telemetry = {"cost_usd": 9, "accounted_upper_bound_usd": 10, "updated_at": "later", "ts": "later",
+                 "parent_decision": "integrated", "queue_reconciliation_warning": "diagnostic",
+                 "terminal_provider_notice": "older metadata remains outside this hash",
+                 "terminal_origin": "host_salvage"}
+    for row in (legacy, current):
+        assert _child_result_sha256({**row, **telemetry}) == _child_result_sha256(row)
 
 
 @pytest.mark.parametrize("ephemeral", [False, True])

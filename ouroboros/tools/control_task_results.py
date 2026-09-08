@@ -264,7 +264,9 @@ def _get_task_result(
         )
     if trace:
         output += f"\n\n[SUBTASK_TRACE]\n{trace}\n[/SUBTASK_TRACE]"
-    return output
+    from ouroboros.task_finalization import provider_terminal_body
+
+    return provider_terminal_body(output, str(data.get("terminal_host_notice") or ""))
 
 
 def _wait_attention_poll(

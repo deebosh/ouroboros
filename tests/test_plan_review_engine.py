@@ -443,6 +443,8 @@ def test_open_wave_under_advisory_emits_one_typed_event_at_record_time(harness):
 # ---------------------------------------------------------------- closure per class
 
 
+
+
 def test_need_evidence_closes_by_disposition_at_zero_cost_with_optional_notes(harness):
     note = json.dumps([_finding("n1", "note"), _finding("e1", "need_evidence", locator="notes.md")])
     sub = harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
@@ -1013,7 +1015,7 @@ def test_state_stays_persistable_at_the_declared_wave_bounds(tmp_path):
     assert state["waves"][-1]["findings"], "the newest wave keeps its findings"
 
 
-def test_repeated_need_evidence_is_demoted_not_dropped():
+def test_repeated_need_evidence_keeps_its_request_type_and_disposition():
     """I-03: re-asking for the same locator must not turn the wave GREEN."""
     from ouroboros.tools import plan_spec
 
@@ -1021,7 +1023,7 @@ def test_repeated_need_evidence_is_demoted_not_dropped():
                  "summary": "I still need the quotes", "recommendation": "attach them"}]
     normalized, disclosures, _ = plan_spec.validate_findings(
         findings, spec_ids={"goal"}, seen_locators={"flight-quotes.csv"}, slot="s1")
-    assert [f["class"] for f in normalized] == ["note"]
+    assert [f["class"] for f in normalized] == ["need_evidence"]
     assert any("need_evidence_repeat" in d for d in disclosures)
     agg = plan_spec.aggregate([
         {"slot": "s1", "model": "m", "ok": True, "findings": normalized},

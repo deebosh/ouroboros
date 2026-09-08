@@ -762,7 +762,8 @@ review does not run (`PlanPacketError`). Declared or reviewer-requested
 evidence the policy cannot attach is a named absence instead — a
 `[reviewer-requested]` omission row, or the head attached with the cut named
 `truncated_to_<N>` — and the panel still runs and judges with it; a re-asked
-locator becomes a `need_evidence_repeat` note that keeps the wave open at $0.
+locator stays a `need_evidence` request with a `need_evidence_repeat` disclosure,
+requiring the same free disposition without expanding request memory or paid cycles.
 DEVELOPMENT.md is not resident in a plan-review packet; it is one such request
 away. Packet composition, bounds, and wave/replay mechanics: ARCHITECTURE
 "Plan construction and review" and `ouroboros/tools/plan_packet.py` /
@@ -813,7 +814,10 @@ or a paid actor still in flight);
 findings are inputs the main agent may accept, reject, or defer. Optional
 `note` findings, including useful premise criticism and simpler alternatives,
 remain readable but need no adoption or disposition; a note-only wave closes
-immediately under both enforcement modes. Outstanding `need_evidence` can close
+immediately under both enforcement modes. The same `review_disposition` call may
+voluntarily annotate a current closed note-only wave; it keeps the verdict and
+spec unchanged, retains the previous immutable artifact, and never reopens the
+review or buys another panel. Outstanding `need_evidence` can close
 without a second LLM call through a separate `plan_task` call containing `review_disposition` only —
 `{review_fingerprint, items: [{finding_id, decision, rationale}]}` — covering
 each required finding exactly once; duplicates, contradictions, unknown, stale, or
@@ -3118,6 +3122,10 @@ Contributor rules:
   durable `tests_evidence` record is forensic telemetry the gate never
   consults, so a restart forces a rerun. Review-binding and tag-binding
   mismatches use the same managed failure route.
+  Creation/reuse observations use the existing event log with the exact subject
+  and workload fingerprint; logs never become reuse authority. Preserve the
+  executable's invocation path as well as its resolved binary identity, because
+  separate Python environments may symlink the same binary.
 - Process containment is unconditional, including after a green pass:
   Windows uses a kill-on-close Job Object; POSIX uses an environment
   membership token plus a process-group enumeration backstop and promises

@@ -16,6 +16,7 @@ drift apart.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import pathlib
@@ -247,16 +248,43 @@ class PreflightTestProof(NamedTuple):
 def _executable_identity(executable: str) -> tuple:
     import shutil
 
-    path = pathlib.Path(shutil.which(executable) or executable).resolve(strict=True)
+    # Python locates pyvenv.cfg from the invocation path, before resolving the
+    # binary symlink. Equal binary/stat facts need not mean the same environment.
+    invocation = pathlib.Path(shutil.which(executable) or executable).absolute()
+    path = invocation.resolve(strict=True)
     stat = path.stat()
-    return str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+    return str(invocation), str(path), stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+
+
+def log_preflight_test_proof(ctx, proof: PreflightTestProof, *, reused: bool, phase: str) -> None:
+    """Disclose the runner's actual proof on the existing event log, never read it as authority."""
+    event = {
+        "ts": utc_now_iso(), "type": "preflight_test_proof",
+        "action": "reused" if reused else "created", "phase": phase,
+        "task_id": str(getattr(ctx, "task_id", "") or ""),
+        "head": proof.head, "tree": proof.tree, "index_tree": proof.index_tree,
+        "workload_fingerprint": hashlib.sha256(json.dumps(
+            proof.workload, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest(),
+    }
+    metadata = getattr(ctx, "task_metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    root = (metadata.get("budget_drive_root") or getattr(ctx, "budget_drive_root", None)
+            or getattr(ctx, "drive_root", None))
+    try:
+        if root and append_jsonl(pathlib.Path(root) / "logs" / "events.jsonl", event):
+            return  # append_jsonl also forwards through the worker/server log sink.
+    except Exception:
+        log.warning("Preflight proof event could not be persisted", exc_info=True)
+    # Diagnostics cannot turn completed tests into a failed gate. Keep the
+    # binding visible even when no data root or durable log is available.
+    log.warning("Preflight proof event (not persisted): %s", json.dumps(event, sort_keys=True))
 
 
 def preflight_test_workload(
     repo, *, timeout=None, pytest_args=None, passes=None, agent_python=None, probe_module="",
 ) -> tuple:
     """Effective runner inputs, with generated paths and probe names normalized."""
-    import json
     import sys
     import tempfile
     from ouroboros import preflight_runner as pr

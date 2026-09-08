@@ -1,6 +1,12 @@
 """Runner receipts, equivalent workloads, and the real ordinary/managed consumers."""
 
+import hashlib
+import json
+import logging
+import os
 import shutil
+import subprocess
+import venv
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +40,12 @@ def _suite(repo):
     (repo / "candidate.txt").write_text("tested")
 
 
+def _proof_events(root):
+    path = root / "logs" / "events.jsonl"
+    return [row for line in path.read_text().splitlines()
+            if (row := json.loads(line)).get("type") == "preflight_test_proof"] if path.exists() else []
+
+
 @pytest.fixture
 def candidate(tmp_path):
     from tests.test_preflight_runner import _make_repo, _git
@@ -65,12 +77,13 @@ def test_env_skip_and_managed_force_share_one_proof_owner(tmp_path, monkeypatch,
     suites, proofs = [], []
     monkeypatch.setattr("ouroboros.preflight_runner.run_hermetic_pytest", lambda *a, **kw: suites.append(kw) or error)
     monkeypatch.setattr("supervisor.update_merge.record_managed_tests_proof", lambda ctx, **kw: proofs.append(ctx))
-    ctx = SimpleNamespace(repo_dir=tmp_path)
+    ctx = SimpleNamespace(repo_dir=tmp_path, drive_root=tmp_path / "data")
     result = run_tests_preflight_with_proof(ctx, runner=_run_review_preflight_tests)
     assert result == (error if managed else None)
     assert len(suites) == int(managed)
     assert not proofs  # None from a stub proves neither execution nor coverage.
     assert ctx._preflight_tests_passed is False
+    assert _proof_events(ctx.drive_root) == []
 
 
 def test_advisory_failure_does_not_borrow_main_physical_capture(monkeypatch):
@@ -127,11 +140,18 @@ def test_actual_managed_proof_owner_reruns_after_commit(tmp_path, monkeypatch, s
     assert not getattr(foreign, "_preflight_test_proof", None)
 
 
-def test_ordinary_preflights_reuse_real_lanes_until_head_changes(candidate, physical_passes):
+def test_ordinary_preflights_reuse_real_lanes_until_head_changes(candidate, physical_passes, tmp_path, monkeypatch):
     from tests.test_preflight_runner import _git
     from ouroboros.tools import git
 
     ctx = candidate
+    canonical = tmp_path / "canonical"
+    ctx.task_id = "proof-task"
+    ctx.task_metadata = {"budget_drive_root": str(canonical)}
+    from ouroboros import utils
+
+    live_events = []
+    monkeypatch.setattr(utils, "_log_sink", live_events.append)
     assert run_tests_preflight_with_proof(ctx, runner=_run_review_preflight_tests) is None
     proof = ctx._preflight_test_proof
     assert proof and ctx._preflight_tests_passed
@@ -149,6 +169,69 @@ def test_ordinary_preflights_reuse_real_lanes_until_head_changes(candidate, phys
     assert len(physical_passes) == 4 and ctx._preflight_test_proof is post_proof
     fresh = SimpleNamespace(repo_dir=ctx.repo_dir)
     assert not preflight_test_proof_matches(fresh, ctx.repo_dir)
+    events = _proof_events(canonical)
+    assert [row["action"] for row in events] == ["created", "reused", "created", "reused"]
+    assert [row["phase"] for row in events] == [pr.PRE_COMMIT_PHASE] * 2 + ["post_commit"] * 2
+    assert {row["task_id"] for row in events} == {"proof-task"}
+    assert [row for row in live_events if row.get("type") == "preflight_test_proof"] == events
+    assert _proof_events(ctx.drive_root) == []  # Canonical log, not a child-only copy.
+    for row, source in zip(events, (proof, proof, post_proof, post_proof)):
+        assert (row["head"], row["tree"], row["index_tree"]) == (source.head, source.tree, source.index_tree)
+        assert row["workload_fingerprint"] == hashlib.sha256(json.dumps(
+            source.workload, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        assert "workload" not in row  # Environment/interpreter details stay process-local.
+
+
+@pytest.mark.parametrize("failure", ["return_false", "raise"])
+def test_proof_logging_failure_does_not_change_runner_authority(candidate, monkeypatch, caplog, failure):
+    def unavailable_log(*_args, **_kwargs):
+        if failure == "raise":
+            raise OSError("event log unavailable")
+        return False
+
+    monkeypatch.setattr("ouroboros.commit_admission.append_jsonl", unavailable_log)
+    monkeypatch.setattr(pr, "_execute_pytest_pass", lambda *a: (0, "green fixture", ""))
+    monkeypatch.setattr(pr, "_observed_worker_ids", lambda *a: {"gw0", "gw1"})
+    with caplog.at_level(logging.WARNING, logger="ouroboros.commit_admission"):
+        assert pr.run_hermetic_pytest(candidate.repo_dir, ctx=candidate) is None
+        proof = candidate._preflight_test_proof
+        assert proof and candidate._preflight_tests_passed
+        assert pr.run_hermetic_pytest(candidate.repo_dir, ctx=candidate) is None
+        assert candidate._preflight_test_proof is proof
+    events = [json.loads(record.getMessage().split(": ", 1)[1]) for record in caplog.records
+              if record.getMessage().startswith("Preflight proof event (not persisted): ")]
+    assert [row["action"] for row in events] == ["created", "reused"]
+    assert all(row["task_id"] == "" and row["head"] == proof.head for row in events)
+
+
+def test_interpreter_identity_preserves_real_venv_invocation_path(candidate, tmp_path, monkeypatch):
+    from ouroboros.commit_admission import _executable_identity
+
+    executables, prefixes = [], []
+    for name in ("first-env", "second-env"):
+        root = tmp_path / name
+        venv.EnvBuilder(with_pip=False, symlinks=True).create(root)
+        executable = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        executables.append(executable)
+        prefixes.append(subprocess.run(
+            [str(executable), "-I", "-c", "import sys; print(sys.prefix)"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip())
+    if executables[0].resolve() != executables[1].resolve():
+        pytest.skip("This host creates venv copies rather than aliases of the same binary")
+    assert prefixes[0] != prefixes[1]
+    first, second = [_executable_identity(str(path)) for path in executables]
+    assert first[1:] == second[1:]  # Identical resolved binary and stat facts.
+    assert first[0] == str(executables[0].absolute())
+    assert second[0] == str(executables[1].absolute())
+    monkeypatch.setenv("OUROBOROS_AGENT_PYTHON", str(executables[0]))
+    before = capture_preflight_test_subject(candidate.repo_dir)
+    monkeypatch.setenv("OUROBOROS_AGENT_PYTHON", str(executables[1]))
+    after = capture_preflight_test_subject(candidate.repo_dir)
+    assert before and after
+    assert (before.head, before.tree, before.index_tree) == (after.head, after.tree, after.index_tree)
+    assert not before.covers(after)
 
 
 @pytest.mark.parametrize("custom", [False, True], ids=["default", "custom"])
@@ -214,6 +297,7 @@ def test_nonproof_outcomes_never_mint_a_receipt(candidate, monkeypatch, outcome)
             monkeypatch.setattr(pr, "run_node_tests", lambda *a: None)
     result = pr.run_hermetic_pytest(ctx.repo_dir, ctx=ctx)
     assert not getattr(ctx, "_preflight_test_proof", None)
+    assert _proof_events(ctx.drive_root) == []
     if outcome in {"no_git", "no_suite"}:
         assert result is None and not ctx._preflight_tests_passed
     elif outcome != "node_missing":

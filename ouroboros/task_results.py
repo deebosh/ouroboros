@@ -1511,11 +1511,8 @@ def record_plan_review_wave(
         waves.append(copy.deepcopy(wave))
         if not state.get("series_id"):
             state["series_id"] = fingerprint[:16]
-        # C-07: the cap counts PAID CYCLES, not writes. Two concurrent identical calls
-        # (agent + operator script) each dispatch a panel, but the second write replaces
-        # the first wave and must not charge a second cycle — UNLESS it is the earned
-        # delta cycle of a fully-rejected wave, which advances cycle_index and is a new
-        # paid panel by design (final-gate finding, 4e133c8a).
+        # C-07: replacement writes don't charge again; a fully-rejected wave's
+        # earned delta advances cycle_index and charges its new physical panel.
         already_paid = any(
             w.get("paid") and int(w.get("cycle_index") or 0) >= int(wave.get("cycle_index") or 0)
             for w in previous
@@ -1542,6 +1539,14 @@ def record_plan_review_wave(
     state = _update_plan_review_state(results_drive_root, task_id, _record)
     return plan_review_wave(state, fingerprint) or {}
 
+def plan_review_notes_are_annotatable(wave: Dict[str, Any]) -> bool:
+    """Optional notes remain discussable after automatic closure, not new authority."""
+    findings = wave.get("findings") or []
+    return bool(findings) and wave.get("aggregate") == "REVIEW_REQUIRED" and all(
+        finding.get("class") == "note" for finding in findings
+    )
+
+
 def record_plan_review_dispositions(
     results_drive_root: Any,
     task_id: str,
@@ -1554,15 +1559,17 @@ def record_plan_review_dispositions(
     recorded_at: str = "",
 ) -> Dict[str, Any]:
     """Store the agent's dispositions on one FULL wave and its resulting closure.
-    A wave that is already closed is immutable (``PLAN_REVIEW_DISPOSITION_IMMUTABLE``);
-    a GREEN/REVISE_PLAN/DEGRADED wave never becomes closed here (the closure table in
-    ``plan_spec.closure_after_disposition`` is the caller's authority)."""
+    Only note-only closed waves accept annotations. Closure authority remains
+    ``plan_spec.closure_after_disposition``; other closed waves are immutable."""
 
     def _record(state: Dict[str, Any]) -> Dict[str, Any]:
         wave = next((w for w in state["waves"] if str(w.get("request_fingerprint") or "") == fingerprint), None)
         if wave is None or wave.get("compact"):
             raise ValueError("PLAN_REVIEW_DISPOSITION_UNBINDABLE: no full wave holds this fingerprint")
-        if wave.get("closed"):
+        current = state.get("current_attempt") or {}
+        if current.get("fingerprint") and current["fingerprint"] != fingerprint:
+            raise ValueError("PLAN_REVIEW_DISPOSITION_STALE: a newer attempt supersedes this wave")
+        if wave.get("closed") and not plan_review_notes_are_annotatable(wave):
             raise ValueError("PLAN_REVIEW_DISPOSITION_IMMUTABLE: a closed wave cannot be changed")
         wave["dispositions"] = copy.deepcopy(list(dispositions))
         wave["disposition_recorded_at"] = recorded_at or utc_now_iso()

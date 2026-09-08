@@ -1358,7 +1358,8 @@ def run_hermetic_pytest(
             )
         from ouroboros.platform_layer import kill_processes_referencing
         from ouroboros.commit_admission import (
-            PreflightTestProof, capture_preflight_test_subject, preflight_test_workload_unchanged,
+            PreflightTestProof, capture_preflight_test_subject, log_preflight_test_proof,
+            preflight_test_workload_unchanged,
         )
 
         subject = capture_preflight_test_subject(
@@ -1369,6 +1370,7 @@ def run_hermetic_pytest(
         if can_reuse:
             ctx._preflight_test_proof = previous_proof
             ctx._preflight_tests_passed = True
+            log_preflight_test_proof(ctx, previous_proof, reused=True, phase=phase)
             return None
         started = time.monotonic()
         node_result = run_node_tests(worktree, temp_root, timeout, max_output)
@@ -1469,6 +1471,7 @@ def run_hermetic_pytest(
                     and preflight_test_workload_unchanged(subject, worktree, timeout=timeout, pytest_args=pytest_args)
                     and (not subject.workload[4] or (node_result or {}).get("returncode") == 0)):
                 ctx._preflight_test_proof = subject
+                log_preflight_test_proof(ctx, subject, reused=False, phase=phase)
         return None
     except subprocess.TimeoutExpired:
         return f"⚠️ PRE_PUSH_TEST_ERROR: pytest timed out after {timeout} seconds"

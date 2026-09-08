@@ -793,7 +793,9 @@ structurally unverifiable, that is blocking against the claim, not a `need_evide
   discloses the demotion.
 - `note` — optional advice retained in the review; no disposition is required to proceed.
 - `need_evidence` — a typed request `{locator, why}`. It never blocks by itself and the same
-  locator cannot be asked twice on one task; the host attaches the locator on the next cycle
+  locator is remembered only once per task; repeating a valid request or filling the bounded
+  request memory does not turn it into optional advice. It retains its free disposition,
+  without another remembered locator or paid call. The host attaches a remembered locator on the next cycle
   (through the same evidence policy), so the agent's next envelope carries it — a new
   fingerprint, i.e. a paid cycle that actually has the evidence — or, when the locator cannot
   be resolved, carries a named omission row for it, so the panel judges the absence instead
@@ -819,7 +821,9 @@ authority, and prose outside the array is not parsed.
 - **REVIEW_REQUIRED** — notes / `need_evidence`, or a blocking finding BELOW quorum. A
   note-only wave closes immediately in either enforcement mode. The agent closes outstanding
   `need_evidence` with a disposition (accept / reject with rationale / defer) — no new panel,
-  no cost; notes do not need entries. A below-quorum blocking
+  no cost; notes do not need entries. Voluntary dispositions on current closed note-only
+  waves remain available through the same call, without reopening or a paid cycle.
+  A below-quorum blocking
   finding stays OPEN whatever the disposition says: it closes only through a changed spec
   (a new fingerprint, the next paid cycle) or a reject the next paid delta cycle judges.
 - **REVISE_PLAN** — blocking findings at quorum. A disposition can never close it: the agent
