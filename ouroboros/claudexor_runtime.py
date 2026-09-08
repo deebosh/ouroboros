@@ -8,8 +8,9 @@ while credentials, daemon state, and runs remain under ``DATA_DIR/claudexor``.
 There is no mutable ``current`` pointer.  The code's exact pin is the next-spawn
 selection.  Installing a newer pin while an older daemon is alive therefore
 stages the immutable directory without hot-swapping the process; the next
-natural daemon start selects it.  Rolling Ouroboros back selects the older pin
-and its preserved directory again.
+daemon start selects it, and a planned restart whose landed checkout changed the
+pin ends the old daemon so that start follows (``server_restart``).  Rolling
+Ouroboros back selects the older pin and its preserved directory again.
 """
 
 from __future__ import annotations

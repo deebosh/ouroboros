@@ -3,7 +3,8 @@
 The live-task census the restart drain consults, the teardown arguments that
 finalize interrupted tasks with an honest reason, the managed-update guard on
 preserving queued work, the checkout/update serialization gate, the owned-work
-stop of the owner's manual Restart, and the event bus shutdown. The restart
+stop of the owner's manual Restart, the planned restart's engine-pin daemon stop,
+and the event bus shutdown. The restart
 transaction itself — the deferred drain record and the performer that raises
 the exit signal — stays in ``server.py`` for now: the upstream delegation
 train coupled it to the composition root through the planned-handoff
@@ -48,9 +49,8 @@ def _stop_owned_work(ctx: Any) -> None:
     start a dead daemon — which is what the two flags above guarantee.
     """
     from ouroboros.cancel_intents import request_cancel
-    from ouroboros.claudexor_daemon import CUSTODY_PURPOSE, get_owned_daemon, read_owned_gateway
+    from ouroboros.claudexor_daemon import read_owned_gateway
     from ouroboros.delegate_custody import reconcile_orphaned_runs
-    from ouroboros.utils import append_jsonl, utc_now_iso
 
     for task_id in _owned_live_task_ids(ctx):
         try:
@@ -77,21 +77,75 @@ def _stop_owned_work(ctx: Any) -> None:
     except Exception:
         log.warning("Owner restart: delegated-run cancellation did not complete; custody retained",
                     exc_info=True)
+    _stop_owned_daemon("Owner restart")
+
+
+def _stop_owned_daemon(label: str) -> None:
+    """The attested owned-daemon stop a restart makes; never a veto.
+
+    An unconfirmed stop was already disclosed by ``stop_outcome`` (critical log
+    plus the ``process_stop_unconfirmed`` supervisor row, custody retained); a
+    raising stop gets the same row here, as Panic records it. Either way the
+    restart proceeds and the next generation attaches to a still-live daemon.
+    """
+    from ouroboros.claudexor_daemon import CUSTODY_PURPOSE, get_owned_daemon
+    from ouroboros.utils import append_jsonl, utc_now_iso
+
     try:
         outcome = get_owned_daemon().stop_outcome()
     except Exception as exc:
-        log.critical("Owner restart: owned Claudexor stop raised %s; custody is unconfirmed", type(exc).__name__)
+        log.critical("%s: owned Claudexor stop raised %s; custody is unconfirmed", label, type(exc).__name__)
         try:
             append_jsonl(pathlib.Path(DATA_DIR) / "logs" / "supervisor.jsonl", {
                 "ts": utc_now_iso(), "type": "process_stop_unconfirmed",
                 "purpose": CUSTODY_PURPOSE, "reason": f"stop raised {type(exc).__name__}",
             })
         except Exception:
-            log.critical("Owner restart: failed to record unconfirmed daemon stop")
+            log.critical("%s: failed to record unconfirmed daemon stop", label)
     else:
         if outcome == "unconfirmed":  # stop_outcome already disclosed the remainder
-            log.critical("Owner restart: owned Claudexor stop unconfirmed; custody retained, the "
-                         "restart proceeds and the next generation attaches to the live daemon")
+            log.critical("%s: owned Claudexor stop unconfirmed; custody retained, the "
+                         "restart proceeds and the next generation attaches to the live daemon", label)
+
+
+def _stop_owned_daemon_for_new_pin() -> None:
+    """A planned restart ends the owned daemon only when the landed checkout pins another engine.
+
+    Runs in the server lifespan teardown of every requested restart (planned
+    self-restart, managed update or rollback; the owner's manual Restart has
+    already stopped the daemon, so nothing answers). It compares the pin the
+    next generation selects — ``load_runtime_pin`` reads the checkout that
+    already landed, not this process's cached pin — with the serving engine's
+    handshake through the attach-only ``read_owned_gateway``. An unprovisioned
+    home, an unpublished or unreadable pin and an unreachable, foreign or
+    stopped daemon leave the existing handoff untouched: the next generation
+    attaches. A different version or build SHA makes the same attested stop the
+    manual Restart makes, so the next generation spawns the pinned engine; the
+    delegated runs that daemon served end with it, and the next generation's
+    startup sweep and resumed parents close them as absent (no invented spend).
+    """
+    from ouroboros.claudexor_daemon import owned_daemon_provisioned, read_owned_gateway
+    from ouroboros.claudexor_runtime import load_runtime_pin
+
+    if not owned_daemon_provisioned():
+        return
+    try:
+        pin = load_runtime_pin()
+        if pin is None:
+            return
+        with read_owned_gateway() as gateway:
+            serving = (gateway.engine_version, gateway.engine_build_sha)
+    except Exception as exc:
+        log.info("Planned restart keeps the owned Claudexor daemon: the engine pin comparison is "
+                 "unavailable (%s)", exc)
+        return
+    if serving == (pin.version, pin.build_sha):
+        return
+    log.warning("Planned restart stops the owned Claudexor daemon: engine %s (%s) is serving while the "
+                "checkout pins %s (%s); the next generation starts the pinned engine and the runs "
+                "in flight end with this one", serving[0] or "unknown", serving[1][:12] or "unknown",
+                pin.version, pin.build_sha[:12])
+    _stop_owned_daemon("Planned restart")
 
 
 def _live_running_task_ids(ctx: Any) -> list:

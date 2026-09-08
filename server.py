@@ -99,6 +99,7 @@ from ouroboros.server_restart import (  # noqa: F401
     _safe_restart_serialized,
     _shutdown_supervisor_event_bus,
     _shutdown_task_cleanup_args,
+    _stop_owned_daemon_for_new_pin,
     _stop_owned_work,
 )
 
@@ -1414,6 +1415,14 @@ async def lifespan(app):
             )
         except Exception:
             pass
+        if _restart_requested.is_set():
+            try:
+                # A planned restart whose landed checkout pins another engine ends
+                # the owned daemon here so the next generation starts on that pin.
+                _stop_owned_daemon_for_new_pin()
+            except Exception:
+                log.critical("Planned restart: engine pin check raised; the owned daemon is left serving",
+                             exc_info=True)
         try:
             from supervisor.message_bus import get_bridge
             get_bridge().shutdown()

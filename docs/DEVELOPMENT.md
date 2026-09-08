@@ -2718,9 +2718,13 @@ marker after a write fault; existing malformed or foreign markers are never
 replaced. The reaper's permissive keep is never stop authority, and a daemon known
 only by name or port is never signalled.
 Explicit stop and next-start runtime selection remain separate contracts: a
-staged engine pin applies at the daemon's next start, and a planned restart
-reports it staged while the serving engine's atomic replacement predicate still
-omits setup jobs with unconfirmed termination. Service quiescence excludes
+newer engine pin is never hot-swapped and the daemon's next start selects it; a
+planned restart whose landed checkout pins another engine version or build ends
+the serving daemon in the lifespan teardown through
+`server_restart._stop_owned_daemon_for_new_pin` (`load_runtime_pin` from the
+checkout against `read_owned_gateway`, then the shared attested stop — never a
+veto), while an unchanged, unreadable or unpublished pin and an unreachable daemon
+leave the handoff untouched (`tests/test_planned_restart_engine_pin.py`). Service quiescence excludes
 zombie-only groups, but checks every member before releasing a writer fence
 (`tests/test_claudexor_custody_lifetime.py`, `tests/test_process_custody_liveness.py`).
 The owner's manual Restart keeps its checkout-first order: the update gate and
