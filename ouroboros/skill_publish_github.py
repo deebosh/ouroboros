@@ -472,9 +472,16 @@ def create_pr_receipt(
             snapshot_hash=attempt.snapshot_hash,
             ruleset_sha256=str(attempt.scanner.get("ruleset_sha256") or ""),
         )
-    except SkillPublishGitHubError:
+    except SkillPublishGitHubError as exc:
         if result.ok:
-            raise
+            # The mutator succeeded and only the read-only settlement failed: say so
+            # before the settlement's own hint, or "retry" would risk a duplicate PR.
+            raise SkillPublishGitHubError(
+                exc.reason_code,
+                "gh pr create reported success but the pull request could not be settled; "
+                "inspect the recorded branch and commit on GitHub before retrying. " + exc.repair_hint,
+                status=exc.status, detail=exc.detail, http_status=exc.http_status, operation=exc.operation,
+            ) from exc
         # Retain the mutator's evidence if the read-only settlement also failed.
         settled = None
     if settled is None and not result.ok:

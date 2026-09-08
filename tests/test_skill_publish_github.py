@@ -21,6 +21,9 @@ RULESET_SHA = "b" * 64
 
 @pytest.fixture(autouse=True)
 def synthetic_github_credentials(monkeypatch):
+    # Load-bearing for hermeticity: ``github_repair_hint`` consults the host's real
+    # gh configuration when no token is configured, so without this every failure
+    # hint below would depend on whether the developer's machine has gh logged in.
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_SYNTHETIC1234567890")
 
 
@@ -345,6 +348,12 @@ def test_sync_success_marks_fork_synced(monkeypatch, tmp_path):
          "⚠️ GH_ERROR: warning: quoted (HTTP 403) is not a status | gh: Not Found (HTTP 404)"),
         ("a marker (HTTP 403) inside a sentence", None, "⚠️ GH_ERROR: a marker (HTTP 403) inside a sentence"),
         ("gh: Not Found (HTTP 404)\r\n", 404, "⚠️ GH_ERROR: gh: Not Found (HTTP 404)"),
+        # gh api without a message; go-gh HTTPError from every other command, wrapped or bare
+        ("gh: HTTP 401", 401, "⚠️ GH_ERROR: gh: HTTP 401"),
+        ("failed to fork: HTTP 403: Resource not accessible by personal access token (https://api.github.com/repos/hub/project/forks)",
+         403, None),
+        ("HTTP 422: Validation Failed (https://api.github.com/repos/hub/project/pulls)", 422, None),
+        ("note that HTTP 403 is not what happened here", None, "⚠️ GH_ERROR: note that HTTP 403 is not what happened here"),
         # a bare number is prose, never a status
         ("permission denied, status 403", None, "⚠️ GH_ERROR: permission denied, status 403"),
         # the status is read from the WHOLE redacted stderr, before the head is cut
@@ -417,17 +426,53 @@ def test_unconfigured_credentials_hint_uses_settings(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("handler,kwargs", [
-    (transport._get_issue, {}),
-    (transport._comment_on_issue, {"body": "comment"}),
-    (transport._close_issue, {}),
+@pytest.mark.parametrize("handler,kwargs,expected", [
+    (transport._get_issue, {"number": 0}, "⚠️ TOOL_ARG_ERROR: issue number must be positive"),
+    (transport._comment_on_issue, {"number": 0, "body": "comment"}, "⚠️ TOOL_ARG_ERROR: issue number must be positive"),
+    (transport._close_issue, {"number": 0}, "⚠️ TOOL_ARG_ERROR: issue number must be positive"),
+    (transport._get_pr, {"number": 0}, "⚠️ TOOL_ARG_ERROR: PR number must be positive."),
+    (transport._comment_on_pr, {"number": 0, "body": "comment"}, "⚠️ TOOL_ARG_ERROR: PR number must be positive."),
+    (transport._comment_on_pr, {"number": 7, "body": "  "}, "⚠️ TOOL_ARG_ERROR: comment body cannot be empty."),
+    (transport._create_issue, {"title": " "}, "⚠️ TOOL_ARG_ERROR: issue title cannot be empty."),
 ])
-def test_nonpositive_issue_number_publishes_typed_argument_error(handler, kwargs):
+def test_argument_refusals_publish_typed_argument_errors(handler, kwargs, expected):
     ctx = types.SimpleNamespace(_active_builtin_tool_result=None)
-    text = handler(ctx, number=0, **kwargs)
+    text = handler(ctx, **kwargs)
     result = ctx._active_builtin_tool_result
     assert (result.status, result.code) == ("error", "TOOL_ARG_ERROR")
-    assert result.text == text == "⚠️ TOOL_ARG_ERROR: issue number must be positive"
+    assert result.text == text == expected
+
+
+def test_fork_denial_carries_the_status_from_gh_own_error_line(monkeypatch, tmp_path):
+    """``repo fork`` fails through go-gh's ``HTTP NNN: …`` shape, not ``(HTTP NNN)``."""
+    calls = []
+
+    def run(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[1:3] == ["repo", "view"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "GraphQL: Could not resolve to a Repository")
+        assert cmd[1:3] == ["repo", "fork"]
+        return subprocess.CompletedProcess(
+            cmd, 1, "",
+            "failed to fork: HTTP 403: Resource not accessible by personal access token "
+            "(https://api.github.com/repos/hub/project/forks)",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    attempt = _attempt()
+    with pytest.raises(github.SkillPublishGitHubError) as caught:
+        github.prepare_publish_repository(
+            types.SimpleNamespace(repo_dir=tmp_path), attempt,
+            owner="hub", repo="project", base_branch="main", login="alice",
+        )
+    error = caught.value
+    assert error.reason_code == "fork_prepare_failed"
+    assert error.http_status == 403
+    assert error.operation == "repo fork"
+    assert "GITHUB_TOKEN in Settings → Secrets" in error.repair_hint
+    assert "HTTP 403" in error.detail
+    assert attempt.marks == []
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("create_failed", [True, False])
@@ -458,6 +503,10 @@ def test_failed_pr_settlement_keeps_producer_evidence_without_retry(monkeypatch,
     assert error.operation == ("pr create" if create_failed else "pulls")
     assert error.http_status == (None if create_failed else 403)
     assert ("GH_TIMEOUT" if create_failed else "403") in error.detail
+    assert "inspect" in error.repair_hint.lower() and "before retrying" in error.repair_hint
+    if not create_failed:
+        assert error.repair_hint.startswith("gh pr create reported success")
+        assert "HTTP 403 for pulls on hub/project" in error.repair_hint
 
 
 @pytest.mark.parametrize("stdout", ['["wrong shape"]', 'invalid ghp_SYNTHETIC1234567890 ' + 'x' * 1000])

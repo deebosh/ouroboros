@@ -562,10 +562,11 @@ def test_confirmation_failure_is_parseable_and_calls_nothing(tmp_path):
     assert not {"error_detail", "github_status", "github_operation"} & result.keys()
 
 
-def test_github_failure_envelope_is_reached_from_the_subprocess_boundary(monkeypatch, tmp_path):
+@pytest.mark.parametrize("long_stderr", [False, True])
+def test_github_failure_envelope_is_reached_from_the_subprocess_boundary(monkeypatch, tmp_path, long_stderr):
     """Real repository preparation + real transport; only the gh process is fake."""
     from ouroboros import skill_publish_github
-    from ouroboros.skill_publish_result import extract_skill_publish_result_metadata
+    from ouroboros.skill_publish_result import _bounded_text, extract_skill_publish_result_metadata
 
     ctx, events, _captured = _install_transaction_fakes(monkeypatch, tmp_path, snapshot=_snapshot())
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_SYNTHETIC1234567890")
@@ -579,9 +580,10 @@ def test_github_failure_envelope_is_reached_from_the_subprocess_boundary(monkeyp
         if cmd[1:3] == ["repo", "view"]:
             return subprocess.CompletedProcess(cmd, 0, '{"name":"project"}', "")
         assert cmd[1:4] == ["api", "-X", "POST"] and cmd[4].endswith("/merge-upstream")
-        return subprocess.CompletedProcess(
-            cmd, 1, "", "gh: token ghp_SYNTHETIC1234567890 was rejected (HTTP 403)",
-        )
+        stderr = "gh: token ghp_SYNTHETIC1234567890 was rejected (HTTP 403)"
+        if long_stderr:
+            stderr = "x" * 700 + "\n" + stderr
+        return subprocess.CompletedProcess(cmd, 1, "", stderr)
 
     monkeypatch.setattr(subprocess, "run", run)
     result = _submit(ctx)
@@ -591,15 +593,24 @@ def test_github_failure_envelope_is_reached_from_the_subprocess_boundary(monkeyp
     assert result["github_status"] == 403
     assert result["github_operation"] == "merge-upstream"
     assert result["error_detail"].startswith("⚠️ GH_ERROR: ")
-    assert "(HTTP 403)" in result["error_detail"]
+    # The status is read from the whole stderr BEFORE the head is bounded, so it
+    # survives even when the marker itself falls outside the 600-char head.
+    assert ("(HTTP 403)" in result["error_detail"]) == (not long_stderr)
     assert "ghp_SYNTHETIC1234567890" not in json.dumps(result)
     assert "receipt" not in result
     assert not any(row[0] == "mutation" for row in events)
     assert sum(1 for cmd in commands if cmd[-3:-2] == ["-X"] or "merge-upstream" in " ".join(cmd)) == 1
     projected = extract_skill_publish_result_metadata(json.dumps(result))["skill_publish_attempt"]
     assert projected["github_status"] == 403
-    assert projected["error_detail"] == result["error_detail"]
     assert projected["github_operation"] == "merge-upstream"
+    # The projection is a single bounded line; the envelope keeps the transport's
+    # own multi-line omission note when the head was cut. Pinned, not accidental.
+    assert projected["error_detail"] == _bounded_text(result["error_detail"], 640)
+    if long_stderr:
+        assert "OMISSION NOTE" in result["error_detail"] and "\n" in result["error_detail"]
+        assert "\n" not in projected["error_detail"] and len(projected["error_detail"]) <= 640
+    else:
+        assert projected["error_detail"] == result["error_detail"]
 
 
 def test_later_scanner_error_does_not_erase_known_scanner_identity():

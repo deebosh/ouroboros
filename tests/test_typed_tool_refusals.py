@@ -13,8 +13,10 @@ flagged shape is narrow: the text opens with ``ERROR:`` or with ``⚠️`` follo
 something that is not an UPPER_SNAKE identifier — prose, a lowercase name, a bare
 capital — AND the real adapter records it ``ok``. A typed-looking marker the adapter
 buckets as a warning (``⚠️ X_INVALID``) is a vocabulary question for the adapter's
-owner, not this lint, and an adapter that starts typing a text releases it here. Every surviving site carries a written reason here, so the
-allowlist IS the residual disclosure; a site removed from the tree must be removed
+owner, not this lint (a separate, larger residual — dozens of marker-shaped refusals
+recorded ``ok`` — that this allowlist does NOT count), and an adapter that starts
+typing a text releases it here. Every surviving site carries a written reason here,
+so the allowlist IS the disclosure of the identifier-less residual; a site removed from the tree must be removed
 here too (shrink-only), and a file whose count grows fails. It is a per-file COUNT
 ratchet: swapping one old site for a new one inside the same file is invisible to
 it (disclosed), and the producer's own tests pin individual sites.

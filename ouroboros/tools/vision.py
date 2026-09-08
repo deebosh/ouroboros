@@ -60,6 +60,11 @@ def _get_llm_client():
     return LLMClient()
 
 
+class _ProviderCapExceeded(ValueError):
+    """The bytes are a valid image that still exceeds the VLM provider's payload cap —
+    a provider limit (``VLM_ERROR``, like the base64 path), not a bad argument."""
+
+
 def _refuse(ctx: Any, message: str, code: str = "TOOL_ARG_ERROR") -> str:
     """Publish a refusal this module AUTHORS as a typed result; text unchanged.
 
@@ -310,7 +315,7 @@ def _downscale_image_for_vlm(raw: bytes, mime: str) -> Tuple[bytes, str]:
         log.debug("Failed to downscale VLM image payload", exc_info=True)
     if len(raw) <= _VLM_MAX_PROVIDER_BYTES:
         return raw, mime
-    raise ValueError(
+    raise _ProviderCapExceeded(
         f"⚠️ VLM_IMAGE_TOO_LARGE: image payload exceeds {int(_VLM_MAX_PROVIDER_BYTES / 1024 / 1024)}MB provider cap"
     )
 
@@ -601,6 +606,8 @@ def _load_local_image_payload(ctx: ToolContext, file_path: str) -> Tuple[Optiona
         ))
     try:
         return _image_payload_from_bytes(raw, mime), ""
+    except _ProviderCapExceeded as e:
+        return None, _refuse(ctx, str(e), code="VLM_ERROR")
     except ValueError as e:
         return None, _refuse(ctx, str(e))
 

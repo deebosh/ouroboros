@@ -672,6 +672,24 @@ def test_view_image_non_image_and_outside_root_are_argument_errors(tmp_path, mon
     assert registry._ctx.messages == []
 
 
+def test_view_image_provider_payload_cap_keeps_vlm_error(tmp_path, monkeypatch):
+    """The provider cap is a provider limit (like the base64 path), not a bad argument."""
+    import ouroboros.tools.vision as vision
+
+    registry, uploads = _vision_registry(tmp_path, monkeypatch)
+    img = uploads / "huge.png"
+    img.write_bytes(_real_png_bytes())
+
+    def over_cap(_raw, _mime):
+        raise vision._ProviderCapExceeded("⚠️ VLM_IMAGE_TOO_LARGE: image payload exceeds 6MB provider cap")
+
+    monkeypatch.setattr(vision, "_image_payload_from_bytes", over_cap)
+    result = registry.execute_result("view_image", {"path": str(img)})
+    assert (result.status, result.code) == ("error", "VLM_ERROR")
+    assert "VLM_IMAGE_TOO_LARGE" in result.text
+    assert registry._ctx.messages == []
+
+
 def test_vlm_query_provider_capability_gap_keeps_vlm_error(tmp_path, monkeypatch):
     import ouroboros.tools.vision as vision
 

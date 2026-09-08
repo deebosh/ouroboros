@@ -21,6 +21,14 @@ log = logging.getLogger(__name__)
 _GENERIC_TRANSPORT = object()
 
 
+# gh's own HTTP status shapes (see ``_gh_run``); the first match in stderr order wins.
+_GH_STATUS_RE = re.compile(
+    r"\(HTTP (\d{3})\)[ \t\r]*$"
+    r"|^(?:[a-z][a-z ]*: )*HTTP (\d{3})(?::| \(|[ \t\r]*$)",
+    re.MULTILINE,
+)
+
+
 @dataclass(frozen=True)
 class GhResult:
     ok: bool
@@ -142,14 +150,18 @@ def _gh_run(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
         )
         if res.returncode != 0:
             # Redact the WHOLE stderr first (a cut could split a token), read gh's own
-            # line-terminal ``(HTTP NNN)`` marker before any bounding (a marker quoted
-            # mid-sentence is prose, not a status), then keep a bounded head.
+            # status marker before any bounding, then keep a bounded head. gh writes the
+            # status in three deterministic shapes and nowhere else: ``gh: <msg> (HTTP NNN)``
+            # at the end of a line (``gh api`` with a message), ``gh: HTTP NNN`` (``gh api``
+            # without one) and ``HTTP NNN: <msg> (<url>)`` — optionally wrapped as
+            # ``failed to fork: HTTP NNN: …`` — from every other command. A marker quoted
+            # mid-sentence is prose, not a status.
             err = redact_known_values(res.stderr or "", [github_token_from_env_or_settings()])
-            status = re.search(r"\(HTTP (\d{3})\)[ \t\r]*$", err, flags=re.MULTILINE)
+            status = _GH_STATUS_RE.search(err)
             head = " | ".join([line.strip() for line in err.splitlines() if line.strip()][:3])
             head = truncate_within_limit(head, 600)
             return GhResult(False, "⚠️ GH_ERROR: " + head, res.returncode,
-                            int(status.group(1)) if status else None, "exit")
+                            int(status.group(1) or status.group(2)) if status else None, "exit")
         return GhResult(True, res.stdout.strip(), res.returncode, None, "")
     except FileNotFoundError as e:
         missing = str(getattr(e, "filename", "") or "")

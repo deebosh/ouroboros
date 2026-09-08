@@ -191,10 +191,13 @@ Enforcement: the prompt-edit discipline is scored by CHECKLISTS item 13(b)
 (a prompt edit never restates a tool schema and is never an incident patch);
 the recoverable-failure boundary has no automated surface — review-only; the
 typed-refusal rule is ratcheted by `tests/test_typed_tool_refusals.py`, a
-source lint over returned literals in `ouroboros/tools/` whose per-file
-allowlist is the residual disclosure — a file whose count of untyped failure
-returns grows fails, a shrink must be recorded, and a same-file swap of one old
-site for a new one is invisible to the count; a failure text that travels
+source lint over returned literals in `ouroboros/tools/` that flags only
+identifier-less heads (`⚠️ prose`, bare `ERROR:`); its per-file allowlist
+discloses that identifier-less residual — a file whose count grows fails, a
+shrink must be recorded, and a same-file swap of one old site for a new one is
+invisible to the count. A marker-shaped refusal the adapter still buckets as a
+warning (`⚠️ SOME_IDENTIFIER: …` recorded `ok`) is a separate, larger residual
+owned by the adapter vocabulary, not by this lint; a failure text that travels
 through a variable, a tuple or a helper is outside its reach and is pinned by
 the producer's own tests.
 
