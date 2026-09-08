@@ -742,16 +742,11 @@ def test_budget_dispatch_rail_preserves_current_candidate_and_exact_binding(
     }
 
     def request_another_round(**_kwargs):
+        from tests.test_delivery_forced_finalization import _bind_host_pass
+
         candidate = registry._ctx._delivery_candidate
-        historical_binding.update({
-            "candidate_sha256": candidate.content_sha256,
-            "evidence_revision": candidate.evidence_revision,
-            "acceptance_status": "pass",
-            "authoritative": True,
-            "panel_id": "panel-exact",
-            "binding_hash": "binding-exact",
-        })
-        candidate.acceptance_binding = dict(historical_binding)
+        _bind_host_pass(loop, registry, _kwargs["llm_trace"], candidate)
+        historical_binding.update(candidate.acceptance_binding)
         return True
 
     monkeypatch.setattr(loop, "call_llm_with_retry", fake_call)

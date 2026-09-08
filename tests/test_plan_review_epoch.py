@@ -35,7 +35,7 @@ def test_open_review_required_wave_replays_free_even_when_the_epoch_moved(harnes
         return dict(snapshots["evidence"])
 
     _patch_health(monkeypatch, _snap)
-    note = json.dumps([_finding("n1", "note")])
+    note = json.dumps([_finding("n1", "blocking", breaks="claim_1")])
     sub = harness.install({"s1": note, "s2": CLEAN})
     ctx = harness.make_ctx()
     first = _call(ctx)
@@ -298,7 +298,7 @@ def test_cached_replay_of_an_open_wave_retries_a_failed_advisory_open_append(har
 
     harness.state["enforcement"] = "advisory"
     _patch_health(monkeypatch, lambda slots: {})
-    note = json.dumps([_finding("n1", "note")])
+    note = json.dumps([_finding("n1", "blocking", breaks="claim_1")])
     sub = harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
     real_append = utils.append_jsonl
 

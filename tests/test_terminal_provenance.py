@@ -424,9 +424,8 @@ def test_a_notice_keeps_its_completion_excerpt_unlike_a_salvage():
 def test_a_non_provider_rail_with_a_complete_candidate_stays_model_final(tmp_path, monkeypatch):
     """The candidate branch only stamped provenance on the provider rail, so a
     round-limit stop that delivered the model's own complete answer went out
-    unattributed. The ordinary no-tool final composes the same disclosure glue
-    and stays model_final; this rail now says the same thing, and the glue is
-    still appended to the model's text."""
+    unattributed. Host disclosures stay separately attributed and do not
+    replace the model answer or its candidate identity."""
     from tests.test_delivery_forced_finalization import _forced_test_context
 
     loop, registry, limit_ctx, trace = _forced_test_context(tmp_path)
@@ -439,8 +438,8 @@ def test_a_non_provider_rail_with_a_complete_candidate_stays_model_final(tmp_pat
 
     text, usage, _returned_trace = loop._handle_round_limit(limit_ctx)
 
-    assert text.startswith(answer)
-    assert text.endswith("Plan review was left open.")
+    assert text == answer
+    assert usage["terminal_host_notice"] == "Plan review was left open."
     assert usage["terminal_origin"] == loop.TERMINAL_ORIGIN_MODEL_FINAL
     assert usage["terminal_plan_review_open"] is True
 

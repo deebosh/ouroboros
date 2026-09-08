@@ -818,7 +818,7 @@ def persist_tool_trajectory_source(
         )
         path = str(stored_ref["path"])
         return {
-            "kind": "task_source", "root": "artifact_store", "path": path,
+            **stored_ref,
             "reader": "read_file",
             "artifact_ref": f"artifact_store:{path}#chars=0-{len(data.decode('utf-8'))}",
         }
@@ -885,6 +885,33 @@ def materialize_repo_diff_evidence(
             "reason": "partial_repo_diff_without_task_source_ref", "source_ref": {},
         },
     }
+
+
+def materialize_tool_args_source(drive_root: Any, call: Dict[str, Any]) -> tuple[Any, bool, Dict[str, Any]]:
+    """Recover logging-sanitizer omissions from the existing redacted call blob."""
+    args = call.get("args")
+    rendered = json.dumps(args, ensure_ascii=False, default=str)
+    # These are sanitize_tool_args_for_log's transport markers, not a judgment
+    # about the command's meaning. Legacy rows without them retain their view.
+    if not any(marker in rendered for marker in (
+        "<TRUNCATED:", '"_depth_limit":', '"_truncated":', '"_repr":', '"_error":',
+    )):
+        return args, True, {}
+    trace = call.get("trace_ref") if isinstance(call.get("trace_ref"), dict) else {}
+    ref = trace.get("redacted_projection_ref") or {}
+    try:
+        from ouroboros.observability import read_blob_ref
+        payload = read_blob_ref(pathlib.Path(drive_root), ref)
+        if (not isinstance(payload, dict) or "args" not in payload
+                or not call.get("tool_call_id")
+                or payload.get("tool_call_id") != call["tool_call_id"]
+                or payload.get("tool") != call.get("tool")):
+            raise ValueError("argument source does not match the tool call")
+        return payload["args"], True, {}
+    except (OSError, TypeError, ValueError) as exc:
+        return args, False, {"tool": str(call.get("tool") or ""), "status": "source_unavailable",
+                             "reason": f"argument_source_unavailable: {type(exc).__name__}: {exc}",
+                             "source_ref": ref}
 
 
 def materialize_tool_result_source(

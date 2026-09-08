@@ -153,7 +153,7 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
     elif aggregate == "REVIEW_REQUIRED":
         blocking = [f for f in wave.get("findings") or [] if f.get("class") == "blocking"]
         text = (
-            "Disposition every finding id (accept | reject | defer, each with a rationale) in ONE "
+            "Notes are optional. Disposition need_evidence (accept | reject | defer, with a rationale) in ONE "
             f"call: plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}) — no "
             "reviewer call, no cycle. "
         )

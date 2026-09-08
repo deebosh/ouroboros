@@ -425,7 +425,7 @@ def test_disposition_inputs_are_bounded_at_entry(harness):
     item count — so a $0 closure can always be persisted."""
     from ouroboros.tools import plan_spec
 
-    note = json.dumps([_finding("n1", "note")])
+    note = json.dumps([_finding("n1", "need_evidence", locator="notes.md")])
     harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()
     _call(ctx)
@@ -542,9 +542,9 @@ def test_first_cycle_and_no_request_delta_cycle_carry_no_continuation_delta(harn
     assert not [d for row in wave2["actors"] for d in row.get("capability_delta") or []]
 
 
-def test_missing_requested_evidence_reask_is_demoted_and_keeps_the_wave_open(harness):
+def test_missing_requested_evidence_reask_becomes_an_optional_note(harness):
     """Re-asking a locator the host already could not attach is a `need_evidence_repeat`
-    note: no new attachment, no new fingerprint, and the wave stays open at $0."""
+    note: the repeated request does not require further disposition or another panel."""
     ask = json.dumps([_finding("f1", "need_evidence", breaks="goal", locator="gone.md",
                                summary="read it")])
     sub = harness.install({"s1": ask, "s2": CLEAN, "s3": CLEAN})
@@ -553,10 +553,10 @@ def test_missing_requested_evidence_reask_is_demoted_and_keeps_the_wave_open(har
     out = _call(harness.make_ctx())
     assert len(sub.calls) == 1
     wave = _state(harness)["waves"][-1]
-    assert wave["paid"] is True and wave["closed"] is False
+    assert wave["paid"] is True and wave["closed"] is True
     repeat = [f for f in wave["findings"] if f["locator"] == "gone.md"]
     assert repeat and [f["class"] for f in repeat] == ["note"]  # demoted, never re-attached
-    assert _control(out)["closed"] is False
+    assert _control(out)["closed"] is True
 
 
 def test_both_reviewer_routes_learn_the_range_selectors(harness):

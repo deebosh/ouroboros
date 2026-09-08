@@ -532,7 +532,9 @@ def synthesize_plan_review_wave(
         "evidence_manifest_hash": manifest_hash, "constitutional": bool(constitutional),
         "constitutional_note": constitutional_note, "findings": list(agg["findings"]),
         "aggregate": aggregate, "reasons": list(agg["reasons"]), "counts": dict(agg["counts"]),
-        "closed": aggregate == "GREEN", "dispositions": [], "actors": slot_records,
+        "closed": plan_spec.closure_after_disposition(
+            aggregate, agg["findings"], [], enforcement,
+        )["closed"], "dispositions": [], "actors": slot_records,
         "custody_pending": False,
         "actors_degraded": [str(r["slot_id"]) for r in slot_records if not r["ok"]],
         "enforcement": enforcement, "cycle_cap": cap,

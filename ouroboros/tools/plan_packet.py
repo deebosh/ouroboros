@@ -78,8 +78,8 @@ def build_plan_review_system_prompt(
     architecture_nav_map: Optional[str] = None,
     governance_by_retrieval: bool = False,
 ) -> str:
-    """Findings-only reviewer stance for ONE independent slot (no competing plan,
-    no issue quota, no 'your own approach'). Governance pack per the owner-approved
+    """Findings-only reviewer stance with optional brainstorming, not a competing
+    plan or an issue quota. Governance pack per the owner-approved
     W3 wording: a self-modification plan (``constitutional``) carries BIBLE.md in
     full AND ARCHITECTURE.md inline; every other plan carries the BIBLE navigation
     map, the ARCHITECTURE navigation map and named on-demand pointers (the caller
@@ -100,9 +100,14 @@ def build_plan_review_system_prompt(
         "## The one question\n\n"
         "Is this spec sufficient to START the work safely? — not whether everything is specified.\n\n"
         "## Stance — findings only\n\n"
-        "Report findings against the spec; do not write a competing plan or propose an alternative "
-        "of your own, and do not fill a quota — an empty findings array with NO_FINDINGS is a "
-        "legitimate result. Name the exact spec id, locator, or evidence line behind each finding.\n\n"
+        "Report findings against the spec; do not write a compulsory competing plan, and do not "
+        "fill a quota — an empty findings array with NO_FINDINGS is a legitimate result. "
+        "Name the exact spec id, locator, or evidence line behind each finding.\n\n"
+        "Planning review is also an important brainstorming opportunity: challenge the premise "
+        "and suggest a simpler or more general alternative when useful. Express this advice as "
+        "optional `note` findings; Ouroboros decides whether to adopt it, without a required "
+        "disposition. A preference, premise challenge, or repeated suggestion alone is never "
+        "a blocker. Independently demonstrated failures still follow the blocking rule below.\n\n"
         "## Rubric (domain-free)\n\n" + "\n".join(_RUBRIC) + "\n",
     ]
     if constitutional:

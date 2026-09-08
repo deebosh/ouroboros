@@ -30,7 +30,7 @@ import logging
 import pathlib
 from typing import Any, Dict, List
 
-from ouroboros.utils import truncate_review_artifact
+from ouroboros.utils import sanitize_tool_result_for_log, truncate_review_artifact
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +60,22 @@ TERMINAL_PLAN_REVIEW_NOTE = (
 )
 
 
+def set_terminal_host_notice(usage: Dict[str, Any], *parts: str) -> None:
+    """Keep the current host disclosure beside the answer, never inside its identity."""
+    notice = sanitize_tool_result_for_log("\n\n".join(part.strip() for part in parts if part.strip()))
+    if notice:
+        usage["terminal_host_notice"] = notice
+    else:
+        usage.pop("terminal_host_notice", None)
+
+
+def terminal_notice_text(result: Dict[str, Any]) -> str:
+    """The same terminal notices on transports with one text body or no event stream."""
+    return "\n\n".join(str(result[key]) for key in (
+        "terminal_provider_notice", "terminal_host_notice",
+    ) if result.get(key))
+
+
 def send_provider_death_notice(
     ctx: Any, chat_id: int, task_id: Any, final_result: Dict[str, Any],
 ) -> bool:
@@ -68,7 +84,7 @@ def send_provider_death_notice(
         return False
     plan_note = (
         f"\n\n{TERMINAL_PLAN_REVIEW_NOTE}"
-        if final_result.get("terminal_plan_review_open") is True else ""
+        if final_result.get("terminal_plan_review_open") is True and not final_result.get("terminal_host_notice") else ""
     )
     notice = str(final_result.get("terminal_provider_notice") or "") or (
         "A model-provider outage stopped this task. Partial work and workspace files "
@@ -138,6 +154,8 @@ def prepare_terminal_send_event(
         send_event.setdefault("progress_meta", {}).update(correlation.get("progress_meta", {}))
     origin = str(usage.get("terminal_origin") or "")
     notice = str(usage.get("terminal_provider_notice") or "")
+    if usage.get("terminal_host_notice") and not presence:
+        send_event["terminal_host_notice"] = usage["terminal_host_notice"]
     if ephemeral and not presence:
         # This final concludes the transient activity even if task_done is
         # missed. emit_task_results adds its computed outcome/accounting facts
@@ -185,8 +203,9 @@ def terminal_result_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
         fields["terminal_salvage_path"] = path
     if usage.get("terminal_plan_review_open") is True:
         fields["terminal_plan_review_open"] = True
-    if isinstance(usage.get("terminal_provider_notice"), str) and usage["terminal_provider_notice"]:
-        fields["terminal_provider_notice"] = usage["terminal_provider_notice"]
+    for key in ("terminal_provider_notice", "terminal_host_notice"):
+        if isinstance(usage.get(key), str) and usage[key]:
+            fields[key] = usage[key]
     return fields
 
 
@@ -412,6 +431,7 @@ def build_sealed_final_package(result_row: Any, final_text: str) -> Dict[str, An
         "artifact_manifest": manifest[:_SEALED_MANIFEST_MAX_FILES],
         **({"artifact_manifest_omitted": omitted} if omitted else {}),
         "completion_observations": row.get("completion_observations") or {"status": "unavailable"},
+        **({"terminal_host_notice": row["terminal_host_notice"]} if row.get("terminal_host_notice") else {}),
     }
 
 
@@ -435,6 +455,9 @@ def sealed_final_prompt_section(sealed_final: Dict[str, Any] | None) -> str:
     manifest_text = "\n".join(rows) if rows else "(no files in the artifact store)"
     observations = json.dumps(sealed_final.get("completion_observations") or {"status": "unavailable"},
                               ensure_ascii=False, default=str)
+    host_notice = truncate_review_artifact(
+        str(sealed_final.get("terminal_host_notice") or ""), limit=_SEALED_FINAL_TEXT_PROMPT_CHARS,
+    )
     return (
         "## Sealed final outcome (host-attested ground truth)\n"
         "Below are the final answer submitted for delivery and a host-built\n"
@@ -450,6 +473,7 @@ def sealed_final_prompt_section(sealed_final: Dict[str, Any] | None) -> str:
         "not additional evidence you have read. Omitted or unavailable facts remain unknown.\n"
         "Final result text (submitted for delivery):\n"
         f"{final_text}\n"
+        + (f"Host-authored terminal notice (separate from the model answer):\n{host_notice}\n" if host_notice else "") +
         "Artifact store manifest (task_results/artifacts/<task_id>/):\n"
         f"{manifest_text}\nTask completion observations:\n{observations}\n\n"
     )

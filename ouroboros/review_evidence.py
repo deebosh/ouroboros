@@ -287,14 +287,16 @@ def build_task_acceptance_evidence(
         ev["depth_summary"] = build_depth_summary(contract, ev["terminal_subtree_statuses"])
         prov["terminal_subtree_statuses"] = prov["depth_summary"] = "host_attested"
     if isinstance(llm_trace, dict):
+        from ouroboros.artifacts import persist_tool_trajectory_source
+        source_ref = persist_tool_trajectory_source(drive_root, task_id, llm_trace["tool_calls"]) if llm_trace.get("tool_calls") else {}
         traj, omitted, unresolved = _accept_trajectory(
             llm_trace.get("tool_calls") or [], drive_root=drive_root, task_id=task_id,
+            source_ref=source_ref,
         )
         if traj or omitted:
             ev["tool_trajectory"] = traj
             prov["tool_trajectory"] = "tool_result"
-            from ouroboros.artifacts import persist_tool_trajectory_source
-            if source_ref := persist_tool_trajectory_source(drive_root, task_id, llm_trace.get("tool_calls")):
+            if source_ref:
                 ev["tool_trajectory_source_ref"] = source_ref
             if omitted:
                 ev["tool_trajectory_omitted_leading"] = omitted
@@ -396,9 +398,29 @@ def build_task_acceptance_evidence(
     ev["__provenance__"] = prov
     # The host facts own identity; the bounded packet is their presentation.
     # Keep exact receipt changes visible even beyond an exhibit's text cap.
-    ev[ACCEPTANCE_SOURCE_REVISION_KEY] = task_acceptance_evidence_revision({
-        **ev, "verification_receipts_source": redact_projection(receipts).value,
-    })
+    source_evidence = {**ev, "verification_receipts_source": redact_projection(receipts).value}
+    if isinstance(llm_trace, dict):
+        source_evidence["tool_calls_source"] = redact_projection(llm_trace.get("tool_calls") or []).value
+    # Choosing a view does not change the source facts or a previous verdict.
+    supplied = dict(ev.get("agent_supplied") or {})
+    selected = supplied.pop("tool_trajectory_indices", None)
+    if supplied:
+        source_evidence["agent_supplied"] = supplied
+    else:
+        source_evidence.pop("agent_supplied", None)
+        source_evidence["__provenance__"] = {k: v for k, v in prov.items() if k != "agent_supplied"}
+    ev[ACCEPTANCE_SOURCE_REVISION_KEY] = task_acceptance_evidence_revision(source_evidence)
+    if isinstance(selected, list) and selected and isinstance(llm_trace, dict):
+        rows, _omitted, issues = _accept_trajectory(
+            [], drive_root=drive_root, task_id=task_id,
+            source_ref=ev.get("tool_trajectory_source_ref"), indices=selected,
+        )
+        if rows:
+            ev["tool_trajectory_selected"] = rows
+            prov["tool_trajectory_selected"] = "tool_result"
+        partial_sources.extend(issues)
+        if partial_sources:
+            ev["__unresolved_partial_artifacts__"] = partial_sources
     if isinstance(acceptance_dialogue_history, list) and acceptance_dialogue_history:
         ev[UNHASHED_ACCEPTANCE_DIALOGUE_HISTORY_KEY] = acceptance_dialogue_history
     return _accept_enforce_budget(ev, budget=budget_chars)

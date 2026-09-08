@@ -898,7 +898,10 @@ def write_task_result(
     decision 4=A) — there is deliberately no override that lets a cancellation
     replace an already-completed result (discarding a result is a separate
     explicit parent action, ``discard_child_result``). ``_field_projector`` is the narrow
-    custody seam for fields and status that depend on CURRENT; it runs under this same lock.
+    custody seam for fields and status that depend on CURRENT; it runs under this same lock
+    after ordinary review-publication selection. A projector may then publish verified
+    refs of that selected publication or derive its patch directly from CURRENT;
+    replaying the incoming-review merge afterward would undo that physical handoff.
     ``strict_existing_dict`` is reserved for authority-preserving callers:
     when true, an existing malformed/non-object or wrong-schema result raises
     instead of being treated as an empty row and overwritten.  The check
@@ -920,7 +923,12 @@ def write_task_result(
         # ABI 7.0: every write stamps the row; a row another schema version
         # owns (a rollback survivor) is never silently downgraded.
         require_writable_task_result_schema(existing, path)
-        projected_fields = _field_projector(existing, {**fields, "status": status}) if _field_projector else dict(fields)
+        prepared_fields = dict(fields)
+        if "review_projection" in prepared_fields:
+            prepared_fields["review_projection"] = merge_review_projection(
+                existing.get("review_projection"), prepared_fields["review_projection"],
+            )
+        projected_fields = _field_projector(existing, {**prepared_fields, "status": status}) if _field_projector else prepared_fields
         projected_status = str(projected_fields.pop("status", status))
         # Monotonic lifecycle: no stale mirror may overwrite a terminal outcome.
         existing_status = str(existing.get("status") or "")
@@ -930,10 +938,6 @@ def write_task_result(
             log.debug("Blocked status regression %s -> %s for task %s",
                       existing.get("status"), projected_status, task_id)
             return None
-        if "review_projection" in projected_fields:
-            projected_fields["review_projection"] = merge_review_projection(
-                existing.get("review_projection"), projected_fields["review_projection"],
-            )
         now = utc_now_iso()
         # ABI-3 write seam: the merge BASE is the existing row normalized onto
         # the honest cost names (its own legacy spelling wins its own pair,

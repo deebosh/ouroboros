@@ -478,6 +478,8 @@ def test_settings_post_canonicalizes_mcp_server_ids(tmp_path, monkeypatch):
     """
     import server as srv
 
+    _wire_singleton(_FakeTransport([]))  # Exercise refresh without a live example.com request.
+
     drive_root = tmp_path / "drive"
     drive_root.mkdir()
     saved_payload: Dict[str, Any] = {}

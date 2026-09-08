@@ -543,7 +543,8 @@ def _is_manifest_ref(value: Any) -> bool:
 
 
 def _is_task_source_ref(value: Any) -> bool:
-    return bool(isinstance(value, dict) and value.get("kind") == "task_source")
+    return bool(isinstance(value, dict) and value.get("kind") == "task_source"
+                and value.get("availability") != "unavailable")
 
 
 def _task_source_contract_valid(ref: Dict[str, Any]) -> bool:
@@ -587,23 +588,12 @@ def _promote_task_source_ref(
             state["unavailable_refs"], _promotion_fact(ref, "invalid_ref")
         )
         return _typed_unavailable_ref(ref, "invalid_ref")
+    from ouroboros.artifacts import read_actor_source_bytes, store_actor_source_bytes
     try:
-        from ouroboros.artifacts import (
-            read_actor_source_bytes,
-            store_actor_source_bytes,
-        )
-
-        read_actor_source_bytes(parent_root, task_id, ref)
-        # The destination already contains this exact verified handle.  Count
-        # the idempotent resolution just like a fresh promotion so concurrent
-        # copy-back callers publish the same deterministic custody projection.
-        state["promoted_source_handle_count"] += 1
-        return dict(ref)
-    except Exception:
-        pass
-
-    try:
-        raw = read_actor_source_bytes(child_root, task_id, ref)
+        try:
+            raw = read_actor_source_bytes(parent_root, task_id, ref)
+        except Exception:
+            raw = read_actor_source_bytes(child_root, task_id, ref)
     except Exception as exc:
         reason = _task_source_failure_reason(exc)
         _append_promotion_fact(
@@ -626,6 +616,27 @@ def _promote_task_source_ref(
     source = _task_artifact_dir(child_root, task_id, create=False).joinpath(
         *rel.parts
     )
+    # These two owned JSON formats publish typed refs. Inspect their closure
+    # even when the outer source was already copied by an earlier attempt.
+    if name_match.group(2) == "json" and name_match.group(1) in {
+        "acceptance", "acceptance_tool_trajectory",
+    }:
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeError):
+            payload = None
+        if (isinstance(payload, list) and name_match.group(1) == "acceptance_tool_trajectory") or (
+            isinstance(payload, dict) and isinstance(payload.get("request"), dict)
+            and payload["request"].get("surface") == "task_acceptance"
+        ):
+            rewritten = _rewrite_child_ref_tree(payload, parent_root, child_root, task_id, state)
+            if rewritten != payload:
+                raw = json.dumps(rewritten, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    # Relative task_source addresses normally stay identical, preserving exact
+    # checkpoint bytes. Absolute observability refs or unavailable dependencies
+    # require a newly addressed source, never an overwrite of the old checkpoint.
+    changed = hashlib.sha256(raw).hexdigest() != expected_sha
+    target_ref = ref
     try:
         promoted = store_actor_source_bytes(
             parent_root,
@@ -635,11 +646,18 @@ def _promote_task_source_ref(
             data=raw,
             extension=name_match.group(2),
         )
-        if str(promoted.get("path") or "") != rel.as_posix():
+        if not changed and str(promoted.get("path") or "") != rel.as_posix():
             raise OSError("canonical task source path changed during promotion")
-        read_actor_source_bytes(parent_root, task_id, ref)
+        target_ref = {**ref, **promoted} if changed else ref
+        if changed and name_match.group(1) == "acceptance_tool_trajectory":
+            # Host-verified source identity survives locator rebasing; sha256
+            # still verifies the physical bytes of this promoted copy.
+            target_ref.setdefault("corpus_sha256", expected_sha)
+        if changed and "artifact_ref" in target_ref:
+            target_ref["artifact_ref"] = f"artifact_store:{promoted['path']}#chars=0-{len(raw.decode('utf-8'))}"
+        read_actor_source_bytes(parent_root, task_id, target_ref)
         state["promoted_source_handle_count"] += 1
-        return dict(ref)
+        return dict(target_ref)
     except Exception as exc:
         # A CONCURRENT copy-back of the same task may have claimed this exact
         # content-addressed destination between our miss above and our write
@@ -650,12 +668,14 @@ def _promote_task_source_ref(
         # this caller must publish the same complete custody projection as the
         # winner. Only a still-unreadable destination is a pending ref.
         try:
-            read_actor_source_bytes(parent_root, task_id, ref)
+            if changed and target_ref is ref:
+                raise OSError("rewritten source not stored")
+            read_actor_source_bytes(parent_root, task_id, target_ref)
         except Exception:
             pass
         else:
             state["promoted_source_handle_count"] += 1
-            return dict(ref)
+            return dict(target_ref)
         _append_promotion_fact(
             state["pending_refs"],
             _promotion_fact(

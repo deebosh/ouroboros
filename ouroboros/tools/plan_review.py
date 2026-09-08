@@ -16,7 +16,8 @@ DISPATCHED (B2 — a dispatched DEGRADED panel pays like any other; a wave of on
 typed $0 skip rows stays unpaid); an identical fingerprint — DEGRADED included —
 replays the recorded wave free (no panel, no cycle). Closure
 (``plan_spec.closure_after_disposition``): GREEN closes;
-REVIEW_REQUIRED closes by disposition at $0; REVISE_PLAN never closes by
+Note-only REVIEW_REQUIRED closes immediately; need_evidence closes by disposition
+at $0; a below-quorum blocking finding stays open. REVISE_PLAN never closes by
 disposition — accept ⇒ changed spec (next paid cycle), reject ⇒ rationale rides
 into the next delta cycle. Under blocking enforcement an open wave HOLDS
 finalization (``owner_hurry.force_plan_decision``); at the cap the typed
@@ -236,7 +237,7 @@ def get_tools():
                     "Submit goal + spec (what/how-checked/deferred) + plan prose; independent "
                     "reviewers return typed findings against the spec (blocking findings must name "
                     "the spec element they break); the host aggregates: GREEN closes; "
-                    "REVIEW_REQUIRED closes by your review_disposition at no cost; REVISE_PLAN needs "
+                    "Notes are optional; need_evidence closes by review_disposition at no cost; REVISE_PLAN needs "
                     "a changed spec (next paid cycle) or a reject-with-rationale judged in the next "
                     "cycle. Cycles are bounded by the owner's Max review cycles; an unchanged "
                     "envelope replays the recorded result for free (a locator a reviewer asked for "

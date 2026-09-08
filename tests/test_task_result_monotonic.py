@@ -72,6 +72,30 @@ def test_replica_projector_keeps_terminal_lifecycle_guard(drive):
     assert result["result"] == "cancelled"
 
 
+def test_writer_selects_current_review_before_locked_projector(drive):
+    panel = {"surface": "task_acceptance", "panel_id": "p", "panel_index": 0,
+             "task_attempt": 1, "publication_revision": 2, "superseded": True,
+             "aggregate_signal": "FAIL", "applied_source_ref": {"path": "original"}}
+    tr.write_task_result(drive, "review", tr.STATUS_COMPLETED, review_projection={"panels": [panel]})
+    stale = {**panel, "superseded": False, "aggregate_signal": "PASS",
+             "applied_source_ref": {"path": "stale"}}
+    calls = []
+
+    def project(current, fields):
+        assert (drive / "task_results" / "review.json.lock").exists()
+        assert fields["review_projection"] == current["review_projection"] == {"panels": [panel]}
+        calls.append(True)
+        return {**fields, "status": current["status"], "review_projection": {
+            "panels": [{**fields["review_projection"]["panels"][0],
+                        "applied_source_ref": {"path": "promoted"}}]}}
+
+    saved = tr.write_task_result(drive, "review", tr.STATUS_RUNNING,
+                                 review_projection={"panels": [stale]}, _field_projector=project)
+    assert calls == [True]
+    assert saved["status"] == tr.STATUS_COMPLETED
+    assert saved["review_projection"] == {"panels": [{**panel, "applied_source_ref": {"path": "promoted"}}]}
+
+
 def test_cancel_requested_blocks_running_but_allows_cancelled(drive):
     tr.write_task_result(drive, "t", tr.STATUS_CANCEL_REQUESTED)
     tr.write_task_result(drive, "t", tr.STATUS_RUNNING)

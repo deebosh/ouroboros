@@ -412,7 +412,7 @@ def test_open_wave_under_advisory_emits_one_typed_event_at_record_time(harness):
     """B2: advisory is loud AT THE MOMENT an open wave records — one deduplicated
     typed owner-visible event on the log_event rail; replays never re-emit."""
     harness.state["enforcement"] = "advisory"
-    note = json.dumps([_finding("n1", "note")])
+    note = json.dumps([_finding("n1", "blocking", breaks="claim_1")])
     sub = harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()
     while not harness.events.empty():
@@ -443,7 +443,7 @@ def test_open_wave_under_advisory_emits_one_typed_event_at_record_time(harness):
 # ---------------------------------------------------------------- closure per class
 
 
-def test_notes_close_by_disposition_at_zero_cost(harness):
+def test_need_evidence_closes_by_disposition_at_zero_cost_with_optional_notes(harness):
     note = json.dumps([_finding("n1", "note"), _finding("e1", "need_evidence", locator="notes.md")])
     sub = harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()
@@ -458,7 +458,6 @@ def test_notes_close_by_disposition_at_zero_cost(harness):
     full = pr._handle_plan_task(ctx, review_disposition={
         "review_fingerprint": fp,
         "items": [
-            {"finding_id": "s1:n1", "decision": "accept", "rationale": "will do"},
             {"finding_id": "s1:e1", "decision": "defer", "rationale": "not needed"},
         ],
     })
@@ -474,7 +473,7 @@ def test_notes_close_by_disposition_at_zero_cost(harness):
     })
     assert "already_closed" in repeat
     # An unknown finding id on an OPEN wave is refused, typed, before anything is recorded.
-    sub = harness.install({"s1": json.dumps([_finding("n2", "note")]), "s2": CLEAN, "s3": CLEAN})
+    sub = harness.install({"s1": json.dumps([_finding("e2", "need_evidence", locator="notes.md::lines=1-2")]), "s2": CLEAN, "s3": CLEAN})
     _call(ctx, spec={**DECK_SPEC, "in_scope": ["a 4-slide deck"]})
     open_fp = _state(harness)["waves"][-1]["request_fingerprint"]
     bad = pr._handle_plan_task(ctx, review_disposition={
@@ -485,7 +484,7 @@ def test_notes_close_by_disposition_at_zero_cost(harness):
 
 
 def test_v2_wave_without_exact_artifact_can_close_by_disposition(harness):
-    sub = harness.install({"s1": json.dumps([_finding("n1", "note")]), "s2": CLEAN, "s3": CLEAN})
+    sub = harness.install({"s1": json.dumps([_finding("n1", "need_evidence", locator="notes.md")]), "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()
     _call(ctx)
     fp = _state(harness)["waves"][-1]["request_fingerprint"]
@@ -544,7 +543,7 @@ def test_blocking_without_valid_breaks_is_demoted_to_note(harness):
     bad = json.dumps([_finding("b1", "blocking", breaks="claim_99")])
     harness.install({"s1": bad, "s2": bad, "s3": CLEAN})
     out = _call(harness.make_ctx())
-    assert _control(out) == {"outcome": "REVIEW_REQUIRED", "closed": False}
+    assert _control(out) == {"outcome": "REVIEW_REQUIRED", "closed": True}
     wave = _state(harness)["waves"][-1]
     assert {f["class"] for f in wave["findings"]} == {"note"}
     assert any("blocking_without_valid_breaks" in d for a in wave["actors"] for d in a["disclosures"])
@@ -556,7 +555,7 @@ def test_blocking_without_valid_breaks_is_demoted_to_note(harness):
 def test_hold_on_self_opened_plan_under_blocking_and_advisory_disclosure(harness):
     from ouroboros.owner_hurry import force_plan_decision, plan_review_disclosure, plan_review_reminder
 
-    note = json.dumps([_finding("n1", "note")])
+    note = json.dumps([_finding("n1", "need_evidence", locator="notes.md")])
     harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()  # no force_plan: the task opened the review itself
     before = force_plan_decision(ctx, {}, enforcement="blocking")
@@ -971,7 +970,7 @@ def test_disposition_cannot_close_a_superseded_wave(harness, monkeypatch):
     ctx = harness.make_ctx()
     harness.install({"s1": note, "s2": note, "s3": CLEAN})
     first = _call(ctx)
-    assert _control(first) == {"outcome": "REVIEW_REQUIRED", "closed": False}
+    assert _control(first) == {"outcome": "REVIEW_REQUIRED", "closed": True}
     fp_a = _state(harness)["waves"][-1]["request_fingerprint"]
     harness.install({"s1": blocking, "s2": blocking, "s3": CLEAN})
     second = _call(ctx, spec={**DECK_SPEC, "in_scope": ["a 9-slide deck"]})
@@ -1170,16 +1169,17 @@ def test_final_cycle_survives_progress_reference_failure(harness, monkeypatch):
     )
 
 
-def test_duplicate_contradictory_dispositions_are_refused():
+@pytest.mark.parametrize("klass,closed", [("note", True), ("need_evidence", False)])
+def test_duplicate_contradictory_dispositions_are_refused(klass, closed):
     """Production-gate finding (grok): accept-then-reject for one finding must refuse BOTH."""
     from ouroboros.tools import plan_spec
 
-    findings = [{"finding_id": "1:n", "id": "n", "class": "note", "summary": "tighten"}]
+    findings = [{"finding_id": "1:n", "id": "n", "class": klass, "summary": "tighten"}]
     closure = plan_spec.closure_after_disposition(
         "REVIEW_REQUIRED", findings,
         [{"finding_id": "1:n", "decision": "accept", "rationale": "ok"},
          {"finding_id": "1:n", "decision": "reject", "rationale": "no"}], "blocking")
-    assert closure["closed"] is False and closure["open_ids"] == ["1:n"]
+    assert closure["closed"] is closed and closure["open_ids"] == ([] if closed else ["1:n"])
     assert any("duplicate_disposition:1:n" in note for note in closure["notes"])
 
 
@@ -1560,5 +1560,3 @@ def test_epoch_replay_free_while_unchanged_transient_keeps_it_healed_repays(harn
     assert len(sub.calls) == 2
     assert [s.slot_id for s in sub.calls[1]["slots"]] == ["s1", "s2", "s3"]
     assert _state(harness)["cycles_paid"] == 2
-
-

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros.config import get_context_mode
 from ouroboros.outcomes import reviewable_effect_projection
+from ouroboros.task_finalization import set_terminal_host_notice
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.utils import sanitize_tool_result_for_log
 
@@ -328,6 +329,16 @@ def _replace_delivery_candidate(
         full_text if model_text is None else model_text
     )
     previous_candidate = getattr(tools._ctx, "_delivery_candidate", None)
+    if (
+        isinstance(previous_candidate, _loop().DeliveryCandidate)
+        and previous_candidate.full_text == full_text
+        and _loop()._current_delivery_candidate(ctx, llm_trace) is previous_candidate
+    ):
+        previous_candidate.finalization_control = control
+        tools._ctx._delivery_control_required = False
+        _loop()._publish_delivery_candidate(tools, previous_candidate, llm_trace)
+        return previous_candidate
+    evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(tools, ctx, llm_trace)
     if isinstance(previous_candidate, _loop().DeliveryCandidate):
         _loop()._supersede_delivery_acceptance_binding(
             tools,
@@ -335,7 +346,6 @@ def _replace_delivery_candidate(
             previous_candidate,
             reason="delivery_candidate_replaced",
         )
-    evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(tools, ctx, llm_trace)
     content_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
     revision = int(getattr(tools._ctx, "_delivery_candidate_revision", 0) or 0) + 1
     tools._ctx._delivery_candidate_revision = revision
@@ -414,6 +424,15 @@ def _current_delivery_candidate(
     candidate = _loop()._live_delivery_candidate(ctx)
     if candidate is None:
         return None
+    if _loop()._task_acceptance_owner_generation_changed(ctx.tools._ctx):
+        return None
+    if candidate.acceptance_binding.get("authoritative") is True:
+        current_binding = _delivery_acceptance_binding(ctx.tools, llm_trace, candidate.content_sha256)
+        if not current_binding.get("authoritative") or any(
+            current_binding.get(key) != candidate.acceptance_binding.get(key)
+            for key in ("panel_id", "binding_hash")
+        ):
+            return None  # Matching answer bytes cannot revive a superseded host verdict.
     evidence_revision, evidence_fingerprint = _loop()._delivery_evidence_state(
         ctx.tools, ctx, llm_trace,
     )
@@ -843,7 +862,7 @@ def _resolve_delivery_control(
 
 
 def _compose_delivery_suffix(full_text: str, suffix: str) -> str:
-    """Compose one host-owned suffix into the exact delivered/candidate text."""
+    """Join host-authored fallback text and its notice, without model authorship."""
 
     text = str(full_text or "")
     note = str(suffix or "")
@@ -960,21 +979,8 @@ def _no_tool_final_answer(
     _loop()._project_child_result_dispositions(limit_ctx, llm_trace)
     plan_suffix = _loop()._force_plan_disclosure(tools._ctx, llm_trace)
     orphan_suffix = _loop()._forced_orphan_note(limit_ctx, include_terminal=False)
-    normal_suffix = plan_suffix + orphan_suffix
-    composed_content = _loop()._compose_delivery_suffix(str(content or ""), normal_suffix)
+    set_terminal_host_notice(limit_ctx.accumulated_usage, plan_suffix, orphan_suffix)
     candidate = getattr(tools._ctx, "_delivery_candidate", None)
-    if composed_content and (
-        not isinstance(candidate, _loop().DeliveryCandidate)
-        or candidate.full_text != composed_content
-    ):
-        candidate = _loop()._replace_delivery_candidate(
-            tools,
-            limit_ctx,
-            llm_trace,
-            composed_content,
-            control="host_suffix" if normal_suffix else "candidate",
-            model_text=str(content or ""),
-        )
     if isinstance(candidate, _loop().DeliveryCandidate):
         if orphan_suffix:
             candidate.degraded = True

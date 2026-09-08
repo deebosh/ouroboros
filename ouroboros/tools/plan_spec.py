@@ -810,9 +810,9 @@ def closure_after_disposition(
 ) -> dict:
     """The ONE closure table (F7) → ``{closed, open_ids, notes}``.
 
-    GREEN → closed. REVIEW_REQUIRED (only note/need_evidence) → closed when
-    every finding id carries a disposition (accept|reject|defer + rationale —
-    the disposition form as today, plan §7.2 A). REVISE_PLAN → NEVER closed by
+    GREEN → closed. Notes are optional advice, so a note-only REVIEW_REQUIRED
+    wave closes without dispositions. Need_evidence still requires a disposition
+    (accept|reject|defer + rationale). REVISE_PLAN → NEVER closed by
     disposition (blocking needs a changed spec → new cycle, or reject-with-
     rationale → next paid delta cycle). DEGRADED → not closable by disposition
     (rerun the wave). Advisory enforcement never flips ``closed``: the caller
@@ -855,7 +855,7 @@ def closure_after_disposition(
         # says — a single blocking finding below quorum surfaces as REVIEW_REQUIRED,
         # and closing it with a $0 disposition would be exactly the laundering the
         # height rule exists to prevent. It needs a changed spec or a paid delta cycle.
-        if blocking or fid not in valid:
+        if blocking or (finding.get("class") != "note" and fid not in valid):
             open_ids.append(fid)
     if verdict == "GREEN":
         closed = True
