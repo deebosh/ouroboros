@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
@@ -27,6 +28,9 @@ log = logging.getLogger(__name__)
 BLOCK_SIZE = 100                          # Messages per consolidation block
 MAX_SUMMARY_BLOCKS = 10                   # Compress into era when exceeded
 ERA_COMPRESS_COUNT = 4                    # Oldest blocks to compress per era
+BLOCK_SUMMARY_MAX_CHARS = 24_000         # ibl-local consolidator: per-block byte cap (BIBLE P1)
+ERA_SUMMARY_MAX_CHARS = 96_000           # ibl-local consolidator: per-era byte cap (4× block cap)
+PENDING_BYTES_TRIGGER = 50_000           # ibl-local consolidator: byte-aware consolidation trigger
 
 
 def _consolidation_route() -> Tuple[str, bool]:
@@ -109,10 +113,27 @@ def should_consolidate(
         # run regardless of pending volume: the run appends the one durable gap
         # block and rebases the cursor even below BLOCK_SIZE.
         return True
-    total = sum(_count_lines(path) for path in segments if path.exists())
-    if last_offset > total:
-        return _count_lines(chat_path) >= BLOCK_SIZE
-    return (total - last_offset) >= BLOCK_SIZE
+    total_lines = sum(_count_lines(path) for path in segments if path.exists())
+    total_bytes = sum(
+        path.stat().st_size for path in segments if path.exists()
+    )
+    if last_offset > total_lines:
+        # Cursor past total — fall back to live-only heuristic. Line count is
+        # the primary trigger; the byte threshold (PENDING_BYTES_TRIGGER) is a
+        # SECONDARY safety net for pathological long-message cases where message
+        # count stays under BLOCK_SIZE but raw bytes are already bloating.
+        live_lines = _count_lines(chat_path)
+        if live_lines >= BLOCK_SIZE:
+            return True
+        return total_bytes >= PENDING_BYTES_TRIGGER
+    pending_lines = total_lines - last_offset
+    if pending_lines >= BLOCK_SIZE:
+        return True
+    # Byte-aware secondary trigger (ibl-local consolidator): a single pathological
+    # long-message run can accumulate 50K chars across well under 100 messages,
+    # which still bloats context. Approximation: when total pending bytes crosses
+    # PENDING_BYTES_TRIGGER, run regardless of pending line count.
+    return total_bytes >= PENDING_BYTES_TRIGGER
 
 
 def consolidate(
@@ -358,7 +379,48 @@ def _run_block_consolidation(
     return total_usage
 
 
-def _call_consolidation_llm(llm_client: Any, prompt: str, label: str) -> Tuple[str, Dict[str, Any]]:
+def _strip_think_blocks(raw: str) -> str:
+    """Strip ``...`` blocks from LLM output before storing.
+
+    Models like minimax/M2.7-highspeed emit `` reasoning regardless of
+    `reasoning_effort="low"`. Storing those sections inflates dialogue_blocks.json
+    (45.8% of current content per cycle-54 measurement, observed range
+    0–95% per block) and bloats downstream scratchpad rendering. We strip them
+    AFTER the call — the model still thinks, the stored memory only carries
+    the answer. Conservative: only strips WELL-FORMED closing tags; an unclosed
+    `` tag fails safe (no strip) so partial responses are preserved
+    verbatim and surfaced to the cursor advance / retry path."""
+    if not raw:
+        return ""
+    stripped = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL)
+    return stripped.strip()
+
+
+def _truncate_with_marker(content: str, max_chars: int, span_label: str) -> str:
+    """Bound stored content at ``max_chars`` and append an honest truncation marker.
+
+    BIBLE P1: a content cap that silently loses the tail is NOT acceptable —
+    the marker is a durable, visible fact that the stored span is bounded.
+    Cursor and span_label are recorded so a reader can correlate the truncation
+    back to the generation that produced it."""
+    if len(content) <= max_chars:
+        return content
+    kept = content[:max_chars].rstrip()
+    marker = (
+        f"\n\n[...truncated at {max_chars} chars (original ~{len(content)} chars); "
+        f"span: {span_label} — single-block byte cap prevents dialogue_blocks.json bloat]..."
+    )
+    return kept + marker
+
+
+def _call_consolidation_llm(
+    llm_client: Any,
+    prompt: str,
+    label: str,
+    *,
+    max_chars: int = BLOCK_SUMMARY_MAX_CHARS,
+    span_label: str = "consolidation",
+) -> Tuple[str, Dict[str, Any]]:
     try:
         model, use_local = _consolidation_route()
         msg, usage = llm_client.chat(
@@ -369,7 +431,15 @@ def _call_consolidation_llm(llm_client: Any, prompt: str, label: str) -> Tuple[s
             max_tokens=16384,
             use_local=use_local,
         )
-        return msg.get("content", ""), usage
+        raw = msg.get("content", "")
+        stripped = _strip_think_blocks(raw)
+        bounded = _truncate_with_marker(stripped, max_chars, span_label)
+        if len(bounded) > max_chars + 200:  # marker overhead capped ~200 chars
+            log.warning(
+                "Consolidation output for %s exceeded byte cap %d (stripped %d chars, truncated to %d)",
+                span_label, max_chars, len(stripped), max_chars,
+            )
+        return bounded, usage
     except Exception as e:
         log.error("%s failed: %s", label, e, exc_info=True)
         return "", {"cost": 0}
@@ -407,7 +477,13 @@ Create a detailed episodic memory entry from these {message_count} messages.
 {messages_text}
 """
 
-    return _call_consolidation_llm(llm_client, prompt, "Block summary LLM call")
+    return _call_consolidation_llm(
+        llm_client,
+        prompt,
+        "Block summary LLM call",
+        max_chars=BLOCK_SUMMARY_MAX_CHARS,
+        span_label=f"block {first_date} {first_time}-{last_time}",
+    )
 
 
 def _compress_blocks_to_era(
@@ -438,7 +514,13 @@ Write as Ouroboros (first person). Aim for 30-40% of original length.
 {combined}
 """
 
-    content, usage = _call_consolidation_llm(llm_client, prompt, "Era compression")
+    content, usage = _call_consolidation_llm(
+        llm_client,
+        prompt,
+        "Era compression",
+        max_chars=ERA_SUMMARY_MAX_CHARS,
+        span_label=f"era {start_date}-{end_date}",
+    )
     if not content or not content.strip():
         log.warning("Era compression returned empty — keeping original blocks (Bible P1)")
         return None, usage

@@ -396,3 +396,187 @@ def test_try_extract_embedded_json_balanced_and_skips_strings(tmp_path):
     assert _try_extract_embedded_json("no json here at all") is None
     # Unbalanced — defer.
     assert _try_extract_embedded_json("{ \"a\": 1 ") is None
+
+
+# ---------------------------------------------------------------------------
+# ibl-local dialogue-consolidator compression quality — strip-think + cap + byte trigger
+# ---------------------------------------------------------------------------
+
+
+def test_strip_think_blocks_basic():
+    """The most common case: a single <think>...</think> block at the start."""
+    from ouroboros.consolidator import _strip_think_blocks
+
+    raw = "<think>\nplan: foo\n</think>\n\n### Block: 2026-09-07\nactual content"
+    assert _strip_think_blocks(raw) == "### Block: 2026-09-07\nactual content"
+
+
+def test_strip_think_blocks_no_think():
+    """No think block → raw returned unchanged."""
+    from ouroboros.consolidator import _strip_think_blocks
+
+    raw = "### Block: 2026-09-07\nactual content"
+    assert _strip_think_blocks(raw) == raw
+
+
+def test_strip_think_blocks_multiple():
+    """Multiple disjoint think blocks are all stripped."""
+    from ouroboros.consolidator import _strip_think_blocks
+
+    raw = (
+        "<think>plan 1</think>summary intro\n"
+        "<think>plan 2</think>body content\n"
+        "trailing text"
+    )
+    out = _strip_think_blocks(raw)
+    assert "plan 1" not in out
+    assert "plan 2" not in out
+    assert "summary intro" in out
+    assert "body content" in out
+    assert "trailing text" in out
+
+
+def test_strip_think_blocks_unclosed_fails_safe():
+    """Unclosed ``<think>`` (no closing tag) must NOT eat the whole reply —
+    the conservative regex is paired-aware. Without a closing tag the think
+    block is NOT stripped and the whole raw text passes through."""
+    from ouroboros.consolidator import _strip_think_blocks
+
+    raw = "<think>never closed\nactual content here"
+    out = _strip_think_blocks(raw)
+    assert out == raw  # unclosed → pass-through, not silently consumed
+
+
+def test_strip_think_blocks_multiline():
+    """Multiline think content with DOTALL semantics is removed as a unit."""
+    from ouroboros.consolidator import _strip_think_blocks
+
+    raw = (
+        "<think>\n"
+        "first line of plan\n"
+        "second line\n"
+        "third line\n"
+        "</think>\n"
+        "### Block\nactual"
+    )
+    out = _strip_think_blocks(raw)
+    assert out == "### Block\nactual"
+
+
+def test_truncate_with_marker_under_cap():
+    """Content below the cap returns unchanged."""
+    from ouroboros.consolidator import _truncate_with_marker
+
+    text = "short content " * 10  # ~150 chars
+    out, truncated = _truncate_with_marker(text, max_chars=1000, span_label="test")
+    assert truncated is False
+    assert out == text
+
+
+def test_truncate_with_marker_over_cap():
+    """Content over the cap is truncated with an honest marker naming the cut span."""
+    from ouroboros.consolidator import _truncate_with_marker
+
+    text = "x" * 5_000
+    out, truncated = _truncate_with_marker(text, max_chars=2_000, span_label="block 2026-09-07")
+    assert truncated is True
+    assert out.startswith("x" * 2_000)
+    assert "truncated" in out.lower()
+    assert "block 2026-09-07" in out
+
+
+def test_truncate_with_marker_exact_cap():
+    """Content exactly at the cap does NOT trigger truncation."""
+    from ouroboros.consolidator import _truncate_with_marker
+
+    text = "x" * 1_000
+    out, truncated = _truncate_with_marker(text, max_chars=1_000, span_label="test")
+    assert truncated is False
+    assert out == text
+
+
+def test_call_consolidation_llm_strips_think_and_truncates(tmp_paths):
+    """End-to-end: _call_consolidation_llm returns content with think stripped
+    AND over-cap content truncated."""
+    from ouroboros.consolidator import _call_consolidation_llm
+
+    mock_llm = MagicMock()
+    overlong_body = "x" * 30_000
+    mock_llm.chat.return_value = (
+        {
+            "content": (
+                "<think>\nplan: blah\nblah\n</think>\n\n"
+                f"### Block: 2026-09-07\n{overlong_body}"
+            )
+        },
+        {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30, "cost": 0.001},
+    )
+
+    out, usage = _call_consolidation_llm(
+        mock_llm, "any prompt", "test", max_chars=24_000, span_label="block 2026-09-07"
+    )
+
+    assert "plan: blah" not in out
+    assert out.startswith("### Block: 2026-09-07")
+    assert "truncated" in out.lower()
+    # Content is bounded: marker + body < 24_000 + small marker overhead.
+    assert len(out) <= 24_000 + 500
+    assert usage["cost"] == 0.001
+
+
+def test_call_consolidation_llm_under_cap_unchanged():
+    """Under-cap content passes through clean — no truncation marker, no think
+    bleed."""
+    from ouroboros.consolidator import _call_consolidation_llm
+
+    mock_llm = MagicMock()
+    body = "### Block: 2026-09-07\nclean summary body, no think, well under cap."
+    mock_llm.chat.return_value = (
+        {"content": body},
+        {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15, "cost": 0.0},
+    )
+
+    out, _usage = _call_consolidation_llm(
+        mock_llm, "any prompt", "test", max_chars=24_000, span_label="block 2026-09-07"
+    )
+
+    assert out == body
+
+
+def test_should_consolidate_byte_trigger(tmp_paths, monkeypatch):
+    """Byte-aware secondary trigger: pending volume below BLOCK_SIZE but raw
+    bytes >= PENDING_BYTES_TRIGGER fires the consolidator (catches pathological
+    long-message runs)."""
+    from ouroboros import consolidator as cons_mod
+    monkeypatch.setattr(cons_mod, "PENDING_BYTES_TRIGGER", 5_000)
+
+    chat_path, _, meta_path = tmp_paths
+    # 50 messages (under BLOCK_SIZE=100) but each carries a huge payload → ~12.5KB
+    _write_big_chat_entries(chat_path, count=50, payload_size=250)
+    assert should_consolidate(meta_path, chat_path) is True
+
+
+def test_should_consolidate_no_byte_trigger_when_small(tmp_paths):
+    """The byte trigger does NOT fire when raw bytes are small even with
+    pending lines below BLOCK_SIZE — only one of (line cap OR byte cap) needs
+    to hold."""
+    from ouroboros import consolidator as cons_mod
+
+    chat_path, _, meta_path = tmp_paths
+    _write_big_chat_entries(chat_path, count=10, payload_size=10)
+    assert should_consolidate(meta_path, chat_path) is False
+
+
+def _write_big_chat_entries(path, *, count: int, payload_size: int):
+    """Write count chat entries each carrying payload_size bytes of text."""
+    import json as _json
+
+    payload = "x" * payload_size
+    with path.open("w") as f:
+        for i in range(count):
+            entry = {
+                "ts": f"2026-09-07T{10 + i // 60:02d}:{i % 60:02d}:00Z",
+                "direction": "in" if i % 2 == 0 else "out",
+                "text": payload,
+            }
+            f.write(_json.dumps(entry) + "\n")
