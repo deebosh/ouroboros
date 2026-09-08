@@ -19,10 +19,12 @@ a ``ToolContext``, put in a child's environment, or handed to a harness sandbox.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import pathlib
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -298,7 +300,8 @@ class ClaudexorGateway:
 
     def _request(self, method: str, path: str, *, json_body: Any = None,
                  headers: Optional[Dict[str, str]] = None,
-                 timeout_sec: Optional[float] = None) -> Any:
+                 timeout_sec: Optional[float] = None,
+                 content_body: Optional[bytes] = None, raw_bytes: bool = False) -> Any:
         # ``timeout_sec`` replaces the client's read default for THIS call only, for a
         # caller that is bounding ITSELF — today every `delegate_wait` poll, each asking
         # for what its window has left, floored at ``SHORT_POLL_TIMEOUT_SEC`` and never
@@ -322,7 +325,8 @@ class ClaudexorGateway:
         try:
             # Preserve received headers even when decoding or reading the body
             # fails. In particular, a 401/403 must survive a later read timeout.
-            with self._client.stream(method, path, json=json_body,
+            payload = {"content": content_body} if content_body is not None else {"json": json_body}
+            with self._client.stream(method, path, **payload,
                                      headers=headers or None, **bound) as response:
                 response.read()
         except httpx.HTTPError as exc:
@@ -333,6 +337,8 @@ class ClaudexorGateway:
             ) from exc
         if response.status_code >= 400:
             raise self._problem(response)
+        if raw_bytes:
+            return response.content
         if not response.content:
             return None
         try:
@@ -420,6 +426,157 @@ class ClaudexorGateway:
     def agent_capabilities(self) -> Dict[str, Any]:
         body = self._request("GET", "/v2/agent-capabilities")
         return body if isinstance(body, dict) else {}
+
+    # Model operations use the same private control transport, not Agent runs
+    # or the redacted/size-capped artifact surface. Callers own all admission,
+    # waiting, billing and explicit acknowledgement. The engine owns account
+    # choice; this client preserves the caller's Auto/pin request verbatim.
+
+    def list_model_sources(self) -> Dict[str, Any]:
+        """Return the engine's opaque source ids and credential-harness bindings."""
+        return _model_object(self._request("GET", "/v2/model-sources"))
+
+    def list_source_models(self, source: str,
+                           credential_profile_id: Optional[str] = None, *,
+                           requested_model: Optional[str] = None) -> Dict[str, Any]:
+        """Preserve the exact-profile catalog envelope; an omitted pin means engine Auto."""
+        from urllib.parse import quote, urlencode
+
+        path = f"/v2/model-sources/{quote(str(source), safe='')}/models"
+        query = {}
+        if credential_profile_id is not None:
+            query["credentialProfileId"] = credential_profile_id
+        if requested_model is not None:
+            query["requestedModel"] = requested_model
+        if query:
+            path += "?" + urlencode(query)
+        return _model_object(self._request("GET", path))
+
+    def upload_model_request(self, request: Dict[str, Any], *,
+                             idempotency_key: str) -> Dict[str, Any]:
+        """Upload exact request JSON without spending a generation or logging content.
+
+        Stage keys derive from the caller's invocation identity, never the prompt.
+        An explicit retry can finish an uploaded/finalized handle after a lost
+        reply. A cancelled or still-writing upload remains a typed refusal; this
+        method never creates another upload or inference to hide that outcome.
+        """
+        from urllib.parse import quote
+
+        key = _model_idempotency_key(idempotency_key)
+        if not isinstance(request, dict):
+            raise ClaudexorUnavailable("invalid_model_payload", "Model request must be a JSON object")
+        try:
+            data = json.dumps(request, ensure_ascii=False, allow_nan=False,
+                              sort_keys=True, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError, UnicodeError) as exc:
+            raise ClaudexorUnavailable("invalid_model_payload", "Model request is not valid JSON") from exc
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        stage_key = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        created = _model_object(self._request(
+            "POST", "/v2/uploads",
+            json_body={"purpose": "model", "kind": "file", "mime": "application/json",
+                       # Bind create's existing metadata identity to the bytes too:
+                       # equal length alone would let an open upload change payload.
+                       "name": f"model-request-{digest.removeprefix('sha256:')}.json",
+                       "sizeBytes": len(data)},
+            headers={"Idempotency-Key": f"model-upload-{stage_key}"},
+        ))
+        upload_id = created.get("uploadId")
+        if not isinstance(upload_id, str) or not upload_id:
+            raise ClaudexorUnavailable("malformed_response", "Model upload returned no upload id")
+        path = f"/v2/uploads/{quote(upload_id, safe='')}"
+        try:
+            status = _model_object(self._request("GET", path))
+        except ClaudexorUnavailable as exc:
+            if exc.status_code != 404 or exc.code != "upload_not_found":
+                raise
+            # Finalize removes the upload handle but retains its idempotent receipt.
+        else:
+            if status.get("uploadId") != upload_id:
+                raise ClaudexorUnavailable("malformed_response", "Model upload status identity mismatch")
+            if status.get("state") == "open":
+                self._request("PUT", f"{path}/bytes", content_body=data,
+                              headers={"Content-Type": "application/octet-stream"})
+            elif status.get("state") != "uploaded":
+                raise ClaudexorUnavailable("model_upload_unavailable", "Model upload is not ready for finalization")
+        resource = _model_object(self._request(
+            "POST", f"{path}/finalize", json_body={"expectedSha256": digest},
+            headers={"Idempotency-Key": f"model-finalize-{stage_key}"},
+        ))
+        if resource.get("purpose") != "model":
+            raise ClaudexorUnavailable("resource_purpose_mismatch", "Model upload returned an Agent attachment")
+        ref = _model_payload_ref({name: resource.get(name) for name in ("resourceId", "sha256", "sizeBytes")})
+        if ref["sha256"] != digest or ref["sizeBytes"] != len(data):
+            raise ClaudexorUnavailable("model_payload_integrity_error", "Finalized model request differs from uploaded bytes")
+        return ref
+
+    def create_model_operation(self, request_ref: Dict[str, Any], *,
+                               idempotency_key: str) -> Dict[str, Any]:
+        """Create or rejoin exactly one caller-identified generation; never mint a retry key."""
+        key = _model_idempotency_key(idempotency_key)
+        return _model_operation(self._request(
+            "POST", "/v2/model-operations", json_body={"request": _model_payload_ref(request_ref)},
+            headers={"Idempotency-Key": key},
+        ))
+
+    def get_model_operation(self, operation_id: str, *,
+                            timeout_sec: Optional[float] = None) -> Dict[str, Any]:
+        from urllib.parse import quote
+
+        return _model_operation(self._request(
+            "GET", f"/v2/model-operations/{quote(str(operation_id), safe='')}",
+            timeout_sec=timeout_sec,
+        ), operation_id)
+
+    def get_model_result(self, operation_id: str, *, expected_ref: Dict[str, Any],
+                         timeout_sec: Optional[float] = None,
+                         raw_bytes: bool = False) -> Dict[str, Any] | bytes:
+        """Read and verify the complete result, without ACK, redaction or artifact caps.
+
+        The expected reference comes from this operation's ready custody record.
+        Failure preserves that handle: only another read of the same operation is
+        appropriate here, never a new generation. The caller acknowledges after
+        it has retained the returned result under its own custody contract.
+        ``raw_bytes`` retains the exact verified JSON encoding for that custody;
+        it never skips the size, digest, UTF-8 or object validation below.
+        """
+        from urllib.parse import quote
+
+        ref = _model_payload_ref(expected_ref)
+        data = self._request(
+            "GET", f"/v2/model-operations/{quote(str(operation_id), safe='')}/result",
+            timeout_sec=timeout_sec, raw_bytes=True,
+        )
+        if len(data) != ref["sizeBytes"] or "sha256:" + hashlib.sha256(data).hexdigest() != ref["sha256"]:
+            raise ClaudexorUnavailable("model_payload_integrity_error", "Model result does not match its size and SHA-256")
+        try:
+            body = json.loads(data.decode("utf-8", errors="strict"), parse_constant=_reject_json_constant)
+        except (ValueError, UnicodeError) as exc:
+            raise ClaudexorUnavailable("malformed_response", "Model result is not valid UTF-8 JSON") from exc
+        body = _model_object(body)
+        return data if raw_bytes else body
+
+    def acknowledge_model_result(self, operation_id: str, sha256: str) -> Dict[str, Any]:
+        """Acknowledge only the exact result the caller has retained; no implicit ACK."""
+        from urllib.parse import quote
+
+        return _model_operation(self._request(
+            "POST", f"/v2/model-operations/{quote(str(operation_id), safe='')}/ack",
+            json_body={"sha256": sha256},
+        ), operation_id)
+
+    def cancel_model_operation(self, operation_id: str, *, reason_code: str = "") -> Dict[str, Any]:
+        """Request cancellation; the returned engine lifecycle, not this POST, proves settlement."""
+        from urllib.parse import quote
+
+        control = {"action": "cancel"}
+        if reason_code:
+            control["reasonCode"] = reason_code
+        return _model_operation(self._request(
+            "POST", f"/v2/model-operations/{quote(str(operation_id), safe='')}/control",
+            json_body=control,
+        ), operation_id)
 
     def harnesses(self) -> List[Dict[str, Any]]:
         """GET /v2/harnesses — per-harness status rows WITH the full manifest.
@@ -786,6 +943,40 @@ class ClaudexorGateway:
             json_body={"name": str(name), "value": str(value)},
         )
         return body if isinstance(body, dict) else {}
+
+
+def _model_object(body: Any) -> Dict[str, Any]:
+    if not isinstance(body, dict):
+        raise ClaudexorUnavailable("malformed_response", "Model transport returned a non-object response")
+    return body
+
+
+def _model_operation(body: Any, operation_id: Optional[str] = None) -> Dict[str, Any]:
+    body = _model_object(body)
+    if (not isinstance(body.get("id"), str) or not body["id"]
+            or (operation_id is not None and body["id"] != operation_id)):
+        raise ClaudexorUnavailable("malformed_response", "Model operation response identity mismatch")
+    return body
+
+
+def _model_idempotency_key(value: str) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 256:
+        raise ClaudexorUnavailable("invalid_idempotency_key", "A stable caller-supplied model invocation key is required")
+    return value.strip()
+
+
+def _model_payload_ref(value: Dict[str, Any]) -> Dict[str, Any]:
+    if (not isinstance(value, dict) or set(value) != {"resourceId", "sha256", "sizeBytes"}
+            or not isinstance(value.get("resourceId"), str) or not value["resourceId"]
+            or not isinstance(value.get("sha256"), str)
+            or re.fullmatch(r"sha256:[a-f0-9]{64}", value["sha256"]) is None
+            or type(value.get("sizeBytes")) is not int or value["sizeBytes"] < 0):
+        raise ClaudexorUnavailable("model_payload_ref_invalid", "Invalid model payload reference")
+    return dict(value)
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("Non-finite JSON number")
 
 
 def pending_interactions(detail: Dict[str, Any]) -> List[Dict[str, Any]]:

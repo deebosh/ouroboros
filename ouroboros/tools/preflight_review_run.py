@@ -519,8 +519,11 @@ def _run_claude_advisory(
     except ValueError as exc:
         return [], f"⚠️ ADVISORY_ERROR: {exc}", "", 0
     from ouroboros.reviewer_slot_config import advisory_slot_config
+    from ouroboros.review_records import apply_review_model_override
+    from ouroboros.model_wait import current_model_wait
 
-    _slot = advisory_slot_config()
+    waiter = current_model_wait()
+    _slot = apply_review_model_override(advisory_slot_config(), waiter.overrides if waiter else {}, slot_id="advisory_slot_1")
     if delegated_route:
         model = ""  # the session route resolves its own model; reported after the run
     else:
@@ -531,8 +534,8 @@ def _run_claude_advisory(
         # (advisory_model_credentials_missing) before ever calling in.
         from ouroboros.provider_models import model_has_credentials
 
-        model = _car()._advisory_native_model()
-        if not model_has_credentials(model):
+        model = _car()._advisory_native_model(_slot)
+        if not getattr(_slot, "use_local", None) and not model_has_credentials(model):
             return [], (
                 f"⚠️ ADVISORY_ERROR: no provider credentials for advisory model "
                 f"{model}; add the provider key or point the advisory row at a "
@@ -540,7 +543,6 @@ def _run_claude_advisory(
             ), "", 0
     options = dict(options or {})
     drive_root = options.get("drive_root")
-    include_repo_diff = bool(options.get("include_repo_diff", True))
     review_surface = str(options.get("review_surface") or "repo")
     expected_items = options.get("expected_items")
     try:
@@ -568,7 +570,7 @@ def _run_claude_advisory(
         resolved_paths, managed_subject_diff = list(paths or []), False
     else:
         try:
-            if include_repo_diff:
+            if options.get("include_repo_diff", True):
                 diff_text, context_paths, early, managed_subject_diff = _car()._advisory_review_diff(
                     repo_dir, ctx, paths
                 )
@@ -625,7 +627,8 @@ def _run_claude_advisory(
 
     prompt_chars = len(prompt)
     diag = _car()._get_runtime_diagnostics(model, prompt_chars, resolved_paths)
-    size_skip = None if resuming else _car()._predispatch_size_skip(ctx, delegated_route, model, prompt, managed_subject_diff)
+    size_skip = None if resuming else _car()._predispatch_size_skip(
+        ctx, delegated_route, model, prompt, managed_subject_diff, slot=_slot)
     if size_skip is not None:
         return size_skip
 
@@ -787,6 +790,8 @@ def _run_claude_advisory(
         return items, raw_text, model, prompt_chars
 
     except Exception as e:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(e)
         skip = _car()._maybe_overflow_skip(ctx, delegated_route, prompt_chars, model, None, str(e), verb="raised")
         if skip is not None:
             return skip

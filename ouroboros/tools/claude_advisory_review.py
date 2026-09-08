@@ -145,11 +145,11 @@ def _advisory_default_model() -> str:
     return _same_model_payable_spelling(str(OPENROUTER_REVIEW_DEFAULTS["advisory"]))
 
 
-def _advisory_native_model() -> str:
+def _advisory_native_model(slot=None) -> str:
     """The routed model the native advisory episode will run on."""
     from ouroboros.reviewer_slot_config import advisory_slot_config
 
-    configured = (advisory_slot_config().target_id or "").strip()
+    configured = ((slot or advisory_slot_config()).target_id or "").strip()
     if configured:
         return _same_model_payable_spelling(configured)
     return _advisory_default_model()
@@ -213,6 +213,8 @@ def _run_advisory_native(
         reviewer_slots([model], effort=slot.effort or "low", role_hint="advisory pre-reviewer",
                        id_prefix="advisory_slot")[0],
         subagent_id=str(getattr(slot, "subagent_id", "") or ""),
+        session_profile=str(getattr(slot, "profile_id", "") or ""),
+        **({"use_local": slot.use_local} if getattr(slot, "use_local", None) is not None else {}),
     )
     if int(mandatory_read_corpus_chars or 0) > 0:
         # Declared on the request FIRST: the bound the budget section names is
@@ -338,7 +340,7 @@ def _prompt_oversize_skip_warning(prompt_chars: int, managed: bool) -> str:
     )
 
 
-def _api_window_skip_warning(model: str, prompt: str, managed: bool) -> str:
+def _api_window_skip_warning(model: str, prompt: str, managed: bool, slot=None) -> str:
     """The api route's admission verdict against its REAL window, or ``""`` to proceed.
 
     The window comes from the reviewer-window SSOT
@@ -354,7 +356,9 @@ def _api_window_skip_warning(model: str, prompt: str, managed: bool) -> str:
     from ouroboros.tools.review import _review_output_budget
     from ouroboros.utils import estimate_tokens
 
-    window = _rw.resolve_reviewer_window(model).sizing_window()
+    window = _rw.resolve_reviewer_window(model, **(_rw.reviewer_window_binding(slot) if slot else {})).sizing_window()
+    if window <= 0:
+        return ""  # Unknown capacity; the independent prompt sanity bound remains.
     output_reserve, tokenizer_margin = _rw.window_scaled_reserves(
         window,
         output_reserve=_review_output_budget(),
@@ -449,6 +453,7 @@ def _predispatch_size_skip(
     model: str,
     prompt: str,
     managed: bool,
+    slot=None,
 ) -> Optional[tuple]:
     """Both pre-dispatch size gates: the typed skip tuple, or ``None`` to dispatch.
 
@@ -466,7 +471,7 @@ def _predispatch_size_skip(
         return [], _prompt_oversize_skip_warning(prompt_chars, managed), model, prompt_chars
     if delegated_route:
         return None
-    window_skip = _api_window_skip_warning(model, prompt, managed)
+    window_skip = _api_window_skip_warning(model, prompt, managed, slot=slot)
     if not window_skip:
         return None
     log.warning(

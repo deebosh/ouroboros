@@ -520,6 +520,7 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                         window.__finishObserver = new MutationObserver((rows) => {
                             for (const row of rows) {
                                 if (row.attributeName === 'data-finished'
+                                    && row.oldValue === '0'
                                     && row.target.dataset.finished === '1') {
                                     window.__finishTransitions += 1;
                                 }
@@ -527,6 +528,7 @@ def test_ui_smoke_queue_loss_converges_terminal_card_once(direct_server_with_dat
                         });
                         window.__finishObserver.observe(document.querySelector(sel), {
                             attributes: true, attributeFilter: ['data-finished'],
+                            attributeOldValue: true,
                         });
                     }""",
                     card,

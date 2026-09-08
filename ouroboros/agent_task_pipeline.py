@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import functools
 import logging
 import pathlib
@@ -38,6 +39,8 @@ from ouroboros.contracts.task_contract import build_task_contract
 from ouroboros.subagents import envelope_from_task, substrate_result_fields
 from ouroboros.subagent_messages import subagent_message_meta
 from ouroboros.utils import utc_now_iso, append_jsonl, truncate_review_artifact as _truncate_with_notice
+from ouroboros.utils import in_worker_process
+from ouroboros.llm_claudexor import propagate_model_error
 from ouroboros.post_task_checkpoint import (
     POST_TASK_SYNTHESIS_INFLIGHT as _POST_TASK_SYNTHESIS_INFLIGHT,
     POST_TASK_SYNTHESIS_LOCK as _POST_TASK_SYNTHESIS_LOCK,
@@ -84,6 +87,7 @@ def _run_post_task_processing_async(
     blocking: bool = False,
     on_reflection: Callable[[Dict[str, Any] | None, Any], None] | None = None,
     sealed_final: Dict[str, Any] | None = None,
+    event_queue: Any = None,
 ) -> Dict[str, Any] | None:
     """Run best-effort LLM-heavy post-task memory work off the reply path."""
     task_snapshot = json.loads(json.dumps(task, ensure_ascii=False, default=str))
@@ -128,7 +132,7 @@ def _run_post_task_processing_async(
         with _POST_TASK_SYNTHESIS_LOCK:
             if post_task_key in _POST_TASK_SYNTHESIS_INFLIGHT:
                 return None
-            _POST_TASK_SYNTHESIS_INFLIGHT.add(post_task_key)
+            _POST_TASK_SYNTHESIS_INFLIGHT[post_task_key] = None
         _set_root_post_task_checkpoint(env, task_snapshot, "running")
 
     # Freeze one honest subtree view synchronously at the pre-synthesis
@@ -142,8 +146,8 @@ def _run_post_task_processing_async(
     # stage — the durable immediate cancel intent every stop ingress mints
     # and custody keeps open while this worker holds its in-flight key, or
     # the live task marker re-read (the entry snapshot cannot see a stop that
-    # landed later). The owner mailbox control is NOT the worker's currency:
-    # it is unlinked at task_done and its only reader is the loop's drain.
+    # landed later). Stop intent stays separate from model-wait choices, whose
+    # existing mailbox remains owned until this phase settles.
     intent_root = task_snapshot.get("budget_drive_root") or env.drive_root
     stage_task_id = str(task_snapshot.get("id") or task_snapshot.get("task_id") or "")
 
@@ -183,7 +187,8 @@ def _run_post_task_processing_async(
                     from ouroboros.post_task_evolution import maybe_promote
 
                     maybe_promote(env, task_snapshot, reflection_entry, llm_client)
-                except Exception:
+                except Exception as error:
+                    propagate_model_error(error)
                     log.debug("Post-task evolution promotion failed", exc_info=True)
                 if on_reflection is not None:
                     on_reflection(reflection_entry, llm_client)
@@ -224,11 +229,28 @@ def _run_post_task_processing_async(
             )
             if post_task_key is not None:
                 with _POST_TASK_SYNTHESIS_LOCK:
-                    _POST_TASK_SYNTHESIS_INFLIGHT.discard(post_task_key)
+                    _POST_TASK_SYNTHESIS_INFLIGHT.pop(post_task_key, None)
+            from supervisor.terminal_delivery import cleanup_settled_owner_mailbox
+            cleanup_settled_owner_mailbox(intent_root, stage_task_id, task_snapshot)
+
+    from ouroboros.model_wait import current_model_wait, task_model_wait_scope
+    parent_wait = current_model_wait()
+    role_overrides = copy.deepcopy(parent_wait.overrides) if parent_wait else {}
 
     def _run() -> None:
         with usage_scope(post_scope):
-            _run_scoped()
+            if blocking:
+                _run_scoped()
+            else:
+                # A detached thread must not inherit its parent's closing scope.
+                with task_model_wait_scope(task=task_snapshot, drive_root=env.drive_root,
+                                           event_queue=event_queue, worker_slot_held=False,
+                                           owner_control=lambda: "owner_stopped" if _owner_stop_requested() else None) as owner:
+                    owner.overrides.update(role_overrides)
+                    if post_task_key is not None:
+                        with _POST_TASK_SYNTHESIS_LOCK:
+                            _POST_TASK_SYNTHESIS_INFLIGHT[post_task_key] = owner
+                    _run_scoped()
 
     if blocking:
         _run()
@@ -239,7 +261,7 @@ def _run_post_task_processing_async(
         _set_root_post_task_checkpoint(env, task_snapshot, "degraded")
         if post_task_key is not None:
             with _POST_TASK_SYNTHESIS_LOCK:
-                _POST_TASK_SYNTHESIS_INFLIGHT.discard(post_task_key)
+                _POST_TASK_SYNTHESIS_INFLIGHT.pop(post_task_key, None)
         raise
     return None
 
@@ -354,7 +376,8 @@ def _run_global_backlog_promotion_only(
             "metadata": {"globalized_from_project_task": True},
         }
         maybe_promote(env, global_task, sanitized_entry, llm)
-    except Exception:
+    except Exception as error:
+        propagate_model_error(error)
         log.debug("Canonical post-task promotion-only path failed", exc_info=True)
 
 
@@ -757,7 +780,7 @@ def _dispatch_root_post_task(
         global_reflection_callback = functools.partial(
             _run_global_backlog_promotion_only, parent_env, parent_task)
     split_non_project = split and not project_scoped
-    blocking = split_non_project or (
+    blocking = in_worker_process() or split_non_project or (
         str(task.get("type") or "") == "evolution"
         or bool(str(task.get("workspace_root") or "").strip())
         or bool(str(task.get("workspace_mode") or "").strip())
@@ -781,7 +804,7 @@ def _dispatch_root_post_task(
         _run_post_task_processing_async(
             parent_env, parent_task, post_usage, llm_trace, review_evidence,
             pathlib.Path(budget_drive_root) / "logs",
-            blocking=True, sealed_final=sealed_final,
+            blocking=True, sealed_final=sealed_final, event_queue=event_queue,
         )
     else:
         _run_post_task_processing_async(
@@ -789,6 +812,7 @@ def _dispatch_root_post_task(
             blocking=blocking,
             on_reflection=global_reflection_callback,
             sealed_final=sealed_final,
+            event_queue=event_queue,
         )
 
 

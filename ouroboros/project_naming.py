@@ -193,6 +193,7 @@ def llm_project_name(
         chat_kwargs = dict(
             messages=[{"role": "user", "content": _NAMING_PROMPT.format(request=naming_input)}],
             model=model,
+            model_role="light",
             tools=None,
             reasoning_effort="low",
             max_tokens=256,

@@ -491,7 +491,7 @@ export function isTerminalTaskDetail(record) {
     const status = String(record?.status || '').toLowerCase();
     const synthesis = String(record?.root_phase_checkpoint?.post_task_synthesis || '').toLowerCase();
     return TERMINAL_TASK_DETAIL_STATUSES.has(status)
-        && !(status === 'completed' && OPEN_POST_TASK_SYNTHESIS_STATUSES.has(synthesis));
+        && !(['completed', 'failed'].includes(status) && OPEN_POST_TASK_SYNTHESIS_STATUSES.has(synthesis));
 }
 
 // A task_done normally mirrors durable task detail. Keep the detail predicate
@@ -728,7 +728,8 @@ export function summarizeLogEvent(evt) {
 
     if (t === 'task_done') {
         const terminal = taskDoneIsTerminal(evt);
-        const presentation = taskPresentation(terminal ? taskTerminalPhase(evt) : 'working');
+        const outcome = taskTerminalPhase(evt);
+        const presentation = taskPresentation(terminal || outcome === 'error' ? outcome : 'working');
         const reasonCode = evt.reason_code ? String(evt.reason_code) : '';
         const artifactStatus = evt.artifact_bundle?.status || evt.artifact_status || '';
         const reviewDetails = formatReviewProjection(evt.review_projection);
@@ -1186,7 +1187,8 @@ export function summarizeChatLiveEvent(evt) {
 
     if (t === 'task_done') {
         const terminal = taskDoneIsTerminal(evt);
-        const presentation = taskPresentation(terminal ? taskTerminalPhase(evt) : 'working');
+        const outcome = taskTerminalPhase(evt);
+        const presentation = taskPresentation(terminal || outcome === 'error' ? outcome : 'working');
         const unavailable = evt.cost_accounting_status === 'unavailable';
         // C13: the SHARED accessor and its null policy — same alias precedence as
         // chat.js and the Python seams, and a REAL $0 prints instead of vanishing.

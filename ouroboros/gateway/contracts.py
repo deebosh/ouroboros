@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from ouroboros.gateway.widgets import ExtensionLiveSnapshot, WidgetTab, WidgetsResponse
+from ouroboros.gateway.decision_contracts import DecisionRequest, DecisionResponse  # noqa: F401 -- public re-exports
 
 try:  # Python 3.11+
     from typing import Literal, NotRequired, Required, TypedDict  # type: ignore[attr-defined]
@@ -670,9 +671,10 @@ class EvolutionStateSnapshot(TypedDict):
 class ActiveDirectTurn(TypedDict):
     """An active in-process direct chat or ephemeral decision turn.
 
-    Snapshot rows in ``StateResponse.active_direct_turns``; every field is
-    always emitted by ``DirectActivityRegistry.snapshot()`` (empty-string for
-    absent optionals), so the mirror marks them all required.
+    Snapshot rows in ``StateResponse.active_direct_turns``; the seven identity
+    and activity fields are always emitted by ``DirectActivityRegistry.snapshot()``
+    (empty-string for absent values), so the mirror marks them required.
+    A model_waits projection is optional and must be supplied by its live owner.
     """
 
     activity_id: str
@@ -682,6 +684,8 @@ class ActiveDirectTurn(TypedDict):
     kind: str
     phase: str
     started_at: float
+    model_waits: NotRequired[Dict[str, Any]]
+    task_attempt: NotRequired[int]
 
 
 class ActiveChatActivity(ActiveDirectTurn):
@@ -1090,6 +1094,7 @@ class TaskDetailResponse(TypedDict, total=False):
     stored task-result keys pass through) plus additive typed projections."""
 
     cost_breakdown: TaskCostBreakdown
+    model_waits: Dict[str, Any]
     # Poltergeist phase A cancel projection (additive-optional): ``"pending"``
     # while a durable cancel intent is open and the supervisor teardown has not
     # settled — the status itself honestly stays running/scheduled. Absent on
@@ -1332,50 +1337,6 @@ class TaskHurryResponse(TypedDict, total=False):
     attempt_key: int
     duplicate: bool
     error: str
-
-
-class DecisionRequest(TypedDict):
-    """POST /api/decisions body — the ONE answer ingress for owner decision
-    cards (owner decision 1=A). ``decision_id`` is a composed family id:
-    ``quiz:{task_id}:{quiz_id}`` (this phase), ``routing:{client_message_id}:
-    {routing_token}`` (#198), ``interaction:{task_id}:{run_id}:
-    {interaction_id}`` (#204). ``request_id`` is the idempotency key; a
-    replayed request returns the recorded confirmation instead of acting
-    twice. ``comment`` is the owner's optional verbatim remark.
-
-    ``option_index`` is optional for the ``quiz`` family ONLY: an owner who
-    takes none of the offered options answers with a non-empty ``comment``
-    and no index. Every other family still requires the integer — a routing
-    choice IS its option."""
-
-    request_id: str
-    decision_id: str
-    option_index: NotRequired[int]
-    comment: NotRequired[str]
-
-
-class DecisionResponse(TypedDict, total=False):
-    """Answer-ingress reply. 2xx carries the card's new lifecycle ``state``
-    (``answered``; ``duplicate`` marks an idempotent replay). A late answer
-    to a settled task is 409 with ``state`` telling the truth
-    (``expired_terminal``/``answered``) so the card settles instead of
-    inviting retries. The routing family (#198) adds: ``dispatched`` (the
-    confirmed durable receipt status), ``task_id`` (the derived id of a
-    promoted task), ``latest_status`` (the superseding row's status on a 409),
-    ``reason``/``detail`` (typed refusal/unconfirmed diagnostics)."""
-
-    ok: bool
-    decision_id: str
-    state: str
-    answered_index: int
-    comment: str
-    duplicate: bool
-    error: str
-    dispatched: str
-    task_id: str
-    latest_status: str
-    reason: str
-    detail: str
 
 
 class LogTailResponse(TypedDict, total=False):

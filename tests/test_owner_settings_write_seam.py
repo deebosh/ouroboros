@@ -488,8 +488,8 @@ def test_settings_save_body_runs_off_the_event_loop():
     # The endpoint hands its body to the ONE writer seam, and that seam is
     # what runs it off the loop (and maps the bounded document lock's typed
     # refusal to 503 settings_busy for every writer).
-    assert "_run_settings_writer(_api_settings_post_sync" in endpoint_text
-    assert "asyncio.to_thread(fn, request, body)" in writer_seam_text
+    assert "_run_settings_writer(_api_settings_post_sync, request, body)" in endpoint_text
+    assert "asyncio.to_thread(fn, context, body)" in writer_seam_text
     assert "SettingsDocumentBusy" in writer_seam_text
 
     # Worker threads do not inherit the event loop's free serialization: a

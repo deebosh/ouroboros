@@ -605,7 +605,13 @@ def test_e10_graceful_stop_keeps_the_intent_open_and_finalizes(e2e_clone, tmp_pa
             assert intent.get("source") == "http_graceful"
 
             final = server.wait_task(task_id, timeout=300)
-            assert final.get("status") in {"completed", "cancelled"}, final
+            # Keep the failure cause visible: the full task's contract/metadata
+            # otherwise hides these fields in the CI assertion preview.
+            assert final.get("status") in {"completed", "cancelled"}, {
+                key: final.get(key) for key in (
+                    "status", "reason_code", "terminal_origin", "result", "outcome_axes",
+                )
+            }
             # The terminal reason is stamped by the finalization rail, which lands after
             # the status does — read it with a bound rather than in the same instant.
             reason = wait_until(lambda: task_result(data_root, task_id).get("reason_code"), 60)

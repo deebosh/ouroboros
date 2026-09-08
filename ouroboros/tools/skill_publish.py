@@ -599,6 +599,7 @@ def _select_optional_pr_core(
         response, usage = LLMClient().chat(
             messages=[{"role": "user", "content": prompt}],
             model=model,
+            model_role="light",
             reasoning_effort="low",
             max_tokens=8192,
             use_local=os.environ.get("USE_LOCAL_LIGHT", "").lower() in {"true", "1"},
@@ -606,7 +607,9 @@ def _select_optional_pr_core(
         )
         _record_llm_usage(ctx, model, usage)
         body = str(response.get("content") or "").strip()
-    except Exception:
+    except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         ctx.emit_progress_fn("PR body formatter unavailable; using deterministic fallback.")
         return fallback
     if not body:

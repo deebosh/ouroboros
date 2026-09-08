@@ -135,7 +135,9 @@ def _refused(message: str, status: int, **extra: Any) -> Tuple[int, Dict[str, An
     return status, payload
 
 
-async def answer_decision(drive_root: pathlib.Path, body: Any) -> Tuple[int, Dict[str, Any]]:
+async def answer_decision(
+    drive_root: pathlib.Path, body: Any, *, get_background_model_wait: Any = None,
+) -> Tuple[int, Dict[str, Any]]:
     """The ONE decision-answer ingress, transport-neutral: ``(status, payload)``.
 
     ``POST /api/decisions`` (the browser card) and the loopback Host Service
@@ -153,6 +155,12 @@ async def answer_decision(drive_root: pathlib.Path, body: Any) -> Tuple[int, Dic
             400, reason_code="request_id_required",
         )
     decision_id = str(body.get("decision_id") or "").strip()
+    if decision_id.split(":", 1)[0] == "model_wait":
+        from ouroboros.gateway.task_model_wait import answer_model_wait_decision
+
+        return await answer_model_wait_decision(
+            drive_root, body, get_background_model_wait=get_background_model_wait,
+        )
     raw_comment = body.get("comment")
     if raw_comment is not None and not isinstance(raw_comment, str):
         return _refused("comment must be a string", 400, reason_code="comment_invalid")
@@ -340,7 +348,10 @@ async def answer_decision(drive_root: pathlib.Path, body: Any) -> Tuple[int, Dic
 async def api_decision_answer(request: Request) -> JSONResponse:
     """POST /api/decisions — idempotent owner answer for a decision card."""
     body = await request_json_or(request, {})
-    status, payload = await answer_decision(request_drive_root(request), body)
+    status, payload = await answer_decision(
+        request_drive_root(request), body,
+        get_background_model_wait=getattr(request.app.state, "get_background_model_wait", None),
+    )
     return JSONResponse(payload, status_code=status)
 
 

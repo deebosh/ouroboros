@@ -10,9 +10,212 @@ as by ``config``, which is why it holds no settings-file knowledge.
 from __future__ import annotations
 
 import dataclasses
+import copy
+import json
 import os
 
 from ouroboros.settings_defaults import SETTINGS_DEFAULTS
+
+
+MODEL_ACCOUNTS_KEY = "OUROBOROS_MODEL_ACCOUNTS"
+MODEL_CONTEXT_WINDOWS_KEY = "OUROBOROS_MODEL_CONTEXT_WINDOWS"
+MODEL_ROLE_SETTINGS = {
+    "main": "OUROBOROS_MODEL",
+    "light": "OUROBOROS_MODEL_LIGHT",
+    "vision": "OUROBOROS_MODEL_VISION",
+    "consciousness": "OUROBOROS_MODEL_CONSCIOUSNESS",
+    "deep_review": "OUROBOROS_MODEL_DEEP_SELF_REVIEW",
+    "websearch": "OUROBOROS_WEBSEARCH_MODEL",
+    "fallback": "OUROBOROS_MODEL_FALLBACKS",
+}
+
+
+def normalize_model_role_options(key: str, raw: object) -> tuple[dict, str]:
+    """Validate the role-owned account/window options, never infer roles from model IDs.
+
+    Empty account means Auto; zero/absent window means Auto, NOT a capacity.
+    Fallback arrays retain order, matching the existing ordered model chain.
+    Invalid pins must never silently degrade into automatic account selection.
+    """
+    if key not in (MODEL_ACCOUNTS_KEY, MODEL_CONTEXT_WINDOWS_KEY):
+        raise ValueError(f"Unknown model role option: {key}")
+    if raw is None or raw == "":
+        raw = {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"{key} must be a JSON object") from exc
+    if not isinstance(raw, dict) or set(raw) - set(MODEL_ROLE_SETTINGS):
+        raise ValueError(f"{key} must contain only known model roles")
+    def value(item: object) -> str | int:
+        if key == MODEL_ACCOUNTS_KEY:
+            if not isinstance(item, str):
+                raise ValueError(f"{key}: an account must be a profile name or an empty Auto value")
+            return item.strip()
+        if isinstance(item, bool) or not isinstance(item, int) or item < 0:
+            raise ValueError(f"{key}: a context window must be a nonnegative integer")
+        return item
+    parsed = {}
+    for role, option in raw.items():
+        if role == "fallback":
+            if not isinstance(option, list):
+                raise ValueError(f"{key}: fallback must be an ordered array")
+            parsed[role] = [value(item) for item in option]
+        else:
+            parsed[role] = value(option)
+    return parsed, json.dumps(parsed, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def model_role_option(key: str, role: str, *, settings: dict | None = None) -> str | int:
+    """Read one explicit role (``fallback:<index>`` for a chain entry).
+
+    Unlabelled calls use Auto, not Main inferred by string equality. Reviewers
+    and configured agents carry their own existing route credential field.
+    """
+    default = "" if key == MODEL_ACCOUNTS_KEY else 0
+    raw = (settings or {}).get(key, "") if settings is not None else os.environ.get(key, "")
+    options, _canonical = normalize_model_role_options(key, raw)
+    family, separator, position = role.partition(":")
+    if family == "fallback" and separator:
+        try:
+            index = int(position)
+        except ValueError:
+            raise ValueError("Fallback model role requires its ordered index") from None
+        rows = options.get("fallback", [])
+        return rows[index] if 0 <= index < len(rows) else default
+    return options.get(role, default) if role != "fallback" else default
+
+
+def task_model_binding(task: dict, *, context_fit_plan: object = None,
+                       overrides: dict | None = None) -> tuple[str, str | None]:
+    """Bind an acting call to its explicit role, active fit plan or frozen actor.
+
+    Callers may pass their live owner's overrides; this pure projection never
+    captures another task's ambient wait or turns an observed Auto account into a pin.
+    """
+    metadata = task.get("task_metadata", task.get("metadata", {}))
+    metadata = metadata if isinstance(metadata, dict) else {}
+    actor = task.get("configured_subagent", metadata.get("configured_subagent", {}))
+    actor = actor if isinstance(actor, dict) else {}
+    route = actor.get("route") or {}
+    actor_id = str(actor.get("selected_subagent_id") or "")
+    actor_role = f"subagent:{actor_id}" if actor_id and route.get("kind") == "api_model" else "main"
+    role = str(task.get("model_role") or getattr(context_fit_plan, "model_role", "")
+               or metadata.get("model_role") or actor_role)
+    pin = task.get("credential_profile_id")
+    if pin is None and role == actor_role and actor_role != "main":
+        pin = str(route.get("credential_profile_id") or "")
+    pin = (overrides or {}).get(role, {}).get("model_account_override", pin)
+    return role, pin
+
+
+def apply_model_role_override(settings: dict, *, role: str, model: str,
+                              credential_profile_id: str, use_local: bool) -> dict:
+    """Apply explicit wait-card persistence to one role; never infer it from a model.
+
+    The gateway owns locking and writes. Referenced reviewer actors are copied
+    before editing so another reviewer or task actor keeps its prior assignment
+    and native-inspection delivery is not silently converted to packed chat.
+    """
+    from ouroboros.provider_models import provider_for_model, parse_claudexor_model
+
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("A model is required")
+    if not isinstance(credential_profile_id, str) or not isinstance(use_local, bool):
+        raise ValueError("Account and local routing must be explicit")
+    model, pin = model.strip(), credential_profile_id.strip()
+    subscription = not use_local and provider_for_model(model) == "claudexor"
+    if subscription:
+        parse_claudexor_model(model)
+    if pin and not subscription:
+        raise ValueError("An account pin requires a managed model source")
+    result = copy.deepcopy(settings)
+    family, _, identity = role.partition(":")
+    if family in MODEL_ROLE_SETTINGS:
+        key = MODEL_ROLE_SETTINGS[family]
+        accounts, _ = normalize_model_role_options(MODEL_ACCOUNTS_KEY, result.get(MODEL_ACCOUNTS_KEY))
+        if family == "fallback":
+            values = _parse_model_list(result.get(key, ""))
+            if not identity.isdigit() or int(identity) >= len(values):
+                raise ValueError("The selected fallback role no longer exists")
+            shared_local = result.get("USE_LOCAL_FALLBACK", SETTINGS_DEFAULTS["USE_LOCAL_FALLBACK"])
+            if use_local != (shared_local is True or shared_local == "true"):
+                raise ValueError("Local applies to all fallbacks in Settings. Change it only for this task, or edit Models.")
+            index = int(identity)
+            values[index] = model
+            pins = list(accounts.get("fallback", []))
+            pins.extend([""] * max(0, len(values) - len(pins)))
+            pins[index] = pin
+            result[key], accounts[family] = ", ".join(values), pins
+        else:
+            if identity:
+                raise ValueError("Unknown model role")
+            result[key], accounts[family] = model, pin
+        local_key = f"USE_LOCAL_{family.upper()}"
+        if local_key in SETTINGS_DEFAULTS and family != "fallback":
+            result[local_key] = use_local
+        elif local_key not in SETTINGS_DEFAULTS and use_local:
+            result[key] = model if model.endswith(" (local)") else f"{model} (local)"
+        result[MODEL_ACCOUNTS_KEY] = normalize_model_role_options(MODEL_ACCOUNTS_KEY, accounts)[1]
+        return result
+    from ouroboros.configured_subagents import normalize_configured_subagents, configured_subagents_dict
+    from ouroboros.reviewer_slot_config import reviewer_slot_save_check
+
+    routed_model = model if not use_local or model.endswith(" (local)") else f"{model} (local)"
+    slots = None
+    actor_id = identity
+    if family == "reviewer":
+        raw = result.get("OUROBOROS_REVIEWER_SLOTS")
+        if not raw:
+            from ouroboros.subscription_install_presets import preview_api_reviewer_slots
+            raw = preview_api_reviewer_slots(result)
+        slots = json.loads(raw) if isinstance(raw, str) else copy.deepcopy(raw)
+        if not result.get("OUROBOROS_REVIEWER_SLOTS") and identity != "deep_review_slot_1":
+            # The stored ABI is one triad/scope panel, not sparse overrides.
+            # Preserve its other effective rows, but do not author the independent
+            # legacy-derived deep-review placeholder on an unrelated row edit.
+            slots.pop("deep_review", None)
+        rows = [*slots.get("triad", []), *slots.get("scope", [])]
+        rows.extend(slots[name] for name, slot_id in (
+            ("advisory", "advisory_slot_1"), ("deep_review", "deep_review_slot_1"))
+                    if identity == slot_id and isinstance(slots.get(name), dict))
+        row = next((item for item in rows if item.get("slot_id", identity) == identity), None)
+        if row is None:
+            raise ValueError("The selected reviewer no longer exists")
+        actor_id = str(row.get("subagent_id") or "")
+        if not actor_id:
+            row["route"] = {"kind": "api_chat", "target_id": routed_model, "profile_id": pin}
+    elif family != "subagent":
+        raise ValueError("Unknown waiting model role")
+    if actor_id:
+        roster = configured_subagents_dict(normalize_configured_subagents(result.get("OUROBOROS_SUBAGENTS"))[0])
+        actor = next((item for item in roster["items"] if item["subagent_id"] == actor_id), None)
+        if actor is None:
+            raise ValueError("The selected task agent or referenced reviewer no longer exists")
+        if family == "reviewer":
+            current_route = actor["route"]
+            if (current_route.get("kind") == "api_model" and current_route.get("target_id") == routed_model
+                    and str(current_route.get("credential_profile_id") or "") == pin):
+                return result  # Replaying a saved role cannot mint duplicate roster actors.
+            actor = copy.deepcopy(actor)
+            ids = {item["subagent_id"] for item in roster["items"]}
+            base, number = f"reviewer-{identity}", 1
+            actor_id = base
+            while actor_id in ids:
+                number += 1
+                actor_id = f"{base}-{number}"
+            actor.update(subagent_id=actor_id, route={"kind": "api_model", "target_id": routed_model,
+                                                     "credential_profile_id": pin})
+            roster["items"].append(actor)
+            row["subagent_id"] = actor_id
+        else:
+            actor["route"] = {"kind": "api_model", "target_id": routed_model, "credential_profile_id": pin}
+        result["OUROBOROS_SUBAGENTS"] = normalize_configured_subagents(roster)[1]
+    if slots is not None:
+        result["OUROBOROS_REVIEWER_SLOTS"] = json.dumps(slots, ensure_ascii=False)
+        reviewer_slot_save_check(result["OUROBOROS_REVIEWER_SLOTS"], subagents_raw=result.get("OUROBOROS_SUBAGENTS"))
+    return result
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

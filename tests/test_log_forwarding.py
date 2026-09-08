@@ -35,6 +35,7 @@ SERVER_HANDLER_PUSHED_TYPES = frozenset({
     "budget_scope_paused", "task_metrics_event", "review_late_result",
     "task_cost_finalized", "skill_exec_finished", "skill_exec_failed",
     "task_cancel_cascade_noop", "task_cancel_cascade_error",
+    "task_model_wait",
 })
 
 

@@ -25,6 +25,9 @@ export function desiredLiveCardPhase(record = {}, terminalPhase = 'done') {
             className: 'chat-live-phase working finalizing',
         };
     }
+    if (record.modelWaiting) return {
+        phase: 'working', text: 'Waiting for access', className: 'chat-live-phase working waiting',
+    };
     return { phase: 'working', text: 'Working', className: 'chat-live-phase working' };
 }
 
@@ -73,5 +76,15 @@ export function setLiveCardPhase(record, phase = 'working', text = '', className
     if (phaseEl.getAttribute('aria-live') !== 'polite') phaseEl.setAttribute('aria-live', 'polite');
     if (phaseEl.getAttribute('aria-atomic') !== 'true') phaseEl.setAttribute('aria-atomic', 'true');
     if (phaseEl.getAttribute('aria-label') !== activeLabel) phaseEl.setAttribute('aria-label', activeLabel);
-    return changed;
+    return setLiveCardTypingVisible(record, !record.finished) || changed;
+}
+
+// Phase and activity share this one animation writer. A subscription wait
+// remains unfinished without pretending the paused role is doing computation.
+export function setLiveCardTypingVisible(record, visible) {
+    if (!record?.inlineTypingEl) return false;
+    const display = visible && !record.modelWaiting ? '' : 'none';
+    if (record.inlineTypingEl.style.display === display) return false;
+    record.inlineTypingEl.style.display = display;
+    return Boolean(record.inlineTypingEl.isConnected);
 }

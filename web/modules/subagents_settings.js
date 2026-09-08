@@ -20,8 +20,11 @@ import {
     ROUTE_KIND_AGENT_SESSION,
     ROUTE_KIND_API_MODEL,
     compoundSessionEffortConflict,
-    composeSessionTarget,
-    decodeRouteChoice,
+    changeRouteChoice,
+    routeModelFields,
+    routeModelInputHtml,
+    routeTargetFromModel,
+    routeSupportsAccount,
     effortSelectHtml,
     encodeRouteChoice,
     indexProfilesByHarness,
@@ -31,7 +34,6 @@ import {
     selectHtml,
     serializeRouteSpec,
     sessionModelOptions,
-    splitSessionTarget,
 } from './route_editor_primitives.js';
 import { harnessMap, rowMeta, rowStatus, sessionRouteVerdict } from './subagent_status_primitives.js';
 import { revealNewRow } from './ui_helpers.js';
@@ -152,7 +154,7 @@ export function parseAvailableSubagentsSetting(value) {
         if (![ROUTE_KIND_API_MODEL, ROUTE_KIND_AGENT_SESSION].includes(routeKind)) {
             return { setting: null, error: `row ${index + 1} has unsupported route kind` };
         }
-        if (routeKind !== ROUTE_KIND_AGENT_SESSION
+        if (!routeSupportsAccount({ ...row.route, kind: routeKind })
             && String(row.route.credential_profile_id || '').trim()) {
             return { setting: null, error: `row ${index + 1} has an account pin on an API route` };
         }
@@ -186,11 +188,12 @@ function rowErrors(row, index, ids) {
     if (![ROUTE_KIND_API_MODEL, ROUTE_KIND_AGENT_SESSION].includes(route.kind)) {
         errors.push('must use API model or Agent session.');
     }
-    if (!String(route.target_id || '').trim()) {
+    if (!routeModelFields(route).model.trim() && route.kind !== ROUTE_KIND_AGENT_SESSION
+        || !String(route.target_id || '').trim()) {
         errors.push('needs a model or agent-session route.');
     }
-    if (route.kind !== ROUTE_KIND_AGENT_SESSION && route.credential_profile_id) {
-        errors.push('can pin an account only for an Agent session.');
+    if (!routeSupportsAccount(route) && route.credential_profile_id) {
+        errors.push('can pin an account only for a subscription model or Agent session.');
     }
     if (route.kind === ROUTE_KIND_AGENT_SESSION) {
         const target = String(route.target_id || '');
@@ -329,10 +332,11 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
     const rowKey = row._uiKey || row.subagent_id;
     const headingId = `available-subagent-${rowKey}-heading`;
     const session = row.route.kind === ROUTE_KIND_AGENT_SESSION;
-    const split = session ? splitSessionTarget(row.route.target_id) : { harness: '', model: '' };
+    const split = routeModelFields(row.route, state.modelSources);
     const harnesses = harnessMap(state.snapshot);
     const routeGroups = routeChoiceGroups({
         harnesses: state.catalogKnown ? (state.snapshot?.harnesses || []) : [],
+        modelSources: state.modelSources,
         currentChoice: encodeRouteChoice(row),
         catalogKnown: state.catalogKnown,
     });
@@ -342,19 +346,19 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
     const profileOptions = profileOptionsFor(
         (indexProfilesByHarness(state.snapshot)[split.harness]) || [],
         row.route.credential_profile_id || '',
-        { accountsKnown: state.accountsKnown },
+        { accountsKnown: state.accountsKnown && Boolean(split.harness) },
     );
     const status = rowStatus(row, state);
     const errors = rowErrors(row, index, new Set());
     const meta = rowMeta(row, state, errors);
     const invalid = Boolean(row._uiAttempted) && errors.length > 0;
-    const routeIdentity = session
-        ? harnessIdentityMarkup(split.harness, {
+    const routeIdentity = session || split.subscription
+        ? harnessIdentityMarkup(split.harness || split.source, {
             // A retained snapshot is useful for preserving the controls, but
             // its daemon-provided product name is evidence only while the
             // current catalog read is known. During a read gap the shared
             // presentation catalog supplies the safe, stable fallback.
-            label: familyLabel(split.harness, state.snapshot, {
+            label: split.subscription ? `${split.sourceLabel} model` : familyLabel(split.harness, state.snapshot, {
                 catalogKnown: state.catalogKnown,
             }),
             className: 'available-subagent-route-identity',
@@ -378,12 +382,12 @@ export function availableSubagentRowMarkup(row, state, index = 0) {
                 <textarea data-subagent-field="recommended_use" rows="1" aria-label="Description for Subagent ${ordinal}" placeholder="When should Ouroboros choose this subagent?">${escapeHtml(row.recommended_use)}</textarea>
             </label>
             <div class="available-subagent-route">
-                ${selectHtml(`data-subagent-field="route" aria-label="Type for Subagent ${ordinal}"`, routeGroups, encodeRouteChoice(row))}
+                ${selectHtml(`data-subagent-field="route" aria-label="Source for Subagent ${ordinal}"`, routeGroups, encodeRouteChoice(row))}
                 ${session
                     ? selectHtml(`data-subagent-field="model" aria-label="Agent session model for Subagent ${ordinal}"`, [{ label: '', options: modelOptions }], split.model)
-                    : `<input data-subagent-field="model" list="available-subagent-api-model-catalog" value="${escapeHtml(row.route.target_id || '')}" placeholder="provider/model-id" autocomplete="off" spellcheck="false" aria-label="API model for Subagent ${ordinal}">`}
-                ${session
-                    ? selectHtml(`data-subagent-field="account" aria-label="Agent session account for Subagent ${ordinal}"`, [{ label: '', options: profileOptions }], row.route.credential_profile_id || '')
+                    : routeModelInputHtml(`data-subagent-field="model" aria-label="${split.subscription ? 'Subscription' : 'API'} model for Subagent ${ordinal}"`, row.route, state.apiModels, `actor-${rowKey}-models`)}
+                ${routeSupportsAccount(row.route)
+                    ? selectHtml(`data-subagent-field="account" aria-label="Account for Subagent ${ordinal}"`, [{ label: '', options: profileOptions }], row.route.credential_profile_id || '')
                     : ''}
                 ${effortSelectHtml(`data-subagent-field="effort" aria-label="Reasoning effort for Subagent ${ordinal}"`, row.effort || '', 'route default')}
             </div>
@@ -410,7 +414,7 @@ export function availableSubagentsRenderSignature(state, nowMs = Date.now()) {
         state.snapshot?.subagent_last_delegation || null,
         (state.setting?.items || []).map((row) => row?.route?.kind === ROUTE_KIND_AGENT_SESSION
             ? sessionRouteVerdict(row, state, nowMs).text : ''),
-        state.apiModels,
+        state.apiModels, state.modelSources,
     ]);
 }
 
@@ -446,7 +450,7 @@ export function createAvailableSubagentsEditor({
         accountsKnown: false,
         quotaKnown: false,
         snapshot: null,
-        apiModels: [],
+        apiModels: [], modelSources: [],
         signature: '',
         statusDisposer: null,
         catalogDisposer: null,
@@ -556,23 +560,19 @@ export function createAvailableSubagentsEditor({
                 markDirty();
             });
             rowElement.querySelector('[data-subagent-field="route"]')?.addEventListener('change', (event) => {
-                const decoded = decodeRouteChoice(event.target.value, { apiKind: ROUTE_KIND_API_MODEL });
-                row.route = decoded.kind === ROUTE_KIND_AGENT_SESSION
-                    ? { kind: ROUTE_KIND_AGENT_SESSION, target_id: decoded.harness }
-                    : { kind: ROUTE_KIND_API_MODEL, target_id: '' };
+                row.route = changeRouteChoice(row.route, event.target.value);
                 markDirty({ structural: true });
                 paint();
             });
             rowElement.querySelector('[data-subagent-field="model"]')?.addEventListener(
                 row.route.kind === ROUTE_KIND_AGENT_SESSION ? 'change' : 'input',
                 (event) => {
-                    if (row.route.kind === ROUTE_KIND_AGENT_SESSION) {
-                        const { harness } = splitSessionTarget(row.route.target_id);
-                        row.route.target_id = composeSessionTarget(harness, event.target.value);
-                    } else {
-                        row.route.target_id = String(event.target.value || '');
-                    }
-                    markDirty();
+                    const previous = encodeRouteChoice(row);
+                    row.route.target_id = routeTargetFromModel(row.route, event.target.value);
+                    const structural = previous !== encodeRouteChoice(row);
+                    if (structural) delete row.route.credential_profile_id;
+                    markDirty({ structural });
+                    if (structural) paint();
                 },
             );
             rowElement.querySelector('[data-subagent-field="account"]')?.addEventListener('change', (event) => {
@@ -639,10 +639,7 @@ export function createAvailableSubagentsEditor({
                     ? state.setting.items.map((row, index) => availableSubagentRowMarkup(row, state, index)).join('')
                         || '<div class="available-subagents-empty">No subagents configured. Add one, or leave the list empty to make no actors available.</div>'
                     : '<div class="available-subagents-empty">The saved configuration could not be loaded, so this editor will not replace it.</div>'}
-            </div>
-            <datalist id="available-subagent-api-model-catalog">
-                ${state.apiModels.map((model) => `<option value="${escapeHtml(model)}"></option>`).join('')}
-            </datalist>`;
+            </div>`;
         container.querySelector('[data-subagents-enabled]')?.addEventListener('change', (event) => {
             state.setting.enabled = Boolean(event.target.checked);
             markDirty();
@@ -805,6 +802,7 @@ export function createAvailableSubagentsEditor({
         if (!state.catalogDisposer) {
             const target = getDoc();
             const onCatalog = (event) => {
+                state.modelSources = event?.detail?.model_sources || [];
                 state.apiModels = (event?.detail?.items || [])
                     .map((item) => String(item.value || item.id || ''))
                     .filter(Boolean);

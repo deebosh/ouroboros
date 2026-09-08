@@ -430,13 +430,17 @@ def build_review_pack(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_packed_window(model: str) -> Any:
+def _resolve_packed_window(model: str, row: Optional[ConfiguredReviewerSlot] = None, *,
+                           model_route: Optional[dict] = None) -> Any:
     """ONE `ReviewerWindow` for the packed model from the shared resolver — the
     caller validates the floor on THIS object and sizes with THIS object."""
     from ouroboros import reviewer_window as _rw
     from ouroboros.config import review_model_uses_local
 
-    return _rw.resolve_reviewer_window(model, use_local=review_model_uses_local(model))
+    return _rw.resolve_reviewer_window(model, use_local=row.use_local if row and row.use_local is not None else review_model_uses_local(model),
+                                      model_role=f"reviewer:{row.slot_id}" if row else "deep_review",
+                                      credential_profile_id=row.profile_id if row else None,
+                                      **({"model_route": model_route} if model_route else {}))
 
 
 def _packed_window_reason(window: Any, model: str) -> str:
@@ -459,7 +463,7 @@ def _packed_window_reason(window: Any, model: str) -> str:
     return ""
 
 
-def _packed_route(configured: str) -> Tuple[str, Optional[str]]:
+def _packed_route(configured: str, row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[str, Optional[str]]:
     """The packed delivery's ``(unavailable_reason, sendable_model)``.
 
     Provider/credential knowledge comes from the provider registry SSOT; two
@@ -469,10 +473,10 @@ def _packed_route(configured: str) -> Tuple[str, Optional[str]]:
     and the payable model must not be EVIDENCED below the ≥1M floor
     (`_packed_window_reason`).
     """
-    reason, model = _packed_credentials(configured)
+    reason, model = ("", configured) if row and row.use_local is True else _packed_credentials(configured)
     if reason:
         return reason, None
-    reason = _packed_window_reason(_resolve_packed_window(str(model)), str(model))
+    reason = _packed_window_reason(_resolve_packed_window(str(model), row), str(model))
     return (reason, None) if reason else ("", model)
 
 
@@ -549,13 +553,13 @@ def deep_review_route(row: Optional[ConfiguredReviewerSlot] = None) -> Tuple[str
     if not str(row.target_id or "").strip():
         return "deep_review row has no target (empty model id / session target)", None
     if not row.retrieves:
-        return _packed_route(row.target_id)
+        return _packed_route(row.target_id, row)
     if row.is_session:
         reason = _session_route_reason(row)
         return reason, (None if reason else (row.session_target or row.target_id))
     from ouroboros.provider_models import model_has_credentials
 
-    if model_has_credentials(row.target_id):
+    if row.use_local is True or model_has_credentials(row.target_id):
         return "", row.target_id
     return f"no provider credentials for {row.target_id}", None
 
@@ -582,7 +586,7 @@ def _review_slot(row: ConfiguredReviewerSlot, model: str, timeout_sec: Optional[
     return ReviewSlot(
         slot_id=row.slot_id, model=model, effort=row_effort(row, "deep_self_review"),
         timeout_sec=timeout_sec, max_tokens=_DEEP_MAX_OUTPUT_TOKENS,
-        role_hint="deep self-reviewer", use_local=review_model_uses_local(model),
+        role_hint="deep self-reviewer", use_local=row.use_local if row.use_local is not None else review_model_uses_local(model),
         route=ReviewRouteKind.AGENT_SESSION if row.is_session else ReviewRouteKind.API_CHAT,
         session_target=row.session_target, session_profile=row.profile_id,
         subagent_id=row.subagent_id,
@@ -893,6 +897,8 @@ def _run_retrieving_review(
         # to the agent's budget rail like every other budget refusal.
         custody = {**executor.failure_custody(), "deep_review_memory": memory}
         _record_execution(slot, custody, status="error", error=f"{type(exc).__name__}: {exc}")
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         if isinstance(exc, BudgetExceeded):
             raise
         log.error("Deep self-review failed: %s", exc, exc_info=True)
@@ -1018,7 +1024,8 @@ def _run_packed_review(
     # assumption and is disclosed in the header.
     from ouroboros import reviewer_window as _rw
 
-    window_fact = _resolve_packed_window(model)
+    window_fact = _resolve_packed_window(model, row)
+    from ouroboros.config import review_model_uses_local
     sub_floor = _packed_window_reason(window_fact, model)
     if sub_floor:
         return _failed(deep_review_unavailable_text(sub_floor), reason_code="deep_self_review_unavailable")
@@ -1052,12 +1059,28 @@ def _run_packed_review(
         # budget rail exactly like the review send itself.
         from ouroboros.capability_evidence import cold_start_density_probe
 
-        if cold_start_density_probe(
+        outcome = cold_start_density_probe(
             drive_root, llm, emit_progress, model,
             density_probe_sample(repo_dir, stats["context_manifest"]),
             task_id="deep_self_review", call_type="deep_self_review_density_probe",
             source="deep_review_cold_start_probe",
-        ) == "measured":
+            model_role=f"reviewer:{row.slot_id}", model_account_override=row.profile_id,
+        )
+        from ouroboros.review_records import apply_review_model_override
+        from ouroboros.model_wait import current_model_wait
+        waiter = current_model_wait()
+        updated = apply_review_model_override(row, waiter.overrides) if waiter else row
+        changed = updated != row
+        if changed:
+            row, model = updated, updated.target_id
+            window_fact = _resolve_packed_window(model, row)
+            sub_floor = _packed_window_reason(window_fact, model)
+            if sub_floor:
+                return _failed(deep_review_unavailable_text(sub_floor), reason_code="deep_self_review_unavailable")
+            deep_window = window_fact.sizing_window()
+            deep_output_reserve, deep_margin = _rw.window_scaled_reserves(
+                deep_window, output_reserve=_DEEP_MAX_OUTPUT_TOKENS, tokenizer_margin=_DEEP_OUTPUT_MARGIN_TOKENS)
+        if outcome == "measured" or changed:
             input_limit = max(0, calibrated_input_token_limit(
                 model,
                 context_window=deep_window,
@@ -1141,22 +1164,71 @@ def _run_packed_review(
     ]
 
     # no_proxy prevents macOS fork-safety SIGSEGV in bundled child process.
+    from contextlib import nullcontext
     from ouroboros.llm_observability import chat_observed
+    from ouroboros.model_wait import current_model_wait
+    from ouroboros.review_records import apply_review_model_override
 
-    response, usage = chat_observed(
-        llm,
-        drive_root=drive_root,
-        task_id="deep_self_review",
-        call_type="deep_self_review",
-        messages=messages,
-        model=model,
-        tools=None,
-        reasoning_effort=row_effort(row, "deep_self_review"),
-        max_tokens=_DEEP_MAX_OUTPUT_TOKENS,
-        temperature=None,
-        no_proxy=True,
-    )
+    def reprepare(values: dict) -> dict:
+        """Keep the complete packet, but revalidate its new route before a send."""
+        nonlocal row, model, window_fact, deep_window
+        updated = apply_review_model_override(row, {f"reviewer:{row.slot_id}": values})
+        observed = values.pop("_model_observed_route", None)
+        fact = _resolve_packed_window(values["model"], updated, **({"model_route": observed} if observed else {}))
+        reason = _packed_window_reason(fact, values["model"])
+        if reason:
+            raise ValueError(deep_review_unavailable_text(reason))
+        window = fact.sizing_window()
+        output, margin = _rw.window_scaled_reserves(
+            window, output_reserve=_DEEP_MAX_OUTPUT_TOKENS, tokenizer_margin=_DEEP_OUTPUT_MARGIN_TOKENS)
+        limit = max(0, calibrated_input_token_limit(values["model"], context_window=window,
+            output_reserve=output, tokenizer_margin=margin, drive_root=drive_root))
+        if estimated_tokens > limit:
+            raise ValueError(f"Deep self-review pack exceeds the changed route input cap: "
+                             f"~{estimated_tokens:,} tokens > ~{limit:,} for {values['model']}. "
+                             "Choose a wider model or a retrieving deep_review row; the full packet is unchanged.")
+        row, model, window_fact, deep_window = updated, values["model"], fact, window
+        return values
+
+    waiter = current_model_wait()
+    binding = waiter.register_reprepare(f"reviewer:{row.slot_id}", reprepare) if waiter else nullcontext()
+    with binding:
+        response, usage = chat_observed(
+            llm,
+            drive_root=drive_root,
+            task_id="deep_self_review",
+            call_type="deep_self_review",
+            model_role=f"reviewer:{row.slot_id}",
+            model_account_override=row.profile_id,
+            use_local=row.use_local if row.use_local is not None else review_model_uses_local(model),
+            messages=messages,
+            model=model,
+            tools=None,
+            reasoning_effort=row_effort(row, "deep_self_review"),
+            max_tokens=_DEEP_MAX_OUTPUT_TOKENS,
+            temperature=None,
+            no_proxy=True,
+        )
     usage = dict(usage or {})
+    # Auto can select a different account than preparation observed. Its paid
+    # response remains in custody and is delivered even if its window is unfit.
+    host_route = usage.get("model_role_route") or {}
+    observed = (usage.get("claudexor") or {}).get("route") or {}
+    actual_model = str(host_route.get("model") or usage.get("resolved_model") or model)
+    if observed.get("source") and observed.get("model"):
+        actual_model = f"claudexor::{observed['source']}={observed['model']}"
+    actual_row = apply_review_model_override(row, {f"reviewer:{row.slot_id}": {
+        "model": actual_model,
+        "model_account_override": observed.get("credentialProfileId", host_route.get("credential_profile_id", row.profile_id)),
+        "use_local": host_route.get("use_local", row.use_local if row.use_local is not None else review_model_uses_local(actual_model)),
+    }})
+    prior_local = row.use_local if row.use_local is not None else review_model_uses_local(model)
+    if ((actual_model, actual_row.profile_id, actual_row.use_local) != (model, row.profile_id, prior_local)
+            or (observed and observed != window_fact.model_route)):
+        window_fact = _resolve_packed_window(actual_model, actual_row, **({"model_route": observed} if observed else {}))
+        deep_window = window_fact.sizing_window()
+    row, model = actual_row, actual_model
+    sub_floor = _packed_window_reason(window_fact, model)
     memory = stats.get("memory") or {"inlined": 0, "total": len(_MEMORY_WHITELIST), "dispositions": {}}
     # FIRST: the usage of both «Выполняется как» records below (error or
     # responded) and the returned usage carry the memory fact; the durable D22
@@ -1169,21 +1241,28 @@ def _run_packed_review(
         _record_execution(slot, usage, status="error", error="empty response")
         return _failed("⚠️ Model returned an empty response for the deep self-review.",
                        reason_code="deep_self_review_error", usage=usage)
-    usage.setdefault("resolved_model", model)
-    _record_execution(slot, usage, status="responded")
+    usage["resolved_model"] = model
+    _record_execution(slot, usage, status="error" if sub_floor else "responded", error=sub_floor)
     # Completeness from the response the packed path holds: the provider's
     # stop marker (OpenAI-compatible finish_reason OR direct-Anthropic
     # stop_reason), not only the normalizer's usage projection.
-    incomplete = _delivery_incomplete("api_packet", usage, response if isinstance(response, dict) else None)
+    incomplete = "deep_self_review_unavailable" if sub_floor else _delivery_incomplete(
+        "api_packet", usage, response if isinstance(response, dict) else None)
     emit_progress(f"Deep self-review complete ({len(text):,} chars; incomplete={incomplete}).")
-    window_label = f"{deep_window}" if int(window_fact.window_tokens) > 0 else f"assumed_{deep_window}"
+    window_label = (f"{deep_window}" if int(window_fact.window_tokens) > 0
+                    else f"assumed_{deep_window}" if deep_window else "unknown")
     header = _provenance_header(
         "api_packet", model, usage, memory, {"pack": f"{stats['file_count']}_files"},
         f"Deep self-review: one packed API review on {_header_value(model)} — {stats['file_count']} files; "
-        f"{_memory_line(memory)}; window {deep_window:,}" + (" (unknown, full window assumed)" if int(window_fact.window_tokens) <= 0 else "")
-        + "; " + ("complete" if incomplete == "none" else f"INCOMPLETE ({incomplete}: the report hit the output reserve)"),
+        f"{_memory_line(memory)}; " + (f"window {deep_window:,}" if deep_window else "window unknown")
+        + (" (unknown, full window assumed)" if deep_window and int(window_fact.window_tokens) <= 0 else "")
+        + "; " + ("complete" if incomplete == "none" else
+                   f"INCOMPLETE ({_header_value(sub_floor)})" if sub_floor else
+                   f"INCOMPLETE ({incomplete}: the report hit the output reserve)"),
         incomplete=incomplete, extra={"window": window_label},
     )
+    if sub_floor:
+        return _failed(header + text, reason_code="deep_self_review_unavailable", usage=usage)
     return header + text, usage
 
 
@@ -1216,6 +1295,10 @@ def run_deep_self_review(
             row = slot or deep_review_slot()
         except ValueError as exc:
             return _failed(deep_review_unavailable_text(str(exc)), reason_code="deep_self_review_unavailable")
+        from ouroboros.review_records import apply_review_model_override
+        from ouroboros.model_wait import current_model_wait
+        waiter = current_model_wait()
+        row = apply_review_model_override(row, waiter.overrides) if waiter else row
         reason, model = deep_review_route(row)
         if reason:
             return _failed(deep_review_unavailable_text(reason), reason_code="deep_self_review_unavailable")
@@ -1230,5 +1313,7 @@ def run_deep_self_review(
         # budget-pause checkpoint) stays live for the deep review too.
         raise
     except Exception as e:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(e)
         log.error("Deep self-review failed: %s", e, exc_info=True)
         return _failed(f"❌ Deep self-review failed: {type(e).__name__}: {e}", reason_code="deep_self_review_error")

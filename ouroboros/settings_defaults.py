@@ -79,6 +79,9 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     "OUROBOROS_SERVER_HOST": "127.0.0.1",
     "OUROBOROS_HOST_SERVICE_PORT": 8767,
     "OUROBOROS_MODEL": OPENROUTER_DEFAULTS["main"],
+    # Role-owned choices; empty account and zero window mean Auto, not healthy/known.
+    "OUROBOROS_MODEL_ACCOUNTS": "{}",
+    "OUROBOROS_MODEL_CONTEXT_WINDOWS": "{}",
     # Worker lanes; empty means "use OUROBOROS_MODEL" (one model by default, per-lane
     # override optional). HEAVY = mutative first-level subagents; LIGHT = auto/deep bulk.
     "OUROBOROS_MODEL_HEAVY": OPENROUTER_DEFAULTS["heavy"],

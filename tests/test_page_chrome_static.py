@@ -237,8 +237,14 @@ def test_server_navigation_and_chat_static_contracts():
     assert 'id="s-total-budget"' in ui
     assert 'id="s-settings-per-task-cost"' in ui
     assert "setupContract.budgetFields" in settings
-    assert "'anthropic/claude-sonnet-5'" in settings
-    assert "'anthropic::claude-sonnet-5'" in settings
+    # Model defaults come from the shared setup contract, not duplicate model
+    # literals in Settings. Source qualification belongs to the shared editor.
+    assert "setupContract.modelSlots" in settings
+    assert "modelRoles.load(s" in settings
+    assert "inputId: slot.settingsInputId" in settings
+    model_roles = _read("web/modules/model_roles.js")
+    assert "composeModelSource" in model_roles
+    assert "route_editor_primitives.js" in model_roles
     assert "currentSettings?.[field.settingKey]" in settings
     assert "window.addEventListener('ouro:settings-updated'" in settings
     assert "source: 'settings'" in settings

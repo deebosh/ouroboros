@@ -388,6 +388,67 @@ element in the card shares one keyboard ring (2px `--focus-accent-border`,
 2px offset). Component geometry (card min/max width) keeps local literals like
 the rest of the chat surface.
 
+### Subscription waits inside task cards
+
+Quota exhaustion and a confirmed need to sign in again use the same component,
+`model_wait.js` with `model_wait.css`, inside the existing task card. Each
+waiting role has its own row; the model, account and reason are separate facts.
+The controls stay visible when the task's timeline is collapsed. Waiting carries
+a quiet warning status and no computation animation, activity counter or invented
+progress. Completed steps remain intact; a held worker slot and its effect on
+the queue are stated only when the host reports that fact.
+
+The quota row offers automatic continuation, initially enabled, and shows a
+known reset time or an explicit unknown. An authentication row instead offers
+the existing Accounts sign-in flow. Both can open Settings, retry explicitly,
+or use the shared model-role editor to choose a replacement model/account.
+The replacement affects the named waiting role until the task ends; an unchecked
+"Also save this role in Settings" checkbox separately requests persistence.
+Fallback Local remains shared by its Settings group. Changing Local for one
+waiting fallback makes the replacement task-only: the persistence checkbox is
+cleared and disabled with an explanation, while Apply remains available. Model
+and account changes can still be saved when the shared Local value is unchanged.
+Permanent group-wide Local changes remain in Models.
+
+A pool confirmed to contain both accounts requiring sign-in and accounts waiting
+for quota says "Waiting for access" and names both causes. It keeps automatic
+continuation and opens Accounts without selecting a profile or initiating login.
+Unknown pool availability is not this state. The confirmed quota component uses
+the same execution-clock pause; an authentication-only wait still consumes that
+clock, and calendar deadlines stay fixed.
+
+A submitted action is shown as pending until the task reports its application.
+A saved Settings change and a still-pending task change are disclosed separately.
+Retries preserve the original request identity and payload. Revisioned rows reject
+older observations, resolved episodes never reopen, and a terminal task removes
+all wait actions. A mailbox delivery failure keeps Retry request available for
+that same accepted command, even while its application remains pending. The
+current task attempt selects live actions; a previous attempt's retained pause
+never makes a new working attempt appear to wait. Updates and history rebuilds preserve the same keyed editor,
+its draft, persistence checkbox, focus and reading position. Wait pickers omit
+Context controls on every render: their action changes model/account only.
+Waiting chips do not pulse or show typing. Closing the chat disposes view
+resources without claiming that it stopped the task; continuation requires the
+Ouroboros process to remain running.
+
+Background consciousness uses this component inside its existing background card,
+without a task-queue entry or a held worker slot. Its live owner identifies one
+wakeup cycle: a new cycle replaces old wait actions, and a current live snapshot
+outranks a historical end-of-cycle marker after reconnect. The background label
+is preserved, and the card appears only in its host-reported chat. Foreground
+pause is shown separately from model access waiting;
+it never claims computation or completion. Temporary model changes last until
+this wakeup cycle ends; the persistence checkbox saves the consciousness role.
+
+An already-delivered answer does not close a still-open post-task synthesis.
+Reflection or consolidation waits use the same role controls in that task's
+existing finalizing card. Pooled tasks, including API-only tasks, keep their
+worker slot until post-work settles; the answer arrives early. Detached direct
+chat post-work holds no worker slot. Both claims follow the host's live owner
+and post-task checkpoint, not the presence of answer text or a cost estimate.
+Failed main work stays visibly failed after history reload while post-work
+controls remain live; the unfinished checkpoint never erases the outcome.
+
 ## 6. Account group / row anatomy
 
 For a repeated identity row (a connected agent account, a reviewer slot,
@@ -423,6 +484,47 @@ instead, and let the status text carry the claim.
 
 ## 7. Onboarding density
 
+Accounts is the common connection surface for subscriptions and API keys.
+Models and Agents edit assignments; adding a connection updates available
+choices without replacing an owner's assignments. A model role uses one compact
+Source / Model / Account row, with a single grouped source select. The account
+is a property of that role: Auto rotates compatible accounts and an explicit
+pin stays pinned. A model inherited from Main remains visibly inherited while
+its account can be pinned independently. Fallbacks use the same row in their
+saved order, with adjacent move/remove controls and the group's Add action.
+
+Context details distinguish the exact route's advertised Auto window from a
+manual value labelled "set by you". Changing an account withdraws the previous
+account's metadata immediately, including during a failed or pending catalog
+read. Unknown limits stay unknown. Catalog updates keep the edited field and
+caret in place and never assign a model. `model_roles.js` and `model_roles.css`
+own the shared Settings/wizard editor; `reviewer_slots.css` supplies the same
+reviewer-row layout to both documents.
+
+Available subagents and all review categories use the same grouped source
+choices and Source / Model / Account controls. Subscription model sources and
+agent sessions are distinct groups: neither implies the other's model inventory.
+Source ids are opaque; the model-sources catalog names the credential harness.
+Saved subscription-model account pins survive catalog gaps and unrelated saves;
+direct API-key models do not offer a subscription-account pin. Catalog entries
+are suggestions, not account-specific entitlement or context evidence.
+Changing a model or account never changes the delivery kind: a configured
+subagent reference remains a reference to its native inspection episode, while
+an inline packed-review model remains inline. Catalog refreshes preserve the
+edited value, focus, selection and scroll position.
+Returning to a reviewer's previous source restores that source's model/account
+draft; a source not previously selected starts without another source's pin.
+
+The wizard has five steps: Accounts, Models, Review, Budget, Summary. Agent
+connection is inside Accounts; Codex is the recommended connection for starting
+without an API key. Other existing agent connections describe their actual agent
+capability. Review & start computes the skipped model and reviewer steps before
+showing Summary. Summary names the assignments the one atomic Finish saves,
+including deep self-review. Reviewers remain editable with the same controls as
+Settings. A subscription-only Budget step leads with quota/reset facts and keeps
+optional API spending fields collapsed. "No API key" never claims unlimited free
+work or that paid provider credits were enabled.
+
 The first-run wizard is a compact flow that must not scroll at the default
 desktop window size merely because a step has several fields.
 
@@ -441,6 +543,7 @@ The scale is applied surface by surface. Migrated today:
 
 - `web/settings.css` (settings shell, model/effort cards, MCP cards)
 - `web/onboarding.css` (the whole first-run wizard)
+- `web/model_roles.css` and `web/reviewer_slots.css` (shared role editors)
 - `web/style.css` between the `design-system:migrated-begin` and
   `design-system:migrated-end` marker pairs (several — migrated surfaces are
   not contiguous in the file): harness accounts, reviewer slots, the

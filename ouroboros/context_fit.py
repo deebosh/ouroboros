@@ -13,7 +13,7 @@ import json
 import logging
 import math
 import pathlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
@@ -105,6 +105,9 @@ class ContextFitPlan:
     user_content_json: str
     max_projection: ContextFitProjection
     low_projection: ContextFitProjection
+    model_role: str = "main"
+    model_route: Dict[str, Any] = field(default_factory=dict)
+    evidence_source: str = ""
 
     def projection(self, mode: str) -> ContextFitProjection:
         return self.low_projection if str(mode or "").lower() == "low" else self.max_projection
@@ -486,34 +489,52 @@ def measure_main_fit(
     )
 
 
+def _context_route(task: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Resolve the same effective settings and account identity on success or failure."""
+    from ouroboros.capability_evidence import model_account_options
+    from ouroboros.config import load_settings
+    from ouroboros.gateway.settings import _active_main_route
+    from ouroboros.server_runtime import apply_runtime_provider_defaults
+
+    settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
+    local_override = task.get("use_local_model")
+    route = _active_main_route(
+        settings, model_override=str(task.get("model") or "").strip(),
+        use_local_override=(
+            bool(local_override) if local_override is not None else None
+        ),
+    )
+    from ouroboros.model_slots import task_model_binding
+    role, account = task_model_binding(task)
+    route["model_role"] = role
+    route["options"] = {}
+    if route["provider"] == "claudexor":
+        route["options"] = model_account_options(
+            route["model"], role=role, settings=settings,
+            credential_profile_id=account,
+            model_route=task.get("model_route"),
+        )
+    return route, settings
+
+
 def resolve_context_fit_route(
     task: Dict[str, Any],
     *,
     allow_fetch: bool,
 ) -> Tuple[Dict[str, Any], Any]:
-    """Resolve one exact route through the existing settings/evidence SSOT.
+    """Resolve capacity from effective settings and exact account evidence.
 
-    The document the route is read from is the provider-normalized EFFECTIVE
-    settings — the same derivation the task-start projection and the settings
-    GET make — never the owner-raw read: the read seam carries the vocabulary
-    normalization only, and a direct-provider install with no explicit model
-    resolves its main slot through the provider normalization alone, so the
-    owner-raw route would name a model the loop never runs."""
-    from ouroboros.capability_evidence import probe
-    from ouroboros.config import DATA_DIR, load_settings
-    from ouroboros.gateway.settings import _active_main_route
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
+    Auto discovery is advertised preparation evidence, not proof of the account
+    that will serve the next operation. The caller replaces ``model_route`` from
+    actual operation receipts when it rebinds. A manual role window is an owner
+    sizing assertion only; it neither changes the provider nor writes a scope ack.
+    """
+    from dataclasses import replace
+    from ouroboros.capability_evidence import SOURCE_USER_SETTING, STATUS_ASSERTED, probe
+    from ouroboros.config import DATA_DIR
+    from ouroboros.model_slots import MODEL_CONTEXT_WINDOWS_KEY, model_role_option
 
-    settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
-    model = str(task.get("model") or "").strip()
-    local_override = task.get("use_local_model")
-    route = _active_main_route(
-        settings,
-        model_override=model,
-        use_local_override=(
-            bool(local_override) if local_override is not None else None
-        ),
-    )
+    route, settings = _context_route(task)
     evidence = probe(
         DATA_DIR,
         provider=route["provider"],
@@ -521,31 +542,27 @@ def resolve_context_fit_route(
         base_url=route["base_url"],
         use_local=route["use_local"],
         allow_fetch=allow_fetch,
+        options=route["options"] or None,
     )
+    window = int(model_role_option(MODEL_CONTEXT_WINDOWS_KEY, route["model_role"],
+                                   settings=settings))
+    if window:
+        evidence = replace(evidence, window_tokens=window, status=STATUS_ASSERTED,
+                           source=SOURCE_USER_SETTING, stale=False,
+                           detail=f"Context for {route['model_role']} asserted by user; provider limit unchanged")
     return route, evidence
 
 
 def _failed_route_evidence(task: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
     from ouroboros.capability_evidence import route_fingerprint
-    from ouroboros.config import load_settings
-    from ouroboros.gateway.settings import _active_main_route
-    from ouroboros.server_runtime import apply_runtime_provider_defaults
 
-    settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
-    route = _active_main_route(
-        settings,
-        model_override=str(task.get("model") or ""),
-        use_local_override=(
-            bool(task.get("use_local_model"))
-            if task.get("use_local_model") is not None
-            else None
-        ),
-    )
+    route, _settings = _context_route(task)
     evidence = SimpleNamespace(
         route_fp=route_fingerprint(
             provider=route["provider"],
             base_url=route["base_url"],
             model=route["model"],
+            options=route["options"] or None,
         ),
         status="failed",
         stale=True,
@@ -655,4 +672,12 @@ def build_context_fit_plan(
         user_content_json=core.user_content_json,
         max_projection=max_projection,
         low_projection=low_projection,
+        model_role=str(route.get("model_role") or "main"),
+        model_route={
+            "source": str(getattr(evidence, "source_id", "") or ""),
+            "model": str(route["model"]).partition("=")[2],
+            "credentialProfileId": str(getattr(evidence, "credential_profile_id", "") or ""),
+            "accountFingerprint": str(getattr(evidence, "account_fingerprint", "") or ""),
+        } if route["provider"] == "claudexor" else {},
+        evidence_source=str(getattr(evidence, "source", "") or ""),
     )

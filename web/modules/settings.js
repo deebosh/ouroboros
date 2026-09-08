@@ -20,6 +20,7 @@ import { showToast } from './toast.js';
 import { escapeHtmlAttr as escapeHtml, formatDualVersion } from './utils.js';
 import { apiClient, apiFetch, cleanExtensionRoute, extensionRoutePath } from './api_client.js';
 import { claudexorStatus } from './claudexor_status_store.js';
+import { createModelRolesEditor } from './model_roles.js';
 import { collectSafeFieldValues, renderSafeField, setInlineStatus, revealNewRow } from './ui_helpers.js';
 import { extensionActionStatus } from './extension_status_text.js';
 
@@ -318,29 +319,6 @@ function collectSecretValue(id, body) {
     if (value && !value.includes('...')) body[settingKey] = value;
 }
 
-// Fallback picker pills mirror config defaults plus useful direct-provider ids.
-const SETTINGS_FALLBACK_MODELS = [
-    'google/gemini-3.8-flash',
-    'x-ai/grok-4.6',
-    'openai/gpt-5.6-terra',
-    'openai/gpt-5.6-sol',
-    'openai/gpt-5.6-luna',
-    'openai::gpt-5.6-terra',
-    'openai::gpt-5.6-sol',
-    'openai::gpt-5.6-luna',
-    'anthropic/claude-sonnet-5',
-    'anthropic/claude-opus-5',
-    'anthropic::claude-sonnet-5',
-    'anthropic::claude-opus-5',
-    'anthropic::claude-opus-4-6',
-    'deepseek/deepseek-v4-pro',
-    'deepseek::deepseek-v4-pro',
-    'deepseek::deepseek-v4-flash',
-    'minimax::MiniMax-M3',
-    'minimax::MiniMax-M2.7',
-];
-
-let settingsModelCatalogItems = SETTINGS_FALLBACK_MODELS.map((value) => ({ value, label: 'Suggested model' }));
 
 /**
  * Pure predicate (v6.82 P2): should the collapsed Settings "More providers"
@@ -424,6 +402,9 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     let settingsDirty = false;
     const providerTestGenerations = new Map();
     const providerTestsInFlight = new Set();
+    const modelRoles = createModelRolesEditor({ hostId: 'settings-model-roles',
+        onChange: () => updateSettingsDirtyState() });
+    modelRoles.mount();
     initMcpSettings({ onChange: updateSettingsDirtyState });
     initReviewerSlots({ onChange: () => updateSettingsDirtyState() });
     initSubagentsSection({
@@ -537,7 +518,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     }
 
     function discardUnsavedSettingsDraft() {
-        closeSettingsModelPickers();
         applySettings(currentSettings || {});
         setSettingsCleanBaseline();
         setStatus('', 'ok');
@@ -567,10 +547,9 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         applySecretInputs(page, s);
         INPUT_FIELDS.forEach(([id, key, fallback = '']) => applyInputValue(id, fallback && !s[key] ? fallback : s[key]));
         VALUE_FIELDS.forEach(([id, key, fallback]) => { byId(id).value = s[key] || fallback; });
-        setupModelSlots().forEach((slot) => {
-            applyInputValue(slot.settingsInputId, s[slot.settingKey]);
-            if (slot.settingsToggleId) applyCheckboxValue(slot.settingsToggleId, s[`USE_LOCAL_${slot.slot.toUpperCase()}`]);
-        });
+        modelRoles.load(s, { ...setupContract, modelSlots: setupModelSlots().map((slot) => ({
+            ...slot, inputId: slot.settingsInputId,
+        })) });
         applyCheckboxValue('s-auto-grant-reviewed-skills', s.OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS);
         // Owner-facing mutative-subagents control shows the EFFECTIVE state when it
         // is binary-representable: an explicit value, or unset in advanced/pro
@@ -704,7 +683,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         settingsLoaded = true;
         setSettingsCleanBaseline();
         armCleanBaselineOnStatusSettle();
-        closeSettingsModelPickers();
         _renderNetworkHint(data._meta);
         markSettingsDirty = updateSettingsDirtyState;
         syncSettingsLoadState();
@@ -771,10 +749,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             // unloaded/unparseable editor omits the key on an unrelated save.
             ...collectSubagentsSettings(),
         };
-        setupModelSlots().forEach((slot) => {
-            body[slot.settingKey] = fieldValue(slot.settingsInputId);
-            if (slot.settingsToggleId) body[`USE_LOCAL_${slot.slot.toUpperCase()}`] = Boolean(byId(slot.settingsToggleId)?.checked);
-        });
+        Object.assign(body, modelRoles.collect());
         INPUT_FIELDS.forEach(([id, key, fallback = '']) => {
             const value = fieldValue(id).trim();
             body[key] = key === 'OUROBOROS_SERVER_HOST' ? value || fallback : value || '';
@@ -952,13 +927,15 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                     + `Confirm that this reviewer supports a ${floorText}-token context window?\n`
                     + `provider: ${ack.provider || '(default)'}\nmodel: ${ack.model}\n`
                     + `base_url: ${ack.base_url || '(default)'}\n\n`
-                    + 'This applies only to this exact model/provider. Cancelling leaves scope '
+                    + (ack.options ? `account: ${ack.options.credential_profile_id}\nidentity: ${ack.options.account_fingerprint}\n\n` : '')
+                    + 'This applies only to the exact route shown above. Cancelling leaves scope '
                     + 'review blocking commits on this route.',
                 confirmLabel: 'Confirm window',
             });
             if (!confirmed) continue;
             await apiClient.ownerCapabilityAck({
                 provider: ack.provider, model: ack.model, base_url: ack.base_url,
+                options: ack.options, route_fp: ack.route_fp,
                 window_tokens: floor, note: 'owner-confirmed scope reviewer window',
             });
             acked += 1;
@@ -1042,101 +1019,12 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (event.detail?.page === 'settings') refreshSettingsAfterExtensionChange('settings page shown');
     });
 
-    function closeSettingsModelPickers(exceptPicker = null) {
-        page.querySelectorAll('[data-model-picker]').forEach((picker) => {
-            if (picker === exceptPicker) return;
-            const panel = picker.querySelector('.model-picker-results');
-            if (!panel) return;
-            panel.hidden = true;
-            panel.innerHTML = '';
-        });
-    }
-
-    function renderSettingsModelPicker(input) {
-        const picker = input.closest('[data-model-picker]');
-        const panel = picker?.querySelector('.model-picker-results');
-        if (!picker || !panel) return;
-        const needle = String(input.value || '').trim().toLowerCase();
-        let items = settingsModelCatalogItems
-            .filter((item) => {
-                const haystack = `${item.value} ${item.label || ''} ${item.provider || ''}`.toLowerCase();
-                return !needle || haystack.includes(needle);
-            })
-            .slice(0, 8);
-        if (!items.length && needle) {
-            items = settingsModelCatalogItems.slice(0, 8);
-        }
-        if (!items.length) {
-            panel.hidden = true;
-            panel.innerHTML = '';
-            return;
-        }
-        panel.innerHTML = items.map((item) => `
-            <button type="button" class="model-picker-item" data-value="${escapeHtml(item.value)}">
-                <span class="model-picker-item-value">${escapeHtml(item.value)}</span>
-                <span class="model-picker-item-label">${escapeHtml(item.label || item.provider || 'Catalog model')}</span>
-            </button>
-        `).join('');
-        panel.hidden = false;
-    }
-
-    page.addEventListener('focusin', (event) => {
-        const input = event.target instanceof Element
-            ? event.target.closest('[data-model-picker] input')
-            : null;
-        if (!input) return;
-        const picker = input.closest('[data-model-picker]');
-        closeSettingsModelPickers(picker);
-        renderSettingsModelPicker(input);
-    });
-    page.dataset.modelPickerBound = '1';
-
-    page.addEventListener('input', (event) => {
-        const input = event.target instanceof Element
-            ? event.target.closest('[data-model-picker] input')
-            : null;
-        if (!input) return;
-        const picker = input.closest('[data-model-picker]');
-        closeSettingsModelPickers(picker);
-        renderSettingsModelPicker(input);
-    });
-
-    page.addEventListener('mousedown', (event) => {
-        const item = event.target instanceof Element
-            ? event.target.closest('.model-picker-item')
-            : null;
-        if (item) {
-            const picker = item.closest('[data-model-picker]');
-            const input = picker?.querySelector('input');
-            if (input) {
-                event.preventDefault();
-                input.value = item.dataset.value || '';
-                closeSettingsModelPickers();
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            return;
-        }
-        if (!(event.target instanceof Element) || !event.target.closest('[data-model-picker]')) {
-            closeSettingsModelPickers();
-        }
-    });
-
-    document.addEventListener('settings-model-catalog:updated', (event) => {
-        const items = Array.isArray(event.detail?.items) ? event.detail.items : [];
-        settingsModelCatalogItems = items.length
-            ? items.map((item) => ({
-                value: item.value || item.id || '',
-                label: item.label || item.provider || 'Catalog model',
-                provider: item.provider || '',
-            })).filter((item) => item.value)
-            : SETTINGS_FALLBACK_MODELS.map((value) => ({ value, label: 'Suggested model' }));
-        page.querySelectorAll('[data-model-picker]').forEach((picker) => {
-            const panel = picker.querySelector('.model-picker-results');
-            if (panel && !panel.hidden) {
-                const input = picker.querySelector('input');
-                renderSettingsModelPicker(input);
-            }
-        });
+    const onModelCatalog = (event) => modelRoles.adoptCatalog(event.detail);
+    document.addEventListener('settings-model-catalog:updated', onModelCatalog);
+    window.addEventListener('pagehide', (event) => {
+        if (event.persisted) return;
+        modelRoles.destroy();
+        document.removeEventListener('settings-model-catalog:updated', onModelCatalog);
     });
 
     // Provider readiness probe: one short model request against the card draft.
@@ -1238,6 +1126,8 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             return;
         }
         const subagentErrors = validateSubagentsDraft();
+        const modelError = modelRoles.validate();
+        if (modelError) { setStatus(modelError, 'warn'); return; }
         if (subagentErrors.length) {
             setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn', 'subagents');
             return;

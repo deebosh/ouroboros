@@ -72,11 +72,11 @@ test('the chat.js terminal seam keeps soft-stop truth in the details', () => {
     assert.match(chat, /taskStoppedWithSummary\(msg \|\| \{\}\)/);
     assert.match(
         chat,
-        /taskPresentation\(finalizing \? 'working' : taskTerminalPhase\(msg \|\| \{\}\)\)/,
+        /taskPresentation\(finalizing && outcome !== 'error' \? 'working' : outcome\)/,
     );
     assert.match(chat, /softStopped \? OWNER_STOP_DETAIL_MARKER : ''/);
     assert.match(chat, /\[softStopDetail, reasonDetail\]\.filter\(Boolean\)\.join\('\\n'\)/);
-    assert.match(chat, /visible: Boolean\(softStopDetail \|\| reasonDetail\)/);
+    assert.match(chat, /visible: Boolean\(softStopDetail \|\| reasonDetail \|\| outcome === 'error'\)/);
     assert.doesNotMatch(chat, /reviewDetails/);
 });
 

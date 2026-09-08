@@ -59,22 +59,17 @@ test('the ladder is three rungs and states the launch gate honestly', () => {
     assert.equal(VALUE_LADDER.length, 3);
 
     const [runs, better, best] = VALUE_LADDER;
-    // Rung 1: the access step ALREADY satisfied the requirement.
-    assert.match(runs.title, /API key/i);
-    assert.match(runs.body, /Ouroboros runs/i);
-    // Rung 2: the benefit and the D-1 limit in the same breath — a plan moves
-    // delegated work and configured review rows, and CANNOT run the main agent.
-    assert.match(better.body, /delegated subagents/i);
-    assert.match(better.body, /commit, plan, and skill review and task acceptance/i);
-    assert.match(better.body, /main\s+agent keeps using the API key or local model/i);
-    assert.match(better.body, /a plan cannot run it/i);
+    assert.match(runs.title, /Codex subscription/i);
+    assert.match(runs.body, /models and agents without an API key/i);
+    assert.match(better.body, /API keys and local models work on their own/i);
+    assert.match(better.body, /Claude Code, Cursor, and Antigravity remain agent connections/i);
     // Rung 3: rotation, in the owner's own terms.
     assert.match(best.body, /rotate/i);
     assert.match(best.body, /window is spent/i);
 
-    // No rung may imply a subscription is what starts Ouroboros.
+    // Access is subscription-backed, not a promise of unlimited free service.
     for (const rung of VALUE_LADDER) {
-        assert.doesNotMatch(rung.body, /(subscription|plan) (alone )?(is enough|starts Ouroboros)/i);
+        assert.doesNotMatch(rung.body, /guaranteed free|unlimited/i);
     }
 });
 
@@ -159,8 +154,8 @@ test('nothing connected: no declaration, and the outcome says so plainly', () =>
         subscriptionsConnected: false, skipSubscriptionPresets: false,
     });
     const text = agentsOutcomeText([]);
-    assert.match(text, /No agent account connected/i);
-    assert.match(text, /Settings → Agents/);
+    assert.match(text, /Connect Codex to start without an API key/i);
+    assert.match(text, /Other subscriptions remain available for agents/);
 });
 
 test('one connected account declares the preset request and promises nothing certain', () => {
@@ -176,7 +171,7 @@ test('one connected account declares the preset request and promises nothing cer
     assert.match(text, /Available subagents/);
     // Conditional by construction: the compiler may still refuse a seat.
     assert.match(text, /will try to/);
-    assert.match(text, /nothing is changed/);
+    assert.match(text, /Main still needs Codex, an API key, or a local model/);
     assert.doesNotMatch(text, /guarantee|always/i);
 });
 

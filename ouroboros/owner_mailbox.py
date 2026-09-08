@@ -27,6 +27,9 @@ KIND_HURRY = "hurry"
 # chosen option label (plus an optional owner comment) — delivered inside a
 # structural frame, never as forged free-form owner dialogue.
 KIND_QUIZ_ANSWER = "quiz_answer"
+# A model-call waiter consumes this control itself, not the conversation loop.
+# The default drain withholds it so it cannot become forged owner dialogue.
+KIND_MODEL_WAIT = "model_wait"
 # The mailbox is append-only, so a sender that changes its mind cannot delete the
 # control it already wrote — it appends this retraction naming the target msg_id.
 # Revocations are resolved by the READER over the whole mailbox, so a control that
@@ -407,7 +410,7 @@ def reset_attempt_controls_for_retry(
         for row in rows:
             kind = str(row.get("kind") or KIND_OWNER_TEXT)
             msg_id = str(row.get("msg_id") or "")
-            if kind not in {KIND_HURRY, KIND_FINALIZE_NOW} or not msg_id or msg_id in revoked:
+            if kind not in {KIND_HURRY, KIND_FINALIZE_NOW, KIND_MODEL_WAIT} or not msg_id or msg_id in revoked:
                 continue
             if revoke_owner_control(drive_root, task_id, msg_id):
                 revoked.add(msg_id)
@@ -516,6 +519,7 @@ def drain_owner_entries(
     *,
     include_acknowledged: bool = False,
     _read_status: Optional[Dict[str, bool]] = None,
+    kinds: Optional[set[str]] = None,
 ) -> List[dict]:
     """Read unseen mailbox entries without mutating the append-only mailbox.
 
@@ -526,6 +530,9 @@ def drain_owner_entries(
     lookup after transcript delivery; it writes no acknowledgement or mailbox row.
     ``_read_status`` distinguishes successful emptiness from failed/torn reads
     for wait-local peeks without changing the normal delivery projection.
+
+    A selective reader claims only its own kinds. The ordinary conversation
+    drain excludes model-wait controls, whose consumer is the still-live call.
     """
     if _read_status is not None:
         _read_status["complete"] = False
@@ -572,12 +579,14 @@ def drain_owner_entries(
             parsed.append(entry)
         entries = []
         for entry in parsed:
+            kind = str(entry.get("kind") or KIND_OWNER_TEXT)
+            if (kinds is not None and kind not in kinds) or (kinds is None and kind == KIND_MODEL_WAIT):
+                continue
             mid = entry.get("msg_id", "")
             if mid and mid in seen_ids:
                 continue
             if mid:
                 seen_ids.add(mid)
-            kind = str(entry.get("kind") or KIND_OWNER_TEXT)
             if kind == KIND_CONTROL_REVOKED or (mid and mid in revoked):
                 continue
             text = entry.get("text", "")

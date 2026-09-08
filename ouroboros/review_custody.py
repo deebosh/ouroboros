@@ -14,13 +14,15 @@ import json
 import logging
 import queue
 import threading
-import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros.deadline_utils import review_operation_timeout_sec
 from ouroboros.observability import new_call_id
+from ouroboros.model_wait import (
+    calendar_scope, copy_wait_context, current_model_wait, execution_deadline_scope, monotonic_now,
+)
 from ouroboros.review_dispatch import slot_id_for_row
 from ouroboros.usage_accounting import (
     PHYSICAL_ATTEMPT_STATES, POSITIVE_PHYSICAL_ATTEMPT_STATES,
@@ -699,6 +701,8 @@ def _attempt_key(request: Any, slot: Any) -> str:
             "subagent_id",
         )
     }
+    if getattr(slot, "default_temperature", None) is not None:
+        slot_data["default_temperature"] = slot.default_temperature
     identity = {
         "retry_key": retry_key,
         "surface": getattr(request, "surface", ""),
@@ -729,6 +733,8 @@ def _attempt_key(request: Any, slot: Any) -> str:
             "policy": getattr(request, "policy", {}),
             "session_task": getattr(request, "session_task", ""),
         }
+        if getattr(request, "default_temperature", None) is not None:
+            payload["default_temperature"] = request.default_temperature
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
 
@@ -1022,7 +1028,7 @@ def run_custodied_review_slots(
         ) else ""
         window = _logical_timeout(slot, request, usage_meta)
         slot_windows[slot_id] = window
-        slot_deadlines[slot_id] = time.monotonic() + window
+        slot_deadlines[slot_id] = monotonic_now(slot_id) + window
         custody_lost = False
         no_resend_operation_id = ""
         with _ACTIVE_LOCK:
@@ -1101,7 +1107,7 @@ def run_custodied_review_slots(
 
                     window = float(NESTED_SETTLEMENT_MARGIN_SEC)
                     slot_windows[slot_id] = window
-                    slot_deadlines[slot_id] = time.monotonic() + window
+                    slot_deadlines[slot_id] = monotonic_now(slot_id) + window
                 if window > 0:
                     entry = ActiveReviewAttempt(
                         key=key,
@@ -1190,7 +1196,9 @@ def run_custodied_review_slots(
                     phase="started",
                 )
                 try:
-                    with usage_scope(review_usage_scope):
+                    with (usage_scope(review_usage_scope),
+                          calendar_scope(str(getattr(request, "deadline_at", "") or "")),
+                          execution_deadline_scope(slot_deadlines[slot_id], review_slot_id=slot_id)):
                         actor = run_slot(
                             slot, entry.operation_id, entry.retry_state,
                             slot_deadlines[slot_id],
@@ -1211,7 +1219,7 @@ def run_custodied_review_slots(
                 )
 
             threading.Thread(
-                target=worker,
+                target=copy_wait_context().run, args=(worker,),
                 name=f"ouroboros-review-{getattr(request, 'surface', 'review')}-{slot_id}",
                 daemon=True,
             ).start()
@@ -1241,13 +1249,21 @@ def run_custodied_review_slots(
         if str(getattr(slot, "slot_id", "") or "") not in immediate_actors
     }
     while pending:
-        now = time.monotonic()
-        expired = {slot_id for slot_id in pending if slot_deadlines[slot_id] <= now}
+        from ouroboros.deadline_utils import seconds_until
+
+        calendar_remaining = seconds_until(getattr(request, "deadline_at", ""))
+        wait_context = current_model_wait()
+        waiting_slots = wait_context.waiting_slots() if wait_context is not None else set()
+        expired = {slot_id for slot_id in pending if slot_deadlines[slot_id] <= monotonic_now(slot_id)}
+        if calendar_remaining == 0.0:
+            expired.update(pending & waiting_slots)
         for slot_id in expired:
             pending.remove(slot_id)
         if not pending:
             break
-        remaining = min(slot_deadlines[slot_id] - now for slot_id in pending)
+        remaining = min(slot_deadlines[slot_id] - monotonic_now(slot_id) for slot_id in pending)
+        if calendar_remaining is not None and pending & waiting_slots:
+            remaining = min(remaining, calendar_remaining)
         try:
             actor = result_queue.get(timeout=remaining)
         except queue.Empty:

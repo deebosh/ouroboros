@@ -10,6 +10,8 @@ The dependency runs one way: this module never imports the coordinator.
 
 from __future__ import annotations
 
+from ouroboros.model_wait import monotonic_now
+
 import asyncio
 import hashlib
 import json
@@ -428,6 +430,8 @@ class ApiChatReviewExecutor(ReviewSlotExecutor):
             self._chat_kwargs = {
                 "messages": self.messages,
                 "model": slot.model,
+                "model_role": f"reviewer:{slot.slot_id}",
+                "model_account_override": slot.session_profile,
                 "reasoning_effort": slot.effort,
                 "max_tokens": int(request.max_tokens or slot.max_tokens),
                 "temperature": request.temperature if request.temperature is not None else slot.temperature,
@@ -436,6 +440,11 @@ class ApiChatReviewExecutor(ReviewSlotExecutor):
                 "cache_affinity": f"{request.surface}:{request.task_id or 'review'}",
                 "use_local": bool(slot.use_local),
             }
+            default_temperature = getattr(request, "default_temperature", None)
+            if default_temperature is None:
+                default_temperature = getattr(slot, "default_temperature", None)
+            if default_temperature is not None:
+                self._chat_kwargs["default_temperature"] = default_temperature
         # Recompute this per physical send because the executor is reused for retries.
         self._chat_kwargs["timeout"] = review_transport_timeout(
             slot.model,
@@ -1291,7 +1300,7 @@ class AgentSessionReviewExecutor(ReviewSlotExecutor):
         from ouroboros.deadline_utils import review_operation_timeout_sec
         logical_deadline = getattr(self, "_logical_deadline_monotonic", None)
         logical_timeout = (
-            max(0.001, float(logical_deadline) - time.monotonic())
+            max(0.001, float(logical_deadline) - monotonic_now())
             if logical_deadline is not None else
             review_operation_timeout_sec(getattr(slot, "timeout_sec", None),
                 route=getattr(slot, "route", None),

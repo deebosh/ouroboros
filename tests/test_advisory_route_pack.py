@@ -484,7 +484,8 @@ def test_native_advisory_episode_bound_is_derived_from_the_advisory_models_windo
 
     bound_calls = []
 
-    def _bound(model_id, *, output_reserve, use_local=None, mandatory_read_chars=0):
+    def _bound(model_id, *, output_reserve, use_local=None, mandatory_read_chars=0,
+               model_role="", credential_profile_id=None):
         bound_calls.append((model_id, output_reserve))
         return 60_000  # above the first send; the floor below it is its own typed end
 
