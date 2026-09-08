@@ -46,7 +46,7 @@ MAX_GOAL_CHARS = 2000
 MAX_FINDINGS_PER_SLOT = 32
 # Per-task `need_evidence` memory: reviewers' requests the host remembers (and, W3, attaches).
 # Bounded so the durable review state stays bounded whatever the panel asks for; a request past
-# the cap is demoted (never remembered), disclosed `need_evidence_memory_full`.
+# the cap stays a typed request but is not remembered, disclosed `need_evidence_memory_full`.
 MAX_NEED_EVIDENCE_MEMORY = 4 * MAX_LIST_ITEMS
 MAX_FINDING_TEXT_CHARS = 2000
 PACKET_OBJECTIVE_CHARS = 8_000

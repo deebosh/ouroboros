@@ -17,6 +17,49 @@ from tests.test_plan_review_engine import harness as _engine_harness  # the shar
 harness = _engine_harness  # noqa: F811 - pytest registers the fixture under this module's namespace
 
 
+@pytest.mark.parametrize("notice_prefix", ["", "source detail " * 4000], ids=["complete", "budgeted"])
+def test_task_locator_preserves_host_notice_and_invalidates_changed_evidence(harness, notice_prefix):
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    answer = "The report is complete."
+    write_task_result(harness.drive, "previous", "completed", result=answer)
+    reader = pr._task_evidence_reader(harness.drive)
+    assert "terminal_host_notice" not in json.loads(reader("previous"))
+    first_notice = notice_prefix + "First source limitation."
+    write_task_result(harness.drive, "previous", "completed", terminal_host_notice=first_notice)
+    sub = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    spec = {**DECK_SPEC, "evidence": ["task:previous"]}
+    request = pr._PlanRequest(goal="Ship the deck", plan="Outline first, then draft each slide.", spec=spec)
+    packet = pr.build_plan_review_packet_for_dry_run(ctx, request)
+    assert _control(_call(ctx, spec=spec))["closed"] is True
+    first = _state(harness)["waves"][-1]
+    assert first["request_fingerprint"] == packet["fingerprint"]
+    attached = packet["manifest"]["attached"][0]
+    assert '"terminal_host_notice":' in attached["text"]
+    assert '"terminal_host_notice":' in _user_text(sub.calls[0]["request"].messages[1]["content"])
+    assert json.loads(reader("previous"))["result"] == answer
+    assert _control(_call(ctx, spec=spec))["closed"] is True and len(sub.calls) == 1
+
+    write_task_result(harness.drive, "previous", "completed",
+                      terminal_host_notice=notice_prefix + "Second source limitation.")
+    packet = pr.build_plan_review_packet_for_dry_run(ctx, request)
+    assert _control(_call(ctx, spec=spec))["closed"] is True
+    second = _state(harness)["waves"][-1]
+    assert second["request_fingerprint"] == packet["fingerprint"]
+    changed = packet["manifest"]["attached"][0]
+    assert len(sub.calls) == 2 and _state(harness)["cycles_paid"] == 2
+    assert second["request_fingerprint"] != first["request_fingerprint"]
+    assert changed["sha256"] != attached["sha256"]
+    assert load_task_result(harness.drive, "previous")["result"] == answer
+    if notice_prefix:
+        assert changed["text"] == attached["text"]  # The changed tail is beyond the view.
+        assert any(o["reason"].startswith("truncated_to_") for o in second["evidence_manifest"]["omissions"])
+    else:
+        assert json.loads(attached["text"])["terminal_host_notice"] == first_notice
+        assert json.loads(changed["text"])["terminal_host_notice"] == "Second source limitation."
+
+
 @pytest.mark.parametrize("decision", ["accept", "reject", "defer"])
 def test_closed_notes_allow_voluntary_disposition_without_new_authority(harness, decision):
     notes = json.dumps([_finding("n1", "note"), _finding("n2", "note")])

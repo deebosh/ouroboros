@@ -375,7 +375,7 @@ def _plan_fingerprint(goal: str, plan: str, spec: dict, manifest_hash: str, cons
 
 
 def _task_evidence_reader(root: pathlib.Path) -> Callable[[str], Optional[str]]:
-    """``task:<id>`` locators → a bounded JSON summary of that task's durable result."""
+    """Task-result projection; the evidence resolver hashes, budgets and redacts it."""
     def _read(task_id: str) -> Optional[str]:
         try:
             record = load_task_result(root, task_id)
@@ -383,13 +383,16 @@ def _task_evidence_reader(root: pathlib.Path) -> Callable[[str], Optional[str]]:
             return None
         if not isinstance(record, dict):
             return None
-        return json.dumps({
+        projection = {
             "task_id": task_id,
             "status": record.get("status"),
             "reason_code": record.get("reason_code"),
             "ts": record.get("ts"),
             "result": truncate_review_artifact(str(record.get("result") or ""), limit=_TASK_EVIDENCE_RESULT_CHARS),
-        }, ensure_ascii=False, indent=2, default=str)
+        }
+        if "terminal_host_notice" in record:
+            projection["terminal_host_notice"] = str(record["terminal_host_notice"] or "")
+        return json.dumps(projection, ensure_ascii=False, indent=2, default=str)
     return _read
 
 
