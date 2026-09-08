@@ -13,7 +13,6 @@ from ouroboros.config import get_context_mode
 from ouroboros.context_budget import (
     LARGE_CONTEXT_SECTION_CHARS,
     MAX_RECENT_CHAT_TAIL,
-    SCRATCHPAD_MAX_CONTENT_CHARS,
     SCRATCHPAD_SECTION_BUDGET_CHARS,
 )
 from ouroboros.memory import _SCRATCHPAD_MAX_BLOCKS
