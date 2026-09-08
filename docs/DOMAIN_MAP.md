@@ -8,14 +8,14 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 
 | domain | name | modules | proposed |
 |---|---|---:|---:|
-| D01 | Agent core & main loop | 29 | 0 |
+| D01 | Agent core & main loop | 30 | 0 |
 | D02 | LLM client, routing & providers | 35 | 0 |
 | D03 | Context assembly, fit & compaction | 11 | 0 |
 | D04 | Tool execution: registry, access & typed results | 20 | 0 |
 | D05 | Tool surfaces: files, code, shell, media, external | 28 | 0 |
 | D06 | Review stack | 63 | 0 |
 | D07 | Delegation, subagents & Claudexor | 48 | 0 |
-| D08 | Supervisor: queue, workers, events & runtime control | 43 | 0 |
+| D08 | Supervisor: queue, workers, events & runtime control | 44 | 0 |
 | D09 | Cancellation, owner control & process custody | 13 | 0 |
 | D10 | Git, update & release machinery | 28 | 0 |
 | D11 | Gateway, server & Web UI | 51 | 0 |
@@ -28,7 +28,7 @@ The manifest is the SSOT of the module→domain assignment (1:1, complete over t
 | D18 | Launcher, packaging, platform & shared substrate | 12 | 0 |
 | D19 | Frozen contracts (ABI) | 10 | 0 |
 | D20 | Presence | 9 | 0 |
-| **total** | | **526** | **0** |
+| **total** | | **528** | **0** |
 
 ## Dependency direction matrix (strict, pinned)
 
@@ -197,6 +197,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `ouroboros/outcome_receipt_store.py`
 - `ouroboros/outcomes.py`
 - `ouroboros/owner_mailbox.py`
+- `ouroboros/owner_wait.py`
 - `ouroboros/post_task_checkpoint.py`
 - `ouroboros/post_task_synthesis.py`
 - `ouroboros/synthesis_cost_text.py`
@@ -467,6 +468,7 @@ No function body (≥ 10 normalized lines) is shared verbatim across domains. Ne
 - `supervisor/worker_assignment.py`
 - `supervisor/worker_chat_lane.py`
 - `supervisor/worker_health.py`
+- `supervisor/worker_owner_wait.py`
 - `supervisor/worker_pool_lifecycle.py`
 - `supervisor/worker_process.py`
 - `supervisor/worker_promotion.py`

@@ -98,6 +98,7 @@ EVENT_DISPOSITIONS: Dict[str, EventDisposition] = {
     "owner_message_injected": _handled(
         # v7 L-B split: the drain that emits the receipt lives in the round-limits leaf.
         "supervisor.events_runtime_controls", "ouroboros/loop_round_limits.py"),
+    "owner_wait": _handled("supervisor.worker_owner_wait", "ouroboros/owner_wait.py"),
     "project_digest": _handled(
         "supervisor.events_project_routing", "ouroboros/agent_task_pipeline.py"),
     "promote_chat_to_task": _handled(

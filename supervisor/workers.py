@@ -86,6 +86,8 @@ class Worker:
     # teardown (kill/join/archive/respawn) is handed to the background reaper. The slot
     # is unavailable for assignment until respawn_worker() installs a fresh Worker.
     reaping: bool = False
+    # A required owner wait keeps this process and task, lending only dispatch capacity.
+    active_capacity: bool = True
 
 
 _EVENT_Q = None
@@ -1278,14 +1280,16 @@ def kill_workers(
                     continue
                 if task_id in preserve_running:
                     successor = dict(task)
-                    successor["_attempt"] = int(meta.get("attempt") or task.get("_attempt") or 1) + 1
+                    continuing_wait = isinstance(successor.get("_owner_wait_resume"), dict)
+                    successor["_attempt"] = int(meta.get("attempt") or task.get("_attempt") or 1) + (0 if continuing_wait else 1)
                     try:
                         from ouroboros.owner_hurry import retry_reset
 
-                        retry_reset(
-                            queue._task_drive_for_task(task, str(task_id)),
-                            DRIVE_ROOT, str(task_id), reason="planned_restart_requeue",
-                        )
+                        if not continuing_wait:
+                            retry_reset(
+                                queue._task_drive_for_task(task, str(task_id)),
+                                DRIVE_ROOT, str(task_id), reason="planned_restart_requeue",
+                            )
                     except Exception:
                         log.debug(
                             "Planned-restart retry reset failed for %s", task_id,

@@ -325,9 +325,10 @@ def get_tools() -> List[ToolEntry]:
         }, _update_scratchpad),
         ToolEntry("send_user_message", {
             "name": "send_user_message",
-            "description": "Send a proactive message to the user. Use when you have something "
-                           "genuinely worth saying — an insight, a question, or an invitation to collaborate. "
-                           "This is NOT for task responses (those go automatically).",
+            "description": "Send a separate reply to the owner during ongoing work, or reach out "
+                           "with an insight, a question, or an invitation to collaborate. "
+                           "The reply appears in the conversation and leaves the task running. "
+                           "Progress stays in the task card; the final answer is delivered automatically.",
             "parameters": {"type": "object", "properties": {
                 "text": {"type": "string", "description": "Message text"},
                 "reason": {"type": "string", "description": "Why you're reaching out (logged, not sent)"},

@@ -306,13 +306,13 @@ class QuizValidationError(ValueError):
 
 def validate_quiz_payload(
     question: Any, options: Any, stake: Any, assumption: Any,
+    *, wait_for_answer: bool = False,
 ) -> Dict[str, Any]:
     """Return one cleaned quiz payload, or refuse the entire card.
 
     Shared by the asking tool and the message bus (one validator, two
-    callers — the LinksOutbound pattern). ``assumption`` is REQUIRED by
-    owner decision 27=A: a quiz is fire-and-continue, so the card must name
-    what the task keeps doing while the owner has not answered.
+    callers — the LinksOutbound pattern). Optional questions name an
+    assumption; required waiting has no implied default answer.
     """
     q_text = str(question or "").strip()
     if not q_text or len(q_text) > _MAX_QUIZ_QUESTION_CHARS:
@@ -344,7 +344,9 @@ def validate_quiz_payload(
             option["detail"] = detail[:500]
         cleaned.append(option)
     assumption_text = str(assumption or "").strip()
-    if not assumption_text:
+    if not isinstance(wait_for_answer, bool):
+        raise QuizValidationError("QUIZ_WAIT_INVALID", "wait_for_answer must be a boolean.")
+    if not assumption_text and not wait_for_answer:
         raise QuizValidationError(
             "QUIZ_ASSUMPTION_REQUIRED",
             "state the assumption you continue under until the owner answers.",
@@ -388,11 +390,13 @@ def _escalate(
     options: list | None = None,
     stake: str = "",
     assumption: str = "",
+    wait_for_answer: bool = False,
 ) -> str:
     """One escalation verb for the whole tree (owner decision 31 hierarchy).
 
     A ROOT task addresses the OWNER: a typed quiz card in the chat
-    (fire-and-continue under the mandatory ``assumption`` — decision 27=A).
+    (optional clarification continues under ``assumption``; required waiting
+    preserves the task at the next completed-tool boundary).
     A SUBAGENT addresses its PARENT: a typed mailbox frame the parent answers
     with ``forward_to_worker`` or raises higher by calling ``escalate``
     itself, forwarding the payload verbatim. The owner only ever sees what no
@@ -408,7 +412,7 @@ def _escalate(
         return ("⚠️ ESCALATE_UNAVAILABLE: background consciousness cannot escalate — "
                 "record the open question in memory or scratchpad instead.")
     try:
-        payload = validate_quiz_payload(question, options, stake, assumption)
+        payload = validate_quiz_payload(question, options, stake, assumption, wait_for_answer=wait_for_answer)
     except QuizValidationError as exc:
         return f"⚠️ {exc.code}: {exc}"
     task_id = str(getattr(ctx, "task_id", "") or "").strip()
@@ -422,10 +426,16 @@ def _escalate(
                 "ask the question directly in your reply instead of a card.")
     parent_task_id = str(meta.get("parent_task_id") or "").strip()
     delegation_role = str(meta.get("delegation_role") or "").strip()
-    if delegation_role and not parent_task_id:
-        # Fail-closed on corrupted lineage: a delegated context without its
-        # parent id must never fall through to the OWNER card path (decision
-        # 31 — the owner sees only what no ancestor answered).
+    if wait_for_answer and (parent_task_id or not callable(getattr(ctx, "owner_wait_callback", None))):
+        return "⚠️ ESCALATE_UNAVAILABLE: required owner waiting needs a managed root task."
+    if wait_for_answer:
+        from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
+
+        if is_a2a_chat_id(getattr(ctx, "current_chat_id", None)):
+            return "⚠️ ESCALATE_UNAVAILABLE: this machine-to-machine chat has no owner question delivery."
+    if delegation_role not in ("", "root") and not parent_task_id:
+        # A root has no parent. A child missing its lineage must not fall
+        # through to the owner card path.
         return ("⚠️ ESCALATE_UNAVAILABLE: delegated context without a parent "
                 "task id — record the open question in your result instead.")
 
@@ -513,8 +523,12 @@ def _escalate(
         quiz_id=quiz_id, question=payload["question"],
         options=[row["label"] for row in payload["options"]],
         stake=payload["stake"], assumption=payload["assumption"],
+        wait_for_answer=wait_for_answer,
     )
     if asked.get("refused"):
+        if wait_for_answer:
+            return ("⚠️ ESCALATE_UNAVAILABLE: the task already has the maximum number "
+                    "of open owner questions. No default answer or wait was selected.")
         return ("⚠️ ESCALATE_UNAVAILABLE: this task already has the maximum "
                 "number of unanswered owner questions open; proceed under your "
                 f"stated assumption: {payload['assumption']}")
@@ -530,8 +544,14 @@ def _escalate(
         "assumption": payload["assumption"],
         "state": "open",
         "task_id": task_id,
+        **({"wait_for_answer": True} if wait_for_answer else {}),
     })
     delivered = "delivered to the owner" if mode == "live" else "queued for the owner"
+    if wait_for_answer:
+        ctx._owner_wait_requested = quiz_id
+        return (f"OK: quiz {quiz_id} {delivered}; the task waits after this tool batch, "
+                "preserving its live browser and releasing active execution capacity. "
+                "Addressed owner text resumes your judgment; existing Stop and task deadlines still apply.")
     return (f"OK: quiz {quiz_id} {delivered}; continuing under assumption: "
             f"{payload['assumption']}. The answer (if any) arrives as an owner "
             "quiz answer in a later round; the card expires when this task ends.")

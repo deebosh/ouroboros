@@ -100,6 +100,11 @@ from tests.fixtures_e2e_cancellation import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+def test_stub_finalization_marker_accepts_multipart_content():
+    assert StubModelServer._is_finalization_turn({
+        "messages": [{"content": [{"type": "text", "text": "[OWNER_STOP]"}]}],
+    })
+
 @pytest.fixture(scope="session")
 def e2e_clone(tmp_path_factory):
     """One throwaway clone of the checkout under test, shared by every scenario server."""

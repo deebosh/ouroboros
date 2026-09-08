@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import types
 
+import pytest
 
 from ouroboros.owner_quiz import (
     STATE_ANSWERED,
@@ -298,11 +299,12 @@ def _escalate(ctx, **kw):
     from ouroboros.tools.core import _escalate as impl
 
     return impl(ctx, kw.pop("question"), kw.pop("options"),
-                kw.pop("stake", ""), kw.pop("assumption", ""))
+                kw.pop("stake", ""), kw.pop("assumption", ""), **kw)
 
 
-def test_escalate_root_records_projection_and_emits_quiz(tmp_path):
-    ctx = _tool_ctx(tmp_path)
+@pytest.mark.parametrize("role", ["", "root"])
+def test_escalate_root_records_projection_and_emits_quiz(tmp_path, role):
+    ctx = _tool_ctx(tmp_path, role=role)
     out = _escalate(ctx, question="Which db?", options=["sqlite", "postgres"],
                     assumption="sqlite meanwhile")
     assert out.startswith("OK: quiz ")
@@ -314,6 +316,26 @@ def test_escalate_root_records_projection_and_emits_quiz(tmp_path):
     states = quiz_states(tmp_path, "root-1")
     assert list(states.values())[0]["state"] == STATE_OPEN
     assert states[evt["quiz_id"]]["options"] == ["sqlite", "postgres"]
+
+
+def test_required_root_question_records_wait_without_default_answer(tmp_path):
+    ctx = _tool_ctx(tmp_path, role="root")
+    ctx.owner_wait_callback = lambda *_: None
+    result = _escalate(ctx, question="Which destination?", options=["A", "B"],
+                       wait_for_answer=True)
+    assert result.startswith("OK: quiz")
+    assert ctx._owner_wait_requested
+    event = ctx.pending_events[0]
+    assert event["wait_for_answer"] is True and event["assumption"] == ""
+    assert quiz_states(tmp_path, "root-1")[ctx._owner_wait_requested]["wait_for_answer"] is True
+
+
+def test_required_question_refuses_unaddressable_machine_chat(tmp_path):
+    ctx = _tool_ctx(tmp_path, role="root", chat_id=-1)
+    ctx.owner_wait_callback = lambda *_: None
+    result = _escalate(ctx, question="Which?", options=["A", "B"], wait_for_answer=True)
+    assert "no owner question delivery" in result
+    assert not ctx.pending_events and not quiz_states(tmp_path, "root-1")
 
 
 def test_escalate_subagent_writes_parent_mailbox_frame(tmp_path, monkeypatch):

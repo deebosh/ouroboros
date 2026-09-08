@@ -109,6 +109,13 @@ def _reconcile_delegated_runs(running_task_ids: set) -> None:
         from ouroboros.claudexor_daemon import ensure_owned_gateway
         from ouroboros.delegate_custody import reconcile_orphaned_runs
         from ouroboros.delegate_recovery import recoverable_task_ids
+        from ouroboros.owner_wait import restore_owner_wait_allowed
+        from supervisor.queue import PENDING, _queue_lock
+
+        with _queue_lock:
+            pending_waits = [dict(task) for task in PENDING if task.get("_owner_wait_resume")]
+        continued = {str(task["id"]) for task in pending_waits
+                     if restore_owner_wait_allowed(DATA_DIR, task)}
 
         # The tick runs on the supervisor loop thread: a daemon sitting in its
         # recovery-only admission window must not hold that thread for the default
@@ -116,7 +123,7 @@ def _reconcile_delegated_runs(running_task_ids: set) -> None:
         outcomes = reconcile_orphaned_runs(
             DATA_DIR, running_task_ids=running_task_ids,
             gateway_factory=lambda: ensure_owned_gateway(admission_wait_sec=0),
-            recoverable_task_ids=recoverable_task_ids(DATA_DIR),
+            recoverable_task_ids=recoverable_task_ids(DATA_DIR) | continued,
         )
         if outcomes:
             log.info("Delegated-run reconciliation handled %d orphan(s): %s", len(outcomes), outcomes)

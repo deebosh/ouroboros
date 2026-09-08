@@ -1442,9 +1442,11 @@ def get_tools() -> List[ToolEntry]:
                 "A root task asks the OWNER (a typed quiz card with option buttons); "
                 "a subagent asks its PARENT task (a typed mailbox frame the parent "
                 "answers with forward_to_worker or escalates higher, verbatim). "
-                "Fire-and-continue: state the assumption you keep working under — "
-                "the answer, if it comes, arrives in a later round, and the question "
-                "expires when your task ends."
+                "For optional clarification, state an assumption and continue independent work. "
+                "A managed root may set wait_for_answer=true when the answer is necessary: "
+                "after the current tool batch it waits without model calls, preserving its browser "
+                "and freeing active worker capacity. Addressed owner text resumes your judgment. "
+                "Stop and existing task deadlines remain effective; questions expire only at task end."
             ),
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "The decision being escalated (markdown renders in chat)"},
@@ -1453,8 +1455,9 @@ def get_tools() -> List[ToolEntry]:
                     "detail": {"type": "string", "description": "Optional one-line consequence of this option (max 500)"},
                 }, "required": ["label"]}, "description": "2-6 mutually exclusive options"},
                 "stake": {"type": "string", "description": "What depends on this decision (optional, max 500)"},
-                "assumption": {"type": "string", "description": "REQUIRED: the assumption you continue under until answered (max 500)"},
-            }, "required": ["question", "options", "assumption"]},
+                "assumption": {"type": "string", "description": "For optional clarification, the assumption you continue under (max 500); may be empty for required waiting."},
+                "wait_for_answer": {"type": "boolean", "default": False, "description": "Managed roots only: wait for addressed owner input before another model round."},
+            }, "required": ["question", "options"]},
         }, _escalate),
         ToolEntry("forward_to_worker", {
             "name": "forward_to_worker",

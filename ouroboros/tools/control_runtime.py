@@ -217,11 +217,7 @@ def _update_scratchpad(ctx: ToolContext, content: str) -> str:
 
 
 def _send_user_message(ctx: ToolContext, text: str, reason: str = "") -> str:
-    """Send a proactive message to the user (not as reply to a task).
-
-    Use when you have something genuinely worth saying — an insight,
-    a question, a status update, or an invitation to collaborate.
-    """
+    """Send a separate owner reply without completing the ongoing task."""
     chat_id = getattr(ctx, "current_chat_id", None)
     if chat_id is None or chat_id == "":  # 0 is a real hidden session, not absence
         return "⚠️ No active chat — cannot send proactive message."

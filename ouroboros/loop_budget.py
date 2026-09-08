@@ -641,6 +641,28 @@ def _finalize_task_services(ctx: _LoopExitContext) -> bool:
         return True
 
 
+def _finish_tool_round_budget(
+    ctx: _RoundLimitContext, budget_remaining_usd: Optional[float],
+    cost_ceiling: "task_pacing.CostCeiling", active_model: str,
+    active_use_local: bool, active_effort: str, tool_calls: Optional[list[Dict[str, Any]]] = None,
+) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    """Complete the existing budget decision after warm or cold owner input.
+
+    Only a freshly executed tool batch advances the nanny's metered baseline;
+    cold continuation owes the budget decision, never execution of old tools.
+    """
+    if tool_calls is not None:
+        _loop()._note_nanny_delegate_activity(ctx.tools._ctx, ctx.round_idx, ctx.accumulated_usage, tool_calls)
+    _loop()._prepare_post_tool_budget_context(
+        ctx.tools, ctx, ctx.llm_trace, active_model, active_use_local, active_effort)
+    result = _loop()._check_budget_limits(ctx, budget_remaining_usd, cost_ceiling=cost_ceiling)
+    if result is None:
+        return None
+    text, usage, trace = result
+    _loop()._merge_finalization_trace(ctx.llm_trace, trace)
+    return text, usage, ctx.llm_trace
+
+
 def _prepare_post_tool_budget_context(
     tools: ToolRegistry,
     limit_ctx: _RoundLimitContext,

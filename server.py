@@ -999,10 +999,13 @@ def _perform_supervisor_restart(
     restart_transaction_id = uuid.uuid4().hex
     try:
         from ouroboros.delegate_recovery import prepare_planned_restart_handoffs
+        from ouroboros.owner_wait import prepare_owner_wait_handoffs
 
         planned_handoffs = prepare_planned_restart_handoffs(
             ctx.DRIVE_ROOT, ctx.RUNNING,
             restart_transaction_id=restart_transaction_id,
+            additional_task_ids=prepare_owner_wait_handoffs(
+                ctx.DRIVE_ROOT, ctx.RUNNING, restart_transaction_id),
         )
     except Exception:
         log.debug("Planned self-restart delegate handoff preparation failed", exc_info=True)

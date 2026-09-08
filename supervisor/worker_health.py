@@ -163,6 +163,8 @@ def ensure_workers_healthy() -> None:
 
 
 def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
+    from supervisor.worker_owner_wait import has_owner_wait_checkpoint
+
     busy_crashes = 0
     dead_detections = 0
     crashed_tasks = []
@@ -228,6 +230,8 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
                     crash_signal = -exitcode if is_crash_signal else None
                     chat_id = _pool().coerce_chat_identity(task.get("chat_id"), 0)
                     attempt = int(task.get("_attempt") or 1)
+                    replay_unsafe = (not getattr(w, "active_capacity", True)
+                                     or has_owner_wait_checkpoint(meta, attempt))
                     # Reconstruct cost/rounds from durable llm_usage for any
                     # abnormal-termination rollup below (worker died pre-finalize,
                     # so the event would otherwise carry zeros).
@@ -255,9 +259,16 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
                         # terminal event so the live card resolves instead of
                         # spinning until reconnect/history reconciliation.
                         _pool()._emit_task_done_terminal(task, str(w.busy_task_id), existing_status or "completed")
-                    elif is_crash_signal or attempt > _pool().QUEUE_MAX_RETRIES:
+                    elif (is_crash_signal or attempt > _pool().QUEUE_MAX_RETRIES
+                          or replay_unsafe):
                         deep = task_type == "deep_self_review"
-                        if is_crash_signal:
+                        if replay_unsafe:
+                            result_text = (
+                                "Worker process died after an owner-wait checkpoint. The continuation "
+                                "source is retained; completed actions were not retried."
+                            )
+                            reason_code = "worker_crash_owner_wait"
+                        elif is_crash_signal:
                             log.warning(
                                 "Task %s worker crashed with signal %s — terminal (no retry)",
                                 w.busy_task_id, crash_signal,
@@ -299,7 +310,9 @@ def _ensure_workers_healthy_locked(queue: Any) -> tuple[List[int], bool]:
                             log.debug("Failed to write failed status for %s", w.busy_task_id, exc_info=True)
                         # Message before task_done: otherwise the UI may close the card first.
                         try:
-                            if is_crash_signal and deep:
+                            if replay_unsafe:
+                                user_msg = result_text
+                            elif is_crash_signal and deep:
                                 user_msg = (
                                     f"❌ Deep self-review failed: worker process crashed (signal {crash_signal}). "
                                     "This is a known platform fork-safety limitation. "

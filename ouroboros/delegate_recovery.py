@@ -576,6 +576,16 @@ def recoverable_task_ids(drive_root: Any) -> set[str]:
 
 
 def has_planned_restart_handoffs(drive_root: Any) -> bool:
+    from ouroboros.task_results import _TRULY_TERMINAL_STATUSES, load_task_result
+
+    active = _read_restart_transaction(drive_root, "active")
+    transaction = _read_restart_transaction(drive_root, str(active.get("transaction_id") or ""))
+    if transaction.get("status") == "prepared" and transaction.get("supervisor_pid") == os.getpid():
+        for task_id in transaction.get("task_ids", []):
+            row = load_task_result(drive_root, task_id, strict=True) or {}
+            if (row.get("status") not in _TRULY_TERMINAL_STATUSES
+                    and (row.get("owner_wait") or {}).get("state") == "waiting"):
+                return True
     root = pathlib.Path(drive_root) / "state" / "delegate_recovery"
     if not root.exists():
         return False
@@ -591,11 +601,12 @@ def prepare_planned_restart_handoffs(
     running: Mapping[str, Any],
     *,
     restart_transaction_id: str = "",
+    additional_task_ids: Optional[set[str]] = None,
 ) -> set[str]:
     """Reserve only exact tasks durably in event-only supervising sleep."""
 
     transaction_id = str(restart_transaction_id or uuid.uuid4().hex)
-    preserved: set[str] = set()
+    preserved: set[str] = set(additional_task_ids or ())
     for task_id, meta in dict(running or {}).items():
         task = meta.get("task") if isinstance(meta, dict) else None
         if not isinstance(task, dict):

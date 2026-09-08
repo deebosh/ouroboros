@@ -812,8 +812,12 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
     from ouroboros.outcomes import ACCEPTANCE_ACCEPTED, REASON_OWNER_REQUESTED_FINALIZATION
 
     decision: Dict[str, Any] = {}
+    veto: Dict[str, Any] = {}
     for source in (event, result):
         axes = source.get("outcome_axes") if isinstance(source.get("outcome_axes"), dict) else {}
+        objective = axes.get("objective") or {}
+        if isinstance(objective, dict) and isinstance(objective.get("receipt_veto"), dict):
+            veto = objective["receipt_veto"]
         for holder in (source.get("review_status"), axes.get("review")):
             if isinstance(holder, dict) and isinstance(holder.get("acceptance_decision"), dict):
                 decision = holder["acceptance_decision"]
@@ -826,7 +830,8 @@ def _completion_verdict(result: Dict[str, Any], event: Dict[str, Any]) -> str:
         if rationale:
             clause += " — " + rationale
     elif reason and reason != REASON_OWNER_REQUESTED_FINALIZATION:
-        clause = f"Reason: {reason}"
+        detail = veto.get("detail") if veto.get("reason") == reason else ""
+        clause = f"Reason: {' '.join(strip_markdown(str(detail)).split()) if detail else reason}"
     else:
         return ""
     return clause if clause.endswith((".", "!", "?", "…")) else clause + "."

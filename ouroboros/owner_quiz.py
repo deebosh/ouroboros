@@ -108,6 +108,7 @@ def record_asked(
     drive_root: Any, task_id: str, *,
     quiz_id: str, question: str, options: List[str],
     stake: str = "", assumption: str = "",
+    wait_for_answer: bool = False,
 ) -> Dict[str, Any]:
     """Worker-side projection write at ask time.
 
@@ -120,6 +121,7 @@ def record_asked(
         "options": [str(label) for label in options],
         "stake": str(stake or ""), "assumption": str(assumption or ""),
         "state": STATE_OPEN, "asked_at": stamp,
+        **({"wait_for_answer": True} if wait_for_answer else {}),
     }
 
     refused: Dict[str, str] = {}

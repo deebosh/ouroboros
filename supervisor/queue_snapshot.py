@@ -96,16 +96,20 @@ def persist_queue_snapshot(reason: str = "") -> bool:
 
             _ws = list(_workers_mod.WORKERS.values())
             worker_total = len(_ws)
+            active_worker_count = sum(1 for w in _ws if getattr(w, "active_capacity", True))
+            parked_worker_count = worker_total - active_worker_count
             worker_pool_disabled_reason = str(
                 getattr(_workers_mod, "_WORKER_POOL_DISABLED_REASON", "") or ""
             )
             reaping_count = sum(1 for _w in _ws if getattr(_w, "reaping", False))
             assignable_idle_workers = sum(
                 1 for _w in _ws
-                if getattr(_w, "busy_task_id", None) is None and not getattr(_w, "reaping", False)
+                if (getattr(_w, "busy_task_id", None) is None and not getattr(_w, "reaping", False)
+                    and getattr(_w, "active_capacity", True))
             )
         except Exception:
             worker_total = 0
+            active_worker_count = parked_worker_count = 0
             worker_pool_disabled_reason = "unknown"
             reaping_count = 0
             assignable_idle_workers = 0
@@ -152,6 +156,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
                 "review_reason": t.get("review_reason"), "review_source_task_id": t.get("review_source_task_id"),
                 "_budget_pause": t.get("_budget_pause"), "budget_resumed_at": t.get("budget_resumed_at"), "_terminalization_retry": t.get("_terminalization_retry"),
                 "_cancel_intent_authority_hold": t.get("_cancel_intent_authority_hold"),
+                "_owner_wait_resume": t.get("_owner_wait_resume"),
             },
         })
     running_rows = []
@@ -164,6 +169,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
         running_rows.append({
             "id": task_id, "type": task.get("type"), "priority": task.get("priority"),
             "attempt": meta.get("attempt"), "worker_id": meta.get("worker_id"),
+            "owner_wait": meta.get("owner_wait"), "started_at": started,
             "runtime_sec": round(max(0.0, now - started), 2) if started > 0 else 0.0,
             "quota_wait_sec": quota_waited_seconds(meta, now),
             "execution_sec": max(0.0, now - started - quota_waited_seconds(meta, now)) if started > 0 else 0.0,
@@ -177,6 +183,7 @@ def persist_queue_snapshot(reason: str = "") -> bool:
         "pending_count": len(pending_items), "running_count": len(running_items),
         "reaping_count": reaping_count,
         "worker_total": worker_total,
+        "active_worker_count": active_worker_count, "parked_worker_count": parked_worker_count,
         "worker_pool_disabled_reason": worker_pool_disabled_reason,
         "assignable_idle_workers": assignable_idle_workers,
         "acceptance_fences": acceptance_fences,
@@ -217,8 +224,7 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
         ts_unix = _queue().parse_iso_to_ts(ts)
         if ts_unix is None:
             return 0
-        if (time.time() - ts_unix) > max_age_sec:
-            return 0
+        stale = (time.time() - ts_unix) > max_age_sec
         from ouroboros.task_results import (
             _TRULY_TERMINAL_STATUSES, STATUS_CANCEL_REQUESTED, STATUS_CANCELLED,
             load_task_result, write_task_result,
@@ -230,6 +236,15 @@ def restore_pending_from_snapshot(max_age_sec: int = 900) -> int:
             for row in (snap.get("pending") or [])
             if isinstance(row, dict) and isinstance(row.get("task"), dict)
         ]
+        from ouroboros.owner_wait import restore_owner_wait_allowed
+
+        snapshot_pending = [
+            task for task in snapshot_pending
+            if (not task.get("_owner_wait_resume") and not stale)
+            or (task.get("_owner_wait_resume") and restore_owner_wait_allowed(_queue().DRIVE_ROOT, task))
+        ]
+        if stale and not snapshot_pending:
+            return 0
         snapshot_pending, pending_by_id, restored = restore_terminalization_retry_rows(
             snapshot_pending, pending=_queue().PENDING, running=_queue().RUNNING,
             queue_seq_counter_ref=_queue().QUEUE_SEQ_COUNTER_REF, sort_pending=_queue().sort_pending,

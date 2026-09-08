@@ -1296,7 +1296,9 @@ def _make_quiz(api):
             stake = str(event.get("stake") or "").strip()
             assumption = str(event.get("assumption") or "").strip()
             lang = _poller_preferences(api)[4]
-            body = telegram_quiz.render_quiz_text(question, labels, stake, assumption)
+            wait_for_answer = event.get("wait_for_answer") is True
+            body = telegram_quiz.render_quiz_text(
+                question, labels, stake, assumption, wait_for_answer=wait_for_answer)
             token = telegram_quiz.mint_token(task_id, quiz_id)
             # One button per option; a reply to the card is a free-form answer.
             # Both reach the host's decision ingress (#472).
@@ -1306,7 +1308,10 @@ def _make_quiz(api):
             )
             telegram_quiz.remember_quiz(api, token, {
                 "task_id": task_id, "quiz_id": quiz_id, "chat_id": chat_id,
-                "message_id": int(message_id or 0), "options": labels, "text": body,
+                "message_id": int(message_id or 0), "options": labels,
+                # The answer edit keeps optional history, not a live waiting claim.
+                "text": (telegram_quiz.render_quiz_text(question, labels, stake, "")
+                         if wait_for_answer else body),
             })
         except Exception as exc:
             api.log("error", f"Telegram quiz error: {exc}")

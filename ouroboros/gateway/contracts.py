@@ -356,13 +356,10 @@ class QuizOption(TypedDict):
 class QuizOutbound(TypedDict):
     """Outbound owner quiz card: a typed question with option buttons.
 
-    Fire-and-continue: the asking task keeps working under ``assumption``
-    while the card is open. ``state`` is the card's lifecycle word
-    (``open`` in this display phase; answered/expired arrive with the
-    answer ingress). History replay of a SETTLED card additionally merges the
-    projection's record of the answer: ``answered_index`` when an offered
-    option was taken, and the owner's verbatim ``comment`` (the whole answer
-    when the owner took none of the options).
+    Optional questions continue under ``assumption``; ``wait_for_answer`` marks
+    required waiting without an implied answer. ``state`` carries lifecycle.
+    Replay merges the stored ``answered_index`` and verbatim ``comment``; a
+    comment without an index is the owner's whole answer, not an option choice.
     """
 
     type: Literal["quiz"]
@@ -372,6 +369,7 @@ class QuizOutbound(TypedDict):
     options: list[QuizOption]
     stake: str
     assumption: str
+    wait_for_answer: NotRequired[bool]
     state: str
     ts: str
     answered_index: NotRequired[int]

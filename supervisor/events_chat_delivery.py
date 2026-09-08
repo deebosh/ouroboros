@@ -389,6 +389,7 @@ def _handle_send_quiz(evt: Dict[str, Any], ctx: Any) -> None:
             assumption=str(evt.get("assumption") or ""),
             state=str(evt.get("state") or "open"),
             task_id=str(evt.get("task_id") or ""),
+            **({"wait_for_answer": True} if evt.get("wait_for_answer") is True else {}),
         )
         if not ok:
             _log_error(ctx, "send_quiz_error", chat_id=chat_id, error=err)

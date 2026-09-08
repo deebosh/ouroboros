@@ -1,9 +1,8 @@
 // Owner decision cards: the typed quiz card (question + option buttons +
 // stake + assumption) and the routing picker (#198) — one decision-card
-// family, one answer contract (POST /api/decisions). The quiz card is
-// fire-and-continue UI: the asking task keeps working under the stated
-// assumption, so it must read correctly both as "you can redirect me" (open)
-// and as a record of what happened (answered / expired). The routing picker
+// family, one answer contract (POST /api/decisions). Optional questions let
+// the task keep working under an assumption; required questions wait for an
+// answer. Both read as a record after settlement. The routing picker
 // settles into the plain routing ack line once its dispatch is confirmed.
 import { MAX_DECISION_COMMENT, MAX_QUIZ_OPTIONS } from './api_types.js';
 import { renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js';
@@ -51,6 +50,7 @@ export function createChatDecision({
             options,
             stake: String(src.stake || ''),
             assumption: String(src.assumption || ''),
+            waitForAnswer: src.wait_for_answer === true,
             state: String(src.state || 'open'),
             taskId: String(msg.task_id || ''),
             ts: msg.ts || null,
@@ -171,6 +171,8 @@ export function createChatDecision({
                 const box = card.querySelector('.chat-quiz-comment-box');
                 if (box) { box.remove(); changed = true; }
                 if (renderOwnerAnswer(card, String(card.dataset.ownerComment || ''))) changed = true;
+                const waiting = card.querySelector('.chat-quiz-wait');
+                if (waiting) { waiting.remove(); changed = true; }
             }
             const status = card.querySelector('.chat-quiz-status-text');
             const nextStatus = statusText(state);
@@ -311,10 +313,13 @@ export function createChatDecision({
         // The signature line: what the agent keeps doing while the owner has
         // not answered — and, once the card settles, the record of the path
         // it took by default.
-        if (quiz.assumption) {
+        if (quiz.assumption || quiz.waitForAnswer) {
             const assumption = document.createElement('div');
             assumption.className = 'chat-quiz-assumption';
-            assumption.textContent = `Continuing meanwhile: ${quiz.assumption}`;
+            if (quiz.waitForAnswer) assumption.classList.add('chat-quiz-wait');
+            assumption.textContent = quiz.waitForAnswer
+                ? 'Waiting for your answer; Stop and the task deadline still apply.'
+                : `Continuing meanwhile: ${quiz.assumption}`;
             card.append(assumption);
         }
 

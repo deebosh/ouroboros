@@ -424,7 +424,7 @@ def _handle_promote_chat_to_task(evt: Dict[str, Any], ctx: Any) -> Dict[str, Any
         outcome = outcome if isinstance(outcome, dict) else {"status": "scheduled"}
         admitted_task_contract = outcome.pop("_admitted_task_contract", None)
         if str(outcome.get("status") or "") == "scheduled":
-            title = str(evt.get("title") or "").strip()[:80]
+            suggested_name = str(outcome.pop("_admitted_suggested_name", "") or "")
             receipt = _emit_routing_receipt(
                 ctx,
                 evt,
@@ -450,7 +450,7 @@ def _handle_promote_chat_to_task(evt: Dict[str, Any], ctx: Any) -> Dict[str, Any
                 project_id=str(outcome.get("project_id") or evt.get("project_id") or ""),
                 description=str(evt.get("objective") or ""),
                 expected_output=str(evt.get("expected_output") or ""),
-                suggested_name=title,
+                suggested_name=suggested_name,
                 promotion_admission={
                     "status": admission_status,
                     "routing_token": str(evt.get("routing_token") or ""),
@@ -491,10 +491,10 @@ def _handle_promote_chat_to_task(evt: Dict[str, Any], ctx: Any) -> Dict[str, Any
                 status="scheduled",
                 attachment_manifest=_events()._routing_attachments(outcome.get("attachment_manifest")),
             )
-            if title:
+            if suggested_name:
                 _broadcast_task_named(
                     {"type": "task_named", "task_id": str(outcome.get("task_id") or task_id),
-                     "suggested_name": title}
+                     "suggested_name": suggested_name}
                 )
             try:
                 ctx.append_jsonl(

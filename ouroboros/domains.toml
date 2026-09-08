@@ -259,6 +259,7 @@ D20 = "Presence"
 "ouroboros/owner_hurry.py" = "D09"
 "ouroboros/owner_quiz.py" = "D09"  # F6 sync (#Q-2b): owner quiz cards, structural expiry with the authoring task
 "ouroboros/owner_mailbox.py" = "D01"
+"ouroboros/owner_wait.py" = "D01"
 "ouroboros/packaged_cli.py" = "D18"
 "ouroboros/packaged_cli_install.py" = "D18"
 "ouroboros/platform_layer.py" = "D18"
@@ -571,6 +572,7 @@ D20 = "Presence"
 "supervisor/worker_chat_lane.py" = "D08"
 "supervisor/worker_pool_lifecycle.py" = "D08"
 "supervisor/worker_process.py" = "D08"
+"supervisor/worker_owner_wait.py" = "D08"
 "supervisor/worker_promotion.py" = "D08"
 
 # F6 rolling-upstream sync (b9f7597f..8d13373b) — new upstream leaves, placed by

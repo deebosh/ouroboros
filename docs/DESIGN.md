@@ -344,10 +344,11 @@ not child-task cards and never prove execution by themselves.
 ### Quiz card
 
 The owner quiz card (`web/modules/chat_decision.js`, `.chat-quiz-*` in
-`web/style.css`) is a chat-delivered decision surface. It is fire-and-continue
-UI: the asking task keeps working under a stated assumption, so the card must
-read correctly both as an invitation ("you can redirect me") and, after it
-settles, as a record of the path taken. Anatomy, top to bottom:
+`web/style.css`) is a chat-delivered decision surface. Optional clarification is fire-and-continue: the task states its assumption.
+Required waiting keeps the same card and explicitly says that the task awaits
+the owner, with Stop and existing task deadlines still effective. No assumption
+is treated as an answer. After settlement, status and the owner's recorded answer
+keep both forms readable. Anatomy, top to bottom:
 
 1. **Head** — neutral `Question` chip (`--type-meta`, neutral pair) and a
    status as dot + text. The lifecycle word family is closed:
@@ -375,11 +376,12 @@ settles, as a record of the path taken. Anatomy, top to bottom:
    line (`Owner's answer: …`, `--type-body`, `--text-primary`) under the
    options — beside the highlighted option when one was chosen, and as the
    whole answer when none was.
-6. **Assumption** — the signature line (`Continuing meanwhile: …`),
+6. **Assumption or waiting** — the signature line (`Continuing meanwhile: …`
+   for optional clarification, an explicit waiting statement for required input),
    `--type-meta`, `--text-meta`, separated by a hairline. While the card is
-   open it names the default path; once the card settles it is the durable
-   record of what the agent did without an answer. It is never dropped on
-   state change.
+   open it names the default path. The optional assumption remains after settlement
+   as the record of work continued meanwhile. Required waiting copy disappears
+   when the card settles; the status and recorded owner answer remain.
 
 The card was born on tokens ahead of the rest of the chat surface (which has
 since migrated too): type sizes and every colour come from tokens (no new

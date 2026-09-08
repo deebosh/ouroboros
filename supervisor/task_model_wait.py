@@ -3,21 +3,8 @@
 from __future__ import annotations
 
 import copy
-import math
 from typing import Any
-
-
-def quota_waited_seconds(meta: dict, now: float) -> float:
-    """Read one union-clock snapshot, never sum the parallel waiting rows."""
-    clock = meta.get("model_wait_quota_clock") or {}
-    try:
-        elapsed = float(clock.get("elapsed_sec") or 0.0)
-        observed = float(clock.get("observed_at") or now)
-        if not math.isfinite(elapsed) or not math.isfinite(observed):
-            return 0.0
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, elapsed) + (max(0.0, now - observed) if clock.get("active") is True else 0.0)
+from ouroboros.model_wait import quota_waited_seconds  # noqa: F401 -- historical supervisor import surface
 
 
 def model_waiting(meta: dict) -> bool:

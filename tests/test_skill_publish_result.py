@@ -65,11 +65,12 @@ def _success_result(*, skill: str = "demo", repository: str = REPOSITORY) -> str
     )
 
 
-def _failed_result(*, skill: str = "demo", status: str = "scanner_blocked") -> str:
+def _failed_result(*, skill: str = "demo", status: str = "scanner_blocked",
+                   completed_stage: str = "local_preflight", reason_code: str = "scanner_high_confidence") -> str:
     return serialize_skill_publish_result(
         ok=False,
         status=status,
-        reason_code="scanner_high_confidence",
+        reason_code=reason_code,
         skill=skill,
         snapshot_hash=SNAPSHOT_HASH,
         scanner={
@@ -77,7 +78,7 @@ def _failed_result(*, skill: str = "demo", status: str = "scanner_blocked") -> s
             "version": "1.8.1",
             "ruleset_sha256": RULESET_SHA256,
         },
-        completed_stage="local_preflight",
+        completed_stage=completed_stage,
         completed_effects=[],
         blocker_count=1,
         repair_hint="Remove the finding and run a fresh skill review.",
@@ -550,12 +551,73 @@ def test_receipt_without_its_validated_attempt_metadata_cannot_satisfy_veto():
 @pytest.mark.parametrize("objective_status", ["fail", "not_evaluated", "degraded"])
 def test_valid_receipt_never_promotes_existing_objective(objective_status):
     outcome = _loop_outcome(objective_status)
+    before = json.loads(json.dumps(outcome))
     apply_skill_publish_receipt_veto(
         outcome,
         _task(),
         {"tool_calls": [_trace_call(_success_result())]},
     )
+    assert outcome == before
+
+
+@pytest.mark.parametrize("objective_status", ["pass", "best_effort", "fail", "degraded", "not_evaluated"])
+@pytest.mark.parametrize("stage,reason", [("local_preflight", "github_actor_unavailable"),
+                                         ("fork_ready", "fork_sync_failed")])
+def test_definite_pre_branch_failure_is_failed_even_when_review_degrades(objective_status, stage, reason):
+    from ouroboros.outcomes import normalize_outcome_axes
+    from ouroboros.project_dialogue import outcome_phase
+
+    outcome = _loop_outcome(objective_status)
+    review = {"status": "degraded", "reason": "quorum_unavailable"}
+    outcome["outcome_axes"]["review"] = review
+    trace = {"tool_calls": [_trace_call(_failed_result(completed_stage=stage, reason_code=reason))]}
+    original_trace = json.loads(json.dumps(trace))
+    apply_skill_publish_receipt_veto(outcome, _task(), trace)
+    assert outcome["reason_code"] == "skill_publish_pr_not_created"
+    assert outcome["outcome_axes"]["objective"]["status"] == "fail"
+    assert outcome["outcome_axes"]["objective"]["receipt_veto"]["detail"].startswith("PR not created;")
+    assert outcome["outcome_axes"]["review"] is review
+    assert outcome["outcome_axes"]["execution"]["status"] == "ok"
+    assert trace == original_trace
+    record = {"status": "completed", **outcome}
+    assert normalize_outcome_axes(record)["objective"]["status"] == "fail"
+    assert outcome_phase(record, {}) == "error"
+
+
+@pytest.mark.parametrize("stage,reason", [("fork_ready", "branch_create_failed"),
+                                         ("fork_synced", "branch_create_failed"),
+                                         ("branch_created", "commit_failed"),
+                                         ("pr_create_attempted", "pr_open_indeterminate")])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("objective_status", ["degraded", "fail"])
+def test_an_unconfirmed_branch_or_pr_attempt_survives_other_pre_branch_failures(stage, reason, reverse, objective_status):
+    outcome = _loop_outcome(objective_status)
+    unknown = _trace_call(_failed_result(status="partial", completed_stage=stage, reason_code=reason))
+    calls = [unknown, _trace_call(_failed_result())]
+    if reverse:
+        calls.reverse()
+    apply_skill_publish_receipt_veto(outcome, _task(), {"tool_calls": calls})
     assert outcome["outcome_axes"]["objective"]["status"] == objective_status
+    assert "receipt_veto" not in outcome["outcome_axes"]["objective"]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_any_valid_same_target_receipt_preserves_degraded_review(reverse):
+    calls = [_trace_call(_success_result()), _trace_call(_failed_result())]
+    if reverse:
+        calls.reverse()
+    outcome = _loop_outcome("degraded")
+    apply_skill_publish_receipt_veto(outcome, _task(), {"tool_calls": calls})
+    assert outcome["outcome_axes"]["objective"]["status"] == "degraded"
+    assert "reason_code" not in outcome
+
+
+def test_ordinary_task_is_not_failed_by_a_publication_tool_attempt():
+    outcome = _loop_outcome("degraded")
+    apply_skill_publish_receipt_veto(outcome, _task(task_type="task"), {
+        "tool_calls": [_trace_call(_failed_result())],
+    })
+    assert outcome["outcome_axes"]["objective"]["status"] == "degraded"
 
 
 @pytest.mark.parametrize("task_type", ["task", "Skill_publish", "skill_publish ", ""])

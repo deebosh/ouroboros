@@ -34,6 +34,8 @@ _STAGE_INDEX = {stage: index for index, stage in enumerate(SKILL_PUBLISH_STAGES)
 _HASH_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _REPOSITORY_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SUCCESS_OBJECTIVE_STATUSES = frozenset({"pass", "best_effort"})
+SKILL_PUBLISH_PR_NOT_CREATED = "skill_publish_pr_not_created"
+SKILL_PUBLISH_PR_NOT_CREATED_DETAIL = "PR not created; publication stopped before creating a submission branch"
 
 _FINDING_TEXT_LIMITS = {
     "path": 320,
@@ -546,18 +548,22 @@ def apply_skill_publish_receipt_veto(
     task: Mapping[str, Any],
     llm_trace: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    """Demote false publication success; never manufacture objective success."""
+    """Project explicit Publish failure without manufacturing success or certainty."""
 
     if not isinstance(task, Mapping) or task.get("type") != SKILL_PUBLISH_OPERATION:
         return loop_outcome
     axes = loop_outcome.get("outcome_axes") if isinstance(loop_outcome, dict) else None
     objective = axes.get("objective") if isinstance(axes, dict) else None
-    if not isinstance(objective, dict) or str(objective.get("status") or "") not in _SUCCESS_OBJECTIVE_STATUSES:
+    if not isinstance(objective, dict):
+        return loop_outcome
+    objective_status = str(objective.get("status") or "")
+    if objective_status not in _SUCCESS_OBJECTIVE_STATUSES | {"fail", "degraded", "not_evaluated"}:
         return loop_outcome
 
     target = skill_publish_target_from_task(task)
     saw_attempt = False
     saw_receipt = False
+    pre_branch_failures = []
     if target is not None and isinstance(llm_trace, Mapping):
         calls = llm_trace.get("tool_calls")
         if isinstance(calls, list):
@@ -567,6 +573,20 @@ def apply_skill_publish_receipt_veto(
                 attempt = call.get("skill_publish_attempt")
                 if isinstance(attempt, Mapping):
                     saw_attempt = True
+                if not isinstance(attempt, Mapping) or attempt.get("skill") == target["skill"]:
+                    # completed_stage is LAST CONFIRMED, never proof that the next
+                    # request was not sent. Branch creation can follow fork_ready
+                    # directly (publishing to one's own repository), or fork_synced.
+                    # A typed fork-sync failure is before that call on either path.
+                    stage = attempt.get("completed_stage", "") if isinstance(attempt, Mapping) else None
+                    pre_branch_failures.append(
+                        isinstance(attempt, Mapping)
+                        and attempt.get("ok") is False
+                        and (
+                            stage in ("", *SKILL_PUBLISH_STAGES[:_STAGE_INDEX["fork_ready"]])
+                            or stage == "fork_ready" and attempt.get("reason_code") == "fork_sync_failed"
+                        )
+                    )
                 raw_receipt = call.get("skill_publish_receipt")
                 if isinstance(raw_receipt, Mapping):
                     saw_receipt = True
@@ -595,7 +615,15 @@ def apply_skill_publish_receipt_veto(
                     # attempts stay in the trace and retain their execution semantics.
                     return loop_outcome
 
-    if target is None:
+    definite_pre_branch_failure = bool(pre_branch_failures) and all(pre_branch_failures) and not saw_receipt
+    if definite_pre_branch_failure:
+        reason = SKILL_PUBLISH_PR_NOT_CREATED
+        loop_outcome["reason_code"] = reason
+    elif objective_status not in _SUCCESS_OBJECTIVE_STATUSES:
+        # A degraded review says nothing about publication. Preserve it unless
+        # every relevant attempt proves that no branch/PR request could start.
+        return loop_outcome
+    elif target is None:
         reason = "skill_publish_target_missing"
     elif saw_receipt:
         reason = "skill_publish_receipt_mismatch"
@@ -614,7 +642,10 @@ def apply_skill_publish_receipt_veto(
             "source": "task_acceptance_review",
             "outcome_tier": "blocked_with_evidence",
             "reason": reason,
-            "receipt_veto": {"status": "failed", "reason": reason},
+            "receipt_veto": {
+                "status": "failed", "reason": reason,
+                **({"detail": SKILL_PUBLISH_PR_NOT_CREATED_DETAIL} if definite_pre_branch_failure else {}),
+            },
         }
     )
     return loop_outcome
