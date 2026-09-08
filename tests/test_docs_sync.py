@@ -495,9 +495,11 @@ def test_architecture_mirror_matches_the_split_axes_contracts():
     # swarm_fanout carries the requested lane; a wave event written before any
     # child starts cannot know what the children ran on.
     assert "requested/effective lanes" not in arch
-    # Both wait_tasks projection enumerations disclose capability_delta.
+    # The canonical projection discloses capability_delta; the handbook points
+    # to that owner instead of maintaining another drifting field enumeration.
     assert "trace_summary, capability_delta when the child has something to disclose" in arch_flat
-    assert "trace_summary, capability_delta when disclosable, duplicate_of" in dev_flat
+    assert "`control_task_results._wait_for_tasks` owns its projection" in dev_flat
+    assert 'ARCHITECTURE\'s "Waiting on children"' in dev_flat
 
 
 # Identifiers the prompts legitimately name in backticks that are NOT tools:
