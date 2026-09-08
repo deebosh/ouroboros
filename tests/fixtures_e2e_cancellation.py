@@ -149,6 +149,14 @@ class StubModelServer:
             content = message.get("content") if isinstance(message, dict) else None
             if isinstance(content, str) and ("[OWNER_STOP]" in content or "[FINALIZE_NOW]" in content):
                 return True
+            if isinstance(content, list):
+                text = " ".join(
+                    str(part.get("text") or "")
+                    for part in content
+                    if isinstance(part, dict)
+                )
+                if "[OWNER_STOP]" in text or "[FINALIZE_NOW]" in text:
+                    return True
         return False
 
     def _completion(self, body: dict, seq: int) -> dict:
