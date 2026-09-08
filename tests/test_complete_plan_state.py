@@ -34,7 +34,7 @@ def _record(root, raw, *, closed=True, findings=None, evidence_manifest=None):
 
 
 def _raw_state(root, task_id="large-plan"):
-    return json.loads(task_results.task_result_path(root, task_id).read_text())["plan_review_state"]
+    return json.loads(task_results.task_result_path(root, task_id).read_text(encoding="utf-8"))["plan_review_state"]
 
 
 @pytest.mark.parametrize("field", ["goal", "acceptance_claims", "in_scope"])

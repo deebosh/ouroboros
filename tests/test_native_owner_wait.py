@@ -101,7 +101,6 @@ def test_answer_frame_describes_only_work_that_continued(required):
 def test_expired_wait_clock_precedes_post_tool_budget(tmp_path, monkeypatch, cold):
     """A saved tail may have spent its budget, but an expired clock keeps its cause."""
     import json
-    import socket
     import time
     from ouroboros import loop, model_wait, owner_wait, task_pacing
     from tests.test_owner_wait_cold_loop import cold_registry
@@ -109,8 +108,9 @@ def test_expired_wait_clock_precedes_post_tool_budget(tmp_path, monkeypatch, col
 
     def no_network(*_args, **_kwargs):
         pytest.fail("synthetic wait must never contact a provider")
-    monkeypatch.setattr(socket.socket, "connect", no_network)
-    monkeypatch.setattr(socket.socket, "connect_ex", no_network)
+    monkeypatch.setattr("ouroboros.llm.LLMClient.chat", no_network)
+    monkeypatch.setattr("ouroboros.llm.LLMClient.chat_async", no_network)
+    monkeypatch.setattr("ouroboros.pricing._fetch_live_rows", no_network)
     monkeypatch.setenv("OUROBOROS_TASK_ABS_CEILING_SEC", "21600")
     registry = cold_registry(tmp_path, monkeypatch, task_pacing.CostCeiling(state="active", ceiling_usd=9.0))
     ctx = registry._ctx

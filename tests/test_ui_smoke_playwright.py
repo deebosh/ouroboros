@@ -9,6 +9,7 @@ import sys
 import textwrap
 import time
 import urllib.request
+from collections import deque
 
 import pytest
 
@@ -189,14 +190,36 @@ def _run_docker_ui_assertions(url: str) -> None:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 390, "height": 844})
+            events = deque(maxlen=40)
+            page.on("console", lambda msg: events.append(["console", msg.type, msg.text[:1000]]))
+            page.on("pageerror", lambda error: events.append(["pageerror", str(error)[:1000]]))
+            page.on("requestfailed", lambda req: events.append(["requestfailed", req.url, req.failure]))
+            page.on("response", lambda res: events.append(["response", res.status, res.url])
+                    if res.request.resource_type in {"document", "script"} or res.status >= 400 else None)
+            response = None
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                response = page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 if page.locator("#onboarding-overlay").count():
                     overlay_text = page.locator("#onboarding-overlay").inner_text(timeout=5_000)
                     if "Ouroboros" in overlay_text:
                         return
                 page.wait_for_selector("#page-chat", timeout=30_000)
                 assert page.locator("#page-chat").count() == 1
+            except Exception:
+                print("DOCKER_UI_BROWSER_EVENTS " + json.dumps(list(events)), file=sys.stderr)
+                try:
+                    print("DOCKER_UI_PAGE " + json.dumps({
+                        "url": page.url, "title": page.title(),
+                        "document_status": response.status if response is not None else None,
+                        "nodes": {selector: {"count": page.locator(selector).count(),
+                                             "visible": page.locator(selector).is_visible()}
+                                  for selector in ("#page-chat", "#onboarding-overlay", ".onboarding-frame")},
+                        "body": page.locator("body").inner_text(timeout=1000)[:4000],
+                        "html": page.content()[:8000],
+                    }), file=sys.stderr)
+                except Exception as diagnostic_error:
+                    print(f"DOCKER_UI_PAGE unavailable: {diagnostic_error}", file=sys.stderr)
+                raise
             finally:
                 browser.close()
     except PlaywrightError as exc:
@@ -2221,6 +2244,15 @@ def test_ui_smoke_docker_mode_loads_health():
         url = f"http://127.0.0.1:{port}"
         _wait_health(url, timeout_sec=45)
         _run_docker_ui_assertions(url)
+    except Exception:
+        try:
+            logs = subprocess.run(["docker", "logs", "--tail", "100", cid],
+                                  capture_output=True, text=True, timeout=10)
+            print(f"DOCKER_UI_CONTAINER {cid} logs_exit={logs.returncode}\n"
+                  f"{logs.stdout[-10000:]}\n{logs.stderr[-10000:]}", file=sys.stderr)
+        except Exception as diagnostic_error:
+            print(f"DOCKER_UI_CONTAINER logs unavailable: {diagnostic_error}", file=sys.stderr)
+        raise
     finally:
         subprocess.run(["docker", "stop", cid], capture_output=True, text=True, timeout=30)
 

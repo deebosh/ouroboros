@@ -4,7 +4,6 @@ import copy
 from dataclasses import replace
 import json
 import queue as stdqueue
-import socket
 import threading
 import time
 from types import SimpleNamespace
@@ -24,14 +23,16 @@ from tests.test_loop_transport_wait import _loop_kwargs
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
+    """Block provider/catalog calls without interfering with local event-loop IPC."""
     attempted = []
 
-    def refuse(*args):
-        attempted.append(args)
-        raise AssertionError("owner-wait model-state fixture attempted network")
+    def refuse(*args, **kwargs):
+        attempted.append((args, kwargs))
+        raise AssertionError("owner-wait model-state fixture attempted a provider/catalog call")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse)
-    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
+    monkeypatch.setattr("ouroboros.llm.LLMClient.chat", refuse)
+    monkeypatch.setattr("ouroboros.llm.LLMClient.chat_async", refuse)
+    monkeypatch.setattr("ouroboros.pricing._fetch_live_rows", refuse)
     monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "max")
     monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
     monkeypatch.setenv("OUROBOROS_TASK_ABS_CEILING_SEC", "21600")

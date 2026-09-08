@@ -763,7 +763,7 @@ def test_an_ordinary_contract_field_reaches_the_run_instructions_complete(tmp_pa
 @pytest.mark.parametrize("objective", [
     "UNIQUE_ATOMIC_OBJECTIVE",
     "яё𐍈🚀\n" * 55_000 + "LARGE_COMPILED_OBJECTIVE_TAIL",
-])
+], ids=["short", "large-unicode"])
 def test_atomic_compiled_work_order_sends_dynamic_brief_once(tmp_path, monkeypatch, objective):
     from ouroboros.subagent_work_order import compile_external_work_order
 

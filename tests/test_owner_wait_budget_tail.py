@@ -1,7 +1,6 @@
 """A cold grant finishes the saved round before another ordinary model/tool call."""
 
 import json
-import socket
 from dataclasses import replace
 
 import pytest
@@ -30,9 +29,9 @@ def test_cold_grant_checks_saved_budget_before_ordinary_dispatch(tmp_path, monke
         accounting.settle_attempt(held, {"prompt_tokens": 1, "completion_tokens": 1},
                                   cost_usd=amount, cost_final=True)
 
-    def refuse_network(*args):
-        network.append(args)
-        raise AssertionError("fixture attempted network access")
+    def refuse_network(*args, **kwargs):
+        network.append((args, kwargs))
+        raise AssertionError("fixture attempted a provider call")
 
     def forced(call, **kwargs):
         calls.append((phase, "forced", call.round_idx, call.active_model))
@@ -55,8 +54,8 @@ def test_cold_grant_checks_saved_budget_before_ordinary_dispatch(tmp_path, monke
         return {"role": "assistant", "content": "", "tool_calls": [{"id": phase, "type": "function",
             "function": {"name": name, "arguments": json.dumps(args)}}]}, .2
 
-    monkeypatch.setattr(socket.socket, "connect", refuse_network)
-    monkeypatch.setattr(socket.socket, "connect_ex", refuse_network)
+    monkeypatch.setattr("ouroboros.llm.LLMClient.chat", refuse_network)
+    monkeypatch.setattr("ouroboros.llm.LLMClient.chat_async", refuse_network)
     monkeypatch.setattr(pricing, "_fetch_live_rows", lambda provider: {})
     monkeypatch.setattr(loop, "_dispatch_round_model", ordinary)
     monkeypatch.setattr(loop, "_call_forced_model_once", forced)

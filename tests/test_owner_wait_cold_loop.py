@@ -1,5 +1,6 @@
 """Cold continuation reaches the real loop with its original route and ceiling."""
 
+import asyncio
 from dataclasses import replace
 import json
 import socket
@@ -21,17 +22,25 @@ from tests.test_loop_transport_wait import _loop_kwargs
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    """These synthetic model/route fixtures must never reach a provider or catalog."""
+    """Block provider/catalog calls, leaving asyncio's local IPC available."""
     attempted = []
 
-    def refuse_connect(_socket, address):
-        attempted.append(address)
-        raise AssertionError("cold-loop fixture attempted network access")
+    def refuse_provider(*args, **kwargs):
+        attempted.append((args, kwargs))
+        raise AssertionError("cold-loop fixture attempted a provider/catalog call")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse_connect)
-    monkeypatch.setattr(socket.socket, "connect_ex", refuse_connect)
+    monkeypatch.setattr("ouroboros.llm.LLMClient.chat", refuse_provider)
+    monkeypatch.setattr("ouroboros.llm.LLMClient.chat_async", refuse_provider)
+    monkeypatch.setattr("ouroboros.pricing._fetch_live_rows", refuse_provider)
     yield
     assert attempted == []
+
+
+def test_provider_isolation_preserves_event_loop_self_pipe(monkeypatch):
+    # Windows uses this TCP fallback for asyncio's internal wakeup channel.
+    monkeypatch.setattr(socket, "socketpair", socket._fallback_socketpair)
+    event_loop = asyncio.new_event_loop()
+    event_loop.close()
 
 
 def cold_registry(tmp_path, monkeypatch, ceiling=None):
