@@ -376,7 +376,7 @@ def _rewrite_ledger(
         from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 
         lock_path = jsonl_append_lock_path(path)
-        lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0)
+        lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0, owner_aware_stale=True)
         if lock_fd is None:
             log.warning("process ledger rewrite skipped: append lock unavailable")
             return
