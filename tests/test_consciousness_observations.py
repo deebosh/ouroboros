@@ -147,6 +147,57 @@ def test_cross_instance_enqueue_same_id_is_atomically_deduplicated(tmp_path, mon
     assert [row["id"] for row in rows] == ["cross-instance-id"]
 
 
+def test_age_stale_lock_is_never_evicted_from_a_live_observation_writer(tmp_path, monkeypatch):
+    """A LIVE holder of the inbox lock must survive an aged lock file.
+
+    Age-only staleness let a contender unlink a live writer's lock; both then
+    read one still-empty inbox and both claimed the same stable ID -- the
+    Windows full-test symptom `results=[True, True]` / `assert 2 == 1`.
+    """
+    import os
+    import threading
+    import time
+
+    from ouroboros import platform_layer
+    from ouroboros.utils import jsonl_append_lock_path
+
+    owner, drive = _make(tmp_path)
+    contender, _ = _make(tmp_path)
+    store = drive / "state" / "consciousness_observations.jsonl"
+    lock_path = jsonl_append_lock_path(store)
+    # Pin the NAME tier: there the eviction has no kernel backstop, so the
+    # staleness contract alone decides whether a live holder keeps its lock.
+    monkeypatch.setattr(platform_layer, "kernel_file_locks_enforced", lambda _path: False)
+
+    holding = threading.Event()
+    read_state = type(owner)._read_observation_state
+
+    def stall_with_a_backdated_lock(instance, **kwargs):
+        state = read_state(instance, **kwargs)
+        if instance is owner and not holding.is_set():
+            aged = time.time() - 600.0  # far past this seam's stale_sec=10.0
+            os.utime(lock_path, (aged, aged))
+            holding.set()
+            time.sleep(1.0)  # a slow owner, still inside its transaction
+        return state
+
+    monkeypatch.setattr(type(owner), "_read_observation_state", stall_with_a_backdated_lock)
+
+    def enqueue(instance):
+        if instance is contender:
+            assert holding.wait(10), "owner never entered its critical section"
+        return instance.inject_observation(
+            "same", observation_id="live-holder-id", source="instance"
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(enqueue, (owner, contender)))
+
+    assert sum(results) == 1, results
+    rows = [json.loads(line) for line in store.read_text().splitlines()]
+    assert [row["id"] for row in rows] == ["live-holder-id"]
+
+
 @pytest.mark.parametrize("damage", ["unreadable", "malformed", "invalid_utf8"])
 def test_enqueue_does_not_claim_a_new_id_from_an_incomplete_inbox(tmp_path, monkeypatch, damage):
     first, drive = _make(tmp_path)
