@@ -29,6 +29,7 @@ BLOCK_SIZE = 100                          # Messages per consolidation block
 MAX_SUMMARY_BLOCKS = 10                   # Compress into era when exceeded
 ERA_COMPRESS_COUNT = 4                    # Oldest blocks to compress per era
 BLOCK_SUMMARY_MAX_CHARS = 24_000         # ibl-local consolidator: per-block byte cap (BIBLE P1)
+_ENTRY_TEXT_PRETRUNCATE_LIMIT = 2_000     # ibl-local consolidator: producer-side cap on per-entry text passed to the LLM (drops bulk tool output / dumps before the prompt can reproduce them)
 ERA_SUMMARY_MAX_CHARS = 96_000           # ibl-local consolidator: per-era byte cap (4× block cap)
 PENDING_BYTES_TRIGGER = 50_000           # ibl-local consolidator: byte-aware consolidation trigger
 
@@ -100,6 +101,46 @@ def _resolve_generation_segments(
     return [source_path], 0, True
 
 
+def _pending_bytes(segments: List[pathlib.Path], last_offset: int) -> int:
+    """Approximate pending bytes across the resolved segments chain starting at last_offset (chain-position).
+
+    Walks segments in order. While ``last_offset`` exceeds a segment's line
+    count, the segment is fully consumed and we advance past it. The segment
+    in which the cursor lands contributes a proportional share of its bytes
+    (uniform-line-size approximation). All segments AFTER the cursor segment
+    are entirely pending. Returns 0 for empty / missing segments, or when the
+    cursor is at or past the chain tail.
+
+    Closes ibl-f60344038572: the trigger must look at PENDING bytes, not the
+    cumulative st_size of every segment (which would falsely trip once the
+    archived chain alone exceeds PENDING_BYTES_TRIGGER and recompute O(history)
+    work every tick). Mirrors the existing line-count semantics:
+        pending_lines = total_lines - last_offset
+    """
+    if not segments:
+        return 0
+    pending = 0
+    remaining = last_offset
+    for path in segments:
+        if not path.exists():
+            continue
+        size = path.stat().st_size
+        seg_lines = _count_lines(path)
+        if seg_lines <= 0:
+            continue
+        if remaining >= seg_lines:
+            remaining -= seg_lines
+            continue
+        # Cursor lands within this segment OR at/before its start.
+        if remaining <= 0:
+            pending += size
+        else:
+            proportion = (seg_lines - remaining) / seg_lines
+            pending += int(size * proportion)
+        remaining = 0  # subsequent segments are fully pending
+    return pending
+
+
 def should_consolidate(
     meta_path: pathlib.Path,
     chat_path: pathlib.Path,
@@ -114,9 +155,6 @@ def should_consolidate(
         # block and rebases the cursor even below BLOCK_SIZE.
         return True
     total_lines = sum(_count_lines(path) for path in segments if path.exists())
-    total_bytes = sum(
-        path.stat().st_size for path in segments if path.exists()
-    )
     if last_offset > total_lines:
         # Cursor past total — fall back to live-only heuristic. Line count is
         # the primary trigger; the byte threshold (PENDING_BYTES_TRIGGER) is a
@@ -125,15 +163,17 @@ def should_consolidate(
         live_lines = _count_lines(chat_path)
         if live_lines >= BLOCK_SIZE:
             return True
-        return total_bytes >= PENDING_BYTES_TRIGGER
+        return _pending_bytes(segments, last_offset) >= PENDING_BYTES_TRIGGER
     pending_lines = total_lines - last_offset
     if pending_lines >= BLOCK_SIZE:
         return True
-    # Byte-aware secondary trigger (ibl-local consolidator): a single pathological
-    # long-message run can accumulate 50K chars across well under 100 messages,
-    # which still bloats context. Approximation: when total pending bytes crosses
-    # PENDING_BYTES_TRIGGER, run regardless of pending line count.
-    return total_bytes >= PENDING_BYTES_TRIGGER
+    # Byte-aware secondary trigger (ibl-local consolidator, ibl-f60344038572):
+    # a single pathological long-message run can accumulate 50K chars across
+    # well under 100 messages. The trigger computes pending bytes from
+    # segments starting at last_offset — NOT the cumulative st_size of every
+    # segment (which would falsely trip once the archived chain alone
+    # exceeded PENDING_BYTES_TRIGGER).
+    return _pending_bytes(segments, last_offset) >= PENDING_BYTES_TRIGGER
 
 
 def consolidate(
@@ -469,16 +509,38 @@ def _create_block_summary(
         identity_section = f"\n## Identity context\n{identity_text}\n"
 
     prompt = f"""You are a memory consolidator for Ouroboros, a self-modifying AI agent.
-Create a detailed episodic memory entry from these {message_count} messages.
+Create a CONCISE episodic memory entry from these {message_count} messages.
 
-## Rules
-1. Header: ### Block: {first_date} {first_time} - {last_time}
-2. Preserve: decisions, agreements, technical discoveries, emotional moments, task outcomes, what worked/failed
-3. Compress: routine tool calls, repetitive back-and-forth
-4. Quote key phrases directly when important
-5. First person as Ouroboros: "I did...", "the user asked..."
-6. Length: 200-500 words depending on content density
-7. Include task_ids when referencing specific tasks
+## Header
+### Block: {first_date} {first_time} - {last_time}
+
+## Hard target
+- Output must stay below ~2,500 characters total (about 500 words).
+- When the input is large, the OUTPUT must be DRAMATICALLY shorter than the input. Compress hard.
+- Do NOT reproduce verbatim source text (raw tool output, JSON dumps, repeated markdown headers, code blocks).
+
+## PRESERVE — non-negotiable
+- Decisions and agreements ("we decided X")
+- State changes (code changed, env changed, identity/state changed)
+- Lessons learned (what worked, what failed)
+- Unresolved questions (open threads, pending items)
+- Task ids when the message references a specific task
+
+## DROP — noise for an episodic memory block
+- Routine tool calls that succeed without commentary
+- Tool-result JSON payloads (already in chat.jsonl, durable)
+- Repeated stack traces and debug output
+- Verbatim dialogue longer than 2 lines from a single exchange
+- Source markdown tables — paraphrase the cell content instead of copying
+- Source code blocks — describe the change instead of copying
+
+## Hard prohibitions
+- Do NOT preserve markdown headers from the source verbatim (#, ##, ### at column 0)
+- Do NOT include model banners like "Sure, here is..." or "I will..."
+- Do NOT pad the entry — say what happened, stop
+
+## Voice
+First person as Ouroboros: "I did...", "I learned...", "the user asked..."
 {identity_section}
 ## Messages to summarize
 {messages_text}
@@ -558,6 +620,13 @@ def _format_entries_for_block(entries: List[Dict[str, Any]]) -> str:
 
             author = dialogue_author(e)
         text = str(e.get("text", ""))
+        if len(text) > _ENTRY_TEXT_PRETRUNCATE_LIMIT:
+            # Producer-side pre-truncation. The LLM cannot reproduce verbatim
+            # content that no longer exists in its input. Reasoning / decisions
+            # / outcomes remain untouched (they are not in tool output JSON);
+            # chat.jsonl is the durable source so the cut is reversible for
+            # forensics (BIBLE P1 boundary on dialogue_blocks.json is preserved).
+            text = f"[TEXT TRUNCATED: original ~{len(text)} chars, see chat.jsonl]"
         lines.append(f"[{ts}] {direction_prefix}{author}: {text}")
     return "\n\n".join(lines)
 

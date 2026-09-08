@@ -10,6 +10,7 @@ from ouroboros.consolidator import (
     _load_meta,
     atomic_write_json as _save_meta,
     _count_lines,
+    _pending_bytes,
     _format_entries_for_block,
     _load_blocks,
     _write_locked_json as _save_blocks,
@@ -60,6 +61,52 @@ def test_should_consolidate_respects_offset(tmp_paths):
     chat_path, _, meta_path = tmp_paths
     _write_chat_entries(chat_path, BLOCK_SIZE + 5)
     _save_meta(meta_path, {"last_consolidated_offset": BLOCK_SIZE + 2})
+    assert should_consolidate(meta_path, chat_path) is False
+
+
+def test_pending_bytes_ignores_segments_covered_by_cursor(tmp_path):
+    """ibl-f60344038572: _pending_bytes must walk segments from the chain
+    cursor and not double-count already-consumed prefix bytes. A large archive
+    whose cursor already covers must NOT contribute its st_size.
+    """
+    seg0 = tmp_path / "live.jsonl"
+    seg1 = tmp_path / "archive.jsonl"
+    seg0.write_text("\n".join('{"k":"v"}' for _ in range(50)) + "\n")  # ~400 bytes, 50 lines
+    seg1.write_bytes(b"x" * 100_000)  # 100KB archive, single line
+
+    seg0_size = seg0.stat().st_size
+    seg0_lines = _count_lines(seg0)
+    seg1_lines = _count_lines(seg1)  # 1 line
+
+    # Case 1: cursor at start (last_offset=0) → all of seg0 + all of seg1 pending
+    assert _pending_bytes([seg0, seg1], 0) == seg0_size + 100_000
+
+    # Case 2: cursor at end of seg0 → seg0 contributes 0, seg1 fully pending
+    assert _pending_bytes([seg0, seg1], seg0_lines) == 100_000
+
+    # Case 3: cursor past all segments → 0 pending (degenerate; nothing left)
+    assert _pending_bytes([seg0, seg1], seg0_lines + seg1_lines) == 0
+
+    # Case 4: cursor mid-seg0 → proportional share of seg0 + all of seg1
+    half_offset = seg0_lines // 2
+    expected = int(seg0_size * 0.5) + 100_000
+    assert _pending_bytes([seg0, seg1], half_offset) == expected
+
+    # Case 5: empty / missing segments → 0 (no crash)
+    assert _pending_bytes([], 0) == 0
+    assert _pending_bytes([tmp_path / "missing.jsonl"], 0) == 0
+
+
+def test_should_consolidate_archived_latch_off(tmp_paths):
+    """ibl-f60344038572 integration: even with archived st_size > PENDING_BYTES_TRIGGER
+    alone, pending_lines < BLOCK_SIZE and cursor-past-archive must return False.
+    """
+    chat_path, _, meta_path = tmp_paths
+    # Write a few live messages — well under BLOCK_SIZE lines
+    _write_chat_entries(chat_path, 5)
+    # Save an offset that pretends we've already consolidated past the live region
+    _save_meta(meta_path, {"last_consolidated_offset": 5})
+    # Five lines, cursor at line 5 → pending_lines=0, far below BLOCK_SIZE
     assert should_consolidate(meta_path, chat_path) is False
 
 
