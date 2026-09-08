@@ -17,7 +17,7 @@ from ouroboros.config import get_light_model
 from ouroboros.context import build_user_content
 from ouroboros.deadline_utils import parse_deadline_ts
 from ouroboros.llm import LLMClient, add_usage
-from ouroboros.loop_llm_call import emit_llm_usage_event
+from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY, emit_llm_usage_event
 from ouroboros.loop_tool_execution import prune_reclaim_trace_refs, reclaim_negative_memo, reclaim_trace_refs
 from ouroboros.loop_transport import TransportWaitEpisode, finalize_now_transport_terminal as _finalize_now_transport_terminal
 from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
@@ -451,6 +451,12 @@ def _handle_model_wait_control(
         # was interrupted, and the real drain above consumed this control. Older
         # transport episodes and unresolved wire attempts keep their no-call rails.
         no_call_source, _ = _loop().provider_no_call_source(ctx.accumulated_usage, False)
+        if (no_call_source == "provider_outcome_unknown_no_resend"
+                and not isinstance(ctx.accumulated_usage.get(TRANSPORT_DEATHS_KEY), dict)):
+            # Only OPEN custody may deny the owner's graceful stop its one bounded
+            # turn. A SETTLED earlier attempt leaves the mutable error-kind
+            # projection behind; the latch is the round's unresolved-attempt record.
+            no_call_source = ""
         if transport_episode is not None or not no_call_source:
             return _maybe_early_finalize(ctx, ctx.tools, controls, transport_episode=transport_episode)
     reason_code = (REASON_OWNER_REQUESTED_FINALIZATION

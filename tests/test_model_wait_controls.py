@@ -242,6 +242,50 @@ def test_pre_call_graceful_control_after_round_drain_runs_one_final_turn(main_ca
     assert any(message.get("content") == "verified read A" for message in gateway.uploads[0][0]["messages"])
 
 
+def test_pre_call_graceful_control_after_settled_provider_hiccup_keeps_final_turn(main_call, monkeypatch):
+    """A SETTLED earlier provider hiccup leaves the mutable ``_last_llm_error_kind``
+    projection behind; only OPEN custody (the round's ``_transport_deaths`` record)
+    may deny the owner's pre-call Wrap up its one final turn (E10 CI signature)."""
+    from ouroboros.loop_llm_call import TRANSPORT_DEATHS_KEY
+    from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
+    from supervisor.owner_stop import owner_stop_control_id
+
+    ctx, gateway, owner, events, _decide, _observations = main_call
+    tools = _loop_tools(ctx, owner)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    mid_task = next(message for message in ctx.messages if message.get("role") == "assistant")
+    mid_task["content"] = "still working"
+    final = result()
+    final["message"] = {"role": "assistant", "content": "Verified work summarized after the settled hiccup"}
+    gateway.results = [final]
+    gateway.dispatch = ["response_received"]
+    call = loop._call_round_model
+    injected = []
+
+    def after_drain(model_call):
+        assert not injected
+        injected.append(True)
+        # The projection of an attempt that already SETTLED; no open custody record exists.
+        model_call.accumulated_usage["_last_llm_error_kind"] = "provider_outcome_unknown"
+        assert TRANSPORT_DEATHS_KEY not in model_call.accumulated_usage
+        intent = cancel_intents.request_cancel(ctx.drive_root, "task-one",
+            requested_stop_policy=cancel_intents.STOP_POLICY_FINALIZE)
+        assert owner_mailbox.write_owner_message(ctx.drive_root,
+            REASON_OWNER_REQUESTED_FINALIZATION, "task-one",
+            msg_id=owner_stop_control_id(intent), kind=owner_mailbox.KIND_FINALIZE_NOW)
+        return call(model_call)
+
+    monkeypatch.setattr(loop, "_call_round_model", after_drain)
+    text, usage, trace = loop.run_llm_loop(ctx.messages, tools, ctx.llm, ctx.drive_logs,
+        lambda *_args, **_kwargs: None, queue.Queue(), task_id="task-one",
+        drive_root=ctx.drive_root, event_queue=events)
+    assert text == final["message"]["content"] and text != "still working" and len(gateway.creates) == 1
+    assert usage["reason_code"] == REASON_OWNER_REQUESTED_FINALIZATION
+    assert usage["terminal_origin"] == "model_final"
+    assert usage.get("_best_effort_extracted") is True  # outcomes.py lifts this to best-effort, not failed
+    assert trace["forced_finalization"]["source"] == "model"
+
+
 def test_pre_call_wrap_keeps_the_existing_transport_episode_no_call(main_call, monkeypatch):
     from ouroboros import loop_transport
     from ouroboros.outcomes import REASON_OWNER_REQUESTED_FINALIZATION
