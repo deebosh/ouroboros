@@ -237,7 +237,11 @@ def test_render_scratchpad_block_boundary_invariant(tmp_path):
     # Find each block marker in the body and confirm its content begins with
     # the canned "xxxx" content (full block, not a truncated slice).
     import re
-    for m in re.finditer(r"### \[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2} — forced\]\n(x+)", body):
+    # The renderer prints the timestamp to the minute (``ts[:16]``); a pattern
+    # that expected seconds matched nothing, so this loop never asserted.
+    matches = list(re.finditer(r"### \[\d{4}-\d{2}-\d{2}T\d{2}:\d{2} — forced\]\n(x+)", body))
+    assert matches, "no rendered block matched — the invariant was not exercised"
+    for m in matches:
         # Each retained block has at least one 'x' before the trailing \n.
         block_xs = m.group(1)
         assert len(block_xs) > 0
