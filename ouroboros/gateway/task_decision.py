@@ -120,7 +120,7 @@ def _quiz_answer_frame(
         lines.append(f"The owner chose option {option_index + 1}: {label}")
         if comment:
             lines.append(f"Owner comment (verbatim): {comment}")
-    if str(block.get("assumption") or ""):
+    if str(block.get("assumption") or "") and not block.get("wait_for_answer"):
         lines.append(
             f"You continued under the assumption: {block.get('assumption')} — "
             "judge yourself whether work has moved past the answered fork."

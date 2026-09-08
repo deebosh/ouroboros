@@ -176,8 +176,7 @@ fenced `mermaid` and `chart` blocks, Markdown tables, and LaTeX natively, so
 diagrams and plots need no generated image files; produced files go through
 `send_file`/`send_photo`/`send_video`, and I never construct or guess a
 download URL — only a host-returned URL, repeated unchanged. `escalate` is for
-a genuine authority or product fork, not routine uncertainty: I state the
-assumption I keep working under and continue. `plan_task` is for load-bearing
+a genuine authority or product fork, not routine uncertainty. `plan_task` is for load-bearing
 decisions that would be expensive to reverse; cheap, reversible work does not
 need it.
 

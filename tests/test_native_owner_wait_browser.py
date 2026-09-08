@@ -4,7 +4,9 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,36 @@ from tests.system_e2e.harness import (
 pytestmark = [pytest.mark.serial, pytest.mark.browser]
 local_form = form_fixture
 wait_clone = clone_fixture
+
+
+@contextmanager
+def chat_connection(server):
+    """Consume live frames like the UI; an unread client stalls WS flow control."""
+    from websockets.exceptions import ConnectionClosed
+    from websockets.sync.client import connect
+
+    stopped, errors = threading.Event(), []
+    with connect(ws_url(server), open_timeout=30, proxy=None) as ws:
+        def receive():
+            while not stopped.is_set():
+                try:
+                    ws.recv(timeout=1)
+                except TimeoutError:
+                    continue
+                except ConnectionClosed as exc:
+                    if not stopped.is_set():
+                        errors.append(exc)
+                    return
+        reader = threading.Thread(target=receive)
+        reader.start()
+        try:
+            yield ws
+        finally:
+            stopped.set()
+            ws.close()
+            reader.join(5)
+            assert not reader.is_alive()
+            assert not errors, errors
 
 
 @pytest.mark.parametrize("surface", ["main", "project"])
@@ -69,9 +101,7 @@ def test_native_owner_wait_retains_form_and_remains_addressable(
                 project = _api(server.base_url, "POST", "/api/projects", {
                     "name": "Native waiting", "path": str(folder),
                 })["project"]
-            from websockets.sync.client import connect
-
-            with connect(ws_url(server), open_timeout=30, proxy=None) as ws:
+            with chat_connection(server) as ws:
                 def submit(text, *, in_project=False):
                     message_id = uuid.uuid4().hex
                     ws.send(json.dumps({"type": "chat", "content": text, "client_message_id": message_id,

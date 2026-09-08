@@ -1056,7 +1056,8 @@ def _make_outbound(api):
             # formatting; an absent/True hint renders markdown→HTML as before.
             parse_mode = "" if event.get("markdown") is False else "HTML"
 
-            silent_on = _is_silent_mode_enabled(local_settings)
+            # A host receipt must neither replace nor become the tracked agent reply.
+            silent_on = _is_silent_mode_enabled(local_settings) and event.get("role") != "system"
             tracked_msg_id = _get_silent_msg(api, chat_id) if silent_on else 0
 
             # Silent mode: try to edit the previously tracked message in-place.

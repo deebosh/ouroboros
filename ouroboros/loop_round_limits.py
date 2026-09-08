@@ -540,6 +540,15 @@ def _maybe_early_finalize(
                 limit_ctx, controls["finalize_deadline_ts"],
             )
         return _loop()._handle_forced_finalization(limit_ctx, str(controls["finalize_now"]))
+    # A completed-tool wait may expire without a mailbox control. Preserve
+    # that existing execution bound before a soft-budget finalizer labels it.
+    from ouroboros.model_wait import ModelWaitInterrupted
+
+    waiter = getattr(tools._ctx, "model_wait_context", None)
+    reason = waiter.control_reason() if waiter is not None else None
+    if reason in {"absolute_ceiling", "execution_deadline"}:
+        return _handle_model_wait_control(limit_ctx, ModelWaitInterrupted(reason),
+                                          transport_episode=transport_episode)
     # An active episode owns the deadline sliver: its last free redial +
     # no-resend terminal replace the paid deadline_local finalize call.
     if transport_episode is None:
