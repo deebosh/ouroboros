@@ -518,7 +518,8 @@ def test_pre_round_terminal_order_keeps_cost_after_stop_and_deadline(monkeypatch
                         lambda *_args: calls.append("deadline") or (result_value if deadline else None))
     monkeypatch.setattr(loop, "_soft_land_exhausted_ceiling", lambda *_args: calls.append("cost") or result_value)
     result_value_actual = loop_round_limits._maybe_early_finalize(
-        SimpleNamespace(), None, {"finalize_now": "deadline"} if stop else {},
+        SimpleNamespace(), SimpleNamespace(_ctx=SimpleNamespace()),
+        {"finalize_now": "deadline"} if stop else {},
         cost_ceiling=object(), transport_episode=object() if transport else None)
     assert result_value_actual == result_value and calls == expected
 
