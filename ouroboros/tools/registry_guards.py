@@ -553,21 +553,23 @@ def _ephemeral_block_result(
     name: str,
     ext_tool: Any = None,
     is_mcp: bool = False,
+    *,
+    extension_unavailable: bool = False,
 ) -> ToolResult | None:
     """CW3: a short ephemeral decision turn may call ONLY the allowlisted read/decision
-    tools (_EPHEMERAL_ALLOWED_TOOLS); every other built-in (durable/control/review/skill
-    mutator, run_command) AND all extension/MCP tools fail closed. Default-deny, so a new
-    mutator can never silently become reachable. It answers inline or promote_chat_to_task's
-    the durable work into a supervised task."""
-    if not getattr(ctx, "is_ephemeral_turn", False):
+    built-ins (_EPHEMERAL_ALLOWED_TOOLS); every other built-in (durable/control/review/
+    skill mutator, run_command) fails closed. Default-deny, so a new mutator can never
+    silently become reachable. The owner's dynamic surfaces are not gated here (issue
+    #722, owner-approved 2026-09-08): configured MCP tools and enabled, granted,
+    reviewed extension tools ride every lane behind their own gates (extension
+    liveness, acting-child grants, the network resource guard), exactly as on a managed
+    task — the model decides inline vs promote_chat_to_task; a dead extension name
+    (``extension_unavailable``) keeps its EXTENSION_UNAVAILABLE answer instead of the
+    allowlist text. The turn answers inline or promote_chat_to_task's the durable work
+    into a supervised task."""
+    if not getattr(ctx, "is_ephemeral_turn", False) or ext_tool or extension_unavailable or is_mcp:
         return None
-    if ext_tool or is_mcp:
-        text = (
-            f"⚠️ EPHEMERAL_TURN_RESTRICTED: external tool '{name}' can have durable side "
-            "effects, which a short same-route decision turn must not do. Answer inline, "
-            "or promote_chat_to_task to do that work in a supervised task."
-        )
-    elif name not in _EPHEMERAL_ALLOWED_TOOLS:
+    if name not in _EPHEMERAL_ALLOWED_TOOLS:
         text = (
             f"⚠️ EPHEMERAL_TURN_RESTRICTED: '{name}' is not in the decision-turn allowlist "
             "(read/inspect + answer/route/spawn/steer only) — a short same-route turn must "

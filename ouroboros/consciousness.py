@@ -133,7 +133,10 @@ class BackgroundConsciousness:
 
     @contextlib.contextmanager
     def _observation_writer_lock(self, path: pathlib.Path):
-        """Use the same sidecar lock seam as append_jsonl for store transactions."""
+        """Same sidecar lock seam as append_jsonl -- and the same owner-aware
+        staleness: elapsed time alone must never evict a LIVE holder, or two
+        writers enter one append-only inbox and the stable-ID dedupe admits a
+        duplicate row.  A dead or stampless owner still recovers by age."""
 
         lock_path = jsonl_append_lock_path(path)
         lock_fd = acquire_exclusive_file_lock(
@@ -141,6 +144,7 @@ class BackgroundConsciousness:
             timeout_sec=2.0,
             stale_sec=10.0,
             poll_sec=0.01,
+            owner_aware_stale=True,
         )
         if lock_fd is None:
             yield False
@@ -1415,7 +1419,7 @@ def compact_acknowledged_observations(
         retention_days = get_gc_retention_days()
     cutoff = age_cutoff(retention_days, now)
     lock_path = jsonl_append_lock_path(path)
-    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0)
+    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0, owner_aware_stale=True)
     if lock_fd is None:
         report["skipped"] = "lock_unavailable"
         return report
