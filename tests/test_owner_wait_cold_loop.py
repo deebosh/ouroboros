@@ -38,7 +38,8 @@ def no_network(monkeypatch):
 
 def test_provider_isolation_preserves_event_loop_self_pipe(monkeypatch):
     # Windows uses this TCP fallback for asyncio's internal wakeup channel.
-    monkeypatch.setattr(socket, "socketpair", socket._fallback_socketpair)
+    monkeypatch.setattr(socket, "socketpair",
+                        getattr(socket, "_fallback_socketpair", socket.socketpair))
     event_loop = asyncio.new_event_loop()
     event_loop.close()
 
