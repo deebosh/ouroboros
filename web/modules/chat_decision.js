@@ -1,9 +1,8 @@
 // Owner decision cards: the typed quiz card (question + option buttons +
 // stake + assumption) and the routing picker (#198) — one decision-card
-// family, one answer contract (POST /api/decisions). The quiz card is
-// fire-and-continue UI: the asking task keeps working under the stated
-// assumption, so it must read correctly both as "you can redirect me" (open)
-// and as a record of what happened (answered / expired). The routing picker
+// family, one answer contract (POST /api/decisions). Optional questions let
+// the task keep working under an assumption; required questions wait for an
+// answer. Both read as a record after settlement. The routing picker
 // settles into the plain routing ack line once its dispatch is confirmed.
 import { MAX_DECISION_COMMENT, MAX_QUIZ_OPTIONS } from './api_types.js';
 import { renderRoutingAnnotation, routingOptionLabel } from './chat_activity.js';
@@ -172,6 +171,8 @@ export function createChatDecision({
                 const box = card.querySelector('.chat-quiz-comment-box');
                 if (box) { box.remove(); changed = true; }
                 if (renderOwnerAnswer(card, String(card.dataset.ownerComment || ''))) changed = true;
+                const waiting = card.querySelector('.chat-quiz-wait');
+                if (waiting) { waiting.remove(); changed = true; }
             }
             const status = card.querySelector('.chat-quiz-status-text');
             const nextStatus = statusText(state);
@@ -315,6 +316,7 @@ export function createChatDecision({
         if (quiz.assumption || quiz.waitForAnswer) {
             const assumption = document.createElement('div');
             assumption.className = 'chat-quiz-assumption';
+            if (quiz.waitForAnswer) assumption.classList.add('chat-quiz-wait');
             assumption.textContent = quiz.waitForAnswer
                 ? 'Waiting for your answer; Stop and the task deadline still apply.'
                 : `Continuing meanwhile: ${quiz.assumption}`;

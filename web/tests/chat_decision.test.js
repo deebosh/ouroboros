@@ -116,6 +116,26 @@ test('required question renders waiting identically from live and stored frames'
     } finally { fx.restore(); }
 });
 
+test('required waiting copy ends when the answer settles, including history replay', async () => {
+    const fx = fixture();
+    try {
+        const required = { ...WS_MSG, wait_for_answer: true, assumption: '' };
+        const card = fx.decision.buildQuizCard(required);
+        card.querySelectorAll('.chat-quiz-option')[0].click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(card.dataset.state, 'answered');
+        assert.equal(card.querySelector('.chat-quiz-assumption'), null);
+        assert.ok(card.querySelectorAll('.chat-quiz-option').every((btn) => btn.disabled));
+        for (const state of ['answered', 'expired_terminal', 'superseded']) {
+            const replay = fx.decision.buildQuizCard({
+                task_id: 't-1', text: required.question,
+                quiz: { ...required, state, quiz_id: `closed-${state}` },
+            });
+            assert.equal(replay.querySelector('.chat-quiz-assumption'), null);
+        }
+    } finally { fx.restore(); }
+});
+
 test('quiz card renders full anatomy from a WS frame', () => {
     const fx = fixture();
     try {

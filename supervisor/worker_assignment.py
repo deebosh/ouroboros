@@ -255,7 +255,7 @@ def assign_tasks() -> None:
                     if isinstance(candidate.get("_budget_pause"), dict):
                         continue
                     root_task_id = str(candidate.get("root_task_id") or "").strip()
-                    if root_task_id in queue.BUDGET_ROOT_FENCES:
+                    if root_task_id in queue.BUDGET_ROOT_FENCES and not candidate.get("_owner_wait_resume"):
                         continue
                     if str(candidate.get("type") or "") == "evolution" and remaining < EVOLUTION_BUDGET_RESERVE:
                         continue

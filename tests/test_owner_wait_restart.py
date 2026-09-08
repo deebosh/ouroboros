@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import queue as stdqueue
 import threading
 import time
 from types import SimpleNamespace
@@ -43,7 +44,7 @@ class InertProcess:
 
 @pytest.fixture
 def restart_case(tmp_path, monkeypatch):
-    from supervisor import update_merge
+    from supervisor import task_lifecycle, update_merge
 
     pending, running = [], {}
     for module in (workers, queue):
@@ -52,7 +53,9 @@ def restart_case(tmp_path, monkeypatch):
         monkeypatch.setattr(module, "RUNNING", running)
     monkeypatch.setattr(queue, "QUEUE_SNAPSHOT_PATH", tmp_path / "state/queue_snapshot.json")
     monkeypatch.setattr(queue, "ACCEPTANCE_FENCES", {})
-    monkeypatch.setattr(queue, "BUDGET_ROOT_FENCES", {})
+    budget_fences = {}
+    for module in (queue, task_lifecycle):
+        monkeypatch.setattr(module, "BUDGET_ROOT_FENCES", budget_fences)
     monkeypatch.setattr(queue, "ADMISSION_RESERVATIONS", {})
     monkeypatch.setattr(queue, "QUEUE_SEQ_COUNTER_REF", {"value": 0})
     monkeypatch.setattr(workers, "_WORKER_POOL_DISABLED_REASON", "")
@@ -91,6 +94,7 @@ def restart_case(tmp_path, monkeypatch):
 
 
 def first_cleanup(case):
+    pending_ids = [row["id"] for row in workers.PENDING]
     native = owner_wait.prepare_owner_wait_handoffs(case.root, workers.RUNNING, case.transaction_id)
     selected = delegate_recovery.prepare_planned_restart_handoffs(
         case.root, workers.RUNNING, restart_transaction_id=case.transaction_id,
@@ -103,8 +107,8 @@ def first_cleanup(case):
         reconcile_delegate_custody=False, archive_service_logs=False,
     )
     assert not case.process.is_alive() and not workers.RUNNING
-    assert [row["id"] for row in workers.PENDING] == [case.task_id]
-    successor = workers.PENDING[0]
+    assert sorted(row["id"] for row in workers.PENDING) == sorted(pending_ids + [case.task_id])
+    successor = next(row for row in workers.PENDING if row["id"] == case.task_id)
     assert successor["_attempt"] == case.attempt
     assert successor["_owner_wait_resume"]["started_at"] == case.started
     assert load_task_result(case.root, case.task_id)["status"] == "running"
@@ -222,3 +226,74 @@ def test_running_projection_cannot_turn_consumed_wait_back_into_a_resume(restart
     with pytest.raises(ValueError, match="not an active"):
         owner_wait.load_owner_wait(case.ctx, task["_owner_wait_resume"])
     assert load_task_result(case.root, case.task_id)["owner_wait"]["state"] == "resumed"
+
+
+@pytest.mark.parametrize("remaining", [100.0, 0.0])
+def test_child_budget_fence_allows_only_restored_owner_continuation(restart_case, monkeypatch, remaining):
+    from ouroboros import usage_accounting as accounting
+    from supervisor import events_budget, state, task_lifecycle
+
+    case = restart_case
+    case.task.update(root_task_id=case.task_id, delegation_role="root")
+    sibling = {"id": "not-started-child", "type": "task", "chat_id": 1, "depth": 1,
+               "root_task_id": case.task_id, "parent_task_id": case.task_id,
+               "delegation_role": "subagent", "text": "Unstarted independent work"}
+    assert not queue.enqueue_task(sibling).get("_admission_blocked")
+    write_task_result(case.root, "spent-child", "failed", root_task_id=case.task_id,
+                      parent_task_id=case.task_id, reason_code="budget_exhausted")
+    events_budget._handle_budget_root_fence({
+        "type": "budget_root_fence", "task_id": "spent-child", "task_type": "task",
+        "resource_limit": {"scope": "root", "root_task_id": case.task_id},
+    }, SimpleNamespace(DRIVE_ROOT=case.root, RUNNING=workers.RUNNING,
+                       persist_queue_snapshot=queue.persist_queue_snapshot,
+                       bridge=SimpleNamespace(push_log=lambda event: None)))
+    assert workers.RUNNING[case.task_id]["owner_wait"]["state"] == "waiting"
+    fence = dict(queue.BUDGET_ROOT_FENCES[case.task_id])
+    first_cleanup(case)
+    acknowledge(case, monkeypatch, "launcher")
+
+    # A new supervisor restores the snapshot, not leftovers in process maps.
+    workers.PENDING.clear()
+    workers.RUNNING.clear()
+    workers.WORKERS.clear()
+    queue.BUDGET_ROOT_FENCES.clear()
+    queue.ACCEPTANCE_FENCES.clear()
+    queue.ADMISSION_RESERVATIONS.clear()
+    queue.QUEUE_SEQ_COUNTER_REF["value"] = 0
+    assert queue.restore_pending_from_snapshot() == 2
+    assert queue.BUDGET_ROOT_FENCES is task_lifecycle.BUDGET_ROOT_FENCES
+    assert queue.BUDGET_ROOT_FENCES == {case.task_id: fence}
+
+    commands = stdqueue.Queue()
+    workers.WORKERS[0] = workers.Worker(0, InertProcess(), commands)
+    monkeypatch.setattr(workers, "load_state", lambda: {})
+    monkeypatch.setattr(workers, "repo_writer_task_allowed", lambda task: True)
+    monkeypatch.setattr(state, "budget_remaining", lambda *args, **kwargs: remaining)
+    workers.assign_tasks()
+    assert set(workers.RUNNING) == {case.task_id}
+    sent = commands.get_nowait()
+    assert commands.empty() and sent["id"] == case.task_id
+    assert sent["_attempt"] == case.attempt
+    assert workers.RUNNING[case.task_id]["started_at"] == case.started
+    handoff = sent["_owner_wait_resume"]
+    assert handoff["source_ref"] == case.wait["source_ref"]
+    assert owner_wait.load_owner_wait(case.ctx, handoff)["round_idx"] == 7
+    if remaining > 0:
+        assert [row["id"] for row in workers.PENDING] == [sibling["id"]]
+    else:
+        # Ordinary work follows its existing global-budget pause/terminal rail.
+        stopped = load_task_result(case.root, sibling["id"])
+        assert stopped["reason_code"] == "budget_exhausted"
+        assert stopped["resource_limit"]["scope"] == "global"
+    assert queue.BUDGET_ROOT_FENCES == {case.task_id: fence}
+    assert json.loads(queue.QUEUE_SNAPSHOT_PATH.read_text())["budget_root_fences"] == [fence]
+    fresh = queue.enqueue_task({**sibling, "id": "fresh-child"})
+    assert fresh["_admission_blocked"] == "root_budget_fence"
+    with accounting.usage_scope(accounting.UsageScope(
+        drive_root=case.root, task_id=case.task_id, root_task_id=case.task_id,
+        global_limit_usd=100.0, root_limit_usd=100.0,
+    )):
+        with pytest.raises(accounting.BudgetExceeded) as refused:
+            accounting.reserve_attempt(accounting.AttemptRequest(
+                model="fixture", provider="openai", reservation_usd=1.0))
+        assert refused.value.limit_scope == "root"
