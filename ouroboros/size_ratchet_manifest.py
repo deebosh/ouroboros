@@ -135,6 +135,7 @@ BAND_PATHS = {
     "ouroboros/loop_tool_execution.py": None,
     "ouroboros/marketplace/ouroboroshub.py": "Entered the band from 373 lines: the hubflow sprint added the adopt transaction (eligibility prelude, CAS re-verification, move-aside + state-quintet snapshot, verified rollback with per-step error collection, retention finalize) beside the existing install/update flows (hubflow sprint, adopt-in-ouroboroshub owner decision D4).",
     "ouroboros/mcp_client.py": "F3.1 typed-organ producer cutover (D05 entry 7b) plus E5+s2r2 (#447): the MCP transport keeps the SDK-owned error bit as a typed ToolResult, follows nextCursor pagination with injective 12-hex slugs, and discloses collision/pagination omissions; grew into the band from 984 lines, shrink-only otherwise.",
+    "ouroboros/memory.py": "ibl-2b09abdadd25: scratchpad content-size cap added alongside the existing block-count cap in append_scratchpad_block's eviction loop",
     "ouroboros/observability.py": "Entered the band from 820 lines: child task copy-back now promotes only promised observability CAS manifests/blobs and task-owned source handles into canonical storage before headless GC, with typed unavailable gaps and retry metadata.",
     "ouroboros/preflight_runner.py": None,
     "ouroboros/projects_registry.py": "Entered the band from 999 lines: the stuck-Working liveness sprint homed the project-thread membership lens (mtime-cached) and its broadcast-choke marker here \u2014 registry semantics belong to the registry, not to message_bus.",
