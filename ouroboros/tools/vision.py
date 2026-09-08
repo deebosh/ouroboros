@@ -63,8 +63,8 @@ def _get_llm_client():
 def _refuse(ctx: Any, message: str, code: str = "TOOL_ARG_ERROR") -> str:
     """Publish a refusal this module AUTHORS as a typed result; text unchanged.
 
-    The registry types a string result by its first-line ``⚠️ IDENTIFIER``
-    marker, so identifier-less prose (``⚠️ File not found: x.png``) was recorded
+    The registry types a string result by its first-line typed marker (the
+    warning sign plus an UPPER_SNAKE code), so identifier-less prose (``⚠️ File not found: x.png``) was recorded
     as ``status=ok`` even though the producer already knew it had failed. Both
     codes used here carry ``status="error"``. Refusal text authored by a POLICY
     owner (``_read_file_parity_block``, ``protected_artifacts``) is NOT routed

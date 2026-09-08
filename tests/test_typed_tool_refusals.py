@@ -15,7 +15,9 @@ capital — AND the real adapter records it ``ok``. A typed-looking marker the a
 buckets as a warning (``⚠️ X_INVALID``) is a vocabulary question for the adapter's
 owner, not this lint, and an adapter that starts typing a text releases it here. Every surviving site carries a written reason here, so the
 allowlist IS the residual disclosure; a site removed from the tree must be removed
-here too (shrink-only), and a new site anywhere fails.
+here too (shrink-only), and a file whose count grows fails. It is a per-file COUNT
+ratchet: swapping one old site for a new one inside the same file is invisible to
+it (disclosed), and the producer's own tests pin individual sites.
 
 Scope limit (disclosed): only RETURNED string literals (plain, f-string with a static
 head, or a leading-literal concatenation) are scanned. A failure text that reaches the

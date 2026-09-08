@@ -337,9 +337,14 @@ def test_sync_success_marks_fork_synced(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "stderr,expected_status,expected_text",
     [
-        # the FIRST gh marker wins; the bounded head keeps three non-empty lines
+        # the FIRST line-terminal gh marker wins; the bounded head keeps three non-empty lines
         ("\n first\n\n second (HTTP 401)\n third\n ignored (HTTP 403)", 401,
          "⚠️ GH_ERROR: first | second (HTTP 401) | third"),
+        # a marker quoted mid-sentence is prose; gh's own marker ends its line
+        ("warning: quoted (HTTP 403) is not a status\ngh: Not Found (HTTP 404)", 404,
+         "⚠️ GH_ERROR: warning: quoted (HTTP 403) is not a status | gh: Not Found (HTTP 404)"),
+        ("a marker (HTTP 403) inside a sentence", None, "⚠️ GH_ERROR: a marker (HTTP 403) inside a sentence"),
+        ("gh: Not Found (HTTP 404)\r\n", 404, "⚠️ GH_ERROR: gh: Not Found (HTTP 404)"),
         # a bare number is prose, never a status
         ("permission denied, status 403", None, "⚠️ GH_ERROR: permission denied, status 403"),
         # the status is read from the WHOLE redacted stderr, before the head is cut
@@ -361,6 +366,24 @@ def test_transport_bounds_stderr_and_only_reads_gh_http_marker(
     assert "ignored" not in result.text
     if expected_text is not None:
         assert result.text == expected_text
+
+
+@pytest.mark.parametrize("filename,failure,fragment", [
+    (None, "cli_missing", "`gh` CLI not found"),
+    ("/usr/local/bin/gh", "cli_missing", "`gh` CLI not found"),
+    # a vanished working directory is a launch failure, not a missing CLI
+    ("/vanished/project", "exception", "/vanished/project"),
+])
+def test_launch_failure_names_what_is_missing(monkeypatch, tmp_path, filename, failure, fragment):
+    def run(cmd, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", filename)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = transport._gh_run(["api", "/user"], types.SimpleNamespace(repo_dir=tmp_path))
+    assert (result.ok, result.exit_code, result.http_status, result.failure) == (False, None, None, failure)
+    assert fragment in result.text
+    hint = github.github_repair_hint(result, operation="user", repository="hub/project", default="default")
+    assert ("Install" in hint) == (failure == "cli_missing")
 
 
 @pytest.mark.parametrize("failure", ["cli_missing", "timeout", "exit", "exception"])
@@ -451,6 +474,28 @@ def test_malformed_json_keeps_bounded_redacted_detail(monkeypatch, tmp_path, std
     assert error.detail
     assert len(error.detail) <= 640
     assert "ghp_SYNTHETIC1234567890" not in error.detail
+
+
+@pytest.mark.parametrize("ref,content,reason_code,fragment", [
+    # the parser's own cause travels with the stage code
+    ({"object": {"sha": BASE_SHA}}, b"{", "upstream_catalog_invalid", "Expecting"),
+    ({"object": {"sha": BASE_SHA}}, b"[]", "upstream_catalog_invalid", "list, not an object"),
+    # a wrongly shaped ref answer is a read failure with the answer as its detail
+    ({"object": "not a mapping"}, b"{}", "upstream_read_failed", "not a mapping"),
+])
+def test_malformed_upstream_answers_keep_their_cause(monkeypatch, ref, content, reason_code, fragment):
+    def fake_json(_ctx, args, **_kwargs):
+        if "/git/refs/heads/" in args[-1]:
+            return ref
+        return {"content": base64.b64encode(content).decode("ascii")}
+
+    monkeypatch.setattr(github, "_json_object", fake_json)
+    with pytest.raises(github.SkillPublishGitHubError) as caught:
+        github.fetch_upstream_catalog(types.SimpleNamespace(), "hub", "project", "main")
+    error = caught.value
+    assert error.reason_code == reason_code
+    assert fragment in error.detail
+    assert error.operation == ("contents" if reason_code == "upstream_catalog_invalid" else "git/refs")
 
 
 @pytest.mark.parametrize("returncode,stdout,stderr", [

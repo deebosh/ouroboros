@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import pathlib
+import subprocess
 import types
 from typing import Callable
 
@@ -559,6 +560,46 @@ def test_confirmation_failure_is_parseable_and_calls_nothing(tmp_path):
     assert result["reason_code"] == "confirmation_required"
     assert result["completed_effects"] == []
     assert not {"error_detail", "github_status", "github_operation"} & result.keys()
+
+
+def test_github_failure_envelope_is_reached_from_the_subprocess_boundary(monkeypatch, tmp_path):
+    """Real repository preparation + real transport; only the gh process is fake."""
+    from ouroboros import skill_publish_github
+    from ouroboros.skill_publish_result import extract_skill_publish_result_metadata
+
+    ctx, events, _captured = _install_transaction_fakes(monkeypatch, tmp_path, snapshot=_snapshot())
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_SYNTHETIC1234567890")
+    monkeypatch.setattr(
+        skill_publish, "prepare_publish_repository", skill_publish_github.prepare_publish_repository,
+    )
+    commands = []
+
+    def run(cmd, **_kwargs):
+        commands.append(cmd)
+        if cmd[1:3] == ["repo", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, '{"name":"project"}', "")
+        assert cmd[1:4] == ["api", "-X", "POST"] and cmd[4].endswith("/merge-upstream")
+        return subprocess.CompletedProcess(
+            cmd, 1, "", "gh: token ghp_SYNTHETIC1234567890 was rejected (HTTP 403)",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = _submit(ctx)
+    assert result["ok"] is False
+    assert result["reason_code"] == "fork_sync_failed"
+    assert result["completed_stage"] == "fork_ready"
+    assert result["github_status"] == 403
+    assert result["github_operation"] == "merge-upstream"
+    assert result["error_detail"].startswith("⚠️ GH_ERROR: ")
+    assert "(HTTP 403)" in result["error_detail"]
+    assert "ghp_SYNTHETIC1234567890" not in json.dumps(result)
+    assert "receipt" not in result
+    assert not any(row[0] == "mutation" for row in events)
+    assert sum(1 for cmd in commands if cmd[-3:-2] == ["-X"] or "merge-upstream" in " ".join(cmd)) == 1
+    projected = extract_skill_publish_result_metadata(json.dumps(result))["skill_publish_attempt"]
+    assert projected["github_status"] == 403
+    assert projected["error_detail"] == result["error_detail"]
+    assert projected["github_operation"] == "merge-upstream"
 
 
 def test_later_scanner_error_does_not_erase_known_scanner_identity():

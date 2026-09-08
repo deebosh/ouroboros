@@ -191,9 +191,12 @@ Enforcement: the prompt-edit discipline is scored by CHECKLISTS item 13(b)
 (a prompt edit never restates a tool schema and is never an incident patch);
 the recoverable-failure boundary has no automated surface — review-only; the
 typed-refusal rule is ratcheted by `tests/test_typed_tool_refusals.py`, a
-source lint over returned literals in `ouroboros/tools/` whose allowlist is the
-residual disclosure — a failure text that travels through a variable, a tuple
-or a helper is outside its reach and is pinned by the producer's own tests.
+source lint over returned literals in `ouroboros/tools/` whose per-file
+allowlist is the residual disclosure — a file whose count of untyped failure
+returns grows fails, a shrink must be recorded, and a same-file swap of one old
+site for a new one is invisible to the count; a failure text that travels
+through a variable, a tuple or a helper is outside its reach and is pinned by
+the producer's own tests.
 
 ### Documentation contract
 
@@ -825,10 +828,12 @@ separate `plan_task` call containing `review_disposition` only —
 `{review_fingerprint, items: [{finding_id, decision, rationale}]}` — covering
 every finding exactly once; duplicates, contradictions, unknown, stale, or
 incomplete dispositions fail closed, and mixed or vacuous calls fail before an
-attempt is recorded as typed argument errors — a schema-equivalent empty
-optional field (`""`, `{}`, a list or dict whose members are all empty) beside a
-disposition is ignored, never mistaken for a second operation. Never replay the
-plan envelope with the disposition.
+attempt is recorded as typed argument errors — an optional field that carries
+no meaning beside a disposition (a blank `goal`/`plan`; a `spec` holding only
+declared keys whose values are `None`, `""` or `[]`) is ignored, never mistaken
+for a second operation, while any non-empty list, undeclared key or non-blank
+string is meaning and makes the call mixed. Never replay the plan envelope with
+the disposition.
 Blocking `REVISE_PLAN` requires changed plan text and another panel; advisory
 may proceed only under loud host disclosure and the agent's rationale.
 Reviewers are findings-only — they never author a competing plan — a blocking

@@ -135,7 +135,8 @@ def fetch_upstream_catalog(ctx: ToolContext, owner: str, repo: str, base_branch:
         reason_code="upstream_read_failed",
         operation="git/refs", repository=f"{owner}/{repo}", branch=base_branch,
     )
-    base_sha = str((ref.get("object") or {}).get("sha") or "")
+    ref_object = ref.get("object")
+    base_sha = str((ref_object.get("sha") if isinstance(ref_object, dict) else "") or "")
     if not _HEX_OID_RE.fullmatch(base_sha):
         raise SkillPublishGitHubError(
             "upstream_read_failed",
@@ -155,12 +156,13 @@ def fetch_upstream_catalog(ctx: ToolContext, owner: str, repo: str, base_branch:
         raise SkillPublishGitHubError(
             "upstream_catalog_invalid",
             "Repair the upstream Hub catalog, then retry.",
-            operation="contents",
+            detail=f"catalog.json at {base_sha}: {exc}", operation="contents",
         ) from exc
     if not isinstance(catalog, dict):
         raise SkillPublishGitHubError(
             "upstream_catalog_invalid",
             "Repair the upstream Hub catalog, then retry.",
+            detail=f"catalog.json at {base_sha}: top-level JSON is {type(catalog).__name__}, not an object",
             operation="contents",
         )
     return catalog, base_sha.lower()

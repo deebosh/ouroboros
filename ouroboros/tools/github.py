@@ -34,8 +34,8 @@ class GhResult:
 def _refuse(ctx: ToolContext, text: str, code: str = "TOOL_ARG_ERROR") -> str:
     """Publish a refusal this module AUTHORS as a typed result; text unchanged.
 
-    The registry types a string result by its first-line ``⚠️ IDENTIFIER`` marker,
-    so prose such as ``⚠️ issue number must be positive`` was recorded ``status=ok``
+    The registry types a string result by its first-line typed marker (the
+    warning sign plus an UPPER_SNAKE code), so prose such as ``⚠️ issue number must be positive`` was recorded ``status=ok``
     although the producer already knew it had refused. Both codes carry
     ``status="error"``."""
     return _publish_tool_result(ctx, ToolResult(status="error", code=code, text=text))
@@ -94,9 +94,10 @@ def _gh_run(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
     # tool's sidecar; the publication transport omits `repo`, so it can never
     # reach them and its own final result is never shadowed from here.
     if repo is not _GENERIC_TRANSPORT and not isinstance(repo, str):
-        return GhResult(False, _refuse(
-            ctx, "⚠️ GH_TARGET_INVALID: repo must be a string; omit it to use the selected Project."),
-            None, None, "target")
+        return GhResult(False, _publish_tool_result(ctx, ToolResult(
+            status="error", code="TOOL_ARG_ERROR",
+            text="⚠️ GH_TARGET_INVALID: repo must be a string; omit it to use the selected Project.",
+        )), None, None, "target")
     try:
         cwd, env = pathlib.Path(ctx.repo_dir), _gh_env(ctx)
         cmd = ["gh", *args]
@@ -116,9 +117,10 @@ def _gh_run(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
                         f"⚠️ GH_TARGET_UNAVAILABLE: {note or 'The selected Project directory is unavailable.'}",
                         None, None, "target")
                 if project and not selected:
-                    return GhResult(False, _refuse(
-                        ctx, "⚠️ GH_TARGET_REQUIRED: this Project has no repository directory; pass repo='[HOST/]OWNER/REPO'."),
-                        None, None, "target")
+                    return GhResult(False, _publish_tool_result(ctx, ToolResult(
+                        status="error", code="TOOL_ARG_ERROR",
+                        text="⚠️ GH_TARGET_REQUIRED: this Project has no repository directory; pass repo='[HOST/]OWNER/REPO'.",
+                    )), None, None, "target")
             binding = build_resolved_resource_binding(ctx, operation="shell", process_cwd="")
             cwd = binding.target_path
             if workspace and cwd != pathlib.Path(workspace).resolve(strict=False):
@@ -140,18 +142,23 @@ def _gh_run(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
         )
         if res.returncode != 0:
             # Redact the WHOLE stderr first (a cut could split a token), read gh's own
-            # ``(HTTP NNN)`` marker before any bounding, then keep a bounded head.
+            # line-terminal ``(HTTP NNN)`` marker before any bounding (a marker quoted
+            # mid-sentence is prose, not a status), then keep a bounded head.
             err = redact_known_values(res.stderr or "", [github_token_from_env_or_settings()])
-            status = re.search(r"\(HTTP (\d{3})\)", err)
+            status = re.search(r"\(HTTP (\d{3})\)[ \t\r]*$", err, flags=re.MULTILINE)
             head = " | ".join([line.strip() for line in err.splitlines() if line.strip()][:3])
             head = truncate_within_limit(head, 600)
             return GhResult(False, "⚠️ GH_ERROR: " + head, res.returncode,
                             int(status.group(1)) if status else None, "exit")
         return GhResult(True, res.stdout.strip(), res.returncode, None, "")
-    except FileNotFoundError:
-        return GhResult(False,
-            "⚠️ GH_ERROR: `gh` CLI not found. Install GitHub CLI and ensure it is on PATH (https://cli.github.com/)",
-            None, None, "cli_missing")
+    except FileNotFoundError as e:
+        missing = str(getattr(e, "filename", "") or "")
+        if not missing or pathlib.Path(missing).name == "gh":
+            return GhResult(False,
+                "⚠️ GH_ERROR: `gh` CLI not found. Install GitHub CLI and ensure it is on PATH (https://cli.github.com/)",
+                None, None, "cli_missing")
+        detail = truncate_within_limit(redact_known_values(str(e), [github_token_from_env_or_settings()]), 600)
+        return GhResult(False, f"⚠️ GH_ERROR: {detail}", None, None, "exception")
     except subprocess.TimeoutExpired:
         return GhResult(False, f"⚠️ GH_TIMEOUT: exceeded {timeout}s.", None, None, "timeout")
     except Exception as e:
