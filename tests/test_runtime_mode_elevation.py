@@ -721,7 +721,9 @@ def test_started_predicate_is_read_only_and_never_constructs_the_agent(monkeypat
     class _Busy:
         _busy = True
 
-    monkeypatch.setattr(workers, "_chat_agent", _Busy(), raising=False)
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register("settings-turn", 1, actor=_Busy())
     assert _has_started_agent_tasks() is True
 
 
@@ -817,21 +819,20 @@ def test_owner_context_mode_endpoint_refuses_lowering_while_task_runs(isolated_s
 
 
 def test_owner_context_mode_idle_predicate_covers_pending_and_direct_chat_busy(monkeypatch):
-    from types import SimpleNamespace
+    from supervisor.active_activity import get_direct_activity_registry
 
     from ouroboros.gateway import settings as settings_mod
     import supervisor.workers as workers
 
     monkeypatch.setattr(workers, "PENDING", [{"id": "queued"}])
     monkeypatch.setattr(workers, "RUNNING", {})
-    monkeypatch.setattr(workers, "_get_chat_agent", lambda: SimpleNamespace(_busy=False))
     assert settings_mod._has_running_agent_tasks() is True
 
     monkeypatch.setattr(workers, "PENDING", [])
-    monkeypatch.setattr(workers, "_get_chat_agent", lambda: SimpleNamespace(_busy=True))
+    get_direct_activity_registry().register("preparing", 1)
     assert settings_mod._has_running_agent_tasks() is True
 
-    monkeypatch.setattr(workers, "_get_chat_agent", lambda: SimpleNamespace(_busy=False))
+    get_direct_activity_registry().unregister("preparing")
     assert settings_mod._has_running_agent_tasks() is False
 
 

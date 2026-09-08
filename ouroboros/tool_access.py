@@ -167,17 +167,20 @@ def _process_root_candidates(
     bucket: str = "",
     skill_name: str = "",
     include_skill: bool = False,
+    require_active: bool = True,
 ) -> list[tuple[ResourceRoot, pathlib.Path, str, str]]:
     """Return side-effect-free ``(root, base, source, skill)`` candidates."""
 
     profile = active_tool_profile(ctx)
-    active = resource_root_path(ctx, "active_workspace")
     candidates: list[tuple[ResourceRoot, pathlib.Path, str, str]] = []
-    room = project_room_lens_dir(ctx)
-    if room is not None:
-        candidates.append(("active_workspace", room, "active_workspace", ""))
+    try:
+        active = resource_root_path(ctx, "active_workspace")
+    except ValueError:
+        if require_active:
+            raise
+    else:
+        candidates.append(("active_workspace", active, "active_workspace", ""))
     candidates += [
-        ("active_workspace", active, "active_workspace", ""),
         ("system_repo", resource_root_path(ctx, "system_repo"), "system_repo", ""),
     ]
 
@@ -457,6 +460,9 @@ def _select_process_target(
         raise ValueError("cwd=skill_payload[/subdir] requires bucket and skill_name")
     candidate_records = _process_root_candidates(
         ctx, operation, bucket=bucket, skill_name=skill_name, include_skill=include_skill,
+        require_active=(reserved_root == "active_workspace" or (
+            not reserved_root and not is_absolute_path_text(text) and not text.startswith("~")
+        )),
     )
     allowed = [(label, root) for label, root, _source, _name in candidate_records]
     if not candidate_records:
@@ -677,6 +683,7 @@ def build_resolved_resource_binding(
         normalized == "runtime_data" and operation in {"write", "edit"}
     ) or (
         normalized == "active_workspace" and operation == "edit" and not workspace_active
+        and project_room_lens_dir(ctx) is None
     )
     if legacy_data_form:
         from ouroboros.contracts.skill_payload_policy import (
@@ -724,11 +731,7 @@ def build_resolved_resource_binding(
 
     source = str(normalized)
     selected_name = ""
-    room = (
-        project_room_lens_dir(ctx)
-        if normalized == "active_workspace" and operation in {"read", "list", "search", "shell"}
-        else None
-    )
+    room = project_room_lens_dir(ctx) if normalized == "active_workspace" else None
     if normalized == "skill_payload":
         selected_bucket = str(bucket or "").strip()
         selected_skill = str(skill_name or "").strip()

@@ -62,7 +62,7 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "enqueue_task", "load_state", "persist_queue_snapshot",
     })),
     "supervisor/worker_chat_lane.py": ("supervisor/workers.py", "_pool", frozenset({
-        "DRIVE_ROOT", "REPO_DIR", "_chat_agent_lock", "_ephemeral_chat_lock",
+        "DRIVE_ROOT", "REPO_DIR", "_repo_writer_gate_lock", "chat_turn_liveness",
         "_get_chat_agent", "_origin_from_mapping", "_repo_writer_turn_allowed",
         "_report_binding_failure", "get_event_q", "load_state",
         "repo_writer_admission_closed", "send_with_budget",

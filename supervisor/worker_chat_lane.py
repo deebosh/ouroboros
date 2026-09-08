@@ -1,7 +1,7 @@
 """The direct and ephemeral chat lanes, and the resume after a restart.
 
-A chat turn runs on the single long-lived agent under its own lock; an ephemeral
-turn gets a throwaway one. Both are refused while the repo-writer gate is closed
+Each chat turn owns a fresh native agent and a registered execution; an explicit
+swarm routing turn retains its transient contract. Both are refused while the repo-writer gate is closed
 for a DESTRUCTIVE update window (apply/replace prologue, materialization,
 rollback), so a managed update never races a turn that could touch the checkout
 mid-reset. While the ONE authorized assisted resolver holds the repository
@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import json
 import pathlib
-import sys
 import time
 import uuid
 from typing import Any, Dict, Optional, Tuple, Union
@@ -143,16 +142,12 @@ def handle_chat_direct(
     task_constraint: Optional[dict] = None,
     task_metadata: Optional[dict] = None,
 ) -> None:
-    with _pool()._chat_agent_lock:
-        if not owner_conversation_admitted(chat_id):
-            return
-        _handle_chat_direct_locked(
-            chat_id,
-            text,
-            image_data,
-            task_constraint=task_constraint,
-            task_metadata=task_metadata,
-        )
+    if not owner_conversation_admitted(chat_id):
+        return
+    _handle_chat_direct_locked(
+        chat_id, text, image_data,
+        task_constraint=task_constraint, task_metadata=task_metadata,
+    )
 
 
 def _handle_chat_direct_locked(
@@ -177,7 +172,7 @@ def _handle_chat_direct_locked(
         return
 
     _run_chat_task(
-        _pool()._get_chat_agent(), chat_id, text, image_data,
+        None, chat_id, text, image_data,
         task_constraint=task_constraint, task_metadata=task_metadata, ephemeral=False,
     )
 
@@ -213,9 +208,8 @@ def _run_chat_task(
 ) -> None:
     """Build the direct-chat task and run it on the given agent, draining events.
 
-    ``ephemeral`` marks a SHORT-LIVED same-route turn (run on a separate agent
-    instance while the shared chat agent is busy): it carries _ephemeral_turn so
-    the task pipeline skips long-term memory / reflection / evolution writes."""
+    ``ephemeral`` is only the explicit constrained routing contract. Ordinary
+    Main/Project turns use the full native task/result/delivery lifecycle."""
     task: Optional[dict] = None
     client_msg_id = ""
     if task_metadata:
@@ -232,7 +226,26 @@ def _run_chat_task(
         "text": text,
         "_is_direct_chat": True,
     }
+    from supervisor.active_activity import get_direct_activity_registry
+
+    registry = get_direct_activity_registry()
+    # Close/check/register is one short transaction with the update owner.
+    # The registered execution includes agent construction, attachment staging,
+    # the whole native lifecycle and event delivery, not just its LLM rounds.
+    with _pool()._repo_writer_gate_lock:
+        if not owner_conversation_admitted(chat_id):
+            return
+        activity = registry.register(
+            task["id"], chat_id,
+            client_message_id=client_msg_id,
+            project_id=str((task_metadata or {}).get("project_id") or ""),
+            kind=kind, origin_message_ref=(task_metadata or {}).get("origin_message_ref"),
+            actor=agent,
+        )
     try:
+        if agent is None:
+            agent = _pool()._get_chat_agent()
+            activity.actor = agent
         from ouroboros.contracts.task_contract import attach_task_contract
 
         if ephemeral:
@@ -348,50 +361,37 @@ def _run_chat_task(
             )
         attach_task_contract(task)
 
-        pid = str(task.get("project_id") or "")
+        # Announce the authoritative start immediately (owner decision 2A):
+        # the client's `Sending...` retires on this frame, not on a socket
+        # echo, and the frame carries the activity<->client_message_id link
+        # so even a turn that fails before its first LLM round concludes
+        # cleanly via its keyed error final.
+        try:
+            from supervisor.message_bus import get_bridge
 
-        from supervisor.active_activity import track_direct_activity
-
-        with track_direct_activity(
-            activity_id=str(task["id"]),
-            chat_id=int(chat_id or 0),
-            client_message_id=client_msg_id,
-            project_id=pid,
-            kind=kind,
-            phase="thinking",
-            origin_message_ref=task.get("origin_message_ref"),
-        ):
-            # Announce the authoritative start immediately (owner decision 2A):
-            # the client's `Sending...` retires on this frame, not on a socket
-            # echo, and the frame carries the activity<->client_message_id link
-            # so even a turn that fails before its first LLM round concludes
-            # cleanly via its keyed error final.
-            try:
-                from supervisor.message_bus import get_bridge
-
-                get_bridge().send_chat_action(
-                    int(chat_id or 0),
-                    "typing",
-                    activity_id=str(task["id"]),
-                    client_message_id=client_msg_id,
-                    phase="thinking",
-                    kind=kind,
-                )
-            except Exception:
-                log.debug("Direct-turn start typing announce failed", exc_info=True)
-            # The turn's live emits (loop_llm_call and friends publish
-            # straight to the agent's event queue DURING handle_task) and its
-            # returned events are both drained after the registry entry is
-            # gone: route them through the turn-scoped addressing proxy.
-            turn_queue = _TurnEventQueue(_pool().get_event_q(), task["id"], chat_id)
-            prev_queue = getattr(agent, "_event_queue", None)
-            agent._event_queue = turn_queue
-            try:
-                events = agent.handle_task(task)
-            finally:
-                agent._event_queue = prev_queue
-            for e in events:
-                _pool().get_event_q().put(turn_queue.stamp(e))
+            get_bridge().send_chat_action(
+                int(chat_id or 0),
+                "typing",
+                activity_id=str(task["id"]),
+                client_message_id=client_msg_id,
+                phase="thinking",
+                kind=kind,
+            )
+        except Exception:
+            log.debug("Direct-turn start typing announce failed", exc_info=True)
+        # The turn's live emits (loop_llm_call and friends publish
+        # straight to the agent's event queue DURING handle_task) and its
+        # returned events can be consumed after this registry entry is gone:
+        # stamp the authoritative chat identity before handing them off.
+        turn_queue = _TurnEventQueue(_pool().get_event_q(), task["id"], chat_id)
+        prev_queue = getattr(agent, "_event_queue", None)
+        agent._event_queue = turn_queue
+        try:
+            events = agent.handle_task(task)
+        finally:
+            agent._event_queue = prev_queue
+        for e in events:
+            _pool().get_event_q().put(turn_queue.stamp(e))
     except Exception as e:
         import traceback
         err_msg = f"⚠️ Error: {type(e).__name__}: {e}"
@@ -441,6 +441,8 @@ def _run_chat_task(
             )
         except Exception:
             log.debug("Suppressed exception", exc_info=True)
+    finally:
+        registry.unregister(task["id"])
 
 
 def handle_chat_ephemeral(
@@ -450,12 +452,9 @@ def handle_chat_ephemeral(
     task_constraint: Optional[dict] = None,
     task_metadata: Optional[dict] = None,
 ) -> None:
-    """The "turn = decision" path (v6.33.0 WS10): when the shared chat agent is
-    busy, a new main-chat message runs as a SHORT-LIVED turn on a SEPARATE agent
-    instance — bypassing _chat_agent_lock so it never freezes/injects into the
-    running turn, while keeping the SAME ROUTE (same make_agent config: model /
-    mode / effort, not a cheaper lane). Ephemeral turns are serialized among
-    themselves and are barred from long-term memory/reflection/evolution writes."""
+    """Run an explicitly constrained swarm routing turn on its own actor."""
+    if not owner_conversation_admitted(chat_id):
+        return
     from supervisor.state import budget_remaining, load_state
     failure_meta = _host_operation_failure(task_metadata)
     try:
@@ -469,18 +468,10 @@ def handle_chat_ephemeral(
         except Exception:
             pass
         return
-    if not getattr(sys, 'frozen', False):
-        sys.path.insert(0, str(_pool().REPO_DIR))
-    from ouroboros.agent import make_agent
-
-    with _pool()._ephemeral_chat_lock:
-        if not owner_conversation_admitted(chat_id):
-            return
-        agent = make_agent(repo_dir=str(_pool().REPO_DIR), drive_root=str(_pool().DRIVE_ROOT), event_queue=_pool().get_event_q())
-        _run_chat_task(
-            agent, chat_id, text, image_data,
-            task_constraint=task_constraint, task_metadata=task_metadata, ephemeral=True,
-        )
+    _run_chat_task(
+        None, chat_id, text, image_data,
+        task_constraint=task_constraint, task_metadata=task_metadata, ephemeral=True,
+    )
 
 
 def auto_resume_after_restart() -> None:
@@ -550,8 +541,7 @@ def auto_resume_after_restart() -> None:
                 return
 
         time.sleep(2)  # Let everything initialize
-        agent = _pool()._get_chat_agent()
-        if not agent._busy:
+        if not _pool().chat_turn_liveness():
             import threading
             threading.Thread(
                 target=handle_chat_direct,
@@ -583,8 +573,8 @@ DIRECT_TURN_STOP_LIVE = "live"        # armed, still inside a step (the sweep re
 def stop_direct_chat_turn(task_id: str, turn: Dict[str, Any], *, deliver: bool = True) -> str:
     """Stop the in-process direct-chat turn COOPERATIVELY; a typed outcome.
 
-    There is no worker process to kill: the turn runs on the long-lived chat
-    agent inside the supervisor. The lane writes the typed ``finalize_now``
+    There is no worker process to kill: the turn owns a native actor
+    inside the supervisor. The lane writes the typed ``finalize_now``
     control (``REASON_OWNER_STOPPED_DIRECT_TURN``) to the canonical drive's
     owner mailbox — the one the turn's loop drains at every round boundary,
     where it ends the turn with ZERO further model calls — then waits the

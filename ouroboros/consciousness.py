@@ -121,7 +121,9 @@ class BackgroundConsciousness:
 
     @property
     def is_paused(self) -> bool:
-        return bool(getattr(self, "_paused", False))
+        from supervisor.active_activity import get_direct_activity_registry
+
+        return bool(getattr(self, "_paused", False) or get_direct_activity_registry().snapshot())
 
     def _observation_lock_for_instance(self) -> threading.RLock:
         """Lazily restore observation fields for object.__new__ overlap tests."""
@@ -653,7 +655,7 @@ class BackgroundConsciousness:
             if self._stop_event.is_set():
                 break
 
-            if self._paused:
+            if self.is_paused:
                 self._last_idle_reason = "paused_by_active_task"
                 continue
 
@@ -669,11 +671,11 @@ class BackgroundConsciousness:
                 cycle_completed = self._think()
                 self._last_cycle_finished_at = utc_now_iso()
                 # Preserve distinct overflow/LLM error statuses set inside _think().
-                if cycle_completed and not self._stop_event.is_set() and not self._paused:
+                if cycle_completed and not self._stop_event.is_set() and not self.is_paused:
                     self._last_idle_reason = "sleeping"
                 # Retire the live card now that this cycle is done (skip while paused:
                 # a real task is active and owns the status).
-                if not self._paused:
+                if not self.is_paused:
                     self._emit_cycle_idle(self._last_idle_reason)
             except Exception as e:
                 self._last_cycle_finished_at = utc_now_iso()

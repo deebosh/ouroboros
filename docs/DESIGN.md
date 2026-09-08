@@ -443,8 +443,9 @@ this wakeup cycle ends; the persistence checkbox saves the consciousness role.
 An already-delivered answer does not close a still-open post-task synthesis.
 Reflection or consolidation waits use the same role controls in that task's
 existing finalizing card. Pooled tasks, including API-only tasks, keep their
-worker slot until post-work settles; the answer arrives early. Detached direct
-chat post-work holds no worker slot. Both claims follow the host's live owner
+worker slot until post-work settles; the answer arrives early. Ordinary native
+chat post-work holds no worker slot; its existing card keeps the same live
+post-task model-wait controls after ordinary dialogue admission closes. Both claims follow the host's live owner
 and post-task checkpoint, not the presence of answer text or a cost estimate.
 Failed main work stays visibly failed after history reload while post-work
 controls remain live; the unfinished checkpoint never erases the outcome.

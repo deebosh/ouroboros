@@ -118,7 +118,9 @@ def _route_project_chat_to_running_task(
         direct_agent = None
         direct_lock = None
         if candidate.get("direct_chat"):
-            direct_agent = ctx.get_chat_agent()
+            from supervisor.workers import get_direct_chat_agent
+
+            direct_agent = get_direct_chat_agent(tid)
             direct_lock = getattr(direct_agent, "_owner_message_admission_lock", None)
             if direct_lock is None:
                 return ""
@@ -595,7 +597,6 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
     needs_decision_lane = swarm_intent or bool(project_id) or has_projects or bool(global_roots)
     if needs_decision_lane:
         task_metadata = _decision_turn_metadata(ctx, chat_id, client_message_id, task_metadata)
-    agent = ctx.get_chat_agent()
 
     def _run_direct() -> None:
         try:
@@ -609,7 +610,7 @@ def _route_owner_message(bridge: Any, ctx: Any, incoming: Dict[str, Any]) -> Non
         finally:
             ctx.consciousness.resume()
 
-    if needs_decision_lane or agent._busy:
+    if swarm_intent:
         threading.Thread(
             target=ctx.handle_chat_ephemeral,
             args=(chat_id, text or image_caption, image_data),

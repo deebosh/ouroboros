@@ -30,6 +30,8 @@ class DirectActivityEntry:
     origin_message_ref: Dict[str, Any] = field(default_factory=dict)
     model_wait_owner: Any = field(default=None, repr=False, compare=False)
 
+    actor: Any = field(default=None, repr=False, compare=False)
+
     def to_dict(self) -> Dict[str, Any]:
         row = {
             "activity_id": self.activity_id,
@@ -50,7 +52,7 @@ class DirectActivityRegistry:
     """Thread-safe registry for active direct-chat and ephemeral-decision turns."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.Condition()
         self._activities: Dict[str, DirectActivityEntry] = {}
 
     def register(
@@ -63,6 +65,7 @@ class DirectActivityRegistry:
         kind: str = "direct_chat",
         phase: str = "thinking",
         origin_message_ref: Optional[Dict[str, Any]] = None,
+        actor: Any = None,
     ) -> DirectActivityEntry:
         aid = str(activity_id or "").strip()
         if not aid:
@@ -76,6 +79,7 @@ class DirectActivityRegistry:
             phase=str(phase or "thinking"),
             started_at=time.time(),
             origin_message_ref=dict(origin_message_ref or {}),
+            actor=actor,
         )
         with self._lock:
             self._activities[aid] = entry
@@ -86,6 +90,7 @@ class DirectActivityRegistry:
         aid = str(activity_id or "").strip()
         with self._lock:
             entry = self._activities.pop(aid, None)
+            self._lock.notify_all()
         if entry:
             log.debug("Unregistered direct activity: %s (chat_id=%s)", aid, entry.chat_id)
         return entry
@@ -124,10 +129,22 @@ class DirectActivityRegistry:
         with self._lock:
             return self._activities.get(aid)
 
+    def actors(self) -> List[DirectActivityEntry]:
+        """Private actor handles; never include execution objects in UI snapshots."""
+        with self._lock:
+            return list(self._activities.values())
+
+    def wait_until_empty(self, timeout: float) -> List[str]:
+        """Wait for whole executions, including preparation and post-task work."""
+        with self._lock:
+            self._lock.wait_for(lambda: not self._activities, timeout=max(0.0, timeout))
+            return list(self._activities)
+
     def clear(self) -> None:
         """Clear registry — primarily for tests and process resets."""
         with self._lock:
             self._activities.clear()
+            self._lock.notify_all()
 
 
 # Global process-local singleton

@@ -355,10 +355,13 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None) -
                 phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
                 activities.append(_activity(task_id, row, phase, started_at))
         from ouroboros.post_task_checkpoint import post_task_model_waits
-        visible = {row["activity_id"] for row in activities}
+        visible = {row["activity_id"]: row for row in activities}
         for owner in post_task_model_waits(drive_root):
-            if owner.task_id not in visible:
-                row = {**owner.task, "model_waits": owner.snapshot()["model_waits"]}
+            waits = owner.snapshot()["model_waits"]
+            if owner.task_id in visible:
+                visible[owner.task_id].update(phase="finalizing", model_waits=waits, task_attempt=owner.attempt)
+            else:
+                row = {**owner.task, "model_waits": waits}
                 activities.append(_activity(owner.task_id, row, "finalizing", _epoch_or_zero(row.get("queued_at"))))
     except Exception:
         log.debug("Managed-activity snapshot unavailable for /api/state", exc_info=True)

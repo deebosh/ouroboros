@@ -306,7 +306,7 @@ def _resource_allowed(ctx: Any, key: str) -> bool:
             if isinstance(value, bool) and not value:
                 return False
     if key == "network":
-        for name in ("web", "allow_web", "internet", "external_network"):
+        for name in ("internet", "external_network"):
             value = resources.get(name)
             if isinstance(value, bool) and not value:
                 return False
@@ -319,8 +319,7 @@ def _disabled_tools(ctx: Any) -> frozenset:
     Independent of ``allowed_resources``: a caller can disable specific tools
     (e.g. the agent's web_search/browser/VLM tools for a faithful benchmark)
     WITHOUT setting web/network=false — so shell network egress (git/pip) stays
-    available and the web<->network cross-implication in ``_resource_allowed``
-    never fires.
+    available. Withholding web tools does not withhold unrelated network tools.
     """
     metadata = getattr(ctx, "task_metadata", {}) if isinstance(getattr(ctx, "task_metadata", {}), dict) else {}
     contract = metadata.get("task_contract") if isinstance(metadata.get("task_contract"), dict) else {}

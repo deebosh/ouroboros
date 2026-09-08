@@ -77,25 +77,17 @@ def test_normalize_spec_errors_are_typed():
     assert plan_spec.normalize_spec("not a mapping") == ({}, ["spec: must be an object"])  # type: ignore[arg-type]
 
 
-def test_normalize_spec_bounds_lists_with_recorded_omission():
+def test_normalize_spec_preserves_lists_beyond_former_bounds():
+    items = [f"item {i}" for i in range(43)]
+    rejected = [f"r{i}" for i in range(10)]
     spec, errors = plan_spec.normalize_spec({
-        "goal": "g", "in_scope": [f"item {i}" for i in range(plan_spec.MAX_LIST_ITEMS + 3)],
+        "goal": "g", "in_scope": items,
+        "decisions": [{"choice": "c", "rejected": rejected}],
     })
     assert errors == []
-    assert len(spec["in_scope"]) == plan_spec.MAX_LIST_ITEMS
-    assert spec["normalization_omissions"] == [
-        f"in_scope: {plan_spec.MAX_LIST_ITEMS + 3} items declared, kept the first "
-        f"{plan_spec.MAX_LIST_ITEMS} (bound {plan_spec.MAX_LIST_ITEMS})"
-    ]
-    # B-10: nested cap on decision.rejected, recorded the same way.
-    spec, errors = plan_spec.normalize_spec({
-        "goal": "g", "decisions": [{"choice": "c", "rejected": [f"r{i}" for i in range(plan_spec.MAX_REJECTED_PER_DECISION + 2)]}],
-    })
-    assert errors == [] and len(spec["decisions"][0]["rejected"]) == plan_spec.MAX_REJECTED_PER_DECISION
-    assert spec["normalization_omissions"] == [
-        f"decisions[0].rejected: {plan_spec.MAX_REJECTED_PER_DECISION + 2} items declared, kept the first "
-        f"{plan_spec.MAX_REJECTED_PER_DECISION} (bound {plan_spec.MAX_REJECTED_PER_DECISION})"
-    ]
+    assert spec["in_scope"] == items
+    assert spec["decisions"][0]["rejected"] == rejected
+    assert spec["normalization_omissions"] == []
 
 
 def test_normalize_spec_goal_type_and_bool_scalars():
@@ -824,15 +816,15 @@ def test_prior_blocking_findings_survive_the_section_bound(monkeypatch):
     assert "no prior findings recorded" in empty_cycle2 and "First cycle" not in empty_cycle2
 
 
-def test_spec_section_is_bounded_structurally_never_clipped():
+def test_current_spec_is_complete_while_historical_json_views_remain_bounded():
     worst = {"goal": "g", "decisions": [
-        {"choice": "c" * 600, "rejected": ["r" * 600] * plan_spec.MAX_REJECTED_PER_DECISION, "why": "w" * 600}
+        {"choice": "c" * 600, "rejected": ["r" * 600] * 8, "why": "w" * 600}
         for _ in range(plan_spec.MAX_LIST_ITEMS)
     ], "in_scope": ["i" * 600] * plan_spec.MAX_LIST_ITEMS, "invariants": ["v" * 600] * plan_spec.MAX_LIST_ITEMS}
     spec, errors = plan_spec.normalize_spec(worst)
     assert errors == []
-    text, notes = plan_spec.bounded_json(plan_spec.spec_with_ids(spec), plan_spec.PACKET_SPEC_CHARS)
-    assert len(text) <= plan_spec.PACKET_SPEC_CHARS
+    text, notes = plan_spec.bounded_json(plan_spec.spec_with_ids(spec), 120_000)
+    assert len(text) <= 120_000
     json.loads(text)  # whole items only — always valid JSON
     assert notes and all("kept " in n and "full-set sha256=" in n for n in notes)
     packet = plan_packet.build_plan_review_user_content(
@@ -840,20 +832,23 @@ def test_spec_section_is_bounded_structurally_never_clipped():
         prior_cycles=[], dispositions=[], spec_delta=None, root_exploration_log=None,
     )
     spec_section = packet[packet.index("## SPEC"):packet.index("## PLAN PROSE")]
-    assert len(spec_section) < plan_spec.PACKET_SPEC_CHARS + 2000 and "OMISSION NOTE (structural)" in spec_section
+    assert len(spec_section) > 120_000 and "OMISSION NOTE" not in spec_section
+    rendered_spec = json.loads(spec_section.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert rendered_spec == plan_spec.spec_with_ids(spec)
     # Oversized scalars with no list left → typed omission object, never clipped JSON.
     text, notes = plan_spec.bounded_json({"blob": "x" * 500}, 100)
     assert json.loads(text)["omitted"] is True and "full_payload_sha256" in text and notes
 
 
-def test_user_content_bounds_are_disclosed_not_silent():
+def test_user_content_preserves_current_plan_prose():
     spec, _ = plan_spec.normalize_spec(DECK_SPEC)
     manifest = plan_evidence.resolve_evidence([], active_root=".", allowed_roots=["."])
     content = plan_packet.build_plan_review_user_content(
-        objective="o", goal=spec["goal"], plan_prose="P" * (plan_spec.PACKET_PROSE_CHARS + 500), spec=spec,
+        objective="o", goal=spec["goal"], plan_prose="P" * 40_500 + "DECISIVE_PLAN_TAIL", spec=spec,
         manifest=manifest, prior_cycles=[], dispositions=[], spec_delta=None, root_exploration_log=None,
     )
-    assert "OMISSION NOTE" in content and "(no evidence declared)" in content
+    assert "P" * 40_500 + "DECISIVE_PLAN_TAIL" in content
+    assert "OMISSION NOTE" not in content and "(no evidence declared)" in content
     assert "(not provided by host)" in content
 
 

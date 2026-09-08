@@ -347,6 +347,10 @@ def _exercise_owner_followup_during_acceptance_panel(monkeypatch, tmp_path, *, d
         _current_chat_id=chat_id,
         _current_task_metadata={},
     )
+    if direct:
+        from supervisor.active_activity import get_direct_activity_registry
+
+        get_direct_activity_registry().register(root_id, chat_id, actor=direct_agent)
     token = ("a" if direct else "b") * 32
 
     def begin_fence(*, root_task_id, task_id):

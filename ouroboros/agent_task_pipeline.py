@@ -240,6 +240,11 @@ def _run_post_task_processing_async(
     def _run() -> None:
         with usage_scope(post_scope):
             if blocking:
+                # Native post-task work retains its call owner after dialogue
+                # admission closes; pooled owners stay in their worker process.
+                if post_task_key is not None and parent_wait is not None and not parent_wait.worker_slot_held:
+                    with _POST_TASK_SYNTHESIS_LOCK:
+                        _POST_TASK_SYNTHESIS_INFLIGHT[post_task_key] = parent_wait
                 _run_scoped()
             else:
                 # A detached thread must not inherit its parent's closing scope.
@@ -478,12 +483,9 @@ def emit_task_results(
     outcome_axes = normalize_outcome_axes({"outcome_axes": loop_outcome.get("outcome_axes")})
     execution_status = str((outcome_axes.get("execution") or {}).get("status") or "")
     reason_code = str(loop_outcome.get("reason_code") or "")
-    # CW3 (v6.34.0): a short same-route "turn=decision" turn (ephemeral, run while the
-    # main agent is busy) DELIVERS its inline answer but must not leave a durable TASK
-    # RECORD \u2014 no task_result file, no task_eval ledger row. The cognitive-memory writes
-    # (reflection/consolidation/letters-home) are already gated further below; this
-    # closes the remaining durable task-record writes. An inline answer + card
-    # resolution and budget metrics still flow so the reply is visible.
+    # Explicit ephemeral routing delivers an inline answer and card facts
+    # without task-result, evaluation or cognitive post-task writes. Ordinary
+    # Main/Project work uses the native durable-result path.
     _ephemeral = bool(task.get("_ephemeral_turn"))
     _root_outbox = _is_root_post_task(task)   # durable outbox (no model call): pre-marker predicate
     if getattr(ctx, "_skip_post_task_synthesis", False):   # "Stop now": paid root predicates see it
@@ -624,6 +626,7 @@ def emit_task_results(
         # CW3: tells the supervisor's task_done handler to NOT synthesize a durable
         # missing-result task_result for a transient decision turn (which has none).
         "_ephemeral": _ephemeral,
+        "_is_direct_chat": bool(task.get("_is_direct_chat")),
         # Presentation marker only. The supervisor's typed routing event remains
         # the action/receipt authority; the visible transient card gets no
         # managed-task controls (including "Turn into project").
@@ -780,7 +783,7 @@ def _dispatch_root_post_task(
         global_reflection_callback = functools.partial(
             _run_global_backlog_promotion_only, parent_env, parent_task)
     split_non_project = split and not project_scoped
-    blocking = in_worker_process() or split_non_project or (
+    blocking = in_worker_process() or bool(task.get("_is_direct_chat")) or split_non_project or (
         str(task.get("type") or "") == "evolution"
         or bool(str(task.get("workspace_root") or "").strip())
         or bool(str(task.get("workspace_mode") or "").strip())
@@ -976,6 +979,7 @@ def _store_task_result(env: Any, task: Dict[str, Any], text: str,
             accounted_upper_bound_usd_with_children=_cost_with_children,
             cost_with_children_partial=_cost_partial,
             task_contract=task_contract,
+            _is_direct_chat=bool(task.get("_is_direct_chat")),
             loop_outcome=loop_outcome,
             project_id=str(task.get("project_id") or ""),
             parent_task_id=task.get("parent_task_id"),

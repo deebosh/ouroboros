@@ -65,8 +65,11 @@ def test_both_custody_surfaces_see_the_same_live_task_set(monkeypatch):
     # init_queue_refs across the suite without restore (the upstream test
     # convention), so assuming the dict is empty here is cross-test fragile.
     monkeypatch.setattr(queue, "RUNNING", {"t-live": {}})
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register("native-live", 1)
     sm._periodic_supervisor_maintenance([0.0], [time.time()])
-    assert seen["processes"] == seen["delegated"] == {"t-live"}, seen
+    assert seen["processes"] == seen["delegated"] == {"t-live", "native-live"}, seen
 
 
 def test_an_orphaned_delegated_run_is_reconciled_when_its_owner_is_gone(tmp_path, monkeypatch):

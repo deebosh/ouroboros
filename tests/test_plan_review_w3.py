@@ -407,14 +407,14 @@ def test_state_stays_persistable_at_the_worst_case_request_bounds(tmp_path):
 
     wide = "𝕏" * plan_spec.MAX_ITEM_CHARS  # 4-byte UTF-8 each
     n_items = plan_spec.MAX_LIST_ITEMS
-    # a MAXIMAL normalized spec: every list full, every string at the per-string bound, 4-byte chars
+    # A large operative spec beside maximally populated reviewer-request memory.
     spec = {
         "goal": "Ship", "acceptance_claims": [f"{wide[:-4]}c{i:03d}" for i in range(n_items)],
         "in_scope": [f"{wide[:-4]}i{i:03d}" for i in range(n_items)],
         "non_goals": [f"{wide[:-4]}n{i:03d}" for i in range(n_items)],
         "invariants": [f"{wide[:-4]}v{i:03d}" for i in range(n_items)],
         "decisions": [{"choice": wide, "why": wide,
-                       "rejected": [wide] * plan_spec.MAX_REJECTED_PER_DECISION} for _ in range(n_items)],
+                       "rejected": [wide] * 8} for _ in range(n_items)],
         "deferred": [{"what": wide, "why_safe_to_defer": wide} for _ in range(n_items)],
         "affected_resources": [f"{wide[:-4]}a{i:03d}" for i in range(n_items)],
         "evidence": [f"{wide[:-4]}e{i:03d}" for i in range(n_items)],

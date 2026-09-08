@@ -87,27 +87,14 @@ def _handle_steer_task(evt: Dict[str, Any], ctx: Any) -> None:
     direct_lock = None
     direct_active = False
     try:
-        direct_agent = ctx.get_chat_agent()
+        from supervisor.workers import get_direct_chat_agent, direct_chat_turn
+
+        direct_agent = get_direct_chat_agent(target)
         direct_lock = getattr(direct_agent, "_owner_message_admission_lock", None)
         if direct_lock is not None:
             with direct_lock:
-                direct_active = bool(
-                    getattr(direct_agent, "_busy", False)
-                    and getattr(direct_agent, "_accepting_owner_messages", False)
-                    and str(getattr(direct_agent, "_current_task_id", "") or "") == target
-                )
-                if direct_active:
-                    direct_metadata = getattr(direct_agent, "_current_task_metadata", {})
-                    direct_metadata = direct_metadata if isinstance(direct_metadata, dict) else {}
-                    task = {
-                        "id": target,
-                        "chat_id": int(getattr(direct_agent, "_current_chat_id", 0) or 0),
-                        "project_id": str(direct_metadata.get("project_id") or ""),
-                        "title": str(direct_metadata.get("title") or ""),
-                        "suggested_name": str(direct_metadata.get("suggested_name") or ""),
-                        "objective": str(getattr(direct_agent, "_current_task_text", "") or ""),
-                        "_is_direct_chat": True,
-                    }
+                task = direct_chat_turn(target)
+                direct_active = task is not None
     except Exception:
         direct_active = False
     if not direct_active:

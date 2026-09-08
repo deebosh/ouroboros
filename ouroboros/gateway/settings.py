@@ -347,11 +347,11 @@ def _has_running_agent_tasks() -> bool:
     # can be invisible to one snapshot. The context-mode guard tolerates it —
     # the read races the supervisor thread with or without any settings lock.
     try:
-        from supervisor.workers import PENDING, RUNNING, _get_chat_agent
+        from supervisor.workers import PENDING, RUNNING
+        from supervisor.active_activity import get_direct_activity_registry
         if PENDING or RUNNING:
             return True
-        agent = _get_chat_agent()
-        return bool(getattr(agent, "_busy", False))
+        return bool(get_direct_activity_registry().snapshot())
     except Exception:
         return False
 
@@ -362,18 +362,15 @@ def _has_started_agent_tasks() -> bool:
     A queued-but-unstarted task re-reads settings in ``handle_task``, so warning
     that it "keeps the previous configuration" would be false; ``PENDING`` is
     deliberately excluded (unlike ``_has_running_agent_tasks``, whose callers
-    gate on any outstanding work). READ-ONLY on purpose: ``_get_chat_agent()``
-    CONSTRUCTS the agent (and inserts the canonical repo into ``sys.path``) —
-    an answer to "is anything started?" must never start something to find out.
-    Disclosed residual: a live EPHEMERAL turn (workers' local ephemeral agent)
-    is invisible here — it holds no reviewer/subagent stage this warning
-    guards, and reaching it read-only would require a new surface."""
+    gate on any outstanding work). Registry inspection includes native turns
+    without constructing an actor merely to answer a status question."""
     try:
         import supervisor.workers as _workers
         if _workers.RUNNING:
             return True
-        agent = getattr(_workers, "_chat_agent", None)
-        return bool(getattr(agent, "_busy", False))
+        from supervisor.active_activity import get_direct_activity_registry
+
+        return bool(get_direct_activity_registry().snapshot())
     except Exception:
         return False
 

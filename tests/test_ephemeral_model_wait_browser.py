@@ -80,5 +80,5 @@ def test_ephemeral_wait_hydrates_without_task_controls_and_browser_retry_resumes
         waiter.wait_for(state="detached")
         page.wait_for_selector(f'.chat-live-card[data-task-id="{task_id}"][data-finished="1"]')
         assert len(flow.transport.operations) == 2
-        assert flow.registry.snapshot() == []
+        assert [row["activity_id"] for row in flow.registry.snapshot()] == ["other-turn"]
         capture(page, "ephemeral-real-wait-completed")

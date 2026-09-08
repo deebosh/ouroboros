@@ -150,7 +150,7 @@ def test_ephemeral_lane_runs_the_turn_while_the_resolver_holds_the_repo(tx_repo,
 
     lane.handle_chat_ephemeral(1, "why did the merge conflict?")
 
-    assert turns == [("ephemeral-agent", "why did the merge conflict?", True)]
+    assert turns == [(None, "why did the merge conflict?", True)]  # construction belongs to registered execution
     assert notices == []
 
 

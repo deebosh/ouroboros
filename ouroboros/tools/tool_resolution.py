@@ -56,10 +56,7 @@ def active_repo_dir_for(ctx: Any) -> pathlib.Path:
     """Return the active repo/workspace root for real and lightweight test contexts."""
     active = getattr(ctx, "active_repo_dir", None)
     if callable(active):
-        try:
-            candidate = active()
-        except Exception:
-            candidate = None
+        candidate = active()
         path = _coerce_real_path(candidate)
         if path is not None:
             return path
@@ -71,6 +68,11 @@ def active_repo_dir_for(ctx: Any) -> pathlib.Path:
         if workspace_mode:
             return workspace_path
 
+    from ouroboros.tool_access import project_room_lens_dir
+
+    room = project_room_lens_dir(ctx)
+    if room is not None:
+        return room
     return pathlib.Path(getattr(ctx, "repo_dir"))
 
 

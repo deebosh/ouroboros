@@ -27,7 +27,6 @@ from ouroboros.tool_access import (
     active_tool_profile,  # noqa: F401
     normalize_root,  # noqa: F401
     normalize_runtime_data_path,  # noqa: F401
-    project_room_lens_dir,
     UserFilesPathBlockedError,
     user_files_path_block_reason,
 )
@@ -589,18 +588,6 @@ def _write_file(
     ), "")
     if protected_block:
         return protected_block
-    if normalized == "active_workspace" and (_room := project_room_lens_dir(ctx)) is not None:
-        # Room write-guard (v6.61.3): with the lens re-pointing reads at the room
-        # folder, a default-root write silently landing in the SYSTEM REPO would be
-        # a read/write split trap (read game.js from the folder, "fix" it into the
-        # repo). Mutations belong to promoted tasks; deliberate self-repo writes
-        # stay available via the explicit root.
-        return (
-            f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {_room} and are edited by "
-            "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
-            "workspace) for real work there. For a deliberate write to the Ouroboros system "
-            'repo, pass root="system_repo" explicitly.'
-        )
     if normalized in {"active_workspace", "system_repo"}:
         from ouroboros.tools.git import _repo_write
 
@@ -758,15 +745,6 @@ def _edit_text(
     )
     if protected_block:
         return protected_block
-    if normalized == "active_workspace" and (_room := project_room_lens_dir(ctx)) is not None:
-        # Room write-guard (v6.61.3) — same rule as write_file: room mutations go
-        # through promoted tasks; explicit root="system_repo" for the self-repo.
-        return (
-            f"⚠️ ROOM_WRITE_VIA_TASK: this room's files live in {_room} and are edited by "
-            "PROMOTED tasks — call promote_chat_to_task (it inherits the room folder as its "
-            "workspace) for real work there. For a deliberate edit of the Ouroboros system "
-            'repo, pass root="system_repo" explicitly.'
-        )
     bound_skill_payload = bool(
         binding.skill_name
         and binding.source in {"external", "clawhub", "ouroboroshub", "native", "user_repo"}

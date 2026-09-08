@@ -20,6 +20,8 @@ import json
 import types
 from types import SimpleNamespace
 
+import pytest
+
 MARKDOWN_RESULT = (
     "# Report title\n\n## Short conclusion\n\nBody with `inline code` and **bold**."
 )
@@ -104,6 +106,28 @@ def test_completion_summary_event_text_is_plain_and_fully_normalized(
     # Structural fields stay intact next to the plain text.
     assert queued[0]["progress_meta"]["target_label"] == "Launch 🚀 › Ship release"
     assert queued[0]["system_type"] == "project_completion_summary"
+
+
+@pytest.mark.parametrize("carrier", ["event", "task", "result", "done"])
+def test_direct_project_completion_stays_in_its_room(tmp_path, monkeypatch, carrier):
+    from ouroboros.project_dialogue import enqueue_project_completion_summary
+    from ouroboros.projects_registry import create_project
+
+    project = create_project(tmp_path, "room", name="Room")
+    rows = {
+        "event": {"status": "completed"},
+        "task": {"id": "conversation", "project_id": "room", "chat_id": project["chat_id"]},
+        "result": {"status": "completed", "project_id": "room", "result": "Ordinary answer"},
+        "done": {"status": "completed"},
+    }
+    rows[carrier]["_is_direct_chat"] = True
+    queued = []
+    monkeypatch.setattr("supervisor.terminal_delivery.enqueue_terminal_delivery",
+                        lambda _root, event: queued.append(event) or True)
+    assert enqueue_project_completion_summary(
+        tmp_path, rows["event"], "conversation", rows["task"], rows["result"], rows["done"],
+    ) is False
+    assert not queued
 
 
 def test_host_salvage_terminal_incident_drops_inherited_markdown_format(tmp_path):

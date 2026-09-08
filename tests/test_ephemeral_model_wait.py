@@ -34,7 +34,7 @@ def ephemeral_call(setup, monkeypatch):
     monkeypatch.setattr(task_queue, "PENDING", [])
     busy = SimpleNamespace(_busy=True, _current_task_id="other-turn", _accepting_owner_messages=True,
                            _current_task_metadata={}, _current_task_text="Other work", _current_chat_id=1)
-    monkeypatch.setattr(workers, "_chat_agent", busy)
+    registry.register("other-turn", 1, actor=busy)
     events, published, failures = queue.Queue(), [], []
     monkeypatch.setattr(workers, "get_event_q", lambda: events)
     monkeypatch.setattr(workers, "send_with_budget", lambda *a, **k: failures.append((a, k)))
@@ -135,7 +135,8 @@ def test_ephemeral_producer_reaches_decision_and_resumes_same_call(ephemeral_cal
             assert flow.transport.uploads[-1][0]["account"] == {"mode": "pin", "profileId": "replacement"}
         assert [row["state"] for row in ledger(flow.root)] == [
             "reserved", "dispatched", "released", "reserved", "dispatched", "settled"]
-        assert flow.owner.closed and flow.registry.snapshot() == []
+        assert flow.owner.closed
+        assert [row["activity_id"] for row in flow.registry.snapshot()] == ["other-turn"]
         assert not mailbox.exists()
         assert not (flow.root / "task_results" / f"{flow.task['id']}.json").exists()
         assert clients[first](body).status_code == 409
@@ -163,7 +164,7 @@ def test_ephemeral_wait_rejects_stale_attempt_revision_and_closed_owner(ephemera
         flow.owner._drain_controls()
         assert row["auto_continue"] is False
         assert clients["web"](body).json()["applied"] is True
-        snapshot = flow.registry.snapshot()[0]
+        snapshot = flow.registry.get(flow.task["id"]).to_dict()
         assert snapshot["kind"] == "ephemeral_decision" and snapshot["model_waits"]
         assert "cancelable" not in snapshot and "model_wait_owner" not in snapshot
         before = deepcopy(snapshot["model_waits"])

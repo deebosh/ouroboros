@@ -81,7 +81,11 @@ def _periodic_supervisor_maintenance(last_custody_reap: list, last_review_reconc
             from ouroboros.process_custody import reap_orphaned_processes
             from supervisor.queue import RUNNING as _running_tasks
 
-            live_tasks = set(_running_tasks.keys())
+            from supervisor.active_activity import get_direct_activity_registry
+
+            live_tasks = set(_running_tasks) | {
+                row["activity_id"] for row in get_direct_activity_registry().snapshot()
+            }
             reap_orphaned_processes(
                 DATA_DIR, running_task_ids=live_tasks,
                 live_owner_skills=_installed_skill_names(),

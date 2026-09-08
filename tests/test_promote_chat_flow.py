@@ -1821,9 +1821,9 @@ def test_route_project_chat_does_not_confirm_failed_mailbox_write(tmp_path, monk
     )
 
 
-def test_busy_project_chat_routes_to_ephemeral_decision_turn(tmp_path, monkeypatch):
+def test_busy_project_chat_runs_native_with_routing_context(tmp_path, monkeypatch):
     """WS1/P5 (v6.34.0): a busy PROJECT chat is NOT mechanically auto-enqueued into a
-    duplicate pooled task. It runs the ephemeral decision turn (project-scoped, seeing
+    duplicate pooled task. It runs a native conversation turn (project-scoped, seeing
     current_chat.running_tasks) so the one mind decides steer_task / answer / promote by
     judgment — replacing the old 'Hybrid B+' auto-enqueue fallback."""
     import threading as _threading
@@ -1834,7 +1834,7 @@ def test_busy_project_chat_routes_to_ephemeral_decision_turn(tmp_path, monkeypat
     proj = create_project(tmp_path, "market-research")
     project_chat = int(proj["chat_id"])
     enqueued = []
-    ephemeral_calls = []
+    direct_calls = []
     called = _threading.Event()
 
     monkeypatch.setattr("supervisor.message_bus.log_chat", lambda *a, **k: None)
@@ -1856,8 +1856,14 @@ def test_busy_project_chat_routes_to_ephemeral_decision_turn(tmp_path, monkeypat
         def inject_observation(self, _text):
             return None
 
-    def _ephemeral(cid, text, image_data, *, task_constraint=None, task_metadata=None):
-        ephemeral_calls.append({"chat_id": cid, "text": text, "metadata": task_metadata})
+        def pause(self):
+            pass
+
+        def resume(self):
+            pass
+
+    def _direct(cid, text, image_data, *, task_constraint=None, task_metadata=None):
+        direct_calls.append({"chat_id": cid, "text": text, "metadata": task_metadata})
         called.set()
 
     ctx = types.SimpleNamespace(
@@ -1867,19 +1873,19 @@ def test_busy_project_chat_routes_to_ephemeral_decision_turn(tmp_path, monkeypat
         update_state=lambda fn: fn({"owner_id": 1, "owner_chat_id": 1}),
         consciousness=_Consciousness(),
         get_chat_agent=lambda: types.SimpleNamespace(_busy=True),
-        handle_chat_direct=lambda *a, **k: (_ for _ in ()).throw(AssertionError("direct lane must not run when busy")),
-        handle_chat_ephemeral=_ephemeral,
+        handle_chat_direct=_direct,
+        handle_chat_ephemeral=lambda *a, **k: (_ for _ in ()).throw(AssertionError("ordinary turn became ephemeral")),
         enqueue_task=lambda task: enqueued.append(task),
         send_with_budget=lambda *a, **k: None,
     )
 
     assert server._process_bridge_updates(_Bridge(), 0, ctx) == 1
-    assert called.wait(timeout=3)  # the ephemeral decision turn ran on its own thread
+    assert called.wait(timeout=3)  # the native conversation turn ran on its own thread
     assert enqueued == []  # NOT auto-enqueued into a duplicate pooled task
-    assert len(ephemeral_calls) == 1
-    md = ephemeral_calls[0]["metadata"] or {}
+    assert len(direct_calls) == 1
+    md = direct_calls[0]["metadata"] or {}
     assert str(md.get("project_id") or "")  # project-scoped decision turn
-    assert "сколько будет 2+2?" in (ephemeral_calls[0]["text"] or "")
+    assert "сколько будет 2+2?" in (direct_calls[0]["text"] or "")
 
 
 def test_project_from_task_endpoint_creates_binding(tmp_path):
@@ -2405,6 +2411,11 @@ def test_busy_direct_main_root_is_manifested_and_steerable_without_promotion(tmp
         _current_task_metadata={"client_message_id": "initial-1"},
         _task_started_ts=10.0,
     )
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(
+        direct_agent._current_task_id, direct_agent._current_chat_id, actor=direct_agent,
+    )
     routing_ctx = types.SimpleNamespace(
         DRIVE_ROOT=tmp_path,
         RUNNING={},
@@ -2453,6 +2464,11 @@ def test_direct_turn_closed_admission_returns_manual_target(tmp_path):
         _current_task_id="direct-root",
         _current_chat_id=1,
         _current_task_metadata={},
+    )
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(
+        direct_agent._current_task_id, direct_agent._current_chat_id, actor=direct_agent,
     )
     receipts = []
 
@@ -2585,6 +2601,11 @@ def test_direct_root_steering_uses_live_human_identity_for_receipt_and_notice(
         _current_task_text="Continue the Tower Defence task",
         _owner_message_generation=0,
     )
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(
+        direct_agent._current_task_id, direct_agent._current_chat_id, actor=direct_agent,
+    )
     acks = []
     notices = []
     ctx = types.SimpleNamespace(
@@ -2639,6 +2660,11 @@ def test_direct_project_followup_carries_same_live_human_identity(tmp_path):
         },
         _current_task_text="Continue the Tower Defence task",
         _owner_message_generation=0,
+    )
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(
+        direct_agent._current_task_id, direct_agent._current_chat_id, actor=direct_agent,
     )
     notices = []
     ctx = types.SimpleNamespace(

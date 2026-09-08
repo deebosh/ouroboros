@@ -344,6 +344,7 @@ class OuroborosAgent:
                    if isinstance(started, (int, float)) and started > 0 else {}),
                 **({"queued_at": task["queued_at"]} if task.get("queued_at") is not None else {}),
                 chat_id=task.get("chat_id"),
+                _is_direct_chat=bool(task.get("_is_direct_chat")),
                 parent_task_id=task.get("parent_task_id"),
                 root_task_id=task.get("root_task_id"),
                 session_id=task.get("session_id"),
@@ -562,7 +563,7 @@ class OuroborosAgent:
                 _room_dir, _room_note = room_chat_lens_dir(self.env.drive_root, _resolved_project_id)
                 if _room_dir:
                     task_metadata["_project_room_dir"] = _room_dir
-                elif _room_note:
+                if _room_note:
                     task_metadata["_project_room_note"] = _room_note
             except Exception:
                 log.debug("room lens resolution failed", exc_info=True)

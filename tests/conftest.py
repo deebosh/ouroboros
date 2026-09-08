@@ -732,3 +732,10 @@ def pytest_terminal_summary(terminalreporter):
 # shapes, ``MagicMock`` vs real, etc.).
 
 
+
+
+@pytest.fixture(autouse=True)
+def _isolate_direct_activities(monkeypatch):
+    from supervisor import active_activity
+
+    monkeypatch.setattr(active_activity, "_DIRECT_ACTIVITY_REGISTRY", active_activity.DirectActivityRegistry())

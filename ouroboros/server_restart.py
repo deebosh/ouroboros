@@ -149,7 +149,7 @@ def _stop_owned_daemon_for_new_pin() -> None:
 
 
 def _live_running_task_ids(ctx: Any) -> list:
-    """RUNNING task ids with a fresh heartbeat — structured facts only.
+    """Pooled tasks with a fresh heartbeat and registered native executions.
 
     Heartbeat staleness belongs to the generic supervisor queue, not to the
     planning-scout wait policy.  The latter intentionally waits until terminal
@@ -168,7 +168,11 @@ def _live_running_task_ids(ctx: Any) -> list:
             hb = 0.0
         if hb and (now - hb) < HEARTBEAT_STALE_SEC:
             live.append(str(tid))
-    return live
+    from supervisor.active_activity import get_direct_activity_registry
+
+    return list(dict.fromkeys(live + [
+        row["activity_id"] for row in get_direct_activity_registry().snapshot()
+    ]))
 
 
 def _managed_update_pending_kwargs() -> dict:

@@ -39,7 +39,6 @@ from ouroboros.delegate_custody import RunCustody as _RunCustody
 from ouroboros.tool_capabilities import tool_result_limit
 from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.subagent_work_order import (  # noqa: F401 - compatibility re-export
-    _FIELD_CHARS as _ASSIGNMENT_FIELD_CHARS,
     assignment_instructions as _assignment_instructions,
 )
 from ouroboros.delegate_source_coverage import (
@@ -173,11 +172,10 @@ def _host_instructions(authority: "DelegatedRunShape", assignment: str = "",
 def _build_start_instructions(
     authority: "DelegatedRunShape", assignment: str = "", payload_skill: str = "",
     coordination_context: str = "",
-) -> tuple[str, str]:
-    """Build the bounded instruction field for a fresh physical start."""
+) -> str:
+    """Build complete host instructions for a fresh physical start."""
     return append_coordination_context(
         _host_instructions(authority, assignment, payload_skill), coordination_context,
-        instruction_budget_chars=_ASSIGNMENT_FIELD_CHARS,
     )
 
 
@@ -188,20 +186,20 @@ def _derive_authority(ctx: ToolContext) -> "DelegatedRunShape":
     the host decides with what powers. Ouroboros asks for an access PROFILE and lets
     Claudexor pick the mechanism (fs sandbox, tool allowlist, ...) — no harness branch.
 
-    The SHAPE itself belongs to ``subagents.delegated_run_shape``, which the dispatcher
-    also reads: this function only answers "does this task hold a mutating surface",
-    which is the one part that needs the live ``ToolContext``. Two authorities qualify
-    (B5, owner 2=A): an ACTING CHILD with a valid write surface, and the ROOT of an
-    EXTERNAL-WORKSPACE task — the root already holds write+shell inside the project,
-    so its delegated runs carry the same mutating shape, bounded by the same
-    workspace; ``_mutation_authority`` (``tools.delegate_integration``) validates the
-    concrete target either way.
+    The SHAPE belongs to ``subagents.delegated_run_shape``. An acting child or an
+    ordinary root with a selected external workspace/room holds write authority
+    there; ``_mutation_authority`` validates that same physical target. The existing
+    snapshot capability decides whether it can execute that mutating assignment.
     """
     from ouroboros.subagents import delegated_run_shape
-    from ouroboros.tool_access import active_tool_profile
+    from ouroboros.tool_access import (
+        _TOP_LEVEL_PRINCIPAL_PROFILES, active_tool_profile, project_room_lens_dir,
+    )
 
     profile = active_tool_profile(ctx)
-    mutating = profile in ("acting_subagent", "external_workspace_task")
+    mutating = profile in ("acting_subagent", "external_workspace_task") or (
+        profile in _TOP_LEVEL_PRINCIPAL_PROFILES and project_room_lens_dir(ctx) is not None
+    )
     if mutating:
         from ouroboros.presence_authority import presence_ceiling_allows_delegated_surface
 
@@ -300,8 +298,8 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
     from ouroboros.gateways.claudexor import ClaudexorUnavailable
     from ouroboros.subagents import delegated_execution_workspace_root, resolve_subagent_executor, route_health
 
-    text = str(prompt or "").strip()
-    if not text:
+    text = str(prompt or "")
+    if not text.strip():
         return _fail("delegate_start", "empty_prompt", "prompt is required")
     selector_root = str(root or "").strip()
     selector_refusal = _payload_selector_refusal(selector_root, retry_of, bucket, skill_name)
@@ -374,14 +372,12 @@ def _delegate_start(ctx: ToolContext, prompt: str, max_seconds: Optional[int] = 
             payload_skill = str(
                 (payload_auth.get("resource_ref") or {}).get("skill_name") or ""
             )
-        instructions, instruction_error = _build_start_instructions(
+        instructions = _build_start_instructions(
             authority,
             assignment,
             payload_skill=payload_skill,
             coordination_context=_coordination_context,
         )
-        if instruction_error:
-            return instruction_error
 
     access = authority.access
     try:

@@ -868,12 +868,12 @@ def enqueue_project_completion_summary(
     drive_root: Any, evt: Dict[str, Any], task_id: str, task: Dict[str, Any],
     result: Dict[str, Any], task_done_event: Dict[str, Any],
 ) -> bool:
-    """Owe Main's one compact row for a terminal non-ephemeral Project root."""
+    """Owe Main's compact row for a managed Project root, not a conversation."""
     tid = str(task_id or "").strip()
     task = task if isinstance(task, dict) else {}
     result = result if isinstance(result, dict) else {}
     if not tid or any(
-        bool(row.get("_ephemeral") or row.get("ephemeral_decision"))
+        bool(row.get("_ephemeral") or row.get("ephemeral_decision") or row.get("_is_direct_chat"))
         for row in (evt, task, result, task_done_event) if isinstance(row, dict)
     ):
         return False

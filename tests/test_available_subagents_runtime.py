@@ -261,210 +261,42 @@ def test_selected_session_visibility_failure_blocks_without_native_substitution(
     assert amended.executor_resolution.reason == "delegate_tools_invisible"
 
 
-@pytest.mark.parametrize(
-    ("interactive", "expected_reason"),
-    [
-        (True, ""),
-        (False, "work_order_source_channel_unavailable"),
-    ],
-)
-def test_over_budget_bootstrap_uses_only_a_live_interaction_channel(
-    monkeypatch, tmp_path, interactive, expected_reason,
-):
-    from ouroboros import delegate_custody as custody
+def test_large_bootstrap_delivers_full_work_without_question_channel(monkeypatch, tmp_path):
     import ouroboros.claudexor_daemon as daemon
     import ouroboros.subagent_bootstrap as bootstrap
     import ouroboros.subagent_runtime as runtime
-    from ouroboros.subagent_work_order import work_order_fingerprint
+    from ouroboros.subagent_work_order import compile_external_work_order
 
     class Gateway:
         def harnesses(self):
-            return [{
-                "id": "codex",
-                "manifest": {"capabilities": {"interactive": interactive}},
-            }]
+            pytest.fail("work-order size must not require an interactive-capability probe")
 
         def close(self):
             pass
 
-    monkeypatch.setattr(daemon, "ensure_owned_gateway", lambda: Gateway())
+    monkeypatch.setattr(daemon, "ensure_owned_gateway", Gateway)
     calls = []
     monkeypatch.setattr(runtime, "exact_start", lambda ctx, prompt, spec: (
         calls.append((prompt, spec))
-        or json.dumps({"status": "started", "run_id": "run-source", "custody_durable": True})
+        or json.dumps({"status": "started", "run_id": "run-full", "custody_durable": True})
     ))
-    import ouroboros.delegate_supervision as supervision
-
-    monkeypatch.setattr(
-        supervision, "supervised_wait",
-        lambda *_a, **_kw: pytest.fail("the host must not wait inside bootstrap (owner 1=A)"),
-    )
     snapshot = _snapshot(_settings(_session_row(target="codex=gpt-5.6-sol")), "session-builder")
-    dispatch = SimpleNamespace(
-        executor="harness", blocked=False,
-        executor_resolution=SimpleNamespace(route=SimpleNamespace(route_id="codex")),
-    )
-    ctx = SimpleNamespace(
-        task_id="child-source", drive_root=tmp_path, budget_drive_root=str(tmp_path),
-        task_metadata={},
-    )
-    task = {
-        "id": "child-source",
-        "objective": ("THIS MUST NOT BE SENT AS A PREFIX " + ("x" * 250_100)),
-        "configured_subagent": snapshot,
-        "task_contract": {"objective": "THIS MUST NOT BE SENT AS A PREFIX " + ("x" * 250_100)},
-    }
-    full_sha = work_order_fingerprint(task)
-    # Charter D1: the host pre-starts the leaf during bootstrap, through the
-    # same wrapper the model's delegate_start(prompt="") uses — and does NOT
-    # wait on it (owner 1=A). With a live interactive channel the oversized
-    # order rides the source-request lens; without one, the definite refusal
-    # ends the child unrun and typed at $0.
+    dispatch = SimpleNamespace(executor="harness", blocked=False)
+    ctx = SimpleNamespace(task_id="child-full", drive_root=tmp_path,
+                          budget_drive_root=str(tmp_path), task_metadata={})
+    objective = "яё𐍈🚀\n" * 55_000 + "DECISIVE_TAIL"
+    task = {"id": ctx.task_id, "objective": objective, "configured_subagent": snapshot,
+            "task_contract": {"objective": objective}}
     raw = bootstrap.bootstrap_before_context(ctx, task, dispatch)
-    custody_rows = [
-        json.loads(line)
-        for line in custody.event_log_path(tmp_path).read_text().splitlines()
-    ]
 
-    if interactive:
-        out = json.loads(raw)
-        assert out["status"] == "configured_session_started"
-        assert out["startup"]["status"] == "started"
-        assert out["startup"]["run_id"] == "run-source"
-        assert len(calls) == 1
-        prompt, spec = calls[0]
-        assert "WORK ORDER SOURCE REQUEST" in prompt
-        assert "THIS MUST NOT BE SENT AS A PREFIX" not in prompt
-        assert spec["compiled_work_order"] is True
-        assert spec["work_order_fingerprint"] == full_sha
-        assert spec["work_order_source_request"]["complete_sha256"] == full_sha
-        assert custody_rows[-1]["type"] == "configured_subagent_work_order_source_request"
-        assert custody_rows[-1]["status"] == "attempted"
-        assert custody_rows[-1]["source_channel"] == {
-            "status": "available",
-            "reason": "interactive",
-            "route": "codex",
-        }
-    else:
-        assert raw == ""
-        assert ctx._configured_startup_refusal["reason"] == expected_reason
-        assert calls == []
-        assert custody_rows[-1]["type"] == "delegate_run_start_blocked"
-        assert custody_rows[-2]["type"] == "configured_subagent_work_order_refused"
-        assert custody_rows[-2]["reason"] == expected_reason
-
-
-@pytest.mark.parametrize(
-    ("bootstrap_interactive", "start_interactive", "expected_status", "expected_reason"),
-    [
-        (True, False, "refused", "work_order_source_channel_unavailable"),
-        (None, True, "started", ""),
-        (True, None, "refused", "work_order_source_channel_unverified"),
-    ],
-)
-def test_over_budget_start_reprobes_live_interaction_capability(
-    monkeypatch, tmp_path, bootstrap_interactive, start_interactive,
-    expected_status, expected_reason,
-):
-    from ouroboros import delegate_custody as custody
-    import ouroboros.claudexor_daemon as daemon
-    import ouroboros.subagent_bootstrap as bootstrap
-    import ouroboros.subagent_runtime as runtime
-
-    observations = iter([bootstrap_interactive, start_interactive])
-    closed = []
-
-    class Gateway:
-        def harnesses(self):
-            interactive = next(observations)
-            capabilities = (
-                {} if interactive is None else {"interactive": interactive}
-            )
-            return [{
-                "id": "codex",
-                "manifest": {"capabilities": capabilities},
-            }]
-
-        def close(self):
-            closed.append(True)
-
-    monkeypatch.setattr(daemon, "ensure_owned_gateway", Gateway)
-    starts = []
-    monkeypatch.setattr(runtime, "exact_start", lambda _ctx, prompt, spec: (
-        starts.append((prompt, spec))
-        or json.dumps({"status": "started", "run_id": "run-live-probe"})
-    ))
-    import ouroboros.delegate_supervision as supervision
-
-    monkeypatch.setattr(
-        supervision, "supervised_wait",
-        lambda *_a, **_kw: pytest.fail("the host must not wait inside bootstrap (owner 1=A)"),
-    )
-    snapshot = _snapshot(
-        _settings(_session_row(target="codex=gpt-5.6-sol")),
-        "session-builder",
-    )
-    dispatch = SimpleNamespace(
-        executor="harness", blocked=False,
-        executor_resolution=SimpleNamespace(route=SimpleNamespace(route_id="codex")),
-    )
-    ctx = SimpleNamespace(
-        task_id="child-live-probe",
-        drive_root=tmp_path,
-        budget_drive_root=str(tmp_path),
-        task_metadata={},
-    )
-    task = {
-        "id": "child-live-probe",
-        "objective": "x" * 250_100,
-        "configured_subagent": snapshot,
-        "task_contract": {"objective": "x" * 250_100},
-    }
-
-    # Charter D1: both observations happen inside the bootstrap now — the
-    # cached channel probe at authority-freeze time, then the LIVE re-probe
-    # inside the pre-start's delegate_start_entry. The (True→False) row proves
-    # the cached "available" observation is context only, never start
-    # authority: the live probe overrides it into a typed $0 refusal.
-    raw = bootstrap.bootstrap_before_context(ctx, task, dispatch)
-    custody_rows = [
-        json.loads(line)
-        for line in custody.event_log_path(tmp_path).read_text().splitlines()
-    ]
-
-    assert len(closed) == 2
-    assert ctx._configured_actor_bootstrap["source_channel"]["route"] == "codex"
-    if expected_reason:
-        assert raw == ""
-        assert ctx._configured_startup_refusal["reason"] == expected_reason
-        assert starts == []
-        # The refusal row plus the D5 attempt fact: a pre-custody refusal is
-        # still a durable delegate_start ATTEMPT (triad 2026-08-30).
-        assert custody_rows[-1]["type"] == "delegate_run_start_blocked"
-        assert custody_rows[-1]["reason"] == "configured_work_order_source_refused"
-        refused = custody_rows[-2]
-        assert refused["route"] == "codex"
-        assert refused["type"] == "configured_subagent_work_order_refused"
-        assert refused["reason"] == expected_reason
-        assert refused["source_channel"]["reason"] == (
-            "interactive_unsupported"
-            if start_interactive is False
-            else "interactive_capability_missing"
-        )
-    else:
-        out = json.loads(raw)
-        assert out["status"] == "configured_session_started"
-        assert out["startup"]["status"] == expected_status
-        assert len(starts) == 1
-        assert "WORK ORDER SOURCE REQUEST" in starts[0][0]
-        assert custody_rows[-1]["route"] == "codex"
-        assert custody_rows[-1]["type"] == "configured_subagent_work_order_source_request"
-        assert custody_rows[-1]["status"] == "attempted"
-        assert custody_rows[-1]["source_channel"] == {
-            "status": "available",
-            "reason": "interactive",
-            "route": "codex",
-        }
+    assert json.loads(raw)["status"] == "configured_session_started"
+    assert len(calls) == 1
+    prompt, spec = calls[0]
+    assert prompt == compile_external_work_order(task)
+    assert objective in prompt
+    assert spec["compiled_work_order"] is True
+    assert "work_order_source_request" not in spec
+    assert "source_request" not in ctx._configured_actor_bootstrap
 
 
 def test_pending_over_budget_recovery_replays_compact_body_and_full_fingerprint(
@@ -916,24 +748,13 @@ def test_actor_first_retry_cannot_turn_coordination_prompt_into_work_order_prefi
         ctx, "coordination text is not the canonical assignment", retry_of="inv-1",
     ))
     assert out["status"] == "refused"
-    assert out["reason"] == "work_order_source_channel_unverified"
+    assert out["reason"] == "configured_work_order_unavailable"
 
 
-def test_actor_first_over_budget_retry_reprobes_source_channel(monkeypatch, tmp_path):
-    import ouroboros.claudexor_daemon as daemon
+def test_actor_first_legacy_retry_replays_recorded_partial_body(monkeypatch, tmp_path):
+    from ouroboros import delegate_custody as custody
     import ouroboros.subagent_runtime as runtime
 
-    class Gateway:
-        def harnesses(self):
-            return [{
-                "id": "codex",
-                "manifest": {"capabilities": {"interactive": True}},
-            }]
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(daemon, "ensure_owned_gateway", Gateway)
     starts = []
     monkeypatch.setattr(runtime, "exact_start", lambda _ctx, prompt, spec: (
         starts.append((prompt, spec))
@@ -941,27 +762,21 @@ def test_actor_first_over_budget_retry_reprobes_source_channel(monkeypatch, tmp_
     ))
     snapshot = _snapshot(_settings(_session_row()), "session-builder")
     ctx = SimpleNamespace(
-        task_id="child-over-budget-retry",
-        drive_root=tmp_path,
-        budget_drive_root=str(tmp_path),
-        _configured_actor_bootstrap={
-            "snapshot": snapshot,
+        task_id="child-legacy-retry", drive_root=tmp_path, budget_drive_root=str(tmp_path),
+        _configured_actor_bootstrap={"snapshot": snapshot,
             "selected_subagent_id": "session-builder",
-            "canonical_work_order": "",
-            "source_prompt": "WORK ORDER SOURCE REQUEST\ncoverage=partial",
-            "source_request": {"kind": "complete_work_order", "sha256": "f" * 64},
-            "source_channel": {"status": "unavailable", "route": "cursor"},
-            "work_order_fingerprint": "f" * 64,
-            "work_order_chars": 250001,
-        },
+            "canonical_work_order": "NEW COMPLETE RENDER MUST NOT REPLACE STORED BODY"},
     )
-
-    out = json.loads(runtime.delegate_start_entry(ctx, "ignored", retry_of="inv-1"))
-
+    stored_prompt = "WORK ORDER SOURCE REQUEST\ncoverage=partial"
+    assert custody.record_start_requested(
+        tmp_path, run_id="", task_id=ctx.task_id, invocation_id="inv-legacy",
+        idempotency_key="inv-legacy", max_seconds=60, request={"prompt": stored_prompt},
+        project_id="", project_owned=False, route="codex",
+        work_order_coverage="partial", work_order_source_request={"coverage": "partial"},
+    )
+    out = json.loads(runtime.delegate_start_entry(ctx, "ignored", retry_of="inv-legacy"))
     assert out["status"] == "started"
-    assert len(starts) == 1
-    assert starts[0][1]["retry_of"] == "inv-1"
-    assert ctx._configured_actor_bootstrap["source_channel"]["route"] == "codex"
+    assert starts == [(stored_prompt, {"retry_of": "inv-legacy", "_resolved_binding": None})]
 
 
 def test_actor_first_bootstrap_adopts_existing_handoff_without_new_start(monkeypatch, tmp_path):
