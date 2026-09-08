@@ -347,7 +347,8 @@ The owner quiz card (`web/modules/chat_decision.js`, `.chat-quiz-*` in
 `web/style.css`) is a chat-delivered decision surface. Optional clarification is fire-and-continue: the task states its assumption.
 Required waiting keeps the same card and explicitly says that the task awaits
 the owner, with Stop and existing task deadlines still effective. No assumption
-is treated as an answer. Both forms remain readable after settlement. Anatomy, top to bottom:
+is treated as an answer. After settlement, status and the owner's recorded answer
+keep both forms readable. Anatomy, top to bottom:
 
 1. **Head** — neutral `Question` chip (`--type-meta`, neutral pair) and a
    status as dot + text. The lifecycle word family is closed:
@@ -378,9 +379,9 @@ is treated as an answer. Both forms remain readable after settlement. Anatomy, t
 6. **Assumption or waiting** — the signature line (`Continuing meanwhile: …`
    for optional clarification, an explicit waiting statement for required input),
    `--type-meta`, `--text-meta`, separated by a hairline. While the card is
-   open it names the default path; once the card settles it is the durable
-   record of whether the agent waited or continued without an answer. It is never dropped on
-   state change.
+   open it names the default path. The optional assumption remains after settlement
+   as the record of work continued meanwhile. Required waiting copy disappears
+   when the card settles; the status and recorded owner answer remain.
 
 The card was born on tokens ahead of the rest of the chat surface (which has
 since migrated too): type sizes and every colour come from tokens (no new

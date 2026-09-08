@@ -82,11 +82,11 @@ def _settings(tmp_path, **extra):
     (tmp_path / "settings.json").write_text(json.dumps({"TELEGRAM_CHAT_ID": "42", **extra}), encoding="utf-8")
 
 
-def _send_card(plugin, tmp_path, monkeypatch):
+def _send_card(plugin, tmp_path, monkeypatch, *, wait_for_answer=False):
     _settings(tmp_path)
     monkeypatch.setattr(plugin, "TelegramClient", Client)
     api = Api(tmp_path)
-    asyncio.run(plugin._make_quiz(api)(dict(_EVENT)))
+    asyncio.run(plugin._make_quiz(api)({**_EVENT, "wait_for_answer": wait_for_answer}))
     return api
 
 
@@ -154,6 +154,34 @@ def test_tapped_option_reaches_the_decision_ingress_and_settles_the_card(tmp_pat
     assert last.edits == [(42, 555,
                            "Question: Which db?\n1. sqlite\n2. postgres\nContinuing meanwhile: sqlite meanwhile"
                            "\nAnswered: 2. postgres", [])]
+
+
+@pytest.mark.parametrize("required", [True, False])
+@pytest.mark.parametrize("answer_path", ["callback", "reply"])
+def test_settled_quiz_drops_only_required_wait_copy(tmp_path, monkeypatch, required, answer_path):
+    plugin = _load_plugin()
+    api = _send_card(plugin, tmp_path, monkeypatch, wait_for_answer=required)
+    assert ("Waiting for your answer" in _LAST_CLIENT[-1].panels[0][1]) is required
+    token = plugin.telegram_quiz.mint_token("task-1", "q1")
+    if answer_path == "callback":
+        Client.updates = [{"update_id": 70, "callback_query": {
+            "id": "cb", "data": f"qz:{token}:1", "from": {"id": 42},
+            "message": {"message_id": 555, "chat": {"id": 42, "type": "private"}},
+        }}]
+    else:
+        Client.updates = [{"update_id": 70, "message": {
+            "message_id": 600, "chat": {"id": 42, "type": "private"}, "from": {"id": 42},
+            "text": "Keep the prepared choice", "reply_to_message": {"message_id": 555},
+        }}]
+    posts = []
+    assert not _run_poller(plugin, api, monkeypatch, posts,
+                           reply=(200, {"ok": True, "state": "answered", "answered_index": 1}))
+    assert len(posts) == 1 and posts[0][0] == "/chat/decision"
+    text = _LAST_CLIENT[-1].edits[0][2]
+    assert "Waiting for your answer" not in text
+    assert ("Continuing meanwhile: sqlite meanwhile" in text) is not required
+    assert "Answered: " in text
+    assert _LAST_CLIENT[-1].edits[0][3] == []
 
 
 @pytest.mark.parametrize("answer_text", ["Use mysql instead", "  Use mysql instead\n", "2", "`/panic`", "The command is /panic"])
