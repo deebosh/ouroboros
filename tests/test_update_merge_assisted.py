@@ -969,6 +969,8 @@ def test_rollback_disarms_replay_before_touching_dirty_tree(tmp_path, monkeypatc
 
 
 def test_restart_smoke_syncs_dependencies_before_code_checks(monkeypatch):
+    import supervisor._update_smoke as update_smoke
+
     calls = []
     monkeypatch.setattr(update_merge, "managed_update_constitution_present", lambda _ref: True)
     monkeypatch.setattr(git_ops, "git_capture", lambda _cmd: (0, "", ""))
@@ -976,8 +978,12 @@ def test_restart_smoke_syncs_dependencies_before_code_checks(monkeypatch):
         git_ops, "sync_runtime_dependencies",
         lambda reason: (calls.append(("deps", reason)) or (True, "ok")),
     )
+    # update_restart_smoke's body now lives in supervisor/_update_smoke.py and
+    # calls _run_update_smoke via THAT module's own namespace (ibl-978e5cd9258f
+    # leaf-module split) — patch it there, not the update_merge re-export, or
+    # the internal call won't see the stub.
     monkeypatch.setattr(
-        update_merge, "_run_update_smoke",
+        update_smoke, "_run_update_smoke",
         lambda cmd, timeout_sec=120.0: (calls.append(("smoke", cmd)) or {
             "ok": True, "stdout": "", "stderr": "", "returncode": 0,
         }),
@@ -992,6 +998,7 @@ def test_restart_smoke_syncs_dependencies_before_code_checks(monkeypatch):
 
 def test_restart_smoke_timeout_kills_process_tree(monkeypatch):
     import ouroboros.platform_layer as platform_layer
+    import supervisor._update_smoke as update_smoke
     from ouroboros.tools import shell
 
     killed = []
@@ -1010,7 +1017,10 @@ def test_restart_smoke_timeout_kills_process_tree(monkeypatch):
             return "", ""
 
     proc = HungProcess()
-    monkeypatch.setattr(update_merge.subprocess, "Popen", lambda *_a, **_k: proc)
+    # _run_update_smoke's body now lives in supervisor/_update_smoke.py
+    # (ibl-978e5cd9258f leaf-module split) and calls `subprocess.Popen` via
+    # THAT module's own import, not update_merge's — patch it there.
+    monkeypatch.setattr(update_smoke.subprocess, "Popen", lambda *_a, **_k: proc)
     monkeypatch.setattr(platform_layer, "kill_process_tree", lambda value: killed.append(value))
 
     result = update_merge._run_update_smoke(["python"], timeout_sec=0.01)

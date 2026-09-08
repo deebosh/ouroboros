@@ -13,10 +13,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
-import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from ouroboros.utils import append_jsonl, utc_now_iso
 from supervisor import git_ops as _g
@@ -33,6 +31,12 @@ from supervisor.update_candidate import (  # noqa: F401
     stash_local_changes_for_update, lookup_update_stash,
     destructive_apply_guard, project_version_carriers,
     quarantine_corrupt_update_tx_marker,
+)
+# The pre-restart smoke-test helpers live in supervisor/_update_smoke.py
+# (module-size split, ibl-978e5cd9258f); re-exported so every historical
+# caller/test keeps resolving them here (F401 intended).
+from supervisor._update_smoke import (  # noqa: F401
+    _run_update_smoke, update_restart_smoke,
 )
 
 UPDATE_TX_MARKER_NAME = "ouroboros-update-tx.json"
@@ -1021,76 +1025,6 @@ def enqueue_assisted_resolution_task(tx: Dict[str, Any]) -> str:
         elif task_id not in workers.RUNNING:
             enqueue_task(task, front=True)
     return task_id
-
-
-def _run_update_smoke(cmd: List[str], timeout_sec: float = 120.0) -> Dict[str, Any]:
-    from ouroboros.platform_layer import kill_process_tree, subprocess_new_group_kwargs
-    from ouroboros.tools.shell import _active_subprocesses, _subprocess_lock
-
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(_g.REPO_DIR),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        **subprocess_new_group_kwargs(),
-    )
-    with _subprocess_lock:
-        _active_subprocesses.add(proc)
-    try:
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            kill_process_tree(proc)
-            try:
-                stdout, stderr = proc.communicate(timeout=10)
-            except Exception:
-                stdout, stderr = "", ""
-            return {
-                "ok": False,
-                "stdout": stdout or "",
-                "stderr": f"update smoke exceeded {timeout_sec:.0f}s and was terminated",
-                "returncode": 124,
-            }
-        return {
-            "ok": proc.returncode == 0,
-            "stdout": stdout or "",
-            "stderr": stderr or "",
-            "returncode": proc.returncode,
-        }
-    finally:
-        with _subprocess_lock:
-            _active_subprocesses.discard(proc)
-
-
-def update_restart_smoke() -> Dict[str, Any]:
-    """Stronger pre-restart smoke than ``import_test`` for gating an update apply: no
-    unmerged index, ``py_compile server.py``, and an import of the core boot surface.
-    pytest is intentionally NOT in this blocking gate (bloat/risk in a live self-updater)."""
-    if not managed_update_constitution_present("HEAD"):
-        return {
-            "ok": False,
-            "stderr": "BIBLE.md is absent, empty, or not a regular file",
-            "returncode": 1,
-        }
-    if getattr(sys, "frozen", False):
-        return {"ok": True, "skipped": "frozen"}
-    rc_u, unmerged, _ue = _g.git_capture(["git", "diff", "--name-only", "--diff-filter=U"])
-    if rc_u != 0:
-        return {"ok": False, "stderr": "could not inspect unmerged paths", "returncode": rc_u}
-    if unmerged.strip():
-        return {"ok": False, "stderr": f"unmerged paths remain: {unmerged}", "returncode": 1}
-    deps_ok, deps_message = _g.sync_runtime_dependencies(reason="managed_update_pre_restart")
-    if not deps_ok:
-        return {"ok": False, "stderr": f"dependency sync failed: {deps_message}", "returncode": 1}
-    compiled = _run_update_smoke([sys.executable, "-m", "py_compile", "server.py"])
-    if not compiled["ok"]:
-        return compiled
-    return _run_update_smoke(
-        [sys.executable, "-c",
-         "import server, ouroboros.gateway.router, supervisor.queue, "
-         "supervisor.events, ouroboros.tools.registry; print('smoke_ok')"]
-    )
 
 
 _ASSISTED_BOOT_ATTEMPT_CAP = 3
