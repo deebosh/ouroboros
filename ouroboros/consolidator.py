@@ -396,21 +396,28 @@ def _strip_think_blocks(raw: str) -> str:
     return stripped.strip()
 
 
-def _truncate_with_marker(content: str, max_chars: int, span_label: str) -> str:
+def _truncate_with_marker(content: str, max_chars: int, span_label: str) -> Tuple[str, bool]:
     """Bound stored content at ``max_chars`` and append an honest truncation marker.
+
+    Returns ``(content, was_truncated)``. When content fits within the cap
+    the original is returned unchanged with ``False``; when content exceeds
+    the cap the bounded prefix plus marker is returned with ``True``. The
+    typed ``was_truncated`` lets callers record the cut as a durable fact
+    rather than infer it from content shape.
 
     BIBLE P1: a content cap that silently loses the tail is NOT acceptable —
     the marker is a durable, visible fact that the stored span is bounded.
     Cursor and span_label are recorded so a reader can correlate the truncation
-    back to the generation that produced it."""
+    back to the generation that produced it.
+    """
     if len(content) <= max_chars:
-        return content
+        return content, False
     kept = content[:max_chars].rstrip()
     marker = (
         f"\n\n[...truncated at {max_chars} chars (original ~{len(content)} chars); "
         f"span: {span_label} — single-block byte cap prevents dialogue_blocks.json bloat]..."
     )
-    return kept + marker
+    return kept + marker, True
 
 
 def _call_consolidation_llm(
@@ -433,8 +440,8 @@ def _call_consolidation_llm(
         )
         raw = msg.get("content", "")
         stripped = _strip_think_blocks(raw)
-        bounded = _truncate_with_marker(stripped, max_chars, span_label)
-        if len(bounded) > max_chars + 200:  # marker overhead capped ~200 chars
+        bounded, was_truncated = _truncate_with_marker(stripped, max_chars, span_label)
+        if was_truncated and len(bounded) > max_chars + 200:  # marker overhead capped ~200 chars
             log.warning(
                 "Consolidation output for %s exceeded byte cap %d (stripped %d chars, truncated to %d)",
                 span_label, max_chars, len(stripped), max_chars,
