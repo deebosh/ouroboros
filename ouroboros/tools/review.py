@@ -80,7 +80,7 @@ def get_tools():
                     "properties": {
                         "claim": {"type": "string", "description": "Final claim or task result the agent intends to release."},
                         "goal": {"type": "string", "description": "Original task goal."},
-                        "evidence": {"type": "object", "description": "Relevant tool trace, artifacts, tests, and observed facts."},
+                        "evidence": {"type": "object", "description": "Relevant tool trace, artifacts, tests, and observed facts. To select earlier tool records from the host's complete retained trajectory, supply tool_trajectory_indices: [zero-based source indices]. The host materializes these records with their corpus-SHA addresses; a bounded or missing record stays partial/unavailable. Your own prose remains agent-supplied evidence."},
                         "checklist": {"type": "string", "default": "", "description": "Optional acceptance checklist."},
                         "agent_disposition": {
                             "type": "string",
@@ -847,8 +847,8 @@ def _build_critical_block_message(
         "e.g. it would remove or restrict a working capability that the accepted plan\n"
         "did not narrow. Argue for a capability-preserving remedy: change what you can\n"
         "argue for, not what you can override — a rebuttal never overrides owner-chosen\n"
-        "enforcement. If the same finding repeats after a rebuttal, implement the fix\n"
-        "instead of re-arguing.\n\n"
+        "enforcement. Repetition alone does not validate a finding: verify its evidence\n"
+        "and proportionality again, retaining a justified rebuttal when appropriate.\n\n"
         + "Critical findings:\n"
         + "\n".join(f"  - {_format_review_entry(f, default_severity='critical')}" for f in critical_entries)
         + (

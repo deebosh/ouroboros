@@ -16,7 +16,8 @@ DISPATCHED (B2 — a dispatched DEGRADED panel pays like any other; a wave of on
 typed $0 skip rows stays unpaid); an identical fingerprint — DEGRADED included —
 replays the recorded wave free (no panel, no cycle). Closure
 (``plan_spec.closure_after_disposition``): GREEN closes;
-REVIEW_REQUIRED closes by disposition at $0; REVISE_PLAN never closes by
+Note-only REVIEW_REQUIRED closes immediately; need_evidence closes by disposition
+at $0; a below-quorum blocking finding stays open. REVISE_PLAN never closes by
 disposition — accept ⇒ changed spec (next paid cycle), reject ⇒ rationale rides
 into the next delta cycle. Under blocking enforcement an open wave HOLDS
 finalization (``owner_hurry.force_plan_decision``); at the cap the typed
@@ -48,6 +49,7 @@ from ouroboros.review_cycles import emit_review_cycles_exhausted, review_max_cyc
 from ouroboros.task_results import (
     load_plan_review_state, load_task_result, mark_current_plan_review_unavailable,
     plan_review_wave, current_plan_review_wave, record_plan_review_dispositions,
+    plan_review_notes_are_annotatable,
 )
 from ouroboros.tools import plan_evidence, plan_spec
 from ouroboros.tools.plan_render import _next_step, _quote_control_lines, _render_wave  # noqa: F401 — engine renderers
@@ -237,7 +239,7 @@ def get_tools():
                     "Submit goal + spec (what/how-checked/deferred) + plan prose; independent "
                     "reviewers return typed findings against the spec (blocking findings must name "
                     "the spec element they break); the host aggregates: GREEN closes; "
-                    "REVIEW_REQUIRED closes by your review_disposition at no cost; REVISE_PLAN needs "
+                    "Notes are optional; need_evidence closes by review_disposition at no cost; REVISE_PLAN needs "
                     "a changed spec (next paid cycle) or a reject-with-rationale judged in the next "
                     "cycle. Cycles are bounded by the owner's Max review cycles; an unchanged "
                     "envelope replays the recorded result for free (a locator a reviewer asked for "
@@ -409,7 +411,7 @@ def _plan_fingerprint(goal: str, plan: str, spec: dict, manifest_hash: str, cons
 
 
 def _task_evidence_reader(root: pathlib.Path) -> Callable[[str], Optional[str]]:
-    """``task:<id>`` locators → a bounded JSON summary of that task's durable result."""
+    """Task-result projection; the evidence resolver hashes, budgets and redacts it."""
     def _read(task_id: str) -> Optional[str]:
         try:
             record = load_task_result(root, task_id)
@@ -417,13 +419,16 @@ def _task_evidence_reader(root: pathlib.Path) -> Callable[[str], Optional[str]]:
             return None
         if not isinstance(record, dict):
             return None
-        return json.dumps({
+        projection = {
             "task_id": task_id,
             "status": record.get("status"),
             "reason_code": record.get("reason_code"),
             "ts": record.get("ts"),
             "result": truncate_review_artifact(str(record.get("result") or ""), limit=_TASK_EVIDENCE_RESULT_CHARS),
-        }, ensure_ascii=False, indent=2, default=str)
+        }
+        if "terminal_host_notice" in record:
+            projection["terminal_host_notice"] = str(record["terminal_host_notice"] or "")
+        return json.dumps(projection, ensure_ascii=False, indent=2, default=str)
     return _read
 
 
@@ -927,7 +932,7 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
             f"claimed={fingerprint}). Re-call plan_task with the spec you want reviewed. "
             "No plan attempt was recorded.",
         )
-    if wave.get("closed"):
+    if wave.get("closed") and not plan_review_notes_are_annotatable(wave):
         return _publish_rendered_wave(ctx, wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
                                       cached=True,
                                       notes=["already_closed: this wave is closed; the disposition is not re-applied"])

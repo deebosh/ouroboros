@@ -135,9 +135,14 @@ it through CHECKLISTS items 1 (`bible_compliance`) and 21
 ### LLM-first affordances
 
 Do not repair a semantic tool-choice failure by adding one more keyword hint to
-`prompts/SYSTEM.md`. Put stable discoverability in the tool schema or add a
-typed affordance at the point of need. SYSTEM accretion trains around one
-incident, bloats the resident prefix, and forks the authority.
+`prompts/SYSTEM.md`. A model mistake alone does not justify a new host contract:
+first establish a real missing capability or information, or an independently
+valid requirement. When discoverability is genuinely missing, repair the existing
+tool schema or affordance at the point of need. Do not freeze the model's reasoning,
+dialogue representation or collaboration strategy to make one incident testable.
+SYSTEM accretion trains around one incident, bloats the resident prefix, and forks
+the authority. These choices are reviewed through CHECKLISTS' development and
+capability-regression items, not a new semantic gate.
 
 What belongs in `prompts/SYSTEM.md` (tier-0 for every Main/task profile in both
 context modes — Background Consciousness and the safety supervisor carry their
@@ -777,7 +782,8 @@ review does not run (`PlanPacketError`). Declared or reviewer-requested
 evidence the policy cannot attach is a named absence instead — a
 `[reviewer-requested]` omission row, or the head attached with the cut named
 `truncated_to_<N>` — and the panel still runs and judges with it; a re-asked
-locator becomes a `need_evidence_repeat` note that keeps the wave open at $0.
+locator stays a `need_evidence` request with a `need_evidence_repeat` disclosure,
+requiring the same free disposition without expanding request memory or paid cycles.
 DEVELOPMENT.md is not resident in a plan-review packet; it is one such request
 away. Packet composition, bounds, and wave/replay mechanics: ARCHITECTURE
 "Plan construction and review" and `ouroboros/tools/plan_packet.py` /
@@ -825,23 +831,31 @@ non-goals, the load-bearing decisions with their rejected alternatives, and
 what is consciously deferred. Plan review publishes exactly `GREEN`,
 `REVIEW_REQUIRED`, `REVISE_PLAN`, or the honest `DEGRADED` (no quorum,
 or a paid actor still in flight);
-findings are inputs the main agent may
-accept, reject, or defer. Closure happens without a second LLM call through a
-separate `plan_task` call containing `review_disposition` only —
+findings are inputs the main agent may accept, reject, or defer. Optional
+`note` findings, including useful premise criticism and simpler alternatives,
+remain readable but need no adoption or disposition; a note-only wave closes
+immediately under both enforcement modes. The same `review_disposition` call may
+voluntarily annotate a current closed note-only wave; it keeps the verdict and
+spec unchanged, retains the previous immutable artifact, and never reopens the
+review or buys another panel. Outstanding `need_evidence` can close
+without a second LLM call through a separate `plan_task` call containing `review_disposition` only —
 `{review_fingerprint, items: [{finding_id, decision, rationale}]}` — covering
-every finding exactly once; duplicates, contradictions, unknown, stale, or
-incomplete dispositions fail closed, and mixed or vacuous calls fail before an
+each required finding exactly once; duplicates, contradictions, unknown, stale, or
+incomplete required dispositions fail closed, and mixed or vacuous calls fail before an
 attempt is recorded as typed argument errors — an optional field that carries
 no meaning beside a disposition (a blank `goal`/`plan`; a `spec` holding only
 declared keys whose values are `None`, `""` or `[]`) is ignored, never mistaken
 for a second operation, while any non-empty list, undeclared key or non-blank
 string is meaning and makes the call mixed. Never replay the plan envelope with
 the disposition.
-Blocking `REVISE_PLAN` requires changed plan text and another panel; advisory
+Any real blocking finding, including one below quorum, stays open for a changed
+spec or a justified rejection evaluated in the next paid delta cycle; advice
+does not become a blocker through repetition. Blocking `REVISE_PLAN` likewise
+requires another panel; advisory
 may proceed only under loud host disclosure and the agent's rationale.
-Reviewers are findings-only — they never author a competing plan — a blocking
-finding must name the spec id it breaks, and there is never a required number
-of findings.
+Reviewers return findings, including optional alternatives, not a required
+competing plan. A blocking finding must name the spec id it breaks, and there
+is never a required number of findings.
 
 Force-plan is an LLM-first pre-implementation obligation on the admitted
 managed root, not a mechanical permission check. `plan_review_state` owns
@@ -1398,207 +1412,186 @@ devtool files).
 
 ### Live E2E stand (`devtools/e2e_live/`)
 
-`python -m devtools.e2e_live.run_live_lanes` drives K isolated REAL servers
-(`--lanes`, default 4, at most 6, starts staggered 2–3 s apart), one
-owner-shaped scenario attempt per lane, from the scenario table in
-`scenarios.py`: SM1 (the brand accent changed to a blue consistently with the
-design system — DESIGN.md §3: the one `--accent` value, its named roles and the
-accent alpha ladder — in BOTH `web/style.css` and `web/onboarding.css`, the
-onboarding sheet being inlined standalone and mirroring the app tokens by value
-with `tests/test_web_typography_static.py` pinning the parity; verified in the
-browser on a real consumer flow; and landed as one reviewed RELEASE through
-`preflight_review` → `commit_reviewed` under advanced runtime and blocking
-enforcement with no skip flags, the synchronized version carriers bumped in the
-same diff. The task is the realistic one an owner would give and lets the
-product's own policy shape the work, because the first paid run's narrower prompt
-— only `--accent`, no bump, the advisory preflight skipped — was refused by the
-commit gate three ways: the triad's version_bump item (BIBLE P9), the scope
-review's mixed blue/red palette against DESIGN §3, and the triad's
-development_compliance 2(i) with no vision-inspected UI evidence. The `--stub`
-rehearsal projects the bump offline through `release_sync.sync_release_metadata`
-plus the README history row and runs the same hermetic suite as its tests
-preflight, since `preflight_runner._preflight_env` scrubs every settings key
-`config.apply_settings_to_env` projects, so the loopback lane's
-`OPENAI_COMPATIBLE_BASE_URL` never reaches `tests/test_settings_effort.py`;
-acceptance is the S2 set, the parity of the two committed files' whole shared
-`:root` token set, a strictly-greater release VERSION whose carriers pass the
-release admission gate (`commit_admission.release_metadata_preflight`) read at
-the landed commit, a diff confined to the stylesheets, the carriers the
-`release_sync` SSOT names, `docs/DESIGN.md` and comment-only `web/**/*.css`
-companions, a REAL advisory ledger row rather than a skip/bypass row, the typed
-refusal trail of every `commit_reviewed`/`preflight_review` call — ledger
-`block_reason`s, the `⚠️ CODE:` prefixes such as PREFLIGHT_BLOCKED /
-TESTS_PREFLIGHT_BLOCKED / SCOPE_REVIEW_BLOCKED, the task's terminal
-`reason_code` such as `budget_exhausted` or `deadline_local` — the browser/vision
-tool rows recorded as a `vision_evidence_present` fact for the reviewers to judge,
-plus the
-computed style read by a browser from the COMMITTED CSS after a restart), SW1
-(the Swarm button arms `force_plan`; at least two children with causal lineage,
-the `swarm_fanout` receipt, the with-children cost rollup, no orphan process by
-the `/proc` environ scan), SK1 (the model authors `SKILL.md`+`plugin.py` and runs
-`skill_preflight`; the runner reviews — the verdict is the product gate: the review call
-answers 200 with its own `executable_review`, the `/api/extensions` row says
-`executable_review` (clean, warnings, or blockers under advisory enforcement — the SK1 lane
-sets none, so it runs the tree default) and findings were persisted; the status, enforcement,
-blocking reason, non-PASS items and the clean state are recorded facts — grants exactly the manifest's one
-privileged permission, enables, dispatches, deletes; the author and dispatch
-tasks keep separate `author_*`/`dispatch_*` terminal checks, and the dispatch
-counts only on a tools.jsonl row with typed status `ok` and the extension's exact
-echo — the generation digest alone is stamped on failures too). Every acceptance
-is a callable over durable artifacts, never a reading of model prose, and
-`LaneContext.check` refuses a second write to the same key. The launcher follows
-the benchmark family's admission contract (`launcher_audit.audit_source` is
-pinned on it by source). The SEED is a clean DETACHED clone of `--seed` (a commit
-or ref, default `HEAD`, resolved in `--source-repo`, default this tree)
-materialized once under the run root; every lane clones it and asserts its HEAD is
-the admitted sha and the clone is clean; the source's own dirtiness is disclosed
-in the manifest, never under test; an unresolvable ref or a dirty seed is a typed
-refusal persisted in `run_manifest.json`. The key is read by NAME from
-`$OUROBOROS_E2E_LIVE_OPENROUTER_KEY` (`--key-env`; the pool file is never opened;
-the run-root `effective_settings.json` is REDACTED and the value reaches disk
-only in each lane's 0600 settings file, disclosed by fingerprint as the runtime
-grant); the preflight takes `min(key limit remaining, account credits)` and
-refuses below `--min-credit-usd`. `--total-budget` (default 100) is the RUN-WIDE
-cap: a ledger sums the lanes' settled physical-attempt ledger rows (`state/usage_attempts.jsonl`, the
-product's money authority; the `llm_usage` telemetry misses skill review, advisory and synthesis), reserves
-`max(0.01, --per-task-usd × (root tasks + 1 with --self-mod for the scenario that absorbs))` per attempt (SM1 and SW1 one root — scouts spend
-under their root's `OUROBOROS_PER_TASK_COST_USD` fence — SK1 two; with `--self-mod` SM1's
-one post-task evolution cycle is one more root (SW1/SK1 pin promotion off) (the rc.14 paid run showed a second, generic
-cycle at t=0 from the benchmark campaign the lane pre-seeded then), all under the lane fence — SM1_a1
-task $3.84 + cycles $12.40 + $2.84 of $20; the lane's TOTAL_BUDGET is the true fence and the
-+1 root is its reservation), admits an
-attempt only while `spent + reserved(in flight) + reservation ≤ cap` — an attempt that
-cannot fit YET (blocked only by reservations in flight) waits for a settle and asks again,
-one that can NEVER fit (`spent + reservation > cap`) is refused and recorded `not_run` with
-`reason_code=budget_cap` for that attempt alone (no run-wide halt: a later, smaller attempt
-is asked on its own; the manifest carries `refusals` and `first_refused`), and writes each lane's TOTAL_BUDGET as its OWN reservation — an
-immutable ceiling disjoint from every other lane's, so the settled spend plus the ceilings
-in flight never exceed the cap; the manifest records the cap, the spend, the reservation rule
-and the stop reason. Every stand root runs under the PRODUCT'S default in-task ceiling —
-min(`cost_hard_stop_pct` 50% of the GLOBAL remaining at task start, per-task cap − planning
-margin), where in a lane the global remaining IS the lane budget (rc.14, under a 1× lane fence:
-SM1_a3 `budget_exhausted` at $10.21 of $20); no bench profile is injected, because with a
-reservation ≥ 2 × per-task the per-task axis already binds at task start and a projected
-profile would change the pacing path under test. That default therefore also covers the two
-roots that have no metadata seam anyway: the `--self-mod` evolution root (its task metadata
-carries only the transaction) and SW1's root on the UI path (`ui_probe.send_chat` is a WS chat
-frame without metadata). Before any lane spends, `budget_preflight` (recorded as
-`extra.budget_preflight`, the same typed shape as the credit preflight) prints one row per
-scenario, the worst case Σ reservation × attempts against the cap and the per-ROUND worst case
-(the `--lanes` largest reservations of one attempt per scenario in flight at once; above the
-cap the round's last lane waits on a settle, it is not refused), and refuses fail-closed
-(`{stage: budget_preflight, reason: reservation_unreachable}`, exit 3) a scenario whose
-reservation exceeds the cap or equals it with `--attempts ≥ 2` — its second attempt can never be
-admitted after any spend (the rc.15 plan, cap 200 / per-task 50 under the 2× rule, reserved the
-whole cap for SK1 and would have burned SM1/SW1 first); there is no override flag, the operator
-changes the flags. Jobs are dispatched round-robin by attempt index (`dispatch_order`: a1 of
-every scenario, then a2, then a3, largest reservation first within a round, stable among equals)
-and the ledger admits them FIFO by that dispatch index: an attempt reserves only when no
-earlier-dispatched attempt is still asking and `spent + reserved + reservation ≤ cap`; one that
-can never fit is refused at once and leaves the line. Ordering the pool alone did not order
-admission — the dominant race is the woken waiter against the freed lane's NEXT job (settle in
-`run_attempt`'s finally → return → the executor takes the next job → `admit` on the same thread),
-which the newcomer won 300/300 on CPython, so a round that overflows the cap (the owner
-configuration under the earlier +1-for-every-lane rule: 150 + 100 + 100 = 350 > 300) let later attempts leapfrog the waiter and could
-leave SW1 at 0/3 under pessimistic spends. FIFO admission removes that race at the cost of
-possible head-of-line idle lanes (a waiting large reservation holds back a smaller attempt that
-would fit). The verdict is pass-of PER scenario, so the order protects the MINIMUM admitted
-attempts per scenario rather than the sum: at cap 300 / per-task 50 / `--self-mod` / 3 lanes
-with realistic spends (SM1 30, SW1 8, SK1 15) all nine attempts are admitted in dispatch order
-(SM1_a1, SK1_a1, SW1_a1, …: SM1 and SK1 reserve 100, SW1 50) for $159; with pessimistic spends
-(SM1 45, SW1 8, SK1 30) eight are admitted and SK1_a3 is refused ($219 + 100 > 300) — 8/9 at
-$219 with every scenario keeping two, whereas largest-first dispatch (the rejected order, traced
-under the earlier rule) refused every SW1 attempt (SW1 0/3). For a given spend model the
-admitted sequence is exact (pinned in `tests/test_e2e_live_runner.py`); on a live run only the
-lanes' actual spend and its timing move it, and the first `--lanes` attempts, which enter
-admission within microseconds of each other, line up in the thread scheduler's order (in
-practice the submission order) — every later attempt enters alone, as a lane frees.
-`round_worst_case_usd` sums ONE attempt per scenario (the `--lanes` largest reservations), so
-with `--lanes` above the number of scenarios it understates what admission can put in flight;
-`requested_task_ids` keep the argument order (the manifest's identity pin).
-`--per-task-usd` (default 8; an attempt reserves it × its root tasks, +1 with `--self-mod`) is the
-runtime's per-root-task fence: with the tree's default review panel a blocking triad that includes
-claude-opus-5 plus the scope review exceeded $8 on SM1 in the first paid run
-(lanes spent $2–6 and still hit the fence, which counts reserved upper bounds),
-so size it to the review panel (16–20 for a blocking SM1) and let the run-wide
-cap be the real stop; SK1's owner-side skill review spends outside any root task
-and is bounded only by the lane's TOTAL_BUDGET. `--total-budget`,
-`--per-task-usd`, `--min-credit-usd` and `--watch-interval` (≥ 5 s) must be
-finite and positive. The manifest names the model from the applied settings
-file, not from argv. The commit gate's hermetic pytest pass runs inside each lane
-server and resolves `-n auto` to the host CPU count, so the stand sets
-`OUROBOROS_PREFLIGHT_TEST_WORKERS=max(2, 16 // lanes)` in its own process
-(`IsolatedServer` keeps that one key through the settings-authoritative sweep;
-`preflight_runner._preflight_env` still scrubs it from the candidate suite) and
-records the applied value as `extra.preflight_test_workers` in the manifest and
-`preflight_test_workers` in every lane row. Paid lanes run the stand's review panel
-(`scenarios.STAND_PANEL_SETTINGS`): triad gemini-3.8-flash / gpt-5.6-luna / deepseek-v4-pro, scope
-deepseek-v4-pro, advisory claude-sonnet-5, every reviewer at effort low, task and evolution at medium —
-three model families at a fraction of the default panel's cost; `--production-panel` runs the tree's
-own defaults instead, and the product's defaults for installs are untouched. `--self-mod` enables post-task evolution with the real
-re-exec restart — a settings fact (`OUROBOROS_POST_TASK_EVOLUTION` + cadence `every_n:1`) while the
-lane seeds `owner_chat_id` ONLY, never a campaign: the scenario task's post-task promotion
-(`apply_pending_request`) enables the one-shot campaign whose cycle lands, restarts and absorbs.
-A pre-seeded active campaign (the benchmark helper's form, rc.15 paid run2) runs generic cycles from
-t=0, gets the promotion refused (evolution already enabled) and its kept request file blocks the
-`no_promotion` exit of the absorb wait. `--self-mod` REQUIRES a confirmed absorb per lane whose scenario
-`expects_absorb` (SM1, the one that lands a commit; its clean-worktree check records the
-porcelain and tolerates only the runtime's transient `.ouroboros/` scratch, which a post-task
-cycle in the same clone writes seconds after the commit): a pre-task snapshot
-(clone HEAD, served sha, uptime, absorbed-cycle counter) and, afterwards, the
-counter advanced, the served sha moved, the uptime reset and the server ready;
-anything less is a typed `self_mod_absorb_confirmed=false` and the run fails. The
-wait (`IsolatedServer.wait_for_absorb`) ends early only with proof that no cycle is
-pending — six consecutive polls with the queue idle, `supervisor_ready`, no promotion
-request and no campaign `active_transaction` (a committed cycle keeps its transaction
-as `waiting_for_restart` through the synchronous restart and the re-exec boot, when a
-single idle sample looks exactly like a declined promotion) — and types the reason from
-the durable campaign state (`no_promotion`, `no_decision`, `cycle_no_op`,
-`cycle_not_absorbed`, `campaign_<status>`, `cycle_not_enqueued`).
-SW1/SK1 commit nothing, so under `--self-mod` they stop their server right after
-the scenario with `self_mod_absorb: {"expected": false}` and no absorb check, and their
-lane settings pin `OUROBOROS_POST_TASK_EVOLUTION=false` (a one-shot cycle promoted from
-their own roots could re-exec the server inside the lifecycle under test) —
-the rc.15 paid stand (2026-09-05) had SK1_a1 pass twelve of its thirteen lifecycle
-checks (the thirteenth was a real reviewer finding on the model-authored plugin),
-then wait about 27 minutes for a promotion nothing had committed before the
-evolution cycle ended and the wait returned no_promotion.
-Per lane: `lanes/<id>_a<n>/result.json` (checks, digests including the settings
-sha256 and its secret-free config digest, seed `git describe`, pre/post HEAD and
-the exact diff digest, grants by fingerprint, the lane's spend, runtime terminal
-disclosure, and on an infra failure a typed `refusal` {type, code, message} with
-`reason_code=infra_error:<code>` mirrored into `result_index.jsonl`) plus
-screenshots when a browser client exists (`ui_probe.resolve_ui_client`: the
-suite's `PlaywrightUIClient` when it carries this surface, else headless Chromium,
-else a typed `ui_unavailable` reason — never a silently passed check). Lane start
-only PROBES availability; the client the scenario uses opens on the first
-`ctx.ui` use (for SM1 after the task and the absorb wait; SW1 drives the task through the UI and holds its browser throughout) and is dropped and reopened on
-`ctx.restart()`; a Playwright failure mid-use (a closed target) is the typed
-`ui_unavailable:<ExceptionType>` reason of the UI checks alone, never an
-`infra_error` lane. A failed `no_orphans_after_stop` names the survivors
-(`orphans`: pid + cmdline head, first 20). `--stub`
-runs the same scenarios against the loopback stub model of
-`tests/system_e2e/harness.py` for $0 (`stub_lane.py` routes the swarm wire by
-role); `--attempts N --pass-of K` records every attempt. Run roots are
-append-only outside `repo/` and live `data/`; a watcher line prints lane states,
-the running spend against the cap, free disk on `/` and `/mnt/data`, and the key
-headroom from a probe on its own thread with an 8 s HTTP bound, at most once a
-minute, backing off on failure — a failed probe is informational, never an ALERT
-and never a delay of the tick. In CI the same stand is the `e2e-live` job of
-`.github/workflows/ci.yml` — a dispatch that opts in through the `e2e_live` input
-(`gh workflow run CI --ref <branch> -f e2e_live=true`; a plain dispatch such as
-the pre-tag 3-OS matrix never runs it) or its own nightly cron (03:17 UTC, which
-fires on the default branch `main` and checks out the `ouroboros` branch tip, the
-development line, as the seed), `--total-budget 30` on the repository secret
-`OUROBOROS_E2E_LIVE_OPENROUTER_KEY`
-(the owner creates it; the repository never writes one), sized by the
-reservation rule above to the largest subset admissible under that cap (one SM1
-attempt at `--per-task-usd 15` while the factor is 2), honestly skipped with the
-step-summary line `skipped: secret OUROBOROS_E2E_LIVE_OPENROUTER_KEY not
-configured` until the secret exists, and uploading `run_manifest.json`, every
-`lanes/*/result.json` and the screenshots as the run's artifact even when the run
-fails; its step summary renders the verdicts on completion and the typed refusal
-or error otherwise, never failing on its own.
+`python -m devtools.e2e_live.run_live_lanes` exercises owner-shaped work on
+isolated real servers. `run_live_lanes.py` owns admission, seed/settings, the
+lane pool, budget and reports; `scenarios.py::SCENARIOS` owns scenario prompts,
+settings overrides and callable acceptance checks; `stub_lane.py` reuses the
+loopback model and review answers in `tests/system_e2e/harness.py` for the
+`--stub` $0 rehearsal; `ui_probe.py` owns the real-browser client.
+Keep this opt-in stand outside runtime imports and default local evolution.
+
+#### Scenario acceptance
+
+Judge durable artifacts and actual consumer observations, never model prose
+or an HTTP 200 alone. `LaneContext.check` refuses duplicate keys so a later
+task cannot overwrite an earlier verdict; multi-task scenarios use separate
+terminal-check namespaces. `--attempts N --pass-of K` records every attempt
+and requires K passes for EACH selected scenario.
+
+| Scenario | Work and required evidence | Rationale / limits |
+|---|---|---|
+| SM1 | Change the brand accent consistently with DESIGN.md §3 in `web/style.css` and `web/onboarding.css`, exercise a real browser consumer, then land a reviewed release through `preflight_review` → `commit_reviewed`. The full profile uses advanced runtime and blocking enforcement, with no landing skip flags. Acceptance retains the S2 checks: the commit exists, both committed sheets carry the new accent and agree on their whole shared `:root` token set, VERSION strictly increases, the landed carriers pass `commit_admission.release_metadata_preflight`, the worktree is clean, a real advisory ledger row and `scope_review_complete` exist, usage is positive, and the browser reads the committed accent after restart. | Onboarding is standalone and mirrors tokens by value, so changing only one sheet breaks parity. A complete palette includes the named accent roles and alpha ladder; forbidding a bump or skipping review would test a task contrary to the product's own release policy. `vision_evidence_present` records browser/vision tool rows for reviewers to judge, not a host assertion that the image was inspected. `committed_companions` records paths beyond the sheets, release carriers, DESIGN and comment-only CSS as facts, not an automatic scope failure: reviewers may identify another legitimate accent consumer. The clean-tree check discloses and tolerates only transient `.ouroboros/` scratch. |
+| SW1 | The Swarm button arms `force_plan` on the ordinary chat send. Require the managed root and plan review, at least two completed children with causal parent/root/depth lineage, a `swarm_fanout` receipt covering them, absorbed-child finalization, the with-children cost rollup without retired aliases, positive usage and the `/proc` environment-based orphan check. | UI admission, child execution and root accounting are separate proofs. An API fallback can continue diagnostics when the browser is unavailable, but cannot pass `ui_swarm_path_exercised`. Children spend under their root's fence. |
+| SK1 | The model authors `SKILL.md` + `plugin.py` and calls `skill_preflight`; the runner reviews, grants exactly the manifest's one privileged permission (`inject_chat`), enables, dispatches, disables and deletes. Require persisted findings plus HTTP 200 with `executable_review` in BOTH the review response and `/api/extensions`; retain separate `author_*` / `dispatch_*` terminals. Dispatch needs the generation-bearing durable row, typed `status=ok`, exact echo and one host-attributed owner-chat relay per successful call. | The product's executable-review gate decides eligibility under the applied enforcement; SK1 sets no enforcement override. Clean state, non-PASS items, status and blocking reason remain facts, because requiring all-PASS would measure author quality instead of the lifecycle. A generation digest alone also appears on failed dispatches. The fixture exercises its declared permission rather than requesting an unused grant. |
+
+Preserve the typed SM1 refusal trail from `commit_refusal_facts`: advisory
+`block_reason`s, every `commit_reviewed` / `preflight_review` result's
+`⚠️ CODE:` (including `PREFLIGHT_BLOCKED`, `TESTS_PREFLIGHT_BLOCKED`,
+`SCOPE_REVIEW_BLOCKED`), landing skip flags and the terminal `reason_code`
+(for example `budget_exhausted` or `deadline_local`). The stub projects its
+release bump offline through `release_sync.sync_release_metadata` plus the
+README history row and exercises the same hermetic preflight. Its canned
+review answers do not establish paid-model design judgment.
+
+#### Seed and settings
+
+Run `admit_benchmark_run` before world-shaped work and finalize the manifest
+on every exit (`launcher_audit.audit_source` pins this order). Materialize
+`--seed` (default HEAD, resolved in `--source-repo`) once as a clean detached
+clone under the run root; each lane clones it and checks both cleanliness and
+the admitted SHA. Source-checkout dirt is disclosed, never included in the
+seed. Unresolvable refs or a dirty seed produce a typed `run_manifest.json`
+refusal. This prevents concurrent source edits from changing the tested tree.
+
+Build settings from the tree's defaults and explicit stand knobs, never the
+owner's live settings. Read the key only by the environment NAME in `--key-env`
+(default `OUROBOROS_E2E_LIVE_OPENROUTER_KEY`), never a pool file. Keep the
+run-root `effective_settings.json` redacted; only each lane's 0600 settings
+file contains the key, with fingerprint disclosure. The model recorded in
+the manifest comes from the applied settings file, not argv. Credit admission
+uses the minimum of key-limit remaining and account credits, refusing below
+`--min-credit-usd` (default the run cap).
+
+Paid runs use `scenarios.STAND_PANEL_SETTINGS`: Gemini 3.8 Flash / GPT-5.6
+Luna / DeepSeek v4 Pro triad, DeepSeek v4 Pro scope, Claude Sonnet 5 advisory;
+reviewers at low effort, task/evolution at medium. `--production-panel` selects
+the tree's defaults instead; neither choice changes installed product defaults.
+The default `full` profile retains each scenario's enforcement; `wiring` sets
+advisory enforcement and must be reported as such.
+
+`--lanes` defaults to 4 (maximum 6); starts stagger 2–3 seconds. Cap nested
+preflight load through the existing
+`OUROBOROS_PREFLIGHT_TEST_WORKERS=max(2, 16 // lanes)` lever, set before lane
+startup and recorded in `extra.preflight_test_workers` and every lane row.
+`IsolatedServer` forwards that key through its settings-authoritative sweep;
+`preflight_runner._preflight_env` scrubs it and all projected runtime settings
+from the candidate suite. Otherwise each lane's `-n auto` multiplies the host
+CPU count, while leaked loopback settings would change the suite under test.
+
+#### Budget admission and ordering
+
+`RunBudget` owns the run-wide `--total-budget` cap (default $100). Each attempt
+reserves `max(0.01, per_task_usd × (root_tasks + int(self_mod and expects_absorb)))`
+and receives exactly that positive amount as its lane `TOTAL_BUDGET`, never
+the whole run cap. SM1/SW1 have one root, SK1 has two; only SM1 adds an evolution
+root under `--self-mod`. `--per-task-usd` (default $8) is the runtime per-root
+fence, including children. Size it for the selected review panel's reservations,
+not only settled spend; SK1's owner-side review is outside root-task accounting
+but remains inside the lane cap.
+
+Retain product-default in-task pacing without injecting a benchmark profile:
+at task start the early stop is the minimum of `cost_hard_stop_pct` (50% of
+global remaining) and the per-task cap minus its planning margin. A lane's
+global remaining is its own budget; root reservations do not disable this
+earlier stop. SW1's UI root and the evolution root also follow this path.
+
+Read settled spend and unknown-cost counts from `state/usage_attempts.jsonl`;
+`llm_usage` omits review/synthesis spend and cannot be the stand's money source.
+Admit only while `spent + reserved(in flight) + reservation ≤ cap`. If only
+in-flight reservations prevent admission, wait for settlement and recheck;
+if `spent + reservation > cap`, record this attempt as `not_run` with
+`reason_code=budget_cap` and keep later attempts eligible. The manifest retains
+the rule, spend, refusals, `first_refused` and stop reason.
+
+Before spending, `budget_preflight` records a per-scenario reservation table,
+the sum across all attempts and `round_worst_case_usd` (the largest `--lanes`
+reservations, ONE attempt per scenario). A reservation above the cap, or equal
+to it with two or more attempts, refuses with `reservation_unreachable`,
+stage `budget_preflight`, exit 3; change flags rather than bypassing the check.
+The round estimate can understate concurrency when lanes exceed scenario
+count; it is a planning projection, not the admission fence.
+
+`dispatch_order` schedules a1 of every scenario before a2, largest reservation
+first within a round and stable among equals. `RunBudget.admit` also enforces
+FIFO among pending admissions by that dispatch index; a refused head leaves
+the line. Ordering pool submissions alone lets a freed lane's next job beat
+an already-waiting scenario. FIFO protects per-scenario attempt coverage at
+the cost of head-of-line idle lanes when a smaller reservation could fit.
+The initial concurrent arrivals still depend on thread scheduling; later
+admission depends on actual spend and settlement. `requested_task_ids` retain
+argument order for identity. Keep budget/credit/watch inputs finite and positive
+and the watch interval at least five seconds.
+
+#### Self-modification and browser lifetime
+
+`--self-mod` is opt-in: enable `OUROBOROS_POST_TASK_EVOLUTION` with cadence
+`every_n:1` and seed only `owner_chat_id`, never an active campaign. The
+scenario's own post-task promotion must create the one-shot campaign; a
+pre-seeded campaign starts unrelated cycles and blocks that promotion.
+Only `Scenario.expects_absorb` (SM1) owes the real re-exec/absorb proof.
+SW1/SK1 pin promotion off and record `self_mod_absorb: {expected: false}`:
+they commit nothing, and an unrelated cycle could restart the server during
+the lifecycle being tested.
+
+Capture clone HEAD, served SHA, uptime and absorbed-cycle count BEFORE the
+task. `confirm_absorb` requires a later absorbed counter, changed served SHA,
+uptime reset and readiness; mere liveness cannot pass
+`self_mod_absorb_confirmed`. Each absorbing lane that ran must confirm, even
+if the per-scenario pass count was already met. `IsolatedServer.wait_for_absorb`
+may return early only after its idle grace and six consecutive ready, idle
+polls with no promotion request and no campaign `active_transaction`.
+`waiting_for_restart` is still pending work despite an idle queue.
+Non-confirmation retains the durable reason (`no_promotion`, `no_decision`,
+`cycle_no_op`, `cycle_not_absorbed`, `campaign_<status>`, `cycle_not_enqueued`,
+or timeout).
+
+`ui_probe.resolve_ui_client` prefers the suite's `PlaywrightUIClient` when it
+supports the required interface, otherwise headless Chromium, otherwise a
+typed `ui_unavailable` reason. Lane start probes availability and closes the
+probe; `LaneContext.ui` opens the actual client on first use (SM1 after work
+and absorb, SW1 throughout its UI-driven task). Restart closes it and the next
+use opens against the current server. Open/use/close stay on the lane thread.
+A mid-use browser failure records `ui_unavailable:<ExceptionType>` on UI
+checks without discarding other evidence as a lane-wide `infra_error`.
+
+#### Reports, focused verification and CI
+
+Keep run roots append-only outside `repo/` and live `data/`. Every attempt
+writes `lanes/<id>_a<n>/result.json` and `result_index.jsonl`: checks, facts,
+settings SHA and secret-free config digest, seed `git describe`, pre/post HEAD,
+diff digest, grants by fingerprint, spend, runtime terminal disclosure, and
+screenshots when available. Infrastructure failures retain typed
+`refusal {type, code, message}` and `reason_code=infra_error:<code>` in both
+result surfaces. Post-stop `/proc` survivors fail a passing lane and name up
+to twenty PIDs/command heads with an omitted count; without `/proc` the scan
+is explicitly unavailable, never passed.
+
+The watcher reports lane state, spend/cap and free disk on `/` and `/mnt/data`.
+Key headroom is an informational probe on its own thread, with an eight-second
+HTTP bound, at most once a minute and failure backoff. A failed probe is not
+an alert or a delay of the watcher tick.
+
+Focused contracts live in `tests/test_e2e_live_runner.py` (including exact FIFO
+feasibility fixtures), `tests/test_e2e_live_sm1_checks.py`,
+`tests/test_e2e_live_sk1_plugin.py`, `tests/test_e2e_live_panel.py`,
+`tests/test_server_runner_absorb_wait.py` and `tests/test_e2e_live_ci_lane.py`;
+`tests/test_web_typography_static.py` owns shared CSS-token parity. The real
+SM1 stub rehearsal is separately gated by `integration`, `serial` and
+`OUROBOROS_E2E_DEEP=mock`; it starts a real server and the hermetic suite, so
+ordinary focused/default tests must not accidentally launch it.
+
+The existing `.github/workflows/ci.yml` `e2e-live` job runs on its own nightly
+03:17 UTC cron or explicit `e2e_live=true` dispatch, never an ordinary dispatch,
+push, PR or tag. The cron fires on default-branch metadata but checks out
+`ouroboros`; dispatch uses its selected SHA. It runs one SM1 attempt with
+`--self-mod --total-budget 30 --per-task-usd 15`, reserving $30 for its two
+roots. The owner supplies `OUROBOROS_E2E_LIVE_OPENROUTER_KEY`; its absence
+produces the honest green summary `skipped: secret
+OUROBOROS_E2E_LIVE_OPENROUTER_KEY not configured`, not a claimed run.
+Upload the manifest, index, lane results and screenshots even on failure.
+The summary renders verdicts or the typed refusal/error without changing
+the stand's exit verdict. Browser PR proof and the keyless system-E2E
+schedule retain their separate existing CI owners.
 
 ### Light mode and external deliverables
 
@@ -2408,6 +2401,10 @@ by "Provider Independence" above. Call-site imperatives:
   control must not bypass verification, acceptance, safety, skill
   finalization, deadline, child handoff, the unconditional `FINAL ANSWER:`
   latch, or the task-level answer protocol.
+  Host-authored notices remain outside model answer bytes and its acceptance
+  identity; use the existing terminal record/outbox/System projection, preserving
+  notice visibility on replay and single-body/headless transports. An unchanged
+  answer never regains a verdict superseded by actual owner or evidence changes.
 - Every direct child result needs an exact-hash disposition through the
   existing `tree_note(kind="decision")` tagged payload
   (`type=child_result_disposition`; the batch form validates entries
@@ -2472,6 +2469,11 @@ by "Provider Independence" above. Call-site imperatives:
   carry the task's chat id, including zero. A missing source is disclosed, never reconstructed from a
   bounded preview. Source/capacity, publication order and paid identity are
   separate contracts; changing history or presentation must not mint work.
+  Verify the persisted consumer after the actual snapshot merge and child cleanup,
+  not just the copy result. Select the current publication before relocating its
+  references; relocation must not advance semantic publication counters or make a
+  stale child replace a newer review. Keep bulk artifact copying outside result
+  locks; the existing current-field projector can settle the selected review refs.
 - The host buys one authoritative acceptance panel per PAID IDENTITY —
   `sha256(candidate_hash + the sorted set of nonempty (obligation_id,
   disposition, sha256(reason)) tuples)`; an empty disposition reason hashes
@@ -3089,14 +3091,18 @@ topology"):
   and the `OUROBOROS_E2E_DEEP=mock` env gate — real isolated servers, no
   provider keys (ARCHITECTURE "System E2E suite"). Because those three gates
   shut it out of every other pass, the only thing that runs it is the dedicated
-  `system-e2e-mock` CI job on a daily schedule or manual dispatch: never push
-  or pull_request, and carrying no secret.
+  `system-e2e-mock` CI job on its daily schedule, manual dispatch or release
+  tag: never an ordinary branch push or pull_request, and carrying no secret.
 - `browser` / `ui_browser` / `ui_browser_docker` launch real Playwright
   engines (agent browser tools / the host UI / the `ouroboros-web:test`
   container; the docker lane skips cleanly when Docker is unavailable
   locally). The marker is the source of truth for what the lane collects;
   the four Widgets lifecycle suites listed under "Declarative widgets" run
   in it. `portable_detail` covers build/portable artifact invariants.
+  Existing `ui-smoke` runs only `tests/test_skill_publish_browser.py` on PRs,
+  using Chromium and real task admission, Main card and history. Manual/tag
+  runs keep the full host UI and Chromium/WebKit browser-tool suites. These
+  checks do not join the default local pytest run or require a paid provider.
 - `skill_smoke` installs the nine pinned official skills from the LIVE
   catalog (list in `tests/test_skill_smoke_official.py`) and runs as the
   dedicated 3-OS CI job in serial pytest invocations with real network and
@@ -3183,10 +3189,21 @@ Contributor rules:
   promoting the rejected merge.
 - The managed mandate is "the full suite provably ran green on the exact
   committed tree", not "run it twice": the reuse authority is the
-  process-held exact-tree proof (`ctx._managed_tests_proof_trees`); the
+  process-held runner proof (`ctx._preflight_test_proof`) covering the tested
+  tree, installed index, effective passes and execution environment. Equivalent
+  ordinary preflights and post-commit runs reuse it too, after distinct baseline
+  checks. Every workload binds HEAD: equal file trees do not establish
+  equivalence for history-sensitive tests, including ordinary unmarked tests.
+  A newly created commit therefore requires a new run; repeated preflights with
+  unchanged HEAD still reuse the existing proof. A skip, no applicable
+  suite or a mocked `None` return cannot mint a proof. The
   durable `tests_evidence` record is forensic telemetry the gate never
   consults, so a restart forces a rerun. Review-binding and tag-binding
   mismatches use the same managed failure route.
+  Creation/reuse observations use the existing event log with the exact subject
+  and workload fingerprint; logs never become reuse authority. Preserve the
+  executable's invocation path as well as its resolved binary identity, because
+  separate Python environments may symlink the same binary.
 - Process containment is unconditional, including after a green pass:
   Windows uses a kill-on-close Job Object; POSIX uses an environment
   membership token plus a process-group enumeration backstop and promises

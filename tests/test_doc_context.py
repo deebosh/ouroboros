@@ -177,6 +177,29 @@ def test_forked_context_uses_canonical_global_cognition_not_child_noise():
     assert "CHILD_DEEP_NOISE" not in rendered
 
 
+def test_deep_review_is_historical_without_shrinking_its_existing_excerpt(tmp_path):
+    import json
+
+    from ouroboros.context import build_llm_messages
+    from ouroboros.utils import truncate_review_artifact
+
+    env, memory = _make_env_and_memory(tmp_path)
+    path = env.drive_root / "memory" / "deep_review.md"
+    for prefix in ("LEGACY REPORT\n", "<!-- deep-review provenance: generated_at=2026-01-01T00:00:00Z, source_revision=unknown -->\n"):
+        original = prefix + "retained historical reasoning " * 400
+        path.write_text(original, encoding="utf-8")
+        # A recent file mtime is not a review date, even on a copied old report.
+        os.utime(path, (1900000000, 1900000000))
+        messages, _ = build_llm_messages(
+            env=env, memory=memory, task={"id": "history", "type": "task", "text": "continue"},
+        )
+        rendered = json.dumps(messages, ensure_ascii=False)
+        assert json.dumps(truncate_review_artifact(original, limit=8000), ensure_ascii=False)[1:-1] in rendered
+        assert "not a verdict on the current tree" in rendered
+        assert "unrecorded date or source revision is unknown" in rendered
+        assert path.read_text(encoding="utf-8") == original
+
+
 def test_current_plan_and_open_dispositions_enter_actual_model_request():
     import json
 

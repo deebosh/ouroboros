@@ -701,6 +701,7 @@ def build_completed_result_event(
         # copy that drops the format renders as a different message.
         "format": "markdown",
         "delivery_id": delivery_id_for(tid, core_text),
+        **({"terminal_host_notice": stored["terminal_host_notice"]} if (stored or {}).get("terminal_host_notice") else {}),
     }
     return project_terminal_result_event(
         pathlib.Path(drive_root), task_row, tid,

@@ -478,10 +478,12 @@ def test_session_row_runs_through_the_session_executor_with_the_report_contract(
     assert text.startswith(
         "<!-- deep-review provenance: delivery=agent_session, model=gpt-5.6-sol, memory=3/7, "
         "memory_missing=registry.md,WORLD.md,index-full.md,improvement-backlog.md, "
-        "coverage=BIBLE.md:unobserved, incomplete=unobserved, attestation=unobserved -->\n"
+        "coverage=BIBLE.md:unobserved, incomplete=unobserved, attestation=unobserved, "
+        f"generated_at={usage['deep_review_generated_at']}, source_revision=unknown -->\n"
         "_Deep self-review: agent session codex=gpt-5.6-sol (model gpt-5.6-sol) — reads not host-observed "
         "(coverage unobserved); memory 3/7 inlined (omitted: registry.md missing, WORLD.md missing, index-full.md missing, "
-        "improvement-backlog.md missing); completeness not host-observed_\n\n")
+        "improvement-backlog.md missing); completeness not host-observed_\n"
+        f"Report generated at {usage['deep_review_generated_at']}; reviewed source revision: unknown (not captured).\n\n")
     # A session carries NO round/receipt facts — by construction, not by key absence.
     comment = text.split("\n", 1)[0]
     assert "rounds=" not in comment and "receipts=" not in comment and "tool_calls=" not in comment
@@ -653,9 +655,11 @@ def test_packed_row_keeps_the_wire_shape_and_records_its_execution(review_repo, 
     assert kwargs["reasoning_effort"] == "xhigh"  # the row's effort outranks the surface key (R6)
     assert text == (
         "<!-- deep-review provenance: delivery=api_packet, model=openai/fake-deep, memory=0/7, "
-        "coverage=pack:3_files, incomplete=none, attestation=packed, window=assumed_1000000 -->\n"
+        "coverage=pack:3_files, incomplete=none, attestation=packed, window=assumed_1000000, "
+        f"generated_at={usage['deep_review_generated_at']}, source_revision=unknown -->\n"
         "_Deep self-review: one packed API review on openai/fake-deep — 3 files; memory 0/7 inlined; "
-        "window 1,000,000 (unknown, full window assumed); complete_\n\n"
+        "window 1,000,000 (unknown, full window assumed); complete_\n"
+        f"Report generated at {usage['deep_review_generated_at']}; reviewed source revision: unknown (not captured).\n\n"
         "Review result."
     )
     assert usage["deep_review_memory"] == {"inlined": 0, "total": 7, "dispositions": {}}  # the mocked pack carried no memory fact

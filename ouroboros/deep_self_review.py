@@ -767,11 +767,19 @@ def _provenance_header(delivery: str, model: str, usage: Dict[str, Any], memory:
     else:
         facts["attestation"] = "unobserved"
     facts.update(extra or {})
+    # Report generation is observable; none of these delivery paths freezes one
+    # reviewed Git revision. Do not relabel a live HEAD or file mtime as that proof.
+    generated_at = utc_now_iso()
+    usage["deep_review_generated_at"] = generated_at
+    facts.update({"generated_at": generated_at, "source_revision": "unknown"})
     comment = ", ".join(f"{key}={_header_value(value)}" for key, value in facts.items())
     line = str(human).replace("\r", " ").replace("\n", " ")
     while "--" in line:  # the callers bound each external value; the line itself never carries a terminator
         line = line.replace("--", "-")
-    return f"<!-- deep-review provenance: {comment} -->\n_{line}_\n\n"
+    return (
+        f"<!-- deep-review provenance: {comment} -->\n_{line}_\n"
+        f"Report generated at {generated_at}; reviewed source revision: unknown (not captured).\n\n"
+    )
 
 
 def _memory_line(memory: Dict[str, Any]) -> str:

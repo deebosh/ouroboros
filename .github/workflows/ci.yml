@@ -50,7 +50,7 @@ on:
     tags:
       - 'v*'
   # Fork-safe PR validation: no provider secrets and no pull_request_target.
-  # Only the deterministic quick-test job matches pull_request refs below.
+  # Only fork-safe jobs match pull_request refs, including narrow Publish UI proof.
   pull_request:
     branches: [ouroboros]
   # A plain dispatch (the pre-tag 3-OS matrix: `gh workflow run CI --ref <branch>`)
@@ -467,19 +467,31 @@ jobs:
 
   ui-smoke:
     if: |
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'pull_request'
+      || github.event_name == 'workflow_dispatch'
       || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-python-env
-      - name: Install UI smoke browser binaries
-        run: python -m playwright install --with-deps chromium webkit
+      - name: Install UI smoke Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Install full UI smoke WebKit
+        if: github.event_name != 'pull_request'
+        run: python -m playwright install --with-deps webkit
+      - name: Run Publish admission browser proof
+        if: github.event_name == 'pull_request'
+        env:
+          OUROBOROS_RUN_UI_SMOKE: "1"
+          OUROBOROS_EXPECT_BROWSER_ENGINES: chromium
+        run: python -m pytest tests/test_skill_publish_browser.py -o addopts="" -m ui_browser -q --tb=short
       - name: Run host UI smoke
+        if: github.event_name != 'pull_request'
         env:
           OUROBOROS_RUN_UI_SMOKE: "1"
         run: python -m pytest tests/ -m ui_browser -q --tb=short
       - name: Run browser tools Chromium/WebKit smoke
+        if: github.event_name != 'pull_request'
         env:
           OUROBOROS_EXPECT_BROWSER_ENGINES: chromium,webkit
         run: python -m pytest tests/test_browser_tools_smoke.py -m browser -q --tb=short

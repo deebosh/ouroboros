@@ -868,7 +868,7 @@ def test_disposition_supersedes_the_exact_wave_before_hot_state(_harness) -> Non
     from ouroboros.tools.plan_review_artifacts import read_wave
     from tests.test_plan_review_engine import CLEAN, _call, _finding
 
-    note = json.dumps([_finding("n1", "note")])
+    note = json.dumps([_finding("n1", "need_evidence", locator="notes.md")])
     _harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
     _call(_harness.make_ctx())
     prior = load_plan_review_state(_harness.drive, "task-1")["waves"][-1]

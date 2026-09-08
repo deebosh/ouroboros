@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from ouroboros.task_results import plan_review_notes_are_annotatable
 from ouroboros.tools.review_synthesis import PLAN_REVIEW_CONTROL_PREFIX
 from ouroboros.tools.plan_spec import MAX_FINDINGS_PER_SLOT
 
@@ -117,6 +118,13 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
     fp = str(wave.get("request_fingerprint") or "")
     at_cap = cap is not None and cycles_paid >= cap
     if bool(wave.get("closed")):
+        if plan_review_notes_are_annotatable(wave):
+            return (
+                "Closed: proceed with the reviewed spec. Notes are optional; you may record "
+                "accept | reject | defer with a rationale through "
+                f"plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}). "
+                "This neither reopens the review nor calls reviewers or consumes a cycle."
+            )
         return "Closed: proceed with the reviewed spec."
     if bool(wave.get("custody_pending")):
         return (
@@ -153,7 +161,7 @@ def _next_step(wave: dict, *, enforcement: str, cap: Optional[int], cycles_paid:
     elif aggregate == "REVIEW_REQUIRED":
         blocking = [f for f in wave.get("findings") or [] if f.get("class") == "blocking"]
         text = (
-            "Disposition every finding id (accept | reject | defer, each with a rationale) in ONE "
+            "Notes are optional. Disposition need_evidence (accept | reject | defer, with a rationale) in ONE "
             f"call: plan_task(review_disposition={{review_fingerprint: '{fp}', items: [...]}}) — no "
             "reviewer call, no cycle. "
         )

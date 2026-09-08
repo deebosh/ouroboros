@@ -748,7 +748,7 @@ def _run_review_preflight_tests(ctx: "Any", timeout: Optional[int] = None, *, fo
         from ouroboros.preflight_runner import PRE_COMMIT_PHASE, run_hermetic_pytest
 
         # Pre-commit entry point: the deleted-suite baseline is HEAD alone.
-        run_kwargs = {"max_output": MAX_OUTPUT, "phase": PRE_COMMIT_PHASE}
+        run_kwargs = {"max_output": MAX_OUTPUT, "phase": PRE_COMMIT_PHASE, "ctx": ctx}
         if timeout is not None:
             run_kwargs["timeout"] = timeout
         output = run_hermetic_pytest(pathlib.Path(repo_dir), **run_kwargs)

@@ -46,7 +46,7 @@ MAX_GOAL_CHARS = 2000
 MAX_FINDINGS_PER_SLOT = 32
 # Per-task `need_evidence` memory: reviewers' requests the host remembers (and, W3, attaches).
 # Bounded so the durable review state stays bounded whatever the panel asks for; a request past
-# the cap is demoted (never remembered), disclosed `need_evidence_memory_full`.
+# the cap stays a typed request but is not remembered, disclosed `need_evidence_memory_full`.
 MAX_NEED_EVIDENCE_MEMORY = 4 * MAX_LIST_ITEMS
 MAX_FINDING_TEXT_CHARS = 2000
 PACKET_OBJECTIVE_CHARS = 8_000
@@ -636,18 +636,19 @@ def validate_findings(
     never dropped — an ok slot must not launder its blocking finding away); a
     ``need_evidence`` locator already in ``seen_locators`` — the PER-TASK
     (cross-cycle) memory the caller persists in ``plan_review_state`` — or
-    repeated within this slot is DEMOTED to ``note`` (``need_evidence_repeat``):
-    the host never re-attaches it, but the finding stays in the aggregate so a
-    re-asked question cannot close the wave by disappearing; ids are
-    minted ``f{slot}_{n}`` when missing; the slot is capped at
+    repeated within this slot remains ``need_evidence`` with a
+    ``need_evidence_repeat`` disclosure: request memory does not grow, and the
+    agent still supplies its free disposition. A full request memory likewise
+    refuses only remembering another locator, not the request's meaning. Ids
+    are minted ``f{slot}_{n}`` when missing.
     Findings are never capped before aggregation. ``MAX_FINDINGS_PER_SLOT`` is
     retained as the rendered page size only. ``seen_after`` is the
     updated locator memory for the caller to persist; the input is not mutated.
     The engine validates the slots of ONE wave sequentially against the CUMULATIVE
     memory (it passes the running ``seen_after`` back in), so the per-task memory
     cap ``MAX_NEED_EVIDENCE_MEMORY`` is exact across slots; a second slot asking
-    for a locator the first already requested is a `need_evidence_repeat` note —
-    one request suffices, the wave stays open the same way.
+    for a locator the first already requested does not create a second remembered
+    locator; neither repetition nor a memory bound silently closes the wave.
     """
     ids = frozenset(str(s) for s in spec_ids)
     seen = set(str(s) for s in seen_locators)
@@ -685,15 +686,11 @@ def validate_findings(
                 klass = "note"
             elif locator not in seen and len(seen) >= MAX_NEED_EVIDENCE_MEMORY:
                 disclosures.append(f"need_evidence_memory_full:{fid}")
-                klass = "note"
             elif locator in seen:
-                # I-03: a repeat is DEMOTED, never dropped. Dropping it removed the finding from
-                # the aggregate, so a reviewer re-asking for evidence it still needs turned the
-                # wave GREEN and closed the gate. Demotion keeps the cost bound (never attached
-                # again, never blocking, no new fingerprint) while the wave stays open until the
-                # agent disposes of it.
+                # I-03: request deduplication is not a reviewer withdrawing its
+                # need. Keep the typed request for a free disposition; leaving
+                # seen unchanged preserves the attachment and paid-cycle bounds.
                 disclosures.append(f"need_evidence_repeat:{locator}")
-                klass = "note"
             else:
                 seen.add(locator)
         normalized.append({
@@ -810,9 +807,9 @@ def closure_after_disposition(
 ) -> dict:
     """The ONE closure table (F7) → ``{closed, open_ids, notes}``.
 
-    GREEN → closed. REVIEW_REQUIRED (only note/need_evidence) → closed when
-    every finding id carries a disposition (accept|reject|defer + rationale —
-    the disposition form as today, plan §7.2 A). REVISE_PLAN → NEVER closed by
+    GREEN → closed. Notes are optional advice, so a note-only REVIEW_REQUIRED
+    wave closes without dispositions. Need_evidence still requires a disposition
+    (accept|reject|defer + rationale). REVISE_PLAN → NEVER closed by
     disposition (blocking needs a changed spec → new cycle, or reject-with-
     rationale → next paid delta cycle). DEGRADED → not closable by disposition
     (rerun the wave). Advisory enforcement never flips ``closed``: the caller
@@ -855,7 +852,7 @@ def closure_after_disposition(
         # says — a single blocking finding below quorum surfaces as REVIEW_REQUIRED,
         # and closing it with a $0 disposition would be exactly the laundering the
         # height rule exists to prevent. It needs a changed spec or a paid delta cycle.
-        if blocking or fid not in valid:
+        if blocking or (finding.get("class") != "note" and fid not in valid):
             open_ids.append(fid)
     if verdict == "GREEN":
         closed = True

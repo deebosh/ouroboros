@@ -396,14 +396,14 @@ def _tests_preflight_block_message(managed_needs_proof: bool, test_err: str) -> 
 
 def _managed_candidate_needs_proof(ctx: ToolContext) -> bool:
     """Managed single-run mandate (Q10): True when the authorized resolver's
-    CURRENT candidate tree carries no recorded green-suite proof (advisory ran
+    CURRENT candidate workload carries no recorded green-suite proof (advisory ran
     with skip_tests, or the tree changed since) — the compensating preflight
     must then run PRE-commit, before paid review and before any commit exists,
     regardless of skip_tests/doc-only, so a red candidate is fixed in place
     instead of committed and rolled back.
 
     AUTHORITY (synthesis F2): the proof consulted here is the PROCESS-HELD ctx
-    record pinned by ``record_managed_tests_proof`` when the host itself ran
+    record pinned by the hermetic runner when the host itself ran
     the suite — never the durable ``tests_evidence`` tx copy, which is a plain
     resolver-writable file (forensic only; a forged tree there must not
     suppress the mandatory run). A restart between the proof run and the
@@ -411,11 +411,9 @@ def _managed_candidate_needs_proof(ctx: ToolContext) -> bool:
     if not _authorized_managed_update_resolver(ctx):
         return False
     try:
-        from supervisor.update_merge import worktree_snapshot_tree
+        from ouroboros.commit_admission import preflight_test_proof_matches
 
-        cand_tree, _cand_err = worktree_snapshot_tree("HEAD")
-        proofs = getattr(ctx, "_managed_tests_proof_trees", None) or ()
-        return not (cand_tree and cand_tree in proofs)
+        return not preflight_test_proof_matches(ctx, ctx.repo_dir)
     except Exception:
         log.debug("managed proof check failed; running the preflight", exc_info=True)
         return True
@@ -710,6 +708,7 @@ def _run_pre_push_tests(ctx: ToolContext, force: bool = False) -> Optional[str]:
         return run_hermetic_pytest(
             pathlib.Path(ctx.repo_dir),
             max_output=MAX_TEST_OUTPUT,
+            ctx=ctx,
         )
     except Exception as e:
         log.warning(f"Pre-push tests failed with exception: {e}", exc_info=True)
@@ -817,36 +816,21 @@ def _managed_post_commit_tests_gate(
     suite rolls the assisted merge back instead of shipping a warning (ordinary
     commits keep the warning-only contract later in the flow). The gate is
     MANDATORY: neither the caller's skip_tests nor OUROBOROS_PRE_PUSH_TESTS=0
-    can wave a managed merge through untested — but the mandate is "the full
-    suite provably ran green on the exact committed tree", not "run it twice":
-    when the resolver's pre-commit run (advisory preflight or the compensating
-    bypass preflight) pinned a PROCESS-HELD proof for a tree byte-identical to
-    the committed one, that proof is reused and the duplicate run is skipped
-    (Q10). The authority is the host-written ctx record (synthesis F2) — the
+    can wave a managed merge through untested. The shared runner reuses a
+    PROCESS-HELD proof only when candidate files, source index, HEAD and the
+    effective test/environment contract match, after the distinct post-commit
+    baseline checks. A commit changes HEAD and requires a fresh run; repeated
+    checks of the same subject may reuse it. The authority is the ctx record;
     durable ``tests_evidence`` tx copy is resolver-writable forensics and a
-    forged tree there never suppresses this run; a restart between the proof
-    and the commit re-runs the suite once. The terminal record carries the
+    forged tree there never suppresses this run; a restart loses the proof
+    and requires a fresh run. The terminal record carries the
     same review metadata/fingerprints as every sibling failure record, so an
     operator can reconstruct WHICH reviewed revision the gate rejected."""
     if not managed_tx:
         return None
     del skip_tests  # deliberately ignored for managed merges
-    try:
-        committed_tree = run_cmd(
-            ["git", "rev-parse", "HEAD^{tree}"], cwd=ctx.repo_dir
-        ).strip()
-    except Exception:
-        committed_tree = ""
-    proofs = getattr(ctx, "_managed_tests_proof_trees", None) or ()
-    if committed_tree and committed_tree in proofs:
-        try:
-            ctx.emit_progress_fn(
-                "Managed post-commit tests: reusing the green pre-commit hermetic "
-                "run (exact tree match) — no duplicate suite run."
-            )
-        except Exception:
-            pass
-        return None
+    # The shared runner rechecks the post-commit baseline before comparing the
+    # complete workload. A tree-only fast path here would skip both checks.
     post_test_error = _post_commit_result(
         ctx, commit_message, False, test_warning_ref, force=True,
     )

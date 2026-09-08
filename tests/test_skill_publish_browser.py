@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -45,31 +46,11 @@ def test_ui_publish_stale_card_reaches_selected_preflight_and_task(
     )
     direct_server_with_data["restart_server"]()
 
-    posted_tasks = []
-
-    def handle_tasks(route, request):
-        if request.method == "POST" and request.url.rstrip("/").endswith("/api/tasks"):
-            posted_tasks.append(request.post_data_json)
-            route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=json.dumps(
-                    {
-                        "ok": True,
-                        "task_id": "publish-stale-task",
-                        "status": "scheduled",
-                    }
-                ),
-            )
-            return
-        route.continue_()
-
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
             try:
                 page = browser.new_page(viewport={"width": 1280, "height": 900})
-                page.route("**/api/tasks", handle_tasks)
                 page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 # Opening the Skills page starts TWO reads: /api/skills paints
                 # the cards, and the display-only OuroborosHub catalog repaints
@@ -116,12 +97,20 @@ def test_ui_publish_stale_card_reaches_selected_preflight_and_task(
                 dialog_text = dialog.inner_text()
                 assert "Needs attention" in dialog_text
                 assert "snapshot_manifest_missing" in dialog_text
-                with page.expect_request("**/api/tasks", timeout=30_000):
+                with page.expect_response(
+                    lambda response: response.request.method == "POST"
+                    and response.url.rstrip("/").endswith("/api/tasks"),
+                    timeout=30_000,
+                ) as admission:
                     dialog.locator("[data-confirm-ok]").click()
                 page.wait_for_function("() => !document.querySelector('.confirm-dialog')", timeout=30_000)
 
-                assert len(posted_tasks) == 1
-                payload = posted_tasks[0]
+                response = admission.value
+                assert response.status == 200, response.text()
+                accepted = response.json()
+                assert accepted["ok"] is True
+                task_id = accepted["task_id"]
+                payload = response.request.post_data_json
                 assert payload["type"] == "skill_publish"
                 assert payload["metadata"]["skill_publish_target"] == {
                     "skill": skill_name,
@@ -129,9 +118,19 @@ def test_ui_publish_stale_card_reaches_selected_preflight_and_task(
                 }
                 assert "workspace_root" not in payload
                 assert "acceptance_claims" not in payload
+                # Admission, live Main projection and history must agree on the
+                # real identity. A fake HTTP success cannot prove this boundary.
+                assert page.request.get(f"{url}/api/tasks/{task_id}").status == 200
+                page.click('[data-nav-page="chat"]')
+                visible_task = page.locator(f'#page-chat .chat-live-card[data-task-id="{task_id}"]')
+                visible_task.wait_for(state="visible", timeout=30_000)
+                page.reload(wait_until="domcontentloaded")
+                visible_task.wait_for(state="visible", timeout=30_000)
             finally:
                 browser.close()
     except PlaywrightError as exc:
         if "Executable doesn't exist" in str(exc) or "playwright install" in str(exc).lower():
+            if "chromium" in os.environ.get("OUROBOROS_EXPECT_BROWSER_ENGINES", "").split(","):
+                raise
             pytest.skip(str(exc))
         raise

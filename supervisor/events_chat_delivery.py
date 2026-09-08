@@ -109,6 +109,24 @@ def _register_delivered(ctx: Any, delivery_id: str) -> None:
 
 def _handle_send_message(evt: Dict[str, Any], ctx: Any) -> None:
     try:
+        if evt.get("terminal_host_notice"):
+            from supervisor.terminal_delivery import project_terminal_result_event, register_pending_delivery
+
+            answer = dict(evt)
+            notice = str(answer.pop("terminal_host_notice"))
+            note_event = project_terminal_result_event(
+                ctx.DRIVE_ROOT, None, str(evt.get("task_id") or ""),
+                result_text=notice, terminal_origin="host_notice",
+                base_event={**answer, "text": notice, "log_text": notice},
+            )
+            note_event.pop("system_type", None)
+            note_event["delivery_id"] += ":host_notice"
+            # Owe the notice before the answer clears its bundled outbox row.
+            # Each ordinary send retains its own failure/replay/dedupe semantics.
+            register_pending_delivery(ctx.DRIVE_ROOT, note_event)
+            _handle_send_message(answer, ctx)
+            _handle_send_message(note_event, ctx)
+            return
         delivery_id = str(evt.get("delivery_id") or "")
         if delivery_id and delivery_id in _DELIVERED_MESSAGE_IDS:
             log.debug("send_message suppressed as duplicate (delivery_id=%s)", delivery_id)

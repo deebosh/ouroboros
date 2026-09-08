@@ -92,7 +92,9 @@ def _child_result_sha256(result: Dict[str, Any]) -> str:
 
     Cost, timestamps, queue diagnostics, and parent-decision fields are omitted by
     construction. A content/status/artifact change therefore invalidates a prior
-    disposition, while accounting or coordination telemetry does not.
+    disposition, while accounting or coordination telemetry does not. The host
+    notice is part of the parent's consumed result, separate from model-answer
+    identity; its absence preserves the historical hash exactly.
     """
 
     semantic_result = result
@@ -108,6 +110,8 @@ def _child_result_sha256(result: Dict[str, Any]) -> str:
         "artifact_status": str(semantic_result.get("artifact_status") or bundle.get("status") or ""),
         "artifacts": _stable_artifact_identities(semantic_result),
     }
+    if "terminal_host_notice" in semantic_result:
+        payload["terminal_host_notice"] = semantic_result["terminal_host_notice"]
     encoded = json.dumps(
         payload,
         ensure_ascii=False,

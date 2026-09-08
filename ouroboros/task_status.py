@@ -1168,10 +1168,12 @@ def format_subagent_absorption_message(
     reading its 3 children). Whole-artifact-or-pointer: each terminal direct child is
     injected in FULL while the aggregate fits ``budget_chars``; once exceeded, the
     remaining children are replaced WHOLE by a get_task_result pointer — a child's
-    result is NEVER mid-truncated, and the full output is always durable + pullable
-    (P1). Grandchildren roll up to their direct parent: the root sees their STATUS
+    result plus its separately labelled host notice is NEVER mid-truncated, and
+    the full output is always durable + pullable (P1). Grandchildren roll up to
+    their direct parent: the root sees their STATUS
     only, not their raw output (avoids deep-tree context explosion)."""
     from ouroboros.tools.join_ledger import _child_result_sha256
+    from ouroboros.task_finalization import provider_terminal_body
 
     parent = str(parent_task_id or "").strip()
     direct = [c for c in children if str(c.get("parent_task_id") or "") == parent]
@@ -1190,7 +1192,10 @@ def format_subagent_absorption_message(
     for child in terminal:
         cid = str(child.get("task_id") or child.get("id") or "")
         role = str(child.get("role") or "")
-        result = str(child.get("result") or "").strip()
+        result = provider_terminal_body(
+            str(child.get("result") or "").strip(),
+            str(child.get("terminal_host_notice") or ""),
+        )
         terminal_status = str(child.get("child_status") or "")
         status_suffix = (
             f", terminal_result_status={terminal_status}"

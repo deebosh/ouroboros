@@ -514,8 +514,8 @@ def test_validate_findings_demotes_and_drops_structurally():
     assert by_id["f1"]["class"] == "blocking" and by_id["f1"]["breaks"] == "claim_1"
     assert by_id["f2_2"]["class"] == "note" and by_id["f2_2"]["breaks"] == "claim_9"  # minted id, demoted
     assert by_id["n1"]["class"] == "note"
-    # I-03: a repeat is DEMOTED, not dropped — a re-asked question must not close the wave.
-    assert by_id["n2"]["class"] == "note" and by_id["n4"]["class"] == "note"
+    # I-03: deduplication must not turn an unresolved request into optional advice.
+    assert by_id["n2"]["class"] == "need_evidence" and by_id["n4"]["class"] == "need_evidence"
     assert by_id["n3"]["class"] == "need_evidence"
     assert by_id["x"]["class"] == "note"
     assert by_id["empty"]["class"] == "note" and by_id["empty"]["summary"] == "(missing summary)"
@@ -658,6 +658,27 @@ def test_closure_table_and_control_line_invariants():
     assert _control("GREEN", False) is None and _control("REVISE_PLAN", True) is None
 
 
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+def test_optional_notes_do_not_require_disposition(enforcement):
+    note = dict(NOTE, finding_id="1:n")
+    need = dict(NEED, finding_id="2:e")
+    blocker = dict(BLOCK, finding_id="3:b")
+    closure = plan_spec.closure_after_disposition("REVIEW_REQUIRED", [note], [], enforcement)
+    assert closure["closed"] and closure["open_ids"] == []
+    mixed = plan_spec.closure_after_disposition("REVIEW_REQUIRED", [note, need], [], enforcement)
+    assert not mixed["closed"] and mixed["open_ids"] == ["2:e"]
+    disposed = [{"finding_id": "2:e", "decision": "defer", "rationale": "not needed to start"}]
+    assert plan_spec.closure_after_disposition(
+        "REVIEW_REQUIRED", [note, need], disposed, enforcement,
+    )["closed"]
+    rejected = [{"finding_id": "3:b", "decision": "reject", "rationale": "disagree"}]
+    below_quorum = plan_spec.closure_after_disposition(
+        "REVIEW_REQUIRED", [note, blocker], rejected, enforcement,
+    )
+    assert not below_quorum["closed"] and below_quorum["open_ids"] == ["3:b"]
+    assert not plan_spec.closure_after_disposition("DEGRADED", [note], [], enforcement)["closed"]
+
+
 # ------------------------------------------------------------------- B5 packet
 
 
@@ -684,6 +705,9 @@ def test_system_prompt_stance_and_bible_gating():
     assert "Convergence rule" not in plain
     assert "blocking" in lowered and "`breaks`" in plain
     assert "need_evidence" in plain
+    assert "important brainstorming opportunity" in plain
+    assert "optional `note` findings" in plain
+    assert "without a required disposition" in plain
     for phrase in ("Success conditions", "Load-bearing decisions", "Constraints and invariants",
                    "Deferrals", "Evidence sufficiency"):
         assert phrase in plain

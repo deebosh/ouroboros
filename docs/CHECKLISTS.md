@@ -181,7 +181,7 @@ Used by `commit_reviewed` for all changes to the Ouroboros repository.
 | 23 | delegated_transport | If the diff touches the delegated execution/review transport (ouroboros/subagents.py dispatch/route-health, ouroboros/tools/delegate.py, ouroboros/delegate_custody.py, ouroboros/delegate_progress.py, ouroboros/review_execution.py session executors, ouroboros/gateways/claudexor.py, ouroboros/claudexor_daemon.py, ouroboros/claudexor_runtime.py), does it preserve the delegation invariants: capability reductions reach all three destinations (durable envelope, child prompt, parent result — D4); a result counts as received only after a hash-bound read to EOF and retries replay the recorded byte-identical body (D7); the exact selected subagent_id snapshot starts its exact session route with custody-durable requested→effective evidence or returns a TYPED refusal, and neither host dispatch nor tool preflight substitutes another session/API/native route — any fallback is a new explicit LLM selection; quota exhaustion needs POSITIVE evidence judged against the route's own model (applies_to_models scoping, absence = unknown = usable); delegated spend settles through custody with unknown-never-rendered-as-zero and root/parent lineage; and no vendor/harness name is ever branched on in core. For configured external work orders, verify the one total 250,000-character cap, byte-complete fitting orders, full-SHA/source-selector partial lenses only on a positively interactive route, typed cannot-verify refusal otherwise, byte-identical pending recovery of the stored compact body, durable STARTED/replay source state, an actor-readable `get_task_result` canonical range whose renderer is shared with exact source_response verification, a retry after `already_resolved` only when a durable prior delivered event binds the same interaction and exact source selector, terminal cannot_verify before complete interval coverage, and apply refusal until coverage is complete (reject remains available); a disclosed partial lens must never be treated as a complete contract. (PASS with "Not applicable" if no delegated-transport surface changed.) | critical |
 | 24 | perf_lifecycle | If the diff adds or changes an endpoint, poller, subscription, or timer, or reads a growing store (JSONL log, ledger, event table): does any interaction-path read scan an unbounded store per request/message/tick (a full-table read filtered in code is such a scan)? Is a subscription/observer/interval/listener added without a paired disposer? Does O(history) work run on a poll/stream path? Does a GET handler perform new steady-state durable writes outside the two named exceptions? The authoritative definitions are DEVELOPMENT.md "Invariant: Projection over replay (hot readers of growing stores)" and "Invariant: UI resources carry a disposer" — check against those, do not re-derive them here. For an embedded or framed UI surface, also use DEVELOPMENT.md "Invariant: Embedded surfaces declare geometry and refresh semantics" for host geometry/overflow, teardown, retry/error, and real-consumer visual evidence. (PASS with "Not applicable" if the diff touches none of these surfaces.) | advisory |
 | 25 | source_completeness | If any changed consumer can authorize PASS, a destructive rewrite, or replacement of a full contract, does its input distinguish complete from partial and carry a source reference the same actor can resolve? Does the consumer materialize every named omitted source before the decision, or abstain with the existing typed incomplete/degraded outcome? A marker or host claim alone is never sufficient. | critical when applicable |
-| 26 | actor_readable_projection | If the diff adds a bounded projection, omission marker, summary, or status count, can the actor who must decide read the exact canonical source through an existing path? Verify the ref, root, generation/range or ID, and the reader's ability to resolve it; host-unattested or merely hypothetical retrieval does not certify completeness. | critical when applicable |
+| 26 | actor_readable_projection | If the diff adds a bounded projection, omission marker, summary, or status count, can the actor who must decide read the exact canonical source through an existing path? Verify the ref, root, generation/range or ID, and the reader's ability to resolve it after the real merge, promotion and cleanup; a successful copy or an intermediate packet does not prove the persisted consumer still resolves its citations. Host-unattested or merely hypothetical retrieval does not certify completeness. | critical when applicable |
 | 27 | canonical_memory_fork | If the diff touches Project/fork/execution roots, summaries, memory, or GC, does it preserve one canonical identity and distinguish authority/biography from execution-local state? Are referenced canonical artifacts promoted or retained before a child/root is collected, with missing legacy bytes represented as gaps? | critical when applicable |
 | 28 | review_artifact_continuity | If the diff changes plan, triad, scope, advisory, or acceptance evidence, are exact artifact bodies, source selectors, candidate SHA, reviewer model/profile/thread/route continuity, and all omissions retained? Continuity, transport, and coverage discrepancies are retained as typed facts beside the exact artifact bodies; a bounded or partial reviewer view must remain DEGRADED/NOT_RUN rather than PASS, and must never be implemented by discarding, blanking, or relabeling the bodies or their original cause. | critical when applicable |
 | 29 | display_identity_replay | If the diff changes routing, steering, task cards, or history replay, does it preserve the event-time human `Project › Task` presentation snapshot in both live and replay paths while keeping opaque IDs as internal/debug facts? | advisory when applicable |
@@ -750,9 +750,14 @@ or names its absence as an omission row when the locator cannot be resolved).
 Judge only the evidence actually present; nothing missing is ever silent.
 
 **One question: is this SPEC sufficient to START the work safely?** Not "is everything
-specified" — details may be worked out while doing. The reviewer does not write a competing
-plan, does not propose alternatives for their own sake, and has no finding quota. The agent
-authors the plan (P0); reviewers attack it; the host counts, aggregates and enforces.
+specified" — details may be worked out while doing. This is also an important brainstorming
+mechanism: challenge the premise and suggest simpler, more general alternatives when useful.
+Such advice is an optional `note`; Ouroboros decides whether to adopt it without mandatory
+disposition. A premise challenge, preference or repetition alone does not earn blocking
+authority. Independently demonstrated failures still follow the height rule below. No
+compulsory competing plan or finding quota: those create endless rewrite/review cycles.
+The agent authors the plan (P0); reviewers contribute criticism; the host aggregates and
+enforces the actual blocking contract.
 
 ### The spec you are reviewing
 
@@ -786,9 +791,11 @@ structurally unverifiable, that is blocking against the claim, not a `need_evide
 
 - `blocking` — requires `breaks: <spec id>`. Without a valid id the host demotes it to a note and
   discloses the demotion.
-- `note` — the agent disposes of it (accept / reject with rationale / defer) at no cost.
+- `note` — optional advice retained in the review; no disposition is required to proceed.
 - `need_evidence` — a typed request `{locator, why}`. It never blocks by itself and the same
-  locator cannot be asked twice on one task; the host attaches the locator on the next cycle
+  locator is remembered only once per task; repeating a valid request or filling the bounded
+  request memory does not turn it into optional advice. It retains its free disposition,
+  without another remembered locator or paid call. The host attaches a remembered locator on the next cycle
   (through the same evidence policy), so the agent's next envelope carries it — a new
   fingerprint, i.e. a paid cycle that actually has the evidence — or, when the locator cannot
   be resolved, carries a named omission row for it, so the panel judges the absence instead
@@ -811,9 +818,12 @@ authority, and prose outside the array is not parsed.
 ### Cycles and closure
 
 - **GREEN** — no findings. Proceed.
-- **REVIEW_REQUIRED** — notes / `need_evidence`, or a blocking finding BELOW quorum. The agent
-  closes notes and `need_evidence` with one disposition call covering every finding id
-  (accept / reject with rationale / defer) — no new panel, no cost. A below-quorum blocking
+- **REVIEW_REQUIRED** — notes / `need_evidence`, or a blocking finding BELOW quorum. A
+  note-only wave closes immediately in either enforcement mode. The agent closes outstanding
+  `need_evidence` with a disposition (accept / reject with rationale / defer) — no new panel,
+  no cost; notes do not need entries. Voluntary dispositions on current closed note-only
+  waves remain available through the same call, without reopening or a paid cycle.
+  A below-quorum blocking
   finding stays OPEN whatever the disposition says: it closes only through a changed spec
   (a new fingerprint, the next paid cycle) or a reject the next paid delta cycle judges.
 - **REVISE_PLAN** — blocking findings at quorum. A disposition can never close it: the agent

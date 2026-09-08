@@ -246,6 +246,12 @@ def _run_command(args: argparse.Namespace) -> int:
         result = client.request("GET", f"/api/tasks/{urllib.parse.quote(task_id)}")
     result = _await_cost_finality(client, task_id, result)
     exit_code = 0 if _is_terminal_success(result) else 1
+    if not args.jsonl:
+        from ouroboros.task_finalization import provider_terminal_body, terminal_notice_text
+
+        notice = terminal_notice_text(result)
+        if notice:
+            print(provider_terminal_body("", notice), file=sys.stderr)
     if args.patch_out:
         patch = _patch_from_result(client, task_id, result, strict=True)
         pathlib.Path(args.patch_out).expanduser().write_text(patch, encoding="utf-8")

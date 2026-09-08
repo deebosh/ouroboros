@@ -8,12 +8,119 @@ Shares the engine harness with ``test_plan_review_engine`` (real ``ToolContext``
 from __future__ import annotations
 
 import json
+import pytest
 
 import ouroboros.tools.plan_review as pr
 from tests.test_plan_review_engine import CLEAN, DECK_SPEC, _call, _control, _finding, _slots, _state, _user_text
 from tests.test_plan_review_engine import harness as _engine_harness  # the shared fixture, re-exported below
 
 harness = _engine_harness  # noqa: F811 - pytest registers the fixture under this module's namespace
+
+
+@pytest.mark.parametrize("notice_prefix", ["", "source detail " * 4000], ids=["complete", "budgeted"])
+def test_task_locator_preserves_host_notice_and_invalidates_changed_evidence(harness, notice_prefix):
+    from ouroboros.task_results import load_task_result, write_task_result
+
+    answer = "The report is complete."
+    write_task_result(harness.drive, "previous", "completed", result=answer)
+    reader = pr._task_evidence_reader(harness.drive)
+    assert "terminal_host_notice" not in json.loads(reader("previous"))
+    first_notice = notice_prefix + "First source limitation."
+    write_task_result(harness.drive, "previous", "completed", terminal_host_notice=first_notice)
+    sub = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    spec = {**DECK_SPEC, "evidence": ["task:previous"]}
+    request = pr._PlanRequest(goal="Ship the deck", plan="Outline first, then draft each slide.", spec=spec)
+    packet = pr.build_plan_review_packet_for_dry_run(ctx, request)
+    assert _control(_call(ctx, spec=spec))["closed"] is True
+    first = _state(harness)["waves"][-1]
+    assert first["request_fingerprint"] == packet["fingerprint"]
+    attached = packet["manifest"]["attached"][0]
+    assert '"terminal_host_notice":' in attached["text"]
+    assert '"terminal_host_notice":' in _user_text(sub.calls[0]["request"].messages[1]["content"])
+    assert json.loads(reader("previous"))["result"] == answer
+    assert _control(_call(ctx, spec=spec))["closed"] is True and len(sub.calls) == 1
+
+    write_task_result(harness.drive, "previous", "completed",
+                      terminal_host_notice=notice_prefix + "Second source limitation.")
+    packet = pr.build_plan_review_packet_for_dry_run(ctx, request)
+    assert _control(_call(ctx, spec=spec))["closed"] is True
+    second = _state(harness)["waves"][-1]
+    assert second["request_fingerprint"] == packet["fingerprint"]
+    changed = packet["manifest"]["attached"][0]
+    assert len(sub.calls) == 2 and _state(harness)["cycles_paid"] == 2
+    assert second["request_fingerprint"] != first["request_fingerprint"]
+    assert changed["sha256"] != attached["sha256"]
+    assert load_task_result(harness.drive, "previous")["result"] == answer
+    if notice_prefix:
+        assert changed["text"] == attached["text"]  # The changed tail is beyond the view.
+        assert any(o["reason"].startswith("truncated_to_") for o in second["evidence_manifest"]["omissions"])
+    else:
+        assert json.loads(attached["text"])["terminal_host_notice"] == first_notice
+        assert json.loads(changed["text"])["terminal_host_notice"] == "Second source limitation."
+
+
+@pytest.mark.parametrize("decision", ["accept", "reject", "defer"])
+def test_closed_notes_allow_voluntary_disposition_without_new_authority(harness, decision):
+    notes = json.dumps([_finding("n1", "note"), _finding("n2", "note")])
+    sub = harness.install({"s1": notes, "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    assert _control(_call(ctx)) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    before = _state(harness)
+    wave = before["waves"][-1]
+    fingerprint = wave["request_fingerprint"]
+    prior_ref = wave["wave_artifact"]
+    exact_before = pr._read_plan_review_wave_artifact(harness.drive, "task-1", prior_ref)
+    items = [{"finding_id": "s1:n1", "decision": decision, "rationale": "Optional design judgment"}]
+
+    out = pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fingerprint, "items": items})
+
+    assert _control(out) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    assert "Notes are optional" in out and "neither reopens" in out
+    after = _state(harness)
+    annotated = after["waves"][-1]
+    assert annotated["dispositions"] == items  # n2 is not an obligation
+    assert after["cycles_paid"] == before["cycles_paid"] == 1
+    assert after["current_attempt"] == before["current_attempt"]
+    for key in ("spec", "spec_hash", "findings", "aggregate", "closed", "actors"):
+        assert annotated[key] == wave[key]
+    exact = pr._read_plan_review_wave_artifact(harness.drive, "task-1", annotated["wave_artifact"])
+    assert exact["supersedes_wave_artifact"] == prior_ref
+    assert exact["dispositions"] == items
+    assert pr._read_plan_review_wave_artifact(harness.drive, "task-1", prior_ref) == exact_before
+    assert _control(_call(ctx)) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    assert len(sub.calls) == 1
+
+
+def test_closed_note_annotation_keeps_input_validation_and_current_wave_binding(harness):
+    from ouroboros.task_results import record_plan_review_dispositions
+
+    sub = harness.install({"s1": json.dumps([_finding("n1", "note")]), "s2": CLEAN, "s3": CLEAN})
+    ctx = harness.make_ctx()
+    _call(ctx)
+    before = _state(harness)
+    fp = before["waves"][-1]["request_fingerprint"]
+    unknown = pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fp, "items": [
+        {"finding_id": "missing", "decision": "accept", "rationale": "r"},
+    ]})
+    assert unknown.startswith("ERROR: PLAN_REVIEW_DISPOSITION_INVALID")
+    assert _state(harness) == before
+    # Existing duplicate-disposition disclosure remains visible, but optional advice
+    # cannot become a new hold just because its annotation is malformed.
+    duplicate = pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fp, "items": [
+        {"finding_id": "s1:n1", "decision": "accept", "rationale": "r"},
+        {"finding_id": "s1:n1", "decision": "reject", "rationale": "r"},
+    ]})
+    assert "duplicate_disposition:s1:n1" in duplicate
+    assert _control(duplicate)["closed"] is True
+    _call(ctx, spec={**DECK_SPEC, "in_scope": ["a 4-slide deck"]})
+    current = _state(harness)
+    stale = pr._handle_plan_task(ctx, review_disposition={"review_fingerprint": fp, "items": []})
+    assert stale.startswith("ERROR: PLAN_REVIEW_DISPOSITION_STALE")
+    with pytest.raises(ValueError, match="PLAN_REVIEW_DISPOSITION_STALE"):
+        record_plan_review_dispositions(harness.drive, "task-1", fingerprint=fp, dispositions=[], closed=True)
+    assert _state(harness) == current
+    assert len(sub.calls) == 2
 
 
 def test_constitutional_packet_without_architecture_is_a_typed_failure(harness):
@@ -138,7 +245,8 @@ def test_reviewer_requests_are_bounded_like_declared_evidence(harness):
 def test_need_evidence_memory_is_bounded_per_task(harness):
     """W3 (delta review round 6): the per-task request memory (`need_evidence_seen`) is bounded
     (MAX_NEED_EVIDENCE_MEMORY) so the durable review state stays bounded whatever a panel asks
-    for; a request past the cap is demoted (never remembered), disclosed `need_evidence_memory_full`;
+    for; a request past the cap is never remembered, disclosed `need_evidence_memory_full`,
+    but still needs a free disposition instead of becoming optional advice;
     within one wave the memory accumulates across slots so the cap is exact."""
     from ouroboros.tools.plan_spec import MAX_NEED_EVIDENCE_MEMORY
 
@@ -166,8 +274,8 @@ def test_need_evidence_memory_is_bounded_per_task(harness):
     wave = state["waves"][-1]
     full = [d for a in wave["actors"] for d in a["disclosures"] if d.startswith("need_evidence_memory_full:")]
     assert len(full) == 2 * per_wave - MAX_NEED_EVIDENCE_MEMORY
-    kept = sum(1 for f in wave["findings"] if f["class"] == "need_evidence")
-    assert kept == MAX_NEED_EVIDENCE_MEMORY - per_wave
+    assert all(f["class"] == "need_evidence" for f in wave["findings"])
+    assert wave["closed"] is False
 
 
 
@@ -425,7 +533,7 @@ def test_disposition_inputs_are_bounded_at_entry(harness):
     item count — so a $0 closure can always be persisted."""
     from ouroboros.tools import plan_spec
 
-    note = json.dumps([_finding("n1", "note")])
+    note = json.dumps([_finding("n1", "need_evidence", locator="notes.md")])
     harness.install({"s1": note, "s2": CLEAN, "s3": CLEAN})
     ctx = harness.make_ctx()
     _call(ctx)
@@ -542,9 +650,8 @@ def test_first_cycle_and_no_request_delta_cycle_carry_no_continuation_delta(harn
     assert not [d for row in wave2["actors"] for d in row.get("capability_delta") or []]
 
 
-def test_missing_requested_evidence_reask_is_demoted_and_keeps_the_wave_open(harness):
-    """Re-asking a locator the host already could not attach is a `need_evidence_repeat`
-    note: no new attachment, no new fingerprint, and the wave stays open at $0."""
+def test_missing_requested_evidence_reask_keeps_free_disposition_without_new_attachment(harness):
+    """A repeated need stays open, without growing request memory or buying another panel."""
     ask = json.dumps([_finding("f1", "need_evidence", breaks="goal", locator="gone.md",
                                summary="read it")])
     sub = harness.install({"s1": ask, "s2": CLEAN, "s3": CLEAN})
@@ -555,8 +662,18 @@ def test_missing_requested_evidence_reask_is_demoted_and_keeps_the_wave_open(har
     wave = _state(harness)["waves"][-1]
     assert wave["paid"] is True and wave["closed"] is False
     repeat = [f for f in wave["findings"] if f["locator"] == "gone.md"]
-    assert repeat and [f["class"] for f in repeat] == ["note"]  # demoted, never re-attached
+    assert repeat and [f["class"] for f in repeat] == ["need_evidence"]
     assert _control(out)["closed"] is False
+    assert _state(harness)["need_evidence_seen"] == ["gone.md"]
+    assert _control(_call(harness.make_ctx()))["closed"] is False  # Exact replay, not another panel.
+    assert len(sub.calls) == 1 and _state(harness)["cycles_paid"] == 2
+    disposed = pr._handle_plan_task(harness.make_ctx(), review_disposition={
+        "review_fingerprint": wave["request_fingerprint"],
+        "items": [{"finding_id": repeat[0]["finding_id"], "decision": "defer",
+                   "rationale": "The source is unavailable; it is not needed to begin this work."}],
+    })
+    assert _control(disposed) == {"outcome": "REVIEW_REQUIRED", "closed": True}
+    assert len(sub.calls) == 1 and _state(harness)["cycles_paid"] == 2
 
 
 def test_both_reviewer_routes_learn_the_range_selectors(harness):

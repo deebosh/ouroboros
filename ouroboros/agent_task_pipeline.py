@@ -56,7 +56,7 @@ from ouroboros.task_finalization import (
     build_sealed_final_package,
     build_swarm_efficiency as _build_swarm_efficiency,  # moved (module ceiling); tests import it here
     deliver_final_message_live, prepare_terminal_send_event, register_final_answer_owed, stamp_root_final_phase,
-    sealed_final_prompt_section, terminal_result_fields,  # noqa: F401 -- the pipeline module keeps its historical import surface for the synthesis leaf
+    sealed_final_prompt_section, terminal_result_fields, terminal_notice_text,  # noqa: F401 -- the pipeline module keeps its historical import surface for the synthesis leaf
 )
 from ouroboros.dialogue_provenance import is_presence_task, presence_provenance_fields  # noqa: F401 -- the pipeline module keeps its historical import surface for the synthesis leaf
 from ouroboros.presence_runner import build_presence_result_event
@@ -507,7 +507,7 @@ def emit_task_results(
         # on a nearby progress row that may age out independently.
         send_event["progress_meta"] = dict(_message_meta)
     send_event = prepare_terminal_send_event(env.drive_root, task, text, usage, send_event, ephemeral=_ephemeral, presence=_presence)
-    pending_events.append(build_presence_result_event(task, text, ctx, provider_notice=str(usage.get("terminal_provider_notice") or "")) if _presence else send_event)
+    pending_events.append(build_presence_result_event(task, text, ctx, provider_notice=terminal_notice_text(usage)) if _presence else send_event)
     duration_sec = round(time.time() - start_time, 3)
     n_tool_calls = len(llm_trace.get("tool_calls", []))
     n_tool_errors = sum(1 for tc in llm_trace.get("tool_calls", [])

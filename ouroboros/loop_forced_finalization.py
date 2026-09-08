@@ -16,7 +16,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ouroboros.loop_llm_call import forced_response_is_incomplete, forced_response_parts
 from ouroboros.outcomes import REASON_DELIVERY_CONTROL_DEGRADED
-from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL
+from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_NOTICE, TERMINAL_ORIGIN_HOST_SALVAGE, TERMINAL_ORIGIN_MODEL_FINAL, set_terminal_host_notice
 from ouroboros.tool_policy import swarm_router_turn
 from ouroboros.tools.registry import ToolRegistry
 from ouroboros.usage_accounting import BudgetExceeded
@@ -648,11 +648,17 @@ def _publish_model_forced_candidate(
     *,
     degraded_reason: str = "",
 ) -> Optional[DeliveryCandidate]:
-    """Replace the retained answer and old verdict."""
+    """Publish forced model text, retaining an unchanged current answer's binding."""
 
     tools = getattr(ctx, "tools", None)
     if tools is None:
         return None
+    current = _loop()._current_delivery_candidate(ctx, llm_trace)
+    if current is not None and current.full_text == sanitize_tool_result_for_log(full_text):
+        return _loop()._degrade_retained_delivery_candidate(
+            ctx, llm_trace, current, control=f"forced_preserve:{reason_code}",
+            reason_code=degraded_reason or reason_code,
+        )
     candidate = _loop()._replace_delivery_candidate(
         tools,
         ctx,
@@ -692,15 +698,12 @@ def _publish_stale_forced_candidate(
         "does not claim to incorporate it. Resume the task to produce and review "
         "a complete answer against the latest evidence."
     )
-    full_text = _loop()._compose_delivery_suffix(
-        _loop()._compose_delivery_suffix(stale_candidate.full_text, suffix),
-        disclosure,
-    )
+    set_terminal_host_notice(ctx.accumulated_usage, suffix, disclosure)
     candidate = _loop()._replace_delivery_candidate(
         tools,
         ctx,
         llm_trace,
-        full_text,
+        stale_candidate.full_text,
         control=f"forced_stale_preserve:{reason_code}",
     )
     # A host disclosure cannot make the preserved model text current.
@@ -743,6 +746,7 @@ def _forced_fallback_result(
         if tool_ctx is not None else ""
     )
     suffix = plan_suffix + _loop()._forced_orphan_note(ctx)
+    set_terminal_host_notice(ctx.accumulated_usage, suffix)
     live_candidate = _loop()._live_delivery_candidate(ctx)
     fallback_is_retained_model_text = (
         isinstance(live_candidate, _loop().DeliveryCandidate)
@@ -752,7 +756,7 @@ def _forced_fallback_result(
     if candidate is not None:
         composed = (
             candidate.model_text or candidate.full_text if provider_terminal else
-            sanitize_tool_result_for_log(_loop()._compose_delivery_suffix(candidate.full_text, suffix))
+            candidate.full_text
         )
         ctx.accumulated_usage.update(
             terminal_origin=TERMINAL_ORIGIN_MODEL_FINAL,
@@ -816,7 +820,7 @@ def _forced_fallback_result(
             )
             return candidate.full_text, ctx.accumulated_usage, llm_trace
 
-    composed = sanitize_tool_result_for_log(_loop()._compose_delivery_suffix(fallback_text, suffix))
+    composed = sanitize_tool_result_for_log(fallback_text)
     candidate = _publish_model_forced_candidate(
         ctx, llm_trace, composed, reason_code,
     )
@@ -1017,9 +1021,8 @@ def _forced_final_answer(
             if tools_ctx is not None else ""
         )
         ctx.accumulated_usage["terminal_plan_review_open"] = bool(plan_suffix)
-        full_text = extracted if provider_terminal else _loop()._compose_delivery_suffix(
-            extracted, plan_suffix + _loop()._forced_orphan_note(ctx),
-        )
+        set_terminal_host_notice(ctx.accumulated_usage, plan_suffix, _loop()._forced_orphan_note(ctx))
+        full_text = extracted
         ctx.accumulated_usage["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
         candidate = _publish_model_forced_candidate(
             ctx, llm_trace, full_text, reason_code,

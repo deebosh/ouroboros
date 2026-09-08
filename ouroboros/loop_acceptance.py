@@ -50,14 +50,13 @@ def _task_acceptance_eligible(
 ) -> tuple[bool, str]:
     """Return ``(host_should_review, trigger_reason)``.
 
-    ``auto`` and ``required`` are effect-gated: the host enforces review
-    when the turn produced reviewable effects (commit / deliverable / repo /
-    workspace / skill write), declared a typed deliverable/criterion, or is
-    not a direct-chat turn (queued / headless / scheduled). Read-only
-    research and ordinary tool use in direct chat do not justify a
-    three-reviewer panel; ephemeral routing turns are presentation/control
-    decisions. ``off`` never reviews. Gates on typed contracts and observable
-    runtime facts (P3 immune gate), never message content (P5)."""
+    Both modes review observable effects and typed deliverables/criteria.
+    ``auto`` also honors an agent's explicit review-tool request, so read-only
+    research remains reviewable without classifying its prose or tool counts.
+    Queue membership alone qualifies only in ``required``. Child reviews stay
+    advisory, ephemeral control turns are excluded, and ``off`` never reviews.
+    Eligibility uses typed contracts and runtime facts, never message content.
+    """
     if mode == "off":
         return False, "off"
     if not is_root_task:
@@ -68,7 +67,7 @@ def _task_acceptance_eligible(
         prefix = "required" if mode == "required" else "auto"
         if turn_has_reviewable_effects(llm_trace):
             return True, f"{prefix}_effect"
-        if not is_direct_chat:
+        if mode == "required" and not is_direct_chat:
             return True, f"{prefix}_nondirect"
         contract = task_contract if isinstance(task_contract, dict) else {}
         if (
@@ -78,6 +77,11 @@ def _task_acceptance_eligible(
             or bool(contract.get("acceptance_claims"))
         ):
             return True, f"{prefix}_contract"
+        if mode == "auto" and any(
+            isinstance(call, dict) and call.get("tool") == "task_acceptance_review"
+            for call in (llm_trace.get("tool_calls") or [])
+        ):
+            return True, "auto_agent_request"
         return False, "skipped_conversation"
     return False, "skipped_unknown_mode"
 

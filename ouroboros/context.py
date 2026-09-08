@@ -1316,6 +1316,10 @@ def _capture_context_core(
             if dr_text.strip():
                 semi_stable_parts.append(
                     "## Last Deep Self-Review\n\n"
+                    "Historical report from memory/deep_review.md, not a verdict on the current tree. "
+                    "Use its recorded provenance; an unrecorded date or source revision is unknown, "
+                    "not implied by the file timestamp or today's checkout. Recheck findings against "
+                    "current evidence.\n\n"
                     + truncate_review_artifact(dr_text, limit=8000)
                 )
     except Exception:

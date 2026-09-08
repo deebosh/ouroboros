@@ -6,6 +6,7 @@ filesystem state needed for isolated external runs and patch artifacts.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -446,14 +447,17 @@ def copy_child_task_result(parent_drive_root: pathlib.Path, task: Dict[str, Any]
     if not isinstance(child_result, dict):
         return None
     # Canonical terminal results must not retain child-local forensic/source
-    # pointers that the startup GC is about to delete. Promotion happens before
-    # the one atomic canonical result write; a live ref whose destination write
-    # was interrupted remains named in metadata so GC can retry safely.
-    from ouroboros.observability import promote_child_task_refs
+    # pointers that the startup GC is about to delete. Bulk copies stay outside
+    # the result lock; review refs wait for CURRENT publication selection below.
+    # Interrupted copies retain their existing pending custody for GC/retry.
+    from ouroboros.observability import _rewrite_child_ref_tree, promote_child_task_refs
 
+    review_fields = {key: value for key, value in child_result.items() if key == "review_projection"}
     child_result, ref_promotion = promote_child_task_refs(
-        pathlib.Path(parent_drive_root), child_drive, task_id, child_result,
+        pathlib.Path(parent_drive_root), child_drive, task_id,
+        {key: value for key, value in child_result.items() if key != "review_projection"},
     )
+    child_result.update(review_fields)
     # W2 receipt-level handoff: the child's durable verify_and_record receipts ride
     # the SAME finalization copy-back as its artifacts (fail-soft, never blocks).
     _publish_child_verification_receipts(parent_drive_root, task_id, child_drive)
@@ -494,11 +498,23 @@ def copy_child_task_result(parent_drive_root: pathlib.Path, task: Dict[str, Any]
         if not preserve_parent_artifacts and existing_artifact_status not in ARTIFACT_TERMINAL_STATUSES:
             payload["artifact_status"] = ARTIFACT_STATUS_FINALIZING
         payload["child_status"] = child_status
+
+    def _project(current: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+        projected = project_replica_task_result_fields(current, incoming)
+        review = projected.get("review_projection", current.get("review_projection"))
+        if isinstance(review, dict):
+            promotion = copy.deepcopy(ref_promotion)
+            projected["review_projection"] = _rewrite_child_ref_tree(
+                review, pathlib.Path(parent_drive_root), child_drive, task_id, promotion,
+            )
+            projected["child_ref_promotion"] = promotion
+        return projected
+
     return write_task_result(
         parent_drive_root,
         task_id,
         child_status,
-        _field_projector=project_replica_task_result_fields,
+        _field_projector=_project,
         **payload,
     )
 
