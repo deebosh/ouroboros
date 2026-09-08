@@ -48,7 +48,7 @@ import shlex
 import subprocess
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from ouroboros.config import (
     CLAUDEXOR_STARTUP_WAIT_SEC as _SPAWN_WAIT_SEC,
@@ -83,6 +83,9 @@ _SETUP_ATTACH_ROLE = "setup_attach"
 _SHELL_POSIX = "posix"
 _SHELL_POWERSHELL = "powershell"
 _TRANSPORT_UNREACHABLE = "transport_unreachable"
+# The typed answer of ``OwnedClaudexorDaemon.stop_outcome``: an unconfirmed stop
+# is already disclosed (critical log + supervisor row) with custody retained.
+DaemonStopOutcome = Literal["stopped", "nothing_to_stop", "unconfirmed"]
 
 
 def _handshake_serving_mode(body: Any) -> str:
@@ -760,10 +763,18 @@ class OwnedClaudexorDaemon:
                         path, exc, exc_info=True)
 
     def stop(self) -> bool:
+        """``stop_outcome`` as Panic reads it: True only for a confirmed stop."""
+        return self.stop_outcome() == "stopped"
+
+    def stop_outcome(self) -> DaemonStopOutcome:
         """Stop verified own roots; report every unconfirmed remainder.
 
-        False also means nothing needed stopping. True requires a confirmed
-        stop with no remaining custody. Lock acquisition is bounded separately
+        ``"stopped"`` requires a confirmed stop with no remaining custody;
+        ``"nothing_to_stop"`` is the quiet empty case; ``"unconfirmed"`` has
+        already been disclosed by ``_report_stop_unconfirmed`` (critical log
+        plus the supervisor row) with custody retained, so a caller that must
+        proceed anyway — the owner's manual Restart — needs no private state
+        to tell the two non-stops apart. Lock acquisition is bounded separately
         from HTTP connect/read phases and each root's exit wait; there is no
         promised absolute wall-clock deadline for the whole teardown. A
         self-started Popen handle proves direct ownership; attached roots need
@@ -778,11 +789,11 @@ class OwnedClaudexorDaemon:
 
         if not self._lock.acquire(timeout=SHORT_POLL_TIMEOUT_SEC):
             self._report_stop_unconfirmed("daemon manager lock unavailable; custody unchanged")
-            return False
+            return "unconfirmed"
         if self._stopping:
             self._lock.release()
             self._report_stop_unconfirmed("owned daemon stop is already in progress")
-            return False
+            return "unconfirmed"
         self._generation += 1
         self._stopping = True
         self._lock.release()
@@ -813,9 +824,9 @@ class OwnedClaudexorDaemon:
                 if reason:
                     unconfirmed.insert(0, reason)
                 self._report_stop_unconfirmed("; ".join(dict.fromkeys(unconfirmed)))
-                return False
+                return "unconfirmed"
             self._last_error = ""
-            return child_stopped or bool(stopped)
+            return "stopped" if (child_stopped or stopped) else "nothing_to_stop"
         finally:
             with self._lock:
                 self._stopping = False
@@ -843,6 +854,29 @@ def get_owned_daemon() -> OwnedClaudexorDaemon:
         if _MANAGER is None:
             _MANAGER = OwnedClaudexorDaemon()
         return _MANAGER
+
+
+def warm_owned_daemon() -> bool:
+    """One background ``ensure_owned_gateway`` at server start, provisioned homes only.
+
+    The first delegation after a Restart then finds the daemon serving instead
+    of paying its spawn. Nothing new is managed here: a Stop that lands while
+    the ensure is still preparing retires it through the existing start
+    generation, a failure is logged and left to the first real caller, and an
+    unprovisioned home (no descriptor yet) is never touched (``False``).
+    """
+    if not owned_daemon_provisioned():
+        return False
+
+    def warm() -> None:
+        try:
+            ensure_owned_gateway().close()
+        except Exception:
+            log.info("Owned daemon warmup did not reach readiness; the first caller starts or joins",
+                     exc_info=True)
+
+    threading.Thread(target=warm, name="owned-daemon-warmup", daemon=True).start()
+    return True
 
 
 def read_owned_gateway() -> Any:
@@ -959,6 +993,8 @@ __all__ = [
     "ensure_owned_gateway",
     "read_owned_gateway",
     "get_owned_daemon",
+    "warm_owned_daemon",
+    "DaemonStopOutcome",
     "owned_config_dir",
     "owned_daemon_provisioned",
     "owned_descriptor_path",

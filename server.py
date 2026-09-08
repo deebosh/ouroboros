@@ -99,6 +99,7 @@ from ouroboros.server_restart import (  # noqa: F401
     _safe_restart_serialized,
     _shutdown_supervisor_event_bus,
     _shutdown_task_cleanup_args,
+    _stop_owned_work,
 )
 
 REPO_DIR = pathlib.Path(os.environ.get("OUROBOROS_REPO_DIR", pathlib.Path(__file__).parent))
@@ -375,22 +376,10 @@ def _process_bridge_updates(bridge, offset: int, ctx: Any) -> int:
                 log.warning("Failed to write owner restart no-resume flag", exc_info=True)
                 reply("⚠️ Restart cancelled: could not write restart state.", "failed")
                 continue
-            try:
-                ctx.kill_workers(
-                    force=True,
-                    terminal_status="cancelled",
-                    result_reason="Owner restart stopped this task before process restart.",
-                    **_managed_update_pending_kwargs(),
-                )
-            except Exception:
-                owner_restart_flag.unlink(missing_ok=True)
-                stable_skip_flag.unlink(missing_ok=True)
-                log.warning("Restart cancelled because worker shutdown failed", exc_info=True)
-                try:
-                    reply("⚠️ Restart cancelled: failed to stop workers.", "failed")
-                except Exception:
-                    pass
-                continue
+            # Everything reversible is behind us (checkout landed, no-resume
+            # intent durable): from here the restart always follows, and every
+            # unconfirmed stop is a critical diagnostic, never a deferral.
+            _stop_owned_work(ctx)
             try:
                 reply("Stopping active task. New settings apply to the next message.", "")
             except Exception:
@@ -1227,6 +1216,10 @@ async def lifespan(app):
     threading.Thread(
         target=_boot_managed_update_tasks, daemon=True, name="boot-managed-update",
     ).start()
+
+    if not pytest_default_real_data_dir:
+        from ouroboros.claudexor_daemon import warm_owned_daemon
+        warm_owned_daemon()  # provisioned homes only; one background ensure, off the startup path
 
     host_service_task = None
     host_service_server = None

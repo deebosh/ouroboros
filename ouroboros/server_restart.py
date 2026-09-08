@@ -2,19 +2,96 @@
 
 The live-task census the restart drain consults, the teardown arguments that
 finalize interrupted tasks with an honest reason, the managed-update guard on
-preserving queued work, the checkout/update serialization gate, and the event
-bus shutdown. The restart transaction itself — the deferred drain record and
-the performer that raises the exit signal — stays in ``server.py`` for now:
-the upstream delegation train coupled it to the composition root through the
-planned-handoff transaction id (see docs/v7next/LEDGER_CORRECTIONS.md, D11).
+preserving queued work, the checkout/update serialization gate, the owned-work
+stop of the owner's manual Restart, and the event bus shutdown. The restart
+transaction itself — the deferred drain record and the performer that raises
+the exit signal — stays in ``server.py`` for now: the upstream delegation
+train coupled it to the composition root through the planned-handoff
+transaction id (see docs/v7next/LEDGER_CORRECTIONS.md, D11).
 """
 
 from __future__ import annotations
 
+import pathlib
 import time
 from typing import Any
 
-from ouroboros.server_process import DATA_DIR, _owner_restart_requested, _restart_requested
+from ouroboros.server_process import DATA_DIR, _owner_restart_requested, _restart_requested, log
+
+
+def _owned_live_task_ids(ctx: Any) -> list:
+    """Every id this generation's cancel intent can address: pooled tasks,
+    in-process direct/ephemeral activities and running post-task synthesis."""
+    from ouroboros.post_task_checkpoint import POST_TASK_SYNTHESIS_INFLIGHT, POST_TASK_SYNTHESIS_LOCK
+    from supervisor.active_activity import get_direct_activity_registry
+
+    task_ids = list(dict(ctx.RUNNING or {}))
+    task_ids.extend(str(row.get("activity_id") or "") for row in get_direct_activity_registry().snapshot())
+    root = str(pathlib.Path(DATA_DIR).resolve(strict=False))
+    with POST_TASK_SYNTHESIS_LOCK:
+        task_ids.extend(task_id for (path, task_id) in POST_TASK_SYNTHESIS_INFLIGHT if path == root)
+    return [tid for tid in dict.fromkeys(task_ids) if tid]
+
+
+def _stop_owned_work(ctx: Any) -> None:
+    """The owner's manual Restart: stop what this generation owns, then let it re-exec.
+
+    Runs AFTER the checkout gate and the durable no-resume flags, so nothing
+    here can veto: an unconfirmed step is a critical diagnostic with custody
+    retained, and the next generation's startup custody sweep reconciles the
+    remainder (owner restart is a no-resume cause; nothing is adopted). In
+    order: one durable cancel intent per owned live id, ``kill_workers`` with
+    Panic's ``reconcile_delegate_custody=False``, delegated-run cancellation
+    through the public owner-gone seam over the attach-only gateway, and the
+    attested owned-daemon stop exactly as Panic makes it. Between the cancel
+    intents and that stop nothing may call ``ensure_owned_gateway`` — it would
+    start a dead daemon — which is what the two flags above guarantee.
+    """
+    from ouroboros.cancel_intents import request_cancel
+    from ouroboros.claudexor_daemon import CUSTODY_PURPOSE, get_owned_daemon, read_owned_gateway
+    from ouroboros.delegate_custody import reconcile_orphaned_runs
+    from ouroboros.utils import append_jsonl, utc_now_iso
+
+    for task_id in _owned_live_task_ids(ctx):
+        try:
+            request_cancel(DATA_DIR, task_id, reason="Owner restart", source="owner_restart",
+                           requested_by="owner", requested_stop_policy="immediate",
+                           allow_settled_target=True)
+        except Exception:
+            log.warning("Owner restart: cancel intent for %s was not recorded", task_id, exc_info=True)
+    try:
+        confirmed = ctx.kill_workers(
+            force=True, terminal_status="cancelled",
+            result_reason="Owner restart stopped this task before process restart.",
+            reconcile_delegate_custody=False, **_managed_update_pending_kwargs(),
+        )
+    except Exception:
+        log.critical("Owner restart: worker shutdown raised; the restart proceeds and the next "
+                     "generation reconciles the remainder", exc_info=True)
+    else:
+        if confirmed is False:
+            log.critical("Owner restart: worker shutdown is unconfirmed; the restart proceeds and "
+                         "the next generation reconciles the remainder")
+    try:
+        reconcile_orphaned_runs(DATA_DIR, running_task_ids=set(), gateway_factory=read_owned_gateway)
+    except Exception:
+        log.warning("Owner restart: delegated-run cancellation did not complete; custody retained",
+                    exc_info=True)
+    try:
+        outcome = get_owned_daemon().stop_outcome()
+    except Exception as exc:
+        log.critical("Owner restart: owned Claudexor stop raised %s; custody is unconfirmed", type(exc).__name__)
+        try:
+            append_jsonl(pathlib.Path(DATA_DIR) / "logs" / "supervisor.jsonl", {
+                "ts": utc_now_iso(), "type": "process_stop_unconfirmed",
+                "purpose": CUSTODY_PURPOSE, "reason": f"stop raised {type(exc).__name__}",
+            })
+        except Exception:
+            log.critical("Owner restart: failed to record unconfirmed daemon stop")
+    else:
+        if outcome == "unconfirmed":  # stop_outcome already disclosed the remainder
+            log.critical("Owner restart: owned Claudexor stop unconfirmed; custody retained, the "
+                         "restart proceeds and the next generation attaches to the live daemon")
 
 
 def _live_running_task_ids(ctx: Any) -> list:

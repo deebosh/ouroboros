@@ -346,8 +346,14 @@ def test_owner_restart_copy_is_explicit_about_stopped_task():
     assert "panic_stop.flag" in source
     assert "owner_restart_flag.unlink(missing_ok=True)" in source
     assert "stable_skip_flag.unlink(missing_ok=True)" in source
-    assert source.index("_safe_restart_serialized(") < source.index("Stopping active task. New settings apply to the next message.")
-    assert source.index("owner_restart_no_resume.flag") < source.index("Stopping active task. New settings apply to the next message.")
+    # Checkout gate first (a refusal leaves the server intact), then the durable
+    # no-resume intent, then the owned-work stop, then the owner's stop notice.
+    notice = source.index("Stopping active task. New settings apply to the next message.")
+    assert (source.index("_safe_restart_serialized(") < source.index("owner_restart_no_resume.flag")
+            < source.index("_stop_owned_work(ctx)") < notice)
+    stop = _read("ouroboros/server_restart.py").split("def _stop_owned_work", 1)[1]
+    assert (stop.index("request_cancel(") < stop.index("ctx.kill_workers(")
+            < stop.index("reconcile_orphaned_runs(") < stop.index("stop_outcome()"))
 
 
 def test_auto_resume_skips_owner_restart_no_resume_flag(tmp_path, monkeypatch):
@@ -374,11 +380,15 @@ def test_auto_resume_skips_owner_restart_no_resume_flag(tmp_path, monkeypatch):
     assert not compat_flag.exists()
 
 
-def test_owner_restart_cleans_flags_when_worker_shutdown_fails(tmp_path, monkeypatch):
+def test_owner_restart_proceeds_when_worker_shutdown_fails(tmp_path, monkeypatch):
+    """A worker shutdown that raises is a diagnostic, not a veto: the no-resume
+    intent stays, the owner is told the work is stopped, and the process exits."""
     import server
     import supervisor.message_bus as message_bus
+    from ouroboros import config, server_restart
 
     messages = []
+    exits = []
 
     class Bridge:
         def get_updates(self, offset=0, timeout=1):
@@ -393,6 +403,7 @@ def test_owner_restart_cleans_flags_when_worker_shutdown_fails(tmp_path, monkeyp
 
     class Ctx:
         consciousness = None
+        RUNNING = {}
 
         def load_state(self):
             return {}
@@ -417,19 +428,18 @@ def test_owner_restart_cleans_flags_when_worker_shutdown_fails(tmp_path, monkeyp
             raise RuntimeError("shutdown failed")
 
     monkeypatch.setattr(server, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(server_restart, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "log_chat", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        server,
-        "_request_restart_exit",
-        lambda: (_ for _ in ()).throw(AssertionError("restart exit should not be requested")),
-    )
+    monkeypatch.setattr(server, "_request_restart_exit", lambda owner=False: exits.append(owner))
 
     server._process_bridge_updates(Bridge(), 0, Ctx())
 
-    assert not (tmp_path / "state" / "owner_restart_no_resume.flag").exists()
-    assert not (tmp_path / "state" / "panic_stop.flag").exists()
-    assert "Stopping active task. New settings apply to the next message." not in messages
-    assert "⚠️ Restart cancelled: failed to stop workers." in messages
+    assert (tmp_path / "state" / "owner_restart_no_resume.flag").exists()
+    assert (tmp_path / "state" / "panic_stop.flag").exists()
+    assert "Stopping active task. New settings apply to the next message." in messages
+    assert not any("cancelled" in text or "deferred" in text for text in messages)
+    assert exits == [True]
 
 
 def test_ws_sha_reload_decision_is_single_sourced():
@@ -519,6 +529,8 @@ def test_only_an_owner_restart_asks_for_the_runtime_mode_to_be_re_read(tmp_path,
 
     monkeypatch.setattr(server, "DATA_DIR", tmp_path)
     monkeypatch.setattr(message_bus, "log_chat", lambda *args, **kwargs: None)
+    # The owned-work stop has its own suite; this pin is about the owner flag alone.
+    monkeypatch.setattr(server, "_stop_owned_work", lambda ctx: None)
 
     server._owner_restart_requested.clear()
     server._restart_requested.clear()
