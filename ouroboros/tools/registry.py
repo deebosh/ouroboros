@@ -299,12 +299,15 @@ def _owner_control_mention_blocks(text_lower: str, detected: bool, writeish: boo
 # advisory_review, skill_review, submit_skill_to_hub, skill_exec,
 # toggle_skill, cancel_task, task_acceptance_review, ...). The turn may call
 # only the read-only INSPECTION tools plus the route/spawn/steer/reply tools
-# below; everything else — repo/git/cognitive/control/review/skill/publish
-# mutators, run_command (shell is durable-capable), extension tools — is
-# hidden from schemas() and fails closed in execute(). Owner-configured MCP
-# tools ride this lane too, behind the network resource gate (issue #722:
-# every Main/project chat message takes this lane on an install with
-# Projects, so withholding them hid the owner's healthy servers). The allowlist is
+# below; every other built-in — repo/git/cognitive/control/review/skill/publish
+# mutators, run_command (shell is durable-capable) — is hidden from schemas()
+# and fails closed in execute(). The owner's dynamic surfaces ride this lane
+# too: configured MCP tools and enabled, granted, reviewed extension tools,
+# behind their own gates (liveness, grants, the network resource gate) exactly
+# as on a managed task (issue #722, owner decision 2026-09-08: every Main/
+# project chat message takes this lane on an install with Projects, so
+# withholding them hid the owner's healthy servers and skills; the model
+# decides inline vs promote_chat_to_task). The allowlist is
 # EXPLICITLY curated, not derived (deriving from
 # LOCAL_READONLY_SUBAGENT_TOOL_NAMES leaked subagent-only tools:
 # schedule_subagent spawns durable children, wait_task/wait_tasks BLOCK a

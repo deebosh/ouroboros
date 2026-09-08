@@ -592,7 +592,6 @@ def test_capability_omission_manifest_has_one_formatter_with_the_richest_detail(
         {"surface": "tools", "reason": "disabled_by_contract", "tools": ["web_search", "browse_page"]},
         {"surface": "extensions", "reason": "resource_blocked", "resource": "network=false"},
         {"surface": "mcp", "reason": "load_failed", "error": "boom"},
-        {"surface": "extensions", "reason": "ephemeral_turn", "detail": "lane-restricted; promote_chat_to_task"},
         "not-a-dict",
     ])
     assert lines[0] == CAPABILITY_OMISSION_HEADER
@@ -600,9 +599,7 @@ def test_capability_omission_manifest_has_one_formatter_with_the_richest_detail(
     assert lines[1] == "- tools: disabled_by_contract (web_search, browse_page)"
     assert lines[2] == "- extensions: resource_blocked (network=false)"
     assert lines[3] == "- mcp: load_failed (boom)"
-    # A lane restriction's own one-line detail renders too (issue #722).
-    assert lines[4] == "- extensions: ephemeral_turn (lane-restricted; promote_chat_to_task)"
-    assert len(lines) == 5
+    assert len(lines) == 4
     assert format_capability_omissions([], header="") == []
 
 

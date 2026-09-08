@@ -340,8 +340,7 @@ def test_ephemeral_decision_turn_exposes_and_executes_configured_mcp_tools(regis
     names = {schema["function"]["name"] for schema in registry.schemas()}
     assert "mcp_svc__ping" in names
     omissions = {(o.get("surface"), o.get("reason")) for o in registry.capability_omissions()}
-    assert ("mcp", "ephemeral_turn") not in omissions
-    assert ("extensions", "ephemeral_turn") in omissions  # extensions stay lane-restricted
+    assert not [o for o in omissions if o[1] == "ephemeral_turn"]  # no lane-withheld surface remains
     assert registry.get_schema_by_name("mcp_svc__ping")["function"]["name"] == "mcp_svc__ping"
     assert registry.policy_hidden_reason("mcp_svc__ping") is None
     assert "echo(svc/ping)" in registry.execute("mcp_svc__ping", {})
@@ -357,3 +356,13 @@ def test_ephemeral_decision_turn_exposes_and_executes_configured_mcp_tools(regis
     assert len(fake.call_calls) == 1
     assert any(item.get("surface") == "mcp" and item.get("reason") == "resource_blocked"
                for item in registry.capability_omissions())
+
+    # (iv) configuration stays the other filter: a disabled server's tools are absent
+    # from the lane's discovery and never dispatched there either.
+    mcp_client.reconfigure_from_settings(_settings(_good_server(id="svc"), enabled=False))
+    registry.set_context(ToolContext(repo_dir=repo_dir, drive_root=drive_root, is_ephemeral_turn=True))
+    assert "mcp_svc__ping" not in {schema["function"]["name"] for schema in registry.schemas()}
+    assert registry.get_schema_by_name("mcp_svc__ping") is None
+    out = registry.execute("mcp_svc__ping", {})
+    assert "EPHEMERAL_TURN_RESTRICTED" not in out and "echo(svc/ping)" not in out
+    assert len(fake.call_calls) == 1

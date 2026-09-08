@@ -59,8 +59,7 @@ def format_capability_omissions(
     of truth depending on which path the agent hit. Detail is the richest available
     fact: the loader ``error``, else the blocked ``resource``, else the REAL withheld
     tool NAMES (the four thinner copies printed "no detail" for exactly the rows that
-    carry names — ``disabled_by_contract``/``missing_credential``), else the row's own
-    one-line ``detail`` (a lane restriction's working next step). Never raises: an
+    carry names — ``disabled_by_contract``/``missing_credential``). Never raises: an
     unrenderable row is skipped rather than breaking tool discovery.
     """
 
@@ -73,7 +72,6 @@ def format_capability_omissions(
             item.get("error")
             or item.get("resource")
             or (", ".join(str(name) for name in names) if isinstance(names, list) and names else "")
-            or item.get("detail")
             or "no detail"
         )
         lines.append(
