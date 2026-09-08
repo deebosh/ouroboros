@@ -317,14 +317,15 @@ def test_chat_id_addressing_docs_match_the_code_that_routes_it():
     assert "log_addressing.ingress_chat_id" in arch
     assert "is refused with a typed 400 rather than honoured" in arch
     assert "has exactly ONE destination" in arch
-    assert "the only address is `HIDDEN_CHAT_ID` (0)" in arch
+    assert "ordinary API tasks default to `HIDDEN_CHAT_ID` (0)" in arch
+    assert '`source="web"` and `WEB_UI_CHAT_ID` to request Main' in arch
     assert "Registration alone does not qualify" in arch
     assert "admitted into that project's thread" in arch
     assert "stays in the hidden partition, silent in every chat" in arch
     # Scoped is not bound, so the absent conversion button is documented intent.
     assert "Project-SCOPED is not project-BOUND" in arch
     # Naming is part of the same admission contract, and its two slots differ.
-    assert "The run is also NAMED at admission, without a model call" in arch
+    assert "The run is also NAMED at admission and chat promotion, without a new model call" in arch
     assert "`metadata.title` is refused with a" in arch
     assert "never outranks a real name coined later" in arch
     # A degraded delivery names its own cause. The doc must keep saying which

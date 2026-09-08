@@ -946,6 +946,7 @@ class LocalChatBridge:
         assumption: str = "",
         state: str = "open",
         task_id: str = "",
+        wait_for_answer: bool = False,
     ) -> Tuple[bool, str]:
         """Send an owner quiz card to the UI and host event subscribers."""
         if is_a2a_chat_id(chat_id):
@@ -959,7 +960,7 @@ class LocalChatBridge:
             # buttons that cannot deliver anywhere.
             return False, "task_id is required"
         try:
-            payload = validate_quiz_payload(question, options, stake, assumption)
+            payload = validate_quiz_payload(question, options, stake, assumption, wait_for_answer=wait_for_answer)
         except QuizValidationError as exc:
             return False, str(exc)
         ts = utc_now_iso()
@@ -968,6 +969,7 @@ class LocalChatBridge:
             "role": "assistant",
             "quiz_id": qid,
             "question": payload["question"],
+            "wait_for_answer": bool(wait_for_answer),
             "options": payload["options"],
             "stake": payload["stake"],
             "assumption": payload["assumption"],
@@ -983,6 +985,7 @@ class LocalChatBridge:
         publish_event(CHAT_QUIZ, {
             "chat_id": int(chat_id or 0),
             "transport": quiz_transport,
+            "wait_for_answer": bool(wait_for_answer),
             "quiz_id": qid,
             "task_id": str(task_id or ""),
             "question": payload["question"],
@@ -1001,6 +1004,7 @@ class LocalChatBridge:
             task_id=str(task_id or ""), record_type="quiz",
             quiz={
                 "quiz_id": qid,
+                "wait_for_answer": bool(wait_for_answer),
                 "options": payload["options"],
                 "stake": payload["stake"],
                 "assumption": payload["assumption"],

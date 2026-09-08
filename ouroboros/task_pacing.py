@@ -570,7 +570,9 @@ def in_task_cost_ceiling_disclosure(ctx: Any, budget_remaining_usd: Optional[flo
 
     The loop reads the same stashed object, so the number the model is shown at
     task start and the number that later stops the task cannot differ."""
-    ceiling = resolve_task_cost_ceiling(ctx, budget_remaining_usd)
+    ceiling = getattr(ctx, "_cost_ceiling", None)
+    if not isinstance(ceiling, CostCeiling):
+        ceiling = resolve_task_cost_ceiling(ctx, budget_remaining_usd)
     try:
         setattr(ctx, "_cost_ceiling", ceiling)
     except Exception:

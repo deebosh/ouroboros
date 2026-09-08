@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID
+from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, WEB_UI_CHAT_ID
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def bound_project_chat_id(ctx: Any, task_id: Any, parent_task_id: Any = "", root
     )
 
 
-def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "") -> int:
+def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "", *, source: Any = "") -> int:
     """The address a headless/API task is admitted with (ingress capture rule).
 
     A run scoped to a REGISTERED project is admitted into that project's thread,
@@ -59,9 +59,10 @@ def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "") -> 
     included — is refused with a typed conflict rather than honoured or silently
     overridden, because a run addressed away from its room is the shape that puts
     a card in Main whose project holds none of its work. Without such a project
-    the explicit id is the caller's, ``HIDDEN_CHAT_ID`` included: 0 is a real
-    session, never "missing", the same rule ``address_task_event`` enforces at
-    runtime. A value that is not a whole number (a JSON boolean or fraction
+    only default is ``HIDDEN_CHAT_ID``. An explicit UI source may address Main
+    with ``WEB_UI_CHAT_ID``; task type never supplies that provenance. Zero is
+    a real session, never "missing", as ``address_task_event`` also enforces.
+    A value that is not a whole number (a JSON boolean or fraction
     included) raises, so the caller keeps its typed 400. Lifecycle is NOT
     consulted here: ``queue.enqueue_task`` fences a non-active project before an
     address can matter, and a project deleted mid-run keeps its reserved chat.
@@ -99,6 +100,8 @@ def ingress_chat_id(raw_chat_id: Any, drive_root: Any, project_id: Any = "") -> 
             "registered project is admitted into that project's thread, and cannot "
             "be addressed anywhere else"
         )
+    if project_chat is None and not pid and source == "web" and chat_id == WEB_UI_CHAT_ID:
+        return chat_id
     if project_chat is None and chat_id not in (HIDDEN_CHAT_ID, reserved_chat):
         raise ProjectThreadConflict(
             "chat_id is not available to a task with no registered active project: "

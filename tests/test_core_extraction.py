@@ -117,7 +117,7 @@ def test_core_catalog_schema_bytes_and_handler_owners_are_stable():
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "1b60b6aa81c78f7886b68e5bb1c14b8262dd1a13d23f198e193502d68384ae87"
+        "5488b1842c13a8b0869277017d043df10fcc940145c778048e28cdc4703051bf"
     )
     assert {
         entry.name: (entry.handler.__module__, entry.handler.__name__)

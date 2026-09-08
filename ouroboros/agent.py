@@ -605,6 +605,15 @@ class OuroborosAgent:
         ctx.model_wait_context = current_model_wait()
         if ctx.model_wait_context is not None:
             ctx.model_wait_context.tool_context = ctx
+        ctx.task_started_at = self._task_started_ts
+        ctx.owner_wait_callback = getattr(self, "owner_wait_callback", None)
+        ctx.owner_wait_resume = task.get("_owner_wait_resume")
+        from ouroboros.owner_wait import load_owner_wait
+        saved_wait = load_owner_wait(ctx)  # Runtime/ContextFit must disclose the original ceiling.
+        if saved_wait and ctx.model_wait_context is not None:
+            ctx.model_wait_context.restore_continuation(
+                saved_wait.get("model_wait") or {}, started_at=ctx.task_started_at)
+
         if self._event_queue is not None:
             # Optional runtime seam consumed by loop.py.  Unit/direct contexts
             # remain compatible, while production queued tasks establish the
@@ -771,7 +780,7 @@ class OuroborosAgent:
 
     def _handle_task_scoped(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
         self._busy = True
-        start_time = time.time()
+        start_time = float((task.get("_owner_wait_resume") or {}).get("started_at") or time.time())
         self._task_started_ts = start_time
         self._last_progress_ts = start_time
         self._pending_events = []

@@ -397,6 +397,10 @@ export function taskReasonDetail(evt) {
         return `Acceptance: ${decision.status}${rationale ? ` — ${rationale}` : ''}`;
     }
     if (!evt?.reason_code) return '';
+    const receiptVeto = record.outcome_axes?.objective?.receipt_veto;
+    if (receiptVeto?.reason === evt.reason_code && receiptVeto.detail) {
+        return `Reason: ${String(receiptVeto.detail).split(/\s+/).filter(Boolean).join(' ')}`;
+    }
     return `Reason: ${taskReasonPhrase(evt.reason_code)}`;
 }
 

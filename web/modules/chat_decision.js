@@ -51,6 +51,7 @@ export function createChatDecision({
             options,
             stake: String(src.stake || ''),
             assumption: String(src.assumption || ''),
+            waitForAnswer: src.wait_for_answer === true,
             state: String(src.state || 'open'),
             taskId: String(msg.task_id || ''),
             ts: msg.ts || null,
@@ -311,10 +312,12 @@ export function createChatDecision({
         // The signature line: what the agent keeps doing while the owner has
         // not answered — and, once the card settles, the record of the path
         // it took by default.
-        if (quiz.assumption) {
+        if (quiz.assumption || quiz.waitForAnswer) {
             const assumption = document.createElement('div');
             assumption.className = 'chat-quiz-assumption';
-            assumption.textContent = `Continuing meanwhile: ${quiz.assumption}`;
+            assumption.textContent = quiz.waitForAnswer
+                ? 'Waiting for your answer; Stop and the task deadline still apply.'
+                : `Continuing meanwhile: ${quiz.assumption}`;
             card.append(assumption);
         }
 

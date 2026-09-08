@@ -455,6 +455,7 @@
  * @property {QuizOption[]} options
  * @property {string} stake
  * @property {string} assumption
+ * @property {boolean=} wait_for_answer
  * @property {string} state
  * @property {string} ts
  * @property {number=} answered_index

@@ -253,10 +253,12 @@ from supervisor.events_worker_reports import (  # noqa: E402, F401 -- intentiona
 from supervisor.queue_transitions import (  # noqa: E402, F401 -- intentional public re-exports
     _close_campaign_after_owner_stop,
 )
+from supervisor.worker_owner_wait import handle_owner_wait  # noqa: E402
 
 EVENT_HANDLERS = {
     "llm_usage": _handle_llm_usage,
     "external_wait_lease": _handle_external_wait_lease,
+    "owner_wait": handle_owner_wait,
     **_CEH,
     **_MWH,
     **_CDE,

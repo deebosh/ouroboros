@@ -68,7 +68,8 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "repo_writer_admission_closed", "send_with_budget",
     })),
     "supervisor/worker_pool_lifecycle.py": ("supervisor/workers.py", "_pool", frozenset({
-        "DRIVE_ROOT", "REPO_DIR", "WORKERS", "Worker", "_WORKER_PIDS_FILENAME",
+        "DRIVE_ROOT", "MAX_WORKERS", "REPO_DIR", "WORKERS", "Worker", "_WORKER_PIDS_FILENAME",
+        "_WORKER_POOL_DISABLED_REASON",
         "_get_ctx", "_reconcile_confirmed_dead_review_owner",
         "_verify_worker_sha_after_spawn", "get_event_q", "kill_workers", "load_state",
         "reconstruct_task_cost", "send_with_budget",
@@ -78,6 +79,9 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_apply_presence_promotion_authority", "_promoted_scheduled_outcome",
         "_reject_promoted_after_attachment_stage", "_relocate_promoted_attachments",
         "_stage_promoted_initial_attachments",
+    })),
+    "supervisor/worker_owner_wait.py": ("supervisor/workers.py", "_pool", frozenset({
+        "DRIVE_ROOT", "RUNNING", "WORKERS", "repo_writer_task_allowed", "time",
     })),
     # F2.2 lane rows (4fffefb1), pinned here by the ADOPTION truth wave: the four
     # queue/worker leaves the F2.2 cancel-organ train landed proof-green but never
@@ -297,13 +301,14 @@ LEAVES: dict[str, tuple[str, str, frozenset[str]]] = {
         "_SKILL_ACTION_HOLD_CONTROL",
         "_TREE_ACCOUNTING_MAX_STALE_SEC", "_append_or_merge_user_message",
         "_arm_delivery_control",
-        "_compose_delivery_suffix", "_current_delivery_candidate",
+        "_check_budget_limits", "_compose_delivery_suffix", "_current_delivery_candidate",
         "_delivery_evidence_state", "_emit_checkpoint_event",
         "_finalize_forced_services", "_finalize_task_services",
         "_force_plan_disclosure", "_forced_fallback_result",
         "_forced_final_answer", "_forced_swarm_router_result",
         "_hold_delivery_for_skill_action", "_live_delivery_candidate",
-        "_loop_tree_accounting", "_prepare_forced_prompt",
+        "_loop_tree_accounting", "_merge_finalization_trace", "_note_nanny_delegate_activity",
+        "_prepare_forced_prompt", "_prepare_post_tool_budget_context",
         "_publish_delivery_candidate",
         "_record_forced_finalization", "_server_web_allowed_by_task",
         "_undispositioned_children",

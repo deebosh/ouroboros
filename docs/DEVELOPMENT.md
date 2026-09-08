@@ -295,9 +295,9 @@ went invisible while its children surfaced in Main as a nameless card. Use the
 two normalizers instead of a third: `message_bus.notification_chat_route`
 answers "where does this notice go" (first DELIVERABLE candidate, `None` when
 none is) and `message_bus.coerce_chat_identity` answers "what is this row's
-address" (explicit value kept, absence defaulted). Address a headless task
-once, at admission (`log_addressing.ingress_chat_id`), and pass the value
-downstream. Enforcement: `tests/test_chat_id_truthiness_guard.py` is the
+address" (explicit value kept, absence defaulted). Address a task once at admission (`log_addressing.ingress_chat_id`) and pass
+the value downstream. Explicit browser-source Main addressing is distinct from
+the ordinary hidden API default; task type is never source provenance. Enforcement: `tests/test_chat_id_truthiness_guard.py` is the
 source lint that keeps the class closed; its allowlist is where a deliberate
 exception states its reason.
 
@@ -2226,6 +2226,27 @@ by "Provider Independence" above. Call-site imperatives:
 
 #### Timeout & Wait Control
 
+- Required owner waiting retains logical and physical task custody in RUNNING.
+  Persist the completed-tool source, task wait and queue snapshot before lending
+  active capacity; grant the original worker only after reserving active capacity.
+  Keep attempt, start time, completed effects and usage unchanged across a warm
+  wake. Idle replacement retirement uses the existing lifecycle serializer and
+  readiness owner, with process start outside the queue lock. Waiting exempts only
+  idle timeout; Stop, deadline, absolute ceiling and monetary admission still bind.
+  Cold recovery requires the acknowledged planned-restart handoff through every
+  shutdown cleanup. Restore the original CostCeiling before Runtime/ContextFit
+  construction so the model sees the same threshold the loop uses. Rebind fit to the
+  saved model and gives preparation a current progress timestamp without resetting
+  hard clocks. Consumed resume authority is removed from the queue task; saved
+  source evidence still prevents blind crash/timeout replay. Before advancing a cold
+  round or applying queued route overrides, finish its existing post-tool budget
+  decision after the ordinary control/deadline checks. Preserve TaskModelWait
+  role overrides, explicit Auto, auto-continue and completed quota union through
+  that owner's continuation methods; seed the same clock/revision in the supervisor.
+  Calendar deadlines and ordinary owner-wait time retain their meaning
+  (`tests/test_owner_wait_pool.py`, `tests/test_owner_wait_restart.py`,
+  `tests/test_owner_wait_cold_loop.py`, `tests/test_owner_wait_budget_tail.py`,
+  `tests/test_owner_wait_model_context.py`; ARCHITECTURE §5).
 - For a session nanny, `delegate_wait` is event-only at the model surface:
   host supervision renews bounded transport windows with zero LLM calls,
   journal progress streams to the owner without waking the model, and only

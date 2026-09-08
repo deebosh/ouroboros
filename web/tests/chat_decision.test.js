@@ -103,6 +103,19 @@ const WS_MSG = {
     ts: '2026-08-31T10:00:00Z',
 };
 
+test('required question renders waiting identically from live and stored frames', () => {
+    const fx = fixture();
+    try {
+        const live = { ...WS_MSG, quiz_id: 'required-live', wait_for_answer: true, assumption: '' };
+        const card = fx.decision.buildQuizCard(live);
+        assert.match(card.querySelector('.chat-quiz-assumption').textContent, /Waiting for your answer/);
+        const stored = { task_id: 't-1', text: live.question, quiz: { ...live, quiz_id: 'required-replay' } };
+        const replay = fx.decision.buildQuizCard(stored);
+        assert.equal(replay.querySelector('.chat-quiz-assumption').textContent,
+                     card.querySelector('.chat-quiz-assumption').textContent);
+    } finally { fx.restore(); }
+});
+
 test('quiz card renders full anatomy from a WS frame', () => {
     const fx = fixture();
     try {

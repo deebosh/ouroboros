@@ -1296,7 +1296,9 @@ def _make_quiz(api):
             stake = str(event.get("stake") or "").strip()
             assumption = str(event.get("assumption") or "").strip()
             lang = _poller_preferences(api)[4]
-            body = telegram_quiz.render_quiz_text(question, labels, stake, assumption)
+            body = telegram_quiz.render_quiz_text(
+                question, labels, stake, assumption,
+                wait_for_answer=event.get("wait_for_answer") is True)
             token = telegram_quiz.mint_token(task_id, quiz_id)
             # One button per option; a reply to the card is a free-form answer.
             # Both reach the host's decision ingress (#472).

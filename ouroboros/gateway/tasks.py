@@ -522,7 +522,7 @@ def _create_task_from_body(request: Request, body: Any) -> JSONResponse:
     if workspace_root and task_type != "task":
         return json_error("external workspace tasks must use type='task'", 400)
     try:
-        chat_id = ingress_chat_id(body.get("chat_id"), drive_root, _task_project_id)
+        chat_id = ingress_chat_id(body.get("chat_id"), drive_root, _task_project_id, source=body.get("source"))
         depth = parse_task_depth(body.get("depth"), default=0)
     except ProjectThreadConflict as exc:
         return json_error(str(exc), 400)

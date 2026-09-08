@@ -72,6 +72,7 @@ from ouroboros.loop_transport import (
     transport_wait_step as _transport_wait_step,
 )
 from ouroboros.pricing import estimate_cost_optional  # noqa: F401 -- the loop module keeps its historical import surface for the L-B leaves
+from ouroboros.owner_wait import load_owner_wait, resume_native_loop, wait_after_tools
 
 log = logging.getLogger(__name__)
 
@@ -337,15 +338,16 @@ def _apply_runtime_overrides(
     return active_model, active_use_local, active_effort
 
 
-def _resolve_loop_max_rounds() -> int:
+def _resolve_loop_max_rounds(ctx: Any = None) -> int:
     from ouroboros.config import SETTINGS_DEFAULTS
 
     default = int(SETTINGS_DEFAULTS["OUROBOROS_MAX_ROUNDS"])
     try:
-        return max(1, int(os.environ.get("OUROBOROS_MAX_ROUNDS", str(default))))
+        configured = max(1, int(os.environ.get("OUROBOROS_MAX_ROUNDS", str(default))))
     except (ValueError, TypeError):
         log.warning("Invalid OUROBOROS_MAX_ROUNDS, defaulting to %s", default)
-        return default
+        configured = default
+    return min(configured, int(getattr(ctx, "inline_max_rounds", configured)))
 
 
 def run_llm_loop(
@@ -388,6 +390,7 @@ def run_llm_loop(
     ctx._accumulated_usage = accumulated_usage
     invalidate_task_cache_splits(task_id or getattr(ctx, "task_id", ""))  # rebuilt attempt = new prefix
     max_retries = 3
+    saved = load_owner_wait(ctx)
     cost_ceiling = _resolve_task_cost_ceiling(ctx, budget_remaining_usd)
     if cost_ceiling.root_cap_usd is not None:
         # A resumed/late-started tree member must see tree spend before its
@@ -396,47 +399,48 @@ def run_llm_loop(
     from ouroboros.tools import tool_discovery as _td
     _td.set_registry(tools)
 
-    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, initial_tool_schemas(tools), messages)
-    tools._ctx.event_queue = event_queue
-    tools._ctx.task_id = task_id
-    tools._ctx.messages = messages
+    tool_schemas = saved["tool_schemas"] if saved else initial_tool_schemas(tools)
+    tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, messages)
+    ctx.event_queue, ctx.task_id, ctx.messages = event_queue, task_id, messages
     stateful_executor = StatefulToolExecutor()
     exit_ctx = _LoopExitContext(
         tools, drive_root, task_id, event_queue, drive_logs, accumulated_usage, llm_trace,
     )
     _owner_msg_seen: set = set()
-    MAX_ROUNDS = _resolve_loop_max_rounds()
-    MAX_ROUNDS = min(MAX_ROUNDS, int(getattr(ctx, "inline_max_rounds", MAX_ROUNDS)))
+    MAX_ROUNDS = _resolve_loop_max_rounds(ctx)
     round_idx = 0
     free_redial = False
     transport_wait = None
     limit_ctx: Optional[_RoundLimitContext] = None
     try:
+        if saved:
+            active_model, active_effort, active_use_local, active_context_mode, round_idx, context_fit_plan = resume_native_loop(
+                tools, saved, messages, llm_trace, accumulated_usage, _owner_msg_seen)
         while True:
-            if free_redial:
-                # A transport-wait redial re-enters the SAME logical round.
+            if free_redial or saved:
+                # A cold tool tail and a transport redial retain their logical round.
                 free_redial = False
             else:
                 round_idx += 1
 
             ctx = tools._ctx
-            _prev_active_route = (active_model, active_use_local)
-            active_model, active_use_local, active_effort = _apply_runtime_overrides(
-                ctx, active_model, active_use_local, active_effort,
-            )
-            if (active_model, active_use_local) != _prev_active_route:
-                context_fit_plan, active_context_mode = _rebind_context_fit_plan(
-                    context_fit_plan, tools, messages, model=active_model,
-                    use_local=active_use_local, preferred_mode=_preferred_context_mode,
-                    tool_schemas=tool_schemas,
+            if not saved:
+                _prev_active_route = (active_model, active_use_local)
+                active_model, active_use_local, active_effort = _apply_runtime_overrides(
+                    ctx, active_model, active_use_local, active_effort,
                 )
-            if active_model != _prev_active_route[0]:
-                # Cross-FAMILY switch_model / per-task override: strip the prior
-                # family's provider-private reasoning blocks so the new family
-                # does not 400 on a foreign signature (same family = no-op).
-                _sanitized = LLMClient.sanitize_reasoning_on_model_switch(messages, _prev_active_route[0], active_model)
-                if _sanitized is not messages:
-                    messages[:] = _sanitized
+                if (active_model, active_use_local) != _prev_active_route:
+                    context_fit_plan, active_context_mode = _rebind_context_fit_plan(
+                        context_fit_plan, tools, messages, model=active_model,
+                        use_local=active_use_local, preferred_mode=_preferred_context_mode,
+                        tool_schemas=tool_schemas,
+                    )
+                if active_model != _prev_active_route[0]:
+                    # Cross-FAMILY switch: discard provider-private reasoning
+                    # signatures before the new route sees them (same family is a no-op).
+                    _sanitized = LLMClient.sanitize_reasoning_on_model_switch(messages, _prev_active_route[0], active_model)
+                    if _sanitized is not messages:
+                        messages[:] = _sanitized
             ctx.active_context_mode = active_context_mode
             ctx.active_model = active_model
             ctx.active_effort = active_effort
@@ -483,6 +487,14 @@ def run_llm_loop(
                 text, accumulated_usage, forced_trace = _early_final
                 _merge_finalization_trace(llm_trace, forced_trace)
                 return text, accumulated_usage, llm_trace
+
+            if saved:
+                saved = {}
+                budget_result = _finish_tool_round_budget(
+                    limit_ctx, budget_remaining_usd, cost_ceiling, active_model, active_use_local, active_effort)
+                if budget_result is not None:
+                    return budget_result
+                continue
 
             _inject_round_checkpoints(
                 round_idx=round_idx, max_rounds=MAX_ROUNDS, messages=messages, accumulated_usage=accumulated_usage,
@@ -619,26 +631,13 @@ def run_llm_loop(
                 tool_calls, tools, drive_logs, task_id, stateful_executor,
                 messages, llm_trace, emit_progress
             )
+            wait_after_tools(ctx, messages, llm_trace, accumulated_usage,
+                             round_idx, tool_schemas, _owner_msg_seen)
 
-            # Nanny-economics baseline (poltergeist phase B): mark the
-            # round's metered progress; re-baseline when it touched a
-            # delegated run. Exact tool-call transitions — no log scans.
-            _note_nanny_delegate_activity(
-                tools._ctx, round_idx, accumulated_usage, tool_calls,
-            )
-
-            _prepare_post_tool_budget_context(
-                tools, limit_ctx, llm_trace, active_model, active_use_local, active_effort,
-            )
-            budget_result = _check_budget_limits(
-                limit_ctx,
-                budget_remaining_usd,
-                cost_ceiling=cost_ceiling,
-            )
+            budget_result = _finish_tool_round_budget(
+                limit_ctx, budget_remaining_usd, cost_ceiling, active_model, active_use_local, active_effort, tool_calls)
             if budget_result is not None:
-                text, accumulated_usage, budget_trace = budget_result
-                _merge_finalization_trace(llm_trace, budget_trace)
-                return text, accumulated_usage, llm_trace
+                return budget_result
 
     except BudgetExceeded as exc:
         _delegate_hold_close(tools, drive_logs=drive_logs, task_id=task_id, detail="budget")
@@ -778,6 +777,7 @@ from ouroboros.loop_model_call import (  # noqa: E402, F401 -- intentional publi
     _call_round_model,
 )
 from ouroboros.loop_budget import (  # noqa: E402, F401 -- intentional public re-exports
+    _finish_tool_round_budget,
     _check_budget_limits,
     _resolve_task_cost_ceiling,
     _TREE_ACCOUNTING_MAX_STALE_SEC,

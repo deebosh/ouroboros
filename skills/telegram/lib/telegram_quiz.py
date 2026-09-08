@@ -71,12 +71,15 @@ def quiz_keyboard(token: str, labels: List[str]) -> List[List[dict]]:
     ]
 
 
-def render_quiz_text(question: str, labels: List[str], stake: str, assumption: str) -> str:
+def render_quiz_text(question: str, labels: List[str], stake: str, assumption: str,
+                     *, wait_for_answer: bool = False) -> str:
     lines = [f"Question: {question}"]
     if stake:
         lines.append(f"At stake: {stake}")
     lines.extend(f"{index}. {label}" for index, label in enumerate(labels, 1))
-    if assumption:
+    if wait_for_answer:
+        lines.append("Waiting for your answer; Stop and the task deadline still apply.")
+    elif assumption:
         lines.append(f"Continuing meanwhile: {assumption}")
     return "\n".join(lines)
 

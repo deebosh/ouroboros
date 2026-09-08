@@ -169,6 +169,7 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
     the project writer lease like any other top-level project task.
     """
     from ouroboros.contracts.task_contract import attach_task_contract
+    from ouroboros.project_naming import admission_names
 
     tid = str(evt.get("task_id") or uuid.uuid4().hex[:16])
     admission_token = str(evt.get("routing_token") or "").strip()
@@ -209,8 +210,7 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
             chat_id = 0
     expected_output = str(evt.get("expected_output") or "").strip()
     text = objective if not expected_output else f"{objective}\n\nExpected output: {expected_output}"
-    # Short human title the model coined at card creation (owner P1) — reused as the
-    # project name on a later "turn into project" conversion; never the bare task id.
+    title, suggested_name = admission_names(evt, objective)
     task = {
         "id": tid,
         "root_task_id": tid,
@@ -221,7 +221,8 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
         "description": objective,
         "objective": objective,
         "expected_output": expected_output,
-        "title": str(evt.get("title") or "").strip()[:80],
+        "title": title,
+        "suggested_name": suggested_name,
         "source": "promote_chat_to_task",
         "_require_unique_task_id": True,
         "_require_worker_pool": True,
@@ -430,15 +431,11 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
             "admission_started": True,
         }, attachment_manifest)
     try:
-        if persist_snapshot(reason="promote_chat_to_task") is False:
-            return _pool()._reject_promoted_after_attachment_stage({
-                "status": "needs_manual_target",
-                "reason": "queue_snapshot_persist_failed",
-                "task_id": tid,
-                "admission_started": True,
-            }, attachment_manifest)
+        persisted = persist_snapshot(reason="promote_chat_to_task") is not False
     except Exception:
         log.warning("promote: queue snapshot persist failed for %s", tid, exc_info=True)
+        persisted = False
+    if not persisted:
         return _pool()._reject_promoted_after_attachment_stage({
             "status": "needs_manual_target",
             "reason": "queue_snapshot_persist_failed",
@@ -455,6 +452,7 @@ def promote_chat_to_task(evt: dict, ctx: Any) -> dict:
     # A project root may execute from a forked child drive.  Its budget-root
     # result therefore receives this admitted contract before worker startup.
     outcome = _pool()._promoted_scheduled_outcome(task, admitted, tid)
+    outcome["_admitted_suggested_name"] = task["suggested_name"]
     if attachment_manifest:
         outcome.update(authority)
     if effective_pid:

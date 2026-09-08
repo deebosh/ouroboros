@@ -15,6 +15,7 @@ import copy
 import functools
 import inspect
 import json
+import math
 import pathlib
 import threading
 import time
@@ -111,6 +112,19 @@ class _QuotaClock:
 
     def duration(self, now: float) -> float:
         return self.elapsed + (max(0.0, now - self.started) if self.started is not None else 0.0)
+
+
+def quota_waited_seconds(meta: dict, now: float) -> float:
+    """Read one union-clock snapshot, never sum the parallel waiting rows."""
+    clock = meta.get("model_wait_quota_clock") or {}
+    try:
+        elapsed = float(clock.get("elapsed_sec") or 0.0)
+        observed = float(clock.get("observed_at") or now)
+        if not math.isfinite(elapsed) or not math.isfinite(observed):
+            return 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, elapsed) + (max(0.0, now - observed) if clock.get("active") is True else 0.0)
 
 
 _CURRENT: contextvars.ContextVar[TaskModelWait | None] = contextvars.ContextVar(
@@ -253,6 +267,32 @@ class TaskModelWait:
         from ouroboros.config import get_task_abs_ceiling_sec
         return max(0.0, get_task_abs_ceiling_sec() - (time.monotonic() - self.started_monotonic - self.paused_seconds()))
 
+    def quota_clock_snapshot(self) -> dict:
+        """The same task-wide clock fact for live publication and continuation."""
+        with self.lock:
+            clock = self.clocks[""]
+            return {"revision": self.revision, "elapsed_sec": clock.duration(time.monotonic()),
+                    "observed_at": time.time(), "active": bool(clock.active)}
+
+    def continuation_state(self) -> dict:
+        """Keep completed-call choices and accrued quota time, never live waiters."""
+        with self.lock:
+            return {"overrides": copy.deepcopy(self.overrides),
+                    "auto_continue": dict(self.auto_continue),
+                    "quota_clock": {**self.quota_clock_snapshot(), "active": False}}
+
+    def restore_continuation(self, saved: dict, *, started_at: float | None) -> None:
+        """Rebind one fresh task owner before Runtime context or new model work."""
+        with self.lock:
+            self.overrides = copy.deepcopy(saved.get("overrides") or {})
+            self.auto_continue = dict(saved.get("auto_continue") or {})
+            clock = saved.get("quota_clock") or {}
+            self.revision = int(clock.get("revision") or 0)
+            elapsed = quota_waited_seconds({"model_wait_quota_clock": clock}, time.time())
+            self.clocks = {"": _QuotaClock(elapsed=elapsed)}
+            if started_at:
+                self.started_monotonic = time.monotonic() - max(0.0, time.time() - float(started_at))
+
     @contextlib.contextmanager
     def register_reprepare(self, role: str, callback: Callable[[dict], dict]) -> Iterator[None]:
         """Bind one call's Main-context preparation without a cross-thread registry."""
@@ -358,14 +398,7 @@ class TaskModelWait:
 
             stored = self.mutate_row(row["wait_id"], update)
             row.update(stored)
-            clock = self.clocks[""]
-            now = time.monotonic()
-            clock_projection = {
-                "revision": self.revision,
-                "elapsed_sec": clock.duration(now),
-                "observed_at": time.time(),
-                "active": bool(clock.active),
-            }
+            clock_projection = self.quota_clock_snapshot()
             public = {key: copy.deepcopy(value) for key, value in row.items() if not key.startswith("_")}
             event = {"type": "task_model_wait", "ts": utc_now_iso(), "task_id": self.task_id,
                      **public, "quota_clock": clock_projection, "is_progress": False}

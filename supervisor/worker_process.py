@@ -208,7 +208,10 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
             pass
     try:
         from ouroboros.agent import make_agent
+        from functools import partial
+        from ouroboros.owner_wait import worker_owner_wait
         agent = make_agent(repo_dir=repo_dir, drive_root=drive_root, event_queue=out_q)
+        agent.owner_wait_callback = partial(worker_owner_wait, wid, in_q, out_q)
     except Exception as _e:
         _log_worker_crash(wid, _drive, "make_agent", _e, _tb.format_exc())
         return
@@ -240,6 +243,7 @@ def worker_main(wid: int, in_q: Any, out_q: Any, repo_dir: str, drive_root: str,
                     event_queue=out_q,
                     budget_drive_root=str(task.get("budget_drive_root") or drive_root),
                 )
+                task_agent.owner_wait_callback = agent.owner_wait_callback
                 events = task_agent.handle_task(task)
             else:
                 events = agent.handle_task(task)

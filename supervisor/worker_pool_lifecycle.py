@@ -586,6 +586,36 @@ def respawn_worker(wid: int, *, ready_attempt: int = 1) -> bool:
         old = _pool().WORKERS.get(wid)
     if old is None:
         return False
+    if not getattr(old, "active_capacity", True):
+        if old.proc.is_alive():
+            return False
+        with _queue_lock:
+            active = sum(1 for worker in _pool().WORKERS.values()
+                         if getattr(worker, "active_capacity", True))
+            if _pool()._WORKER_POOL_DISABLED_REASON or active >= _pool().MAX_WORKERS:
+                return retire_worker(wid, old)
+        # The last sleeper can be stopped before its lent slot was created.
+        # Fill only that vacancy, retaining normal failed-spawn recovery.
+    return _spawn_worker_slot(wid, old, ready_attempt=ready_attempt)
+
+
+def retire_worker(wid: int, slot: Any) -> bool:
+    """Forget only a confirmed-dead slot; parked tasks never mint replacements."""
+    with _queue_lock:
+        if _pool().WORKERS.get(wid) is not slot or slot.proc.is_alive():
+            return False
+        _pool().WORKERS.pop(wid)
+    try:
+        slot.in_q.close()
+        slot.in_q.cancel_join_thread()
+    except Exception:
+        log.debug("Failed to close retired worker queue", exc_info=True)
+    _record_worker_pids()
+    return True
+
+
+def _spawn_worker_slot(wid: int, old: Any = None, *, ready_attempt: int = 1) -> bool:
+    """Create or replace a slot under the lifecycle serializer, outside queue lock."""
     ctx = _pool()._get_ctx()
     in_q = ctx.Queue()
     events_cursor, spawned_at = events_log_cursor(), time.time()

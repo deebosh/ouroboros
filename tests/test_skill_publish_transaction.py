@@ -295,6 +295,41 @@ def test_failed_publication_writes_no_receipt_and_no_flag(monkeypatch, tmp_path)
     assert not (tmp_path / "state" / "skills" / "demo" / "ouroboroshub.json").exists()
 
 
+@pytest.mark.parametrize("failure", ["fork_sync", "branch_create"])
+def test_publish_failure_projection_uses_confirmed_transport_progress(monkeypatch, tmp_path, failure):
+    from ouroboros import skill_publish_github as github
+    from ouroboros.skill_publish_result import apply_skill_publish_receipt_veto, extract_skill_publish_result_metadata
+
+    ctx, _events, _captured = _install_transaction_fakes(monkeypatch, tmp_path, snapshot=_snapshot())
+    monkeypatch.setattr(skill_publish, "prepare_publish_repository", github.prepare_publish_repository)
+    monkeypatch.setattr(skill_publish, "ensure_branch", github.ensure_branch)
+    requests = []
+
+    def transport(args, _ctx, **_kwargs):
+        requests.append(args)
+        if args[:2] == ["repo", "view"]:
+            return '{"name":"project"}'
+        if "/repos/alice/project/merge-upstream" in args:
+            return "⚠️ sync rejected" if failure == "fork_sync" else "{}"
+        if args[1] == "/repos/alice/project/git/ref/heads/submit/demo-v1.0.0":
+            return "⚠️ not found"
+        assert args[3] == "/repos/alice/project/git/refs"
+        return "⚠️ response lost after request"
+
+    monkeypatch.setattr(github, "_gh_cmd", transport)
+    result = _submit(ctx)
+    assert result["ok"] is False
+    expected_stage = "fork_ready" if failure == "fork_sync" else "fork_synced"
+    assert result["completed_stage"] == expected_stage
+    assert result["reason_code"] == f"{failure}_failed"
+    outcome = {"outcome_axes": {"objective": {"status": "degraded"}, "review": {"status": "degraded"}}}
+    apply_skill_publish_receipt_veto(outcome, {
+        "type": "skill_publish", "metadata": {"skill_publish_target": {"skill": "demo", "repository": "hub/project"}},
+    }, {"tool_calls": [{"tool": "submit_skill_to_hub", **extract_skill_publish_result_metadata(json.dumps(result))}]})
+    assert outcome["outcome_axes"]["objective"]["status"] == ("fail" if failure == "fork_sync" else "degraded")
+    assert len(requests) == (2 if failure == "fork_sync" else 4)
+
+
 def test_high_payload_finding_blocks_before_any_github_or_mutation(monkeypatch, tmp_path):
     def scanner(named):
         if "SKILL.md" in named:

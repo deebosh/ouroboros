@@ -92,6 +92,9 @@ def _cancel_unauthorized_evolution(task: Dict[str, Any], reason: str) -> bool:
 def assign_tasks() -> None:
     from supervisor import queue
     from supervisor.state import budget_remaining, EVOLUTION_BUDGET_RESERVE
+    from supervisor.worker_owner_wait import maintain_owner_wait_capacity
+
+    maintain_owner_wait_capacity()
     with _queue_lock:
         st = _pool().load_state()
         # Cancellation/terminal custody wins before validating rows left in the
@@ -127,6 +130,8 @@ def assign_tasks() -> None:
                     continue
                 if isinstance(task.get("_budget_pause"), dict):
                     continue
+                if task.get("_owner_wait_resume"):
+                    continue  # Restore the checkpoint; the loop still owns its budget stop.
                 task_id = str(task.get("id") or "")
                 cost_fields = _pool().reconstruct_task_cost(
                     task_id, fields=True,
@@ -204,7 +209,8 @@ def assign_tasks() -> None:
                         "raising the limit does not resume them automatically.",
                     )
                 queue.persist_queue_snapshot(reason="budget_paused_before_dispatch")
-            return
+            if not any(task.get("_owner_wait_resume") for task in _pool().PENDING):
+                return
 
         # Evolution is hard-blocked in light runtime mode at the assignment
         # chokepoint too: a task restored from a snapshot or created before the
@@ -231,7 +237,8 @@ def assign_tasks() -> None:
 
 
         for w in _pool().WORKERS.values():
-            if w.busy_task_id is None and not getattr(w, "reaping", False) and _pool().PENDING:
+            if (w.busy_task_id is None and not getattr(w, "reaping", False)
+                    and getattr(w, "active_capacity", True) and _pool().PENDING):
                 # One-writer-per-project lease: recompute per assignment so a
                 # task assigned in THIS loop pass immediately occupies its lane.
                 leased = running_project_ids(_pool().RUNNING.values())
@@ -239,6 +246,8 @@ def assign_tasks() -> None:
                 # and project-leased candidates)
                 chosen_idx = None
                 for i, candidate in enumerate(_pool().PENDING):
+                    if remaining <= 0 and not candidate.get("_owner_wait_resume"):
+                        continue
                     if _pool()._invalid_depth_deferred(candidate, unresolved_invalid_id_set):
                         continue
                     if not _pool().repo_writer_task_allowed(candidate):
@@ -344,9 +353,13 @@ def assign_tasks() -> None:
                 w.busy_task_id = task["id"]
                 w.in_q.put(task)
                 now_ts = time.time()
+                resume = task.get("_owner_wait_resume") or {}
                 _pool().RUNNING[task["id"]] = {
                     "task": dict(task), "worker_id": w.wid,
-                    "started_at": now_ts, "last_heartbeat_at": now_ts,
+                    "started_at": float(resume.get("started_at") or now_ts), "last_heartbeat_at": now_ts,
+                    "last_progress_at": now_ts,
+                    **({"model_wait_quota_clock": dict(resume["model_wait_quota_clock"])}
+                       if resume.get("model_wait_quota_clock") else {}),
                     "soft_sent": False, "attempt": int(task.get("_attempt") or 1),
                 }
                 task_type = str(task.get("type") or "")
