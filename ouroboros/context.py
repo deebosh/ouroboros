@@ -812,12 +812,22 @@ def _render_scratchpad_for_context(memory: "Memory", budget: int) -> str:
     # newest block(s) alone still exceed budget (n_kept forced to 1 above) —
     # both are a silent-looking truncation from the consumer's point of view
     # and BIBLE P1 requires either be disclosed in-band, not just logged.
+    # The marker names the LIVE store: a context build retires nothing, so the
+    # dropped blocks are still in scratchpad.md (the journal only holds blocks
+    # the writer actually retired/replaced — pointing there cannot resolve).
     if omitted > 0 or len(section) > budget:
+        if omitted > 0:
+            first_ts = str(blocks[0].get("ts", ""))[:16]
+            last_ts = str(blocks[omitted - 1].get("ts", ""))[:16]
+            reason = (
+                f"{omitted} oldest block(s) ({first_ts}..{last_ts}) omitted from "
+                "this context build for size; they are still live"
+            )
+        else:
+            reason = "newest block exceeds the section budget"
         section += (
-            f"\n⚠️ [budget gap: {omitted} block(s) omitted from this context build "
-            f"for size; exact retired/replaced blocks remain readable with "
-            "`read_file(root='runtime_data', "
-            "path='memory/scratchpad_journal.jsonl', start_line=1)`.]\n"
+            f"\n⚠️ [budget gap: {reason} — re-read the full working memory with "
+            "`read_file(root='runtime_data', path='memory/scratchpad.md', start_line=1)`.]\n"
         )
     return section
 
@@ -836,7 +846,13 @@ def build_memory_sections(memory: Memory, partition: str = "all", durable_dialog
         # never re-fire the warning.
         _warn_if_over_budget("scratchpad", scratchpad_raw)
         scratchpad_body = _render_scratchpad_for_context(memory, SCRATCHPAD_SECTION_BUDGET_CHARS)
-        sections.append("## Scratchpad (from `memory/scratchpad.md` — already loaded; do not re-read via read_file(root='runtime_data', path='memory/scratchpad.md'))\n\n" + scratchpad_body)
+        # A trimmed body must not carry the "do not re-read" instruction: the
+        # omitted blocks are only reachable by re-reading the live file.
+        if scratchpad_body != scratchpad_raw:
+            header = "## Scratchpad (from `memory/scratchpad.md` — PARTIAL: trimmed to the section budget; re-read via read_file(root='runtime_data', path='memory/scratchpad.md') for the full working memory)"
+        else:
+            header = "## Scratchpad (from `memory/scratchpad.md` — already loaded; do not re-read via read_file(root='runtime_data', path='memory/scratchpad.md'))"
+        sections.append(header + "\n\n" + scratchpad_body)
 
     if include_stable:
         identity_raw = memory.load_identity()

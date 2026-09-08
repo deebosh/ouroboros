@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 
-from ouroboros.context import _render_scratchpad_for_context
+from ouroboros.context import _render_scratchpad_for_context, build_memory_sections
 from ouroboros.context_budget import (
     SCRATCHPAD_MAX_CONTENT_CHARS,
     SCRATCHPAD_SECTION_BUDGET_CHARS,
@@ -194,6 +194,17 @@ def test_render_scratchpad_trims_with_gap_marker(tmp_path):
     assert len(body) < len(raw)
     assert "budget gap" in body
     assert "omitted" in body
+    # The marker points at the LIVE store: a context build retires nothing,
+    # so the dropped blocks are still in scratchpad.md, not in the journal
+    # (which only holds blocks the writer actually retired/replaced). The
+    # writer's own journal-pointer line above the blocks is a different
+    # pointer for a different population and is deliberately untouched.
+    marker = body[body.index("\n⚠️ [budget gap:"):]
+    assert "path='memory/scratchpad.md'" in marker
+    assert "scratchpad_journal.jsonl" not in marker
+    assert "retired" not in marker
+    # The omitted range is named by timestamp (oldest..last omitted).
+    assert "(2026-09-01T12:00..2026-09-01T12:00)" in marker
     # Newest block is retained (its content shows up in the rendered body).
     # _render_block truncates ts to [:16] (drops seconds/offset), matching
     # _write_scratchpad_markdown's own rendering convention.
@@ -260,6 +271,39 @@ def test_render_scratchpad_no_mid_string_truncation(tmp_path):
     assert long_x is not None
     # The gap marker should be present (some blocks omitted).
     assert "budget gap" in body
+
+
+# ---------- section header on the degraded path ------------------------------
+
+
+def _scratchpad_header(mem):
+    sections = build_memory_sections(mem, partition="volatile")
+    scratchpad = [sec for sec in sections if sec.startswith("## Scratchpad (from")]
+    assert len(scratchpad) == 1
+    return scratchpad[0].split("\n", 1)[0]
+
+
+def test_degraded_section_header_allows_reread(tmp_path):
+    """A trimmed scratchpad section must not forbid re-reading the file: the
+    omitted blocks are reachable ONLY by re-reading memory/scratchpad.md, so
+    the header discloses the partial build and points at the live source."""
+    mem = _force_oversized_via_json(tmp_path, n_blocks=4, each_chars=25_000)
+    header = _scratchpad_header(mem)
+    assert "PARTIAL" in header
+    assert "read_file(root='runtime_data', path='memory/scratchpad.md')" in header
+    assert "do not re-read" not in header
+
+
+def test_non_degraded_section_header_unchanged(tmp_path):
+    """When the scratchpad fits, the header keeps its existing wording so the
+    agent does not re-read what is already loaded."""
+    mem = _mem(tmp_path)
+    mem.append_scratchpad_block("a normal block", source="task")
+    header = _scratchpad_header(mem)
+    assert header == (
+        "## Scratchpad (from `memory/scratchpad.md` — already loaded; do not "
+        "re-read via read_file(root='runtime_data', path='memory/scratchpad.md'))"
+    )
 
 
 # ---------- degraded render order --------------------------------------------
