@@ -460,8 +460,10 @@ def extract_skill_publish_result_metadata(result: Any) -> Dict[str, Any]:
 
     if not isinstance(result, str) or not result.lstrip().startswith("{"):
         return {}
+    from ouroboros.tools.tool_result import _HOST_NOTE_SEPARATOR
+
     try:
-        payload = _loads_unique(result)
+        payload = _loads_unique(result.partition(_HOST_NOTE_SEPARATOR)[0])
         if not isinstance(payload, dict) or payload.get("operation") != SKILL_PUBLISH_OPERATION:
             return {}
         if type(payload.get("ok")) is not bool:
@@ -491,6 +493,13 @@ def extract_skill_publish_result_metadata(result: Any) -> Dict[str, Any]:
                 field="audited_false_positive_count",
             ),
         }
+        # The GitHub cause the transport observed rides beside the stage, only when present.
+        for key, limit in (("error_detail", 640), ("github_operation", 64)):
+            if payload.get(key):
+                attempt[key] = _bounded_text(payload.get(key), limit)
+        github_status = payload.get("github_status")
+        if isinstance(github_status, int) and not isinstance(github_status, bool):
+            attempt["github_status"] = github_status
         metadata: Dict[str, Any] = {"skill_publish_attempt": attempt}
         receipt = payload.get("receipt")
         valid_receipt = validate_skill_publish_receipt(

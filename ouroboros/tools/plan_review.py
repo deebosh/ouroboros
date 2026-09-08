@@ -91,6 +91,7 @@ from ouroboros.tools.review_helpers import review_wave_binding_fence, review_wav
 from ouroboros.tools.review_synthesis import (
     PLAN_REVIEW_CONTROL_PREFIX,
 )
+from ouroboros.tools.tool_result import TOOL_CODE_SPECS, ToolResult, _publish_tool_result
 from ouroboros.utils import truncate_review_artifact, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -267,30 +268,58 @@ def get_tools():
 # --------------------------------------------------------------------------- handler
 
 
+_SPEC_FIELDS = frozenset(_SPEC_SCHEMA["properties"])
+
+
+def _vacuous(name: str, value: object) -> bool:
+    """Nothing was said in this optional envelope field: absent, blank prose, or the
+    spec's DECLARED keys each holding their schema-default empty value. A non-empty
+    list, an unknown key or a wrong type is meaning and reaches the existing refusal."""
+    if value is None:
+        return True
+    if name == "spec":
+        return (isinstance(value, dict) and set(value) <= _SPEC_FIELDS
+                and all(member in (None, "", []) for member in value.values()))
+    return isinstance(value, str) and not value.strip()
+
+
 def _vacuous_disposition(value: object) -> bool:
-    """A schema-shaped but empty disposition (models fill optional objects with defaults)."""
+    """A schema-shaped but empty disposition (models fill optional objects with defaults).
+    An UNKNOWN key or a non-empty items list is never vacuous: refused, not ignored."""
     if not isinstance(value, dict) or set(value) - {"review_fingerprint", "items"}:
         return False
     return not str(value.get("review_fingerprint") or "").strip() and not value.get("items")
 
 
+def _typed_refusal(ctx: ToolContext, code: str, text: str) -> str:
+    """Publish a refusal the producer ALREADY knows about (D02). The text ABI is
+    unchanged; only the registry-visible status stops reading as a successful call."""
+    return _publish_tool_result(ctx, ToolResult(status=TOOL_CODE_SPECS[code].status, code=code, text=text))
+
+
 def _handle_plan_task(ctx: ToolContext, **params) -> str:
     raw_disposition = params.get("review_disposition")
-    envelope_fields = sorted(set(params) - {"review_disposition"})
+    # The registry refuses unknown params; a vacuous envelope field carries no plan.
+    envelope_fields = [k for k in ("goal", "plan", "spec") if not _vacuous(k, params.get(k))]
     if raw_disposition is not None and not _vacuous_disposition(raw_disposition):
         if envelope_fields:
-            return (
+            return _typed_refusal(
+                ctx, "TOOL_ARG_ERROR",
                 "ERROR: PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE: disposition mode accepts "
                 "review_disposition only; a changed plan needs a new review-mode call "
-                "without review_disposition. No plan attempt was recorded."
+                "without review_disposition. No plan attempt was recorded.",
             )
         if not isinstance(raw_disposition, dict):
-            return "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: review_disposition must be an object"
+            return _typed_refusal(
+                ctx, "TOOL_ARG_ERROR",
+                "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: review_disposition must be an object",
+            )
         return _apply_disposition(ctx, raw_disposition)
     if "review_disposition" in params and not envelope_fields:
-        return (
+        return _typed_refusal(
+            ctx, "TOOL_ARG_ERROR",
             "ERROR: PLAN_REVIEW_DISPOSITION_EMPTY: submit goal, plan and spec for review "
-            "mode, or a complete review_disposition as the only field. No plan attempt was recorded."
+            "mode, or a complete review_disposition as the only field. No plan attempt was recorded.",
         )
     request = _PlanRequest(
         goal=str(params.get("goal") or ""), plan=str(params.get("plan") or ""), spec=params.get("spec"),
@@ -320,15 +349,22 @@ def _handle_plan_task(ctx: ToolContext, **params) -> str:
         return _plan_unavailable(ctx, f"ERROR: Plan review failed: {e}", "review_failed")
 
 
+# A FAULT of this call (broken review, unreadable authority); every other reason — budget,
+# configuration, context — is an availability outcome typed `unavailable`, never a fake success.
+_PLAN_FAULT_REASONS = frozenset({"review_failed", "plan_review_exact_artifact_unavailable", "plan_review_custody_invalid"})
+
+
 def _plan_unavailable(ctx: ToolContext, message: str, reason: str) -> str:
     """Persist a retryable availability outcome (the current fingerprint stays open-unavailable)."""
+    code = "TOOL_ERROR" if reason in _PLAN_FAULT_REASONS else "CAPABILITY_UNAVAILABLE"
     try:
         root, task_id = _planning_state_location(ctx)
         state = mark_current_plan_review_unavailable(root, task_id, reason=reason)
         _emit_plan_review_reference(ctx, task_id, state, state_root=root)
     except (OSError, TimeoutError, ValueError) as exc:
-        return f"{message}\nERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}"
-    return message
+        return _typed_refusal(
+            ctx, "TOOL_ERROR", f"{message}\nERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}")
+    return _typed_refusal(ctx, code, message)
 
 
 def _planning_state_location(ctx: ToolContext) -> tuple[pathlib.Path, str]:
@@ -433,12 +469,13 @@ def _prepare_plan_inputs(ctx: ToolContext, request: "_PlanRequest", state_root: 
     if not request.plan.strip():
         errors = ["plan: required non-empty prose", *errors]
     if errors:
-        return {"error": "ERROR: PLAN_SPEC_INVALID: " + "; ".join(errors) + ". No reviewer was called."}
+        return {"error": "ERROR: PLAN_SPEC_INVALID: " + "; ".join(errors) + ". No reviewer was called.",
+                "code": "TOOL_ARG_ERROR"}
     from ouroboros.review_substrate import review_repo_dirs_for
     try:
         system_root, active_root = review_repo_dirs_for(ctx)
     except ValueError as exc:
-        return {"error": f"ERROR: PLAN_SUBJECT_ROOT_INVALID: {exc}"}
+        return {"error": f"ERROR: PLAN_SUBJECT_ROOT_INVALID: {exc}", "code": "TOOL_ERROR"}
     locators = list(spec["affected_resources"]) + list(spec["evidence"])
     constitutional, constitutional_note = plan_spec.resolve_constitutional(
         active_root=active_root, system_repo_root=system_root,
@@ -454,7 +491,7 @@ def _prepare_plan_inputs(ctx: ToolContext, request: "_PlanRequest", state_root: 
     try:
         reviewer_requested, request_dropped = _reviewer_requested_locators(ctx, state_root)
     except ValueError as exc:
-        return {"error": f"ERROR: {exc}"}
+        return {"error": f"ERROR: {exc}", "code": "TOOL_ERROR"}
     host_locators = [loc for loc in reviewer_requested if loc not in declared_evidence]
     # B-08/C-06: allowed roots are the active workspace and the system repo only; the runtime
     # data plane is denied outright (the sensitive-name policy is a residual, not a boundary).
@@ -491,7 +528,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
     try:
         state_root, task_id = _planning_state_location(ctx)
     except ValueError as exc:
-        return f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}"
+        return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}")
     prepared = _prepare_plan_inputs(ctx, request, state_root)
     if prepared.get("error"):
         if "PLAN_SPEC_INVALID" in prepared["error"]:
@@ -500,8 +537,8 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
                     ctx, state_root, task_id, {"goal": request.goal, "plan": request.plan, "spec": request.spec},
                     reason="plan_input_invalid")
             except (OSError, TimeoutError, ValueError) as exc:
-                return f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}"
-        return prepared["error"]
+                return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}")
+        return _typed_refusal(ctx, str(prepared.get("code") or "TOOL_ERROR"), prepared["error"])
     spec, manifest = prepared["spec"], prepared["manifest"]
     system_root, active_root = prepared["system_root"], prepared["active_root"]
     constitutional = prepared["constitutional"]
@@ -512,7 +549,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
     try:
         state = load_plan_review_state(state_root, task_id)
     except (OSError, TimeoutError, ValueError) as exc:
-        return f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}"
+        return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}")
     enforcement = get_review_enforcement()
     cap = review_max_cycles()
     cycles_paid = int(state.get("cycles_paid") or 0)
@@ -520,7 +557,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
     try:
         _record_plan_review_attempt_with_reference(ctx, state_root, task_id, fingerprint=fingerprint)
     except (OSError, TimeoutError, ValueError) as exc:
-        return f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}"
+        return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}")
     previous_override: Optional[dict] = None
     replay_snapshot: Any = _PLAN_NO_SNAPSHOT
     resume_in_flight = False
@@ -575,7 +612,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
                 ctx, state_root, task_id, fingerprint=fingerprint, status="rail_degraded",
                 reason="plan_task_deadline")
         except (OSError, TimeoutError, ValueError) as exc:
-            return f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}"
+            return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}")
         return _plan_deadline_skip(ctx, emit=True) or deadline_skip
     if cap is not None and cycles_paid >= cap and not resume_in_flight:
         return _cycles_exhausted(ctx, state, state_root, task_id, cap=cap, cycles_paid=cycles_paid,
@@ -707,11 +744,11 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
             # dispatched nothing); the tool answer still describes the attempt that ran.
             stored = wave
     except (OSError, TimeoutError, ValueError) as exc:
-        return f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}"
+        return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}")
     try:
         paid_now = int(load_plan_review_state(state_root, task_id).get("cycles_paid") or 0)
     except (OSError, TimeoutError, ValueError) as exc:
-        return f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}"
+        return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_INVALID: {exc}")
     _emit_plan_review_reference(ctx, task_id, state_root=state_root)
     if enforcement == "advisory" and not stored.get("closed"):
         # B2: loud at the moment — ONE typed owner-visible event per recorded open wave.
@@ -730,7 +767,7 @@ async def _run_plan_review_async(ctx: ToolContext, request: _PlanRequest) -> str
                 attempt_fingerprint=fingerprint, cycles_paid=paid_now, cap=cap,
             ) or stored
         except (OSError, TimeoutError, ValueError) as exc:
-            return f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}"
+            return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}")
         emit_review_cycles_exhausted(
             getattr(ctx, "event_queue", None), state_root, surface="plan_review",
             task_id=task_id, cycles_paid=paid_now, cap=cap, enforcement=enforcement,
@@ -809,7 +846,7 @@ def _cycles_exhausted(
                 cycles_paid=cycles_paid, cap=cap,
             ) or current
         except (OSError, TimeoutError, ValueError) as exc:
-            return f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}"
+            return _typed_refusal(ctx, "TOOL_ERROR", f"ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: {exc}")
     emit_review_cycles_exhausted(
         getattr(ctx, "event_queue", None), state_root, surface="plan_review", task_id=task_id,
         cycles_paid=cycles_paid, cap=cap, enforcement=enforcement, fingerprint=fingerprint,
@@ -854,39 +891,41 @@ def _cycles_exhausted(
 
 
 def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
+    def _bad(text: str) -> str:  # every refusal below is an argument-shape refusal
+        return _typed_refusal(ctx, "TOOL_ARG_ERROR", text)
+
     unknown = sorted(str(k) for k in disposition if k not in {"review_fingerprint", "items"})
     if unknown:
-        return "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: unknown fields: " + ", ".join(unknown)
+        return _bad("ERROR: PLAN_REVIEW_DISPOSITION_INVALID: unknown fields: " + ", ".join(unknown))
     fingerprint = str(disposition.get("review_fingerprint") or "").strip()
     if not fingerprint:
-        return "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: review_fingerprint is required"
+        return _bad("ERROR: PLAN_REVIEW_DISPOSITION_INVALID: review_fingerprint is required")
     try:
         root, task_id = _planning_state_location(ctx)
         state = load_plan_review_state(root, task_id)
     except (OSError, TimeoutError, ValueError) as exc:
-        return "ERROR: PLAN_REVIEW_STATE_INVALID: " + str(exc)
+        return _typed_refusal(ctx, "TOOL_ERROR", "ERROR: PLAN_REVIEW_STATE_INVALID: " + str(exc))
     enforcement = get_review_enforcement()
     cap = review_max_cycles()
     cycles_paid = int(state.get("cycles_paid") or 0)
     wave = plan_review_wave(state, fingerprint)
     if wave is None or wave.get("compact"):
-        return (
+        return _bad(
             "ERROR: PLAN_REVIEW_DISPOSITION_UNBINDABLE: no recorded plan-review wave holds "
-            f"fingerprint {fingerprint} (compact history is not dispositionable). No plan attempt was recorded."
-        )
+            f"fingerprint {fingerprint} (compact history is not dispositionable). No plan attempt was recorded.")
     try:
         wave = _authority_wave(root, task_id, wave) or wave
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return "ERROR: PLAN_REVIEW_DISPOSITION_UNBINDABLE: exact wave is unreadable: " + str(exc)
+        return _bad("ERROR: PLAN_REVIEW_DISPOSITION_UNBINDABLE: exact wave is unreadable: " + str(exc))
     # I-01: a disposition closes ONLY the CURRENT attempt's wave (never a superseded one).
     attempt = state.get("current_attempt") if isinstance(state.get("current_attempt"), dict) else {}
     current_fp = str(attempt.get("fingerprint") or "")
     if current_fp and current_fp != fingerprint:
-        return (
+        return _bad(
             "ERROR: PLAN_REVIEW_DISPOSITION_STALE: a disposition can close only the CURRENT "
             f"plan-review wave; a newer attempt supersedes it (current={current_fp}, "
             f"claimed={fingerprint}). Re-call plan_task with the spec you want reviewed. "
-            "No plan attempt was recorded."
+            "No plan attempt was recorded.",
         )
     if wave.get("closed"):
         return _publish_rendered_wave(ctx, wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
@@ -894,13 +933,13 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
                                       notes=["already_closed: this wave is closed; the disposition is not re-applied"])
     raw_items = disposition.get("items")
     if not isinstance(raw_items, list):
-        return "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: items must be an array"
+        return _bad("ERROR: PLAN_REVIEW_DISPOSITION_INVALID: items must be an array")
     if len(raw_items) > 2 * len(wave.get("findings") or []) + 8:  # bounded like the findings they answer
-        return "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: more items than findings could need"
+        return _bad("ERROR: PLAN_REVIEW_DISPOSITION_INVALID: more items than findings could need")
     items: List[dict] = []
     for index, item in enumerate(raw_items):
         if not isinstance(item, dict):
-            return f"ERROR: PLAN_REVIEW_DISPOSITION_INVALID: items[{index}] must be an object"
+            return _bad(f"ERROR: PLAN_REVIEW_DISPOSITION_INVALID: items[{index}] must be an object")
         items.append({
             "finding_id": str(item.get("finding_id") or "").strip()[:plan_spec.MAX_ID_CHARS * 2],
             "decision": str(item.get("decision") or "").strip().lower()[:40],  # enum-like, bounded
@@ -909,9 +948,9 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
     known = {str(f.get("finding_id") or "") for f in wave.get("findings") or []}
     unknown_ids = sorted({i["finding_id"] for i in items if i["finding_id"] not in known})
     if unknown_ids:
-        return (
+        return _bad(
             "ERROR: PLAN_REVIEW_DISPOSITION_INVALID: unknown finding ids " + ", ".join(unknown_ids)
-            + "; valid ids: " + ", ".join(sorted(known))
+            + "; valid ids: " + ", ".join(sorted(known)),
         )
     closure = plan_spec.closure_after_disposition(
         str(wave.get("aggregate") or ""), wave.get("findings") or [], items, enforcement,
@@ -936,7 +975,8 @@ def _apply_disposition(ctx: ToolContext, disposition: dict) -> str:
             wave_artifact=disposition_ref, recorded_at=disposition_recorded_at,
         )
     except (OSError, TimeoutError, ValueError) as exc:
-        return "ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: " + str(exc)
+        return _typed_refusal(
+            ctx, "TOOL_ERROR", "ERROR: PLAN_REVIEW_STATE_PERSIST_FAILED: " + str(exc))
     _emit_plan_review_reference(ctx, task_id, state_root=root)
     ctx.emit_progress_fn(
         f"📐 plan_task: disposition recorded — {'closed' if closure['closed'] else 'still open'} "
