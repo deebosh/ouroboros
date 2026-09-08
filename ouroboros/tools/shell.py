@@ -7,9 +7,6 @@ import json
 import logging
 import os
 import pathlib
-import re
-import shlex
-import stat
 import subprocess
 import threading
 import time
@@ -37,7 +34,20 @@ from ouroboros.tools.output_export_policy import (  # noqa: F401 — re-exported
     _sensitive_output_component_reason,
 )
 from ouroboros.tools.result_envelope import annotate as _annotate_result
-from ouroboros.shell_parse import is_absolute_path_text, recover_stringified_argv
+from ouroboros.shell_parse import (  # noqa: F401 - moved to its own module; compatibility re-export
+    is_absolute_path_text,
+    recover_stringified_argv,
+    normalize_run_command_argv,
+    _ENV_REF_PATTERN,
+    _EMBEDDED_SHELL_OP_RE,
+    _GLUED_REDIRECT_RE,
+    _SHELL_BUILTINS,
+    _SHELL_INTERPRETERS,
+    _SHELL_OPERATORS,
+    _SINGLE_ARG_SHELL_META_RE,
+    _literal_argv_notes,
+    _validate_shell_argv,
+)
 from ouroboros.tools.registry import (
     ToolContext,
     ToolEntry,
@@ -82,7 +92,6 @@ from ouroboros.tools.shell_grep_argv import (  # noqa: F401 - moved to its own m
     _is_search_no_match,
     _maybe_autocorrect_grep_backslash_pipe,
 )
-from ouroboros.tools.shell_and_chain import _maybe_split_single_element_and_chain, _maybe_wrap_single_element_pipeline
 from ouroboros.tools.shell_output_fingerprint import (  # noqa: F401 - moved to its own module; compatibility re-export
     _OUTPUT_DIR_MAX_BYTES,
     _OUTPUT_DIR_MAX_FILES,
@@ -103,10 +112,6 @@ _active_subprocesses: set = set()
 _subprocess_lock = threading.Lock()
 _RUN_SHELL_DEFAULT_TIMEOUT_SEC = 360
 _CONTROL_DIR_BACKUP_MAX_BYTES = 5 * 1024 * 1024
-from ouroboros.tools.output_export_policy import (  # noqa: E402 — constants SSOT moved with the policy
-    _OUTPUT_DIR_MAX_BYTES,
-    _OUTPUT_DIR_MAX_FILES,
-)
 
 
 def _tracked_subprocess_run(cmd, **kwargs):
@@ -720,201 +725,6 @@ def _maybe_preserve_size_ratchet_update(
     return [], note
 
 
-_SHELL_BUILTINS = frozenset([
-    "cd", "source", ".", "export", "alias", "eval",
-    "set", "unset", "pushd", "popd", "read", "ulimit",
-])
-
-_SHELL_OPERATORS = frozenset(["&&", "||", "|", ";", ">", ">>", "<", "<<"])
-# A redirect GLUED into a single argv element ("2>/dev/null", "2>&1", ">out.log",
-# "&>x") — the standalone-operator set above misses these. Anchored at the element
-# START so a '>' inside a sed/awk/grep expression ("s/a>b/c/g") is NOT flagged.
-# Output redirects keep a permissive glued tail. Input redirects are restricted to
-# UNAMBIGUOUS shapes — heredoc/herestring ("<<EOF", "<<<s"), an fd-prefixed input
-# ("0<f", "2<&1"), or a bare standalone "<" — because a plain "<word" element is
-# indistinguishable from a legitimate literal angle-bracket arg (grep "<div>",
-# "<stdin>"), and false-flagging those is worse than missing a rare glued "<file"
-# input redirect. Pipes/control operators are deliberately NOT matched (a glued
-# '|' is valid regex alternation, grep "a|b").
-_GLUED_REDIRECT_RE = re.compile(
-    r'^(?:(?:\d+>>?|>>?&?\d*|\d*>&\d*|&>>?)(?:\S.*)?|\d+<\S*|<<\S*|<)$'
-)
-# Detect shell pipelines STUFFED into a single argv element (e.g.
-# `["curl && -s && https://api..."]`). Signature: whitespace-bracketed `&&` or
-# `||` inside one element, with non-whitespace on both sides. The whole string
-# reaches subprocess as the executable name and dies with a silent
-# `[Errno 2] No such file or directory`. Narrow to `&&`/`||` only because (a)
-# a bare `|` element is already caught by `_SHELL_OPERATORS.intersection` and
-# (b) `|` inside a regex like `grep "a|b"` is legitimate alternation. The
-# check is gated by `_SHELL_INTERPRETERS` so `["sh", "-c", "a && b"]` scripts
-# pass through (env-ref check at the same cascade location carries the same
-# exemption boundary).
-_EMBEDDED_SHELL_OP_RE = re.compile(r'\s(?:&&|\|\|)\s')
-# A cmd list of length 1 has no "other arguments" for an operator-looking
-# substring to be legitimate content of (the false-positive concern that
-# keeps `|` and the >=1 threshold OUT of the multi-arg check above: a value
-# argument like a commit message or grep pattern can legitimately contain
-# "&&"/"|" text when it sits ALONGSIDE other argv elements). When the WHOLE
-# cmd is one string, that string IS what subprocess treats as the executable
-# name — so ANY shell metacharacter inside it (single "&&"/"||"/"|", or ";")
-# means the caller passed a full pipeline as one un-split argv element
-# instead of splitting it or wrapping ["sh", "-c", ...]. This is the
-# single-most-recurring production failure shape (11 backlog nominations,
-# ibl-5aa29f06571d through ibl-4ecff817c661, 2026-08-11..08-15): the >=2
-# stuffed-pipeline check below only fires on TWO OR MORE operators glued into
-# one element, so a lone "&&"/"|" (arguably the more common typo) passed
-# through silently as a raw [Errno 2] with no actionable guidance.
-_SINGLE_ARG_SHELL_META_RE = re.compile(r'\s(?:&&|\|\|)\s|(?<!\|)\|(?!\|)|;')
-_SHELL_INTERPRETERS = frozenset({"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"})
-_ENV_REF_PATTERN = re.compile(r'\$(?:\{[A-Z][A-Z0-9_]*\}|[A-Z][A-Z0-9_]*)')
-def _validate_shell_argv(cmd: List[str]) -> str:
-    """Cascade validation of a shell argv after autocorrect.
-
-    Returns an empty string when valid, or the SHELL_*_ERROR message that
-    should replace the run. Pulled out of _run_shell (cycle #3 cleanup) to
-    keep that function under the 300-line test gate while keeping every
-    check at the same cascade location and gating the _SHELL_INTERPRETERS
-    exemption boundary. Autocorrect (grep backslash-pipe) is intentionally
-    NOT in here — callers run it first so this helper validates what
-    actually gets executed.
-
-    Cascade order (the still-refused subset; env-ref and glued-redirect
-    shapes are now DISCLOSED by ``_literal_argv_notes`` rather than refused —
-    #447 A5 — so those two steps were removed here):
-      2. shell-builtin check (cd, source, ., etc. — refuse with cwd hint
-         for cd and a generic sh -c hint for the rest)
-      3. standalone shell-operator check (`_SHELL_OPERATORS.intersection`)
-      5. single-element metacharacter check (v6.101.0 fix: a lone `&&`/`||`/
-         `|`/`;` when cmd has EXACTLY ONE element — the whole cmd is then
-         necessarily one full pipeline mistakenly passed as an un-split
-         argv string, so the false-positive concern that keeps this out of
-         the multi-arg checks (a value argument legitimately containing
-         operator-looking text) cannot apply).
-      6. embedded-op check (the cycle #1 fix: 2+ whitespace-bracketed
-         `&&`/`||` inside one argv element among possibly several — the
-         multi-arg production failure shape).
-    """
-    executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
-
-    if cmd and cmd[0] in _SHELL_BUILTINS:
-        if cmd[0] == "cd":
-            return (
-                '⚠️ SHELL_CMD_ERROR: "cd" is a shell builtin, not an executable. '
-                'Use the "cwd" parameter instead: '
-                'run_command(cmd=["git", "log"], cwd="/target/dir")'
-            )
-        return (
-            f'⚠️ SHELL_CMD_ERROR: "{cmd[0]}" is a shell builtin and cannot '
-            'be executed directly via subprocess. '
-            'Use ["sh", "-c", "your command"] if you need shell builtins.'
-        )
-
-    found_ops = _SHELL_OPERATORS.intersection(cmd)
-    if found_ops:
-        op = sorted(found_ops)[0]
-        return (
-            f'⚠️ SHELL_CMD_ERROR: Shell operator "{op}" found in cmd array. '
-            'Subprocess does not interpret shell syntax. '
-            'Options: (1) Split into separate run_command calls. '
-            '(2) For pipes/chaining: ["sh", "-c", "cmd1 && cmd2"]'
-        )
-
-    # (Glued-redirect refusal removed — #447 A5: a "2>/dev/null" element is
-    # literal data to subprocess and is now DISCLOSED by _literal_argv_notes,
-    # so the command runs and the [sh,-c,...] hint rides along in the result.)
-
-    # cmd has exactly ONE element: that element is not "one argument among
-    # several" (where operator-looking text can be legitimate content, e.g.
-    # a commit message `["git", "commit", "-m", "step1 && step2 done"]`) —
-    # it IS the entire cmd, and subprocess treats it as the executable NAME.
-    # A real single-token executable name never legitimately contains a
-    # whitespace-bracketed "&&"/"||", a bare "|", or a ";" — so any of those
-    # here means the caller passed a whole pipeline as one un-split argv
-    # string instead of splitting it or wrapping ["sh", "-c", ...]. Gated by
-    # _SHELL_INTERPRETERS so a bare `["bash"]` (interactive, no -c) is not
-    # flagged. This is scoped tighter than the >=2 check below specifically
-    # so it can safely use a >=1 threshold and include the bare "|" that the
-    # multi-arg check below deliberately excludes (see its comment).
-    if len(cmd) == 1 and executable_name not in _SHELL_INTERPRETERS:
-        single = cmd[0]
-        if _SINGLE_ARG_SHELL_META_RE.search(single):
-            preview = single if len(single) <= 80 else single[:77] + "..."
-            return (
-                f'⚠️ SHELL_CMD_ERROR: Shell syntax found in a single-element cmd: "{preview}". '
-                'A one-element cmd is treated as a literal executable NAME by subprocess, '
-                'not as a shell pipeline, so this fails with [Errno 2] No such file or '
-                'directory. Fix: (1) Split into separate argv elements, one per '
-                'run_command call if the operator was meant to chain commands; '
-                '(2) Wrap the pipeline: ["sh", "-c", "your command here"].'
-            )
-
-    # A shell pipeline STUFFED into a single argv element (e.g.
-    # `["curl && -s && https://api.example.com/x"]`) — the standalone-operator
-    # check above only catches `"&&"` as its own element, and the glued-redirect
-    # check only matches redirect-shaped prefixes. The whole string is then
-    # passed to subprocess as the executable name and dies with a silent
-    # `[Errno 2] No such file or directory`. Gated by `_SHELL_INTERPRETERS` so
-    # `["sh", "-c", "echo a && echo b"]` (a legitimate shell script) passes
-    # through. Narrowed to whitespace-bracketed `&&`/`||` (no `|`) so
-    # `grep "a|b"` regex alternation is not over-flagged.
-    if executable_name not in _SHELL_INTERPRETERS:
-        for idx, arg in enumerate(cmd):
-            op_matches = _EMBEDDED_SHELL_OP_RE.findall(arg)
-            if len(op_matches) >= 2:
-                preview = arg if len(arg) <= 80 else arg[:77] + "..."
-                return (
-                    f'⚠️ SHELL_CMD_ERROR: Shell pipeline stuffed into cmd[{idx}]: "{preview}". '
-                    'Two or more `&&`/`||` operators inside one argv element mean '
-                    'the OS treats the WHOLE string as the executable name, producing '
-                    'silent `[Errno 2] No such file or directory` failures. '
-                    'Fix: (1) Split into separate run_command calls; '
-                    '(2) Wrap the pipeline: ["sh", "-c", "cmd1 && cmd2"].'
-                )
-
-    return ""
-
-
-def _literal_argv_notes(cmd: List[str]) -> str:
-    """Disclosure notes for shell-syntax-looking bytes in direct argv (#447 A5).
-
-    A commit message naming ``$HOME``, an awk ``|`` field separator, a
-    ``2>/dev/null`` element — no shell runs for direct argv, so these are
-    LITERAL DATA carrying no authority question. They used to be REFUSED as
-    errors, blocking commands that would have worked; the in-file autocorrect
-    precedent applies instead: run the command and DISCLOSE what was passed
-    literally, so a genuinely mistaken spelling still explains its own cryptic
-    program error.
-    """
-    notes: list[str] = []
-    executable_name = pathlib.Path(cmd[0]).name.lower() if cmd else ""
-    if executable_name not in _SHELL_INTERPRETERS:
-        for arg in cmd:
-            match = _ENV_REF_PATTERN.search(arg)
-            if match:
-                notes.append(
-                    f'⚠️ SHELL_LITERAL_ARGV_NOTE: literal env reference "{match.group(0)}" in the cmd '
-                    "array reached the program UNEXPANDED (run_command executes argv directly). "
-                    'Use ["sh", "-c", "..."] if you intended shell expansion.\n'
-                )
-                break
-    if found_ops := _SHELL_OPERATORS.intersection(cmd):
-        notes.append(
-            f'⚠️ SHELL_LITERAL_ARGV_NOTE: shell operator "{sorted(found_ops)[0]}" in the cmd array was '
-            "passed to the program as a LITERAL argument (subprocess interprets no shell syntax). "
-            'Use ["sh", "-c", "cmd1 && cmd2"] for pipes/chaining.\n'
-        )
-    # Glued redirects bypass the standalone-operator set but remain shell-looking.
-    for arg in cmd:
-        if _GLUED_REDIRECT_RE.match(arg):
-            notes.append(
-                f'⚠️ SHELL_LITERAL_ARGV_NOTE: redirect-looking argument "{arg}" in the cmd array was '
-                "passed to the program as a LITERAL argument (subprocess interprets no shell "
-                'syntax). Use ["sh", "-c", "..."] for real redirection.\n'
-            )
-            break
-    return "".join(notes)
-
-
 def _resolve_scratch_abs(scratch: List[str] | None, work_dir) -> list[pathlib.Path]:
     """Resolve declared ephemeral `scratch=[...]` paths to absolute host paths (relative ones
     against the command cwd). Blank entries dropped. (v6.52.2)"""
@@ -1015,70 +825,12 @@ def _run_shell(
     _timeout_override = timeout_sec if timeout_sec is not None else timeout
     bucket = str(kwargs.get("bucket") or "")
     skill_name = str(kwargs.get("skill_name") or "")
-    if isinstance(cmd, str):
-        # Shared recovery keeps run_command and verify argv semantics aligned.
-        recovered = recover_stringified_argv(cmd)
-        # Malformed structured literals are not shell commands; refuse explicitly.
-        if recovered is None:
-            stripped = cmd.lstrip()
-            is_posix_test_cmd = stripped.startswith("[ ") and stripped.rstrip().endswith(" ]")
-            # A `{ ...; }` brace group is valid shell, not malformed JSON.
-            is_brace_group = stripped.startswith("{ ") and stripped.rstrip().endswith("}")
-            if is_brace_group:
-                return (
-                    '⚠️ SHELL_CMD_ERROR: `{ ...; }` is a shell brace group, which run_command '
-                    'cannot execute directly (it runs argv without a shell). Wrap it in a shell:\n'
-                    '  run_command(cmd=["sh", "-c", "{ cmd1; cmd2; }"])'
-                )
-            if stripped[:1] in ("[", "{") and not is_posix_test_cmd:
-                return (
-                    '⚠️ SHELL_ARG_ERROR: `cmd` looks like a JSON/Python list literal '
-                    'but failed to parse cleanly (likely an escape or quote-mismatch '
-                    'issue). Pass cmd as an actual array, not a stringified array.\n\n'
-                    'Correct usage:\n'
-                    '  run_command(cmd=["git", "log", "--oneline", "-10"])\n\n'
-                    'Wrong usage (the failure that brought you here):\n'
-                    '  run_command(cmd=\'["git", "log", "--oneline", "-10"]\')\n\n'
-                    'For reading files, prefer `read_file`.\n'
-                    'For searching code, prefer `search_code`.'
-                )
-            try:
-                parts = shlex.split(cmd)
-                if parts:
-                    recovered = parts
-            except ValueError:
-                pass
-        if recovered is not None:
-            cmd = recovered
-        else:
-            return (
-                '⚠️ SHELL_ARG_ERROR: `cmd` must be a JSON array of strings, not a plain string.\n\n'
-                'Correct usage:\n'
-                '  run_command(cmd=["grep", "-r", "pattern", "path/"])\n'
-                '  run_command(cmd=["python", "-c", "print(1+1)"])\n\n'
-                'Wrong usage:\n'
-                '  run_command(cmd="grep -r pattern path/")\n\n'
-                'For reading files, prefer `read_file`.\n'
-                'For searching code, prefer `search_code`.'
-            )
-
-    if not isinstance(cmd, list):
-        return "⚠️ SHELL_ARG_ERROR: cmd must be a list of strings."
-    cmd = [str(x) for x in cmd]
-
-    cmd, autocorrect_note = _maybe_autocorrect_grep_backslash_pipe(cmd)
-    cmd, and_chain_note = _maybe_split_single_element_and_chain(cmd)
-    if and_chain_note:
-        autocorrect_note = (autocorrect_note + and_chain_note) if autocorrect_note else and_chain_note
-    cmd, pipeline_note = _maybe_wrap_single_element_pipeline(cmd)
-    if pipeline_note:
-        autocorrect_note = (autocorrect_note + pipeline_note) if autocorrect_note else pipeline_note
-    err = _validate_shell_argv(cmd)
-    if err:
-        return err
-    # #447 A5: env-ref / glued-redirect shapes that used to be refused are now
-    # disclosed as literal pass-throughs — the command still runs.
-    autocorrect_note += _literal_argv_notes(cmd)
+    # Stringified-argv recovery, the autocorrect chain, and validation are
+    # ctx-independent and live in ouroboros.shell_parse.normalize_run_command_argv
+    # (ibl-978e5cd9258f — this function was over the 300-line FUNCTION_DEBT cap).
+    cmd, autocorrect_note = normalize_run_command_argv(cmd)
+    if cmd is None:
+        return autocorrect_note
 
     try:
         binding = _resolved_binding or build_resolved_resource_binding(
