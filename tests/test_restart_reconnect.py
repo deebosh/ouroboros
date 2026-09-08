@@ -1,8 +1,8 @@
 """Regression checks for restart/reconnect client behavior."""
 
+import inspect
 import os
 import pathlib
-import inspect
 
 REPO = pathlib.Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
