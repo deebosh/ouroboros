@@ -815,18 +815,26 @@ def _validate_manifest_candidate(
         return errors
     try:
         index_tree = _staged_tree_without_index_lock(root)
-    except (OSError, ValueError, subprocess.CalledProcessError, SizeRatchetRefUnavailable):
+    except (OSError, FileNotFoundError, subprocess.CalledProcessError, SizeRatchetRefUnavailable):
         # A private ``GIT_INDEX_FILE`` staging gap (or a worktree layout the
         # helper does not recognize) cannot produce a stable staged tree id.
+        # A bare ``ValueError`` is deliberately NOT swallowed here: it carries
+        # a genuine staged-integrity finding (e.g. a gated source blob that is
+        # a symlink hiding behind a live regular file) and must reach the caller
+        # instead of being swallowed into the broad except clause below.
         return errors
     if index_tree == head_tree:
         return errors
     try:
         staged_text, staged, staged_inventory = _staged_manifest_inventory(root, index_tree, manifest_path)
-    except (OSError, ValueError, subprocess.CalledProcessError, SizeRatchetRefUnavailable):
+    except (OSError, FileNotFoundError, subprocess.CalledProcessError, SizeRatchetRefUnavailable):
         # Staged manifest text or its gated-source blobs are unreadable in this
         # checkout; fall through with live-tree findings rather than disabling
         # the entire validator via the advisory lane's broad except clause.
+        # A bare ``ValueError`` is deliberately NOT swallowed here: it carries
+        # a genuine staged-integrity finding (truncated blob, malformed staged
+        # manifest, a gated source that is not a regular file) and must reach
+        # the caller instead of being silenced.
         return errors
     if staged_text is None:
         if previous is None:
