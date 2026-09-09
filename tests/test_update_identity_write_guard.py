@@ -17,7 +17,6 @@ import unittest
 from hashlib import sha256
 from unittest import mock
 
-import pytest
 
 from ouroboros.tools.control import _update_identity
 from ouroboros.tools.registry import ToolContext

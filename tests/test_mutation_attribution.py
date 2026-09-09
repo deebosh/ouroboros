@@ -863,7 +863,6 @@ def test_vcs_restore_reanchor_admits_cleared_pre_existing_paths(tmp_path):
 def test_vcs_restore_reanchor_no_baseline_returns_false(tmp_path):
     """No baseline present: re-anchor must return ``False`` and not raise."""
     from ouroboros.mutation_attribution import (
-        capture_mutation_baseline,
         reanchor_mutation_baseline_after_restore,
     )
     from ouroboros.task_results import STATUS_RUNNING, write_task_result
@@ -957,7 +956,6 @@ def test_vcs_restore_reanchor_under_owning_root_via_lineage(tmp_path):
     lineage resolution in ``_task_attributed_commit_paths``.
     """
     from ouroboros.mutation_attribution import (
-        attributed_git_candidates,
         attribution_task_id,
         capture_mutation_baseline,
         reanchor_mutation_baseline_after_restore,

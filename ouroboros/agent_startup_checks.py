@@ -9,7 +9,7 @@ import pathlib
 import re
 import subprocess
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.task_finalization import TERMINAL_ORIGIN_HOST_SALVAGE
 from ouroboros.tool_capabilities import DEFAULT_TOOL_RESULT_LIMIT

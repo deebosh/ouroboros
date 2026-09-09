@@ -16,7 +16,7 @@ from ouroboros.consolidator import (
     _write_locked_json as _save_blocks,
     BLOCK_SIZE,
 )
-from ouroboros.memory import strip_think_blocks
+from ouroboros.memory import Memory, strip_think_blocks
 
 
 @pytest.fixture
@@ -598,7 +598,6 @@ def test_should_consolidate_no_byte_trigger_when_small(tmp_paths):
     """The byte trigger does NOT fire when raw bytes are small even with
     pending lines below BLOCK_SIZE — only one of (line cap OR byte cap) needs
     to hold."""
-    from ouroboros import consolidator as cons_mod
 
     chat_path, _, meta_path = tmp_paths
     _write_big_chat_entries(chat_path, count=10, payload_size=10)

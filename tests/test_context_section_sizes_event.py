@@ -18,11 +18,8 @@ This test pins:
 from __future__ import annotations
 
 import json
-import pathlib
-import sys
 from types import SimpleNamespace
 
-import pytest
 
 
 # _capture_context_core touches memory/repo_path; we bypass it by patching the

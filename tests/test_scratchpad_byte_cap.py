@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from ouroboros.context import _render_scratchpad_for_context
 from ouroboros.context_budget import (

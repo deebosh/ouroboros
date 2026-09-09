@@ -91,7 +91,6 @@ def _bind_cleanup_test_repo(
     "" (i.e. no admission closure). Returns a dict of the patched handles
     so individual tests can override specific behaviours.
     """
-    from contextlib import contextmanager
 
     monkeypatch.setattr(git_ops, "REPO_DIR", repo.resolve(strict=False))
     monkeypatch.setattr(git_ops, "DRIVE_ROOT", drive_root)
@@ -150,7 +149,7 @@ def test_reset_happens_when_only_own_commit_in_range(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path)
     drive = tmp_path / "drive"
     drive.mkdir()
-    handles = _bind_cleanup_test_repo(repo, monkeypatch, drive)
+    _bind_cleanup_test_repo(repo, monkeypatch, drive)
 
     base_head = _head_sha(repo)
     own_sha = _commit_file(repo, "own.txt", "own cycle change\n", "cycle own commit")

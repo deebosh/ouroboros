@@ -731,11 +731,11 @@ def _build_compacted_summary(
         "compacted_at": utc_now_iso(),
         "newest_raw_ts": newest_ts,
     }
-    for field in _SUMMED_NUMERIC_FIELDS:
-        if field == "cost_usd":
+    for field_name in _SUMMED_NUMERIC_FIELDS:
+        if field_name == "cost_usd":
             total = sum(_compact_row_known_cost(row) for row in root_rows)
         else:
-            total = sum(_compact_row_numeric(row, field) for row in root_rows)
+            total = sum(_compact_row_numeric(row, field_name) for row in root_rows)
         if not total:
             continue
         # Token columns are integer-typed throughout the rest of the
@@ -744,13 +744,13 @@ def _build_compacted_summary(
         # the inconsistency on disk and to downstream readers. Cast
         # token-shaped fields back to ``int`` so the summary row shape
         # matches every other settled row in the ledger.
-        if field in {
+        if field_name in {
             "prompt_tokens", "completion_tokens", "cached_tokens",
             "cache_write_tokens", "ambiguous_call_count",
         }:
-            summary[field] = int(total)
+            summary[field_name] = int(total)
         else:
-            summary[field] = total
+            summary[field_name] = total
     return summary
 
 

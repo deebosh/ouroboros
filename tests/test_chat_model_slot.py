@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import queue
 
-import pytest
 
 import ouroboros.loop as loop_mod
 from ouroboros import config

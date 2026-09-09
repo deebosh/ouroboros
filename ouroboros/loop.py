@@ -3633,44 +3633,6 @@ def _uncommitted_delivery_reminder(paths: List[str]) -> str:
     )
 
 
-def _delivery_control_prompt(candidate: DeliveryCandidate, *, keep_allowed: bool) -> str:
-    keep_line = (
-        "keep is allowed because no answer-invalidating evidence changed."
-        if keep_allowed
-        else "keep is NOT allowed because owner/tool/child/verification evidence changed."
-    )
-    return (
-        "[DELIVERY_FINALIZATION_CONTROL]\n"
-        f"A complete answer candidate (revision {candidate.revision}, sha256 "
-        f"{candidate.content_sha256[:12]}) is retained by the loop; do not replace it with a "
-        f"service notice. {keep_line}\n"
-        "Return exactly one JSON object and no other text:\n"
-        '{"delivery_control":"keep"}\n'
-        "or\n"
-        '{"delivery_control":"replace","full_answer":"<the complete user-facing answer>"}'
-    )
-
-
-def _delivery_replace_required(candidate: DeliveryCandidate) -> bool:
-    """Return whether a typed full replacement is mandatory for this control round."""
-
-    return candidate.finalization_control.startswith(
-        ("effect_revision_required", "skill_revision_required")
-    )
-
-
-def _delivery_keep_allowed(
-    candidate: DeliveryCandidate,
-    evidence_revision: int,
-    evidence_fingerprint: str,
-) -> bool:
-    return (
-        not _delivery_replace_required(candidate)
-        and candidate.evidence_revision == evidence_revision
-        and candidate.evidence_fingerprint == evidence_fingerprint
-    )
-
-
 def _arm_delivery_control(
     tools: ToolRegistry,
     ctx: _RoundLimitContext,

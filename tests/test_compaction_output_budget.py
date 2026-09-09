@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from ouroboros import context_compaction as cc
 from ouroboros.context_budget import ContextReclaimRequest

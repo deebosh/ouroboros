@@ -35,7 +35,7 @@ dedicated test coverage.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Set
+from typing import Any, Dict
 
 import pytest
 
@@ -91,6 +91,7 @@ def clean_admission_state(monkeypatch):
         queue.RUNNING.clear()
         queue.RUNNING.update(saved_running)
         queue.PENDING.clear()
+        queue.PENDING.extend(saved_pending)
         # Restore the workers module-level state we mutated.
         try:
             workers._WORKER_POOL_DISABLED_REASON = saved_disabled
