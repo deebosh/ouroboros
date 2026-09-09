@@ -67,9 +67,8 @@ def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
     signature: unchanged → not one ``<article>`` is touched; changed → keyed
     patch (``web/modules/widget_list.js`` holds the pure helpers). The same
     sync runs on a visible ``extension_lifecycle`` event and on every WebSocket
-    (re)connect, never on a timer. The page has no Refresh control (owner
-    decision Q20): the window reload is the only hard reset, so nothing in the
-    page stops every kept-running card behind the owner's back."""
+    (re)connect, never on a timer. Contextual failed-read Retry uses that same
+    reconcile; it never restores the former blanket Refresh/reset behavior."""
     source = _widgets_js()
     helpers = _read("web/modules/widget_list.js")
     assert "apiClient.widgets()" in source
@@ -80,15 +79,15 @@ def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
     assert "export function widgetTabsSignature" in helpers
     assert "export function planWidgetListPatch" in helpers
     assert "const signature = widgetTabsSignature(tabs);" in source
-    assert "if (signature !== lastSignature) patchWidgetCards(list, lastTabs, tabs);" in source
+    assert "if (signature !== lastSignature) {" in source
+    assert "patchWidgetCards(list, lastTabs, tabs);" in source
     assert "ctx.ws.on('extension_lifecycle', reconcileWidgetList);" in source
     assert "ctx.ws.on('open', reconcileWidgetList);" in source
     assert "setInterval(" not in source
     # Entry paints the shell before the first await, then syncs.
     assert source.index("paintShell(lastTabs);") < source.index("await syncWidgets(generation);")
-    # Owner decision Q20: the page has no Refresh control at all. A window reload
-    # is the only hard reset, so nothing in the page can stop every kept-running
-    # program behind the owner's back, and no confirmation dialog is needed.
+    # Q17 adds recovery from failed reads while preserving Q20's prohibition on
+    # blanket reset. It neither clears Stop nor introduces restart confirmation.
     css = (REPO_ROOT / "web" / "style.css").read_text(encoding="utf-8")
     card = _read("web/modules/widget_card.js")
     for absent in ("widgets-refresh", "refreshBtn", "refreshWidgets", "confirmWidgetsRestart"):
@@ -97,6 +96,9 @@ def test_widgets_page_reads_cheap_list_and_reconciles_by_signature():
     assert "openConfirmDialog" not in card
     assert "widgets-refresh" not in css
     assert "actionsHtml" not in source
+    assert 'id="widgets-list-error"' in source
+    assert "retryButton.addEventListener('click', reconcileWidgetList);" in source
+    assert "listError.hidden = false;" in source
     # `render()` takes no force flag: there is no path that clears every owner
     # Stop and rebuilds every card while the page stays open.
     assert "async function render() {" in source
@@ -367,7 +369,7 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     assert "if (!isFramedWidget(tab)) return '';" in card
     assert card.count("btn btn-primary") == 1
     assert 'role="menuitemradio"' in card
-    assert '<dialog class="skills-card-menu-dialog" role="menu"' in card
+    assert '<dialog class="skills-card-menu-dialog ui-popup" role="menu"' in card
     assert 'class="skills-card-menu-trigger"' in card
     assert '<span class="ui-status" data-tone="neutral" data-widget-status hidden>' in card
     # Owner-facing menu wording, not the enum name (CA-11).
@@ -379,7 +381,9 @@ def test_widgets_launch_policy_controls_and_stop_suppression():
     assert "const ICON_NAME = /^[a-z][a-z0-9_-]*$/i;" in card
     assert "setFrameHeight(mount.firstElementChild, frameHeight(tab.render || {}));" in card
     # Closing a menu hands focus back to its trigger when it was inside (CA-16, WebKit).
-    assert "trigger?.focus({ preventScroll: true });" in card
+    assert "const binding = bindMenu(popover, {" in card
+    assert "anchor: trigger," in card
+    assert "binding.close({ restoreFocus: true })" in card
     assert ".widgets-facade {" in style
     assert "height: var(--widget-frame-height, 320px);" in style.split(".widgets-facade {", 1)[1].split("}", 1)[0]
     assert ".widgets-card-controls .ui-status[data-tone]::before" in style
@@ -638,7 +642,8 @@ def test_widgets_forms_charts_and_kanban_keep_host_owned_contracts():
     assert "export function renderChartDataTable" in chart
     assert "data-widget-kanban-move" in source
     assert "widget-kanban-empty" in source
-    assert "mount.querySelectorAll('[data-widget-kanban-key]')" in source
+    assert "listen('change', (event) =>" in source
+    assert "select?.closest('[data-widget-kanban-key]')" in source
     assert "{ card_id: cardId, column_id: columnId }" in source
     assert "SAFE_FIELD_TYPES" in helper
     assert "autocomplete=\"new-password\"" in helper

@@ -588,8 +588,7 @@ Using a migrated field inside a historical page does not claim the whole page
 has migrated. Migrated today:
 
 - `web/ui.css` (shared palette, fields, buttons, status/chip recipes and
-  menu/chooser chrome, used by both top-level documents; available as source
-  for optional author pages)
+  menu/chooser chrome, used by both top-level documents and optional author pages)
 - `web/settings.css` (settings shell, model/effort cards, MCP cards)
 - `web/onboarding.css` (the whole first-run wizard)
 - `web/model_roles.css` and `web/reviewer_slots.css` (shared role editors)
@@ -621,7 +620,7 @@ An extension may use the optional shared buttons, fields and status functions
 inside its own module or route-iframe page, override them, or design a completely
 independent interface. `.ouro-ui` supplies font and native dark-control context;
 the named classes opt controls into the recipes, with no page-wide reset.
-The optional source reader supplies installed CSS and pure functions; an author
-owns their loading and any update of its page. This is no theme-polling or
-forced-remount mechanism and imposes no mandatory visual conformance. Author
-layout, validation, operations and loading feedback remain author-owned.
+The kit reads the installed source at a new mount; retained frames keep the styling
+they loaded. It introduces no theme polling, forced remount or mandatory visual
+conformance. Author layout, validation, operations and loading feedback remain
+author-owned; the small source recipes are in `docs/examples/author_ui_kit/`.

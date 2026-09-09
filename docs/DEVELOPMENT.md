@@ -3042,8 +3042,15 @@ all source modes and its selected target independently of browser navigation.
 forms/actions, text/data/media, tabs/charts, async jobs, files,
 map/calendar/kanban, and composition through `group`, `metric`, and
 `callout`. Nested interactive components use stable identity and one
-disposer; `subscription.render` is transitively passive. Escape text and
-attributes for their actual HTML contexts, constrain media to extension
+disposer; `subscription.render` is transitively passive. Data updates patch
+the existing component/field nodes at the mount's identity seam, preserving
+selection, composition, native popup state and password input. Passwords stay
+only in their mounted control, never in the retained form-value snapshot.
+Forms and actions own visible pending/result/error feedback by component id;
+an optional status component or a sibling's shared data target is not that
+action's result. Preserve the existing job identity, bounded retries and
+disposal contracts. Escape text and attributes for their actual HTML contexts,
+constrain media to extension
 routes or safe data URLs, and keep charts accessible through a semantic
 table. Rare `kind: "module"` UI runs only in a sandboxed opaque-origin
 iframe with no `allow-same-origin`; its document policy admits scripts,
@@ -3058,7 +3065,9 @@ policy menu, the facade — lives in `widget_card.js`, reorder handles in
 `widget_reorder.js`, chart/table helpers in `widget_chart.js`, the pure
 list-signature and keyed-patch helpers in `widget_list.js`; the page
 compares the list signature after every `GET /api/widgets` and touches no
-card node when it is unchanged.
+card node when it is unchanged. A failed list read exposes contextual Retry
+through that same reconciliation; it preserves unchanged frames and the
+owner's Stop choices. Do not turn Retry into a global refresh/remount.
 Long-running actions use a durable job id and resumable status polling.
 Every timer, listener, observer, stream, abort controller, chart, and
 mounted widget has a paired disposer. Enforcement:
@@ -3069,7 +3078,29 @@ mounted widget has a paired disposer. Enforcement:
 (keyed patch of a running card, reconnect reconcile) and
 `tests/test_widgets_ui_browser_capabilities.py` (the frame CSP, sandbox and
 permissions boundary on Chromium and WebKit) — run all four before a release
-that touched Widgets.
+that touched Widgets. `tests/test_widgets_ui_browser_identity.py` additionally
+pins retained interactive nodes, composition/password lifetime, local action
+feedback and non-destructive list Retry through real declarative consumers.
+
+### Optional author controls
+
+Use `ouroboros.server_web.read_author_kit_assets(request.app.state.repo_dir)`
+to read the fixed installed `web/ui.css` and `web/modules/ui_primitives.js`
+sources for an author-owned page. Resolve at the page/kit GET that serves a
+new mount, not at extension registration; the request root is propagated by
+both in-process and out-of-process dispatch. No bundle cache, new endpoint or
+auth exception belongs in the helper.
+
+`docs/examples/author_ui_kit/` contains the two ordinary extension recipes:
+a module gets source text from its own route through `OuroborosWidget.fetch`,
+adds CSS and imports the self-contained module from a frame-local Blob URL;
+a route iframe embeds the same source safely in its initial HTML under its
+own CSP. Revoke temporary Blob URLs. These paths need no opaque `/static`
+request, new bridge message or widget schema flag. Keep the kit optional and
+author-overridable; retained mounts keep their loaded source, with no theme
+poller or forced remount. Tests `test_author_ui_kit.py` and
+`test_author_ui_kit_browser.py` cover source-root delivery and actual framed
+consumers; they do not certify an arbitrary author's CSP or application.
 
 ### Optional author controls
 
