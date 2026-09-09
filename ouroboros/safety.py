@@ -100,6 +100,7 @@ TOOL_POLICY: Dict[str, str] = {
     "steer_task": POLICY_SKIP,
     "update_scratchpad": POLICY_SKIP,
     "update_identity": POLICY_SKIP,
+    "update_self": POLICY_SKIP,
     "memory_update_registry": POLICY_SKIP,
     "vcs_pull_ff": POLICY_SKIP,
     "vcs_restore": POLICY_SKIP,

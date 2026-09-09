@@ -65,7 +65,7 @@ def test_consciousness_prompt_matches_scope_limited_contracts():
 
     assert "schedule subagents" in consciousness
     assert "wait on subagents" in consciousness
-    assert "Update your scratchpad or identity" in consciousness
+    assert "Update your scratchpad, identity, or self" in consciousness
     assert "Message the user proactively" in consciousness
     assert "recent_tasks" in consciousness
 
