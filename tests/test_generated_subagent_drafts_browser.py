@@ -6,8 +6,6 @@ import json
 
 import pytest
 
-from tests.test_subscription_setup_browser import subscription_ui
-
 pytestmark = [pytest.mark.ui_browser, pytest.mark.serial]
 
 
