@@ -3102,16 +3102,6 @@ poller or forced remount. Tests `test_author_ui_kit.py` and
 `test_author_ui_kit_browser.py` cover source-root delivery and actual framed
 consumers; they do not certify an arbitrary author's CSP or application.
 
-### Optional author controls
-
-`ouroboros.server_web.read_author_kit_assets(request.app.state.repo_dir)`
-returns the fixed installed `web/ui.css` and `web/modules/ui_primitives.js`
-source texts. Pass the serving request root, not an ambient checkout. The
-helper supplies no endpoint, cache or frame loader: authors own delivery,
-source installation and error feedback under their existing page/CSP contract.
-Keep common classes optional and overridable; do not infer a hot-theme update,
-forced remount or new bridge/auth capability from a source read.
-
 ## MCP Client Integration
 
 The base runtime is an optional CLIENT for trusted HTTP/SSE and local stdio
