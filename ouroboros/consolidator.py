@@ -3,10 +3,10 @@ import json
 import logging
 import os
 import pathlib
-import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
+from ouroboros.memory import strip_think_blocks
 from ouroboros.utils import (
     append_jsonl,
     atomic_write_json,
@@ -419,23 +419,6 @@ def _run_block_consolidation(
     return total_usage
 
 
-def _strip_think_blocks(raw: str) -> str:
-    """Strip ``...`` blocks from LLM output before storing.
-
-    Models like minimax/M2.7-highspeed emit `` reasoning regardless of
-    `reasoning_effort="low"`. Storing those sections inflates dialogue_blocks.json
-    (45.8% of current content per cycle-54 measurement, observed range
-    0–95% per block) and bloats downstream scratchpad rendering. We strip them
-    AFTER the call — the model still thinks, the stored memory only carries
-    the answer. Conservative: only strips WELL-FORMED closing tags; an unclosed
-    `` tag fails safe (no strip) so partial responses are preserved
-    verbatim and surfaced to the cursor advance / retry path."""
-    if not raw:
-        return ""
-    stripped = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL)
-    return stripped.strip()
-
-
 def _truncate_with_marker(content: str, max_chars: int, span_label: str) -> Tuple[str, bool]:
     """Bound stored content at ``max_chars`` and append an honest truncation marker.
 
@@ -479,7 +462,7 @@ def _call_consolidation_llm(
             use_local=use_local,
         )
         raw = msg.get("content", "")
-        stripped = _strip_think_blocks(raw)
+        stripped = strip_think_blocks(raw)
         bounded, was_truncated = _truncate_with_marker(stripped, max_chars, span_label)
         if was_truncated and len(bounded) > max_chars + 200:  # marker overhead capped ~200 chars
             log.warning(

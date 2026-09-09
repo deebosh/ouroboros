@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from ouroboros.memory import Memory, _SCRATCHPAD_MAX_BLOCKS
+from ouroboros.memory import Memory, _SCRATCHPAD_MAX_BLOCKS, strip_think_blocks
 
 
 @pytest.fixture
@@ -86,12 +86,18 @@ class TestDialogueBlocks:
 
     def test_format_blocks_as_markdown(self, memory):
         blocks = [
-            {"type": "summary", "content": "### Block: 2026-01-01\nFirst."},
+            {"type": "summary", "content": "<think>private</think>### Block: 2026-01-01\nFirst."},
             {"type": "era", "content": "### Era: 2025\nOld stuff."},
         ]
         md = Memory.format_blocks_as_markdown(blocks)
         assert "First." in md
         assert "Old stuff." in md
+        assert "private" not in md
+        assert "private" in blocks[0]["content"]
+
+    def test_strip_think_blocks_unclosed_fails_safe(self):
+        raw = "prefix\n<think>partial response"
+        assert strip_think_blocks(raw) == raw
 
     def test_corrupt_blocks_file(self, memory):
         blocks_path = memory.drive_root / "memory" / "dialogue_blocks.json"

@@ -16,6 +16,7 @@ from ouroboros.consolidator import (
     _write_locked_json as _save_blocks,
     BLOCK_SIZE,
 )
+from ouroboros.memory import strip_think_blocks
 
 
 @pytest.fixture
@@ -452,30 +453,24 @@ def test_try_extract_embedded_json_balanced_and_skips_strings(tmp_path):
 
 def test_strip_think_blocks_basic():
     """The most common case: a single <think>...</think> block at the start."""
-    from ouroboros.consolidator import _strip_think_blocks
-
     raw = "<think>\nplan: foo\n</think>\n\n### Block: 2026-09-07\nactual content"
-    assert _strip_think_blocks(raw) == "### Block: 2026-09-07\nactual content"
+    assert strip_think_blocks(raw) == "### Block: 2026-09-07\nactual content"
 
 
 def test_strip_think_blocks_no_think():
     """No think block → raw returned unchanged."""
-    from ouroboros.consolidator import _strip_think_blocks
-
     raw = "### Block: 2026-09-07\nactual content"
-    assert _strip_think_blocks(raw) == raw
+    assert strip_think_blocks(raw) == raw
 
 
 def test_strip_think_blocks_multiple():
     """Multiple disjoint think blocks are all stripped."""
-    from ouroboros.consolidator import _strip_think_blocks
-
     raw = (
         "<think>plan 1</think>summary intro\n"
         "<think>plan 2</think>body content\n"
         "trailing text"
     )
-    out = _strip_think_blocks(raw)
+    out = strip_think_blocks(raw)
     assert "plan 1" not in out
     assert "plan 2" not in out
     assert "summary intro" in out
@@ -487,17 +482,13 @@ def test_strip_think_blocks_unclosed_fails_safe():
     """Unclosed ``<think>`` (no closing tag) must NOT eat the whole reply —
     the conservative regex is paired-aware. Without a closing tag the think
     block is NOT stripped and the whole raw text passes through."""
-    from ouroboros.consolidator import _strip_think_blocks
-
     raw = "<think>never closed\nactual content here"
-    out = _strip_think_blocks(raw)
+    out = strip_think_blocks(raw)
     assert out == raw  # unclosed → pass-through, not silently consumed
 
 
 def test_strip_think_blocks_multiline():
     """Multiline think content with DOTALL semantics is removed as a unit."""
-    from ouroboros.consolidator import _strip_think_blocks
-
     raw = (
         "<think>\n"
         "first line of plan\n"
@@ -506,7 +497,7 @@ def test_strip_think_blocks_multiline():
         "</think>\n"
         "### Block\nactual"
     )
-    out = _strip_think_blocks(raw)
+    out = strip_think_blocks(raw)
     assert out == "### Block\nactual"
 
 

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 from collections import Counter, deque
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -23,6 +24,37 @@ _AUTOMATIC_CHAT_TAIL_BYTES = 512 * 1024
 _AUTOMATIC_CHAT_MAX_SCAN_ROWS = 5_000
 
 _SCRATCHPAD_MAX_BLOCKS = 10
+
+# Matches well-formed <think>...</think> spans (DOTALL: a think block may span
+#   multiple lines, including code blocks and JSON). The lazy `*?` is
+#   paired-aware: an UNCLOSED ``<think>`` (no ``</think>``) finds no match,
+#   so the original text passes through unchanged — see
+#   test_strip_think_blocks_unclosed_fails_safe. This is the SSOT helper
+#   for both the future-consolidation write path (ouroboros.consolidator)
+#   and the historical model-bound projection (Memory.format_blocks_as_markdown
+#   below); one regex, one behavior, two call sites.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def strip_think_blocks(raw: str) -> str:
+    """Strip well-formed ``<think>...</think>`` spans from LLM/agent output.
+
+    Public helper owned by ``ouroboros.memory`` — single SSOT for the regex
+    shared by the future-consolidation write path (``ouroboros.consolidator``)
+    and the historical model-bound projection (``Memory.format_blocks_as_markdown``).
+    Conservative: an unclosed ``<think>`` (no ``</think>``) fails safe — no
+    span is matched, the original text passes through unchanged, so partial
+    responses are surfaced to the cursor advance / retry path rather than
+    silently consumed. Strips NOTHING if ``raw`` is empty or None-like.
+
+    This is a PROJECTION step, not a recompression: it does not summarize,
+    paraphrase, or otherwise alter the durable block content. Raw source
+    (chat.jsonl, dialogue_blocks.json) is the SSOT; the model-bound layer
+    sees the cleaned projection.
+    """
+    if not raw:
+        return ""
+    return _THINK_BLOCK_RE.sub("", raw).strip()
 
 
 def _history_timestamp(value: Any, *, field: str = "ts") -> datetime:
@@ -566,7 +598,19 @@ class Memory:
 
     @staticmethod
     def format_blocks_as_markdown(blocks: List[Dict[str, Any]]) -> str:
-        return "\n\n".join(b.get("content", "") for b in blocks)
+        """Render historical dialogue blocks for the model-bound projection.
+
+        Each block's raw ``content`` is the durable SSOT (stored verbatim in
+        ``memory/dialogue_blocks.json``). The projection layer strips well-formed
+        ``<think>...</think>`` spans before joining so the model never sees
+        private think-bubble noise; this is a SHAPE-PRESERVING projection step,
+        not a recompression — order, paragraph breaks, and non-think text
+        pass through unchanged. Unclosed ``<think>`` tags fail safe
+        (pass-through, no silent consumption). Raw ``dialogue_blocks.json``
+        is NOT modified here; only the in-memory markdown rendering for the
+        current context build is affected.
+        """
+        return "\n\n".join(strip_think_blocks(b.get("content", "")) for b in blocks)
 
     def load_identity(self) -> str:
         path = self.identity_path()
