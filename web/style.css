@@ -5872,8 +5872,10 @@ textarea.chat-input {
     padding: 6px 10px;
     border-bottom: 1px solid var(--divider);
     font-size: 12px;
-    word-break: break-all;
 }
+.new-project-browser-path > strong { min-width: 0; overflow-wrap: anywhere; }
+.new-project-browser-path > button { flex: 0 0 auto; white-space: nowrap; }
+
 
 .new-project-browser-list {
     display: flex;
@@ -7155,78 +7157,6 @@ textarea.chat-input {
 }
 
 
-.files-context-menu:not(.ui-popup) {
-    position: fixed;
-    min-width: 160px;
-    padding: 6px;
-    border-radius: var(--radius);
-    border: 1px solid var(--divider);
-    background: rgba(18, 20, 26, 0.96);
-    box-shadow: 0 20px 45px rgba(0, 0, 0, 0.35);
-    z-index: 20;
-}
-
-.files-context-menu:not(.ui-popup) .files-context-item {
-    width: 100%;
-    border: none;
-    border-radius: var(--radius-sm);
-    padding: 10px 12px;
-    background: transparent;
-    color: var(--text-primary);
-    text-align: left;
-    cursor: pointer;
-}
-
-.files-context-menu:not(.ui-popup) .files-context-item:hover {
-    background: var(--menu-item-hover);
-}
-
-.files-context-menu:not(.ui-popup) .files-context-item-danger {
-    color: var(--status-error-fg);
-}
-
-.files-context-menu:not(.ui-popup) .files-context-item-danger:hover {
-    background: rgba(239, 68, 68, 0.12);
-    color: #fecaca;
-}
-
-
-.project-row-menu:not(.ui-popup) {
-    position: fixed;
-    top: var(--prm-top, 0);
-    left: var(--prm-left, 0);
-    z-index: 120;
-    display: flex;
-    flex-direction: column;
-    min-width: 180px;
-    padding: 4px;
-    border: 1px solid var(--divider);
-    border-radius: var(--radius-md, 8px);
-    background: var(--ui-modal-bg);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-    max-width: min(260px, calc(100vw - 16px));
-}
-
-.project-row-menu:not(.ui-popup) button {
-    text-align: left;
-    padding: 7px 10px;
-    border: none;
-    background: transparent;
-    color: var(--text-primary);
-    font-size: 13px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-}
-
-.project-row-menu:not(.ui-popup) button:hover {
-    background: var(--menu-item-hover);
-}
-
-.project-row-menu:not(.ui-popup) button.danger {
-    color: var(--status-error-fg);
-}
-
-
 .chat-photo-menu:not(.ui-popup) {
     position: absolute;
     top: 34px;
@@ -7256,41 +7186,9 @@ textarea.chat-input {
 .chat-photo-menu:not(.ui-popup) button:hover { background: var(--menu-item-hover); }
 
 
-.files-modal-input:not(.ui-control) {
-    width: 100%;
-    margin-top: 14px;
-    border: 1px solid var(--divider);
-    border-radius: var(--radius-md);
-    padding: 11px 12px;
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--text-primary);
-    font: inherit;
-}
-.files-editor-name:not(.ui-control) {
-    width: 100%;
-    border: 1px solid var(--divider);
-    border-radius: var(--radius-md);
-    padding: 10px 12px;
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--text-primary);
-    font: inherit;
-}
-.files-editor:not(.ui-control) {
-    width: 100%;
-    flex: 1;
-    min-height: 320px;
-    border: 0;
-    outline: none;
-    resize: none;
-    margin: 0;
-    padding: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    line-height: inherit;
-    white-space: pre;
-    tab-size: 4;
-}
+
+
+
 .form-field input:not(.ui-control):not(.ui-checkbox), .form-field select:not(.ui-control):not(.ui-checkbox),
 .reviewer-slot-controls input:not(.ui-control):not(.ui-checkbox), .reviewer-slot-controls select:not(.ui-control):not(.ui-checkbox) {
     padding: 8px 12px;
@@ -7358,13 +7256,5 @@ textarea.chat-input {
     padding: 3px 5px;
 }
 
-
-.files-toolbar input:not(.ui-control) {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--divider);
-    color: var(--text-primary);
-    border-radius: var(--radius-md);
-    padding: 10px 12px;
-}
 
 /* track-migration:end */

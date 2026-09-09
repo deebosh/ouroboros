@@ -22,10 +22,13 @@ def test_files_page_registers_navigation_guard():
 
 def test_new_file_discard_and_context_menu_clamp_regressions():
     source = _read("web/modules/files.js")
+    shared = _read("web/modules/ui_interactions.js")
 
     assert "createNewFile({ force: true })" in source
-    assert "window.innerWidth - rect.width" in source
-    assert "window.innerHeight - rect.height" in source
+    assert "bindMenu(contextMenuEl" in source
+    assert "document.body.appendChild(contextMenuEl)" in source
+    assert "leftEdge + width - rect.width" in shared
+    assert "topEdge + height - rect.height" in shared
 
 
 def test_files_page_explains_manager_role_and_directory_affordance():
@@ -192,6 +195,7 @@ def test_open_browser_detached_records_outcome(monkeypatch):
 def test_files_confirm_dialog_results_are_normalized():
     source = _read("web/modules/files.js")
     helper = _read("web/modules/ui_helpers.js")
+    primitives = _read("web/modules/ui_primitives.js")
     toast = _read("web/modules/toast.js")
 
     assert "typeof result === 'boolean' ? { confirmed: result, value: '' } : result" in source

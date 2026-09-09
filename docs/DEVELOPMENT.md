@@ -1946,6 +1946,19 @@ owner, owed terminal delivery, cascade postconditions — lives in ARCHITECTURE
   raw-model sources can supply Main; an Agent-only connection cannot invent one.
   Subscription copy says "without an API key", never guaranteed free. Provider
   credits/spend settings are not enabled or changed by connecting an account.
+- Settings validates the complete draft before any Save request; never omit an
+  invalid custom-key row and save the remainder. Keep pure draft collection and
+  dirty comparison separate from field-error painting. A failed save/refresh
+  preserves edits; leaving or reloading a dirty draft asks before discarding.
+  Preserve saved/unsaved/unknown write receipts and the independent owner-only
+  endpoints. Tests: `web/tests/settings_validation.test.js` and the real
+  `tests/test_ui_smoke_settings_drafts.py` consumer.
+- Model-role and actor/reviewer adapters use `model_chooser.js`; the chooser
+  owns suggestions/keyboard/position only, never route identity or entitlement.
+  Update options in place and dispose bindings before replacing inputs. Short
+  source/account choices stay native; retain arbitrary API ids and saved
+  undiscovered choices. Tests: `web/tests/model_chooser.test.js`,
+  `tests/test_model_chooser_browser.py`, `tests/test_subscription_role_routes_browser.py`.
 - Models, actors and reviewers share source/model/account controls. Preserve
   exact pins on ordinary save/reload and catalog failure; a source's credential
   harness comes from its metadata, never an assumed equal name. A referenced
@@ -3015,6 +3028,13 @@ Dispose before removing a popup, and close/restore a menu before opening a
 dialog from its action. `web/tests/ui_interactions.test.js` pins callbacks,
 focus, geometry and cleanup; actual menu/chooser/dialog browser consumers
 remain necessary for viewport and engine-sensitive behavior.
+
+Files keeps one current editable document through cancelled navigation, ordinary
+folder refresh, failed Save and clipboard feedback. Pointer/keyboard submission
+shares one in-flight write; newer text remains dirty after an earlier save.
+The New Project adapter shares dialog focus and menu behavior while retaining
+all source modes and its selected target independently of browser navigation.
+`tests/test_ui_smoke_files_project_drafts.py` verifies these real consumers.
 
 ### Declarative widgets
 

@@ -65,7 +65,9 @@ def test_a_fresh_subagent_row_invites_and_only_a_save_attempt_makes_it_red() -> 
     host = _read(MODULES / "settings.js")
     # Every Save click is an attempt — including one another field's validation
     # then aborts — so the stamp precedes the cadence check's early return.
-    assert host.index("noteSubagentsSaveAttempt();") < host.index("Every-N cadence needs")
+    save = host[host.index("byId('btn-save-settings').addEventListener"):]
+    assert save.index("noteSubagentsSaveAttempt();") < save.index("const errors = renderValidation();")
+    assert "Every-N cadence needs" in host
     assert "agentsStep?.noteSaveAttempt?.();" in _read(MODULES / "onboarding_wizard.js")
     # Errors name the card the way its heading does, never a bare "Row N".
     assert "`Subagent ${index + 1} ${text}`" in editor
