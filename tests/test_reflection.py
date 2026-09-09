@@ -25,6 +25,9 @@ from ouroboros.reflection import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _write_entry(drive_root: Path, entry: dict) -> Path:
     """Append a single reflection entry to task_reflections.jsonl under drive_root."""
     logs_dir = drive_root / "logs"
@@ -185,7 +188,7 @@ def test_main_emits_trailing_json_for_stored_entry(tmp_path):
 
     result = _run_cli(
         ["--task-id", "task-cli-1", "--drive-root", str(drive_root)],
-        cwd="/opt/ouroboros",
+        cwd=str(REPO_ROOT),
     )
     assert result.returncode == 0, f"stderr: {result.stderr!r}, stdout: {result.stdout!r}"
     # The narrative precedes the trailing-JSON markers.
@@ -209,7 +212,7 @@ def test_main_exits_nonzero_on_missing_task(tmp_path):
     # No entries written.
     result = _run_cli(
         ["--task-id", "no-such-task", "--drive-root", str(drive_root)],
-        cwd="/opt/ouroboros",
+        cwd=str(REPO_ROOT),
     )
     assert result.returncode == 1
     # Typed stderr message — no traceback, mentions the missing task_id.
@@ -226,7 +229,7 @@ def test_main_uses_drive_root_env_var(tmp_path):
     # No --drive-root flag; env must be honored.
     result = _run_cli(
         ["--task-id", "task-env-1"],
-        cwd="/opt/ouroboros",
+        cwd=str(REPO_ROOT),
         drive_root_override=str(drive_root),
     )
     assert result.returncode == 0, f"stderr: {result.stderr!r}"
@@ -236,7 +239,7 @@ def test_main_uses_drive_root_env_var(tmp_path):
 def test_main_exits_2_when_no_task_id():
     result = _run_cli(
         [],
-        cwd="/opt/ouroboros",
+        cwd=str(REPO_ROOT),
     )
     assert result.returncode == 2
     assert "no task_id given" in result.stderr
