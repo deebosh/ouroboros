@@ -94,10 +94,7 @@ def _resolve_edit_target(
     spellings of one file inside a single call collapse to one entry instead of
     two writes where the last silently discards the first.
     """
-    from ouroboros.tools.core import (
-        _access_or_block,
-        project_room_lens_dir,
-    )
+    from ouroboros.tools.core import _access_or_block
 
     if not path or not str(path).strip():
         return None, "", None, f"⚠️ {error_tag}: path is required."
@@ -131,12 +128,6 @@ def _resolve_edit_target(
     if reason := block_reason_for_path(ctx, target, "write", binding):
         return None, "", None, (
             f"⚠️ {error_tag}: protected artifact path blocked: {reason}"
-        )
-    if normalized == "active_workspace" and project_room_lens_dir(ctx) is not None:
-        return None, "", None, (
-            "⚠️ ROOM_WRITE_VIA_TASK: this room's files are edited by PROMOTED tasks — "
-            "call promote_chat_to_task for real work there. For a deliberate edit of "
-            'the Ouroboros system repo, pass root="system_repo" explicitly.'
         )
     norm = normalize_repo_path(rel)
     if (
@@ -190,16 +181,20 @@ def _finish_mutation(
     except Exception:
         log.debug("%s: advisory invalidation failed (non-critical)", source_tool, exc_info=True)
     targets_system = binding_targets_system_repo(ctx, binding) if binding is not None else False
-    if ctx.is_workspace_mode() and not targets_system:
-        return "Files are on disk but NOT committed. Do not commit; the headless runner will emit a patch artifact."
+    if not targets_system:
+        footer = "Files are on disk but NOT committed."
+        if ctx.is_workspace_mode():
+            footer += " Do not commit; the headless runner will emit a patch artifact."
+        return footer
     footer = (
         "Files are on disk but NOT committed. Run commit_reviewed when ready.\n"
         "⚠️ Advisory pre-review is now stale — run preflight_review before commit_reviewed."
     )
     # A pro-mode edit of a protected surface announces itself here exactly as it
-    # does from git._repo_write / _str_replace_editor (SYSTEM.md's protected-write
-    # contract): the mode ALLOWS the write, and the notice is what keeps it visible.
-    protected = protected_paths_in(changed_paths) if targets_system or not ctx.is_workspace_mode() else []
+    # does from git._repo_write / _str_replace_editor (the protected-write contract
+    # in ARCHITECTURE "Safety and runtime mode" and SYSTEM.md "Safety-critical
+    # files"): the mode ALLOWS the write, and the notice is what keeps it visible.
+    protected = protected_paths_in(changed_paths)
     if protected and mode_allows_protected_write(_runtime_mode()):
         footer += "\n\n" + core_patch_notice(protected)
     return footer

@@ -19,7 +19,9 @@ from ouroboros.config import (
     SKILL_SOURCE_NATIVE,
     SKILL_SOURCE_OUROBOROSHUB,
 )
+from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.skill_loader import (
+    SKILL_OWNER_STATE_SCHEMA_VERSION,
     SkillPayloadUnreadable,
     SkillReviewState,
     compute_content_hash,
@@ -40,8 +42,10 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
     hash/provenance check. On a clean preflight, persist a durable CLEAN verdict bound to the content_hash
     (review_profile='owner_attested', reviewer_models=['owner_attestation'], one explicit
     PASS finding so the status serializes) and drop the owner-issued marker that
-    load_review_state requires for the verdict to stay valid. Owner-only (the endpoint gates
-    it); the agent can never forge the marker (it is an owner-state file)."""
+    load_review_state requires for the verdict to stay valid. The acting model
+    interprets owner intent; the shared lifecycle action owner validates source
+    provenance, caller and selected revision. Generic agent file writes cannot
+    forge the owner-state marker."""
     # A FAILED attestation preflight persists as a normal review result (so the gate's
     # fresh ``preflight_failed`` fact and the Repair affordance appear) — but ONLY when
     # persisting cannot clobber a FRESH valid verdict: review.json absent, or its recorded
@@ -73,6 +77,18 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
             error=("owner-attestation refused: the manifest has validation issues the LLM "
                    "manifest reviewer would flag (" + "; ".join(str(w) for w in validate_warnings[:5])
                    + "); fix them or run the full skill_review"),
+        )
+    # ABI-1: the NEW-PASS admission predicate is common to every PASS-minting
+    # path — an attestation is a PASS issuance, so a field-less extension is
+    # refused here exactly like in the LLM review path. Nothing is persisted,
+    # so an existing hash-bound PASS (grandfather) stays untouched.
+    from ouroboros.contracts.plugin_api import extension_new_pass_admission_error
+
+    admission_error = extension_new_pass_admission_error(manifest)
+    if admission_error:
+        return _sr.SkillReviewOutcome(
+            skill_name=skill.name, status=_sr.STATUS_PENDING, content_hash=content_hash,
+            error=f"owner-attestation refused (PluginAPI 2.0 admission): {admission_error}",
         )
     findings = [{
         "item": "owner_attestation",
@@ -115,9 +131,12 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
             content_hash=content_hash, findings=findings,
         )
     marker_path = skill_state_dir(drive_root, skill.name) / "owner_attestation.json"
-    atomic_write_json(marker_path, {"attested_at": utc_now_iso(), "content_hash": content_hash})
+    atomic_write_json(marker_path, with_schema_version(
+        {"attested_at": utc_now_iso(), "content_hash": content_hash},
+        SKILL_OWNER_STATE_SCHEMA_VERSION,
+    ))
     skill.review = review_state
-    return _sr.SkillReviewOutcome(
+    outcome = _sr.SkillReviewOutcome(
         skill_name=skill.name,
         status=_sr.STATUS_CLEAN,
         findings=findings,
@@ -125,6 +144,8 @@ def run_owner_attestation(ctx: Any, drive_root: pathlib.Path, skill: Any, conten
         content_hash=content_hash,
         review_profile="owner_attested",
     )
+    _sr._apply_auto_grant_outcome(outcome, skill, _sr.auto_grant_if_enabled(drive_root, skill))
+    return outcome
 
 
 def review_skill_owner_attest(ctx: Any, skill_name: str):

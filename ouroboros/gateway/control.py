@@ -49,6 +49,17 @@ def _managed_update_payload(*, fetch: bool, include_tags: bool) -> dict[str, Any
     from supervisor.update_merge import active_update_tx
 
     status = compute_managed_update_status(fetch=fetch)
+    # The update letter rides the same payload: written only after a FETCHING
+    # check (never on the passive read), projected against the live HEAD/target.
+    letter = None
+    try:
+        from ouroboros import update_letter as _letter
+
+        if fetch:
+            _letter.refresh_after_check(status)
+        letter = _letter.project_letter_for_panel(status)
+    except Exception:
+        log.debug("update letter projection failed", exc_info=True)
     # Additive minimal public projection of an active managed-update
     # transaction, so a re-opened panel can say "resolution in progress"
     # instead of silently reading as ordinary state (a second apply 409s).
@@ -82,6 +93,7 @@ def _managed_update_payload(*, fetch: bool, include_tags: bool) -> dict[str, Any
         "latest_version": latest_version,
         "official_tags": official_tags,
         "update_tx": update_tx,
+        "letter": letter,
         **status,
     }
 
@@ -842,6 +854,12 @@ def _start_assisted_merge_fenced(plan: dict, tx: dict) -> JSONResponse:
              **({"stash_note": note} if note else {})},
             status_code=409,
         )
+    # The server's own owner-control path must be resident BEFORE conflict
+    # markers reach the live tree: a first function-local import after that
+    # point raises SyntaxError on a conflicted module (#283). Best effort.
+    from supervisor.worker_chat_lane import preload_owner_control_path
+
+    preload_owner_control_path()
     # Final late-mutation guard: the resolver boot above can wait ~90s and the
     # writer fence stops Ouroboros, not humans — re-verify the exact planned
     # state IMMEDIATELY before the first destructive command.
@@ -1203,7 +1221,19 @@ async def api_update_apply(request: Request) -> JSONResponse:
     body = await request_json_or(request, {}, exceptions=(Exception,))
     if not isinstance(body, dict):
         return json_error("JSON body must be an object.", 400)
-    strategy = str(body.get("strategy") or "auto_merge").strip().lower()
+    # Executable gateway ABI (ABI-3, Q7=A): UpdateApplyRequest declares
+    # `strategy` REQUIRED with a closed vocabulary — the derived schema now
+    # enforces the contract as written (no silent auto_merge default).
+    from ouroboros.gateway.contracts import UpdateApplyRequest
+    from ouroboros.gateway.schema import validate_ingress
+
+    schema_errors = validate_ingress(body, UpdateApplyRequest)
+    if schema_errors:
+        return json_error(
+            f"invalid request body: {schema_errors[0]}", 400,
+            schema_errors=schema_errors[:8],
+        )
+    strategy = str(body.get("strategy") or "").strip().lower()
     if strategy not in _UPDATE_STRATEGIES:
         return json_error(f"unsupported update strategy: {strategy or 'missing'}", 400)
     expected_base_sha = str(body.get("expected_base_sha") or "").strip()

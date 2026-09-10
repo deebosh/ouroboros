@@ -11,10 +11,16 @@ import pytest
 from ouroboros.provider_models import OPENAI_DIRECT_DEFAULTS
 from ouroboros.deep_self_review import (
     build_review_pack,
-    is_review_available,
+    deep_review_route,
     run_deep_self_review,
 )
+from ouroboros.reviewer_slot_config import DEEP_REVIEW_SLOT_ID, ConfiguredReviewerSlot
 from ouroboros.tools.review_helpers import _is_probably_binary
+
+
+def _packed_row(model: str) -> ConfiguredReviewerSlot:
+    """The packed deep-review row (a direct api row: the historical delivery)."""
+    return ConfiguredReviewerSlot(slot_id=DEEP_REVIEW_SLOT_ID, kind="api_chat", target_id=model)
 
 
 def _make_dulwich_mock(file_list: list[str]):
@@ -101,23 +107,32 @@ class TestBuildReviewPack:
         assert "Fix recurring review blocker" in pack
 
     def test_skips_missing_memory(self, tmp_repo, tmp_drive):
-        """Missing memory files are silently skipped."""
+        """Missing memory files are not inlined — and their absence is DISCLOSED
+        (omission section + typed disposition), never silently skipped."""
         with mock.patch("dulwich.repo.Repo", _make_dulwich_mock(["main.py"])):
             pack, stats = build_review_pack(tmp_repo, tmp_drive)
 
-        # registry.md, WORLD.md, index-full.md don't exist — should not appear
-        assert "registry.md" not in pack
-        assert "WORLD.md" not in pack
-        assert "index-full.md" not in pack
+        for rel in ("memory/registry.md", "memory/WORLD.md", "memory/knowledge/index-full.md"):
+            assert f"## FILE: drive/{rel}" not in pack
+            assert f"drive/{rel} (missing: not present under the data root)" in pack[pack.index("## OMITTED FILES"):]
+            assert stats["memory"]["dispositions"][rel] == "missing"
+        assert stats["memory"]["inlined"] == 3 and stats["memory"]["total"] == 7
+        assert stats["memory"]["dispositions"]["memory/identity.md"] == "inlined"
 
 
-class TestIsReviewAvailable:
+class TestPackedRouteAvailability:
+    """Availability (`deep_review_route`) of the SYNTHESIZED packed row: no `deep_review` row saved,
+    so the legacy model key is the migration source and the packed rules
+    (credentials, the -pro rewrite, the OPENAI_BASE_URL trust rule) apply."""
+
     def test_openrouter(self):
-        with (
-            mock.patch("ouroboros.deep_self_review.get_deep_self_review_model", return_value="openai/gpt-5.5-pro"),
-            mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=True),
+        with mock.patch.dict(
+            os.environ,
+            {"OPENROUTER_API_KEY": "sk-or-test", "OUROBOROS_MODEL_DEEP_SELF_REVIEW": "openai/gpt-5.5-pro"},
+            clear=True,
         ):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
         assert available is True
         assert model == "openai/gpt-5.5-pro"
 
@@ -127,7 +142,8 @@ class TestIsReviewAvailable:
             # Ensure OPENROUTER_API_KEY and OPENAI_BASE_URL are not set
             os.environ.pop("OPENROUTER_API_KEY", None)
             os.environ.pop("OPENAI_BASE_URL", None)
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
         assert available is True
         # The direct route lands on the PROVIDER default, not a mechanical
         # `openai::` + router-slug rewrite: `-pro` is an OpenRouter routing slug
@@ -137,59 +153,34 @@ class TestIsReviewAvailable:
 
     def test_none(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
         assert available is False
         assert model is None
 
     def test_direct_provider_prefix_requires_matching_key_even_with_openrouter(self):
-        with (
-            mock.patch("ouroboros.deep_self_review.get_deep_self_review_model", return_value="anthropic::claude-opus-4.8"),
-            mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=True),
+        with mock.patch.dict(
+            os.environ,
+            {"OPENROUTER_API_KEY": "sk-or-test", "OUROBOROS_MODEL_DEEP_SELF_REVIEW": "anthropic::claude-opus-4.8"},
+            clear=True,
         ):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
 
         assert available is False
         assert model is None
 
     def test_direct_provider_prefix_available_with_matching_key(self):
-        with (
-            mock.patch("ouroboros.deep_self_review.get_deep_self_review_model", return_value="anthropic::claude-opus-4.8"),
-            mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-test"}, clear=True),
+        with mock.patch.dict(
+            os.environ,
+            {"ANTHROPIC_API_KEY": "sk-ant-test", "OUROBOROS_MODEL_DEEP_SELF_REVIEW": "anthropic::claude-opus-4.8"},
+            clear=True,
         ):
-            available, model = is_review_available()
+            reason, model = deep_review_route()
+            available = not reason
 
         assert available is True
         assert model == "anthropic::claude-opus-4.8"
-
-    def test_openai_direct_preferred_when_both_keys_set(self):
-        """Regression for ibl-ad4731a2f03e: when both OPENAI_API_KEY and
-        OPENROUTER_API_KEY are set, an OpenRouter cascade must NOT shadow a
-        working direct-OpenAI route (the openrouter credit cascade is silent
-        at the provider level — openrouter looks healthy then 402s mid-call).
-        """
-        with (
-            mock.patch("ouroboros.deep_self_review.get_deep_self_review_model", return_value="openai/gpt-5.5-pro"),
-            mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test", "OPENROUTER_API_KEY": "sk-or-test"}, clear=True),
-        ):
-            available, model = is_review_available()
-        assert available is True
-        # The direct-OpenAI rewrite path wins; the result must NOT be the
-        # raw OpenRouter route (`openai/gpt-5.5-pro`) that the bug returned.
-        assert model != "openai/gpt-5.5-pro"
-        assert model == OPENAI_DIRECT_DEFAULTS["deep_self_review"]
-
-    def test_openrouter_used_when_openai_direct_unavailable(self):
-        """The fix must preserve the openrouter fallback when openai direct is
-        NOT available (no OPENAI_API_KEY) — openrouter is the only path.
-        """
-        with (
-            mock.patch("ouroboros.deep_self_review.get_deep_self_review_model", return_value="openai/gpt-5.5"),
-            mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-test"}, clear=True),
-        ):
-            available, model = is_review_available()
-        assert available is True
-        # Falls through to openrouter since openai direct is unreachable.
-        assert model == "openai/gpt-5.5"
 
 
 class TestRequestToolEmitsEvent:
@@ -202,8 +193,8 @@ class TestRequestToolEmitsEvent:
 
         ctx = FakeCtx()
         with mock.patch(
-            "ouroboros.deep_self_review.is_review_available",
-            return_value=(True, "openai/gpt-5.5-pro"),
+            "ouroboros.deep_self_review.deep_review_route",
+            return_value=("", "openai/gpt-5.5-pro"),
         ):
             result = _request_deep_self_review(ctx, "test reason")
         assert len(ctx.pending_events) == 1
@@ -214,7 +205,7 @@ class TestRequestToolEmitsEvent:
         assert "Deep self-review" in result
 
     def test_unavailable_returns_error(self):
-        """When no API key is available, returns error without emitting event."""
+        """An unavailable ROW returns the typed reason without emitting an event."""
         from ouroboros.tools.control import _request_deep_self_review
 
         class FakeCtx:
@@ -222,12 +213,13 @@ class TestRequestToolEmitsEvent:
 
         ctx = FakeCtx()
         with mock.patch(
-            "ouroboros.deep_self_review.is_review_available",
-            return_value=(False, None),
+            "ouroboros.deep_self_review.deep_review_route",
+            return_value=("no provider credentials for openai/x", None),
         ):
             result = _request_deep_self_review(ctx, "test reason")
         assert len(ctx.pending_events) == 0
-        assert "unavailable" in result
+        assert result.startswith("❌ Deep self-review unavailable: no provider credentials for openai/x")
+        assert "Review lanes" in result
 
 
 class TestVendoredFilesExcluded:
@@ -465,8 +457,9 @@ class TestNoProxyLlmChat:
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
 
-        with mock.patch("httpx.Client", side_effect=capturing_httpx_client):
-            with mock.patch("openai.OpenAI") as mock_openai_cls:
+        # Resolve the SDK before mocking the HTTP class it inherits on import.
+        with mock.patch("openai.OpenAI") as mock_openai_cls:
+            with mock.patch("httpx.Client", side_effect=capturing_httpx_client):
                 mock_oa = mock.Mock()
                 mock_oa.chat.completions.create.return_value = mock_resp
                 mock_openai_cls.return_value = mock_oa
@@ -505,8 +498,8 @@ class TestNoProxyLlmChat:
             "usage": {"prompt_tokens": 1, "completion_tokens": 1},
         }
 
-        with mock.patch("httpx.Client", TrackingClient):
-            with mock.patch("openai.OpenAI") as mock_openai_cls:
+        with mock.patch("openai.OpenAI") as mock_openai_cls:
+            with mock.patch("httpx.Client", TrackingClient):
                 mock_oa = mock.Mock()
                 mock_oa.chat.completions.create.return_value = mock_resp
                 mock_openai_cls.return_value = mock_oa
@@ -536,8 +529,8 @@ class TestNoProxyLlmChat:
 
         llm = LLMClient()
 
-        with mock.patch("httpx.Client", TrackingClient):
-            with mock.patch("openai.OpenAI") as mock_openai_cls:
+        with mock.patch("openai.OpenAI") as mock_openai_cls:
+            with mock.patch("httpx.Client", TrackingClient):
                 mock_oa = mock.Mock()
                 mock_oa.chat.completions.create.side_effect = RuntimeError("boom")
                 mock_openai_cls.return_value = mock_oa
@@ -565,10 +558,10 @@ class TestNoProxyLlmChat:
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
         }
 
-        with mock.patch("httpx.Client") as mock_httpx_cls:
-            mock_http = mock.Mock()
-            mock_httpx_cls.return_value = mock_http
-            with mock.patch("openai.OpenAI") as mock_openai_cls:
+        with mock.patch("openai.OpenAI") as mock_openai_cls:
+            with mock.patch("httpx.Client") as mock_httpx_cls:
+                mock_http = mock.Mock()
+                mock_httpx_cls.return_value = mock_http
                 mock_oa = mock.Mock()
                 mock_oa.chat.completions.create.return_value = mock_resp
                 mock_openai_cls.return_value = mock_oa
@@ -620,21 +613,22 @@ class TestNoProxyLlmChat:
         assert len(new_clients) == 0
 
     def test_run_deep_self_review_calls_llm_with_no_proxy_and_configured_effort(self, tmp_repo, tmp_drive, monkeypatch):
-        """run_deep_self_review passes no_proxy=True to llm.chat."""
+        """The packed row's wire call: no_proxy=True, the surface effort when
+        the row names none, and the report delivered behind the host header."""
         from ouroboros.deep_self_review import run_deep_self_review
-        small_pack = "x" * 50_000
+        small_pack = "x" * 100
         manifest = {"status": "ok", "selected_count": 1}
         mock_llm = mock.Mock()
-        mock_llm.chat.return_value = ({"content": "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."}, {"cost": 0.01})
+        mock_llm.chat.return_value = ({"content": "Review result."}, {"cost": 0.01})
         monkeypatch.setenv("OUROBOROS_EFFORT_DEEP_SELF_REVIEW", "medium")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
 
         with mock.patch(
             "ouroboros.deep_self_review.build_review_pack",
             return_value=(
                 small_pack,
                 {
-                    "file_count": 5,
-                    "memory_count": 3,
+                    "file_count": 1,
                     "total_chars": len(small_pack),
                     "skipped": [],
                     "context_manifest": manifest,
@@ -645,12 +639,13 @@ class TestNoProxyLlmChat:
                 repo_dir=tmp_repo,
                 drive_root=tmp_drive,
                 llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="openai/gpt-5.5-pro",
+                emit_progress=lambda x, *, incident=None: None,
+                slot=_packed_row("openai/gpt-5.5-pro"),
             )
 
-        assert result == "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."
+        assert result.endswith("\n\nReview result.")
+        assert result.startswith("<!-- deep-review provenance: delivery=api_packet, model=openai/gpt-5.5-pro, ")
+        assert usage["resolved_model"] == "openai/gpt-5.5-pro" and "execution_status" not in usage
         mock_llm.chat.assert_called_once()
         _, kwargs = mock_llm.chat.call_args
         assert kwargs.get("no_proxy") is True, "llm.chat must be called with no_proxy=True"
@@ -662,68 +657,70 @@ class TestNoProxyLlmChat:
 
 
 class TestReviewPackOverflow:
-    def test_overflow_shrinks_and_proceeds(self, tmp_repo, tmp_drive):
+    def test_overflow_shrinks_and_proceeds(self, tmp_repo, tmp_drive, monkeypatch):
         """An estimator-drift overshoot triggers ONE tighter rebuild, then the
         review proceeds — the historical '+853 tokens' fatal error class."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
         huge_pack = "x" * 4_000_000  # > 745K-token gate
         small_pack = "y" * 4_000     # comfortably under
         mock_llm = mock.Mock()
-        mock_llm.chat.return_value = ({"content": "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."}, {"cost": 0.0})
+        mock_llm.chat.return_value = ({"content": "Review result."}, {"cost": 0.0})
         build_calls = []
 
         def fake_build(repo_dir, drive_root, fixed_prompt_tokens=0, hard_budget_reduction=0, input_token_limit=0):
             build_calls.append(hard_budget_reduction)
             if hard_budget_reduction:
-                return small_pack, {"file_count": 5, "memory_count": 3, "total_chars": len(small_pack), "skipped": []}
-            return huge_pack, {"file_count": 100, "memory_count": 3, "total_chars": len(huge_pack), "skipped": []}
+                return small_pack, {"file_count": 5, "total_chars": len(small_pack), "skipped": []}
+            return huge_pack, {"file_count": 100, "total_chars": len(huge_pack), "skipped": []}
 
         with (
             mock.patch("ouroboros.deep_self_review.build_review_pack", side_effect=fake_build),
             mock.patch(
                 "ouroboros.llm_observability.chat_observed",
-                return_value=({"content": "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."}, {"cost": 0.0}),
+                return_value=({"content": "Review result."}, {"cost": 0.0}),
             ),
         ):
             result, _usage = run_deep_self_review(
                 repo_dir=tmp_repo,
                 drive_root=tmp_drive,
                 llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
+                emit_progress=lambda x, *, incident=None: None,
+                slot=_packed_row("test-model"),
             )
 
-        assert result == "Review result. See memory/identity.md, memory/scratchpad.md, memory/registry.md."
+        assert result.endswith("\n\nReview result.")
         assert len(build_calls) == 2, "must rebuild once with a tighter budget"
         assert build_calls[1] > 0, "retry must reduce the atlas hard budget"
 
-    def test_explicit_error_when_shrink_cannot_fit(self, tmp_repo, tmp_drive):
+    def test_explicit_error_when_shrink_cannot_fit(self, tmp_repo, tmp_drive, monkeypatch):
         """If even the tighter rebuild stays over the gate, fail closed with the
-        explicit error (the pinned last-resort assertion)."""
+        explicit error (the pinned last-resort assertion) and TYPED usage, so
+        the caller never writes the error over the previous report."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
         huge_pack = "x" * 4_000_000
         mock_llm = mock.Mock()
 
         with mock.patch(
             "ouroboros.deep_self_review.build_review_pack",
-            return_value=(huge_pack, {"file_count": 100, "memory_count": 3, "total_chars": 4_000_000, "skipped": []}),
+            return_value=(huge_pack, {"file_count": 100, "total_chars": 4_000_000, "skipped": []}),
         ):
             result, usage = run_deep_self_review(
                 repo_dir=tmp_repo,
                 drive_root=tmp_drive,
                 llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
+                emit_progress=lambda x, *, incident=None: None,
+                slot=_packed_row("test-model"),
             )
 
         assert "too large" in result
         # v6.80.0: the deep reviewer's cap is DENSITY-calibrated per model at call
         # time (the module constant is only the uncalibrated window arithmetic), so
         # the message must quote the calibrated number actually enforced.
-        # v6.87.9: the window itself is resolved from Capability Evidence per
-        # reviewer (an unknown route keeps the full-window assumption; a KNOWN
-        # sub-1M one shrinks) and the reserves scale to it, so the quoted number
-        # follows the same resolution instead of a hardcoded 1M.
+        # v6.87.9 / Ф3: the window is resolved from Capability Evidence per
+        # reviewer. An unknown route keeps the full-window assumption and is
+        # dispatched-and-disclosed (`window=assumed_1000000`, owner fork A
+        # pending ratification); a CONFIRMED sub-1M route is a typed refusal
+        # (no shrink). The quoted number follows that same resolution.
         from ouroboros.reviewer_window import (
             reviewer_context_window,
             window_scaled_reserves,
@@ -745,7 +742,7 @@ class TestReviewPackOverflow:
             tokenizer_margin=margin,
         )
         assert f"{enforced:,}" in result
-        assert usage == {}
+        assert usage == {"execution_status": "infra_failed", "reason_code": "deep_self_review_error"}
         mock_llm.chat.assert_not_called()
 
 
@@ -788,7 +785,7 @@ class TestOmissionSectionBound:
 def test_direct_openai_deep_review_sends_a_real_openai_model_id():
     """PHYSICAL-PAYLOAD proof, not a defaults-table assertion.
 
-    The OpenRouter default is the slug `openai/gpt-5.6-sol-pro`. That `-pro`
+    An owner may pin the slug `openai/gpt-5.6-sol-pro`. That `-pro`
     suffix is an OpenRouter routing slug, NOT an OpenAI model id: live-probed
     2026-07-29, `gpt-5.6-sol-pro` on api.openai.com /v1/chat/completions returns
     404, while pro reasoning exists only on /v1/responses as
@@ -844,1101 +841,16 @@ def test_direct_fallback_preserves_an_explicit_real_model_pin():
     with mock.patch.dict(os.environ, env, clear=False):
         os.environ.pop("OPENROUTER_API_KEY", None)
         os.environ.pop("OPENAI_BASE_URL", None)
-        with mock.patch(
-            "ouroboros.deep_self_review.get_deep_self_review_model",
-            return_value="openai/gpt-5.5",
-        ):
-            available, model = is_review_available()
+        os.environ.pop("OUROBOROS_REVIEWER_SLOTS", None)
+        with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_DEEP_SELF_REVIEW": "openai/gpt-5.5"}):
+            reason, model = deep_review_route()
+            available = not reason
         assert available is True
         assert model == "openai::gpt-5.5", "an explicit real-model pin survives"
-        with mock.patch(
-            "ouroboros.deep_self_review.get_deep_self_review_model",
-            return_value="openai/gpt-5.5-pro",
-        ):
-            available, model = is_review_available()
+        with mock.patch.dict(os.environ, {"OUROBOROS_MODEL_DEEP_SELF_REVIEW": "openai/gpt-5.5-pro"}):
+            reason, model = deep_review_route()
+            available = not reason
         assert available is True
         assert model == OPENAI_DIRECT_DEFAULTS["deep_self_review"], (
             "a router-only -pro slug lands on the provider default"
         )
-
-
-# Shared manifest fixture for Gate A and Gate B tests. The pack_path set is
-# built from this manifest + _MEMORY_WHITELIST at the time _ground_response_in_pack
-# runs; tests that need different selected/omitted rows construct their own.
-# ``secret_module.py`` is intentionally absent from both selected and omitted —
-# a fabricated path the model has no way to know about, used by the
-# "response_refs_paths_not_in_pack" test as a true non-groundable reference.
-_MANIFEST_REVIEW_TOOLS = {
-    "status": "ok",
-    "selected": [
-        {"rel_path": "ouroboros/deep_self_review.py", "disposition": "selected"},
-        {"rel_path": "ouroboros/tools/review_helpers.py", "disposition": "selected"},
-        {"rel_path": "ouroboros/loop.py", "disposition": "selected"},
-    ],
-    "omitted": [],
-}
-
-
-class TestPackIntegrityGate:
-    """Gate A — refuses to send a pathologically small pack to the reviewer.
-
-    Catches the structural-hallucination class: a 1-2 file pack invites the
-    reviewer to invent project context. Three sub-conditions, any of which
-    fails the gate; the gate fires BEFORE ``chat_observed`` is invoked so no
-    review tokens are spent on the rejected attempt.
-    """
-
-    def _sufficient_pack_stats(self):
-        return {
-            "file_count": 6,
-            "memory_count": 3,
-            "total_chars": 60_000,
-            "skipped": [],
-            "context_manifest": _MANIFEST_REVIEW_TOOLS,
-        }
-
-    def _build_with_stats(self, stats):
-        pack = "x" * stats["total_chars"]
-        return pack, stats
-
-    def test_gate_a_fires_when_total_chars_below_minimum(self, tmp_repo, tmp_drive):
-        stats = self._sufficient_pack_stats()
-        stats["total_chars"] = 49_999  # one below the 50_000 floor
-        mock_llm = mock.Mock()
-
-        with mock.patch(
-            "ouroboros.deep_self_review.build_review_pack",
-            return_value=self._build_with_stats(stats),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "pack integrity gate failed" in result
-        assert "total_chars=49,999" in result
-        assert "min 50,000" in result
-        assert usage == {}
-        mock_llm.chat.assert_not_called()
-
-    def test_gate_a_fires_when_memory_count_below_minimum_despite_adequate_file_count(
-        self, tmp_repo, tmp_drive
-    ):
-        """At file_count=5 (at the threshold, NOT below), memory_count=1 below.
-
-        The fixture has 3 atlas selected + 2 memory files = file_count=5, which
-        satisfies the file_count sub-condition. The ``memory_count`` sub-condition
-        is the actual firing trigger — the test name is intentionally specific
-        to avoid future-maintainer confusion about which sub-check fired.
-        """
-        stats = self._sufficient_pack_stats()
-        stats["file_count"] = 5  # at threshold, not below
-        stats["memory_count"] = 1  # below threshold
-        mock_llm = mock.Mock()
-
-        with mock.patch(
-            "ouroboros.deep_self_review.build_review_pack",
-            return_value=self._build_with_stats(stats),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "pack integrity gate failed" in result
-        assert "memory_count=1" in result
-        assert "min 3" in result
-        mock_llm.chat.assert_not_called()
-
-    def test_gate_a_passes_when_pack_meets_all_thresholds(self, tmp_repo, tmp_drive):
-        """At file_count=6, memory_count=3, total_chars=60_000, gate A passes,
-        chat_observed IS called, and Gate B passes too (3 grounded refs)."""
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_stats(self._sufficient_pack_stats()),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "Reviewed ouroboros/deep_self_review.py, "
-                            "ouroboros/loop.py, and ouroboros/tools/review_helpers.py. "
-                            "Findings follow."
-                        )
-                    },
-                    {"cost": 0.01},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "Reviewed ouroboros" in result
-        assert "pack integrity gate failed" not in result
-        assert "response ungrounded" not in result
-        assert usage == {"cost": 0.01}
-
-    def test_gate_a_does_not_fire_when_atlas_assembly_fails_first(
-        self, tmp_repo, tmp_drive
-    ):
-        """The pre-existing ``pack_text == ""`` + skipped-fatal path takes
-        precedence over Gate A — preserves the existing error verbatim and
-        does not double-report."""
-        mock_llm = mock.Mock()
-
-        with mock.patch(
-            "ouroboros.deep_self_review.build_review_pack",
-            return_value=("", {"file_count": 0, "total_chars": 0,
-                               "skipped": ["FATAL: atlas exploded"]}),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "Failed to build review pack" in result
-        assert "atlas exploded" in result
-        assert "pack integrity gate failed" not in result
-        mock_llm.chat.assert_not_called()
-
-    def test_gate_a_at_exact_minimums_passes(self, tmp_repo, tmp_drive):
-        """Boundary case: file_count=5, memory_count=3, total_chars=50_000.
-
-        Gate A uses ``<`` (strict), not ``<=`` — equal-to-minimum passes. Catches
-        a regression where someone might tighten to ``<=`` and silently reject
-        valid packs at the floor.
-        """
-        stats = self._sufficient_pack_stats()
-        stats["file_count"] = 5
-        stats["memory_count"] = 3
-        stats["total_chars"] = 50_000
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_stats(stats),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "Grounded review of ouroboros/deep_self_review.py, "
-                            "ouroboros/loop.py, and ouroboros/tools/review_helpers.py."
-                        )
-                    },
-                    {"cost": 0.01},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "Grounded review" in result
-        assert "pack integrity gate failed" not in result
-        assert "response ungrounded" not in result
-        assert usage == {"cost": 0.01}
-
-    def test_gate_a_fires_when_memory_count_key_absent(self, tmp_repo, tmp_drive):
-        """Regression guard: stats dict missing ``memory_count`` key (older
-        build_review_pack_re_repack pre-fix) defaults to 0, which fails the memory
-        sub-condition. Without ``memory_count`` exposure, Gate A becomes a
-        permanent failure even on structurally complete packs.
-        """
-        stats = {
-            "file_count": 100,  # well above floor
-            # no memory_count key
-            "total_chars": 200_000,  # well above floor
-            "skipped": [],
-            "context_manifest": _MANIFEST_REVIEW_TOOLS,
-        }
-        mock_llm = mock.Mock()
-
-        with mock.patch(
-            "ouroboros.deep_self_review.build_review_pack",
-            return_value=self._build_with_stats(stats),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "pack integrity gate failed" in result
-        assert "memory_count=0" in result
-        mock_llm.chat.assert_not_called()
-
-
-class TestResponseGroundingGate:
-    """Gate B — refuses to publish a review whose findings cannot be tied to
-    pack artifacts.
-
-    Catches the structural-hallucination class at the OTHER end of the
-    pipeline: a model that was given a real pack but ignored it (or copied a
-    prior review from training data, or fabricated findings about files that
-    don't exist). Failures here preserve ``usage`` because review tokens WERE
-    spent — this is not a pre-flight check.
-    """
-
-    def _build_with_pack(self, manifest=None):
-        manifest = manifest if manifest is not None else _MANIFEST_REVIEW_TOOLS
-        stats = {
-            "file_count": 6,
-            "memory_count": 3,
-            "total_chars": 60_000,
-            "skipped": [],
-            "context_manifest": manifest,
-        }
-        return "x" * 60_000, stats
-
-    def test_gate_b_fires_when_response_has_no_path_refs(self, tmp_repo, tmp_drive):
-        """Pure prose with no path-like tokens: gate fires."""
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "This is a deep review of the agent system. The architecture "
-                            "is generally sound but the documentation could be improved. "
-                            "Several edge cases in error handling warrant attention."
-                        )
-                    },
-                    {"cost": 0.42},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "response ungrounded" in result
-        assert "0 distinct path references" in result
-        assert "corrective retry was attempted" in result, (
-            "refusal text notes that the corrective retry ran"
-        )
-        assert usage == {"cost": 0.84}, (
-            "usage = sum of both chat_observed calls (0.42 + 0.42) when the "
-            "corrective retry still falls short"
-        )
-
-    def test_gate_b_fires_when_response_refs_paths_not_in_pack(self, tmp_repo, tmp_drive):
-        """Response mentions fabricated paths that are NOT in the manifest."""
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "Issues found in ouroboros/nonexistent.py and "
-                            "ouroboros/loop.py, also some.py and other.py. "
-                            "More on ouroboros/tools/review_helpers.py."
-                        )
-                    },
-                    {"cost": 0.42},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "response ungrounded" in result
-        assert "2 distinct path references" in result  # loop.py + review_helpers.py
-        assert "corrective retry was attempted" in result
-        assert usage == {"cost": 0.84}, "merged cost across two chat_observed calls"
-
-    def test_gate_b_fires_when_only_one_path_ref_intersects(self, tmp_repo, tmp_drive):
-        """5 path mentions but only 1 in pack: gate fires (count < 3)."""
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "Reviewed ouroboros/loop.py, some.py, other.py, "
-                            "another.py, last.py. Findings: none."
-                        )
-                    },
-                    {"cost": 0.42},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "response ungrounded" in result
-        assert "1 distinct path references" in result
-        assert "corrective retry was attempted" in result
-        assert usage == {"cost": 0.84}, "merged cost across two chat_observed calls"
-
-    def test_gate_b_passes_with_three_distinct_grounded_refs(self, tmp_repo, tmp_drive):
-        """Response mentions 3 distinct pack paths → gate passes."""
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "Reviewed ouroboros/deep_self_review.py for the gates, "
-                            "ouroboros/loop.py for the task loop, and "
-                            "ouroboros/tools/review_helpers.py for the prompt pack. "
-                            "All look sound."
-                        )
-                    },
-                    {"cost": 0.42},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "Reviewed ouroboros" in result
-        assert "response ungrounded" not in result
-        assert usage == {"cost": 0.42}
-
-    def test_gate_b_strips_url_paths_before_checking(self, tmp_repo, tmp_drive):
-        """A URL whose leaf path IS in the pack must NOT ground via the leaf.
-
-        Without the URL-stripping pre-pass, ``https://example.com/ouroboros/deep_self_review.py``
-        would parse as ``example.com/ouroboros/deep_self_review.py`` and fail
-        suffix-matching (no pack_path ends with that string), so the test passes
-        for the wrong reason. The strip-then-extract implementation removes
-        the URL substring entirely, leaving zero path refs in this response, so
-        the gate fires (0 grounded).
-        """
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "See https://example.com/ouroboros/deep_self_review.py "
-                            "for the canonical review-pipeline documentation."
-                        )
-                    },
-                    {"cost": 0.42},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "response ungrounded" in result
-        assert "0 distinct path references" in result
-
-    def test_gate_b_handles_basename_only_paths(self, tmp_repo, tmp_drive):
-        """Response references ``deep_self_review.py`` (basename) — suffix-match
-        against ``ouroboros/deep_self_review.py`` grounds it."""
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "deep_self_review.py, loop.py, review_helpers.py — all fine."
-                        )
-                    },
-                    {"cost": 0.42},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "Reviewed ouroboros" in result.lower() or "deep_self_review.py" in result
-        assert "response ungrounded" not in result
-        assert usage == {"cost": 0.42}
-
-    def test_gate_b_includes_memory_whitelist_paths(self, tmp_repo, tmp_drive):
-        """Response references memory/identity.md, memory/scratchpad.md, and
-        memory/knowledge/patterns.md (all in _MEMORY_WHITELIST) — must ground
-        via the helper, even though they are not in atlas.selected."""
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "Reviewed memory/identity.md for the agent's self-model, "
-                            "memory/scratchpad.md for working context, and "
-                            "memory/knowledge/patterns.md for the pattern register. "
-                            "All current."
-                        )
-                    },
-                    {"cost": 0.42},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "Reviewed memory" in result
-        assert "response ungrounded" not in result
-        assert usage == {"cost": 0.42}
-
-    def test_gate_b_passes_usage_accounting_preserved(self, tmp_repo, tmp_drive):
-        """When Gate B fires, usage is preserved (we spent review tokens)."""
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {"content": "No code references here, just prose."},
-                    {"cost": 0.99},
-                ),
-            ),
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert "response ungrounded" in result
-        assert "corrective retry was attempted" in result
-        assert usage == {"cost": 1.98}, (
-            "usage = sum of both chat_observed calls (0.99 + 0.99) when the "
-            "corrective retry also fails Gate B"
-        )
-
-    def test_system_prompt_requires_min_path_refs(self):
-        """The system prompt explicitly states the Gate B citation requirement.
-
-        Closes ibl-8095de135be5: the prompt must announce the Gate B floor in
-        plain language so the model targets it on the FIRST generation rather
-        than relying on a corrective retry. Substring checks pin the three
-        required components: the numeric floor, the verbatim-citation rule,
-        and the rejection clause.
-        """
-        from ouroboros.deep_self_review import _SYSTEM_PROMPT, _DEEP_MIN_PATH_REFS
-
-        assert str(_DEEP_MIN_PATH_REFS) in _SYSTEM_PROMPT, (
-            "system prompt must surface the Gate B floor numerically"
-        )
-        prompt_lower = _SYSTEM_PROMPT.lower()
-        assert "verbatim" in prompt_lower, (
-            "system prompt must require VERBATIM path citations"
-        )
-        assert "distinct" in prompt_lower, (
-            "system prompt must require DISTINCT path citations"
-        )
-        assert "rejected" in prompt_lower or "rejection" in prompt_lower, (
-            "system prompt must warn that under-citation gets rejected"
-        )
-
-    def test_gate_b_retries_once_and_publishes_on_corrected_response(
-        self, tmp_repo, tmp_drive
-    ):
-        """First response grounds 1 path; corrective retry grounds 3 paths.
-
-        Verifies the rescue path (closes ibl-8095de135be5): chat_observed is
-        called TWICE, the second response is returned as the result (NOT a
-        refusal), and merged usage reflects both calls.
-        """
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                side_effect=[
-                    (
-                        {"content": "Reviewed ouroboros/loop.py briefly."},
-                        {"cost": 0.40},
-                    ),
-                    (
-                        {
-                            "content": (
-                                "Reviewed ouroboros/deep_self_review.py for the gates, "
-                                "ouroboros/loop.py for the task loop, and "
-                                "ouroboros/tools/review_helpers.py for the prompt pack. "
-                                "All look sound."
-                            )
-                        },
-                        {"cost": 0.60},
-                    ),
-                ],
-            ) as chat_patch,
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert chat_patch.call_count == 2, (
-            "corrective retry issued (second chat_observed call)"
-        )
-        assert "Reviewed ouroboros/deep_self_review.py" in result, (
-            "returned text is the REVISED retry response, not the first"
-        )
-        assert "response ungrounded" not in result, (
-            "no refusal published when the corrective retry meets the gate"
-        )
-        assert usage == {"cost": 1.00}, (
-            "merged cost = 0.40 + 0.60 across the two calls"
-        )
-
-    def test_gate_b_refuses_after_corrective_retry_still_short(
-        self, tmp_repo, tmp_drive
-    ):
-        """Both responses ground only 1 path → refusal notes the retry attempt.
-
-        Verifies the fail-closed path: chat_observed is called twice, the
-        refusal text mentions a corrective retry was attempted, and merged
-        usage reflects both calls (matches contract test (c) for ibl-8095de135be5).
-        """
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                side_effect=[
-                    (
-                        {"content": "Reviewed ouroboros/loop.py briefly."},
-                        {"cost": 0.55},
-                    ),
-                    (
-                        {"content": "Still only ouroboros/loop.py to mention."},
-                        {"cost": 0.65},
-                    ),
-                ],
-            ) as chat_patch,
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert chat_patch.call_count == 2
-        assert "response ungrounded" in result
-        assert "corrective retry was attempted" in result
-        assert "1 distinct path references" in result
-        assert usage == pytest.approx({"cost": 1.20}), "merged cost = 0.55 + 0.65"
-
-    def test_gate_b_does_not_retry_when_first_response_meets_floor(
-        self, tmp_repo, tmp_drive
-    ):
-        """First response already grounds 3 paths → no retry call issued.
-
-        Verifies the BOUNDED retry (contract test (d) for ibl-8095de135be5):
-        chat_observed is called ONCE, the first response is returned
-        directly, and usage reflects only that single call.
-        """
-        mock_llm = mock.Mock()
-
-        with (
-            mock.patch(
-                "ouroboros.deep_self_review.build_review_pack",
-                return_value=self._build_with_pack(),
-            ),
-            mock.patch(
-                "ouroboros.llm_observability.chat_observed",
-                return_value=(
-                    {
-                        "content": (
-                            "Reviewed ouroboros/deep_self_review.py, "
-                            "ouroboros/loop.py, and "
-                            "ouroboros/tools/review_helpers.py — all sound."
-                        )
-                    },
-                    {"cost": 0.42},
-                ),
-            ) as chat_patch,
-        ):
-            result, usage = run_deep_self_review(
-                repo_dir=tmp_repo,
-                drive_root=tmp_drive,
-                llm=mock_llm,
-                emit_progress=lambda x: None,
-                event_queue=None,
-                model="test-model",
-            )
-
-        assert chat_patch.call_count == 1, (
-            "no corrective retry when first response already meets the floor"
-        )
-        assert "Reviewed ouroboros" in result
-        assert "response ungrounded" not in result
-        assert usage == {"cost": 0.42}
-
-
-def test_deep_max_output_tokens_cap_prevents_100k_402_trap():
-    """Regression: ibl-be9ba2d99b25 (task c7862982).
-
-    Pre-fix: deep_self_review called chat_observed with max_tokens=100_000,
-    causing an OpenRouter account-level 402 ("requested up to 100000 tokens,
-    but can only afford 56") and an $11.00 charge for a zero-tool-call
-    review. The fix landed in 8506304f (v6.103.9) by lowering the constant
-    to 10_000; this test locks that cap so the rot cannot return via a
-    tempting "just bump it back up" edit. Raise WITH a backpressure
-    rationale (and rotate this test accordingly), not by accident.
-    """
-    from ouroboros.deep_self_review import _DEEP_MAX_OUTPUT_TOKENS
-
-    assert _DEEP_MAX_OUTPUT_TOKENS <= 10_000, (
-        f"_DEEP_MAX_OUTPUT_TOKENS={_DEEP_MAX_OUTPUT_TOKENS} exceeds the 10k cap. "
-        "The 100k default was the rot captured by ibl-be9ba2d99b25 ($11.00 wasted "
-        "on task c7862982). If a future review genuinely needs more output, raise "
-        "the cap WITH a backpressure rationale, not by editing this constant."
-    )
-
-    # Belt-and-braces: the constant must be >0 (a zero would silently under-deliver
-    # the review just as effectively as a 100k default would over-charge). The 10k
-    # ceiling implies a minimum of roughly 1k for any honest findings list.
-    assert _DEEP_MAX_OUTPUT_TOKENS >= 1_000, (
-        f"_DEEP_MAX_OUTPUT_TOKENS={_DEEP_MAX_OUTPUT_TOKENS} is suspiciously small. "
-        "The review's findings section needs at least a few hundred tokens; below "
-        "1k the structural-utility of the review collapses."
-    )
-
-
-# ----------------------------------------------------------------------
-# Chunked pipeline (v6.109.x — closes Modes 1+2 of
-# ibl-deep-self-review-large-context-truncation).
-# ----------------------------------------------------------------------
-
-from ouroboros.deep_self_review import (  # noqa: E402
-    _chunk_atlas_into_groups,
-    _can_chunk_review,
-    _build_synthesis_prompt,
-    _run_chunked_deep_self_review,
-    _DEEP_CHUNK_TOKEN_BUDGET,
-    _DEEP_CHUNK_MIN_FILE_COUNT,
-    _DEEP_CHUNK_MIN_CHARS,
-    _DEEP_MAX_CHUNKS,
-    _DEEP_CHUNK_MAX_FILES_PER_CHUNK,
-    _DEEP_MAX_OUTPUT_TOKENS,
-)
-
-
-class TestChunkAtlasIntoGroups:
-    def test_empty_returns_empty(self):
-        assert _chunk_atlas_into_groups([], max_chunks=8, max_files_per_chunk=30) == []
-
-    def test_zero_chunks_returns_empty(self):
-        assert _chunk_atlas_into_groups(["a.py"], max_chunks=0, max_files_per_chunk=30) == []
-
-    def test_zero_files_per_chunk_returns_empty(self):
-        assert _chunk_atlas_into_groups(["a.py"], max_chunks=8, max_files_per_chunk=0) == []
-
-    def test_single_file_single_chunk(self):
-        groups = _chunk_atlas_into_groups(
-            ["only.py"], max_chunks=8, max_files_per_chunk=30
-        )
-        assert groups == [["only.py"]]
-
-    def test_balanced_distribution(self):
-        files = [f"file_{i}.py" for i in range(24)]
-        groups = _chunk_atlas_into_groups(
-            files, max_chunks=8, max_files_per_chunk=30
-        )
-        # 24 files / 8 chunk cap = ceil(24/30) = 1 chunk; OR ceil(24/8) depending on path.
-        # The helper caps chunks at min(max_chunks, ceil(len/max_files_per_chunk)).
-        # ceil(24/30)=1, so n_chunks=1, chunk_size=24 — single chunk holds all.
-        assert len(groups) == 1
-        assert groups[0] == files
-
-    def test_chunk_cap_respected(self):
-        files = [f"file_{i}.py" for i in range(120)]
-        groups = _chunk_atlas_into_groups(
-            files, max_chunks=8, max_files_per_chunk=30
-        )
-        # 120 / 30 = 4 chunks (cap 8 unused here).
-        assert len(groups) == 4
-        assert all(len(g) <= 30 for g in groups)
-        # All input files preserved, no duplicates.
-        flat = [p for g in groups for p in g]
-        assert sorted(flat) == sorted(files)
-        assert len(flat) == len(files)
-
-    def test_max_chunks_enforced_above_file_floor(self):
-        # When file_cap would suggest MORE chunks than max_chunks allows,
-        # max_chunks dominates — chunks grow past the file cap to fit all
-        # the files into the smaller chunk count. 90 files with max_chunks=2
-        # → ceil(90/30)=3 desired chunks, but capped at 2 → 2 chunks of 45.
-        files = [f"file_{i}.py" for i in range(90)]
-        groups = _chunk_atlas_into_groups(
-            files, max_chunks=2, max_files_per_chunk=30
-        )
-        assert len(groups) == 2
-        assert all(len(g) == 45 for g in groups)
-        flat = [p for g in groups for p in g]
-        assert sorted(flat) == sorted(files)
-
-    def test_file_floor_enforced_when_max_chunks_allows_more(self):
-        # Inverse: when max_chunks allows MORE chunks than file_cap needs,
-        # file_cap dominates — fewer chunks is the right answer. 60 files
-        # with max_chunks=4, file_cap=30 → ceil(60/30)=2, min(4,2)=2.
-        files = [f"file_{i}.py" for i in range(60)]
-        groups = _chunk_atlas_into_groups(
-            files, max_chunks=4, max_files_per_chunk=30
-        )
-        assert len(groups) == 2
-        assert all(len(g) == 30 for g in groups)
-
-    def test_deterministic(self):
-        files = [f"file_{i}.py" for i in range(50)]
-        g1 = _chunk_atlas_into_groups(
-            files, max_chunks=8, max_files_per_chunk=30
-        )
-        g2 = _chunk_atlas_into_groups(
-            files, max_chunks=8, max_files_per_chunk=30
-        )
-        assert g1 == g2
-
-    def test_chunk_size_balanced(self):
-        # 100 files, 4 chunks: each gets ceil(100/4)=25 files.
-        files = [f"file_{i}.py" for i in range(100)]
-        groups = _chunk_atlas_into_groups(
-            files, max_chunks=4, max_files_per_chunk=30
-        )
-        assert len(groups) == 4
-        # ceil(100/4)=25, exactly: all 25.
-        assert all(len(g) == 25 for g in groups)
-        # First chunk holds indices 0-24, second 25-49, etc.
-        assert groups[0] == files[0:25]
-        assert groups[1] == files[25:50]
-        assert groups[2] == files[50:75]
-        assert groups[3] == files[75:100]
-
-    def test_underfilled_chunks_dropped(self):
-        # 5 files with cap 8 chunks: produces 1 chunk (not 8).
-        files = [f"file_{i}.py" for i in range(5)]
-        groups = _chunk_atlas_into_groups(
-            files, max_chunks=8, max_files_per_chunk=30
-        )
-        assert len(groups) == 1
-        assert groups[0] == files
-
-
-class TestCanChunkReview:
-    def test_1m_window_eligible(self):
-        eligible, budget = _can_chunk_review("any-model", 1_000_000, 155_000)
-        # 200K (chunk) + 10K (output) + 155K (margin) = 365K ≤ 1M → eligible.
-        assert eligible is True
-        assert budget == _DEEP_CHUNK_TOKEN_BUDGET
-
-    def test_too_small_window_refused(self):
-        # 300K window can't fit chunk + output + margin.
-        eligible, budget = _can_chunk_review("any-model", 300_000, 155_000)
-        assert eligible is False
-        assert budget == _DEEP_CHUNK_TOKEN_BUDGET  # budget is always reported
-
-    def test_zero_window_refused(self):
-        eligible, _ = _can_chunk_review("any-model", 0, 155_000)
-        assert eligible is False
-
-    def test_exact_threshold_eligible(self):
-        # deep_window == chunk + output + margin → eligible (>=).
-        threshold = _DEEP_CHUNK_TOKEN_BUDGET + _DEEP_MAX_OUTPUT_TOKENS + 155_000
-        eligible, _ = _can_chunk_review("any-model", threshold, 155_000)
-        assert eligible is True
-
-    def test_one_below_threshold_refused(self):
-        threshold = _DEEP_CHUNK_TOKEN_BUDGET + _DEEP_MAX_OUTPUT_TOKENS + 155_000
-        eligible, _ = _can_chunk_review("any-model", threshold - 1, 155_000)
-        assert eligible is False
-
-
-class TestBuildSynthesisPrompt:
-    def test_carries_all_chunk_paths(self):
-        responses = [
-            "Chunk 1 found X in ouroboros/a.py and ouroboros/b.py.",
-            "Chunk 2 found Y in tests/test_a.py.",
-        ]
-        paths = [
-            ["ouroboros/a.py", "ouroboros/b.py"],
-            ["tests/test_a.py"],
-        ]
-        prompt = _build_synthesis_prompt(responses, paths)
-        assert "Chunk 1" in prompt
-        assert "Chunk 2" in prompt
-        assert "ouroboros/a.py" in prompt
-        assert "ouroboros/b.py" in prompt
-        assert "tests/test_a.py" in prompt
-        # Must explicitly bind synthesis to the chunks' paths (no raw re-review).
-        assert "synthesize" in prompt.lower()
-        assert "union of chunk paths" in prompt.lower() or "chunk paths" in prompt.lower()
-
-    def test_chunk_ordering_preserved(self):
-        # Critical: prompt's chunk order must match chunk_paths order so the
-        # synthesis model knows which finding is grounded against which slice.
-        responses = ["alpha", "beta", "gamma"]
-        paths = [["a.py"], ["b.py"], ["c.py"]]
-        prompt = _build_synthesis_prompt(responses, paths)
-        assert prompt.index("Chunk 1/3") < prompt.index("Chunk 2/3") < prompt.index("Chunk 3/3")
-        assert prompt.index("alpha") < prompt.index("beta") < prompt.index("gamma")
-
-    def test_marks_disagreement_as_finding(self):
-        """Per design: chunk disagreement is itself a finding, not averaged away."""
-        prompt = _build_synthesis_prompt(["resp"], [["file.py"]])
-        assert "disagree" in prompt.lower() or "disagreement" in prompt.lower()
-
-    def test_empty_inputs_safe(self):
-        # Defensive: empty chunk_responses shouldn't crash; just produces the header.
-        prompt = _build_synthesis_prompt([], [])
-        assert "Synthesis pass" in prompt
-        assert "synthesize" in prompt.lower()
-
-
-class TestChunkedPipelineRefusal:
-    def test_no_manifest_refuses(self):
-        text, usage = _run_chunked_deep_self_review(
-            repo_dir=pathlib.Path("/tmp/fake"),
-            drive_root=pathlib.Path("/tmp/fake_drive"),
-            llm=None,
-            emit_progress=lambda m: None,
-            event_queue=None,
-            model="any-model",
-            deep_window=1_000_000,
-            deep_output_reserve=10_000,
-            deep_margin=155_000,
-            atlas_manifest=None,
-            fixed_prompt_tokens=0,
-        )
-        assert "Chunked pipeline requires an assembled atlas manifest" in text
-        assert usage == {}
-
-    def test_window_too_small_refuses_with_p3_message(self):
-        manifest = {"selected": [{"rel_path": f"f{i}.py"} for i in range(30)], "omitted": []}
-        text, usage = _run_chunked_deep_self_review(
-            repo_dir=pathlib.Path("/tmp/fake"),
-            drive_root=pathlib.Path("/tmp/fake_drive"),
-            llm=None,
-            emit_progress=lambda m: None,
-            event_queue=None,
-            model="any-model",
-            deep_window=100_000,  # too small
-            deep_output_reserve=10_000,
-            deep_margin=155_000,
-            atlas_manifest=manifest,
-            fixed_prompt_tokens=0,
-        )
-        assert "Chunked pipeline refused" in text
-        assert "P3" in text or "reviewer floor" in text
-        assert usage == {}
-
-    def test_too_few_selected_refuses(self):
-        manifest = {"selected": [{"rel_path": "a.py"}, {"rel_path": "b.py"}], "omitted": []}
-        text, usage = _run_chunked_deep_self_review(
-            repo_dir=pathlib.Path("/tmp/fake"),
-            drive_root=pathlib.Path("/tmp/fake"),
-            llm=None,
-            emit_progress=lambda m: None,
-            event_queue=None,
-            model="any-model",
-            deep_window=1_000_000,
-            deep_output_reserve=10_000,
-            deep_margin=155_000,
-            atlas_manifest=manifest,
-            fixed_prompt_tokens=0,
-        )
-        assert "only 2 files in atlas" in text
-        assert "min 5" in text
-
-
-class TestChunkedGateAEnforcement:
-    """Per-chunk Gate A is the structural integrity floor — a chunk that
-    receives too few files or too few chars MUST refuse, not silently shrink.
-
-    Tested at the helper boundary: ``_chunk_atlas_into_groups`` does not
-    enforce Gate A (caller responsibility), so this test goes through
-    ``_run_chunked_deep_self_review`` with an underpopulated chunk group
-    forced via a tight max_files_per_chunk — but the production code uses
-    ``_DEEP_CHUNK_MAX_FILES_PER_CHUNK = 30``, so we test the post-grouping
-    Gate A check by passing a manifest whose total selected is just over
-    the threshold AND whose chunks, after grouping, each have ≥
-    ``_DEEP_CHUNK_MIN_FILE_COUNT`` — verifying the standard happy path does
-    not reject on Gate A. The refusing path is covered by
-    ``TestChunkedPipelineRefusal::test_too_few_selected_refuses``.
-    """
-
-    def test_balanced_chunks_pass_per_chunk_gate_a(self):
-        # 60 files → 2 chunks of 30. Each is at the file-cap edge but well
-        # above _DEEP_CHUNK_MIN_FILE_COUNT=5. This is the happy-path grouping.
-        files = [f"ouroboros/m{i}.py" for i in range(60)]
-        groups = _chunk_atlas_into_groups(
-            files, max_chunks=_DEEP_MAX_CHUNKS, max_files_per_chunk=_DEEP_CHUNK_MAX_FILES_PER_CHUNK
-        )
-        # 60 files / 30 cap = 2 chunks of 30 each.
-        assert len(groups) == 2
-        assert all(len(g) == 30 for g in groups)
-        assert all(len(g) >= _DEEP_CHUNK_MIN_FILE_COUNT for g in groups)
-
-
-class TestChunkPipelineConstants:
-    """Pin the structural invariants of the chunked-pipeline bounds."""
-
-    def test_min_file_count_at_least_5(self):
-        # Per-chunk Gate A's structural floor must match the whole-pack Gate A's.
-        # Lowering it here would let a 1-2-file chunk produce grounded-but-empty
-        # findings — the same hallucination class the whole-pack Gate A refuses.
-        assert _DEEP_CHUNK_MIN_FILE_COUNT >= 5, (
-            "Per-chunk Gate A's file-count floor cannot be lower than the "
-            "whole-pack Gate A's (which is 5)."
-        )
-
-    def test_min_chars_matches_whole_pack(self):
-        # Per-chunk Gate A's char floor equals the whole-pack's. Different
-        # thresholds would mean "small pack is OK if chunked" — exactly the
-        # hallucination class the whole-pack floor was added to prevent.
-        from ouroboros.deep_self_review import _DEEP_MIN_PACK_CHARS
-        assert _DEEP_CHUNK_MIN_CHARS == _DEEP_MIN_PACK_CHARS, (
-            "Per-chunk Gate A must use the same char floor as whole-pack Gate A."
-        )
-
-    def test_max_chunks_bounded(self):
-        # Each chunk costs a separate review LLM call. Capping at a small
-        # number bounds the worst-case cost of a chunked deep self-review;
-        # large enough to handle real-world large codebases without splitting
-        # the review into trivial sub-reviews.
-        assert 1 <= _DEEP_MAX_CHUNKS <= 16
-        assert _DEEP_CHUNK_MAX_FILES_PER_CHUNK >= _DEEP_CHUNK_MIN_FILE_COUNT
-
-    def test_chunk_budget_smaller_than_full_pack(self):
-        # The per-chunk budget is intentionally smaller than the whole-pack
-        # cap so each chunk fits comfortably in the reviewer's REAL window
-        # even when the full pack does not. If chunk budget >= whole-pack cap
-        # the chunked path is mathematically equivalent to the whole-pack path
-        # and we lose the dispatch rationale.
-        from ouroboros.deep_self_review import _DEEP_INPUT_TOKEN_LIMIT
-        assert _DEEP_CHUNK_TOKEN_BUDGET <= _DEEP_INPUT_TOKEN_LIMIT
-

@@ -10,24 +10,25 @@ makes the FACT structural (one re-loop) while the decision stays the child's.
 
 from types import SimpleNamespace
 
-from ouroboros.loop import _maybe_inject_finalization_nudges
+from ouroboros.loop_nudges import _maybe_inject_finalization_nudges
 
 
-def _run(ctx_obj, msgs, tool_calls):
+def _run(ctx_obj, msgs, tool_calls, drive):
+    ctx_obj.drive_root = drive
     return _maybe_inject_finalization_nudges(
-        SimpleNamespace(_ctx=ctx_obj), None or __import__("pathlib").Path("."), "t",
+        SimpleNamespace(_ctx=ctx_obj), drive, "t",
         {"reasoning_notes": [], "tool_calls": tool_calls}, "done", msgs, lambda *_: None,
     )
 
 
-def test_harness_child_finalizing_without_delegation_gets_one_nudge():
+def test_harness_child_finalizing_without_delegation_gets_one_nudge(tmp_path):
     ctx = SimpleNamespace(_nanny_route_dispatched=True, _nanny_finalization_injected=False)
     msgs: list = []
-    assert _run(ctx, msgs, []) is True
+    assert _run(ctx, msgs, [], tmp_path) is True
     assert any("NANNY_DID_NOT_DELEGATE" in m.get("content", "") for m in msgs)
     # One-shot: the latch suppresses a second injection — the child may still
     # finalize with a stated reason, never a hard gate on its judgment (P5).
-    assert _run(ctx, [], []) is False
+    assert _run(ctx, [], [], tmp_path) is False
 
 
 def test_nanny_nudge_stays_out_of_owner_chat_progress(tmp_path):
@@ -71,6 +72,7 @@ def _custody_drive(tmp_path):
 
 
 def _run_full(tools, drive, task_id, msgs, tool_calls):
+    tools._ctx.drive_root = drive
     return _maybe_inject_finalization_nudges(
         tools, drive, task_id,
         {"reasoning_notes": [], "tool_calls": tool_calls}, "done", msgs, lambda *_: None,
@@ -319,17 +321,17 @@ def test_closed_absent_run_counts_as_settled_not_pending(tmp_path):
     assert evidence["subscription_cost_usd"] is None  # spend undisclosed, never zero
 
 
-def test_a_delegating_nanny_and_a_native_child_are_not_nudged():
+def test_a_delegating_nanny_and_a_native_child_are_not_nudged(tmp_path):
     # A delegate_start in the trace with NO custody row yet (pending settlement
     # or an uncustodied start) is an attempt, not a choice — no accusation, and
     # the failure case is owned by custody evidence (see the test above).
     delegating = SimpleNamespace(_nanny_route_dispatched=True,
                                  _nanny_finalization_injected=False)
-    assert _run(delegating, [], [{"tool": "delegate_start", "args": {}}]) is False
+    assert _run(delegating, [], [{"tool": "delegate_start", "args": {}}], tmp_path) is False
 
     native = SimpleNamespace(_nanny_route_dispatched=False,
                              _nanny_finalization_injected=False)
-    assert _run(native, [], []) is False
+    assert _run(native, [], [], tmp_path) is False
 
 
 def test_host_coordination_no_longer_suppresses_zero_leaf_accusation(tmp_path):
@@ -348,7 +350,7 @@ def test_host_coordination_no_longer_suppresses_zero_leaf_accusation(tmp_path):
     assert "NANNY_DID_NOT_DELEGATE" in message
 
     undispatched = SimpleNamespace()  # a ctx that never saw a dispatch at all
-    assert _run(undispatched, [], []) is False
+    assert _run(undispatched, [], [], tmp_path) is False
 
 
 def test_configured_actor_typed_zero_run_receipt_finalizes_in_silence(tmp_path):

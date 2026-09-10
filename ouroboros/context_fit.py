@@ -13,7 +13,7 @@ import json
 import logging
 import math
 import pathlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
@@ -21,6 +21,19 @@ from ouroboros.context_layout import reference_doc_sections
 from ouroboros.utils import estimate_tokens
 
 log = logging.getLogger(__name__)
+
+
+def extract_plain_text_from_content(content: Any) -> str:
+    """Text of a string or multipart message content, for transcript sealing.
+
+    The one extractor lives in ``loop_messages`` (the retired ``delivery_protocol``
+    leaf carried a copy). Read at CALL time: ``loop_messages`` imports
+    ``ouroboros.llm`` at module top and the LLM lanes import this module, so a
+    top-level import here would be an import cycle.
+    """
+    from ouroboros.loop_messages import _extract_plain_text_from_content
+
+    return _extract_plain_text_from_content(content)
 
 ContextProfile = Literal["owner_max", "owner_low", "task_local_low"]
 MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]
@@ -92,6 +105,9 @@ class ContextFitPlan:
     user_content_json: str
     max_projection: ContextFitProjection
     low_projection: ContextFitProjection
+    model_role: str = "main"
+    model_route: Dict[str, Any] = field(default_factory=dict)
+    evidence_source: str = ""
 
     def projection(self, mode: str) -> ContextFitProjection:
         return self.low_projection if str(mode or "").lower() == "low" else self.max_projection
@@ -199,6 +215,98 @@ def _render_context_system_content(
     ]
 
 
+def seal_task_transcript(
+    messages: List[Dict[str, Any]],
+    keep_active: int = 5,
+    min_prefix_tokens: int = 2048,
+) -> None:
+    """Mark ONE stable message-side boundary for provider prompt caching.
+
+    Until enough tool results exist to seal a rolling boundary among them, the
+    boundary is the task message itself: without it everything after the two
+    SYSTEM markers -- the mutable context block and the task contract -- is
+    re-sent uncached every round, which is exactly the short-lived nanny and
+    leaf shape. The marker MIGRATES to the rolling tool seal in the same call
+    that first qualifies, because a request may declare at most four
+    breakpoints (tools, two system blocks and this one): leaving both would
+    make the rolling seal a fifth marker and silently drop it.
+    """
+    for msg in messages:
+        if msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            # Flatten the old sealed boundary before choosing a new one.
+            msg["content"] = extract_plain_text_from_content(content)
+    first_user = next((m for m in messages if m.get("role") == "user"), None)
+    if isinstance(first_user, dict) and isinstance(first_user.get("content"), list):
+        # Drop this function's own previous task-message marker, so exactly one
+        # message-side breakpoint survives whichever branch runs below.
+        for block in first_user["content"]:
+            if isinstance(block, dict):
+                block.pop("cache_control", None)
+
+    tool_indices = [
+        i for i, m in enumerate(messages)
+        if m.get("role") == "tool"
+    ]
+    if len(tool_indices) <= keep_active:
+        _mark_task_message(first_user)
+        return
+
+    seal_candidate_idx = tool_indices[-(keep_active + 1)]
+
+    prefix_text_len = sum(
+        len(extract_plain_text_from_content(m.get("content", "")))
+        for m in messages[: seal_candidate_idx + 1]
+    )
+    prefix_tokens = prefix_text_len // 4  # rough 4-chars-per-token estimate
+
+    if prefix_tokens < min_prefix_tokens:
+        # Not yet a worthwhile rolling boundary: the task message stays the anchor.
+        _mark_task_message(first_user)
+        return
+
+    candidate = messages[seal_candidate_idx]
+    plain_text = str(candidate.get("content", ""))
+    if not plain_text.strip():
+        # Anthropic 400s on cache_control attached to an empty text block; never seal
+        # an empty tool output as the cache anchor (turns the whole task unanswerable).
+        plain_text = "(no tool output)"
+    candidate["content"] = [
+        {
+            "type": "text",
+            "text": plain_text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+def _mark_task_message(message: Optional[Dict[str, Any]]) -> None:
+    """Anchor the prefix on the task message's last non-empty text block.
+
+    Anthropic rejects a marker on an empty text block, so a task message with
+    no text at all is left unmarked rather than padded: the same rule the
+    rolling tool seal enforces on empty tool output."""
+    if not isinstance(message, dict):
+        return
+    content = message.get("content")
+    if isinstance(content, str):
+        if not content.strip():
+            return
+        content = [{"type": "text", "text": content}]
+        message["content"] = content
+    if not isinstance(content, list):
+        return
+    for block in reversed(content):
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and str(block.get("text") or "").strip()
+        ):
+            block["cache_control"] = {"type": "ephemeral"}
+            return
+
+
 def tool_schema_tokens(tools: Optional[List[Dict[str, Any]]]) -> int:
     """chars/4 estimate of the TOOL-SCHEMA segment of a prompt.
 
@@ -227,6 +335,18 @@ def bounded_prompt_tokens_for_payload(prompt_payload: Dict[str, Any], fallback_c
     except Exception:
         pass
     return max(0, int(fallback_chars) // 4)
+
+
+def messages_carry_native_images(messages: Any) -> bool:
+    """Whether a message carries an image part the proxy bounds instead of pricing."""
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and str(part.get("type") or "") in {"image", "image_url"}
+            for part in content
+        ):
+            return True
+    return False
 
 
 def estimate_context_prompt_tokens(
@@ -369,26 +489,52 @@ def measure_main_fit(
     )
 
 
+def _context_route(task: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Resolve the same effective settings and account identity on success or failure."""
+    from ouroboros.capability_evidence import model_account_options
+    from ouroboros.config import load_settings
+    from ouroboros.gateway.settings import _active_main_route
+    from ouroboros.server_runtime import apply_runtime_provider_defaults
+
+    settings, _changed, _keys = apply_runtime_provider_defaults(load_settings())
+    local_override = task.get("use_local_model")
+    route = _active_main_route(
+        settings, model_override=str(task.get("model") or "").strip(),
+        use_local_override=(
+            bool(local_override) if local_override is not None else None
+        ),
+    )
+    from ouroboros.model_slots import task_model_binding
+    role, account = task_model_binding(task)
+    route["model_role"] = role
+    route["options"] = {}
+    if route["provider"] == "claudexor":
+        route["options"] = model_account_options(
+            route["model"], role=role, settings=settings,
+            credential_profile_id=account,
+            model_route=task.get("model_route"),
+        )
+    return route, settings
+
+
 def resolve_context_fit_route(
     task: Dict[str, Any],
     *,
     allow_fetch: bool,
 ) -> Tuple[Dict[str, Any], Any]:
-    """Resolve one exact route through the existing settings/evidence SSOT."""
-    from ouroboros.capability_evidence import probe
-    from ouroboros.config import DATA_DIR
-    from ouroboros.gateway.settings import _active_main_route, _owner_read_settings_raw
+    """Resolve capacity from effective settings and exact account evidence.
 
-    settings = _owner_read_settings_raw()
-    model = str(task.get("model") or "").strip()
-    local_override = task.get("use_local_model")
-    route = _active_main_route(
-        settings,
-        model_override=model,
-        use_local_override=(
-            bool(local_override) if local_override is not None else None
-        ),
-    )
+    Auto discovery is advertised preparation evidence, not proof of the account
+    that will serve the next operation. The caller replaces ``model_route`` from
+    actual operation receipts when it rebinds. A manual role window is an owner
+    sizing assertion only; it neither changes the provider nor writes a scope ack.
+    """
+    from dataclasses import replace
+    from ouroboros.capability_evidence import SOURCE_USER_SETTING, STATUS_ASSERTED, probe
+    from ouroboros.config import DATA_DIR
+    from ouroboros.model_slots import MODEL_CONTEXT_WINDOWS_KEY, model_role_option
+
+    route, settings = _context_route(task)
     evidence = probe(
         DATA_DIR,
         provider=route["provider"],
@@ -396,28 +542,27 @@ def resolve_context_fit_route(
         base_url=route["base_url"],
         use_local=route["use_local"],
         allow_fetch=allow_fetch,
+        options=route["options"] or None,
     )
+    window = int(model_role_option(MODEL_CONTEXT_WINDOWS_KEY, route["model_role"],
+                                   settings=settings))
+    if window:
+        evidence = replace(evidence, window_tokens=window, status=STATUS_ASSERTED,
+                           source=SOURCE_USER_SETTING, stale=False,
+                           detail=f"Context for {route['model_role']} asserted by user; provider limit unchanged")
     return route, evidence
 
 
 def _failed_route_evidence(task: Dict[str, Any]) -> Tuple[Dict[str, Any], Any]:
     from ouroboros.capability_evidence import route_fingerprint
-    from ouroboros.gateway.settings import _active_main_route, _owner_read_settings_raw
 
-    route = _active_main_route(
-        _owner_read_settings_raw(),
-        model_override=str(task.get("model") or ""),
-        use_local_override=(
-            bool(task.get("use_local_model"))
-            if task.get("use_local_model") is not None
-            else None
-        ),
-    )
+    route, _settings = _context_route(task)
     evidence = SimpleNamespace(
         route_fp=route_fingerprint(
             provider=route["provider"],
             base_url=route["base_url"],
             model=route["model"],
+            options=route["options"] or None,
         ),
         status="failed",
         stale=True,
@@ -527,4 +672,12 @@ def build_context_fit_plan(
         user_content_json=core.user_content_json,
         max_projection=max_projection,
         low_projection=low_projection,
+        model_role=str(route.get("model_role") or "main"),
+        model_route={
+            "source": str(getattr(evidence, "source_id", "") or ""),
+            "model": str(route["model"]).partition("=")[2],
+            "credentialProfileId": str(getattr(evidence, "credential_profile_id", "") or ""),
+            "accountFingerprint": str(getattr(evidence, "account_fingerprint", "") or ""),
+        } if route["provider"] == "claudexor" else {},
+        evidence_source=str(getattr(evidence, "source", "") or ""),
     )

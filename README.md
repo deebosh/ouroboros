@@ -12,7 +12,7 @@
 [![Linux](https://img.shields.io/badge/Linux-x86__64-orange.svg)](https://ouroboros-agent.ai/install/#linux)
 [![Windows](https://img.shields.io/badge/Windows-x64-blue.svg)][download-windows-x64]
 [![OuroborosHub](https://img.shields.io/badge/OuroborosHub-skills%20marketplace-8A2BE2.svg)](https://github.com/razzant/OuroborosHub)
-[![Version 6.115.7](https://img.shields.io/badge/version-6.115.7-green.svg)](VERSION)
+[![Version 7.0.0](https://img.shields.io/badge/version-7.0.0-green.svg)](VERSION)
 
 Ouroboros is an open-source, general-purpose AI agent whose identity, durable memory, and history continue across tasks and restarts. It works on external projects, coordinates a live swarm of specialist agents, and can rewrite the implementation it runs on, including its code, architecture, prompts, tools, and dependencies. Reflection can also change how it understands itself without severing that continuity.
 
@@ -64,13 +64,13 @@ The desktop packages already contain an optional CLI installer. On macOS, after 
 
 </details>
 
-[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v6.115.7/Ouroboros-6.115.7.dmg
-[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v6.115.7/Ouroboros-6.115.7-windows-x64.zip
-[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v6.115.7/ouroboros_6.115.7_amd64.deb
-[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.115.7/ouroboros-6.115.7-1.x86_64.rpm
-[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.115.7/ouroboros-6.115.7-1.red80.x86_64.rpm
-[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.115.7/Ouroboros-6.115.7-linux-x86_64.AppImage
-[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v6.115.7/Ouroboros-6.115.7-linux-x86_64.tar.gz
+[download-macos-arm64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/Ouroboros-7.0.0.dmg
+[download-windows-x64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/Ouroboros-7.0.0-windows-x64.zip
+[download-linux-deb-amd64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/ouroboros_7.0.0_amd64.deb
+[download-linux-rpm-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/ouroboros-7.0.0-1.x86_64.rpm
+[download-linux-rpm-red80-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/ouroboros-7.0.0-1.red80.x86_64.rpm
+[download-linux-appimage-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/Ouroboros-7.0.0-linux-x86_64.AppImage
+[download-linux-x86_64]: https://github.com/razzant/ouroboros/releases/download/v7.0.0/Ouroboros-7.0.0-linux-x86_64.tar.gz
 
 Ouroboros bundles [Claudexor](https://github.com/razzant/claudexor) as its local execution layer for delegated coding and hosted-agent review. Ouroboros owns the task, memory, review, and final integration, while Claudexor runs the selected connected coding harness and returns durable execution evidence. [Explore Claudexor](https://claudexor.ai/).
 
@@ -194,7 +194,7 @@ Chromium and WebKit binaries are bundled, but their distro-level shared librarie
 
 ### Connected coding subscriptions
 
-Use your existing **Codex, Claude Code, or Cursor subscriptions** for delegated coding and review. Ouroboros drives them through [Claudexor](https://github.com/razzant/claudexor), its bundled multi-harness engine. Connect accounts in **Settings → Agents**; no separate Claudexor install is needed. Release artifacts carry the exact reviewed engine and Node archives. Source checkouts obtain those same pinned archives on first use.
+Use your existing **Codex, Claude Code, or Cursor subscriptions** for delegated coding and review. Ouroboros drives them through [Claudexor](https://github.com/razzant/claudexor), its bundled multi-harness engine. Connect accounts in **Settings → Accounts** and choose their roles in **Agents**; no separate Claudexor install is needed. Release artifacts carry the exact reviewed engine and Node archives. Source checkouts obtain those same pinned archives on first use.
 
 ### Headless CLI with uv
 
@@ -312,7 +312,7 @@ To change Ouroboros itself, follow [CONTRIBUTING.md](CONTRIBUTING.md): read [doc
 
 #### Configuration
 
-The first-run wizard and **Settings** configure model access, cognitive roles, local models, review policy, runtime mode, budget, skills, and optional integrations. Ouroboros supports configurable remote providers, compatible endpoints, and local GGUF inference; exact settings and defaults live in [`ouroboros/config.py`](ouroboros/config.py) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+The first-run wizard and **Settings** configure model access, cognitive roles, local models, review policy, runtime mode, budget, skills, and optional integrations. Ouroboros supports configurable remote providers, compatible endpoints, and local GGUF inference; every key and its shipped default lives in [`ouroboros/settings_defaults.py`](ouroboros/settings_defaults.py) — with the clamped scales, model slots, reviewer routes and numeric limits in its sibling leaves, all re-exported through the [`ouroboros/config.py`](ouroboros/config.py) facade — and the same vocabulary is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 The server binds to `127.0.0.1:8765` by default. Read [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) before exposing it beyond loopback; non-local binds need `OUROBOROS_NETWORK_PASSWORD` or an explicitly trusted external access layer.
 
@@ -449,6 +449,7 @@ and the reason.
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 7.0.0 | 2026-09-08 | **v7: a modular runtime with full ordinary-conversation tools, complete delegated inputs and visible owner dialogue.** Main and Project conversations retain their chosen tools and working folders; required owner waits preserve the live browser without occupying pooled execution capacity. Publish admission is visible in its intended chat, and GitHub/image/plan failures retain their actual causes. Planning advice stays optional; source-backed evidence, separate host notices and exact-workload test reuse preserve honest review without new approval machinery. Integrates the subscription model and account-role controls, owned startup/restart custody and cross-platform repairs, with Claudexor pinned to 3.10.1. |
 | 6.115.7 | 2026-09-09 | test(contracts): register update_self in TOOL_POLICY, EXPECTED_TOOLS, tool-count assertions; update consciousness prompt assertion for the new "scratchpad, identity, or self" wording (closes CI Run tests (parallel) failures from update_self landing in 80f33e39/5ca11103/e7c8f619 without downstream SSOT updates) |
 | 6.115.6 | 2026-09-09 | fix(test): resolve `tests/test_reflection.py` cwd to repo root at runtime instead of hard-coded `/opt/ouroboros` (resolves CI `Run tests (parallel)` `FileNotFoundError: '/opt/ouroboros'` failures for `test_main_emits_trailing_json_for_stored_entry`, `test_main_exits_nonzero_on_missing_task`, `test_main_uses_drive_root_env_var`, `test_main_exits_2_when_no_task_id`) |
 | 6.115.5 | 2026-09-09 | fix(review): narrow staged-blob except tuples so a bare ValueError propagates (closes test_staged_gated_symlink_cannot_hide_behind_a_live_regular_file; mirrors upstream razzant/ouroboros#755) |
@@ -459,7 +460,7 @@ and the reason.
 | 6.113.0 | 2026-08-29 | **feat: delegation by construction — the nanny charter, typed $0 terminals, truthful executor cards, and honest route health (Claudexor runtime 3.9.0).** An `agent_session` child now IS work on its harness: the host pre-starts the physical leaf through the same configured `delegate_start` wrapper BEFORE the nanny's first LLM round and never waits — her first round arrives with a live `configured_session_started` receipt, waiting is her own `delegate_wait` decision, and children may run beside the leaf. A definite refusal to start (typed pre-POST, dispatch-blocked, engine-rejected — with a custody-handle guard that always prefers a model episode over a false terminal) ends the task typed and unrun at $0; ambiguity always wakes the model, and durable zero-run/unknown-evidence fences outrank blocked terminals. Zero-run receipts narrow to incomplete\|unknown, actor cleanliness requires a SUCCEEDED delegated run (children are evidence, never a completion path), unreadable custody projects typed unknown all the way into the finalization nudge, and only acts of delegation reset the economics baseline (the reminder-storm class is dead). route_health stops refusing on aggregate doctor status — admission belongs to the engine; the owner's enabled toggle stays a typed `route_disabled`. Acceptance sees substrate facts as visibility with zero gates. The executor chip tells the run truth for the whole lifecycle (dispatched → counted `N ok, M failed` → evidence honesty), all-failed can never render clean, actual_substrate reaches the wire, and the terminal evidence frame survives chat-0/A2A routing. The pinned Claudexor runtime moves to 3.9.0: per-vendor quota pacing with typed Retry-After floors (a poll 429 is never a quota fact), honest foreground cooldowns, first-429 short-circuit, cached accounts default, and the cursor delegation belt (live-E2E proven). This tag also carries the untagged 6.111.0 and 6.112.0 (P13 Emergence) below, and heals the branch's latent size-ratchet debt root-cause (settings_integrity extraction, cybergym module splits, regenerated manifest). |
 | 6.112.0 | 2026-08-28 | **feat: Principle 13 (Emergence) — designs must get better as intelligence grows.** BIBLE.md gains a new constitutional principle: code hardcodes the floor — truth, custody, budgets, authority, acceptance — never the ceiling; strategy belongs to the mind, patterns that worked are examples to record rather than laws to enforce, and every design faces the stronger-mind test: when the model gets smarter, does this get better on its own, or does it have to be torn out first? Pointed clarifications close the readings that used to license freezing today's shape: P2 defines the class by the invariant rather than the incident, P5 names how work is shaped (decomposition, roles, ordering, delegation) as behavior belonging to the LLM, and P7 distinguishes unused machinery (premature) from unused freedom (headroom). DEVELOPMENT.md adds the operational lens — the invariant question and the stronger-mind question, with a symmetric proof burden against both fossilizing the current case and speculating a framework. |
 | 6.110.0 | 2026-08-22 | **feat: preserve work-order authority across oversized delegation and recovery.** Complete external work orders remain byte-complete within the host serializer budget; when an order needs bounded continuation, Ouroboros asks the same actor for an exact readable canonical range and keeps incomplete coverage as typed `cannot_verify` evidence. Partial input can no longer authorize PASS, a destructive rewrite, or replacement of the full contract, while valid complete work continues through the existing flow. |
-Older releases are preserved in Git tags and GitHub releases. Older 6.x rows (including 6.110.1, 6.108.1, 6.106.0, 6.101.1, 6.97.2, 6.105.0, 6.97.1, 6.97.0, 6.96.1, 6.96.0, 6.95.0, 6.94.0, 6.93.0, 6.92.1, 6.92.0, 6.91.1, 6.90.3, 6.91.0, 6.90.2, 6.90.0, 6.87.5, 6.87.4, 6.87.3, 6.87.2, 6.84.0, 6.87.1, 6.83.0, 6.86.1, 6.81.1, 6.76.0, 6.75.0, 6.74.5, 6.74.4, 6.74.1, 6.74.0, 6.73.2, 6.73.1, 6.73.0, 6.72.0, 6.71.2, 6.71.1, 6.71.0, 6.70.0, 6.69.0, 6.68.0, 6.67.0, 6.66.0, 6.65.4, 6.65.3, 6.65.2, 6.65.1, 6.65.0, 6.64.3, 6.64.2, 6.64.1, 6.64.0, 6.63.0, 6.62.0, 6.61.4, 6.61.3, 6.61.1, 6.61.0, 6.60.0, 6.59.0, 6.58.0, 6.57.0, 6.56.0, 6.55.0, 6.54.4, 6.54.2, 6.54.1, 6.54.0, 6.53.4, 6.53.0, 6.51.0), the 5.2.0 through 5.33.0-rc.6 rows, and former `4.0.0` rows are rolled off to respect the P9 changelog cap; their full bodies remain at their git tags.
+Older releases are preserved in Git tags and GitHub releases. Older 6.x rows (including 6.110.1, 6.109.0, 6.108.1, 6.106.0, 6.101.1, 6.97.2, 6.105.0, 6.97.1, 6.97.0, 6.96.1, 6.96.0, 6.95.0, 6.94.0, 6.93.0, 6.92.1, 6.92.0, 6.91.1, 6.90.3, 6.91.0, 6.90.2, 6.90.0, 6.87.5, 6.87.4, 6.87.3, 6.87.2, 6.84.0, 6.87.1, 6.83.0, 6.86.1, 6.81.1, 6.76.0, 6.75.0, 6.74.5, 6.74.4, 6.74.1, 6.74.0, 6.73.2, 6.73.1, 6.73.0, 6.72.0, 6.71.2, 6.71.1, 6.71.0, 6.70.0, 6.69.0, 6.68.0, 6.67.0, 6.66.0, 6.65.4, 6.65.3, 6.65.2, 6.65.1, 6.65.0, 6.64.3, 6.64.2, 6.64.1, 6.64.0, 6.63.0, 6.62.0, 6.61.4, 6.61.3, 6.61.1, 6.61.0, 6.60.0, 6.59.0, 6.58.0, 6.57.0, 6.56.0, 6.55.0, 6.54.4, 6.54.2, 6.54.1, 6.54.0, 6.53.4, 6.53.0, 6.51.0), the 5.2.0 through 5.33.0-rc.6 rows, and former `4.0.0` rows are rolled off to respect the P9 changelog cap; their full bodies remain at their git tags.
 
 ---
 

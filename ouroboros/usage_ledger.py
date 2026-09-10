@@ -15,17 +15,16 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import gzip
+import errno
 import json
 import logging
 import os
 import pathlib
 import re
 import threading
-import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
 
 from ouroboros.utils import append_jsonl, replace_atomic, utc_now_iso
 
@@ -33,11 +32,16 @@ log = logging.getLogger(__name__)
 
 LEDGER_REL = pathlib.Path("state/usage_attempts.jsonl")
 QUARANTINE_REL = pathlib.Path("state/usage_attempts.quarantine.jsonl")
+LOCK_REL = pathlib.Path("state/usage_attempts.lock")  # the ONE monetary lock
+# The ONE directory a baseline header may name (CPL4-C6). The substrate owns
+# it because the substrate is what decides a row is well formed: a reference
+# out of this directory is corruption, not a reader's problem.
+ARCHIVE_SEGMENT_DIR_REL = pathlib.Path("archive/usage_ledger")
+_ARCHIVE_SEGMENT_PREFIX = ARCHIVE_SEGMENT_DIR_REL.as_posix() + "/"
 _TERMINAL = frozenset({"settled", "unresolved", "released"})
 
 __all__ = (
-    "LEDGER_REL", "QUARANTINE_REL", "UsageAccountingError", "UsageLedgerCorrupt",
-    "compact_ledger",
+    "LEDGER_REL", "LOCK_REL", "QUARANTINE_REL", "UsageAccountingError", "UsageLedgerCorrupt",
 )
 
 
@@ -103,6 +107,58 @@ def _validate_candidate_facts(row: Dict[str, Any], sequence: int) -> None:
         raise UsageLedgerCorrupt(f"invalid candidate_manifest_ref in usage row seq={sequence}")
 
 
+def valid_archive_rel(value: Any) -> bool:
+    """Whether ``archive_rel`` names a segment INSIDE the archive directory.
+
+    A baseline header is the only ledger row that points at bytes outside its
+    own file, so the reference is bounded HERE, once, instead of at each
+    reader: relative, forward-slash, exactly ``archive/usage_ledger/<name>``,
+    no traversal, no drive letter, no separator inside the name. An absolute
+    path or a ``..`` hop cannot satisfy the prefix, so a tampered header can
+    never point a reader at a file elsewhere on the host and have its
+    ``attempt_id``s counted as archived history.
+    """
+    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+        return False
+    if not value.startswith(_ARCHIVE_SEGMENT_PREFIX):
+        return False
+    name = value[len(_ARCHIVE_SEGMENT_PREFIX):]
+    return bool(name) and name not in {".", ".."} and "/" not in name
+
+
+def _validate_baseline_header(row: Dict[str, Any], sequence: int) -> None:
+    """Provenance checks on the compaction stamp (CPL4-C6).
+
+    The header claims a summary of bytes that are no longer in this file, so
+    its claim must be checkable WITHOUT reading them: a bounded archive path,
+    a well-formed source hash, a positive epoch, and counts that actually add
+    up to the source row range it names. A header whose numbers do not close
+    cannot be an honest fold of anything, whatever the archive holds.
+    """
+
+    def _count(key: str, minimum: int) -> int:
+        value = row.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise UsageLedgerCorrupt(f"invalid usage baseline {key} seq={sequence}")
+        return value
+
+    _count("compaction_epoch", 1)
+    if not valid_archive_rel(row.get("archive_rel")):
+        raise UsageLedgerCorrupt(f"invalid usage baseline archive_rel seq={sequence}")
+    if not _SHA256_RE.fullmatch(str(row.get("source_sha256") or "")):
+        raise UsageLedgerCorrupt(f"invalid usage baseline source_sha256 seq={sequence}")
+    _count("source_size_bytes", 1)
+    _count("folded_attempt_count", 1)
+    _count("group_count", 1)
+    source_rows = _count("source_row_count", 1)
+    folded_rows = _count("folded_row_count", 1)
+    retained_rows = _count("retained_row_count", 0)
+    if _count("source_first_seq", 1) != 1 or _count("source_last_seq", 1) != source_rows:
+        raise UsageLedgerCorrupt(f"usage baseline source range mismatch seq={sequence}")
+    if folded_rows + retained_rows != source_rows:
+        raise UsageLedgerCorrupt(f"usage baseline row counts do not sum seq={sequence}")
+
+
 def _drive_root(value: pathlib.Path | str | None = None) -> pathlib.Path:
     if value is not None:
         if not isinstance(value, (str, pathlib.Path)):
@@ -129,30 +185,43 @@ def _named_lock(
     *,
     timeout_sec: float,
     stale_sec: float,
-) -> Iterator[None]:
+) -> Iterator[Callable[[], bool]]:
+    """Hold a named monetary lock; yields a heartbeat that renews its age.
+
+    Acquisition is OWNER-AWARE: elapsed time alone never evicts a lock whose
+    writing process is still alive, because a stolen monetary lock means two
+    writers rewriting the same authority.  The yielded callable additionally
+    keeps the lockfile young for acquirers that are not owner-aware (an older
+    build, a foreign helper), and is a no-op cost for holds that never
+    approach ``stale_sec``.
+    """
     from ouroboros.platform_layer import (
         acquire_exclusive_file_lock,
+        refresh_exclusive_file_lock,
         release_exclusive_file_lock,
     )
 
     path = root / "state" / filename
-    fd = acquire_exclusive_file_lock(path, timeout_sec=timeout_sec, stale_sec=stale_sec)
+    fd = acquire_exclusive_file_lock(  # ENOLCK is the name tier for ordinary locks; money never runs there
+        path, timeout_sec=timeout_sec, stale_sec=stale_sec, owner_aware_stale=True,
+        refuse_name_tier_errnos=frozenset({errno.ENOLCK}),
+    )
     if fd is None:
         raise UsageAccountingError(f"usage accounting lock unavailable: {path}")
     try:
-        yield
+        yield lambda: refresh_exclusive_file_lock(path, fd)
     finally:
         release_exclusive_file_lock(path, fd)
 
 
 @contextlib.contextmanager
-def _locked(root: pathlib.Path) -> Iterator[None]:
+def _locked(root: pathlib.Path) -> Iterator[Callable[[], bool]]:
     # Operator fix 2026-07-23: 4.0s starves under a grown ledger (reserve_attempt
     # re-reads the whole usage_attempts.jsonl under this lock — ~0.5s hold at 20MB),
     # failing healthy tasks with UsageAccountingError at >=10 concurrent workers.
     # Waiting longer is always correct here; the transaction itself stays atomic.
-    with _named_lock(root, "usage_attempts.lock", timeout_sec=45.0, stale_sec=90.0):
-        yield
+    with _named_lock(root, LOCK_REL.name, timeout_sec=45.0, stale_sec=90.0) as heartbeat:
+        yield heartbeat
 
 
 def _append_bytes_fsync(path: pathlib.Path, payload: bytes) -> None:
@@ -222,7 +291,7 @@ def _fsync_path(path: pathlib.Path) -> None:
 
 
 @contextlib.contextmanager
-def _locked_with_fsync(root: pathlib.Path) -> Iterator[None]:
+def _locked_with_fsync(root: pathlib.Path) -> Iterator[Callable[[], bool]]:
     """``_locked`` + ``_fsync_path(ledger)`` AFTER release.
 
     Every append that goes through the ledger is paired with exactly one
@@ -233,17 +302,32 @@ def _locked_with_fsync(root: pathlib.Path) -> Iterator[None]:
     sequence, transition validation) and moves the kernel-level flush
     OUTSIDE the lock so a signal can interrupt it.
 
-    Yielding callers run their budget read + append under the lock; the
+    Yields the lock heartbeat (same object ``_locked`` yields) so a caller
+    that needs it — e.g. CPL4-C6 opportunistic compaction on the reserve
+    path — can pass it through; callers that don't just ignore it. The
     fsync happens automatically on successful exit. A failure inside the
     ``with`` block skips the fsync — there is nothing durable to flush.
     """
-    with _locked(root):
-        yield
+    with _locked(root) as heartbeat:
+        yield heartbeat
     _fsync_path(root / LEDGER_REL)
 
 
-def _write_bytes_atomic_fsync(path: pathlib.Path, payload: bytes) -> None:
-    """Persist the exact snapshotted bytes without reopening the source."""
+def _write_bytes_atomic_fsync(
+    path: pathlib.Path,
+    payload: bytes,
+    precondition: Optional[Callable[[], bool]] = None,
+) -> bool:
+    """Persist the exact snapshotted bytes without reopening the source.
+
+    ``precondition`` is evaluated once the temp bytes are durable, immediately
+    before EVERY rename attempt — the Windows sharing-violation retry included,
+    because a proof taken before a refused attempt is stale by the next one —
+    the last instant each replace can still be refused. A ``False`` answer
+    cleans up the temp file and returns ``False`` with the destination
+    untouched (CPL4-C6: the compactor re-proves lock ownership and that the
+    live ledger is still the snapshot it folded, INSIDE the swap, so neither a
+    lost hold nor an append landing between attempts is erased by a rename)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}")
     fd: Optional[int] = None
@@ -261,7 +345,10 @@ def _write_bytes_atomic_fsync(path: pathlib.Path, payload: bytes) -> None:
         os.fsync(fd)
         os.close(fd)
         fd = None
-        replace_atomic(tmp, path)
+        if not replace_atomic(tmp, path, precondition=precondition):
+            tmp.unlink()
+            return False
+        return True
     except Exception:
         if fd is not None:
             os.close(fd)
@@ -313,7 +400,39 @@ def _validate_records(
     expected sequence number and the prefix's per-attempt last-state map (which
     is mutated in place as the tail validates). Defaults reproduce the historic
     whole-ledger behavior exactly.
+
+    Baseline rows (CPL4-C6 compaction, docs/v7next/DESIGN_USAGE_COMPACTION.md)
+    are legal ONLY as the leading block of a from-scratch validation: exactly
+    one ``usage_baseline`` header at seq 1, ``usage_baseline_group`` rows
+    joined to it by ``baseline_id``. The compactor rewrites the whole file
+    atomically and never appends, so a baseline row in an incremental tail (or
+    after any non-baseline row) is corruption. The header's own provenance
+    (epoch, bounded archive reference, source hash, closing counts) and the
+    block's agreement with it are checked here too, so a forged stamp fails at
+    the substrate rather than at whichever reader happens to trust it first.
     """
+    baseline_allowed = int(start_seq) == 1 and not states
+    baseline_id: Optional[str] = None
+    baseline_header: Optional[Dict[str, Any]] = None
+    baseline_groups = 0
+    baseline_attempts = 0
+    baseline_closed = False
+    pre_compaction_seq = 0
+    pre_compaction_closed = False
+
+    def _close_baseline_block() -> None:
+        """Reconcile the header's declared totals with the block that follows."""
+        nonlocal baseline_closed
+        if baseline_closed or baseline_header is None:
+            return
+        baseline_closed = True
+        if baseline_groups != int(baseline_header.get("group_count") or 0):
+            raise UsageLedgerCorrupt("usage baseline group_count does not match the block")
+        if baseline_attempts != int(baseline_header.get("folded_attempt_count") or 0):
+            raise UsageLedgerCorrupt(
+                "usage baseline folded_attempt_count does not match the block"
+            )
+
     states = {} if states is None else states
     expected = int(start_seq)
     for row in records:
@@ -353,20 +472,62 @@ def _validate_records(
                     f"invalid {token_field} in usage row seq={sequence}"
                 )
         previous = states.get(attempt_id)
+        if kind in {"usage_baseline", "usage_baseline_group"}:
+            if not baseline_allowed or previous is not None:
+                raise UsageLedgerCorrupt(
+                    f"baseline row outside the leading block at seq={sequence}"
+                )
+            if kind == "usage_baseline":
+                identity = row.get("baseline_id")
+                if baseline_id is not None or sequence != 1 or state != "settled" or not (
+                    isinstance(identity, str) and identity
+                ):
+                    raise UsageLedgerCorrupt(f"invalid usage baseline header seq={sequence}")
+                _validate_baseline_header(row, sequence)
+                baseline_id = identity
+                baseline_header = row
+            else:
+                count = row.get("folded_attempt_count")
+                if (
+                    baseline_id is None
+                    or row.get("baseline_id") != baseline_id
+                    or isinstance(count, bool)
+                    or not isinstance(count, int)
+                    or count < 1
+                    or state not in _TERMINAL
+                ):
+                    raise UsageLedgerCorrupt(f"invalid usage baseline group seq={sequence}")
+                baseline_groups += 1
+                baseline_attempts += count
+            states[attempt_id] = state
+            continue
+        baseline_allowed = False
+        _close_baseline_block()
+        # ``pre_compaction_seq`` is a provenance claim about an epoch that only
+        # a leading header proves happened, and the compactor emits it on the
+        # retained rows in one strictly increasing run before any later append.
+        # The claim also has to name a row the archived source ACTUALLY held:
+        # the header declares that range (``source_first_seq``..
+        # ``source_last_seq``), and a retained row claiming an origin outside
+        # it claims to come from bytes nobody archived.
+        carried = row.get("pre_compaction_seq")
+        if carried is not None:
+            if (
+                baseline_header is None
+                or pre_compaction_closed
+                or isinstance(carried, bool)
+                or not isinstance(carried, int)
+                or carried <= pre_compaction_seq
+                or carried < int(baseline_header.get("source_first_seq") or 0)
+                or carried > int(baseline_header.get("source_last_seq") or 0)
+            ):
+                raise UsageLedgerCorrupt(f"invalid pre_compaction_seq in usage row seq={sequence}")
+            pre_compaction_seq = carried
+        else:
+            pre_compaction_closed = True
         if kind.startswith("legacy_") or kind in {"external_unmetered", "subscription_session"}:
             if previous is not None or state not in {"settled", "unresolved"}:
                 raise UsageLedgerCorrupt(f"invalid legacy usage row seq={row.get('seq')}")
-        elif kind == "compacted":
-            # A compacted summary row carries the pre-summed final for one
-            # root_task_id; its source rows have already been archived and
-            # removed from this ledger by ``compact_ledger``. It has no
-            # prior attempt_id in the ledger (the synthetic attempt_id is
-            # unique to the compaction) and MUST be settled — any other
-            # state would mean the compactor mis-emitted the row.
-            if previous is not None or state != "settled":
-                raise UsageLedgerCorrupt(
-                    f"invalid compacted usage row seq={row.get('seq')}: previous={previous} state={state}"
-                )
         elif previous is None:
             if state != "reserved":
                 raise UsageLedgerCorrupt(f"attempt {attempt_id} did not begin reserved")
@@ -385,6 +546,7 @@ def _validate_records(
         else:
             raise UsageLedgerCorrupt(f"attempt {attempt_id} changed after terminal state")
         states[attempt_id] = state
+    _close_baseline_block()
 
 
 def _read_records_locked(root: pathlib.Path) -> list[Dict[str, Any]]:
@@ -610,351 +772,3 @@ def _number(value: Any) -> Optional[float]:
 def _final_rows(records: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return {str(row["attempt_id"]): row for row in records}
 
-
-# Compactness knobs. The row threshold is the cheap no-op short-circuit
-# (almost every <2000-row ledger is well under the byte threshold); the byte
-# threshold is the in-bounds form of the same idea — both chosen so a
-# normal-velocity run never enters the per-row fold loop, and a slow
-# growth run enters it only when it has something to do.
-_COMPACT_ROW_THRESHOLD = 2000
-_COMPACT_BYTE_THRESHOLD = 20 * 1024 * 1024  # 20 MB
-
-# Token fields the projection sums in ``_summary`` / ``_breakdown_bucket``.
-# A folded root's summary row carries the pre-summed totals under these
-# canonical names; the SAME set is what ``compact_ledger`` reads off each
-# raw row to build the summary.
-_SUMMED_NUMERIC_FIELDS = (
-    "cost_usd",
-    "reservation_upper_bound_usd",
-    "reservation_usd",
-    "prompt_tokens",
-    "completion_tokens",
-    "cached_tokens",
-    "cache_write_tokens",
-    "ambiguous_call_count",
-)
-
-
-def _compact_row_numeric(row: Dict[str, Any], field: str) -> float:
-    """Return ``row[field]`` as a non-negative float, or 0 when missing/invalid.
-
-    The compactor folds every numeric column the projection consumes; a
-    missing or non-numeric value contributes 0 to the summary row, NOT
-    the row's raw value, so the projection's "unknown = None, never 0"
-    rule (see ``_summary``) is preserved — a summary row's missing field
-    is still missing downstream, while a PRESENT field's partial totals
-    sum cleanly.
-    """
-    value = row.get(field)
-    if value is None or isinstance(value, bool):
-        return 0.0
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if parsed != parsed or parsed < 0.0:  # NaN or negative
-        return 0.0
-    return parsed
-
-
-def _compact_row_known_cost(row: Dict[str, Any]) -> float:
-    """Return row's SETTLED cost contribution to the summary; 0 if not a settled
-    final-cost row. Mirrors ``_summary``: a row's cost enters ``settled_usd``
-    only if ``state == "settled"``; otherwise it lives on a different axis
-    (reserved / unresolved / unknown) that the compactor preserves by NOT
-    folding the root."""
-    if str(row.get("state") or "") != "settled":
-        return 0.0
-    cost = row.get("cost_usd")
-    if cost is None or isinstance(cost, bool):
-        return 0.0
-    try:
-        parsed = float(cost)
-    except (TypeError, ValueError):
-        return 0.0
-    if parsed != parsed or parsed < 0.0:
-        return 0.0
-    return parsed
-
-
-def _compact_parse_iso_epoch(ts_str: str) -> float:
-    """Parse an ISO-8601 timestamp string to epoch seconds, or ``-1.0`` on failure.
-
-    The compactor only needs ordering; a malformed timestamp is treated as
-    "not archivable" because we cannot prove the row is older than the
-    cutoff. ``datetime.fromisoformat`` accepts the project's
-    ``+00:00`` suffix but is brittle against the ``Z`` shorthand; we
-    normalize both."""
-    if not ts_str:
-        return -1.0
-    try:
-        from datetime import datetime
-
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
-    except (TypeError, ValueError):
-        return -1.0
-
-
-def _compact_cutoff_ts(retention_days: int, now: float) -> float:
-    """Return the cutoff epoch-seconds: a root is archivable iff its
-    newest row's ts is strictly LESS than this."""
-    return now - max(0, int(retention_days)) * 86400.0
-
-
-def _build_compacted_summary(
-    root_rows: Sequence[Dict[str, Any]],
-    root_task_id: str,
-    newest_ts: str,
-) -> Dict[str, Any]:
-    """Build the pre-summed ``kind=compacted, state=settled`` summary row
-    for one archivable root.
-
-    The summary's numeric totals equal the sum of every raw row in the
-    root for the canonical fields the projection consumes
-    (``_SUMMED_NUMERIC_FIELDS``). Token fields (prompt/completion/cached/
-    cache_write) are summed; ambiguous_call_count is summed for legacy
-    rows that carry it. ``cost_usd`` is summed from settled rows only —
-    a non-settled row in an all-terminal group is impossible here (the
-    caller gates on ``all_terminal``) but the guard is defensive.
-
-    ``cost_final`` is True on the summary: the sum IS the final cost of
-    the source rows, by construction. A future cost-finality reconciliation
-    over a folded root can re-derive this from the archive.
-    """
-    summary: Dict[str, Any] = {
-        "kind": "compacted",
-        "attempt_id": f"compacted:{root_task_id}",
-        "root_task_id": root_task_id,
-        "state": "settled",
-        "cost_final": True,
-        "row_count": len(root_rows),
-        "compacted_at": utc_now_iso(),
-        "newest_raw_ts": newest_ts,
-    }
-    for field_name in _SUMMED_NUMERIC_FIELDS:
-        if field_name == "cost_usd":
-            total = sum(_compact_row_known_cost(row) for row in root_rows)
-        else:
-            total = sum(_compact_row_numeric(row, field_name) for row in root_rows)
-        if not total:
-            continue
-        # Token columns are integer-typed throughout the rest of the
-        # ledger; storing them as floats here would round-trip through
-        # ``int()`` in the projection's ``summed()`` helper but expose
-        # the inconsistency on disk and to downstream readers. Cast
-        # token-shaped fields back to ``int`` so the summary row shape
-        # matches every other settled row in the ledger.
-        if field_name in {
-            "prompt_tokens", "completion_tokens", "cached_tokens",
-            "cache_write_tokens", "ambiguous_call_count",
-        }:
-            summary[field_name] = int(total)
-        else:
-            summary[field_name] = total
-    return summary
-
-
-def compact_ledger(
-    root: pathlib.Path | str | None = None,
-    *,
-    retention_days: int | None = None,
-    min_rows: int = _COMPACT_ROW_THRESHOLD,
-    min_bytes: int = _COMPACT_BYTE_THRESHOLD,
-) -> Dict[str, Any]:
-    """Fold fully-settled, fully-cold roots into pre-summed ``kind=compacted``
-    summary rows and archive the raw rows to a gzipped monthly file.
-
-    The byte-identical invariant is the gate: every total ``usage_projection``
-    and ``usage_breakdown`` reports before the call must match the totals
-    after, to the cent / token. The mechanism is the structure of the
-    existing projection: ``_summary`` and ``_breakdown_bucket`` already
-    take the "last row per ``attempt_id``" view (``_final_rows``), so
-    replacing a root's N raw rows with ONE row whose
-    ``state=settled, kind=compacted, cost_usd=<sum>, prompt_tokens=<sum>, ...``
-    is picked up as that root's "final" and enters the same totals.
-
-    Thresholds: skips when rows < ``min_rows`` OR the ledger < ``min_bytes``.
-    Both default to the production knobs (2000 / 20 MB); tests pass
-    smaller values to exercise the fold path on small ledgers.
-
-    Archive: ``data/archive/usage_attempts_YYYY-MM.jsonl.gz`` (one per
-    calendar month of the cutoff; multiple compactions in the same month
-    APPEND rows to the same file). The file format is one JSON row per
-    line, gzip-compressed, byte-identical to what the original rows were
-    on disk.
-
-    Caller contract: the function is safe to invoke from outside the
-    lock — it acquires the same ``_locked`` flock as every other
-    write path. It does NOT fsync (the underlying ``_write_bytes_atomic_fsync``
-    does, on the replacement file).
-    """
-    drive_root = _drive_root(root)
-    if retention_days is None:
-        from ouroboros.retention import get_gc_retention_days
-
-        retention_days = get_gc_retention_days()
-    cutoff_ts = _compact_cutoff_ts(retention_days, time.time())
-    archive_dir = drive_root / "data" / "archive"
-    # yyyy-mm in UTC. Two compactions in the same month share one file.
-    archive_stem = time.strftime("%Y-%m", time.gmtime(cutoff_ts))
-    archive_path = archive_dir / f"usage_attempts_{archive_stem}.jsonl.gz"
-
-    with _locked(drive_root):
-        ledger_path = drive_root / LEDGER_REL
-        bytes_before = ledger_path.stat().st_size if ledger_path.exists() else 0
-        records = _read_records_locked(drive_root)
-        rows_before = len(records)
-        if rows_before == 0:
-            return {
-                "status": "skipped", "reason": "empty",
-                "roots_folded": 0, "rows_before": 0, "rows_after": 0,
-                "bytes_before": bytes_before, "bytes_after": bytes_before,
-                "archive": str(archive_path),
-            }
-        if rows_before < int(min_rows) and bytes_before < int(min_bytes):
-            return {
-                "status": "skipped", "reason": "below_threshold",
-                "roots_folded": 0, "rows_before": rows_before, "rows_after": rows_before,
-                "bytes_before": bytes_before, "bytes_after": bytes_before,
-                "archive": str(archive_path),
-            }
-
-        # Group by root_task_id. A row without root_task_id cannot be
-        # ARCHIVED (there is no identity to carry the summary row's
-        # root_task_id), but it MUST stay in the live file — silently
-        # dropping it would break the byte-identical invariant for any
-        # ``_final_rows`` projection consumer, destroy the
-        # ``subscription_sessions`` count (which ``_summary`` reads on a
-        # separate axis), and erase audit history for
-        # ``legacy_*`` / ``external_unmetered`` / bg-consciousness /
-        # chat-direct / planning / review LLM calls.
-        by_root: Dict[str, list[Dict[str, Any]]] = {}
-        rootless_rows: list[Dict[str, Any]] = []
-        for row in records:
-            rid = str(row.get("root_task_id") or "")
-            if rid:
-                by_root.setdefault(rid, []).append(row)
-            else:
-                rootless_rows.append(row)
-
-        archivable_root_ids: list[str] = []
-        archivable_rows: list[Dict[str, Any]] = []
-        live_rows: list[Dict[str, Any]] = list(rootless_rows)
-        summary_rows: list[Dict[str, Any]] = []
-
-        for rid, root_rows in by_root.items():
-            # ``all_terminal`` is the CORRECT production-invariant check:
-            # an attempt's state machine goes reserved -> dispatched -> settled
-            # and ALL three rows live in the ledger (audit trail). The
-            # projection's ``_final_rows`` semantics — "the LAST row per
-            # attempt_id wins" — is what the byte-identical invariant
-            # actually pins: we want the same final state the projection
-            # would see before vs. after. An attempt that has any row whose
-            # state is NOT in _TERMINAL means the attempt has not yet
-            # reached its terminal phase, and its row contribution to the
-            # totals (cost / tokens) is in flight. Folding the root now
-            # would lose that visibility.
-            latest_states: Dict[str, str] = {}
-            newest_epoch = -1.0
-            newest_ts = ""
-            for row in root_rows:
-                aid = str(row.get("attempt_id") or "")
-                latest_states[aid] = str(row.get("state") or "")
-                epoch = _compact_parse_iso_epoch(str(row.get("ts") or ""))
-                if epoch > newest_epoch:
-                    newest_epoch = epoch
-                    newest_ts = str(row.get("ts") or "")
-            all_terminal = all(state in _TERMINAL
-                               for state in latest_states.values())
-            if not all_terminal or newest_epoch < 0.0:
-                # Some attempt in the root is not yet terminal — keep the
-                # raw rows in the live file so the projection sees the
-                # in-flight reservation/dispatch.
-                live_rows.extend(root_rows)
-                continue
-            if newest_epoch >= cutoff_ts:
-                # Every attempt is terminal but the newest row is still
-                # inside the cutoff window. Leave the root's raw rows
-                # intact for now; the next compaction cycle will fold.
-                live_rows.extend(root_rows)
-                continue
-            # Archivable. Build ONE summary row per root (the spec
-            # mandates a SINGLE pre-summed row per root). The byte-identical
-            # invariant covers the COST and TOKEN axes (settled_usd,
-            # confirmed_usd, prompt_tokens, completion_tokens, cached_tokens,
-            # cache_write_tokens, reserved_usd, unresolved_upper_bound_usd,
-            # accounted_usd, unknown_unmetered, non_final_rows). The
-            # ``attempt_counts`` metric is per-ROW in the pre-fold file
-            # (reserved + dispatched + settled transitions count), and
-            # collapses to 1 per root after fold. The compactor's
-            # accepted trade-off is the row count delta: the savings on
-            # row bytes (and the smaller re-validation time) outweigh
-            # the metric-shift. The projection surfaces a
-            # ``compacted`` kind so a downstream audit can still see
-            # which roots were folded and when.
-            archivable_root_ids.append(rid)
-            archivable_rows.extend(root_rows)
-            summary_rows.append(
-                _build_compacted_summary(root_rows, rid, newest_ts)
-            )
-
-        if not archivable_root_ids:
-            return {
-                "status": "skipped", "reason": "nothing_archivable",
-                "roots_folded": 0, "rows_before": rows_before, "rows_after": rows_before,
-                "bytes_before": bytes_before, "bytes_after": bytes_before,
-                "archive": str(archive_path),
-            }
-
-        # Append the raw rows to the gzipped archive BEFORE rewriting the
-        # live file: the archive is the recovery record. We do this under
-        # the lock so a concurrent reader cannot observe a half-rewritten
-        # file paired with a half-written archive.
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        payload_bytes = b"".join(
-            (json.dumps(row, ensure_ascii=False, sort_keys=True,
-                        separators=(",", ":")) + "\n").encode("utf-8")
-            for row in archivable_rows
-        )
-        with open(archive_path, "ab") as raw:
-            with gzip.GzipFile(fileobj=raw, mode="wb") as gz:
-                gz.write(payload_bytes)
-
-        # Rewrite the live ledger: every archivable root's raw rows
-        # replaced by ONE summary row, in the same order they appeared.
-        # ``_summary`` keys on attempt_id, so the summary's attempt_id
-        # (``compacted:<root>``) MUST be unique — and ``_validate_records``
-        # accepts it as a settled-from-null kind.
-        # The new file is its own ledger: rewrite seq 1..N contiguously
-        # so the validator's dense-sequence check passes without the
-        # caller caring about the original seq values.
-        combined = live_rows + summary_rows
-        for new_seq, row in enumerate(combined, start=1):
-            row["seq"] = new_seq
-        new_payload = b"".join(
-            (json.dumps(row, ensure_ascii=False, sort_keys=True,
-                        separators=(",", ":")) + "\n").encode("utf-8")
-            for row in combined
-        )
-        # Validate the new payload as a complete ledger before swapping
-        # it on disk — a structural mistake in the compactor must not
-        # corrupt the live file.
-        new_records_for_check: list[Dict[str, Any]] = []
-        for chunk in new_payload.splitlines(keepends=True):
-            line = chunk.rstrip(b"\r\n")
-            if not line:
-                continue
-            new_records_for_check.append(json.loads(line.decode("utf-8")))
-        _validate_records(new_records_for_check)
-        _write_bytes_atomic_fsync(ledger_path, new_payload)
-
-        return {
-            "status": "compacted",
-            "roots_folded": len(archivable_root_ids),
-            "folded_root_ids": archivable_root_ids,
-            "rows_before": rows_before,
-            "rows_after": len(new_records_for_check),
-            "bytes_before": bytes_before,
-            "bytes_after": len(new_payload),
-            "archive": str(archive_path),
-        }

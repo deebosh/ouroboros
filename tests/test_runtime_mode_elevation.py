@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import types
 
 import pytest
 
@@ -722,7 +721,9 @@ def test_started_predicate_is_read_only_and_never_constructs_the_agent(monkeypat
     class _Busy:
         _busy = True
 
-    monkeypatch.setattr(workers, "_chat_agent", _Busy(), raising=False)
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register("settings-turn", 1, actor=_Busy())
     assert _has_started_agent_tasks() is True
 
 
@@ -818,21 +819,20 @@ def test_owner_context_mode_endpoint_refuses_lowering_while_task_runs(isolated_s
 
 
 def test_owner_context_mode_idle_predicate_covers_pending_and_direct_chat_busy(monkeypatch):
-    from types import SimpleNamespace
+    from supervisor.active_activity import get_direct_activity_registry
 
     from ouroboros.gateway import settings as settings_mod
     import supervisor.workers as workers
 
     monkeypatch.setattr(workers, "PENDING", [{"id": "queued"}])
     monkeypatch.setattr(workers, "RUNNING", {})
-    monkeypatch.setattr(workers, "_get_chat_agent", lambda: SimpleNamespace(_busy=False))
     assert settings_mod._has_running_agent_tasks() is True
 
     monkeypatch.setattr(workers, "PENDING", [])
-    monkeypatch.setattr(workers, "_get_chat_agent", lambda: SimpleNamespace(_busy=True))
+    get_direct_activity_registry().register("preparing", 1)
     assert settings_mod._has_running_agent_tasks() is True
 
-    monkeypatch.setattr(workers, "_get_chat_agent", lambda: SimpleNamespace(_busy=False))
+    get_direct_activity_registry().unregister("preparing")
     assert settings_mod._has_running_agent_tasks() is False
 
 
@@ -872,44 +872,38 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
 
     Rounds three, four and five each fixed the disk-authored-key rule on ONE path while a sibling
     path kept bypassing it (sibling keys, then the projection, then the generic owner POST). The
-    rule now lives in ``config.prepare_settings_for_persist``, and this test enumerates every
-    function that writes the settings file so a NEW writer cannot quietly reintroduce the shape:
-    it must either route through the prologue or be added here with a reason.
+    rule now lives in ``config.prepare_settings_for_persist``, and this test walks every function
+    in the tree that writes a settings document (``tests._shared.settings_writers``, the one
+    predicate the byte pin's inventory is closed over too) so a NEW writer cannot quietly
+    reintroduce the shape: it must route through the prologue or be exempted here with a reason,
+    AND it must join ``SETTINGS_WRITERS`` so the byte pin drives it — a routed sixth writer is
+    still a sixth writer, and one outside this closed set is exactly what the scan exists to see.
     """
-    import ast
     import pathlib
-    import re
+
+    from tests._shared import SETTINGS_WRITERS, settings_writers
 
     # (module, function) -> why it may write settings.json without the prologue
     exempt = {
         ("ouroboros/context_mode_compat.py", "normalize_and_persist_context_mode_compat"):
             "one-window startup migration: while the settings lock is held, atomically rewrites "
-            "only the raw document's context compatibility pair. Routing through the prologue "
-            "would merge defaults and turn unrelated absence into authorship.",
-        ("ouroboros/usage_accounting.py", "_legacy_snapshot"):
+            "the raw document with only its context compatibility pair changed, in serializer "
+            "bytes. Routing through the prologue would merge defaults and turn unrelated absence "
+            "into authorship.",
+        ("ouroboros/usage_legacy_import.py", "_legacy_snapshot"):
             "reads/hashes the settings file for the usage archive; its writes target the archive.",
         ("ouroboros/tools/core.py", "_data_write"):
             "names SETTINGS_PATH only to REFUSE agent writes to it.",
+        ("ouroboros/colab_bootstrap.py", "write_colab_settings"):
+            "writes the generated document for ANOTHER root (the Colab Drive data dir) in "
+            "serialize_settings bytes. The prologue proves its ratchets against the value on "
+            "THIS process's disk, so routing a foreign path through it would answer the wrong file.",
     }
     # Keys are POSIX-normalised: `str(WindowsPath(...))` is backslash-separated, so on Windows
     # every `exempt` lookup below would miss and every hardcoded assertion at the end would
     # fail — turning the tripwire into either a red matrix or, worse, a guard that flags the
     # exempted writers while silently vouching for nothing.
-    writers = {}
-    for path in sorted(pathlib.Path("ouroboros").rglob("*.py")) + [pathlib.Path("server.py")]:
-        src = path.read_text(encoding="utf-8")
-        if "SETTINGS_PATH" not in src and "atomic_write_json" not in src:
-            continue
-        for node in ast.walk(ast.parse(src)):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            seg = ast.get_source_segment(src, node) or ""
-            settings_write = (
-                "SETTINGS_PATH" in seg
-                and re.search(r"\.write_text\(|atomic_write_json\(|json\.dump\(", seg)
-            ) or "atomic_write_json(settings_path" in seg
-            if settings_write:
-                writers[(path.as_posix(), node.name)] = "prepare_settings_for_persist" in seg
+    writers = settings_writers(pathlib.Path(__file__).resolve().parents[1])
 
     unrouted = {k for k, routed in writers.items() if not routed and k not in exempt}
     assert not unrouted, (
@@ -918,9 +912,22 @@ def test_every_settings_writer_routes_through_the_shared_prologue():
         f"(naming any key they genuinely author in `authored_keys`), or add them to `exempt` with "
         f"a reason. Do not re-implement the silence/ratchet rule at the call site."
     )
-    # The two real writers must still BE routed — deleting the call must fail this test.
+    # The inventory is CLOSED over the scanned roots, routed or not: the flagged set is exactly
+    # the writers the byte pin drives plus the matches declared above as non-writers.
+    expected = set(SETTINGS_WRITERS) | set(exempt)
+    assert set(writers) == expected, (
+        f"the settings-writer inventory drifted: {sorted(set(writers) ^ expected)}. A function "
+        f"that persists a settings document belongs in tests._shared.SETTINGS_WRITERS, where the "
+        f"byte pin in tests/test_settings_read_seam.py drives it; one this scan flags without "
+        f"persisting a settings document belongs in `exempt` with a reason; a stale entry leaves "
+        f"whichever list holds it."
+    )
+    # The three real writers must still BE routed — deleting the call must fail this test.
+    # The owner endpoints' write lives in the locked read-modify-write primitive that
+    # `_owner_write_settings` is now one caller of.
     assert writers.get(("ouroboros/config.py", "save_settings")) is True
-    assert writers.get(("ouroboros/gateway/owner_settings.py", "_owner_write_settings")) is True
+    assert writers.get(("ouroboros/gateway/owner_settings.py", "_owner_update_settings")) is True
+    assert writers.get(("ouroboros/packaged_cli.py", "_save_settings")) is True
 
 
 def test_generic_settings_post_does_not_author_a_mode_decision(isolated_settings, monkeypatch):
@@ -941,7 +948,6 @@ def test_generic_settings_post_does_not_author_a_mode_decision(isolated_settings
     from ouroboros.gateway import settings as settings_mod
     from ouroboros.gateway.settings import api_settings_post
 
-    monkeypatch.setattr(_os, "environ", dict(_os.environ))
     _own_ratchet_env(monkeypatch)
     _os.environ["OUROBOROS_CONTEXT_MODE"] = "low"  # forwarded by the benchmark launcher
     _os.environ["OUROBOROS_SAFETY_MODE"] = "light"
@@ -980,7 +986,6 @@ def test_owner_endpoint_authors_its_own_key_even_at_the_default(isolated_setting
     from ouroboros import config as cfg
     from ouroboros.gateway.settings import api_owner_safety_mode
 
-    monkeypatch.setattr(_os, "environ", dict(_os.environ))
     _own_ratchet_env(monkeypatch)
     _os.environ["OUROBOROS_SAFETY_MODE"] = "light"
     _seed_disk(isolated_settings, {"TOTAL_BUDGET": "10"})
@@ -1013,9 +1018,8 @@ def test_env_forwarded_modes_survive_the_documented_startup_path(isolated_settin
 
     from ouroboros import config as cfg
 
-    # Own the WHOLE environment: apply_settings_to_env writes ~122 keys, so a real copy is the only
-    # honest ownership boundary here (the same technique the auto-low regression test uses).
-    monkeypatch.setattr(_os, "environ", dict(_os.environ))
+    # Own every mode key: apply_settings_to_env writes ~122 keys, and the autouse
+    # os.environ snapshot restores the rest after the test.
     _own_ratchet_env(monkeypatch)
     _os.environ["OUROBOROS_CONTEXT_MODE"] = "low"
     _os.environ["OUROBOROS_SAFETY_MODE"] = "light"
@@ -1066,7 +1070,6 @@ def test_agent_save_cannot_end_a_forwarded_mode_mid_run(isolated_settings, monke
     from ouroboros import config as cfg
     from ouroboros.tools.control import _set_tool_timeout
 
-    monkeypatch.setattr(_os, "environ", dict(_os.environ))  # the tool writes os.environ via apply
     _own_ratchet_env(monkeypatch)
     _os.environ["OUROBOROS_CONTEXT_MODE"] = "low"
     _os.environ["OUROBOROS_SAFETY_MODE"] = "light"
@@ -1336,271 +1339,117 @@ def test_launcher_auto_grant_bridge_disables_truthy_alias(monkeypatch):
     assert saved["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] == "false"
 
 
+def _launcher_grant_skill(tmp_path, monkeypatch, *, name="demo", skill_type="script", permissions=(), keys=("OPENROUTER_API_KEY",)):
+    import launcher
+    from ouroboros.skill_loader import SkillReviewState, load_skill, save_review_state
+
+    drive = tmp_path / "data"
+    payload = drive / "skills" / "external" / name
+    payload.mkdir(parents=True)
+    declaration = {
+        "script": "runtime: python3\nscripts:\n  - name: run.py\n",
+        "extension": "entry: plugin.py\nplugin_api: '2.0'\n",
+        "instruction": "",
+    }[skill_type]
+    (payload / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Launcher grant fixture.\nversion: 1.0.0\ntype: {skill_type}\n"
+        f"permissions: {json.dumps(list(permissions))}\nenv_from_settings: {json.dumps(list(keys))}\n"
+        "subscribe_events: [chat.outbound]\n" + declaration + "---\n"
+    )
+    if skill_type == "script":
+        (payload / "scripts").mkdir()
+        (payload / "scripts" / "run.py").write_text("print('ok')\n")
+    if skill_type == "extension":
+        (payload / "plugin.py").write_text("def register(api):\n    return None\n")
+    loaded = load_skill(payload, drive)
+    save_review_state(drive, name, SkillReviewState(status="clean", content_hash=loaded.content_hash))
+    monkeypatch.setattr(launcher, "DATA_DIR", drive)
+    monkeypatch.setattr(launcher, "REPO_DIR", tmp_path / "repo")
+    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
+    monkeypatch.setattr(launcher, "_read_port_file", lambda: 8765)
+    monkeypatch.setenv("OUROBOROS_SKILLS_REPO_PATH", "")
+    return loaded, drive
+
+
 def test_launcher_skill_key_grant_validates_review_and_manifest(monkeypatch, tmp_path):
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = ["OPENROUTER_API_KEY"]
-        def is_script(self):
-            return True
-        def is_extension(self):
-            return False
-
-    class _Review:
-        status = "advisory_pass"
-        def is_stale_for(self, _hash):
-            return False
-
-    loaded = types.SimpleNamespace(
-        name="demo",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="hash-a",
-    )
-    captured = {}
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-    monkeypatch.setattr(
-        "ouroboros.skill_loader.save_skill_grants",
-        lambda drive, name, keys, **kw: captured.update(
-            {"drive": drive, "name": name, "keys": keys, **kw}
-        ),
-    )
-
-    result = launcher._request_skill_key_grant(
-        "demo",
-        ["OPENROUTER_API_KEY"],
-        lambda _title, _message: True,
-    )
-
+    loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch)
+    result = launcher._request_skill_key_grant("demo", ["OPENROUTER_API_KEY"], lambda *a: True)
     assert result["ok"] is True
-    assert captured["name"] == "demo"
-    assert captured["keys"] == ["OPENROUTER_API_KEY"]
-    assert captured["content_hash"] == "hash-a"
-    assert captured["requested_keys"] == ["OPENROUTER_API_KEY"]
-    # v5.2.2: scripts pick up grants on next ``_scrub_env`` call so no
-    # server reconcile is invoked. ``extension_action`` and
-    # ``extension_reason`` therefore stay ``None`` for script-type
-    # skills.
+    grants = load_skill_grants(drive, "demo")
+    assert grants["granted_keys"] == ["OPENROUTER_API_KEY"]
+    assert grants["requested_keys"] == ["OPENROUTER_API_KEY"]
+    assert grants["content_hash"] == loaded.content_hash
     assert result.get("extension_action") is None
     assert result.get("extension_reason") is None
 
 
 def test_launcher_skill_grant_supports_permission_grants(monkeypatch, tmp_path):
+    import io
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = []
-        permissions = ["inject_chat", "subscribe_event"]
-        subscribe_events = ["chat.outbound"]
-        def is_script(self):
-            return False
-        def is_extension(self):
-            return True
-
-    class _Review:
-        status = "pass"
-        def is_stale_for(self, _hash):
-            return False
-
-    loaded = types.SimpleNamespace(
-        name="bridge",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="hash-a",
-    )
-    captured = {}
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-    monkeypatch.setattr(
-        "ouroboros.skill_loader.save_skill_grants",
-        lambda drive, name, keys, **kw: captured.update(
-            {"drive": drive, "name": name, "keys": keys, **kw}
-        ),
-    )
-    monkeypatch.setattr("urllib.request.urlopen", lambda *_a, **_kw: types.SimpleNamespace(read=lambda: b'{"ok": true}'))
-
-    result = launcher._request_skill_key_grant(
-        "bridge",
-        ["inject_chat", "subscribe_event:chat.outbound"],
-        lambda _title, _message: True,
-    )
-
+    _loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch, name="bridge", skill_type="extension",
+                                         keys=(), permissions=("inject_chat", "subscribe_event"))
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: io.BytesIO(b'{"ok":true}'))
+    result = launcher._request_skill_key_grant("bridge", ["inject_chat", "subscribe_event:chat.outbound"], lambda *a: True)
     assert result["ok"] is True
-    assert captured["keys"] == []
-    assert captured["granted_permissions"] == ["inject_chat", "subscribe_event:chat.outbound"]
-    assert captured["requested_permissions"] == ["inject_chat", "subscribe_event:chat.outbound"]
+    assert result["granted_permissions"] == ["inject_chat", "subscribe_event:chat.outbound"]
+    grants = load_skill_grants(drive, "bridge")
+    assert grants["granted_keys"] == []
+    assert grants["granted_permissions"] == result["granted_permissions"]
 
 
 def test_launcher_skill_key_grant_supports_extensions(monkeypatch, tmp_path):
-    """v5.2.2 dual-track grants: ``type: extension`` skills can be
-    granted core keys and the launcher posts to the agent server's
-    /api/skills/<name>/reconcile so the new grant reaches the live
-    plugin without forcing a manual disable/enable.
-
-    The launcher and server are independent OS processes — this test
-    verifies the cross-process contract by stubbing ``urllib.request.urlopen``
-    instead of stubbing ``reconcile_extension`` directly (which only
-    runs in the launcher process and would not affect the server).
-    """
+    """The launcher grants locally, then reconciles in the real server process."""
+    import io
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = ["OPENROUTER_API_KEY"]
-        def is_script(self):
-            return False
-        def is_extension(self):
-            return True
+    _loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch, name="demo_ext", skill_type="extension")
+    calls = []
 
-    class _Review:
-        status = "pass"
-        def is_stale_for(self, _hash):
-            return False
+    def response(request, timeout=10):
+        calls.append((request.full_url, request.get_method()))
+        assert load_skill_grants(drive, "demo_ext")["granted_keys"] == ["OPENROUTER_API_KEY"]
+        return io.BytesIO(b'{"extension_action":"extension_loaded","extension_reason":"ready","live_loaded":true}')
 
-    loaded = types.SimpleNamespace(
-        name="demo_ext",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="ext-hash",
-    )
-    captured: dict = {}
-    reconcile_calls: list = []
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr(launcher, "_read_port_file", lambda: 8765)
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-    monkeypatch.setattr(
-        "ouroboros.skill_loader.save_skill_grants",
-        lambda drive, name, keys, **kw: captured.update(
-            {"drive": drive, "name": name, "keys": keys, **kw}
-        ),
-    )
-
-    class _FakeResponse:
-        def __init__(self, body: bytes):
-            self._body = body
-        def read(self):
-            return self._body
-        def __enter__(self):
-            return self
-        def __exit__(self, *_):
-            return False
-
-    def _fake_urlopen(req, timeout=10):
-        reconcile_calls.append({
-            "url": req.full_url,
-            "method": req.get_method(),
-            "data": req.data,
-        })
-        return _FakeResponse(
-            b'{"skill":"demo_ext","extension_action":"extension_loaded",'
-            b'"extension_reason":"ready","live_loaded":true,"load_error":null}'
-        )
-
-    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
-
-    result = launcher._request_skill_key_grant(
-        "demo_ext",
-        ["OPENROUTER_API_KEY"],
-        lambda _title, _message: True,
-    )
-
+    monkeypatch.setattr("urllib.request.urlopen", response)
+    result = launcher._request_skill_key_grant("demo_ext", ["OPENROUTER_API_KEY"], lambda *a: True)
     assert result["ok"] is True
-    assert captured["name"] == "demo_ext"
-    assert captured["keys"] == ["OPENROUTER_API_KEY"]
-    assert len(reconcile_calls) == 1
-    call = reconcile_calls[0]
-    assert call["url"] == "http://127.0.0.1:8765/api/skills/demo_ext/reconcile"
-    assert call["method"] == "POST"
-    assert result.get("extension_action") == "extension_loaded"
+    assert calls == [("http://127.0.0.1:8765/api/skills/demo_ext/reconcile", "POST")]
+    assert result["extension_action"] == "extension_loaded"
 
 
 def test_launcher_skill_key_grant_handles_reconcile_http_error(monkeypatch, tmp_path):
-    """If the server-side reconcile HTTP call fails, the grant write
-    succeeded but the response carries ``extension_reason='reconcile_call_failed'``
-    so the UI can warn the user without throwing away the persisted grant."""
+    """A failed reconcile does not undo a grant already persisted by its owner."""
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = ["OPENROUTER_API_KEY"]
-        def is_script(self):
-            return False
-        def is_extension(self):
-            return True
+    _loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch, name="demo_ext", skill_type="extension")
 
-    class _Review:
-        status = "pass"
-        def is_stale_for(self, _hash):
-            return False
-
-    loaded = types.SimpleNamespace(
-        name="demo_ext",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="ext-hash",
-    )
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr(launcher, "_read_port_file", lambda: 8765)
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-    monkeypatch.setattr(
-        "ouroboros.skill_loader.save_skill_grants",
-        lambda *_a, **_kw: None,
-    )
-
-    def _broken_urlopen(*_a, **_kw):
+    def unavailable(*a, **k):
         raise ConnectionError("server not reachable")
 
-    monkeypatch.setattr("urllib.request.urlopen", _broken_urlopen)
-
-    result = launcher._request_skill_key_grant(
-        "demo_ext",
-        ["OPENROUTER_API_KEY"],
-        lambda _title, _message: True,
-    )
-
-    # Grant itself succeeded (file persisted)
+    monkeypatch.setattr("urllib.request.urlopen", unavailable)
+    result = launcher._request_skill_key_grant("demo_ext", ["OPENROUTER_API_KEY"], lambda *a: True)
     assert result["ok"] is True
-    assert result.get("granted_keys") == ["OPENROUTER_API_KEY"]
-    # But the server reconcile failed and the UI is told
-    assert result.get("extension_reason") == "reconcile_call_failed"
-    assert result.get("extension_action") is None
+    assert load_skill_grants(drive, "demo_ext")["granted_keys"] == ["OPENROUTER_API_KEY"]
+    assert result["extension_reason"] == "reconcile_call_failed"
+    assert result["extension_action"] is None
 
 
 def test_launcher_skill_key_grant_rejects_instruction_skill(monkeypatch, tmp_path):
     import launcher
+    from ouroboros.skill_loader import load_skill_grants
 
-    class _Manifest:
-        env_from_settings = ["OPENROUTER_API_KEY"]
-        def is_script(self):
-            return False
-        def is_extension(self):
-            return False
-
-    class _Review:
-        status = "pass"
-        def is_stale_for(self, _hash):
-            return False
-
-    loaded = types.SimpleNamespace(
-        name="instr",
-        manifest=_Manifest(),
-        review=_Review(),
-        content_hash="instr-hash",
-    )
-    monkeypatch.setattr(launcher, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(launcher, "_load_settings", lambda: {"OUROBOROS_SKILLS_REPO_PATH": ""})
-    monkeypatch.setattr("ouroboros.skill_loader.find_skill", lambda *_a, **_kw: loaded)
-
-    result = launcher._request_skill_key_grant(
-        "instr",
-        ["OPENROUTER_API_KEY"],
-        lambda _title, _message: True,
-    )
+    _loaded, drive = _launcher_grant_skill(tmp_path, monkeypatch, name="instr", skill_type="instruction")
+    result = launcher._request_skill_key_grant("instr", ["OPENROUTER_API_KEY"], lambda *a: True)
     assert result["ok"] is False
     assert "script and extension" in result["error"]
+    assert load_skill_grants(drive, "instr")["granted_keys"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -1849,7 +1698,7 @@ def test_context_mode_guard_does_not_block_readonly_diagnostics(diagnostic_cmd, 
 def test_browser_evaluate_context_mode_self_lowering_guard():
     from types import SimpleNamespace
 
-    from ouroboros.tools.browser import _blocks_context_mode_self_lowering_js, _is_context_mode_owner_post
+    from ouroboros.browser_policy import _blocks_context_mode_self_lowering_js, _is_context_mode_owner_post
 
     assert _blocks_context_mode_self_lowering_js(
         "fetch('/api/owner/context-mode', {method:'POST', body: JSON.stringify({mode:'low'})})"
@@ -2098,13 +1947,12 @@ def test_shell_settings_tripwire_flags_obfuscated_owner_settings_write(tmp_path,
         return "done"
 
     reg.override_handler("run_command", _sneaky_writer)
-    result = reg.execute("run_command", {"cmd": ["true"]})
-
-    from ouroboros.tools.result_envelope import typed_result_meta
+    typed = reg.execute_result("run_command", {"cmd": ["true"]})
+    result = typed.text
 
     assert result.lstrip().startswith("done"), result[:300]  # payload owns line 1
     assert "⚠️ OWNER_SETTINGS_CHANGED" in result, result[:300]  # note appended, payload not replaced
-    assert (typed_result_meta(result) or {}).get("tripwire") == "owner_settings_changed"
+    assert dict(typed.meta).get("tripwire") == "owner_settings_changed"
     # Detect-and-report: the write is disclosed, not silently reverted.
     assert settings.read_text(encoding="utf-8") == '{"OWNER": "hijacked"}'
 

@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 
@@ -98,8 +99,13 @@ class OuroborosHTTPClient:
         except urllib.error.URLError as exc:
             raise ConnectionCLIError(f"cannot download from Ouroboros server at {self.base_url}: {exc}") from exc
 
-    def stream_sse(self, path: str, timeout: float = 120.0) -> Iterator[Dict[str, Any]]:
-        req = urllib.request.Request(self.base_url + path, headers={"Accept": "text/event-stream"})
+    def stream_sse(self, path: str, timeout: float = 120.0, *, body: Optional[dict] = None) -> Iterator[Dict[str, Any]]:
+        headers = {"Accept": "text/event-stream"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(self.base_url + path, headers=headers,
+            data=json.dumps(body).encode("utf-8") if body is not None else None,
+            method="POST" if body is not None else "GET")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 yield from _parse_sse_lines(resp)
@@ -203,6 +209,7 @@ def _run_command(args: argparse.Namespace) -> int:
         disabled_tools.extend(part.strip() for part in str(raw or "").split(",") if part.strip())
     body = {
         "description": prompt,
+        "title": getattr(args, "title", "") or "",
         "workspace_root": args.workspace or "",
         "workspace_mode": "external" if args.workspace else "",
         "project_id": getattr(args, "project_id", "") or "",
@@ -239,6 +246,12 @@ def _run_command(args: argparse.Namespace) -> int:
         result = client.request("GET", f"/api/tasks/{urllib.parse.quote(task_id)}")
     result = _await_cost_finality(client, task_id, result)
     exit_code = 0 if _is_terminal_success(result) else 1
+    if not args.jsonl:
+        from ouroboros.task_finalization import provider_terminal_body, terminal_notice_text
+
+        notice = terminal_notice_text(result)
+        if notice:
+            print(provider_terminal_body("", notice), file=sys.stderr)
     if args.patch_out:
         patch = _patch_from_result(client, task_id, result, strict=True)
         pathlib.Path(args.patch_out).expanduser().write_text(patch, encoding="utf-8")
@@ -290,7 +303,11 @@ def _chat_send_command(args: argparse.Namespace) -> int:
 
 
 def _chat_history_command(args: argparse.Namespace) -> int:
-    _print_json(_client(args).request("GET", f"/api/chat/history?limit={int(args.limit)}"))
+    # `n_human` is the server's quota for conversation (non-progress) rows. An
+    # omitted (or non-positive) --limit sends no quota so the server's own window
+    # governs, the way the server already treats a non-positive legacy `limit`.
+    query = f"?n_human={int(args.limit)}" if (args.limit or 0) > 0 else ""
+    _print_json(_client(args).request("GET", f"/api/chat/history{query}"))
     return 0
 
 
@@ -501,6 +518,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--start", action="store_true", help="start a local server if attach fails")
     run.add_argument("--workspace", default="", help="external workspace root")
     run.add_argument("--project-id", default="", help="per-project facts scope id (else derived from the workspace path)")
+    run.add_argument("--title", default="", help="owner-facing task name (else derived from the prompt's first line)")
     run.add_argument("--memory-mode", choices=["shared", "forked", "empty"], default="")
     run.add_argument("--attach", action="append", default=[])
     run.add_argument("--jsonl", action="store_true")
@@ -513,19 +531,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--result-json-out", default="", help="write final task result JSON to this path")
     run.add_argument("--disable-tools", action="append", default=[], help="comma-separated tool names to withhold from this task")
     run.add_argument(
-        "--task-metadata-json",
-        default="",
+        "--task-metadata-json", default="",
         help="JSON object merged into the task metadata (e.g. budget_profile); "
-        "host-owned keys delegation_role/source cannot be overridden",
-    )
+        "host-owned keys delegation_role/source cannot be overridden")
     run.add_argument("--actor-id", default="cli")
     run.add_argument("--delegation-role", default="root")
     run.add_argument(
-        "--prompt-file",
-        default="",
+        "--prompt-file", default="",
         help="read the task prompt from this file ('-' = stdin); mutually "
-        "exclusive with the positional prompt (E2BIG hygiene for bulk prompts)",
-    )
+        "exclusive with the positional prompt (E2BIG hygiene for bulk prompts)")
     run.add_argument("prompt", nargs=argparse.REMAINDER)
     run.set_defaults(func=_run_command)
 
@@ -552,7 +566,10 @@ def build_parser() -> argparse.ArgumentParser:
     chat_send.add_argument("text", nargs=argparse.REMAINDER)
     chat_send.set_defaults(func=_chat_send_command)
     chat_history = chat_sub.add_parser("history")
-    chat_history.add_argument("--limit", type=int, default=100)
+    chat_history.add_argument(
+        "--limit", type=int, default=None,
+        help="conversation rows to fetch (server-capped; omitted, zero or negative = the server's default window)",
+    )
     chat_history.set_defaults(func=_chat_history_command)
 
     logs = subparsers.add_parser("logs", help="read runtime logs")
@@ -760,7 +777,13 @@ def _watch_task(
     quiet: bool,
     timeout_sec: float,
 ) -> None:
-    cursor = 0
+    cursor: Optional[dict] = None
+    legacy_seq = 0
+    legacy = False
+    first_connection = True
+    # Bounded overlap suppression across explicit view replays. Older repeats
+    # outside this recent window may reappear; no infinite exactly-once claim.
+    seen: OrderedDict[str, None] = OrderedDict()
     final = False
     deadline = time.time() + timeout_sec if timeout_sec and timeout_sec > 0 else None
     while not final:
@@ -772,21 +795,49 @@ def _watch_task(
             remaining = max(0.0, deadline - time.time())
             wait_param = max(0, min(30, int(remaining)))
             request_timeout = max(1.0, min(40.0, remaining + 1.0))
-        path = f"/api/tasks/{urllib.parse.quote(task_id)}/events?cursor={cursor}&wait={wait_param}"
+        path = f"/api/tasks/{urllib.parse.quote(task_id)}/events"
         saw_event = False
-        for event in client.stream_sse(path, timeout=request_timeout):
-            if deadline is not None and time.time() >= deadline:
-                raise TaskTimeoutCLIError(f"task {task_id} did not finish within {timeout_sec:g}s")
-            saw_event = True
-            cursor = max(cursor, int(event.get("seq") or cursor))
-            if jsonl:
-                print(json.dumps(event, ensure_ascii=False), flush=True)
-            elif not quiet:
-                rendered = _render_event_for_stderr(event)
-                if rendered:
-                    print(rendered, file=sys.stderr, flush=True)
-            if event.get("type") == "task_result":
-                final = _is_terminal_result((event.get("data") or {}))
+        try:
+            events = (client.stream_sse(f"{path}?cursor={legacy_seq}&wait={wait_param}", timeout=request_timeout)
+                      if legacy else client.stream_sse(path, timeout=request_timeout,
+                          body={"v": 2, "wait": wait_param, "cursor": cursor}))
+            for event in events:
+                if deadline is not None and time.time() >= deadline:
+                    raise TaskTimeoutCLIError(f"task {task_id} did not finish within {timeout_sec:g}s")
+                saw_event = True
+                if event.get("type") == "error":
+                    raise CLIError(str(event.get("error") or "task stream failed"))
+                identity = str(event.get("event_id") or "")
+                duplicate = bool(identity) and identity in seen
+                if not duplicate:
+                    if jsonl:
+                        print(json.dumps(event, ensure_ascii=False), flush=True)
+                    elif not quiet:
+                        rendered = _render_event_for_stderr(event)
+                        if rendered:
+                            print(rendered, file=sys.stderr, flush=True)
+                if event.get("type") == "task_result":
+                    final = _is_terminal_result((event.get("data") or {}))
+                if identity:
+                    seen[identity] = None
+                    seen.move_to_end(identity)
+                    if len(seen) > 4096:
+                        seen.popitem(last=False)
+                # Advance only after the complete envelope was consumed. A
+                # result snapshot has no log identity and is never deduplicated.
+                if not legacy:
+                    next_cursor = event.get("cursor")
+                    if not isinstance(next_cursor, dict):
+                        raise CLIError("v2 task event is missing its cursor")
+                    cursor = next_cursor
+                legacy_seq = max(legacy_seq, int(event.get("seq") or legacy_seq))
+        except CLIError as exc:
+            if (first_connection and not saw_event and not legacy
+                    and isinstance(exc.__cause__, urllib.error.HTTPError) and exc.__cause__.code == 405):
+                legacy, first_connection = True, False
+                continue
+            raise
+        first_connection = False
         if not saw_event:
             time.sleep(0.5)
 
@@ -843,6 +894,8 @@ def _render_event_for_stderr(event: Dict[str, Any]) -> str:
         return f"tool: {data.get('tool', '?')}"
     if etype in {"task_done", "task_metrics"}:
         return f"{etype}: {data.get('task_id', '')}"
+    if etype in {"cursor_replay", "history_gap"}:
+        return f"{etype}: {event.get('reason', '')}"
     return ""
 
 

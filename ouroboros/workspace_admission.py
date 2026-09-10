@@ -167,17 +167,12 @@ def resolve_room_workspace(
 
 
 def room_chat_lens_dir(drive_root: Any, project_id: str) -> tuple[str, str]:
-    """The project-room folder for the DIRECT-CHAT lens (v6.61.3), or ("", note).
+    """The selected folder for a direct conversation, with an availability note.
 
-    Chat-lane sibling of ``resolve_room_workspace``: the conversation lane of a
-    folder-room re-points its reads/default-shell-cwd at the room folder so the
-    tool affordance matches the room fact (the robot-room incident: ``.`` resolved
-    to the system repo and the agent narrated the wrong tree). Requirements are
-    LIGHTER than task admission — no git requirement (reading a plain folder in
-    chat is fine); mutations still go through promoted tasks, which keep the full
-    ``validate_workspace_root`` gate. Returns ``(dir, note)``: a set-but-unusable
-    working_dir yields ("", loud note) so the chat context can disclose the
-    breakage instead of silently falling back to the system repo."""
+    Ordinary folders need no Git admission. A missing folder keeps its selected
+    address so tools cannot fall back to the system repository; an unreadable
+    registry instead returns a note without inventing an address.
+    """
     pid = str(project_id or "").strip()
     if not pid:
         return "", ""
@@ -186,18 +181,21 @@ def room_chat_lens_dir(drive_root: Any, project_id: str) -> tuple[str, str]:
 
         project = get_project(drive_root, pid) or {}
         raw = str(project.get("working_dir") or "").strip()
-    except Exception:
-        return "", ""
+    except Exception as exc:
+        return "", (
+            f"project {pid!r} registry entry is unreadable ({type(exc).__name__}: {exc}) — "
+            "cannot determine the room's repository"
+        )
     if not raw:
         return "", ""
     try:
         resolved = pathlib.Path(raw).expanduser().resolve(strict=False)
-    except OSError as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         return "", f"project {pid!r} working_dir is unusable: {type(exc).__name__}: {exc}"
     if not resolved.is_dir():
-        return "", (
+        return str(resolved), (
             f"project {pid!r} working_dir {raw} is unusable (missing or not a directory) — "
-            "room reads/shell fall back to the system repo; fix or re-attach the folder"
+            "the selected folder remains the active target; fix or re-attach the folder"
         )
     return str(resolved), ""
 

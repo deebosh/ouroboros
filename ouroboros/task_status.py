@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import pathlib
 import time
 from datetime import datetime, timezone
@@ -75,7 +74,6 @@ ARTIFACT_NONTERMINAL_STATUSES: frozenset[str] = frozenset({
     ARTIFACT_STATUS_PENDING,
     ARTIFACT_STATUS_FINALIZING,
 })
-HANDOFF_SNIPPET_CHARS = 240
 _ORPHAN_RUNNING_GRACE_SECONDS = 30.0
 _ARTIFACT_LIFECYCLE_FIELDS: frozenset[str] = frozenset({
     "artifact_status",
@@ -292,6 +290,54 @@ def _queue_task_status(snapshot: Dict[str, Any], task_id: str) -> tuple[str, Dic
             task = row.get("task") if isinstance(row.get("task"), dict) else {}
             return STATUS_SCHEDULED, task
     return "", {}
+
+
+def observe_cancellation_target(
+    drive_root: Any, task_id: str, *, include_execution: bool = False,
+    request_origin: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Read separate source facts about the resolved target, never cancel authority.
+
+    The result file, queue snapshot and custody rows are separate observations;
+    their own timestamps/freshness survive. A failed liveness probe is UNKNOWN,
+    never the fail-open ownership hint used to admit an actual cancellation.
+    """
+    from ouroboros.cancel_intents import _validated_single_cancel_target
+    from ouroboros.cost_projection import cost_projection
+    from ouroboros.utils import utc_now_iso
+
+    observation: Dict[str, Any] = {"observed_at": utc_now_iso(), "requested_task_id": task_id,
+                                   "request_origin": dict(request_origin or {})}
+    try:
+        target = _validated_single_cancel_target(drive_root, task_id)
+    except Exception:
+        return {**observation, "observed_task_id": None, "status": "retry_target_unavailable"}
+    observation["observed_task_id"] = target
+    try:
+        record = load_task_result(drive_root, target, strict=True) or {}
+        observation["task_result"] = {"status": record.get("status"), "updated_at": record.get("updated_at"),
+                                      "started_at": record.get("started_at"), "cost": cost_projection(record)}
+    except Exception:
+        observation["task_result"] = {"status": None, "coverage": "unavailable"}
+    try:
+        snapshot = _load_queue_snapshot(pathlib.Path(drive_root))
+        fresh = not (snapshot.get("_snapshot_missing") or snapshot.get("_snapshot_invalid") or _snapshot_is_stale(snapshot))
+        state, _task = _queue_task_status(snapshot, target) if fresh else ("unknown", {})
+        observation["queue_snapshot"] = {"status": state or "not_listed", "ts": snapshot.get("ts"), "fresh": fresh}
+    except Exception:
+        observation["queue_snapshot"] = {"status": "unknown", "fresh": False}
+    if include_execution:
+        try:
+            from ouroboros.delegate_evidence import task_execution_evidence
+
+            evidence = task_execution_evidence(drive_root, target)
+            keys = ("delegated_runs_started", "delegated_runs_settled", "delegated_runs_succeeded",
+                    "delegated_runs_failed", "subscription_cost_usd", "subscription_cost_estimated")
+            observation["delegated_execution"] = ({"evidence_read_failed": True} if evidence.get("evidence_read_failed")
+                                                   else {key: evidence[key] for key in keys if key in evidence})
+        except Exception:
+            observation["delegated_execution"] = {"evidence_read_failed": True}
+    return observation
 
 
 class _EventsTailIndex:
@@ -679,14 +725,6 @@ def effective_task_result(
                 continue
             if key == "artifacts":
                 continue
-            if key in {"delegated_runs_unreconciled", "delegate_terminal_reconciliation"} and key in result:
-                # Custody disclosure is CANONICAL-authoritative once the
-                # canonical row carries it: write-side heals (kill-clear,
-                # boot backfill) land only there, and a retained stale child
-                # replica must not re-shadow a healed row. A canonical row
-                # that lacks the field still takes the replica's copy
-                # (the pre-copy-back window).
-                continue
             merged[key] = value
         merged.setdefault("child_drive_root", child_text)
         merged.setdefault("headless_child_drive_root", child_text)
@@ -769,6 +807,8 @@ def effective_task_result(
         projected = dict(merged)
         for field in _CHILD_DISPOSITION_FIELDS:
             projected.pop(field, None)
+        if isinstance(projected.get("artifact_bundle"), dict) and projected["artifact_bundle"].get("status"):
+            projected["artifact_status"] = normalize_outcome_axes(projected)["artifacts"]["status"]
         return projected
     try:
         from ouroboros.artifacts import (
@@ -801,8 +841,6 @@ def effective_task_result(
                 if not source_text:
                     continue
                 source = pathlib.Path(source_text).expanduser().resolve(strict=False)
-                if not source.is_file():
-                    continue
                 if is_verification_receipts_path(child_text, task_id, source):
                     # Historical child results may already list the receipt
                     # stream as a generic artifact.  Reconcile it through its
@@ -811,13 +849,25 @@ def effective_task_result(
                         pathlib.Path(drive_root), task_id, pathlib.Path(child_text),
                     )
                     continue
-                copied = copy_file_to_task_artifacts(
-                    parent_artifact_ctx,
-                    source,
-                    kind=str(child_artifact.get("kind") or "child_artifact"),
-                )
-                if copied:
-                    rebased_child_artifacts.append(copied)
+                try:
+                    copied = copy_file_to_task_artifacts(
+                        parent_artifact_ctx, source,
+                        kind=str(child_artifact.get("kind") or "child_artifact"),
+                        **({"immutable": True, "expected": child_artifact} if child_artifact.get("immutable") else {}),
+                    )
+                    if copied is None:
+                        raise OSError("child artifact file is missing")
+                except (OSError, ValueError) as exc:
+                    copied = {**child_artifact, "status": ARTIFACT_STATUS_FAILED,
+                              "copy_status": "failed", "copy_error": f"{type(exc).__name__}: {exc}"}
+                    promotion = merged.get("child_ref_promotion")
+                    promotion = dict(promotion) if isinstance(promotion, dict) else {}
+                    merged["child_ref_promotion"] = {
+                        **promotion, "schema_version": 1, "status": "incomplete",
+                        "pending_refs": [*(promotion.get("pending_refs") or []),
+                                         {"path": str(source), "kind": "task_artifact", "reason": copied["copy_error"]}],
+                    }
+                rebased_child_artifacts.append(copied)
 
         collected_artifacts = collect_task_artifact_records(drive_root, task_id)
         if collected_artifacts or rebased_child_artifacts:
@@ -836,8 +886,7 @@ def effective_task_result(
                 collected_artifacts = collect_task_artifact_records(drive_root, task_id)
             merged["artifacts"] = merge_artifact_records(existing_artifacts, rebased_child_artifacts, collected_artifacts)
             merged["artifact_bundle"] = artifact_bundle_from_result(merged)
-            if not merged.get("artifact_status"):
-                merged["artifact_status"] = merged["artifact_bundle"].get("status")
+            merged["artifact_status"] = merged["artifact_bundle"].get("status")
     except Exception:
         pass
     return _project_child_result_disposition(pathlib.Path(drive_root), merged)
@@ -1064,101 +1113,6 @@ def find_child_tasks(
     return sorted(rows.values(), key=lambda item: (str(item.get("ts") or ""), str(item.get("task_id") or "")))
 
 
-def compute_cost_with_children(
-    drive_root: pathlib.Path, task_id: str, own_cost_usd: float
-) -> tuple[float, bool]:
-    """Recursive per-task cost rollup (v6.57.0, P6b): own cost PLUS the cost of every
-    direct child. Each child already stored its own ``cost_usd_with_children``, so
-    summing the direct children's rolled-up value makes this correct for the whole
-    subtree without re-walking it. Returns ``(total, partial)`` where ``partial`` is
-    True when any direct child is still non-terminal (its cost is not final yet).
-
-    Why a NEW field and not a change to ``cost_usd``: existing consumers (per-task
-    accounting, the global session budget ledger) read ``cost_usd`` as this task's own
-    spend; the parent card / Logs read the rollup. Never mutate ``cost_usd`` — the
-    site/PB incident showed a parent under-reporting because children weren't summed,
-    but the fix is an ADDITIVE field, not a semantics change (P7 SSOT)."""
-    total = float(own_cost_usd or 0.0)
-    partial = False
-    try:
-        children = find_child_tasks(
-            pathlib.Path(drive_root), parent_task_id=str(task_id), root_task_id="", scope="direct"
-        )
-    except Exception:
-        return round(total, 6), True
-    for child in children:
-        accounting_available = str(child.get("cost_accounting_status") or "available") == "available"
-        child_total = child.get("cost_usd_with_children")
-        if child_total is None:
-            child_total = child.get("cost_usd")
-        try:
-            if child_total is None or not accounting_available:
-                raise ValueError("child cost unavailable")
-            total += float(child_total)
-        except (TypeError, ValueError):
-            partial = True
-        if (
-            str(child.get("status") or "").strip().lower() not in FINAL_STATUSES
-            or child.get("cost_final") is not True
-            or bool(child.get("cost_with_children_partial"))
-        ):
-            partial = True
-    return round(total, 6), partial
-
-
-def _handoff_snippet(value: Any) -> Dict[str, Any]:
-    text = str(value or "")
-    stripped = text.strip()
-    if not stripped:
-        return {"available": False, "chars": 0, "preview": ""}
-    preview = stripped.replace("\n", " ")
-    if len(preview) > HANDOFF_SNIPPET_CHARS:
-        preview = preview[: HANDOFF_SNIPPET_CHARS - 3] + "..."
-    return {"available": True, "chars": len(text), "preview": preview}
-
-
-def format_handoff_message(children: List[Dict[str, Any]]) -> str:
-    from ouroboros.tools.join_ledger import _child_result_sha256
-
-    from ouroboros.cost_projection import cost_projection
-
-    payload = []
-    for child in children:
-        result_info = _handoff_snippet(child.get("result"))
-        trace_info = _handoff_snippet(child.get("trace_summary"))
-        _cost = cost_projection(child)
-        payload.append({
-            "task_id": str(child.get("task_id") or child.get("id") or ""),
-            "status": str(child.get("status") or ""),
-            "role": str(child.get("role") or ""),
-            "description": str(child.get("description") or child.get("objective") or ""),
-            # SSOT cost projection (C2): honest null — a child with no accounting
-            # reads null here, never a fabricated $0 — plus the additive name.
-            "cost_usd": _cost["cost_usd"],
-            "accounted_upper_bound_usd": _cost["accounted_upper_bound_usd"],
-            "cost_final": _cost["cost_final"],
-            "artifact_status": str(child.get("artifact_status") or ""),
-            "terminal_result_status": (
-                str(child.get("child_status") or "")
-                if str(child.get("child_status") or "") != str(child.get("status") or "")
-                else ""
-            ),
-            "child_result_sha256": _child_result_sha256(child),
-            "result_available": result_info["available"],
-            "result_chars": result_info["chars"],
-            "result_preview": result_info["preview"],
-            "trace_available": trace_info["available"],
-            "trace_chars": trace_info["chars"],
-            "trace_preview": trace_info["preview"],
-            "full_output": "Use get_task_result or wait_task for the full untruncated child output (wait_tasks returns a compact batch projection).",
-        })
-    return (
-        "[SUBAGENT_HANDOFF_STATUS]\n"
-        + json.dumps(payload, ensure_ascii=False, indent=2)
-        + "\n[/SUBAGENT_HANDOFF_STATUS]"
-    )
-
-
 def _artifact_stat_marker(path: str) -> str:
     """GROUND-TRUTH existence fact for a child's claimed artifact path. An ABSOLUTE path
     that does not exist is flagged ⚠ MISSING (a child can report a deliverable it never
@@ -1214,10 +1168,12 @@ def format_subagent_absorption_message(
     reading its 3 children). Whole-artifact-or-pointer: each terminal direct child is
     injected in FULL while the aggregate fits ``budget_chars``; once exceeded, the
     remaining children are replaced WHOLE by a get_task_result pointer — a child's
-    result is NEVER mid-truncated, and the full output is always durable + pullable
-    (P1). Grandchildren roll up to their direct parent: the root sees their STATUS
+    result plus its separately labelled host notice is NEVER mid-truncated, and
+    the full output is always durable + pullable (P1). Grandchildren roll up to
+    their direct parent: the root sees their STATUS
     only, not their raw output (avoids deep-tree context explosion)."""
     from ouroboros.tools.join_ledger import _child_result_sha256
+    from ouroboros.task_finalization import provider_terminal_body
 
     parent = str(parent_task_id or "").strip()
     direct = [c for c in children if str(c.get("parent_task_id") or "") == parent]
@@ -1236,15 +1192,28 @@ def format_subagent_absorption_message(
     for child in terminal:
         cid = str(child.get("task_id") or child.get("id") or "")
         role = str(child.get("role") or "")
-        result = str(child.get("result") or "").strip()
+        result = provider_terminal_body(
+            str(child.get("result") or "").strip(),
+            str(child.get("terminal_host_notice") or ""),
+        )
         terminal_status = str(child.get("child_status") or "")
         status_suffix = (
             f", terminal_result_status={terminal_status}"
             if terminal_status and terminal_status != str(child.get("status") or "")
             else ""
         )
+        # A child's typed custody debt travels WITH its result: the parent could
+        # absorb the work while its child's own delegated patch sat undisposed,
+        # and nothing in the digest said so. Bounded, and silent for a clean
+        # child. Visibility only — authority over that patch is the orphan rule.
+        debt = child.get("delegated_runs_unreconciled")
+        debt = [str(x) for x in debt] if isinstance(debt, list) else []
+        debt_suffix = f", custody_debt={','.join(debt[:10])}" if debt else ""
+        if len(debt) > 10:
+            debt_suffix += f' (+{len(debt) - 10} more — get_task_result("{cid}"))'
         lines.append(
-            f"\n## child {cid} ({role}) — status={child.get('status')}{status_suffix}, "
+            f"\n## child {cid} ({role}) — status={child.get('status')}{status_suffix}"
+            f"{debt_suffix}, "
             # SSOT cost projection (C2): unknown says unknown, never $0.0000.
             f"cost={cost_display(child, decimals=4)}, child_result_sha256={_child_result_sha256(child)}"
         )

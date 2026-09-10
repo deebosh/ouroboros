@@ -33,9 +33,9 @@ def test_ordinary_top_level_presets_share_one_exact_principal_matrix():
 
 def test_shared_top_level_principal_does_not_widen_specialized_profiles():
     assert "shell" not in _POLICY["local_readonly_subagent"]["skill_payload"]
-    assert "shell" not in _POLICY["skill_repair"]["skill_payload"]
+    assert "skill_repair" not in _POLICY
     assert "skill_payload" not in _POLICY["acting_subagent"]
-    for profile in ("local_readonly_subagent", "skill_repair", "acting_subagent"):
+    for profile in ("local_readonly_subagent", "acting_subagent"):
         assert "search" not in _POLICY[profile]["runtime_data"]
     assert "delegate" in _POLICY["operator_control"]["active_workspace"]
 
@@ -54,6 +54,22 @@ def test_private_binding_argument_is_rejected_at_public_boundary(tmp_path):
 
     assert result.startswith("⚠️ TOOL_ARG_ERROR (read_file)"), result
     assert "_resolved_binding" not in result
+
+
+def test_public_unknown_argument_is_named_in_the_refusal(tmp_path):
+    """A refusal that does not name the offending key leaves the caller guessing.
+    A PUBLIC unknown key is named; a private dispatch carrier still is not."""
+    repo = tmp_path / "repo"
+    data = tmp_path / "data"
+    repo.mkdir()
+    data.mkdir()
+    registry = ToolRegistry(repo_dir=repo, drive_root=data)
+
+    read_result = registry.execute("read_file", {"path": "README.md", "description": "x"})
+    assert "unsupported argument(s): description" in read_result, read_result
+
+    list_result = registry.execute("list_files", {"dir": "."})
+    assert "unsupported argument(s): dir" in list_result, list_result
 
 
 def _skill(root: pathlib.Path, location: str, name: str) -> pathlib.Path:
@@ -154,7 +170,8 @@ def test_binding_collision_blocks_mutation_but_exact_read_stays_inspectable(tmp_
     assert not (data / "state" / "skills" / "same").exists()
 
 
-def test_binding_preserves_project_room_read_lens_but_not_write_target(tmp_path):
+@pytest.mark.parametrize("operation", ["read", "list", "search", "write", "edit", "shell", "vcs"])
+def test_binding_preserves_the_project_room_target_for_every_operation(tmp_path, operation):
     repo = tmp_path / "repo"
     data = tmp_path / "data"
     room = tmp_path / "room"
@@ -167,15 +184,11 @@ def test_binding_preserves_project_room_read_lens_but_not_write_target(tmp_path)
         task_metadata={"_project_room_dir": str(room)},
     )
 
-    read_binding = build_resolved_resource_binding(
-        ctx, root="active_workspace", operation="read", path="README.md"
-    )
-    write_binding = build_resolved_resource_binding(
-        ctx, root="active_workspace", operation="write", path="README.md"
+    binding = build_resolved_resource_binding(
+        ctx, root="active_workspace", operation=operation, path="README.md"
     )
 
-    assert read_binding.base_path == room.resolve()
-    assert write_binding.base_path == repo.resolve()
+    assert binding.base_path == room.resolve()
 
 
 def test_binding_synthesizes_only_manifest_first_external_write_target(tmp_path):
@@ -280,7 +293,7 @@ def test_target_sensitive_override_without_private_keyword_fails_loudly(tmp_path
 
 
 def test_direct_handler_fallback_builds_once(tmp_path, monkeypatch):
-    import ouroboros.tools.core as core
+    import ouroboros.tools.core_file_tools as core
 
     repo = tmp_path / "repo"
     data = tmp_path / "data"
@@ -465,3 +478,54 @@ def test_skill_repair_explicit_root_infers_its_existing_selector(tmp_path, monke
     )
 
     assert "repair target" in result
+
+
+def test_registry_tool_resolution_owner_facades_preserve_identity():
+    """The tool_resolution extraction is a semantic no-op: the registry facade
+    re-exports the exact objects, and the characterized signatures hold.
+
+    Carried from the v7 reference (ouroboros_v7_wip @ 9f691656); the reference's
+    companion test of the TYPED dispatch-path projection
+    (``_normalize_dispatch_path_args_result``) is deliberately NOT carried —
+    that machinery is part of the deferred typed-result cutover and this tree
+    keeps the upstream string-returning body.
+    """
+    import inspect
+
+    from ouroboros.tools import registry, tool_resolution
+
+    names = (
+        "_coerce_real_path",
+        "active_repo_dir_for",
+        "system_repo_dir_for",
+        "_PATH_NORMALIZED_TOOLS",
+        "_normalize_dispatch_path_args",
+        "_GENERIC_VCS_TARGET_TOOLS",
+        "_TARGET_BINDING_OPERATIONS",
+        "_SKILL_LIFECYCLE_TARGET_TOOLS",
+        "_PROCESS_TARGET_TOOLS",
+        "_VERIFY_RUN_KINDS",
+        "_target_binding_operation",
+        "_build_builtin_target_binding",
+        "_binding_items",
+        "_binding_set_targets_system_repo",
+        "_binding_set_is_light_restricted",
+    )
+    for name in names:
+        assert getattr(registry, name) is getattr(tool_resolution, name)
+
+    callables = {
+        "_coerce_real_path": "(value: 'Any') -> 'pathlib.Path | None'",
+        "active_repo_dir_for": "(ctx: 'Any') -> 'pathlib.Path'",
+        "system_repo_dir_for": "(ctx: 'Any') -> 'pathlib.Path'",
+        "_normalize_dispatch_path_args": "(ctx: 'Any', name: 'str', args: 'Dict[str, Any]') -> 'str'",
+        "_target_binding_operation": "(name: 'str', args: 'dict[str, Any]') -> 'str | None'",
+        "_build_builtin_target_binding": "(ctx: 'Any', name: 'str', args: 'dict[str, Any]') -> 'Any'",
+        "_binding_items": "(binding: 'Any') -> 'tuple[Any, ...]'",
+        "_binding_set_targets_system_repo": "(ctx: 'Any', binding: 'Any') -> 'bool'",
+        "_binding_set_is_light_restricted": "(ctx: 'Any', binding: 'Any') -> 'bool'",
+    }
+    assert {
+        name: str(inspect.signature(getattr(tool_resolution, name)))
+        for name in callables
+    } == callables

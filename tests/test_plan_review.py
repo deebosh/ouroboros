@@ -554,7 +554,7 @@ class TestPlanReviewToolRegistration(unittest.TestCase):
 
         self.assertIn("TOOL_ARG_ERROR (plan_task)", result)
         self.assertIn("review_disposition", result)
-        self.assertNotIn("review_dispositon", result)
+        self.assertIn("unsupported argument(s): review_dispositon", result)
         self.assertNotIn("handler-ran", result)
 
     def test_plan_task_description_is_domain_neutral_and_trigger_free(self):
@@ -634,6 +634,72 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
             run.assert_not_called()
             self.assertFalse((root / "task_results" / "parent.json").exists())
 
+    def test_padded_disposition_is_disposition_mode_not_a_mixed_envelope(self):
+        """Schema-default goal/plan/spec beside a real disposition say NOTHING, so they
+        reach disposition mode exactly like the bare envelope. The reciprocal (a vacuous
+        disposition beside a real plan) was already tolerated; this is the other side."""
+        import ouroboros.tools.plan_review as pr
+        from ouroboros.tools.registry import ToolContext
+
+        ctx = ToolContext(repo_dir=pathlib.Path("."), drive_root=pathlib.Path("."))
+        ctx.task_id = "parent"
+        disposition = {"review_fingerprint": "f" * 64, "items": []}
+        for padding in (
+            {},  # the bare disposition-only envelope, for reference
+            {"goal": "", "plan": "", "spec": {}},
+            {"goal": "  ", "plan": "\n", "spec": {"in_scope": [], "non_goals": []}},
+            {"goal": None, "spec": None},
+        ):
+            with self.subTest(padding=padding):
+                with patch.object(pr, "_apply_disposition", return_value="disposed") as apply_, patch.object(
+                    pr, "_run_plan_review_async",
+                ) as run:
+                    out = pr._handle_plan_task(ctx, review_disposition=disposition, **padding)
+                self.assertEqual(out, "disposed")
+                apply_.assert_called_once_with(ctx, disposition)
+                run.assert_not_called()
+
+    def test_meaningful_or_invalid_padding_beside_a_disposition_is_still_mixed(self):
+        """Only schema-equivalent emptiness is ignored: a non-empty list, an unknown spec
+        key or a wrong type is meaning (or an error) and keeps the typed refusal — a
+        vacuity rule must never discard an invalid value to make a call pass."""
+        import ouroboros.tools.plan_review as pr
+        from ouroboros.tools.registry import ToolContext
+
+        ctx = ToolContext(repo_dir=pathlib.Path("."), drive_root=pathlib.Path("."))
+        ctx.task_id = "parent"
+        disposition = {"review_fingerprint": "f" * 64, "items": []}
+        for padding in (
+            {"spec": {"in_scope": [""]}},
+            {"spec": {"unknown": ""}},
+            {"goal": []},
+            {"plan": "P changed"},
+        ):
+            with self.subTest(padding=padding):
+                with patch.object(pr, "_apply_disposition") as apply_, patch.object(
+                    pr, "_run_plan_review_async",
+                ) as run:
+                    out = pr._handle_plan_task(ctx, review_disposition=disposition, **padding)
+                self.assertIn("PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE", out)
+                apply_.assert_not_called()
+                run.assert_not_called()
+
+    def test_disposition_with_an_empty_item_beside_a_plan_is_not_vacuous(self):
+        """``items=[{}]`` says something malformed, not nothing: beside a plan it is a
+        mixed envelope (refused typed), never silently promoted into review mode."""
+        import ouroboros.tools.plan_review as pr
+        from ouroboros.tools.registry import ToolContext
+
+        ctx = ToolContext(repo_dir=pathlib.Path("."), drive_root=pathlib.Path("."))
+        ctx.task_id = "parent"
+        with patch.object(pr, "_run_plan_review_async") as run:
+            out = pr._handle_plan_task(
+                ctx, plan="P", goal="G", spec={},
+                review_disposition={"review_fingerprint": "", "items": [{}]},
+            )
+        self.assertIn("PLAN_REVIEW_DISPOSITION_MIXED_ENVELOPE", out)
+        run.assert_not_called()
+
     def test_state_lookup_failure_is_error_not_absence(self):
         # Consultation guard: an indeterminate state store must ERROR, never be
         # classified as "no review" (which would silently launch a paid wave).
@@ -695,7 +761,7 @@ class TestPlanReviewDispositionEnvelope(unittest.TestCase):
 
     def test_control_line_outcomes_follow_the_parser_contract(self):
         import ouroboros.tools.plan_review as pr
-        from ouroboros.loop_tool_execution import _parse_plan_review_control
+        from ouroboros.tools.plan_render import _parse_plan_review_control
 
         for aggregate, closed, expected in (
             ("GREEN", True, ("GREEN", True)),

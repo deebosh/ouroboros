@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import hashlib
 import json
@@ -16,7 +17,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Iterator
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +27,12 @@ _log_sink: Optional[Callable[[Dict[str, Any]], None]] = None
 def set_log_sink(fn: Optional[Callable[[Dict[str, Any]], None]]) -> None:
     global _log_sink
     _log_sink = fn
+
+
+def has_log_sink() -> bool:
+    """Whether this process registered a sink, not a delivery acknowledgement."""
+    return _log_sink is not None
+
 
 def utc_now_iso() -> str:
     return _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
@@ -209,19 +216,30 @@ _REPLACE_RETRY_INITIAL_DELAY_SEC = 0.002
 _REPLACE_RETRY_MAX_DELAY_SEC = 0.1
 
 
-def replace_atomic(src: pathlib.Path | str, dst: pathlib.Path | str) -> None:
+def replace_atomic(
+    src: pathlib.Path | str, dst: pathlib.Path | str, *,
+    precondition: Callable[[], bool] | None = None,
+) -> bool:
     """``os.replace`` with a bounded retry on Windows sharing violations.
 
     Retries ONLY on PermissionError, which POSIX rename(2) never raises for an
     open destination — so POSIX behavior is byte-identical (one syscall, no
     sleeps). After the bound is exhausted the last PermissionError propagates
     unchanged; every other exception propagates immediately.
+
+    ``precondition`` is asked immediately before EVERY attempt, retries
+    included: a proof taken before a refused attempt is stale by the next one
+    (the monetary ledger swap re-proves lock ownership and its snapshot here,
+    CPL4-C6). A ``False`` answer leaves ``dst`` untouched and returns False,
+    ``src`` left for the caller to remove; True once replaced.
     """
     delay = _REPLACE_RETRY_INITIAL_DELAY_SEC
     for attempt in range(_REPLACE_RETRY_ATTEMPTS):
+        if precondition is not None and not precondition():
+            return False
         try:
             os.replace(src, dst)
-            return
+            return True
         except PermissionError:
             if attempt == _REPLACE_RETRY_ATTEMPTS - 1:
                 raise
@@ -245,40 +263,50 @@ def _atomic_overwrite(path: pathlib.Path, write_temp: Callable[[pathlib.Path], N
     Note: a symlink at ``path`` is REPLACED with a regular file (os.replace acts on the
     link, not its target). This is intentional and confinement-preserving — writing
     THROUGH a symlink could escape the caller's allowed root — so the write always lands
-    inside ``path``'s directory rather than wherever a link points."""
+    inside ``path``'s directory rather than wherever a link points.
+
+    Being that SSOT is also why the pytest live-data guard sits here rather than on each
+    writer: every full-file overwrite in the tree replaces through this seam, so the next
+    writer added is guarded by construction instead of by remembering (RES-14b)."""
     path = pathlib.Path(path)
+    assert_test_data_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         # 0o7777 keeps the special bits (setuid/setgid/sticky) too, not just rwx.
         existing_mode = os.stat(path).st_mode & 0o7777
     except OSError:
         existing_mode = None  # new file -> keep the platform default
-    tmp_name = (
-        f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}"
-    )
-    tmp = path.with_name(tmp_name)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}")
     try:
         write_temp(tmp)
         if existing_mode is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.chmod(tmp, existing_mode)
-            except OSError:
-                pass
         replace_atomic(tmp, path)
     except Exception:
-        try:
+        with contextlib.suppress(OSError):
             tmp.unlink()
-        except OSError:
-            pass
         raise
 
 
-def write_bytes_atomic(
-    path: pathlib.Path,
-    content: bytes,
-    *,
-    fsync: bool = False,
-) -> None:
+def _write_fd_fully(fd: int, data: bytes, target: pathlib.Path) -> None:
+    """``os.write`` until every byte lands.
+
+    A single call may write SHORT (POSIX permits partial writes — signals,
+    quota edges, some filesystems), and treating its return as done truncates
+    the record silently: the atomic lanes would publish a half document behind
+    a successful rename, and the append lane a TORN line behind a successful
+    append. One loop for every durable writer in this module.
+    """
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError(f"short write to {target}")
+        view = view[written:]
+
+
+def write_bytes_atomic(path: pathlib.Path, content: bytes, *, fsync: bool = False) -> None:
     """Atomically overwrite ``path`` with exact bytes."""
 
     def _write(tmp: pathlib.Path) -> None:
@@ -288,12 +316,7 @@ def write_bytes_atomic(
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
         fd = os.open(str(tmp), flags, 0o644)
         try:
-            view = memoryview(content)
-            while view:
-                written = os.write(fd, view)
-                if written <= 0:
-                    raise OSError(f"short write to {tmp}")
-                view = view[written:]
+            _write_fd_fully(fd, content, tmp)
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -301,35 +324,27 @@ def write_bytes_atomic(
     _atomic_overwrite(path, _write)
 
 
-def write_text_atomic(
-    path: pathlib.Path,
-    content: str,
-    *,
-    fsync: bool = False,
-) -> None:
-    """Atomically overwrite UTF-8 text with platform newline semantics."""
+def write_text_atomic(path: pathlib.Path, content: str, *, fsync: bool = False) -> None:
+    """Atomically overwrite ``path`` with ``content`` encoded UTF-8, BYTE-EXACT.
 
-    def _write(tmp: pathlib.Path) -> None:
-        if fsync:
-            fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-            try:
-                os.write(fd, content.encode("utf-8"))
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        else:
-            tmp.write_text(content, encoding="utf-8")
+    The file receives exactly ``content.encode("utf-8")`` on every platform:
+    the newlines the caller wrote are the newlines on disk. This is the
+    contract every caller in this tree needs — durable JSON state (through
+    ``atomic_write_json``), receipts, run manifests, projection files, and the
+    agent's own file writes/edits, which round-trip source text that Python
+    reads back with universal newlines.
 
-    _atomic_overwrite(path, _write)
+    It used to be "platform newline semantics": both lanes translated ``\\n``
+    to ``\\r\\n`` on Windows (``Path.write_text`` in text mode, and ``os.open``
+    without ``O_BINARY``). Nothing asked for that translation, while a
+    byte-compared manifest, a hashed receipt and an LF source file the agent
+    merely re-saved were all silently rewritten by it.
+    """
+    write_bytes_atomic(pathlib.Path(path), content.encode("utf-8"), fsync=fsync)
 
 
-def atomic_write_json(
-    path: pathlib.Path,
-    payload: Any,
-    *,
-    trailing_newline: bool = False,
-    fsync: bool = False,
-) -> None:
+def atomic_write_json(path: pathlib.Path, payload: Any, *, trailing_newline: bool = False,
+                      fsync: bool = False) -> None:
     """Atomically persist a JSON value (object or list) via a sibling temp file."""
     content = json.dumps(payload, ensure_ascii=False, indent=2)
     if trailing_newline:
@@ -350,6 +365,12 @@ def sweep_stale_temp_files(root: pathlib.Path, *, min_age_sec: float = 3600.0) -
     Only files whose suffix after the final ``.tmp.`` is the atomic signature
     (pid/tid/uuid → hex digits and dots) are reaped, so a legitimate user dotfile
     such as ``.config.tmp.backup`` is never deleted.
+
+    The data-root ``tmp_scripts/`` fallback is in scope too (CPL4-C20):
+    ``tools/shell.py`` unlinks its ``script_<uuid>.<ext>`` files in a
+    ``finally``, so one that survived is a hard-kill orphan. Only the
+    TOP-LEVEL fallback dir is swept here — task-drive copies die with their
+    drive's own GC prune — and only at startup, when no script can be live.
     """
     root = pathlib.Path(root)
     if not root.is_dir():
@@ -359,17 +380,21 @@ def sweep_stale_temp_files(root: pathlib.Path, *, min_age_sec: float = 3600.0) -
     now = time.time()
     try:
         candidates = list(root.rglob(".*.tmp.*"))
+        candidates.extend(root.glob("tmp_scripts/script_*"))
     except OSError:
         return 0
+    fallback_scripts = root / "tmp_scripts"
     for tmp in candidates:
         try:
             if not tmp.is_file():
                 continue
-            # Require the post-".tmp." suffix to be the atomic signature (hex/dot
-            # only) so we never delete an unrelated dotfile that happens to match.
-            suffix = tmp.name.rsplit(".tmp.", 1)
-            if len(suffix) != 2 or not suffix[1] or set(suffix[1]) - hex_chars:
-                continue
+            if not (tmp.parent == fallback_scripts and tmp.name.startswith("script_")):
+                # Require the post-".tmp." suffix to be the atomic signature
+                # (hex/dot only) so we never delete an unrelated dotfile that
+                # happens to match.
+                suffix = tmp.name.rsplit(".tmp.", 1)
+                if len(suffix) != 2 or not suffix[1] or set(suffix[1]) - hex_chars:
+                    continue
             if now - tmp.stat().st_mtime < min_age_sec:
                 continue
             tmp.unlink()
@@ -426,7 +451,7 @@ def update_json_locked(
     path = pathlib.Path(path)
     lock_path = path.with_name(path.name + ".lock")
     lock_fd = acquire_exclusive_file_lock(
-        lock_path, timeout_sec=timeout_sec, stale_sec=stale_sec
+        lock_path, timeout_sec=timeout_sec, stale_sec=stale_sec, owner_aware_stale=True,
     )
     if lock_fd is None:
         raise TimeoutError(
@@ -460,6 +485,38 @@ def jsonl_append_lock_path(path: pathlib.Path) -> pathlib.Path:
     return path.parent / f".append_jsonl_{path_hash}.lock"
 
 
+def assert_test_data_path(path: pathlib.Path) -> None:
+    """Fail closed when pytest resolves a writer into the live data tree.
+
+    Lives here (the no-ouroboros-imports leaf) so the whole durable-write
+    surface guards the same roots from two seams: ``append_jsonl`` below for
+    appends, and ``_atomic_overwrite`` above for every full-file replace
+    (``supervisor.state.atomic_write_text`` included, which also calls it
+    directly). The jsonl side was the unguarded half that let the issue #455
+    supervisor.jsonl leak land silently. Outside pytest this is one env read.
+    """
+    if os.environ.get("OUROBOROS_PYTEST_ACTIVE") != "1":
+        return
+    if os.environ.get("OUROBOROS_ALLOW_LIVE_DATA_TESTS") == "1":
+        return
+    # ``expanduser``, not ``Path.home()``: this guards the tree of the operator
+    # RUNNING pytest, which the environment fixes. A suite that redirects
+    # ``Path.home`` into its own tmp dir is hermetic by construction, and reading
+    # the patched attribute made those writes look live; redirecting ``$HOME``
+    # itself still moves the guard, as the hermetic subprocess pin needs.
+    roots = {pathlib.Path(os.path.expanduser("~")) / "Ouroboros" / "data"}
+    configured = str(os.environ.get("OUROBOROS_TEST_LIVE_DATA_ROOT") or "").strip()
+    if configured:
+        roots.add(pathlib.Path(configured))
+    target = pathlib.Path(path).resolve(strict=False)
+    for root in roots:
+        try:
+            target.relative_to(root.resolve(strict=False))
+        except ValueError:
+            continue
+        raise RuntimeError(f"PYTEST_LIVE_DATA_WRITE_BLOCKED: {target}")
+
+
 def append_jsonl(
     path: pathlib.Path, obj: Dict[str, Any], *, ensure_record_boundary: bool = False,
     require_lock: bool = False,
@@ -470,7 +527,8 @@ def append_jsonl(
     append; it is opt-in so high-volume event logs keep their established path.
     ``require_lock`` is reserved for authority streams that also have atomic
     whole-file reconciliation: unlike high-volume observational logs, they may
-    not fall back to an unlocked append after lock timeout.
+    not fall back to an unlocked append after lock timeout. Both lanes take the
+    shared owner-aware lock primitive, so a live holder is never displaced.
     Returns ``True`` on successful write, ``False`` when all retries
     failed (which is also logged at WARNING). Important events
     (``task_done``, ``llm_round``, escalation messages) need that signal
@@ -479,59 +537,40 @@ def append_jsonl(
     """
     if not isinstance(path, pathlib.Path):
         raise TypeError(f"append_jsonl: path must be pathlib.Path, got {type(path).__name__}")
+    assert_test_data_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(obj, ensure_ascii=False)
     data = (line + "\n").encode("utf-8")
 
-    lock_timeout_sec = 2.0
-    lock_stale_sec = 10.0
-    lock_sleep_sec = 0.01
     write_retries = 3
     retry_sleep_base_sec = 0.01
 
+    from ouroboros.platform_layer import (
+        acquire_exclusive_file_lock,
+        release_exclusive_file_lock,
+    )
+
     lock_path = jsonl_append_lock_path(path)
     lock_fd = None
-    lock_acquired = False
     _written = False
 
     try:
-        if require_lock:
-            from ouroboros.platform_layer import acquire_exclusive_file_lock
+        # ONE lock primitive for both lanes. The unlocked lane used to hand-roll
+        # its own O_CREAT|O_EXCL + age-reclaim loop — the duplicate this module's
+        # own contract tells feature code not to write — and the copy was NOT
+        # owner-aware, so a high-volume appender could delete the lock of a LIVE
+        # holder (the memory-journal compactor rewrites a journal under exactly
+        # this lock). Owner-aware everywhere: a live holder is waited out and the
+        # non-required lane then appends unlocked, exactly as before.
+        lock_fd = acquire_exclusive_file_lock(
+            lock_path,
+            timeout_sec=2.0,
+            stale_sec=10.0,
+            poll_sec=0.01,
+            owner_aware_stale=True,
+        )
 
-            lock_fd = acquire_exclusive_file_lock(
-                lock_path,
-                timeout_sec=lock_timeout_sec,
-                stale_sec=lock_stale_sec,
-                poll_sec=lock_sleep_sec,
-                owner_aware_stale=True,
-            )
-            lock_acquired = lock_fd is not None
-        else:
-            start = time.time()
-            while time.time() - start < lock_timeout_sec:
-                try:
-                    lock_fd = os.open(
-                        str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644,
-                    )
-                    lock_acquired = True
-                    break
-                except FileExistsError:
-                    try:
-                        stat = lock_path.stat()
-                        if time.time() - stat.st_mtime > lock_stale_sec:
-                            lock_path.unlink()
-                            continue
-                    except Exception:
-                        log.debug(
-                            "Failed to read lock stat during lock acquisition retry",
-                            exc_info=True,
-                        )
-                    time.sleep(lock_sleep_sec)
-                except Exception:
-                    log.debug("Failed to acquire file lock for jsonl append", exc_info=True)
-                    break
-
-        if require_lock and not lock_acquired:
+        if require_lock and lock_fd is None:
             log.warning("append_jsonl: required lock unavailable for %s", path)
             return False
 
@@ -555,15 +594,27 @@ def append_jsonl(
         for attempt in range(write_retries):
             try:
                 fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-                try:
-                    os.write(fd, append_data)
-                finally:
-                    os.close(fd)
-                _written = True
-                return True
             except Exception:
                 if attempt < write_retries - 1:
                     time.sleep(retry_sleep_base_sec * (2 ** attempt))
+                continue
+            try:
+                # One bare ``os.write`` may land SHORT: trusting its return
+                # published a TORN line as a successful append (the class the
+                # atomic writers already fixed). Share their full-write loop.
+                _write_fd_fully(fd, append_data, path)
+                _written = True
+                return True
+            except Exception:
+                # Bytes of this record may already be in the file; re-appending
+                # the whole line would duplicate that prefix. Report the failure
+                # (the caller owns the fallback) and let the next append's
+                # ``ensure_record_boundary`` start a clean record — a partially
+                # landed record is never retried whole.
+                log.warning("append_jsonl: torn write to %s", path, exc_info=True)
+                return False
+            finally:
+                os.close(fd)
 
         for attempt in range(write_retries):
             try:
@@ -577,18 +628,7 @@ def append_jsonl(
     except Exception:
         log.warning("append_jsonl: all write attempts failed for %s", path, exc_info=True)
     finally:
-        if lock_fd is not None:
-            try:
-                os.close(lock_fd)
-            except Exception:
-                log.debug("Failed to close lock fd after jsonl append", exc_info=True)
-                pass
-        if lock_acquired:
-            try:
-                lock_path.unlink()
-            except Exception:
-                log.debug("Failed to unlink lock file after jsonl append", exc_info=True)
-                pass
+        release_exclusive_file_lock(lock_path, lock_fd)
         # Live-stream only runtime LOG files. chat.jsonl has its own live
         # channel (the chat frame family), and state/memory/receipt jsonl
         # stores are durable data, not a log feed — streaming them made every
@@ -616,13 +656,14 @@ def iter_jsonl_objects(
     tail_bytes: Optional[int] = None,
     dict_only: bool = True,
     gap_reasons: Optional[set[str]] = None,
+    _handle: Any = None,  # Internal borrowed stream; its caller owns closing.
 ) -> Iterator[Any]:
     """Yield parseable JSONL entries; max_entries applies to raw tail lines."""
     path = pathlib.Path(path)
     if (max_entries is not None and max_entries <= 0) or (tail_bytes is not None and tail_bytes <= 0):
         return
     try:
-        with path.open("rb") as handle:
+        with (contextlib.nullcontext(_handle) if _handle is not None else path.open("rb")) as handle:
             if tail_bytes is not None:
                 file_size = path.stat().st_size
                 if file_size > tail_bytes:
@@ -663,7 +704,191 @@ def iter_jsonl_objects(
                 elif gap_reasons is not None:
                     gap_reasons.add("invalid_jsonl_row")
     except FileNotFoundError:
+        if _handle is not None:
+            raise
         return
+
+
+class JsonlChainUnreadable(OSError):
+    """A rotated JSONL chain could not be enumerated or opened IN FULL.
+
+    Authority readers (money, custody) pass ``strict=True`` so an unreadable
+    ``archive/`` directory or segment is a TYPED incomplete view instead of an
+    empty one — the lenient default answers "this store never rotated" for
+    both, which is how a permission error silently under-counts a ledger.
+    Fail-soft readers (UI tails, context backfill, boot probes) keep the
+    lenient default: a missing segment degrades their window, it decides
+    nothing.
+    """
+
+
+def jsonl_archive_segments(
+    path: pathlib.Path, *, strict: bool = False,
+) -> List[pathlib.Path]:
+    """Rotated archive segments for a ``logs/<name>.jsonl`` store, oldest first.
+
+    ``rotate_jsonl_log_if_needed`` renames the live file to
+    ``archive/<stem>_<ts>[_<n>].jsonl`` beside the ``logs/`` directory;
+    lexicographic name order is chronological by construction (the rotator's
+    ``_<n>`` collision suffix sorts after ``<ts>.jsonl``). A store that never
+    rotated yields an empty list.
+
+    Enumeration is an explicit ``scandir``: ``Path.glob`` SWALLOWS a
+    ``PermissionError`` on the archive directory and yields nothing, so the
+    former ``except OSError`` never saw the very failure that matters. With
+    ``strict`` an unreadable directory raises :class:`JsonlChainUnreadable`;
+    an absent one is still positively empty on both paths.
+    """
+    path = pathlib.Path(path)
+    archive_dir = path.parent.parent / "archive"
+    stem = path.name[:-len(".jsonl")] if path.name.endswith(".jsonl") else path.stem
+    prefix = f"{stem}_"
+    try:
+        with os.scandir(archive_dir) as entries:
+            found = [
+                pathlib.Path(entry.path)
+                for entry in entries
+                if entry.name.startswith(prefix)
+                and entry.name.endswith(".jsonl")
+                and entry.is_file()
+            ]
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        if strict:
+            raise JsonlChainUnreadable(
+                f"cannot enumerate the rotated archive of {path}: {exc}"
+            ) from exc
+        return []
+    return sorted(found)
+
+
+@contextlib.contextmanager
+def jsonl_chain_handles(
+    path: pathlib.Path, *, strict: bool = False,
+    start_offset: Optional[int] = None,
+    snapshot: Optional[Dict[str, Any]] = None,
+) -> Iterator[List[Tuple[pathlib.Path, Any]]]:
+    """Open binary handles for a rotated JSONL chain; the context owns closing.
+
+    By default yield every ``(path, handle)`` in archive filename order, with
+    the initially opened live generation last. Open live BEFORE enumeration;
+    device/inode identity excludes its renamed archive alias after rotation.
+    On Windows that open handle can prevent the rotator's rename. This is not
+    an atomic content snapshot, a JSON-row deduplicator, or an event-time sort.
+
+    ``start_offset`` counts bytes across the captured chain lengths, skipping
+    consumed segments without opening them and seeking within selected ones.
+    The captured EOF yields no handles; an offset beyond it always raises
+    ``JsonlChainUnreadable``, even when ``strict`` is false.
+
+    ``snapshot`` is a caller-owned dict for ONE source and ONE logical pass.
+    An empty dict captures paths, stat identities, cumulative ends and total
+    once; reuse selects at most one segment at the requested offset. Reusing
+    it for another path raises ``ValueError``. Never populate it from client
+    paths. Without it, every call discovers a fresh remaining whole chain.
+    No descriptors survive context exit. At most two are open in snapshot
+    mode: the initially pinned live handle and the selected archive handle.
+    If the captured live generation rotated between calls, locate its inode
+    in the archive and retain that path in the same snapshot.
+
+    Snapshot metadata does NOT cap the returned handle's reads: an appending
+    file can expose bytes beyond the captured total. The caller must limit
+    reads to that total and start a fresh snapshot for the next pass; the
+    cursor follower owns this EOF limit and unfinished-line handling.
+
+    Missing live files and entries lost before discovery stat are benign.
+    Strict enumeration/stat/open/seek failures raise ``JsonlChainUnreadable``;
+    lenient mode skips them. With an offset, a selected segment shorter than
+    its captured size is such a failure; a required segment lost after the
+    snapshot is not empty history. Errors while the caller reads a yielded
+    handle propagate as its original I/O errors. All opened handles close on
+    context exit, including failed setup, caller errors and early returns.
+    """
+    from bisect import bisect_right
+
+    path = pathlib.Path(path)
+    state = snapshot if snapshot is not None else {}
+    with contextlib.ExitStack() as stack:
+        live_handle = None
+        if not state:
+            try:
+                live_handle = stack.enter_context(path.open("rb"))
+                live_stat = os.fstat(live_handle.fileno())
+            except OSError as exc:
+                if strict and not isinstance(exc, FileNotFoundError):
+                    raise JsonlChainUnreadable(f"cannot open or stat {path}: {exc}") from exc
+                live_stat = None
+            entries, ends, total = [], [], 0
+            for segment in [*jsonl_archive_segments(path, strict=strict), path]:
+                try:
+                    stat = live_stat if segment == path else segment.stat()
+                except OSError as exc:
+                    if strict and not isinstance(exc, FileNotFoundError):
+                        raise JsonlChainUnreadable(f"cannot stat {segment}: {exc}") from exc
+                    continue
+                if stat is None or (segment != path and live_stat is not None
+                        and (stat.st_dev, stat.st_ino) == (live_stat.st_dev, live_stat.st_ino)):
+                    continue
+                total += stat.st_size
+                entries.append([segment, stat, segment == path])
+                ends.append(total)
+            state.update(path=path, entries=entries, ends=ends, total=total)
+        if state["path"] != path:
+            raise ValueError("chain pass belongs to a different source")
+        entries, ends = state["entries"], state["ends"]
+        if start_offset is not None and start_offset > state["total"]:
+            raise JsonlChainUnreadable(f"shortened or missing chain at {path}")
+        first = bisect_right(ends, start_offset) if start_offset is not None else 0
+        stop = min(len(entries), first + 1) if snapshot is not None else len(entries)
+        handles = []
+        for index in range(first, stop):
+            segment, expected, was_live = entries[index]
+            try:
+                if was_live:
+                    handle = live_handle
+                    if handle is None:
+                        with contextlib.suppress(FileNotFoundError):
+                            handle = stack.enter_context(segment.open("rb"))
+                    identity = (expected.st_dev, expected.st_ino)
+                    actual = os.fstat(handle.fileno()) if handle is not None else None
+                    if actual is None or (actual.st_dev, actual.st_ino) != identity:
+                        if handle is not None:
+                            handle.close()
+                        for candidate in jsonl_archive_segments(path, strict=strict):
+                            with contextlib.suppress(FileNotFoundError):
+                                stat = candidate.stat()
+                                if (stat.st_dev, stat.st_ino) == identity:
+                                    segment = entries[index][0] = candidate
+                                    break
+                        else:
+                            raise JsonlChainUnreadable(f"original live generation missing at {path}")
+                        handle = stack.enter_context(segment.open("rb"))
+                else:
+                    handle = stack.enter_context(segment.open("rb"))
+                if start_offset is not None:
+                    if os.fstat(handle.fileno()).st_size < expected.st_size:
+                        raise JsonlChainUnreadable(f"shortened chain segment {segment}")
+                    handle.seek(max(0, start_offset - (ends[index - 1] if index else 0)))
+                handles.append((segment, handle))
+            except OSError as exc:
+                if strict:
+                    raise JsonlChainUnreadable(f"cannot read {segment}: {exc}") from exc
+        yield handles
+
+def iter_jsonl_chain_objects(
+    path: pathlib.Path,
+    dict_only: bool = True,
+) -> Iterator[Any]:
+    """``iter_jsonl_objects`` across the rotated archive chain + live file.
+
+    Full-history readers that must not lose early rows to rotation use this
+    instead of a single-file read; bounded/tail readers keep their own
+    windows.
+    """
+    with jsonl_chain_handles(pathlib.Path(path)) as handles:
+        for segment, handle in handles:
+            yield from iter_jsonl_objects(segment, dict_only=dict_only, _handle=handle)
 
 
 def iter_llm_usage_events(
@@ -672,9 +897,8 @@ def iter_llm_usage_events(
     max_entries: Optional[int] = None,
     tail_bytes: Optional[int] = None,
 ) -> Iterator[Dict[str, Any]]:
-    for event in iter_jsonl_objects(path, max_entries=max_entries, tail_bytes=tail_bytes):
-        if event.get("type") == "llm_usage":
-            yield event
+    yield from (event for event in iter_jsonl_objects(path, max_entries=max_entries, tail_bytes=tail_bytes)
+                if event.get("type") == "llm_usage")
 
 
 def llm_usage_cost(event: Dict[str, Any]) -> float:
@@ -904,14 +1128,11 @@ def run_cmd(
     existing call site keeps working unchanged; ``timeout`` and ``check`` are
     keyword-only so they cannot be silently passed positionally by accident.
 
-    ``timeout`` is forwarded to ``subprocess.run``; on expiry the exception
-    is converted to ``RuntimeError`` with the SAME ``"Command failed: "`` prefix
-    the non-zero-exit branch already produces, so callers and tests that match
-    on that text keep parsing. The timeout fact is appended in parentheses so
-    a consumer can distinguish a timeout from a regular non-zero exit. This
-    closes ``ibl-local-67f046589043`` (registry's ``_worktree_status_snapshot``
-    passing ``timeout=20`` and silently swallowing the resulting TypeError to
-    ``"<status-unavailable>"``).
+    ``timeout`` is forwarded to ``subprocess.run`` and ``subprocess.TimeoutExpired``
+    propagates raw (v7: upstream's contract — the fork's convert-to-RuntimeError
+    variant was dropped in the merge). ``ibl-local-67f046589043`` — registry's
+    ``_worktree_status_snapshot`` passing ``timeout=20`` — stays closed: the
+    parameter is accepted, and that call site catches ``Exception``.
 
     ``check=False`` suppresses the non-zero-exit raise and returns whatever
     stdout was captured, which lets callers probe a known-bad exit code
@@ -921,33 +1142,14 @@ def run_cmd(
     # depend on the operator's locale: a Russian-locale git answers «метка … уже
     # существует» where the code and its tests match "already exists".
     env = {**os.environ, "LC_ALL": "C", "LANG": "C"}
-    try:
-        res = subprocess.run(
-            cmd,
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        # `text=True` makes exc.stdout/stderr Optional[str] on modern Python,
-        # but stay defensive in case a future caller drops text=True — bytes
-        # would otherwise blow up the f-string below.
-        if isinstance(exc.stdout, bytes):
-            stdout = exc.stdout.decode("utf-8", errors="replace")
-        else:
-            stdout = exc.stdout or ""
-        if isinstance(exc.stderr, bytes):
-            stderr = exc.stderr.decode("utf-8", errors="replace")
-        else:
-            stderr = exc.stderr or ""
-        raise RuntimeError(
-            f"Command failed: {' '.join(cmd)}\n"
-            f"\nSTDOUT:\n{stdout}\n"
-            f"\nSTDERR:\n{stderr}\n"
-            f"\n(subprocess.TimeoutExpired after {timeout}s)"
-        ) from exc
+    res = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=timeout,
+    )
     if check and res.returncode != 0:
         raise RuntimeError(
             f"Command failed: {' '.join(cmd)}\n\nSTDOUT:\n{res.stdout}\n\nSTDERR:\n{res.stderr}"
@@ -959,25 +1161,16 @@ def get_git_info(repo_dir: pathlib.Path) -> tuple[str, str]:
     branch = ""
     sha = ""
     try:
-        r = subprocess.run(
+        branch = run_cmd(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=2,
+            cwd=repo_dir, timeout=2,
         )
-        if r.returncode == 0:
-            branch = r.stdout.strip()
     except Exception:
         log.debug("Failed to get git branch", exc_info=True)
-        pass
     try:
-        r = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_dir), capture_output=True, text=True, timeout=2,
-        )
-        if r.returncode == 0:
-            sha = r.stdout.strip()
+        sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=repo_dir, timeout=2)
     except Exception:
         log.debug("Failed to get git SHA", exc_info=True)
-        pass
     return branch, sha
 
 def sanitize_task_for_event(
@@ -1060,20 +1253,6 @@ _SECRET_PATTERNS = _re.compile(
 _SECRET_URL_CREDENTIAL_RE = _re.compile(
     r'(?i)\b(?:postgres|postgresql|mysql|mariadb|mongodb(?:\+srv)?|redis)://[^/\s:@]+:[^/\s@]+@'
 )
-_SECRET_LITERAL_FIELDS_RE = _re.compile(
-    r'(?im)(?:^|[\s,{])["\']?([A-Za-z_][A-Za-z0-9_-]*)["\']?\s*[:=]\s*["\']([^"\']+)["\']'
-)
-_SECRET_BRACKET_LITERAL_RE = _re.compile(
-    r'(?im)\[\s*["\']([A-Za-z_][A-Za-z0-9_-]*)["\']\s*\]\s*[:=]\s*["\']([^"\']+)["\']'
-)
-_SECRET_UNQUOTED_ASSIGNMENT_RE = _re.compile(
-    r'(?im)^([A-Za-z_][A-Za-z0-9_-]*)\s*[:=]\s*([A-Za-z0-9_\-./+=]{16,})\s*$'
-)
-_SECRET_FALLBACK_LITERAL_RE = _re.compile(
-    r'(?i)(?:os\.getenv|os\.environ\.get|settings\.get)\(\s*[\'"]([^\'"]+)[\'"][^)]*,\s*[\'"]([^\'"]+)[\'"]'
-    r'|api\.get_settings\([^)]*\)\.get\(\s*[\'"]([^\'"]+)[\'"][^)]*,\s*[\'"]([^\'"]+)[\'"]'
-    r'|process\.env\.([A-Z0-9_]+)\s*(?:\|\||\?\?)\s*[\'"]([^\'"]+)[\'"]'
-)
 _SECRET_KEY_NAME_RE = _re.compile(
     r'(?i)^(?:'
     r'token|access_token|refresh_token|auth_token|secret|secret_key|password|passwd|passphrase|authorization|'
@@ -1113,55 +1292,6 @@ def is_credential_header_name(key: Any) -> bool:
     return normalized in CREDENTIAL_HEADER_NAMES or is_secret_key_name(normalized)
 
 
-def _secret_placeholder_value(value: str) -> bool:
-    cleaned = str(value or "").strip().rstrip(",}]").strip().strip("'\"").strip()
-    if not cleaned:
-        return True
-    lowered = cleaned.lower()
-    if lowered in {"redacted", "***redacted***", "set_via_env", "set-in-settings", "changeme", "example"}:
-        return True
-    if lowered == "bearer":
-        return True
-    if lowered.startswith("bearer "):
-        bearer_value = cleaned[7:].strip()
-        if _secret_placeholder_value(bearer_value):
-            return True
-    if lowered in {"str", "string", "int", "float", "bool", "none", "null", "undefined"}:
-        return True
-    if lowered.startswith(("str ", "str|", "str |", "str)", "str):", "string ", "string|", "string |", "string)", "string):")):
-        return True
-    if lowered.startswith(("os.environ", "os.getenv", "process.env", "settings.", "api.get_settings")):
-        for literal in _re.findall(r"['\"]([^'\"]*)['\"]", cleaned):
-            if literal and not _secret_placeholder_value(literal) and not _secret_key_name(literal):
-                return False
-        return True
-    if lowered.startswith(("f\"", "f'")) and "{" in cleaned:
-        return True
-    if "settings" in lowered and any(word in lowered for word in ("configure", "configured", "set", "enter", "provide")):
-        return True
-    if "+" in cleaned and any(part in lowered for part in ("token", "key", "secret", "settings", "env")):
-        return True
-    if cleaned.startswith(("<", "${", "{")) and (cleaned.endswith((">", "}")) or cleaned.count("{") == 1):
-        return True
-    if _re.match(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\(?[^)]*\)?$", cleaned):
-        return True
-    if _re.match(r"^[A-Za-z_][A-Za-z0-9_]*\([^)]*\)$", cleaned):
-        return True
-    if _re.match(r"^[a-z_][a-z0-9_]*$", cleaned) and cleaned in {
-        "password",
-        "token",
-        "secret",
-        "api_key",
-        "auth_header",
-        "access_token",
-        "refresh_token",
-    }:
-        return True
-    if cleaned.isupper() and "_" in cleaned and not any(ch.isdigit() for ch in cleaned) and _secret_key_name(cleaned):
-        return True
-    return False
-
-
 def sanitize_tool_result_for_log(result: str) -> str:
     """Redact potential secrets before a public or durable projection."""
     if not isinstance(result, str) or len(result) < 20:
@@ -1187,27 +1317,12 @@ def sanitize_tool_args_for_log(
 ) -> Dict[str, Any]:
     """Sanitize tool arguments for logging: redact secrets, truncate large fields."""
 
-    def _redact_public_string(value: str) -> tuple[str, bool]:
-        try:
-            from ouroboros.observability import redact_projection
-
-            redacted = redact_projection(value)
-            return str(redacted.value), bool(redacted.records)
-        except Exception:
-            log.debug("Failed to run observability redactor for tool args", exc_info=True)
-            return sanitize_tool_result_for_log(value), sanitize_tool_result_for_log(value) != value
-
     def _sanitize_value(key: str, value: Any, depth: int) -> Any:
         if depth > 3:
             return {"_depth_limit": True}
         if key.lower() in _SECRET_KEYS:
             return "*** REDACTED ***"
         if isinstance(value, str):
-            redacted, did_redact = _redact_public_string(value)
-            if did_redact:
-                if len(redacted) > threshold:
-                    return f"<REDACTED_TRUNCATED:{key}:{len(redacted)}ch>"
-                return redacted
             if len(value) > threshold:
                 return f"<TRUNCATED:{key}:{len(value)}ch:sha={sha256_text(value)[:12]}>"
             return value
@@ -1223,17 +1338,19 @@ def sanitize_tool_args_for_log(
             return value
         except (TypeError, ValueError):
             log.debug("Failed to JSON serialize value in sanitize_tool_args", exc_info=True)
-            return {"_repr": repr(value)}
+            return {"_repr": sanitize_tool_result_for_log(repr(value))}
 
     try:
-        return {k: _sanitize_value(k, v, 0) for k, v in args.items()}
+        from ouroboros.observability import redact_projection
+
+        # Redact with the complete nested key context before limiting depth,
+        # list length or field size; a value alone loses DB_PASSWORD's meaning.
+        projected = redact_projection(args).value
+        return {k: _sanitize_value(k, v, 0) for k, v in projected.items()}
     except Exception:
         log.debug("Failed to sanitize tool arguments for logging", exc_info=True)
-        try:
-            return json.loads(json.dumps(args, ensure_ascii=False, default=str))
-        except Exception:
-            log.debug("Tool argument sanitization failed completely", exc_info=True)
-            return {"_error": "sanitization_failed"}
+        return {"_error": "sanitization_failed"}
+
 
 
 async def collect_evolution_metrics(repo_dir: str, data_dir: str | None = None) -> list[dict]:

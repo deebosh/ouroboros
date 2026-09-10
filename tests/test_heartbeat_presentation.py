@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 import pathlib
 import time
 import types
@@ -62,7 +61,6 @@ def test_root_heartbeat_carries_one_live_subtree_projection(tmp_path, monkeypatc
     _handle_task_heartbeat({"task_id": "root-hb", "phase": "running"}, ctx)
 
     frame = pushed[0]
-    assert frame["cost_usd_with_children"] == 76.82
     assert frame["accounted_upper_bound_usd_with_children"] == 76.82
     assert frame["cost_final"] is False
     assert frame["cost_with_children_partial"] is True
@@ -84,7 +82,7 @@ def test_child_heartbeat_does_not_read_or_publish_live_cost(tmp_path, monkeypatc
     _handle_task_heartbeat({"task_id": "child-hb", "phase": "running"}, ctx)
 
     assert "cost_accounting_status" not in pushed[0]
-    assert "cost_usd_with_children" not in pushed[0]
+    assert "accounted_upper_bound_usd_with_children" not in pushed[0]
 
 
 def test_root_heartbeat_keeps_ledger_failure_honest(tmp_path, monkeypatch):
@@ -101,7 +99,6 @@ def test_root_heartbeat_keeps_ledger_failure_honest(tmp_path, monkeypatch):
 
     frame = pushed[0]
     assert frame["cost_accounting_status"] == "unavailable"
-    assert frame["cost_usd_with_children"] is None
     assert frame["accounted_upper_bound_usd_with_children"] is None
     assert frame["cost_final"] is False
 
@@ -121,7 +118,7 @@ def test_root_heartbeat_omits_empty_or_legacy_only_cost(tmp_path, monkeypatch):
     _handle_task_heartbeat({"task_id": "root-empty", "phase": "running"}, ctx)
 
     assert "cost_accounting_status" not in pushed[0]
-    assert "cost_usd_with_children" not in pushed[0]
+    assert "accounted_upper_bound_usd_with_children" not in pushed[0]
 
 
 def test_root_heartbeat_keeps_unknown_zero_cost_nullable_and_measured_zero_numeric(
@@ -142,7 +139,6 @@ def test_root_heartbeat_keeps_unknown_zero_cost_nullable_and_measured_zero_numer
     _handle_task_heartbeat({"task_id": "root-unknown", "phase": "running"}, ctx)
     unknown = pushed[0]
     assert unknown["cost_accounting_status"] == "available"
-    assert unknown["cost_usd_with_children"] is None
     assert unknown["accounted_upper_bound_usd_with_children"] is None
     assert unknown["unknown_unmetered"] == 1
 
@@ -151,45 +147,39 @@ def test_root_heartbeat_keeps_unknown_zero_cost_nullable_and_measured_zero_numer
         "id": "root-free", "type": "task", "root_task_id": "root-free",
     })
     _handle_task_heartbeat({"task_id": "root-free", "phase": "running"}, ctx)
-    assert pushed[0]["cost_usd_with_children"] == 0.0
+    assert pushed[0]["accounted_upper_bound_usd_with_children"] == 0.0
 
 
-def test_retired_timeout_defaults_are_quiet_but_custom_value_is_loud(tmp_path, monkeypatch) -> None:
-    from supervisor import queue
+def test_a_retired_liveness_knob_leaves_no_deprecation_chatter(tmp_path, monkeypatch) -> None:
+    """Retirement is silent by construction, for the whole class.
 
-    monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)
-    queue.init(tmp_path, 600, 1800)
-    events = tmp_path / "logs" / "events.jsonl"
-    assert not events.exists()
-
-    queue.init(tmp_path, 601, 1800)
-    row = json.loads(events.read_text(encoding="utf-8"))
-    assert row["type"] == "deprecated_settings_ignored"
-    assert row["keys"] == ["OUROBOROS_SOFT_TIMEOUT_SEC"]
-
-
-def test_retired_planning_heartbeat_key_is_silent_and_dropped_on_load(
-    tmp_path, monkeypatch,
-) -> None:
-    """The planning-scout heartbeat knob is RETIRED with the scout swarm (plan-review
-    redesign 2026-08-15): ``config.RETIRED_SETTING_KEYS`` drops it on settings load, so
-    there is no saved value left to be loud about, and the supervisor's timeout
-    deprecation path no longer names it (deleted consistently, not kept half-loud)."""
+    Three knobs (the planning-scout heartbeat, and D04's flat soft/hard wall
+    clock) were once accepted as typed no-ops that logged a
+    ``deprecated_settings_ignored`` row. ``config.RETIRED_SETTING_KEYS`` drops
+    all three on settings load, so there is no stored value left for the
+    supervisor to be loud about — and no half-retired key it still names."""
     from ouroboros import config
     from supervisor import queue
 
-    assert "OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC" in config.RETIRED_SETTING_KEYS
-    monkeypatch.setattr(queue, "_timeout_deprecation_emitted", False)
-    monkeypatch.setenv("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC", "121")
-    queue.init(tmp_path, 600, 1800)
-    assert not (tmp_path / "logs" / "events.jsonl").exists()
-    queue.refresh_timeouts_from_settings({"OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC": 121})
+    retired = ("OUROBOROS_PLAN_TASK_SWARM_HEARTBEAT_STALE_SEC",
+               "OUROBOROS_SOFT_TIMEOUT_SEC", "OUROBOROS_HARD_TIMEOUT_SEC")
+    for key in retired:
+        assert key in config.RETIRED_SETTING_KEYS
+        monkeypatch.setenv(key, "121")
+    queue.init(tmp_path)
+    queue.refresh_timeouts_from_settings({key: 121 for key in retired})
     assert not (tmp_path / "logs" / "events.jsonl").exists()
 
 
 def test_owner_visible_incidents_use_canonical_message_seam() -> None:
     repo = pathlib.Path(__file__).resolve().parents[1]
-    for relpath in ("server.py", "supervisor/workers.py"):
+    for relpath in (
+        "server.py",
+        "supervisor/workers.py",
+        # F2.2: spans moved out of workers.py keep the same seam invariant.
+        "supervisor/worker_assignment.py",
+        "supervisor/worker_health.py",
+    ):
         source = (repo / relpath).read_text(encoding="utf-8")
         assert "get_bridge().send_message(" not in source
         assert "bridge.send_message(" not in source
@@ -272,3 +262,58 @@ def test_cancel_event_keeps_requested_retry_id_for_owner_presentation(monkeypatc
         "toast_once": "stable-root:cancellation_fault",
         "cancel_physical_task_id": "physical-retry-7f3a",
     }
+
+
+def test_routine_cancel_outcomes_publish_nothing_to_the_owner_chat(monkeypatch) -> None:
+    """#624: custody publishes the settled truth itself (task_summary/salvage in
+    the task's own thread; the tool result to the calling agent). A second host
+    acknowledgement for cancelled / already-settled / not-found reached the
+    GLOBAL owner chat as an untyped assistant row with no task identity — and
+    for a pending-drop race the "had already finished" wording misstated the
+    causal history. Those three outcomes now publish nothing; only FAILED keeps
+    its typed progress incident (the test above)."""
+    import supervisor.queue as q
+    from supervisor.events import _handle_cancel_task
+
+    for outcome in (q.CANCEL_CANCELLED, q.CANCEL_ALREADY_SETTLED, q.CANCEL_NOT_FOUND):
+        sent = []
+        seen = []
+        monkeypatch.setattr(
+            q, "cancel_task_custody",
+            lambda task_id, **_kw: seen.append(task_id) or outcome,
+        )
+
+        class _Ctx:
+            DRIVE_ROOT = pathlib.Path("/unused")
+
+            @staticmethod
+            def load_state():
+                return {"owner_chat_id": 9}
+
+            @staticmethod
+            def send_with_budget(*args, **kwargs):
+                sent.append((args, kwargs))
+
+        _handle_cancel_task({"task_id": "child-A", "requested_task_id": "child-A"}, _Ctx())
+        assert seen == ["child-A"], outcome  # custody still runs
+        assert sent == [], (outcome, sent)   # no Main-chat speech, no untyped row
+
+    # A missing task id never reaches custody and still says nothing.
+    sent = []
+    monkeypatch.setattr(q, "cancel_task_custody", lambda task_id, **_kw: q.CANCEL_CANCELLED)
+
+    class _Ctx2:
+        @staticmethod
+        def load_state():
+            return {"owner_chat_id": 9}
+
+        @staticmethod
+        def send_with_budget(*args, **kwargs):
+            sent.append((args, kwargs))
+
+    _handle_cancel_task({"task_id": ""}, _Ctx2())
+    assert sent == []
+    # The handler no longer carries the prose that leaked: source pin.
+    src = inspect.getsource(_handle_cancel_task)
+    for leaked in ("teardown confirmed", "had already finished", "no such live task"):
+        assert leaked not in src

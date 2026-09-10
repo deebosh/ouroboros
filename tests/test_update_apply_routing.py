@@ -419,7 +419,9 @@ def test_unknown_strategy_is_400_and_never_falls_back_to_replace():
     response = asyncio.run(control.api_update_apply(_Request({"strategy": "force"})))
 
     assert response.status_code == 400
-    assert "unsupported" in _body(response)["error"]
+    # ABI-3 ingress schema: the closed strategy vocabulary refuses at the
+    # derived-schema gate before the bespoke check.
+    assert "strategy must be one of" in _body(response)["error"]
 
 
 def test_update_apply_rejects_non_object_json():
@@ -662,6 +664,13 @@ def test_assisted_resolver_boots_before_conflicts_reach_live_tree(
         "materialize_assisted_merge_live",
         lambda *_a: (calls.append("materialize") or True, "ok", "m0tree"),
     )
+    import supervisor.worker_chat_lane as worker_chat_lane
+
+    monkeypatch.setattr(
+        worker_chat_lane,
+        "preload_owner_control_path",
+        lambda: calls.append("preload") or [],
+    )
     monkeypatch.setattr(
         update_merge,
         "enqueue_assisted_resolution_task",
@@ -690,8 +699,10 @@ def test_assisted_resolver_boots_before_conflicts_reach_live_tree(
 
     assert response.status_code == expected_status
     if ready:
+        # The owner-control path is preloaded AFTER the resolver proof and BEFORE
+        # the first destructive step writes conflict markers into the tree (#283).
         assert calls == [
-            "close_gate", f"resolver_ready:{BASE}", "tx:materializing_assisted",
+            "close_gate", f"resolver_ready:{BASE}", "preload", "tx:materializing_assisted",
             "materialize", "tx:assisted_resolution", "enqueue",
         ]
     else:

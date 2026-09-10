@@ -11,6 +11,7 @@ self-healing daemon-thread pattern.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any, Dict
@@ -49,6 +50,12 @@ def _write_watch_marker(data: Dict[str, Any]) -> None:
 def ensure_update_watch_started() -> None:
     """Start the watcher thread, or RESTART it if it ever died."""
     global _watch_thread
+    # Never spawn the background watcher inside the test process — a daemon
+    # thread with a bare ``time.sleep`` loop trips conftest's thread-hygiene
+    # check on whichever test happens to run after the pool is first inited.
+    # (Same idiom as usage_ledger._fsync_path / utils under OUROBOROS_PYTEST_ACTIVE.)
+    if os.environ.get("OUROBOROS_PYTEST_ACTIVE") == "1":
+        return
     t = _watch_thread
     if t is not None and t.is_alive():
         return

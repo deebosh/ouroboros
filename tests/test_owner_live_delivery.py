@@ -170,6 +170,23 @@ class TestSendToolsLiveIntegration:
 
 
 class TestFinalAnswerSelection:
+    def test_deferred_mid_task_reply_stays_separate_from_the_live_final(self, tmp_path):
+        from ouroboros.task_finalization import deliver_final_message_live
+        from ouroboros.tools.control import _send_user_message
+
+        ctx = _ctx(event_queue=None)
+        ctx.drive_logs = lambda: tmp_path
+        assert "queued for delivery" in _send_user_message(ctx, "A separate reply while I work.")
+        ctx.pending_events.append({
+            "type": "send_message", "task_id": ctx.task_id, "chat_id": ctx.current_chat_id,
+            "text": "The final answer.", "is_progress": False,
+        })
+        q = _Queue()
+        assert deliver_final_message_live(q, ctx.pending_events, ctx.task_id)
+        assert [row["text"] for row in q.items] == ["The final answer."]
+        assert ctx.pending_events[0]["system_type"] == "proactive_message"
+        assert ctx.pending_events[0]["text"] == "A separate reply while I work."
+
     def test_final_beats_deferred_proactive_with_same_task_id(self):
         from ouroboros.task_finalization import deliver_final_message_live
 
@@ -187,7 +204,7 @@ class TestFinalAnswerSelection:
 
 class TestSupervisorPhotoChatZero:
     def test_handle_send_photo_delivers_to_chat_zero(self):
-        from supervisor.chat_delivery_events import _handle_send_photo
+        from supervisor.events_chat_delivery import _handle_send_photo
 
         sent = []
 

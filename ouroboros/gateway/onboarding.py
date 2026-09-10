@@ -10,8 +10,8 @@ transaction:
 
 1. re-prove FRESH-INSTALL status server-side — a browser boolean is a request,
    never an authority;
-2. validate the wizard payload through the SHARED setup validator and the
-   startup gate (a subscription alone never satisfies it, D-1);
+2. validate the wizard payload through the SHARED setup validator; a pending
+   subscription draft is completed from exact model transport discovery;
 3. apply the ordinary provider normalization before compiling task routes;
 4. compile truthful API/local task actors with zero daemon reads, or read ONE
    fresh Claudexor snapshot when subscriptions were declared;
@@ -32,6 +32,8 @@ the owner believes is live, and would only fail later, inside a real review.
 from __future__ import annotations
 
 import asyncio
+import threading
+import concurrent.futures
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -56,6 +58,8 @@ from ouroboros.gateway.owner_settings import (
     _owner_read_settings_raw,
     _owner_write_settings,
     post_commit_failure_response,
+    settings_document_digest,
+    SettingsDocumentBusy,
     settings_document_mutation,
     unsaved_error,
 )
@@ -74,6 +78,7 @@ from ouroboros.subscription_install_presets import (
     HarnessDiscovery,
     SubscriptionInstallPreset,
     compile_install_preset,
+    preview_api_reviewer_slots,
 )
 
 log = logging.getLogger(__name__)
@@ -443,7 +448,37 @@ def _read_harness_snapshot() -> Dict[str, Any]:
     panel uses (no second discovery path)."""
     from ouroboros.gateway.claudexor_accounts import _status_payload
 
-    return _status_payload(True)
+    from ouroboros.gateway.models import _subscription_model_catalog
+
+    snapshot = _status_payload(True)
+    snapshot["model_catalog"] = _subscription_model_catalog()["items"]
+    return snapshot
+
+
+# The snapshot read runs on its OWN single worker, and one read is shared by
+# every completion attempt while it is in flight: a read that outlived its
+# bound (issue #464's wedged owned-daemon initialization) is abandoned by the
+# awaiting request but not by the executor — a retry JOINS it instead of
+# starting another blocked thread. Without this, every timed-out completion
+# would consume one worker of the loop's shared default executor for good,
+# and once that pool was exhausted every other ``to_thread`` endpoint would
+# queue behind the wedge.
+_snapshot_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="onboarding-snapshot",
+)
+_snapshot_inflight: Optional["concurrent.futures.Future[Dict[str, Any]]"] = None
+_snapshot_lock = threading.Lock()
+
+
+def _snapshot_read_future() -> "concurrent.futures.Future[Dict[str, Any]]":
+    """The in-flight snapshot read, started if none is running."""
+    global _snapshot_inflight
+    with _snapshot_lock:
+        future = _snapshot_inflight
+        if future is None or future.done():
+            future = _snapshot_executor.submit(_read_harness_snapshot)
+            _snapshot_inflight = future
+        return future
 
 
 async def resolve_install_preset(
@@ -457,8 +492,27 @@ async def resolve_install_preset(
     discoveries: Sequence[HarnessDiscovery] = ()
     capability: Mapping[str, Any] = {}
     if subscriptions_connected:
+        from ouroboros.config import get_onboarding_snapshot_timeout_sec
+
+        timeout_sec = get_onboarding_snapshot_timeout_sec()
         try:
-            snapshot = await asyncio.to_thread(_read_harness_snapshot)
+            snapshot = await asyncio.wait_for(
+                asyncio.wrap_future(_snapshot_read_future()), timeout=timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            # A wedged owned-daemon initialization (a lock held by an earlier
+            # read that never returned, issue #464) must not hold the wizard on
+            # "Saving..." forever: the read is abandoned to its thread and the
+            # completion answers with the same typed, skippable failure the
+            # dead-engine case uses.
+            log.warning(
+                "Claudexor snapshot for onboarding presets did not answer within %ss",
+                timeout_sec,
+            )
+            return None, PresetFailure(
+                "daemon_timeout",
+                f"the Claudexor status read did not answer within {timeout_sec}s",
+            )
         except Exception as exc:  # a dead/broken engine is a failure, not a crash
             log.warning("Claudexor snapshot for onboarding presets failed", exc_info=True)
             return None, PresetFailure("daemon_unavailable", f"{type(exc).__name__}: {exc}")
@@ -478,6 +532,7 @@ async def resolve_install_preset(
         configured_subagents=owner_draft,
         source=SOURCE_CONFIGURED if owner_draft is not None else SOURCE_ONBOARDING_DEFAULT,
         capability=capability,
+        model_catalog=snapshot.get("model_catalog") or (),
     )
     if not preset.ok:
         refusal = preset.refusal.as_dict() if preset.refusal else {}
@@ -554,7 +609,7 @@ def _write_precondition(expect_preset: bool, expect_safety_light: bool, read_fin
         # keeps the transaction honest: the owner's other change survives and
         # this one is told, in the seam that already exists for exactly this,
         # that nothing was written.
-        if _settings_fingerprint() != read_fingerprint:
+        if settings_document_digest() != read_fingerprint:
             # Deliberately OVER-refuses in two narrow cases rather than risk
             # under-refusing in any: a write that lands in the microseconds
             # between the digest and the read is rejected even though this
@@ -581,40 +636,6 @@ def _write_precondition(expect_preset: bool, expect_safety_light: bool, read_fin
 # ---------------------------------------------------------------------------
 
 
-def _settings_fingerprint() -> str:
-    """What the settings document looked like at a given instant.
-
-    Completion derives the WHOLE document from an unlocked read and then writes
-    that whole dictionary back. Between the two, another owner write can land —
-    and every key it changed would be silently restored to the value this
-    request read, while the owner is told the save succeeded. The fingerprint
-    turns that into something the locked precondition can notice.
-
-    A digest of the raw bytes, not of a parsed dict: it is the file this write
-    replaces.
-
-    Exactly two answers can ever COMPARE EQUAL: a digest, and the absent
-    sentinel. An unreadable file is neither — it is returned as a value that
-    never equals anything, itself included, because a stable
-    ``unreadable:PermissionError`` token on both sides would let a swap between
-    two different unreadable files satisfy the check. That is fail-OPEN, and it
-    is reachable: the loader silently falls back to defaults when it cannot
-    read, while the atomic rename still lands because the parent directory is
-    writable. So an unreadable settings file refuses the write.
-    """
-    from hashlib import sha256
-    from uuid import uuid4
-
-    from ouroboros.config import SETTINGS_PATH
-
-    try:
-        return sha256(SETTINGS_PATH.read_bytes()).hexdigest()
-    except FileNotFoundError:
-        return "absent"
-    except OSError as exc:
-        return f"unreadable:{type(exc).__name__}:{uuid4()}"
-
-
 def _prepared_settings(
     body: Dict[str, Any],
     *,
@@ -633,13 +654,10 @@ def _prepared_settings(
     if error:
         return old_settings, {}, str(error)
     normalized, _changed, _keys = apply_runtime_provider_defaults(prepared)
-    if not has_startup_ready_provider(normalized):
-        # D-1: the launch gate is API-key-or-local-model. An agent
-        # subscription is an amplifier, never the thing that satisfies it.
+    connected, skipped = parse_subscription_intent(body)
+    if not has_startup_ready_provider(normalized) and not (connected and not skipped):
         return old_settings, {}, (
-            "Add at least one API key or a local model before finishing. An "
-            "agent subscription strengthens Ouroboros but cannot run the "
-            "main model on its own."
+            "Connect a model-capable subscription, an API key, or a local model before finishing."
         )
     return old_settings, normalized, ""
 
@@ -710,6 +728,8 @@ async def api_onboarding_subagents_preview(request: Request) -> JSONResponse:
     assert preset is not None
     return JSONResponse({
         "ok": True,
+        "model_settings": dict(preset.model_settings),
+        "reviewer_slots": preset.reviewer_slots or preview_api_reviewer_slots(current),
         "available_subagents": configured_subagents_dict(
             normalize_configured_subagents(preset.available_subagents)[0]
         ),
@@ -796,8 +816,12 @@ async def api_onboarding_complete(request: Request) -> JSONResponse:
     # this request goes on to derive is NEWER than the fingerprint, the locked
     # precondition sees the mismatch and refuses. Taken the other way round the
     # same interleaving would be invisible, and this is the one ordering that
-    # fails closed.
-    read_fingerprint = _settings_fingerprint()
+    # fails closed. Completion derives the WHOLE document from an unlocked read
+    # and writes that whole dictionary back, so without this a concurrent owner
+    # write would be silently restored key by key while the owner is told the
+    # save succeeded. The digest is the one the single-decision owner endpoints
+    # ask the same staleness question with.
+    read_fingerprint = settings_document_digest()
     old_settings, current, error = _prepared_settings(body)
     if error:
         return unsaved_error(error, 400)
@@ -856,6 +880,26 @@ async def api_onboarding_complete(request: Request) -> JSONResponse:
         # R8 ordering: provider normalization has ALREADY run over `current`;
         # the structured preset keys land on top of it, never through it.
         current.update(preset.settings_keys())
+        # Finish receives the visible editor draft. A value equal to a shipped
+        # default is still explicit owner intent; only omitted fields (or an
+        # empty Main awaiting its first proposal) may be authored here.
+        current.update({key: value for key, value in preset.model_settings.items()
+                        if key not in body or (key == "OUROBOROS_MODEL" and not body[key])})
+
+    if not has_startup_ready_provider(current):
+        return unsaved_error("The connected accounts do not provide a Main model. Connect Codex, an API provider, or a local model.",
+                             400, code="model_source_unavailable")
+
+    if "OUROBOROS_REVIEWER_SLOTS" in body:
+        from ouroboros.reviewer_slot_config import reviewer_slot_save_check
+        raw_slots = body["OUROBOROS_REVIEWER_SLOTS"]
+        if not isinstance(raw_slots, str):
+            return unsaved_error("Reviewer slots must use their serialized JSON contract.", 400)
+        try:
+            reviewer_slot_save_check(raw_slots, subagents_raw=current.get(SUBAGENTS_SETTING))
+        except ValueError as exc:
+            return unsaved_error(str(exc), 400, code="invalid_reviewer_slots")
+        current["OUROBOROS_REVIEWER_SLOTS"] = raw_slots
 
     # The durable completion fact rides in the SAME write, whatever the preset
     # did: a completion that connected nothing must still close the window.
@@ -863,51 +907,71 @@ async def api_onboarding_complete(request: Request) -> JSONResponse:
     pending_mode = normalize_runtime_mode(current.get("OUROBOROS_RUNTIME_MODE"))
     active_mode = get_runtime_mode()
     boundary = CommitBoundary()
-    try:
-        await asyncio.to_thread(
-            _persist, request, old_settings, current, pending_mode, safety_light,
-            install_preset_applied, boundary, read_fingerprint,
-        )
-    except Exception as exc:
-        if boundary.committed:
-            # The transaction LANDED; a post-save step did not. Saying
-            # "nothing was saved" here would send the owner back through an
-            # onboarding that is already complete (BIBLE P1).
-            return post_commit_failure_response(exc, boundary)
-        if isinstance(exc, SettingsPreconditionFailed):
-            return unsaved_error(str(exc), 409, code="onboarding_state_changed")
-        if isinstance(exc, SettingsLockUnavailable):
-            # NO `can_skip`. That flag means "there is a different button that
-            # WILL work", and the skip is the same request to the same endpoint,
-            # which takes the same lock — offering it under contention promises
-            # an escape that leads straight back here. `can_skip` belongs to the
-            # preset-verification failures, where finishing without agent
-            # defaults genuinely bypasses the thing that failed.
-            return unsaved_error(str(exc), 503, code="settings_locked")
-        if isinstance(exc, PermissionError):
-            return unsaved_error(str(exc), 403)
-        log.exception("onboarding completion failed")
-        return unsaved_error(f"{type(exc).__name__}: {exc}", 500)
 
-    _owner_audit(request, "onboarding_complete", {
-        "runtime_mode": pending_mode,
-        "preset": preset_reason,
-        "preset_harnesses": list(preset.connected) if preset else [],
-        "subscriptions_connected": subscriptions_connected,
-    })
-    payload: Dict[str, Any] = {
-        "ok": True,
-        "status": "saved",
-        "runtime_mode": pending_mode,
-        "restart_required": active_mode != pending_mode,
-        "preset": {
-            "applied": preset is not None,
-            "reason": preset_reason,
-            "harnesses": list(preset.connected) if preset else [],
-            "receipt": dict(preset.receipt) if preset else {},
-        },
-    }
-    return JSONResponse(payload)
+    def _complete_locked(request: Request, _body: Any) -> JSONResponse:
+        # ONE synchronous body — the persist, its exception mapping and the
+        # success audit — run through the shared bounded writer seam
+        # (``settings._run_settings_writer``), so this save inherits the
+        # initiating-writer cap (twice the document-lock bound) and the typed
+        # 503 ``settings_save_timeout`` with ``saved: null`` when the body
+        # wedges in its post-commit effects. A bare ``to_thread`` here used to
+        # be the one settings write with no cap at all: the wizard sat on
+        # "Saving..." for as long as the hot-reload took. ``SettingsDocumentBusy``
+        # is left to the seam, which answers the same 503 ``settings_busy``
+        # this endpoint used to map itself (issue #464's second half).
+        try:
+            _persist(
+                request, old_settings, current, pending_mode, safety_light,
+                install_preset_applied, boundary, read_fingerprint,
+            )
+        except SettingsDocumentBusy:
+            raise
+        except Exception as exc:
+            if boundary.committed:
+                # The transaction LANDED; a post-save step did not. Saying
+                # "nothing was saved" here would send the owner back through an
+                # onboarding that is already complete (BIBLE P1).
+                return post_commit_failure_response(exc, boundary)
+            if isinstance(exc, SettingsPreconditionFailed):
+                return unsaved_error(str(exc), 409, code="onboarding_state_changed")
+            if isinstance(exc, SettingsLockUnavailable):
+                # NO `can_skip`. That flag means "there is a different button that
+                # WILL work", and the skip is the same request to the same endpoint,
+                # which takes the same lock — offering it under contention promises
+                # an escape that leads straight back here. `can_skip` belongs to the
+                # preset-verification failures, where finishing without agent
+                # defaults genuinely bypasses the thing that failed.
+                return unsaved_error(str(exc), 503, code="settings_locked")
+            if isinstance(exc, PermissionError):
+                return unsaved_error(str(exc), 403)
+            log.exception("onboarding completion failed")
+            return unsaved_error(f"{type(exc).__name__}: {exc}", 500)
+
+        _owner_audit(request, "onboarding_complete", {
+            "runtime_mode": pending_mode,
+            "preset": preset_reason,
+            "preset_harnesses": list(preset.connected) if preset else [],
+            "subscriptions_connected": subscriptions_connected,
+        })
+        payload: Dict[str, Any] = {
+            "ok": True,
+            "status": "saved",
+            "runtime_mode": pending_mode,
+            "restart_required": active_mode != pending_mode,
+            "preset": {
+                "applied": preset is not None,
+                "reason": preset_reason,
+                "harnesses": list(preset.connected) if preset else [],
+                "receipt": dict(preset.receipt) if preset else {},
+            },
+        }
+        return JSONResponse(payload)
+
+    # Lazy, in the direction ``_persist`` already imports (settings.py imports
+    # nothing from this module).
+    from ouroboros.gateway.settings import _run_settings_writer
+
+    return await _run_settings_writer(_complete_locked, request, body)
 
 
 __all__ = [

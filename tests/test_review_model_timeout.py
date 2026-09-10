@@ -2,20 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 
-def test_query_model_timeout_becomes_error_actor(monkeypatch):
+def test_query_model_timeout_becomes_error_actor(monkeypatch, request):
     from ouroboros.tools.review import _query_model
     from ouroboros.observability import read_blob_ref
     from ouroboros.tools.review_helpers import review_drive_root
 
     captured = {}
+    release = threading.Event()
+    entered = threading.Event()
+
+    def finish_physical_operation():
+        release.set()
+        if worker := captured.get("worker"):
+            worker.join(timeout=5)
+            assert not worker.is_alive(), "the test owns its late review operation"
+
+    request.addfinalizer(finish_physical_operation)
 
     class HangingClient:
         async def chat_async(self, **kwargs):
-            captured.update(kwargs)
-            await asyncio.sleep(1)
+            captured.update(kwargs, worker=threading.current_thread())
+            entered.set()
+            assert release.wait(5), "the caller must release the controlled review"
             return {"content": "late"}, {}
 
     monkeypatch.setenv("OUROBOROS_REVIEW_MODEL_TIMEOUT_SEC", "0.01")
@@ -31,6 +43,7 @@ def test_query_model_timeout_becomes_error_actor(monkeypatch):
         )
     )
 
+    assert entered.wait(5), "the physical reviewer must enter before its facts are inspected"
     assert model == "fake/reviewer"
     assert headers is None
     assert result["error"].startswith("Error: Timeout after 0.01s")

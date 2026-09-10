@@ -205,29 +205,37 @@ def test_update_self_reached_through_bg_execute_tool(tmp_path):
         owner_chat_id_fn=lambda: None,
     )
 
-    # offered to the wakeup LLM this cycle
-    schema_names = {s.get("function", {}).get("name") for s in bc._tool_schemas()}
-    assert "update_self" in schema_names
+    try:
+        # offered to the wakeup LLM this cycle
+        schema_names = {s.get("function", {}).get("name") for s in bc._tool_schemas()}
+        assert "update_self" in schema_names
 
-    # the whitelist gate: a bogus name is refused, update_self is not
-    bogus = bc._execute_tool(
-        {"function": {"name": "definitely_not_a_bg_tool", "arguments": "{}"}},
-        all_pending_events=[],
-    )
-    assert "not available in background mode" in bogus
+        # the whitelist gate: a bogus name is refused, update_self is not
+        bogus = bc._execute_tool(
+            {"function": {"name": "definitely_not_a_bg_tool", "arguments": "{}"}},
+            all_pending_events=[],
+        )
+        assert "not available in background mode" in bogus
 
-    out = bc._execute_tool(
-        {"function": {"name": "update_self", "arguments": _json.dumps(
-            {"content": "BG path check — reached update_self from the wakeup loop."})}},
-        all_pending_events=[],
-    )
-    assert "not available in background mode" not in out
+        out = bc._execute_tool(
+            {"function": {"name": "update_self", "arguments": _json.dumps(
+                {"content": "BG path check — reached update_self from the wakeup loop."})}},
+            all_pending_events=[],
+        )
+        assert "not available in background mode" not in out
 
-    self_md = (drive_root / "memory" / "self.md").read_text(encoding="utf-8")
-    assert "reached update_self from the wakeup loop" in self_md
-    journal = [
-        _json.loads(x)
-        for x in (drive_root / "memory" / "self_journal.jsonl").read_text(encoding="utf-8").splitlines()
-        if x.strip()
-    ]
-    assert journal and journal[-1]["type"] == "self_appended"
+        self_md = (drive_root / "memory" / "self.md").read_text(encoding="utf-8")
+        assert "reached update_self from the wakeup loop" in self_md
+        journal = [
+            _json.loads(x)
+            for x in (drive_root / "memory" / "self_journal.jsonl").read_text(encoding="utf-8").splitlines()
+            if x.strip()
+        ]
+        assert journal and journal[-1]["type"] == "self_appended"
+    finally:
+        # _execute_tool routes every call through the sticky
+        # StatefulToolExecutor, whose ThreadPoolExecutor worker is
+        # non-daemon; the test owns this bc and never start()s it, so
+        # stop() would no-op — shut the executor down explicitly or the
+        # "stateful_tool_0" thread leaks and poisons the xdist worker.
+        bc._tool_executor.shutdown(wait=True)

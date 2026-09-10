@@ -27,6 +27,7 @@ def test_model_catalog_tags_provider_values(monkeypatch):
         "CLOUDRU_FOUNDATION_MODELS_API_KEY": "cloudru-key",
         "GIGACHAT_CREDENTIALS": "giga-creds",
         "MINIMAX_API_KEY": "minimax-key",
+        "DEEPSEEK_API_KEY": "deepseek-key",
     })
 
     async def fake_openrouter(_client, _api_key):
@@ -46,6 +47,7 @@ def test_model_catalog_tags_provider_values(monkeypatch):
             "openai-compatible": "compatible-pro",
             "cloudru": "cloudru-pro",
             "minimax": "MiniMax-M3",
+            "deepseek": "deepseek-v4-pro",
         }[provider_id]
         return [model_catalog_api._build_model_catalog_entry(provider_id, provider_label, model_id, model_id)]
 
@@ -68,9 +70,10 @@ def test_model_catalog_tags_provider_values(monkeypatch):
     assert "openai-compatible::compatible-pro" in values
     assert "cloudru::cloudru-pro" in values
     assert "gigachat::giga-pro" in values
-    # MiniMax rides the shared OpenAI-compatible live fetcher (GET /v1/models on
-    # the region host), so the fake returns exactly one model for it.
+    # MiniMax and DeepSeek ride the shared OpenAI-compatible live fetcher
+    # (GET /v1/models on their fixed hosts), so the fake returns one model each.
     assert "minimax::MiniMax-M3" in values
+    assert "deepseek::deepseek-v4-pro" in values
     assert payload["errors"] == []
 
     openrouter_item = items_by_value["anthropic/claude-sonnet-4-6"]
@@ -207,13 +210,16 @@ def test_model_catalog_classifies_httpx_error_stage(monkeypatch):
     assert payload["errors"][0]["stage"] == "connect"
 
 
-def test_model_catalog_no_longer_uses_requests_or_to_thread():
+def test_direct_api_catalog_loaders_keep_the_native_async_transport():
+    # The owned Claudexor gateway is synchronous and is explicitly offloaded
+    # at the endpoint boundary. Direct API fetchers must remain natively async.
     source = "\n".join(
         inspect.getsource(obj)
         for obj in (
-            model_catalog_api.api_model_catalog,
             model_catalog_api._provider_specs,
             model_catalog_api._load_provider,
+            model_catalog_api._fetch_openai_compatible_model_catalog,
+            model_catalog_api._fetch_openrouter_model_catalog,
         )
     )
     assert "import requests" not in source

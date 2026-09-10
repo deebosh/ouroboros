@@ -148,12 +148,16 @@ function primaryHtmlFor(slug, verdict, pending) {
 }
 
 
-function secondaryHtmlFor(verdict, rawSkill) {
-    if (verdict.action !== 'wait_pr') return '';
+function secondaryHtmlFor(verdict, rawSkill, pending) {
+    if (verdict.badges.includes('conflict')
+        || (!verdict.badges.includes('submitted_pr') && !verdict.copy_facts.edited_since_submission)) return '';
     const published = rawSkill?.published && typeof rawSkill.published === 'object' ? rawSkill.published : {};
     const href = safeExternalHrefAttr(published.pr_url);
     if (!href) return '';
-    return `<a class="btn btn-default" href="${href}" target="_blank" rel="noopener noreferrer">PR #${escapeHtml(String(verdict.copy_facts.receipt_pr ?? ''))}</a>`;
+    return `<a class="btn btn-default" href="${href}" target="_blank" rel="noopener noreferrer">PR #${escapeHtml(String(verdict.copy_facts.receipt_pr ?? ''))}</a>
+        <button class="btn btn-ghost" data-oh-clear-publication="${escapeHtml(rawSkill.name)}"
+                data-oh-receipt="${escapeHtml(JSON.stringify(published))}" ${pending ? 'disabled' : ''}>Clear local submission</button>
+        <span class="muted">Local record only; the PR remains on GitHub.</span>`;
 }
 
 
@@ -250,7 +254,7 @@ export function initOuroborosHub(pane, controlsHost = null) {
             installed,
             lifecycle,
             primaryHtml: primaryHtmlFor(slug, verdict, pending),
-            secondaryHtml: secondaryHtmlFor(verdict, rawSkill),
+            secondaryHtml: secondaryHtmlFor(verdict, rawSkill, pending),
             badgesHtml: badgesHtmlFor(verdict),
             official: true,
         });
@@ -351,6 +355,22 @@ export function initOuroborosHub(pane, controlsHost = null) {
         });
     }
 
+    async function clearPublication(name, expected) {
+        try {
+            const data = await fetchJson(`/api/marketplace/ouroboroshub/publication/${encodeURIComponent(name)}/clear`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ expected_published: expected }),
+            });
+            if (!data.ok) throw resultError(data);
+            emitSkillLifecycle('submission cleared', name, data);
+            await refresh();
+            show(`${name}: local submission record cleared`, 'ok');
+        } catch (err) {
+            show(`${name}: ${typedErrorText(err)}`, 'danger');
+        }
+    }
+
     async function runAction(slug, action) {
         const item = state.results.find((row) => String(row.slug || '') === slug);
         if (!item) return;
@@ -440,6 +460,16 @@ export function initOuroborosHub(pane, controlsHost = null) {
         renderCards();
     });
     results.addEventListener('click', async (event) => {
+        const clearButton = event.target.closest('[data-oh-clear-publication]');
+        if (clearButton) {
+            clearButton.disabled = true;
+            try {
+                await clearPublication(clearButton.dataset.ohClearPublication, JSON.parse(clearButton.dataset.ohReceipt));
+            } finally {
+                clearButton.disabled = false;
+            }
+            return;
+        }
         const dismiss = event.target.closest('[data-oh-dismiss]');
         if (dismiss) {
             clearPending(dismiss.dataset.ohDismiss);

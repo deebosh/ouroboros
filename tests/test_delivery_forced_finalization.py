@@ -20,9 +20,9 @@ def _forced_test_context(tmp_path, *, usage=None, incoming=None):
     trace = {"tool_calls": [], "reasoning_notes": []}
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     registry._ctx.task_id = "parent1"
+    registry._ctx.task_contract = {"expected_output": "A verified result"}
     registry._ctx.task_metadata = {
-        "budget_drive_root": str(tmp_path),
-        "root_task_id": "parent1",
+        "budget_drive_root": str(tmp_path), "root_task_id": "parent1",
     }
     ctx = loop._RoundLimitContext(
         [{"role": "user", "content": "task"}],
@@ -250,8 +250,8 @@ def test_blocking_open_plan_round_rail_preserves_useful_candidate(tmp_path, monk
     text, usage, _returned_trace = loop._handle_round_limit(limit_ctx)
 
     assert text.startswith("Useful verified work completed before the rail.")
-    assert "Blocking plan review remained open" in text
-    assert "`round_limit`" in text
+    assert "Blocking plan review remained open" in usage["terminal_host_notice"]
+    assert "`round_limit`" in usage["terminal_host_notice"]
     assert usage["reason_code"] == "round_limit"
 
 
@@ -371,8 +371,8 @@ def test_physical_budget_exit_discloses_stale_candidate_after_service_teardown(
     candidate = registry._ctx._delivery_candidate
     assert text == candidate.full_text
     assert text.startswith(old.full_text)
-    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in text
-    assert "does not claim to incorporate it" in text
+    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in usage["terminal_host_notice"]
+    assert "does not claim to incorporate it" in usage["terminal_host_notice"]
     assert candidate is not old
     assert candidate.content_sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert candidate.revision > old.revision
@@ -394,7 +394,7 @@ def test_physical_budget_exit_discloses_stale_candidate_after_service_teardown(
     assert usage["reason_code"] == "budget_exhausted"
 
 
-def test_budget_dispatch_rail_revises_candidate_for_undispositioned_child_suffix(
+def test_budget_dispatch_rail_keeps_candidate_beside_undispositioned_child_notice(
     tmp_path, monkeypatch,
 ):
     import hashlib
@@ -410,15 +410,7 @@ def test_budget_dispatch_rail_revises_candidate_for_undispositioned_child_suffix
         "Complete answer retained before the budget rail.",
         control="replace",
     )
-    original.acceptance_binding = {
-        "candidate_sha256": original.content_sha256,
-        "evidence_revision": original.evidence_revision,
-        "acceptance_status": "pass",
-        "authoritative": True,
-        "panel_id": "panel-old",
-        "binding_hash": "binding-old",
-    }
-    loop._publish_delivery_candidate(registry, original, trace)
+    _bind_host_pass(loop, registry, trace, original)
     monkeypatch.setattr(
         accounting,
         "usage_breakdown",
@@ -445,12 +437,12 @@ def test_budget_dispatch_rail_revises_candidate_for_undispositioned_child_suffix
     candidate = registry._ctx._delivery_candidate
     assert text == candidate.full_text
     assert text.startswith(original.full_text)
-    assert "child1 [running]" in text
+    assert "child1 [running]" in usage["terminal_host_notice"]
     assert candidate.content_sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert candidate.content_sha256 != original.content_sha256
-    assert candidate.acceptance_binding["acceptance_status"] == "unaccepted"
-    assert candidate.acceptance_binding["authoritative"] is False
-    assert returned_trace["forced_finalization"]["source"] == "budget_preserve_with_host_suffix"
+    assert candidate is original
+    assert candidate.acceptance_binding["acceptance_status"] == "pass"
+    assert candidate.acceptance_binding["authoritative"] is True
+    assert returned_trace["forced_finalization"]["source"] == "budget_preserve"
     assert usage["reason_code"] == "budget_exhausted"
 
 
@@ -512,8 +504,8 @@ def test_budget_latch_preserves_stale_candidate_with_resume_disclosure(
 
     rebound = registry._ctx._delivery_candidate
     assert text.startswith(answer)
-    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in text
-    assert "has not been regenerated or accepted" in text
+    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in usage["terminal_host_notice"]
+    assert "has not been regenerated or accepted" in usage["terminal_host_notice"]
     assert rebound is not old
     assert rebound.content_sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert rebound.revision > old.revision
@@ -575,8 +567,8 @@ def test_provider_unavailable_preserves_stale_candidate_with_resume_disclosure(
     rebound = registry._ctx._delivery_candidate
     assert forced_calls == 1
     assert text.startswith(answer)
-    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in text
-    assert "does not claim to incorporate it" in text
+    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in usage["terminal_host_notice"]
+    assert "does not claim to incorporate it" in usage["terminal_host_notice"]
     assert rebound is not old
     assert rebound.content_sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert rebound.revision > old.revision
@@ -771,7 +763,7 @@ def test_deadline_exhausted_forced_finalization_keeps_local_reason(tmp_path, mon
     assert outcome["outcome_axes"]["execution"]["reason_code"] == "deadline_local"
 
 
-def test_normal_host_suffix_is_inside_candidate_and_panel_subject(tmp_path, monkeypatch):
+def test_normal_host_notice_stays_outside_candidate_and_panel_subject(tmp_path, monkeypatch):
     import hashlib
 
     _write_child(tmp_path)
@@ -802,9 +794,10 @@ def test_normal_host_suffix_is_inside_candidate_and_panel_subject(tmp_path, monk
     )
 
     assert result is not None
-    text, _usage, returned_trace = result
+    text, usage, returned_trace = result
     assert text == captured["content"]
-    assert text.count("DEFERRED CHILD RESULTS") == 1
+    assert text == "Base complete answer."
+    assert usage["terminal_host_notice"].count("DEFERRED CHILD RESULTS") == 1
     assert returned_trace["delivery_candidate"]["content_sha256"] == hashlib.sha256(
         text.encode("utf-8")
     ).hexdigest()
@@ -812,7 +805,7 @@ def test_normal_host_suffix_is_inside_candidate_and_panel_subject(tmp_path, monk
     assert registry._ctx._delivery_candidate.model_text == "Base complete answer."
 
 
-def test_forced_retained_candidate_suffix_creates_new_unaccepted_revision(
+def test_forced_retained_candidate_notice_preserves_unchanged_revision(
     tmp_path, monkeypatch,
 ):
     import hashlib
@@ -822,16 +815,10 @@ def test_forced_retained_candidate_suffix_creates_new_unaccepted_revision(
     original = loop._replace_delivery_candidate(
         registry, ctx, trace, "Retained complete answer.", control="candidate",
     )
-    original.acceptance_binding = {
-        "candidate_sha256": original.content_sha256,
-        "acceptance_status": "pass",
-        "authoritative": True,
-        "panel_id": "old-panel",
-        "binding_hash": "old-binding",
-    }
+    _bind_host_pass(loop, registry, trace, original)
     monkeypatch.setattr(loop, "call_llm_with_retry", lambda *_a, **_k: (None, 0.0))
 
-    text, _usage, returned_trace = loop._forced_final_answer(
+    text, usage, returned_trace = loop._forced_final_answer(
         ctx,
         prompt="finalize",
         fallback_text="host fallback",
@@ -840,11 +827,11 @@ def test_forced_retained_candidate_suffix_creates_new_unaccepted_revision(
 
     candidate = registry._ctx._delivery_candidate
     assert text == candidate.full_text
-    assert "NOTE: finalized" in text
-    assert candidate.revision == original.revision + 1
+    assert "NOTE: finalized" in usage["terminal_host_notice"]
+    assert candidate is original
     assert candidate.content_sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
-    assert candidate.acceptance_binding["acceptance_status"] == "unaccepted"
-    assert candidate.acceptance_binding["authoritative"] is False
+    assert candidate.acceptance_binding["acceptance_status"] == "pass"
+    assert candidate.acceptance_binding["authoritative"] is True
     assert returned_trace["delivery_candidate"]["content_sha256"] == candidate.content_sha256
 
 
@@ -945,8 +932,8 @@ def test_forced_model_call_rebinds_latest_child_result_and_suffix(tmp_path, monk
     )
     assert calls == 1
     assert latest_hash != initial_hash
-    assert "child1 [completed]" in text
-    assert "child1 [running]" not in text
+    assert "child1 [completed]" in ctx.accumulated_usage["terminal_host_notice"]
+    assert "child1 [running]" not in ctx.accumulated_usage["terminal_host_notice"]
     assert text == candidate.full_text
     assert candidate.content_sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert candidate.evidence_revision == evidence_revision
@@ -1010,6 +997,51 @@ def test_production_budget_wrapup_propagates_budget_exceeded(tmp_path, monkeypat
                 state=task_pacing.COST_CEILING_ACTIVE, ceiling_usd=4.0,
             ),
         )
+
+
+def test_wrapup_is_forced_while_real_ledger_admission_still_fits(tmp_path, monkeypatch):
+    """The post-round rail reserves the last affordable send before another
+    ordinary round could consume it; the forced call crosses real admission."""
+    from ouroboros import task_pacing
+    import ouroboros.usage_accounting as accounting
+
+    loop, _registry, ctx, _trace = _forced_test_context(
+        tmp_path, usage={"cost": 1.0, "_context_prompt_estimate": 1000},
+    )
+    scope = accounting.UsageScope(
+        drive_root=tmp_path, task_id="parent1", root_task_id="parent1",
+        global_limit_usd=1000.0, root_limit_usd=100.0,
+    )
+    with accounting.usage_scope(scope):
+        prior = accounting.reserve_attempt(accounting.AttemptRequest(
+            model="test-model", provider="openrouter", reservation_usd=96.5,
+        ))
+        accounting.mark_dispatched(prior)
+        accounting.settle_attempt(prior, {}, cost_usd=96.5, cost_final=True)
+
+        monkeypatch.setattr(accounting, "_reservation_cost", lambda _request: 2.0)
+        admitted = []
+
+        def forced_model(*_args, **_kwargs):
+            reservation = accounting.reserve_attempt(accounting.AttemptRequest(
+                model="test-model", provider="openrouter", reservation_usd=2.0,
+            ))
+            accounting.mark_dispatched(reservation)
+            accounting.settle_attempt(reservation, {}, cost_usd=2.0, cost_final=True)
+            admitted.append(reservation.attempt_id)
+            return {"role": "assistant", "content": "Affordable final answer."}, 0.0
+
+        monkeypatch.setattr(loop, "call_llm_with_retry", forced_model)
+        result = loop._check_budget_limits(
+            ctx, budget_remaining_usd=900.0,
+            cost_ceiling=task_pacing.resolve_cost_ceiling(
+                900.0, {"cost_hard_stop_pct": 50}, root_cap_usd=100.0,
+            ),
+        )
+
+    assert result is not None and result[0].startswith("Affordable final answer.")
+    assert len(admitted) == 1
+    assert accounting.usage_projection(tmp_path, root_task_id="parent1")["accounted_usd"] == 98.5
 
 
 def test_forced_owner_arrival_gets_one_complete_refresh(tmp_path, monkeypatch):
@@ -1157,7 +1189,7 @@ def test_stale_preserve_supersedes_accepted_pass_in_outcome_and_projection(
         reason_code="provider_unavailable",
     )
 
-    assert "STALE-EVIDENCE NOTICE" in text
+    assert "STALE-EVIDENCE NOTICE" in usage["terminal_host_notice"]
     assert prior_run["superseded_by_revision"] is True
     assert prior_run["superseded_reason"] == (
         "delivery_evidence_changed_after_host_acceptance"
@@ -1256,7 +1288,7 @@ def test_child_result_change_during_host_panel_supersedes_pass(tmp_path, monkeyp
     registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
     registry._ctx.task_id = "parent1"
     registry._ctx.drive_root = str(tmp_path)
-    registry._ctx.is_direct_chat = False
+    registry._ctx.task_contract = {"expected_output": "A verified result"}
     registry._ctx._task_acceptance_reviewed = False
     registry._ctx.task_metadata = {
         "budget_drive_root": str(tmp_path),
@@ -1310,7 +1342,7 @@ def test_child_result_change_during_host_panel_supersedes_pass(tmp_path, monkeyp
         llm_trace=trace,
         drive_root=tmp_path,
         messages=messages,
-        emit_progress=lambda _text: None,
+        emit_progress=lambda _text, *, incident=None: None,
     )
 
     assert another_round is True
@@ -2249,7 +2281,7 @@ def test_forced_rail_reads_current_child_state_across_the_forced_call(
         for row in seen_evidence.get("terminal_subtree_statuses", [])
     }
     assert subtree.get("child1") == "completed"
-    assert "child1" in text
+    assert "child1" in usage["terminal_host_notice"]
 
 
 def test_post_tool_evidence_change_holds_while_absorption_gate_open(tmp_path):
@@ -2489,7 +2521,7 @@ def test_round_limit_stamps_typed_acceptance_bypass(tmp_path, monkeypatch):
 
     _text, _usage, trace = loop._handle_round_limit(limit_ctx)
 
-    # Non-direct-chat task with no acceptance decision -> the panel was OWED.
+    # Declared deliverable with no acceptance decision -> the panel was OWED.
     assert trace["review_decision"] == {
         "eligibility": "eligible",
         "trigger": "bypassed_round_limit",
@@ -2557,11 +2589,14 @@ def test_forced_bypass_never_overwrites_an_existing_host_decision(tmp_path, monk
 
     # The prior host decision lane keeps authority (here the forced replacement
     # superseded the PASS through the existing revision machinery); the bypass
-    # recorder never overwrites an existing decision with a bypass reason.
+    # recorder never overwrites an existing decision with a bypass reason. The
+    # dangling revision request itself is closed, because this rail cannot take
+    # the improvement pass it promised.
     decision = returned_trace["acceptance_decision"]
-    assert decision["status"] in {"accepted", "revision_requested"}
+    assert decision["status"] == "finalized_unaccepted"
     assert decision.get("reason", "") != "acceptance_bypassed_round_limit"
-    assert decision.get("source", "") != "forced_finalization"
+    assert decision.get("reason", "") == "revision_unavailable_on_forced_rail"
+    assert decision.get("source", "") == "forced_finalization"
 
 
 def test_forced_bypass_stamps_over_deferred_agent_stance(tmp_path, monkeypatch):
@@ -2673,3 +2708,108 @@ def test_forced_bypass_probe_failure_records_unknown_eligibility(tmp_path, monke
     }
     assert "acceptance_decision" not in trace
 
+
+
+def test_forced_final_sends_the_round_tool_envelope(tmp_path, monkeypatch):
+    """The forced wrap-up call reuses the round's exact tool envelope."""
+
+    loop, registry, limit_ctx, _trace = _forced_test_context(tmp_path)
+    schemas = [{"type": "function", "function": {"name": "read_file"}}]
+    limit_ctx.tool_schemas = schemas
+    seen: dict = {}
+
+    def _capture(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return {"role": "assistant", "content": "wrapped up"}, 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", _capture)
+
+    loop._handle_round_limit(limit_ctx)
+
+    assert seen["args"][3] is schemas
+    assert seen["kwargs"]["allow_server_web_search"] == loop._server_web_allowed_by_task(
+        registry._ctx
+    )
+    assert "tool_choice" not in seen["kwargs"]
+
+
+def test_forced_final_tool_call_only_reply_falls_back_to_host_text(tmp_path, monkeypatch):
+    """A tool-calls-only reply on a budget rail degrades to the host fallback text."""
+
+    loop, _registry, limit_ctx, _trace = _forced_test_context(tmp_path)
+    limit_ctx.tool_schemas = [{"type": "function", "function": {"name": "read_file"}}]
+    monkeypatch.setattr(
+        loop,
+        "call_llm_with_retry",
+        lambda *_args, **_kwargs: (
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            0.0,
+        ),
+    )
+
+    text, usage, trace = loop._handle_round_limit(limit_ctx)
+
+    assert text
+    assert not usage.get("_best_effort_extracted")
+    assert trace.get("forced_finalization", {}).get("source") != "forced_model_incomplete"
+
+
+def test_forced_final_mixed_content_and_tool_calls_is_degraded(tmp_path, monkeypatch):
+    """Content beside an unexecuted tool call is a preamble, not a final."""
+
+    loop, _registry, limit_ctx, _trace = _forced_test_context(tmp_path)
+    limit_ctx.tool_schemas = [{"type": "function", "function": {"name": "read_file"}}]
+    monkeypatch.setattr(
+        loop,
+        "call_llm_with_retry",
+        lambda *_args, **kwargs: (
+            kwargs["response_meta_out"].update(tool_call_count=1, finish_reason="tool_calls") or
+            {
+                "role": "assistant",
+                "content": "here is the answer",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            0.0,
+        ),
+    )
+
+    text, usage, trace = loop._handle_round_limit(limit_ctx)
+
+    assert "here is the answer" in text
+    assert usage.get("terminal_origin") != "model_final"
+    assert trace.get("forced_finalization", {}).get("source") == "forced_model_incomplete"
+
+
+def test_web_forbidding_contract_keeps_the_forced_call_web_free(tmp_path, monkeypatch):
+    """A task that forbids web never gets server web search on the forced call."""
+
+    loop, registry, limit_ctx, _trace = _forced_test_context(tmp_path)
+    registry._ctx.task_contract = {"allowed_resources": {"web": False}}
+    seen: dict = {}
+
+    def _capture(*args, **kwargs):
+        seen.update(kwargs)
+        return {"role": "assistant", "content": "wrapped up"}, 0.0
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", _capture)
+
+    loop._handle_round_limit(limit_ctx)
+
+    assert seen["allow_server_web_search"] is False

@@ -24,6 +24,88 @@ def _state_attr(request: Request, name: str, default: Any = None) -> Any:
     return getattr(state, name, default) if state is not None else default
 
 
+def _git_checkout_identity(repo_dir: Any) -> tuple:
+    """(branch|None, sha) of the ACTUAL runtime git checkout, read-only.
+
+    W2-F3: on a source-mode install nothing ever writes ``current_branch`` /
+    ``current_sha`` into state.json (the supervisor stamps them only on managed
+    update/reset flows), so ``/api/state`` answered ``sha: ""`` / ``branch:
+    null`` while the process demonstrably ran from a real checkout. This reads
+    the identity from the checkout itself — pure stdlib file reads (``.git`` may
+    be a worktree pointer file; branch refs live in the common dir, loose or
+    packed) rather than a ``git`` subprocess, because ``/api/state`` is the UI's
+    poll path. A detached HEAD honestly has no branch; any unreadable layout
+    degrades to ``(None, "")`` — never an invented identity.
+    """
+    try:
+        gitpath = pathlib.Path(repo_dir) / ".git"
+        if gitpath.is_file():
+            pointer = gitpath.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None, ""
+            gitdir = (gitpath.parent / pointer.split(":", 1)[1].strip()).resolve()
+        elif gitpath.is_dir():
+            gitdir = gitpath
+        else:
+            return None, ""
+        head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref: "):
+            # Detached HEAD: a bare commit id and honestly no branch.
+            return None, head if len(head) >= 7 else ""
+        ref = head[5:].strip()
+        branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+        commondir = gitdir
+        pointer_file = gitdir / "commondir"
+        if pointer_file.is_file():
+            commondir = (gitdir / pointer_file.read_text(encoding="utf-8").strip()).resolve()
+        loose = commondir / ref
+        if loose.is_file():
+            return branch, loose.read_text(encoding="utf-8").strip()
+        packed = commondir / "packed-refs"
+        if packed.is_file():
+            for line in packed.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.endswith(f" {ref}") and not line.startswith(("#", "^")):
+                    return branch, line.split(" ", 1)[0]
+        return branch, ""
+    except Exception:
+        return None, ""
+
+
+def _runtime_repo_identity(st: Dict[str, Any]) -> tuple:
+    """(branch, sha) for ``/api/state``: supervisor-stamped state values win
+    (they carry managed update/reset provenance); the live checkout fills the
+    source-mode gap; nothing is invented when both are silent."""
+    branch = st.get("current_branch") or None
+    sha = str(st.get("current_sha") or "")
+    if branch and sha:
+        return branch, sha
+    from ouroboros.config import REPO_DIR
+
+    checkout_branch, checkout_sha = _git_checkout_identity(REPO_DIR)
+    return branch or checkout_branch, sha or checkout_sha
+
+
+def _evolution_state_public(evolution_state: Dict[str, Any]) -> Dict[str, Any]:
+    """ABI-3 projection boundary for ``/api/state`` (fix-round-3).
+
+    Campaign history rows are durable supervisor state: a row written by an
+    older release still carries the retired ``cost_usd`` spelling. Resolve the
+    pair deprecated-wins and emit the honest name only — copy-on-write, since
+    the snapshot dict aliases shared supervisor campaign state.
+    """
+    campaign = evolution_state.get("campaign") if isinstance(evolution_state, dict) else None
+    if not isinstance(campaign, dict) or not isinstance(campaign.get("history"), list):
+        return evolution_state
+    from ouroboros.cost_projection import with_cost_aliases
+
+    history = [
+        with_cost_aliases(row) if isinstance(row, dict) else row
+        for row in campaign["history"]
+    ]
+    return {**evolution_state, "campaign": {**campaign, "history": history}}
+
+
 async def api_health(_request: Request) -> JSONResponse:
     runtime_version = get_version()
     app_version = os.environ.get("OUROBOROS_APP_VERSION", "").strip() or runtime_version
@@ -169,7 +251,7 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
                 budget_projection = accounting
         except Exception:
             budget_projection = None
-    evolution_state = (
+    evolution_state = _evolution_state_public(
         get_evolution_status_snapshot(budget_projection=budget_projection)
         if budget_projection is not None
         else get_evolution_status_snapshot()
@@ -177,6 +259,8 @@ def _state_snapshot(request: Request) -> Dict[str, Any]:
     task_bindings = _task_bindings_safe(request)
     return {
         "st": st,
+        # Resolved here so the checkout file reads stay on the snapshot thread.
+        "runtime_identity": _runtime_repo_identity(st),
         "workers_alive": alive,
         "workers_total": total_w,
         "pending_count": len(PENDING),
@@ -289,7 +373,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None) -
             running_rows = [
                 (
                     str(task_id),
-                    dict(meta.get("task") or {}) if isinstance(meta, dict) else {},
+                    {**(meta.get("task") or {}), "_attempt": int(meta.get("attempt")
+                        or (meta.get("task") or {}).get("_attempt") or 1)} if isinstance(meta, dict) else {},
                     _epoch_or_zero(meta.get("started_at")) if isinstance(meta, dict) else 0.0,
                 )
                 for task_id, meta in queue_mod.RUNNING.items()
@@ -319,6 +404,8 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None) -
                 "kind": "managed_task",
                 "phase": phase,
                 "started_at": started_at,
+                "task_attempt": int(row.get("_attempt") or 1),
+                **({"model_waits": row["model_waits"]} if row.get("model_waits") else {}),
             }
 
         from supervisor.queue_transitions import budget_pause_fact
@@ -334,6 +421,15 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None) -
             if task_id and _is_root(task_id, row):
                 phase = "finalizing" if _managed_task_finalizing(drive_root, task_id) else "working"
                 activities.append(_activity(task_id, row, phase, started_at))
+        from ouroboros.post_task_checkpoint import post_task_model_waits
+        visible = {row["activity_id"]: row for row in activities}
+        for owner in post_task_model_waits(drive_root):
+            waits = owner.snapshot()["model_waits"]
+            if owner.task_id in visible:
+                visible[owner.task_id].update(phase="finalizing", model_waits=waits, task_attempt=owner.attempt)
+            else:
+                row = {**owner.task, "model_waits": waits}
+                activities.append(_activity(owner.task_id, row, "finalizing", _epoch_or_zero(row.get("queued_at"))))
     except Exception:
         log.debug("Managed-activity snapshot unavailable for /api/state", exc_info=True)
     return activities
@@ -350,6 +446,7 @@ async def api_state(request: Request) -> JSONResponse:
 
         snap = await asyncio.to_thread(_state_snapshot, request)
         st = snap["st"]
+        runtime_branch, runtime_sha = snap["runtime_identity"]
         limit = snap["limit"]
         accounting = snap["accounting"]
         breakdown = snap["breakdown"]
@@ -377,8 +474,13 @@ async def api_state(request: Request) -> JSONResponse:
                 round((spent / limit * 100) if limit > 0 else 0, 1)
                 if spent is not None else None
             ),
-            "branch": st.get("current_branch", "ouroboros"),
-            "sha": (st.get("current_sha") or "")[:8],
+            # W2-F3: state values when the supervisor stamped them, else the
+            # actual runtime checkout (source-mode installs never stamp state).
+            # The retired bare "ouroboros" default was dead code — load_state
+            # always seeds the key (None), so the default never fired — and a
+            # guessed branch is not identity.
+            "branch": runtime_branch,
+            "sha": (runtime_sha or "")[:8],
             "evolution_enabled": bool(st.get("evolution_mode_enabled")),
             "bg_consciousness_enabled": bg_requested,
             "evolution_cycle": int(st.get("evolution_cycle") or 0),
@@ -455,10 +557,16 @@ def _projects_summary_safe(request: Request) -> list:
 
 
 def _task_bindings_safe(request: Request) -> dict:
-    """{task_id: {project_id, chat_id}} for tasks bound to a project. The frontend
-    uses this to recognise a project-scoped task card: it suppresses the stray
-    "turn into project" button (P2) AND turns the card into a pointer that opens
-    the bound project's panel (F4). Never raises."""
+    """{task_id: {project_id, chat_id}} for tasks BOUND to a project. The frontend
+    uses this to recognise a bound task card: it suppresses the stray "turn into
+    project" button (P2) AND turns the card into a pointer that opens the bound
+    project's panel (F4).
+
+    Bound is not the same as project-SCOPED: a headless/CLI run carries a
+    project_id for lease and memory without ever being bound (that stays the
+    owner-facing convert/promote act), so it is absent here BY DESIGN. It needs
+    no button gate either — such a run is addressed to its project thread at
+    admission, so it never mints a card in Main. Never raises."""
     try:
         from ouroboros.projects_registry import all_task_project_bindings
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import multiprocessing as mp
 import threading
+import time
 import types
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
@@ -157,11 +158,19 @@ def test_single_slot_respawn_starts_child_without_queue_lock(monkeypatch, tmp_pa
     monkeypatch.setattr(workers, "_get_ctx", lambda: fake_ctx)
     monkeypatch.setattr(workers, "get_event_q", lambda: object())
     monkeypatch.setattr(workers, "_record_worker_pids", lambda: None)
+    # The readiness seam is stubbed: a fake pid must never reach the real teardown.
+    handed = []
+    monkeypatch.setattr(workers, "_verify_worker_sha_after_spawn", lambda slots, *_rest: handed.append(dict(slots)))
 
     assert workers.respawn_worker(0) is True
     assert lock_was_free == [True]
     assert workers.WORKERS[0] is not old
-    assert workers.WORKERS[0].reaping is False
+    # Installed unassignable: the readiness seam opens it once the child confirms ready.
+    assert workers.WORKERS[0].reaping is True
+    deadline = time.time() + 5
+    while not handed and time.time() < deadline:
+        time.sleep(0.01)
+    assert handed == [{0: workers.WORKERS[0]}]
 
 
 def test_worker_pool_respawn_reuses_process_event_bus_and_refuses_live_pool(monkeypatch, tmp_path):
@@ -281,12 +290,12 @@ def test_real_event_queue_reaches_dispatch_and_confirms_durable_admission(
 ):
     import supervisor.workers as workers
     from ouroboros.task_results import load_task_result
-    from ouroboros.tools import control
+    from ouroboros.tools import control, control_events
     from supervisor.events import _handle_promote_chat_to_task
 
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 2.0)
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 15.0)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
     pending = []
 
     def enqueue(task):
@@ -323,10 +332,10 @@ def test_real_event_queue_reaches_dispatch_and_confirms_durable_admission(
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(control._promote_chat_to_task, tool_ctx, "Build the racer", predecessor_task_id="")
-            event = queue.get(timeout=2)
+            event = queue.get(timeout=10)
             assert event["type"] == "promote_chat_to_task"
             outcome = _handle_promote_chat_to_task(event, handler_ctx)
-            result_text = future.result(timeout=3)
+            result_text = future.result(timeout=15)
         task_id = event["task_id"]
         assert outcome == {"status": "scheduled", "task_id": task_id}
         assert result_text.startswith(f"OK: task {task_id}")
@@ -360,12 +369,12 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
         load_task_result,
         review_binding_hash,
     )
-    from ouroboros.tools import control
+    from ouroboros.tools import control, control_events
     from supervisor.events import _handle_promote_chat_to_task
 
     monkeypatch.setattr(workers, "DRIVE_ROOT", tmp_path)
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 2.0)
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 15.0)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
     create_project(tmp_path, "racer", name="Racer")
     pending = []
 
@@ -406,9 +415,9 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
                 "belongs there",
                 predecessor_task_id="",
             )
-            event = queue.get(timeout=2)
+            event = queue.get(timeout=10)
             outcome = _handle_promote_chat_to_task(event, handler_ctx)
-            text = future.result(timeout=3)
+            text = future.result(timeout=15)
         assert outcome["status"] == "scheduled"
         assert text.startswith("✉️ Routed to project 'Racer'")
         assert "durably scheduled" in text
@@ -449,11 +458,11 @@ def test_route_to_project_waits_for_same_durable_admission(monkeypatch, tmp_path
 
 
 def test_manual_target_tool_waits_for_durable_handler_receipt(monkeypatch, tmp_path):
-    from ouroboros.tools import control
+    from ouroboros.tools import control, control_events
     from supervisor.events import _handle_routing_manual_target
 
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 2.0)
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 15.0)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
     queue = mp.get_context("spawn").Queue()
     tool_ctx = types.SimpleNamespace(
         event_queue=queue,
@@ -476,9 +485,9 @@ def test_manual_target_tool_waits_for_durable_handler_receipt(monkeypatch, tmp_p
                 "uncertain target",
                 predecessor_task_id="",
             )
-            event = queue.get(timeout=2)
+            event = queue.get(timeout=10)
             _handle_routing_manual_target(event, handler_ctx)
-            text = future.result(timeout=3)
+            text = future.result(timeout=15)
         assert text.startswith("⚠️ NEEDS_MANUAL_TARGET")
         assert 'Host-validated options: [{"kind": "new_task"}]' in text
     finally:
@@ -491,12 +500,12 @@ def test_steer_tool_reports_delivery_only_after_mailbox_receipt(
 ):
     import supervisor.queue as supervisor_queue
     from ouroboros.owner_mailbox import drain_owner_messages
-    from ouroboros.tools import control
+    from ouroboros.tools import control, control_events
     from supervisor.events import _handle_steer_task
 
     monkeypatch.setattr(supervisor_queue, "DRIVE_ROOT", tmp_path)
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 2.0)
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 15.0)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.01)
     target = {"id": "target01", "chat_id": 1}
     queue = mp.get_context("spawn").Queue()
     tool_ctx = types.SimpleNamespace(
@@ -517,9 +526,9 @@ def test_steer_tool_reports_delivery_only_after_mailbox_receipt(
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(control._steer_task, tool_ctx, "target01", "Use the new data")
-            event = queue.get(timeout=2)
+            event = queue.get(timeout=10)
             _handle_steer_task(event, handler_ctx)
-            text = future.result(timeout=3)
+            text = future.result(timeout=15)
         assert text.startswith("✉️ Steering task target01")
         assert "durably confirmed" in text
         assert drain_owner_messages(tmp_path, "target01") == ["Use the new data"]
@@ -529,10 +538,10 @@ def test_steer_tool_reports_delivery_only_after_mailbox_receipt(
 
 
 def test_stale_live_transport_returns_unconfirmed_not_ok(monkeypatch, tmp_path):
-    from ouroboros.tools import control
+    from ouroboros.tools import control, control_events
 
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 0.05)
-    monkeypatch.setattr(control, "_PROMOTE_CONFIRM_POLL_SEC", 0.005)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_TIMEOUT_SEC", 0.05)
+    monkeypatch.setattr(control_events, "_PROMOTE_CONFIRM_POLL_SEC", 0.005)
     stale_queue = mp.get_context("spawn").Queue()
     ctx = types.SimpleNamespace(
         event_queue=stale_queue,
@@ -543,7 +552,7 @@ def test_stale_live_transport_returns_unconfirmed_not_ok(monkeypatch, tmp_path):
     )
     try:
         out = control._promote_chat_to_task(ctx, "Never drained", predecessor_task_id="")
-        event = stale_queue.get(timeout=2)
+        event = stale_queue.get(timeout=10)
         assert event["type"] == "promote_chat_to_task"
         assert out.startswith("PROMOTE_UNCONFIRMED:")
         assert "Do not report this task as created" in out

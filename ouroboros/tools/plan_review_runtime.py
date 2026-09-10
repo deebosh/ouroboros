@@ -19,7 +19,8 @@ import logging
 import pathlib
 from typing import Any, Dict, List, Optional
 
-from ouroboros.config import review_model_uses_local
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+
 from ouroboros.deadline_utils import parse_deadline_ts, utc_now
 from ouroboros.llm import LLMClient
 from ouroboros.review_execution_projection import review_executions_from_actor_usage
@@ -150,6 +151,59 @@ def build_plan_review_packet(
     return system_prompt, user_content, _session_task_text(system(True), user_content, str(active_root))
 
 
+def publish_plan_review_projection(
+    ctx: ToolContext,
+    review: dict,
+    text: str,
+) -> str:
+    """Publish control metadata only from validated structured review state."""
+    aggregate = review.get("aggregate_signal")
+    closed = review.get("closed")
+    if aggregate not in {"GREEN", "REVIEW_REQUIRED", "REVISE_PLAN", "DEGRADED"}:
+        raise ValueError(f"invalid plan review aggregate signal: {aggregate!r}")
+    if type(closed) is not bool:
+        raise ValueError("plan review closed state must be boolean")
+    if (aggregate == "GREEN" and not closed) or (
+        aggregate in {"REVISE_PLAN", "DEGRADED"} and closed
+    ):
+        raise ValueError(
+            f"invalid plan review control state: outcome={aggregate}, closed={closed}"
+        )
+    return _publish_tool_result(
+        ctx,
+        ToolResult(
+            status="ok",
+            code="OK",
+            text=text,
+            meta={
+                "plan_review_outcome": aggregate,
+                "plan_review_closed": closed,
+            },
+        ),
+    )
+
+
+def publish_rendered_wave(
+    ctx: ToolContext, wave: dict, *, cap, cycles_paid: int, enforcement: str,
+    cached: bool = False, notes=None, reminder: str = "", head: str = "",
+) -> str:
+    """Render one recorded wave and publish it as the typed plan result (D02).
+
+    The public text and the native structured control leave in ONE ``ToolResult``:
+    ``plan_render.wave_control_state`` is the same projection the rendered
+    ``PLAN_REVIEW_CONTROL_JSON`` footer reads, so the loop's trusted metadata can
+    never diverge from the text the model sees."""
+    from ouroboros.tools.plan_render import _render_wave, wave_control_state
+
+    outcome, closed = wave_control_state(wave)
+    text = head + _render_wave(
+        wave, cap=cap, cycles_paid=cycles_paid, enforcement=enforcement,
+        cached=cached, notes=notes, reminder=reminder,
+    )
+    return publish_plan_review_projection(
+        ctx, {"aggregate_signal": outcome, "closed": closed}, text)
+
+
 def plan_deadline_skip(ctx: ToolContext, *, emit: bool = False) -> str:
     """Project the existing deadline rail without starting a paid reviewer panel."""
     from ouroboros.config import get_plan_task_deadline_min_sec
@@ -208,36 +262,19 @@ def record_raw_plan_request_attempt(
 
 
 def plan_review_slots() -> list:
-    """The configured commit-triad rows as plan-review ``ReviewSlot`` objects.
-
-    Both kinds ride: an ``api_chat`` row is one in-process call over the lean
-    packet; an ``agent_session`` row is a delegated retrieving reviewer
-    (``session_target``/``session_profile`` carried per row). Effort is the row's
-    explicit value, else a compound Cursor/Agy route's encoded value, else
-    ``PLAN_REVIEW_EFFORT``. Slot ids are the rows' own (structured:
-    owner-assigned; legacy: ``slot_N`` from the one mint).
+    """The configured commit-triad rows as plan-review ``ReviewSlot`` objects:
+    the shared ``triad_delivery_slots`` builder (one reader of the triad rows
+    for plan, skill and acceptance review) with plan review's own slot
+    properties — timeout, output budget, temperature, and ``PLAN_REVIEW_EFFORT``
+    as the effort default. Both delivery kinds ride; slot ids are the rows' own.
     """
-    from ouroboros.review_execution import ReviewRouteKind
-    from ouroboros.review_substrate import ReviewSlot
-    from ouroboros.reviewer_slot_config import load_reviewer_slot_config, row_effort
+    from ouroboros.reviewer_slot_config import triad_delivery_slots
 
-    return [
-        ReviewSlot(
-            slot_id=row.slot_id,
-            model=row.target_id,
-            effort=row_effort(row, "review", default=PLAN_REVIEW_EFFORT),
-            timeout_sec=PLAN_REVIEW_SLOT_TIMEOUT_SEC,
-            max_tokens=PLAN_REVIEW_MAX_TOKENS,
-            temperature=0.2,
-            role_hint="plan reviewer",
-            use_local=review_model_uses_local(row.target_id),
-            route=ReviewRouteKind.AGENT_SESSION if row.is_session else ReviewRouteKind.API_CHAT,
-            session_target=row.session_target,
-            session_profile=row.profile_id,
-            subagent_id=row.subagent_id,
-        )
-        for row in load_reviewer_slot_config().triad
-    ]
+    return triad_delivery_slots(
+        role_hint="plan reviewer", default_effort=PLAN_REVIEW_EFFORT,
+        timeout_sec=PLAN_REVIEW_SLOT_TIMEOUT_SEC, max_tokens=PLAN_REVIEW_MAX_TOKENS,
+        default_temperature=0.2,
+    )
 
 
 def slot_is_session(slot: Any) -> bool:
@@ -276,8 +313,10 @@ async def run_plan_review_slots(
     the substrate RAN under, its route, text/error, refs, usage and the
     ``host_file_read_attestation`` fact."""
     from ouroboros.review_substrate import ReviewRequest, run_review_request
+    from ouroboros.model_wait import copy_wait_context
     from ouroboros.tools.plan_packet import plan_user_stable_len
     from ouroboros.tools.review_synthesis import build_plan_review_messages
+    from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
 
     request = ReviewRequest(
         surface="plan_review",
@@ -289,25 +328,31 @@ async def run_plan_review_slots(
         task_id=str(getattr(ctx, "task_id", "") or "plan_review"),
         call_type="plan_review",
         max_tokens=PLAN_REVIEW_MAX_TOKENS,
-        temperature=0.2,
+        default_temperature=0.2,
         no_proxy=True,
         session_task=session_task,
         session_root=session_root,
         session_threads=dict(session_threads or {}),
         retry_key=str(retry_key or ""),
+        # The paid cycle's identity (plan fingerprint + cycle) owns its cache
+        # split: a revised plan under the same task/model/slot starts cold.
+        usage_attribution={"review_wave_id": str(retry_key or "")} if retry_key else {},
         policy={"output_contract": output_contract} if output_contract else {},
     )
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: run_review_request(
-            request,
-            slots=list(slots),
-            drive_root=pathlib.Path(ctx.drive_root),
-            llm=LLMClient(),
-            usage_ctx=ctx,
-        ),
-    )
+    wait_context = copy_wait_context()
+    parent_usage = current_usage_scope() or UsageScope()
+
+    def run():
+        # Carry the admitted root wallet and live wait owner, but no parent
+        # Main physical capture/context into the reviewer's separate attempts.
+        with usage_scope(parent_usage):
+            return run_review_request(
+                request, slots=list(slots), drive_root=pathlib.Path(ctx.drive_root),
+                llm=LLMClient(), usage_ctx=ctx,
+            )
+
+    result = await loop.run_in_executor(None, wait_context.run, run)
     by_id = {str(slot.slot_id): slot for slot in slots}
     rows = [_plan_row_from_actor(actor, by_id.get(str(actor.get("slot_id") or ""))) for actor in result.actors]
     answered = {row["slot_id"] for row in rows}
@@ -492,7 +537,9 @@ def synthesize_plan_review_wave(
         "evidence_manifest_hash": manifest_hash, "constitutional": bool(constitutional),
         "constitutional_note": constitutional_note, "findings": list(agg["findings"]),
         "aggregate": aggregate, "reasons": list(agg["reasons"]), "counts": dict(agg["counts"]),
-        "closed": aggregate == "GREEN", "dispositions": [], "actors": slot_records,
+        "closed": plan_spec.closure_after_disposition(
+            aggregate, agg["findings"], [], enforcement,
+        )["closed"], "dispositions": [], "actors": slot_records,
         "custody_pending": False,
         "actors_degraded": [str(r["slot_id"]) for r in slot_records if not r["ok"]],
         "enforcement": enforcement, "cycle_cap": cap,
@@ -1079,18 +1126,24 @@ def plan_slot_fit(slots: list, *, prompt_chars: int, quorum: int) -> tuple[list,
     (ok=False, $0) so it is REPORTED as not participating; fewer callable slots than the
     review quorum is a loud typed refusal, never a silent absence of review."""
     from ouroboros.tools.review_synthesis import per_slot_input_token_limits
+    from ouroboros.review_records import apply_review_model_override
+    from ouroboros.model_wait import current_model_wait
+
+    waiter = current_model_wait()
+    slots = [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter else slots
 
     # Only api_chat rows are sized: a RETRIEVING (agent_session) row's model id is an opaque
     # harness target, not a provider route (`reviewer_window.reviewer_route(session=True)`), and
     # the review organ's convention (triad: "session rows are not constrained by this pack")
     # is that such a row is never fit-excluded — it retrieves with its own tools.
-    api_models = [str(getattr(slot, "model", "") or "") for slot in slots if not slot_retrieves(slot)]
+    api_slots = [slot for slot in slots if not slot_retrieves(slot)]
+    api_models = [str(getattr(slot, "model", "") or "") for slot in api_slots]
     limits = per_slot_input_token_limits(
-        api_models, output_reserve=PLAN_REVIEW_MAX_TOKENS, tokenizer_margin=155_000)
+        api_models, output_reserve=PLAN_REVIEW_MAX_TOKENS, tokenizer_margin=155_000, slots=api_slots)
     estimated = max(1, (max(0, int(prompt_chars)) + 3) // 4)  # utils.estimate_tokens on the packet
     callable_slots, oversize = [], []
     for slot in slots:
-        cap = int(limits.get(str(getattr(slot, "model", "") or ""), 0) or 0)
+        cap = 0 if slot_retrieves(slot) else int(limits[str(slot.slot_id)])
         if slot_retrieves(slot) or estimated <= cap:
             callable_slots.append(slot)
             continue
@@ -1109,7 +1162,7 @@ def plan_slot_fit(slots: list, *, prompt_chars: int, quorum: int) -> tuple[list,
         error = (
             "⚠️ PLAN_REVIEW_DEGRADED_PREFLIGHT_OVERSIZE: the assembled packet "
             f"(~{estimated:,} estimated tokens) exceeds the calibrated input cap of too many reviewer "
-            "slots (" + ", ".join(f"{m}<={int(limits.get(m, 0) or 0):,}" for m in api_models)
+            "slots (" + ", ".join(f"{slot.slot_id}:{slot.model}<={int(limits[slot.slot_id]):,}" for slot in api_slots)
             + "), so fewer than the review quorum remain callable and NO reviewer was called. "
             "A constitutional plan carries BIBLE.md and ARCHITECTURE.md in full (W3): configure "
             "reviewer slots with a larger context window, or shrink the declared evidence."
@@ -1136,6 +1189,10 @@ def plan_fanout_inputs(
             "oversize_rows": [], "health_evidence": resume.get("health_evidence") or {},
             "error": "",
         }
+    from ouroboros.review_records import apply_review_model_override
+    from ouroboros.model_wait import current_model_wait
+    waiter = current_model_wait()
+    slots = [apply_review_model_override(slot, waiter.overrides) for slot in slots] if waiter else slots
     health_evidence = (
         plan_panel_health_snapshot(slots)
         if replay_snapshot is PLAN_NO_SNAPSHOT else replay_snapshot

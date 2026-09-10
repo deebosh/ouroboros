@@ -15,7 +15,6 @@ from ouroboros.context_budget import (
     MAX_RECENT_CHAT_TAIL,
     SCRATCHPAD_SECTION_BUDGET_CHARS,
 )
-from ouroboros.memory import _SCRATCHPAD_MAX_BLOCKS
 from ouroboros.context_fit import (
     ContextCore as _ContextCore,
 )
@@ -52,7 +51,8 @@ from ouroboros.context_health import (
 )
 from ouroboros.context_layout import architecture_context_section, reference_doc_sections  # noqa: F401
 from ouroboros.contracts.task_contract import normalize_bool
-from ouroboros.memory import Memory
+from ouroboros.memory import Memory, render_scratchpad_markdown
+from ouroboros.update_letter import official_update_projection  # contract: never raises
 from ouroboros.utils import (
     get_git_info,
     read_json_dict,
@@ -200,11 +200,17 @@ def _build_attachment_image_blocks(task: Dict[str, Any]) -> List[Dict[str, Any]]
     live; the rest stay manifest-readable via read_file(root='artifact_store', ...).
     Never raises — a per-file error skips just that image."""
     entries = task.get("attachment_images")
-    if not isinstance(entries, list) or not entries:
-        return []
-    drive_root = task.get("drive_root")
-    task_id = task.get("id")
+    drive_root, task_id = task.get("drive_root"), task.get("id")
     if not drive_root or not task_id:
+        return []
+    contract = task.get("task_contract") or {}
+    if "attachment_manifest_ref" in contract:
+        from ouroboros.artifacts import resolve_attachment_manifest
+        try:
+            entries = resolve_attachment_manifest(drive_root, str(task_id), contract)
+        except (OSError, ValueError, TypeError) as exc:
+            return [{"type": "text", "text": f"Attachment source unavailable: {exc}. The inline rows are not the complete input set."}]
+    if not isinstance(entries, list) or not entries:
         return []
     import base64 as _b64
 
@@ -352,7 +358,8 @@ def _scheduled_tasks_digest(env: Any, *, limit: int = 8) -> Optional[Dict[str, A
 # existed — the owner watched a placebo. State the rule where the decision is
 # made instead of policing prose afterwards.
 _DECISION_TURN_OUTCOME_RULE = (
-    "This is a short DECISION turn with read/inspect tools only. A request "
+    "This is a short DECISION turn: built-in tools are read/inspect only; the "
+    "owner's configured MCP tools and enabled extension tools are callable here. A request "
     "carrying an external side effect (submit/publish/repair/commit/install/"
     "write) MUST either become a real supervised task via promote_chat_to_task "
     "or be explicitly declined in the answer. Ending this turn with a promise "
@@ -378,226 +385,16 @@ _OWNER_CLIENT_NOTE = (
 )
 
 
-def _project_room_fact(task: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The project-room working-folder FACT for a room turn, or None.
-
-    Extracted verbatim from ``build_runtime_section`` (v6.90.x submarine unwind)
-    to keep that builder under the hard method gate; the resolution and the
-    stated rule are unchanged.
-    """
-    # v6.58.0 (2.2): a conversation/decision turn in a project ROOM sees the room's
-    # working folder as a structural FACT — it can promote work into that folder
-    # without ITSELF becoming a workspace task (decision turns deliberately keep the
-    # promote/steer/route toolset, which workspace profiles exclude). The default
-    # transport: promote_chat_to_task from this room inherits working_dir unless
-    # workspace='none'. Registry read is anchored at the canonical DATA_DIR.
-    # v6.61.3 room lens: the rule now states the REAL chat-lane affordances (reads +
-    # default shell cwd resolve to the folder; writes go through promoted tasks) —
-    # the robot-room incident was exactly a fact/affordance split. A set-but-broken
-    # working_dir is disclosed loudly instead of a silent system-repo fallback.
-    try:
-        _room_pid = str(task.get("project_id") or "").strip()
-        if _room_pid and not str(task.get("workspace_root") or "").strip():
-            from ouroboros.config import DATA_DIR as _DATA_DIR
-            from ouroboros.projects_registry import get_project as _get_project
-            from ouroboros.workspace_admission import room_chat_lens_dir as _room_lens
-
-            _room = _get_project(_DATA_DIR, _room_pid) or {}
-            _room_wd = str(_room.get("working_dir") or "").strip()
-            if _room_wd:
-                # Same resolver the agent uses for the tool lens, so the stated rule
-                # and the actual tool surface cannot diverge (the robot incident).
-                _lens_dir, _room_note = _room_lens(_DATA_DIR, _room_pid)
-                _lens_active = bool(task.get("_is_direct_chat")) and bool(_lens_dir)
-                fact = {
-                    "project_id": _room_pid,
-                    "working_dir": _room_wd,
-                    "rule": (
-                        (
-                            "This room's chat lane LOOKS AT the project folder: read_file/"
-                            "list_files/search_code/query_code with root=active_workspace and "
-                            "the DEFAULT shell cwd resolve to working_dir. The Ouroboros "
-                            "system repo needs explicit root=\"system_repo\" (reads) or an "
-                            "explicit cwd (shell). File WRITES here go through "
-                            "promote_chat_to_task — the promoted task inherits this folder as "
-                            "its workspace (workspace='none' opts out)."
-                        )
-                        if _lens_active
-                        else (
-                            "This project has a working folder. Tasks promoted from this room "
-                            "run with it as their active workspace by default; pass "
-                            "workspace='none' to promote a folder-less task."
-                        )
-                    ),
-                }
-                if _room_note:
-                    fact["working_dir_warning"] = _room_note
-                return fact
-    except Exception:
-        log.debug("Failed to inject project_room working_dir fact", exc_info=True)
-    return None
-
-
-def _runtime_budget_info(env: Any, task: Dict[str, Any]) -> Dict[str, Any]:
-    """Start-of-task budget block: global projection + the STATIC per-task tree cap,
-    written once at task start so the cached prefix stays byte-stable (DEVELOPMENT
-    cache_friendliness item 22); live tree spend rides only the cache-breaking
-    surfaces (checkpoint/pacing/milestones)."""
-    try:
-        from ouroboros.usage_accounting import usage_projection
-
-        total_usd = float(os.environ.get("TOTAL_BUDGET", "1"))
-        budget_root = pathlib.Path(task.get("budget_drive_root") or env.drive_root)
-        projection = usage_projection(budget_root, global_limit_usd=total_usd)
-        spent_usd = float(projection.get("accounted_usd") or 0.0)
-        budget_info = {
-            "status": "available", "total_usd": total_usd,
-            "spent_usd": spent_usd, "remaining_usd": total_usd - spent_usd,
-            "reserved_usd": float(projection.get("reserved_usd") or 0.0),
-            "unresolved_upper_bound_usd": float(projection.get("unresolved_upper_bound_usd") or 0.0),
-            "unknown_unmetered": int(projection.get("unknown_unmetered") or 0),
-        }
-    except Exception:
-        log.error("Budget authority unavailable for runtime context", exc_info=True)
-        budget_info = {"status": "unavailable"}
-    try:
-        root_cap = float(os.environ.get("OUROBOROS_PER_TASK_COST_USD", "0") or 0)
-    except (TypeError, ValueError):
-        root_cap = 0.0
-    if root_cap > 0:
-        budget_info["per_task_tree_cap_usd"] = root_cap
-        budget_info["per_task_tree_cap_rule"] = (
-            "Hard cap for THIS task's WHOLE tree (own model calls + all subagents), enforced "
-            "by the physical-attempt ledger: dispatches are refused once the tree's accounted "
-            "spend reaches it and the task is force-stopped. Budget checkpoints during the task report the live tree number."
-        )
-    return budget_info
-
-
-def _promoted_task_toolset(env: Any) -> Dict[str, Any]:
-    """The LIVE built-in toolset available to an ordinary promoted task.
-
-    Workspace focus changes the default target, not the top-level principal's
-    tool names. The projection therefore asks the real registry once and keeps
-    credential omissions typed instead of maintaining a second static catalog.
-    Dynamic extension/MCP availability remains task-time state.
-    """
-    from types import SimpleNamespace
-
-    from ouroboros.tools.registry import ToolRegistry, _builtin_tool_availability
-
-    registry = ToolRegistry(pathlib.Path(env.repo_dir), pathlib.Path(getattr(env, "drive_root", ".")))
-
-    probe = SimpleNamespace(
-        task_id="promote_toolset_probe",
-        task_metadata={},
-        task_contract={},
-        task_constraint=None,
-        is_workspace_mode=lambda: False,
-        is_ephemeral_turn=False,
-    )
-    registry.set_context(probe)
-    top_level_tools = set(registry.available_tools())
-    # Typed omissions: registered built-ins that live availability removes right
-    # now (credential gates). Named with their reason so the router can tell
-    # "does not exist" from "exists but currently unavailable".
-    unavailable = {}
-    for name in registry._entries:
-        available, reason, detail = _builtin_tool_availability(name, probe)
-        if not available:
-            unavailable[name] = f"{reason}: {detail}" if detail else reason
-    return {
-        "top_level_tools": sorted(top_level_tools),
-        **({"unavailable_builtin_tools": dict(sorted(unavailable.items()))} if unavailable else {}),
-        "rule": (
-            "LIVE built-in tool availability, evaluated by the real tool "
-            "registry at promote time. Project focus changes the default root, "
-            "not this ordinary top-level toolset. unavailable_builtin_tools "
-            "exist but are currently unusable (e.g. missing credentials) — do "
-            "not demand them. Dynamic extension/MCP tools are NOT listed (their "
-            "availability is unknowable at promote time). If an objective/"
-            "expected_output demands specific BUILT-IN tools, demand only names "
-            "listed here."
-        ),
-    }
-
-
-def _delegation_capability_fact() -> Optional[Dict[str, Any]]:
-    """B4-lite: honestly-labeled HISTORICAL delegation observations.
-
-    Deliberately NOT live health — receipts prove what the last execution did,
-    not what a lane can do now; live lane facts arrive from plan-review wave
-    rows and typed delegate refusals. Pure bounded file reads over the existing
-    receipt projections: no daemon probes, no new health authority. Absent
-    receipt files mean absent observations, never "healthy". Fail-soft on its
-    own (None on any failure) so a problem here never drops the surrounding
-    capabilities digest.
-    """
-    try:
-        from ouroboros.reviewer_slot_config import reviewer_slot_last_executions
-        from ouroboros.subagents import subagent_last_delegation
-
-        def _observed_label(ts: Any) -> str:
-            # Timestamp only: the verbatim "historical, not live health" disclaimer
-            # lives ONCE in the note below, never repeated per row.
-            return f"last observed at {str(ts or '').strip() or 'unknown time'}"
-
-        delegation: Dict[str, Any] = {
-            "note": (
-                "Every row here is historical, not live health (the last "
-                "recorded execution per reviewer slot / delegated run): "
-                "live lane facts arrive from plan-review wave rows and typed "
-                "delegate refusals. A missing row means no observation on "
-                "record — never healthy."
-            ),
-        }
-        slot_rows: List[Dict[str, Any]] = []
-        for slot_id, row in sorted(reviewer_slot_last_executions().items()):
-            if not isinstance(row, dict):
-                continue
-            status = str(row.get("status") or "").strip()
-            fact: Dict[str, Any] = {
-                "slot": str(slot_id),
-                "outcome": (("ok" if status == "ok" else "failed") if status
-                            else "unknown"),
-                "observed": _observed_label(row.get("ts")),
-            }
-            requested = row.get("requested") if isinstance(row.get("requested"), dict) else {}
-            effective = row.get("effective") if isinstance(row.get("effective"), dict) else {}
-            if requested.get("profile_id"):
-                fact["requested_profile"] = str(requested["profile_id"])
-            if effective.get("profile_id"):
-                fact["applied_profile"] = str(effective["profile_id"])
-            # B1's typed failure facts, forwarded only when recorded (a dated
-            # window carries reset_at without a code and an undated one the
-            # code without a reset — read both independently).
-            for key in ("failure_code", "reset_at"):
-                if row.get(key):
-                    fact[key] = row[key]
-            slot_rows.append(fact)
-        if slot_rows:
-            delegation["reviewer_slots_last"] = slot_rows
-        last = subagent_last_delegation()
-        if isinstance(last, dict) and last:
-            last_fact = {
-                "route": str(last.get("route") or ""),
-                "requested_model": str(last.get("requested_model") or ""),
-                "applied_model": str(last.get("applied_model") or ""),
-                "observed": _observed_label(last.get("ts")),
-            }
-            if last.get("requested_profile"):
-                last_fact["requested_profile"] = str(last["requested_profile"])
-            if last.get("applied_profile"):
-                last_fact["applied_profile"] = str(last["applied_profile"])
-            if last.get("selected_subagent_id"):
-                last_fact["selected_subagent_id"] = str(last["selected_subagent_id"])
-            delegation["subagent_last_delegation"] = last_fact
-        if len(delegation) == 1:
-            return None
-        return delegation
-    except Exception:
-        log.debug("Failed to build delegation capability fact", exc_info=True)
-        return None
+# The runtime section's fact builders live in ouroboros/context_runtime_facts.py
+# (extracted at this module's size ceiling); re-exported here because the section
+# builder below and the tests that monkeypatch these names address them on THIS
+# surface.
+from ouroboros.context_runtime_facts import (  # noqa: E402,F401 — re-exported public surface
+    _delegation_capability_fact,
+    _project_room_fact,
+    _promoted_task_toolset,
+    _runtime_budget_info,
+)
 
 
 def _task_authority_projection(env: Any, task: Dict[str, Any]) -> Dict[str, Any]:
@@ -644,7 +441,7 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
         log.debug("Failed to get git info for context", exc_info=True)
         git_branch, git_sha = "unknown", "unknown"
 
-    budget_info = _runtime_budget_info(env, task)
+    budget_info = _runtime_budget_info(env, task, ctx)
 
     try:
         from ouroboros.config import get_runtime_mode
@@ -909,8 +706,8 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
             }
     except Exception:
         log.debug("Failed to inject answer_protocol rule", exc_info=True)
-    runtime_ctx = json.dumps(runtime_data, ensure_ascii=False, indent=2)
-    out = "## Runtime context\n\n" + runtime_ctx
+    runtime_data["official_update"] = official_update_projection(git_sha)
+    out = "## Runtime context\n\n" + json.dumps(runtime_data, ensure_ascii=False, indent=2)
     try:
         from ouroboros.task_tree_ledger import tree_ledger_tail_digest
         _root_id = str(task.get("root_task_id") or task.get("id") or "")
@@ -1028,6 +825,11 @@ def _render_scratchpad_for_context(memory: "Memory", budget: int) -> str:
     silent amnesia. Block-boundary cuts only — never mid-block, never
     mid-string. The caller wraps the returned body with the section header
     ("## Scratchpad (from `memory/scratchpad.md` ...)") inline, same as before.
+
+    The kept slice is rendered by the writer's own
+    ouroboros.memory.render_scratchpad_markdown, so the degraded body is the
+    same markdown, in the same newest-first order, as the prefix of
+    scratchpad.md it stands in for.
     """
     raw = memory.load_scratchpad()
     if len(raw) <= budget:
@@ -1041,61 +843,46 @@ def _render_scratchpad_for_context(memory: "Memory", budget: int) -> str:
         # already prevents NEW writes on this state.
         return raw
 
-    # Render each block the way _write_scratchpad_markdown would
-    # (ouroboros/memory.py:_write_scratchpad_markdown).
-    def _render_block(b: Dict[str, Any]) -> str:
-        ts = str(b.get("ts", ""))[:16]
-        source = b.get("source", "?")
-        content = b.get("content", "")
-        out = f"### [{ts} — {source}]\n{content}\n\n---\n"
-        metadata = b.get("metadata") if isinstance(b.get("metadata"), dict) else {}
-        source_ref = metadata.get("source_ref") if isinstance(metadata.get("source_ref"), dict) else {}
-        entry_id = str(source_ref.get("entry_id") or "")
-        if entry_id:
-            out += (
-                "Exact replaced blocks: `read_file(root='runtime_data', "
-                "path='memory/scratchpad_journal.jsonl', start_line=1)`; "
-                f"locate `entry_id={entry_id}`.\n\n"
-            )
-        return out
+    # Render through the writer's own renderer so a degraded build reads in
+    # the SAME order (newest-first) as the scratchpad.md it stands in for.
+    journal_pointer = memory.journal_path().exists()
 
-    rendered_blocks = [_render_block(b) for b in blocks]
+    def _build(kept: List[Dict[str, Any]]) -> str:
+        return render_scratchpad_markdown(kept, journal_pointer=journal_pointer)
+
     n_total = len(blocks)
-
-    def _build(kept_rendered: List[str]) -> str:
-        n = len(kept_rendered)
-        parts = [f"## Scratchpad (working memory — {n}/{_SCRATCHPAD_MAX_BLOCKS} blocks)\n\n"]
-        if memory.journal_path().exists():
-            parts.append(
-                "Exact retired/replaced source blocks remain readable with "
-                "`read_file(root='runtime_data', "
-                "path='memory/scratchpad_journal.jsonl', start_line=1)`.\n\n"
-            )
-        parts.extend(kept_rendered)
-        return "".join(parts)
-
     # Find the largest k (newest-first kept) such that the section fits.
     n_kept = n_total
     while n_kept > 1:
-        section = _build(rendered_blocks[-n_kept:])
+        section = _build(blocks[-n_kept:])
         if len(section) <= budget:
             break
         n_kept -= 1
     # Always retain at least the single newest, even if it alone exceeds
     # budget (BIBLE P1 — never silent, paired with the gap marker below).
     n_kept = max(1, n_kept)
-    section = _build(rendered_blocks[-n_kept:])
+    section = _build(blocks[-n_kept:])
     omitted = n_total - n_kept
     # Fire the gap marker whenever older blocks were dropped OR the retained
     # newest block(s) alone still exceed budget (n_kept forced to 1 above) —
     # both are a silent-looking truncation from the consumer's point of view
     # and BIBLE P1 requires either be disclosed in-band, not just logged.
+    # The marker names the LIVE store: a context build retires nothing, so the
+    # dropped blocks are still in scratchpad.md (the journal only holds blocks
+    # the writer actually retired/replaced — pointing there cannot resolve).
     if omitted > 0 or len(section) > budget:
+        if omitted > 0:
+            first_ts = str(blocks[0].get("ts", ""))[:16]
+            last_ts = str(blocks[omitted - 1].get("ts", ""))[:16]
+            reason = (
+                f"{omitted} oldest block(s) ({first_ts}..{last_ts}) omitted from "
+                "this context build for size; they are still live"
+            )
+        else:
+            reason = "newest block exceeds the section budget"
         section += (
-            f"\n⚠️ [budget gap: {omitted} block(s) omitted from this context build "
-            f"for size; exact retired/replaced blocks remain readable with "
-            "`read_file(root='runtime_data', "
-            "path='memory/scratchpad_journal.jsonl', start_line=1)`.]\n"
+            f"\n⚠️ [budget gap: {reason} — re-read the full working memory with "
+            "`read_file(root='runtime_data', path='memory/scratchpad.md', start_line=1)`.]\n"
         )
     return section
 
@@ -1114,7 +901,13 @@ def build_memory_sections(memory: Memory, partition: str = "all", durable_dialog
         # never re-fire the warning.
         _warn_if_over_budget("scratchpad", scratchpad_raw)
         scratchpad_body = _render_scratchpad_for_context(memory, SCRATCHPAD_SECTION_BUDGET_CHARS)
-        sections.append("## Scratchpad (from `memory/scratchpad.md` — already loaded; do not re-read via read_file(root='runtime_data', path='memory/scratchpad.md'))\n\n" + scratchpad_body)
+        # A trimmed body must not carry the "do not re-read" instruction: the
+        # omitted blocks are only reachable by re-reading the live file.
+        if scratchpad_body != scratchpad_raw:
+            header = "## Scratchpad (from `memory/scratchpad.md` — PARTIAL: trimmed to the section budget; re-read via read_file(root='runtime_data', path='memory/scratchpad.md') for the full working memory)"
+        else:
+            header = "## Scratchpad (from `memory/scratchpad.md` — already loaded; do not re-read via read_file(root='runtime_data', path='memory/scratchpad.md'))"
+        sections.append(header + "\n\n" + scratchpad_body)
 
     if include_stable:
         identity_raw = memory.load_identity()
@@ -1422,10 +1215,21 @@ def _build_installed_skills_section(env: Any, *, max_lines: int = 100) -> str:
         lines.append(f"- {name} ({meta}): {description or 'No description.'}")
         if when:
             lines.append(f"  Trigger: {when}")
+        # CPL-7 Model Experience: bounded prose; absent section renders nothing.
+        experience = skill.get("model_experience")
+        if isinstance(experience, dict):
+            sees = _field(experience.get("what_model_sees"), 220)
+            token_effect = _field(experience.get("token_effect"), 160)
+            if sees:
+                lines.append(f"  Model experience: {sees}")
+            if token_effect:
+                lines.append(f"  Token effect: {token_effect}")
         if surfaces:
             lines.append(f"  Tools: {', '.join(surfaces[:8])}")
         elif skill.get("runnable_via_skill_exec"):
             lines.append("  Tools: skill_exec")
+        if skill.get("type") == "extension" and not skill.get("live_loaded"):
+            lines.append(f"  Live ({_field(skill.get('process') or 'unknown', 20)}): no ({_field(skill.get('live_reason') or 'unknown', 60)})")
         count += 1
         if len(lines) >= max_lines:
             lines.append("- ... (truncated; call list_skills for the full catalogue)")
@@ -1571,6 +1375,10 @@ def _capture_context_core(
             if dr_text.strip():
                 semi_stable_parts.append(
                     "## Last Deep Self-Review\n\n"
+                    "Historical report from memory/deep_review.md, not a verdict on the current tree. "
+                    "Use its recorded provenance; an unrecorded date or source revision is unknown, "
+                    "not implied by the file timestamp or today's checkout. Recheck findings against "
+                    "current evidence.\n\n"
                     + truncate_review_artifact(dr_text, limit=8000)
                 )
     except Exception:

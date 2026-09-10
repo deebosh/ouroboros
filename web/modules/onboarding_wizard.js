@@ -14,6 +14,12 @@ import {
 } from './onboarding_agents_step.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from './ui_helpers.js';
+import { createModelRolesEditor, modelRolesHost, modelRoleMap, parseModelSource } from './model_roles.js';
+import { availableSubagentsEditorHost } from './subagents_settings.js';
+import { adoptSubagentRoster, applyReviewerSlotsDraft, collectReviewerSlots,
+    destroyReviewerSlots, initReviewerSlots, renderReviewerSlotsSection } from './reviewer_slots.js';
+import { accountRows } from './claudexor_status_store.js';
+import { accountRowFacts } from './harness_accounts.js';
 
 (() => {
         // The wizard is its own document inside the overlay iframe, so the SPA's
@@ -49,7 +55,6 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         ];
         const MODEL_DEFAULTS = bootstrap.modelDefaults || {};
         const LOCAL_PRESETS = bootstrap.localPresets || {};
-        const MODEL_SUGGESTIONS = bootstrap.modelSuggestions || [];
         const INITIAL_STATE = bootstrap.initialState || {};
         // What a stored credential looks like in INITIAL_STATE: a marker saying
         // "configured", not the secret. Posting it back means "leave it alone";
@@ -62,9 +67,16 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         error: '',
         saving: false,
         modelsDirty: false,
+        reviewerDraftDirty: false,
+        reviewerSlots: null,
+        modelAccounts: {},
+        modelContextWindows: {},
+        apiAccessOpen: false,
+        apiBudgetOpen: false,
         localSourceOpen: Boolean(INITIAL_STATE.localSource),
         moreProvidersOpen: Boolean(
-            INITIAL_STATE.cloudruKey || INITIAL_STATE.minimaxKey || INITIAL_STATE.compatibleBaseUrl || INITIAL_STATE.compatibleApiKey,
+            INITIAL_STATE.cloudruKey || INITIAL_STATE.minimaxKey || INITIAL_STATE.deepseekKey
+            || INITIAL_STATE.compatibleBaseUrl || INITIAL_STATE.compatibleApiKey,
         ),
         localStatusText: 'Status: Offline',
         localStatusTone: 'muted',
@@ -78,6 +90,10 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         availableSubagents: null,
         skipSubscriptionPresets: false,
         presetFailure: null,
+        // Set when completion answered 503 `settings_save_timeout`: the save is
+        // still running in the server, so the wizard offers "Check status"
+        // instead of a blind retry (a second write over an unknown first).
+        saveUnknown: false,
         // Set once completion SUCCEEDED but the receipt says the saved runtime
         // mode needs a restart, in the one shell that cannot restart anything.
         completedRestartMode: '',
@@ -85,6 +101,65 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
 
     let localStatusPollStarted = false;
     let agentsStep = null;
+    let modelSources = [];
+    let catalogGeneration = 0;
+    const modelRoles = createModelRolesEditor({ hostId: 'onboarding-model-roles', onChange: (settings) => {
+        adoptModelSettings(settings);
+        state.modelsDirty = true;
+        markStepEdited();
+    } });
+
+    function draftSettings() {
+        return onboardingSettingsDraft({ state, providerFields: PROVIDER_FIELDS,
+            budgetFields: BUDGET_FIELDS, modelSlots: MODEL_SLOTS, trim });
+    }
+
+    function adoptModelSettings(settings = {}) {
+        MODEL_SLOTS.forEach((slot) => {
+            if (slot.settingKey in settings) state[slot.stateKey] = settings[slot.settingKey];
+        });
+        if ('OUROBOROS_MODEL_ACCOUNTS' in settings) state.modelAccounts = modelRoleMap(settings.OUROBOROS_MODEL_ACCOUNTS);
+        if ('OUROBOROS_MODEL_CONTEXT_WINDOWS' in settings) state.modelContextWindows = modelRoleMap(settings.OUROBOROS_MODEL_CONTEXT_WINDOWS);
+    }
+
+    function hasApiAccess() {
+        return PROVIDER_FIELDS.some((field) => !['MINIMAX_REGION', 'OPENAI_COMPATIBLE_API_KEY'].includes(field.settingKey)
+            && trim(state[field.stateKey]));
+    }
+
+    function hasModelSubscription() {
+        return modelSources.some((source) => state.agentsConnected.includes(source.credentialHarness));
+    }
+
+    function applySetupPreview(response) {
+        if (!state.modelsDirty && response.model_settings) {
+            adoptModelSettings(response.model_settings);
+            loadModelRoles();
+        }
+        if (!state.reviewerDraftDirty && response.reviewer_slots) {
+            state.reviewerSlots = typeof response.reviewer_slots === 'string'
+                ? JSON.parse(response.reviewer_slots) : response.reviewer_slots;
+            if (state.currentStep === 'review_mode') applyReviewerSlotsDraft(state.reviewerSlots);
+        }
+        modelRoles.adoptCatalog(response);
+        if (state.agentsConnected.length) {
+            const generation = ++catalogGeneration;
+            void fetchJson('/api/model-catalog', { cache: 'no-store' }).then((catalog) => {
+                if (generation !== catalogGeneration) return;
+                modelSources = catalog.model_sources || [];
+                modelRoles.adoptCatalog(catalog);
+                if (state.currentStep === 'summary') render();
+                else syncCurrentStepActionState();
+            }).catch(() => {}); // An unread catalog never invents a model source.
+        }
+        if (state.currentStep === 'summary') render();
+        else syncCurrentStepActionState();
+    }
+
+    function loadModelRoles() {
+        modelRoles.load(draftSettings(), { ...SETUP_CONTRACT,
+            modelSlots: MODEL_SLOTS.map((slot) => ({ ...slot, settingsToggleId: '' })) });
+    }
 
     function trim(value) {
         return String(value || '').trim();
@@ -144,6 +219,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
                 ['OPENAI_API_KEY', 'openai'],
                 ['CLOUDRU_FOUNDATION_MODELS_API_KEY', 'cloudru'],
                 ['MINIMAX_API_KEY', 'minimax'],
+                ['DEEPSEEK_API_KEY', 'deepseek'],
                 ['ANTHROPIC_API_KEY', 'anthropic'],
             ].filter(([settingKey]) => configured[settingKey]);
             if (hasOpenrouter) return 'openrouter';
@@ -185,6 +261,8 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
     function syncCurrentStepActionState() {
         const next = document.getElementById('next-btn');
         if (next) next.disabled = nextButtonShouldBeDisabled();
+        const quick = document.getElementById('quick-start-btn');
+        if (quick) quick.hidden = !hasModelSubscription();
     }
 
     function markStepEdited() {
@@ -242,6 +320,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
 
     function applyModelDefaults(force) {
         if (state.modelsDirty && !force) return;
+        if (hasModelSubscription()) return;
         const defaults = MODEL_DEFAULTS[activeProviderProfile()] || MODEL_DEFAULTS.openrouter || {};
         state.mainModel = defaults.main || '';
         state.lightModel = defaults.light || '';
@@ -262,8 +341,8 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
             const shortKey = keyValues.find(([field, value]) => value && (field.inputType || 'password') === 'password' && value.length < 10 && value !== trim(INITIAL_STATE[field.stateKey]));
             if (shortKey) return `${shortKey[0].label.replace(' API Key', '')} API key looks too short.`;
             const hasRemote = keyValues.some(([field, value]) => value && !['OPENAI_COMPATIBLE_API_KEY', 'MINIMAX_REGION'].includes(field.settingKey));
-            if (!hasRemote && !localSource) {
-                return 'Enter at least one remote key or a local model source before continuing.';
+            if (!hasRemote && !localSource && !hasModelSubscription()) {
+                return 'Connect Codex, enter an API key, or choose a local model before continuing.';
             }
             if (trim(state.minimaxRegion) && !['global_en', 'cn_zh'].includes(trim(state.minimaxRegion).toLowerCase())) {
                 return 'MiniMax Region must be global_en or cn_zh.';
@@ -289,7 +368,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         if (!trim(state.mainModel)) {
             return 'Confirm the Main model before starting Ouroboros.';
         }
-        return '';
+        return state.currentStep === 'models' ? modelRoles.validate() : '';
     }
 
     function validateReviewStep() {
@@ -301,6 +380,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
 
     function validateBudgetStep() {
         for (const field of BUDGET_FIELDS) {
+            if (hasModelSubscription() && !hasApiAccess() && state[field.stateKey] === '') continue;
             const value = Number(state[field.stateKey]);
             const min = Number(field.min || 0.01);
             if (!Number.isFinite(value) || value < min) {
@@ -311,10 +391,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
     }
 
     function validateCurrentStep() {
-        // 'agents' is deliberately absent from this per-step navigation gate: a
-        // subscription is an amplifier, never an admission requirement. Final
-        // completion separately validates the visible canonical actor draft.
-        if (state.currentStep === 'providers') return validateProvidersStep();
+        if (['accounts', 'providers'].includes(state.currentStep)) return validateProvidersStep();
         if (state.currentStep === 'models') return validateModelsStep();
         if (state.currentStep === 'review_mode') return validateReviewStep();
         if (state.currentStep === 'budget') return validateBudgetStep();
@@ -328,8 +405,8 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
             render();
             return;
         }
-        if (state.currentStep === 'providers') applyModelDefaults(false);
-        if (['providers', 'models', 'review_mode', 'budget'].includes(state.currentStep)) {
+        if (['accounts', 'providers'].includes(state.currentStep)) applyModelDefaults(false);
+        if (['accounts', 'providers', 'models', 'review_mode', 'budget'].includes(state.currentStep)) {
             // Preview is enrichment, never a navigation gate. Refresh in the
             // background after the step has a valid complete draft; Finish
             // checks the receipt only if generated rows still own the editor.
@@ -430,19 +507,23 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
 
     function summaryRows() {
         const rows = [
-            ['Detected setup', profileLabel(activeProviderProfile())],
+            ['Connected access', hasModelSubscription() && !hasApiAccess()
+                ? modelSources.filter((source) => state.agentsConnected.includes(source.credentialHarness))
+                    .map((source) => source.label || source.id).join(', ') + ' subscription · no API key'
+                : profileLabel(activeProviderProfile())],
             ['Review mode', reviewLabel(state.reviewEnforcement)],
             ['Runtime mode', runtimeModeLabel(state.runtimeMode)],
-            ['Total budget', formatUsd(state.totalBudget)],
-            ['Per-task cost cap', formatUsd(state.perTaskCostUsd)],
-            ['Main', trim(state.mainModel)],
-            ['Light', trim(state.lightModel) || '(uses Main)'],
-            ['Fallback', trim(state.fallbackModel)],
+            ...((hasApiAccess() || !hasModelSubscription()) ? [
+                ['Total API budget', formatUsd(state.totalBudget)],
+                ['Per-task API cap', formatUsd(state.perTaskCostUsd)],
+            ] : [['Budget', 'Subscription quota · wait and auto-continue on reset']]),
+            ...MODEL_SLOTS.map((slot) => [slot.label.replace(/ Model$/, ''), modelSummary(slot)]),
         ];
         if (trim(state.openrouterKey)) rows.splice(1, 0, ['OpenRouter', 'configured']);
         if (trim(state.openaiKey)) rows.splice(1, 0, ['OpenAI', 'configured']);
         if (trim(state.cloudruKey)) rows.splice(1, 0, ['Cloud.ru', 'configured']);
         if (trim(state.minimaxKey)) rows.splice(1, 0, ['MiniMax', 'configured']);
+        if (trim(state.deepseekKey)) rows.splice(1, 0, ['DeepSeek', 'configured']);
         if (trim(state.anthropicKey)) rows.splice(1, 0, ['Anthropic', 'configured']);
         if (hasLocalModel()) {
             rows.splice(
@@ -453,10 +534,38 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
             );
         }
         rows.push(['Agents', agentsSummaryValue()]);
+        for (const [key, label] of [['triad', 'Triad review'], ['scope', 'Scope review'],
+            ['advisory', 'Advisory review'], ['deep_review', 'Deep self-review']]) {
+            const value = state.reviewerSlots?.[key];
+            if (value) rows.push([label, (Array.isArray(value) ? value : [value]).map(reviewerSummary).join(' · ')]);
+        }
         if (trim(state.skillsRepoPath)) {
             rows.push(['Skills repo', trim(state.skillsRepoPath)]);
         }
         return rows;
+    }
+
+    function modelSummary(slot) {
+        const values = trim(state[slot.stateKey]).split(',').map((value) => value.trim()).filter(Boolean);
+        const inherited = !values.length && slot.slot !== 'fallback';
+        if (inherited) values.push(trim(state.mainModel));
+        return values.map((value, index) => {
+            const { source, model } = parseModelSource(value);
+            const account = slot.slot === 'fallback' ? state.modelAccounts.fallback?.[index] : state.modelAccounts[slot.slot];
+            const context = slot.slot === 'fallback' ? state.modelContextWindows.fallback?.[index] : state.modelContextWindows[slot.slot];
+            const assignment = source.startsWith('subscription:')
+                ? `${source.slice(13)} · ${model} · ${account ? `Account: ${account}` : 'Auto rotation'}` : value;
+            return `${inherited ? 'Uses Main · ' : ''}${assignment}${Number(context) > 0 ? ` · ${Number(context).toLocaleString('en-US')} tokens, set by you` : ''}`;
+        }).join(' → ') || 'None';
+    }
+
+    function reviewerSummary(row) {
+        const actor = state.availableSubagents?.items?.find((item) => item.subagent_id === row.subagent_id);
+        const route = row.route || actor?.route;
+        const account = route?.profile_id || route?.credential_profile_id;
+        const effort = row.effort || actor?.effort;
+        return [row.enabled === false ? 'Disabled' : '', route?.target_id || row.subagent_id || 'Not configured',
+            account ? `Account: ${account}` : '', effort ? `Effort: ${effort}` : ''].filter(Boolean).join(' · ');
     }
 
     function agentsSummaryValue() {
@@ -510,22 +619,22 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
             `;
         }
 
-        function renderProvidersStep() {
+        function renderProvidersStep({ embedded = false } = {}) {
         const selectedProfile = activeProviderProfile();
         const localPreset = trim(state.localPreset);
         const localSourceOpen = state.localSourceOpen || hasLocalModel();
         const moreProvidersOpen = state.moreProvidersOpen || hasMoreProviderValue();
         return `
-            <div class="step-header">
+            ${embedded ? '' : `<div class="step-header">
                 <div>
-                    <h2 class="step-title">${escapeHtml(STEP_META.providers.title)}</h2>
-                    <p class="step-copy">${escapeHtml(STEP_META.providers.copy)}</p>
+                    <h2 class="step-title">${escapeHtml(STEP_META.providers?.title || 'API access')}</h2>
+                    <p class="step-copy">${escapeHtml(STEP_META.providers?.copy || '')}</p>
                 </div>
             </div>
                 <div class="panel-card">
                     <h3>Keys first, routing second</h3>
                     <p>${escapeHtml(PROVIDER_PROFILES[selectedProfile]?.providerCopy || '')}</p>
-                </div>
+                </div>`}
                 <div class="field-grid">
                     ${primaryProviderFields().map((field) => providerKeyField({
                         ...field,
@@ -598,10 +707,18 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
     function bindAgentsStep() {
         if (!agentsStep) {
             agentsStep = createAgentsStep({
-                isVisible: () => state.currentStep === 'agents',
-                onChange: (connected) => { state.agentsConnected = connected; },
-                previewPayload: () => onboardingSettingsDraft({ state, providerFields: PROVIDER_FIELDS, budgetFields: BUDGET_FIELDS, modelSlots: MODEL_SLOTS, trim }),
+                isVisible: () => ['accounts', 'agents', 'models', 'budget'].includes(state.currentStep),
+                onChange: (connected) => {
+                    state.agentsConnected = connected;
+                    syncCurrentStepActionState();
+                },
+                previewPayload: draftSettings,
                 onSubagentsChange: (setting) => { state.availableSubagents = setting; },
+                onSetupPreview: applySetupPreview,
+                onStatus: () => {
+                    const quota = document.getElementById('wizard-subscription-quota');
+                    if (quota && state.currentStep === 'budget') quota.innerHTML = subscriptionQuotaHtml();
+                },
             });
         }
         agentsStep.setSkipPresets(state.skipSubscriptionPresets);
@@ -609,13 +726,45 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         syncCurrentStepActionState();
     }
 
-    function modelSuggestionField({ id, label, value, note }) {
+    function renderAccountsStep() {
         return `
-            <div class="field wizard-model-field" data-wizard-model-field>
-                <label for="${escapeHtml(id)}">${escapeHtml(label)}</label>
-                <input id="${escapeHtml(id)}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false" data-wizard-model-input>
-                <div class="wizard-model-suggestions" hidden></div>
-                <div class="field-note">${escapeHtml(note)}</div>
+            <div class="step-header"><div>
+                <h2 class="step-title">Accounts</h2>
+                <p class="step-copy">Start with Codex, or connect API access. You can add more accounts any time.</p>
+            </div></div>
+            ${agentsStepHtml({ compact: true, showRoster: false })}
+            <details class="wizard-collapse" data-collapse="api-access" ${state.apiAccessOpen || hasApiAccess() ? 'open' : ''}>
+                <summary><span>API keys and local models</span><span class="selection-badge">${hasApiAccess() ? 'Configured' : 'Optional'}</span></summary>
+                <div class="wizard-collapse-body">${renderProvidersStep({ embedded: true })}</div>
+            </details>
+            <div class="wizard-inline-note">Subscription limits still apply. This connection does not enable paid credits or change your provider's spending limits.</div>
+        `;
+    }
+
+    async function reviewAndStart() {
+        if (validateProvidersStep()) return;
+        state.error = '';
+        const ready = await agentsStep.refreshSubagentsPreview({ force: true });
+        if (!ready) {
+            state.error = agentsStep.previewError || 'Setup suggestions could not be prepared. Try again or choose your models manually.';
+            render(); return;
+        }
+        state.currentStep = 'summary';
+        render();
+    }
+
+    function subscriptionQuotaHtml() {
+        if (!state.agentsConnected.length) return '';
+        const snapshot = agentsStep?.snapshot;
+        const accountRead = agentsStep?.reads?.accounts || 'unread';
+        const quotaRead = agentsStep?.reads?.quota || 'unread';
+        const lines = accountRows(snapshot).filter((row) => row.enabled !== false).map((row) => {
+            const facts = accountRowFacts(row, snapshot, { accountsRead: accountRead, quotaRead });
+            return `<div class="subscription-quota-row"><strong>${escapeHtml(facts.name)}</strong>
+                <span>${escapeHtml(facts.quota.label)}</span></div>`;
+        }).join('');
+        return `<div class="panel-card"><h3>Subscription quota</h3>${lines}
+            <p class="field-note">Compatible accounts rotate automatically. If the pool is exhausted, Ouroboros waits and continues when quota resets. You can switch the waiting role yourself.</p>
             </div>
         `;
     }
@@ -643,20 +792,11 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
                     <p class="step-copy">${escapeHtml(STEP_META.models.copy)}</p>
                 </div>
             </div>
-                <div class="panel-card">
-                    <h3>Current profile</h3>
-                    <p>${escapeHtml(PROVIDER_PROFILES[profile]?.modelCopy || '')}</p>
-                </div>
                 ${profile === 'openai-compatible' ? renderCompatibleModelLoader() : ''}
-                <div class="grid two">
-                    ${MODEL_SLOTS.map((slot) => modelSuggestionField({
-                        id: slot.inputId,
-                        label: slot.label,
-                        value: state[slot.stateKey],
-                        note: slot.note,
-                    })).join('')}
-                </div>
-            <div class="wizard-inline-note">Direct providers use explicit <code>provider::model</code> values, including <code>minimax::MiniMax-M3</code> and <code>minimax::MiniMax-M2.7</code>. OpenAI-compatible endpoints use <code>openai-compatible::your-model-name</code>. Plain slash-form model IDs stay router-style by design.</div>
+                ${modelRolesHost('onboarding-model-roles')}
+                <details class="wizard-collapse"><summary>Available subagents</summary>
+                    <div class="wizard-collapse-body">${availableSubagentsEditorHost('onboarding-available-subagents')}</div>
+                </details>
         `;
     }
 
@@ -672,6 +812,10 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
                     <p class="step-copy">${escapeHtml(STEP_META.review_mode.copy)}</p>
                 </div>
                 </div>
+                <div class="wizard-inline-note">${state.reviewerSlots ? 'Your reviewer assignments are ready below. You can change every reviewer, including deep self-review.' : 'Reviewer assignments will be prepared from your connected access.'}</div>
+                <details class="wizard-collapse"><summary>Reviewers</summary>
+                    <div class="wizard-collapse-body">${renderReviewerSlotsSection()}</div>
+                </details>
                 <div class="wizard-choice-grid">
                     ${REVIEW_MODES.map((mode) => `
                         <button type="button" class="wizard-choice ${escapeHtml(mode.className || mode.value)} ${state.reviewEnforcement === mode.value ? 'active' : ''}" data-review-mode="${escapeHtml(mode.value)}">
@@ -713,7 +857,10 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
                     <p class="step-copy">${escapeHtml(STEP_META.budget.copy)}</p>
                 </div>
                 </div>
-                <div class="grid two">
+                <div id="wizard-subscription-quota">${subscriptionQuotaHtml()}</div>
+                <details class="wizard-collapse" data-collapse="api-budget" ${hasApiAccess() || !hasModelSubscription() || state.apiBudgetOpen ? 'open' : ''}>
+                <summary><span>API spending limits</span><span class="selection-badge">Optional with subscriptions</span></summary>
+                <div class="wizard-collapse-body grid two">
                     ${BUDGET_FIELDS.map((field) => `
                         <div class="panel-card">
                             <h3>${escapeHtml(field.title)}</h3>
@@ -724,7 +871,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
                             </div>
                         </div>
                     `).join('')}
-                </div>
+                </div></details>
             `;
         }
 
@@ -767,6 +914,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
     }
 
     function renderStepContent() {
+        if (state.currentStep === 'accounts') return renderAccountsStep();
         if (state.completedRestartMode) return renderRestartRequiredScreen();
         if (state.currentStep === 'providers') return renderProvidersStep();
         if (state.currentStep === 'agents') return renderAgentsStep();
@@ -792,17 +940,23 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
     }
 
     function render() {
+        destroyReviewerSlots();
         const meta = STEP_META[state.currentStep];
         const index = STEP_ORDER.indexOf(state.currentStep);
+        // An UNKNOWN save (503 settings_save_timeout: the write may still be
+        // running in the server) makes "Check status" the primary action and
+        // the re-submit an explicit, secondary "Retry save" — never the default
+        // button beside it, which re-POSTed a second write over the first.
+        const saveUnknown = state.currentStep === 'summary' && state.saveUnknown;
         const nextLabel = state.currentStep === 'summary'
-            ? (state.saving ? 'Saving...' : 'Start Ouroboros')
+            ? (state.saving ? 'Saving...' : (saveUnknown ? 'Retry save' : 'Start Ouroboros'))
             : 'Continue';
         root.innerHTML = `
             <div class="wizard-shell">
                 <div class="wizard-header">
                     <div>
                         <h1 class="wizard-title">Ouroboros</h1>
-                        <p class="wizard-subtitle">Shared desktop and web onboarding with the same model, review, and budget flow in both hosts.</p>
+                        <p class="wizard-subtitle">Your accounts, your models, one Ouroboros.</p>
                     </div>
                     <div class="wizard-badge">Step ${index + 1} of ${STEP_ORDER.length}</div>
                 </div>
@@ -814,10 +968,14 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
                         <div class="footer-copy">${escapeHtml(meta.footer)}</div>
                         <div class="footer-actions">
                             <button class="btn btn-secondary" id="back-btn" type="button" ${index === 0 || state.saving ? 'disabled' : ''}>Back</button>
+                            ${state.currentStep === 'accounts' ? `<button class="btn btn-secondary" id="quick-start-btn" type="button" ${hasModelSubscription() ? '' : 'hidden'}>Review &amp; start</button>` : ''}
                             ${state.currentStep === 'summary' && shouldOfferPresetSkip() ? `
                                 <button class="btn btn-secondary" id="skip-presets-btn" type="button" ${state.saving ? 'disabled' : ''}>Finish without subscription presets</button>
                             ` : ''}
-                            <button class="btn btn-primary" id="next-btn" type="button" ${nextButtonShouldBeDisabled() ? 'disabled' : ''}>${escapeHtml(nextLabel)}</button>
+                            <button class="btn ${saveUnknown ? 'btn-secondary' : 'btn-primary'}" id="next-btn" type="button" ${nextButtonShouldBeDisabled() ? 'disabled' : ''}>${escapeHtml(nextLabel)}</button>
+                            ${saveUnknown ? `
+                                <button class="btn btn-primary" id="check-save-btn" type="button" ${state.saving ? 'disabled' : ''}>Check status</button>
+                            ` : ''}
                         </div>
                     </div>
                     <div class="wizard-error">${escapeHtml(state.error)}</div>
@@ -827,7 +985,6 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         `;
         bindEvents();
         renderLocalStatus();
-        renderClaudeCliStatus();
     }
 
         function bindClearButtons() {
@@ -870,6 +1027,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         // reaches the FIRST details element, which silently drops the toggle
         // persistence of every later collapse on the step.
         const collapseStateKeys = {
+            'api-access': 'apiAccessOpen',
             'more-providers': 'moreProvidersOpen',
             'local-model': 'localSourceOpen',
         };
@@ -1054,83 +1212,23 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
             }
         }
 
-        function bindModelsStep() {
-            const modelInputMap = Object.fromEntries(MODEL_SLOTS.map((slot) => [slot.inputId, slot.stateKey]));
-            bindCompatibleModelLoader();
-            function suggestionMatches(query) {
-                const needle = trim(query).toLowerCase();
-                return MODEL_SUGGESTIONS
-                    .filter((model) => !needle || String(model).toLowerCase().includes(needle))
-                    .slice(0, 8);
-            }
-        function closeSuggestions(exceptInput = null) {
-            root.querySelectorAll('.wizard-model-suggestions').forEach((panel) => {
-                if (exceptInput && panel.parentElement?.querySelector('input') === exceptInput) return;
-                panel.hidden = true;
-                panel.innerHTML = '';
-            });
-        }
-        function renderSuggestions(input) {
-            const panel = input.closest('[data-wizard-model-field]')?.querySelector('.wizard-model-suggestions');
-            if (!panel) return;
-            const matches = suggestionMatches(input.value);
-            if (!matches.length) {
-                panel.hidden = true;
-                panel.innerHTML = '';
-                return;
-            }
-            panel.innerHTML = matches.map((model) => (
-                `<button type="button" class="wizard-model-suggestion" data-value="${escapeHtml(model)}">${escapeHtml(model)}</button>`
-            )).join('');
-            panel.hidden = false;
-        }
-        Object.entries(modelInputMap).forEach(([id, key]) => {
-            const input = document.getElementById(id);
-            if (!input) return;
-            input.addEventListener('focus', () => {
-                closeSuggestions(input);
-                renderSuggestions(input);
-            });
-            input.addEventListener('input', () => {
-                state[key] = input.value;
-                state.modelsDirty = true;
-                state.error = '';
-                agentsStep?.invalidateGeneratedPreview();
-                closeSuggestions(input);
-                renderSuggestions(input);
-                syncCurrentStepActionState();
-            });
-            input.addEventListener('change', () => {
-                void agentsStep?.refreshSubagentsPreview({ force: true });
-            });
-        });
-        root.querySelectorAll('.wizard-model-suggestions').forEach((panel) => {
-            panel.addEventListener('mousedown', (event) => {
-                const button = event.target.closest('.wizard-model-suggestion');
-                if (!button) return;
-                event.preventDefault();
-                const input = panel.parentElement?.querySelector('input');
-                if (!input) return;
-                input.value = button.dataset.value || '';
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                closeSuggestions();
-            });
-        });
-        if (root.dataset.modelSuggestionOutsideListener !== '1') {
-            root.dataset.modelSuggestionOutsideListener = '1';
-            document.addEventListener('mousedown', (event) => {
-                if (!root.contains(event.target) || !event.target.closest('[data-wizard-model-field]')) {
-                    root.querySelectorAll('.wizard-model-suggestions').forEach((panel) => {
-                        panel.hidden = true;
-                        panel.innerHTML = '';
-                    });
-                }
-            });
-        }
+    function bindModelsStep() {
+        bindCompatibleModelLoader();
+        loadModelRoles();
+        modelRoles.mount();
+        agentsStep?.mount();
         syncCurrentStepActionState();
     }
 
     function bindReviewModeStep() {
+        initReviewerSlots({ onChange: () => {
+            state.reviewerDraftDirty = true;
+            const value = collectReviewerSlots().OUROBOROS_REVIEWER_SLOTS;
+            if (value) state.reviewerSlots = JSON.parse(value);
+            markStepEdited();
+        } });
+        adoptSubagentRoster({ OUROBOROS_SUBAGENTS: state.availableSubagents });
+        if (state.reviewerSlots) applyReviewerSlotsDraft(state.reviewerSlots);
         root.querySelectorAll('[data-review-mode]').forEach((button) => {
             button.addEventListener('click', () => {
                 state.reviewEnforcement = button.getAttribute('data-review-mode');
@@ -1153,6 +1251,8 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
     }
 
         function bindBudgetStep() {
+            const disclosure = root.querySelector('[data-collapse="api-budget"]');
+            disclosure?.addEventListener('toggle', () => { state.apiBudgetOpen = disclosure.open; });
             BUDGET_FIELDS.forEach((field) => {
                 const input = document.getElementById(field.inputId);
                 if (input) input.addEventListener('input', () => { state[field.stateKey] = input.value; markStepEdited(); });
@@ -1223,6 +1323,44 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         render();
     }
 
+    async function checkSaveStatus() {
+        // Completion answered 503 `settings_save_timeout`: its body kept running
+        // in the server past the shared writer bound, so whether the bytes
+        // landed is UNKNOWN (`saved: null`) and a retry would be a second write.
+        // Re-read the readiness probe the overlay itself gates on — 204 means a
+        // startup-ready provider is on disk, i.e. the transaction landed — and
+        // proceed exactly as a completion receipt would; otherwise stay open.
+        state.error = '';
+        render();
+        let status = 0;
+        try {
+            const response = await fetch('/api/onboarding', {
+                method: 'GET', headers: { Accept: 'application/json' },
+            });
+            status = response.status;
+        } catch (error) {
+            state.error = `Could not check the save status: ${String(error?.message || error)}. Try again in a moment.`;
+            render();
+            return;
+        }
+        if (status === 204) {
+            state.saveUnknown = false;
+            await agentsStep?.disposeForCompletion();
+            agentsStep = null;
+            // The receipt's `restart_required` never arrived: the boot-pinned
+            // mode is what the page loaded with, so a changed choice is treated
+            // as needing a restart — the honest side to err on.
+            announceCompletion({
+                runtime_mode: state.runtimeMode,
+                restart_required: trim(state.runtimeMode) !== trim(INITIAL_STATE.runtimeMode),
+            });
+            return;
+        }
+        state.error = 'Setup is not complete yet — the save may still be running in the '
+            + 'server. Check again in a moment; if it never completes, finish setup again.';
+        render();
+    }
+
     async function completeOnboardingAtomically(payload) {
         // The atomic completion (D-8): server-side fresh-install proof, the
         // structural provider gate, optional agent-preset compilation, a single
@@ -1266,6 +1404,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
     }
 
     async function saveWizard({ skipPresets = false } = {}) {
+        if (state.saving) return;
         if (skipPresets) {
             state.skipSubscriptionPresets = true;
             await agentsStep?.setSkipPresets(true);
@@ -1274,6 +1413,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         const modelsError = validateModelsStep();
         const reviewError = validateReviewStep();
         const budgetError = validateBudgetStep();
+        agentsStep?.noteSaveAttempt?.();
         const subagentsError = agentsStep?.validateSubagents?.()?.[0] || '';
         const previewError = agentsStep && !agentsStep.generatedPreviewReady
             ? (agentsStep.previewPending
@@ -1297,6 +1437,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
             // Completion validates this visible draft and never replaces it.
             OUROBOROS_SUBAGENTS: agentsStep?.availableSubagents
                 || state.availableSubagents,
+            ...(state.reviewerSlots ? { OUROBOROS_REVIEWER_SLOTS: JSON.stringify(state.reviewerSlots) } : {}),
         };
         try {
             await saveWizardPayload(payload);
@@ -1307,6 +1448,7 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
             const notice = completionFailureNotice(error);
             state.saving = false;
             state.presetFailure = notice.canSkip ? { code: notice.code } : null;
+            state.saveUnknown = Boolean(notice.saveUnknown);
             state.error = notice.text;
             render();
         }
@@ -1328,6 +1470,11 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
         document.getElementById('skip-presets-btn')?.addEventListener('click', () => {
             saveWizard({ skipPresets: true });
         });
+        document.getElementById('check-save-btn')?.addEventListener('click', () => {
+            checkSaveStatus();
+        });
+        document.getElementById('quick-start-btn')?.addEventListener('click', reviewAndStart);
+        if (state.currentStep === 'accounts') { bindProvidersStep(); bindAgentsStep(); }
         if (state.currentStep === 'providers') bindProvidersStep();
         if (state.currentStep === 'agents') bindAgentsStep();
         if (state.currentStep === 'models') bindModelsStep();
@@ -1337,5 +1484,10 @@ import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from '.
     }
 
     applyModelDefaults(false);
+    window.addEventListener('pagehide', (event) => {
+        if (event.persisted) return;
+        modelRoles.destroy();
+        destroyReviewerSlots();
+    });
     render();
 })();

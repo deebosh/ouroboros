@@ -14,7 +14,8 @@ Pins the four server seams of the continuity contract:
    synthesis is still owed.
 4. ``gateway.history`` withholds ``task_terminal_status`` and stamps
    ``task_phase="finalizing"`` on the rows of a completed-but-open-checkpoint
-   task; a record without a checkpoint keeps legacy terminal semantics.
+   task, retaining failed execution truth independently of finalization;
+   a record without a checkpoint keeps legacy terminal semantics.
 
 Plus the zero-mock persistence chain: ``server._process_bridge_updates`` with
 the REAL ``log_chat`` writer must yield a history response that carries the
@@ -109,6 +110,7 @@ def test_chat_activities_snapshot_projects_queue_roots_with_phases(tmp_path, mon
         "client_message_id": "",
         "kind": "managed_task",
         "phase": "queued",
+        "task_attempt": 1,
     }
     assert rows["running-root"]["phase"] == "working"
     assert rows["running-root"]["started_at"] == 111.0
@@ -347,11 +349,12 @@ def test_ephemeral_final_keeps_decision_meta_without_phase_marker(tmp_path, monk
     })
 
     send = next(evt for evt in events if evt["type"] == "send_message")
-    # #369: the ephemeral final carries its typed conclusion (its task_done is
-    # client-dropped by design) — but still NO finalizing phase marker.
-    assert send["progress_meta"] == {
-        "ephemeral_decision": True, "task_terminal_status": "completed",
-    }
+    # The ephemeral final carries its own conclusion and outcome, without
+    # a post-task finalizing hold or managed-task authority.
+    assert send["progress_meta"]["ephemeral_decision"] is True
+    assert send["progress_meta"]["task_terminal_status"] == "completed"
+    done = next(evt for evt in events if evt["type"] == "task_done")
+    assert send["progress_meta"]["outcome_axes"] == done["outcome_axes"]
     assert "task_phase" not in send["progress_meta"]
 
 
@@ -452,21 +455,77 @@ def test_history_split_drive_running_with_open_checkpoint_is_finalizing(tmp_path
     assert all("task_terminal_status" not in m for m in rows)
 
 
-def test_history_failed_with_open_checkpoint_stays_terminal(tmp_path):
-    """Failure honesty outranks the finalizing hold: a failed record replays
-    terminal immediately even while its post-task checkpoint is open."""
+@pytest.mark.parametrize("post_work", ["pending_once", "running"])
+def test_history_failed_main_keeps_outcome_and_post_work_controls_until_close(tmp_path, post_work):
+    """Failure stays visible while its post-work owner remains actionable.
+
+    Old progress/answer rows contain no failure text or outcome snapshot:
+    replay must project the canonical failed axis without settling the card.
+    """
     from ouroboros.task_results import STATUS_FAILED, write_task_result
 
     _write_history_rows(tmp_path, "fin-task")
+    wait = {
+        "wait_id": "post-light", "revision": 1, "task_attempt": 1, "role": "light",
+        "model": "claudexor::codex=gpt-test", "source": "codex",
+        "credential_profile_id": "personal", "credential_harness": "codex",
+        "reason": "quota", "reset_at": "", "auto_continue": True,
+        "state": "waiting", "worker_slot_held": False,
+    }
     write_task_result(
         tmp_path, "fin-task", STATUS_FAILED,
-        result="boom",
+        result="boom", reason_code="main_execution_failed",
+        outcome_axes={"execution": {"status": "failed"}},
+        root_phase_checkpoint={"post_task_synthesis": post_work},
+        model_waits={wait["wait_id"]: wait},
+    )
+    with (tmp_path / "logs" / "progress.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "type": "task_model_wait", "task_id": "fin-task", "chat_id": 1,
+            "ts": "2026-08-17T10:00:06+00:00", **wait,
+        }) + "\n")
+
+    messages = _history_messages(tmp_path)
+    rows = [m for m in messages if m.get("task_id") == "fin-task"]
+    assert rows and all(m.get("task_phase") == "finalizing" for m in rows)
+    assert all("task_terminal_status" not in m for m in rows)
+    progress = next(m for m in rows if m.get("is_progress"))
+    assert progress["outcome_axes"]["execution"]["status"] == "failed"
+    assert progress["reason_code"] == "main_execution_failed"
+    assert progress["outcome_final"] is False
+    waiting = next(m for m in rows if m.get("system_type") == "task_model_wait")
+    assert waiting["model_waits"]["post-light"] == wait
+
+    write_task_result(
+        tmp_path, "fin-task", STATUS_FAILED,
+        root_phase_checkpoint={"post_task_synthesis": "completed"},
+    )
+    messages = _history_messages(tmp_path)
+    progress = next(m for m in messages if m.get("is_progress") and m.get("task_id") == "fin-task")
+    assert progress["task_terminal_status"] == "failed"
+    assert progress["outcome_axes"]["execution"]["status"] == "failed"
+    assert progress["reason_code"] == "main_execution_failed"
+    assert progress["outcome_final"] is True
+    assert progress.get("task_phase") != "finalizing"
+    waiting = next(m for m in messages if m.get("system_type") == "task_model_wait")
+    assert waiting["task_terminal_status"] == "failed"
+
+
+def test_history_cancelled_with_open_checkpoint_stays_terminal(tmp_path):
+    """Cancellation ends the post-work owner despite an old open checkpoint."""
+    from ouroboros.task_results import STATUS_CANCELLED, write_task_result
+
+    _write_history_rows(tmp_path, "fin-task")
+    write_task_result(
+        tmp_path, "fin-task", STATUS_CANCELLED,
+        outcome_axes={"execution": {"status": "failed"}},
         root_phase_checkpoint={"post_task_synthesis": "running"},
     )
 
     messages = _history_messages(tmp_path)
     progress = next(m for m in messages if m.get("is_progress") and m.get("task_id") == "fin-task")
-    assert progress["task_terminal_status"] == "failed"
+    assert progress["task_terminal_status"] == "cancelled"
+    assert progress["outcome_final"] is True
     assert progress.get("task_phase") != "finalizing"
 
 

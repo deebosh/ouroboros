@@ -9,6 +9,7 @@ success, while typed runtime evidence may conservatively degrade an otherwise
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import pathlib
@@ -19,40 +20,18 @@ from ouroboros import _outcome_receipts
 # Tool-call trace vocabulary + execution-axis classifier (leaf module). Re-exported
 # here so `from ouroboros.outcomes import _classify_tool_errors/_POLICY_DENIAL_STATUSES/...`
 # keeps resolving for every historical import site.
-from ouroboros._outcome_tool_errors import (
+from ouroboros._outcome_tool_errors import (  # explicit re-exports, one statement
     _BLOCKING_TOOL_STATUSES as _BLOCKING_TOOL_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _classify_tool_errors as _classify_tool_errors,
-)
-from ouroboros._outcome_tool_errors import (
     _COSMETIC_TOOL_NAMES as _COSMETIC_TOOL_NAMES,
-)
-from ouroboros._outcome_tool_errors import (
     _is_ignored_readonly_block as _is_ignored_readonly_block,
-)
-from ouroboros._outcome_tool_errors import (
     _NON_BLOCKING_READONLY_BLOCK_STATUSES as _NON_BLOCKING_READONLY_BLOCK_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _NON_BLOCKING_RECOVERABLE_STATUSES as _NON_BLOCKING_RECOVERABLE_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _OK_TOOL_STATUSES as _OK_TOOL_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _POLICY_DENIAL_STATUSES as _POLICY_DENIAL_STATUSES,
-)
-from ouroboros._outcome_tool_errors import (
     _RECOVERY_TOOL_NAMES as _RECOVERY_TOOL_NAMES,
-)
-from ouroboros._outcome_tool_errors import (
     _ROOT_WRITE_TOOLS as _ROOT_WRITE_TOOLS,
-)
-from ouroboros._outcome_tool_errors import (
     _unresolved_tool_errors as _unresolved_tool_errors,
-)
-from ouroboros._outcome_tool_errors import (
     _user_file_basenames as _user_file_basenames,
 )
 from ouroboros.headless import (
@@ -132,8 +111,9 @@ BEST_EFFORT_REASON_CODES = frozenset({
 })
 
 # Typed final-answer protocol marker (machine-readable deliverable payload,
-# separate from reasoning prose). The agent is instructed in SYSTEM.md to end
-# short-deliverable answers with this exact line.
+# separate from reasoning prose). Since v6.60.0 the instruction to end a
+# short-deliverable answer with this exact line comes from the per-task
+# contract (answer_protocol="final_answer_line"), never from prompts/SYSTEM.md.
 FINAL_ANSWER_MARKER = "FINAL ANSWER:"
 
 OUTCOME_TIER_SOLVED = "solved"
@@ -147,6 +127,7 @@ REASON_PROVIDER_FAILURE = "provider_failure"
 REASON_TASK_EXCEPTION = "task_exception"
 REASON_DEEP_SELF_REVIEW_UNAVAILABLE = "deep_self_review_unavailable"
 REASON_DEEP_SELF_REVIEW_ERROR = "deep_self_review_error"
+REASON_DEEP_SELF_REVIEW_PACK_UNFIT = "deep_self_review_pack_unfit"
 REASON_TOOL_FAILURE = "tool_failure"
 REASON_DELIVERY_CONTROL_DEGRADED = "delivery_control_degraded"
 REASON_CHILD_RESULTS_DEFERRED = "child_results_deferred"
@@ -626,6 +607,27 @@ def infra_failed_axes(reason_code: str, *, lifecycle: str = "failed", review_tri
         review_trigger=review_trigger,
     )
 
+
+# An undisposed own delegated patch is a DEBT, not a failure: the task's own
+# derived verdicts (execution, review, objective, artifacts) are what it earned
+# and must survive, so the custody fact is ADDED as an objective warning rather
+# than replacing the axes with an infrastructure terminal.
+WARN_DELEGATED_CUSTODY_UNRECONCILED = "delegated_custody_unreconciled"
+
+
+def custody_debt_axes(axes: Any) -> Dict[str, Any]:
+    """Add the custody-debt warning to derived axes without rewriting them.
+
+    Idempotent: the overlay is applied again when the result row is stored, and
+    ``_merge_objective_warning`` already dedups. Nothing is copied onto the
+    execution axis — the debt list itself lives on the row as
+    ``delegated_runs_unreconciled`` plus the reconciliation envelope."""
+    out = copy.deepcopy(axes) if isinstance(axes, dict) and axes else {}
+    objective = out.setdefault(
+        "objective", {"status": OBJECTIVE_NOT_EVALUATED, "source": "none"})
+    _merge_objective_warning(objective, WARN_DELEGATED_CUSTODY_UNRECONCILED)
+    return out
+
 # Tools/roots whose successful use means the turn produced reviewable work.
 # Root-aware write tools: these take a `root` arg, so the scratch-exclusion rule
 # applies directly. (The retired SDK edit gateway was the one cwd-based coding
@@ -1024,11 +1026,24 @@ def public_task_result(result: Dict[str, Any], *, include_outcome_axes: bool = T
                     stack.append((child_value, clone, child_key))
     if not isinstance(public, dict):
         return {}
+    # ABI-3 projection boundary: the public contract carries NO retired cost
+    # alias — a stored legacy row's pair resolves deprecated-wins and leaves
+    # under the honest names only, at the top level and on the nested public
+    # cost planes (the subagent envelope with its usage snapshot and the
+    # loop-outcome usage snapshot) — ONE shared normalizer with the
+    # write_task_result rewrite seam (fix-round-3). Internal planes that
+    # merely share the spelling inside evidence blobs (review receipts,
+    # ledger rows) are their own schemas and pass through untouched.
+    from ouroboros.cost_projection import normalize_task_result_cost_planes
+
+    public = normalize_task_result_cost_planes(public)
     plan_state = public.get("plan_review_state")
     if isinstance(plan_state, dict) and plan_state.get("schema_version") == 1:
         plan_state["legacy_v1_projection"] = legacy_plan_review_projection(plan_state)
     if include_outcome_axes:
         public["outcome_axes"] = normalize_outcome_axes(result)
+        if isinstance(public.get("artifact_bundle"), dict) and public["artifact_bundle"].get("status"):
+            public["artifact_status"] = public["outcome_axes"]["artifacts"]["status"]
     return public
 
 
@@ -1040,6 +1055,7 @@ _INFRA_TEXT_PREFIXES = (
     ("❌ Deep self-review unavailable:", "runtime", REASON_DEEP_SELF_REVIEW_UNAVAILABLE),
     ("⚠️ Deep self-review error:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
     ("❌ Deep self-review failed:", "runtime", REASON_DEEP_SELF_REVIEW_ERROR),
+    ("❌ Deep self-review pack unfit:", "runtime", REASON_DEEP_SELF_REVIEW_PACK_UNFIT),
 )
 
 
@@ -1152,7 +1168,6 @@ def collect_trace_refs(usage: Dict[str, Any], llm_trace: Dict[str, Any]) -> Dict
 
 def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """Return v2 ArtifactBundle while preserving old artifact fields."""
-
     existing_bundle = result.get("artifact_bundle") if isinstance(result.get("artifact_bundle"), dict) else {}
     artifacts = list(result.get("artifacts") or []) if isinstance(result.get("artifacts"), list) else []
     bundle_status = str(existing_bundle.get("status") or "").strip()
@@ -1184,7 +1199,9 @@ def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
             continue
         path = str(item.get("path") or "")
         explicit_status = str(item.get("status") or "").strip()
-        if explicit_status:
+        if item.get("copy_status") == "failed":
+            artifact_status = "missing"
+        elif explicit_status:
             artifact_status = explicit_status
         elif path and pathlib.Path(path).exists():
             artifact_status = ARTIFACT_STATUS_READY
@@ -1201,10 +1218,13 @@ def artifact_bundle_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
             "size": int(item.get("size") or 0),
             "sha256": str(item.get("sha256") or ""),
             "status": artifact_status,
-            "errors": list(item.get("errors") or []) if isinstance(item.get("errors"), list) else [],
+            "errors": (list(item.get("errors") or []) if isinstance(item.get("errors"), list) else [])
+                      + ([str(item["copy_error"])] if item.get("copy_error") else []),
         }
         records.append(record)
-    if status != ARTIFACT_STATUS_FAILED and any(str(item.get("status") or "") == "missing" for item in records):
+    if old_status == ARTIFACT_STATUS_FAILED or any(item["status"] == ARTIFACT_STATUS_FAILED for item in records):
+        status = ARTIFACT_STATUS_FAILED
+    elif status != ARTIFACT_STATUS_FAILED and any(item["status"] == "missing" for item in records):
         status = "missing"
     errors = []
     if result.get("artifact_error"):
@@ -1224,6 +1244,11 @@ def refresh_verification_ledger_artifacts(
     """Return ``ledger`` with artifact status synchronized after finalization."""
 
     if not isinstance(ledger, dict):
+        return ledger
+    # An omitted-to-artifact stub is a PROJECTION of the artifact file, not a
+    # source: it carries no entries, so rebuilding from it would mint "0
+    # entries / no failures / execution ok" over the real ledger's summary.
+    if ledger.get("omitted_to_artifact"):
         return ledger
     entries = [
         item for item in (ledger.get("entries") or [])

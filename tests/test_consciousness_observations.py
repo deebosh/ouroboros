@@ -86,9 +86,44 @@ def test_concurrent_enqueue_same_id_has_one_durable_row(tmp_path):
     assert [row["id"] for row in rows] == ["same-id"]
 
 
-def test_cross_instance_enqueue_same_id_is_atomically_deduplicated(tmp_path):
+def test_cross_instance_enqueue_same_id_is_atomically_deduplicated(tmp_path, monkeypatch):
+    import os
+    import threading
+    from ouroboros import consciousness, platform_layer
+
     first, drive = _make(tmp_path)
     second, _ = _make(tmp_path)
+    trace = []
+    original_acquire = consciousness.acquire_exclusive_file_lock
+    original_release = consciousness.release_exclusive_file_lock
+
+    def record(event, path, fd):
+        facts = {"event": event, "thread": threading.get_ident(), "path": str(path), "fd": fd}
+        for name, target in (("fd_identity", fd), ("path_identity", path)):
+            if target is None:
+                facts[name] = None
+                continue
+            try:
+                stat = os.fstat(target) if isinstance(target, int) else target.stat()
+                facts[name] = (stat.st_dev, stat.st_ino, stat.st_size)
+            except (OSError, TypeError) as exc:
+                facts[name] = type(exc).__name__
+        facts["kernel_tier"] = platform_layer._KERNEL_LOCK_TIER.get(os.path.realpath(str(path.parent)))
+        trace.append(facts)
+
+    def acquire(path, **kwargs):
+        fd = original_acquire(path, **kwargs)
+        record("acquired", path, fd)
+        return fd
+
+    def release(path, fd):
+        try:
+            record("releasing", path, fd)
+        finally:
+            original_release(path, fd)
+
+    monkeypatch.setattr(consciousness, "acquire_exclusive_file_lock", acquire)
+    monkeypatch.setattr(consciousness, "release_exclusive_file_lock", release)
 
     def enqueue(instance):
         return instance.inject_observation(
@@ -97,12 +132,110 @@ def test_cross_instance_enqueue_same_id_is_atomically_deduplicated(tmp_path):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(enqueue, (first, second)))
-    assert sum(results) == 1
+    # Keep native failure facts: an unknown read and two different lock names
+    # can both resemble a lost race, but require different repairs.
+    diagnostics = {"results": results, "locks": trace, "states": [
+        {"rows": list((instance._observation_state_cache or {}).get("rows", {})),
+         "gaps": (instance._observation_state_cache or {}).get("gap_reasons", ["not read"])}
+        for instance in (first, second)
+    ]}
+    assert sum(results) == 1, diagnostics
     rows = [
         json.loads(line)
         for line in (drive / "state" / "consciousness_observations.jsonl").read_text().splitlines()
     ]
     assert [row["id"] for row in rows] == ["cross-instance-id"]
+
+
+def test_age_stale_lock_is_never_evicted_from_a_live_observation_writer(tmp_path, monkeypatch):
+    """A LIVE holder of the inbox lock must survive an aged lock file.
+
+    Age-only staleness let a contender unlink a live writer's lock; both then
+    read one still-empty inbox and both claimed the same stable ID -- the
+    Windows full-test symptom `results=[True, True]` / `assert 2 == 1`.
+    """
+    import os
+    import threading
+    import time
+
+    from ouroboros import platform_layer
+    from ouroboros.utils import jsonl_append_lock_path
+
+    owner, drive = _make(tmp_path)
+    contender, _ = _make(tmp_path)
+    store = drive / "state" / "consciousness_observations.jsonl"
+    lock_path = jsonl_append_lock_path(store)
+    # Pin the NAME tier: there the eviction has no kernel backstop, so the
+    # staleness contract alone decides whether a live holder keeps its lock.
+    monkeypatch.setattr(platform_layer, "kernel_file_locks_enforced", lambda _path: False)
+
+    holding = threading.Event()
+    read_state = type(owner)._read_observation_state
+
+    def stall_with_a_backdated_lock(instance, **kwargs):
+        state = read_state(instance, **kwargs)
+        if instance is owner and not holding.is_set():
+            aged = time.time() - 600.0  # far past this seam's stale_sec=10.0
+            os.utime(lock_path, (aged, aged))
+            holding.set()
+            time.sleep(1.0)  # a slow owner, still inside its transaction
+        return state
+
+    monkeypatch.setattr(type(owner), "_read_observation_state", stall_with_a_backdated_lock)
+
+    def enqueue(instance):
+        if instance is contender:
+            assert holding.wait(10), "owner never entered its critical section"
+        return instance.inject_observation(
+            "same", observation_id="live-holder-id", source="instance"
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(enqueue, (owner, contender)))
+
+    assert sum(results) == 1, results
+    rows = [json.loads(line) for line in store.read_text().splitlines()]
+    assert [row["id"] for row in rows] == ["live-holder-id"]
+
+
+@pytest.mark.parametrize("damage", ["unreadable", "malformed", "invalid_utf8"])
+def test_enqueue_does_not_claim_a_new_id_from_an_incomplete_inbox(tmp_path, monkeypatch, damage):
+    first, drive = _make(tmp_path)
+    assert first.inject_observation("original", observation_id="stable")
+    store = drive / "state" / "consciousness_observations.jsonl"
+    original = store.read_bytes()
+    second, _ = _make(tmp_path)
+    with monkeypatch.context() as patch:
+        if damage == "unreadable":
+            open_path = pathlib.Path.open
+            def refused(path, *args, **kwargs):
+                if path == store and args and args[0] == "rb":
+                    raise PermissionError("controlled inbox read refusal")
+                return open_path(path, *args, **kwargs)
+            patch.setattr(pathlib.Path, "open", refused)
+        else:
+            store.write_bytes(b"{broken\n" if damage == "malformed" else b"\xff\n")
+        before = store.read_bytes() if damage != "unreadable" else original
+        assert second.inject_observation("replacement", observation_id="stable") is False
+        assert second.status_snapshot()["observation_source_complete"] is False
+    assert store.read_bytes() == before
+    store.write_bytes(original)
+    assert second.inject_observation("replacement", observation_id="stable") is False
+    assert second.inject_observation("new payload", observation_id="new") is True
+    assert [row["payload"] for row in second._snapshot_pending_observations()] == ["original", "new payload"]
+
+
+def test_new_observations_survive_an_older_source_gap(tmp_path):
+    instance, drive = _make(tmp_path)
+    store = drive / "state" / "consciousness_observations.jsonl"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_bytes(b"{broken\n")
+    assert instance.inject_observation("fresh owner observation") is True
+    assert instance.status_snapshot()["observation_source_complete"] is False
+    pending = instance._snapshot_pending_observations()
+    assert [row["payload"] for row in pending] == ["fresh owner observation"]
+    assert instance._ack_observations(pending) is False
+    assert store.read_bytes().startswith(b"{broken\n")
 
 
 def test_cross_process_enqueue_same_id_is_atomically_deduplicated(tmp_path):

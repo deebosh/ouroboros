@@ -133,6 +133,9 @@ def _migrated_sources() -> dict[str, str]:
     return {
         "web/settings.css": _decommented(_read("web/settings.css")),
         "web/onboarding.css": _decommented(_read("web/onboarding.css")),
+        "web/model_roles.css": _decommented(_read("web/model_roles.css")),
+        "web/model_wait.css": _decommented(_read("web/model_wait.css")),
+        "web/reviewer_slots.css": _decommented(_read("web/reviewer_slots.css")),
         "web/style.css (migrated regions)": _migrated_style_region(),
     }
 
@@ -271,7 +274,7 @@ def test_muted_is_a_global_colour_only_utility() -> None:
 def test_chips_and_meta_lines_declare_their_own_foreground() -> None:
     """Root cause #2. A rule that declares a size and no colour inherits
     near-white --text-primary — invisible in the CSS, loudest on screen."""
-    region = _migrated_style_region()
+    region = _migrated_style_region() + _decommented(_read("web/reviewer_slots.css"))
     for selector in (".harness-chip", ".reviewer-slot-meta", ".harness-account-main strong"):
         bodies = [
             body for sel, body in RULE.findall(region) if sel.strip() == selector
@@ -308,7 +311,7 @@ def test_migrated_region_markers_do_not_swallow_unmigrated_surfaces() -> None:
     strictly alternating) is asserted by ``_style_marker_spans`` on every call
     that reads a region."""
     region = _migrated_style_region(raw=True)
-    assert ".reviewer-slots-heading" in region
+    assert ".reviewer-slots-heading" in _read("web/reviewer_slots.css")
     assert ".harness-account-row" in region
     # The Dashboard -> Updates tab migrated on 2026-08-31; its rules must stay
     # inside the guarded region so a later edit cannot drift them out of it.
@@ -343,7 +346,7 @@ def test_migrated_region_markers_do_not_swallow_unmigrated_surfaces() -> None:
 # loaded together by web/index.html, so a token declared in one and named in
 # the other is correct. web/onboarding.css is NOT here: it is inlined into a
 # standalone page with its own `:root` and is covered by the mirror test above.
-ROOT_CONSUMERS = ("web/style.css", "web/settings.css")
+ROOT_CONSUMERS = ("web/style.css", "web/settings.css", "web/model_roles.css", "web/reviewer_slots.css", "web/model_wait.css")
 
 VAR_REFERENCE = re.compile(r"var\(\s*(--[a-z0-9-]+)")
 DECLARATION = re.compile(r"^\s*(--[a-z0-9-]+)\s*:", re.MULTILINE)
@@ -418,7 +421,7 @@ def test_every_root_token_has_a_reader() -> None:
 # Focus canon: one ring vocabulary across the whole app (docs/DESIGN.md "Focus")
 # ---------------------------------------------------------------------------
 
-FOCUS_FILES = ("web/style.css", "web/settings.css", "web/onboarding.css")
+FOCUS_FILES = (*ROOT_CONSUMERS, "web/onboarding.css")
 FOCUS_TOKENS = ("var(--focus-accent-border)", "var(--focus-accent-ring)")
 
 

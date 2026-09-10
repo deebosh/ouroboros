@@ -296,6 +296,26 @@ def review_operation_timeout_sec(
     )
 
 
+def main_transport_timeout_sec(
+    model: str, deadline_ts: Optional[float], *, reserve_sec: Optional[float] = None,
+) -> float:
+    """Main's transport projection lives beside the corresponding review policy."""
+    from ouroboros.provider_models import provider_for_model
+
+    # Preserve the native Anthropic default while narrowing every route to an
+    # owner deadline. Other routes use the shared dead-socket bound; local models
+    # receive the same explicit bound their client already supports.
+    explicit = 120 if provider_for_model(model) == "anthropic" else None
+    # ``None`` is the low-level raw-deadline contract. The production round
+    # dispatcher passes the finalization reserve explicitly; keeping this
+    # default raw prevents admission from accepting a call and then shrinking
+    # its transport to the 0.001-second floor unexpectedly.
+    return transport_timeout_with_deadline(
+        explicit, deadline_ts=deadline_ts,
+        reserve_sec=0.0 if reserve_sec is None else reserve_sec,
+    )
+
+
 def review_transport_timeout(model: Any, explicit: Any = None, deadline_at: Any = None) -> Optional[float]:
     """Resolve one review route's physical timeout without hiding an owner deadline."""
     from ouroboros.config import get_finalization_grace_sec

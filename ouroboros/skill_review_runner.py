@@ -20,7 +20,9 @@ from ouroboros.skill_lifecycle_queue import (
     run_blocking_preserving_cancellation,
     run_lifecycle_job_blocking,
 )
+from ouroboros.contracts.schema_versions import with_schema_version
 from ouroboros.skill_loader import (
+    SKILL_OWNER_STATE_SCHEMA_VERSION,
     SkillPayloadUnreadable,
     compute_content_hash,
     find_skill,
@@ -46,6 +48,7 @@ from ouroboros.utils import append_jsonl, atomic_write_json, read_json_dict, utc
 from ouroboros.tool_access import (
     ResolvedResourceBinding,
     build_resolved_resource_binding,
+    canonical_data_root,
     load_bound_skill,
 )
 
@@ -60,6 +63,17 @@ ReviewImpl = Callable[..., SkillReviewOutcome]
 
 def review_job_state_path(drive_root: pathlib.Path, skill_name: str) -> pathlib.Path:
     return skill_state_dir(pathlib.Path(drive_root), skill_name) / "review_job.json"
+
+
+def _write_review_job(path: pathlib.Path, data: Dict[str, Any]) -> None:
+    """Single write seam for review_job.json: every write — fresh or merge —
+    lands with the ABI-2 stamp (CPL4-C10), so a job started before the upgrade
+    still finishes stamped. Readers keep legacy-0 tolerance."""
+    atomic_write_json(
+        path,
+        with_schema_version(data, SKILL_OWNER_STATE_SCHEMA_VERSION),
+        trailing_newline=True,
+    )
 
 
 _UI_REVIEW_FIELDS = (
@@ -336,7 +350,7 @@ def _append_terminal_history(
                 "job_id": str(job_data.get("job_id") or ""),
                 "status": status,
                 "terminal_reason": terminal_reason,
-                "reason": "terminal history append failed",
+                "reason": "terminal history or root-task projection append failed",
             },
         )
     return appended
@@ -497,7 +511,7 @@ def mark_stale_review_job_interrupted(
         "content_hash": data.get("content_hash") or current_content_hash,
     }
     payload["terminal_reason"] = payload["interrupt_reason"]
-    atomic_write_json(path, payload, trailing_newline=True)
+    _write_review_job(path, payload)
     _append_terminal_history(
         drive_root,
         skill_name,
@@ -664,7 +678,7 @@ def _patch_review_job(
     if expected_job_id and current_job_id and current_job_id != expected_job_id:
         return
     data.update(updates)
-    atomic_write_json(path, data, trailing_newline=True)
+    _write_review_job(path, data)
 
 
 @contextlib.contextmanager
@@ -871,7 +885,7 @@ def _mark_review_job_timeout(
         "terminal_reason": reason or "lifecycle_timeout",
         "content_hash": current.get("content_hash") or content_hash,
     }
-    atomic_write_json(path, payload, trailing_newline=True)
+    _write_review_job(path, payload)
     _append_terminal_history(
         drive_root,
         skill_name,
@@ -923,14 +937,6 @@ def _reconcile_deps_after_pass_review(
         return "failed", f"{type(exc).__name__}: {exc}"
 
 
-def _heal_mode(ctx: Any) -> bool:
-    try:
-        constraint = getattr(ctx, "task_constraint", None)
-        return bool(constraint and getattr(constraint, "mode", "") == "skill_repair")
-    except Exception:
-        return False
-
-
 def _outcome_payload(
     outcome: SkillReviewOutcome,
     *,
@@ -938,6 +944,8 @@ def _outcome_payload(
     deps_error: str,
     extension_action: Any,
     extension_reason: Any,
+    extension_process: Any = None,
+    extension_server_reconcile: Any = None,
     job: LifecycleJob | None = None,
     job_data: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
@@ -964,6 +972,10 @@ def _outcome_payload(
         "deps_error": deps_error,
         "extension_action": extension_action,
         "extension_reason": extension_reason,
+        "extension_process": extension_process,
+        "extension_server_reconcile": extension_server_reconcile,
+        "extension_load_error": getattr(outcome, "extension_load_error", None),
+        "extension_live_loaded": getattr(outcome, "extension_live_loaded", None),
     }
     if getattr(outcome, "convergence_hint", ""):
         payload["convergence_hint"] = outcome.convergence_hint
@@ -988,19 +1000,9 @@ def _reconcile_extension_payload(
     drive_root: pathlib.Path,
     repo_path: str | None,
     binding: ResolvedResourceBinding | None,
-    heal_mode: bool,
     revert_enabled_on_error: bool = False,
-) -> tuple[Any, Any]:
-    if heal_mode:
-        try:
-            from ouroboros import extension_loader
-
-            if skill_name in extension_loader.snapshot()["extensions"]:
-                extension_loader.unload_extension(skill_name)
-                return "extension_unloaded", "heal_review_only"
-            return "extension_heal_review_only", "heal_review_only"
-        except Exception:
-            return "extension_heal_review_only", "heal_review_only"
+) -> Dict[str, Any]:
+    """Reconcile after review; the receipt also names the answering process."""
     try:
         from ouroboros import extension_loader
 
@@ -1015,9 +1017,17 @@ def _reconcile_extension_payload(
             retry_load_error=True,
             revert_enabled_on_error=revert_enabled_on_error,
         )
-        return live_state.get("action"), live_state.get("reason")
-    except Exception:
-        return None, None
+        return {
+            "action": live_state.get("action"),
+            "reason": live_state.get("reason"),
+            "process": str(live_state.get("process") or ""),
+            "server_reconcile": str(live_state.get("server_reconcile") or ""),
+            "load_error": live_state.get("load_error"),
+            "live_loaded": live_state.get("live_loaded"),
+        }
+    except Exception as exc:
+        return {"action": None, "reason": "reconcile_failed", "process": "", "server_reconcile": "",
+                "load_error": f"{type(exc).__name__}: {exc}", "live_loaded": None}
 
 
 def _on_started(
@@ -1078,7 +1088,7 @@ def _on_started(
             "snapshot_revised": snapshot_revised,
             "terminal_reason": "",
         }
-        atomic_write_json(review_job_state_path(drive_root, skill_name), payload, trailing_newline=True)
+        _write_review_job(review_job_state_path(drive_root, skill_name), payload)
         append_jsonl(
             _events_path(drive_root),
             {
@@ -1169,7 +1179,7 @@ def _on_finished(
         replayed_from_ts = str(getattr(result, "replayed_from_ts", "") or "")
         if replayed_from_ts:
             payload["replayed_from_ts"] = replayed_from_ts
-        atomic_write_json(review_job_state_path(drive_root, skill_name), payload, trailing_newline=True)
+        _write_review_job(review_job_state_path(drive_root, skill_name), payload)
         # Lifecycle completion is not a semantic review verdict.  A runner can
         # finish without returning a result (for example after an in-process
         # handoff), so never let the lifecycle word ``completed`` paint a
@@ -1330,7 +1340,7 @@ def run_skill_review_lifecycle_blocking(
             )
     drive_root = (
         binding.state_drive_root if binding is not None
-        else pathlib.Path(ctx.drive_root)
+        else canonical_data_root(ctx)
     )
     repo_path = repo_path if repo_path is not None else get_skills_repo_path()
     selected = _load_binding_skill(binding) if binding is not None else find_skill(
@@ -1390,25 +1400,34 @@ def run_skill_review_lifecycle_blocking(
                 )
             setattr(outcome, "deps_status", deps_status)
             setattr(outcome, "deps_error", deps_error)
-            if executable_review and getattr(outcome, "auto_flow", False) and deps_status == "failed":
-                outcome.status = STATUS_PENDING
-                outcome.error = deps_error or "self-authored dependency reconciliation failed"
-                executable_review = False
-            just_auto_enabled = bool(executable_review and getattr(outcome, "auto_flow", False))
+            from ouroboros.contracts.task_constraint import normalize_task_constraint
+            from ouroboros.skill_loader import grant_status_for_skill
+
+            current = _load_binding_skill(binding) if binding is not None else find_skill(
+                drive_root, skill_name, repo_path=repo_path,
+            )
+            constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
+            just_auto_enabled = bool(
+                executable_review and getattr(outcome, "auto_flow", False)
+                and deps_status != "failed" and current is not None
+                and current.content_hash == outcome.content_hash
+                and grant_status_for_skill(drive_root, current).get("usable")
+                and (constraint is None or (constraint.allow_enable and not constraint.has_selected_skill))
+                and not (skill_state_dir(drive_root, skill_name) / "enabled.json").exists()
+            )
             if just_auto_enabled:
-                save_enabled(drive_root, skill_name, True)
+                save_enabled(drive_root, skill_name, True, actor="review_auto_enable")
             progress.set("Reloading extension…")
-            extension_action, extension_reason = _reconcile_extension_payload(
+            reconcile = _reconcile_extension_payload(
                 ctx,
                 skill_name,
                 drive_root=drive_root,
                 repo_path=repo_path,
                 binding=binding,
-                heal_mode=_heal_mode(ctx),
                 revert_enabled_on_error=just_auto_enabled,
             )
-            setattr(outcome, "extension_action", extension_action)
-            setattr(outcome, "extension_reason", extension_reason)
+            for key, value in reconcile.items():
+                setattr(outcome, f"extension_{key}", value)
         return outcome
 
     try:
@@ -1427,7 +1446,7 @@ def run_skill_review_lifecycle_blocking(
                 presentation=provenance,
                 progress_target=progress,
                 result_message=_review_result_message,
-                result_error=lambda item: getattr(item, "error", "") or getattr(item, "deps_error", "") or "",
+                result_error=lambda item: getattr(item, "error", "") or getattr(item, "deps_error", "") or getattr(item, "extension_load_error", "") or "",
                 on_started=_on_started(
                     drive_root, skill_name, content_hash, started_monotonic, provenance,
                     refresh_content_hash=lambda: _skill_content_hash(
@@ -1465,5 +1484,7 @@ def run_skill_review_lifecycle_blocking(
         deps_error=getattr(outcome, "deps_error", ""),
         extension_action=getattr(outcome, "extension_action", None),
         extension_reason=getattr(outcome, "extension_reason", None),
+        extension_process=getattr(outcome, "extension_process", None),
+        extension_server_reconcile=getattr(outcome, "extension_server_reconcile", None),
         job_data=_read_review_job(review_job_state_path(drive_root, skill_name)),
     )

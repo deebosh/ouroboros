@@ -39,6 +39,19 @@ def test_transport_timeout_is_narrowed_by_numeric_owner_deadline(monkeypatch):
     assert deadlines.transport_timeout_with_deadline(90, deadline_ts=999.0) == 0.001
 
 
+def test_update_letter_timeout_is_a_clamped_config_getter(monkeypatch):
+    from ouroboros.config import SETTINGS_DEFAULTS, get_update_letter_timeout_sec
+
+    monkeypatch.delenv("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", raising=False)
+    assert get_update_letter_timeout_sec() == float(SETTINGS_DEFAULTS["OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC"])
+    monkeypatch.setenv("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", "not-a-number")
+    assert get_update_letter_timeout_sec() == 120.0
+    monkeypatch.setenv("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", "0")
+    assert get_update_letter_timeout_sec() == 10.0
+    monkeypatch.setenv("OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC", "99999")
+    assert get_update_letter_timeout_sec() == 600.0
+
+
 def test_dispatch_window_distinguishes_no_deadline_from_spent_deadline(monkeypatch):
     import ouroboros.deadline_utils as deadlines
 
@@ -789,9 +802,12 @@ def test_expiring_strict_review_poll_keeps_the_subsecond_bound():
     assert 0 < gateway.timeout <= 0.001
 
 
-def test_strict_poll_splits_http_phase_budget_and_recomputes_retry():
-    import time
-    from ouroboros.delegate_progress import bounded_poll
+def test_strict_poll_splits_http_phase_budget_and_recomputes_retry(monkeypatch):
+    from types import SimpleNamespace
+    import ouroboros.delegate_progress as progress
+
+    clock = [100.0]
+    monkeypatch.setattr(progress, "time", SimpleNamespace(monotonic=lambda: clock[0]))
 
     class AtomicRace(Exception):
         code = "ENOENT"
@@ -803,25 +819,18 @@ def test_strict_poll_splits_http_phase_budget_and_recomputes_retry():
         def get_run(self, _run_id, *, timeout_sec=None):
             self.timeouts.append(timeout_sec)
             if len(self.timeouts) == 1:
-                # Guarantees monotonic advances between the two poll_bound
-                # computations, so the retry ask is measurably below the first.
-                time.sleep(0.01)
+                # A 10ms sleep can stay within one Windows clock tick. Model
+                # elapsed poll work explicitly while retaining the real thread.
+                clock[0] += 1.0
                 raise AtomicRace("/.git/objects/ab/tmp_obj_123")
             return {"summary": {"state": "succeeded"}}
 
     gateway = Gateway()
-    # A coarse budget below the 60s read default: the contract under test is
-    # the SPLIT (first ask bounded by the whole budget, retry ask recomputed
-    # from the remainder), not stopwatch accuracy.  The previous 0.08s budget
-    # required the first phase (thread spawn + 0.01s sleep + raise) to finish
-    # with window remaining inside 80ms of wall clock; on a loaded CI host the
-    # budget was already spent by the catch, so the injected AtomicRace
-    # escaped instead of earning its one re-read (same margin redesign as
-    # test_strict_poll_phase_budget_is_bounded_in_wall_time).
-    detail = bounded_poll(gateway, "run-1", 30.0, strict=True)
+    # Below the 60s read default, the retry must receive the whole remainder.
+    # The neighboring wall-time test independently covers a stalled HTTP phase.
+    detail = progress.bounded_poll(gateway, "run-1", 30.0, strict=True)
     assert detail == {"summary": {"state": "succeeded"}}
-    assert 0 < gateway.timeouts[0] <= 30.0
-    assert 0 < gateway.timeouts[1] < gateway.timeouts[0]
+    assert gateway.timeouts == [30.0, 29.0]
 
 
 def test_strict_poll_phase_budget_is_bounded_in_wall_time():
@@ -866,14 +875,16 @@ def test_strict_poll_phase_budget_is_bounded_in_wall_time():
 
 def test_claudexor_bound_applies_to_connect_phase_too():
     import httpx
+    from contextlib import contextmanager
     from ouroboros.gateways import claudexor as cx
 
     calls = []
 
     class Recorder:
-        def request(self, method, path, **kwargs):
+        @contextmanager
+        def stream(self, method, path, **kwargs):
             calls.append(kwargs)
-            return httpx.Response(200, json={"id": "run-1", "summary": {}})
+            yield httpx.Response(200, json={"id": "run-1", "summary": {}})
 
     gateway = cx.ClaudexorGateway(cx.DaemonEndpoint("127.0.0.1", 1, "token"))
     gateway.close()
@@ -1042,7 +1053,9 @@ def test_expired_local_deadline_does_not_dispatch_a_paid_final_call(monkeypatch,
 
     assert result is not None
     assert result[0].startswith("⚠️ Task reached its deadline")
-    assert ctx.accumulated_usage == {
+    usage = dict(ctx.accumulated_usage)
+    assert usage.pop("terminal_origin") == "host_notice"
+    assert usage == {
         "execution_status": "failed",
         "reason_code": "deadline_local",
     }

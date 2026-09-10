@@ -523,21 +523,18 @@ def test_repo_write_normal_in_repo_path_still_succeeds(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_capability_profiles_pin_new_tools():
-    # Write-capable lanes see the tools; the read-only subagent lane and the
-    # heal-mode allowlist must NOT (P3: the read-only lane stays write-free,
-    # and heal mode edits skill payloads, which these tools refuse).
+    # Write-capable lanes see the tools; the read-only subagent lane stays
+    # write-free. Repair is ordinary development, not a reduced profile.
     from ouroboros.tool_capabilities import (
         ACTING_SUBAGENT_TOOL_NAMES,
         CORE_TOOL_NAMES,
         LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
     )
-    from ouroboros.tools.registry import _HEAL_MODE_ALLOWED_TOOLS
 
     for name in ("apply_patch", "edit_batch"):
         assert name in CORE_TOOL_NAMES
         assert name in ACTING_SUBAGENT_TOOL_NAMES
         assert name not in LOCAL_READONLY_SUBAGENT_TOOL_NAMES
-        assert name not in _HEAL_MODE_ALLOWED_TOOLS
 
 
 def test_tool_policy_and_smoke_registration():
@@ -921,9 +918,11 @@ def test_managed_update_resolver_keeps_its_exemption(tmp_path, monkeypatch):
     tools the one lane that cannot finish a conflict resolution.
     """
     from ouroboros.tools import registry as registry_mod
+    from ouroboros.tools import registry_guards
 
     reg, repo = _guard_registry(tmp_path)
     (repo / "BIBLE.md").write_text("P1 honest\n", encoding="utf-8")
+    monkeypatch.setattr(registry_guards, "_authorized_managed_update_resolver", lambda ctx: True)
     monkeypatch.setattr(registry_mod, "_authorized_managed_update_resolver", lambda ctx: True)
     result = str(reg.execute("apply_patch", {
         "patch": "*** Update File: BIBLE.md\n-P1 honest\n+P1 resolved\n",

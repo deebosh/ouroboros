@@ -25,6 +25,7 @@ into custody. The canonical ``status`` never carries intent again.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import os
@@ -115,7 +116,7 @@ def cancellation_projection_lock(drive_root: Any) -> Iterator[None]:
 
     path = _intents_path(drive_root)
     lock_path = path.with_name(path.name + ".lock")
-    lock_fd = acquire_exclusive_file_lock(lock_path)
+    lock_fd = acquire_exclusive_file_lock(lock_path, owner_aware_stale=True)
     if lock_fd is None:
         raise TimeoutError("cancel-intent projection lock unavailable")
     try:
@@ -141,18 +142,42 @@ def _valid_task_id(task_id: Any) -> str:
     return validate_task_id(task_id)
 
 
+def _refuse_corrupt(
+    drive_root: Any, task_id: str, op: str, exc: Exception,
+) -> CancelIntentProjectionCorrupt:
+    """Disclose a corrupt projection and build the typed refusal for ``op``.
+
+    Every mutation of the projection AUTHORS a durable record, so all of them
+    fail closed on a file they could not read — the mint refuses to record an
+    intent, and the four lifecycle mutators refuse to claim, release, settle or
+    re-scope one. Reading the file for BEHAVIOUR is the separate, deliberately
+    fail-soft path (``active_intents``): the split is what keeps one unreadable
+    file from wedging the supervisor tick while still never letting corruption
+    masquerade as "no cancel was requested".
+    """
+    _forensic(drive_root, {
+        "event": "projection_corrupt_refused", "task_id": task_id,
+        "op": op, "error": str(exc)[:200],
+    })
+    log.error(
+        "cancel-intent projection is corrupt; refusing %s for %s", op, task_id,
+    )
+    return CancelIntentProjectionCorrupt(str(exc))
+
+
 def _load_intents(data: Dict[str, Any], *, strict: bool = False) -> Dict[str, Any]:
     """The active-intent rows; ``strict`` refuses a malformed nested value.
 
-    GR5-6: the MINTING mutator (``request_cancel``) passes ``strict=True`` — a
-    present-but-non-dict ``intents`` under a valid top-level dict used to be
-    coerced to ``{}``, so the next mint rewrote the file and silently dropped
-    every other active intent, the exact loss the top-level
-    ``strict_existing_dict`` check refuses. The raise is the same typed
-    ``ValueError``, so the caller's existing corrupt-projection handling
-    (refuse + forensic row + ``CancelIntentProjectionCorrupt``) applies. The
-    non-minting mutators find no row in ``{}`` and abort without overwriting;
-    read paths disclose separately (``active_intents``)."""
+    GR5-6 (v7 delta D08 re-derived on the hardened custody bytes): every
+    MUTATOR passes ``strict=True`` — a present-but-non-dict ``intents`` under
+    a valid top-level dict used to be coerced to ``{}``, so the next mint
+    rewrote the file and silently dropped every other active intent (the
+    exact loss the top-level ``strict_existing_dict`` check refuses), and the
+    non-minting mutators read that same ``{}`` as "nobody requested a cancel"
+    — an answer indistinguishable from a lost claim-first fence. The raise is
+    the typed ``ValueError`` each mutator turns into
+    ``CancelIntentProjectionCorrupt``. Read paths disclose separately and
+    stay fail-soft (``active_intents``)."""
     intents = data.get("intents")
     if isinstance(intents, dict):
         return intents
@@ -325,6 +350,7 @@ def request_cancel(
     scope: str = "",
     allow_settled_target: bool = False,
     requested_stop_policy: str = "",
+    observation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Record durable cancel intent for ``task_id`` — idempotent per task.
 
@@ -367,6 +393,7 @@ def request_cancel(
     # Whether THIS mutation recorded a new hardening — a duplicate immediate
     # request over an already-hardened intent must not re-emit the forensic row.
     newly_hardened = {"value": False}
+    observed = copy.deepcopy(observation) if isinstance(observation, dict) else None
 
     def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         newly_hardened["value"] = False
@@ -445,6 +472,8 @@ def request_cancel(
         ):
             target_id = _validated_single_cancel_target(drive_root, tid)
         resolved["task_id"] = target_id
+        if observed is not None:
+            observed["matches_cancel_target"] = observed.get("observed_task_id") == target_id
         existing = intents.get(target_id)
         if existing is not None and not isinstance(existing, dict):
             # GR6-3 row strictness: a present-but-malformed ROW is corruption,
@@ -482,6 +511,7 @@ def request_cancel(
                 "already_requested": False,
                 "already_settled": True,
                 "status": resolved["status"],
+                **({"observation": observed} if observed is not None else {}),
             })
             return None
         if isinstance(existing, dict) and existing.get("request_id"):
@@ -489,6 +519,9 @@ def request_cancel(
             minted["already_requested"] = True
             updated_row = dict(existing)
             changed = rekeyed
+            if rekeyed and isinstance(updated_row.get("observation"), dict):
+                updated_row["observation"] = {**updated_row["observation"],
+                    "matches_cancel_target": updated_row["observation"].get("observed_task_id") == target_id}
             if scope_text == SCOPE_CASCADE and str(existing.get("scope") or "") != SCOPE_CASCADE:
                 # A single-cancel intent later re-entered through the cascade
                 # ingress must be replayed as a cascade. WIDEN-ONLY (GR2-1d):
@@ -524,6 +557,7 @@ def request_cancel(
             "requested_at": utc_now_iso(),
             "generation": 0,
             "scope": scope_text or SCOPE_SINGLE,
+            **({"observation": observed} if observed is not None else {}),
         }
         if policy_text == STOP_POLICY_FINALIZE:
             row["stop_policy"] = STOP_POLICY_FINALIZE
@@ -565,6 +599,7 @@ def request_cancel(
             "status": str(minted.get("status") or ""),
             "source": str(source or ""),
             "reason": reason_text,
+            **({"observation": observed} if observed is not None else {}),
         })
     elif not minted.get("already_requested"):
         _forensic(drive_root, {
@@ -576,6 +611,7 @@ def request_cancel(
             "request_id": minted.get("request_id"),
             "source": minted.get("source"), "requested_by": minted.get("requested_by"),
             "scope": minted.get("scope"), "reason": reason_text,
+            **({"observation": minted["observation"]} if "observation" in minted else {}),
             **({"stop_policy": minted.get("stop_policy")} if minted.get("stop_policy") else {}),
             **(
                 {"settled_target_status": resolved.get("status")}
@@ -612,8 +648,11 @@ def mark_finalize_control_drained(
     (``supervisor/owner_stop.py``). FIRST DRAIN WINS: a restart re-drain (the
     control is replayable until terminal cleanup) never moves the stamp, so a
     worker crash cannot resurrect an unlimited episode. No-op for absent
-    intents and for non-finalize policies. Fail-soft: a projection failure
-    never breaks the round loop. Returns whether THIS call recorded the stamp.
+    intents and for non-finalize policies. Fail-soft for ordinary write
+    failures (a projection error never breaks the round loop) but fail-CLOSED
+    for a corrupt projection: ``CancelIntentProjectionCorrupt`` is raised
+    rather than answering "no intent" over a file nobody could read. Returns
+    whether THIS call recorded the stamp.
     """
     try:
         requested_tid = _valid_task_id(task_id)
@@ -625,7 +664,7 @@ def mark_finalize_control_drained(
 
     def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         recorded.clear()
-        intents = _load_intents(current)
+        intents = _load_intents(current, strict=True)
         row = intents.get(tid)
         if not isinstance(row, dict) or stop_policy(row) != STOP_POLICY_FINALIZE:
             return None
@@ -636,7 +675,11 @@ def mark_finalize_control_drained(
         return {"schema_version": _SCHEMA_VERSION, "intents": intents}
 
     try:
-        update_json_locked(_intents_path(drive_root), _mutate)
+        update_json_locked(_intents_path(drive_root), _mutate, strict_existing_dict=True)
+    except ValueError as exc:
+        raise _refuse_corrupt(
+            drive_root, tid, "mark_finalize_control_drained", exc,
+        ) from exc
     except Exception:
         log.debug(
             "finalize-control drain stamp failed for %s", task_id, exc_info=True,
@@ -663,6 +706,10 @@ def mark_intent_scope(drive_root: Any, task_id: str, scope: str) -> bool:
     ``cascade`` → ``single`` is refused as a no-op plus a forensic row — a
     narrowed record would make the watchdog replay the root alone while its
     descendants kept running, exactly the shape the scope exists to prevent.
+
+    A CORRUPT projection raises ``CancelIntentProjectionCorrupt``: the caller
+    (the cascade's scope stamp) already treats a failure here as loud, and
+    "no intent to widen" is not an answer this file can honestly give.
     """
     try:
         tid = _valid_task_id(task_id)
@@ -676,7 +723,7 @@ def mark_intent_scope(drive_root: Any, task_id: str, scope: str) -> bool:
 
     def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         narrowed.clear()
-        intents = _load_intents(current)
+        intents = _load_intents(current, strict=True)
         row = intents.get(tid)
         if not isinstance(row, dict) or str(row.get("scope") or "") == scope_text:
             return None
@@ -688,7 +735,9 @@ def mark_intent_scope(drive_root: Any, task_id: str, scope: str) -> bool:
         return {"schema_version": _SCHEMA_VERSION, "intents": intents}
 
     try:
-        update_json_locked(_intents_path(drive_root), _mutate)
+        update_json_locked(_intents_path(drive_root), _mutate, strict_existing_dict=True)
+    except ValueError as exc:
+        raise _refuse_corrupt(drive_root, tid, "mark_intent_scope", exc) from exc
     except Exception:
         log.debug("cancel-intent scope update failed for %s", task_id, exc_info=True)
         return False
@@ -987,6 +1036,10 @@ def release_claim(
     must never revert the claim of the custody attempt that took over from it.
     Returns ``True`` only when this exact claim was durably reopened; ``False``
     means the row was absent, already changed, or did not match the fence.
+
+    A corrupt projection raises ``CancelIntentProjectionCorrupt``; the caller
+    logs it and the intent stays CLAIMED for the watchdog, which is the same
+    conservative outcome an unwritable projection already produces.
     """
     try:
         tid = _valid_task_id(task_id)
@@ -996,7 +1049,7 @@ def release_claim(
     mismatch: Dict[str, Any] = {}
 
     def _mutate(current: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        intents = _load_intents(current)
+        intents = _load_intents(current, strict=True)
         row = intents.get(tid)
         if not isinstance(row, dict) or row.get("state") != INTENT_CLAIMED:
             return None
@@ -1014,7 +1067,10 @@ def release_claim(
         released.update(row)
         return {"schema_version": _SCHEMA_VERSION, "intents": intents}
 
-    update_json_locked(_intents_path(drive_root), _mutate)
+    try:
+        update_json_locked(_intents_path(drive_root), _mutate, strict_existing_dict=True)
+    except ValueError as exc:
+        raise _refuse_corrupt(drive_root, tid, "release_claim", exc) from exc
     if released:
         _forensic(drive_root, {
             "event": "claim_released", "task_id": tid,
@@ -1050,6 +1106,10 @@ def settle_intent(
     trigger. When the refused caller holds the matching fenced claim, that
     claim is RELEASED in the same write (state back to ``requested``) so the
     watchdog can re-feed the cascade instead of waiting out a dead claim.
+
+    A corrupt projection raises ``CancelIntentProjectionCorrupt`` instead of
+    reporting the no-op every settle caller reads as "nothing left to settle":
+    the intent must stay OPEN for the watchdog when nobody could read the file.
     """
     try:
         tid = _valid_task_id(task_id)
@@ -1063,7 +1123,7 @@ def settle_intent(
         settled.clear()
         mismatch.clear()
         cascade_deferred.clear()
-        intents = _load_intents(current)
+        intents = _load_intents(current, strict=True)
         row = intents.get(tid)
         if not isinstance(row, dict):
             return None
@@ -1097,7 +1157,10 @@ def settle_intent(
         settled.update(row)
         return {"schema_version": _SCHEMA_VERSION, "intents": intents}
 
-    update_json_locked(_intents_path(drive_root), _mutate)
+    try:
+        update_json_locked(_intents_path(drive_root), _mutate, strict_existing_dict=True)
+    except ValueError as exc:
+        raise _refuse_corrupt(drive_root, tid, "settle_intent", exc) from exc
     if settled:
         _forensic(drive_root, {
             "event": "settled", "task_id": tid,
@@ -1206,8 +1269,60 @@ def migrate_legacy_cancel_latches(drive_root: Any) -> List[str]:
     incident's wedged shape). Each becomes an ordinary active intent so the
     supervisor watchdog drives it through custody to a settled outcome. The file
     itself is left untouched here (legacy read-path; custody writes the terminal).
+
+    ABI-2 CARVE-OUT (owner 4A) — the ONE exception to the Q8=B wholesale
+    quarantine, and the reason this function opens with a scan of its own. A
+    pre-redesign latch file is by definition UNSTAMPED, so under ABI-2 the first
+    ordinary read moves it byte-unchanged into ``task_results/quarantine/``:
+    the scan below stopped finding wedged tasks, and custody's own fail-soft
+    read then saw no durable result and settled ``not_found`` — the task
+    disappeared without ever reaching a terminal. Boot therefore performs, for
+    the LATCHED rows and nothing else, the same stamp-on-write that a live
+    pre-upgrade task performs on its next lifecycle write (the transition
+    ``require_writable_task_result_schema`` already admits as lawful, and a
+    wedged task has no worker left to make it): same status, same fields, no
+    conversion — not a converter, and deliberately not a general one. The row
+    is then an ordinary latch, this scan adopts it, and custody drives it to
+    the ``cancelled`` terminal. Every other unstamped row still quarantines on
+    the very next read, including the one below. Applying the carve-out is ONE
+    typed durable events row per boot (never one per file), the same log-only
+    visibility owner decision 6.3=B gives the quarantine itself.
     """
-    from ouroboros.task_results import STATUS_CANCEL_REQUESTED, list_task_results
+    from ouroboros.task_result_schema import task_result_schema_refusal
+    from ouroboros.task_results import (
+        STATUS_CANCEL_REQUESTED, list_task_results, task_results_dir,
+        write_task_result,
+    )
+    from ouroboros.utils import read_json_dict
+
+    admitted: List[str] = []
+    for path in sorted(task_results_dir(drive_root, create=False).glob("*.json")):
+        raw = read_json_dict(path)
+        if task_result_schema_refusal(raw) != "unstamped_pre_7_0":
+            continue
+        if (
+            str(raw.get("status") or "") != STATUS_CANCEL_REQUESTED
+            or str(raw.get("task_id") or "") != path.stem
+        ):
+            continue  # not a latch, or an identity this write would rewrite
+        try:
+            write_task_result(drive_root, path.stem, STATUS_CANCEL_REQUESTED)
+        except Exception:
+            log.warning("cancel-latch schema admission failed for %s", path.name,
+                        exc_info=True)
+            continue
+        admitted.append(path.stem)
+    if admitted:
+        try:
+            append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {
+                "ts": utc_now_iso(),
+                "type": "task_result_cancel_latch_admitted",
+                "count": len(admitted),
+                "task_ids": admitted,
+                "reason": "unstamped_pre_7_0",
+            })
+        except Exception:
+            log.warning("failed to record the cancel-latch admission", exc_info=True)
 
     migrated: List[str] = []
     try:

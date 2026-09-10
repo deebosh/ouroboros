@@ -8,11 +8,17 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from ouroboros.cost_projection import honest_accounted_amount, with_cost_aliases
+from ouroboros.cost_projection import (
+    COST_ALIAS_PAIRS,
+    carry_cost_meta,
+    honest_accounted_amount,
+    with_cost_aliases,
+)
 from ouroboros.task_results import (
     TASK_COST_META_FIELDS,
     STATUS_COMPLETED,
     load_task_result,
+    merge_review_projection,
     resolve_task_lineage,
     write_task_result,
 )
@@ -21,7 +27,8 @@ from ouroboros.utils import append_jsonl, utc_now_iso
 log = logging.getLogger(__name__)
 
 POST_TASK_SYNTHESIS_LOCK = threading.Lock()
-POST_TASK_SYNTHESIS_INFLIGHT: set[tuple[str, str]] = set()
+# None reserves dispatch before the thread binds its live model-wait owner.
+POST_TASK_SYNTHESIS_INFLIGHT: dict[tuple[str, str], Any] = {}
 POST_TASK_SYNTHESIS_OPEN_STATUSES = frozenset({"pending_once", "running"})
 POST_TASK_SYNTHESIS_TERMINAL_STATUSES = frozenset({"completed", "degraded"})
 _TERMINAL_ACCOUNTING_FIELDS = (
@@ -29,6 +36,15 @@ _TERMINAL_ACCOUNTING_FIELDS = (
     "total_rounds",
     "prompt_tokens",
     "completion_tokens",
+)
+# Scrub set for the stale-accounting pops below: ABI-3 keeps the retired
+# alias spellings HERE (read/scrub tolerance, never an emission) so a legacy
+# replica/patch overlay cannot smuggle a stale `cost_usd` past a scrub that
+# only knows the honest names — deprecated-wins at the write seam would then
+# resurrect the stale amount.
+_TERMINAL_ACCOUNTING_SCRUB_FIELDS = (
+    *_TERMINAL_ACCOUNTING_FIELDS,
+    *(old for _new, old in COST_ALIAS_PAIRS),
 )
 
 
@@ -40,6 +56,41 @@ def post_task_synthesis_is_open(value: Any) -> bool:
 def post_task_synthesis_is_terminal(value: Any) -> bool:
     """Return whether canonical post-task synthesis has settled."""
     return str(value or "") in POST_TASK_SYNTHESIS_TERMINAL_STATUSES
+
+
+def post_task_synthesis_in_flight(drive_root: Any, task_id: str) -> bool:
+    """Whether THIS process is still running the paid post-task synthesis of
+    ``task_id`` on ``drive_root`` — the in-flight key the pipeline holds from
+    dispatch until its terminal checkpoint is stored (GR6-1, widened to the
+    non-blocking lane): a direct-chat turn's loop returns and its liveness
+    ends while the synthesis thread still bills, so the key is the live
+    physical ownership the stop ingress and custody must see. Process-local
+    on purpose: a durable ``running`` phase alone cannot tell a live worker
+    from one that died before the boot reconciler degraded it."""
+    tid = str(task_id or "").strip()
+    if not tid or not drive_root:
+        return False
+    try:
+        root_key = str(pathlib.Path(drive_root).resolve(strict=False))
+    except (TypeError, OSError, ValueError):
+        return False
+    with POST_TASK_SYNTHESIS_LOCK:
+        return (root_key, tid) in POST_TASK_SYNTHESIS_INFLIGHT
+
+
+def post_task_model_wait(drive_root: Any, task_id: str):
+    """The existing process-local synthesis owner, never a durable liveness guess."""
+    key = (str(pathlib.Path(drive_root).resolve(strict=False)), str(task_id))
+    with POST_TASK_SYNTHESIS_LOCK:
+        owner = POST_TASK_SYNTHESIS_INFLIGHT.get(key)
+    return owner if owner is not None and not owner.closed else None
+
+
+def post_task_model_waits(drive_root: Any) -> list:
+    root = str(pathlib.Path(drive_root).resolve(strict=False))
+    with POST_TASK_SYNTHESIS_LOCK:
+        owners = [owner for (path, _task), owner in POST_TASK_SYNTHESIS_INFLIGHT.items() if path == root]
+    return [owner for owner in owners if owner is not None and not owner.closed]
 
 
 def _parse_updated_at(value: Any) -> datetime | None:
@@ -55,18 +106,33 @@ def _parse_updated_at(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _delegated_receipt_counts(value: Any) -> tuple[int, int] | None:
+    if not isinstance(value, dict) or value.get("evidence_read_failed"):
+        return None
+    counts = (value.get("delegated_runs_started"), value.get("delegated_runs_settled"))
+    if any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in counts):
+        return None
+    return counts
+
+
 def project_replica_task_result_fields(
     canonical_fields: Dict[str, Any],
     replica_fields: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Return the replica overlay permitted over a canonical task result.
 
-    A terminal canonical post-task checkpoint owns only its synthesis fields
-    and the accounting snapshot written with that checkpoint. The replica
-    continues to own acceptance, result, review, and trace fields. ``updated_at``
-    is monotonic projection metadata only; it never selects field authority.
+    A terminal canonical post-task checkpoint owns its synthesis fields and
+    accounting snapshot. Canonical custody also retains non-regressing delegation
+    receipts and canonical-if-present reconciliation disclosures under the narrow
+    rules below. The replica continues to own acceptance, result, and trace fields;
+    review snapshots retain the newest host publication of each panel.
+    ``updated_at`` is monotonic metadata only; it never selects field authority.
     """
     overlay = dict(replica_fields)
+    if "review_projection" in overlay:
+        overlay["review_projection"] = merge_review_projection(
+            canonical_fields.get("review_projection"), overlay["review_projection"],
+        )
     canonical_checkpoint = canonical_fields.get("root_phase_checkpoint")
     canonical_post_task = (
         str(canonical_checkpoint.get("post_task_synthesis") or "")
@@ -84,7 +150,7 @@ def project_replica_task_result_fields(
                 "post_task_stop_reason"
             ]
         overlay["root_phase_checkpoint"] = merged_checkpoint
-        for field in _TERMINAL_ACCOUNTING_FIELDS:
+        for field in _TERMINAL_ACCOUNTING_SCRUB_FIELDS:
             overlay.pop(field, None)
 
     # Non-Project split synthesis writes this field in the canonical parent
@@ -92,6 +158,61 @@ def project_replica_task_result_fields(
     if isinstance(canonical_fields.get("continuation_narrative"), dict):
         if str(canonical_fields["continuation_narrative"].get("text") or "").strip():
             overlay.pop("continuation_narrative", None)
+
+    # Write-side custody heals must survive both reducer consumers. A canonical
+    # absence still accepts the first replica value.
+    for field in (
+        "delegated_runs_unreconciled",
+        "delegate_terminal_reconciliation",
+    ):
+        if field in canonical_fields:
+            overlay.pop(field, None)
+
+    canonical_envelope = canonical_fields.get("subagent_envelope")
+    canonical_evidence = (
+        canonical_envelope.get("execution_evidence")
+        if isinstance(canonical_envelope, dict)
+        else None
+    )
+    if isinstance(canonical_evidence, dict) and canonical_evidence:
+        replica_envelope = overlay.get("subagent_envelope")
+        replica_evidence = (
+            replica_envelope.get("execution_evidence")
+            if isinstance(replica_envelope, dict)
+            else None
+        )
+
+        canonical_counts = _delegated_receipt_counts(canonical_evidence)
+        replica_counts = _delegated_receipt_counts(replica_evidence)
+        canonical_wins = not isinstance(replica_evidence, dict) or not replica_evidence
+        if isinstance(replica_evidence, dict) and replica_evidence:
+            canonical_wins = bool(
+                canonical_counts is not None
+                and (
+                    replica_counts is None
+                    or all(a >= b for a, b in zip(canonical_counts, replica_counts))
+                )
+            )
+        if canonical_wins:
+            merged_envelope = (
+                dict(replica_envelope)
+                if isinstance(replica_envelope, dict)
+                else dict(canonical_envelope)
+            )
+            merged_envelope["execution_evidence"] = dict(canonical_evidence)
+            canonical_substrate = str(
+                canonical_envelope.get("actual_substrate")
+                or canonical_fields.get("actual_substrate")
+                or ""
+            ).strip()
+            if canonical_substrate:
+                merged_envelope["actual_substrate"] = canonical_substrate
+                overlay["actual_substrate"] = canonical_substrate
+            if "native_contribution" in canonical_envelope:
+                merged_envelope["native_contribution"] = canonical_envelope[
+                    "native_contribution"
+                ]
+            overlay["subagent_envelope"] = merged_envelope
 
     canonical_updated_at = _parse_updated_at(canonical_fields.get("updated_at"))
     replica_updated_at = _parse_updated_at(overlay.get("updated_at"))
@@ -137,7 +258,7 @@ def project_root_post_task_checkpoint_fields(
                 "post_task_stop_reason"
             ]
         if patch_post_task != canonical_post_task:
-            for field in _TERMINAL_ACCOUNTING_FIELDS:
+            for field in _TERMINAL_ACCOUNTING_SCRUB_FIELDS:
                 overlay.pop(field, None)
     else:
         if "post_task_stop_reason" in patch:
@@ -225,7 +346,7 @@ def set_root_post_task_checkpoint(
                 subtree_final = bool(subtree.get("cost_final"))
                 subtree_amount = honest_accounted_amount(subtree)
                 cost_fields.update({
-                    "cost_usd_with_children": (
+                    "accounted_upper_bound_usd_with_children": (
                         round(subtree_amount, 6) if subtree_amount is not None else None
                     ),
                     "cost_with_children_partial": not subtree_final,
@@ -236,15 +357,15 @@ def set_root_post_task_checkpoint(
                 cost_fields.update({
                     "cost_accounting_status": "unavailable",
                     "cost_accounting_error": "ledger_unavailable",
-                    "cost_usd": None,
-                    "cost_usd_with_children": None,
+                    "accounted_upper_bound_usd": None,
+                    "accounted_upper_bound_usd_with_children": None,
                 })
-        # SSOT cost naming (C2/F12): re-converge the alias pairs as the LAST step,
-        # after every branch above has finished mutating the deprecated spellings
-        # (`reconstruct_task_cost` aliases at ITS seam, then the subtree refresh
-        # and the unavailable fallback edit `cost_usd[_with_children]` only) —
-        # otherwise this producer persists a DIVERGED pair: an honest name still
-        # carrying the pre-refresh amount beside a corrected alias.
+        # SSOT cost naming (C2/F12/ABI-3): every branch above writes the honest
+        # names directly onto the honest-named `reconstruct_task_cost` fields
+        # (Ф3.1 fix-round — producers no longer touch the retired spellings);
+        # the seam stays as the LAST step as the idempotent invariant guard —
+        # it re-normalizes amounts and would strip any retired key a future
+        # mutation leaked, so this producer can never persist a diverged pair.
         cost_fields = with_cost_aliases(cost_fields)
         checkpoint_patch = {"post_task_synthesis": effective_status}
         if stop_reason:
@@ -281,9 +402,16 @@ def set_root_post_task_checkpoint(
                 "task_id": task_id,
                 "root_task_id": str(stored.get("root_task_id") or task.get("root_task_id") or task_id),
                 "post_task_status": stored_post_task,
+                # The typed stop disclosure rides the same event (owner Stop-now
+                # during synthesis, restart recovery): absent when nothing stopped.
+                **({"post_task_stop_reason": str(stored_checkpoint.get("post_task_stop_reason"))}
+                   if stored_checkpoint.get("post_task_stop_reason") else {}),
+                # ABI-3: cost pair CONVERTED from a possibly-legacy stored row
+                # (deprecated-wins) — the event carries honest names only.
+                **carry_cost_meta(stored),
                 **{
                     field: stored[field]
-                    for field in _TERMINAL_ACCOUNTING_FIELDS
+                    for field in ("total_rounds", "prompt_tokens", "completion_tokens")
                     if field in stored
                 },
             }

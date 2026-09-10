@@ -193,8 +193,10 @@ function createCodeBlock(source, language = '') {
 }
 
 function transformRenderedMarkdown(fragment) {
-    fragment.querySelectorAll('h1, h2, h3').forEach((heading) => {
-        heading.classList.add(`md-${heading.tagName.toLowerCase()}`);
+    // Levels 4+ have no size of their own (DESIGN.md §1): they read as the
+    // smallest heading label, exactly as the legacy renderMarkdown demotes them.
+    fragment.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((heading) => {
+        heading.classList.add(`md-h${Math.min(Number(heading.tagName.slice(1)), 3)}`);
     });
     fragment.querySelectorAll('blockquote').forEach((quote) => quote.classList.add('md-quote'));
     fragment.querySelectorAll('a').forEach((link) => {

@@ -103,6 +103,39 @@ const WS_MSG = {
     ts: '2026-08-31T10:00:00Z',
 };
 
+test('required question renders waiting identically from live and stored frames', () => {
+    const fx = fixture();
+    try {
+        const live = { ...WS_MSG, quiz_id: 'required-live', wait_for_answer: true, assumption: '' };
+        const card = fx.decision.buildQuizCard(live);
+        assert.match(card.querySelector('.chat-quiz-assumption').textContent, /Waiting for your answer/);
+        const stored = { task_id: 't-1', text: live.question, quiz: { ...live, quiz_id: 'required-replay' } };
+        const replay = fx.decision.buildQuizCard(stored);
+        assert.equal(replay.querySelector('.chat-quiz-assumption').textContent,
+                     card.querySelector('.chat-quiz-assumption').textContent);
+    } finally { fx.restore(); }
+});
+
+test('required waiting copy ends when the answer settles, including history replay', async () => {
+    const fx = fixture();
+    try {
+        const required = { ...WS_MSG, wait_for_answer: true, assumption: '' };
+        const card = fx.decision.buildQuizCard(required);
+        card.querySelectorAll('.chat-quiz-option')[0].click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(card.dataset.state, 'answered');
+        assert.equal(card.querySelector('.chat-quiz-assumption'), null);
+        assert.ok(card.querySelectorAll('.chat-quiz-option').every((btn) => btn.disabled));
+        for (const state of ['answered', 'expired_terminal', 'superseded']) {
+            const replay = fx.decision.buildQuizCard({
+                task_id: 't-1', text: required.question,
+                quiz: { ...required, state, quiz_id: `closed-${state}` },
+            });
+            assert.equal(replay.querySelector('.chat-quiz-assumption'), null);
+        }
+    } finally { fx.restore(); }
+});
+
 test('quiz card renders full anatomy from a WS frame', () => {
     const fx = fixture();
     try {
@@ -307,6 +340,33 @@ test('applyQuizStateFrame settles an existing card and ignores unknown ids', asy
 
         // Unknown id: no card found, nothing thrown, honest false.
         assert.equal(fx.decision.applyQuizStateFrame(root, { quiz_id: 'other', state: 'answered' }), false);
+    } finally {
+        fx.restore();
+    }
+});
+
+test('a live quiz_state frame carries the owner comment onto the card like replay does (#471)', () => {
+    const fx = fixture();
+    if (!globalThis.CSS) globalThis.CSS = { escape: (v) => String(v) };
+    try {
+        const card = fx.decision.buildQuizCard(WS_MSG);
+        const inner = card.children[0] || card;
+        const quizCard = inner.matchesClass && inner.matchesClass('chat-quiz-card') ? inner : card;
+        const root = { querySelector: (sel) => (sel.includes('qz-1') ? quizCard : null) };
+        // The owner rejected every option and answered in their own words: the
+        // frame carries no answered_index and the recorded comment.
+        assert.equal(fx.decision.applyQuizStateFrame(root, {
+            quiz_id: 'qz-1', task_id: 't-1', state: 'answered', comment: 'neither — use duckdb',
+        }), true);
+        assert.equal(quizCard.dataset.state, 'answered');
+        assert.equal(quizCard.dataset.ownerComment, 'neither — use duckdb');
+        assert.equal(quizCard.querySelector('.chat-quiz-answer').textContent,
+            "Owner's answer: neither — use duckdb");
+        assert.ok(quizCard.querySelectorAll('.chat-quiz-option').every((btn) => !btn.classList.contains('chosen')));
+        // A later lifecycle frame without a comment never wipes the recorded one.
+        fx.decision.applyQuizStateFrame(root, { quiz_id: 'qz-1', task_id: 't-1', state: 'superseded' });
+        assert.equal(quizCard.dataset.ownerComment, 'neither — use duckdb');
+        assert.equal(quizCard.dataset.state, 'superseded');
     } finally {
         fx.restore();
     }

@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import os
 
+from ouroboros.model_slots import ResolvedModelTarget, parse_fallback_chain
+from ouroboros.settings_defaults import OPENROUTER_DEFAULTS, OPENROUTER_REVIEW_DEFAULTS, SETTINGS_DEFAULTS  # noqa: F401
+
 # MiniMax exposes the same OpenAI-compatible API on two regional hosts. Keep the
 # mapping centralized so transport, capability evidence, and settings diagnostics
 # fingerprint the exact endpoint selected by the owner.
@@ -23,16 +26,45 @@ def resolve_minimax_base_url(region: str = "") -> str:
     return MINIMAX_REGION_ENDPOINTS.get(selected, MINIMAX_REGION_ENDPOINTS[MINIMAX_DEFAULT_REGION])
 
 
+# DeepSeek serves one official OpenAI-compatible endpoint (no regions, no
+# owner-configurable base URL — a proxy/mirror setup belongs to the generic
+# openai-compatible slot). Kept as a module constant so transport and the
+# provider test resolve the same host; the reviewer-window/base-url fingerprint
+# maps deliberately have NO deepseek branch (both default to "" consistently —
+# the fingerprint is already unique per provider+model).
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+
+# DeepSeek's Chat Completions ``reasoning_effort`` enum is low/high/max
+# (medium/xhigh are documented aliases of high) and thinking is switched off by
+# ``thinking.type=disabled``, not by an effort value. This is the wire dialect
+# of one provider, projected at the physical-send boundary; the canonical
+# Ouroboros effort scale stays the SSOT everywhere else. Not a model or pricing
+# table and never an admission gate.
+DEEPSEEK_REASONING_EFFORT_ALIASES = {
+    "minimal": "low",
+    "medium": "high",
+    "xhigh": "high",
+    "ultra": "max",
+}
+
+
+def normalize_deepseek_reasoning_effort(value: str) -> str:
+    """Project one canonical effort tier onto DeepSeek's Chat wire enum."""
+    normalized = str(value or "").strip().lower()
+    return DEEPSEEK_REASONING_EFFORT_ALIASES.get(normalized, normalized)
+
+
 # Direct-provider prefix → canonical provider name. Un-prefixed models route
 # through OpenRouter. Order matters only for readability; prefixes are disjoint.
 PROVIDER_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("claudexor::", "claudexor"),
     ("openai::", "openai"),
     ("anthropic::", "anthropic"),
     ("minimax::", "minimax"),
     ("cloudru::", "cloudru"),
     ("gigachat::", "gigachat"),
     ("qwen::", "qwen"),
-    ("google_genai::", "google_genai"),
+    ("deepseek::", "deepseek"),
     ("openai-compatible::", "openai-compatible"),
     ("openrouter::", "openrouter"),
 )
@@ -44,7 +76,7 @@ PROVIDER_ENV_KEYS: dict[str, str] = {
     "minimax": "MINIMAX_API_KEY",
     "cloudru": "CLOUDRU_FOUNDATION_MODELS_API_KEY",
     "qwen": "QWEN_API_KEY",
-    "google_genai": "OUROBOROS_GEMINI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
@@ -71,23 +103,18 @@ PROVIDER_CREDENTIAL_GROUPS: dict[str, tuple[str, ...]] = {
     "minimax": ("MINIMAX_API_KEY", "MINIMAX_REGION"),
     "cloudru": ("CLOUDRU_FOUNDATION_MODELS_API_KEY", "CLOUDRU_FOUNDATION_MODELS_BASE_URL"),
     "qwen": ("QWEN_API_KEY", "QWEN_BASE_URL"),
+    "deepseek": ("DEEPSEEK_API_KEY",),
     "gigachat": (
         "GIGACHAT_CREDENTIALS", "GIGACHAT_PASSWORD", "GIGACHAT_USER",
         "GIGACHAT_BASE_URL", "GIGACHAT_SCOPE", "GIGACHAT_VERIFY_SSL_CERTS",
-    ),
-    "google_genai": (
-        # OUROBOROS_GEMINI_API_KEY is env-only by design (v6.103.8 — the key
-        # never appears in settings.json, never reaches the Settings UI, and
-        # has no SETTINGS_DEFAULTS row). OUROBOROS_GEMINI_BASE_URL is the
-        # persistable endpoint; it defaults to Google's public generativelanguage
-        # host so an env override is a per-install choice, not a prerequisite.
-        "OUROBOROS_GEMINI_API_KEY", "OUROBOROS_GEMINI_BASE_URL",
     ),
     "openai-compatible": (
         "OPENAI_COMPATIBLE_API_KEY", "OPENAI_COMPATIBLE_BASE_URL",
         "OPENAI_API_KEY", "OPENAI_BASE_URL",
     ),
     "local": (),
+    # The owned engine holds credentials; no control token reaches model settings/env.
+    "claudexor": (),
 }
 
 # Active settings keys that hold a ROUTED model identity (prefix -> provider via
@@ -128,8 +155,65 @@ def provider_for_model(model: str) -> str:
     return "openrouter"
 
 
+def parse_claudexor_model(model: str) -> tuple[str, str]:
+    """Split the model transport's opaque source and model, never an account pin."""
+    if not str(model).startswith("claudexor::"):
+        raise ValueError("Not a Claudexor model identity")
+    source, separator, native_model = str(model)[len("claudexor::"):].partition("=")
+    if not separator or not source.strip() or not native_model.strip():
+        raise ValueError("Claudexor models use claudexor::<source>=<model>")
+    return source.strip(), native_model.strip()
+
+
+def resolve_model_target(
+    model: str,
+    *,
+    effort: str = "",
+    credential_ref: str = "",
+    context_window: int = 0,
+) -> ResolvedModelTarget:
+    """Construct the ABI-4 typed target at an EXISTING resolution seam.
+
+    Wraps what the resolution already computed (reuse-first): the transport
+    lane comes from ``provider_for_model``, and the optional facts keep their
+    typed sentinels unless the calling seam genuinely resolved them. No
+    parallel resolver, no pricing, no window probing — a context window is
+    Capability Evidence's fact (0 = unknown, fail-open).
+    """
+    model_id = str(model or "").strip()
+    return ResolvedModelTarget(
+        model_id=model_id,
+        provider_route=provider_for_model(model_id),
+        credential_ref=str(credential_ref or "").strip(),
+        effort=str(effort or "").strip(),
+        context_window=max(0, int(context_window or 0)),
+    )
+
+
+def fallback_candidate_targets(active_model: str = "") -> tuple[ResolvedModelTarget, ...]:
+    """The cross-model fallback candidate ladder as typed targets (ABI-4).
+
+    Same membership and order as ``model_slots.get_fallback_models`` — a typed
+    view over the ONE chain SSOT, not a second resolver. Effort stays the ""
+    sentinel: the ladder resolves destinations, the dispatching round owns the
+    active effort. ``provider_route`` stays the ``""`` sentinel DELIBERATELY:
+    the chain's local-vs-remote dispatch lane is the loop's single global
+    ``USE_LOCAL_FALLBACK`` flag (the pre-existing contract, byte-identical
+    through the ABI-4 sweep), so a per-candidate route here would be a
+    fabricated fact no dispatcher consumes.
+    """
+    from ouroboros.model_slots import get_fallback_models
+
+    return tuple(
+        ResolvedModelTarget(model_id=model, provider_route="")
+        for model in get_fallback_models(active_model)
+    )
+
+
 def provider_has_credentials(provider: str) -> bool:
-    """Return True when the environment carries usable credentials for a provider."""
+    """Whether a route is configured; a managed engine's live readiness is separate."""
+    if provider == "claudexor":
+        return True  # A selected engine route needs no API key in Ouroboros.
     if provider == "local":
         return True
     if provider == "openai-compatible":
@@ -150,6 +234,9 @@ def provider_has_credentials_in_settings(provider: str, settings: dict) -> bool:
     """Mapping-based twin used by pure config/default compilers (no ambient env)."""
     def get(key: str) -> str:
         return str((settings or {}).get(key, "") or "").strip()
+
+    if provider == "claudexor":
+        return True  # Selection declares the route; never persist a synthetic healthy bit.
 
     if provider == "local":
         return bool(get("LOCAL_MODEL_SOURCE"))
@@ -185,7 +272,7 @@ def local_only_review_route_env() -> bool:
         provider_has_credentials(provider)
         for provider in (
             "openrouter", "openai", "anthropic", "minimax", "cloudru", "gigachat",
-            "google_genai", "openai-compatible",
+            "deepseek", "openai-compatible",
         )
     )
 
@@ -205,9 +292,7 @@ def resolve_credentialed_model(default_model: str) -> str:
     # LIGHT/MAIN are single-model slots; FALLBACKS is a comma chain expanded via the
     # shared SSOT parser (which also honors the legacy singular OUROBOROS_MODEL_FALLBACK)
     # instead of testing the whole comma-string as one broken model id. Empty Light
-    # (default -> Main) simply contributes nothing here. Lazy import: config imports this
-    # module, so importing config at module load would be circular.
-    from ouroboros.config import parse_fallback_chain
+    # (default -> Main) simply contributes nothing here.
     candidates: list[str] = []
     light = str(os.environ.get("OUROBOROS_MODEL_LIGHT", "") or "").strip()
     if light:
@@ -234,9 +319,7 @@ def declared_model_settings(
     ``config.SETTINGS_DEFAULTS`` for it, so the default's provider is genuinely reachable and
     must be declared.  ``include_claude_sdk_defaults`` is a RETIRED no-op kept for caller
     compatibility: the Claude-SDK transport and its dedicated model slots are gone, so both
-    values declare the same set. Lazy config import (config imports this module)."""
-    from ouroboros.config import SETTINGS_DEFAULTS
-
+    values declare the same set."""
     declared: dict[str, str] = {}
     for key in MODEL_SETTING_KEYS:
         value = str((settings or {}).get(key) or "").strip()
@@ -311,33 +394,6 @@ def provider_credential_plan(
     }
 
 
-# Shipped router profile. Keeping the root-loop role policy beside the direct
-# provider profiles gives onboarding, runtime defaults, and tests one vocabulary
-# instead of repeating model ids across those surfaces.
-OPENROUTER_DEFAULTS = {
-    "main": "google/gemini-3.7-flash",
-    "heavy": "",
-    "light": "openai/gpt-5.6-luna",
-    "vision": "",
-    "consciousness": "",
-    "chat": "",
-    "fallback": "openai/gpt-5.6-luna",
-    "deep_self_review": "openai/gpt-5.6-sol-pro",
-}
-
-OPENROUTER_REVIEW_DEFAULTS = {
-    "triad": (
-        "google/gemini-3.7-flash",
-        "openai/gpt-5.6-terra",
-        "anthropic/claude-opus-5",
-    ),
-    "scope": ("openai/gpt-5.6-terra",),
-    # Routed catalog id (the retired Claude-SDK spelling migrated same-model);
-    # without provider credentials the advisory gate records an audited bypass.
-    "advisory": "anthropic/claude-sonnet-5",
-}
-
-
 OPENAI_DIRECT_DEFAULTS = {
     "main": "openai::gpt-5.6-terra",
     "heavy": "",
@@ -350,15 +406,13 @@ OPENAI_DIRECT_DEFAULTS = {
     # Cloud.ru and GigaChat are documented BELOW that floor, so filling their slot
     # would advertise a deep review that is doomed to overflow its real route.
     #
-    # DELIBERATELY plain Sol, NOT the OpenRouter default's `-pro`: that suffix is an
-    # OpenRouter slug, not an OpenAI model id. Live-probed 2026-07-29 against
-    # api.openai.com: `gpt-5.6-sol-pro` on /v1/chat/completions -> 404; the pro
+    # Plain Sol, the same model the OpenRouter default names. A `-pro` suffix is an
+    # OpenRouter routing slug, not an OpenAI model id: live-probed 2026-07-29 against
+    # api.openai.com, `gpt-5.6-sol-pro` on /v1/chat/completions -> 404; the pro
     # reasoning mode exists only on /v1/responses as `reasoning.mode="pro"` (200),
     # and passing `reasoning` to /v1/chat/completions -> 400 "Unknown parameter".
-    # Every LLM call in llm.py is a chat.completions call, so a direct-OpenAI
-    # install runs deep review on plain Sol — an owner-accepted capability
-    # difference from the OpenRouter default, disclosed in README/ARCHITECTURE
-    # rather than papered over with a slug that does not exist.
+    # Every LLM call in llm.py is a chat.completions call, so an owner's pinned
+    # `-pro` slug lands here too (deep_self_review.deep_review_route).
     "deep_self_review": "openai::gpt-5.6-sol",
 }
 
@@ -401,6 +455,24 @@ MINIMAX_DIRECT_DEFAULTS = {
     # the Cloud.ru/GigaChat clear-instead-of-fill path; owners can opt in manually.
 }
 
+DEEPSEEK_DIRECT_DEFAULTS = {
+    "main": "deepseek::deepseek-v4-pro",
+    "heavy": "",
+    "light": "deepseek::deepseek-v4-flash",
+    "fallback": "deepseek::deepseek-v4-flash",
+    # DeepSeek documents a FIRM 1M context on every v4 model (api-docs
+    # 2026-08: "1M context, 384K max output" with no guaranteed-minimum
+    # caveat), so the slot follows the OpenAI/Anthropic fill pattern rather
+    # than the MiniMax clear-instead-of-fill path (whose guaranteed floor was
+    # 512K). The route's /models endpoint publishes NO window metadata, so the
+    # ≥1M authority for blocking deep/scope review in Max mode still requires
+    # the owner capability acknowledgement — until then the gate fails closed
+    # loudly rather than silently degrading (see ARCHITECTURE §7).
+    "deep_self_review": "deepseek::deepseek-v4-pro",
+    # No vision default: deepseek-v4-flash-vision-exp is experimental; it is
+    # recognized by supports_vision() for explicit owner selection only.
+}
+
 ANTHROPIC_DIRECT_DEFAULTS = {
     "main": "anthropic::claude-opus-5",
     "heavy": "",
@@ -412,34 +484,14 @@ ANTHROPIC_DIRECT_DEFAULTS = {
     "deep_self_review": "anthropic::claude-opus-5",
 }
 
-GOOGLE_GENAI_DIRECT_DEFAULTS = {
-    # v6.103.8 — added as the deep-self-review escape route after OpenRouter
-    # exhausted its credit pool on task c7862982 (a 100k-token review attempt
-    # 402'd for $11.00 of pure waste). Default to a single flash-class model
-    # owners have ALREADY proven reachable on the API (the live list-models
-    # probe against the owner's AIza key returned gemini-3.7-flash with a 1M
-    # input / 65K output window). Heavier Gemini tiers (pro/ultra) carry the
-    # same 1M input window but cost more; owners who need them override the
-    # slot directly.
-    "main": "google_genai::gemini-3.7-flash",
-    "heavy": "google_genai::gemini-3.7-flash",
-    "light": "google_genai::gemini-3.5-flash",
-    "fallback": "google_genai::gemini-3.5-flash",
-    # Deep self-review ships as the SAME model that lit up the c7862982
-    # trace — a thinking model (Gemini returns thoughtsTokenCount separately,
-    # so reasoning shows up in usage accounting) with a 1M input window that
-    # fits the deep-review pack budget without the 100k->402 trap.
-    "deep_self_review": "google_genai::gemini-3.7-flash",
-}
-
 DIRECT_PROVIDER_DEFAULTS = {
     "openai": OPENAI_DIRECT_DEFAULTS,
     "anthropic": ANTHROPIC_DIRECT_DEFAULTS,
     "cloudru": CLOUDRU_DIRECT_DEFAULTS,
     "gigachat": GIGACHAT_DIRECT_DEFAULTS,
     "qwen": QWEN_DIRECT_DEFAULTS,
-    "google_genai": GOOGLE_GENAI_DIRECT_DEFAULTS,
     "minimax": MINIMAX_DIRECT_DEFAULTS,
+    "deepseek": DEEPSEEK_DIRECT_DEFAULTS,
 }
 
 # Review panels are declared as provider ROLE sequences, then compiled against
@@ -455,6 +507,9 @@ DIRECT_PROVIDER_REVIEW_ROLES = {
     "gigachat": ("main", "main", "main"),
     "qwen": ("main", "main", "main"),
     "minimax": ("main", "light", "light"),
+    # Strongest-main ×3 policy (same as OpenAI/Anthropic): an exclusive
+    # DeepSeek install reviews with three independent thinking v4-pro calls.
+    "deepseek": ("main", "main", "main"),
 }
 
 DIRECT_PROVIDER_SCOPE_DEFAULTS = {
@@ -499,17 +554,11 @@ def migrate_model_value(provider: str, value: str) -> str:
         if text.startswith("minimax/"):
             return f"minimax::{text[len('minimax/'):]}"
         return text
-    if provider == "google_genai":
-        if text.startswith("google_genai::"):
+    if provider == "deepseek":
+        if text.startswith("deepseek::"):
             return text
-        # OpenRouter ships Gemini models under the "google/" prefix; lift them
-        # to the direct prefix so an owner carrying an OpenRouter-style default
-        # (e.g. "google/gemini-3.7-flash") still routes to google_genai when the
-        # provider says so. NOTE: this is intentionally NOT applied when the
-        # bare id already begins with "google/" but provider is NOT google_genai
-        # — migrate_model_value is keyed by provider, not by id shape.
-        if text.startswith("google/"):
-            return f"google_genai::{text[len('google/'):]}"
+        if text.startswith("deepseek/"):
+            return f"deepseek::{text[len('deepseek/'):]}"
         return text
     return text
 
@@ -548,6 +597,11 @@ _VISION_MODEL_PREFIXES: tuple[str, ...] = (
     "qwen/qwen-vl", "qwen/qwen2.5-vl", "qwen/qwen3-vl",
     "mistralai/pixtral", "meta-llama/llama-4", "meta-llama/llama-3.2-90b-vision",
     "openai/gpt-5.5",
+    # Narrow on purpose: only the dedicated vision variant. Plain deepseek
+    # chat/v4 ids stay non-vision (pinned by tests), and this slash-form
+    # normalized id also names a real OpenRouter vendor namespace — the
+    # OpenRouter /models overlay may refine exact ids either way.
+    "deepseek/deepseek-v4-flash-vision",
 )
 
 # Runtime overlay: model_id → bool, fed from OpenRouter /models
@@ -562,12 +616,41 @@ def update_vision_overlay(model_id: str, supports: bool) -> None:
         _VISION_OVERLAY[normalized] = bool(supports)
 
 
-def supports_vision(model_id: str) -> bool:
-    """True when the model accepts native image input blocks."""
+def supports_vision(model_id: str, *, model_role: str = "",
+                    model_account_override: str | None = None) -> bool | None:
+    """Image capability; None means unavailable subscription metadata, not blindness.
+
+    Subscription metadata belongs to this call's role/account, never the global
+    model-id overlay. Image senders preserve input when that fact is unknown;
+    the actual call can start the engine and return its normal typed refusal.
+    Metadata discovery itself must not start it or buy a model generation.
+    """
     # Local lanes have no vision regardless of family name; check the RAW id —
     # normalize_model_identity strips the " (local)" suffix.
     if str(model_id or "").strip().endswith(" (local)"):
         return False
+    if provider_for_model(model_id) == "claudexor":
+        from ouroboros.gateways.claudexor import ClaudexorUnavailable
+        from ouroboros.llm import LLMClient
+        from ouroboros.model_slots import MODEL_ACCOUNTS_KEY, model_role_option
+        from ouroboros.model_wait import current_model_wait
+
+        source, native_model = parse_claudexor_model(model_id)
+        wait = current_model_wait()
+        if model_account_override is None and wait is not None:
+            model_account_override = wait.overrides.get(model_role, {}).get("model_account_override")
+        account = (model_account_override if model_account_override is not None
+                   else model_role_option(MODEL_ACCOUNTS_KEY, model_role))
+        try:
+            catalog = LLMClient.claudexor_model_catalog(
+                source, account or None, requested_model=native_model)
+        except ClaudexorUnavailable:
+            return None
+        if catalog.get("source") != source or (account and catalog.get("credentialProfileId") != account):
+            return None
+        item = next((row for row in catalog.get("models", []) if row.get("id") == native_model), {})
+        modalities = item.get("inputModalities")
+        return "image" in modalities if isinstance(modalities, list) and modalities else None
     normalized = normalize_model_identity(model_id)
     if not normalized:
         return False
@@ -600,8 +683,8 @@ def normalize_model_identity(model: str) -> str:
         return f"minimax/{text[len('minimax::'):]}"
     if text.startswith("qwen::"):
         return f"qwen/{text[len('qwen::'):]}"
-    if text.startswith("google_genai::"):
-        return f"google/{text[len('google_genai::'):]}"
+    if text.startswith("deepseek::"):
+        return f"deepseek/{text[len('deepseek::'):]}"
     if text.startswith("anthropic::"):
         return f"anthropic/{normalize_anthropic_model_id(text[len('anthropic::'):])}"
     if text.startswith("anthropic/"):

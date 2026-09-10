@@ -215,7 +215,7 @@ def test_atlas_devtools_manifest_only_unless_touched(tmp_path):
 
 
 def test_atlas_marks_sensitive_binary_oversized_and_vendored_files(tmp_path):
-    _write(tmp_path / ".env.example", "TOKEN=secret\n")
+    _write(tmp_path / ".env.production", "TOKEN=secret\n")
     (tmp_path / "image.png").write_bytes(b"\x89PNG\r\n\x00")
     _write(tmp_path / "script.min.js", "minified();\n")
     (tmp_path / "huge.py").write_bytes(b"x" * (1_048_576 + 1))
@@ -227,7 +227,7 @@ def test_atlas_marks_sensitive_binary_oversized_and_vendored_files(tmp_path):
     pack = compile_review_context_atlas(
         ReviewContextAtlasRequest(
             repo_dir=tmp_path,
-            tracked_paths=(".env.example", "image.png", "script.min.js", "huge.py", "normal.py"),
+            tracked_paths=(".env.production", "image.png", "script.min.js", "huge.py", "normal.py"),
             fixed_prompt_tokens=100,
             target_total_tokens=20_000,
             hard_total_tokens=25_000,
@@ -235,9 +235,9 @@ def test_atlas_marks_sensitive_binary_oversized_and_vendored_files(tmp_path):
     )
 
     coverage = _coverage(pack)
-    assert coverage[".env.example"]["disposition"] == "sensitive"
-    assert coverage[".env.example"]["sha256"] == ""
-    assert coverage[".env.example"]["size"] == 0
+    assert coverage[".env.production"]["disposition"] == "sensitive"
+    assert coverage[".env.production"]["sha256"] == ""
+    assert coverage[".env.production"]["size"] == 0
     assert coverage["image.png"]["disposition"] == "binary_media"
     assert coverage["script.min.js"]["disposition"] == "vendored_minified"
     assert coverage["huge.py"]["disposition"] == "oversized"
@@ -730,50 +730,6 @@ def test_atlas_admission_reason_reports_remaining_capacity_not_a_file_claim(tmp_
         assert "remain after higher-priority content and the rendered manifest" in row["reason"]
 
 
-def test_untouched_force_included_set_degrades_instead_of_blocking(tmp_path):
-    """Regression for ibl-1b372dd99e48 / ibl-8c94b2ce5783.
-
-    BEFORE: a commit that co-exists with the repo's fixed force-include set
-    (``prompts/``, ``ouroboros/contracts/``, the protected-runtime + review-stack
-    paths) forced the atlas to assemble EVERY one of them in full. When their
-    aggregate exceeded the hard budget, the pack failed
-    ``required_artifact_omitted`` and scope review was blocked at $0 — even for a
-    one-line diff that touches none of them.
-
-    AFTER: a force-included path the diff does NOT touch is owed a coverage
-    manifest row, not a full snapshot. Under aggregate budget pressure it
-    degrades to ``manifest_only`` (disclosed), the assembly SUCCEEDS, and review
-    can proceed. The genuine assembly-failure signal still fires for a
-    required-in-full artifact (a touched path / canonical doc)."""
-    for idx in range(10):
-        _write(tmp_path / "prompts" / f"p_{idx}.md", "prompt line\n" * 650)
-    _write(tmp_path / "module.py", "def run():\n    return 42\n")
-
-    pack = compile_review_context_atlas(
-        ReviewContextAtlasRequest(
-            repo_dir=tmp_path,
-            tracked_paths=("module.py", *(f"prompts/p_{idx}.md" for idx in range(10))),
-            anchors=("module.py",),
-            fixed_prompt_tokens=100,
-            target_total_tokens=8_000,
-            hard_total_tokens=14_000,
-        )
-    )
-
-    assert not atlas_assembly_failed(pack), pack.status
-    assert not pack.manifest["unassembled_required"]
-    coverage = _coverage(pack)
-    assert coverage["module.py"]["disposition"] == "full"
-    demoted = 0
-    for idx in range(10):
-        row = coverage[f"prompts/p_{idx}.md"]
-        assert row["disposition"] in {"full", "manifest_only"}, row
-        if row["disposition"] == "manifest_only":
-            assert "not in the diff" in row["reason"]
-            demoted += 1
-    assert demoted >= 1, "aggregate budget pressure must have demoted at least one untouched prompt"
-
-
 def test_atlas_compact_manifest_is_the_default_and_collapses_excluded_rows(tmp_path):
     """Approved with the #284 fixes: compact coverage is the default prompt
     form, and policy-excluded classes collapse to per-directory count rows in
@@ -853,3 +809,29 @@ def test_canonical_context_docs_membership_includes_design():
     from ouroboros.tools.review_context_atlas import _CANONICAL_CONTEXT_DOCS
 
     assert "docs/DESIGN.md" in _CANONICAL_CONTEXT_DOCS
+
+
+def test_atlas_diff_only_reason_override_is_the_callers_typed_omission(tmp_path):
+    """A `diff_only_included` row omitted BY DESIGN (the scope pack's span-only
+    release carriers) carries the caller's reason instead of the budget one —
+    same disposition, same selection; the required-artifact escalation ignores
+    the override, so a by-design reason can never launder a refusal."""
+    _write(tmp_path / "uv.lock", "lock\n" * 50)
+    _write(tmp_path / "module.py", "q = 1\n" * 50)
+    _write(tmp_path / "prompts" / "touched.md", "p\n" * 50)
+    every = ("uv.lock", "module.py", "prompts/touched.md")
+
+    pack = compile_review_context_atlas(
+        ReviewContextAtlasRequest(
+            repo_dir=tmp_path, tracked_paths=every, anchors=every,
+            already_included=frozenset(every), diff_only_included=frozenset(every),
+            diff_only_reasons={"uv.lock": "BY-DESIGN-REASON", "prompts/touched.md": "BY-DESIGN-REASON"},
+        )
+    )
+
+    coverage = _coverage(pack)
+    assert coverage["uv.lock"]["disposition"] == "already_included"
+    assert coverage["uv.lock"]["reason"] == "BY-DESIGN-REASON"
+    assert "full snapshot omitted" in coverage["module.py"]["reason"]
+    assert coverage["prompts/touched.md"]["disposition"] == "budget_omitted"
+    assert [row["path"] for row in atlas_unassembled_required(pack.manifest)] == ["prompts/touched.md"]

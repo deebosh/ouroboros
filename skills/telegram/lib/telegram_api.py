@@ -4,7 +4,7 @@ import base64
 import html as html_lib
 import mimetypes
 import re
-from typing import Any, Dict, Optional
+from typing import Any, BinaryIO, Dict, Optional
 
 import httpx
 
@@ -15,6 +15,8 @@ _TABLE_MAX_COLUMNS = 6
 _TABLE_MAX_CELL_CHARS = 24
 # Match Ouroboros's existing per-photo transfer ceiling for every Telegram download.
 _MAX_TELEGRAM_DOWNLOAD_BYTES = 10 * 1024 * 1024
+# Outgoing document transport is independent of this integration's inbound cap.
+_MAX_TELEGRAM_UPLOAD_BYTES = 50 * 1024 * 1024
 _NOT_MODIFIED_PREFIX = "bad request: message is not modified"
 
 
@@ -559,8 +561,9 @@ def _telegram_html_to_plain(value: str) -> str:
 
 
 class TelegramClient:
-    def __init__(self, token: str):
+    def __init__(self, token: str, *, trust_env: bool = False):
         self.token = str(token or "").strip()
+        self.trust_env = bool(trust_env)
         if not self.token:
             raise ValueError("TELEGRAM_BOT_TOKEN is missing")
         self.api_base = f"https://api.telegram.org/bot{self.token}"
@@ -570,7 +573,9 @@ class TelegramClient:
         method_text = str(method or "")
         safe_method = method_text if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", method_text) else "request"
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            # trust_env trades ambient-proxy/SSL_CERT isolation for a proxy-routed install's
+            # only egress; decided once by the caller via net_transport.env_proxies_configured.
+            async with httpx.AsyncClient(timeout=timeout, trust_env=self.trust_env) as client:
                 response = await client.post(f"{self.api_base}/{method_text}", data=data, files=files)
         except httpx.TimeoutException:
             raise TelegramTransportError(f"Telegram API timed out during {safe_method}.") from None
@@ -616,7 +621,7 @@ class TelegramClient:
 
     async def _download_bytes(self, file_path: str) -> bytes:
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, trust_env=self.trust_env) as client:
                 async with client.stream("GET", f"{self.file_base}/{file_path}") as response:
                     if response.status_code >= 400:
                         raise RuntimeError(f"Telegram file download returned HTTP {response.status_code}")
@@ -720,9 +725,9 @@ class TelegramClient:
         await self.call("sendPhoto", data=data, files=files, timeout=30)
 
     async def send_document(
-        self, chat_id: int, file_bytes: bytes, filename: str = "file", *, caption: str = "", parse_mode: str = "HTML"
+        self, chat_id: int, file_bytes: bytes | BinaryIO, filename: str = "file", *, caption: str = "", parse_mode: str = "HTML"
     ) -> None:
-        """Send an arbitrary document/file to a chat via sendDocument."""
+        """Send bytes or a borrowed binary file through the existing multipart call."""
         safe_name = (str(filename or "file").replace("\r", " ").replace("\n", " ").strip() or "file")
         files = {"document": (safe_name, file_bytes, "application/octet-stream")}
         formatted = markdown_to_telegram_html(caption) if (caption and parse_mode == "HTML") else caption
@@ -736,7 +741,7 @@ class TelegramClient:
     async def send_audio(
         self,
         chat_id: int,
-        file_bytes: bytes,
+        file_bytes: bytes | BinaryIO,
         filename: str,
         *,
         caption: str = "",
@@ -756,19 +761,23 @@ class TelegramClient:
 
     async def send_message_with_inline_keyboard(
         self, chat_id: int, text: str, keyboard: list[list[dict]], parse_mode: str = "HTML"
-    ) -> None:
-        """Send a message with an inline keyboard (list of button rows)."""
+    ) -> int:
+        """Send a message with an inline keyboard (list of button rows); return its message id (0 if unknown)."""
         import json as _json
         reply_markup = _json.dumps({"inline_keyboard": keyboard})
         formatted = markdown_to_telegram_html(text) if parse_mode == "HTML" else text
         data = {"chat_id": str(chat_id), "text": formatted, "reply_markup": reply_markup}
         if parse_mode:
             data["parse_mode"] = parse_mode
-        await self.call(
+        payload = await self.call(
             "sendMessage",
             data=data,
             timeout=20,
         )
+        try:
+            return int(((payload or {}).get("result") or {}).get("message_id") or 0)
+        except (AttributeError, TypeError, ValueError):
+            return 0
 
     async def answer_callback_query(self, callback_query_id: str, *, text: str = "") -> None:
         """Acknowledge a callback query from an inline button press."""

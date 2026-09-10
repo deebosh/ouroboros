@@ -14,6 +14,7 @@ import types
 from pathlib import Path
 
 import pytest
+from tests._typed_guard_shared import _shell_guard_text
 
 PY = sys.executable or "python3"  # portable interpreter for cross-platform check commands
 
@@ -362,7 +363,7 @@ def test_artifact_observation_reconciliation_clears_the_red_nudge(tmp_path, monk
         for receipt in receipts:
             append_verification_receipt(drive, "t", receipt)
         return loop_mod._maybe_inject_finalization_nudges(
-            SimpleNamespace(_ctx=SimpleNamespace()), drive, "t",
+            SimpleNamespace(_ctx=SimpleNamespace(drive_root=drive)), drive, "t",
             {"reasoning_notes": [], "tool_calls": []}, "answer", [], lambda *_: None,
         )
 
@@ -532,7 +533,7 @@ def test_red_verification_nudge_one_shot_and_before_receipt_absent(monkeypatch):
     monkeypatch.setattr(L, "_skill_finalization_message", lambda *a, **k: "")
     dr = Path(tempfile.mkdtemp())
     O.append_verification_receipt(dr, "redt", {"status": "fail", "check": "pytest", "returncode": 1})
-    ctx = _t.SimpleNamespace(task_contract={}, task_metadata={})
+    ctx = _t.SimpleNamespace(task_contract={}, task_metadata={}, drive_root=dr)
     tools = _t.SimpleNamespace(_ctx=ctx)
     # a turn WITH reviewable effects + a red receipt: BOTH the red gate and the FR3 gate qualify.
     trace = {"reasoning_notes": [], "tool_calls": [{"tool": "commit_reviewed", "status": "ok"}]}
@@ -684,10 +685,10 @@ def test_verify_and_record_check_is_shell_guarded_against_subagent_secret_read()
 
     reg = ToolRegistry(repo_dir=".", drive_root=tempfile.mkdtemp())
     reg._ctx.task_constraint = TaskConstraint(mode="acting_subagent", surface="external_workspace", write_root=tempfile.mkdtemp())
-    mapped = process_shell_guard_args("verify_and_record", {"check": "cat data/settings.json", "cwd": ""})
-    # v6.51.0: normalized via the SSOT (non-login `sh -c`); the guard still inspects the inner command.
-    assert mapped["cmd"] == ["sh", "-c", "cat data/settings.json"]
-    block = reg._run_shell_safety_check(mapped, "advanced")
+    mapped = process_shell_guard_args("verify_and_record", {"check": ["cat", str(Path(reg._ctx.drive_root) / "settings.json")], "cwd": ""})
+    # The shared process guard sees the exact physical path on every platform.
+    assert mapped["cmd"] == ["cat", str(Path(reg._ctx.drive_root) / "settings.json")]
+    block = _shell_guard_text(reg, mapped, "advanced")
     assert block and "SECRET" in block.upper()
 
 

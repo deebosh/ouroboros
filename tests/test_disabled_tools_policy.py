@@ -136,6 +136,7 @@ def test_registry_hides_and_blocks_disabled_tools(tmp_path, monkeypatch):
 
 
 def test_registry_hides_missing_credential_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr("ouroboros.tools.github.github_cli_configured", lambda: False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -217,7 +218,7 @@ def test_registry_arg_aliases_and_public_tool_arg_errors(tmp_path):
     result = reg.execute("commit_reviewed", {"commit_message": "x", "skip_advisory_pre_review": True})
     assert "TOOL_ARG_ERROR (commit_reviewed)" in result
     assert "skip_advisory_review" in result
-    assert "skip_advisory_pre_review" not in result
+    assert "unsupported argument(s): skip_advisory_pre_review" in result
 
     result = reg.execute("list_skills", {"foo": "bar"})
     assert "TOOL_ARG_ERROR (list_skills)" in result

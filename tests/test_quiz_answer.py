@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import types
 
+import pytest
 
 from ouroboros.owner_quiz import (
     STATE_ANSWERED,
@@ -105,7 +106,7 @@ def test_task_done_seam_reconciles_and_broadcasts(tmp_path, monkeypatch):
     frames = []
 
     class _Bridge:
-        def send_quiz_state(self, quiz_id, task_id, state, answered_index=None, chat_id=0):
+        def send_quiz_state(self, quiz_id, task_id, state, answered_index=None, chat_id=0, comment=None):
             frames.append((quiz_id, task_id, state))
 
     import supervisor.message_bus as mb
@@ -152,7 +153,7 @@ def test_ingress_answers_a_live_quiz_end_to_end(tmp_path, monkeypatch):
     frames = []
 
     class _Bridge:
-        def send_quiz_state(self, quiz_id, task_id, state, answered_index=None, chat_id=0):
+        def send_quiz_state(self, quiz_id, task_id, state, answered_index=None, chat_id=0, comment=None):
             frames.append((quiz_id, task_id, state, answered_index))
 
     import supervisor.message_bus as mb
@@ -298,11 +299,12 @@ def _escalate(ctx, **kw):
     from ouroboros.tools.core import _escalate as impl
 
     return impl(ctx, kw.pop("question"), kw.pop("options"),
-                kw.pop("stake", ""), kw.pop("assumption", ""))
+                kw.pop("stake", ""), kw.pop("assumption", ""), **kw)
 
 
-def test_escalate_root_records_projection_and_emits_quiz(tmp_path):
-    ctx = _tool_ctx(tmp_path)
+@pytest.mark.parametrize("role", ["", "root"])
+def test_escalate_root_records_projection_and_emits_quiz(tmp_path, role):
+    ctx = _tool_ctx(tmp_path, role=role)
     out = _escalate(ctx, question="Which db?", options=["sqlite", "postgres"],
                     assumption="sqlite meanwhile")
     assert out.startswith("OK: quiz ")
@@ -314,6 +316,26 @@ def test_escalate_root_records_projection_and_emits_quiz(tmp_path):
     states = quiz_states(tmp_path, "root-1")
     assert list(states.values())[0]["state"] == STATE_OPEN
     assert states[evt["quiz_id"]]["options"] == ["sqlite", "postgres"]
+
+
+def test_required_root_question_records_wait_without_default_answer(tmp_path):
+    ctx = _tool_ctx(tmp_path, role="root")
+    ctx.owner_wait_callback = lambda *_: None
+    result = _escalate(ctx, question="Which destination?", options=["A", "B"],
+                       wait_for_answer=True)
+    assert result.startswith("OK: quiz")
+    assert ctx._owner_wait_requested
+    event = ctx.pending_events[0]
+    assert event["wait_for_answer"] is True and event["assumption"] == ""
+    assert quiz_states(tmp_path, "root-1")[ctx._owner_wait_requested]["wait_for_answer"] is True
+
+
+def test_required_question_refuses_unaddressable_machine_chat(tmp_path):
+    ctx = _tool_ctx(tmp_path, role="root", chat_id=-1)
+    ctx.owner_wait_callback = lambda *_: None
+    result = _escalate(ctx, question="Which?", options=["A", "B"], wait_for_answer=True)
+    assert "no owner question delivery" in result
+    assert not ctx.pending_events and not quiz_states(tmp_path, "root-1")
 
 
 def test_escalate_subagent_writes_parent_mailbox_frame(tmp_path, monkeypatch):
@@ -607,8 +629,8 @@ def test_own_answer_needs_no_option_index(tmp_path, monkeypatch):
     frames = []
 
     class _Bridge:
-        def send_quiz_state(self, quiz_id, task_id, state, answered_index=None, chat_id=0):
-            frames.append((quiz_id, state, answered_index))
+        def send_quiz_state(self, quiz_id, task_id, state, answered_index=None, chat_id=0, comment=None):
+            frames.append((quiz_id, state, answered_index, comment))
 
     import supervisor.message_bus as mb
 
@@ -620,7 +642,9 @@ def test_own_answer_needs_no_option_index(tmp_path, monkeypatch):
     body = resp.json()
     assert body["state"] == "answered"
     assert "answered_index" not in body  # absent, never fabricated
-    assert frames == [("q1", "answered", None)]
+    # #471: the live frame carries the recorded comment so the open card can
+    # render `Owner's answer:` exactly as the replayed one does.
+    assert frames == [("q1", "answered", None, "neither — use duckdb")]
 
     block = quiz_states(tmp_path, "task-1")["q1"]
     assert block["state"] == STATE_ANSWERED
@@ -754,3 +778,45 @@ def test_escalate_walks_past_a_settled_parent_to_the_live_ancestor(tmp_path, mon
     out = _escalate(ctx, question="?", options=["a", "b"], assumption="a")
     assert out.startswith("⚠️ ESCALATE_PARENT_SETTLED")
     assert "no live ancestor" in out
+
+
+def test_projection_refuses_foreign_schema_and_stamps_its_own_write(tmp_path):
+    """ABI-2 (audit #16-5): the quiz writer shares the hurry guard — an
+    unstamped pre-upgrade row is stamped on write, and a row stamped by another
+    schema is refused byte-untouched."""
+    import pytest
+
+    from ouroboros.contracts.schema_versions import SCHEMA_VERSION_KEY
+    from ouroboros.task_result_schema import TASK_RESULT_SCHEMA_VERSION
+
+    path = _result_path(tmp_path, "t-schema")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"status": "running"}), encoding="utf-8")
+    record_asked(tmp_path, "t-schema", quiz_id="q1", question="?", options=["A", "B"])
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row[SCHEMA_VERSION_KEY] == TASK_RESULT_SCHEMA_VERSION
+    assert "q1" in row["owner_quiz"] and row["status"] == "running"
+
+    foreign = {"status": "running", SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION + 1}
+    path.write_text(json.dumps(foreign), encoding="utf-8")
+    with pytest.raises(ValueError, match="TASK_RESULT_SCHEMA_REFUSED"):
+        record_asked(tmp_path, "t-schema", quiz_id="q2", question="?", options=["A"])
+    assert json.loads(path.read_text(encoding="utf-8")) == foreign
+
+
+def test_quiz_state_frame_carries_the_comment_only_when_recorded():
+    """#471: `send_quiz_state` puts the owner's free-text answer on the live
+    `quiz_state` frame when one was recorded and leaves the key absent
+    otherwise (an option-only answer, an expiry, a supersede)."""
+    from supervisor.message_bus import LocalChatBridge
+
+    frames = []
+    bridge = LocalChatBridge.__new__(LocalChatBridge)
+    bridge._broadcast_fn = frames.append
+    bridge.send_quiz_state("q1", "t1", "answered", answered_index=1)
+    bridge.send_quiz_state("q1", "t1", "answered", comment="neither — use duckdb")
+    bridge.send_quiz_state("q1", "t1", "expired_terminal", comment="")
+    assert [("comment" in f, f.get("comment")) for f in frames] == [
+        (False, None), (True, "neither — use duckdb"), (False, None),
+    ]
+    assert frames[0]["answered_index"] == 1 and "answered_index" not in frames[1]

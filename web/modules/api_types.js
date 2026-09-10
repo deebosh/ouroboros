@@ -36,6 +36,8 @@
 
 /**
  * @typedef {Object} ActiveDirectTurn
+ * @property {Object.<string,Object>=} model_waits
+ * @property {number=} task_attempt
  * @property {string} activity_id
  * @property {number} chat_id
  * @property {string} project_id
@@ -47,6 +49,8 @@
 
 /**
  * @typedef {Object} ActiveChatActivity
+ * @property {Object.<string,Object>=} model_waits
+ * @property {number=} task_attempt
  * @property {string} activity_id
  * @property {number} chat_id
  * @property {string} project_id
@@ -186,6 +190,19 @@
  */
 
 /**
+ * 503 from an owner settings write whose body did not answer within its bound
+ * (twice OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC): the body keeps running
+ * in its server thread, so whether the bytes landed is UNKNOWN — `saved` is
+ * null, neither true nor false. Reload settings to see what landed instead of
+ * re-saving blindly. Shared by POST /api/settings, the owner endpoints and
+ * POST /api/onboarding/complete (the wizard offers "Check status" on it).
+ * @typedef {Object} SettingsSaveTimeoutResponse
+ * @property {string} error
+ * @property {string} code  // settings_save_timeout
+ * @property {null} saved
+ */
+
+/**
  * 503 from POST /api/onboarding/complete: NOTHING was persisted, the wizard
  * stays open, and `can_skip` means "finish without agent defaults" will work.
  * @typedef {Object} OnboardingPresetFailureResponse
@@ -224,6 +241,8 @@
  * @property {boolean=} markdown
  * @property {boolean=} is_progress
  * @property {string=} task_id
+ * @property {Object=} origin_message_ref
+ *   Host-captured inbound identity for a correlated operation's terminal reply.
  * @property {boolean=} ephemeral_decision
  * @property {string=} task_phase
  *   "finalizing" on a root's early final answer: post-task synthesis still
@@ -232,7 +251,13 @@
  *   Typed terminal fact on a frame that IS the turn's conclusion (stamped on
  *   direct/ephemeral finals and the direct error branch).
  * @property {string=} task_incident
+ * @property {string=} cancel_physical_task_id
+ *   A cancellation fault names the physical task it could not settle when that
+ *   differs from the displayed task id.
  * @property {string=} toast_once
+ * @property {string=} toast_tone
+ *   The incident's valence for the one-shot toast (warn/ok/error); absent =
+ *   the alarm tone.
  * @property {boolean=} task_id_pending
  *   X3: a repair receipt whose managed task id does not exist yet (minted at
  *   promotion) — typed truth instead of an invented id.
@@ -283,17 +308,17 @@
  * @property {string=} status
  * @property {boolean=} cancelable
  *   v6.82 (P5): host-attested — this frame's task is a supervisor-queue task that
- *   POST /api/tasks/{id}/cancel can force-cancel (never set for direct-chat turns).
- * @property {?number=} cost_usd
+ *   POST /api/tasks/{id}/cancel can force-cancel: a lineage-resolved pooled root or
+ *   the live in-process direct-chat turn (stopped cooperatively through the same
+ *   ownership seam); never a subagent frame or an ephemeral decision turn.
  * @property {?number=} accounted_upper_bound_usd
- *   C2: the additive HONEST name for cost_usd — an accounted upper bound, not a
- *   settled receipt. Same value as the deprecated alias, null when unknown.
+ *   C2: an accounted upper bound, not a settled receipt; null when unknown.
+ *   (ABI-3: the deprecated `cost_usd` alias is removed from the contract.)
  * @property {?number=} accounted_upper_bound_usd_with_children
- *   C2: honest name for cost_usd_with_children (same value, null when unknown).
+ *   C2: subtree upper bound (formerly aliased `cost_usd_with_children`); null when unknown.
  * @property {"available"|"unavailable"=} cost_accounting_status
  * @property {string=} cost_accounting_error
  * @property {boolean=} cost_final
- * @property {?number=} cost_usd_with_children
  * @property {boolean=} cost_with_children_partial
  * @property {?number=} reserved_usd
  * @property {?number=} unresolved_upper_bound_usd
@@ -334,7 +359,6 @@
  * @property {string=} sender_session_id
  * @property {string=} client_message_id
  * @property {Object=} transport
- * @property {number=} telegram_chat_id
  * @property {string=} system_type
  * @property {string=} target_label
  * @property {string=} project_id
@@ -374,7 +398,6 @@
  * @property {number=} chat_id
  * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
- * @property {number=} telegram_chat_id
  */
 
 /**
@@ -396,7 +419,6 @@
  * @property {number=} chat_id
  * @property {string=} task_id
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
- * @property {number=} telegram_chat_id
  */
 
 /**
@@ -433,6 +455,7 @@
  * @property {QuizOption[]} options
  * @property {string} stake
  * @property {string} assumption
+ * @property {boolean=} wait_for_answer
  * @property {string} state
  * @property {string} ts
  * @property {number=} answered_index
@@ -454,26 +477,40 @@
  * @property {string} state
  * @property {string} ts
  * @property {number=} answered_index
+ * @property {string=} comment
+ *   The owner's recorded free-text answer, when one was recorded.
  * @property {number=} chat_id
  */
 
 /**
  * POST /api/decisions body — the ONE answer ingress for owner decision cards
- * (decision families quiz:/routing:/interaction:). request_id is the
+ * (decision families quiz:/routing:/interaction:/model_wait:). request_id is the
  * idempotency key; a replay returns the recorded confirmation. option_index is
- * optional for the quiz family only: an owner who takes none of the offered
- * options sends a non-empty comment and no index.
+ * optional for a quiz free answer and for typed model_wait actions. A quiz
+ * free answer sends a non-empty comment; model_wait sends revision and action.
  * @typedef {Object} DecisionRequest
  * @property {string} request_id
  * @property {string} decision_id
  * @property {number=} option_index
  * @property {string=} comment
+ * @property {number=} revision
+ * @property {string=} action
+ * @property {boolean=} auto_continue
+ * @property {string=} model
+ * @property {string=} credential_profile_id
+ * @property {boolean=} use_local
+ * @property {boolean=} persist_role
  */
 
 /**
  * Answer-ingress reply; 409 carries the card's truthful lifecycle state so a
  * late click settles the card instead of inviting retries.
  * @typedef {Object} DecisionResponse
+ * @property {string=} request_id
+ * @property {boolean=} applied
+ * @property {(boolean|null)=} saved
+ * @property {Object=} wait
+ * @property {string=} reason_code
  * @property {boolean=} ok
  * @property {string=} decision_id
  * @property {string=} state
@@ -498,6 +535,8 @@
  * @property {string} ts
  * @property {string=} caption
  * @property {string=} download_url
+ * @property {string=} download_url_compat
+ * @property {Object=} file_ref
  * @property {string=} content
  * @property {string=} source
  * @property {string=} sender_label
@@ -508,7 +547,6 @@
  * @property {string=} task_id
  * @property {number=} size_bytes
  * @property {boolean=} project_thread  // server-stamped: chat_id is a reserved Project thread; Main never adopts it even before projectChatIds learns the project
- * @property {number=} telegram_chat_id
  */
 
 /**
@@ -560,6 +598,12 @@
 /** Additive history fact: a project-owned Main mirror cannot grant cancel authority.
  * @typedef {Object} ProjectMirrorHistoryFields
  * @property {boolean=} project_mirror
+ */
+
+/** Additive /api/chat/history terminality projection.
+ * @typedef {Object} TaskOutcomeHistoryFields
+ * @property {"working"|"done"|"warn"|"error"|"cancelled"=} outcome_phase  // canonical display phase; "working" is not terminal
+ * @property {boolean=} outcome_final  // true only after the canonical task outcome settles; false marks a pre-finalization narrative
  */
 
 /**
@@ -658,6 +702,7 @@
  * @property {string} display_name
  * @property {string} path
  * @property {number} size
+ * @property {string=} sha256
  * @property {string} mime
  */
 
@@ -678,13 +723,6 @@
  * @typedef {Object} OwnerContextModeResponse
  * @property {boolean} ok
  * @property {string} context_mode
- */
-
-/**
- * @typedef {Object} OwnerScopeReviewFloorResponse
- * @property {boolean} ok
- * @property {string} scope_review_floor  // blocking_1m | advisory (v6.34.0, CW1)
- * @property {string} deprecation_notice  // v6.80.0: stored, but enforcement-inert
  */
 
 /**
@@ -720,6 +758,52 @@
  * @property {?{slug: string, version: string, content_hash: string, repository: string, pr_number: number, pr_url: string, published_at: string}=} published
  * @property {boolean=} published_malformed
  * @property {boolean=} identity_collision
+ * @property {string=} process
+ * @property {string=} server_reconcile
+ */
+
+/**
+ * @typedef {Object} SkillToggleResponse
+ * @property {string} skill
+ * @property {boolean} enabled
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
+ * @property {string=} process
+ * @property {string=} server_reconcile
+ */
+
+/**
+ * @typedef {Object} SkillReconcileResponse
+ * @property {string} skill
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
+ * @property {boolean} live_loaded
+ * @property {?string} load_error
+ * @property {string=} process
+ * @property {string=} server_reconcile
+ */
+
+/**
+ * One Widgets card from `GET /api/widgets` (`gateway/widgets.py::WidgetTab`).
+ * `revision` is the owning skill's live payload content hash — a change
+ * signature for the page, not an ETag or cache token. Frame geometry stays
+ * inside `render`.
+ * @typedef {Object} WidgetTab
+ * @property {string} key
+ * @property {string} skill
+ * @property {string} tab_id
+ * @property {string} title
+ * @property {string} icon
+ * @property {string} ws_prefix
+ * @property {Object} render
+ * @property {number} span
+ * @property {number} grid_span
+ * @property {string} revision
+ */
+
+/**
+ * @typedef {Object} WidgetsResponse
+ * @property {WidgetTab[]} ui_tabs
  */
 
 /**
@@ -767,6 +851,18 @@
  */
 
 /**
+ * @typedef {Object} SkillReviewResponse
+ * @property {string} skill
+ * @property {string} status
+ * @property {string=} extension_action
+ * @property {string=} extension_reason
+ * @property {string=} extension_process
+ * @property {string=} extension_server_reconcile
+ * @property {string|null=} extension_load_error
+ * @property {boolean|null=} extension_live_loaded
+ */
+
+/**
  * @typedef {Object} SkillGrantResponse
  * @property {boolean} ok
  * @property {string} skill
@@ -807,6 +903,7 @@
  * @property {string} description
  * @property {string=} task_id
  * @property {string=} type
+ * @property {string=} title Owner-facing run name; omitted, admission derives one from the description's first line.
  * @property {number=} chat_id
  * @property {number=} depth
  * @property {string=} session_id
@@ -843,6 +940,7 @@
  * @property {string=} reason_code
  * @property {string=} error
  * @property {AttachmentManifestEntry[]=} attachment_manifest
+ * @property {Object=} attachment_manifest_ref
  */
 
 /**
@@ -856,6 +954,9 @@
  * @property {string=} abs_path
  * @property {string=} mime
  * @property {boolean=} is_image
+ * @property {number=} size
+ * @property {string=} sha256
+ * @property {string=} rule
  */
 
 /**
@@ -868,6 +969,25 @@
  * @property {string=} ts
  * @property {string=} root
  * @property {Object=} data
+ * @property {string=} event_id
+ * @property {TaskEventCursor=} cursor
+ * @property {string=} reason
+ * @property {string=} error
+ */
+
+/**
+ * @typedef {Object} TaskEventCursor
+ * @property {number} v
+ * @property {number} seq
+ * @property {string} view
+ * @property {Object<string, Object<string, number>>} positions
+ */
+
+/**
+ * @typedef {Object} TaskEventsRequest
+ * @property {number} v
+ * @property {number=} wait
+ * @property {?TaskEventCursor=} cursor
  */
 
 /**
@@ -914,6 +1034,7 @@
  * intent is the SOFT stop ("finalize_then_cancel") — the UI shows
  * "Finalizing…" and offers the hard escalation; absent on immediate intents.
  * @typedef {Object} TaskDetailResponse
+ * @property {Object.<string,Object>=} model_waits
  * @property {TaskCostBreakdown=} cost_breakdown
  * @property {string=} cancel_state
  * @property {string=} cancel_reason
@@ -1119,12 +1240,11 @@
 /**
  * @typedef {Object} UiPreferencesResponse
  * @property {string[]} widget_order
+ * @property {Object.<string,'auto'|'manual'|'retain'>} widget_start_mode  // owner per-card launch-policy override, keyed "<skill>:<tab_id>"
  * @property {boolean} nested_subagents_expanded
  * @property {number} sidebar_width  // px; 0 = CSS default (v6.33.0)
  * @property {number} project_panel_width  // px; 0 = CSS default
  * @property {Object.<string,number>} project_seen_revision  // monotonic paint ACK
- * @property {Object.<string,string>} project_last_viewed  // deprecated accepted no-op
- * @property {Object.<string,boolean>} project_hidden  // deprecated accepted no-op
  * @property {boolean=} ok
  */
 
@@ -1202,10 +1322,31 @@
  * @property {?boolean} check_ok
  */
 
+/**
+ * The LLM-written update letter, delivered inside the ordinary
+ * `/api/update/status` and `/api/update/check` payloads as the additive
+ * `letter` key (absent or null when the install has none). It outlives the
+ * update it describes: `relation` says what the running checkout is to the
+ * letter's target, and the panel relabels the paragraph instead of deleting
+ * it.
+ *
+ * @typedef {Object} UpdateLetter
+ * @property {'ready'|'failed'} state
+ * @property {'pending'|'applied'|'superseded'|'other'} relation  offered now / already the running version / a newer target appeared after it was written / HEAD moved elsewhere
+ * @property {string} text  markdown, one short paragraph; may be empty when a failed write has no previous good letter
+ * @property {string} author_version  the Ouroboros version that wrote it
+ * @property {string} target_version  the version it describes
+ * @property {string} written_at  ISO 8601
+ * @property {''|'no_credentials'|'budget_exhausted'|'context_overflow'|'timeout'|'material_unavailable'|'output_truncated'|'provider_unavailable'|'empty_response'} error_kind
+ * @property {string} error_text  short, secret-free; empty when state is ready
+ * @property {{base_sha: string, target_sha: string, update_channel: string, target_ref: string}} key  the exact range the letter was written for
+ * @property {boolean} has_last_good  `text` is the previous good letter kept through a failed rewrite; `relation`, `key` and the provenance describe THAT letter, not the range that failed
+ */
+
 export const MAX_LINK_ACTIONS = 12;
 export const MAX_QUIZ_OPTIONS = 6;
 // Mirror of ouroboros/gateway/task_decision.py::_COMMENT_MAX — the ingress
 // REFUSES a longer comment (it is delivered verbatim, never truncated), so
 // the card must not offer to send one.
 export const MAX_DECISION_COMMENT = 2000;
-export const GATEWAY_CONTRACT_VERSION = '6.115.7';
+export const GATEWAY_CONTRACT_VERSION = '7.0.0';

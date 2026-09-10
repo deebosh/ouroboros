@@ -312,7 +312,8 @@ class TestHelperFunctions:
         captured = {}
 
         class FakeLlm:
-            def chat(self, *, messages, model, reasoning_effort, max_tokens):
+            def chat(self, *, messages, model, reasoning_effort, max_tokens, model_role=""):
+                assert model_role == "light"
                 captured["prompt"] = messages[0]["content"]
                 return {"content": "Friction was in repeated advisory runs."}, {"cost": 0}
 
@@ -343,7 +344,8 @@ class TestHelperFunctions:
         captured = {}
 
         class FakeLlm:
-            def chat(self, *, messages, model, reasoning_effort, max_tokens):
+            def chat(self, *, messages, model, reasoning_effort, max_tokens, model_role=""):
+                assert model_role == "light"
                 captured["prompt"] = messages[0]["content"]
                 return {"content": "Root cause was missing tests."}, {"cost": 0}
 
@@ -368,7 +370,8 @@ class TestHelperFunctions:
         captured = {}
 
         class FakeLlm:
-            def chat(self, *, messages, model, reasoning_effort, max_tokens):
+            def chat(self, *, messages, model, reasoning_effort, max_tokens, model_role=""):
+                assert model_role == "light"
                 captured["prompt"] = messages[0]["content"]
                 return {"content": "Reflection mentions tests_affected."}, {"cost": 0}
 

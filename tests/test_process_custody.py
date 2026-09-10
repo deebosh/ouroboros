@@ -46,9 +46,9 @@ _POPEN_ALLOWLIST = {
     "ouroboros/packaged_cli.py",          # user-facing CLI wrapper (foreground)
     "ouroboros/cli.py",                   # dev CLI (foreground)
     "ouroboros/server_control.py",        # restart exec path
-    "ouroboros/headless.py",              # waited synchronous child
+    "ouroboros/workspace_patch_capture.py",  # waited synchronous child
     "ouroboros/preflight_runner.py",      # waited hermetic pytest child
-    "ouroboros/tools/shell.py",           # bounded foreground commands (waited + tracked)
+    "ouroboros/tools/shell_process.py",   # bounded foreground commands (waited + tracked)
     "ouroboros/tools/skill_exec.py",      # bounded skill run (waited + tracked)
     "ouroboros/tools/skill_preflight.py", # waited preflight child
     "ouroboros/marketplace/isolated_deps.py",  # waited installer child
@@ -57,13 +57,25 @@ _POPEN_ALLOWLIST = {
     # so /panic's tracked-subprocess sweep can never observe it alive but
     # untracked (isolated_deps._run template).
     "ouroboros/claudexor_daemon.py",
-    "ouroboros/extension_process_runner.py",  # waited extension child
+    "ouroboros/extension_process_runner.py",  # waited calls and session-owned response streams
     "ouroboros/workspace_executor.py",    # custody write-through added at spawn
     "ouroboros/local_model.py",           # custody record added at spawn
     "ouroboros/extension_companion.py",   # custody write-through added at spawn
     "ouroboros/tools/services.py",        # routed through spawn_supervised
     "supervisor/update_merge.py",        # bounded pre-restart import/compile smoke
+    # ibl-978e5cd9258f leaf-split of update_merge.py: the same bounded
+    # pre-restart smoke child (waited via communicate(timeout), added to
+    # tools.shell._active_subprocesses under the lock, kill_process_tree on
+    # timeout). The allowlist entry did not follow the code at the split.
+    "supervisor/_update_smoke.py",
     "supervisor/git_ops.py",             # shared bounded Git/dependency helpers (waited + panic-tracked)
+    # v7 G1 split: sync_runtime_dependencies (the waited + panic-tracked pip
+    # child) moved into the checkout/reset leaf with its custody unchanged.
+    "supervisor/git_ops_reset.py",
+    # D34 carrier engine: short-lived bounded git plumbing (waited, own process
+    # group, whole-tree kill on timeout); kept self-contained so the standalone
+    # operator rebase helper can import the module without the runtime stack.
+    "supervisor/update_carriers.py",
     "ouroboros/colab_bootstrap.py",      # bounded Colab clone/fetch helper
 }
 
@@ -233,9 +245,9 @@ def test_update_quiesce_kills_service_group_that_outlives_leader(tmp_path, monke
     rewritten = []
     killed = []
     group_alive = {456: True}
-    monkeypatch.setattr(process_custody, "_read_ledger_strict", lambda _root: (True, [entry]))
+    assert process_custody.append_jsonl(ledger_path(tmp_path), entry)
     monkeypatch.setattr(process_custody, "_fingerprint_matches", lambda _entry: False)
-    monkeypatch.setattr(process_custody, "process_group_is_alive", lambda pgid: group_alive.get(pgid, False))
+    monkeypatch.setattr(process_custody, "process_group_has_live_members", lambda pgid: group_alive.get(pgid, False))
     monkeypatch.setattr(
         process_custody,
         "kill_process_group_id",
@@ -244,7 +256,7 @@ def test_update_quiesce_kills_service_group_that_outlives_leader(tmp_path, monke
     monkeypatch.setattr(
         process_custody,
         "_rewrite_ledger",
-        lambda _root, entries: rewritten.extend(entries),
+        lambda _root, entries, **_kw: rewritten.extend(entries),
     )
 
     ok, blockers = process_custody.quiesce_custodied_services(tmp_path)
@@ -468,6 +480,60 @@ def test_lifeline_kills_child_when_parent_dies(tmp_path):
     except ProcessLookupError:
         return
     raise AssertionError("child outlived dead parent despite lifeline")
+
+
+def _process_gone(pid: int) -> bool:
+    """True once ``pid`` is dead — an unreaped zombie counts as dead too."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return not state.strip() or state.strip().startswith("Z")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="lifeline is POSIX-only")
+@pytest.mark.parametrize("start_method", ["forkserver", "spawn"])
+def test_lifeline_fires_on_supervisor_death_under_every_start_method(tmp_path, start_method):
+    """The lifeline watches the SUPERVISOR, not the immediate parent: under forkserver
+    the parent is the forkserver process, which outlives a SIGKILLed supervisor for as
+    long as any worker holds its alive pipe, so a ppid watch never fires and the orphan
+    would keep running LLM rounds until the next boot."""
+    from tests._shared import reap_test_process_group
+
+    script = tmp_path / "supervisor.py"
+    script.write_text(
+        "import multiprocessing as mp, pathlib, sys, time\n"
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        "def child(armed):\n"
+        "    from ouroboros.process_custody import start_parent_lifeline\n"
+        "    start_parent_lifeline(poll_sec=0.2, label='test')\n"
+        "    pathlib.Path(armed).write_text('armed')\n"
+        "    time.sleep(60)\n"
+        "if __name__ == '__main__':\n"
+        f"    proc = mp.get_context({start_method!r}).Process(target=child, args=(sys.argv[2],))\n"
+        "    proc.start()\n"
+        "    pathlib.Path(sys.argv[1]).write_text(str(proc.pid))\n"
+        "    time.sleep(60)\n"
+    )
+    pid_file, armed = tmp_path / "child_pid", tmp_path / "armed"
+    # Own session: the lifeline's group-kill can only ever hit this tree, and the
+    # cleanup census below also covers the forkserver/resource-tracker helpers.
+    supervisor = subprocess.Popen([sys.executable, str(script), str(pid_file), str(armed)], start_new_session=True)
+    try:
+        deadline = time.time() + 60
+        while not armed.exists() and supervisor.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert armed.exists(), "child never armed its lifeline"
+        child_pid = int(pid_file.read_text())
+        supervisor.kill()
+        supervisor.wait(timeout=10)
+        deadline = time.time() + 15
+        while time.time() < deadline and not _process_gone(child_pid):
+            time.sleep(0.2)
+        assert _process_gone(child_pid), f"{start_method} child outlived the dead supervisor"
+    finally:
+        reap_test_process_group(supervisor)
 
 
 # --- NW-10: custody session-id adoption + keep-service sparing ---
@@ -864,8 +930,8 @@ def test_start_time_match_matrix(tmp_path, monkeypatch, live, recorded, expected
 def test_reaper_skips_the_fingerprint_for_live_same_session_rows(tmp_path, monkeypatch, purpose):
     """A live same-session session row is kept either way, so the `ps` is pure cost.
 
-    The counter is the assertion: worker-pool members, the SyncManager, the claudexor
-    daemon, the local-model server and keep-services are ALL scope="session", so this is
+    The counter is the assertion: worker-pool members, the SyncManager, the
+    local-model server and keep-services are ALL scope="session", so this is
     the hot majority of the ledger on every 600s tick and startup sweep.
     """
     calls = []
@@ -903,14 +969,14 @@ def test_reaper_keeps_dead_leader_session_service_with_a_live_group(tmp_path, mo
         "fingerprint": {"start_time": "gone", "cmd_sha256": "gone"},
     }
     rewritten = []
-    monkeypatch.setattr(process_custody, "_read_ledger", lambda _root: [entry])
+    assert process_custody.append_jsonl(ledger_path(tmp_path), entry)
     monkeypatch.setattr(process_custody, "pid_is_alive", lambda _pid: False)  # leader is dead
-    monkeypatch.setattr(process_custody, "process_group_is_alive", lambda pgid: pgid == 456)
+    monkeypatch.setattr(process_custody, "process_group_has_live_members", lambda pgid: pgid == 456)
     monkeypatch.setattr(
         process_custody, "kill_process_group_id",
         lambda pgid: pytest.fail(f"a surviving service group must not be killed (pgid={pgid})"),
     )
-    monkeypatch.setattr(process_custody, "_rewrite_ledger", lambda _root, entries: rewritten.extend(entries))
+    monkeypatch.setattr(process_custody, "_rewrite_ledger", lambda _root, entries, **_kw: rewritten.extend(entries))
 
     assert reap_orphaned_processes(tmp_path) == []
     assert rewritten == [entry], "the dead-leader row must survive on its group evidence"

@@ -44,7 +44,15 @@ def _restore_server_pid():
 
 def _start_sleepy(supervisor: CompanionSupervisor, tmp_path: pathlib.Path,
                   skill_name: str = "demo", name: str = "sleepy",
-                  seconds: int = 30) -> CompanionDescriptor:
+                  seconds: int = 30,
+                  restart_policy: str = "never") -> CompanionDescriptor:
+    # restart_policy defaults to "never": these tests kill the process and
+    # assert it STAYS dead (recovery is then driven explicitly via
+    # supervisor.restart()). With the production default "on_failure" the
+    # monitor auto-respawns 0.5s after the kill -9 (non-zero returncode),
+    # which races _wait_until_dead + the persisted `alive` read and flakes
+    # under load (test_snapshot_persists_descriptor_after_monitor_exit,
+    # test_restart_dead_companion_respawns_from_persisted_snapshot).
     descriptor = CompanionDescriptor(
         skill_name=skill_name,
         name=name,
@@ -52,6 +60,7 @@ def _start_sleepy(supervisor: CompanionSupervisor, tmp_path: pathlib.Path,
                  f"import time; time.sleep({seconds})"],
         cwd=tmp_path,
         env={},
+        restart_policy=restart_policy,
     )
     assert supervisor.start(descriptor) is True
     return descriptor
@@ -72,6 +81,25 @@ def _wait_until_dead(supervisor: CompanionSupervisor, key: str, timeout: float =
                 return True
         time.sleep(0.05)
     return False
+
+
+def _wait_snapshot_alive_false(snapshot_path: pathlib.Path, key: str, timeout: float = 5.0) -> dict:
+    """Return the snapshot entry for ``key`` once the monitor has rewritten
+    the file with ``alive == False``. _monitor_runtime pops the runtime entry
+    (what _wait_until_dead observes) a beat before it calls
+    _write_runtime_snapshot(), so a bare read can catch the pre-crash file."""
+    deadline = time.monotonic() + timeout
+    entry: dict = {}
+    while time.monotonic() < deadline:
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            snapshot = {}
+        entry = snapshot.get(key) or {}
+        if entry and entry.get("alive") is False:
+            return entry
+        time.sleep(0.05)
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -117,10 +145,9 @@ def test_restart_dead_companion_respawns_from_persisted_snapshot(tmp_path: pathl
     # The descriptor survives in the snapshot as ``alive=False``.
     snapshot_path = tmp_path / "state" / "extension_companions.json"
     assert snapshot_path.exists()
-    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-    assert "demo:sleepy" in snapshot
-    assert snapshot["demo:sleepy"]["alive"] is False
-    assert snapshot["demo:sleepy"]["command"]  # descriptor fields present
+    entry = _wait_snapshot_alive_false(snapshot_path, "demo:sleepy")
+    assert entry.get("alive") is False
+    assert entry["command"]  # descriptor fields present
 
     result = supervisor.restart("demo", "sleepy", reason="recover from crash")
 
@@ -253,11 +280,12 @@ def test_snapshot_persists_descriptor_after_monitor_exit(tmp_path: pathlib.Path)
 
     # After the monitor popped the runtime entry, the snapshot still carries
     # the descriptor (with alive=False).
-    snapshot = json.loads((tmp_path / "state" / "extension_companions.json").read_text(encoding="utf-8"))
-    assert "demo:sleepy" in snapshot
-    assert snapshot["demo:sleepy"]["alive"] is False
-    assert snapshot["demo:sleepy"]["command"]
-    assert snapshot["demo:sleepy"]["cwd"]
+    entry = _wait_snapshot_alive_false(
+        tmp_path / "state" / "extension_companions.json", "demo:sleepy",
+    )
+    assert entry.get("alive") is False
+    assert entry["command"]
+    assert entry["cwd"]
 
     # And a live companion carries the same descriptor fields plus the live overlay.
     live_dir = tmp_path / "live"

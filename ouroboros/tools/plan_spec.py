@@ -9,20 +9,11 @@ it never interprets the domain. Everything here works identically for a code
 change, a slide deck, a literature review, a GUI flow or a trip plan — a spec
 with ZERO file paths is first-class.
 
-Bounds (every cut is disclosed, never silent — DEVELOPMENT.md "No silent
-truncation"; list bounds record an omission entry, string bounds go through the
-SSOT ``utils.truncate_review_artifact`` marker):
+Operative specs are normalized without size cuts: every chosen requirement
+participates in identity and reaches the current reviewer packet. Bounds below
+apply only to findings, reviewer-request memory, and historical/display views;
+those cuts retain their existing disclosures.
 
-* ``MAX_LIST_ITEMS`` — items kept per spec list (in_scope, non_goals,
-  invariants, decisions, deferred, affected_resources, evidence,
-  acceptance_claims); ``MAX_REJECTED_PER_DECISION`` — nested ``decision.rejected``.
-* ``MAX_ITEM_CHARS`` / ``MAX_GOAL_CHARS`` — per-string bounds (same 600-char
-  default as ``task_contract._bounded_claim_text``).
-* ``MAX_FINDINGS_PER_SLOT`` is the rendered page size, never an authority or
-  aggregation cap; ``MAX_FINDING_TEXT_CHARS`` bounds each finding string.
-* ``PACKET_*_CHARS`` — reviewer-packet section bounds (objective, plan prose,
-  root exploration log; SPEC and prior cycles are bounded STRUCTURALLY by
-  ``bounded_json`` — whole items with disclosed counts + full-set hash).
 """
 
 from __future__ import annotations
@@ -39,20 +30,16 @@ from ouroboros.tool_access import path_is_relative_to
 from ouroboros.triad_review import empty_array_is_verified_clean, extract_json_array
 from ouroboros.utils import truncate_review_artifact
 
+# Reviewer-request memory/attachment bounds, not limits on an operative spec.
 MAX_LIST_ITEMS = 40
-MAX_REJECTED_PER_DECISION = 8
 MAX_ITEM_CHARS = 600
-MAX_GOAL_CHARS = 2000
 MAX_FINDINGS_PER_SLOT = 32
 # Per-task `need_evidence` memory: reviewers' requests the host remembers (and, W3, attaches).
 # Bounded so the durable review state stays bounded whatever the panel asks for; a request past
-# the cap is demoted (never remembered), disclosed `need_evidence_memory_full`.
+# the cap stays a typed request but is not remembered, disclosed `need_evidence_memory_full`.
 MAX_NEED_EVIDENCE_MEMORY = 4 * MAX_LIST_ITEMS
 MAX_FINDING_TEXT_CHARS = 2000
-PACKET_OBJECTIVE_CHARS = 8_000
-PACKET_SPEC_CHARS = 120_000
 PACKET_PRIOR_FINDING_SUMMARY_CHARS = 400
-PACKET_PROSE_CHARS = 40_000
 PACKET_EXPLORATION_CHARS = 12_000
 PACKET_PRIOR_CYCLES_CHARS = 60_000
 
@@ -95,21 +82,13 @@ def _unique_id(candidate: str, seen: set[str]) -> str:
     return out
 
 
-def _cap_list(items: list, label: str, omissions: list[str], *, bound: int = MAX_LIST_ITEMS) -> list:
-    """Bound a list at ``bound`` and RECORD the cut (P1) — never a silent slice."""
-    if len(items) <= bound:
-        return items
-    omissions.append(f"{label}: {len(items)} items declared, kept the first {bound} (bound {bound})")
-    return items[:bound]
-
-
 def _is_scalar(value: Any) -> bool:
     """str/int/float are tolerated as text; bool is not (``True`` is not a spec item)."""
     return isinstance(value, (str, int, float)) and not isinstance(value, bool)
 
 
 def _string_list(raw: Any, label: str, errors: list[str], omissions: list[str]) -> list[str]:
-    """Tolerant string list: bare string → one item; blanks dropped; bounded with disclosure."""
+    """Tolerant complete string list: bare string → one item; blank drops disclosed."""
     if raw is None:
         return []
     items = [raw] if _is_scalar(raw) else raw
@@ -124,7 +103,7 @@ def _string_list(raw: Any, label: str, errors: list[str], omissions: list[str]) 
         if not _is_scalar(item):
             errors.append(f"{label}[{index}]: must be a string")
             continue
-        text = bounded_text(item, MAX_ITEM_CHARS)
+        text = str(item).strip()
         if text:
             out.append(text)
         else:
@@ -133,7 +112,7 @@ def _string_list(raw: Any, label: str, errors: list[str], omissions: list[str]) 
             blank += 1
     if blank:
         omissions.append(f"{label}: {blank} blank item(s) dropped")
-    return _cap_list(out, label, omissions)
+    return out
 
 
 def _object_list(raw: Any, label: str, text_key: str, errors: list[str]) -> list[dict]:
@@ -170,7 +149,6 @@ def _normalize_claims(raw: Any, errors: list[str], omissions: list[str], seen: s
             f"acceptance_claims: {dropped} item(s) dropped as empty/invalid by the "
             "task_contract acceptance-claims normalizer"
         )
-    claims = _cap_list(claims, "acceptance_claims", omissions)
     for index, claim in enumerate(claims, start=1):
         # Ids are HOST-MINTED positionally (claim_1..N) because they are the only valid
         # `breaks` targets a reviewer may name: a caller-chosen id could shadow another
@@ -186,9 +164,9 @@ def _normalize_claims(raw: Any, errors: list[str], omissions: list[str], seen: s
 
 def _normalize_decisions(raw: Any, errors: list[str], omissions: list[str], seen: set[str]) -> list[dict]:
     out: list[dict] = []
-    items = _cap_list(_object_list(raw, "decisions", "choice", errors), "decisions", omissions)
+    items = _object_list(raw, "decisions", "choice", errors)
     for index, item in enumerate(items, start=1):
-        choice = bounded_text(item.get("choice"), MAX_ITEM_CHARS)
+        choice = str(item.get("choice") or "").strip()
         if not choice:
             errors.append(f"decisions[{index - 1}]: choice is required")
             continue
@@ -197,20 +175,19 @@ def _normalize_decisions(raw: Any, errors: list[str], omissions: list[str], seen
             # id or move between cycles, and these ids are what a blocking finding names.
             "id": _unique_id(f"decision_{index}", seen),
             "choice": choice,
-            "rejected": _cap_list(
-                _string_list(item.get("rejected"), f"decisions[{index - 1}].rejected", errors, omissions),
-                f"decisions[{index - 1}].rejected", omissions, bound=MAX_REJECTED_PER_DECISION,
+            "rejected": _string_list(
+                item.get("rejected"), f"decisions[{index - 1}].rejected", errors, omissions,
             ),
-            "why": bounded_text(item.get("why"), MAX_ITEM_CHARS),
+            "why": str(item.get("why") or "").strip(),
         })
     return out
 
 
 def _normalize_deferred(raw: Any, errors: list[str], omissions: list[str], seen: set[str]) -> list[dict]:
     out: list[dict] = []
-    items = _cap_list(_object_list(raw, "deferred", "what", errors), "deferred", omissions)
+    items = _object_list(raw, "deferred", "what", errors)
     for index, item in enumerate(items, start=1):
-        what = bounded_text(item.get("what"), MAX_ITEM_CHARS)
+        what = str(item.get("what") or "").strip()
         if not what:
             errors.append(f"deferred[{index - 1}]: what is required")
             continue
@@ -219,7 +196,7 @@ def _normalize_deferred(raw: Any, errors: list[str], omissions: list[str], seen:
             # id or move between cycles, and these ids are what a blocking finding names.
             "id": _unique_id(f"deferred_{index}", seen),
             "what": what,
-            "why_safe_to_defer": bounded_text(item.get("why_safe_to_defer"), MAX_ITEM_CHARS),
+            "why_safe_to_defer": str(item.get("why_safe_to_defer") or "").strip(),
         })
     return out
 
@@ -228,9 +205,9 @@ def normalize_spec(raw: Mapping[str, Any] | None) -> tuple[dict, list[str]]:
     """Normalize a plan spec (plan §9.2 schema) → ``(spec, errors)``.
 
     Tolerant of strings-vs-dicts, mints stable ids (claim_N / invariant_N /
-    decision_N / deferred_N the declared id, when different, is kept beside it as `declared_id`), trims, and bounds
-    every list at ``MAX_LIST_ITEMS`` — the excess is RECORDED under
-    ``spec["normalization_omissions"]`` (P1), never silently dropped. Genuinely
+    decision_N / deferred_N; a differing declared claim id stays as `declared_id`),
+    trims edges, and preserves every operative string and list item. Empty/invalid
+    dropped claims and blank list items are disclosed in ``normalization_omissions``. Genuinely
     malformed input (missing goal, unknown field, wrong container type, decision
     without choice) yields typed error strings; on any error the returned spec
     is best-effort and NOT authoritative — the caller must refuse it.
@@ -245,7 +222,7 @@ def normalize_spec(raw: Mapping[str, Any] | None) -> tuple[dict, list[str]]:
     unknown = sorted(str(key) for key in raw if key not in _SPEC_KEYS)
     if unknown:
         errors.append("spec: unknown fields: " + ", ".join(unknown))
-    goal = bounded_text(raw.get("goal"), MAX_GOAL_CHARS) if isinstance(raw.get("goal"), str) else ""
+    goal = raw["goal"].strip() if isinstance(raw.get("goal"), str) else ""
     if not goal:
         errors.append(
             "goal: must be a string" if raw.get("goal") is not None and not isinstance(raw.get("goal"), str)
@@ -444,7 +421,6 @@ def _is_url(locator: str) -> bool:
 def _is_path_locator(locator: str) -> bool:
     return bool(locator) and not _is_url(locator) and not locator.startswith(_TASK_LOCATOR_PREFIX)
 
-
 def _resolve_locator_path(locator: str, root: pathlib.Path) -> tuple[Optional[pathlib.Path], str]:
     """Relative → under ``root``; absolute (or ``file://`` absolute) as-is. Returns
     ``(path, "")`` or ``(None, reason)`` — ``symlink_loop`` (RuntimeError from resolve) or
@@ -500,6 +476,7 @@ def resolve_constitutional(
     true. Returns ``(constitutional, note)`` — the note names the deciding
     locator for disclosure.
     """
+    from ouroboros.tools.plan_evidence import _split_selector
     system = pathlib.Path(system_repo_root).resolve(strict=False)
     active = pathlib.Path(active_root).resolve(strict=False)
     # Payload roots are supplied by the FROZEN skill-payload predicate
@@ -518,7 +495,7 @@ def resolve_constitutional(
             locator = str(raw or "").strip()
             if not _is_path_locator(locator):
                 continue
-            resolved, _reason = _resolve_locator_path(locator, active)
+            resolved, _reason = _resolve_locator_path(_split_selector(locator)[0], active)
             if resolved is None or any(_under(resolved, payload) for payload in payloads):
                 continue
             if resolved == system or _under(resolved, system):
@@ -530,14 +507,17 @@ def resolve_constitutional(
                 if label == "evidence" and not exists(resolved):
                     skipped.append(locator)
                     continue
+                # The locator is quoted VERBATIM (never ``repr``): the note is disclosure a
+                # reviewer copies back, and ``repr`` doubles every backslash of a Windows path.
                 return True, (
-                    f"constitutional: {label} locator {locator!r} resolves under the "
+                    f"constitutional: {label} locator '{locator}' resolves under the "
                     "Ouroboros system repository (structural fact)"
                 )
     if skipped:
+        listed = ", ".join(f"'{item}'" for item in skipped[:5])
         return False, (
             "not constitutional: the only system-repo locators declared are EVIDENCE paths that do "
-            f"not exist ({', '.join(repr(item) for item in skipped[:5])}) — declare them under "
+            f"not exist ({listed}) — declare them under "
             "affected_resources if the work will change them"
         )
     return False, "not constitutional: no declared locator resolves under the Ouroboros system repository"
@@ -578,7 +558,7 @@ _PLAN_FINDING_ELEMENT_SCHEMA = """\
   "id": "<short local id, e.g. f1>",
   "class": "blocking" | "note" | "need_evidence",
   "breaks": "<spec id — REQUIRED for blocking: goal | claim_N | invariant_N | decision_N | deferred_N>",
-  "locator": "<REQUIRED for need_evidence: the exact path / URL / task:<id> you need>",
+  "locator": "<REQUIRED for need_evidence: an absolute path, or one relative to the subject workspace root; add ::lines=A-B, ::bytes=A-B, ::tail=N or ::symbol=Name (.py only) for one range; task:<id> = a prior task's result; a URL may be named; the host never fetches it>",
   "summary": "<what is wrong or missing, concretely>",
   "recommendation": "<the smallest change to the SPEC that resolves it>"
 }"""
@@ -633,18 +613,19 @@ def validate_findings(
     never dropped — an ok slot must not launder its blocking finding away); a
     ``need_evidence`` locator already in ``seen_locators`` — the PER-TASK
     (cross-cycle) memory the caller persists in ``plan_review_state`` — or
-    repeated within this slot is DEMOTED to ``note`` (``need_evidence_repeat``):
-    the host never re-attaches it, but the finding stays in the aggregate so a
-    re-asked question cannot close the wave by disappearing; ids are
-    minted ``f{slot}_{n}`` when missing; the slot is capped at
+    repeated within this slot remains ``need_evidence`` with a
+    ``need_evidence_repeat`` disclosure: request memory does not grow, and the
+    agent still supplies its free disposition. A full request memory likewise
+    refuses only remembering another locator, not the request's meaning. Ids
+    are minted ``f{slot}_{n}`` when missing.
     Findings are never capped before aggregation. ``MAX_FINDINGS_PER_SLOT`` is
     retained as the rendered page size only. ``seen_after`` is the
     updated locator memory for the caller to persist; the input is not mutated.
     The engine validates the slots of ONE wave sequentially against the CUMULATIVE
     memory (it passes the running ``seen_after`` back in), so the per-task memory
     cap ``MAX_NEED_EVIDENCE_MEMORY`` is exact across slots; a second slot asking
-    for a locator the first already requested is a `need_evidence_repeat` note —
-    one request suffices, the wave stays open the same way.
+    for a locator the first already requested does not create a second remembered
+    locator; neither repetition nor a memory bound silently closes the wave.
     """
     ids = frozenset(str(s) for s in spec_ids)
     seen = set(str(s) for s in seen_locators)
@@ -682,15 +663,11 @@ def validate_findings(
                 klass = "note"
             elif locator not in seen and len(seen) >= MAX_NEED_EVIDENCE_MEMORY:
                 disclosures.append(f"need_evidence_memory_full:{fid}")
-                klass = "note"
             elif locator in seen:
-                # I-03: a repeat is DEMOTED, never dropped. Dropping it removed the finding from
-                # the aggregate, so a reviewer re-asking for evidence it still needs turned the
-                # wave GREEN and closed the gate. Demotion keeps the cost bound (never attached
-                # again, never blocking, no new fingerprint) while the wave stays open until the
-                # agent disposes of it.
+                # I-03: request deduplication is not a reviewer withdrawing its
+                # need. Keep the typed request for a free disposition; leaving
+                # seen unchanged preserves the attachment and paid-cycle bounds.
                 disclosures.append(f"need_evidence_repeat:{locator}")
-                klass = "note"
             else:
                 seen.add(locator)
         normalized.append({
@@ -807,14 +784,14 @@ def closure_after_disposition(
 ) -> dict:
     """The ONE closure table (F7) → ``{closed, open_ids, notes}``.
 
-    GREEN → closed. REVIEW_REQUIRED (only note/need_evidence) → closed when
-    every finding id carries a disposition (accept|reject|defer + rationale —
-    the disposition form as today, plan §7.2 A). REVISE_PLAN → NEVER closed by
+    GREEN → closed. Notes are optional advice, so a note-only REVIEW_REQUIRED
+    wave closes without dispositions. Need_evidence still requires a disposition
+    (accept|reject|defer + rationale). REVISE_PLAN → NEVER closed by
     disposition (blocking needs a changed spec → new cycle, or reject-with-
     rationale → next paid delta cycle). DEGRADED → not closable by disposition
     (rerun the wave). Advisory enforcement never flips ``closed``: the caller
     may proceed with the wave open under loud disclosure — this function only
-    reports. Control-line invariants (``loop_tool_execution
+    reports. Control-line invariants (``tools.plan_render
     ._parse_plan_review_control``): GREEN ⇒ closed, REVISE_PLAN ⇒ not closed.
     """
     verdict = str(aggregate or "").strip().upper()
@@ -852,7 +829,7 @@ def closure_after_disposition(
         # says — a single blocking finding below quorum surfaces as REVIEW_REQUIRED,
         # and closing it with a $0 disposition would be exactly the laundering the
         # height rule exists to prevent. It needs a changed spec or a paid delta cycle.
-        if blocking or fid not in valid:
+        if blocking or (finding.get("class") != "note" and fid not in valid):
             open_ids.append(fid)
     if verdict == "GREEN":
         closed = True

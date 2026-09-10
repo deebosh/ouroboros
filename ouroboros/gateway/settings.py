@@ -23,20 +23,24 @@ from ouroboros.config import ENDPOINT_AUTHORED_SETTINGS as _ENDPOINT_AUTHORED_SE
 from ouroboros.gateway._helpers import json_error, json_exception, request_drive_root
 from ouroboros.gateway.owner_settings import (
     CommitBoundary,
+    SettingsDocumentBusy,
     SettingsLockUnavailable,
     _CONTEXT_MODE_KEYS,
     _owner_audit,
     _owner_read_settings_raw,
+    _owner_update_settings,
     _owner_write_settings,
     settings_document_mutation,
     owner_write_guard,
     post_commit_failure_response,
+    settings_document_digest,
     unsaved_error,
 )
 from ouroboros.onboarding_wizard import build_onboarding_html
 from ouroboros.platform_layer import is_container_env
 from ouroboros.provider_models import MINIMAX_REGION_ENDPOINTS, resolve_minimax_base_url
 from ouroboros.secret_masking import (
+    MCP_RESPONSE_ONLY_FIELDS,
     is_custom_secret_setting_key,
     looks_masked_mcp_secret,
     looks_masked_settings_secret,
@@ -167,8 +171,7 @@ def _rehydrate_mcp_servers_payload(incoming: Any, current: Any) -> list:
     for entry in incoming:
         if not isinstance(entry, dict):
             continue
-        clone = dict(entry)
-        clone.pop("auth_configured", None)
+        clone = {key: value for key, value in entry.items() if key not in MCP_RESPONSE_ONLY_FIELDS}
         if clone.get("id"):
             clone["id"] = _mcp_canonical_id(clone.get("id"))
         token = str(clone.get("auth_token") or "")
@@ -206,15 +209,6 @@ _IMMEDIATE_KEYS = frozenset({
     "MCP_TOOL_TIMEOUT_SEC",
 })
 
-# Retired keys the settings document still carries: changing them has NO
-# effect at any point (supervisor/queue.py accepts them as typed no-ops).
-# Classifying them as immediate or next-task would both be lies; the save
-# reports them with an explicit "retired" warning instead.
-_RETIRED_NO_EFFECT_KEYS = frozenset({
-    "OUROBOROS_SOFT_TIMEOUT_SEC",
-    "OUROBOROS_HARD_TIMEOUT_SEC",
-})
-
 _RESTART_REQUIRED_KEYS = frozenset({
     "OUROBOROS_MAX_WORKERS",
     "OUROBOROS_SERVER_HOST",
@@ -249,26 +243,19 @@ def _classify_settings_changes(
     ]
 
 
-def _effect_buckets(all_changed: list, warnings: list) -> tuple:
+def _effect_buckets(all_changed: list) -> tuple:
     """Split changed keys into the honest effect buckets for the save response.
 
-    A retired key applies NEVER, so neither bucket may claim it — it is
-    reported through an explicit warning instead (#285).
+    Every key that reaches here applies at SOME point, so both buckets are
+    truthful claims (#285). A key a release retired cannot reach here at all:
+    the merge only walks SETTINGS_DEFAULTS, and load_settings strips retired
+    keys off disk — the RC auditor is what tells an upgrading install its
+    stored value is gone (scripts/rc_audit.py "retired-setting").
     """
-    retired_changed = sorted(k for k in all_changed if k in _RETIRED_NO_EFFECT_KEYS)
-    if retired_changed:
-        warnings.append(
-            "Retired setting(s) saved, but they no longer affect anything: "
-            + ", ".join(retired_changed)
-            + ". Task runtime is governed by OUROBOROS_TASK_IDLE_TIMEOUT_SEC "
-            "and OUROBOROS_TASK_ABS_CEILING_SEC."
-        )
     immediate_changed = [k for k in all_changed if k in _IMMEDIATE_KEYS]
     next_task_changed = [
         k for k in all_changed
-        if k not in _IMMEDIATE_KEYS
-        and k not in _RESTART_REQUIRED_KEYS
-        and k not in _RETIRED_NO_EFFECT_KEYS
+        if k not in _IMMEDIATE_KEYS and k not in _RESTART_REQUIRED_KEYS
     ]
     return immediate_changed, next_task_changed
 
@@ -304,12 +291,6 @@ def _merge_settings_payload(current: Dict[str, Any], body: Dict[str, Any]) -> Di
             # One-window false provenance tombstone. Generic settings never authors
             # context intent; the dedicated owner endpoint writes the pair atomically.
             "OUROBOROS_CONTEXT_MODE_AUTO_LOW",
-            # CW1 (v6.34.0): the scope-review floor is owner-only and flows ONLY through
-            # its dedicated audited endpoint (api_owner_scope_review_floor). Since v6.80.0
-            # the value is enforcement-inert — BIBLE P3 scope-review applicability follows
-            # the owner context mode — but the frozen contract surface and the owner-only
-            # write path stay, so a generic settings write still cannot author it.
-            "OUROBOROS_SCOPE_REVIEW_FLOOR",
             # v6.54.3: LLM-safety-supervisor coverage (full/light/off) is likewise an
             # immune-system control — a generic settings write must not lower it. It
             # flows ONLY through the dedicated audited owner endpoint
@@ -374,11 +355,11 @@ def _has_running_agent_tasks() -> bool:
     # can be invisible to one snapshot. The context-mode guard tolerates it —
     # the read races the supervisor thread with or without any settings lock.
     try:
-        from supervisor.workers import PENDING, RUNNING, _get_chat_agent
+        from supervisor.workers import PENDING, RUNNING
+        from supervisor.active_activity import get_direct_activity_registry
         if PENDING or RUNNING:
             return True
-        agent = _get_chat_agent()
-        return bool(getattr(agent, "_busy", False))
+        return bool(get_direct_activity_registry().snapshot())
     except Exception:
         return False
 
@@ -389,20 +370,62 @@ def _has_started_agent_tasks() -> bool:
     A queued-but-unstarted task re-reads settings in ``handle_task``, so warning
     that it "keeps the previous configuration" would be false; ``PENDING`` is
     deliberately excluded (unlike ``_has_running_agent_tasks``, whose callers
-    gate on any outstanding work). READ-ONLY on purpose: ``_get_chat_agent()``
-    CONSTRUCTS the agent (and inserts the canonical repo into ``sys.path``) —
-    an answer to "is anything started?" must never start something to find out.
-    Disclosed residual: a live EPHEMERAL turn (workers' local ephemeral agent)
-    is invisible here — it holds no reviewer/subagent stage this warning
-    guards, and reaching it read-only would require a new surface."""
+    gate on any outstanding work). Registry inspection includes native turns
+    without constructing an actor merely to answer a status question."""
     try:
         import supervisor.workers as _workers
         if _workers.RUNNING:
             return True
-        agent = getattr(_workers, "_chat_agent", None)
-        return bool(getattr(agent, "_busy", False))
+        from supervisor.active_activity import get_direct_activity_registry
+
+        return bool(get_direct_activity_registry().snapshot())
     except Exception:
         return False
+
+
+async def _run_settings_writer(fn: Any, context: Any, body: Any) -> JSONResponse:
+    """Run one settings WRITER endpoint body off the event loop, bounded.
+
+    Every writer serializes on the bounded in-process document lock
+    (``settings_document_mutation``); its typed refusal answers the same
+    503 ``settings_busy`` on every endpoint — the generic save, the four
+    single-decision endpoints and onboarding alike — never an untyped 500
+    from one of them while another answers honestly.
+
+    The INITIATING writer (onboarding completion included) is bounded by the same
+    contract the lock enforces on later writers (``OUROBOROS_SETTINGS_DOCUMENT_LOCK_TIMEOUT_SEC``):
+    one lock wait plus one held episode, each within that bound. A body wedged
+    in its post-commit effects (extension reload, remote configuration) is
+    abandoned to its uncancellable worker thread and the Save answers a typed
+    503 ``settings_save_timeout`` with ``saved: null`` — whether the bytes
+    landed is genuinely unknown then, so neither ``true`` nor ``false`` would
+    be honest. Later writers keep getting ``settings_busy`` meanwhile.
+    """
+    from ouroboros.config import get_settings_document_lock_timeout_sec
+
+    bound_sec = get_settings_document_lock_timeout_sec()
+    # The body runs in its own task so a timeout of the WAIT can be told apart from a
+    # TimeoutError raised BY the body (asyncio.TimeoutError is the builtin on 3.11+).
+    episode = asyncio.ensure_future(asyncio.to_thread(fn, context, body))
+    try:
+        return await asyncio.wait_for(asyncio.shield(episode), timeout=2 * bound_sec)
+    except SettingsDocumentBusy as exc:
+        return unsaved_error(str(exc), 503, code="settings_busy")
+    except (asyncio.TimeoutError, TimeoutError):
+        if episode.done():
+            # The body FINISHED: it raised (re-raised here as an ordinary failure), or its
+            # result landed in the tick the timer fired — ``wait_for`` abandons the shield one
+            # tick before reading it — and a finished save is answered, not thrown away.
+            return episode.result()
+        log.warning(
+            "Settings writer %s did not answer within %ss; its thread keeps running",
+            getattr(fn, "__name__", fn), 2 * bound_sec,
+        )
+        return json_error(
+            f"the settings save is still running in the server after {2 * bound_sec}s "
+            "and was left to finish on its own; reload Settings to see what landed",
+            503, code="settings_save_timeout", saved=None,
+        )
 
 
 @owner_write_guard
@@ -412,7 +435,7 @@ async def api_owner_runtime_mode(request: Request) -> JSONResponse:
     # Off the event loop, under the document lock (held inside): a slow
     # generic save must not be able to freeze the loop THROUGH this
     # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_runtime_mode_sync, request, body)
+    return await _run_settings_writer(_api_owner_runtime_mode_sync, request, body)
 
 
 def _api_owner_runtime_mode_sync(request: Request, body: Any) -> JSONResponse:
@@ -421,6 +444,9 @@ def _api_owner_runtime_mode_sync(request: Request, body: Any) -> JSONResponse:
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
     if raw_mode not in set(_config.VALID_RUNTIME_MODES):
         return unsaved_error("'mode' must be one of: light, advanced, pro", 400)
+    # The digest is taken BEFORE the read that decides, so a write landing between the
+    # two is refused rather than silently reverted by this request's write.
+    digest = settings_document_digest()
     old_settings = _owner_read_settings_raw()
     previous_mode = _config.normalize_runtime_mode(old_settings.get("OUROBOROS_RUNTIME_MODE"))
     active_mode = _config.get_runtime_mode()
@@ -430,13 +456,17 @@ def _api_owner_runtime_mode_sync(request: Request, body: Any) -> JSONResponse:
         # A no-change POST must not rewrite settings.json: the rewrite raced a
         # concurrent generic save (last-writer-wins over a stale read) for zero
         # information gain. The audit and the response stay identical either way.
-        # Re-read under the document lock: the pre-lock read above only decided
-        # whether to write at all, and a threaded generic save may be mid
-        # read-merge-write on the same document.
-        with settings_document_mutation():
-            current = dict(_owner_read_settings_raw())
+        def _set_runtime_mode(current: Dict[str, Any]) -> Dict[str, Any]:
             current["OUROBOROS_RUNTIME_MODE"] = next_mode
-            _owner_write_settings(current)
+            return current
+
+        # Under the seam-wide document lock, because a threaded generic save may
+        # be mid read-merge-write on the same document. The transform's own read
+        # happens inside the settings lock, so there is no second stale read to
+        # refresh here; the digest keeps this request's PRE-lock decision bound to
+        # the document that decision was taken from.
+        with settings_document_mutation():
+            _owner_update_settings(_set_runtime_mode, digest)
     _owner_audit(
         request,
         "runtime_mode",
@@ -461,21 +491,28 @@ async def api_owner_auto_grant(request: Request) -> JSONResponse:
     # Off the event loop, under the document lock (held inside): a slow
     # generic save must not be able to freeze the loop THROUGH this
     # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_auto_grant_sync, request, body)
+    return await _run_settings_writer(_api_owner_auto_grant_sync, request, body)
 
 
 def _api_owner_auto_grant_sync(request: Request, body: Any) -> JSONResponse:
     if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
         return unsaved_error("'enabled' must be a boolean", 400)
     enabled = bool(body.get("enabled"))
+    value = "true" if enabled else "false"
+
+    # No digest: this endpoint decides nothing from the stored document — the body
+    # carries the whole decision — so refusing a concurrent unrelated write would
+    # cost the owner a retry and buy nothing.
+    def _set_auto_grant(current: Dict[str, Any]) -> Dict[str, Any]:
+        current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = value
+        return current
+
     with settings_document_mutation():
-        current = _owner_read_settings_raw()
-        current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = "true" if enabled else "false"
-        _owner_write_settings(current)
+        _owner_update_settings(_set_auto_grant)
         # Projected under the SAME lock as the commit: released first, two
         # writers can commit A->B and project B->A, stranding the live
         # environment on the loser's value.
-        os.environ["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = current["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"]
+        os.environ["OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS"] = value
     _owner_audit(request, "auto_grant", {"enabled": enabled})
     return JSONResponse({"ok": True, "enabled": enabled})
 
@@ -592,6 +629,18 @@ def _unrecognised_review_models(models: Any) -> list:
         return []
 
 
+def _candidate_reviewer_rows(settings: Dict[str, Any], family: str) -> list:
+    """Resolve candidate rows once with their candidate roster, retaining account identity."""
+    from ouroboros.reviewer_slot_config import _default_config, parse_reviewer_slots, roster_env_override
+    raw = str(settings.get("OUROBOROS_REVIEWER_SLOTS") or "").strip()
+    try:
+        with roster_env_override(str(settings.get("OUROBOROS_SUBAGENTS") or "")):
+            config = parse_reviewer_slots(raw) if raw else _default_config()
+        return list(getattr(config, family))
+    except ValueError:
+        return []  # Refused at the API boundary already; never probe garbage.
+
+
 def _candidate_scope_models(settings: Dict[str, Any]) -> list:
     """Scope-review API model candidates from CANDIDATE settings (6.1-aware).
 
@@ -599,26 +648,9 @@ def _candidate_scope_models(settings: Dict[str, Any]) -> list:
     api_chat scope rows are the routes the >=1M gate applies to. A retrieving
     (session) row is NOT a provider model id, so it is not a candidate here —
     its own >=200K floor and its own ack route are handled by
-    ``_candidate_scope_session_targets``. Otherwise the legacy comma keys, then
-    the live config."""
-    from ouroboros.config import get_scope_review_models
-
-    raw_structured = str(settings.get("OUROBOROS_REVIEWER_SLOTS") or "").strip()
-    if raw_structured:
-        try:
-            from ouroboros.reviewer_slot_config import parse_reviewer_slots
-
-            return [r.target_id for r in parse_reviewer_slots(raw_structured).scope
-                    if not r.is_session]
-        except ValueError:
-            return []  # refused at the API boundary already; never probe garbage
-    return [
-        m for m in str(
-            settings.get("OUROBOROS_SCOPE_REVIEW_MODELS")
-            or settings.get("OUROBOROS_SCOPE_REVIEW_MODEL")
-            or ""
-        ).replace(",", " ").split() if m
-    ] or list(get_scope_review_models() or [])
+    ``_candidate_scope_session_targets``. Otherwise the live derived config
+    (ABI 7.0/ABI-10: the comma settings keys are retired)."""
+    return [r.target_id for r in _candidate_reviewer_rows(settings, "scope") if not r.is_session]
 
 
 def _candidate_scope_session_targets(settings: Dict[str, Any]) -> list:
@@ -630,31 +662,15 @@ def _candidate_scope_session_targets(settings: Dict[str, Any]) -> list:
     can ever be reached by. Leaving these rows out of the notice made the floor
     decorative: the mode could not reach `asserted` through any product path, so
     every retrieving row stayed advisory-only forever by construction."""
-    raw_structured = str(settings.get("OUROBOROS_REVIEWER_SLOTS") or "").strip()
-    if not raw_structured:
-        return []  # legacy rows share ONE session route with no per-row target
-    try:
-        from ouroboros.reviewer_slot_config import parse_reviewer_slots
-
-        return [r.target_id for r in parse_reviewer_slots(raw_structured).scope
-                if r.is_session and r.target_id]
-    except ValueError:
-        return []
+    return [r.target_id for r in _candidate_reviewer_rows(settings, "scope") if r.is_session and r.target_id]
 
 
 def _candidate_triad_models(settings: Dict[str, Any]) -> list:
     """Triad api-row candidates from CANDIDATE settings (6.1-aware mirror of
     ``_candidate_scope_models``; session rows are never provider model ids)."""
-    raw_structured = str(settings.get("OUROBOROS_REVIEWER_SLOTS") or "").strip()
-    if raw_structured:
-        try:
-            from ouroboros.reviewer_slot_config import parse_reviewer_slots
-
-            return [r.target_id for r in parse_reviewer_slots(raw_structured).triad
-                    if not r.is_session]
-        except ValueError:
-            return []
-    return str(settings.get("OUROBOROS_REVIEW_MODELS") or "").replace(",", " ").split()
+    # ABI 7.0 (ABI-10): no comma settings key to read — without a structured
+    # value the candidate set is the live derived triad.
+    return [r.target_id for r in _candidate_reviewer_rows(settings, "triad") if not r.is_session]
 
 
 def _review_capability_notices(settings: Dict[str, Any]) -> list:
@@ -686,24 +702,33 @@ def _review_capability_notices(settings: Dict[str, Any]) -> list:
     could describe the outgoing route instead of the incoming one."""
     notices: list = []
     try:
-        from ouroboros.capability_evidence import ONE_MILLION, confirms_at_least, probe
+        from ouroboros.capability_evidence import ONE_MILLION, confirms_at_least, model_account_options, probe
         from ouroboros.config import DATA_DIR
         from ouroboros.tools.scope_review_session import SESSION_WINDOW_FLOOR
 
-        candidates = [(str(m), False, ONE_MILLION) for m in _candidate_scope_models(settings)]
-        candidates += [(str(t), True, SESSION_WINDOW_FLOOR)
-                       for t in _candidate_scope_session_targets(settings)]
+        candidates = _candidate_reviewer_rows(settings, "scope")
         seen: set = set()
-        for model, session, floor in candidates:
-            if (model, session) in seen:
-                continue
-            seen.add((model, session))
+        for row in candidates:
+            model, session = row.target_id, row.is_session
+            floor = SESSION_WINDOW_FLOOR if row.retrieves else ONE_MILLION
             route = _review_slot_route(settings, model, session=session)
+            options = model_account_options(model, role=f"reviewer:{row.slot_id}",
+                        credential_profile_id=row.profile_id) if route["provider"] == "claudexor" else None
             ev = probe(
                 DATA_DIR, provider=route["provider"], model=route["model"],
                 base_url=route["base_url"], use_local=route["use_local"],
                 allow_fetch=True, allow_generative=False,
+                options=options,
             )
+            if ev.route_fp in seen:
+                continue
+            seen.add(ev.route_fp)
+            bound = route["provider"] != "claudexor" or bool(
+                ev.source_id and ev.credential_profile_id and ev.account_fingerprint
+                and (ev.source == "owner_ack" or ev.provenance and not ev.stale))
+            if options is not None and bound:
+                route["options"] = {**options, "credential_profile_id": ev.credential_profile_id,
+                                    "account_fingerprint": ev.account_fingerprint}
             # SAME freshness policy the scope gate applies at review time
             # (`reviewer_window.ReviewerWindow.blocking_authority_allowed`): an expired
             # or outage-carried record will NOT authorise a blocking verdict, so the
@@ -712,7 +737,8 @@ def _review_capability_notices(settings: Dict[str, Any]) -> list:
             if not confirms_at_least(ev, floor, require_fresh=True):
                 notices.append({
                     "surface": "scope_review_session" if session else "scope_review",
-                    "needs_ack": {**route, "route_fp": ev.route_fp, "evidence": ev.to_json()},
+                    "needs_ack": {**route, "route_fp": ev.route_fp, "evidence": ev.to_json()} if bound else None,
+                    "role": f"reviewer:{row.slot_id}", "binding_known": bound,
                     "window_tokens": int(ev.window_tokens or 0),
                     "floor_tokens": int(floor),
                     "verified": int(ev.window_tokens or 0) > 0,
@@ -733,7 +759,7 @@ async def api_owner_context_mode(request: Request) -> JSONResponse:
     # Off the event loop, under the document lock (held inside): a slow
     # generic save must not be able to freeze the loop THROUGH this
     # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_context_mode_sync, request, body)
+    return await _run_settings_writer(_api_owner_context_mode_sync, request, body)
 
 
 def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
@@ -745,6 +771,7 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
     if raw_mode not in set(VALID_CONTEXT_MODES):
         return unsaved_error("'mode' must be one of: low, max", 400)
     next_mode = _config.normalize_context_mode(raw_mode)
+    digest = settings_document_digest()
     previous_mode = _config.get_owner_context_mode()
     if previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
         return unsaved_error(
@@ -752,6 +779,15 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
             "Wait until no queued or running work remains, then switch Low/Max.",
             409,
         )
+
+    def _set_context_mode(current: Dict[str, Any]) -> Dict[str, Any]:
+        current["OUROBOROS_CONTEXT_MODE"] = next_mode
+        # The retired marker survives one compatibility window only as explicit false
+        # provenance, so owner Low still means "scope review not performed" while a bare
+        # forwarded env Low remains owner Max.
+        current["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
+        return current
+
     with settings_document_mutation():
         # The idle guard is re-proved UNDER the lock: this thread can block on
         # it behind a long generic save, and a task started in that window
@@ -759,6 +795,8 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
         # BOTH halves of the predicate re-proved under the lock: the pre-lock
         # answer above is only a fast path, and a writer that committed while
         # this thread waited can have changed the very mode being lowered FROM.
+        # The digest cannot stand in for this: the queue changes without ever
+        # touching the settings document.
         previous_mode = _config.get_owner_context_mode()
         if previous_mode == "max" and next_mode == "low" and _has_running_agent_tasks():
             return unsaved_error(
@@ -766,14 +804,10 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
                 "Wait until no queued or running work remains, then switch Low/Max.",
                 409,
             )
-        current = _owner_read_settings_raw()
-        current["OUROBOROS_CONTEXT_MODE"] = next_mode
-        # The retired marker survives one compatibility window only as explicit false
-        # provenance, so owner Low still means "scope review not performed" while a bare
-        # forwarded env Low remains owner Max.
-        current["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
         # This endpoint IS the author of both keys, so they persist even at the shipped default.
-        _owner_write_settings(current, authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
+        # The digest binds the idle refusal above to the document this write replaces.
+        _owner_update_settings(_set_context_mode, digest,
+                               authored_keys=_CONTEXT_MODE_KEYS, allow_context_lowering=True)
         # Same-lock projection: see api_owner_auto_grant.
         os.environ["OUROBOROS_CONTEXT_MODE"] = next_mode
         os.environ["OUROBOROS_CONTEXT_MODE_AUTO_LOW"] = "false"
@@ -783,62 +817,6 @@ def _api_owner_context_mode_sync(request: Request, body: Any) -> JSONResponse:
         {"context_mode": next_mode, "previous_context_mode": previous_mode},
     )
     return JSONResponse({"ok": True, "context_mode": next_mode})
-
-
-_SCOPE_REVIEW_FLOOR_DEPRECATION_NOTICE = (
-    "OUROBOROS_SCOPE_REVIEW_FLOOR is DEPRECATED since v6.80.0 and no longer affects "
-    "anything: your value is stored, but whether the BIBLE P3 blocking scope review runs "
-    "is decided solely by the owner-only context mode (max = blocking scope gate, low = "
-    "whole-repository scope review declaredly not performed). Use POST "
-    "/api/owner/context-mode to change that."
-)
-
-
-@owner_write_guard
-async def api_owner_scope_review_floor(request: Request) -> JSONResponse:
-    """Persist the owner-selected P3 scope-review floor (blocking_1m | advisory).
-
-    Owner-only + audited (CW1, v6.34.0): merge-skipped from the generic /api/settings
-    path, so ONLY this dedicated endpoint may author it.
-
-    DEPRECATED and ENFORCEMENT-INERT since v6.80.0: nothing in the runtime consults the
-    stored value — scope-review applicability comes solely from
-    ``config.get_owner_context_mode()``. The endpoint is kept because the gateway contract
-    surface is frozen and because an owner customization is never destroyed: the write is
-    accepted, stored, audited, and answered with an explicit deprecation notice naming the
-    control that actually decides."""
-    body = await _json_body_or_empty(request)
-    # Off the event loop, under the document lock (held inside): a slow
-    # generic save must not be able to freeze the loop THROUGH this
-    # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_scope_review_floor_sync, request, body)
-
-
-def _api_owner_scope_review_floor_sync(request: Request, body: Any) -> JSONResponse:
-    raw = str((body or {}).get("floor") or "").strip().lower()
-    if raw not in {"blocking_1m", "advisory"}:
-        return unsaved_error("'floor' must be one of: blocking_1m, advisory", 400)
-    with settings_document_mutation():
-        current = _owner_read_settings_raw()
-        previous = str(current.get("OUROBOROS_SCOPE_REVIEW_FLOOR") or "blocking_1m").strip().lower()
-        current["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
-        _owner_write_settings(current)
-        # Same-lock projection: see api_owner_auto_grant.
-        os.environ["OUROBOROS_SCOPE_REVIEW_FLOOR"] = raw
-    _owner_audit(
-        request,
-        "scope_review_floor",
-        {
-            "scope_review_floor": raw,
-            "previous_scope_review_floor": previous,
-            "deprecated": True,
-        },
-    )
-    return JSONResponse({
-        "ok": True,
-        "scope_review_floor": raw,
-        "deprecation_notice": _SCOPE_REVIEW_FLOOR_DEPRECATION_NOTICE,
-    })
 
 
 @owner_write_guard
@@ -854,7 +832,7 @@ async def api_owner_safety_mode(request: Request) -> JSONResponse:
     # Off the event loop, under the document lock (held inside): a slow
     # generic save must not be able to freeze the loop THROUGH this
     # endpoint's synchronous lock acquisition.
-    return await asyncio.to_thread(_api_owner_safety_mode_sync, request, body)
+    return await _run_settings_writer(_api_owner_safety_mode_sync, request, body)
 
 
 def _api_owner_safety_mode_sync(request: Request, body: Any) -> JSONResponse:
@@ -863,12 +841,19 @@ def _api_owner_safety_mode_sync(request: Request, body: Any) -> JSONResponse:
     raw_mode = str((body or {}).get("mode") or "").strip().lower()
     if raw_mode not in set(_config.VALID_SAFETY_MODES):
         return unsaved_error("'mode' must be one of: full, light, off", 400)
-    with settings_document_mutation():
-        current = _owner_read_settings_raw()
-        previous = _config.normalize_safety_mode(current.get("OUROBOROS_SAFETY_MODE"))
+
+    def _set_safety_mode(current: Dict[str, Any]) -> Dict[str, Any]:
         current["OUROBOROS_SAFETY_MODE"] = raw_mode
-        _owner_write_settings(
-            current, authored_keys=("OUROBOROS_SAFETY_MODE",), allow_safety_lowering=True)
+        return current
+
+    with settings_document_mutation():
+        # The previous mode is read for the audit trail only; the digest binds that
+        # read to the document the locked update replaces.
+        digest = settings_document_digest()
+        previous = _config.normalize_safety_mode(
+            _owner_read_settings_raw().get("OUROBOROS_SAFETY_MODE"))
+        _owner_update_settings(_set_safety_mode, digest,
+                               authored_keys=("OUROBOROS_SAFETY_MODE",), allow_safety_lowering=True)
         # Same-lock projection: see api_owner_auto_grant.
         os.environ["OUROBOROS_SAFETY_MODE"] = raw_mode
     _owner_audit(
@@ -910,7 +895,7 @@ async def api_acknowledge_capability(request: Request) -> JSONResponse:
         return json_error("'window_tokens' must be a positive integer", 400)
     try:
         from ouroboros.capability_evidence import record_owner_ack
-        record = record_owner_ack(
+        record = await asyncio.to_thread(record_owner_ack,
             request_drive_root(request),
             provider=provider, model=model,
             base_url=str((body or {}).get("base_url") or ""),
@@ -918,9 +903,12 @@ async def api_acknowledge_capability(request: Request) -> JSONResponse:
             headers=(body or {}).get("headers") if isinstance((body or {}).get("headers"), dict) else None,
             options=(body or {}).get("options") if isinstance((body or {}).get("options"), dict) else None,
             note=str((body or {}).get("note") or ""),
+            expected_route_fp=str((body or {}).get("route_fp") or ""),
         )
         _owner_audit(request, "capability_ack", {"route_fp": record.get("route_fp"), "window_tokens": window_tokens, "model": model})
         return JSONResponse({"ok": True, "ack": record})
+    except ValueError as exc:
+        return json_error(str(exc), 400)
     except Exception as exc:
         return json_exception(exc)
 
@@ -928,8 +916,8 @@ async def api_acknowledge_capability(request: Request) -> JSONResponse:
 async def api_reviewer_slots(request: Request) -> JSONResponse:
     """GET /api/reviewer-slots — the effective slot rows plus «выполняется как».
 
-    One read for Agents → Review lanes: the parsed SSOT rows (structured or the
-    legacy migration view, labeled by ``source``), the real row limits, and
+    One read for Agents → Review lanes: the parsed SSOT rows (structured or
+    the shipped default panel, labeled by ``source``), the real row limits, and
     the D22 last-execution projection keyed by slot_id — what each saved row
     REALLY ran as last time (the UI face of capability_delta). A malformed
     structured value comes back as a typed ``config_error`` instead of a 500:
@@ -938,18 +926,29 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
     from ouroboros.reviewer_slot_config import (
         SCOPE_SLOT_LIMIT,
         TRIAD_SLOT_LIMIT,
+        deep_review_slot,
         load_reviewer_slot_config,
         reviewer_slot_last_executions,
+        synthesized_deep_review_slot,
     )
 
     payload: Dict[str, Any] = {
-        "limits": {"triad": TRIAD_SLOT_LIMIT, "scope": SCOPE_SLOT_LIMIT, "advisory": 1},
+        "limits": {"triad": TRIAD_SLOT_LIMIT, "scope": SCOPE_SLOT_LIMIT, "advisory": 1, "deep_review": 1},
         "last_executions": reviewer_slot_last_executions(),
     }
     try:
         config = load_reviewer_slot_config()
     except ValueError as exc:
         payload["config_error"] = str(exc)
+        # The deep-review singleton stays visible beside the error as a
+        # legacy-derived REPAIR PLACEHOLDER — the row synthesized from the model
+        # key, labeled `synthesized_from` — NOT the effective runtime row: with
+        # the structured value unparseable no row is effective at all
+        # (`deep_review_slot()` raises) until the setting is repaired; the
+        # placeholder only gives the repair save a real row to start from.
+        synthesized = synthesized_deep_review_slot()
+        payload["deep_review"] = {"route": {"kind": synthesized.kind, "target_id": synthesized.target_id},
+                                  "effort": "", "synthesized_from": "OUROBOROS_MODEL_DEEP_SELF_REVIEW"}
         return JSONResponse(payload)
     # The stored form must round-trip: an actor row comes back as its
     # subagent_id REFERENCE (with the resolved route only as read-only
@@ -970,6 +969,12 @@ async def api_reviewer_slots(request: Request) -> JSONResponse:
     payload["source"] = config.source
     payload["triad"] = [_row(r) for r in config.triad]
     payload["scope"] = [_row(r) for r in config.scope]
+    # The deep self-review singleton: the saved row, or the packed api row
+    # synthesized from the legacy model key — disclosed as such so the editor
+    # can say the row is not saved yet (saving materializes the migration).
+    payload["deep_review"] = {k: v for k, v in _row(deep_review_slot(config)).items() if k != "slot_id"}
+    if config.deep_review is None:
+        payload["deep_review"]["synthesized_from"] = "OUROBOROS_MODEL_DEEP_SELF_REVIEW"
     advisory_route = {"kind": config.advisory.kind, "target_id": config.advisory.target_id}
     if config.advisory.profile_id:
         advisory_route["profile_id"] = config.advisory.profile_id
@@ -1144,7 +1149,7 @@ async def api_settings_post(request: Request) -> JSONResponse:
     except Exception as exc:
         # Same answer the broad in-body handler used to give a parse failure.
         return unsaved_error(str(exc), 400)
-    return await asyncio.to_thread(_api_settings_post_sync, request, body)
+    return await _run_settings_writer(_api_settings_post_sync, request, body)
 
 
 def _api_settings_post_sync(request: Request, body: Any) -> JSONResponse:
@@ -1166,26 +1171,31 @@ def _check_reviewer_slots_against_incoming_roster(body: dict) -> str:
     roster-only save re-validates the STORED slots so a still-referenced
     actor cannot be removed out from under them. An EXPLICITLY cleared slots
     value ('' present in the body) is a clear, not a fallback to the stored
-    value — presence and emptiness are tracked separately. Returns the D4
-    fallback warning ('' when none); raises ValueError on malformed."""
+    value — presence and emptiness are tracked separately. Returns the
+    save-time disclosure ('' when none: the one-time R12 notice when this save
+    first gives the triad a retrieving row); raises ValueError on malformed."""
     subagents_key = "OUROBOROS_SUBAGENTS"
     slots_key = "OUROBOROS_REVIEWER_SLOTS"
     roster_changed = subagents_key in body
+    stored = str((load_settings() or {}).get(slots_key) or "").strip()
     if slots_key in body:
         slots_to_check = str(body.get(slots_key) or "").strip()
         if not slots_to_check:
             return ""  # explicit clear: nothing to validate
     elif roster_changed:
-        slots_to_check = str((load_settings() or {}).get(slots_key) or "").strip()
+        slots_to_check = stored
         if not slots_to_check:
             return ""
     else:
         return ""
     from ouroboros.reviewer_slot_config import reviewer_slot_save_check
 
+    # The stored value decides whether this save first introduces a retrieving
+    # triad row (the one-time R12 disclosure); a roster-only save keeps it.
     return reviewer_slot_save_check(
         slots_to_check,
         subagents_raw=(str(body.get(subagents_key) or "") if roster_changed else None),
+        previous_raw=stored,
     )
 
 
@@ -1246,10 +1256,10 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
                 return unsaved_error(str(exc), 400)
             body = dict(body)
             body[subagents_key] = canonical_subagents
-        # Reviewer-slot SSOT (6.1): 400 on malformed; D4 fallback disclosed;
+        # Reviewer-slot SSOT (6.1): 400 on malformed; save-time disclosure returned;
         # validated against the roster THIS save produces (S4 — see helper).
         try:
-            _reviewer_fallback_warning = _check_reviewer_slots_against_incoming_roster(body)
+            _reviewer_slots_warning = _check_reviewer_slots_against_incoming_roster(body)
         except ValueError as exc:
             return unsaved_error(str(exc), 400)
         parsed_budget: dict[str, float] = {}
@@ -1374,8 +1384,8 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
 
         # Tolerate stubbed side effects returning None (test harnesses).
         warnings = list(side_effect_warnings or [])
-        if _reviewer_fallback_warning:
-            warnings.append(_reviewer_fallback_warning)
+        if _reviewer_slots_warning:
+            warnings.append(_reviewer_slots_warning)
         if provider_defaults_changed:
             change_kind = classify_runtime_provider_change(old_effective_settings, current)
             if change_kind == "direct_normalize":
@@ -1424,7 +1434,7 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
                 settings_to_save["GITHUB_REPO"] = resolved_slug
                 _owner_write_settings(settings_to_save)
                 os.environ["GITHUB_REPO"] = resolved_slug
-        immediate_changed, next_task_changed = _effect_buckets(all_changed, warnings)
+        immediate_changed, next_task_changed = _effect_buckets(all_changed)
         agent_task_running = bool(next_task_changed) and started_before_save
         if agent_task_running:
             # Owner decision (2026-08-05): the task-start snapshot boundary STAYS —
@@ -1485,4 +1495,6 @@ def _api_settings_post_locked(request: Request, body: Any) -> JSONResponse:
             return post_commit_failure_response(e, boundary)
         if isinstance(e, SettingsLockUnavailable):
             return unsaved_error(str(e), 503, code="settings_locked")
+        if isinstance(e, SettingsDocumentBusy):
+            return unsaved_error(str(e), 503, code="settings_busy")
         return unsaved_error(str(e), 400)

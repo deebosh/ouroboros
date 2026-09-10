@@ -1,39 +1,6 @@
-// The first-run "Connect your agents" step (phase 3C).
-//
-// The owner's ask, verbatim: «Хочу чтобы сразу была возможность подписки
-// добавить и чтобы она была красивее и прозрачнее. Чтобы было понятно что
-// достаточно одного любого API ключа и если хотя бы одну подписку добавить,
-// то будет зашибись + если добавить несколько подписок, то ещё более зашибись
-// и что они ротироваться будут.»
-//
-// So the step is a VALUE LADDER, not a form: one API key already runs
-// Ouroboros, one agent plan moves delegated work onto that plan, eligible
-// plans can also move review work, and several accounts rotate. Two honesty
-// constraints are load-bearing
-// and must survive every future edit:
-//
-//   * A subscription NEVER satisfies the startup gate (D-1). The main agent is
-//     an API LLM client; a plan cannot run it. The ladder says so in the same
-//     breath as the benefit, because a wizard that implies otherwise sends the
-//     owner to a first run that refuses to start.
-//   * "Rides a plan" is not "free", and NOT every reviewer moves. Commit triad,
-//     scope, advisory, plan, and skill review follow their configured delivery;
-//     task acceptance stays API-only (D15). The footnote carries both.
-//
-// The rotation artwork is a STATIC SVG — inline, no library, no animation
-// (no comparable product animates this, and motion here would be noise). It is
-// `aria-hidden`: every fact it draws is in the ladder text beside it, which is
-// also what survives when a short viewport hides the figure.
-//
-// Login is NOT reimplemented here: `harness_login_cards.js` owns the job
-// lifecycle and `claudexor_status_store.js` is the only reader of
-// `/api/claudexor/status`. This module owns the step's copy, its artwork, its
-// per-family rows, and BOTH sides of its conversation with the completion
-// endpoint — the one declaration it hands over, and how the answer is read.
-// Those live here rather than inside the wizard's IIFE so every branch of
-// "what did the server actually say" is asserted in node without a transport.
-//
-// Pure helpers up top are node-tested without a DOM.
+// Shared onboarding account connection and install-preview controller.
+// Login and account truth remain in the same controller/store as Settings;
+// draft compilation is read-only and completion is one atomic transaction.
 
 import { apiClient } from './api_client.js';
 import { claudexorStatus, accountRows, familyLabel } from './claudexor_status_store.js';
@@ -49,8 +16,8 @@ import { escapeHtmlAttr as escapeHtml } from './utils.js';
 // Reviewer policy remains a separate core-only projection: Agy is task-only and
 // must never be omitted here merely because it creates no reviewer seats.
 export const AGENT_FAMILIES = [
-    { harness: 'claude' },
     { harness: 'codex' },
+    { harness: 'claude' },
     { harness: 'cursor' },
     { harness: 'agy' },
 ];
@@ -68,33 +35,30 @@ const LOGIN_RELEASE_RETRY_MS = 600;
 export const VALUE_LADDER = [
     {
         tone: 'Runs',
-        title: 'One API key, or a local model',
-        body: 'Ouroboros runs. That is the whole requirement, and you met it on the '
-            + 'previous step.',
+        title: 'One Codex subscription',
+        body: 'Run models and agents without an API key. Codex is the recommended starting point.',
     },
     {
         tone: 'Better',
-        title: 'Add one agent plan',
-        body: 'Delegated subagents run inside that plan instead of billing your API key '
-            + 'per call. Claude Code, Codex, and Cursor plans can also move commit, plan, '
-            + 'and skill review; '
-            + 'task-only plans such as Antigravity do not change reviewer routes. The main '
-            + 'agent keeps using the API key or local model you configured above: a '
-            + 'plan cannot run it.',
+        title: 'Add API keys or other agents',
+        body: 'API keys and local models work on their own or alongside subscriptions. '
+            + 'Claude Code, Cursor, and Antigravity remain agent connections.',
     },
     {
         tone: 'Best',
         title: 'Add several accounts',
         body: 'They rotate on their own. When one account’s window is spent, the '
-            + 'next one picks the work up, so a long session does not stall on a single '
-            + 'limit.',
+            + 'next compatible account can pick the work up. A pinned role waits for its account.',
     },
 ];
 
 export const LADDER_FOOTNOTE =
     'Riding a plan is not free — it moves that work onto a subscription you already '
-    + 'pay for instead of adding per-call API charges. Task acceptance stays on the API '
-    + 'key; plan and skill review follow each configured triad row.';
+    + 'pay for instead of adding per-call API charges. What moves is exactly what you '
+    + 'route: commit, plan, skill review and task acceptance each follow their configured '
+    + 'triad row, so an all-subscription triad also puts each substantive task\'s '
+    + 'acceptance panel on the subscription: on the API it measured about 12 s and '
+    + '$0.07 per model row per task; a session spends minutes of your window per task instead.';
 
 // ---------------------------------------------------------------------------
 // Pure helpers.
@@ -167,7 +131,7 @@ export function onboardingSettingsDraft({
         ...Object.fromEntries(providerFields.map(
             (field) => [field.settingKey, clean(state[field.stateKey])],
         )),
-        ...Object.fromEntries(budgetFields.map(
+        ...Object.fromEntries(budgetFields.filter((field) => state[field.stateKey] !== '').map(
             (field) => [field.settingKey, Number(state[field.stateKey] || 0)],
         )),
         OUROBOROS_REVIEW_ENFORCEMENT: clean(state.reviewEnforcement) || 'advisory',
@@ -182,6 +146,8 @@ export function onboardingSettingsDraft({
         ...Object.fromEntries(modelSlots.map(
             (slot) => [slot.settingKey, clean(state[slot.stateKey])],
         )),
+        OUROBOROS_MODEL_ACCOUNTS: state.modelAccounts || {},
+        OUROBOROS_MODEL_CONTEXT_WINDOWS: state.modelContextWindows || {},
         OUROBOROS_RUNTIME_MODE: clean(state.runtimeMode) || 'advanced',
     };
 }
@@ -219,7 +185,12 @@ export function readCompletionAnswer({ status = 0, ok = false, parsed = false, d
                 code: String(body.code || ''),
                 detail: String(body.detail || ''),
                 canSkip: Boolean(body.can_skip),
-                saved: Boolean(body.saved),
+                // Tri-state, as the server sends it: `null` is the typed 503
+                // `settings_save_timeout` — the save body kept running in the
+                // server past its bound, so whether the bytes landed is
+                // genuinely UNKNOWN. Collapsing it to `false` would offer a
+                // blind re-save over a transaction that may already be on disk.
+                saved: body.saved === null ? null : Boolean(body.saved),
                 // `post_commit_failed` is what the server actually sends (see
                 // the gateway contract); `stage` was a name this reader made up,
                 // so a real post-commit envelope parsed to '' and the owner lost
@@ -266,20 +237,30 @@ export function completionFailureNotice(error) {
     // escape hatch is only offered when nothing is on disk — once settings
     // exist, "finish without agent defaults" would be a second write, not an
     // alternative to the first.
+    //
+    // `saved === null` is the third state (503 `settings_save_timeout`): the
+    // save is still running in the server, so neither "written" nor "nothing
+    // saved" is true yet. The wizard offers "Check status" for that case
+    // instead of a retry, which would be a second write over an unknown first.
     const message = String(error?.message || error || 'Failed to save onboarding settings.');
     const detail = String(error?.detail || '').trim();
-    const saved = Boolean(error?.saved);
+    const saved = error?.saved === null ? null : Boolean(error?.saved);
     const parts = [message];
     if (detail) parts.push(detail);
     if (saved) {
         parts.push('Your settings WERE written'
             + `${error?.stage ? ` — the step that failed afterwards was ${String(error.stage)}` : ''}`
             + '. Restart Ouroboros to pick them up rather than filling this in again.');
+    } else if (saved === null) {
+        parts.push('Whether your settings were saved is unknown — the save is still '
+            + 'running in the server. Use "Check status" to see whether it landed '
+            + 'before finishing setup again.');
     }
     return {
         code: String(error?.code || ''),
         saved,
-        canSkip: Boolean(error?.canSkip) && !saved,
+        saveUnknown: saved === null,
+        canSkip: Boolean(error?.canSkip) && saved === false,
         text: parts.join(' — '),
     };
 }
@@ -293,13 +274,12 @@ export function agentsOutcomeText(connected = [], {
     // What the owner is told BEFORE finishing. Every verb is conditional,
     // because the compiler can still refuse a seat no live model id satisfies.
     if (!accountsKnown) {
-        return 'Your agent accounts could not be checked, so nothing is assumed here. '
-            + 'Finishing now leaves reviewers and subagents on your API access.';
+        return 'Accounts could not be checked. Your draft is kept; refresh the connection '
+            + 'or configure API access to continue.';
     }
     if (!connected.length) {
-        return 'No agent account connected. Ouroboros will run everything on the API '
-            + 'access you configured — you can connect an account any time in '
-            + 'Settings → Agents.';
+        return 'Connect Codex to start without an API key, or add API access below. '
+            + 'Other subscriptions remain available for agents.';
     }
     const labels = joinLabels(familyLabels(connected, snapshot, { catalogKnown }));
     if (skipPresets) {
@@ -321,7 +301,7 @@ export function agentsOutcomeText(connected = [], {
     if (reviewerHarnesses.length) {
         const reviewerLabels = familyLabels(reviewerHarnesses, snapshot, { catalogKnown });
         clauses.push(`${joinLabels(reviewerLabels)} can `
-            + 'also move commit, scope, advisory, plan, and skill review.');
+            + 'also move commit, scope, advisory, plan, skill review, and task acceptance.');
     }
     if (taskOnlyHarnesses.length) {
         const taskOnlyLabels = familyLabels(taskOnlyHarnesses, snapshot, { catalogKnown });
@@ -329,8 +309,9 @@ export function agentsOutcomeText(connected = [], {
             + `${taskOnlyHarnesses.length === 1 ? 'is task-only and does' : 'are task-only and do'} `
             + 'not change reviewer routes.');
     }
-    clauses.push('If those models cannot be read at that moment nothing is changed, '
-        + 'and you can finish without subscription presets.');
+    clauses.push(connected.includes('codex')
+        ? 'Codex can also supply your model roles without an API key.'
+        : 'Main still needs Codex, an API key, or a local model.');
     return clauses.join(' ');
 }
 
@@ -454,10 +435,13 @@ export function familyRowHtml(family, { status, connected = false }) {
     return `
         <div class="agent-family-row" data-agent-family="${escapeHtml(family.harness)}">
             <span class="agent-family-identity">
+                <span class="agent-family-heading">
                 ${harnessIdentityMarkup(family.harness, {
                     label: family.label,
                     className: 'agent-family-name',
                 })}
+                <span class="agent-family-purpose">${family.harness === 'codex' ? 'Models + agents · Recommended' : 'Agents'}</span>
+                </span>
                 <span class="agent-family-status" data-tone="${escapeHtml(status.tone)}">${escapeHtml(status.text)}</span>
             </span>
             <button type="button" class="btn btn-secondary" data-agent-connect="${escapeHtml(family.harness)}">
@@ -481,30 +465,30 @@ export function familyListHtml(snapshot, {
     })).join('');
 }
 
-export function agentsStepHtml() {
+export function agentsStepHtml({ compact = false, showRoster = true } = {}) {
     // The static skeleton. Everything that moves (family rows, the service
     // note, the outcome sentence) is patched in place afterwards, so a status
     // tick never rebuilds the login card mounted between them.
     return `
-        <div class="panel-card agent-ladder-card">
+        ${compact ? '' : `<div class="panel-card agent-ladder-card">
             <h3>What an agent plan changes</h3>
             ${ladderHtml()}
-        </div>
+        </div>`}
         <div class="panel-card" id="agents-accounts">
-            <h3>Your agent accounts</h3>
+            <h3>Subscriptions</h3>
             <div id="agents-status-note" class="agent-service-note" hidden></div>
             <div id="agents-family-list" class="agent-family-list"></div>
             <div id="agents-login-host"></div>
             <div id="agents-outcome" class="agent-outcome"></div>
         </div>
-        <div class="panel-card" id="agents-available-subagents-card">
+        ${showRoster ? `<div class="panel-card" id="agents-available-subagents-card">
             <h3>Available subagents</h3>
             <div class="agent-ladder-note">
                 This generated draft is what Ouroboros will see. Describe when each numbered
                 subagent is useful, then adjust its route, model, effort, or account pin if needed.
             </div>
             ${availableSubagentsEditorHost('onboarding-available-subagents')}
-        </div>
+        </div>` : ''}
     `;
 }
 
@@ -533,6 +517,8 @@ export function createAgentsStep({
     previewPayload = () => ({}),
     previewTransport = (payload) => apiClient.previewOnboardingSubagents(payload),
     onSubagentsChange = () => {},
+    onSetupPreview = () => {},
+    onStatus = () => {},
 } = {}) {
     const getDoc = typeof doc === 'function' ? doc : () => doc;
     const state = {
@@ -582,12 +568,13 @@ export function createAgentsStep({
         win: () => getDoc()?.defaultView,
         store,
         onChange: onSubagentsChange,
-        baselineLabel: 'Generated draft',
+        baseline: 'generated',
     });
 
     function previewRequest() {
         return {
             ...(previewPayload() || {}),
+            ...(subagents.dirty ? { OUROBOROS_SUBAGENTS: subagents.setting } : {}),
             ...subscriptionDeclaration({
                 connected: state.connected,
                 skipPresets: state.skipPresets,
@@ -600,7 +587,7 @@ export function createAgentsStep({
     }
 
     async function refreshSubagentsPreview({ force = false } = {}) {
-        if (state.disposed || subagents.dirty) return false;
+        if (state.disposed) return false;
         const payload = previewRequest();
         const signature = JSON.stringify(payload);
         if (!force && signature === state.previewAppliedSignature && subagents.loaded) return true;
@@ -610,13 +597,15 @@ export function createAgentsStep({
         try {
             const response = await previewTransport(payload);
             if (state.disposed || generation !== state.previewGeneration) return false;
-            const result = subagents.applyGeneratedPreview(response);
+            const result = subagents.dirty ? { applied: true } : subagents.applyGeneratedPreview(response);
             if (!result.applied) {
                 state.previewError = result.error || 'Available subagents preview was not applied.';
                 return false;
             }
             state.previewAppliedSignature = signature;
             onSubagentsChange(subagents.setting);
+            onSetupPreview(response);
+            state.previewAppliedSignature = currentPreviewSignature();
             return true;
         } catch (error) {
             if (state.disposed || generation !== state.previewGeneration) return false;
@@ -629,7 +618,6 @@ export function createAgentsStep({
     }
 
     function invalidateGeneratedPreview() {
-        if (subagents.dirty) return;
         state.previewGeneration += 1;
         state.previewAppliedSignature = '';
         state.previewPending = false;
@@ -699,6 +687,7 @@ export function createAgentsStep({
         state.previewStatusSignature = statusSignature;
         state.connected = next;
         paint();
+        onStatus();
         if (changed) onChange([...state.connected]);
         if (changed || statusChanged) refreshSubagentsPreview({ force: statusChanged });
     }
@@ -801,6 +790,8 @@ export function createAgentsStep({
         get snapshot() { return store?.snapshot || null; },
         get catalogKnown() { return Boolean(store?.catalogKnown); },
         get accountsKnown() { return accountsKnown(); },
+        get reads() { return store.reads; },
+        refreshStatus() { return store.refresh(); },
         get availableSubagents() { return subagents.setting; },
         get generatedPreviewReady() {
             if (subagents.dirty) return true;
@@ -814,6 +805,9 @@ export function createAgentsStep({
         get previewPending() { return state.previewPending; },
         get previewError() { return state.previewError; },
         validateSubagents() { return subagents.validate(); },
+        // Finish is the wizard's commit: the roster then shows its own errors
+        // beside the rows they name when the owner steps back here.
+        noteSaveAttempt() { subagents.noteSaveAttempt(); },
         refreshSubagentsPreview,
         invalidateGeneratedPreview,
         setSkipPresets(value) {

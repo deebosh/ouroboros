@@ -84,6 +84,7 @@ def ensure_reaper_started() -> None:
 def request_finalization_grace(
     task_drive: pathlib.Path, task_id: str, terminal_reason: str, *, chat_id: int, stamp: int,
     control_msg_id: str = "", toast_text: str = "", control_text: str = "",
+    quiet: bool = False,
 ) -> str:
     """Ask a task to finalize cooperatively before the supervisor stops it.
 
@@ -121,6 +122,10 @@ def request_finalization_grace(
     except Exception:
         control_msg_id = ""
         log.debug("Failed to write finalize_now control for %s", task_id, exc_info=True)
+    if quiet:
+        # A cascade sweep speaks for the whole tree once; the per-task toast
+        # would only decorate its summary.
+        return control_msg_id
     try:
         from supervisor import workers as _workers_mod
         _workers_mod.get_event_q().put({
@@ -251,22 +256,19 @@ def _kill_and_confirm_worker_dead(proc: Any, worker_id: int, task_id: str) -> bo
     dead. The Variant-A invariant gates the terminal write + retry on the original being dead, so a
     final hard kill is attempted if the first did not confirm death, and an is_alive() that raises is
     treated as still-alive (fail-closed) — the caller then refuses to enqueue a colliding retry."""
-    from supervisor import queue as _q
-
     try:
-        from ouroboros.platform_layer import kill_pid_tree
+        from supervisor.worker_pool_lifecycle import kill_worker_tree
 
         # Spare deliberately-kept services so a timeout kill leaves verifier-facing services alive;
-        # they reparent to init and the custody reaper governs them.
-        _keep = _q._kept_service_pids()
+        # they reparent to init and the custody reaper governs them (daemon roots are always spared).
         if proc is not None:
             if getattr(proc, "pid", None):
-                kill_pid_tree(proc.pid, exclude_pids=_keep)
+                kill_worker_tree(proc.pid, keep_services=True)
             elif proc.is_alive():
                 proc.terminate()
             proc.join(timeout=5)
             if proc.is_alive() and getattr(proc, "pid", None):
-                kill_pid_tree(proc.pid, exclude_pids=_keep)
+                kill_worker_tree(proc.pid, keep_services=True)
                 proc.join(timeout=2)
     except Exception:
         log.warning("Reaper: failed to terminate worker %d for task %s", worker_id, task_id, exc_info=True)
@@ -279,10 +281,8 @@ def _kill_and_confirm_worker_dead(proc: Any, worker_id: int, task_id: str) -> bo
     except Exception:
         return False  # cannot confirm -> fail closed (treat as still alive)
     try:
-        from ouroboros.platform_layer import kill_pid_tree
-
         if getattr(proc, "pid", None):
-            kill_pid_tree(proc.pid, exclude_pids=_q._kept_service_pids())
+            kill_worker_tree(proc.pid, keep_services=True)
         proc.join(timeout=2)
         return not proc.is_alive()
     except Exception:

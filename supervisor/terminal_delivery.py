@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 
 from ouroboros.utils import update_json_locked, utc_now_iso
 from ouroboros.task_finalization import (
+    HOST_AUTHORED_TERMINAL_ORIGINS,
     TERMINAL_ORIGIN_HOST_SALVAGE,
     TERMINAL_ORIGIN_MODEL_FINAL,
 )
@@ -70,18 +71,20 @@ _HOST_SALVAGE_RECEIPT = (
 def cleanup_settled_owner_mailbox(
     drive_root: Any, task_id: str, task: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Remove attempt mail only after the canonical task result is settled."""
-
+    """Keep model-wait choices until the canonical post-task phase settles."""
     from ouroboros.owner_mailbox import cleanup_task_mailbox
+    from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
     from ouroboros.task_results import load_task_result
     from ouroboros.task_status import SETTLED_STATUSES
     from supervisor.queue import _task_drive_for_task
 
     durable = load_task_result(pathlib.Path(drive_root), str(task_id)) or {}
-    if str(durable.get("status") or "") in SETTLED_STATUSES:
-        cleanup_task_mailbox(
-            _task_drive_for_task(task or durable, str(task_id)), str(task_id),
-        )
+    pending = (durable.get("child_ref_promotion") or {}).get("pending_refs", [])
+    if any(isinstance(ref, dict) and ref.get("kind") == "task_attachment" for ref in pending):
+        return  # Accepted inputs still need this mailbox as their retry source.
+    post_status = (durable.get("root_phase_checkpoint") or {}).get("post_task_synthesis")
+    if str(durable.get("status") or "") in SETTLED_STATUSES and not post_task_synthesis_is_open(post_status):
+        cleanup_task_mailbox(_task_drive_for_task(task or durable, str(task_id)), str(task_id))
 
 
 def _registry_path(drive_root: Any) -> pathlib.Path:
@@ -698,12 +701,13 @@ def build_completed_result_event(
         # copy that drops the format renders as a different message.
         "format": "markdown",
         "delivery_id": delivery_id_for(tid, core_text),
+        **({"terminal_host_notice": stored["terminal_host_notice"]} if (stored or {}).get("terminal_host_notice") else {}),
     }
     return project_terminal_result_event(
         pathlib.Path(drive_root), task_row, tid,
         result_text=core_text,
         terminal_origin=(stored or {}).get("terminal_origin"),
-        base_event=event,
+        base_event=event, provider_notice=str((stored or {}).get("terminal_provider_notice") or ""),
     )
 
 
@@ -715,14 +719,18 @@ def project_terminal_result_event(
     result_text: str,
     terminal_origin: Any,
     base_event: Optional[Dict[str, Any]] = None,
+    provider_notice: str = "",
 ) -> Dict[str, Any]:
     """Project one terminal event from producer-stamped origin.
 
     ``host_salvage`` becomes one short keyed plain System receipt (inherited
-    ``format``/``log_text`` dropped; the full bytes stay in task details);
-    ``model_final`` and a missing legacy origin keep the assistant projection
-    untouched — no text/status/length inference. The delivery id always
-    digests the stable core result rather than a mutable disclosure suffix.
+    ``format``/``log_text`` dropped; the full bytes stay in task details).
+    ``host_notice`` is a text the host wrote alone, so it keeps its OWN words
+    and inherited markdown and becomes a System row WITHOUT a system_type,
+    which is what lets a replayed card conclude on it. ``model_final`` and a
+    missing legacy origin keep the assistant projection untouched — no
+    text/status/length inference. The delivery id always digests the stable
+    core result rather than a mutable disclosure suffix.
     """
     tid = str(task_id or "")
     core_text = str(result_text or "")
@@ -732,19 +740,24 @@ def project_terminal_result_event(
     event.setdefault("chat_id", lineage_chat_id(drive_root, task or {}, tid))
     event["delivery_id"] = delivery_id_for(tid, core_text)
     origin = str(terminal_origin or "")
-    if origin == TERMINAL_ORIGIN_HOST_SALVAGE:
+    if origin in HOST_AUTHORED_TERMINAL_ORIGINS:
+        salvage = origin == TERMINAL_ORIGIN_HOST_SALVAGE
+        receipt = (provider_notice + "\n\nThe full intermediate output and technical details are preserved "
+                   "in the task details.") if provider_notice else _HOST_SALVAGE_RECEIPT
         event.update({
-            "text": _HOST_SALVAGE_RECEIPT,
+            "text": receipt if salvage else (event.get("text") or core_text),
             "role": "system",
-            "system_type": "terminal_incident",
-            "terminal_origin": TERMINAL_ORIGIN_HOST_SALVAGE,
+            "terminal_origin": origin,
+            **({"system_type": "terminal_incident"} if salvage else {}),
         })
-        event.pop("log_text", None)
-        event.pop("format", None)
+        if salvage:
+            event.pop("log_text", None)
+            event.pop("format", None)
         return event
     if origin == TERMINAL_ORIGIN_MODEL_FINAL:
         event["terminal_origin"] = TERMINAL_ORIGIN_MODEL_FINAL
-    # Missing origin remains absent so legacy rows replay byte-compatibly.
+    # A missing origin now identifies only a row written before every forced
+    # rail stamped one; it stays absent so legacy rows replay byte-compatibly.
     return event
 
 

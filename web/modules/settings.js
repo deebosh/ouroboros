@@ -8,6 +8,7 @@ import {
     availableSubagentsPreviewPayload,
     collectSubagentsSettings,
     initSubagentsSection,
+    noteSubagentsSaveAttempt,
     reloadSubagentsSection,
     subagentSettingsFingerprint,
     validateSubagentsDraft,
@@ -19,7 +20,9 @@ import { showToast } from './toast.js';
 import { escapeHtmlAttr as escapeHtml, formatDualVersion } from './utils.js';
 import { apiClient, apiFetch, cleanExtensionRoute, extensionRoutePath } from './api_client.js';
 import { claudexorStatus } from './claudexor_status_store.js';
-import { collectSafeFieldValues, renderSafeField, setInlineStatus } from './ui_helpers.js';
+import { createModelRolesEditor } from './model_roles.js';
+import { collectSafeFieldValues, renderSafeField, setInlineStatus, revealNewRow } from './ui_helpers.js';
+import { extensionActionStatus } from './extension_status_text.js';
 
 let markSettingsDirty = () => {};
 const BASE_SECRET_KEYS = new Set(SECRET_KEYS.map(([key]) => key));
@@ -34,7 +37,10 @@ const INPUT_FIELDS = [
     // 6.1: OUROBOROS_REVIEW_MODELS / OUROBOROS_SCOPE_REVIEW_MODELS are no
     // longer authored here — the Review lanes section composes the ONE
     // structured setting; the comma keys stay a backend-derived projection.
-    ['s-deep-self-review-model', 'OUROBOROS_MODEL_DEEP_SELF_REVIEW'], ['s-skills-repo-path', 'OUROBOROS_SKILLS_REPO_PATH'],
+    // R7: OUROBOROS_MODEL_DEEP_SELF_REVIEW is not authored here either — the
+    // deep self-review row lives in Review lanes; the key is the backend's
+    // invisible migration source for that row.
+    ['s-skills-repo-path', 'OUROBOROS_SKILLS_REPO_PATH'],
     ['s-clawhub-registry-url', 'OUROBOROS_CLAWHUB_REGISTRY_URL'], ['s-websearch-model', 'OUROBOROS_WEBSEARCH_MODEL'], ['s-gh-repo', 'GITHUB_REPO'],
     ['s-local-source', 'LOCAL_MODEL_SOURCE'], ['s-local-filename', 'LOCAL_MODEL_FILENAME'], ['s-local-chat-format', 'LOCAL_MODEL_CHAT_FORMAT'],
     ['s-subagent-worktree-root', 'OUROBOROS_SUBAGENT_WORKTREE_ROOT'], ['s-subagent-projects-root', 'OUROBOROS_SUBAGENT_PROJECTS_ROOT'],
@@ -93,10 +99,15 @@ function isTruthySetting(value) {
     return value === true || ['true', '1', 'yes', 'on'].includes(normalized);
 }
 
-function setStatus(text, tone = 'ok') {
+// `owner` names the surface a message belongs to (today only the Available
+// subagents roster claims one); a later message from anyone else drops it, so
+// an owner may clear its own stale message but never a newer one.
+function setStatus(text, tone = 'ok', owner = '') {
     const status = byId('settings-status');
     status.textContent = text;
     status.dataset.tone = tone;
+    if (owner) status.dataset.owner = owner;
+    else delete status.dataset.owner;
 }
 
 function setButtonBusy(button, busy) {
@@ -285,7 +296,8 @@ function renderExtensionSettingsSections(root, sections) {
                 });
                 const data = await resp.json().catch(() => ({}));
                 if (!resp.ok || data.error) throw new Error(data.error || `HTTP ${resp.status}`);
-                setInlineStatus(status, data.message || 'Saved.', 'ok');
+                const outcome = extensionActionStatus(data);
+                setInlineStatus(status, outcome.text, outcome.tone);
             } catch (err) {
                 setInlineStatus(status, err.message || String(err), 'danger');
             } finally {
@@ -312,27 +324,6 @@ function collectSecretValue(id, body) {
     if (value && !value.includes('...')) body[settingKey] = value;
 }
 
-// Fallback picker pills mirror config defaults plus useful direct-provider ids.
-const SETTINGS_FALLBACK_MODELS = [
-    'google/gemini-3.7-flash',
-    'x-ai/grok-4.6',
-    'openai/gpt-5.6-terra',
-    'openai/gpt-5.6-sol',
-    'openai/gpt-5.6-luna',
-    'openai::gpt-5.6-terra',
-    'openai::gpt-5.6-sol',
-    'openai::gpt-5.6-luna',
-    'anthropic/claude-sonnet-5',
-    'anthropic/claude-opus-5',
-    'anthropic::claude-sonnet-5',
-    'anthropic::claude-opus-5',
-    'anthropic::claude-opus-4-6',
-    'deepseek/deepseek-v4-pro',
-    'minimax::MiniMax-M3',
-    'minimax::MiniMax-M2.7',
-];
-
-let settingsModelCatalogItems = SETTINGS_FALLBACK_MODELS.map((value) => ({ value, label: 'Suggested model' }));
 
 /**
  * Pure predicate (v6.82 P2): should the collapsed Settings "More providers"
@@ -342,11 +333,12 @@ let settingsModelCatalogItems = SETTINGS_FALLBACK_MODELS.map((value) => ({ value
  * Exported for dependency-free node tests.
  */
 export function moreProvidersCredentialConfigured({
-    cloudruKey = '', minimaxKey = '', gigachatCredentials = '', gigachatUser = '', gigachatPassword = '',
+    cloudruKey = '', minimaxKey = '', deepseekKey = '', gigachatCredentials = '', gigachatUser = '', gigachatPassword = '',
 } = {}) {
     const has = (v) => Boolean(String(v ?? '').trim());
     return has(cloudruKey)
         || has(minimaxKey)
+        || has(deepseekKey)
         || has(gigachatCredentials)
         || (has(gigachatUser) && has(gigachatPassword));
 }
@@ -415,10 +407,19 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     let settingsDirty = false;
     const providerTestGenerations = new Map();
     const providerTestsInFlight = new Set();
+    const modelRoles = createModelRolesEditor({ hostId: 'settings-model-roles',
+        onChange: () => updateSettingsDirtyState() });
+    modelRoles.mount();
     initMcpSettings({ onChange: updateSettingsDirtyState });
     initReviewerSlots({ onChange: () => updateSettingsDirtyState() });
     initSubagentsSection({
         onChange: () => updateSettingsDirtyState(),
+        // The roster's section line and the footer message it owns read one
+        // verdict: when the judged rows come clean, the footer clears with the
+        // line and the tint — unless someone else has written the footer since.
+        onJudged: (clean) => {
+            if (clean && byId('settings-status').dataset.owner === 'subagents') setStatus('', 'ok');
+        },
         isOuterDraftClean: () => !settingsDirty,
         onGeneratedApply: () => {
             if (settingsLoaded && !settingsDirty) setSettingsCleanBaseline();
@@ -522,7 +523,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     }
 
     function discardUnsavedSettingsDraft() {
-        closeSettingsModelPickers();
         applySettings(currentSettings || {});
         setSettingsCleanBaseline();
         setStatus('', 'ok');
@@ -552,10 +552,9 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         applySecretInputs(page, s);
         INPUT_FIELDS.forEach(([id, key, fallback = '']) => applyInputValue(id, fallback && !s[key] ? fallback : s[key]));
         VALUE_FIELDS.forEach(([id, key, fallback]) => { byId(id).value = s[key] || fallback; });
-        setupModelSlots().forEach((slot) => {
-            applyInputValue(slot.settingsInputId, s[slot.settingKey]);
-            if (slot.settingsToggleId) applyCheckboxValue(slot.settingsToggleId, s[`USE_LOCAL_${slot.slot.toUpperCase()}`]);
-        });
+        modelRoles.load(s, { ...setupContract, modelSlots: setupModelSlots().map((slot) => ({
+            ...slot, inputId: slot.settingsInputId,
+        })) });
         applyCheckboxValue('s-auto-grant-reviewed-skills', s.OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS);
         applyCheckboxValue('s-update-autocheck-enabled', s.OUROBOROS_UPDATE_AUTOCHECK_ENABLED);
         // Owner-facing mutative-subagents control shows the EFFECTIVE state when it
@@ -633,6 +632,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (moreProvidersCredentialConfigured({
             cloudruKey: value('s-cloudru-key'),
             minimaxKey: value('s-minimax-key'),
+            deepseekKey: value('s-deepseek-key'),
             gigachatCredentials: value('s-gigachat-credentials'),
             gigachatUser: value('s-gigachat-user'),
             gigachatPassword: value('s-gigachat-password'),
@@ -689,7 +689,6 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         settingsLoaded = true;
         setSettingsCleanBaseline();
         armCleanBaselineOnStatusSettle();
-        closeSettingsModelPickers();
         _renderNetworkHint(data._meta);
         markSettingsDirty = updateSettingsDirtyState;
         syncSettingsLoadState();
@@ -757,10 +756,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             // unloaded/unparseable editor omits the key on an unrelated save.
             ...collectSubagentsSettings(),
         };
-        setupModelSlots().forEach((slot) => {
-            body[slot.settingKey] = fieldValue(slot.settingsInputId);
-            if (slot.settingsToggleId) body[`USE_LOCAL_${slot.slot.toUpperCase()}`] = Boolean(byId(slot.settingsToggleId)?.checked);
-        });
+        Object.assign(body, modelRoles.collect());
         INPUT_FIELDS.forEach(([id, key, fallback = '']) => {
             const value = fieldValue(id).trim();
             body[key] = key === 'OUROBOROS_SERVER_HOST' ? value || fallback : value || '';
@@ -938,13 +934,15 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
                     + `Confirm that this reviewer supports a ${floorText}-token context window?\n`
                     + `provider: ${ack.provider || '(default)'}\nmodel: ${ack.model}\n`
                     + `base_url: ${ack.base_url || '(default)'}\n\n`
-                    + 'This applies only to this exact model/provider. Cancelling leaves scope '
+                    + (ack.options ? `account: ${ack.options.credential_profile_id}\nidentity: ${ack.options.account_fingerprint}\n\n` : '')
+                    + 'This applies only to the exact route shown above. Cancelling leaves scope '
                     + 'review blocking commits on this route.',
                 confirmLabel: 'Confirm window',
             });
             if (!confirmed) continue;
             await apiClient.ownerCapabilityAck({
                 provider: ack.provider, model: ack.model, base_url: ack.base_url,
+                options: ack.options, route_fp: ack.route_fp,
                 window_tokens: floor, note: 'owner-confirmed scope reviewer window',
             });
             acked += 1;
@@ -1004,8 +1002,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (host.querySelector('.muted')) host.innerHTML = '';
         const row = customSecretRow();
         host.appendChild(row);
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        row.querySelector('[data-custom-secret-key]')?.focus();
+        revealNewRow(row, row.querySelector('[data-custom-secret-key]'));
         markSettingsDirty();
     });
 
@@ -1029,101 +1026,12 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         if (event.detail?.page === 'settings') refreshSettingsAfterExtensionChange('settings page shown');
     });
 
-    function closeSettingsModelPickers(exceptPicker = null) {
-        page.querySelectorAll('[data-model-picker]').forEach((picker) => {
-            if (picker === exceptPicker) return;
-            const panel = picker.querySelector('.model-picker-results');
-            if (!panel) return;
-            panel.hidden = true;
-            panel.innerHTML = '';
-        });
-    }
-
-    function renderSettingsModelPicker(input) {
-        const picker = input.closest('[data-model-picker]');
-        const panel = picker?.querySelector('.model-picker-results');
-        if (!picker || !panel) return;
-        const needle = String(input.value || '').trim().toLowerCase();
-        let items = settingsModelCatalogItems
-            .filter((item) => {
-                const haystack = `${item.value} ${item.label || ''} ${item.provider || ''}`.toLowerCase();
-                return !needle || haystack.includes(needle);
-            })
-            .slice(0, 8);
-        if (!items.length && needle) {
-            items = settingsModelCatalogItems.slice(0, 8);
-        }
-        if (!items.length) {
-            panel.hidden = true;
-            panel.innerHTML = '';
-            return;
-        }
-        panel.innerHTML = items.map((item) => `
-            <button type="button" class="model-picker-item" data-value="${escapeHtml(item.value)}">
-                <span class="model-picker-item-value">${escapeHtml(item.value)}</span>
-                <span class="model-picker-item-label">${escapeHtml(item.label || item.provider || 'Catalog model')}</span>
-            </button>
-        `).join('');
-        panel.hidden = false;
-    }
-
-    page.addEventListener('focusin', (event) => {
-        const input = event.target instanceof Element
-            ? event.target.closest('[data-model-picker] input')
-            : null;
-        if (!input) return;
-        const picker = input.closest('[data-model-picker]');
-        closeSettingsModelPickers(picker);
-        renderSettingsModelPicker(input);
-    });
-    page.dataset.modelPickerBound = '1';
-
-    page.addEventListener('input', (event) => {
-        const input = event.target instanceof Element
-            ? event.target.closest('[data-model-picker] input')
-            : null;
-        if (!input) return;
-        const picker = input.closest('[data-model-picker]');
-        closeSettingsModelPickers(picker);
-        renderSettingsModelPicker(input);
-    });
-
-    page.addEventListener('mousedown', (event) => {
-        const item = event.target instanceof Element
-            ? event.target.closest('.model-picker-item')
-            : null;
-        if (item) {
-            const picker = item.closest('[data-model-picker]');
-            const input = picker?.querySelector('input');
-            if (input) {
-                event.preventDefault();
-                input.value = item.dataset.value || '';
-                closeSettingsModelPickers();
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            return;
-        }
-        if (!(event.target instanceof Element) || !event.target.closest('[data-model-picker]')) {
-            closeSettingsModelPickers();
-        }
-    });
-
-    document.addEventListener('settings-model-catalog:updated', (event) => {
-        const items = Array.isArray(event.detail?.items) ? event.detail.items : [];
-        settingsModelCatalogItems = items.length
-            ? items.map((item) => ({
-                value: item.value || item.id || '',
-                label: item.label || item.provider || 'Catalog model',
-                provider: item.provider || '',
-            })).filter((item) => item.value)
-            : SETTINGS_FALLBACK_MODELS.map((value) => ({ value, label: 'Suggested model' }));
-        page.querySelectorAll('[data-model-picker]').forEach((picker) => {
-            const panel = picker.querySelector('.model-picker-results');
-            if (panel && !panel.hidden) {
-                const input = picker.querySelector('input');
-                renderSettingsModelPicker(input);
-            }
-        });
+    const onModelCatalog = (event) => modelRoles.adoptCatalog(event.detail);
+    document.addEventListener('settings-model-catalog:updated', onModelCatalog);
+    window.addEventListener('pagehide', (event) => {
+        if (event.persisted) return;
+        modelRoles.destroy();
+        document.removeEventListener('settings-model-catalog:updated', onModelCatalog);
     });
 
     // Provider readiness probe: one short model request against the card draft.
@@ -1213,6 +1121,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             setStatus('Reload current settings successfully before saving.', 'warn');
             return;
         }
+        // The owner just tried to commit the draft — every Save click is one,
+        // whichever validation aborts it below — so from here the roster shows
+        // its own errors beside the rows they name, not only in this status.
+        noteSubagentsSaveAttempt();
         // Validate Every-N cadence before save: malformed N must NOT silently coerce
         // into a valid (e.g. every-task) cadence. Abort with a visible error instead.
         if (byId('s-post-task-evolution-mode')?.value === 'every_n'
@@ -1221,8 +1133,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
             return;
         }
         const subagentErrors = validateSubagentsDraft();
+        const modelError = modelRoles.validate();
+        if (modelError) { setStatus(modelError, 'warn'); return; }
         if (subagentErrors.length) {
-            setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn');
+            setStatus(`Available subagents: ${subagentErrors[0]}`, 'warn', 'subagents');
             return;
         }
         const body = collectBody();

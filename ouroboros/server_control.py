@@ -93,14 +93,24 @@ def execute_panic_stop(
     data_dir: pathlib.Path,
     panic_exit_code: int,
     log: Any,
+    bound_port: int | None = None,
 ) -> None:
     """Full emergency stop: kill everything, write panic flag, hard-exit.
 
-    Known limit (disclosed residual): an ATTACHED Claudexor daemon — one this
-    process did not spawn — is left alive, because ``get_owned_daemon().stop()``
-    only ever kills a self-started daemon's process group (delegated harness
-    runs die with that group); cross-generation cleanup of a stale owned daemon
-    belongs to the process-custody reaper at the next manual start.
+    ``bound_port`` is the main port the server actually bound. The caller owns
+    that fact and passes it in; this leaf does not reach back into the server
+    module for it. Omitted (or falsy), the sweep falls back to the default
+    install port — see the sweep below.
+
+    The owned Claudexor daemon is stopped by ``get_owned_daemon().stop()``:
+    the self-started child and every custody-ledger root confirmed as this
+    installation's daemon (a prior generation's or a worker's spawn), each by
+    process group so the delegated harness runs die with it. Disclosed
+    residuals: a daemon this installation never ledgered (spawned inside the
+    spawn-to-record window, or by a caller outside custody) is not signalled
+    by name or port; on Windows the ledger identity is unmeasurable, so only
+    the self-started child is stopped here and the launcher's kill-on-close Job
+    Object ends the rest with the application.
     """
     log.critical("PANIC STOP initiated.")
     try:
@@ -155,15 +165,24 @@ def execute_panic_stop(
         pass
 
     # Owned Claudexor daemon: panic is instant and hard, so no network run-cancel
-    # calls — stop() kills the self-spawned daemon's whole process group, taking
-    # the delegated harness runs (its children) down with it. Attached daemons
-    # are never killed (see docstring residual).
+    # calls — stop() kills the self-spawned daemon and every ledger-confirmed own
+    # daemon root by process group, taking the delegated harness runs (their
+    # children) down with them; the worker tree-kill below spares daemon roots
+    # by design, so this explicit stop is what ends them (see docstring residuals).
     try:
         from ouroboros.claudexor_daemon import get_owned_daemon
 
         get_owned_daemon().stop()
-    except Exception:
-        pass
+    except Exception as exc:
+        log.critical("PANIC: owned Claudexor stop raised %s; custody is unconfirmed", type(exc).__name__)
+        try:
+            from ouroboros.utils import append_jsonl, utc_now_iso
+            append_jsonl(data_dir / "logs" / "supervisor.jsonl", {
+                "ts": utc_now_iso(), "type": "process_stop_unconfirmed",
+                "purpose": "claudexor_daemon", "reason": f"stop raised {type(exc).__name__}",
+            })
+        except Exception:
+            log.critical("PANIC: failed to record unconfirmed daemon stop")
 
     try:
         from ouroboros.tools.shell import kill_all_tracked_subprocesses
@@ -211,16 +230,16 @@ def execute_panic_stop(
             except (ProcessLookupError, PermissionError):
                 pass
         # Sweep the actually bound main port (not hardcoded 8765/8766 — a
-        # custom-port install would panic-kill an unrelated listener).
+        # custom-port install would panic-kill an unrelated listener). The
+        # default install port stays the last resort, for a caller that has no
+        # bound port to give and for a sweep that fails.
         try:
-            import server as _server_mod
-
-            kill_process_on_port(_server_mod._actual_bound_port())
+            kill_process_on_port(bound_port or 8765)
         except Exception:
             kill_process_on_port(8765)
         kill_process_on_port(host_service_port())
     except Exception:
         pass
 
-    log.critical("PANIC STOP complete — hard exit with code %d.", panic_exit_code)
+    log.critical("PANIC STOP teardown finished — hard exit with code %d; consult stop diagnostics for unconfirmed custody.", panic_exit_code)
     os._exit(panic_exit_code)
