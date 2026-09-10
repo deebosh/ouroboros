@@ -102,7 +102,7 @@ def normalize_attachment_manifest(value: Any) -> list[Dict[str, Any]]:
     rows: list[Dict[str, Any]] = []
     allowed = (
         "ordinal", "status", "reason", "label", "root", "relpath",
-        "abs_path", "mime", "is_image",
+        "abs_path", "mime", "is_image", "size", "sha256", "rule",
     )
     for index, item in enumerate(value):
         if not isinstance(item, Mapping):
@@ -187,7 +187,10 @@ def normalize_delegation_budget(value: Any) -> Dict[str, Any]:
     return budget
 
 
-VALID_IMPROVEMENT_POLICIES = ("fixed", "adaptive", "until_deadline")
+# ABI 7.0 (owner Q10=A): the legacy ``until_deadline`` policy alias and the
+# never-consumed ``stall_rounds_threshold`` knob are REMOVED. An unknown
+# policy (including the retired spelling) normalizes to "fixed".
+VALID_IMPROVEMENT_POLICIES = ("fixed", "adaptive")
 
 
 def _opt_pct(value: Any) -> Any:
@@ -230,7 +233,7 @@ def normalize_budget_profile(value: Any) -> Dict[str, Any]:
 
     ``improvement_policy``: fixed (default; the configured/max pass cap decides) |
     adaptive (passes stop early when the remaining window can no longer fit a
-    review comfortably) | until_deadline (passes bounded ONLY by the time gate).
+    review comfortably).
 
     ``cost_hard_stop_pct`` (v6.56.0, additive): the in-task cost hard-stop as a
     percentage of the budget remaining at task start. None -> the historical
@@ -250,7 +253,6 @@ def normalize_budget_profile(value: Any) -> Dict[str, Any]:
         "improvement_policy": policy if policy in VALID_IMPROVEMENT_POLICIES else "fixed",
         "max_improvement_passes": _opt_nonneg_int(v.get("max_improvement_passes")),
         "reserve_finalization_pct": _opt_pct(v.get("reserve_finalization_pct")),
-        "stall_rounds_threshold": _opt_nonneg_int(v.get("stall_rounds_threshold")),
         "cost_hard_stop_pct": _opt_cost_hard_stop_pct(v.get("cost_hard_stop_pct")),
     }
 
@@ -376,6 +378,41 @@ def effective_acceptance_claims(
     return [], ""
 
 
+def normalize_browser_origin(value: Any, *, origin_only: bool = False) -> str:
+    """Canonical exact HTTP(S) origin; malformed or wildcard targets grant nothing."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    if not isinstance(value, str):
+        return ""
+    if any(character.isspace() or ord(character) < 32 for character in value.strip()):
+        return ""
+    try:
+        parsed = urlsplit(value.strip())
+        host = str(parsed.hostname or "").rstrip(".").lower()
+        if parsed.scheme not in {"http", "https"} or not host or any(c in host for c in "*%\\"):
+            return ""
+        if parsed.username is not None or parsed.password is not None:
+            return ""
+        if origin_only and (parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+            return ""
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        if not 0 < port < 65536:
+            return ""
+        host = f"[{ipaddress.ip_address(host).compressed}]" if ":" in host else host.encode("idna").decode("ascii")
+        return f"{parsed.scheme}://{host}:{port}"
+    except (ValueError, UnicodeError):
+        return ""
+
+
+def normalize_allowed_origins(value: Any) -> list[str]:
+    """Normalize only explicit origins, preserving an empty declared subset."""
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(origin for item in value
+                              if (origin := normalize_browser_origin(item, origin_only=True))))
+
+
 def normalize_resource_policy(value: Any) -> Dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
@@ -415,6 +452,9 @@ def normalize_resource_policy(value: Any) -> Dict[str, Any]:
             out["protected_artifacts"] = records
     for key, raw in value.items():
         if key == "protected_artifacts":
+            continue
+        if key == "allowed_origins":
+            out[key] = normalize_allowed_origins(raw)
             continue
         if raw is not None:
             out[str(key)] = raw
@@ -579,6 +619,14 @@ def build_task_contract(task: Mapping[str, Any] | None) -> Dict[str, Any]:
             else (task.get("answer_protocol") or metadata.get("answer_protocol"))
         ),
     }
+    attachment_ref = merged.get("attachment_manifest_ref", task.get("attachment_manifest_ref"))
+    if attachment_ref is not None:
+        if not isinstance(attachment_ref, Mapping):
+            raise ValueError("attachment_manifest_ref must be a file reference")
+        contract["attachment_manifest_ref"] = {
+            key: copy.deepcopy(attachment_ref[key]) for key in
+            ("kind", "root", "path", "size", "sha256", "read", "count") if key in attachment_ref
+        }
     predecessor_authority = (
         merged.get("predecessor_authority")
         if isinstance(merged.get("predecessor_authority"), Mapping)
@@ -786,4 +834,4 @@ def attach_task_contract(task: Dict[str, Any]) -> Dict[str, Any]:
     return task
 
 
-__all__ = ["answer_protocol_active", "attach_task_contract", "build_task_contract", "effective_acceptance_claims", "normalize_acceptance_claims", "normalize_allowed_resources", "normalize_answer_protocol", "normalize_attachment_manifest", "normalize_bool", "normalize_budget_profile", "normalize_delegation_budget", "normalize_depth_provenance", "normalize_disabled_tools", "normalize_resource_policy"]
+__all__ = ["answer_protocol_active", "attach_task_contract", "build_task_contract", "effective_acceptance_claims", "normalize_acceptance_claims", "normalize_allowed_resources", "normalize_allowed_origins", "normalize_browser_origin", "normalize_answer_protocol", "normalize_attachment_manifest", "normalize_bool", "normalize_budget_profile", "normalize_delegation_budget", "normalize_depth_provenance", "normalize_disabled_tools", "normalize_resource_policy"]

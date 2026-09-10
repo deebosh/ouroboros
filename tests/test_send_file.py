@@ -4,13 +4,8 @@ import types
 
 import pytest
 
-from ouroboros.tools.core import (
-    _MAX_DOCUMENT_FILE_BYTES,
-    _MAX_LINK_ACTIONS,
-    _detect_document_mime,
-    _send_file,
-    _send_links,
-)
+from ouroboros.tools.core import _MAX_LINK_ACTIONS, _send_links
+from ouroboros.tools.core_artifacts import _send_file, _detect_document_mime, _MAX_DOCUMENT_FILE_BYTES
 from ouroboros.gateway.files import download_url_for_local_file
 
 
@@ -29,7 +24,7 @@ class TestSendFile:
         doc = tmp_path / "report.csv"
         doc.write_text("a,b,c\n1,2,3\n", encoding="utf-8")
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(drive_root=tmp_path)
         result = _send_file(ctx, file_path=str(doc), caption="quarterly report")
 
         assert "OK" in result
@@ -45,7 +40,7 @@ class TestSendFile:
         blob = tmp_path / "data.bin"
         blob.write_bytes(b"\x00\x01\x02\x03")
 
-        ctx = _make_ctx()
+        ctx = _make_ctx(drive_root=tmp_path)
         result = _send_file(ctx, file_path=str(blob))
 
         assert "OK" in result
@@ -55,7 +50,7 @@ class TestSendFile:
         doc = tmp_path / "note.txt"
         doc.write_text("hi", encoding="utf-8")
 
-        ctx = _make_ctx(chat_id=0)
+        ctx = _make_ctx(chat_id=0, drive_root=tmp_path)
         result = _send_file(ctx, file_path=str(doc))
 
         assert "OK" in result
@@ -77,18 +72,25 @@ class TestSendFile:
         assert "not found" in result.lower()
 
     def test_directory_is_rejected(self, tmp_path):
-        ctx = _make_ctx()
+        ctx = _make_ctx(drive_root=tmp_path)
         result = _send_file(ctx, file_path=str(tmp_path))
         assert "not found" in result.lower()
         assert ctx.pending_events == []
 
-    def test_file_too_large(self, tmp_path):
+    def test_large_file_has_captured_reference_without_inline_bytes(self, tmp_path):
+        from ouroboros.gateway.files import resolve_task_file_reference
         big = tmp_path / "huge.bin"
-        big.write_bytes(b"\x00" * (_MAX_DOCUMENT_FILE_BYTES + 1))
-
-        ctx = _make_ctx()
+        with big.open("wb") as handle:
+            handle.seek(_MAX_DOCUMENT_FILE_BYTES)
+            handle.write(b"last")
+        ctx = _make_ctx(drive_root=tmp_path / "data")
         result = _send_file(ctx, file_path=str(big))
-        assert "too large" in result.lower()
+        assert result.startswith("OK")
+        event = ctx.pending_events[0]
+        assert event["file_base64"] == ""
+        assert event["file_ref"]["size"] == big.stat().st_size
+        stored = resolve_task_file_reference(ctx.drive_root, ctx.task_id, event["file_ref"])
+        assert stored.is_file() and stored != big
 
     def test_no_input_returns_error(self):
         ctx = _make_ctx()
@@ -107,12 +109,12 @@ class TestSendFile:
 
         assert "OK" in result
         event = ctx.pending_events[0]
-        assert event["download_url"].startswith("/api/files/download?path=")
-        # The URL points at the durable artifact copy, not the original path.
-        assert "task_results/artifacts" in event["download_url"]
+        assert event["download_url"].startswith("/api/tasks/t-send-file/artifacts/")
+        assert event["download_url_compat"].startswith("/api/files/download?path=")
+        assert "task_results/artifacts" in event["download_url_compat"]
 
-    def test_event_download_url_empty_when_outside_browser_root(self, tmp_path, monkeypatch):
-        # Root is an unrelated dir; the delivered file is not servable → "".
+    def test_canonical_url_survives_unrelated_browser_root(self, tmp_path, monkeypatch):
+        # The canonical task route is independent of the current Files root.
         other = tmp_path / "root"
         other.mkdir()
         monkeypatch.setenv("OUROBOROS_FILE_BROWSER_DEFAULT", str(other))
@@ -123,7 +125,8 @@ class TestSendFile:
         result = _send_file(ctx, file_path=str(doc))
 
         assert "OK" in result
-        assert ctx.pending_events[0]["download_url"] == ""
+        assert ctx.pending_events[0]["download_url"].startswith("/api/tasks/t-send-file/artifacts/")
+        assert ctx.pending_events[0]["download_url_compat"] == ""
 
 
 class TestDownloadUrlForLocalFile:
@@ -281,7 +284,7 @@ class TestSendLinks:
 
 
 def test_send_links_delivery_handler_prefers_bound_project_chat(monkeypatch):
-    from supervisor import chat_delivery_events
+    from supervisor import events_chat_delivery as chat_delivery_events
 
     sent = []
     ctx = types.SimpleNamespace(
@@ -311,3 +314,16 @@ def test_send_links_delivery_handler_prefers_bound_project_chat(monkeypatch):
         "References",
         "task-links",
     )]
+
+
+@pytest.mark.parametrize("name", [".gitignore", "ж" * 100 + ".txt"], ids=["dotfile", "utf8"])
+def test_benign_filename_capture_stays_readable_by_document_bridge(tmp_path, name):
+    from ouroboros.gateway.files import resolve_task_file_reference
+    source = tmp_path / name
+    source.write_text("build/\n")
+    ctx = _make_ctx(drive_root=tmp_path / "data")
+    assert _send_file(ctx, str(source)).startswith("OK")
+    event = ctx.pending_events[0]
+    assert event["filename"] == name
+    assert not event["file_ref"]["path"].startswith(".")
+    assert resolve_task_file_reference(ctx.drive_root, ctx.task_id, event["file_ref"]).read_text() == "build/\n"

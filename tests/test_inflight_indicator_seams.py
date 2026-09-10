@@ -3,7 +3,7 @@
 Pins the three seams the browser contract depends on:
 
 1. ``supervisor.workers._run_chat_task`` tracks the turn in the
-   ``DirectActivityRegistry`` for exactly the duration of ``agent.handle_task``
+   ``DirectActivityRegistry`` through preparation, ``agent.handle_task`` and event delivery
    with the correct ``kind``/``client_message_id``/``project_id``.
 2. ``supervisor.events._handle_typing_start`` stamps ``kind`` and
    ``client_message_id`` from the registry onto the typing action — and leaves

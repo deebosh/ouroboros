@@ -242,8 +242,8 @@ def test_direct_operator_can_read_native_payload_but_not_mutate_or_forge_sidecar
         "write_file",
         {**selector, "path": ".seed-origin", "content": "forged\n"},
     )
-    assert "BLOCKED" in ordinary_write
-    assert "BLOCKED" in sidecar_write
+    assert "SKILL_PAYLOAD_ARG_ERROR" in ordinary_write
+    assert "SKILL_PAYLOAD_ARG_ERROR" in sidecar_write
     assert not (payload / "new.txt").exists()
     assert (payload / ".seed-origin").read_text(encoding="utf-8") == "launcher-seed\n"
 
@@ -484,7 +484,8 @@ def test_external_alias_does_not_widen_child_or_repair_profiles(
     _skill(data, "user-native")
     ctx = ToolContext(repo_dir=repo, drive_root=data, task_constraint=constraint)
 
-    with pytest.raises(ValueError, match="cannot select skill location=native"):
+    refusal = "cannot select skill location=native" if constraint.mode == "local_readonly_subagent" else "selected a different skill payload"
+    with pytest.raises(ValueError, match=refusal):
         build_resolved_resource_binding(
             ctx,
             root="skill_payload",

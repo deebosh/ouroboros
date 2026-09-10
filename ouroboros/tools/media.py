@@ -134,7 +134,7 @@ def _ocr_pdf(ctx: ToolContext, path: str = "", max_pages: int = 0) -> str:
         return (
             "⚠️ OCR_PDF_SCANNED_UNAVAILABLE: this PDF has no extractable text layer (likely "
             "scanned/image-only). True OCR of scanned pages is not available in this build — "
-            "render a page to an image and call vlm_query on it instead."
+            "render a page to an image and view_image it (or vlm_query it) instead."
         )
     note = "" if total <= cap else f"\n\n[disclosed: showed first {cap} of {total} pages]"
     if len(text) > _OCR_PDF_MAX_CHARS:
@@ -302,7 +302,7 @@ def get_tools() -> List[ToolEntry]:
                     "Extract the text of a local PDF file (the embedded text layer of a digital PDF). "
                     "Use for reading PDFs attached to the task (see the [ATTACHMENTS] manifest) or produced "
                     "during work. Scanned/image-only PDFs have no text layer and return a typed "
-                    "OCR_PDF_SCANNED_UNAVAILABLE notice — for those, render a page and use vlm_query."
+                    "OCR_PDF_SCANNED_UNAVAILABLE notice — for those, render a page and view_image it (or vlm_query it)."
                 ),
                 "parameters": {
                     "type": "object",

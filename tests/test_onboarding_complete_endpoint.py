@@ -208,9 +208,9 @@ def test_antigravity_install_succeeds_without_inventing_reviewer_seats(onboardin
         "harnesses": [{
             "id": "agy", "status": "ok", "enabled": True,
             "models": [
-                {"id": "gemini-3.7-flash-low"},
-                {"id": "gemini-3.7-flash-medium"},
-                {"id": "gemini-3.7-flash-high"},
+                {"id": "gemini-3.8-flash-low"},
+                {"id": "gemini-3.8-flash-medium"},
+                {"id": "gemini-3.8-flash-high"},
             ],
         }],
         "profiles": {
@@ -229,7 +229,7 @@ def test_antigravity_install_succeeds_without_inventing_reviewer_seats(onboardin
     items = json.loads(saved[SUBAGENTS_SETTING])["items"]
     assert items[0]["route"] == {
         "kind": "agent_session",
-        "target_id": "agy=gemini-3.7-flash-high",
+        "target_id": "agy=gemini-3.8-flash-high",
         "credential_profile_id": "",
     }
     assert saved["OUROBOROS_REVIEWER_SLOTS"] == ""
@@ -256,6 +256,166 @@ def test_daemon_unavailable_persists_nothing_and_keeps_the_wizard_open(onboardin
     assert not onboarding.settings_path.exists()
     assert onboarding.calls["supervisor"] == 0
     assert onboarding.calls["env"] == []
+
+
+def test_snapshot_read_that_never_answers_is_a_typed_timeout_not_a_hang(onboarding, monkeypatch):
+    """Issue #464: the owner pressed the final save and the button stayed on
+    "Saving..." forever because the ONE Claudexor snapshot read blocked inside
+    the owned-daemon manager. The read is bounded by the config SSOT; a read
+    that outlives the bound answers the same skippable 503 the dead-engine
+    case does, and nothing is written."""
+    import threading
+    import time
+
+    import ouroboros.config as config
+    import ouroboros.gateway.onboarding as gw_onboarding
+
+    monkeypatch.setattr(config, "get_onboarding_snapshot_timeout_sec", lambda: 1)
+    monkeypatch.setattr(gw_onboarding, "_snapshot_inflight", None)
+    release = threading.Event()
+
+    def _wedged_read():
+        release.wait(30)  # never released before the bound; released at teardown
+        return {"daemon": {"state": "running"}, "harnesses": [], "profiles": {}}
+
+    monkeypatch.setattr(gw_onboarding, "_read_harness_snapshot", _wedged_read)
+    started = time.monotonic()
+    try:
+        response = onboarding.client.post(
+            "/api/onboarding/complete",
+            json={**WIZARD_PAYLOAD, "subscriptionsConnected": True},
+        )
+    finally:
+        release.set()
+    elapsed = time.monotonic() - started
+    assert elapsed < 10, f"completion blocked for {elapsed:.1f}s instead of timing out"
+    assert response.status_code == 503, response.text
+    body = response.json()
+    assert body["code"] == "daemon_timeout"
+    assert body["can_skip"] is True
+    assert body["saved"] is False
+    assert not onboarding.settings_path.exists()
+    assert onboarding.calls["supervisor"] == 0
+
+
+def test_settings_document_held_past_its_bound_is_a_typed_busy_not_a_hang(onboarding, monkeypatch):
+    """The second half of issue #464: a writer wedged inside the in-process
+    settings-document lock must not hold the onboarding save forever. The
+    lock acquisition is bounded by the config SSOT and answers 503
+    ``settings_busy`` with nothing written."""
+    import threading
+    import time
+
+    import ouroboros.config as config
+    import ouroboros.gateway.owner_settings as owner_settings
+
+    monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 1)
+    acquired = owner_settings._settings_document_lock.acquire(timeout=5)
+    assert acquired
+    started = time.monotonic()
+    try:
+        response = onboarding.client.post(
+            "/api/onboarding/complete",
+            json={**WIZARD_PAYLOAD, "subscriptionsConnected": False},
+        )
+    finally:
+        owner_settings._settings_document_lock.release()
+    elapsed = time.monotonic() - started
+    assert elapsed < 10, f"completion blocked for {elapsed:.1f}s instead of timing out"
+    assert response.status_code == 503, response.text
+    body = response.json()
+    assert body["code"] == "settings_busy"
+    assert body["saved"] is False
+    assert not onboarding.settings_path.exists()
+    assert onboarding.calls["supervisor"] == 0
+    del threading
+
+
+def test_a_persist_wedged_past_the_writer_bound_answers_the_typed_unknown(onboarding, monkeypatch):
+    """Audit point 3: the INITIATING onboarding writer is capped by the same
+    seam as every settings.py writer (``settings._run_settings_writer``). A
+    persist wedged in its post-commit hot-reload answers 503
+    ``settings_save_timeout`` with ``saved: null`` at twice the document-lock
+    bound and the request RETURNS — the bytes are already on disk, which is
+    exactly why neither ``true`` nor ``false`` would be honest — while the
+    abandoned body still runs to completion in its thread."""
+    import threading
+    import time
+
+    import ouroboros.config as config
+    import ouroboros.gateway.settings as gw_settings
+
+    monkeypatch.setattr(config, "get_settings_document_lock_timeout_sec", lambda: 0.2)
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _wedged(*_a, **_k):
+        release.wait(10)
+        finished.set()
+
+    monkeypatch.setattr(gw_settings, "_apply_settings_save_side_effects", _wedged)
+    started = time.monotonic()
+    try:
+        response = onboarding.client.post(
+            "/api/onboarding/complete",
+            json={**WIZARD_PAYLOAD, "subscriptionsConnected": False},
+        )
+        elapsed = time.monotonic() - started
+        # asyncio timers may fire up to one monotonic-clock resolution early.
+        resolution = time.get_clock_info("monotonic").resolution
+        assert 2 * 0.2 - resolution <= elapsed < 5, elapsed
+        assert not finished.is_set(), "the response must not wait for the wedged body"
+        assert response.status_code == 503, response.text
+        body = response.json()
+        assert body["code"] == "settings_save_timeout"
+        assert "saved" in body and body["saved"] is None
+        assert "still running" in body["error"]
+        assert onboarding.saved()[ONBOARDING_COMPLETED_KEY]
+        assert onboarding.calls["supervisor"] == 1
+    finally:
+        release.set()
+    assert finished.wait(10), "the abandoned body must still run to completion"
+
+
+def test_retries_join_the_wedged_snapshot_read_instead_of_leaking_a_thread_each(onboarding, monkeypatch):
+    """Adversarial finding: ``wait_for`` abandons the awaiting request, not the
+    worker. On the loop's shared default executor every timed-out completion
+    would consume one worker for good and, once exhausted, every other
+    ``to_thread`` endpoint would queue behind the wedge. The read runs on its
+    own single worker and retries JOIN the in-flight read: N attempts, ONE
+    blocked thread, each answering the typed timeout within its bound."""
+    import threading
+    import time
+
+    import ouroboros.config as config
+    import ouroboros.gateway.onboarding as gw_onboarding
+
+    monkeypatch.setattr(config, "get_onboarding_snapshot_timeout_sec", lambda: 1)
+    monkeypatch.setattr(gw_onboarding, "_snapshot_inflight", None)
+    release = threading.Event()
+    started = []
+
+    def _wedged_read():
+        started.append(time.monotonic())
+        release.wait(30)
+        return {"daemon": {"state": "running"}, "harnesses": [], "profiles": {}}
+
+    monkeypatch.setattr(gw_onboarding, "_read_harness_snapshot", _wedged_read)
+    try:
+        answers = []
+        for _ in range(3):
+            t0 = time.monotonic()
+            response = onboarding.client.post(
+                "/api/onboarding/complete",
+                json={**WIZARD_PAYLOAD, "subscriptionsConnected": True},
+            )
+            answers.append((response.status_code, response.json()["code"], time.monotonic() - t0))
+    finally:
+        release.set()
+    assert [a[:2] for a in answers] == [(503, "daemon_timeout")] * 3
+    assert all(elapsed < 10 for _, _, elapsed in answers)
+    assert len(started) == 1, "each retry must join the one in-flight read, not start another blocked thread"
+    assert not onboarding.settings_path.exists()
 
 
 def test_unresolvable_model_refuses_before_any_write(onboarding):
@@ -803,12 +963,17 @@ def test_install_time_status_cannot_be_forged_from_the_payload(onboarding):
         "OUROBOROS_MODEL": "openai/gpt-5.6-luna",
     }), encoding="utf-8")
 
+    manual_slots = json.dumps({
+        "triad": [{"slot_id": "manual-triad", "route": {"kind": "api_chat", "target_id": "openai/custom"}}],
+        "scope": [{"slot_id": "manual-scope", "route": {"kind": "api_chat", "target_id": "openai/custom"}}],
+    })
+
     response = onboarding.client.post("/api/onboarding/complete", json={
         **WIZARD_PAYLOAD,
         "subscriptionsConnected": True,
         PRESET_MARKER_KEY: "",              # try to clear the latch
         "OUROBOROS_SUBSCRIPTION_PRESET_VERSION ": "1",
-        "OUROBOROS_REVIEWER_SLOTS": '{"triad": [], "scope": []}',
+        "OUROBOROS_REVIEWER_SLOTS": manual_slots,
         "OUROBOROS_SAFETY_MODE": "off",
     })
 
@@ -816,17 +981,17 @@ def test_install_time_status_cannot_be_forged_from_the_payload(onboarding):
     assert response.json()["preset"]["applied"] is False
     saved = onboarding.saved()
     assert not saved.get(PRESET_MARKER_KEY)
-    # Neither the reviewer slots nor safety mode ride through the wizard payload:
-    # the shared setup validator only copies the setup contract's own keys.
-    assert not saved.get("OUROBOROS_REVIEWER_SLOTS")
+    # Review is now an ordinary editable wizard surface. Its valid explicit
+    # value is preserved, but it cannot reopen presets or lower safety.
+    assert saved["OUROBOROS_REVIEWER_SLOTS"] == manual_slots
     assert saved.get("OUROBOROS_SAFETY_MODE", "") != "off"
 
 
-def test_subscription_alone_does_not_satisfy_the_launch_gate(onboarding):
-    """D-1: at least one API key or a local model. A subscription amplifies.
+def test_agent_only_inventory_does_not_invent_a_model_transport(onboarding):
+    """A declared subscription is checked, not trusted as raw model capability.
 
-    The shared setup validator is the first gate and refuses with its own
-    provider-list wording; nothing is written and the daemon is never asked."""
+    The fixture has only agent inventory, not model-operation catalog evidence.
+    It cannot provision Main and the atomic transaction must write nothing."""
     payload = {k: v for k, v in WIZARD_PAYLOAD.items() if k != "OPENROUTER_API_KEY"}
 
     response = onboarding.client.post(
@@ -835,13 +1000,11 @@ def test_subscription_alone_does_not_satisfy_the_launch_gate(onboarding):
     assert response.status_code == 400, response.text
     assert "local model" in response.json()["error"]
     assert not onboarding.settings_path.exists()
-    assert onboarding.calls["snapshot"] == 0
+    assert onboarding.calls["snapshot"] == 1
 
 
 def test_startup_gate_is_re_checked_after_normalization(monkeypatch, onboarding):
-    """Defence in depth on the SAME invariant: even if a payload passed the
-    shared validator, an install that would not be startup-ready is refused
-    before anything is saved — a subscription never fills that gap."""
+    """Missing model-capable access is refused after normalization and discovery."""
     import ouroboros.gateway.onboarding as gw_onboarding
 
     monkeypatch.setattr(
@@ -853,9 +1016,9 @@ def test_startup_gate_is_re_checked_after_normalization(monkeypatch, onboarding)
         "/api/onboarding/complete", json={**WIZARD_PAYLOAD, "subscriptionsConnected": True})
 
     assert response.status_code == 400, response.text
-    assert "API key or a local model" in response.json()["error"]
+    assert response.json()["code"] == "model_source_unavailable"
     assert not onboarding.settings_path.exists()
-    assert onboarding.calls["snapshot"] == 0
+    assert onboarding.calls["snapshot"] == 1
 
 
 def test_non_object_body_is_refused(onboarding):
@@ -1335,34 +1498,6 @@ def test_an_uncontended_save_is_never_refused(onboarding):
         onboarding.settings_path.read_text(encoding="utf-8"))
 
 
-def test_an_unreadable_settings_file_can_never_compare_equal(onboarding, monkeypatch):
-    """Fail-OPEN corner, found by the delta review of this very seam: folding
-    every read failure of one exception class into one stable token let a swap
-    between two DIFFERENT unreadable files satisfy the equality check.
-
-    Reachable, because the loader silently falls back to defaults when it cannot
-    read while the atomic rename still lands (the directory stays writable).
-
-    The refusal is injected rather than provoked with chmod 0o000: on Windows
-    chmod only toggles the read-only bit, so the file stays readable and the
-    unreadable branch never runs — this failed the first full matrix on
-    windows-latest while staying green everywhere it had been run before.
-    """
-    import ouroboros.config as cfg
-    import ouroboros.gateway.onboarding as gw_onboarding
-
-    class _Unreadable:
-        def read_bytes(self):
-            raise PermissionError("injected: settings unreadable")
-
-    monkeypatch.setattr(cfg, "SETTINGS_PATH", _Unreadable(), raising=False)
-    first = gw_onboarding._settings_fingerprint()
-    second = gw_onboarding._settings_fingerprint()
-
-    assert first.startswith("unreadable:") and second.startswith("unreadable:")
-    assert first != second, "an unreadable file must refuse, never satisfy equality"
-
-
 def test_a_connected_agy_account_composes_with_core_reviewers(onboarding):
     # The REAL agy wire shape (Claudexor INV-135): a harness with no default
     # credential store reports its harness ROW "unavailable" structurally and
@@ -1377,7 +1512,7 @@ def test_a_connected_agy_account_composes_with_core_reviewers(onboarding):
              "models": [{"id": "claude-opus-5"}, {"id": "claude-sonnet-5"},
                         {"id": "claude-fable-5"}, {"id": "claude-opus-4-6"}]},
             {"id": "agy", "status": "unavailable", "enabled": True,
-             "models": [{"id": "gemini-3.7-flash-high"}, {"id": "gemini-3.1-pro-high"}]},
+             "models": [{"id": "gemini-3.8-flash-high"}, {"id": "gemini-3.1-pro-high"}]},
         ],
         "profiles": {
             # next_up kind="none": the engine returns none whenever the
@@ -1405,7 +1540,7 @@ def test_a_connected_agy_account_composes_with_core_reviewers(onboarding):
         row["route"]["target_id"]
         for row in json.loads(saved[SUBAGENTS_SETTING])["items"]
     ]
-    assert "agy=gemini-3.7-flash-high" in actor_targets
+    assert "agy=gemini-3.8-flash-high" in actor_targets
     reviewer = json.loads(saved["OUROBOROS_REVIEWER_SLOTS"])
     roster = {
         row["subagent_id"]: row["route"]["target_id"]

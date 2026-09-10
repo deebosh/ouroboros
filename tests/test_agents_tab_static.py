@@ -135,19 +135,18 @@ def test_agents_tab_sits_between_models_and_behavior() -> None:
     assert '<section class="settings-panel" data-settings-panel="agents">' in source
 
 
-def test_the_agents_panel_carries_one_banner_and_the_three_sections() -> None:
+def test_accounts_own_connections_and_agents_own_role_editors() -> None:
     panel = _panel("agents")
     for fragment in (
-        "renderAgentsServiceBanner()",
-        "renderAgentAccountsSection()",
         "renderReviewerSlotsSection()",
         "renderSubagentsSection()",
     ):
         assert fragment in panel, f"the Agents panel does not render {fragment}"
-    # Order follows the dependency direction: service banner, accounts,
-    # delegation roster, then the review lanes that reference its rows.
+    accounts = _panel("providers")  # Existing internal tab id, owner-facing Accounts.
+    assert "renderAgentsServiceBanner()" in accounts
+    assert "renderAgentAccountsSection()" in accounts
+    # The delegation roster precedes reviewers that reference its rows.
     order = [panel.index(f) for f in (
-        "renderAgentsServiceBanner()", "renderAgentAccountsSection()",
         "renderSubagentsSection()", "renderReviewerSlotsSection()",
     )]
     assert order == sorted(order), "the Agents panel sections are out of order"
@@ -163,7 +162,7 @@ def test_the_vacated_tabs_no_longer_render_the_moved_sections() -> None:
             f"{renderer} is rendered more than once — a section mounted in two "
             "panels would carry two drafts of the same settings keys"
         )
-    assert "renderAgentAccountsSection()" not in _panel("providers")
+    assert "renderAgentAccountsSection()" not in _panel("agents")
     models = _panel("models")
     assert "renderReviewerSlotsSection()" not in models
     assert "renderSubagentsSection()" not in models
@@ -341,10 +340,17 @@ def test_the_reviewer_disclosure_stopped_advising_against_the_default() -> None:
     """The sentence used to end "keep at least one API reviewer row to avoid the
     fallback", which asks the owner to undo the ratified default (D-3: with a
     subscription connected, everything that can run on one does, and a triad is
-    never half API and half subscription). It is a routing DISCLOSURE now."""
+    never half API and half subscription). Its carrier — the conditional
+    all-delegated warning about a task-acceptance API fallback — is gone with the
+    fallback itself (owner R2/R12, 2026-09-01): acceptance follows the rows, and
+    the only server-side sentence left is the ONE-TIME migration disclosure with
+    the measured numbers, which states what the rows now cost and never advises
+    against the default."""
     config = (REPO_ROOT / "ouroboros" / "reviewer_slot_config.py").read_text(encoding="utf-8")
     assert "Keep at least one API reviewer row" not in config
-    assert "never fall back" in config
+    assert "never fall back" not in config and "stays API-only" not in config
+    assert "Task acceptance now follows these triad rows" in config
+    assert "Keep an api_chat row" not in config
     lanes = _read("reviewer_slots.js")
     assert "keep at least one API row" not in lanes
     assert "never fall back to API spend" in lanes

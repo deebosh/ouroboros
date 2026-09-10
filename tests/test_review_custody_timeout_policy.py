@@ -5,6 +5,73 @@ from __future__ import annotations
 import pytest
 
 
+def test_deadline_crossing_before_queue_wait_preserves_late_result(tmp_path, monkeypatch):
+    """A scheduling gap after expiry checks must not break physical custody."""
+    import threading
+    from types import SimpleNamespace
+
+    import ouroboros.review_custody as custody
+    from ouroboros.review_substrate import ReviewActorRecord, ReviewRequest, ReviewSlot
+    from ouroboros.usage_accounting import UsageScope
+
+    ticks = iter((100.0, 100.04))
+    # The slot starts with 50ms, passes expiry at 40ms, then resumes at 100ms.
+    # Patch only the coordinator's clock; Queue.get retains its real contract.
+    monkeypatch.setattr(custody, "monotonic_now", lambda _slot: next(ticks, 100.1))
+    release = threading.Event()
+    entered = threading.Event()
+    workers, calls, paid = [], [], []
+    request = ReviewRequest(
+        surface="multi_model_review", goal="review", task_id="queue-deadline-gap",
+        retry_key="commit_review:queue-deadline-gap",
+    )
+    slot = ReviewSlot(slot_id="slot-1", model="test/model", timeout_sec=0.05)
+    ctx = SimpleNamespace(_review_paid_stamp=lambda: paid.append("paid"))
+
+    def run_slot(_slot, operation_id, _retry_state, deadline, _checkpoint):
+        workers.append(threading.current_thread())
+        calls.append((operation_id, deadline))
+        entered.set()
+        assert release.wait(10), "test did not release the review worker"
+        return ReviewActorRecord(
+            slot_id=slot.slot_id, model=slot.model, status="ok", raw_text="[]",
+        )
+
+    def error_actor(_slot, error, operation_id="", operation_state="settled"):
+        return ReviewActorRecord(
+            slot_id=slot.slot_id, model=slot.model, status="error", error=error,
+            operation_id=operation_id, operation_state=operation_state,
+            late_result_pending=operation_state == "in_flight",
+        )
+
+    kwargs = dict(
+        request=request, slots=[slot], usage_ctx=ctx, task_id=request.task_id,
+        usage_meta={}, review_usage_scope=UsageScope(drive_root=tmp_path),
+        run_slot=run_slot, error_actor=error_actor,
+    )
+    try:
+        [first] = custody.run_custodied_review_slots(**kwargs)
+        assert first.operation_state == "in_flight"
+        assert first.late_result_pending is True
+        assert entered.wait(10), "review worker never started"
+        assert calls == [(first.operation_id, 100.05)]
+    finally:
+        release.set()
+        assert entered.wait(10), "review worker never started"
+        for worker in workers:
+            worker.join(10)
+            assert not worker.is_alive(), "review worker did not settle"
+
+    [replayed] = custody.run_custodied_review_slots(**kwargs)
+    assert calls == [(first.operation_id, 100.05)]
+    assert paid == ["paid"]
+    assert replayed.operation_id == first.operation_id
+    assert replayed.operation_state == "late_settled"
+    assert replayed.late_result_pending is False
+    assert replayed.status == "ok"
+    assert replayed.raw_text == "[]"
+
+
 def test_spent_deadline_restart_reconciliation_gets_only_a_settlement_window(
     tmp_path, monkeypatch,
 ):

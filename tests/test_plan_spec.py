@@ -12,7 +12,7 @@ import pathlib
 import pytest
 
 from ouroboros.config import adaptive_quorum
-from ouroboros.loop_tool_execution import _parse_plan_review_control
+from ouroboros.tools.plan_render import _parse_plan_review_control
 from ouroboros.tools import plan_evidence, plan_packet, plan_spec
 from ouroboros.tools.review_synthesis import PLAN_REVIEW_CONTROL_PREFIX
 
@@ -77,25 +77,17 @@ def test_normalize_spec_errors_are_typed():
     assert plan_spec.normalize_spec("not a mapping") == ({}, ["spec: must be an object"])  # type: ignore[arg-type]
 
 
-def test_normalize_spec_bounds_lists_with_recorded_omission():
+def test_normalize_spec_preserves_lists_beyond_former_bounds():
+    items = [f"item {i}" for i in range(43)]
+    rejected = [f"r{i}" for i in range(10)]
     spec, errors = plan_spec.normalize_spec({
-        "goal": "g", "in_scope": [f"item {i}" for i in range(plan_spec.MAX_LIST_ITEMS + 3)],
+        "goal": "g", "in_scope": items,
+        "decisions": [{"choice": "c", "rejected": rejected}],
     })
     assert errors == []
-    assert len(spec["in_scope"]) == plan_spec.MAX_LIST_ITEMS
-    assert spec["normalization_omissions"] == [
-        f"in_scope: {plan_spec.MAX_LIST_ITEMS + 3} items declared, kept the first "
-        f"{plan_spec.MAX_LIST_ITEMS} (bound {plan_spec.MAX_LIST_ITEMS})"
-    ]
-    # B-10: nested cap on decision.rejected, recorded the same way.
-    spec, errors = plan_spec.normalize_spec({
-        "goal": "g", "decisions": [{"choice": "c", "rejected": [f"r{i}" for i in range(plan_spec.MAX_REJECTED_PER_DECISION + 2)]}],
-    })
-    assert errors == [] and len(spec["decisions"][0]["rejected"]) == plan_spec.MAX_REJECTED_PER_DECISION
-    assert spec["normalization_omissions"] == [
-        f"decisions[0].rejected: {plan_spec.MAX_REJECTED_PER_DECISION + 2} items declared, kept the first "
-        f"{plan_spec.MAX_REJECTED_PER_DECISION} (bound {plan_spec.MAX_REJECTED_PER_DECISION})"
-    ]
+    assert spec["in_scope"] == items
+    assert spec["decisions"][0]["rejected"] == rejected
+    assert spec["normalization_omissions"] == []
 
 
 def test_normalize_spec_goal_type_and_bool_scalars():
@@ -241,6 +233,23 @@ def test_constitutional_declared_paths_relative_absolute_and_file_scheme(tmp_pat
         affected_resources=[f"file://{system}/ouroboros/loop.py"], evidence=[],
     )
     assert ok is True and "file://" in note
+
+
+def test_constitutional_evidence_selector_classifies_the_source_path(tmp_path):
+    system = tmp_path / "repo"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    evidence = _write(system / "docs" / "ARCHITECTURE.md", "# Architecture\n")
+
+    ok, note = plan_spec.resolve_constitutional(
+        active_root=workspace,
+        system_repo_root=system,
+        affected_resources=[],
+        evidence=[f"{evidence}::lines=1-1"],
+    )
+
+    assert ok is True
+    assert f"{evidence}::lines=1-1" in note
 
 
 def test_constitutional_payload_exempt_url_task_never_and_empty_false(tmp_path):
@@ -502,8 +511,8 @@ def test_validate_findings_demotes_and_drops_structurally():
     assert by_id["f1"]["class"] == "blocking" and by_id["f1"]["breaks"] == "claim_1"
     assert by_id["f2_2"]["class"] == "note" and by_id["f2_2"]["breaks"] == "claim_9"  # minted id, demoted
     assert by_id["n1"]["class"] == "note"
-    # I-03: a repeat is DEMOTED, not dropped — a re-asked question must not close the wave.
-    assert by_id["n2"]["class"] == "note" and by_id["n4"]["class"] == "note"
+    # I-03: deduplication must not turn an unresolved request into optional advice.
+    assert by_id["n2"]["class"] == "need_evidence" and by_id["n4"]["class"] == "need_evidence"
     assert by_id["n3"]["class"] == "need_evidence"
     assert by_id["x"]["class"] == "note"
     assert by_id["empty"]["class"] == "note" and by_id["empty"]["summary"] == "(missing summary)"
@@ -646,6 +655,27 @@ def test_closure_table_and_control_line_invariants():
     assert _control("GREEN", False) is None and _control("REVISE_PLAN", True) is None
 
 
+@pytest.mark.parametrize("enforcement", ["blocking", "advisory"])
+def test_optional_notes_do_not_require_disposition(enforcement):
+    note = dict(NOTE, finding_id="1:n")
+    need = dict(NEED, finding_id="2:e")
+    blocker = dict(BLOCK, finding_id="3:b")
+    closure = plan_spec.closure_after_disposition("REVIEW_REQUIRED", [note], [], enforcement)
+    assert closure["closed"] and closure["open_ids"] == []
+    mixed = plan_spec.closure_after_disposition("REVIEW_REQUIRED", [note, need], [], enforcement)
+    assert not mixed["closed"] and mixed["open_ids"] == ["2:e"]
+    disposed = [{"finding_id": "2:e", "decision": "defer", "rationale": "not needed to start"}]
+    assert plan_spec.closure_after_disposition(
+        "REVIEW_REQUIRED", [note, need], disposed, enforcement,
+    )["closed"]
+    rejected = [{"finding_id": "3:b", "decision": "reject", "rationale": "disagree"}]
+    below_quorum = plan_spec.closure_after_disposition(
+        "REVIEW_REQUIRED", [note, blocker], rejected, enforcement,
+    )
+    assert not below_quorum["closed"] and below_quorum["open_ids"] == ["3:b"]
+    assert not plan_spec.closure_after_disposition("DEGRADED", [note], [], enforcement)["closed"]
+
+
 # ------------------------------------------------------------------- B5 packet
 
 
@@ -672,6 +702,9 @@ def test_system_prompt_stance_and_bible_gating():
     assert "Convergence rule" not in plain
     assert "blocking" in lowered and "`breaks`" in plain
     assert "need_evidence" in plain
+    assert "important brainstorming opportunity" in plain
+    assert "optional `note` findings" in plain
+    assert "without a required disposition" in plain
     for phrase in ("Success conditions", "Load-bearing decisions", "Constraints and invariants",
                    "Deferrals", "Evidence sufficiency"):
         assert phrase in plain
@@ -712,7 +745,8 @@ def test_system_prompt_stance_and_bible_gating():
     assert "`/srv/ouro/repo/docs/ARCHITECTURE.md`" in pointed and "ARCH-NAV-ROWS" in pointed
     assert "ARCHITECTURE navigation map (pointer, not a copy)" in pointed and "ARCH BODY" not in pointed
     assert "OMISSION NOTE" not in pointed
-    assert "the host attaches it on the next cycle" in pointed
+    assert "attaches what its evidence policy allows on the next cycle" in pointed
+    assert "::lines=A-B" in pointed and "truncated_to_" in pointed
     with_bible = plan_packet.build_plan_review_system_prompt(
         checklist_section="c", constitutional=True, bible_text="BIBLE BODY", cycle_index=1, enforcement="blocking",
         bible_nav_map="NAV-MAP-ROWS", architecture_text="ARCH BODY", architecture_nav_map="ARCH-NAV-ROWS",
@@ -787,15 +821,15 @@ def test_prior_blocking_findings_survive_the_section_bound(monkeypatch):
     assert "no prior findings recorded" in empty_cycle2 and "First cycle" not in empty_cycle2
 
 
-def test_spec_section_is_bounded_structurally_never_clipped():
+def test_current_spec_is_complete_while_historical_json_views_remain_bounded():
     worst = {"goal": "g", "decisions": [
-        {"choice": "c" * 600, "rejected": ["r" * 600] * plan_spec.MAX_REJECTED_PER_DECISION, "why": "w" * 600}
+        {"choice": "c" * 600, "rejected": ["r" * 600] * 8, "why": "w" * 600}
         for _ in range(plan_spec.MAX_LIST_ITEMS)
     ], "in_scope": ["i" * 600] * plan_spec.MAX_LIST_ITEMS, "invariants": ["v" * 600] * plan_spec.MAX_LIST_ITEMS}
     spec, errors = plan_spec.normalize_spec(worst)
     assert errors == []
-    text, notes = plan_spec.bounded_json(plan_spec.spec_with_ids(spec), plan_spec.PACKET_SPEC_CHARS)
-    assert len(text) <= plan_spec.PACKET_SPEC_CHARS
+    text, notes = plan_spec.bounded_json(plan_spec.spec_with_ids(spec), 120_000)
+    assert len(text) <= 120_000
     json.loads(text)  # whole items only — always valid JSON
     assert notes and all("kept " in n and "full-set sha256=" in n for n in notes)
     packet = plan_packet.build_plan_review_user_content(
@@ -803,20 +837,23 @@ def test_spec_section_is_bounded_structurally_never_clipped():
         prior_cycles=[], dispositions=[], spec_delta=None, root_exploration_log=None,
     )
     spec_section = packet[packet.index("## SPEC"):packet.index("## PLAN PROSE")]
-    assert len(spec_section) < plan_spec.PACKET_SPEC_CHARS + 2000 and "OMISSION NOTE (structural)" in spec_section
+    assert len(spec_section) > 120_000 and "OMISSION NOTE" not in spec_section
+    rendered_spec = json.loads(spec_section.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert rendered_spec == plan_spec.spec_with_ids(spec)
     # Oversized scalars with no list left → typed omission object, never clipped JSON.
     text, notes = plan_spec.bounded_json({"blob": "x" * 500}, 100)
     assert json.loads(text)["omitted"] is True and "full_payload_sha256" in text and notes
 
 
-def test_user_content_bounds_are_disclosed_not_silent():
+def test_user_content_preserves_current_plan_prose():
     spec, _ = plan_spec.normalize_spec(DECK_SPEC)
     manifest = plan_evidence.resolve_evidence([], active_root=".", allowed_roots=["."])
     content = plan_packet.build_plan_review_user_content(
-        objective="o", goal=spec["goal"], plan_prose="P" * (plan_spec.PACKET_PROSE_CHARS + 500), spec=spec,
+        objective="o", goal=spec["goal"], plan_prose="P" * 40_500 + "DECISIVE_PLAN_TAIL", spec=spec,
         manifest=manifest, prior_cycles=[], dispositions=[], spec_delta=None, root_exploration_log=None,
     )
-    assert "OMISSION NOTE" in content and "(no evidence declared)" in content
+    assert "P" * 40_500 + "DECISIVE_PLAN_TAIL" in content
+    assert "OMISSION NOTE" not in content and "(no evidence declared)" in content
     assert "(not provided by host)" in content
 
 
@@ -879,3 +916,18 @@ def test_blank_spec_items_are_disclosed_not_silently_dropped():
     assert errors == []
     assert spec["in_scope"] == ["auth"]
     assert any("blank item(s) dropped" in note for note in spec["normalization_omissions"])  # one bounded note per list
+
+
+def test_the_findings_contract_advertises_locator_forms_and_range_selectors() -> None:
+    """A reviewer can only ask for what the contract taught it to spell: the exact-range
+    selectors and the never-fetched URL are stated where the locator is requested."""
+    from ouroboros.tools.plan_spec import (
+        PLAN_FINDINGS_ARRAY_CONTRACT,
+        _PLAN_FINDING_ELEMENT_SCHEMA,
+    )
+
+    for token in ("::lines=A-B", "::bytes=A-B", "::tail=N", "::symbol=Name",
+                  "relative to the subject workspace root", "never fetches"):
+        assert token in PLAN_FINDINGS_ARRAY_CONTRACT, token
+    assert _PLAN_FINDING_ELEMENT_SCHEMA.startswith("{")
+    assert _PLAN_FINDING_ELEMENT_SCHEMA.endswith("}")

@@ -40,7 +40,7 @@ class FakeApi:
 class FakeTelegramClient:
     instances = []
 
-    def __init__(self, token):
+    def __init__(self, token, **_kwargs):
         self.token = token
         self.sent = []
         self.edited = []
@@ -73,7 +73,7 @@ def test_existing_corrupt_settings_refuse_owner_rebinding(tmp_path, monkeypatch)
     plugin = _load_plugin(tmp_path)
     (tmp_path / "settings.json").write_text("{", encoding="utf-8")
 
-    def forbidden_client(_token):
+    def forbidden_client(_token, **_kwargs):
         raise AssertionError("Telegram client must not start with corrupt owner state")
 
     monkeypatch.setattr(plugin, "TelegramClient", forbidden_client)
@@ -466,6 +466,12 @@ def test_startup_deferred_validation_with_network_still_down_paces_with_backoff(
     assert all(later >= earlier for earlier, later in zip(sleeps, sleeps[1:]))
     assert max(sleeps) == 60
     assert sleeps[-2:] == [60, 60]
+    # #376: while validation stays deferred the durable status is truthful —
+    # neither `ready` nor an error, and never absent.
+    assert json.loads((tmp_path / "bridge_status.json").read_text(encoding="utf-8")) == {
+        "state": "degraded",
+        "reason_code": "telegram_startup_deferred",
+    }
 
 
 def test_startup_permanent_rejection_keeps_raise_semantics(tmp_path, monkeypatch):

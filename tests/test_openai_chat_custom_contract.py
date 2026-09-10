@@ -619,13 +619,16 @@ def test_full_builtin_registry_fits_custom_description_contract(tmp_path):
     from jsonschema import validators
 
     from ouroboros.tools.registry import ToolRegistry
+    from tests.test_smoke import EXPECTED_TOOLS
 
     repo_dir = pathlib.Path(__file__).resolve().parents[1]
     registry = ToolRegistry(repo_dir=repo_dir, drive_root=tmp_path)
     schemas = registry.schemas()
-    assert len(schemas) == 116
+    expected_names = set(EXPECTED_TOOLS)
+    assert {tool["function"]["name"] for tool in schemas} == expected_names
+    assert len(schemas) == len(expected_names)
     catalog = project_function_tools_to_openai_custom(schemas)
-    assert len(catalog.tool_names) == len(schemas)
+    assert catalog.tool_names == tuple(sorted(expected_names))
     assert all(
         len(tool["custom"]["description"]) <= MAX_CUSTOM_DESCRIPTION_CHARS
         for tool in catalog.wire_tools()
@@ -633,6 +636,7 @@ def test_full_builtin_registry_fits_custom_description_contract(tmp_path):
     assert json.loads(catalog.wire_tools_json)
     for tool in schemas:
         function = tool["function"]
+        assert catalog.schema_binding(function["name"]).schema() == function["parameters"]
         compact = _projected_schema(catalog, function["name"])
         validator_class = validators.validator_for(compact)
         validator_class.check_schema(compact)

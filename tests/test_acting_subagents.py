@@ -18,6 +18,9 @@ from ouroboros.tool_capabilities import ACTING_SUBAGENT_MODE, ACTING_SUBAGENT_TO
 from ouroboros.runtime_mode_policy import mode_allows_protected_write
 from ouroboros.tools.registry import ToolContext, ToolRegistry
 from ouroboros import subagent_worktrees as sw
+from tests._typed_guard_shared import _shell_guard_text
+
+
 
 
 def _git(repo, *args, check=True):
@@ -383,6 +386,7 @@ def _make_child_patch(target_repo: pathlib.Path, drive: pathlib.Path, child_id: 
     tr = task_result_path(drive, child_id)
     tr.parent.mkdir(parents=True, exist_ok=True)
     result = {
+        "_schema_version": 1,
         "id": child_id,
         "task_id": child_id,
         "parent_task_id": parent_task_id,
@@ -422,6 +426,7 @@ def _make_child_delete_patch(target_repo: pathlib.Path, drive: pathlib.Path, chi
     tr = task_result_path(drive, child_id)
     tr.parent.mkdir(parents=True, exist_ok=True)
     result = {
+        "_schema_version": 1,
         "id": child_id,
         "task_id": child_id,
         "parent_task_id": parent_task_id,
@@ -1123,7 +1128,7 @@ def test_evolution_owner_control_self_change_detected():
 
 
 def test_post_task_evolution_js_guard():
-    from ouroboros.tools.browser import _blocks_post_task_evolution_js
+    from ouroboros.browser_policy import _blocks_post_task_evolution_js
     assert _blocks_post_task_evolution_js(
         "fetch('/api/settings', {method:'POST', body: JSON.stringify({OUROBOROS_POST_TASK_EVOLUTION: true})})"
     )
@@ -1146,7 +1151,7 @@ def test_pro_acting_shell_write_outside_surface_blocked(tmp_path):
     )
     reg = ToolRegistry(repo_dir=repo, drive_root=drive)
     reg._ctx = ctx
-    block = reg._run_shell_safety_check({"cmd": "echo x > ../outside.txt"}, "pro")
+    block = _shell_guard_text(reg, {"cmd": "echo x > ../outside.txt"}, "pro")
     assert block and "WORKSPACE_SHELL_BLOCKED" in block
 
 
@@ -1186,7 +1191,7 @@ def test_acting_subagent_cannot_shell_read_secrets(tmp_path):
     )
     reg = ToolRegistry(repo_dir=repo, drive_root=drive)
     reg._ctx = ctx
-    block = reg._run_shell_safety_check({"cmd": "cat ~/Ouroboros/data/settings.json"}, "pro")
+    block = _shell_guard_text(reg, {"cmd": ["cat", str(drive / "settings.json")]}, "pro")
     assert block and "SUBAGENT_SECRET_READ_BLOCKED" in block
 
 
@@ -1272,14 +1277,24 @@ def test_acting_browser_evaluate_runs_and_keeps_owner_guards(tmp_path, monkeypat
     evaluated = [c for c in calls if isinstance(c, str)]
     assert len(evaluated) == 1 and "1 + 1" in evaluated[0]
 
-    blocked = registry.execute(
+    # A dev page can legitimately reuse an owner-shaped relative pathname.
+    ordinary = registry.execute(
         "browser_action",
         {
             "action": "evaluate",
             "value": "fetch('/api/owner/context-mode', {method:'POST', body: JSON.stringify({mode:'low'})})",
         },
     )
-    assert "CONTEXT_MODE_SELF_LOWERING_BLOCKED" in blocked
+    assert ordinary == "2"
+    from ouroboros.server_entrypoint import bound_service_socket
+    with bound_service_socket(drive, "main", "127.0.0.1", 0) as listener:
+        page.url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+        blocked = registry.execute("browser_action", {"action": "evaluate", "value": "1 + 1"})
+        assert "BROWSER_LOCAL_READONLY_BLOCKED" in blocked
+        ctx.task_constraint = None
+        blocked = registry.execute("browser_action", {"action": "evaluate",
+            "value": "fetch('/api/owner/context-mode', {method:'POST', body: JSON.stringify({mode:'low'})})"})
+        assert "CONTEXT_MODE_SELF_LOWERING_BLOCKED" in blocked
 
 
 def test_no_workspace_acting_integrate_blocked(tmp_path):
@@ -1526,3 +1541,22 @@ def test_select_subagent_constraint_read_only_token_is_readonly():
         constraint = _select_subagent_constraint(surface, "", False, [], "")
         assert isinstance(constraint, dict), surface
         assert constraint == baseline, surface
+
+
+def test_schedule_subagent_publishes_the_depth_request_and_the_handler_accepts_it():
+    """A nanny chain could describe its intended nesting only in prose: the tool
+    refused ``requested_depth`` by name, so the root's own depth summary could
+    never say what had been asked for."""
+    from ouroboros.tools import control
+
+    props = control.schedule_subagent_properties()
+    row = props["requested_depth"]
+    assert row["type"] == "integer"
+    assert row["default"] == 0
+    # Absolute from the root, and telemetry rather than a cap: both semantics
+    # have to be readable by the model that fills the field in.
+    assert "ABSOLUTELY FROM THE ROOT" in row["description"]
+    assert "never widens or narrows" in row["description"]
+    # The handler's closed keyword set DERIVES from the same schema.
+    assert "requested_depth" in control.schedule_subagent_param_names()
+    assert "requested_depth" not in control.HIDDEN_LEGACY_SCHEDULE_PARAMS

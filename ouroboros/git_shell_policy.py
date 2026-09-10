@@ -51,7 +51,8 @@ _TAG_MUTATING_FLAGS = frozenset({
 })
 # `-v`/`--verify` checks a tag's GPG signature and writes nothing — it is
 # read-only inspection, not mutation (it sat in the mutating set, refusing
-# `git tag -v <tag>` at a runtime target against the SYSTEM.md contract).
+# `git tag -v <tag>` at a runtime target against the ARCHITECTURE contract that
+# read-only shell git is allowed everywhere).
 _TAG_READONLY_FLAGS = frozenset({
     "-l", "--list", "-n", "-v", "--verify", "--sort", "--format", "--points-at",
     "--contains", "--merged", "--no-merged", "--column", "--no-column",

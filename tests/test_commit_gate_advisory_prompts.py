@@ -101,7 +101,10 @@ def test_advisory_auto_bypass_on_missing_key(tmp_path, monkeypatch):
     subprocess.run(["git", "init"], cwd=str(repo_dir), capture_output=True)
 
     monkeypatch.delenv("OUROBOROS_REVIEWER_SLOTS", raising=False)
-    monkeypatch.delenv(adv_mod.ADVISORY_REVIEW_ROUTE_ENV, raising=False)
+    # v7: OUROBOROS_ADVISORY_REVIEW_ROUTE is retired and ignored (see
+    # preflight_review_run.py) — clear it for hygiene, but there is no module
+    # constant to name it any more.
+    monkeypatch.delenv("OUROBOROS_ADVISORY_REVIEW_ROUTE", raising=False)
     for _key in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
                  "MINIMAX_API_KEY", "GIGACHAT_AUTH_KEY", "CLOUD_RU_API_KEY"):
         monkeypatch.delenv(_key, raising=False)
@@ -351,8 +354,9 @@ def test_review_blocked_message_prefers_fix_over_rebuttal():
     assert "disproportionate" in lowered
     # Non-override clause: rebuttal is argument, not authority.
     assert "never overrides owner-chosen enforcement" in lowered
-    # Fix-on-repeat coaching survives the replacement.
-    assert "implement the fix" in lowered
+    # Repeat-finding coaching (v7 wording: re-verify evidence/proportionality
+    # rather than the fork's blunt "implement the fix").
+    assert "repetition alone does not validate a finding" in lowered
 
 
 def test_review_blocked_5plus_hint_suggests_split():
@@ -495,17 +499,23 @@ def test_advisory_gate_runs_advisory_inline_on_freshness_gap(monkeypatch, tmp_pa
 
     calls = {"freshness": 0, "inline_advisory": 0, "preflight": 0}
 
-    def fake_freshness(ctx, commit_message, skip, paths=None):
+    def fake_freshness(ctx, commit_message, skip=False, paths=None, *, review_rebuttal="", decision=None):
         calls["freshness"] += 1
         # First call: freshness gap. After the inline advisory runs, it clears.
         if calls["inline_advisory"] == 0:
+            if decision is not None:
+                # v7: the gate now consults decision["refresh_required"] (set by
+                # the real _check_advisory_freshness) instead of re-classifying
+                # the error text — a self-recoverable "no fresh run" gap.
+                decision["refresh_required"] = True
             return (
                 "⚠️ ADVISORY_PRE_REVIEW_REQUIRED: No fresh advisory run found for "
                 "this snapshot (hash=abc123).\nNo advisory runs recorded yet.\n"
             )
         return None
 
-    def fake_inline_advisory(ctx, commit_message, paths=None, skip_tests=False):
+    def fake_inline_advisory(ctx, commit_message, paths=None, skip_tests=False,
+                             *, review_rebuttal="", goal="", scope="", prepared=False):
         calls["inline_advisory"] += 1
         return "{}"
 
@@ -548,7 +558,9 @@ def test_advisory_gate_does_not_retry_inline_on_syntax_preflight_block(monkeypat
 
     calls = {"inline_advisory": 0}
 
-    def fake_freshness(ctx, commit_message, skip, paths=None):
+    def fake_freshness(ctx, commit_message, skip=False, paths=None, *, review_rebuttal="", decision=None):
+        # A syntax-preflight-blocked run is NOT self-recoverable — the gate must
+        # leave decision["refresh_required"] falsy so no inline advisory fires.
         return (
             "⚠️ ADVISORY_PRE_REVIEW_REQUIRED: Last advisory run for this snapshot "
             "was blocked by the syntax preflight (hash=abc123). The Claude SDK "

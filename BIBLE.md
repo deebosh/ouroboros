@@ -106,11 +106,17 @@ on every restart, but one personality that remembers its path.
   (confirmed metadata / route-fingerprinted owner acknowledgement), never an
   assumed default. The mode is permitted only when the tier-0 core (system
   prompt, BIBLE.md, identity.md, scratchpad, durable knowledge index,
-  recent-dialogue horizon) stays always-loaded in full; the agent's self-body
-  documentation (ARCHITECTURE.md, DEVELOPMENT.md) stays RESIDENT in owner-`max`,
-  and narrowing it for a task-class is itself an owner-level horizon decision,
-  not a silent default; reduction is by relocation to on-demand reads with a
-  visible pointer, or by deeper consolidation, never silent truncation; the
+  recent-dialogue horizon) stays always-loaded in full; `docs/ARCHITECTURE.md`
+  stays RESIDENT in owner-`max` for every task class, and `docs/DEVELOPMENT.md`
+  stays resident when the work addresses Ouroboros's own body — a binding to an
+  external working tree, a subagent, or an external API/CLI/scheduled surface
+  receives a visible on-demand pointer instead unless the task itself
+  explicitly requires the handbook (that per-task requirement wins in either
+  direction), while project membership alone is not the signal (an owner-level
+  horizon decision, not a silent default; any further narrowing for a task
+  class is likewise the owner's decision);
+  reduction is by relocation to on-demand reads with a visible pointer, or by
+  deeper consolidation, never silent truncation; the
   memory horizon is preserved (only granularity varies); whether the blocking
   scope reviewer applies at all is governed by this same owner-selected mode as an
   explicit policy coupling under P3 — in `max` the ≥1M blocking scope gate runs, in
@@ -501,7 +507,7 @@ what it says in real current evidence, not in cached impressions.
 - If uncertain — say so. If surprised — show it. If you disagree —
   object.
 - Explain actions as thoughts aloud, not as reports.
-  Not "Executing: repo_read," but "Reading agent.py — I want to
+  Not "Executing: read_file," but "Reading agent.py — I want to
   understand how the loop works, I think it can be simpler."
 - No mechanical intermediaries and no performance — don't play a role,
   be yourself.
@@ -668,8 +674,10 @@ yes.
 - `README.md` contains a changelog (limit: 2 major, 5 minor, 5 patch;
   older history lives in git tags and commit log).
 - Each commit updates, in the same diff: `VERSION`, `pyproject.toml`
-  `[project].version`, `README.md` badge + changelog row, and
-  `docs/ARCHITECTURE.md` version header.
+  `[project].version`, the root version in `uv.lock`, `web/package.json`,
+  `web/modules/api_types.js` (`GATEWAY_CONTRACT_VERSION`), `README.md`
+  badge + changelog row, the named direct-download links in `README.md` and
+  the install pages, and `docs/ARCHITECTURE.md` version header.
 - MAJOR — breaking changes to philosophy or architecture.
 - MINOR — new capabilities.
 - PATCH — fixes, minor improvements, doc/prompt refinements, tests,
@@ -678,12 +686,17 @@ yes.
 
 ### Release Invariant
 
-Version sources are always in sync:
-`VERSION` == `pyproject.toml` == latest git tag == `README.md` badge ==
-`docs/ARCHITECTURE.md` header (using the same author-facing spelling;
-`pyproject.toml` carries the PEP 440 canonical form when the spelling
-differs, e.g. `4.50.0-rc.2` vs `4.50.0rc2`). Discrepancy is a bug that
-must be fixed immediately.
+Version sources are always in sync: `VERSION`, `pyproject.toml`, the root
+version in `uv.lock`, `web/package.json`, `web/modules/api_types.js`
+(`GATEWAY_CONTRACT_VERSION`), the `README.md` badge, the named direct-download
+links (`README.md` and both install pages), the latest `README.md` history
+row, and the `docs/ARCHITECTURE.md` header all carry the same version in the
+same diff (the same author-facing spelling, except that `pyproject.toml` and
+the `uv.lock` root version carry the PEP 440 canonical form when the spelling
+differs, e.g. `4.50.0-rc.2` vs `4.50.0rc2`); the annotated git tag follows on
+commit (see Git Tags).
+`release_sync.version_carrier_desyncs()` checks the file carriers.
+Discrepancy is a bug that must be fixed immediately.
 
 ### Git Tags
 

@@ -65,6 +65,7 @@ _BRANCH_SEGMENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _PROVENANCE_SLUG_MAX = 128
 _PR_BODY_MODEL_TIMEOUT_SEC = 45.0
 _GENERATED_H2_HEADINGS = (
+    "Version change",
     "Author Checklist",
     "Known advisory findings",
     "Secret scan attestation",
@@ -94,6 +95,7 @@ class _PublishAttempt:
     blocker_count: int = 0
     warning_count: int = 0
     audited_false_positive_count: int = 0
+    version_change: Dict[str, str] = field(default_factory=dict)
 
     def mark(self, stage: str, **facts: str) -> None:
         if stage not in SKILL_PUBLISH_STAGES:
@@ -289,7 +291,7 @@ def _catalog_file_paths(entry: Mapping[str, Any]) -> set[str]:
 def _update_catalog(
     catalog: Dict[str, Any],
     entry: Dict[str, Any],
-) -> Tuple[str, Dict[str, Any], Tuple[str, ...]]:
+) -> Tuple[str, Dict[str, Any], Tuple[str, ...], str | None]:
     skills = catalog.get("skills")
     if not isinstance(skills, list):
         raise _PublishFailure(
@@ -306,12 +308,14 @@ def _update_catalog(
             "Repair the upstream Hub catalog, then retry.",
         )
     existing_index = matching_indexes[0] if matching_indexes else None
+    previous_version = None
     if existing_index is None:
         mode = "add"
         obsolete_paths: Tuple[str, ...] = ()
         skills.append(entry)
     else:
         existing = skills[existing_index]
+        previous_version = str(existing.get("version") or "")
         if str(existing.get("version") or "") == str(entry.get("version") or ""):
             raise _PublishFailure(
                 "catalog_version_exists",
@@ -322,7 +326,7 @@ def _update_catalog(
         skills[existing_index] = entry
     skills.sort(key=lambda item: str(item.get("slug") or "") if isinstance(item, dict) else "")
     catalog["skills"] = skills
-    return mode, catalog, obsolete_paths
+    return mode, catalog, obsolete_paths, previous_version
 
 
 def _captured_control_json(snapshot: SkillPublishSnapshot, filename: str) -> Dict[str, Any] | None:
@@ -490,6 +494,7 @@ def _pr_body_prompt(
     note: str,
     provenance: str,
     review: Any,
+    version_change: Mapping[str, str] | None = None,
 ) -> str:
     facts = {
         "mode": mode,
@@ -503,12 +508,13 @@ def _pr_body_prompt(
         "author_note": note[:2000],
         "provenance": provenance[:1000],
         "review_status": normalize_skill_review_status(str(getattr(review, "status", "") or "")),
+        **dict(version_change or {}),
     }
     return (
         "Write concise Markdown for only these sections: Summary and What This Skill Does. "
         "Use only the structured facts below. Do not invent claims or reproduce Author "
-        "Checklist, Known advisory findings, Secret scan attestation, Note, or Provenance "
-        "sections; the host renders those.\n\n"
+        "Checklist, Version change, Known advisory findings, Secret scan attestation, Note, or Provenance "
+        "sections; the host renders those. Version strings are opaque; do not infer their order.\n\n"
         + json.dumps(facts, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
 
@@ -578,7 +584,7 @@ def _select_optional_pr_core(
     review: Any,
 ) -> str:
     fallback = _fallback_pr_core(mode, skill, snapshot)
-    prompt = _pr_body_prompt(mode, skill, snapshot, note, provenance, review)
+    prompt = _pr_body_prompt(mode, skill, snapshot, note, provenance, review, attempt.version_change)
     prompt_scan = _scan(
         ctx,
         attempt,
@@ -593,6 +599,7 @@ def _select_optional_pr_core(
         response, usage = LLMClient().chat(
             messages=[{"role": "user", "content": prompt}],
             model=model,
+            model_role="light",
             reasoning_effort="low",
             max_tokens=8192,
             use_local=os.environ.get("USE_LOCAL_LIGHT", "").lower() in {"true", "1"},
@@ -600,7 +607,9 @@ def _select_optional_pr_core(
         )
         _record_llm_usage(ctx, model, usage)
         body = str(response.get("content") or "").strip()
-    except Exception:
+    except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         ctx.emit_progress_fn("PR body formatter unavailable; using deterministic fallback.")
         return fallback
     if not body:
@@ -669,6 +678,10 @@ def _render_pr_body(
     selected = "\n\n".join(prefix_parts) + "\n"
     selected = _strip_generated_h2_sections(selected, _GENERATED_H2_HEADINGS).rstrip()
     host_sections = [_author_checklist(review).strip()]
+    if attempt.version_change:
+        before = json.dumps(attempt.version_change["catalog_version"], ensure_ascii=False)
+        after = json.dumps(attempt.version_change["proposed_version"], ensure_ascii=False)
+        host_sections.insert(0, f"## Version change\nCatalog version: {before}\n\nProposed version: {after}")
     advisory = _advisory_findings_section(review)
     if advisory:
         host_sections.append(advisory.strip())
@@ -799,7 +812,9 @@ def _submit_skill_to_hub(
         catalog, base_sha = fetch_upstream_catalog(ctx, owner, repo, base_branch)
         payload_files = _payload_files(snapshot)
         entry = _catalog_entry(safe_skill, snapshot, payload_files)
-        mode, updated_catalog, obsolete_paths = _update_catalog(catalog, entry)
+        mode, updated_catalog, obsolete_paths, previous_version = _update_catalog(catalog, entry)
+        if previous_version is not None:
+            attempt.version_change = {"catalog_version": previous_version, "proposed_version": snapshot.manifest.version}
         try:
             catalog_bytes = json.dumps(
                 updated_catalog,
@@ -938,7 +953,7 @@ def _submit_skill_to_hub(
             # fields participate in findings trimming (a post-hoc append could
             # push a just-under-cap envelope past the transport limit and get
             # head-truncated into invalid JSON).
-            extra: Dict[str, Any] = {"publication_recorded": recorded}
+            extra: Dict[str, Any] = {**attempt.version_change, "publication_recorded": recorded}
             if not recorded:
                 extra["publication_record_error"] = record_error
             return attempt.result(
@@ -969,6 +984,11 @@ def _submit_skill_to_hub(
             reason_code=exc.reason_code,
             repair_hint=exc.repair_hint,
             expected_repository=expected_repository,
+            extra_fields={key: value for key, value in {
+                "error_detail": getattr(exc, "detail", ""),
+                "github_status": getattr(exc, "http_status", None),
+                "github_operation": getattr(exc, "operation", ""),
+            }.items() if value},
         )
     except Exception:
         return attempt.result(
@@ -980,39 +1000,43 @@ def _submit_skill_to_hub(
         )
 
 
+_PUBLISH_SCHEMA = {
+    "name": "submit_skill_to_hub",
+    "description": (
+        "Publish one immutable reviewed skill snapshot to OuroborosHub by "
+        "opening a GitHub pull request. A failed result is repair evidence "
+        "for the next agent turn; success contains a validated PR receipt."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "skill": {
+                "type": "string",
+                "description": "Installed skill name (slug).",
+            },
+            "note": {
+                "type": "string",
+                "default": "",
+                "description": "Optional public author note for the pull request.",
+            },
+            "confirm_public_submission": {
+                "type": "boolean",
+                "description": (
+                    "Must be true: confirms the human approved this public "
+                    "OuroborosHub submission."
+                ),
+            },
+        },
+        "required": ["skill", "confirm_public_submission"],
+    },
+}
+
+
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry(
-            name="submit_skill_to_hub",
-            schema={
-                "name": "submit_skill_to_hub",
-                "description": (
-                    "Publish one immutable reviewed skill snapshot to OuroborosHub by "
-                    "opening a GitHub pull request. A failed result is repair evidence "
-                    "for the next agent turn; success contains a validated PR receipt."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "skill": {
-                            "type": "string",
-                            "description": "Installed skill name (slug).",
-                        },
-                        "note": {
-                            "type": "string",
-                            "default": "",
-                            "description": "Optional public author note for the pull request.",
-                        },
-                        "confirm_public_submission": {
-                            "type": "boolean",
-                            "description": (
-                                "Must be true: confirms the human approved this public OuroborosHub submission."
-                            ),
-                        },
-                    },
-                    "required": ["skill", "confirm_public_submission"],
-                },
-            },
+            name="submit_skill_to_hub",  # literal: the tool-policy AST scan keys on it
+            schema=_PUBLISH_SCHEMA,
             handler=_submit_skill_to_hub,
             is_code_tool=False,
             timeout_sec=180,

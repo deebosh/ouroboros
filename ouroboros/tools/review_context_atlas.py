@@ -57,9 +57,10 @@ _REVIEW_STACK_PATHS = frozenset({
     "ouroboros/size_ratchet_manifest.py",
     "ouroboros/tools/review.py",
     "ouroboros/tools/review_context_atlas.py",
-    "ouroboros/tools/scope_review.py",
+    "ouroboros/tools/scope_review.py", "ouroboros/tools/scope_review_pack.py", "ouroboros/tools/scope_review_budget.py",
+    "ouroboros/tools/preflight_review_prompt.py", "ouroboros/tools/preflight_review_run.py",  # the advisory preflight's own prompt assembly and native-episode run decide what the advisory gate sees  # the scope reviewer's own pack assembly and fit arithmetic decide what the blocking scope gate sees
     "ouroboros/tools/parallel_review.py",
-    "ouroboros/tools/review_helpers.py",
+    "ouroboros/tools/review_helpers.py", "ouroboros/tools/review_prompt_text.py", "ouroboros/tools/review_file_pack.py",  # the shared reviewer vocabulary and the packs read from the working tree: what every reviewer is told, and what it is shown
     "ouroboros/tools/review_revalidation.py",
     "ouroboros/tools/claude_advisory_review.py",
     "ouroboros/tools/plan_review.py",
@@ -70,8 +71,8 @@ _REVIEW_STACK_PATHS = frozenset({
     "ouroboros/review_execution.py",
     "ouroboros/tools/plan_review_runtime.py",
     "ouroboros/triad_review.py",
-    "ouroboros/review_state.py",
-    "ouroboros/review_evidence.py",
+    "ouroboros/review_state.py", "ouroboros/review_state_records.py", "ouroboros/review_state_model.py", "ouroboros/review_state_custody.py",  # the review ledger's record rules, its in-memory transitions and the pending-invocation custody: obligation and attempt lifecycle decide what the gates see
+    "ouroboros/review_evidence.py", "ouroboros/review_evidence_sections.py",
     "ouroboros/deep_self_review.py",
 })
 
@@ -200,6 +201,11 @@ class ReviewContextAtlasRequest:
     # manifest that calls a dropped snapshot "included in fixed prompt context" is
     # a false disclosure (P1), not a smaller one.
     diff_only_included: frozenset[str] = field(default_factory=frozenset)
+    # Per-path reason for a ``diff_only_included`` row omitted BY DESIGN rather
+    # than by budget (the scope pack's span-only release carriers); a path
+    # without an entry keeps the budget reason. Same disposition, same
+    # selection, truthful row (P1).
+    diff_only_reasons: Mapping[str, str] = field(default_factory=dict)
     tracked_paths: tuple[str, ...] = ()
     fixed_prompt_tokens: int = 0
     target_total_tokens: int = DEFAULT_ATLAS_TARGET_TOTAL_TOKENS
@@ -266,14 +272,6 @@ class _FileFacts:
     reason: str = ""
     score: float = 0.0
     required: bool = False
-    # Owed IN FULL — a snapshot that does not fit is an assembly FAILURE, never
-    # a smaller pack. Narrower than `required`: touched paths (anchors) and
-    # canonical review docs only. A force-included path the diff does NOT touch
-    # is `required` for COVERAGE (a manifest row must name it) but NOT
-    # `required_in_full` — under aggregate budget pressure it demotes to
-    # `manifest_only`, because an unrelated small change is not owed its full
-    # snapshot. (ibl-1b372dd99e48 / ibl-8c94b2ce5783)
-    required_in_full: bool = False
     symbols: tuple[str, ...] = ()
     imports: tuple[str, ...] = ()
     js_imports: tuple[str, ...] = ()
@@ -338,6 +336,7 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
             already_included,
             req.include_tests,
             diff_only_included=diff_only_included,
+            diff_only_reasons=req.diff_only_reasons,
             inventory_fact=inventory_by_path.get(rel),
         )
         for rel in tracked_paths
@@ -395,10 +394,7 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
     )
 
     for facts in candidates:
-        # Fork tier (ibl-1b372dd99e48): required_in_full (touched path / canonical
-        # doc) competes for the hard budget; a force-included path the diff does
-        # not touch competes only for the target budget and can legally demote.
-        limit = hard_context_tokens if facts.required_in_full else target_context_tokens
+        limit = hard_context_tokens if facts.required else target_context_tokens
         # The admission cost is the EXACT bytes selection adds to the render:
         # the file section (header + metadata + fenced content) PLUS this
         # file's JSON row in the manifest preview's `selected` array — the
@@ -416,36 +412,17 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
             selected_paths.append(facts.rel_path)
             used_tokens += row_cost
             continue
-        if facts.required_in_full:
-            # BIBLE P3 scope floor: a REQUIRED-IN-FULL artifact (touched path or
-            # canonical review doc) that does not fit is a failure to ASSEMBLE,
-            # not a smaller pack. The row records artifact + reason (disclosure,
-            # P1); the pack status refuses the review. The reason states what
-            # actually happened: the REMAINDER was too small, not necessarily the
-            # file alone against the whole budget.
+        if facts.required:
+            # BIBLE P3 scope floor: a REQUIRED artifact that does not fit is a
+            # failure to ASSEMBLE, not a smaller pack. The row records artifact +
+            # reason (disclosure, P1); the pack status refuses the review. The
+            # reason states what actually happened: the REMAINDER was too small,
+            # not necessarily the file alone against the whole budget.
             facts.disposition = "budget_omitted"
             facts.reason = (
                 "required file does not fit the atlas hard budget: needs "
                 f"{row_cost:,} tokens rendered, {max(0, limit - used_tokens):,} remain "
                 "after higher-priority content and the rendered manifest"
-            )
-        elif facts.required and facts.token_count > hard_context_tokens:
-            # A force-included path the diff does NOT touch, individually larger
-            # than the whole hard budget: it could not be assembled at ANY diff
-            # size, so it stays a typed assembly failure — shrink or split the
-            # artifact, or widen the reviewer (ATLAS_MISSING_ARTIFACT_REMEDY).
-            facts.disposition = "budget_omitted"
-            facts.reason = "required file exceeded the atlas hard budget"
-        elif facts.required:
-            # A force-included path the diff does NOT touch that WOULD fit alone
-            # but loses to aggregate budget pressure (ibl-1b372dd99e48): owed a
-            # coverage manifest row, not a full snapshot for an unrelated change.
-            # Demote with a disclosed reason — the assembly succeeds and scope
-            # review can dispatch instead of failing closed at $0.
-            facts.disposition = "manifest_only"
-            facts.reason = (
-                "force-included path not in the diff: coverage row only, "
-                "full snapshot not owed for an unrelated change"
             )
         else:
             facts.disposition = "manifest_only"
@@ -466,34 +443,16 @@ def compile_review_context_atlas(req: ReviewContextAtlasRequest) -> ReviewContex
         # the row cannot be read as "this file alone exceeded the budget".
         removable = [path for path in reversed(selected_paths) if not facts_by_path[path].required]
         removable += sorted(
-            (
-                path
-                for path in selected_paths
-                if facts_by_path[path].required and not facts_by_path[path].required_in_full
-            ),
-            key=lambda path: -facts_by_path[path].token_count,
-        )
-        removable += sorted(
-            (path for path in selected_paths if facts_by_path[path].required_in_full),
+            (path for path in selected_paths if facts_by_path[path].required),
             key=lambda path: -facts_by_path[path].token_count,
         )
         for path in removable:
             facts = facts_by_path[path]
-            if facts.required_in_full:
+            if facts.required:
                 facts.disposition = "budget_omitted"
                 facts.reason = (
                     "required file admitted, then removed because the rendered "
                     "atlas exceeded the hard budget"
-                )
-            elif facts.required:
-                # Selected (so it fit alone) but the pack still overflows: an
-                # untouched force-included path degrades to a coverage row rather
-                # than failing the assembly for an unrelated change
-                # (ibl-1b372dd99e48).
-                facts.disposition = "manifest_only"
-                facts.reason = (
-                    "force-included path not in the diff removed to keep atlas "
-                    "below hard budget: coverage row only"
                 )
             else:
                 facts.disposition = "manifest_only"
@@ -583,6 +542,7 @@ def _build_file_facts(
     already_included: frozenset[str],
     include_tests: bool,
     diff_only_included: frozenset[str] = frozenset(),
+    diff_only_reasons: Mapping[str, str] | None = None,
     inventory_fact: Any = None,
 ) -> _FileFacts:
     facts = _FileFacts(rel_path=rel, language=pathlib.PurePosixPath(rel).suffix.lstrip("."))
@@ -599,16 +559,6 @@ def _build_file_facts(
     is_anchor = rel in anchors
     is_canonical = rel in _CANONICAL_CONTEXT_DOCS
     facts.required = force_include or is_anchor or is_canonical
-    # Owed IN FULL vs. owed for COVERAGE only (ibl-1b372dd99e48). A touched path
-    # (anchor) and a canonical review doc are owed in full — the staged diff is
-    # not a substitute, and dropping them fails the assembly. A force-included
-    # path the diff does NOT touch is owed only a coverage manifest row: a small
-    # unrelated change does not need its full snapshot, so under aggregate budget
-    # pressure it demotes to `manifest_only` instead of refusing the review.
-    # Without this split, ANY commit that co-exists with the repo's fixed
-    # force-include set (prompts/, ouroboros/contracts/, protected runtime +
-    # review-stack paths) overflows the atlas and is scope-blocked at $0.
-    facts.required_in_full = is_anchor or is_canonical
     # The classes owed IN FULL regardless of the change: for these the staged
     # diff is never a substitute for the artifact. An anchor is required
     # BECAUSE it is touched, and its complete change-evidence is the staged
@@ -620,7 +570,8 @@ def _build_file_facts(
         # The caller owns which snapshots actually survived in the fixed prompt;
         # the row must not claim more than it was told (P1).
         facts.reason = (
-            "changes included in the fixed staged diff; full snapshot omitted "
+            (diff_only_reasons or {}).get(rel)
+            or "changes included in the fixed staged diff; full snapshot omitted "
             "to fit the reviewer input budget"
             if rel in diff_only_included
             else "included in fixed prompt context"

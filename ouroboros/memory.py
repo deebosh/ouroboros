@@ -57,6 +57,48 @@ def strip_think_blocks(raw: str) -> str:
     return _THINK_BLOCK_RE.sub("", raw).strip()
 
 
+def render_scratchpad_markdown(
+    blocks: List[Dict[str, Any]], *, journal_pointer: bool = False,
+) -> str:
+    """Render scratchpad blocks the one way the runtime renders them.
+
+    SINGLE SOURCE OF TRUTH for the block markdown. Both the writer
+    (Memory._write_scratchpad_markdown, which persists memory/scratchpad.md)
+    and the consumer-side degradation path
+    (ouroboros/context.py::_render_scratchpad_for_context, which re-renders a
+    kept slice when the section exceeds its context budget) call this, so a
+    degraded context build reads in the SAME order as the file it stands in
+    for. Blocks arrive oldest-first (storage order) and are rendered
+    newest-first, which is the order the model has always read.
+
+    ``journal_pointer`` adds the retired/replaced-blocks pointer line; the
+    writer passes ``Memory.journal_path().exists()`` for it.
+    """
+    n = len(blocks)
+    parts = [f"## Scratchpad (working memory — {n}/{_SCRATCHPAD_MAX_BLOCKS} blocks)\n"]
+    if journal_pointer:
+        parts.append(
+            "Exact retired/replaced source blocks remain readable with "
+            "`read_file(root='runtime_data', "
+            "path='memory/scratchpad_journal.jsonl', start_line=1)`.\n\n"
+        )
+    for block in reversed(blocks):
+        ts = str(block.get("ts", ""))[:16]
+        source = block.get("source", "?")
+        content = block.get("content", "")
+        parts.append(f"### [{ts} — {source}]\n{content}\n\n---\n")
+        metadata = block.get("metadata") if isinstance(block.get("metadata"), dict) else {}
+        source_ref = metadata.get("source_ref") if isinstance(metadata.get("source_ref"), dict) else {}
+        entry_id = str(source_ref.get("entry_id") or "")
+        if entry_id:
+            parts.append(
+                "Exact replaced blocks: `read_file(root='runtime_data', "
+                "path='memory/scratchpad_journal.jsonl', start_line=1)`; "
+                f"locate `entry_id={entry_id}`.\n\n"
+            )
+    return "\n".join(parts)
+
+
 def _history_timestamp(value: Any, *, field: str = "ts") -> datetime:
     text = str(value or "").strip()
     if not text:
@@ -527,30 +569,12 @@ class Memory:
             write_text(self.scratchpad_path(), self._default_scratchpad())
             return
 
-        n = len(blocks)
-        parts = [f"## Scratchpad (working memory — {n}/{_SCRATCHPAD_MAX_BLOCKS} blocks)\n"]
-        if self.journal_path().exists():
-            parts.append(
-                "Exact retired/replaced source blocks remain readable with "
-                "`read_file(root='runtime_data', "
-                "path='memory/scratchpad_journal.jsonl', start_line=1)`.\n\n"
-            )
-        for block in reversed(blocks):
-            ts = str(block.get("ts", ""))[:16]
-            source = block.get("source", "?")
-            content = block.get("content", "")
-            parts.append(f"### [{ts} — {source}]\n{content}\n\n---\n")
-            metadata = block.get("metadata") if isinstance(block.get("metadata"), dict) else {}
-            source_ref = metadata.get("source_ref") if isinstance(metadata.get("source_ref"), dict) else {}
-            entry_id = str(source_ref.get("entry_id") or "")
-            if entry_id:
-                parts.append(
-                    "Exact replaced blocks: `read_file(root='runtime_data', "
-                    "path='memory/scratchpad_journal.jsonl', start_line=1)`; "
-                    f"locate `entry_id={entry_id}`.\n\n"
-                )
-
-        write_text(self.scratchpad_path(), "\n".join(parts))
+        write_text(
+            self.scratchpad_path(),
+            render_scratchpad_markdown(
+                blocks, journal_pointer=self.journal_path().exists(),
+            ),
+        )
 
     def load_dialogue_blocks(self) -> List[Dict[str, Any]]:
         path = self.drive_root / "memory" / "dialogue_blocks.json"
@@ -1075,14 +1099,24 @@ class Memory:
         tail_bytes: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         path = self.logs_path(log_name)
-        if not path.exists():
-            return []
         try:
-            entries = []
-            for entry in iter_jsonl_objects(path, max_entries=max_entries, tail_bytes=tail_bytes):
-                if exclude_a2a and is_a2a_chat_id(entry.get("chat_id")):
-                    continue
-                entries.append(entry)
+            def _rows(source, cap, *, tail=None):
+                return [e for e in iter_jsonl_objects(source, max_entries=cap, tail_bytes=tail)
+                        if not (exclude_a2a and is_a2a_chat_id(e.get("chat_id")))]
+
+            entries = _rows(path, max_entries, tail=tail_bytes)
+            if max_entries is not None and len(entries) < max_entries:
+                # Rotation-aware backfill (CPL4-C2..C4): newest archive segments
+                # top a freshly rotated tail back up; unbounded reads keep
+                # live-file-only semantics (their consumers own their chains).
+                # Archive segments are read whole (no tail_bytes) — a rotated
+                # segment is already bounded by rotation size, unlike the live file.
+                from ouroboros.utils import jsonl_archive_segments
+
+                for segment in reversed(jsonl_archive_segments(path)):
+                    if len(entries) >= max_entries:
+                        break
+                    entries = _rows(segment, max_entries - len(entries)) + entries
             return entries
         except Exception:
             log.warning("Failed to read JSONL entries from %s", log_name, exc_info=True)

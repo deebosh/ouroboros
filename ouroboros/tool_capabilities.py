@@ -7,6 +7,10 @@ from __future__ import annotations
 # sides import this one name instead of repeating the literal.
 BACKGROUND_DELEGATION_ROLE: str = "background"
 
+OWNER_DELIVERY_TOOL_NAMES: frozenset[str] = frozenset({
+    "send_user_message", "send_photo", "send_video", "send_file", "send_links",
+})
+
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "read_file", "list_files", "write_file", "edit_text",
     "apply_patch", "edit_batch", "bump_version",
@@ -42,12 +46,12 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "web_search",
     "browse_page", "browser_action", "analyze_screenshot", "view_image",
     "ocr_pdf", "youtube_transcript", "extract_video_frames",
-    "send_user_message", "send_photo", "send_video", "send_file", "send_links",
+    *OWNER_DELIVERY_TOOL_NAMES,
     "escalate",
     "switch_model",
     "request_restart", "promote_to_stable",
     "preflight_review", "advisory_review", "review_status", "task_acceptance_review", "verify_and_record",
-    # Heal mode blocks enable_tools, so repair/review tools must be core.
+    # Skill discovery and review are core authoring capabilities.
     "list_skills", "skill_review", "skill_preflight",
     "submit_skill_to_hub",
 })
@@ -69,6 +73,7 @@ LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "switch_model",
     "read_file", "list_files", "search_code", "query_code",
     "vcs_status", "vcs_diff",
+    "knowledge_read", "knowledge_list",
     "chat_history", "recent_tasks", "get_task_result", "wait_task", "wait_tasks",
     "escalate",
     "forward_to_worker", "peek_task", "cancel_task", "discard_child_result",
@@ -90,8 +95,8 @@ LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
 
 ACTING_SUBAGENT_MODE: str = "acting_subagent"
 
-# Mutative ("acting") subagents may write inside an isolated write root
-# (self_worktree / external_workspace) and run shell/services there.
+# Mutative ("acting") subagents may write inside their assigned write root
+# (isolated self_worktree / shared external_workspace) and run shell/services there.
 # They explicitly CANNOT commit the live body (commit_reviewed /
 # vcs_commit_reviewed), run runtime control, touch the skills lifecycle, enable
 # tools, or write cognitive memory (update_identity/update_scratchpad/
@@ -157,6 +162,7 @@ UNTRUNCATED_TOOL_RESULTS: frozenset[str] = frozenset({
     "preflight_review",
     "advisory_review",
     "skill_review",
+    "skill_owner_action",
     "review_status",
     "get_task_result",
     "wait_task",

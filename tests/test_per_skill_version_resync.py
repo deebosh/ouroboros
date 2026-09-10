@@ -350,14 +350,20 @@ def test_read_version_returns_empty_for_missing_files(tmp_path):
     assert _read_skill_manifest_version(skill) == ""
 
 
-def test_telegram_format_upgrade_reseeds_version_1_1_0(tmp_path, fake_log):
-    """The launcher-owned Telegram payload must resync for format parity."""
+def test_telegram_owner_wait_upgrade_reseeds_version_1_2_1(tmp_path, fake_log):
+    """The launcher-owned Telegram payload must deliver the owner-wait update.
+
+    The pinned string is the RESYNC KEY, not decoration: `_per_skill_version_resync`
+    re-seeds a marker-owned native skill only when the seed and installed `SKILL.md`
+    `version` differ, so a payload change shipped without a bump never reaches an
+    existing install. Re-pin this whenever skills/telegram payload changes.
+    """
     from ouroboros.launcher_bootstrap import _per_skill_version_resync
 
     seed_dir = pathlib.Path(__file__).resolve().parents[1] / "skills"
     drive_root = tmp_path / "data"
     native_root = drive_root / "skills" / "native"
-    installed = _write_skill(native_root, "telegram", version="1.0.1")
+    installed = _write_skill(native_root, "telegram", version="1.2.0")
     (installed / ".seed-origin").write_text("seeded_from=test\n", encoding="utf-8")
 
     upgraded = _per_skill_version_resync(
@@ -368,5 +374,6 @@ def test_telegram_format_upgrade_reseeds_version_1_1_0(tmp_path, fake_log):
     )
 
     assert upgraded == 1
-    assert "version: 1.1.0" in (installed / "SKILL.md").read_text(encoding="utf-8")
-    assert (installed / "plugin.py").is_file()
+    assert "version: 1.2.1" in (installed / "SKILL.md").read_text(encoding="utf-8")
+    for path in ("plugin.py", "lib/telegram_quiz.py"):
+        assert (installed / path).read_bytes() == (seed_dir / "telegram" / path).read_bytes()

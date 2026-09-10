@@ -151,14 +151,18 @@ def test_sweep_is_throttled_by_periodic_marker(monkeypatch, caplog):
     import time
 
     import server
+    import ouroboros.server_maintenance as server_maintenance
     import ouroboros.task_continuation as continuation_module
 
     caplog.set_level("INFO", logger="server")
 
-    monkeypatch.setattr(server, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])
-    monkeypatch.setattr(server, "_LAST_STORE_GC", [time.time()])
-    monkeypatch.setattr(server, "_periodic_store_gc", lambda: None)
-    monkeypatch.setattr(server, "_LAST_REVIEW_CONTINUATION_SWEEP", [0.0])
+    # v7 L-B split: the periodic-maintenance body (and its store-GC / stale-
+    # continuation-sweep tail) live in ouroboros.server_maintenance now; server
+    # only re-exports them. Patch the owning module so the stubs take effect.
+    monkeypatch.setattr(server_maintenance, "_LAST_CANCEL_INTENT_SWEEP", [time.time()])
+    monkeypatch.setattr(server_maintenance, "_LAST_STORE_GC", [time.time()])
+    monkeypatch.setattr(server_maintenance, "_periodic_store_gc", lambda: None)
+    monkeypatch.setattr(server_maintenance, "_LAST_REVIEW_CONTINUATION_SWEEP", [0.0])
 
     seen = []
     monkeypatch.setattr(

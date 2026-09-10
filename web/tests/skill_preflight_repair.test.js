@@ -41,7 +41,7 @@ function preflightSkill(overrides = {}) {
 
 test('preflight-failed external skill offers Repair as the primary action', () => {
     const html = renderInstalledSkillCard(preflightSkill());
-    assert.match(html, /data-skill-action="repair"[^>]*>Repair</);
+    assert.match(html, /data-skill-action="repair"[^>]*>Repair and run</);
     assert.doesNotMatch(html, />Re-review</);
 });
 
@@ -50,7 +50,7 @@ test('preflight-failed self-authored skill offers Repair too', () => {
         source: 'self_authored',
         is_self_authored: true,
     }));
-    assert.match(html, /data-skill-action="repair"[^>]*>Repair</);
+    assert.match(html, /data-skill-action="repair"[^>]*>Repair and run</);
 });
 
 test('plain pending without a preflight failure keeps the Review CTA', () => {
@@ -59,7 +59,7 @@ test('plain pending without a preflight failure keeps the Review CTA', () => {
         review_findings: [],
     }));
     assert.match(html, />Review</);
-    assert.doesNotMatch(html, /data-skill-action="repair"[^>]*>Repair</);
+    assert.doesNotMatch(html, /data-skill-action="repair"[^>]*>Repair and run</);
 });
 
 test('a gate without the preflight key is never treated as a failure', () => {
@@ -114,7 +114,7 @@ test('non-repairable native source keeps the Review CTA on a preflight failure',
         payload_root: '',
     }));
     assert.match(html, />Review</);
-    assert.doesNotMatch(html, /data-skill-action="repair"[^>]*>Repair</);
+    assert.doesNotMatch(html, /data-skill-action="repair"[^>]*>Repair and run</);
 });
 
 test('the status chip names the preflight failure instead of generic Needs review', () => {
@@ -155,8 +155,8 @@ test('a stale recorded FAIL keeps Re-review primary and offers Repair from the m
         },
     }));
     assert.match(html, /skills-primary-action[^>]*data-skill-action="rereview"[^>]*>Re-review</);
-    assert.doesNotMatch(html, /skills-primary-action[^>]*>Repair</);
-    assert.match(html, /skills-menu-item skills-repair-stale[^>]*data-skill-action="repair"[^>]*>Repair</);
+    assert.doesNotMatch(html, /skills-primary-action[^>]*>Repair and run</);
+    assert.match(html, /skills-menu-item skills-repair-stale[^>]*data-skill-action="repair"[^>]*>Repair and run</);
     assert.match(html, /based on the last recorded preflight/);
     assert.match(html, /Skip review/);
 });
@@ -173,7 +173,7 @@ test('a stale review without a recorded FAIL offers no Repair anywhere', () => {
         review_findings: [],
     }));
     assert.match(html, />Re-review</);
-    assert.doesNotMatch(html, /data-skill-action="repair"[^>]*>Repair</);
+    assert.doesNotMatch(html, /data-skill-action="repair"[^>]*>Repair and run</);
 });
 
 test('self-authored instruction skill offers Make runnable in the menu', () => {

@@ -22,7 +22,7 @@ def _isolated_projects_root(tmp_path_factory, monkeypatch):
 
 def _confirm_promote(monkeypatch):
     monkeypatch.setattr(
-        "ouroboros.tools.control._wait_for_promotion_admission",
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
         lambda *_args, **_kwargs: {"status": "scheduled"},
     )
 
@@ -146,7 +146,7 @@ def test_cat_router_preview_promote_first_request_and_direct_harness_keep_full_a
     result_dir = tmp_path / "task_results"
     result_dir.mkdir()
     (result_dir / f"{predecessor_id}.json").write_text(
-        json.dumps(predecessor), encoding="utf-8",
+        json.dumps({"_schema_version": 1, **predecessor}), encoding="utf-8",
     )
     assert len(json.dumps(predecessor["plan_review_state"])) < 1_000
     assert len(json.dumps({
@@ -261,8 +261,8 @@ def test_main_promotion_selects_only_manifested_canonical_predecessor(tmp_path, 
     result_dir = tmp_path / "task_results"
     result_dir.mkdir()
     rows = [
-        {"task_id": "old-a", "status": "completed", "title": "First project"},
-        {"task_id": "old-b", "status": "completed", "title": "Chosen project"},
+        {"_schema_version": 1, "task_id": "old-a", "status": "completed", "title": "First project"},
+        {"_schema_version": 1, "task_id": "old-b", "status": "completed", "title": "Chosen project"},
     ]
     for row in rows:
         (result_dir / f"{row['task_id']}.json").write_text(
@@ -464,7 +464,7 @@ def test_real_presence_promotion_rebases_root_and_materializes_all_attachments(
         "tid": "presence-child", "objective": "Inspect both inputs",
         "expected_output": "Report", "parent_contract": contract,
         "root_task_id": promoted["id"], "parent_task_id": promoted["id"],
-        "attachment_manifest": child_manifest,
+        **child_manifest,
     })
     work_order = compile_external_work_order({
         "id": "presence-child", "objective": "Inspect both inputs",
@@ -852,7 +852,7 @@ def test_ephemeral_swarm_unconfirmed_promotion_reuses_one_task_id(tmp_path, monk
     from ouroboros.tools.control import _promote_chat_to_task
 
     monkeypatch.setattr(
-        "ouroboros.tools.control._wait_for_promotion_admission",
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
         lambda *_args, **_kwargs: {"status": "unconfirmed", "reason": "confirmation_timeout"},
     )
     ctx = _swarm_ctx(tmp_path)
@@ -870,7 +870,7 @@ def test_ephemeral_swarm_receipt_error_after_emit_keeps_one_attempt(tmp_path, mo
     from ouroboros.tools.control import _promote_chat_to_task
 
     monkeypatch.setattr(
-        "ouroboros.tools.control._wait_for_promotion_admission",
+        "ouroboros.tools.control_events._wait_for_promotion_admission",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("receipt unavailable")),
     )
     event_queue = queue.Queue()
@@ -891,7 +891,7 @@ def test_ephemeral_swarm_rejected_promotion_is_latched_without_event(tmp_path, m
     from ouroboros.tools.control import _promote_chat_to_task
 
     monkeypatch.setattr(
-        "ouroboros.tools.control._promotion_pool_disabled_from_snapshot",
+        "ouroboros.tools.control_routing._promotion_pool_disabled_from_snapshot",
         lambda _ctx: "crash_storm",
     )
     ctx = _swarm_ctx(tmp_path)
@@ -1063,7 +1063,7 @@ def test_promote_event_enqueues_first_class_task(tmp_path, monkeypatch):
     assert task["id"] == "abc12345"
     assert task["type"] == "task"
     assert task["project_id"] == "research-1"
-    assert "delegation_role" not in task
+    assert (task["delegation_role"], task["root_task_id"]) == ("root", task["id"])
     assert "_is_direct_chat" not in task
     assert "Expected output: A summary" in task["text"]
     # The project got registered as a side effect, and the promoted task runs in
@@ -1300,7 +1300,7 @@ def test_route_to_project_event_emits_route_receipt_action(tmp_path, monkeypatch
     assert receipts[-1][1]["status"] == "scheduled"
 
 
-def test_promoted_skill_repair_is_canonical_confined_managed_task(tmp_path, monkeypatch):
+def test_promoted_skill_repair_is_ordinary_managed_task_with_selected_resource(tmp_path, monkeypatch):
     import supervisor.workers as workers
 
     payload = tmp_path / "skills" / "external" / "alpha"
@@ -1337,7 +1337,7 @@ def test_promoted_skill_repair_is_canonical_confined_managed_task(tmp_path, monk
     task = enqueued[0]
     assert task.get("_ephemeral_turn") is None
     assert task["task_constraint"] == {
-        "mode": "skill_repair",
+        "mode": "normal",
         "skill_name": "alpha",
         "payload_root": "skills/external/alpha",
         "allow_enable": False,
@@ -1821,9 +1821,9 @@ def test_route_project_chat_does_not_confirm_failed_mailbox_write(tmp_path, monk
     )
 
 
-def test_busy_project_chat_routes_to_ephemeral_decision_turn(tmp_path, monkeypatch):
+def test_busy_project_chat_runs_native_with_routing_context(tmp_path, monkeypatch):
     """WS1/P5 (v6.34.0): a busy PROJECT chat is NOT mechanically auto-enqueued into a
-    duplicate pooled task. It runs the ephemeral decision turn (project-scoped, seeing
+    duplicate pooled task. It runs a native conversation turn (project-scoped, seeing
     current_chat.running_tasks) so the one mind decides steer_task / answer / promote by
     judgment — replacing the old 'Hybrid B+' auto-enqueue fallback."""
     import threading as _threading
@@ -1834,7 +1834,7 @@ def test_busy_project_chat_routes_to_ephemeral_decision_turn(tmp_path, monkeypat
     proj = create_project(tmp_path, "market-research")
     project_chat = int(proj["chat_id"])
     enqueued = []
-    ephemeral_calls = []
+    direct_calls = []
     called = _threading.Event()
 
     monkeypatch.setattr("supervisor.message_bus.log_chat", lambda *a, **k: None)
@@ -1856,8 +1856,14 @@ def test_busy_project_chat_routes_to_ephemeral_decision_turn(tmp_path, monkeypat
         def inject_observation(self, _text):
             return None
 
-    def _ephemeral(cid, text, image_data, *, task_constraint=None, task_metadata=None):
-        ephemeral_calls.append({"chat_id": cid, "text": text, "metadata": task_metadata})
+        def pause(self):
+            pass
+
+        def resume(self):
+            pass
+
+    def _direct(cid, text, image_data, *, task_constraint=None, task_metadata=None):
+        direct_calls.append({"chat_id": cid, "text": text, "metadata": task_metadata})
         called.set()
 
     ctx = types.SimpleNamespace(
@@ -1867,19 +1873,19 @@ def test_busy_project_chat_routes_to_ephemeral_decision_turn(tmp_path, monkeypat
         update_state=lambda fn: fn({"owner_id": 1, "owner_chat_id": 1}),
         consciousness=_Consciousness(),
         get_chat_agent=lambda: types.SimpleNamespace(_busy=True),
-        handle_chat_direct=lambda *a, **k: (_ for _ in ()).throw(AssertionError("direct lane must not run when busy")),
-        handle_chat_ephemeral=_ephemeral,
+        handle_chat_direct=_direct,
+        handle_chat_ephemeral=lambda *a, **k: (_ for _ in ()).throw(AssertionError("ordinary turn became ephemeral")),
         enqueue_task=lambda task: enqueued.append(task),
         send_with_budget=lambda *a, **k: None,
     )
 
     assert server._process_bridge_updates(_Bridge(), 0, ctx) == 1
-    assert called.wait(timeout=3)  # the ephemeral decision turn ran on its own thread
+    assert called.wait(timeout=3)  # the native conversation turn ran on its own thread
     assert enqueued == []  # NOT auto-enqueued into a duplicate pooled task
-    assert len(ephemeral_calls) == 1
-    md = ephemeral_calls[0]["metadata"] or {}
+    assert len(direct_calls) == 1
+    md = direct_calls[0]["metadata"] or {}
     assert str(md.get("project_id") or "")  # project-scoped decision turn
-    assert "сколько будет 2+2?" in (ephemeral_calls[0]["text"] or "")
+    assert "сколько будет 2+2?" in (direct_calls[0]["text"] or "")
 
 
 def test_project_from_task_endpoint_creates_binding(tmp_path):
@@ -2167,7 +2173,7 @@ def test_bound_task_media_routes_to_project_panel(tmp_path):
     import base64
 
     from ouroboros.projects_registry import bind_task_to_project, create_project
-    from supervisor.chat_delivery_events import _handle_send_photo, _handle_send_video
+    from supervisor.events_chat_delivery import _handle_send_photo, _handle_send_video
 
     project = create_project(tmp_path, "media-proj")
     project_chat = int(project["chat_id"])
@@ -2405,6 +2411,11 @@ def test_busy_direct_main_root_is_manifested_and_steerable_without_promotion(tmp
         _current_task_metadata={"client_message_id": "initial-1"},
         _task_started_ts=10.0,
     )
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(
+        direct_agent._current_task_id, direct_agent._current_chat_id, actor=direct_agent,
+    )
     routing_ctx = types.SimpleNamespace(
         DRIVE_ROOT=tmp_path,
         RUNNING={},
@@ -2453,6 +2464,11 @@ def test_direct_turn_closed_admission_returns_manual_target(tmp_path):
         _current_task_id="direct-root",
         _current_chat_id=1,
         _current_task_metadata={},
+    )
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(
+        direct_agent._current_task_id, direct_agent._current_chat_id, actor=direct_agent,
     )
     receipts = []
 
@@ -2585,6 +2601,11 @@ def test_direct_root_steering_uses_live_human_identity_for_receipt_and_notice(
         _current_task_text="Continue the Tower Defence task",
         _owner_message_generation=0,
     )
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(
+        direct_agent._current_task_id, direct_agent._current_chat_id, actor=direct_agent,
+    )
     acks = []
     notices = []
     ctx = types.SimpleNamespace(
@@ -2639,6 +2660,11 @@ def test_direct_project_followup_carries_same_live_human_identity(tmp_path):
         },
         _current_task_text="Continue the Tower Defence task",
         _owner_message_generation=0,
+    )
+    from supervisor.active_activity import get_direct_activity_registry
+
+    get_direct_activity_registry().register(
+        direct_agent._current_task_id, direct_agent._current_chat_id, actor=direct_agent,
     )
     notices = []
     ctx = types.SimpleNamespace(

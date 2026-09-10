@@ -89,6 +89,9 @@ permissions: [net, tool, route, widget, read_settings, companion_process, superv
 conflicts: [legacy-weather]            # optional incompatible installed skill names
 env_from_settings: [OPENROUTER_API_KEY]                  # core keys require an owner grant
 when_to_use: User asks for the weather forecast.
+model_experience:                   # optional prose (CPL-7); a bare string is also accepted
+  what_model_sees: One weather tool joins the tool list; results come back as compact JSON.
+  token_effect: Small fixed schema cost per round while enabled.
 timeout_sec: 60                     # default 60, hard cap 300
 companion_processes:                # optional; PLURAL, and needs the companion_process permission
   - name: demo_worker               # see "Declaring a companion process"
@@ -102,9 +105,10 @@ scheduled_tasks:                    # optional reviewed cron jobs
 ui_tab:                             # extension widgets (optional)
   tab_id: live
   title: Weather
-  icon: cloud
+  icon: "⛅"                        # one glyph (emoji / symbol); a name like `cloud` is not rendered
   render:
     kind: declarative
+    start: auto                     # launch policy; module/iframe may say manual | retain (see "Launch policy")
     schema_version: 1
     components:
       - type: form
@@ -136,11 +140,39 @@ execute), and required for `script` / `extension`. Allowed values are
 `shutil.which` at exec time, so the operator's host must ship the
 runtime; otherwise `skill_exec` fails closed with a clear error.
 
+Go scripts are compiled into a private temporary executable and then run with
+the caller's arguments unchanged, including arguments ending in `.go`. The
+compiler and program share the invocation timeout; `runtime_phase` distinguishes
+a compilation failure from the program's own exit status. Cleanup uses the same
+tracked-process path as the other script runtimes.
+
+Deno receives `run --no-prompt` and permissions before the script operand.
+Ordinary reads remain available; `fs` permits writes outside the existing skill
+state directory, `net` permits network calls unless the task disables network,
+and `subprocess` permits child processes. Environment access names only the keys
+actually forwarded after grants. A task with network disabled also requires
+cached imports. These are the existing reviewed script effects, not a new OS
+sandbox: in particular, an allowed child process has ordinary host privileges.
+
 `conflicts` is an optional list of canonical skill names (letters, numbers,
 dash, underscore, or dot; at most 32 entries). If either enabled skill names
 the other, both readiness and extension loading fail closed with a typed
 conflict until the owner disables one. Ouroboros never resolves a conflict by
 automatically disabling, deleting, or moving either payload.
+
+`model_experience` is an optional prose section describing the skill from the
+model's point of view: `what_model_sees` (what the skill adds to the model's
+context — tools, sections, attachments) and `token_effect` (roughly what that
+costs and when it is loaded). A bare string is shorthand for
+`what_model_sees`. The prose travels verbatim (bounded) to the model-visible
+surfaces — the `list_skills` JSON and the "Installed Skills" context section —
+so write it for the model, not for the human reviewer. Unknown keys or
+non-string values are refused at parse time.
+
+Manifest refusals teach: every `SkillManifestError` carries the problem plus,
+where the parser knows the repair, a `fix_hint` rendered into the message
+(`... — fix: ...`), so a refused registration tells you how to fix the
+manifest instead of only what was wrong.
 
 ## Lifecycle: install → review → enable → execute
 
@@ -169,7 +201,9 @@ flowchart LR
   in `data/state/skills/<name>/deps.json`.
 - **Enable** flips `enabled.json` after a fresh executable review + grants + deps. The
   Skills UI surfaces a toggle; agents can also call `toggle_skill`.
-  Self-authored provenance does not change the enablement path.
+  A self-authored skill's first enablement can follow
+  `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS`; otherwise enabling requires the owner
+  toggle or an agent acting on the owner's expressed instruction.
 - **Execute**: `skill_exec` runs `type: script` skills as
   subprocess. `type: extension` skills without isolated deps normally run
   through the in-process loader; extensions with reviewed isolated deps are
@@ -219,8 +253,50 @@ install:
 Bare `dependencies` entries are treated as Python packages. `pip`,
 `pipx`, `uv`, `npm`, and `node` specs are installed only after a fresh
 executable review and only under the skill's `.ouroboros_env` directory.
-Global package-manager or arbitrary-download specs remain manual setup
-guidance.
+Global package-manager specs remain manual setup guidance. Exact resources and
+explicit build actions use the same isolated install owner:
+
+```yaml
+install_specs:
+  - kind: download
+    url: https://example.org/application/disk.img
+    # Replace both with the publisher's exact artifact facts.
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    size_bytes: 9437184
+    version: application-data-1
+    target: resources/disk.img
+    platforms: [linux, darwin, win32]
+```
+
+`target`, step `cwd`, and `outputs` are relative to `.ouroboros_env` and must
+remain inside it. Platform names are `sys.platform`, optionally followed by
+`-` and the lowercase `platform.machine()` value (for example,
+`linux-x86_64` or `darwin-arm64`); omitted `platforms` applies everywhere.
+An inapplicable entry is recorded as skipped. Resources are verified by size
+and digest before landing; no package-size cap is borrowed for this file path.
+The content-addressed resource and package caches live under
+`state/skills/<name>/dependency_cache/`, outside the replaceable payload/env.
+Replacing the environment or retrying therefore reuses verified downloaded
+bytes; a different digest selects a different cache entry.
+
+An entry may also declare `steps: [{argv: [...], cwd: "."}]`, `outputs:
+["bin/helper"]`, and `check: {argv: ["helper", "--version"]}`. Arguments stay
+literal; no shell interpolation is performed. Steps require outputs and a
+concrete successful check; declared `bins` must resolve after installation.
+Build tools use the existing process tracking, timeout and cancellation path.
+The normal installer invokes new downloads/build declarations only against
+their fresh executable review and hash-covered specs, rechecking the pinned
+payload before each build/check process.
+
+Python `allow_source_build: true` and npm `allow_install_scripts: true` opt in
+per entry, each with a declared `check`. Without those flags pip remains
+wheel-only and npm keeps `--ignore-scripts`. An already installed npm package
+can be rebuilt explicitly on retry without rebuilding unrelated packages.
+`deps.json` records resource digests, actual resolved package metadata,
+output hashes and build diagnostics. `installed` records delivery;
+`executable_ready` is unknown without a declared check and true only after
+that check succeeds. A failed check stays failed, even if the package manager
+returned zero. Manual dependencies do not acquire a new universal probe gate.
 
 For `type: extension`, any reviewed isolated dependency env is kept out of
 `server.py`: `plugin.py` cataloging and tool/route/WS handlers run in a
@@ -248,8 +324,13 @@ Out-of-process caveats: (1) `register()` and `on_unload` run for **each per-call
 child** (every tool/route/WS dispatch and catalog), so `on_unload` fires per call,
 not once per disable — keep it cheap and idempotent and put durable/once-per-session
 teardown in a `companion_process` shutdown. (2) `send_ws_message` relays through the
-loopback Host Service and is best-effort and rate-limited (~60/min per skill), so a
-progress-heavy job should throttle updates or rely on poll-based status. (3) A
+loopback Host Service and is best-effort: the relay lane holds a 60-message burst
+reserve per skill that refills one message per second, the excess is refused (a 429
+with `retry_after_sec`; the host records each refused burst once with its dropped
+count), so a progress-heavy job should throttle updates or rely on poll-based
+status. Successful children also return aggregate transport/HTTP refusal counts
+through their normal result/process diagnostics; `send_ws_message` still returns
+`None`, and acceptance does not prove browser delivery. (3) A
 `companion_process` is spawned and supervised by the host **server** process: enabling
 a companion skill from the agent's `toggle_skill` tool or via post-review auto-enable
 records it in the worker process and writes a durable
@@ -357,12 +438,16 @@ dropped in silence.
 
 ## The `skill_preflight` tool
 
-When you are writing a skill (or repairing one in heal mode),
+When you are writing or repairing a skill,
 `skill_preflight` runs cheap, offline syntax validators on the
 payload — in-process Python `compile()` for `.py` files (no
-`__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs`,
+`__pycache__` writes), `node --check` for `.js`/`.mjs`/`.cjs` (a
+declared module-widget entry is instead parsed as a classic script, the
+grammar the widget frame runs it in, so top-level `import`/`export` in the
+entry fails preflight),
 `bash -n` for `.sh`/`.bash`, plus a manifest parse, explicit
-entry/script existence checks, and static widget render-schema
+entry/script existence checks (including a module widget's `render.entry`
+existence and containment), and static widget render-schema
 validation. It validates manifest `ui_tab.render` plus actual
 `register_ui_tab` and `register_settings_section` calls in `plugin.py`
 through the same runtime validator as `extension_loader`. The static
@@ -373,6 +458,10 @@ interpret eval, comprehensions, or merges. A schema it can resolve but that is
 invalid fails preflight; an unresolved dynamic registration is recorded as
 `verified=false`, `skipped=true`, `skip_reason=dynamic_ui_schema` with its source
 reference, while runtime registration remains the final fail-closed validator.
+One frozen compatibility exception is intentionally asymmetric: deterministic
+preflight reports an iframe declaration with an omitted `route` as invalid,
+while runtime registration preserves that route-less shape so an existing
+extension still loads (the card remains not-supported rather than executable).
 It does not call any LLM and does not mutate review state, so the agent can
 iterate without burning review tokens.
 
@@ -383,9 +472,12 @@ skill_preflight(skill="weather", paths=["plugin.py"])
 
 ## Repair task path scheme and edit tools
 
-Skills repaired from the Skills or Marketplace UI run under a structured
-`task_constraint.mode="skill_repair"`. The constraint identifies the selected
-skill and payload root, so repair tools use payload-relative paths:
+**Repair and run** from the Skills or Marketplace UI starts an ordinary managed
+development task. The confirmed request is retained as a real owner message, not
+a presentation-only acknowledgement. Its normal task constraint records the selected skill and physical payload
+root; the task also retains the request source and initial content revision.
+Persisted `mode="skill_repair"` task records remain readable with the same ordinary
+tool capabilities. Payload-relative paths address the selected installation:
 
 | Tool | Repair path example | Use when |
 |------|---------------------|----------|
@@ -393,12 +485,27 @@ skill and payload root, so repair tools use payload-relative paths:
 | `edit_text` with `root=skill_payload` | `plugin.py` | One exact replacement in an existing file. |
 | `write_file` with `root=skill_payload` | `new_module.py` | New files or intentional full-file rewrites. |
 | `skill_preflight` | `skill="weather"` | Cheap read-only syntax/schema check before LLM review. |
-| `skill_review` | `skill="weather"` | Required final reviewer-slot review. |
+| `skill_review` | `skill="weather"` | Review the changed payload before execution. |
 
-Repair mode blocks shell, browser/search, scheduling, skill execution,
-repo commits, extension tools, key grants, and enable/disable flows. Finish
-with `skill_preflight` and `skill_review`; the owner enables or grants access
-after a fresh executable review.
+The task retains ordinary shell, browser, search, delegation and execution tools.
+The installed payload is usually a normal directory; an isolated Git copy through
+delegation is optional. Selected payload operations check the known revision;
+after an opaque shell command the task records the observed revision without
+claiming every concurrent change as its own.
+
+Test the repaired installation through its real script, extension tool, HTTP
+route, widget or companion after the normal review, dependencies and permissions
+checks. Review does not forcibly unload a working extension. Inspect widget
+screenshots and repeat the edit/review/execution cycle when fixes are needed.
+
+Repair and run authorizes enabling and testing the repaired installation, leaving
+it working. After review, the model calls `toggle_skill`; the host resolves the
+task's actual original owner message by default. A later direct owner disable
+requires a newer owner instruction. Repair does not authorize granting all
+permissions, attestation or deletion. Existing auto-grant policy still applies. `skill_owner_action` uses the shared lifecycle owners only with the
+specific action, revision and existing owner-intent source; a source reference
+alone is not permission. An automatic edit-and-review request retains
+`allow_enable=False` and does not gain enablement authority from being a Repair.
 
 ### Top-level short-form authoring (including light mode)
 
@@ -413,9 +520,9 @@ one returns a clear
 `bucket and skill_name must be supplied together` error instead of silently
 writing into the drive root.
 
-The constrained Skills UI Repair lane is intentionally narrower and unchanged:
-it still selects only its declared non-native payload and has no shell or
-delegation capability.
+The selected-skill constraint keeps payload-relative calls attached to their
+declared physical skill. Ordinary development capabilities remain available;
+selecting another payload is not an implicit redirect of this task's target.
 
 To **create a new skill** the payload directory need not pre-exist: writing the
 manifest at the payload root (`path="SKILL.md"` or `path="skill.json"`) is the
@@ -475,7 +582,7 @@ calls and runtime behaviours:
 | `supervised_task` | The skill may register an in-process host-supervised async task. |
 | `companion_process` | The skill may register a manifest-declared companion subprocess supervised by the host. |
 | `subscribe_event` | The skill may subscribe to manifest-declared host event topics such as `chat.outbound` or `skill.lifecycle`. Chat topics require owner permission grants; `skill.lifecycle` does not. |
-| `inject_chat` | The skill may request Host Service chat injection after an explicit owner permission grant. |
+| `inject_chat` | The skill may request Host Service chat injection after an explicit owner permission grant: `POST /chat/inject` carries text, an inline image, or `attachments` (`[{path, name?, mime?}]` — regular files under the skill's own state root, at most 25 per message, which the host copies without the former 50 MiB upload cap into the shared `data/uploads` chat-upload store and stages for the task; a file-only message needs no text). The same grant lets the skill relay the owner's decision-card answer through `POST /chat/decision` (`{request_id, decision_id, option_index?, comment?}`, the `POST /api/decisions` contract). A message that carries a `client_message_id` becomes an addressable operation: the host answers with its `operation_ref` (`<chat_id>:<client_message_id>`) on 202, 200 and 504; a repeated delivery of the same message rejoins it instead of enqueueing again (a different message under a reused id is refused with 409); `GET /chat/operations/{operation_ref}` reports the skill's own accepted message (`pending`, `running` with its task or turn, the durable answer, a terminal task status, or `lost` after a host restart); and `POST /chat/cancel` (`{operation_ref, reason?}`) runs the existing cancellation owner on work that message started, answering `cancelled`, `already_terminal`, `unresolved` or `cancel_unsupported` — never a cancellation that did not happen. |
 | `presence` | A reviewed transport skill may submit authenticated non-owner conversation events to the Host Service Presence boundary and poll only their correlated late work. Requires an explicit content-hash-bound owner grant. |
 
 A missing permission causes the matching `register_*` call to raise
@@ -485,7 +592,7 @@ Skills UI.
 ## Grants for protected keys and host permissions
 
 Some settings keys are protected: `OPENROUTER_API_KEY`,
-`OPENAI_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, `ANTHROPIC_API_KEY`, `MINIMAX_API_KEY`,
+`OPENAI_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, `ANTHROPIC_API_KEY`, `MINIMAX_API_KEY`, `DEEPSEEK_API_KEY`,
 `CLOUDRU_FOUNDATION_MODELS_API_KEY`, `GIGACHAT_CREDENTIALS`, `GIGACHAT_PASSWORD`, `TELEGRAM_BOT_TOKEN`,
 `GITHUB_TOKEN`, `OUROBOROS_NETWORK_PASSWORD`. These keys are NEVER
 forwarded to a skill by default, even when listed in
@@ -497,8 +604,9 @@ consent. The desktop launcher's owner-grant bridge records these grants.
 The Skills UI surfaces missing grants on the skill card. The agent
 can also call `toggle_skill enabled=true` only after grants are
 approved (the tool returns `SKILL_TOGGLE_ERROR: cannot enable until
-requested key and permission grants are approved`). Self-authored markers are
-provenance only; they do not auto-grant keys or auto-enable skills.
+requested key and permission grants are approved`). Self-authored markers alone
+do not authorize grants or enablement. Automatic grants and first enablement
+follow the setting below; an explicitly authorized task toggle remains separate.
 
 `OUROBOROS_AUTO_GRANT_REVIEWED_SKILLS` is enabled by default as of v6.10.0; the
 owner may disable it in Settings → Behavior → Skills (desktop asks for native
@@ -661,6 +769,22 @@ The frozen ABI is documented in
 [`ouroboros/contracts/plugin_api.py`](../ouroboros/contracts/plugin_api.py).
 This section shows the practical shape.
 
+Extensions declare the PluginAPI generation they bind against in the manifest
+(PluginAPI 2.0, ABI 7.0):
+
+```yaml
+plugin_api: "2.0"            # major strict; minor = required minimum
+# or, with required capabilities (closed set, validated per execution mode):
+# plugin_api:
+#   version: "2.0"
+#   capabilities: [register_tool, subscribe_event]
+```
+
+A payload without the field binds the legacy "1.3" generation by
+construction: an already-reviewed payload keeps loading on its existing
+hash-bound review PASS, but a NEW review PASS (LLM review, owner attestation,
+or native-seed trust) is refused until the field is declared.
+
 ```python
 def register(api):
     # Tools — agent-callable, namespaced as ext_<len>_<token>_<name>.
@@ -676,7 +800,9 @@ def register(api):
         timeout_sec=60,
     )
 
-    # HTTP routes — mounted at /api/extensions/<skill>/<path>.
+    # HTTP routes — mounted at /api/extensions/<skill>/<path>. GET/HEAD under
+    # manifest, module/... and settings_section are host-owned (see "Loading
+    # more than one file").
     api.register_route("search", handler=http_search, methods=("POST",))
 
     # WebSocket message handlers (inbound) and broadcasts (outbound).
@@ -749,13 +875,30 @@ ui_tab:
   render:
     kind: module
     entry: widget.js
+    start: manual                   # auto | manual | retain — see "Launch policy" below
 ```
 
+The manifest declaration is checked during preflight and review; it does not
+create a live tab. With `permissions: [widget]` in your extension manifest,
+register the same surface in `plugin.py`:
+
+```python
+def register(api):
+    api.register_ui_tab("editor", "Editor", render={
+        "kind": "module", "entry": "widget.js", "start": "manual",
+    })
+```
+
+`register_ui_tab` creates the tab on the Widgets page after the extension loads.
+Keep `widget.js` beside `plugin.py`; it renders into the provided `#root` element.
+
 The host fetches reviewed JS through `GET /api/extensions/<skill>/module/<entry>`,
-embeds it in an opaque-origin iframe (`sandbox="allow-scripts"`, no
-`allow-same-origin`), and injects a fetch bridge that forwards only
-`/api/extensions/<skill>/...` paths. The `widget_module_safety` review item still
-checks the source; do not rely on the sandbox alone.
+embeds it in an opaque-origin iframe (`sandbox="allow-scripts allow-pointer-lock
+allow-downloads"`, never `allow-same-origin`; see "What the frame may do"
+below), and injects the host bridge (`window.OuroborosWidget`, below) that
+forwards only `/api/extensions/<skill>/...` requests and the skill's own
+WebSocket events. The `widget_module_safety` review item still checks the
+source; do not rely on the sandbox alone.
 
 Framed render declarations may add a bounded `height` (320–8,192 pixels).
 When a module omits `height`, the host starts at 320px and measures its
@@ -764,8 +907,12 @@ integer-deduplicates and clamps that value to 8,192px by default; an optional
 module-only `max_height` lowers the ceiling. A fixed `height` disables
 auto-growth. Legacy route iframes accept explicit `height` only because the
 host cannot inspect their opaque document. The parent owns iframe removal and
-the module bootstrap rejects pending fetch promises on disposal, so module
-code must not invent a second resize, vertical-scrolling, or teardown protocol.
+the module bootstrap rejects pending fetch promises and errors open body streams
+on disposal, so module
+code must not invent a second resize, vertical-scrolling, or teardown protocol:
+the host-owned dispose → acknowledgement handshake described under "Launch
+policy" below is the teardown protocol, and `window.__ouroWidgetOnDispose(fn)`
+is the only hook into it.
 These geometry keys are valid only for framed `iframe` and `module` renders;
 declarative renders remain content-driven and reject them.
 
@@ -778,6 +925,342 @@ host-owned resize contract. For auto-height modules, the host bootstrap
 suppresses only document-viewport `overflow-y` below the ceiling and releases
 it at the ceiling; horizontal document overflow remains author-controlled and
 reachable.
+
+#### The in-frame bridge (`window.OuroborosWidget`)
+
+The frame has no scriptable network of its own: `connect-src` stays closed, so
+`XMLHttpRequest`, `WebSocket`, `EventSource` and beacons are refused by the
+document policy, and every request goes through the parent over one nonce-bound
+message grammar (passive image, media and font loads from your own route prefix
+are the one exception — "What the frame may do" below). The bridge exposes:
+
+- **`OuroborosWidget.fetch(url, init)`** (also installed as the frame's
+  `fetch`). `url` must resolve under `/api/extensions/<skill>/...`; anything
+  else — another skill's prefix, a host API, an absolute URL — rejects with
+  `module widget fetch outside extension route prefix`. The parent issues the
+  request with the owner's session and refuses to follow a redirect — the
+  prefix is checked once, before the request, and a followed hop would carry
+  your request and the owner's session wherever it pointed — so a route that
+  answers with a redirect rejects instead of being followed; it streams the
+  answer back, so you get a
+  real `Response`: `status`, `statusText`, **every** response header, and a
+  body that is binary by default. Each next chunk is read only when your
+  consumer requests it — `.text()`, `.json()`, `.arrayBuffer()`,
+  `.blob()` and incremental `body.getReader()` reads all work. Server-sent
+  events are a plain streaming `GET` with `Accept: text/event-stream` read
+  through `body.getReader()` (there is no `EventSource` polyfill); NDJSON works
+  the same way. `HEAD` and 204/205/304 answers carry a `null` body.
+  `init.method`, `init.headers` and `init.body` (string, `ArrayBuffer`, typed
+  array or `Blob`) pass through. There is **no default timeout**: a request or
+  stream lives until it ends, until you abort it, or until the frame is
+  disposed. `init.signal` (an `AbortController`) or cancelling the body stream
+  aborts the parent's request; the optional `init.timeoutMs` is an author-side
+  bound that aborts it for you (the read fails with
+  `widget request timed out`).
+- **`OuroborosWidget.onEvent(callback)`** returns an unsubscribe function. The
+  callback receives `{type, data}` for every event this skill emits with
+  `api.send_ws_message(type, data)` — `type` is the short name you passed; the
+  host strips its own namespace prefix. The first listener subscribes the frame,
+  the last unsubscribe stops delivery, and other skills' events never reach it.
+
+- **`OuroborosWidget.download(name, source)`** saves an existing `Blob`, a
+  `data:` URL, or a URL under this skill's extension route prefix. It resolves
+  to the host's delivery result or rejects with a visible error. In the desktop
+  app it uses the same native Downloads owner as other file controls; in a
+  browser success means the download was started, not that disk writing was
+  confirmed. Large backend files should be passed as route URLs so the host
+  does not turn an HTTP stream into a Blob. Ordinary `<a download>` controls
+  using these routes, `data:` URLs or frame-created Blob URLs use this same path.
+
+Out-of-process routes execute standard Starlette responses in the child and
+stream their ordered headers and body to the host, including `FileResponse`
+HEAD/Range behavior and background actions. There is no total or pre-header
+request timer: finish, abort, disconnect or unloading that skill instance ends
+its response. Slow consumption is backpressure, not a timeout. A body failure
+breaks the stream; cleanup failure after the complete body is logged separately.
+The incoming request body retains its 512 KiB cap, and one-shot tool/catalog/WS
+results retain their existing caps and timeouts.
+
+The out-of-process / companion WS push (`POST /ui/ws-message`) admits
+a 60-message burst per skill and then one message per second (the excess gets a
+429 with `retry_after_sec`, and the host logs each refused burst once with its
+dropped count), so throttle sustained progress streams or fall back to
+poll-based status.
+
+#### What the frame may do
+
+Both framed mounts — the module `srcdoc` frame and a `kind: iframe` route frame
+— carry one capability set, decided for all installs: `sandbox="allow-scripts
+allow-pointer-lock allow-downloads"`, `allow="autoplay; fullscreen;
+clipboard-write"` and `allowfullscreen`. Never `allow-same-origin` (the frame
+stays an opaque origin: no SPA cookies, storage or DOM), never top navigation,
+popups, forms (`form-action` does not fall back to `default-src`, so a form
+submit would be an exfiltration channel), modals or clipboard read.
+
+The module frame's document policy, built by the host from the page origin
+(an opaque frame's `'self'` matches nothing, so sources are absolute):
+
+```
+default-src 'none';
+script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: <origin>/api/extensions/<skill>/module/;
+worker-src blob:;
+style-src 'unsafe-inline';
+img-src data: blob: <origin>/api/extensions/<skill>/;
+media-src data: blob: <origin>/api/extensions/<skill>/;
+font-src data: blob: <origin>/api/extensions/<skill>/
+```
+
+What that gives you, verified on Chromium and WebKit through
+`tests/test_widgets_ui_browser_capabilities.py`:
+
+- **Sibling scripts** from your module prefix, classic (`<script src>`) or
+  `import()` — "Loading more than one file" below.
+- **WebAssembly**: `'wasm-unsafe-eval'` admits `WebAssembly.instantiate` and
+  `instantiateStreaming` on bytes your own route serves — the recipe below.
+- **Workers** from `blob:` URLs (`new Worker(URL.createObjectURL(new Blob([src])))`);
+  `importScripts` inside one may load from your module prefix.
+- **Images, audio, video and fonts** from your own route prefix and from
+  `data:` / `blob:` URLs — "Assets" below, including the CORS rule for fonts.
+- **Clipboard write** (`navigator.clipboard.writeText`) from a user click; the
+  clipboard is never readable from the frame.
+- **Downloads**: module widgets use `OuroborosWidget.download` or ordinary
+  `<a download>` controls for their own route files, data URLs and frame-created
+  Blobs; the existing host save path supports both the desktop app and browsers.
+  A legacy `kind: iframe` route page has no module bridge: its downloads still
+  depend on the embedding engine. Use a module widget or a host-side declarative
+  `file` component when a native Downloads handoff is required.
+- **Pointer lock** (`allow-pointer-lock`) and **fullscreen**
+  (`allowfullscreen` + `allow="fullscreen"`) for games and emulators. Both need
+  a user gesture and a focused window; feature-detect with
+  `document.fullscreenEnabled`, which is `true` in Chromium-based engines
+  (browsers; the Windows shell's WebView2) but `false` in WebKit (the macOS
+  desktop shell): WebKit fails the Fullscreen permission-policy check for an
+  opaque-origin frame.
+- **Autoplay** is allowed by the frame's policy; the browser's own autoplay
+  rules (a user gesture for audible playback) still apply.
+
+A `kind: iframe` route frame is your own page under the same sandbox and
+permissions set, with no bridge and no host CSP: its scripts may use the
+network exactly as your skill's backend already can, without the SPA's cookies
+or DOM. Because its origin is opaque, its `fetch` calls are cross-origin: a
+route it reads must answer with `Access-Control-Allow-Origin: *` (or be
+requested with `mode: "no-cors"` for a fire-and-forget opaque response), and
+on a network install its requests carry no session cookie either.
+
+What the module frame does not give you, by design: a scriptable network (`connect-src` is
+closed — use `OuroborosWidget.fetch`), `eval`/`new Function` (there is no
+`'unsafe-eval'`; WebAssembly is the sanctioned compiled-code path), and any
+load from another skill's prefix or a foreign origin (the document policy
+refuses it and dispatches a `securitypolicyviolation` event you can observe).
+
+#### Launch policy (`render.start`)
+
+A widget card declares how it starts with `render.start`. The validator in
+`ouroboros/extension_ui_validation.py` (`WIDGET_START_MODES`) is the single
+source of truth for the allowed values and fills the default into the stored
+declaration, so every framed or declarative widget tab carries an explicit value
+(a tab without a render has nothing to launch):
+
+| `start` | Behaviour | Default for |
+|---|---|---|
+| `auto` | Starts when the Widgets page is shown; leaving the page stops it. For cheap instruments (a quota gauge, a status board). | `declarative` — the only value it accepts: the host draws it, there is nothing to start |
+| `manual` | The card shows the title, icon, and a Start button; the program runs only after the owner presses Start. Leaving the page is an ordered Stop: for `kind: module` the host sends the dispose message and gives the widget up to one second to save before the frame is removed; a `kind: iframe` route frame has no bridge and is removed at once. | `module`, `iframe` |
+| `retain` | "Keep running": starts on the first Widgets visit like `auto` and keeps running while the owner is on other pages; the card's status reads "Keeps running". It stops on the owner's Stop, on skill disable / unload / delete (also while Widgets is hidden), when the window reloads, and when Ouroboros closes. A server reconnect with the same served code keeps the frame when the skill is live again with the same revision; a changed revision stops it in order and starts it again. | — |
+
+Rules every module author follows:
+
+- **`icon` is one glyph** — an emoji or a symbol character — shown beside the
+  title on a stopped card's facade. An identifier-like name (`cloud`,
+  `gamepad`, the `extension` default) is not a glyph: the host has no named-icon
+  set, does not render the word, and shows its own widgets glyph instead.
+- **Declare `start` explicitly for a heavy program.** A game, emulator, or
+  simulation that should not run all the time is `manual`; only a program that
+  genuinely must keep running while the owner is elsewhere — and that stays
+  cheap while hidden — is `retain`. Omitting the key gives a framed widget
+  `manual`. An existing `module` or `iframe` widget whose declaration omits
+  `start` therefore now renders as a stopped facade with a Start button until
+  either the author republishes it with `start: "auto"` or the owner selects
+  Auto in the card's menu.
+- **The owner always wins, and Stop always wins.** The owner can change any
+  card's mode from the card; that choice is stored in
+  `ui_preferences.widget_start_mode` (`"<skill>:<tab_id>"` → mode) and
+  overrides your declaration. Stop is always available and wins over every
+  mode; do not build your own keep-alive or restart logic against it.
+- **The view is disposable — durable state lives in the skill.** Treat the
+  frame like an editor tab (VS Code's `getState`/`setState` model): autosave
+  through your own `/api/extensions/<skill>/...` routes while running, and
+  register `window.__ouroWidgetOnDispose(fn)` — the hook may be async — to
+  flush what is left. Register with the function; never assign over it. The
+  declared handshake is the teardown protocol: the host posts the dispose
+  message, your hooks run and may finish bridged requests within one second,
+  the bootstrap acknowledges, and only then is the frame removed. `localStorage`
+  and cookies throw in the opaque origin; never keep state only in the frame.
+- **`retain` is not a daemon.** It never survives Ouroboros closing: closing the
+  app ends every widget together with every other Ouroboros process, and a page
+  reload ends every widget too — a frame cannot outlive the page that hosts it.
+  Retained instances are per browser client, not a singleton
+  — a second window or device runs a second instance. A program that must be a
+  singleton, be supervised, or be independent of any window is a
+  `companion_process`, not a widget.
+- **Hidden pages are throttled by the browser, not by the host.** In
+  Chromium-based browsers animation frames pause while the page is hidden;
+  timers, audio, and bridged requests continue at the rate the browser allows.
+  The macOS desktop shell (WKWebView) does not throttle hidden frames; the
+  Windows shell (WebView2) and ordinary Chromium browsers pause animation
+  frames while hidden. No tick rate is promised. Keep work that must progress
+  off `requestAnimationFrame`.
+- **Install and enable never start browser code.** The first visit to Widgets
+  does; nothing runs at app load.
+
+What the host does today: all three policies are honoured — an `auto` card
+mounts when Widgets is shown and stops when the owner leaves, a `manual` card
+waits behind its Start button, and a `retain` card starts on the first visit
+and stays mounted while the owner is elsewhere with a "Keeps running" status
+until Stop, the skill leaving the live list (even while Widgets is hidden) or
+the window going away; the owner's
+per-card override wins over your declaration; and the dispose →
+acknowledgement handshake is live for `kind: module`: your
+`__ouroWidgetOnDispose` hooks may be async and may use the fetch bridge, and
+the parent gives them up to one second before it removes the frame — on Stop,
+on leaving the page, and when your skill's revision changes while the card
+runs (the old frame flushes first, then the fresh card mounts). A `kind: iframe`
+route frame has no bridge and is removed at once. Autosave while running plus the one-second flush
+is still the whole durable path — nothing survives a reload or Ouroboros
+closing, kept-running cards included. When the owner disables your skill while
+its widget runs, the dispose hook still runs, but the server unregisters the
+skill's routes before the lifecycle event reaches the page, so a bridged
+request to your own route from that hook may already answer 409 — autosave
+while running remains the durable path.
+
+#### WebAssembly (`.wasm`) in the payload
+
+A skill may ship WebAssembly modules as ordinary payload files. Review admits
+them **descriptor-admitted, content-hash-bound**: the review pack carries a
+`{path,size,mime_from_name,sha256}` descriptor for each `.wasm` file — the
+review pack never inlines the WebAssembly bytes (an agentic reviewer may still
+open a reachable binary by path) — and the payload content hash
+covers every byte, so changing one byte of a module stales the stored review
+exactly like editing `widget.js`. The admission exists because WebAssembly
+executes only inside the browser's sandboxed widget frame, never natively in
+the host process; native loader magics (ELF, PE, Mach-O, `.pyc`) remain hard
+review blockers. Reviewers judge the JavaScript that instantiates the module
+and the module's provenance instead of its bytes.
+
+Ship and load it through your own route: register a route that returns the
+module bytes with a Starlette `Response` or `FileResponse`. The same response
+runs in an isolated child for dependency-bearing skills and streams without the
+old serialized-result body cap. Then in the widget:
+
+```js
+const bytes = await (await OuroborosWidget.fetch('/api/extensions/<skill>/core.wasm')).arrayBuffer();
+const { instance } = await WebAssembly.instantiate(bytes, imports);
+```
+
+`WebAssembly.instantiateStreaming(OuroborosWidget.fetch(url))` works too
+(the bridge hands back a real `Response`; serve the module as
+`application/wasm`). The module endpoint (`GET /api/extensions/<skill>/module/...`)
+stays JavaScript-only; binary assets always travel through the skill's own
+routes. The frame CSP admits this with `'wasm-unsafe-eval'` — there is no plain
+`'unsafe-eval'`, so WebAssembly is the one compiled-code path.
+
+#### Assets: fonts, audio, video, images
+
+Widget assets are ordinary payload files and travel the same way as
+WebAssembly: your own routes serve them (`register_route` returning a standard
+response, streamed from an isolated child when required), the
+widget references them by `/api/extensions/<skill>/...` URL, and review
+sees each non-text asset as a content-hash-bound descriptor. The module
+endpoint stays JavaScript-only. Hub packages admit `.png .jpg .jpeg .gif .webp
+.svg`, `.mp3 .ogg .wav`, `.mp4 .webm`, `.woff .woff2 .ttf .otf`, and `.wasm`.
+ClawHub archives are capped at 8 MiB per file, 50 MiB uncompressed in total,
+and 200 files (`ouroboros/marketplace/fetcher.py`); OuroborosHub catalog files
+at 5 MiB each (`ouroboros/marketplace/ouroboroshub.py`). A large runtime image
+— a v86 disk image of several megabytes and up — does not fit a package: have
+the installer fetch it through an exact `download` spec and serve it from
+`<skill_dir>/.ouroboros_env/resources/` (`skill_dir` comes from
+`api.get_runtime_info()`). The existing runtime-download path into the skill
+state directory remains available for dynamic data. Declared automatic
+dependencies select the existing process executor; persistent subscriptions
+and long-lived work still use the documented companion facilities.
+Locally installed skills have no per-file cap; the review pack budget is the
+only bound. The frame's `img-src`/`media-src`/`font-src` admit your skill's
+route prefix, so `<img src="/api/extensions/<skill>/logo.png">`,
+`<audio src>` / `<video src>` and `@font-face { src: url(...) }` load straight
+from your routes. Two rules come with that:
+
+- **Fonts need the CORS header.** The frame is an opaque origin, so
+  `@font-face` (like `import()`) is a CORS-mode fetch: a font route must answer
+  with `Access-Control-Allow-Origin: *` or Chromium-based browsers refuse the
+  face (`FontFace.status === "error"`; WebKit is lenient, so test on Chromium).
+  Images and media are plain no-cors loads and need no header; the module
+  endpoint already sends it for scripts.
+- **Passive loads carry no session on network installs.** On a
+  password-protected install reached over the network (not loopback, not the
+  desktop shell), the owner's session cookie is `SameSite=Lax` and an opaque
+  frame's `<img>`/`<audio>`/`<video>`/`@font-face` requests are cross-site, so
+  they arrive without it and get 401. Loopback and the desktop shell are exempt.
+  For an asset that must work everywhere, go through the bridge — the parent
+  sends the session — and hand the bytes to the element as a `blob:` URL, which
+  `img-src`/`media-src`/`font-src` admit:
+
+  ```js
+  const blob = await (await OuroborosWidget.fetch('/api/extensions/<skill>/logo.png')).blob();
+  img.src = URL.createObjectURL(blob);
+  ```
+
+#### Loading more than one file
+
+Every reviewed `.js`/`.mjs` file in the skill directory is served by the module
+endpoint, keyed by its path relative to the skill directory:
+`GET /api/extensions/<skill>/module/lib/x.js`. The host captures all of them
+when the module tab registers (the same moment it reads the entry), so the frame
+always receives the bytes the reviewed bundle loaded from; files under
+`node_modules`, `.ouroboros_env`, other cache directories, and dot-prefixed
+paths (directories and files) are never served, and only UTF-8 text is
+admitted — a non-UTF-8 `.js` fails the load exactly like a broken entry; the
+`.js`/`.mjs` suffix match is case-sensitive. The host owns GET/HEAD for the exact
+paths `manifest` and `settings_section` and for everything under `module/` in
+`/api/extensions/<skill>/`, so do not register skill routes there: a route
+registered at those paths is shadowed for GET/HEAD, while POST and the other
+methods are unaffected. Load a sibling either as a
+classic script or as an ES module:
+
+```html
+<script src="/api/extensions/<skill>/module/lib/x.js"></script>
+```
+
+```js
+const { helper } = await import('/api/extensions/<skill>/module/lib/x.mjs');
+```
+
+The endpoint sends `Access-Control-Allow-Origin: *`, which the opaque-origin
+frame needs for `import()`; relative specifiers inside a module loaded this way
+resolve against its URL, so `import './y.mjs'` reaches `module/lib/y.mjs`.
+
+A sibling loaded this way carries no session, for the same reason passive image
+and font loads do not (above): on a password-protected install reached over the
+network, the frame's request for `module/lib/x.js` is cross-site, arrives without
+the `SameSite=Lax` session cookie and gets 401. The declared entry is unaffected
+— the host fetches it with the owner's session and inlines it — and loopback and
+the desktop shell are exempt. For a skill that must load siblings on a network
+install, fetch the source through the bridge and run it from a `blob:` URL, which
+`script-src` admits:
+
+```js
+const src = await (await OuroborosWidget.fetch('/api/extensions/<skill>/module/lib/x.js')).text();
+const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+await import(url);   // relative specifiers inside x.js no longer resolve: import by URL
+```
+
+Alternatively keep everything the widget needs in the entry file. The
+declared `entry` itself still executes as a classic script even when it is named
+`.mjs`, so keep `import`/`export` statements in the files you load with
+`import()`, not in the entry. The frame's `script-src` admits exactly your
+module prefix (`<origin>/api/extensions/<skill>/module/`), `blob:` URLs and
+inline scripts — a script from any other path or skill is refused by the
+document policy. Hub packages are bounded by the caps above; a
+locally installed skill has no per-file cap, so its captured JavaScript is
+bounded only by what you ship.
 
 For everything else, prefer declarative components (`form`, `action`, `poll`,
 `subscription`, `stream`, `table`, `chart`, `markdown`, `json`, `kv`, `status`,
@@ -907,6 +1390,10 @@ manifest exists, ordinary discovery, preflight, and fresh review resume.
 Grouping directories, unknown or colliding identities, nested manifests, and
 path escapes are still refused; no parallel `external` payload is created.
 
+An ordinary `.env.example` is included in the payload hash, review and publication
+snapshot, including after ClawHub archive import. Its name does not exempt its
+contents from the existing publication scan.
+
 Only literal Betterleaks `high` confidence blocks an outbound publication call.
 `medium`, `low`, missing, and unknown confidence remain redacted warnings. For
 an intentional provider-shaped fixture, Ouroboros may add Betterleaks's
@@ -931,6 +1418,17 @@ best-effort: a write failure is disclosed as `publication_recorded: false` in
 the tool result and never cancels the real PR. The Skills UI reads it for the
 "Submitted PR #N" badge and the adopt confirmation copy; it survives
 uninstall and adopt, and a republish overwrites it.
+
+If a submission is no longer being pursued, **Clear local submission** on its
+OuroborosHub card removes that local waiting state. The action preserves the
+installed files, review and grants, and does not close or change the GitHub PR.
+It clears the receipt shown on the card; if another publication replaced it,
+refresh the card first. Returning to My skills refreshes the submission badge.
+
+For a catalog update, the tool result and PR body name both the current catalog
+version and the proposed version. Versions are opaque strings: an older-looking
+or non-semantic version is allowed, while an identical version still needs to
+change before publishing an update.
 
 Publication succeeds only when the task records a validated pull-request
 receipt in the configured Hub repository for this exact skill. A branch,
@@ -972,9 +1470,9 @@ def register(api):
 | `SKILL_EXEC_BLOCKED: review status is 'pending'` | Run `skill_review` for this skill. |
 | `SKILL_TOGGLE_ERROR: dependency fingerprint is stale` | Re-run `skill_review`; post-review deps reconciliation will reinstall. |
 | `EXTENSION_NOT_LIVE` on tool dispatch | The skill is disabled or the loader had a load_error — check the Skills UI. |
-| `HEAL_MODE_BLOCKED: ...` | The Repair task tried to call a tool the internal heal-mode allowlist does not permit; finish the Repair flow with `skill_review` and exit. |
+| `SKILL_REPAIR_STALE: ...` | The selected payload or its admission revision changed; inspect the current state and the reported conflict before continuing. |
 | `PluginAPI.register_*` raises `ExtensionRegistrationError` | Usually the skill is missing the matching permission in its manifest. For `register_companion_process` the name must also be alnum/underscore and declared under `companion_processes` — see "Declaring a companion process". |
-| Reviewer marks `widget_module_safety: FAIL` | `widget.js` is touching `document.cookie` / `localStorage` / cross-origin `fetch`. Move the data through `/api/extensions/<skill>/` routes. |
+| Reviewer marks `widget_module_safety: FAIL` | `widget.js` fetches outside `/api/extensions/<skill>/`, talks to the parent through its own `postMessage` protocol, declares a `start` mode heavier than the widget needs, or keeps state only inside the frame. Move data through your own routes and save it from `__ouroWidgetOnDispose` (autosave while running until the host's dispose acknowledgement ships). |
 
 For deeper integration questions read
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) §13 (external skills layer)

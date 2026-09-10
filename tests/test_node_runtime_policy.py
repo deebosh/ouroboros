@@ -346,6 +346,7 @@ def test_preflight_missing_node_stays_missing(tmp_path, monkeypatch):
     empty_bin = tmp_path / "empty"
     empty_bin.mkdir()
     monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(wp, "resolve_bundled_node", lambda: None)
     monkeypatch.setattr(
         wp, "node_runtime_health",
         lambda path, timeout_sec=10: (_ for _ in ()).throw(AssertionError("no probe for a missing node")),

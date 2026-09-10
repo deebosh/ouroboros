@@ -461,12 +461,12 @@ def test_capture_transports_utf8_with_nul_and_loader_junk_stays_out(tmp_path, mo
     custody._CUSTODY.clear()
 
 
-def test_non_utf8_addition_is_a_typed_capture_failure(tmp_path, monkeypatch):
+def test_native_loader_content_remains_a_typed_capture_failure(tmp_path, monkeypatch):
     from ouroboros.tools.delegate import _capture_terminal_patch
     from ouroboros.tools.subagent_integration import _integrate_delegated_patch
 
     ctx, skill, handle = _provisioned(tmp_path, monkeypatch)
-    (pathlib.Path(handle.path) / "blob.bin").write_bytes(b"\xff\xfe\x00\x01binary")
+    (pathlib.Path(handle.path) / "blob.bin").write_bytes(b"\x7fELF\xff\xfe\x00\x01binary")
     entry = _payload_entry(handle, skill)
     capture = _capture_terminal_patch(ctx, entry)
     assert capture["status"] == "failed", capture
@@ -1167,7 +1167,7 @@ def test_schema_and_docs_split_git_staging_from_payload_live_apply():
     assert "applied LIVE into the non-Git payload" in decision
     arch = (pathlib.Path(__file__).resolve().parents[1] / "docs" /
             "ARCHITECTURE.md").read_text(encoding="utf-8")
-    assert "differs is the staging substrate" in arch
+    assert "staging substrate differs" in arch
     assert "A SKILL-PAYLOAD target captures through the payload adapter" in arch
     assert "QUEUES the extension reconcile request" in arch
 

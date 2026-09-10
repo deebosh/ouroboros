@@ -19,6 +19,42 @@ from typing import Any, Dict, Optional
 log = logging.getLogger(__name__)
 
 
+# v7 owner-approved contract (softens ibl-local-27745117e0e1): when the human
+# asked for the edited file itself as the deliverable and explicitly wants NO
+# commit, a dirty worktree IS the delivery, not a work-uncommitted failure.
+# Kept deliberately narrow — a bare "implement X" task still fails; only an
+# explicit no-commit / leave-the-file opt-out in the task's own text or
+# expected_output exempts it.
+_UNCOMMITTED_DELIVERABLE_PHRASES = (
+    "no git commit",
+    "no commit requested",
+    "no commit needed",
+    "no need to commit",
+    "without committing",
+    "without a commit",
+    "don't commit",
+    "do not commit",
+    "no need to make a commit",
+    "leave the edited file",
+    "leave the file edited",
+    "leave the edited files",
+    "edited file for me",
+    "edited files for me",
+    "don't make a commit",
+    "do not make a commit",
+)
+
+
+def _task_requests_uncommitted_file_deliverable(task: Dict[str, Any]) -> bool:
+    """True when the task's declared contract makes the edited file itself the
+    requested result and explicitly asks for no commit — the v7 carve-out from
+    universal commit-or-fail finalization."""
+    haystack = " ".join(
+        str(task.get(key) or "") for key in ("expected_output", "text")
+    ).lower()
+    return any(phrase in haystack for phrase in _UNCOMMITTED_DELIVERABLE_PHRASES)
+
+
 def _attach_host_mutation_projection(
     env: Any,
     task: Dict[str, Any],
@@ -83,6 +119,12 @@ def _resolve_work_uncommitted_scope(
     back into a false-positive gate.
     """
     from ouroboros.mutation_attribution import attributed_git_candidates
+
+    if _task_requests_uncommitted_file_deliverable(task):
+        # Owner-approved "edited file, no commit" contract: the dirty worktree is
+        # the requested delivery. Skip the probe entirely so the run finalizes
+        # clean (no REASON_WORK_UNCOMMITTED, no forced failure).
+        return None, None
 
     shared_repo_dir = getattr(env, "repo_dir", None)
     if shared_repo_dir is None:

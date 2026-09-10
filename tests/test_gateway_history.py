@@ -466,6 +466,7 @@ def test_history_annotation_after_quota_resolves_in_window_card(tmp_path):
     results.mkdir()
     (results / "windowed.json").write_text(
         json.dumps({
+            "_schema_version": 1,
             "task_id": "windowed",
             "status": "completed",
             "cost_usd": 0.42,
@@ -484,8 +485,10 @@ def test_history_annotation_after_quota_resolves_in_window_card(tmp_path):
     assert not any(item.get("system_type") == "task_summary" for item in payload)
     rec = next(item for item in payload if item.get("task_id") == "windowed")
     assert rec["task_terminal_status"] == "completed"
-    # Full terminal truth (cost) landed on the in-window progress anchor.
-    assert rec["cost_usd"] == 0.42
+    # Full terminal truth (cost) landed on the in-window progress anchor —
+    # ABI-3: the stored legacy spelling replays under the honest name only.
+    assert rec["accounted_upper_bound_usd"] == 0.42
+    assert "cost_usd" not in rec
     assert rec["cost_final"] is True
 
 
@@ -626,6 +629,8 @@ def test_chat_history_task_summary_row_passes_flat_cost_fields_through(tmp_path)
     through so a reload still shows the card's cost (no result file present)."""
     logs = tmp_path / "logs"
     logs.mkdir()
+    # A STORED legacy snapshot (retired with-children spelling): ABI-3 replay
+    # converts it to the honest name instead of copying the alias out.
     row_cost = {
         "cost_accounting_status": "available",
         "cost_final": False,
@@ -656,15 +661,84 @@ def test_chat_history_task_summary_row_passes_flat_cost_fields_through(tmp_path)
     payload = json.loads(response.body.decode("utf-8"))["messages"]
 
     rec = next(item for item in payload if item.get("task_id") == "cost-summary")
-    for field, expected in row_cost.items():
-        assert rec.get(field) == expected
-    # The snapshot honestly lacks cost_usd — replay must not fabricate it.
-    assert "cost_usd" not in rec
+    # openness fields pass through; the legacy pair converts (deprecated-wins)
+    for field in ("cost_accounting_status", "cost_final",
+                  "cost_with_children_partial", "reserved_usd",
+                  "unresolved_upper_bound_usd", "unknown_unmetered"):
+        assert rec.get(field) == row_cost[field]
+    assert rec["accounted_upper_bound_usd_with_children"] == 1.234567
+    assert "cost_usd_with_children" not in rec
+    # The snapshot honestly lacks an own-cost amount — replay must not
+    # fabricate one under either spelling.
+    assert "cost_usd" not in rec and "accounted_upper_bound_usd" not in rec
+
+
+def test_chat_history_replays_task_summary_finality_without_task_result(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text(
+        json.dumps({
+            "ts": "2026-09-03T00:00:00Z",
+            "direction": "system",
+            "type": "task_summary",
+            "task_id": "open-summary",
+            "chat_id": 1,
+            "text": "Narrative written before finalization.",
+            "outcome_phase": "warn",
+            "outcome_final": False,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    (logs / "progress.jsonl").write_text("", encoding="utf-8")
+
+    endpoint = make_chat_history_endpoint(tmp_path)
+    response = asyncio.run(endpoint(SimpleNamespace(query_params={"limit": "10"})))
+    payload = json.loads(response.body.decode("utf-8"))["messages"]
+
+    rec = next(item for item in payload if item.get("task_id") == "open-summary")
+    assert rec["outcome_phase"] == "warn"
+    assert rec["outcome_final"] is False
+    assert "task_terminal_status" not in rec
+
+
+def test_chat_history_settled_result_overrides_pre_final_summary_finality(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text(
+        json.dumps({
+            "ts": "2026-09-03T00:00:00Z",
+            "direction": "system",
+            "type": "task_summary",
+            "task_id": "settled-summary",
+            "chat_id": 1,
+            "text": "Narrative written before finalization.",
+            "outcome_phase": "working",
+            "outcome_final": False,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    (logs / "progress.jsonl").write_text("", encoding="utf-8")
+    results = tmp_path / "task_results"
+    results.mkdir()
+    (results / "settled-summary.json").write_text(
+        json.dumps({"_schema_version": 1, "task_id": "settled-summary", "status": "completed"}),
+        encoding="utf-8",
+    )
+
+    endpoint = make_chat_history_endpoint(tmp_path)
+    response = asyncio.run(endpoint(SimpleNamespace(query_params={"limit": "10"})))
+    payload = json.loads(response.body.decode("utf-8"))["messages"]
+
+    rec = next(item for item in payload if item.get("task_id") == "settled-summary")
+    assert rec["outcome_phase"] == "done"
+    assert rec["outcome_final"] is True
 
 
 def test_chat_history_attaches_terminal_cost_truth_from_task_result(tmp_path):
     """v6.82 P1: a terminal task_results/<id>.json carries the final cost truth;
-    it is attached to the surviving progress anchor on replay."""
+    it is attached to the surviving progress anchor on replay. ABI-3
+    (fix-round-2 conversion of this OLD-ABI contract test): the stored row is
+    LEGACY-spelled, and the outbound frame carries the honest names only."""
     logs = tmp_path / "logs"
     logs.mkdir()
     (logs / "chat.jsonl").write_text("", encoding="utf-8")
@@ -681,6 +755,7 @@ def test_chat_history_attaches_terminal_cost_truth_from_task_result(tmp_path):
     results.mkdir()
     (results / "cost-terminal.json").write_text(
         json.dumps({
+            "_schema_version": 1,
             "task_id": "cost-terminal",
             "status": "completed",
             "cost_usd": 1.5,
@@ -698,11 +773,12 @@ def test_chat_history_attaches_terminal_cost_truth_from_task_result(tmp_path):
 
     rec = next(item for item in payload if item.get("task_id") == "cost-terminal")
     assert rec["task_terminal_status"] == "completed"
-    assert rec["cost_usd"] == 1.5
+    assert rec["accounted_upper_bound_usd"] == 1.5
     assert rec["cost_final"] is True
-    assert rec["cost_usd_with_children"] == 2.75
+    assert rec["accounted_upper_bound_usd_with_children"] == 2.75
     assert rec["cost_with_children_partial"] is False
     assert rec["cost_accounting_status"] == "available"
+    assert "cost_usd" not in rec and "cost_usd_with_children" not in rec
 
 
 def test_chat_history_terminal_cost_truth_overrides_row_embedded_snapshot(tmp_path):
@@ -732,6 +808,7 @@ def test_chat_history_terminal_cost_truth_overrides_row_embedded_snapshot(tmp_pa
     results.mkdir()
     (results / "cost-override.json").write_text(
         json.dumps({
+            "_schema_version": 1,
             "task_id": "cost-override",
             "status": "completed",
             "cost_usd": 0.9,
@@ -748,10 +825,13 @@ def test_chat_history_terminal_cost_truth_overrides_row_embedded_snapshot(tmp_pa
     payload = json.loads(response.body.decode("utf-8"))["messages"]
 
     rec = next(item for item in payload if item.get("task_id") == "cost-override")
+    # ABI-3: both the row-embedded snapshot and the stored result are
+    # legacy-spelled; the override lands under the honest names only.
     assert rec["cost_final"] is True
-    assert rec["cost_usd_with_children"] == 2.5
+    assert rec["accounted_upper_bound_usd_with_children"] == 2.5
     assert rec["cost_with_children_partial"] is False
-    assert rec["cost_usd"] == 0.9
+    assert rec["accounted_upper_bound_usd"] == 0.9
+    assert "cost_usd" not in rec and "cost_usd_with_children" not in rec
 
 
 def test_chat_history_preserves_nullable_cost_status_and_bounds(tmp_path):
@@ -784,7 +864,14 @@ def test_chat_history_preserves_nullable_cost_status_and_bounds(tmp_path):
     payload = json.loads(response.body.decode("utf-8"))["messages"]
 
     rec = next(item for item in payload if item.get("task_id") == "cost-unavailable")
+    # ABI-3: the legacy null pair converts to the honest names (still null —
+    # never fabricated into $0); every openness marker survives verbatim.
+    assert rec["accounted_upper_bound_usd"] is None
+    assert rec["accounted_upper_bound_usd_with_children"] is None
+    assert "cost_usd" not in rec and "cost_usd_with_children" not in rec
     for field, expected in cost_meta.items():
+        if field in ("cost_usd", "cost_usd_with_children"):
+            continue
         assert field in rec
         assert rec[field] == expected
 
@@ -972,3 +1059,81 @@ def test_main_history_admits_project_started_row_and_project_thread_excludes_it(
 
     # Replay-safe: a second read of the same durable stream is identical.
     assert _messages(1) == main
+
+
+def test_chat_history_replays_the_live_subtree_ceiling_for_a_running_root(tmp_path, monkeypatch):
+    """#469: a root still running replays the SAME non-final subtree ceiling its
+    heartbeat pushes live (one cost owner, `live_root_cost_projection`), stamped
+    on its latest in-window progress row; a child never carries it and a root
+    whose ledger has no attributable rows stays absent — unknown is never zero
+    and never final."""
+    from ouroboros import usage_accounting
+
+    seen_roots = []
+
+    def _projection(_drive, *, root_task_id=""):
+        seen_roots.append(root_task_id)
+        if root_task_id == "root-empty":
+            return {"attempt_counts": {"metadata_only": 1}, "subscription_sessions": 0}
+        return {
+            "accounted_usd": 3.5, "reserved_usd": 0.25, "unresolved_upper_bound_usd": 0.5,
+            "unknown_unmetered": 1, "non_final_rows": 2, "integrity_degraded": False,
+            "attempt_counts": {"resolved": 4}, "subscription_sessions": 0,
+        }
+
+    monkeypatch.setattr(usage_accounting, "usage_projection", _projection)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "chat.jsonl").write_text("", encoding="utf-8")
+    rows = [
+        {"ts": "2026-09-06T00:00:01Z", "content": "root working", "task_id": "root-live"},
+        {"ts": "2026-09-06T00:00:02Z", "content": "root still working", "task_id": "root-live"},
+        {"ts": "2026-09-06T00:00:03Z", "content": "child working", "task_id": "child-live",
+         "delegation_role": "subagent", "parent_task_id": "root-live", "root_task_id": "root-live",
+         "subagent_task_id": "child-live", "subagent_event": "running"},
+        {"ts": "2026-09-06T00:00:04Z", "content": "quiet root", "task_id": "root-empty"},
+        {"ts": "2026-09-06T00:00:05Z", "content": "done root", "task_id": "root-done"},
+    ]
+    (logs / "progress.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8",
+    )
+    results = tmp_path / "task_results"
+    results.mkdir()
+    for task_id, status, extra in (
+        ("root-live", "running", {}),
+        ("child-live", "running", {"delegation_role": "subagent", "parent_task_id": "root-live",
+                                   "root_task_id": "root-live"}),
+        ("root-empty", "running", {}),
+        ("root-done", "completed", {"accounted_upper_bound_usd": 0.42, "cost_final": True}),
+    ):
+        (results / f"{task_id}.json").write_text(json.dumps({
+            "_schema_version": 1, "task_id": task_id, "status": status, "metadata": {}, **extra,
+        }), encoding="utf-8")
+
+    endpoint = make_chat_history_endpoint(tmp_path)
+    response = asyncio.run(endpoint(SimpleNamespace(query_params={"limit": "50"})))
+    payload = json.loads(response.body.decode("utf-8"))["messages"]
+
+    live_rows = [m for m in payload if m.get("task_id") == "root-live"]
+    assert len(live_rows) == 2
+    first, latest = sorted(live_rows, key=lambda m: m["ts"])
+    assert "accounted_upper_bound_usd_with_children" not in first
+    # honest_accounted_amount: the projection's accounted upper bound (which
+    # already folds settled + reserved + unresolved), never re-summed here.
+    assert latest["accounted_upper_bound_usd_with_children"] == 3.5
+    assert latest["cost_final"] is False
+    assert latest["cost_with_children_partial"] is True
+    assert latest["cost_accounting_status"] == "available"
+    assert (latest["reserved_usd"], latest["unresolved_upper_bound_usd"]) == (0.25, 0.5)
+    assert "task_terminal_status" not in latest  # still running, never finalized by replay
+    child = next(m for m in payload if m.get("task_id") == "child-live")
+    assert "accounted_upper_bound_usd_with_children" not in child
+    empty = next(m for m in payload if m.get("task_id") == "root-empty")
+    assert "accounted_upper_bound_usd_with_children" not in empty
+    assert "cost_final" not in empty
+    done = next(m for m in payload if m.get("task_id") == "root-done")
+    assert done["task_terminal_status"] == "completed"
+    assert done["accounted_upper_bound_usd"] == 0.42 and done["cost_final"] is True
+    # Only ROOT lineage reaches the ledger; the finished root is served by its
+    # durable terminal truth, not by a live read.
+    assert sorted(seen_roots) == ["root-empty", "root-live"]

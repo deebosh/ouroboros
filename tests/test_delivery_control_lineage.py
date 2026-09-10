@@ -313,7 +313,7 @@ def test_provider_terminal_incomplete_control_resolves_before_fallback(
         assert returned_trace["forced_finalization"]["source"] == "model"
     else:
         assert text.startswith(retained.full_text)
-        assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in text
+        assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in usage["terminal_host_notice"]
         assert published.acceptance_binding["stale_evidence"] is True
         assert returned_trace["delivery_candidate"]["evidence_current"] is False
 
@@ -626,7 +626,7 @@ def test_forced_historical_keep_after_late_owner_directive_stays_stale(
     published = registry._ctx._delivery_candidate
     assert calls == 2
     assert text.startswith(retained.full_text)
-    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in text
+    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in _usage["terminal_host_notice"]
     assert published.evidence_revision == retained.evidence_revision
     assert published.acceptance_binding["stale_evidence"] is True
     assert returned_trace["delivery_candidate"]["evidence_current"] is False
@@ -669,7 +669,7 @@ def test_forced_armed_retained_control_after_evidence_change_stays_stale(
 
     published = registry._ctx._delivery_candidate
     assert text.startswith(retained.full_text)
-    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in text
+    assert "STALE-EVIDENCE NOTICE — RESUME REQUIRED (host)" in _usage["terminal_host_notice"]
     assert published.evidence_revision == retained.evidence_revision
     assert published.acceptance_binding["stale_evidence"] is True
     assert published.degraded_reason == expected_degraded_reason
@@ -840,7 +840,7 @@ def test_multi_improvement_stale_replace_is_decoded_before_acceptance_and_delive
         tools=registry,
         llm=FakeLLM(),
         drive_logs=tmp_path,
-        emit_progress=lambda _text: None,
+        emit_progress=lambda _text, *, incident=None: None,
         incoming_messages=queue.Queue(),
         task_id="issue-449",
         drive_root=tmp_path,

@@ -132,8 +132,8 @@ def test_onboarding_compact_access_step_keeps_default_width_two_column():
 
 
 def test_settings_more_providers_collapse_keeps_inputs_mounted():
-    """Rarely used provider cards (Cloud.ru, Qwen, MiniMax, GigaChat) collapse
-    under a "More providers" details wrapper, but their inputs must stay mounted:
+    """Rarely used provider cards (Cloud.ru, Qwen, MiniMax, DeepSeek, GigaChat)
+    collapse under a "More providers" details wrapper, but their inputs must stay mounted:
     settings.js applyInputValue has no null guard, so a missing input id
     breaks settings load. The wrapper auto-opens when configured."""
     ui = _read("web/modules/settings_ui.js")
@@ -141,7 +141,8 @@ def test_settings_more_providers_collapse_keeps_inputs_mounted():
     css = _read("web/settings.css")
 
     assert 'id="settings-more-providers"' in ui
-    assert ui.count("advanced: true") == 4
+    # Cloud.ru, Qwen, MiniMax, DeepSeek, GigaChat — the 5 the docstring names.
+    assert ui.count("advanced: true") == 5
     assert "PROVIDER_CARDS.filter((card) => !card.advanced)" in ui
     assert "PROVIDER_CARDS.filter((card) => card.advanced)" in ui
     assert "syncMoreProvidersDisclosure" in settings
@@ -211,9 +212,8 @@ def test_server_navigation_and_chat_static_contracts():
     assert "data?.evolution_state?.detail" in chat_source
     assert "data?.bg_consciousness_state?.detail" in chat_source
     assert re.search(r'<input[^>]+id="chat-file-input"[^>]+multiple', chat_source)
-    assert "MAX_PENDING_ATTACHMENTS = 10" in chat_source
-    assert "MAX_ATTACHMENT_FILE_BYTES = 50 * 1024 * 1024" in chat_source
-    assert "MAX_PENDING_ATTACHMENT_BYTES = 100 * 1024 * 1024" in chat_source
+    assert "uploaded.slice(0, ATTACHMENT_PREVIEW_COUNT)" in chat_source
+    assert "for (const stagedItem of staged)" in chat_source
     assert "pendingAttachments" in chat_source
     assert "attachmentsUploading" in chat_source
     assert "setAttachmentUploadState" in chat_source
@@ -238,8 +238,14 @@ def test_server_navigation_and_chat_static_contracts():
     assert 'id="s-total-budget"' in ui
     assert 'id="s-settings-per-task-cost"' in ui
     assert "setupContract.budgetFields" in settings
-    assert "'anthropic/claude-sonnet-5'" in settings
-    assert "'anthropic::claude-sonnet-5'" in settings
+    # Model defaults come from the shared setup contract, not duplicate model
+    # literals in Settings. Source qualification belongs to the shared editor.
+    assert "setupContract.modelSlots" in settings
+    assert "modelRoles.load(s" in settings
+    assert "inputId: slot.settingsInputId" in settings
+    model_roles = _read("web/modules/model_roles.js")
+    assert "composeModelSource" in model_roles
+    assert "route_editor_primitives.js" in model_roles
     assert "currentSettings?.[field.settingKey]" in settings
     assert "window.addEventListener('ouro:settings-updated'" in settings
     assert "source: 'settings'" in settings

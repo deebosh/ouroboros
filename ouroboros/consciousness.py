@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import copy
 import hashlib
 import inspect
 import json
@@ -41,10 +42,15 @@ from ouroboros.context_budget import (
 )
 from ouroboros.context_layout import architecture_context_section
 from ouroboros.llm import LLMClient, add_usage
-from ouroboros.loop_tool_execution import StatefulToolExecutor, _truncate_tool_result
+from ouroboros.loop_tool_execution import StatefulToolExecutor, _get_tool_timeout, _truncate_tool_result
 from ouroboros.memory import Memory
 from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
-from ouroboros.pricing import infer_provider_from_model
+from ouroboros.pricing import emit_llm_usage_event, infer_provider_from_model
+from ouroboros.model_wait import (
+    ModelWaitInterrupted, execution_deadline_scope, future_result, monotonic_now,
+    mutate_live_wait, task_model_wait_scope,
+)
+from ouroboros.settings_setup_contract import resolve_total_budget_usd
 from ouroboros.utils import (
     append_jsonl,
     emit_log_event,
@@ -122,7 +128,9 @@ class BackgroundConsciousness:
 
     @property
     def is_paused(self) -> bool:
-        return bool(getattr(self, "_paused", False))
+        from supervisor.active_activity import get_direct_activity_registry
+
+        return bool(getattr(self, "_paused", False) or get_direct_activity_registry().snapshot())
 
     def _observation_lock_for_instance(self) -> threading.RLock:
         """Lazily restore observation fields for object.__new__ overlap tests."""
@@ -139,7 +147,10 @@ class BackgroundConsciousness:
 
     @contextlib.contextmanager
     def _observation_writer_lock(self, path: pathlib.Path):
-        """Use the same sidecar lock seam as append_jsonl for store transactions."""
+        """Same sidecar lock seam as append_jsonl -- and the same owner-aware
+        staleness: elapsed time alone must never evict a LIVE holder, or two
+        writers enter one append-only inbox and the stable-ID dedupe admits a
+        duplicate row.  A dead or stampless owner still recovers by age."""
 
         lock_path = jsonl_append_lock_path(path)
         lock_fd = acquire_exclusive_file_lock(
@@ -147,6 +158,7 @@ class BackgroundConsciousness:
             timeout_sec=2.0,
             stale_sec=10.0,
             poll_sec=0.01,
+            owner_aware_stale=True,
         )
         if lock_fd is None:
             yield False
@@ -240,7 +252,16 @@ class BackgroundConsciousness:
             "observation_source": _OBSERVATION_SOURCE_REF,
             "observation_source_complete": gap_count == 0,
             "observation_gap_count": gap_count,
+            **self.model_wait_snapshot(),
         }
+
+    def live_model_wait(self):
+        owner = getattr(self, "_model_wait", None)
+        return owner if self.is_running and owner is not None and not owner.closed else None
+
+    def model_wait_snapshot(self) -> dict:
+        owner = self.live_model_wait()
+        return owner.snapshot() if owner else {"model_wait_owner_id": "", "model_waits": {}}
 
     def start(self) -> str:
         if self.is_running:
@@ -330,6 +351,12 @@ class BackgroundConsciousness:
                     return False
                 state = self._read_observation_state(force=True)
                 if identifier in state["rows"]:
+                    return False
+                # A caller's retryable ID needs a complete deduplication read.
+                # Newly minted IDs can still preserve fresh observations while
+                # an older source gap is awaiting repair.
+                if observation_id and state.get("gap_reasons"):
+                    log.error("Cannot deduplicate observation %s from an incomplete inbox", identifier)
                     return False
                 if not self._append_observation_line_locked(path, {"op": "enqueue", **row}):
                     log.error("Failed to durably enqueue background observation %s", identifier)
@@ -635,7 +662,7 @@ class BackgroundConsciousness:
             if self._stop_event.is_set():
                 break
 
-            if self._paused:
+            if self.is_paused:
                 self._last_idle_reason = "paused_by_active_task"
                 continue
 
@@ -651,11 +678,11 @@ class BackgroundConsciousness:
                 cycle_completed = self._think()
                 self._last_cycle_finished_at = utc_now_iso()
                 # Preserve distinct overflow/LLM error statuses set inside _think().
-                if cycle_completed and not self._stop_event.is_set() and not self._paused:
+                if cycle_completed and not self._stop_event.is_set() and not self.is_paused:
                     self._last_idle_reason = "sleeping"
                 # Retire the live card now that this cycle is done (skip while paused:
                 # a real task is active and owns the status).
-                if not self._paused:
+                if not self.is_paused:
                     self._emit_cycle_idle(self._last_idle_reason)
             except Exception as e:
                 self._last_cycle_finished_at = utc_now_iso()
@@ -679,8 +706,8 @@ class BackgroundConsciousness:
         try:
             from ouroboros.usage_accounting import usage_projection
 
-            total_budget = float(os.environ.get("TOTAL_BUDGET", "1"))
-            if total_budget <= 0:
+            total_budget = resolve_total_budget_usd()
+            if total_budget is None:
                 return True
             max_bg = total_budget * (self._bg_budget_pct / 100.0)
             projection = usage_projection(
@@ -697,21 +724,54 @@ class BackgroundConsciousness:
         """Bind each wakeup to the global ledger and its background sub-budget."""
         from ouroboros.usage_accounting import UsageScope, usage_scope
 
-        try:
-            total_budget = float(os.environ.get("TOTAL_BUDGET", "0") or 0)
-        except (TypeError, ValueError):
-            total_budget = 0.0
-        root_limit = total_budget * (self._bg_budget_pct / 100.0) if total_budget > 0 else None
+        total_budget = resolve_total_budget_usd()
+        root_limit = total_budget * (self._bg_budget_pct / 100.0) if total_budget else None
+
         with usage_scope(UsageScope(
             drive_root=self._drive_root,
             task_id="bg-consciousness",
             root_task_id="bg-consciousness",
             category="consciousness",
             source="background_consciousness",
-            global_limit_usd=total_budget if total_budget > 0 else None,
+            global_limit_usd=total_budget,
             root_limit_usd=root_limit,
-        )):
-            return self._think_scoped()
+        )), task_model_wait_scope(
+            task={"id": "bg-consciousness", "model_wait_owner_id": uuid.uuid4().hex,
+                  "chat_id": getattr(self, "_owner_chat_id_fn", lambda: None)()},
+            drive_root=self._drive_root, event_queue=getattr(self, "_event_queue", None), worker_slot_held=False,
+            row_mutator=lambda key, transform: mutate_live_wait(wait, key, transform),
+            rows_reader=lambda: copy.deepcopy(wait.waits),
+            owner_control=lambda: "stopped" if self._stop_requested() else None,
+        ) as wait:
+            self._model_wait = wait
+            try:
+                with wait.register_reprepare("consciousness", self._prepare_model_call):
+                    return self._think_scoped()
+            finally:
+                self._model_wait = None
+
+    def _prepare_model_call(self, kwargs: dict) -> dict:
+        """Keep the same call through foreground pause, then recheck its route."""
+        from ouroboros import config
+        from ouroboros.openai_chat_dispatch import projected_context_size_bytes
+
+        while self.is_paused and not self._stop_requested():
+            reason = self._model_wait.control_reason()
+            if reason:
+                raise ModelWaitInterrupted(reason, role="consciousness")
+            self._stop_event.wait(config.CLAUDEXOR_MODEL_POLL_INTERVAL_SEC)
+        if self._stop_requested():
+            raise ModelWaitInterrupted("stopped", role="consciousness")
+        if not kwargs.get("use_local"):
+            target = self._llm._resolve_remote_target(kwargs["model"])
+            size = projected_context_size_bytes(kwargs["messages"], kwargs.get("tools"),
+                                                provider=str(target.get("provider") or ""),
+                                                reasoning_effort=kwargs.get("reasoning_effort", ""))
+            if size > BG_CONTEXT_MAX_CHARS:
+                raise OverflowError(f"Background consciousness physical context too large ({size:,} bytes including tools). Groom memory to continue.")
+            if size > BG_CONTEXT_WARN_CHARS:
+                log.warning("consciousness: physical context is large (%d bytes including tools)", size)
+        return kwargs
 
     def _think_scoped(self) -> bool:
         """Run one context/LLM/tools cycle; False preserves skip/error status."""
@@ -721,41 +781,10 @@ class BackgroundConsciousness:
         if not hasattr(self, "_deferred_events"):
             self._deferred_events = []
         observation_snapshot = self._snapshot_pending_observations()
-        try:
-            context = self._build_cycle_context(observation_snapshot)
-        except OverflowError as exc:
-            # P1: skip the cycle rather than silently truncating cognitive context.
-            log.warning("consciousness: wakeup cycle skipped: %s", exc)
-            self._last_idle_reason = "context_overflow"
-            evt: Dict[str, Any] = {
-                "ts": utc_now_iso(),
-                "type": "consciousness_context_overflow",
-                "error": str(exc),
-            }
-            # _ConsciousnessOverflow carries per-section attribution so the
-            # event can name which sections crossed the limit.
-            if isinstance(exc, _ConsciousnessOverflow):
-                evt.update({
-                    "total_chars": exc.total_chars,
-                    "max_chars": exc.max_chars,
-                    "mode": exc.mode,
-                    "sections": [{"name": n, "chars": c} for n, c in exc.sections],
-                    "top_contributors": [
-                        {"name": n, "chars": c} for n, c in exc.top_contributors
-                    ],
-                })
-            append_jsonl(self._drive_root / "logs" / "events.jsonl", evt)
-            return False
         model = self._model
 
         tools = self._tool_schemas()
-        messages = [
-            {"role": "system", "content": context},
-            {"role": "user", "content": "Wake up. Think."},
-        ]
-        _use_local_consciousness = os.environ.get(
-            "USE_LOCAL_CONSCIOUSNESS", ""
-        ).lower() in ("true", "1")
+        _use_local_consciousness = os.environ.get("USE_LOCAL_CONSCIOUSNESS", "").lower() in ("true", "1")
         effort = resolve_effort("consciousness")
         total_cost = 0.0
         cost_final = True
@@ -765,42 +794,17 @@ class BackgroundConsciousness:
         all_pending_events = []
 
         try:
-            target = (
-                self._llm._resolve_remote_target(model)
-                if not _use_local_consciousness else None
-            )
+            context = self._build_cycle_context(observation_snapshot)
+            messages = [
+                {"role": "system", "content": context},
+                {"role": "user", "content": "Wake up. Think."},
+            ]
             for round_idx in range(1, self._max_bg_rounds + 1):
                 if self.is_paused:
                     self._cycle_ack_allowed = False
                     break
-                if target is not None:
-                    from ouroboros.openai_chat_dispatch import projected_context_size_bytes
-
-                    physical_chars = projected_context_size_bytes(
-                        messages,
-                        tools,
-                        provider=str(target.get("provider") or ""),
-                        reasoning_effort=effort,
-                    )
-                    if physical_chars > BG_CONTEXT_MAX_CHARS:
-                        error = (
-                            "Background consciousness physical context too large "
-                            f"({physical_chars:,} bytes including tools). "
-                            "Groom memory to continue."
-                        )
-                        self._last_idle_reason = "context_overflow"
-                        self._append_cycle_receipt(self._drive_root / "logs" / "events.jsonl", {
-                            "ts": utc_now_iso(),
-                            "type": "consciousness_context_overflow",
-                            "error": error,
-                        }, label="context overflow")
-                        return False
-                    if physical_chars > BG_CONTEXT_WARN_CHARS:
-                        log.warning(
-                            "consciousness: physical context is large "
-                            "(%d bytes including tools)",
-                            physical_chars,
-                        )
+                self._prepare_model_call({"model": model, "messages": messages, "tools": tools,
+                                          "reasoning_effort": effort, "use_local": _use_local_consciousness})
                 self._emit_live_log(
                     "llm_round_started",
                     round=round_idx,
@@ -816,6 +820,7 @@ class BackgroundConsciousness:
                     drive_root=self._drive_root,
                     task_id="consciousness",
                     call_type="consciousness_round",
+                    model_role="consciousness",
                     messages=messages,
                     model=model,
                     tools=tools,
@@ -823,6 +828,8 @@ class BackgroundConsciousness:
                     max_tokens=65536,
                     use_local=_use_local_consciousness,
                 )
+                route = usage.get("model_role_route") or {}
+                model, _use_local_consciousness = route.get("model", model), route.get("use_local", _use_local_consciousness)
                 from ouroboros.openai_chat_dispatch import (
                     custom_validation_by_call_id,
                     pop_custom_validation_receipts,
@@ -853,20 +860,10 @@ class BackgroundConsciousness:
                     }, label="budget blocked")
                     break
 
-                if self._event_queue is not None:
-                    provider = "local" if _use_local_consciousness else str(usage.get("provider") or infer_provider_from_model(model))
-                    resolved_model = str(usage.get("resolved_model") or model)
-                    model_name = f"{model} (local)" if _use_local_consciousness else resolved_model
-                    self._event_queue.put({
-                        "type": "llm_usage",
-                        "provider": provider,
-                        "model": model_name,
-                        "usage": usage,
-                        "cost": cost,
-                        "source": "consciousness",
-                        "ts": utc_now_iso(),
-                        "category": "consciousness",
-                    })
+                provider = "local" if _use_local_consciousness else str(usage.get("provider") or infer_provider_from_model(model))
+                model_name = f"{model} (local)" if _use_local_consciousness else str(usage.get("resolved_model") or model)
+                emit_llm_usage_event(self._event_queue, "bg-consciousness", model_name, usage, cost,
+                                     category="consciousness", provider=provider, source="consciousness")
 
                 content = msg.get("content") or ""
                 tool_calls = msg.get("tool_calls") or []
@@ -957,6 +954,31 @@ class BackgroundConsciousness:
                 self._last_idle_reason = "observation_ack_pending"
                 return False
 
+        except ModelWaitInterrupted as exc:
+            self._cycle_ack_allowed = False
+            self._last_idle_reason = exc.control_reason
+            return False
+        except OverflowError as exc:
+            # P1: skip the cycle rather than silently truncating cognitive context.
+            log.warning("consciousness: wakeup cycle skipped: %s", exc)
+            self._last_idle_reason = "context_overflow"
+            evt: Dict[str, Any] = {
+                "ts": utc_now_iso(), "type": "consciousness_context_overflow", "error": str(exc),
+            }
+            # _ConsciousnessOverflow carries per-section attribution so the
+            # event can name which sections crossed the limit.
+            if isinstance(exc, _ConsciousnessOverflow):
+                evt.update({
+                    "total_chars": exc.total_chars,
+                    "max_chars": exc.max_chars,
+                    "mode": exc.mode,
+                    "sections": [{"name": n, "chars": c} for n, c in exc.sections],
+                    "top_contributors": [
+                        {"name": n, "chars": c} for n, c in exc.top_contributors
+                    ],
+                })
+            self._append_cycle_receipt(self._drive_root / "logs" / "events.jsonl", evt, label="context overflow")
+            return False
         except Exception as e:
             self._cycle_ack_allowed = False
             self._emit_live_log("llm_round_error", round=round_idx, model=model, error=repr(e))
@@ -1315,7 +1337,7 @@ class BackgroundConsciousness:
         "send_user_message", "update_scratchpad",
         "update_identity", "update_self", "set_next_wakeup",
         "knowledge_read", "knowledge_write", "knowledge_list",
-        "web_search", "read_file", "list_files", "query_code",
+        "web_search", "read_file", "list_files", "search_code", "query_code",
         "chat_history", "recent_tasks",
         "initiate_presence",
         "list_github_issues", "get_github_issue",
@@ -1334,10 +1356,10 @@ class BackgroundConsciousness:
         registry.register(ToolEntry("set_next_wakeup", {
             "name": "set_next_wakeup",
             "description": "Set how many seconds until your next thinking cycle. "
-                           "Default 300. Range: 60-3600.",
+                           f"Default 300. Range: {self._wakeup_min}-{self._wakeup_max} (clamped).",
             "parameters": {"type": "object", "properties": {
                 "seconds": {"type": "integer",
-                            "description": "Seconds until next wakeup (60-3600)"},
+                            "description": f"Seconds until next wakeup ({self._wakeup_min}-{self._wakeup_max})"},
             }, "required": ["seconds"]},
         }, _set_next_wakeup))
 
@@ -1410,7 +1432,7 @@ class BackgroundConsciousness:
             "delegation_role": BACKGROUND_DELEGATION_ROLE,
         }
 
-        timeout_sec = self._registry.get_timeout(fn_name)
+        timeout_sec = _get_tool_timeout(self._registry, fn_name, args)
         result = None
         error = None
         timed_out = False
@@ -1422,9 +1444,10 @@ class BackgroundConsciousness:
             except Exception as e:
                 error = e
 
-        future = self._tool_executor.submit(_run_tool)
+        with execution_deadline_scope(monotonic_now() + timeout_sec):
+            future = self._tool_executor.submit(_run_tool)
         try:
-            future.result(timeout=timeout_sec)
+            future_result(future, timeout_sec)
         except (TimeoutError, concurrent.futures.TimeoutError):
             self._tool_executor.reset()
             timed_out = True
@@ -1459,6 +1482,8 @@ class BackgroundConsciousness:
                 "error": repr(error),
             }, label=f"tool error:{fn_name}")
             result = f"Error: {repr(error)}"
+            from ouroboros.llm_claudexor import propagate_model_error
+            propagate_model_error(error)
 
         for evt in self._registry._ctx.pending_events:
             all_pending_events.append(evt)
@@ -1504,3 +1529,108 @@ class BackgroundConsciousness:
         }, label=f"tool receipt:{fn_name}")
 
         return result_str
+
+
+def compact_acknowledged_observations(
+    drive_root: Any,
+    retention_days: Optional[int] = None,
+    *,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Fold old ACKNOWLEDGED observation rows into an archive segment (CPL4-C23).
+
+    Contract: unacknowledged rows are NEVER pruned — they must survive
+    restart and overflow verbatim. An acknowledged enqueue older than the
+    unified GC retention moves, together with every ack row naming it, into
+    ``archive/consciousness_observations_<ts>.jsonl`` (durable history,
+    never GC'd). STRICTLY fail-closed: any malformed line, invalid row or
+    ghost ack skips the whole fold — the same gap classes that block a live
+    ack — and the archive segment is written BEFORE the live rewrite, so a
+    crash can only duplicate rows into forensic history, never lose them.
+    Runs at server startup, before Background Consciousness starts, under
+    the store's own writer lock.
+    """
+    from ouroboros.deadline_utils import parse_deadline_ts
+    from ouroboros.retention import age_cutoff, get_gc_retention_days
+
+    path = pathlib.Path(drive_root) / _OBSERVATIONS_REL
+    report: Dict[str, Any] = {"folded": 0, "skipped": "", "archive": ""}
+    if not path.exists():
+        return report
+    if retention_days is None:
+        retention_days = get_gc_retention_days()
+    cutoff = age_cutoff(retention_days, now)
+    lock_path = jsonl_append_lock_path(path)
+    lock_fd = acquire_exclusive_file_lock(lock_path, timeout_sec=2.0, stale_sec=10.0, owner_aware_stale=True)
+    if lock_fd is None:
+        report["skipped"] = "lock_unavailable"
+        return report
+    try:
+        raw_lines = path.read_bytes().splitlines(keepends=True)
+        parsed: List[tuple] = []  # (raw_bytes, row_dict, identifier, is_ack)
+        gap_reasons: List[str] = []
+        enqueued_ids: set = set()
+        acked_ids: set = set()
+        for line_no, raw in enumerate(raw_lines, 1):
+            stripped = raw.strip()
+            if not stripped:
+                report["skipped"] = "blank_line"
+                return report
+            try:
+                row = json.loads(stripped.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                report["skipped"] = "malformed_row"
+                return report
+            if not isinstance(row, dict) or not BackgroundConsciousness._validate_observation_row(
+                row, line_no, gap_reasons,
+            ) or gap_reasons:
+                report["skipped"] = "invalid_row"
+                return report
+            identifier = str(row.get("id", row.get("observation_id")) or "")
+            is_ack = row.get("op") == "ack"
+            if is_ack:
+                if identifier not in enqueued_ids:
+                    report["skipped"] = "ghost_ack"
+                    return report
+                acked_ids.add(identifier)
+            else:
+                enqueued_ids.add(identifier)
+            parsed.append((raw, row, identifier, is_ack))
+        fold_ids: set = set()
+        for _raw, row, identifier, is_ack in parsed:
+            if is_ack or identifier not in acked_ids:
+                continue
+            enqueued_at = parse_deadline_ts(str(row.get("time") or row.get("observed_at") or ""))
+            if enqueued_at is not None and enqueued_at.timestamp() < cutoff:
+                fold_ids.add(identifier)
+        if not fold_ids:
+            return report
+        keep: List[bytes] = []
+        fold: List[bytes] = []
+        for raw, _row, identifier, _is_ack in parsed:
+            (fold if identifier in fold_ids else keep).append(raw)
+        ts = utc_now_iso().replace("-", "").replace(":", "").split(".")[0]
+        archive_dir = pathlib.Path(drive_root) / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        segment = archive_dir / f"consciousness_observations_{ts}.jsonl"
+        suffix = 0
+        while segment.exists():
+            suffix += 1
+            segment = archive_dir / f"consciousness_observations_{ts}_{suffix}.jsonl"
+        # Archive FIRST: a crash between the two writes duplicates rows into
+        # forensic history instead of destroying the owner's inbox.
+        with segment.open("wb") as handle:
+            handle.write(b"".join(fold))
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp = path.with_name(path.name + ".compact.tmp")
+        tmp.write_bytes(b"".join(keep))
+        os.replace(tmp, path)
+        report["folded"] = len(fold_ids)
+        report["archive"] = segment.name
+        return report
+    except OSError:
+        report["skipped"] = "io_error"
+        return report
+    finally:
+        release_exclusive_file_lock(lock_path, lock_fd)

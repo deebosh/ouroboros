@@ -157,7 +157,11 @@ def _classify_loop_execution_status(
         execution_status = EXECUTION_INFRA_FAILED
         reason_code = usage_reason or REASON_PROVIDER_FAILURE
         failure = {"kind": "provider", "reason_code": reason_code}
-        if str(usage.get("_last_llm_error_kind") or "") == "context_overflow":
+        # Only the raw provider API-error terminal carries the overflow sub-kind.
+        # When a latched wait cause outranks the pass (reason_code is
+        # provider_unavailable / a wait terminal), the published projection must
+        # NOT contradict it with an overflow kind (test_transport_wait_repeat_interaction).
+        if reason_code == "llm_api_error" and str(usage.get("_last_llm_error_kind") or "") == "context_overflow":
             failure["error_kind"] = "context_overflow"
     elif (
         usage_status == RESULT_FAILED
@@ -191,7 +195,13 @@ def _classify_loop_execution_status(
         failure = {"kind": _infra[1], "reason_code": reason_code}
     elif delivery_candidate.get("degraded") and not deferred_child_suffix:
         execution_status = EXECUTION_DEGRADED
-        reason_code = usage_reason or REASON_DELIVERY_CONTROL_DEGRADED
+        # The candidate's OWN typed cause survives; the generic code is reserved
+        # for a degradation that reports no reason.
+        reason_code = (
+            usage_reason
+            or str(delivery_candidate.get("degraded_reason") or "")
+            or REASON_DELIVERY_CONTROL_DEGRADED
+        )
         failure = {"kind": "finalization_control", "reason_code": reason_code}
     elif deferred_child_count:
         execution_status = EXECUTION_DEGRADED
@@ -449,9 +459,16 @@ def _finalize_objective_axes(
         # which downstream consumers must interpret via the contract, not as a failure.
         "final_answer_missing_sentinel": not final_answer_payload,
         "failure": headline_failure,
+        # The degradation FACT reaches the record itself — benchmark run-summary
+        # and result-index readers look for it here.
+        "degraded": bool(delivery_candidate.get("degraded")),
+        "degraded_reason": str(delivery_candidate.get("degraded_reason") or ""),
         "recoveries": classification.recovered_tool_errors[:20],
         "usage": {
-            "cost_usd": (
+            # ABI-3: the loop's own accounted cost rides the honest name; the
+            # projection boundary (cost_projection.with_cost_aliases) still
+            # resolves legacy rows deprecated-wins.
+            "accounted_upper_bound_usd": (
                 round(float(usage["cost"]), 6)
                 if usage.get("cost") is not None else None
             ),

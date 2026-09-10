@@ -13,10 +13,8 @@ These tests pin the bug fix that closes ``ibl-local-67f046589043``:
 
 * After the fix, ``run_cmd`` accepts ``timeout`` and ``check`` as keyword-only
   kwargs; the existing positional ``(cmd, cwd)`` signature keeps working for
-  every other caller. A ``subprocess.TimeoutExpired`` is converted to a
-  ``RuntimeError`` with the SAME ``"Command failed: "`` prefix the
-  non-zero-exit branch already produces, so callers/tests that match on that
-  text keep parsing — the timeout fact is appended in parentheses.
+  every other caller. ``subprocess.TimeoutExpired`` propagates raw (v7 merge:
+  upstream's contract; the fork's convert-to-RuntimeError variant was dropped).
 """
 
 from __future__ import annotations
@@ -49,24 +47,16 @@ def test_run_cmd_check_false_returns_stdout_on_nonzero_exit() -> None:
     assert out == "captured-output"
 
 
-def test_run_cmd_timeout_raises_runtime_error_mentioning_timeout() -> None:
-    """(d) timeout= on a slow command raises RuntimeError naming the timeout.
-
-    The new ``Command failed:`` prefix matches the legacy non-zero-exit
-    branch so callers/tests that grep the prefix keep working; the timeout
-    fact is appended so a consumer can distinguish the two failure modes.
+def test_run_cmd_timeout_propagates_timeout_expired() -> None:
+    """(d) timeout= on a slow command lets ``subprocess.TimeoutExpired``
+    propagate raw (v7: upstream's contract — the fork's convert-to-RuntimeError
+    variant was dropped in the merge). Every fork call site that passes
+    ``timeout=`` catches ``Exception``, so the behaviour change is inert there.
     """
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
         run_cmd(["sleep", "5"], timeout=1)
-    msg = str(excinfo.value)
-    assert "Command failed:" in msg
-    assert "TimeoutExpired" in msg
-    assert "sleep" in msg
-    # The numeric timeout value must be present so an operator can see what
-    # bound was exceeded.
-    assert "1" in msg
-    # The wrapped TimeoutExpired is preserved as __cause__ for tracebacks.
-    assert isinstance(excinfo.value.__cause__, subprocess.TimeoutExpired)
+    assert "sleep" in " ".join(excinfo.value.cmd)
+    assert excinfo.value.timeout == 1
 
 
 def test_run_cmd_cwd_is_honored() -> None:

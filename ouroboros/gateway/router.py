@@ -40,6 +40,7 @@ def collect_routes(
         api_skill_review_history_detail,
         api_skill_toggle,
     )
+    from ouroboros.gateway.widgets import api_widgets
     from ouroboros.gateway.files import (
         api_chat_upload,
         api_chat_upload_delete,
@@ -61,6 +62,7 @@ def collect_routes(
         api_ouroboroshub_preview,
         api_ouroboroshub_uninstall,
         api_ouroboroshub_update,
+        api_ouroboroshub_clear_publication,
     )
     from ouroboros.gateway.claudexor_accounts import (
         api_claudexor_credential_profile,
@@ -133,7 +135,6 @@ def collect_routes(
         api_owner_auto_grant,
         api_owner_context_mode,
         api_owner_safety_mode,
-        api_owner_scope_review_floor,
         api_owner_runtime_mode,
         api_settings_get,
         api_settings_post,
@@ -153,9 +154,10 @@ def collect_routes(
         # Distinct from the boot startup-check so the dashboard can badge /
         # toast live without waiting for a restart.
         Route("/api/review-continuations", endpoint=api_review_continuations, methods=["GET"]),
+        Route("/api/widgets", endpoint=api_widgets, methods=["GET"]),
         Route("/api/extensions", endpoint=api_extensions_index, methods=["GET"]),
         Route("/api/extensions/{skill}/manifest", endpoint=api_extension_manifest, methods=["GET"]),
-        Route("/api/extensions/{skill}/module/{entry}", endpoint=api_extension_module, methods=["GET"]),
+        Route("/api/extensions/{skill}/module/{entry:path}", endpoint=api_extension_module, methods=["GET"]),
         Route(
             "/api/extensions/{skill}/settings_section",
             endpoint=api_extension_settings_section,
@@ -197,6 +199,7 @@ def collect_routes(
         ),
         Route("/api/marketplace/ouroboroshub/install", endpoint=api_ouroboroshub_install, methods=["POST"]),
         Route("/api/marketplace/ouroboroshub/update/{name}", endpoint=api_ouroboroshub_update, methods=["POST"]),
+        Route("/api/marketplace/ouroboroshub/publication/{name}/clear", endpoint=api_ouroboroshub_clear_publication, methods=["POST"]),
         Route(
             "/api/marketplace/ouroboroshub/uninstall/{name}",
             endpoint=api_ouroboroshub_uninstall,
@@ -226,7 +229,6 @@ def collect_routes(
         Route("/api/owner/runtime-mode", endpoint=api_owner_runtime_mode, methods=["POST"]),
         Route("/api/owner/auto-grant", endpoint=api_owner_auto_grant, methods=["POST"]),
         Route("/api/owner/context-mode", endpoint=api_owner_context_mode, methods=["POST"]),
-        Route("/api/owner/scope-review-floor", endpoint=api_owner_scope_review_floor, methods=["POST"]),
         Route("/api/owner/safety-mode", endpoint=api_owner_safety_mode, methods=["POST"]),
         Route("/api/owner/capability-ack", endpoint=api_acknowledge_capability, methods=["POST"]),
         Route("/api/model-catalog", endpoint=api_model_catalog),
@@ -240,7 +242,7 @@ def collect_routes(
         Route("/api/tasks", endpoint=api_tasks_list, methods=["GET"]),
         Route("/api/tasks/{task_id}/artifacts/{name}", endpoint=api_task_artifact, methods=["GET"]),
         Route("/api/tasks/{task_id}", endpoint=api_task_get, methods=["GET"]),
-        Route("/api/tasks/{task_id}/events", endpoint=api_task_events, methods=["GET"]),
+        Route("/api/tasks/{task_id}/events", endpoint=api_task_events, methods=["GET", "POST"]),
         Route("/api/tasks/{task_id}/cancel", endpoint=api_task_cancel, methods=["POST"]),
         Route("/api/tasks/{task_id}/hurry", endpoint=api_task_hurry, methods=["POST"]),
         Route("/api/tasks/{task_id}/resume", endpoint=api_task_resume, methods=["POST"]),

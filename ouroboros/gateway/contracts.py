@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from ouroboros.gateway.widgets import ExtensionLiveSnapshot, WidgetTab, WidgetsResponse
+from ouroboros.gateway.decision_contracts import DecisionRequest, DecisionResponse  # noqa: F401 -- public re-exports
+
 try:  # Python 3.11+
     from typing import Literal, NotRequired, Required, TypedDict  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - CI supports Python 3.10.
@@ -37,6 +40,9 @@ class AttachmentManifestEntry(TypedDict, total=False):
     abs_path: str
     mime: str
     is_image: bool
+    size: int
+    sha256: str
+    rule: str
 
 
 class ChatInbound(TypedDict):
@@ -105,6 +111,7 @@ class ChatOutbound(TypedDict):
     markdown: NotRequired[bool]
     is_progress: NotRequired[bool]
     task_id: NotRequired[str]
+    origin_message_ref: NotRequired[Dict[str, Any]]
     # X3: a repair receipt whose managed task id does not exist yet (the router
     # mints it at promotion). Typed truth instead of an invented id.
     task_id_pending: NotRequired[bool]
@@ -119,7 +126,14 @@ class ChatOutbound(TypedDict):
     task_terminal_status: NotRequired[str]
     ephemeral_decision: NotRequired[bool]
     task_incident: NotRequired[str]
+    # A cancellation fault names the PHYSICAL task it could not settle when that
+    # differs from the displayed (logical) task id.
+    cancel_physical_task_id: NotRequired[str]
     toast_once: NotRequired[str]
+    # #628: the incident's valence for the one-shot toast (warn/ok/error),
+    # stamped by the producer that knows whether the boundary is a wait, a
+    # recovery or an exhaustion; absent = the browser keeps its alarm tone.
+    toast_tone: NotRequired[str]
     lifecycle: NotRequired[Dict[str, Any]]
     # C4 multi-chat dedupe: a duplicate lifecycle initiator's typed pointer to
     # the job that already owns the routing ({job_id, kind, target, status,
@@ -164,23 +178,25 @@ class ChatOutbound(TypedDict):
     task_group_id: NotRequired[str]
     task_event: NotRequired[str]
     status: NotRequired[str]
-    # v6.82 (P5): host-attested marker — this frame's task is a supervisor-queue
-    # task that POST /api/tasks/{id}/cancel can force-cancel (never set for
-    # in-process direct-chat turns). Gates the UI "Cancel run" card action.
+    # v6.82 (P5): host-attested marker, stamped by the supervisor's delivery
+    # seam ONLY for a task POST /api/tasks/{id}/cancel will actually stop — a
+    # lineage-resolved pooled ROOT (its RUNNING row) or the live in-process
+    # direct-chat turn (resolved through the same ownership reader the
+    # endpoint uses, supervisor.workers.direct_chat_turn); never a subagent
+    # frame, never an ephemeral decision turn. Gates the UI "Cancel run" action.
     cancelable: NotRequired[bool]
     # Monetary projections are nullable when the physical-attempt ledger cannot
     # be read.  ``None`` is deliberately distinct from a confirmed $0 result.
-    cost_usd: NotRequired[Optional[float]]
-    # C2 (owner 10=B): the additive HONEST names — accounted upper bounds, not
-    # settled receipts. Same values as the deprecated cost_usd[_with_children]
-    # aliases (ouroboros/cost_projection.py is the one author); the aliases stay
-    # outbound because their removal is a separate approved ABI break.
+    # C2 (owner 10=B) named these the HONEST names — accounted upper bounds,
+    # not settled receipts; ABI 7.0 (ABI-3) removed the deprecated
+    # ``cost_usd[_with_children]`` wire aliases, so these are the only outbound
+    # spellings (ouroboros/cost_projection.py is the one author). Stored legacy
+    # records keep both spellings readable via ``resolve_cost_pair``.
     accounted_upper_bound_usd: NotRequired[Optional[float]]
     accounted_upper_bound_usd_with_children: NotRequired[Optional[float]]
     cost_accounting_status: NotRequired[Literal["available", "unavailable"]]
     cost_accounting_error: NotRequired[str]
     cost_final: NotRequired[bool]
-    cost_usd_with_children: NotRequired[Optional[float]]
     cost_with_children_partial: NotRequired[bool]
     reserved_usd: NotRequired[Optional[float]]
     unresolved_upper_bound_usd: NotRequired[Optional[float]]
@@ -211,8 +227,6 @@ class ChatOutbound(TypedDict):
     sender_session_id: NotRequired[str]
     client_message_id: NotRequired[str]
     transport: NotRequired[TransportMetadata]
-    # Deprecated compatibility field: runtime emits ``transport`` instead.
-    telegram_chat_id: NotRequired[int]
     # UI-only system annotation emitted by skill-repair visible commands.
     system_type: NotRequired[str]
     # Event-time human presentation; raw task/project ids remain machine keys.
@@ -255,8 +269,6 @@ class PhotoOutbound(TypedDict):
     # Server-stamped when chat_id is a reserved Project thread: Main never
     # adopts it, even before the browser has learned the project.
     project_thread: NotRequired[bool]
-    # Deprecated compatibility field: runtime emits ``transport`` instead.
-    telegram_chat_id: NotRequired[int]
 
 
 class VideoOutbound(TypedDict):
@@ -271,11 +283,7 @@ class VideoOutbound(TypedDict):
     # Durable task-artifact URL for the stored media, replayed by chat history
     # (the live frame carries the bytes inline instead).
     download_url: NotRequired[str]
-    # Second address for the SAME bytes on the long-shipped
-    # /api/files/download route, present only when the stored file resolves
-    # inside the current file-browser root. Packaged desktop launchers gate
-    # their file bridge to a URL allowlist that predates the artifact route,
-    # so the browser uses download_url and the host bridge prefers this one.
+    # Same dual-address contract as PhotoOutbound.download_url_compat above.
     download_url_compat: NotRequired[str]
     content: NotRequired[str]
     source: NotRequired[str]
@@ -285,11 +293,8 @@ class VideoOutbound(TypedDict):
     transport: NotRequired[TransportMetadata]
     chat_id: NotRequired[int]
     task_id: NotRequired[str]
-    # Server-stamped when chat_id is a reserved Project thread: Main never
-    # adopts it, even before the browser has learned the project.
+    # Same Project-thread stamp contract as PhotoOutbound.project_thread.
     project_thread: NotRequired[bool]
-    # Deprecated compatibility field: runtime emits ``transport`` instead.
-    telegram_chat_id: NotRequired[int]
 
 
 class DocumentOutbound(TypedDict):
@@ -302,10 +307,10 @@ class DocumentOutbound(TypedDict):
     filename: str
     ts: str
     caption: NotRequired[str]
-    # Loopback /api/files/download?path=<root-relative> URL for the durable
-    # artifact copy, used by the desktop host-bridge download (WKWebView-safe)
-    # and to rebuild the bubble on reload without persisting base64.
+    # Canonical captured-file URL; replay never needs to persist inline bytes.
     download_url: NotRequired[str]
+    download_url_compat: NotRequired[str]
+    file_ref: NotRequired[Dict[str, Any]]
     content: NotRequired[str]
     source: NotRequired[str]
     sender_label: NotRequired[str]
@@ -318,8 +323,6 @@ class DocumentOutbound(TypedDict):
     # Server-stamped when chat_id is a reserved Project thread: Main never
     # adopts it, even before the browser has learned the project.
     project_thread: NotRequired[bool]
-    # Deprecated compatibility field: runtime emits ``transport`` instead.
-    telegram_chat_id: NotRequired[int]
 
 
 class LinkAction(TypedDict):
@@ -353,13 +356,10 @@ class QuizOption(TypedDict):
 class QuizOutbound(TypedDict):
     """Outbound owner quiz card: a typed question with option buttons.
 
-    Fire-and-continue: the asking task keeps working under ``assumption``
-    while the card is open. ``state`` is the card's lifecycle word
-    (``open`` in this display phase; answered/expired arrive with the
-    answer ingress). History replay of a SETTLED card additionally merges the
-    projection's record of the answer: ``answered_index`` when an offered
-    option was taken, and the owner's verbatim ``comment`` (the whole answer
-    when the owner took none of the options).
+    Optional questions continue under ``assumption``; ``wait_for_answer`` marks
+    required waiting without an implied answer. ``state`` carries lifecycle.
+    Replay merges the stored ``answered_index`` and verbatim ``comment``; a
+    comment without an index is the owner's whole answer, not an option choice.
     """
 
     type: Literal["quiz"]
@@ -369,6 +369,7 @@ class QuizOutbound(TypedDict):
     options: list[QuizOption]
     stake: str
     assumption: str
+    wait_for_answer: NotRequired[bool]
     state: str
     ts: str
     answered_index: NotRequired[int]
@@ -394,6 +395,9 @@ class QuizStateOutbound(TypedDict):
     state: str
     ts: str
     answered_index: NotRequired[int]
+    # #471: the owner's recorded free-text answer rides the live frame (absent
+    # when empty) so the open card renders `Owner's answer:` as replay does.
+    comment: NotRequired[str]
     chat_id: NotRequired[int]
 
 
@@ -668,9 +672,10 @@ class EvolutionStateSnapshot(TypedDict):
 class ActiveDirectTurn(TypedDict):
     """An active in-process direct chat or ephemeral decision turn.
 
-    Snapshot rows in ``StateResponse.active_direct_turns``; every field is
-    always emitted by ``DirectActivityRegistry.snapshot()`` (empty-string for
-    absent optionals), so the mirror marks them all required.
+    Snapshot rows in ``StateResponse.active_direct_turns``; the seven identity
+    and activity fields are always emitted by ``DirectActivityRegistry.snapshot()``
+    (empty-string for absent values), so the mirror marks them required.
+    A model_waits projection is optional and must be supplied by its live owner.
     """
 
     activity_id: str
@@ -680,9 +685,11 @@ class ActiveDirectTurn(TypedDict):
     kind: str
     phase: str
     started_at: float
+    model_waits: NotRequired[Dict[str, Any]]
+    task_attempt: NotRequired[int]
 
 
-class ActiveChatActivity(TypedDict):
+class ActiveChatActivity(ActiveDirectTurn):
     """One in-flight chat activity in ``StateResponse.active_chat_activities``.
 
     The combined snapshot: direct/ephemeral registry turns (same rows as
@@ -694,14 +701,6 @@ class ActiveChatActivity(TypedDict):
     Field shape mirrors ``ActiveDirectTurn`` so one client reducer hydrates
     both; managed rows carry an empty ``client_message_id``.
     """
-
-    activity_id: str
-    chat_id: int
-    project_id: str
-    client_message_id: str
-    kind: str
-    phase: str
-    started_at: float
 
 
 class StateResponse(TypedDict):
@@ -814,14 +813,6 @@ class OwnerContextModeResponse(TypedDict):
     context_mode: str
 
 
-class OwnerScopeReviewFloorResponse(TypedDict):
-    ok: bool
-    scope_review_floor: str  # blocking_1m | advisory (v6.34.0, CW1)
-    # v6.80.0: the value is STORED but enforcement-inert — scope-review applicability
-    # follows the owner-only context mode. The notice says so on every write.
-    deprecation_notice: str
-
-
 class OwnerSafetyModeResponse(TypedDict):
     ok: bool
     safety_mode: str  # full | light | off (v6.54.3)
@@ -864,12 +855,11 @@ class SkillDeleteResponse(TypedDict, total=False):
 class UiPreferencesResponse(TypedDict):
     ok: NotRequired[bool]
     widget_order: list[str]
+    widget_start_mode: dict[str, Literal["auto", "manual", "retain"]]  # owner per-card launch-policy override
     nested_subagents_expanded: bool
     sidebar_width: int  # px; 0 = CSS default (resizable side sections, v6.33.0)
     project_panel_width: int  # px; 0 = CSS default
     project_seen_revision: dict[str, int]  # monotonic paint ACK per active Project
-    project_last_viewed: dict[str, str]  # deprecated one-minor accepted no-op
-    project_hidden: dict[str, bool]  # deprecated one-minor accepted no-op
 
 
 class GitLogResponse(TypedDict):
@@ -909,12 +899,14 @@ class UploadResponse(TypedDict):
     display_name: str
     path: str
     size: int
+    sha256: NotRequired[str]
     mime: str
 
 
 class ExtensionsIndexResponse(TypedDict, total=False):
     extensions: list[Dict[str, Any]]
     skills: list[Dict[str, Any]]
+    live: ExtensionLiveSnapshot
     lifecycle: Dict[str, Any]
     error: str
 
@@ -1023,6 +1015,10 @@ class _TaskCreateRequestRequired(TypedDict):
 class TaskCreateRequest(_TaskCreateRequestRequired, total=False):
     task_id: str
     type: str
+    # v6.115.0: the run's owner-facing name. Supplied, it fills both name slots
+    # like a promoted chat turn; omitted, admission derives a display-only name
+    # from the request's first line. `metadata.title` is refused (400).
+    title: str
     chat_id: int
     depth: int
     session_id: str
@@ -1063,6 +1059,7 @@ class TaskCreateResponse(TypedDict, total=False):
     reason_code: str
     error: str
     attachment_manifest: list[AttachmentManifestEntry]
+    attachment_manifest_ref: Dict[str, Any]
 
 
 class TaskListResponse(TypedDict, total=False):
@@ -1098,6 +1095,7 @@ class TaskDetailResponse(TypedDict, total=False):
     stored task-result keys pass through) plus additive typed projections."""
 
     cost_breakdown: TaskCostBreakdown
+    model_waits: Dict[str, Any]
     # Poltergeist phase A cancel projection (additive-optional): ``"pending"``
     # while a durable cancel intent is open and the supervisor teardown has not
     # settled — the status itself honestly stays running/scheduled. Absent on
@@ -1245,6 +1243,19 @@ class ClaudexorLoginJobProblem(TypedDict, total=False):
     required_actions: List[str]
 
 
+class TaskEventCursor(TypedDict):
+    v: Literal[2]
+    seq: int
+    view: str
+    positions: Dict[str, Dict[str, int]]
+
+
+class TaskEventsRequest(TypedDict):
+    v: Literal[2]
+    wait: NotRequired[int]
+    cursor: NotRequired[Optional[TaskEventCursor]]
+
+
 class TaskEvent(TypedDict, total=False):
     seq: int
     source: str
@@ -1254,6 +1265,10 @@ class TaskEvent(TypedDict, total=False):
     task_id: str
     root: str
     data: Dict[str, Any]
+    event_id: str
+    cursor: TaskEventCursor
+    reason: str
+    error: str
 
 
 class TaskCancelResponse(TypedDict, total=False):
@@ -1323,50 +1338,6 @@ class TaskHurryResponse(TypedDict, total=False):
     attempt_key: int
     duplicate: bool
     error: str
-
-
-class DecisionRequest(TypedDict):
-    """POST /api/decisions body — the ONE answer ingress for owner decision
-    cards (owner decision 1=A). ``decision_id`` is a composed family id:
-    ``quiz:{task_id}:{quiz_id}`` (this phase), ``routing:{client_message_id}:
-    {routing_token}`` (#198), ``interaction:{task_id}:{run_id}:
-    {interaction_id}`` (#204). ``request_id`` is the idempotency key; a
-    replayed request returns the recorded confirmation instead of acting
-    twice. ``comment`` is the owner's optional verbatim remark.
-
-    ``option_index`` is optional for the ``quiz`` family ONLY: an owner who
-    takes none of the offered options answers with a non-empty ``comment``
-    and no index. Every other family still requires the integer — a routing
-    choice IS its option."""
-
-    request_id: str
-    decision_id: str
-    option_index: NotRequired[int]
-    comment: NotRequired[str]
-
-
-class DecisionResponse(TypedDict, total=False):
-    """Answer-ingress reply. 2xx carries the card's new lifecycle ``state``
-    (``answered``; ``duplicate`` marks an idempotent replay). A late answer
-    to a settled task is 409 with ``state`` telling the truth
-    (``expired_terminal``/``answered``) so the card settles instead of
-    inviting retries. The routing family (#198) adds: ``dispatched`` (the
-    confirmed durable receipt status), ``task_id`` (the derived id of a
-    promoted task), ``latest_status`` (the superseding row's status on a 409),
-    ``reason``/``detail`` (typed refusal/unconfirmed diagnostics)."""
-
-    ok: bool
-    decision_id: str
-    state: str
-    answered_index: int
-    comment: str
-    duplicate: bool
-    error: str
-    dispatched: str
-    task_id: str
-    latest_status: str
-    reason: str
-    detail: str
 
 
 class LogTailResponse(TypedDict, total=False):
@@ -1531,7 +1502,6 @@ __all__ = [
     "OwnerRuntimeModeResponse",
     "OwnerAutoGrantResponse",
     "OwnerContextModeResponse",
-    "OwnerScopeReviewFloorResponse",
     "OwnerSafetyModeResponse",
     "OwnerSkillPresenceRuntimeRequest",
     "OwnerSkillPresenceRuntimeResponse",
@@ -1551,6 +1521,9 @@ __all__ = [
     "ScheduleDeleteResponse",
     "UploadResponse",
     "ExtensionsIndexResponse",
+    "ExtensionLiveSnapshot",
+    "WidgetTab",
+    "WidgetsResponse",
     "SkillPublishPreflightResponse",
     "SkillLifecycleQueueResponse",
     "MarketplaceSearchResponse",
@@ -1577,6 +1550,8 @@ __all__ = [
     "ClaudexorVendorCredentialDisposition",
     "ClaudexorCredentialProfileDeleteResponse",
     "TaskEvent",
+    "TaskEventCursor",
+    "TaskEventsRequest",
     "TaskCancelResponse",
     "TaskHurryRequest",
     "TaskHurryResponse",

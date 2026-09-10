@@ -116,10 +116,12 @@ def test_repair_ui_copy_does_not_promise_a_removed_decision_round():
     for path in (repo / "web/modules/skills.js", repo / "web/modules/marketplace.js"):
         text = path.read_text(encoding="utf-8")
         assert "Ouroboros will decide" not in text
-        assert "if the task cannot start, chat will show why" in text
+        assert "If the task cannot start, chat will show why" in text
+        assert "confirmLabel: 'Repair and run'" in text
+        assert "visible_text:" not in text
 
 
-def test_ordinary_busy_message_still_uses_ephemeral_lane(monkeypatch):
+def test_ordinary_busy_message_uses_native_lane(monkeypatch):
     calls = {"ephemeral": [], "direct": []}
     bridge = FakeBridge()
     bridge.get_updates = lambda offset, timeout=1: [{
@@ -154,8 +156,8 @@ def test_ordinary_busy_message_still_uses_ephemeral_lane(monkeypatch):
 
     server._process_bridge_updates(bridge, 0, ctx)
 
-    assert calls["direct"] == []
-    assert len(calls["ephemeral"]) == 1
+    assert calls["ephemeral"] == []
+    assert len(calls["direct"]) == 1
 
 
 def test_visible_repair_command_is_deduped(monkeypatch):

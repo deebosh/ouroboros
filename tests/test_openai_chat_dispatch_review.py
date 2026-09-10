@@ -415,12 +415,15 @@ def test_localized_109_tools_max_each_admission_metric_independently():
     ) == max(token_sizes)
 
 
-def test_current_116_tool_registry_exposes_and_measures_both_projections(tmp_path):
+def test_current_tool_registry_exposes_and_measures_both_projections(tmp_path):
     from ouroboros.tools.registry import ToolRegistry
+    from tests.test_smoke import EXPECTED_TOOLS
 
     repo_dir = pathlib.Path(__file__).resolve().parents[1]
     tools = ToolRegistry(repo_dir=repo_dir, drive_root=tmp_path).schemas()
-    assert len(tools) == 116
+    expected_names = set(EXPECTED_TOOLS)
+    assert {tool["function"]["name"] for tool in tools} == expected_names
+    assert len(tools) == len(expected_names)
     messages = [{"role": "user", "content": "x"}]
     projections = dispatch.direct_openai_context_projections(
         messages,
@@ -431,6 +434,9 @@ def test_current_116_tool_registry_exposes_and_measures_both_projections(tmp_pat
     byte_sizes, token_sizes = _projection_measures(projections)
 
     assert len(projections) == 2
+    for _messages, projected_tools in projections:
+        assert {tool[tool["type"]]["name"] for tool in projected_tools} == expected_names
+        assert len(projected_tools) == len(expected_names)
     assert dispatch.projected_context_size_bytes(
         messages,
         tools,

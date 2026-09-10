@@ -65,7 +65,7 @@ test('live task_done and replay/log task truth have phase and headline parity', 
     }
     assert.match(
         chatSource,
-        /const presentation = taskPresentation\(finalizing \? 'working' : taskTerminalPhase\(msg \|\| \{\}\)\);/,
+        /const presentation = taskPresentation\(finalizing && outcome !== 'error' \? 'working' : outcome\);/,
     );
 });
 
@@ -77,7 +77,16 @@ test('typed terminal status drives an error phase on live and replay cards', () 
         chatSource,
         /finishLiveCard\(taskId, msg\.task_terminal_status \? taskTerminalPhase\(msg\) : replayTerminalPhase\(taskState, record\)\);/,
     );
-    assert.match(chatSource, /finishLiveCard\(explicitTaskId, taskTerminalPhase\(msg\)\) \|\| changed;/);
+    assert.match(chatSource, /appendTaskSummaryToLiveCard\(msg\) \|\| changed;/);
+});
+
+test('canonical replay status wins over a stale row without erasing open post-work', () => {
+    const record = { status: 'running', task_terminal_status: 'failed' };
+    assert.equal(taskDoneIsTerminal(record), true);
+    assert.equal(taskTerminalPhase(record), 'error');
+    const waiting = { ...record, root_phase_checkpoint: { post_task_synthesis: 'running' } };
+    assert.equal(taskDoneIsTerminal(waiting), false);
+    assert.equal(taskTerminalPhase(waiting), 'error');
 });
 
 test('interrupted task_done remains retryable and cannot finish a root card', () => {
@@ -140,8 +149,8 @@ test('failed child remains a compact local fact without owner-alarm semantics', 
     });
     assert.equal(child.phase, 'error');
     assert.equal(child.terminal, true);
-    assert.match(child.headline, /— Failed$/);
-    assert.doesNotMatch(child.headline, /Issue|Attention|delegated_custody_unreconciled/);
+    // Identity only; the chip carries `Failed` (DESIGN.md §4), the headline never does.
+    assert.equal(child.headline, 'researcher');
     assert.doesNotMatch(child.body, /delegated_custody_unreconciled/);
     assert.match(child.fullBody, /Reason: delegated_custody_unreconciled/);
     assert.equal('ownerAlarm' in child, false);
@@ -163,7 +172,7 @@ test('interrupted child stays retryable with a Working chip and inspectable deta
     assert.equal(child.phase, 'warn');
     assert.equal(child.terminal, false);
     assert.equal(child.visible, true);
-    assert.match(child.headline, /— Working$/);
+    assert.equal(child.headline, 'researcher');
     assert.match(child.fullBody, /transport interrupted; retry remains available/);
     assert.equal(taskPresentation(child.terminal ? child.phase : 'working').headline, 'Working');
     const applyState = chatSource.slice(
@@ -251,7 +260,7 @@ test('history replay keeps open summaries live and terminal fallbacks factual', 
         chatSource.indexOf('function appendTaskSummaryToLiveCard'),
         chatSource.indexOf('// child task_id'),
     );
-    assert.match(summary, /const finalizing = msg\?\.task_phase === 'finalizing';/);
+    assert.match(summary, /const finalizing = msg\?\.task_phase === 'finalizing' \|\| msg\?\.outcome_final === false;/);
     assert.match(summary, /terminal: !finalizing/);
     assert.match(summary, /record\.finalizingHold = true/);
     assert.match(summary, /if \(finalizing\) return changed;\s*changed = finishLiveCard/);
@@ -370,4 +379,29 @@ test('unknown keyword-shaped Chat event does not synthesize an alarm', () => {
 test('header status has no terminal-attention state or writer', () => {
     assert.doesNotMatch(chatSource, /lastTerminalAttention/);
     assert.doesNotMatch(activitySource, /lastTerminalAttention|text: 'Attention'/);
+});
+
+test('a review-caused warning names the acceptance decision on the card and in Logs', () => {
+    // The execution reason beside it ('final_message') names the delivery step,
+    // not the cause; the card body and the Logs meta now say what happened.
+    const evt = {
+        type: 'task_done', status: 'completed', reason_code: 'final_message',
+        outcome_axes: {
+            execution: { status: 'ok' },
+            review: {
+                status: 'degraded',
+                acceptance_decision: {
+                    status: 'finalized_unaccepted',
+                    rationale: 'Acceptance reviewers did not reach a valid quorum.',
+                },
+            },
+        },
+    };
+    const live = summarizeChatLiveEvent(evt);
+    const replay = summarizeLogEvent(evt);
+    assert.deepEqual({ phase: live.phase, headline: live.headline }, { phase: 'warn', headline: 'Done with warnings' });
+    assert.match(live.body, /Acceptance: finalized_unaccepted — Acceptance reviewers did not reach a valid quorum\./);
+    assert.doesNotMatch(live.body, /final_message/);
+    assert.ok(replay.meta.includes('review degraded'));
+    assert.ok(replay.meta.includes('acceptance finalized_unaccepted'));
 });

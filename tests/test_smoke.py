@@ -135,7 +135,7 @@ EXPECTED_TOOLS = [
     "start_service", "service_status", "service_logs", "stop_service",
     "restart_companion",
     "run_command", "run_script",
-    "list_skills", "skill_review", "skill_exec", "toggle_skill",
+    "list_skills", "skill_review", "skill_exec", "toggle_skill", "skill_owner_action",
     "skill_preflight", "submit_skill_to_hub",
     "list_available_tools", "enable_tools",
     "analyze_screenshot", "vlm_query", "view_image",

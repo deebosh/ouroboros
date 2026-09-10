@@ -155,33 +155,35 @@ class TestStageTaskAttachments:
         assert [row["reason"] for row in manifest] == ["source_missing", "source_not_file"]
         assert [row["ordinal"] for row in manifest] == [0, 1]
 
-    def test_large_file_skipped(self, tmp_path, monkeypatch):
+    def test_large_file_is_captured_with_digest(self, tmp_path):
         import ouroboros.artifacts as art
 
-        drive = _drive(tmp_path)
-        big = tmp_path / "big.bin"
-        big.write_bytes(b"\0" * 1024)
-        monkeypatch.setattr(art, "_MAX_STAGED_ATTACHMENT_BYTES", 512)
-        manifest = art.stage_task_attachments(drive, "task07", [{"path": str(big)}])
-        assert manifest[0]["status"] == "rejected"
-        assert manifest[0]["reason"] == "file_too_large"
+        source = tmp_path / "large.bin"
+        with source.open("wb") as handle:
+            handle.seek(51 * 1024 * 1024)
+            handle.write(b"last")
+        manifest = art.stage_task_attachments(_drive(tmp_path), "large", [{"path": str(source)}])
+        assert manifest[0]["status"] == "staged"
+        assert manifest[0]["size"] == source.stat().st_size
+        assert manifest[0]["sha256"] == art.stream_artifact_file(source)["sha256"]
 
-    def test_max_count_bound(self, tmp_path, monkeypatch):
+    def test_count_bound_applies_only_to_inline_projection(self, tmp_path, monkeypatch):
         import ouroboros.artifacts as art
 
         drive = _drive(tmp_path)
         monkeypatch.setattr(art, "_MAX_STAGED_ATTACHMENTS", 2)
         items = []
         for i in range(5):
-            f = tmp_path / f"f{i}.txt"
-            f.write_text(str(i), encoding="utf-8")
-            items.append({"path": str(f)})
-        manifest = art.stage_task_attachments(drive, "task08", items)
+            source = tmp_path / f"f{i}.txt"
+            source.write_text(str(i), encoding="utf-8")
+            items.append({"path": str(source)})
+        manifest = art.stage_task_attachments(drive, "many", items)
         assert len(manifest) == 5
-        assert [row["status"] for row in manifest] == [
-            "staged", "staged", "rejected", "rejected", "rejected",
-        ]
-        assert {row["reason"] for row in manifest[2:]} == {"attachment_limit_exceeded"}
+        assert all(row["status"] == "staged" for row in manifest)
+        authority = art.attachment_manifest_projection(drive, "many", manifest)
+        assert len(authority["attachment_manifest"]) == 2
+        assert authority["attachment_manifest_ref"]["count"] == 5
+        assert art.resolve_attachment_manifest(drive, "many", authority) == manifest
 
     def test_copy_failure_is_a_typed_row(self, tmp_path, monkeypatch):
         import ouroboros.artifacts as art
@@ -190,8 +192,8 @@ class TestStageTaskAttachments:
         source = tmp_path / "copy-me.txt"
         source.write_text("payload", encoding="utf-8")
         monkeypatch.setattr(
-            art.shutil,
-            "copy2",
+            art,
+            "copy_artifact_file",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
         )
 
@@ -607,6 +609,19 @@ class TestInlineImageDataPersistence:
     inline in task['image_base64'] and the agent cannot read them via
     read_file(root='artifact_store', path='attachments/...') — closes
     ibl-162952d44079 and ibl-04a5239e3573 (duplicate)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_event_q(self, monkeypatch):
+        # A prior TestClient lifespan on the same xdist worker leaves
+        # _EVENT_Q_SHUTDOWN latched (server shutdown calls shutdown_event_q());
+        # the real get_event_q() then raises inside _run_chat_task before
+        # agent.handle_task ever runs, leaving agent.task None (seen only on the
+        # ubuntu CI shard). Same isolation precedent as
+        # TestDesktopChatFullSetStaging and
+        # tests/test_inflight_indicator_seams.py::_patch_workers.
+        import supervisor.workers as workers
+
+        monkeypatch.setattr(workers, "get_event_q", lambda: queue.Queue())
 
     def test_image_data_only_persists_and_drops_inline(self, tmp_path, monkeypatch):
         """image_data + no metadata: stage via shared substrate, drop inline keys."""

@@ -18,6 +18,8 @@ import json
 import pathlib
 import re
 
+import pytest
+
 from devtools.benchmarks.common.manifests import (
     benchmark_run_manifest,
     provider_credential_disclosure,
@@ -363,6 +365,105 @@ def test_isolated_credential_grants_reports_the_file_not_the_intent():
     assert grants["granted"]["OPENAI_API_KEY"]["present"] is True
 
 
+@pytest.mark.parametrize("settings_authoritative", [False, True])
+@pytest.mark.parametrize("encoded", [False, True])
+def test_manifest_records_role_options_with_the_same_source_as_models(
+    tmp_path, monkeypatch, settings_authoritative, encoded,
+):
+    from devtools.benchmarks.common import manifests
+
+    file_options = {
+        "OUROBOROS_MODEL_ACCOUNTS": {"main": "account-a", "light": "account-b", "fallback": ["", "account-c"]},
+        "OUROBOROS_MODEL_CONTEXT_WINDOWS": {"main": 872000, "light": 256000, "fallback": [0, 400000]},
+    }
+    env_options = {
+        "OUROBOROS_MODEL_ACCOUNTS": {"main": "env-account", "light": "", "fallback": ["account-b", ""]},
+        "OUROBOROS_MODEL_CONTEXT_WINDOWS": {"main": 128000, "light": 0, "fallback": [400000, 0]},
+    }
+    settings = {"OUROBOROS_MODEL": "claudexor::codex=model-x", "OUROBOROS_MODEL_LIGHT": "claudexor::codex=model-x"}
+    settings.update({key: json.dumps(value) if encoded else value for key, value in file_options.items()})
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    for key, value in env_options.items():
+        monkeypatch.setenv(key, json.dumps(value))
+    monkeypatch.setenv("OUROBOROS_MODEL", "openai::env-model")
+    monkeypatch.setattr(manifests, "repo_provenance", lambda _path: {
+        "git_available": True, "status_available": True, "dirty": False, "head": "a" * 40,
+    })
+    manifest = benchmark_run_manifest(
+        benchmark="unit", run_root=tmp_path / "run", repo_dir=tmp_path / "repo",
+        requested_task_ids=["one"], settings_path=settings_path,
+        settings_authoritative_env=settings_authoritative,
+    )
+    slots = manifest["model_slots"]
+    assert slots["OUROBOROS_MODEL"] == (settings["OUROBOROS_MODEL"] if settings_authoritative else "openai::env-model")
+    for key, value in (file_options if settings_authoritative else env_options).items():
+        assert json.loads(slots[key]) == value
+    assert not set(file_options) & set(manifest["provider_credentials"]["declared_model_slots"])
+
+
+def test_model_id_classifiers_preserve_the_prior_ordered_vocabulary():
+    from devtools.benchmarks.common.model_slots import _ACTIVE_FIXED_MODEL_KEYS
+    from devtools.benchmarks.programbench.run_programbench_e2e import _MODEL_ID_SLOT_KEYS
+
+    # Exact pre-subscription vocabulary: adding role metadata must not drop a
+    # fallback/reviewer list, resurrect Heavy, or widen model-ID admission.
+    prior = (
+        "OUROBOROS_MODEL", "OUROBOROS_MODEL_LIGHT", "OUROBOROS_MODEL_VISION",
+        "OUROBOROS_MODEL_CONSCIOUSNESS", "OUROBOROS_MODEL_CHAT", "OUROBOROS_MODEL_FALLBACKS",
+        "OUROBOROS_MODEL_DEEP_SELF_REVIEW", "OUROBOROS_WEBSEARCH_MODEL",
+        "OUROBOROS_REVIEW_MODELS", "OUROBOROS_SCOPE_REVIEW_MODELS", "OUROBOROS_SCOPE_REVIEW_MODEL",
+    )
+    assert _ACTIVE_FIXED_MODEL_KEYS == prior
+    assert _MODEL_ID_SLOT_KEYS == (*prior[:8], "OUROBOROS_REVIEWER_SLOTS", *prior[8:])
+
+
+@pytest.mark.parametrize("model", ["openai::model-x", "claudexor::codex=model-x"])
+def test_fixed_actor_records_account_window_options_without_changing_model_checks(model, tmp_path, monkeypatch):
+    from devtools.benchmarks.common.manifests import MODEL_SLOT_KEYS
+    from devtools.benchmarks.common.model_slots import fixed_model_actor_snapshot, runtime_actor_snapshot
+    from devtools.benchmarks.programbench import run_programbench_e2e as pb
+    from ouroboros.provider_models import ALL_PROVIDER_CREDENTIAL_KEYS
+
+    for key in (*MODEL_SLOT_KEYS, *ALL_PROVIDER_CREDENTIAL_KEYS):
+        monkeypatch.delenv(key, raising=False)
+    # Exact same model, independent role pins/windows, and an ordered Auto fallback.
+    options = {
+        "OUROBOROS_MODEL_ACCOUNTS": json.dumps({"main": "account-a", "light": "account-b", "fallback": ["", "account-b"]}),
+        "OUROBOROS_MODEL_CONTEXT_WINDOWS": json.dumps({"main": 872000, "light": 256000, "fallback": [0, 256000]}),
+    }
+    baseline = fixed_model_actor_snapshot(model)
+    settings = dict(options)
+    actual = fixed_model_actor_snapshot(model, target=settings)
+    assert actual["mismatches"] == []
+    assert actual["model_slots"] == baseline["model_slots"]
+    assert actual["model_route_options"] == options
+    assert actual["available_subagents"] == baseline["available_subagents"]
+    assert actual["reviewer_slots"] == baseline["reviewer_slots"]
+    assert all(settings[key] == value for key, value in options.items())
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    normalized = pb.preflight_model_slots(settings_path, solve_model=model)
+    assert normalized["OUROBOROS_MODEL"] == normalized["OUROBOROS_MODEL_LIGHT"] == model
+    assert not set(options) & set(normalized)
+
+    settings["OUROBOROS_MODEL_FALLBACKS"] = f"{model},foreign/model"
+    refused = runtime_actor_snapshot(settings, expected_model=model)
+    assert any("OUROBOROS_MODEL_FALLBACKS" in error for error in refused["mismatches"])
+    panel = json.loads(settings["OUROBOROS_REVIEWER_SLOTS"])
+    panel["triad"][0]["route"] = {"kind": "agent_session", "target_id": "codex=model-x"}
+    settings["OUROBOROS_REVIEWER_SLOTS"] = json.dumps(panel)
+    refused = runtime_actor_snapshot(settings, expected_model=model)
+    assert any("agent_session" in error for error in refused["mismatches"])
+    # The direct-provider legacy model-ID refusal still runs with role metadata present.
+    if model.startswith("openai::"):
+        settings["OPENAI_API_KEY"] = "synthetic-test-key"
+        settings["OUROBOROS_MODEL"] = "openai/model-x"
+        settings_path.write_text(json.dumps(settings), encoding="utf-8")
+        with pytest.raises(SystemExit, match="OUROBOROS_MODEL"):
+            pb.preflight_model_slots(settings_path, solve_model=model)
+
+
 # --------------------------------------------------------------------------- FIX B
 
 # The shape `GET /api/tasks/<id>` returns for a task the per-task USD reservation rail
@@ -473,11 +574,23 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     ),
     "delegated_custody_unreconciled": (
         False,
-        "agent_task_pipeline.py terminal custody audit; a delegated-child infrastructure terminal, never a root benchmark capability result",
+        "agent_task_pipeline.py terminal custody overlay; an additive custody-debt disclosure (Done with warnings) on any task that finished with an undisposed own delegated patch, never a truncation; a truncation rail code is preserved",
     ),
     "provider_outcome_unknown": (
         False,
         "tools/search.py recoverable ambiguous paid-call result returned to the LLM; the root task remains live",
+    ),
+    "finalize_control_pending": (
+        False,
+        "loop_transport.wait_transport_repeat llm_not_dispatched event; the never-sent repeat was withdrawn, while the later task terminal carries owner_requested_finalization or its actual rail reason",
+    ),
+    "host_cancelled": (
+        False,
+        "llm_claudexor.py check_control sends a model-operation cancel request; the POST proves neither operation terminality nor the root task's outcome",
+    ),
+    "model_wait_decision_failed": (
+        False,
+        "gateway/task_model_wait.py owner-action ingress refusal (503); it does not terminalize the waiting task",
     ),
     "deadline_exhausted": (
         False,
@@ -495,8 +608,8 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     "delegation_constraint_child_cap": (False, "control_delegation.py:149 rejected call"),
     "delegation_constraint_halt_fanout": (False, "control_delegation.py:103 rejected call"),
     "delegation_constraint_require_lane": (False, "control_delegation.py:126 rejected call"),
-    "deep_self_review_unavailable": (False, "agent.py:705 owner-config gap on a review task"),
-    "deep_self_review_error": (False, "agent.py:743 review-stage error on a review task"),
+    "deep_self_review_unavailable": (False, "deep_self_review.py typed unavailable deep_review row/route on a review task; never a truncation"),
+    "deep_self_review_error": (False, "deep_self_review.py review-stage error (and agent.py's exception branch) on a review task; never a truncation"),
     "worker_pool_unavailable": (False, "gateway/tasks.py managed-task admission refusal"),
     "worker_pool_state_unavailable": (False, "gateway/tasks.py fail-closed admission inspection"),
     "attachment_admission_rejected": (
@@ -521,6 +634,10 @@ _TRUNCATION_DECISIONS: dict[str, tuple[bool, str]] = {
     # a HURRY request — the task itself keeps running untouched, so no trial
     # ever terminalizes with any of them.
     "request_id_required": (False, "gateway/task_hurry.py hurry ingress refusal (400); never a task terminal"),
+    "invalid_request_body": (
+        False,
+        "gateway/task_hurry.py ABI-3 derived-schema ingress refusal (400); never a task terminal",
+    ),
     "unexpected_fields": (
         False,
         "gateway/task_hurry.py hurry ingress refusal (400, text-free contract); never a task terminal",

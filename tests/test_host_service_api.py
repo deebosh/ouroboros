@@ -402,16 +402,16 @@ def test_presence_turn_host_passes_attachment_limit_to_canonical_staging_owner(
         },
     )
 
-    # В25c (capinv-447): the over-limit row is a disclosed rejection; the 25
-    # in-limit rows stage and the turn proceeds. Ordinal rows stay complete.
+    # All captured inputs survive behind the full manifest; only inline view is bounded.
+    from ouroboros.artifacts import resolve_attachment_manifest
     assert response.status_code == 200
     assert agent_calls
-    manifest = agent_calls[0]["attachments"]
+    task = agent_calls[0]
+    assert len(task["attachments"]) == 25
+    manifest = resolve_attachment_manifest(tmp_path, task["id"], task["task_contract"])
     assert len(manifest) == 26
     assert [row["ordinal"] for row in manifest] == list(range(26))
-    assert manifest[25]["status"] == "rejected"
-    assert manifest[25]["reason"] == "attachment_limit_exceeded"
-    assert all(row["status"] == "staged" for row in manifest[:25])
+    assert all(row["status"] == "staged" for row in manifest)
 
 
 def test_presence_turn_host_passes_internal_missing_and_directory_to_staging_owner(
@@ -620,6 +620,7 @@ def test_presence_work_returns_only_correlated_terminal_result(tmp_path: pathlib
     atomic_write_json(
         tmp_path / "task_results" / f"{work_ref}.json",
         {
+            "_schema_version": 1,
             "task_id": work_ref,
             "status": "completed",
             "result": "late answer",
@@ -650,6 +651,7 @@ def test_presence_work_returns_only_correlated_terminal_result(tmp_path: pathlib
     atomic_write_json(
         tmp_path / "task_results" / f"{work_ref}.json",
         {
+            "_schema_version": 1,
             "task_id": work_ref,
             "status": "completed",
             "result": "late deferred answer",

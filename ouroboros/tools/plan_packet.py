@@ -6,23 +6,21 @@ rubric, the blocking rule, the convergence rule (cycle ≥2), the checklist
 section verbatim, and the governance pack (W3: BIBLE.md + ARCHITECTURE.md in full for a
 self-modification plan, their navigation maps otherwise); the user content carries
 TASK OBJECTIVE · SPEC · PLAN PROSE · EVIDENCE (+ OMISSIONS) · ROOT EXPLORATION
-LOG · PRIOR CYCLES in that order. String bounds are ``PACKET_*_CHARS`` (plan_spec) via
-``utils.truncate_review_artifact`` — visible marker, never silent. The
+LOG · PRIOR CYCLES in that order. Current chosen inputs stay complete; history
+and exploration retain disclosed display bounds. The
 ``PLAN_REVIEW_CONTROL_JSON`` control line is NOT emitted here (Phase C owns it).
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping, Optional
 
 from ouroboros.tools.plan_spec import (
     PACKET_EXPLORATION_CHARS,
     bounded_json,
-    PACKET_OBJECTIVE_CHARS,
     PACKET_PRIOR_CYCLES_CHARS,
     PACKET_PRIOR_FINDING_SUMMARY_CHARS,
-    PACKET_PROSE_CHARS,
-    PACKET_SPEC_CHARS,
     PLAN_FINDINGS_ARRAY_CONTRACT,
     bounded_text,
     spec_with_ids,
@@ -42,8 +40,8 @@ _RUBRIC = (
     "irreversibility, external commitments)?",
     "4. Deferrals — is an expensive-to-reverse decision hiding inside `deferred`?",
     "5. Evidence sufficiency — is the attached evidence enough to judge 1–4? If not, ask for "
-    "exactly what is missing with a `need_evidence` finding naming its locator (the host attaches it "
-    "on the next cycle); do not invent a gap.",
+    "exactly what is missing with a `need_evidence` finding naming its locator (the host attaches "
+    "what its evidence policy allows on the next cycle and names every absence); do not invent a gap.",
 )
 
 _BLOCKING_RULE = (
@@ -78,8 +76,8 @@ def build_plan_review_system_prompt(
     architecture_nav_map: Optional[str] = None,
     governance_by_retrieval: bool = False,
 ) -> str:
-    """Findings-only reviewer stance for ONE independent slot (no competing plan,
-    no issue quota, no 'your own approach'). Governance pack per the owner-approved
+    """Findings-only reviewer stance with optional brainstorming, not a competing
+    plan or an issue quota. Governance pack per the owner-approved
     W3 wording: a self-modification plan (``constitutional``) carries BIBLE.md in
     full AND ARCHITECTURE.md inline; every other plan carries the BIBLE navigation
     map, the ARCHITECTURE navigation map and named on-demand pointers (the caller
@@ -100,9 +98,14 @@ def build_plan_review_system_prompt(
         "## The one question\n\n"
         "Is this spec sufficient to START the work safely? — not whether everything is specified.\n\n"
         "## Stance — findings only\n\n"
-        "Report findings against the spec; do not write a competing plan or propose an alternative "
-        "of your own, and do not fill a quota — an empty findings array with NO_FINDINGS is a "
-        "legitimate result. Name the exact spec id, locator, or evidence line behind each finding.\n\n"
+        "Report findings against the spec; do not write a compulsory competing plan, and do not "
+        "fill a quota — an empty findings array with NO_FINDINGS is a legitimate result. "
+        "Name the exact spec id, locator, or evidence line behind each finding.\n\n"
+        "Planning review is also an important brainstorming opportunity: challenge the premise "
+        "and suggest a simpler or more general alternative when useful. Express this advice as "
+        "optional `note` findings; Ouroboros decides whether to adopt it, without a required "
+        "disposition. A preference, premise challenge, or repeated suggestion alone is never "
+        "a blocker. Independently demonstrated failures still follow the blocking rule below.\n\n"
         "## Rubric (domain-free)\n\n" + "\n".join(_RUBRIC) + "\n",
     ]
     if constitutional:
@@ -154,8 +157,10 @@ def build_plan_review_system_prompt(
             "This plan does not touch the Ouroboros system repository; the constitutional pack and "
             "the architecture reference are named on-demand pointers — request either as "
             f"`need_evidence` with locator `{str(bible_locator or 'BIBLE.md').strip()}` or "
-            f"`{str(architecture_locator or 'docs/ARCHITECTURE.md').strip()}` if you need it; the "
-            "host attaches it on the next cycle.\n"
+            f"`{str(architecture_locator or 'docs/ARCHITECTURE.md').strip()}` if you need it, or "
+            "with `::lines=A-B` for one section; the host attaches what its evidence policy "
+            "allows on the next cycle, names every absence, and cuts an over-bound source "
+            "head-first, named `truncated_to_<N>`.\n"
         )
         if bible_nav_map:
             parts.append(f"\n## BIBLE navigation map (pointer, not a copy)\n\n{bible_nav_map}\n")
@@ -170,10 +175,12 @@ def build_plan_review_system_prompt(
     return "\n".join(parts)
 
 
-def _json_block(payload: Any, limit: int) -> str:
-    """Fenced JSON bounded STRUCTURALLY (whole items, disclosed counts + full-set hash) —
-    never clipped mid-string (S-B07/S-B08)."""
-    text, notes = bounded_json(payload, limit)
+def _json_block(payload: Any, limit: Optional[int] = None) -> str:
+    """Complete fenced JSON, or a disclosed historical projection when bounded."""
+    text, notes = (
+        bounded_json(payload, limit) if limit is not None
+        else (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str), [])
+    )
     block = f"```json\n{text}\n```"
     if notes:
         block += "\n⚠️ OMISSION NOTE (structural): " + "; ".join(notes)
@@ -281,16 +288,16 @@ def build_plan_review_user_content(
     """Deterministic reviewer packet: TASK OBJECTIVE · SPEC · PLAN PROSE · EVIDENCE
     (+ OMISSIONS) [cache-stable prefix] · ROOT EXPLORATION LOG · PRIOR CYCLES (all reviewers' prior
     findings as a compact blocking-first projection + agent dispositions + spec
-    delta on cycle ≥2). String bounds are the ``PACKET_*_CHARS`` constants via
-    ``truncate_review_artifact`` (visible marker, never silent); the SPEC JSON
-    block is bounded by ``PACKET_SPEC_CHARS`` (worst case ~1M chars otherwise)."""
+    delta on cycle ≥2). Current objective, spec and plan prose stay complete;
+    the caller's per-slot fit decides whether the actual route can receive them.
+    Exploration and prior cycles retain their disclosed projection bounds."""
     view = spec_with_ids(spec)
     if goal and not view.get("goal"):
         view["goal"] = goal
     sections = [
-        "## TASK OBJECTIVE\n\n" + (bounded_text(objective, PACKET_OBJECTIVE_CHARS) or "(none declared)") + "\n",
-        "## SPEC (ids are the only valid `breaks` targets)\n\n" + _json_block(view, PACKET_SPEC_CHARS) + "\n",
-        "## PLAN PROSE\n\n" + (bounded_text(plan_prose, PACKET_PROSE_CHARS) or "(none)") + "\n",
+        "## TASK OBJECTIVE\n\n" + (objective or "(none declared)") + "\n",
+        "## SPEC (ids are the only valid `breaks` targets)\n\n" + _json_block(view) + "\n",
+        "## PLAN PROSE\n\n" + (plan_prose or "(none)") + "\n",
         "## EVIDENCE\n\n" + _render_evidence(manifest),
         "## ROOT EXPLORATION LOG\n\n"
         + (bounded_text(root_exploration_log, PACKET_EXPLORATION_CHARS) or "(not provided by host)") + "\n",

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import pathlib
 import sys
 import time
@@ -18,8 +19,20 @@ from ouroboros.skill_loader import (
     find_skill,
     save_skill_grants,
 )
-from ouroboros.tools.result_envelope import result_payload_text as _payload
+
+
+def _payload(result) -> str:
+    """The producer payload before any trailing host note (#447 H1).
+
+    Host notes (safety warning, auto-route note, post-exec tripwires) TRAIL the
+    payload, so a test that pins what the extension itself answered reads the
+    text up to the first appended note."""
+    text = str(result or "")
+    head, sep, _tail = text.partition("\n\n⚠️ ")
+    return head if sep else text
+
 from tests._shared import clean_extension_runtime_state
+from tests.test_extension_route_streaming import collect_response
 from tests.test_extension_loader import (
     _add_fake_native_dep,
     _isolated_site_packages_dir,
@@ -307,8 +320,9 @@ def test_native_risk_extension_route_dispatches_out_of_process(tmp_path):
         repo_dir=pathlib.Path(__file__).resolve().parents[1],
     )
 
-    assert result["route"]["kind"] == "json"
-    assert result["route"]["data"] == {
+    events = asyncio.run(collect_response(result, method="POST"))
+    assert events[0]["status"] == 200
+    assert json.loads(b"".join(event.get("body", b"") for event in events)) == {
         "value": "isolated-native-risk",
         "name": "anton",
         "skill": "native_route",
@@ -317,7 +331,7 @@ def test_native_risk_extension_route_dispatches_out_of_process(tmp_path):
     assert pathlib.Path(spec["skills_repo_path"]) == repo_root
 
 
-def test_native_risk_extension_streaming_route_is_materialized_out_of_process(tmp_path):
+def test_native_risk_extension_streaming_route_streams_out_of_process(tmp_path):
     from ouroboros.extension_process_runner import dispatch_extension_route_subprocess
 
     plugin = (
@@ -355,8 +369,9 @@ def test_native_risk_extension_streaming_route_is_materialized_out_of_process(tm
         repo_dir=pathlib.Path(__file__).resolve().parents[1],
     )
 
-    assert result["route"]["kind"] == "response"
-    assert base64.b64decode(result["route"]["body_b64"]) == b"chunk-a-chunk-b"
+    events = asyncio.run(collect_response(result))
+    assert events[0]["status"] == 200
+    assert b"".join(event.get("body", b"") for event in events) == b"chunk-a-chunk-b"
 
 
 def test_native_risk_extension_gateway_route_child_failure_returns_502(tmp_path, monkeypatch):
@@ -410,8 +425,9 @@ def test_native_risk_extension_gateway_route_child_failure_returns_502(tmp_path,
 
     response = asyncio.run(api_extension_dispatch(request))
 
-    assert response.status_code == 502
-    assert b"route-child-boom" in response.body
+    events = asyncio.run(collect_response(response))
+    assert events[0]["status"] == 502
+    assert b"route-child-boom" in b"".join(event.get("body", b"") for event in events)
 
 
 def test_native_risk_extension_gateway_route_rejects_oversized_body_before_child(tmp_path, monkeypatch):
@@ -670,7 +686,7 @@ def test_isolated_dependency_extension_rejects_unproxied_side_effect_surface(tmp
     ],
 )
 def test_out_of_process_catalog_revalidates_parent_namespace(tmp_path, catalog):
-    loaded, _repo_root, _drive_root = _prepare_extension(
+    loaded, _repo_root, drive_root = _prepare_extension(
         tmp_path,
         "catalog_guard",
         "def register(api):\n    pass\n",
@@ -679,10 +695,15 @@ def test_out_of_process_catalog_revalidates_parent_namespace(tmp_path, catalog):
     )
 
     with pytest.raises(ExtensionRegistrationError, match="escaped extension namespace"):
-        extension_loader._register_out_of_process_surfaces(
+        extension_loader._publish_out_of_process_registration(
             loaded,
-            current_hash=loaded.content_hash,
             catalog=catalog,
+            drive_root=drive_root,
+            state_dir=drive_root / "state",
+            settings_reader=lambda: {},
+            granted_keys=[],
+            dependency_site_dirs_enabled=False,
+            current_hash=loaded.content_hash,
         )
 
 
@@ -697,7 +718,7 @@ def test_out_of_process_catalog_revalidates_parent_namespace(tmp_path, catalog):
     ],
 )
 def test_out_of_process_catalog_revalidates_descriptor_shape(tmp_path, catalog):
-    loaded, _repo_root, _drive_root = _prepare_extension(
+    loaded, _repo_root, drive_root = _prepare_extension(
         tmp_path,
         "catalog_guard_shape",
         "def register(api):\n    pass\n",
@@ -706,10 +727,15 @@ def test_out_of_process_catalog_revalidates_descriptor_shape(tmp_path, catalog):
     )
 
     with pytest.raises(ExtensionRegistrationError):
-        extension_loader._register_out_of_process_surfaces(
+        extension_loader._publish_out_of_process_registration(
             loaded,
-            current_hash=loaded.content_hash,
             catalog=catalog(loaded),
+            drive_root=drive_root,
+            state_dir=drive_root / "state",
+            settings_reader=lambda: {},
+            granted_keys=[],
+            dependency_site_dirs_enabled=False,
+            current_hash=loaded.content_hash,
         )
 
 

@@ -51,6 +51,10 @@ CAMPAIGN_FATAL_PROVENANCE_REASONS = frozenset({
     "seed_head_unreadable",
 })
 
+# Non-secret role routing/options, not model IDs. Keep these in the manifest
+# vocabulary without parsing their JSON values as comma-separated model lists.
+MODEL_ROUTE_OPTION_KEYS = ("OUROBOROS_MODEL_ACCOUNTS", "OUROBOROS_MODEL_CONTEXT_WINDOWS")
+
 # Active projection used by every NEW run manifest and preflight. Heavy is not an
 # execution slot after Available subagents and must not leak in from ambient env/settings.
 ACTIVE_MODEL_SLOT_KEYS = (
@@ -62,12 +66,14 @@ ACTIVE_MODEL_SLOT_KEYS = (
     "OUROBOROS_MODEL_FALLBACKS",
     "OUROBOROS_MODEL_DEEP_SELF_REVIEW",
     "OUROBOROS_WEBSEARCH_MODEL",
+    "OUROBOROS_REVIEWER_SLOTS",
     "OUROBOROS_REVIEW_MODELS",
     "OUROBOROS_SCOPE_REVIEW_MODELS",
     "OUROBOROS_SCOPE_REVIEW_MODEL",
     "OUROBOROS_EFFORT_TASK",
     "OUROBOROS_EFFORT_REVIEW",
     "OUROBOROS_EFFORT_SCOPE_REVIEW",
+    *MODEL_ROUTE_OPTION_KEYS,
 )
 
 # Historical READ vocabulary. Old durable manifests can still carry Heavy and retain
@@ -378,9 +384,36 @@ def openrouter_key_remaining(api_key: str, *, timeout: int = 10) -> float | None
     return float(data.get("limit") or 0.0) - float(data.get("usage") or 0.0)
 
 
+def openrouter_account_credits(api_key: str, *, timeout: int = 10) -> float | None:
+    """The ACCOUNT balance behind an OpenRouter key (``total_credits - total_usage``), or None
+    when the endpoint does not report both numbers.
+
+    Never a headroom claim on its own — ``openrouter_key_remaining`` above documents why the
+    credits arithmetic alone lies. It exists because the key's limit is not money either: a key
+    capped at $12k on an account holding $2k is bounded by the ACCOUNT, and a preflight reading
+    only ``limit_remaining`` would start a run the balance cannot finish. Callers take
+    ``min(openrouter_key_remaining(key), openrouter_account_credits(key))`` over the values that
+    are not None; this helper is always the SECOND bound of that min.
+    """
+    key = str(api_key or "").strip()
+    if not key:
+        raise RuntimeError("openrouter_account_credits requires an API key")
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {key}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as resp:  # noqa: S310 - fixed provider URL
+        payload = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(data, dict) or data.get("total_credits") is None or data.get("total_usage") is None:
+        return None
+    return float(data["total_credits"]) - float(data["total_usage"])
+
+
 def model_slot_snapshot(settings_path: pathlib.Path | None = None, *,
                         env_overrides: bool = True) -> dict[str, str]:
-    """Return configured model/review slots without exposing provider secrets.
+    """Return configured model/review slots and role options, without provider secrets.
 
     ``env_overrides`` models how the server being described gets its configuration. A server
     started in THIS process's environment reads settings.json but lets the environment win, so
@@ -402,7 +435,8 @@ def model_slot_snapshot(settings_path: pathlib.Path | None = None, *,
         if value is None:
             value = settings.get(key)
         if value not in (None, ""):
-            slots[key] = str(value)
+            slots[key] = (json.dumps(value, ensure_ascii=False)
+                          if key in MODEL_ROUTE_OPTION_KEYS and isinstance(value, dict) else str(value))
     return slots
 
 

@@ -22,6 +22,7 @@ if __package__ in {None, ""}:
 
 from devtools.benchmarks.common.manifests import (
     ACTIVE_MODEL_SLOT_KEYS,
+    MODEL_ROUTE_OPTION_KEYS,
     admit_benchmark_run,
     finalize_run_manifest,
     runtime_attestation,
@@ -61,9 +62,10 @@ from ouroboros.configured_subagents import normalize_configured_subagents
 from ouroboros.provider_models import migrate_model_value
 
 # Model-carrying slots only; the OUROBOROS_EFFORT_* entries in ACTIVE_MODEL_SLOT_KEYS are
-# effort levels, not model ids.
+# effort levels, not model ids. Role account/window JSON is route metadata too.
 _MODEL_ID_SLOT_KEYS = tuple(
     key for key in ACTIVE_MODEL_SLOT_KEYS if not key.startswith("OUROBOROS_EFFORT_")
+    and key not in MODEL_ROUTE_OPTION_KEYS
 )
 
 TASK_CHECKPOINT_BASENAME = "ouroboros_task_checkpoint.json"
@@ -110,7 +112,9 @@ def _active_direct_provider(settings: dict[str, Any]) -> str:
         for provider, key in (
             ("openai", "OPENAI_API_KEY"),
             ("anthropic", "ANTHROPIC_API_KEY"),
+            ("minimax", "MINIMAX_API_KEY"),
             ("cloudru", "CLOUDRU_FOUNDATION_MODELS_API_KEY"),
+            ("deepseek", "DEEPSEEK_API_KEY"),
         )
         if _setting_or_env(settings, key)
     ]

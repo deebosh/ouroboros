@@ -47,7 +47,7 @@ from ouroboros.route_spec import (
     route_spec_dict,
 )
 
-from devtools.benchmarks.common.manifests import ACTIVE_MODEL_SLOT_KEYS
+from devtools.benchmarks.common.manifests import ACTIVE_MODEL_SLOT_KEYS, MODEL_ROUTE_OPTION_KEYS
 
 # Every model slot a single-model run pins. Superset that is correct for both the
 # settings.json-profile path (SWE-bench Pro) and the forwarded-env path
@@ -66,7 +66,12 @@ SINGLE_MODEL_SLOT_KEYS = (
 )
 
 BENCHMARK_SUBAGENT_ID = "benchmark-model"
-_ACTIVE_FIXED_MODEL_KEYS = tuple(key for key in ACTIVE_MODEL_SLOT_KEYS if "MODEL" in key)
+# Preserve the active manifest ordering, but compare only actual model-ID slots.
+# Role account/window maps and effort metadata never enter model-list parsing.
+_ACTIVE_FIXED_MODEL_KEYS = tuple(
+    key for key in ACTIVE_MODEL_SLOT_KEYS
+    if key in (*SINGLE_MODEL_SLOT_KEYS, "OUROBOROS_REVIEW_MODELS")
+)
 _ACTIVE_LOCAL_ROUTE_KEYS = (
     "USE_LOCAL_MAIN",
     "USE_LOCAL_LIGHT",
@@ -313,12 +318,22 @@ def runtime_actor_snapshot(
                 ("scope", reviewer_config.scope),
             ):
                 for row in rows:
-                    if row.is_session or row.target_id != model:
-                        route_kind = "agent_session" if row.is_session else REVIEWER_ROUTE_KIND_API
+                    # A RETRIEVING row (hosted session OR a configured-subagent
+                    # api row's native tool rounds) is a different delivery
+                    # class even on the measured model: it reads the subject
+                    # itself, pays for its own episode and evidences coverage
+                    # differently, so it is not the packet-delivery panel
+                    # every published number was produced with.
+                    if row.retrieves or row.target_id != model:
+                        route_kind = (
+                            "agent_session" if row.is_session
+                            else "native_tool_rounds" if row.native_retrieval
+                            else REVIEWER_ROUTE_KIND_API
+                        )
                         mismatches.append(
                             f"{REVIEWER_SLOTS_ENV}: {group_name} slot {row.slot_id!r} "
                             f"routes via {route_kind} to {row.target_id!r}; expected "
-                            f"{REVIEWER_ROUTE_KIND_API} on {model!r}"
+                            f"{REVIEWER_ROUTE_KIND_API} packet delivery on {model!r}"
                         )
             if reviewer_config.advisory.enabled:
                 mismatches.append(
@@ -345,6 +360,7 @@ def runtime_actor_snapshot(
     return {
         "model": actual_model,
         "model_slots": active_model_slots,
+        "model_route_options": {key: settings[key] for key in MODEL_ROUTE_OPTION_KEYS if key in settings},
         "local_routes": local_routes,
         "reviewer_slots": reviewer_projection,
         "available_subagents": projection,

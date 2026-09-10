@@ -12,20 +12,40 @@ from __future__ import annotations
 import json
 import logging
 import pathlib
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ouroboros.config import get_finalization_grace_sec
 from ouroboros.deadline_utils import owner_deadline_exhausted, review_transport_timeout
 from ouroboros.review_cross_check import _cross_check_findings
 from ouroboros.triad_review import (
-    REVIEW_JSON_ARRAY_CONTRACT,
+    default_output_contract,
     empty_array_is_verified_clean,
+    extract_fenced_json,
     extract_json_array,
+    object_verdict_payload,
 )
 
 log = logging.getLogger("review_execution")
 
 _UNEXTRACTABLE = "UNEXTRACTABLE"
+
+# The OBJECT variant of the extraction ask (task acceptance): the whole verdict
+# object of the contract, never its findings list alone — a findings-only
+# canonical form loses verdict/outcome_tier/criteria_used/dialogue_status and
+# the coordinator then demotes a completed review to malformed.
+_SESSION_EXTRACT_OBJECT_PROMPT = (
+    "The text below is the final answer of a delegated review session.\n"
+    "Canonicalize its verdict. Reply with EXACTLY ONE of:\n"
+    "1. ONLY the JSON object of the reviewer's verdict, copied faithfully into the\n"
+    "   review's own output contract (below) — every key the reviewer reported,\n"
+    "   findings included. Never invent, merge or drop anything.\n"
+    f"2. The single word {_UNEXTRACTABLE} — when the text is not a completed review\n"
+    "   (a refusal, an error dump, an unfinished session, or anything you cannot map\n"
+    "   faithfully onto the contract).\n"
+    "No prose, no markdown fences.\n\n"
+    "The review's output contract was:\n{contract}\n\n"
+    "Session answer to canonicalize:\n{raw_text}\n"
+)
 
 # The light model canonicalizes NARRATIVE to the review's own output contract —
 # bare ``[]`` or a findings array — so a clean verdict from a session survives
@@ -71,13 +91,20 @@ def _findings_array(payload: Any) -> Optional[List[Dict[str, Any]]]:
     return None
 
 
-def _strictly_parseable(text: str) -> bool:
+def _strictly_parseable(
+    text: str, shape: str = "array", array_validator: Optional[Callable[[list], bool]] = None,
+) -> bool:
     """Would the surfaces' own strict parsers accept this text as a verdict?
 
     The strict path comes FIRST (D19): a session that already obeyed the output
     contract is passed through byte-identical, and the constitutional
     ``empty_array_is_verified_clean`` predicate stays untouched — its strictness
     is the reason extraction exists, not a defect extraction papers over.
+
+    ``shape`` gates the predicate: for an OBJECT contract (task acceptance) the
+    whole text must BE the verdict object — a bare ``[]`` is not a clean object
+    verdict, and letting the array predicate answer for it would route an
+    acceptance answer into the array ladder with no verdict/tier/dialogue keys.
 
     The WHOLE answer must BE the payload. This used to SCAN with
     ``extract_json_array``, so any JSON array of objects appearing anywhere in a
@@ -91,19 +118,40 @@ def _strictly_parseable(text: str) -> bool:
     extraction is for.
     """
     body = str(text or "")
+    if shape == "object":
+        try:
+            return object_verdict_payload(json.loads(body.strip())) is not None
+        except (TypeError, ValueError):
+            return False
     if empty_array_is_verified_clean(body):
         return True
     try:
         parsed = json.loads(body.strip())
     except (TypeError, ValueError):
         return False
-    return bool(parsed) and isinstance(parsed, list) and all(isinstance(item, dict) for item in parsed)
+    return bool(parsed) and isinstance(parsed, list) and all(isinstance(item, dict) for item in parsed) \
+        and (array_validator is None or array_validator(parsed))
+
+
+def _canonical_payload_text(
+    payload: Any, shape: str, array_validator: Optional[Callable[[list], bool]] = None,
+) -> Optional[str]:
+    """Canonical text of a structured payload for ``shape``, or None when it
+    does not carry the contract's shape."""
+    if shape == "object":
+        verdict = object_verdict_payload(payload)
+        return None if verdict is None else json.dumps(verdict, ensure_ascii=False)
+    findings = _findings_array(payload)
+    if findings is None or (findings and array_validator is not None and not array_validator(findings)):
+        return None
+    return "[]" if not findings else json.dumps(findings, ensure_ascii=False)
 
 
 def canonicalize_session_verdict(
     raw_text: str, *, conformance_passed: bool, contract: str = "", llm: Any = None,
     repo_root: Optional[str] = None,
-    deadline_at: Any = None, transport_timeout_sec: Any = None,
+    deadline_at: Any = None, transport_timeout_sec: Any = None, shape: str = "array",
+    array_validator: Optional[Callable[[list], bool]] = None,
 ) -> tuple[str, str, Dict[str, Any]]:
     """Return ``(canonical_text, method, extraction_usage)`` for a session answer.
 
@@ -115,52 +163,68 @@ def canonicalize_session_verdict(
     spends no reviewer slot. An answer too large for the one-send rail is the
     typed ``extraction_incomplete`` — never a windowed read, whose canonical
     form would be a verdict fabricated from the visible cut. ``method`` is one
-    of ``schema | strict | light_model_extraction | extraction_incomplete |
-    unparsed``.
+    of ``report | schema | strict | light_model_extraction |
+    extraction_incomplete | unparsed``.
 
-    ``repo_root`` (optional, ibl-01b310c0ce18): when set, every parsed findings
-    array is passed through :func:`_cross_check_findings` before re-serialization
-    — critical findings whose factual claims cannot be substantiated against the
-    codebase are downgraded to ``"advisory"`` with an audit note. OFF by default
-    (``repo_root=None``) so existing callers see no behavioural change.
+    ``shape`` (``triad_review.review_output_shape``) is the contract's FORM:
+    ``array`` (findings list), ``object`` (the whole acceptance verdict object,
+    kept whole on every branch — never reduced to its findings) or ``report``
+    (a free-form product that is passed through verbatim; nothing here may
+    turn a diagnosis into a findings array).
+
+    An array surface may supply its existing row validator. Shape-valid but
+    contract-invalid rows then reach the same extraction rail; the host never
+    guesses a verdict or severity. Other surfaces keep their own parsing rules.
+
+    ``repo_root`` (optional, ibl-01b310c0ce18): when set AND ``shape == "array"``,
+    every parsed findings array is passed through :func:`_cross_check_findings`
+    before re-serialization — critical findings whose factual claims cannot be
+    substantiated against the codebase are downgraded to ``"advisory"`` with an
+    audit note. OFF by default (``repo_root=None``) so existing callers see no
+    behavioural change.
     """
     text = str(raw_text or "")
     cc_audit: Dict[str, Any] = {}
+    if shape == "report":
+        return text, "report", {}
     if conformance_passed:
         try:
             payload = json.loads(text.strip())
         except (TypeError, ValueError):
             payload = None
-        findings = _findings_array(payload)
-        if findings is not None:
-            if repo_root:
+        canonical = _canonical_payload_text(payload, shape, array_validator)
+        if canonical is not None:
+            usage: Dict[str, Any] = {}
+            if shape == "array" and repo_root:
+                findings = _findings_array(payload) or []
                 findings, cc_audit = _cross_check_findings(findings, pathlib.Path(repo_root))
-            usage = {"cross_check": cc_audit} if cc_audit.get("checked") else {}
-            return ("[]" if not findings else json.dumps(findings, ensure_ascii=False)), "schema", usage
+                canonical = "[]" if not findings else json.dumps(findings, ensure_ascii=False)
+                if cc_audit.get("checked"):
+                    usage["cross_check"] = cc_audit
+            return canonical, "schema", usage
         # The engine claimed conformance over a payload that does not carry the
         # contract's shape: fall through to the honest branches, and the caller
         # discloses the delta.
-    if _strictly_parseable(text):
-        try:
-            findings_strict = json.loads(text.strip())
-            if (
-                isinstance(findings_strict, list)
-                and all(isinstance(it, dict) for it in findings_strict)
-                and repo_root
-            ):
-                findings_strict, cc_audit = _cross_check_findings(
-                    findings_strict, pathlib.Path(repo_root),
-                )
-                text = json.dumps(findings_strict, ensure_ascii=False)
-        except (TypeError, ValueError):
-            pass
-        usage = {"cross_check": cc_audit} if cc_audit.get("checked") else {}
+    if _strictly_parseable(text, shape, array_validator):
+        usage = {}
+        if shape == "array" and repo_root:
+            try:
+                findings_strict = json.loads(text.strip())
+                if isinstance(findings_strict, list) and all(isinstance(it, dict) for it in findings_strict):
+                    findings_strict, cc_audit = _cross_check_findings(
+                        findings_strict, pathlib.Path(repo_root),
+                    )
+                    text = json.dumps(findings_strict, ensure_ascii=False)
+                    if cc_audit.get("checked"):
+                        usage["cross_check"] = cc_audit
+            except (TypeError, ValueError):
+                pass
         return text, "strict", usage
     if len(text) > _EXTRACT_MAX_CHARS:
         return text, "extraction_incomplete", {}
     canonical, usage = _extract_verdict_via_light_model(
         text, contract=contract, llm=llm, deadline_at=deadline_at,
-        transport_timeout_sec=transport_timeout_sec)
+        transport_timeout_sec=transport_timeout_sec, shape=shape, array_validator=array_validator)
     if canonical is not None:
         try:
             payload = json.loads(canonical)
@@ -186,7 +250,9 @@ def canonicalize_session_verdict(
 
 def _extract_verdict_via_light_model(
     raw_text: str, *, contract: str = "", llm: Any = None, deadline_at: Any = None,
-    transport_timeout_sec: Any = None) -> tuple[Optional[str], Dict[str, Any]]:
+    transport_timeout_sec: Any = None, shape: str = "array",
+    array_validator: Optional[Callable[[list], bool]] = None,
+) -> tuple[Optional[str], Dict[str, Any]]:
     """One bounded light-model call canonicalizing narrative to the contract."""
     from ouroboros.config import get_light_model
     from ouroboros.usage_accounting import physical_attempt_limit
@@ -196,8 +262,9 @@ def _extract_verdict_via_light_model(
     model = get_light_model()
     if owner_deadline_exhausted(deadline_at=deadline_at, reserve_sec=get_finalization_grace_sec()):
         return None, {"model": model, "reason_code": "deadline_exhausted", "dispatch": "not_dispatched"}
-    prompt = _SESSION_EXTRACT_PROMPT.format(
-        contract=contract or REVIEW_JSON_ARRAY_CONTRACT,
+    template = _SESSION_EXTRACT_OBJECT_PROMPT if shape == "object" else _SESSION_EXTRACT_PROMPT
+    prompt = template.format(
+        contract=contract or default_output_contract(shape),
         raw_text=raw_text,  # WHOLE — the caller already bounded the one send
     )
     # Formatting the extraction prompt can itself be expensive. Re-check at
@@ -223,6 +290,7 @@ def _extract_verdict_via_light_model(
         _scope = _replace(current_usage_scope() or UsageScope(), source="review_substrate.extraction")
         chat_kwargs = dict(
             messages=[{"role": "user", "content": prompt}], model=model,
+            model_role="light",
             max_tokens=8192, reasoning_effort="low", no_proxy=True,
         )
         transport = review_transport_timeout(model, transport_timeout_sec, deadline_at)
@@ -231,6 +299,8 @@ def _extract_verdict_via_light_model(
         with physical_attempt_limit(1), usage_scope(_scope):
             message, usage = llm.chat(**chat_kwargs)
     except Exception as exc:
+        from ouroboros.llm_claudexor import propagate_model_error
+        propagate_model_error(exc)
         log.warning("Review session verdict extraction failed: %s", exc)
         return None, {}
     content = message.get("content") if isinstance(message, dict) else ""
@@ -241,6 +311,12 @@ def _extract_verdict_via_light_model(
     usage["model"] = model
     if not body or _UNEXTRACTABLE in body.upper()[:80]:
         return None, usage
+    if shape == "object":
+        try:
+            payload: Any = json.loads(body)
+        except (TypeError, ValueError):
+            payload = extract_fenced_json(body)
+        return _canonical_payload_text(payload, shape), usage
     if empty_array_is_verified_clean(body):
         return "[]", usage
     findings = _findings_array(extract_json_array(body))
@@ -251,4 +327,4 @@ def _extract_verdict_via_light_model(
             findings = None
     if findings is None:
         return None, usage
-    return ("[]" if not findings else json.dumps(findings, ensure_ascii=False)), usage
+    return _canonical_payload_text(findings, shape, array_validator), usage
