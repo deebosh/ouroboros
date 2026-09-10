@@ -528,6 +528,21 @@ def _validate_records(
         if kind.startswith("legacy_") or kind in {"external_unmetered", "subscription_session"}:
             if previous is not None or state not in {"settled", "unresolved"}:
                 raise UsageLedgerCorrupt(f"invalid legacy usage row seq={row.get('seq')}")
+        elif kind == "compacted":
+            # Read-compat for the fork's pre-v7 ``compact_ledger`` output. That
+            # WRITER was dropped in the v7.0.0 merge (superseded by CPL4-C6
+            # ``usage_compaction``'s ``usage_baseline`` rows), but the synthetic
+            # ``kind=compacted, state=settled`` summary rows it already folded
+            # into live ledgers must still validate. Such a row carries the
+            # pre-summed final for one root_task_id whose source rows were
+            # archived out; it has no prior attempt_id (the ``compacted:<root>``
+            # id is unique to that compaction) and MUST be settled — any other
+            # state would mean the old compactor mis-emitted it.
+            if previous is not None or state != "settled":
+                raise UsageLedgerCorrupt(
+                    f"invalid compacted usage row seq={row.get('seq')}: "
+                    f"previous={previous} state={state}"
+                )
         elif previous is None:
             if state != "reserved":
                 raise UsageLedgerCorrupt(f"attempt {attempt_id} did not begin reserved")
