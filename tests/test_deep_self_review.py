@@ -106,6 +106,33 @@ class TestBuildReviewPack:
         assert "## FILE: drive/memory/knowledge/improvement-backlog.md" in pack
         assert "Fix recurring review blocker" in pack
 
+    def test_low_context_mode_renders_architecture_and_development_as_nav_maps(
+        self, tmp_repo, tmp_drive, monkeypatch,
+    ):
+        """In `low` context mode both large canonical governance docs — not just
+        ARCHITECTURE.md — are excluded from the atlas's full-file selection and
+        rendered as navigation maps instead, so either one no longer alone can
+        sink the whole pack with a `deep_self_review_pack_unfit` refusal (closes
+        ibl-deep-self-review-large-context-truncation's DEVELOPMENT.md gap)."""
+        docs = tmp_repo / "docs"
+        docs.mkdir()
+        (docs / "ARCHITECTURE.md").write_text("# Architecture\n\n## Section A\n\nArch body text.\n", encoding="utf-8")
+        (docs / "DEVELOPMENT.md").write_text("# Development\n\n## Section B\n\nDev body text.\n", encoding="utf-8")
+        tracked = ["main.py", "docs/ARCHITECTURE.md", "docs/DEVELOPMENT.md"]
+
+        monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "low")
+        with mock.patch("dulwich.repo.Repo", _make_dulwich_mock(tracked)):
+            pack, _stats = build_review_pack(tmp_repo, tmp_drive)
+        assert "Arch body text." not in pack and "Dev body text." not in pack
+        assert "Section A" in pack and "Section B" in pack  # nav-map index entries
+        assert "ARCHITECTURE.md" in pack and "DEVELOPMENT.md" in pack
+        assert "has no tool loop" in pack
+
+        monkeypatch.setenv("OUROBOROS_CONTEXT_MODE", "max")
+        with mock.patch("dulwich.repo.Repo", _make_dulwich_mock(tracked)):
+            pack, _stats = build_review_pack(tmp_repo, tmp_drive)
+        assert "Arch body text." in pack and "Dev body text." in pack
+
     def test_skips_missing_memory(self, tmp_repo, tmp_drive):
         """Missing memory files are not inlined — and their absence is DISCLOSED
         (omission section + typed disposition), never silently skipped."""

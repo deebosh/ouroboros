@@ -335,27 +335,33 @@ def build_review_pack(
     memory = _append_memory_whitelist(memory_parts, skipped, drive_root=drive_root)
     memory_text = "\n".join(memory_parts)
 
-    # Low context mode: render ARCHITECTURE.md as a navigation map (full sections
-    # read on demand) and exclude it from the atlas full-file selection instead of
-    # inlining ~32K tokens. Reuses the atlas ``already_included`` mechanism so the
-    # shared commit-gate atlas (scope / plan review) is unaffected.
+    # Low context mode: render the large canonical governance docs as navigation
+    # maps (full sections read on demand) and exclude them from the atlas
+    # full-file selection instead of inlining them whole. Reuses the atlas
+    # ``already_included`` mechanism so the shared commit-gate atlas (scope /
+    # plan review) is unaffected. Originally ARCHITECTURE.md only; DEVELOPMENT.md
+    # joined once ARCHITECTURE.md's own nav-map savings still left it as the sole
+    # blocker on `deep_self_review_pack_unfit` (both are `_CANONICAL_CONTEXT_DOCS`
+    # REQUIRED members, so either one alone can sink the whole pack).
     nav_parts: list[str] = []
-    already_included: frozenset[str] = frozenset()
+    already_included_set: set[str] = set()
     if get_context_mode() == "low":
-        try:
-            arch_text = (repo_dir / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
-        except Exception:
-            arch_text = ""
-        if arch_text.strip():
+        for doc_name in ("ARCHITECTURE.md", "DEVELOPMENT.md"):
+            rel_path = f"docs/{doc_name}"
+            try:
+                doc_text = (repo_dir / rel_path).read_text(encoding="utf-8")
+            except Exception:
+                doc_text = ""
+            if not doc_text.strip():
+                continue
             nav_parts.append(
-                generate_doc_nav_map(
-                    arch_text, title="ARCHITECTURE.md", rel_path="docs/ARCHITECTURE.md"
-                )
+                generate_doc_nav_map(doc_text, title=doc_name, rel_path=rel_path)
                 + "\n\nNote for this deep self-review call: this surface has no tool loop, "
                 "so the navigation map is an index of omitted sections, not an actionable "
-                "read_file instruction. Flag any needed full ARCHITECTURE.md section explicitly."
+                f"read_file instruction. Flag any needed full {doc_name} section explicitly."
             )
-            already_included = frozenset({"docs/ARCHITECTURE.md"})
+            already_included_set.add(rel_path)
+    already_included: frozenset[str] = frozenset(already_included_set)
 
     # Reserve the (bounded) omission section inside the atlas's fixed budget —
     # it is appended to the pack after the atlas fills, so an unreserved section
