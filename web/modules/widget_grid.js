@@ -96,6 +96,9 @@ function occupancy() {
             for (let row = slot.y; row < slot.y + slot.h; row += 1) rows[row] = (rows[row] || 0) | mask(slot);
             return slot;
         },
+        free(slot) {
+            for (let row = slot.y; row < slot.y + slot.h; row += 1) rows[row] = (rows[row] || 0) & ~mask(slot);
+        },
     };
 }
 
@@ -112,24 +115,24 @@ function byCell([aKey, a], [bKey, b]) {
 }
 
 /**
- * Every card's cell. Saved slots first, in reading order, each at its own cell
- * or pushed straight down past one it would overlap; then the cards without a
- * saved slot, in key order, packed first-fit BELOW the saved arrangement, so a
- * new card never lands inside the owner's composition. `cards` is
+ * Every card's cell. Saved slots (including temporarily absent cards) reserve
+ * their cells first, in reading order, each at its own cell or pushed straight
+ * down past an overlap; only visible cards enter the result. Unsaved cards pack
+ * first-fit BELOW the retained arrangement, never inside the owner's composition. `cards` is
  * `[{ key, w, h }]` in key order (w/h: the default size); returns a Map
  * key → { x, y, w, h } in the same order. No measured size is an input.
  */
 export function planWidgetGrid(cards, layout = {}) {
     const grid = occupancy();
     const placements = new Map();
-    const saved = cards
-        .map((card) => [card.key, Object.prototype.hasOwnProperty.call(layout || {}, card.key) ? normalizeWidgetSlot(layout[card.key]) : null])
-        .filter(([, slot]) => slot)
-        .sort(byCell);
+    // Reserve retained but temporarily absent cards too. A newly appearing card
+    // must not be pinned across a slot whose owner is merely missing in this read.
+    const saved = Object.entries(normalizeWidgetLayout(layout)).sort(byCell);
+    const visible = new Set(cards.map((card) => card.key));
     let floor = 0;
     for (const [key, slot] of saved) {
         const placed = settle(grid, slot);
-        placements.set(key, placed);
+        if (visible.has(key)) placements.set(key, placed);
         floor = Math.max(floor, placed.y + placed.h);
     }
     for (const card of cards) {
@@ -174,17 +177,53 @@ export function widgetReadingOrder(placements) {
     return [...placements].sort(byCell).map(([key]) => key);
 }
 
-/**
- * The `widget_layout` write for an arrangement: every card shown now, pinned
- * at its cell, then the saved slots of cards not shown — a disabled skill
- * keeps its place, the `widget_start_mode` rule — within the stored bound.
- */
+/** Only an explicit installed-skill disabled fact releases an absent card. */
+export function confirmedDisabledWidgetKeys(savedKeys, liveKeys, skills) {
+    if (!Array.isArray(skills)) return [];
+    const live = new Set(liveKeys);
+    const disabled = new Set(skills.filter((skill) => skill?.enabled === false && !skill.identity_collision)
+        .map((skill) => skill.name));
+    return savedKeys.filter((key) => !live.has(key) && disabled.has(key.split(':', 1)[0]));
+}
+
+/** Pin shown cards; retain absent, not-confirmed-disabled keys unchanged. */
 export function widgetLayoutFromPlacements(placements, previous = {}) {
     const entries = [...placements].map(([key, { x, y, w, h }]) => [key, { x, y, w, h }]);
     for (const [key, slot] of Object.entries(normalizeWidgetLayout(previous))) {
         if (!placements.has(key)) entries.push([key, slot]);
     }
     return Object.fromEntries(entries.slice(0, WIDGET_LAYOUT_MAX_ITEMS));
+}
+
+/**
+ * Release only confirmed-disabled keys, never a card temporarily absent from
+ * the live list. Survivors' existing cells are reserved before any compaction:
+ * a card may move to a free EARLIER cell, but may not displace another card.
+ */
+export function compactWidgetLayout(cards, previous, disabledKeys) {
+    const layout = normalizeWidgetLayout(previous);
+    const disabled = new Set(disabledKeys);
+    const missing = Object.entries(layout).filter(([key]) => disabled.has(key)).sort(byCell);
+    if (!missing.length) return null;
+    const visible = new Set(cards.map((card) => card.key));
+    const vacancy = missing[0][1];
+    const grid = occupancy();
+    const result = new Map(Object.entries(layout).filter(([key]) => !disabled.has(key)));
+    for (const slot of result.values()) grid.take(slot);
+    for (const [key, slot] of [...result].filter(([key]) => visible.has(key)).sort(byCell)) {
+        if (byCell([key, slot], missing[0]) <= 0) continue;
+        grid.free(slot);
+        let placed = null;
+        for (let y = vacancy.y; y <= slot.y && !placed; y += 1) {
+            for (let x = 0; x + slot.w <= WIDGET_GRID_COLUMNS && !placed; x += 1) {
+                if (y === slot.y && x >= slot.x) break;
+                const candidate = { ...slot, x, y };
+                if (grid.fits(candidate)) placed = candidate;
+            }
+        }
+        result.set(key, grid.take(placed || slot));
+    }
+    return Object.fromEntries(result);
 }
 
 /** `grid` or `stack` for a list this wide; a zero width (a hidden page) keeps the mode. */

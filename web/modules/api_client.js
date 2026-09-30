@@ -275,7 +275,7 @@ export const apiClient = {
      * @returns {Promise<import('./api_types.js').ProviderTestResponse>}
      */
     providerTest: (payload) => jsonPost('/api/providers/test', payload),
-    extensions: () => fetchJson('/api/extensions', { cache: 'no-store' }),
+    extensions: (init = {}) => fetchJson('/api/extensions', { cache: 'no-store', ...init }),
     /**
      * Widgets page cards: live extension UI tabs projected from the loader
      * snapshot (no skill discovery), each stamped with the owning skill's

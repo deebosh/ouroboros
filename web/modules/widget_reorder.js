@@ -14,6 +14,7 @@
 import { widgetKey } from './widget_list.js';
 import {
     applyWidgetGrid,
+    compactWidgetLayout,
     arrangeWidgetSlot,
     defaultWidgetSize,
     planWidgetGrid,
@@ -37,8 +38,7 @@ export function normalizeWidgetOrder(value) {
         });
 }
 
-// Reorder only visible slots. A disabled skill's key keeps its place in the
-// owner's order and reappears there when enabled again.
+// Reorder visible slots while preserving temporarily absent skills' keys.
 export function mergeVisibleWidgetOrder(fullOrder, visibleOrder) {
     const visible = normalizeWidgetOrder(visibleOrder);
     const visibleKeys = new Set(visible);
@@ -128,7 +128,8 @@ export function createWidgetArrangement(list, options) {
         inFlight = new Promise((resolve) => resolve(options.save(payload)))
             .catch((err) => {
                 console.warn('Failed to save widget arrangement', err);
-                announce('Layout not saved. Try moving a card again when the connection recovers.');
+                queued = null; // A later optimistic basis cannot authorize a write after failure.
+                announce('Layout not saved. Reload Widgets before editing again.');
             })
             .finally(() => {
                 inFlight = null;
@@ -137,10 +138,14 @@ export function createWidgetArrangement(list, options) {
     };
     const persist = (next) => {
         if (options.canEdit?.() === false) return;
+        // Order-only changes still carry the observed layout basis: another
+        // window may have released a disabled card since this window's read.
+        const basis = { widget_layout_if: queued?.widget_layout_if ?? options.prefs().widget_layout ?? {} };
+        const update = { widget_layout: options.prefs().widget_layout ?? {}, ...next };
         revision += 1;
-        options.commit(next);
+        options.commit(update);
         relayout();
-        queued = { ...queued, ...next };
+        queued = { ...queued, ...update, ...basis };
         if (!inFlight) flush();
     };
     const commitOrder = (next) => persist({ widget_order: mergeVisibleWidgetOrder(options.prefs().widget_order, next) });
@@ -324,14 +329,31 @@ export function createWidgetArrangement(list, options) {
 
     return {
         relayout,
-        // The first successful preferences read pins every newly shown card.
-        // Before this, removing a sibling would repack the default positions.
-        // A failed preferences read never authors an empty replacement map.
-        pinDefaults() {
+        // Called only after a successful preferences AND widget-list read.
+        // Retire absent keys, compact into vacated cells, then pin new cards
+        // below the retained arrangement in one serialized write.
+        pinDefaults(disabledKeys = []) {
+            const cards = options.tabs().map((tab) => ({ key: widgetKey(tab), ...defaultWidgetSize(tab) }));
             const stored = options.prefs().widget_layout || {};
-            const missing = order().filter((key) => !Object.prototype.hasOwnProperty.call(stored, key));
-            if (!missing.length || Object.keys(stored).length + missing.length > WIDGET_LAYOUT_MAX_ITEMS) return;
-            persist({ widget_layout: widgetLayoutFromPlacements(plan(), stored) });
+            const disabled = new Set(disabledKeys);
+            const compacted = compactWidgetLayout(cards, stored, disabled);
+            const current = compacted || stored;
+            const missing = cards.filter((card) => !Object.prototype.hasOwnProperty.call(current, card.key));
+            const staleOrder = normalizeWidgetOrder(options.prefs().widget_order)
+                .filter((key) => disabled.has(key));
+            if (!compacted && !missing.length && !staleOrder.length) return;
+            if (Object.keys(current).length + missing.length > WIDGET_LAYOUT_MAX_ITEMS) return;
+            const placements = planWidgetGrid(cards, current);
+            const next = {
+                widget_layout: widgetLayoutFromPlacements(placements, current),
+                ...(staleOrder.length ? {
+                    widget_order: mergeVisibleWidgetOrder(
+                        options.prefs().widget_order.filter((key) => !disabled.has(key)),
+                        widgetReadingOrder(placements),
+                    ),
+                } : {}),
+            };
+            persist(next);
         },
         /** Bind the handles of cards added since the last call (each once). */
         bind() {

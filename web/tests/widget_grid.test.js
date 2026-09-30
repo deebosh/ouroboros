@@ -9,6 +9,8 @@ import {
     normalizeWidgetLayout,
     normalizeWidgetSlot,
     planWidgetGrid,
+    compactWidgetLayout,
+    confirmedDisabledWidgetKeys,
     WIDGET_GRID_COLUMNS,
     WIDGET_GRID_MAX_H,
     WIDGET_GRID_MAX_Y,
@@ -105,8 +107,25 @@ test('adding, removing or updating other cards never moves a saved card', () => 
     // A changed declaration (span, declared height) only changes the DEFAULT size.
     const updated = slots(planWidgetGrid([card('a', 12, 40), card('b', 3, 4), card('c')], layout));
     assert.deepEqual(updated, base);
-    // A saved slot of a card that is not shown occupies nothing.
+    // An absent card still reserves its retained slot, without rendering it.
     assert.deepEqual(slots(planWidgetGrid([card('c')], layout)), { c: base.c });
+});
+
+test('a temporarily absent card reserves its slot before a new card is pinned', () => {
+    const layout = {
+        a: { x: 0, y: 12, w: 4, h: 8 },
+        b: { x: 4, y: 0, w: 4, h: 8 },
+    };
+    const whileAbsent = planWidgetGrid([card('b'), card('c')], layout);
+    assert.deepEqual(slots(whileAbsent), {
+        b: layout.b,
+        c: { x: 0, y: 20, w: 4, h: 8 },
+    });
+    const pinned = widgetLayoutFromPlacements(whileAbsent, layout);
+    assert.deepEqual(pinned.a, layout.a);
+    assert.deepEqual(slots(planWidgetGrid([card('a'), card('b'), card('c')], pinned)), {
+        a: layout.a, b: layout.b, c: pinned.c,
+    });
 });
 
 test('a move pushes the cards in its way straight down, in cascade, and compacts nothing', () => {
@@ -150,16 +169,68 @@ test('reading order and the pinned layout write', () => {
         c: { x: 8, y: 0, w: 4, h: 4 },
     });
     assert.deepEqual(widgetReadingOrder(plan), ['c', 'b', 'a']);
-    const previous = { gone: { x: 0, y: 0, w: 12, h: 4 }, a: { x: 0, y: 40, w: 4, h: 4 } };
+    const previous = { gone: { x: 0, y: 0, w: 12, h: 4 } };
     const layout = widgetLayoutFromPlacements(plan, previous);
-    // Every shown card pinned at its cell first, then the hidden card's slot kept.
     assert.deepEqual(Object.keys(layout), ['a', 'b', 'c', 'gone']);
-    assert.deepEqual(layout.a, { x: 6, y: 4, w: 4, h: 4 });
     assert.deepEqual(layout.gone, previous.gone);
-    const crowded = Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`old:${i}`, { x: 0, y: i, w: 4, h: 4 }]));
-    const bounded = widgetLayoutFromPlacements(plan, crowded);
-    assert.equal(Object.keys(bounded).length, WIDGET_LAYOUT_MAX_ITEMS);
-    assert.deepEqual(Object.keys(bounded).slice(0, 3), ['a', 'b', 'c'], 'shown cards survive the bound');
+    const crowded = new Map(Array.from({ length: 250 }, (_, i) => [`new:${i}`, { x: 0, y: i, w: 4, h: 4 }]));
+    assert.equal(Object.keys(widgetLayoutFromPlacements(crowded)).length, WIDGET_LAYOUT_MAX_ITEMS);
+});
+
+test('only a confirmed disabled skill releases a slot, not a temporarily missing tab', () => {
+    const saved = ['live:one', 'missing:one', 'disabled:one'];
+    const live = ['live:one'];
+    assert.deepEqual(confirmedDisabledWidgetKeys(saved, live, null), []);
+    assert.deepEqual(confirmedDisabledWidgetKeys(saved, live, [
+        { name: 'missing', enabled: true }, { name: 'disabled', enabled: false },
+    ]), ['disabled:one']);
+    assert.deepEqual(confirmedDisabledWidgetKeys(saved, live, [
+        { name: 'disabled', enabled: false, identity_collision: true },
+    ]), []);
+    const previous = Object.fromEntries(saved.map((key, x) => [key, { x: x * 4, y: 0, w: 4, h: 4 }]));
+    const compacted = compactWidgetLayout([card('live:one')], previous, ['disabled:one']);
+    assert.deepEqual(compacted['missing:one'], previous['missing:one']);
+    assert.equal(compacted['disabled:one'], undefined);
+    assert.equal(compactWidgetLayout([card('live:one')], previous, []), null);
+});
+
+test('disabling releases a saved slot, compacts later cards, and re-enabling starts below them', () => {
+    const all = [card('a'), card('b'), card('c')];
+    const previous = widgetLayoutFromPlacements(planWidgetGrid(all));
+    const remaining = all.slice(1);
+    const compacted = compactWidgetLayout(remaining, previous, ['a']);
+    assert.deepEqual(Object.keys(compacted), ['b', 'c']);
+    assert.deepEqual(compacted.b, previous.a);
+    assert.deepEqual(compacted.c, previous.b);
+    assert.equal(compactWidgetLayout(remaining, compacted, ['a']), null);
+    const reenabled = planWidgetGrid(all, compacted);
+    assert.equal(reenabled.get('a').y, previous.a.h, 'returning card must be placed by the owner');
+    assert.deepEqual(reenabled.get('b'), compacted.b);
+    assert.deepEqual(reenabled.get('c'), compacted.c);
+});
+
+test('compaction reserves later cells: a wide survivor never gets pushed down', () => {
+    const layout = {
+        gone: { x: 0, y: 0, w: 4, h: 4 },
+        wide: { x: 4, y: 0, w: 8, h: 8 },
+        lower: { x: 0, y: 4, w: 4, h: 4 },
+    };
+    const compacted = compactWidgetLayout([card('wide'), card('lower')], layout, ['gone']);
+    assert.deepEqual(compacted.wide, layout.wide);
+    assert.deepEqual(compacted.lower, { x: 0, y: 0, w: 4, h: 4 });
+});
+
+test('compaction leaves cards before the vacancy and their sizes intact', () => {
+    const layout = {
+        a: { x: 0, y: 0, w: 4, h: 5 },
+        gone: { x: 4, y: 0, w: 4, h: 5 },
+        b: { x: 8, y: 0, w: 4, h: 7 },
+        c: { x: 0, y: 7, w: 8, h: 9 },
+    };
+    const compacted = compactWidgetLayout([card('a'), card('b'), card('c')], layout, ['gone']);
+    assert.deepEqual(compacted.a, layout.a);
+    assert.deepEqual(compacted.b, { x: 4, y: 0, w: 4, h: 7 }, 'the vacancy is occupied without changing its height');
+    assert.equal(compacted.c.h, 9);
 });
 
 test('a reload restores the same cells from the stored JSON', () => {

@@ -10,10 +10,8 @@ import {
 import { chartConfig, formatNumber, getPath, renderChartDataTable, renderTableCell } from './widget_chart.js';
 import { applyChartTheme, onThemeChange } from './theme_palette.js';
 import { mountModuleWidget, mountRouteIframeWidget } from './widget_module.js';
-import {
-    planWidgetListPatch, requestWidgetCards, requestWidgetListPayload, widgetKey,
-    widgetListRequests, widgetTabsSignature,
-} from './widget_list.js';
+import { confirmedDisabledLayoutKeys, planWidgetListPatch, requestWidgetCards, requestWidgetListPayload,
+    widgetKey, widgetListRequests, widgetTabsSignature } from './widget_list.js';
 import {
     bindWidgetCardMenus,
     effectiveStartMode,
@@ -1438,9 +1436,11 @@ export function initWidgets(ctx = {}) {
                     }
                     renderShell(list, tabs);
                 }
+                const disabledKeys = prefs ? await confirmedDisabledLayoutKeys(apiClient, tabs, uiPreferences) : [];
+                if (!isCurrent()) return;
                 lastTabs = tabs;
                 lastSignature = signature;
-                if (prefs) arrangement.pinDefaults();
+                if (prefs) arrangement.pinDefaults(disabledKeys);
                 arrangement.bind();
                 list.querySelectorAll('[data-widget-move-handle], [data-widget-resize-handle]')
                     .forEach((handle) => { handle.disabled = !preferencesAvailable; });

@@ -8,6 +8,26 @@
    never by moving or rebuilding nodes. */
 
 import { WIDGET_REQUEST_TIMEOUT_MS, withWidgetRequestTimeout } from './widget_job.js';
+import { confirmedDisabledWidgetKeys } from './widget_grid.js';
+
+/** A transient loader gap must not be mistaken for an owner disabling a skill. */
+export async function confirmedDisabledLayoutKeys(client, tabs, preferences) {
+    const live = tabs.map(widgetKey);
+    const saved = [...new Set([
+        ...Object.keys(preferences.widget_layout), ...preferences.widget_order,
+    ])];
+    if (saved.every((key) => live.includes(key))) return [];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+        const index = await client.extensions({ signal: controller.signal });
+        return confirmedDisabledWidgetKeys(saved, live, index?.skills);
+    } catch {
+        return [];
+    } finally {
+        clearTimeout(timer);
+    }
+}
 
 export function widgetKey(tab) {
     return tab.key || `${tab.skill}:${tab.tab_id}`;

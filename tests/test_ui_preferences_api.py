@@ -314,7 +314,7 @@ def test_ui_preferences_widget_start_mode_override(tmp_path):
 
 def test_ui_preferences_widget_layout_cells(tmp_path):
     """Owner Widgets grid cells: persisted per card key, whole-map replace, clamped
-    into the grid, stale keys kept (a disabled skill's card returns to its place),
+    into the grid, transiently absent keys retained until a confirmed disable,
     bounded like the other per-card maps."""
     from starlette.testclient import TestClient
 
@@ -339,6 +339,27 @@ def test_ui_preferences_widget_layout_cells(tmp_path):
         assert client.get("/api/ui/preferences").json()["widget_layout"] == layout
         stored = json.loads((tmp_path / "state" / "ui_preferences.json").read_text(encoding="utf-8"))
         assert stored["widget_layout"] == layout
+
+        # The Widgets client binds a whole-map replacement to the layout it read.
+        # A stale window cannot resurrect a disabled card's retired slot.
+        compacted = {"game:main": layout["game:main"], "gauge:live": layout["gauge:live"]}
+        assert client.post("/api/ui/preferences", json={
+            "widget_layout": compacted, "widget_layout_if": layout,
+        }).status_code == 200
+        stale = client.post("/api/ui/preferences", json={
+            "widget_layout": layout, "widget_layout_if": layout,
+        })
+        assert stale.status_code == 409
+        assert client.get("/api/ui/preferences").json()["widget_layout"] == compacted
+        # Narrow-screen order-only writes carry that same layout basis. A stale
+        # second window must not put the retired card back into widget_order.
+        assert client.post("/api/ui/preferences", json={
+            "widget_layout": layout, "widget_layout_if": layout,
+            "widget_order": ["gone_skill:old", "gauge:live", "game:main"],
+        }).status_code == 409
+        assert client.get("/api/ui/preferences").json()["widget_order"] == ["game:main", "gauge:live"]
+        assert client.post("/api/ui/preferences", json={"widget_layout_if": compacted}).status_code == 400
+        layout = compacted
 
         # Other keys leave the layout alone; a layout write replaces the whole map.
         other = client.post("/api/ui/preferences", json={"widget_start_mode": {"game:main": "retain"}})

@@ -45,7 +45,7 @@ test('normalizeWidgetOrder and sortTabsByWidgetOrder keep the phase-2 contract',
     assert.deepEqual(sortTabsByWidgetOrder(tabs, ['z']).map((tab) => tab.key), ['z', 'x', 'y']);
 });
 
-test('reordering visible cards preserves disabled keys in the owner order', () => {
+test('reordering visible cards retains temporarily absent keys in the owner order', () => {
     assert.deepEqual(mergeVisibleWidgetOrder(['a', 'disabled', 'b'], ['b', 'a']), ['b', 'disabled', 'a']);
     assert.deepEqual(mergeVisibleWidgetOrder([], ['b', 'a']), ['b', 'a']);
     assert.deepEqual(mergeVisibleWidgetOrder(['a', 'gone', 'b'], ['b', 'new', 'a']), ['b', 'gone', 'new', 'a']);
@@ -209,18 +209,22 @@ test('an unavailable preferences read cannot overwrite hidden saved cells', () =
     assert.deepEqual(page.state.prefs.widget_layout, {});
 });
 
-test('first successful preferences read pins defaults; removing a sibling keeps saved cells', async () => {
+test('a successful list refresh frees the disabled card and pins compacted neighbors', async () => {
     const page = harness({ tabs: [moduleTab('demo:a'), moduleTab('demo:b'), moduleTab('demo:c')] });
     page.arrangement.pinDefaults();
     assert.equal(page.saves.length, 1);
-    assert.deepEqual(Object.keys(page.saves[0].widget_layout), ['demo:a', 'demo:b', 'demo:c']);
-    const original = page.arrangement.relayout;
+    await flushMicrotasks();
     page.state.tabs = page.state.tabs.filter((tab) => tab.key !== 'demo:a');
-    original();
-    assert.deepEqual(page.cell('demo:b'), [5, 1, 4, 8]);
-    assert.deepEqual(page.cell('demo:c'), [9, 1, 4, 8]);
+    page.arrangement.pinDefaults(['demo:a']);
+    assert.deepEqual(Object.keys(page.state.prefs.widget_layout), ['demo:b', 'demo:c']);
+    assert.deepEqual(page.state.prefs.widget_order, ['demo:b', 'demo:c']);
+    assert.deepEqual(page.cell('demo:b'), [1, 1, 4, 8]);
+    assert.deepEqual(page.cell('demo:c'), [5, 1, 4, 8]);
+    await flushMicrotasks();
+    page.state.tabs.push(moduleTab('demo:a'));
     page.arrangement.pinDefaults();
-    assert.equal(page.saves.length, 1, 'an unchanged list is not saved again');
+    assert.deepEqual(page.state.prefs.widget_layout['demo:a'], { x: 0, y: 8, w: 4, h: 8 });
+    assert.deepEqual(page.cell('demo:b'), [1, 1, 4, 8]);
     await flushMicrotasks();
 });
 
@@ -236,6 +240,7 @@ test('grid keys move a card one cell, pin every shown card and re-derive the rea
             'demo:c': { x: 8, y: 0, w: 4, h: 8 },
         },
         widget_order: ['demo:b', 'demo:c', 'demo:a'],
+        widget_layout_if: {},
     }]);
     assert.equal(page.status.textContent, 'Moved to column 1, row 2');
     assert.equal(page.byKey('demo:a').scrolled, 1, 'the moved card is kept in view');
@@ -280,7 +285,7 @@ test('the narrow stack reorders the key order and resizes the height only', asyn
     const page = harness({ tabs: [moduleTab('demo:a'), moduleTab('demo:b'), moduleTab('demo:c')], width: 480 });
     assert.equal(page.list.dataset.widgetLayout, 'stack');
     page.byKey('demo:a').move.dispatch('keydown', { key: 'ArrowDown' });
-    assert.deepEqual(page.saves.at(-1), { widget_order: ['demo:b', 'demo:a', 'demo:c'] });
+    assert.deepEqual(page.saves.at(-1), { widget_layout: {}, widget_order: ['demo:b', 'demo:a', 'demo:c'], widget_layout_if: {} });
     assert.deepEqual(['demo:a', 'demo:b', 'demo:c'].map((key) => page.byKey(key).props.get('--widget-order')), ['1', '0', '2']);
     assert.equal(page.status.textContent, 'Moved to position 2 of 3');
     await flushMicrotasks();
@@ -290,7 +295,7 @@ test('the narrow stack reorders the key order and resizes the height only', asyn
     assert.equal(page.byKey('demo:b').resize.dispatch('keydown', { key: 'ArrowRight' }).defaultPrevented, false);
     page.byKey('demo:b').resize.dispatch('keydown', { key: 'ArrowDown' });
     const saved = page.saves.at(-1);
-    assert.deepEqual(Object.keys(saved), ['widget_layout'], 'a stacked resize keeps the owner\'s stacked order');
+    assert.deepEqual(Object.keys(saved), ['widget_layout', 'widget_layout_if'], 'a stacked resize keeps the owner\'s stacked order');
     assert.equal(saved.widget_layout['demo:b'].h, 9);
     assert.equal(page.status.textContent, 'Resized to 9 rows');
 });
@@ -367,7 +372,7 @@ test('a stacked pointer drag reorders by the other cards\' midpoints', () => {
     a.move.dispatch('pointermove', { pointerId: 1, clientX: 10, clientY: 600 });
     assert.deepEqual(['demo:a', 'demo:b', 'demo:c'].map((key) => page.byKey(key).props.get('--widget-order')), ['1', '0', '2']);
     a.move.dispatch('pointerup', { pointerId: 1 });
-    assert.deepEqual(page.saves, [{ widget_order: ['demo:b', 'demo:a', 'demo:c'] }]);
+    assert.deepEqual(page.saves, [{ widget_layout: {}, widget_order: ['demo:b', 'demo:a', 'demo:c'], widget_layout_if: {} }]);
 });
 
 test('writes go one at a time, the last arrangement wins, and a read begun before it is stale', async () => {

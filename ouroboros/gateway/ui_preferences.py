@@ -23,7 +23,8 @@ DEFAULT_UI_PREFERENCES: dict[str, Any] = {
     # {"x", "y", "w", "h"} in grid cells (column / row of the top-left cell, width
     # in columns, height in rows). Out-of-range values are clamped into the grid
     # (web/modules/widget_grid.js mirrors the bounds); keys are never checked
-    # against live widgets, so a disabled skill's card returns to its place.
+    # against live widgets; the Widgets client retires only confirmed-disabled
+    # cards, while temporary loader absence leaves their cells intact.
     "widget_layout": {},
     "nested_subagents_expanded": False,
     # Resizable side sections (0 = use the CSS default). Clamped to sane ranges so
@@ -241,15 +242,24 @@ async def api_ui_preferences_post(request: Request) -> JSONResponse:
     body = await request_json_or(request, None)
     if not isinstance(body, dict):
         return json_error("request body must be a JSON object", 400)
-    unknown = sorted(set(body) - _KNOWN_KEYS)
+    unknown = sorted(set(body) - _KNOWN_KEYS - {"widget_layout_if"})
     if unknown:
         return json_error(f"unknown ui preference key: {unknown[0]}", 400)
     drive_root = request_drive_root(request)
     path = pathlib.Path(drive_root) / "state" / "ui_preferences.json"
     try:
+        # An arrangement carries its observed map; a second window cannot put
+        # a disabled card's released slot back via a stale whole-map POST.
+        basis = body.get("widget_layout_if")
+        if "widget_layout_if" in body and "widget_layout" not in body:
+            return json_error("widget_layout_if requires widget_layout", 400)
+        if "widget_layout_if" in body:
+            basis = _normalize_preferences({"widget_layout": basis}, fill_defaults=False)["widget_layout"]
         with _preferences_lock(path):
             prefs = _stored_preferences(path)
-            incoming = _normalize_preferences(body, fill_defaults=False)
+            if "widget_layout_if" in body and prefs["widget_layout"] != basis:
+                return json_error("Widget layout changed in another window; reload Widgets before editing", 409)
+            incoming = _normalize_preferences({key: val for key, val in body.items() if key != "widget_layout_if"}, fill_defaults=False)
             if "project_seen_revision" in incoming:
                 from ouroboros.projects_registry import get_project
 
