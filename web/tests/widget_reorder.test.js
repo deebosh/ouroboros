@@ -148,18 +148,23 @@ test('a width from the menu shows at once, saves one write at a time and merges 
     assert.deepEqual(widths.readSizes({ 'demo:a': { w: 8, h: 0 } }), { 'demo:a': { w: 8, h: 0 } });
 });
 
-test('a failed save stays visible and the next saved change clears it', async () => {
+test('a failed save stays visible, rides along with the next change and clears once saved', async () => {
     const { saves, status, widths } = board();
     widths.setWidth('demo:a', 6);
     await settle();
     saves[0].reject(new Error('HTTP 500'));
     await settle();
     assert.deepEqual([status.textContent, status.dataset.tone], ['Size not saved: HTTP 500', 'error']);
-    widths.setWidth('demo:a', 8);
+    assert.equal(saves.length, 1, 'nothing retries on its own');
+    // A list read still shows the width that failed to save.
+    assert.deepEqual(widths.readSizes({}), { 'demo:a': { w: 6, h: 0 } });
+    widths.setWidth('demo:b', 8);
     await settle();
+    assert.deepEqual(saves[1].payload, { widget_size: { 'demo:a': { w: 6, h: 0 }, 'demo:b': { w: 8, h: 0 } } });
     saves[1].resolve({ ok: true });
     await settle();
     assert.deepEqual([status.textContent, status.dataset.tone], ['', 'neutral']);
+    assert.deepEqual(widths.readSizes({}), {});
 });
 
 test('the edge handle keys step the width and announce it; other keys and modifiers pass through', async () => {

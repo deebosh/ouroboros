@@ -148,13 +148,16 @@ const widthName = (w) => WIDTH_NAMES.get(w) || `${w} of ${WIDGET_GRID_COLUMNS} c
  * End: narrowest / full width); the stacked column ignores widths and hides
  * the handle. Every change shows at once and is saved one write at a time:
  * changes landing meanwhile merge into the next write, so a card's last width
- * is the one stored whatever order the replies arrive in.
+ * is the one stored whatever order the replies arrive in. A failed write stays
+ * on screen with its notice and rides along with the next change's write;
+ * nothing retries on its own.
  */
 export function createWidgetWidths(list, options) {
     const boundHandles = new WeakSet();
     let drag = null;
     let saving = null;
     let queued = null;
+    let unsaved = null;
     let disposeGrid = null;
 
     const sizes = () => options.prefs().widget_size || {};
@@ -174,13 +177,15 @@ export function createWidgetWidths(list, options) {
     };
 
     const flush = () => {
-        saving = queued;
+        saving = { ...unsaved, ...queued };
+        unsaved = null;
         queued = null;
         Promise.resolve()
             .then(() => options.save({ widget_size: saving }))
             .then(() => { if (options.status?.dataset.tone === 'error') announce(''); })
             .catch((err) => {
                 console.warn('Failed to save widget size', err);
+                unsaved = saving;
                 announce(`Size not saved: ${err?.message || err}`, 'error');
             })
             .finally(() => {
@@ -204,7 +209,7 @@ export function createWidgetWidths(list, options) {
     /** A stored map as this window shows it: its own unsaved widths stay on top. */
     function readSizes(stored) {
         const next = normalizeWidgetSize(stored);
-        for (const [key, size] of Object.entries({ ...saving, ...queued })) {
+        for (const [key, size] of Object.entries({ ...unsaved, ...saving, ...queued })) {
             if (size) next[key] = size;
             else delete next[key];
         }
