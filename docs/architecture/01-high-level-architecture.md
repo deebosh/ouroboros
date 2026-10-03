@@ -423,7 +423,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   ├── settings_secrets.py ← Explicit single-secret Settings reads, sharing the effective loader and saved MCP identity rules; passive Settings responses stay masked (§3 Settings and onboarding)
       │   ├── settings.py      ← /api/settings + /api/owner/*; `GET /api/reviewer-slots` with row limits (triad 10 / scope 4 / advisory 1 / deep_review 1) and typed `config_error`, never a 500; the deep self-review singleton rides the response (saved, or labeled `synthesized_from`), beside a `config_error` only as a repair placeholder, never an effective row
       │   ├── presence_settings.py ← Owner-facing runtime overrides and working-folder selection for reviewed Presence behavior skills
-      │   ├── desktop_autostart.py ← GET/POST /api/desktop/autostart over `desktop_autostart.py`; OS calls off the event loop, outside the settings write seam, public `owner_audit`
+      │   ├── desktop_autostart.py ← GET/POST /api/desktop/autostart over `desktop_autostart.py`; OS calls off the event loop, outside the settings write seam, public `owner_audit`; GET/POST /api/desktop/background, the keep-running choice, inside that seam
       │   ├── control.py       ← /api/reset, /api/command, /api/git/*, /api/update/*, /api/evolution-data HTTP handlers
       │   ├── update_progress.py ← process-local stages owned by the synchronous update executor; status projection and WS invalidation, never recovery authority
       │   ├── schedules.py     ← Cron schedule HTTP surface

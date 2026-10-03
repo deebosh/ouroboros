@@ -334,6 +334,7 @@ export function attentionStatusText({ enabled = true, nativeAttention = false, s
     if (!enabled) return 'Notifications are off; no attention is requested from this system.';
     if (status === 'window_only') return 'Desktop attention can raise this window, but its system sound is unavailable; the app tone is used when needed.';
     if (status === 'unsupported' || status === 'unavailable') return 'Desktop attention is unavailable in this launcher; browser or in-app delivery remains available.';
+    if (status === 'background') return 'Desktop attention is available; while Ouroboros runs in the background, alerts use a system banner or sound instead of opening this window.';
     if (status === 'native_sound' || nativeAttention) return 'Desktop attention is available; the launcher may raise this window and use the system sound.';
     if (bridge) return 'This desktop client exposes an attention bridge; its sound capability will be confirmed on the next alert.';
     if (supported) return 'Browser notifications are available; desktop attention depends on the client.';
@@ -444,7 +445,11 @@ export function createNotifier({
         const nativeCue = typeof api?.request_attention === 'function';
         if (nativeCue) {
             try {
-                void Promise.resolve(api.request_attention(Boolean(decision.sound))).then((result) => {
+                // A newer launcher takes the (privacy-filtered) text for its banner while its window is hidden on purpose.
+                const cue = typeof api.notify_owner === 'function'
+                    ? api.notify_owner(Boolean(decision.sound), decision.title, decision.body || '')
+                    : api.request_attention(Boolean(decision.sound));
+                void Promise.resolve(cue).then((result) => {
                     if (destroyed) return;
                     nativeAttention = Boolean(result?.ok);
                     attentionStatus = String(result?.status || 'unavailable');

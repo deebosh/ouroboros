@@ -354,6 +354,44 @@ test('banner owns sound, while silent in-app delivery still raises the window', 
     silentNotifier.destroy();
 });
 
+test('a launcher that takes the alert text gets it; an older one keeps the sound-only call', () => {
+    const calls = [];
+    const host = {
+        request_attention: (...args) => { calls.push(['request_attention', ...args]); return { ok: true }; },
+        notify_owner: (...args) => { calls.push(['notify_owner', ...args]); return { ok: true, status: 'background' }; },
+    };
+    const make = (hostApi, prefs = ON) => createNotifier({
+        storage: fakeStorage({ [NOTIFY_PREFS_KEY]: JSON.stringify(prefs) }),
+        notificationCtor: undefined,
+        audioContextCtor: null,
+        showToast: () => {},
+        documentRef: fakeDocument(),
+        hostApi,
+    });
+    const frame = (id) => ({ role: 'system', system_type: 'task_summary', task_id: id, content: 'Report ready' });
+    const newer = make(host, { ...ON, show_text: true });
+    newer.handleFrame(frame('text-1'), { kind: 'chat', isMain: true });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'notify_owner');
+    assert.equal(calls[0][1], true);
+    assert.equal(typeof calls[0][2], 'string');
+    assert.equal(calls[0][3], 'Report ready');
+    newer.destroy();
+
+    calls.length = 0;
+    const private_ = make(host);
+    private_.handleFrame(frame('text-2'), { kind: 'chat', isMain: true });
+    assert.equal(calls[0][3], '', 'message text stays private unless the owner turned it on');
+    private_.destroy();
+
+    calls.length = 0;
+    const older = make({ request_attention: host.request_attention });
+    older.handleFrame(frame('text-3'), { kind: 'chat', isMain: true });
+    assert.deepEqual(calls, [['request_attention', true]]);
+    older.destroy();
+    assert.match(attentionStatusText({ status: 'background' }), /instead of opening this window/);
+});
+
 test('in-app fallback tone is used when native window attention cannot play sound', async () => {
     let oscillators = 0;
     class FakeAudioContext {

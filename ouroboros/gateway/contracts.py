@@ -912,7 +912,7 @@ class UiPreferencesResponse(TypedDict):
     welcome: dict[str, str]  # install-wide empty-Main UI copy: mode default|hidden|custom and plain text
 
 
-class DesktopAutostartResponse(TypedDict):  # GET/POST /api/desktop/autostart: the host's sign-in registration as its OS reports it
+class DesktopAutostartResponse(TypedDict):  # GET/POST /api/desktop/autostart (OS registration) and /api/desktop/background (unavailable|off|on)
     state: Literal["unavailable", "off", "on", "other_copy", "disabled_by_os"]
     reason: NotRequired[str]  # present only when unavailable
 
