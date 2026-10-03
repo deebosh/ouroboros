@@ -788,8 +788,11 @@ class ChronicleStore:
         return sorted(pointers, key=lambda p: (p["legacy_block"] if type(p["legacy_block"]) is int else _NO_BLOCK,
                                                p["room_id"], p["sequence"]))
 
-    def active_marks(self, room_id: Any, include_global: bool = True) -> List[Dict[str, Any]]:
+    def active_marks(self, room_id: Any = None, include_global: bool = True) -> List[Dict[str, Any]]:
+        """A room's acting marks (and the global ones); ``room_id=None`` is every room's."""
         with self._index() as db:
+            if room_id is None:
+                return [json.loads(body) for (body,) in db.execute("SELECT body FROM active_marks ORDER BY sequence")]
             query = "SELECT body FROM active_marks WHERE room=?"
             if include_global:
                 query += " OR scope='global'"

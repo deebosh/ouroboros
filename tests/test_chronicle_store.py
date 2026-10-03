@@ -115,6 +115,20 @@ def test_marks_release_is_explicit_and_room_projection_does_not_change_sources(t
     assert store.get(mark["id"])["target_ref"] == source
 
 
+def test_active_marks_without_a_room_are_every_rooms_and_with_one_its_own_and_the_global_ones(tmp_path):
+    store = ChronicleStore(tmp_path)
+    source = {"kind": "task", "task_id": "t1"}
+    room_a = store.mark(source, "in room a", MIND, room_id="a").record["id"]
+    room_b = store.mark(source, "in room b", MIND, room_id="b").record["id"]
+    shared = store.mark(source, "for all", MIND, room_id="a", scope="global").record["id"]
+    assert [mark["id"] for mark in store.active_marks()] == [room_a, room_b, shared]
+    assert [mark["id"] for mark in store.active_marks(None)] == [room_a, room_b, shared]
+    assert [mark["id"] for mark in store.active_marks("b")] == [room_b, shared]  # a room: its own and the global
+    assert [mark["id"] for mark in store.active_marks("b", include_global=False)] == [room_b]
+    assert store.release_mark(room_b, MIND, "done").ok
+    assert [mark["id"] for mark in store.active_marks()] == [room_a, shared]
+
+
 def test_hot_lookup_reads_only_unindexed_log_suffix(tmp_path, monkeypatch):
     store = ChronicleStore(tmp_path)
     store.publish([{"id": "x", "kind": "note", "room_id": "r", "task_id": "t1", "text": "hello", "author": MIND}])

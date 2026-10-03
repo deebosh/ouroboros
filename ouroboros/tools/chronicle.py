@@ -37,7 +37,7 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tupl
 from ouroboros import chat_chain
 from ouroboros.chronicle_import import row_lineage
 from ouroboros.chronicle_store import SPEAKERS, ChronicleStore, PublishResult, source_time_span, verify_quotes
-from ouroboros.dialogue_provenance import render_row_text, row_author
+from ouroboros.dialogue_provenance import memory_row_header, render_row_text, row_author
 from ouroboros.knowledge import focus_signature
 from ouroboros.tool_capabilities import tool_result_limit
 from ouroboros.tools.registry import ToolEntry
@@ -502,9 +502,8 @@ def _listed(record: Dict[str, Any]) -> str:
 
 
 def _row_line(address: Dict[str, Any], row: Dict[str, Any], pos: int, lineage: Dict[str, Any]) -> Tuple[str, str]:
-    """``(header, text)`` of one chat row: ``[<ts>; <author>; row:…]`` and its words without JSON."""
-    label = _author_of(row, pos, lineage)["label"]
-    return f"[{row.get('ts') or 'time not recorded'}; {label}; {chat_chain.format_address(address)}]", render_row_text(row)
+    """``(header, text)`` of one chat row: the one memory-row header and its words without JSON."""
+    return memory_row_header(address, row, author=_author_of(row, pos, lineage)), render_row_text(row)
 
 
 def _fit(head: str, items: List[str], exhausted: bool, continuation: Callable[[int, bool], str],

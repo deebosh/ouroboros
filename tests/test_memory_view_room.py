@@ -143,3 +143,292 @@ def test_the_working_sources_line_lists_exactly_what_the_spec_loads():
             assert "knowledge (overview, index, patterns)" not in new_missing
     nanny = mv.working_sources_line(dataclasses.replace(mv.ROLE_DEFAULTS["nanny"], room_id="1"))
     assert "the top level of your story" in nanny.split(" Not loaded: ", 1)[1]
+
+
+# --- the live part on a richer installation ------------------------------------------------------
+#
+# Main, two Projects (alpha, beta) and a transport chat; two legacy rows before the frontier and
+# twenty-three open rows after it. The first row carrying a child's lineage (pos 4) is the epoch,
+# so the outgoing row at pos 3 without lineage precedes it and the one at pos 5 follows it.
+
+from ouroboros import chat_chain  # noqa: E402
+from ouroboros.chronicle_store import ChronicleStore  # noqa: E402
+
+TRANSPORT = {"provider": "telegram", "conversation_id": "c7", "actor": {"display_name": "Ann"}}
+LATE = {"settled_after_terminal": True, "reviewed_revision": "delivered", "reviewer_outputs": []}
+
+
+def _ts(minute: int) -> str:
+    return f"2026-09-05T10:{minute:02d}:00+00:00"
+
+
+def _rows(rooms):
+    a, b, m = rooms["alpha"], rooms["beta"], shared.msg
+    kid = {"subagent_task_id": "kid1", "parent_task_id": "root1", "root_task_id": "root1", "delegation_role": "subagent"}
+    return [
+        m(_ts(2), "please look at X", client_message_id="m1"),
+        m(_ts(3), "pre-epoch words", direction="out", task_id="pre1"),
+        m(_ts(4), "CHILD REPORT TEXT", direction="out", task_id="kid1", **kid),
+        m(_ts(5), "my answer to you", direction="out", task_id="root1"),
+        m(_ts(6), "LIGHT RETELLING TEXT", direction="system", type="task_summary", task_id="root1",
+          summary_kind="authored_root_summary"),
+        m(_ts(7), "Failed. child", direction="system", type="task_summary", task_id="kid1", parent_task_id="root1",
+          root_task_id="root1", summary_kind="terminal_result_projection", status="failed"),
+        m(_ts(8), "Completed. Root task root1.", direction="system", type="task_summary", task_id="root1",
+          root_task_id="root1", summary_kind="terminal_root_projection", status="completed"),
+        m(_ts(9), "late critique", direction="system", type="acceptance_late_settlement", task_id="root1",
+          late_evidence=LATE),
+        m(_ts(10), "", direction="out", type="quiz", task_id="root4",
+          quiz={"quiz_id": "q1", "question": "Which way?", "options": [{"label": "Left"}, {"label": "Right"}]}),
+        m(_ts(11), "", direction="system", type="quiz_answer", client_message_id="quiz_answer:q1",
+          quiz={"quiz_id": "q1", "question": "Which way?", "options": [{"label": "Left"}, {"label": "Right"}],
+                "answered_index": 1}),
+        m(_ts(12), "A word on my own initiative.", direction="out", type="proactive_message", task_id="root4"),
+        m(_ts(13), "alpha words", chat_id=a, client_message_id="a1"),
+        m(_ts(14), "alpha reply", chat_id=a, direction="out", task_id="ta1"),
+        m(_ts(15), "beta words", chat_id=b, client_message_id="b1"),
+        m(_ts(16), "beta reply", chat_id=b, direction="out", task_id="tb1"),
+        m(_ts(17), "sent?", chat_id=777, direction="system", type="presence_delivery", task_id="pres1",
+          transport={**TRANSPORT, "delivery": {"state": "failed"}, "message": {"id": "x"}}),
+        m(_ts(18), "", direction="system", type="task_summary", task_id="root2", summary_kind="host_task_facts",
+          status="running", result_ref={"reader": "get_task_result", "task_id": "root2"}),
+        m(_ts(19), "line one\n## a heading in my reply", direction="out", task_id="root2"),
+        m(_ts(20), "transport words", chat_id=777, transport=TRANSPORT),
+        m(_ts(21), "Task started", direction="system", type="task_started", task_id="root3"),
+        m(_ts(22), "KID5 REPORT", direction="out", task_id="kid5", subagent_task_id="kid5", parent_task_id="root5",
+          root_task_id="root5", delegation_role="subagent"),
+        m(_ts(23), "ROOT5 RETELLING", direction="system", type="task_summary", task_id="root5",
+          summary_kind="authored_root_summary"),
+        m(_ts(24), "and finally", client_message_id="m9"),
+        m(_ts(25), "Task root6 was cancelled. Below is the last persisted model message: UNREVIEWED DRAFT",
+          direction="system", type="cancel_receipt", task_id="root6"),
+        m(_ts(26), "custody text", direction="system", type="custody_notice", task_id="root6"),
+        m(_ts(27), "Project X › root6 · Cancelled", direction="system", type="project_completion_summary",
+          task_id="root6", status="cancelled"),
+    ]
+
+
+def _install(root):
+    """The installation above, activated: the legacy memory covers the two archive rows."""
+    import json
+
+    from ouroboros.utils import jsonl_generation_signature
+
+    rooms = shared.projects(root)
+    archive = root / "archive" / "chat_20260905T090000.jsonl"
+    shared.append(archive, shared.msg(_ts(0), "old hello", client_message_id="m0"),
+                  shared.msg(_ts(1), "old reply", direction="out", task_id="old1"))
+    rows = _rows(rooms)
+    shared.append(root / "logs" / "chat.jsonl", *rows)
+    memory = root / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "dialogue_blocks.json").write_text(json.dumps([{
+        "ts": _ts(1), "type": "summary", "range": "10:00 - 10:01", "message_count": 2, "content": "Old Main.",
+        "rooms": [{"room_id": "1", "label": "Main", "message_count": 2, "content": "Old Main talk."}]}]),
+        encoding="utf-8")
+    (memory / "dialogue_meta.json").write_text(json.dumps({
+        "chat_log_signature": jsonl_generation_signature(archive), "last_consolidated_offset": 2}), encoding="utf-8")
+    assert ChronicleStore(root).ensure_activated()["kind"] == "activation"
+    return rooms, rows
+
+
+def _view(root, task, **spec_fields):
+    spec = mv.view_spec_for_task(task, root)
+    spec = dataclasses.replace(spec, **spec_fields) if spec_fields else spec
+    snapshot = mv.capture_memory_view(root, task, spec)
+    return snapshot, mv.render_room(snapshot)
+
+
+def _addr(row) -> str:
+    return chat_chain.format_address(chat_chain.row_address(row))
+
+
+def _section(text: str, title: str) -> str:
+    """One ``### …`` subsection (or ``## …`` section) of a rendered block, up to the next heading of its level."""
+    level = title.split(" ", 1)[0] + " "
+    start = text.index(title)
+    rest = text[start + len(title):]
+    ends = [i for i in (rest.find("\n" + level), rest.find("\n## ") if level == "### " else -1) if i >= 0]
+    return text[start:start + len(title) + (min(ends) if ends else len(rest))]
+
+
+MAIN_TASK = {"id": "turn0001", "chat_id": 1}
+
+
+def test_lane_one_is_people_and_my_words_verbatim_and_nothing_else_is_signed_ouroboros(tmp_path):
+    rooms, rows = _install(tmp_path)
+    assert ChronicleStore(tmp_path).activation()["metadata"]["lineage_epoch"]["pos"] == 4
+    snapshot, text = _view(tmp_path, MAIN_TASK)
+    lane1 = _section(text, "### Open conversation since")
+    assert lane1.startswith("### Open conversation since 2026-09-05 10:02 (verbatim: people and my replies)")
+    mine = {_addr(rows[i]) for i in (3, 8, 10, 17)}  # after the epoch: my answer, quiz, proactive word, reply
+    for line in lane1.split("\n")[1:]:
+        if line.startswith("["):
+            label, address = line[1:].split("] ", 1)[0].split("; ")[1:3]
+            assert label != "Ouroboros" or address in mine, line
+    for i in (1, 2, 4, 5, 6, 7, 15, 16, 19, 20, 21, 23, 24, 25):  # unattributed, child, helper and host rows
+        assert _addr(rows[i]) not in lane1, i
+    assert f"[{_ts(5)}; Ouroboros; {_addr(rows[3])}] my answer to you" in lane1
+    assert f"[{_ts(10)}; Ouroboros; {_addr(rows[8])}] [question q1] Which way? — options: (1) Left (2) Right" in lane1
+    assert f"; Owner; {_addr(rows[9])}]" in lane1 and "Right" in lane1.split(_addr(rows[9]))[1].split("\n")[0]
+    assert f"Ouroboros; {_addr(rows[10])}] A word on my own initiative." in lane1
+    assert f"{_addr(rows[17])}] line one\n  ## a heading in my reply" in lane1  # never a section of its own
+    assert f"Ann [provider=telegram; conversation=c7]; {_addr(rows[18])}] transport words" in lane1
+    assert "pre-epoch words" not in text and "CHILD REPORT TEXT" not in text and "LIGHT RETELLING TEXT" not in text
+    assert "KID5 REPORT" not in text and "ROOT5 RETELLING" not in text and "UNREVIEWED DRAFT" not in text
+
+
+def test_lane_two_is_one_host_line_per_root_task_with_typed_facts_by_address(tmp_path):
+    rooms, rows = _install(tmp_path)
+    _snapshot, text = _view(tmp_path, MAIN_TASK)
+    lane2 = _section(text, "### Task facts of this conversation").split("\n")[1:]
+    by_task = {line.split("; task ", 1)[1].split("]", 1)[0]: line for line in lane2 if "; host; task " in line}
+    assert set(by_task) == {"pre1", "root1", "pres1", "root2", "root3", "root5", "root6"} and len(lane2) == 7
+    root1 = by_task["root1"]
+    assert root1 == (f"[{_ts(4)}; host; task root1] Completed. Root task root1.; children 1 (failed 1); rows 5; "
+                     f"get_task_result(task_id='root1'); {_addr(rows[2])}..{_addr(rows[7])}; "
+                     f"late review evidence: {_addr(rows[7])}")
+    assert by_task["root2"].startswith(f"[{_ts(18)}; host; task root2] host facts for root2: status=running; "
+                                       "result: get_task_result(task_id=root2); rows 1;")
+    assert f"delivery failed: {_addr(rows[15])}" in by_task["pres1"]
+    assert by_task["root3"].startswith(f"[{_ts(21)}; host; task root3] running or unreported; last row task_started "
+                                       f"by host, 12 chars, {_addr(rows[19])}")
+    # A running root with a child: its status comes from fields, never from the last row's text.
+    assert by_task["root5"].startswith(f"[{_ts(22)}; host; task root5] running or unreported; last row task_summary "
+                                       f"by Light (legacy retelling), 15 chars, {_addr(rows[21])}; children 1;")
+    assert "outgoing, author not recorded" in by_task["pre1"]  # before the epoch: not mine
+    assert by_task["root6"] == (f"[{_ts(25)}; host; task root6] Project X › root6 · Cancelled; rows 3; "
+                                f"get_task_result(task_id='root6'); {_addr(rows[23])}..{_addr(rows[25])}; "
+                                f"cancel receipt: {_addr(rows[23])}; custody notice: {_addr(rows[24])}")
+    joined = "\n".join(lane2)
+    assert '{"' not in joined and "Delivery details" not in joined and "Late review evidence:" not in joined
+
+
+def test_a_page_seals_rows_only_in_its_room_and_a_row_in_two_rooms_stays_open_in_the_other(tmp_path):
+    from ouroboros.tools.chronicle import page_covers
+
+    rooms, rows = _install(tmp_path)
+    store = ChronicleStore(tmp_path)
+
+    def seal(room, row):
+        covers = page_covers(tmp_path, room, from_addr=_addr(row), to_addr=_addr(row))["covers"]
+        assert store.publish_page(room_id=room, text="sealed", covers=covers, author=shared.MIND).ok
+
+    seal("1", rows[0])
+    seal("777", rows[18])
+    _snapshot, text = _view(tmp_path, MAIN_TASK)
+    lane1 = _section(text, "### Open conversation since")
+    assert _addr(rows[0]) not in lane1 and _addr(rows[3]) in lane1  # inside the page / its neighbour
+    assert lane1.startswith("### Open conversation since 2026-09-05 10:03")
+    assert _addr(rows[18]) in lane1  # sealed in the transport room, still open in Main
+    wake, wake_text = _view(tmp_path, {"id": "w1", "chat_id": 1, "metadata": {"usage_category": "consciousness"}})
+    transport = next(room for room in wake.live_rooms if room["room_id"] == "777")
+    assert (transport["rows"], transport["people"]) == (1, 0)
+
+
+def test_live_rooms_are_rooms_with_open_rows_or_open_notes_and_carry_no_words_by_default(tmp_path):
+    from ouroboros.tools.chronicle import page_covers
+
+    rooms, rows = _install(tmp_path)
+    beta = str(rooms["beta"])
+    store = ChronicleStore(tmp_path)
+    _snapshot, text = _view(tmp_path, MAIN_TASK)
+    live = _section(text, "## Live rooms")
+    header = f"### Project Beta [chat_id={beta}] — open 2026-09-05 10:15 → 2026-09-05 10:16; people 1, mine 1, task facts 0"
+    assert header in live and f"memory_read(room_id='{beta}', rows=true)" in live
+    assert "beta words" not in live and "alpha words" not in live  # other rooms' people only by count
+    _snap, worded = _view(tmp_path, MAIN_TASK, live_rooms="lines_with_words")
+    assert "beta words" in _section(worded, "## Live rooms") and "beta reply" not in worded
+    words_only = page_covers(tmp_path, beta, from_addr=_addr(rows[13]), to_addr=_addr(rows[13]))["covers"]
+    assert store.publish_page(room_id=beta, text="beta asked", covers=words_only, author=shared.MIND).ok
+    note = store.write_note(room_id=beta, task_id="tb1", text="Beta waits for the owner.", author=shared.MIND)
+    _snap, noted = _view(tmp_path, MAIN_TASK)
+    assert f"### Project Beta [chat_id={beta}] — open 2026-09-05 10:16 → 2026-09-05 10:16; people 0, mine 1" in noted
+    assert f"note {note.record['id']} by root on " in noted and "  Beta waits for the owner." in noted
+    by_task = page_covers(tmp_path, beta, task_ids=["tb1"])["covers"]
+    assert f"note:{note.record['id']}" in by_task["rows"]  # the task's page takes its note too
+    assert store.publish_page(room_id=beta, text="beta answered", covers=by_task, author=shared.MIND).ok
+    sealed = _view(tmp_path, MAIN_TASK)[1]
+    assert f"chat_id={beta}]" not in sealed and "Beta waits for the owner." not in sealed  # nothing open: not live
+    store.write_note(room_id=beta, task_id="tb1", text="One more thought on beta.", author=shared.MIND)
+    _snap, again = _view(tmp_path, MAIN_TASK)
+    assert f"### Project Beta [chat_id={beta}] — no open rows; my notes not yet sealed: 1" in again
+
+
+def test_this_room_has_its_head_retold_records_origin_words_and_notes(tmp_path):
+    rooms, rows = _install(tmp_path)
+    alpha = str(rooms["alpha"])
+    store = ChronicleStore(tmp_path)
+    snapshot, text = _view(tmp_path, {"id": "ra1", "chat_id": rooms["alpha"]})
+    head = store.room_head(alpha)
+    assert f"## This room (Project Alpha [chat_id={alpha}]) — head {head}" in text
+    origin = _section(text, "### Words that started this work (retention-proof)")
+    assert f"[2026-09-01T00:05:00+00:00; owner; chat 1 / origin-a] {shared.ORIGIN}" in origin
+    # Once the origin row itself is open in the room, it is read there, not twice.
+    shared.append(tmp_path / "logs" / "chat.jsonl", shared.msg("2026-09-01T00:05:00+00:00", shared.ORIGIN,
+                                                               client_message_id="origin-a"))
+    _snap, again = _view(tmp_path, {"id": "ra1", "chat_id": rooms["alpha"]})
+    assert "### Words that started this work" not in again and shared.ORIGIN in _section(again, "### Open conversation")
+    main_snapshot, main_text = _view(tmp_path, MAIN_TASK)
+    retold = _section(main_text, "### Retold before the update (helper retelling, not lived)")
+    assert "#### legacy-b00-r1 — 2026-09-05 10:00 → 2026-09-05 10:01\n  Old Main talk." in retold
+    assert "### Words that started this work" not in main_text  # Main is no Project
+    note = store.write_note(room_id="1", task_id="root1", text="Keep root1 in mind.", author=shared.MIND)
+    _snap, noted = _view(tmp_path, MAIN_TASK)
+    assert f"note {note.record['id']} by root on " in _section(noted, "### My notes not yet sealed")
+
+
+def test_each_role_sees_its_parts_of_the_live_view(tmp_path):
+    rooms, rows = _install(tmp_path)
+    store = ChronicleStore(tmp_path)
+    store.mark({"kind": "task", "task_id": "root1"}, "Watch root1", shared.MIND, room_id="1")
+    store.mark({"kind": "task", "task_id": "ta1"}, "Watch alpha", shared.MIND, room_id=str(rooms["alpha"]))
+    store.mark({"kind": "task", "task_id": "x"}, "For everyone", shared.MIND, room_id="1", scope="global")
+    words = {"governing_owner_words": [{"text": "Find the cause", "source": "initial_user", "task_id": "root1"}]}
+    main, main_text = _view(tmp_path, MAIN_TASK)
+    assert [mark["text"] for mark in main.marks] == ["Watch root1", "Watch alpha", "For everyone"]
+    wake, wake_text = _view(tmp_path, {"id": "w1", "chat_id": 1, "metadata": {"usage_category": "consciousness"}})
+    assert "## This room" not in wake_text and "- [global; Main] For everyone" in wake_text
+    assert "### Main — open 2026-09-05 10:02 → 2026-09-05 10:27; people " in wake_text  # Main is one line
+    assert "please look at X" not in wake_text and "transport words" not in wake_text  # no people's words
+    child_task = {"id": "kid9", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1",
+                  "metadata": words}
+    child, child_text = _view(tmp_path, child_task)
+    assert mv.render_story(child).startswith("## My story\n") and "## This room (Main) — head " in child_text
+    assert "### Retold before the update" in child_text and "### Open conversation" not in child_text
+    assert "## Live rooms" not in child_text and "Watch alpha" not in child_text and "Watch root1" in child_text
+    assert child_text.startswith("## Words of my human that caused this work (verbatim)\n")
+    assert "Find the cause" in child_text and "Find the cause" not in main_text
+    nanny_task = {**child_task, "id": "nan9", "configured_subagent": {"route": {"kind": "agent_session"}}}
+    nanny, nanny_text = _view(tmp_path, nanny_task)
+    assert mv.render_story(nanny) == "" and "Find the cause" in nanny_text and "### Retold before the update" in nanny_text
+    line = mv.working_sources_line(child.spec, child)
+    assert "the words of my human that caused this work" in line and "the page of your parent's room Main" in line
+    assert "the words that started that work" not in line  # Main holds no Project origin to show
+    alpha_child = mv.working_sources_line(*(lambda s: (s.spec, s))(_view(tmp_path, {**child_task, "id": "kid8",
+                                                                                     "chat_id": rooms["alpha"]})[0]))
+    assert "the words that started that work" in alpha_child
+
+
+def test_before_activation_the_room_is_one_line_with_a_reader_that_works_without_the_chronicle(tmp_path, monkeypatch):
+    shared.projects(tmp_path)
+    monkeypatch.setattr(ChronicleStore, "ensure_activated",
+                        lambda self, **kw: {"kind": "import_pending", "reason": "legacy_memory_lock_busy"})
+    snapshot, text = _view(tmp_path, MAIN_TASK)
+    assert text == ("## This room (Main)\n\nOpen conversation unavailable until my memory is activated "
+                    "(legacy_memory_lock_busy); read it: chat_history(count=100) — every room, newest first; this "
+                    "room is chat_id 1.")
+    assert snapshot.live_rooms == () and snapshot.marks == ()
+
+
+def test_the_view_and_memory_read_print_a_row_with_one_grammar(tmp_path):
+    from ouroboros.tools.chronicle import _memory_read
+    from ouroboros.tools.registry import ToolContext
+
+    rooms, rows = _install(tmp_path)
+    snapshot, _text = _view(tmp_path, MAIN_TASK)
+    read = _memory_read(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="turn0001", current_chat_id=1),
+                        rows=True)
+    assert snapshot.room["lane1"]
+    for item in snapshot.room["lane1"]:
+        assert item["line"].replace("\n" + mv.INDENT, "\n") in read, item["line"]

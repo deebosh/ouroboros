@@ -470,6 +470,31 @@ def render_row_text(row: Mapping[str, Any]) -> str:
     return dialogue_text(row)
 
 
+def memory_row_header(address: Mapping[str, Any], row: Mapping[str, Any], *, author: Mapping[str, Any]) -> str:
+    """``[<ts>; <author label>; row:<chat_id>@<ts>#<sha12>]``: the one header of a chat row in memory text.
+
+    ``memory_read`` rows, the memory view's open conversation and the page writer's
+    input all print a row with this header; ``author`` is ``row_author``'s answer.
+    """
+    from ouroboros.chat_chain import format_address
+
+    label = _text(_mapping(author).get("label")) or "author not recorded"
+    return f"[{row.get('ts') or 'time not recorded'}; {label}; {format_address(dict(address))}]"
+
+
+def render_memory_row(address: Mapping[str, Any], row: Mapping[str, Any], *, author: Mapping[str, Any],
+                      indent: str = "") -> str:
+    """One chat row in memory text: its header, a space, its words (``render_row_text``), never cut.
+
+    Each later line of the words starts with ``indent``: the view indents them so a row's own
+    ``## …`` lines never read as sections; ``memory_read`` prints them as they are.
+    """
+    words = render_row_text(row)
+    if indent:
+        words = words.replace("\n", "\n" + indent)
+    return memory_row_header(address, row, author=author) + " " + words
+
+
 def task_lineage_lookup(drive_root: Any):
     """``lineage_lookup`` for ``row_author``: a strict, read-only task-result lineage reader.
 
@@ -617,6 +642,8 @@ __all__ = [
     "dialogue_provenance",
     "dialogue_speaker",
     "dialogue_text",
+    "memory_row_header",
+    "render_memory_row",
     "render_row_text",
     "row_author",
     "row_class",

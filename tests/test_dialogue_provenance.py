@@ -141,3 +141,19 @@ def test_presence_reflection_entry_is_stamped_before_append(tmp_path, monkeypatc
     )
     assert entry == captured[0]
     assert captured[0]["presence_provenance"] == presence_provenance_from_task(_presence_task())
+
+
+def test_one_row_grammar_serves_memory_read_and_the_view_and_only_indents_later_lines():
+    from ouroboros import chat_chain
+    from ouroboros.dialogue_provenance import memory_row_header, render_memory_row, row_author
+
+    row = {**_row(), "text": "first line\n## not a section"}
+    address = chat_chain.row_address(row)
+    author = row_author(row)
+    header = memory_row_header(address, row, author=author)
+    assert header == (f"[2026-08-21T10:00:00+00:00; {author['label']}; {chat_chain.format_address(address)}]")
+    assert render_memory_row(address, row, author=author) == _chronicle_view(row)  # memory_read prints it as is
+    indented = render_memory_row(address, row, author=author, indent="  ")
+    assert indented == header + " first line\n  ## not a section"
+    assert "\n## " in _chronicle_view(row) and "\n## " not in indented
+    assert memory_row_header(address, {"ts": ""}, author={}).startswith("[time not recorded; author not recorded; ")
