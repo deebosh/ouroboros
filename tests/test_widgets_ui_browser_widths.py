@@ -162,6 +162,12 @@ def test_ui_smoke_widget_board_masonry_and_owner_widths(direct_server_with_data,
     def layout(page) -> str:
         return page.evaluate("document.getElementById('widgets-list').dataset.widgetLayout || ''")
 
+    def width_fixed(page) -> list:
+        # The cards no step can widen or narrow; their edge handle is hidden.
+        return page.evaluate(
+            "() => [...document.querySelectorAll('#widgets-list .widgets-card[data-widget-width-fixed]')].map((node) => node.dataset.widgetKey)"
+        )
+
     def status(page) -> str:
         return page.locator("[data-widget-arrange-status]").text_content()
 
@@ -246,6 +252,7 @@ def test_ui_smoke_widget_board_masonry_and_owner_widths(direct_server_with_data,
                 assert box["issues"]["height"] > box["notes"]["height"] + 400
                 assert box["gauge"]["height"] < box["game"]["height"] - 400
                 assert page.evaluate("document.getElementById('widgets-list').style.getPropertyValue('--masonry-h')")
+                assert width_fixed(page) == [], "on a board of five cards a step can change every card"
                 page.screenshot(path=str(evidence_dir / f"widget-board-{browser_name}.png"), full_page=True)
 
                 # Content growth relayouts the masonry; the grown frame keeps its window.
@@ -323,6 +330,7 @@ def test_ui_smoke_widget_board_masonry_and_owner_widths(direct_server_with_data,
                 assert tops == sorted(tops), tops
                 assert all(same(item["width"], list_width(page)) for item in stacked.values())
                 assert page.locator(f"{card('notes')} [data-widget-resize-handle]").is_hidden()
+                assert sorted(width_fixed(page)) == sorted(key.values()), "in a stack no step changes a card"
                 page.locator(f"{card('gauge')} [data-widget-menu-trigger]").click()
                 page.locator("body > .skills-card-menu-dialog[open] [data-widget-size-note]").wait_for(state="visible")
                 page.screenshot(path=str(evidence_dir / f"widget-board-stack-menu-{browser_name}.png"))
