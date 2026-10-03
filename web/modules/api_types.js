@@ -1445,7 +1445,7 @@
  * @property {boolean=} ok
  */
 /**
- * Host sign-in registration as its OS reports it; `reason` only when unavailable.
+ * Host sign-in registration as its OS reports it, or (/api/desktop/background) the keep-running choice; `reason` only when unavailable.
  * @typedef {Object} DesktopAutostartResponse
  * @property {'unavailable'|'off'|'on'|'other_copy'|'disabled_by_os'} state
  * @property {string=} reason
