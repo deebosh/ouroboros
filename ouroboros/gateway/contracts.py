@@ -257,6 +257,9 @@ class ChatOutbound(TypedDict):
     handoff_id: NotRequired[str]  # immutable origin/destination receipt identity
     terminal_time: NotRequired[Dict[str, Any]]  # host-owned occurrence, separate from publication ts
     completion_answer: NotRequired[str]  # a Project root's model-authored final answer, mirrored into Main (DESIGN)
+    set_at: NotRequired[str]  # a `reminder` row's provenance, live frame only (its text carries the signature): when written
+    scheduled_for: NotRequired[str]  # the due point it was written for
+    delivered_at: NotRequired[str]  # when the host showed it (later than due after downtime)
     chat_id: NotRequired[int]  # present on some transport re-broadcast paths
     # Server-stamped when chat_id is a reserved Project thread: Main never
     # adopts it, even before the browser has learned the project.
@@ -910,6 +913,11 @@ class UiPreferencesResponse(TypedDict):
     welcome: dict[str, str]  # install-wide empty-Main UI copy: mode default|hidden|custom and plain text
 
 
+class DesktopAutostartResponse(TypedDict):  # GET/POST /api/desktop/autostart: the host's sign-in registration as its OS reports it
+    state: Literal["unavailable", "off", "on", "other_copy", "disabled_by_os"]
+    reason: NotRequired[str]  # present only when unavailable
+
+
 class GitLogResponse(TypedDict):
     commits: list[Dict[str, Any]]
     # Tag rows: {tag, date, sha (peeled commit), message} — the mirror said ``list[str]`` while ``list_versions``
@@ -1540,7 +1548,7 @@ __all__ = [
     "SettingsPostCommitFailureResponse",
     "SkillGrantResponse",
     "SkillDeleteResponse",
-    "UiPreferencesResponse",
+    "UiPreferencesResponse", "DesktopAutostartResponse",
     "GitLogResponse",
     "EvolutionDataResponse",
     "ScheduledTasksResponse",
