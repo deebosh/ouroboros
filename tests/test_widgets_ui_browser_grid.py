@@ -5,8 +5,9 @@ declarative cards of very different heights (a 720px game-like frame, a short
 metric, a long route-backed table, an auto-height module): the cards stand in
 rows of the 12-column board in the owner's order at the author's default
 widths; content growth makes only its own card taller and moves no card
-sideways; the card menu, the right-edge drag and its arrow keys set width steps
-stored in ``ui_preferences.widget_size`` (Reset size deletes one) that a window
+sideways; the card menu, the right-edge drag and its arrow keys set width steps,
+each named in the live region, stored in ``ui_preferences.widget_size`` (Reset
+size deletes one) that a window
 reload restores; a narrow window stacks the cards in one column in the same
 order, hides the edge handle, and its menu says widths apply when the list is
 wide. Through all of it every card keeps its DOM node and every frame its
@@ -172,6 +173,9 @@ def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, br
         pitch = (list_width(page) + GAP_PX) / 12
         return count * pitch - GAP_PX
 
+    def status(page) -> str:
+        return page.locator("[data-widget-arrange-status]").text_content()
+
     def saved_sizes(page) -> dict:
         return page.evaluate("async () => (await (await fetch('/api/ui/preferences')).json()).widget_size || {}")
 
@@ -275,6 +279,7 @@ def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, br
                 page.screenshot(path=str(evidence_dir / f"widget-board-menu-{browser_name}.png"))
                 menu.locator('[data-widget-size="12"]').click()
                 wait_saved(page, "gauge", {"w": 12})
+                assert status(page) == "Width: full width", "a menu choice is named like a key or a drag"
                 after = rects(page)
                 assert widths(page)["gauge"] == "12" and same(after["gauge"]["width"], list_width(page))
                 assert after["gauge"]["y"] > after["game"]["y"] + after["game"]["height"]
@@ -299,7 +304,7 @@ def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, br
                 wait_saved(page, "notes", {"w": 12})
                 page.keyboard.press("Home")
                 wait_saved(page, "notes", {"w": 4})
-                assert page.locator("[data-widget-arrange-status]").text_content() == "Width: one third"
+                assert status(page) == "Width: one third"
 
                 # Reset size returns the gauge to its author default.
                 choose(page, "gauge", "reset")
@@ -333,6 +338,7 @@ def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, br
                 page.screenshot(path=str(evidence_dir / f"widget-board-stack-menu-{browser_name}.png"))
                 page.locator('body > .skills-card-menu-dialog[open] [data-widget-size="6"]').click()
                 wait_saved(page, "gauge", {"w": 6})
+                assert status(page) == "Width: half", "on the stacked column the menu is the only path"
                 assert same(rects(page)["gauge"]["width"], list_width(page))
                 assert frames_kept(page)
 

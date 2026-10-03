@@ -519,7 +519,8 @@ def test_widgets_card_width_is_owner_ui_preference():
     handle (pointer drag with a live preview, arrow keys); the stacked column
     hides the handle. `createWidgetWidths` adopts a change at once, relayouts by
     custom properties only and saves one write at a time through the page's
-    preferences client; a read that began before a change does not undo it."""
+    preferences client; a list read takes its reader as it begins, so a change
+    made or written while it was out is not undone by its reply."""
     source = _widgets_js()
     reorder = _read("web/modules/widget_reorder.js")
     card = _read("web/modules/widget_card.js")
@@ -527,7 +528,10 @@ def test_widgets_card_width_is_owner_ui_preference():
     assert "data-widget-resize-handle" in source
     assert "Resize width: drag or use arrow keys" in source
     assert "data-widget-arrange-status role=\"status\" aria-live=\"polite\"" in source
-    assert "widget_size: widths.readSizes(prefs.widget_size)," in source
+    sync = source.split("async function syncWidgets(generation) {", 1)[1].split("\n    }\n", 1)[0]
+    assert sync.index("const readSizes = widths.beginRead();") < sync.index("requestWidgetListPayload(apiClient, controller)")
+    assert "widget_size: readSizes(prefs.widget_size)," in sync
+    assert "widths.readSizes(" not in source
     assert "save: (payload) => apiClient.saveUiPreferences(payload)," in source
     assert "const cardMenus = bindWidgetCardMenus(list, setWidgetStartMode, widths);" in source
     assert "export function createWidgetWidths(list, options)" in reorder

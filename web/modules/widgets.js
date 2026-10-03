@@ -1372,6 +1372,7 @@ export function initWidgets(ctx = {}) {
         try {
             do {
                 listDirty = false;
+                const readSizes = widths.beginRead();
                 const [data, prefs] = await listRequests.run(
                     (controller) => requestWidgetListPayload(apiClient, controller));
                 if (!isCurrent()) return;
@@ -1379,7 +1380,7 @@ export function initWidgets(ctx = {}) {
                 if (prefs) {
                     uiPreferences = {
                         widget_order: normalizeWidgetOrder(prefs.widget_order),
-                        widget_size: widths.readSizes(prefs.widget_size),
+                        widget_size: readSizes(prefs.widget_size),
                         widget_start_mode: prefs.widget_start_mode && typeof prefs.widget_start_mode === 'object'
                             ? prefs.widget_start_mode
                             : {},

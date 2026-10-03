@@ -1231,7 +1231,8 @@ widget's content belongs to its author.
 - **One arrangement per installation.** Order and widths are owner UI state
   stored on the server, the same for every window and device of the
   installation; when two windows arrange at once the last change wins. A
-  width that failed to save stays on screen and says so under the list.
+  width that failed to save stays on screen and says so under the list until
+  a later width change saves it; nothing retries on its own.
 
 ## 6. Account group / row anatomy
 

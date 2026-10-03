@@ -171,11 +171,14 @@ const widthName = (w) => WIDTH_NAMES.get(w) || `${w} of ${WIDGET_GRID_COLUMNS} c
  * `setWidth`. On the desktop board the edge handle drags a card between width
  * steps with a live preview (Escape cancels) and its arrow keys step it (Home /
  * End: narrowest / full width); the stacked column ignores widths and hides
- * the handle. Every change shows at once and is saved one write at a time:
- * changes landing meanwhile merge into the next write, so a card's last width
- * is the one stored whatever order the replies arrive in. A failed write stays
- * on screen with its notice and rides along with the next change's write;
- * nothing retries on its own.
+ * the handle. Every change, the menu's included, is named in the live region,
+ * shows at once and is saved one write at a time: changes landing meanwhile
+ * merge into the next write, so a card's last width is the one stored whatever
+ * order the replies arrive in. A list read takes its reader from `beginRead()`
+ * as it begins, so its reply never undoes a width written while it was out. A
+ * failed write stays on screen with its notice (no step announced meanwhile
+ * replaces it) and rides along with the next change's write until one
+ * succeeds; nothing retries on its own.
  */
 export function createWidgetWidths(list, options) {
     const boundHandles = new WeakSet();
@@ -183,7 +186,12 @@ export function createWidgetWidths(list, options) {
     let saving = null;
     let queued = null;
     let unsaved = null;
+    let failed = false;
     let disposeGrid = null;
+    // Completed writes, counted, and each key's last written size stamped with
+    // that count: a read that began at count `since` shows what was written after.
+    let writes = 0;
+    const written = new Map();
 
     const sizes = () => options.prefs().widget_size || {};
     const tabOf = (key) => options.tabs().find((tab) => widgetKey(tab) === key) || null;
@@ -192,7 +200,7 @@ export function createWidgetWidths(list, options) {
         return tab ? widgetWidth(tab, sizes()) : 0;
     };
     const announce = (text, tone = 'neutral') => {
-        if (!options.status) return;
+        if (!options.status || (failed && tone !== 'error')) return;
         options.status.textContent = text;
         options.status.dataset.tone = tone;
     };
@@ -207,10 +215,17 @@ export function createWidgetWidths(list, options) {
         queued = null;
         Promise.resolve()
             .then(() => options.save({ widget_size: saving }))
-            .then(() => { if (options.status?.dataset.tone === 'error') announce(''); })
+            .then(() => {
+                writes += 1;
+                for (const [key, size] of Object.entries(saving)) written.set(key, { size, at: writes });
+                if (!failed) return;
+                failed = false;
+                announce('');
+            })
             .catch((err) => {
                 console.warn('Failed to save widget size', err);
                 unsaved = saving;
+                failed = true;
                 announce(`Size not saved: ${err?.message || err}`, 'error');
             })
             .finally(() => {
@@ -219,7 +234,7 @@ export function createWidgetWidths(list, options) {
             });
     };
 
-    /** A card's width in board columns, or `null` for its author default. */
+    /** A card's width in board columns, or `null` for its author default; the live region names it. */
     function setWidth(key, w) {
         const size = w === null ? null : { w, h: 0 };
         const next = { ...sizes() };
@@ -229,16 +244,29 @@ export function createWidgetWidths(list, options) {
         relayout();
         queued = { ...queued, [key]: size };
         if (!saving) flush();
+        announce(`Width: ${widthName(widthOf(key))}`);
     }
 
-    /** A stored map as this window shows it: its own unsaved widths stay on top. */
-    function readSizes(stored) {
+    /**
+     * A stored map as this window shows it, for a read that began after `since`
+     * completed writes: widths written later, and widths not written yet, stay on
+     * top of the reply.
+     */
+    function readSizes(stored, since = writes) {
         const next = normalizeWidgetSize(stored);
-        for (const [key, size] of Object.entries({ ...unsaved, ...saving, ...queued })) {
+        const late = {};
+        written.forEach(({ size, at }, key) => { if (at > since) late[key] = size; });
+        for (const [key, size] of Object.entries({ ...late, ...unsaved, ...saving, ...queued })) {
             if (size) next[key] = size;
             else delete next[key];
         }
         return next;
+    }
+
+    /** Called as a list read begins; returns the reader of that read's reply. */
+    function beginRead() {
+        const since = writes;
+        return (stored) => readSizes(stored, since);
     }
 
     function onKey(event, card) {
@@ -252,7 +280,7 @@ export function createWidgetWidths(list, options) {
         if (!w || next === undefined) return;
         event.preventDefault();
         if (next !== w) setWidth(key, next);
-        announce(`Width: ${widthName(next)}`);
+        else announce(`Width: ${widthName(next)}`);
     }
 
     function beginDrag(event, card) {
@@ -311,7 +339,6 @@ export function createWidgetWidths(list, options) {
             return;
         }
         setWidth(done.key, done.width);
-        announce(`Width: ${widthName(done.width)}`);
     }
 
     function bindHandle(handle) {
@@ -331,6 +358,7 @@ export function createWidgetWidths(list, options) {
         setWidth,
         widthOf,
         readSizes,
+        beginRead,
         dispose() {
             cancelDrag();
             disposeGrid?.();

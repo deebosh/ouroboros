@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import {
     createWidgetWidths, mergeWidgetOrder, moveWidgetKey, normalizeWidgetOrder, sortTabsByWidgetOrder,
 } from '../modules/widget_reorder.js';
+import { requestWidgetListPayload } from '../modules/widget_list.js';
 
 // Widgets lifecycle phase 3: a reorder is a pure move in the KEY order; the
 // handles never move an <article> (a moved <iframe> reloads). The card widths
@@ -156,11 +157,19 @@ function board(keys = ['demo:a', 'demo:b'], { width = 1200 } = {}) {
         status,
     });
     widths.relayout();
-    return { list, cards, doc, saves, status, widths, prefs: () => prefs };
+    return {
+        list, cards, doc, saves, status, widths, prefs: () => prefs,
+        adopt(sizes) { prefs = { ...prefs, widget_size: sizes }; },
+    };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const key = (name, extra = {}) => ({ key: name, preventDefault() { this.prevented = true; }, ...extra });
+const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+};
 
 test('a width from the menu shows at once, saves one write at a time and merges what lands meanwhile', async () => {
     const { cards, saves, widths, prefs } = board();
@@ -206,6 +215,81 @@ test('a failed save stays visible, rides along with the next change and clears o
     await settle();
     assert.deepEqual([status.textContent, status.dataset.tone], ['', 'neutral']);
     assert.deepEqual(widths.readSizes({}), {});
+});
+
+test('an old list reply that lands after a confirmed width write keeps the new width on the card', async () => {
+    // The page's composition: the reader is taken as the read begins, then the
+    // preferences and the cards arrive under one deadline (requestWidgetListPayload).
+    const { cards, saves, widths, adopt } = board();
+    const preferences = deferred();
+    const list = deferred();
+    const readSizes = widths.beginRead();
+    const reading = requestWidgetListPayload(
+        { uiPreferences: () => preferences.promise, widgets: () => list.promise }, new AbortController(), 60_000);
+    preferences.resolve({ widget_size: {} });
+    widths.setWidth('demo:a', 12);
+    await settle();
+    saves[0].resolve({ ok: true });
+    await settle();
+    list.resolve({ ui_tabs: [] });
+    const [, prefs] = await reading;
+    adopt(readSizes(prefs.widget_size));
+    widths.relayout();
+    assert.equal(cards[0].props.get('--widget-w'), '12', 'the stored width stays on screen');
+});
+
+test('a read that began before a write completed shows it; a read begun after is the stored truth', async () => {
+    const { saves, widths } = board();
+    const early = widths.beginRead();
+    widths.setWidth('demo:a', 12);
+    await settle();
+    saves[0].resolve({ ok: true });
+    await settle();
+    assert.deepEqual(early({ 'other:c': { w: 6 } }), { 'demo:a': { w: 12, h: 0 }, 'other:c': { w: 6, h: 0 } });
+    // Begun after the write: the reply as stored, another window's later change included.
+    assert.deepEqual(widths.beginRead()({ 'demo:a': { w: 6, h: 0 } }), { 'demo:a': { w: 6, h: 0 } });
+    // A Reset written while a read was out is not undone by its reply either.
+    const out = widths.beginRead();
+    widths.setWidth('demo:a', null);
+    await settle();
+    saves[1].resolve({ ok: true });
+    await settle();
+    assert.deepEqual(out({ 'demo:a': { w: 12, h: 0 } }), {});
+});
+
+test('a failed save keeps its notice until a write succeeds: no step announced meanwhile replaces it', async () => {
+    const { cards, saves, status } = board();
+    const handle = cards[0].handle;
+    const notice = ['Size not saved: offline', 'error'];
+    handle.fire('keydown', key('End'));
+    await settle();
+    saves[0].reject(new Error('offline'));
+    await settle();
+    assert.deepEqual([status.textContent, status.dataset.tone], notice);
+    // End again: the card is already full width, nothing is written, the notice stays.
+    handle.fire('keydown', key('End'));
+    await settle();
+    assert.equal(saves.length, 1);
+    assert.deepEqual([status.textContent, status.dataset.tone], notice);
+    // A new step rides along with the failed width; while that write is out the notice stays.
+    handle.fire('keydown', key('ArrowLeft'));
+    await settle();
+    assert.deepEqual(saves[1].payload, { widget_size: { 'demo:a': { w: 8, h: 0 } } });
+    assert.deepEqual([status.textContent, status.dataset.tone], notice);
+    saves[1].resolve({ ok: true });
+    await settle();
+    assert.deepEqual([status.textContent, status.dataset.tone], ['', 'neutral']);
+    handle.fire('keydown', key('ArrowLeft'));
+    assert.equal(status.textContent, 'Width: half', 'steps are named again once nothing failed is left');
+});
+
+test('a width picked from the card menu is named in the live region like a key or a drag', () => {
+    // The menu calls setWidth (web/modules/widget_card.js); on the stacked column it is the only path.
+    const { status, widths } = board();
+    widths.setWidth('demo:a', 6);
+    assert.deepEqual([status.textContent, status.dataset.tone], ['Width: half', 'neutral']);
+    widths.setWidth('demo:a', null);
+    assert.equal(status.textContent, 'Width: one third', 'Reset size names the author default');
 });
 
 test('the edge handle keys step the width and announce it; other keys and modifiers pass through', async () => {
