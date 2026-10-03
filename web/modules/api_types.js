@@ -1542,12 +1542,11 @@
  */
 
 /**
- * The LLM-written update letter, delivered inside the ordinary
- * `/api/update/status` and `/api/update/check` payloads as the additive
- * `letter` key (absent or null when the install has none). It outlives the
- * update it describes: `relation` says what the running checkout is to the
- * letter's target, and the panel relabels the paragraph instead of deleting
- * it.
+ * The LLM-written update letter, delivered inside the ordinary `/api/update/status`
+ * and `/api/update/check` payloads as the additive `letter` key (absent or null when
+ * the install has none). It outlives the update it describes: `relation` says what the
+ * running checkout is to the letter's target, and the panel relabels the paragraph
+ * instead of deleting it.
  *
  * @typedef {Object} UpdateLetter
  * @property {'ready'|'failed'} state
