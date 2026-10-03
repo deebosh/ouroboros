@@ -231,7 +231,6 @@ BAND_PATHS = {
     "tests/test_ui_smoke_project_continuity.py": "Playwright smoke of the Project continuity contracts (panel/Main re-homing, lifecycle rows, the Main-root project pointer): each test drives one end-to-end owner flow across both surfaces, so the cross-surface assertions cannot be split into smaller files without losing what they prove.",
     "tests/test_update_letter.py": "Entered the band from 969 lines: the update-letter contract gained the HTTP-200 body-error verdicts (a body overflow earns the same single Low retry, other body errors are typed provider failures) and the attempt ids of calls that raised (update-letter sprint 2026-09-04).",
     "tests/test_usage_accounting.py": None,
-    "tests/test_v6730_origin_invariant.py": None,
     "tests/test_v678_receipt_reconciliation.py": None,
     "tests/test_worker_crash_retry.py": "Exercises deferred health recovery through real child terminal persistence, same-attempt source custody and the existing crash policy; preserves one focused fixture owner.",
     "tests/ui_chat_viewport_smoke.py": "Entered the band from 992 lines: the terminal-summary shrink bound gained its calibration rationale for the owner-approved 16px chat scale (frontend sprint 2026-09-01).",
