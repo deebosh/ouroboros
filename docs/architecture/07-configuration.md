@@ -210,6 +210,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE | "" | Owner-only persistent campaign bias; still passes review gates |
 | LOCAL_MODEL_PORT | 8766 | Local-model server port |
 | OUROBOROS_HOST_SERVICE_PORT | 8767 | Host Service port (loopback-only; §12) |
+| OUROBOROS_DESKTOP_KEEP_RUNNING | false | Desktop window close keeps Ouroboros running in the background (Windows, macOS; `launcher_background.py`). Disk-authored consent: absent until the owner chooses in Behavior or answers the first close's one question (`GET/POST /api/desktop/background`) |
 | OUROBOROS_PRESENCE_MAX_ACTIVE | 2 | Cross-process Presence turn cap (UI-bounded 1–20) |
 | LOCAL_MODEL_CHAT_FORMAT | "" | Local-model chat template override |
 | GITHUB_TOKEN | "" | GitHub token (push/PR/issues) |
