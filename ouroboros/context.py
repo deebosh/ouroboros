@@ -1332,7 +1332,9 @@ def _record_memory_view(env: Any, memory: Memory, task: Dict[str, Any], ctx: Any
     if not facts:  # a declared-input child carries no memory view
         return {}
     if ctx is not None:
-        ctx.memory_view_facts = {key: facts[key] for key in ("role", "room_id", "floor", "story_status")}
+        from ouroboros.memory_floor import trace_facts
+
+        ctx.memory_view_facts = trace_facts(facts)
     from ouroboros.utils import append_jsonl
 
     root = pathlib.Path(task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or memory.drive_root)

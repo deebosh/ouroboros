@@ -559,7 +559,6 @@ def _rebind_context_fit_plan(
         )
     from ouroboros.capability_evidence import is_known
     from ouroboros.context import _context_fit_route
-    from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
     from ouroboros.context_fit import _failed_route_evidence, _route_calibration_ratio, main_output_reserve_tokens
     from ouroboros.provider_models import parse_claudexor_model
 
@@ -588,45 +587,15 @@ def _rebind_context_fit_plan(
     known_window = is_known(evidence, require_fresh=True)
     window_tokens = int(getattr(evidence, "window_tokens", 0) or 0)
     output_reserve = main_output_reserve_tokens(use_local=bool(route.get("use_local", use_local)))
-
-    def project(projection: Any) -> Any:
-        calibrated = int(int(projection.estimated_tokens or 0) * ratio)
-        nano = projection.mode == "nano"
-        reserve = NANO_MIN_HEADROOM_TOKENS if nano else output_reserve
-        capacity = min(OWNER_NANO_TARGET_TOKENS, window_tokens) if nano else window_tokens
-        fits = (
-            calibrated + reserve <= capacity
-            if known_window else None
-        )
-        return replace(
-            projection,
-            calibrated_tokens=calibrated,
-            calibration_ratio=ratio,
-            fits_known_window=fits,
-        )
-
-    max_projection = project(plan.max_projection)
-    low_projection = project(plan.low_projection)
-    nano_projection = (
-        project(plan.nano_projection)
-        if getattr(plan, "nano_projection", None) is not None else None
-    )
     preferred = preferred_mode if preferred_mode in {"low", "max", "nano"} else "max"
-    initial_mode = preferred
     rebound = replace(
         plan,
         preferred_mode=preferred,
-        initial_mode=initial_mode,
         model=str(route.get("model") or model),
         provider=str(route.get("provider") or ""),
         route_fp=str(getattr(evidence, "route_fp", "") or ""),
         status=str(getattr(evidence, "status", "") or ""),
         stale=bool(getattr(evidence, "stale", False)),
-        window_tokens=window_tokens,
-        output_reserve_tokens=output_reserve,
-        max_projection=max_projection,
-        low_projection=low_projection,
-        nano_projection=nano_projection,
         model_role=task["model_role"],
         model_route={
             "source": str(getattr(evidence, "source_id", "") or ""),
@@ -635,15 +604,20 @@ def _rebind_context_fit_plan(
             "accountFingerprint": str(getattr(evidence, "account_fingerprint", "") or ""),
         } if route.get("provider") == "claudexor" else {},
         evidence_source=str(getattr(evidence, "source", "") or ""),
-    )
-    mode = initial_mode
+    ).reproject_for_route(  # the memory view re-rendered for this route's window, from the same capture
+        window_tokens=window_tokens, known_window=known_window, ratio=ratio, output_reserve=output_reserve,
+        tool_schemas=tool_schemas)
+    mode = rebound.initial_mode
     projected_prompt_tokens = rebound.projected_tokens_with_tools(mode, tool_schemas)
     messages[:] = rebound.reproject_transcript(messages, mode)
     invalidate_task_cache_splits(getattr(tools._ctx, "task_id", ""))
     tools._ctx.context_fit_plan = rebound
     tools._ctx.messages = messages
     tools._ctx.active_context_mode = mode
+    _adopt_view_facts(tools._ctx, rebound, mode)
     try:
+        _emit_physical_mode(getattr(tools._ctx, "event_queue", None), str(getattr(tools._ctx, "task_id", "") or ""),
+                            tools._ctx.drive_logs(), rebound, mode)
         _loop()._emit_checkpoint_event(
             getattr(tools._ctx, "event_queue", None),
             str(getattr(tools._ctx, "task_id", "") or ""),
@@ -663,6 +637,35 @@ def _rebind_context_fit_plan(
     except Exception:
         log.debug("Failed to emit route-switch context-fit checkpoint", exc_info=True)
     return rebound, mode
+
+
+def _adopt_view_facts(tool_ctx: Any, plan: Any, mode: str) -> None:
+    """The view fact of the projection now sent: on the task context and in the task trace (P3 §2.13)."""
+    receipt = dict(getattr(plan.projection(mode), "memory_facts", None) or {})
+    if not receipt:
+        return
+    from ouroboros.memory_floor import trace_facts
+    from ouroboros.memory_inventory import VIEW_TRACE_KEY
+
+    tool_ctx.memory_view_facts = trace_facts(receipt)
+    trace = getattr(tool_ctx, "_execution_trace", None)
+    if isinstance(trace, dict):
+        trace[VIEW_TRACE_KEY] = dict(tool_ctx.memory_view_facts)
+
+
+def _emit_physical_mode(event_queue: Any, task_id: str, drive_logs: Any, plan: Any, mode: str) -> None:
+    """The known window lowered the mode this plan starts in (P3 §2.6 step 4): one owner-visible checkpoint."""
+    preferred = str(getattr(plan, "preferred_mode", "") or "")
+    if not preferred or mode == preferred or mode != str(getattr(plan, "initial_mode", "") or ""):
+        return
+    _loop()._emit_checkpoint_event(event_queue, task_id, drive_logs, {
+        "checkpoint_kind": "context_fit_physical_mode",
+        "route_fp": str(getattr(plan, "route_fp", "") or ""),
+        "preferred_mode": preferred,
+        "effective_mode": mode,
+        "window_tokens": int(getattr(plan, "window_tokens", 0) or 0),
+        "owner_visible": True,
+    })
 
 
 @dataclass

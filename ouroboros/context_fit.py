@@ -253,6 +253,38 @@ class ContextFitPlan:
     model_route: Dict[str, Any] = field(default_factory=dict)
     evidence_source: str = ""
     nano_projection: Optional[ContextFitProjection] = None
+    core: Optional["ContextCore"] = None  # the capture a new route re-renders the memory view from
+
+    def reproject_for_route(self, *, window_tokens: int, known_window: bool, ratio: float, output_reserve: int,
+                            tool_schemas: Optional[List[Dict[str, Any]]]) -> "ContextFitPlan":
+        """This plan on another route's window: each mode's view, fit and starting mode measured anew.
+
+        The view is re-rendered from ``core.memory_view_json`` (the chronicle and the chat are not
+        read again; books and task stay as captured), starting from ``preferred_mode``, which the
+        window may lower (P3 §2.6 step 4). Without a core the texts stay and are only re-measured.
+        """
+        from dataclasses import replace
+
+        contents, start, books = {}, self.preferred_mode, ("max", "low")
+        if self.core is not None:
+            contents, start = _view_projections(
+                self.core, {form: json.loads(self.projection(form).system_content_json)[0]["text"] for form in books},
+                self.user_content_json, preferred=self.preferred_mode, tool_schemas=tool_schemas,
+                window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio)
+
+        def project(projection: Optional[ContextFitProjection]) -> Optional[ContextFitProjection]:
+            if projection is not None and projection.mode in contents:
+                system, facts = contents[projection.mode]
+                projection = replace(projection, system_content_json=json.dumps(system, ensure_ascii=False, sort_keys=True),
+                                     memory_facts=facts, estimated_tokens=_request_tokens(
+                                         system, projection.user_content_json or self.user_content_json))
+            calibrated = int(int(projection.estimated_tokens or 0) * ratio) if projection is not None else 0
+            return projection and replace(projection, calibrated_tokens=calibrated, calibration_ratio=ratio, fits_known_window=_fits_window(
+                projection.mode, calibrated, window_tokens, known_window, output_reserve))
+
+        return replace(self, initial_mode=start, window_tokens=window_tokens, output_reserve_tokens=output_reserve,
+                       max_projection=project(self.max_projection), low_projection=project(self.low_projection),
+                       nano_projection=project(self.nano_projection))
 
     def projection(self, mode: str) -> ContextFitProjection:
         if str(mode or "").lower() == "nano" and self.nano_projection is not None:
@@ -343,8 +375,12 @@ def _render_context_system_content(
     """``[A▸, B▸, C]``: governance and books; identity with my story; knowledge, my rooms and runtime facts.
 
     ``story`` and ``room`` are the memory view rendered for this projection's mode and
-    window (``memory_floor.render_view_for_mode``); empty without a view.
+    window (``memory_floor.mode_views``); empty without a view.
     """
+    return _system_blocks(core, _governance_text(env, core, mode=mode), story, room)
+
+
+def _governance_text(env: Any, core: ContextCore, *, mode: str) -> str:  # block A, books in ``mode``'s form
     # D-ARCH (owner, 2026-08-08): the reference-doc form follows the RENDERED
     # mode directly — ARCHITECTURE is full in max for every task class and the
     # nav map in low; DEVELOPMENT inclusion is the caller's mode-independent
@@ -362,6 +398,10 @@ def _render_context_system_content(
         )
     )
     static_parts.extend(core.reference_book_errors)
+    return "\n\n".join(static_parts)
+
+
+def _system_blocks(core: ContextCore, governance: str, story: str = "", room: str = "") -> List[Dict[str, Any]]:
     # Stable governance/policy is first; mutable task evidence is last: the
     # cache-friendly ordering for Anthropic-style breakpoints. OpenAI's public API
     # and the Codex backend read a cache only inside the leading system group, so
@@ -370,7 +410,7 @@ def _render_context_system_content(
     return [
         {
             "type": "text",
-            "text": "\n\n".join(static_parts),
+            "text": governance,
             "cache_control": {"type": "ephemeral"},
         },
         {
@@ -772,6 +812,43 @@ def main_output_reserve_tokens(*, use_local: bool) -> int:
     return MAIN_LOOP_MAX_TOKENS
 
 
+def _fits_window(mode: str, calibrated: int, window_tokens: int, known: bool, output_reserve: int) -> Optional[bool]:
+    from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
+
+    capacity = min(OWNER_NANO_TARGET_TOKENS, int(window_tokens)) if mode == "nano" else int(window_tokens or 0)
+    return calibrated + (NANO_MIN_HEADROOM_TOKENS if mode == "nano" else output_reserve) <= capacity if known else None
+
+
+def _request_tokens(system_content: List[Dict[str, Any]], user_content_json: str) -> int:
+    return estimate_context_prompt_tokens([{"role": "system", "content": system_content},
+                                           {"role": "user", "content": json.loads(user_content_json)}])
+
+
+def _view_projections(core: ContextCore, governance: Mapping[str, str], user_content_json: str, *, preferred: str,
+                      tool_schemas: Optional[List[Dict[str, Any]]], window_tokens: int, known_window: bool,
+                      output_reserve: int, ratio: float) -> Tuple[Dict[str, Tuple[List[Dict[str, Any]], Dict]], str]:
+    """Each mode's ``(system content, view receipt)`` and the mode the task starts in.
+
+    ``governance`` is block A by book form. A mode's fixed part is its request without my memory
+    plus the schemas it sends (Nano's selection); view and starting mode are ``memory_floor.mode_views``
+    of the core's snapshot, so a new route re-renders both from the same capture.
+    """
+    form = {mode: "low" if core.compact_reference_docs or mode == "nano" else mode for mode in ("max", "low", "nano")}
+    if not core.memory_view_json:
+        return {mode: (_system_blocks(core, governance[form[mode]]), {}) for mode in form}, preferred
+    from ouroboros import memory_floor
+    from ouroboros.memory_view import snapshot_from_json
+    from ouroboros.tool_policy import select_tool_schemas
+
+    fixed = {mode: _request_tokens(_system_blocks(core, governance[form[mode]]), user_content_json)
+             + tool_schema_tokens(list(select_tool_schemas(tool_schemas or [], context_mode=mode).schemas)) for mode in form}
+    views, start = memory_floor.mode_views(
+        snapshot_from_json(core.memory_view_json), preferred=preferred, fixed_tokens_by_mode=fixed,
+        window_tokens=window_tokens, known_window=known_window, output_reserve=output_reserve, ratio=ratio)
+    return {mode: (_system_blocks(core, governance[form[mode]], story, room), receipt)
+            for mode, (story, room, receipt) in views.items()}, start
+
+
 def build_context_fit_plan(
     env: Any,
     core: ContextCore,
@@ -817,42 +894,19 @@ def build_context_fit_plan(
         str(route["model"] or ""),
     )
     known_window = is_known(evidence, require_fresh=True)
-    rendered = {}
     input_source = None
-    snapshot = None
-    if core.memory_view_json:
-        from ouroboros.memory_view import snapshot_from_json
-
-        snapshot = snapshot_from_json(core.memory_view_json)
-
-    def _estimate(system_content: List[Dict[str, Any]]) -> int:
-        return estimate_context_prompt_tokens([{"role": "system", "content": system_content},
-                                               {"role": "user", "content": user_content}])
-
-    def _memory(mode: str, view_mode: str) -> Tuple[str, str, Dict[str, Any]]:
-        if snapshot is None:
-            return "", "", {}
-        from ouroboros import memory_floor
-        from ouroboros.tool_policy import select_tool_schemas
-
-        if view_mode not in rendered:  # the fixed part without my memory, per book view
-            rendered[view_mode] = _estimate(_render_context_system_content(env, core, mode=view_mode))
-        schemas = list(select_tool_schemas(tool_schemas or [], context_mode=mode).schemas)
-        story, room, facts = memory_floor.render_view_for_mode(
-            snapshot, mode=mode, owner_mode=preferred, window_tokens=int(evidence.window_tokens or 0),
-            known_window=known_window, output_reserve=output_reserve, ratio=ratio,
-            non_memory_tokens=rendered[view_mode] + tool_schema_tokens(schemas))
-        return story, room, memory_floor.view_receipt(snapshot, story, room, facts)
+    contents, initial_mode = _view_projections(
+        core, {form: _governance_text(env, core, mode=form) for form in ("max", "low")}, core.user_content_json,
+        preferred=preferred, tool_schemas=tool_schemas, window_tokens=int(evidence.window_tokens or 0),
+        known_window=known_window, output_reserve=output_reserve, ratio=ratio)
 
     def _projection(mode: str) -> ContextFitProjection:
         nonlocal input_source
         from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
 
-        view_mode = "low" if core.compact_reference_docs or mode == "nano" else mode
-        story, room, memory_facts = _memory(mode, view_mode)
-        system_content = _render_context_system_content(env, core, mode=view_mode, story=story, room=room)
+        system_content, memory_facts = contents[mode]
         system_content_json = json.dumps(system_content, ensure_ascii=False, sort_keys=True)
-        estimated = _estimate(system_content)
+        estimated = _request_tokens(system_content, core.user_content_json)
         user_projection = None
         target = OWNER_NANO_TARGET_TOKENS if mode == "nano" else None
         if preferred == "nano" and target is not None and estimated + NANO_MIN_HEADROOM_TOKENS > target:
@@ -880,20 +934,13 @@ def build_context_fit_plan(
             except (OSError, ValueError, KeyError):
                 log.warning("Exact task input source could not be retained; preserving complete input", exc_info=True)
         calibrated = int(estimated * ratio)
-        fits = (
-            calibrated + (NANO_MIN_HEADROOM_TOKENS if mode == "nano" else output_reserve)
-            <= (min(OWNER_NANO_TARGET_TOKENS, int(evidence.window_tokens)) if mode == "nano"
-                else int(evidence.window_tokens or 0))
-            if known_window
-            else None
-        )
         return ContextFitProjection(
             mode=mode,
             system_content_json=system_content_json,
             estimated_tokens=estimated,
             calibrated_tokens=calibrated,
             calibration_ratio=ratio,
-            fits_known_window=fits,
+            fits_known_window=_fits_window(mode, calibrated, int(evidence.window_tokens or 0), known_window, output_reserve),
             user_content_json=user_projection,
             memory_facts=memory_facts,
         )
@@ -901,10 +948,10 @@ def build_context_fit_plan(
     max_projection = _projection("max")
     low_projection = _projection("low")
     nano_projection = _projection("nano")
-    # Prediction may request mutable-history reclaim, but it never changes the
-    # owner's document projection. Task-local Low is authorized only after a
-    # real provider overflow on this route.
-    initial_mode = preferred
+    # Prediction may request mutable-history reclaim but never changes the owner's document
+    # projection, with one physical exception: a known window that cannot hold the preferred
+    # mode with even the shortest view of my memory (``initial_mode``, P3 §2.6 step 4).
+    # Otherwise task-local Low is authorized only after a real provider overflow on this route.
 
     core_payload = json.dumps(
         {
@@ -949,4 +996,5 @@ def build_context_fit_plan(
             "accountFingerprint": str(getattr(evidence, "account_fingerprint", "") or ""),
         } if route["provider"] == "claudexor" else {},
         evidence_source=str(getattr(evidence, "source", "") or ""),
+        core=core,
     )

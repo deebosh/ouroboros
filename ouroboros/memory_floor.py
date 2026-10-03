@@ -18,7 +18,8 @@ projection (story text, room text and the floor fact the task trace keeps).
 ``physical_mode`` lowers a task's starting mode (Max, Low, Nano) only when the fixed part
 of the preferred mode with the shortest view of my memory cannot fit the window minus the
 reply reserve on the route's calibrated estimate (§2.6 step 4, D-25): all of my memory is
-already addresses and the request still cannot be sent. Rendering stays
+already addresses and the request still cannot be sent. ``mode_views`` renders every mode of
+one plan and picks that starting mode (a new route re-renders it from the same snapshot). Rendering stays
 ``memory_view``'s; nothing here reads the chronicle, publishes a record or calls a model.
 """
 from __future__ import annotations
@@ -207,6 +208,14 @@ def render_view_for_mode(snapshot: mv.MemoryViewSnapshot, *, mode: str, owner_mo
                        lowered_from=lowered_from))
 
 
+TRACE_FIELDS = ("role", "room_id", "floor", "story_status")  # what a task trace keeps of a view receipt
+
+
+def trace_facts(receipt: Mapping[str, Any]) -> Dict[str, Any]:
+    """The part of a view receipt the task context and the task trace keep (``VIEW_TRACE_KEY``)."""
+    return {key: receipt[key] for key in TRACE_FIELDS if key in receipt}
+
+
 def view_receipt(snapshot: mv.MemoryViewSnapshot, story: str, room: str, facts: Mapping[str, Any]) -> Dict[str, Any]:
     """A projection's view fact (P3 §2.13): the floor fact plus the spec, the chronicle's state and block sizes.
 
@@ -248,3 +257,27 @@ def physical_mode(preferred: str, fixed_tokens_by_mode: Mapping[str, int], minim
         if frame["free_tokens"] is not None and frame["free_tokens"] >= 0:  # free space: no working margin in it
             return mode
     return candidates[-1]
+
+
+def mode_views(snapshot: mv.MemoryViewSnapshot, *, preferred: str, fixed_tokens_by_mode: Mapping[str, int],
+               window_tokens: Optional[int], known_window: bool, output_reserve: Optional[int],
+               ratio: float) -> Tuple[Dict[str, Tuple[str, str, Dict[str, Any]]], str]:
+    """Every mode's ``(story text, room text, view receipt)`` and the mode the task starts in.
+
+    The starting mode is ``physical_mode`` of the preferred one; the projection of a mode the
+    window chose names the change in its ``### Physical floor`` (and its fact, ``mode_switch``),
+    never in the runtime facts, which are captured before any mode is chosen.
+    """
+    window = int(window_tokens) if known_window and window_tokens else None
+    start = physical_mode(preferred, fixed_tokens_by_mode, minimal_view_tokens(snapshot, window_tokens=window),
+                          window_tokens=window, known_window=known_window, calibration_ratio=ratio,
+                          reserve_by_mode={mode: context_budget.context_mode_limits(mode, preferred, output_reserve)[1]
+                                           for mode in MODES})
+    views = {}
+    for mode in MODES:
+        story, room, facts = render_view_for_mode(
+            snapshot, mode=mode, owner_mode=preferred, window_tokens=window, known_window=known_window,
+            output_reserve=output_reserve, ratio=ratio, non_memory_tokens=fixed_tokens_by_mode[mode],
+            lowered_from=preferred if mode == start != preferred else None)
+        views[mode] = (story, room, view_receipt(snapshot, story, room, facts))
+    return views, start

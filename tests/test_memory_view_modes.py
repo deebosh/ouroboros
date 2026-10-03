@@ -7,7 +7,10 @@ starting mode drops only when the shortest view of my memory cannot fit, judged 
 route's calibrated estimate; an unknown window keeps the preferred mode and takes no
 step. An owner-selected Low or Nano target is a second boundary for its own steps
 only; task-local Low and a mode the window lowered have none (the owner's answer B,
-D-32, D-37). Each rule is pinned in both directions.
+D-32, D-37). A built plan starts in that mode, says so in the room's ``### Physical floor``
+(never in the runtime context) and in one owner-visible checkpoint, and a new route re-renders
+the view for its own window from the captured snapshot, reading no memory again (seam 23).
+Each rule is pinned in both directions.
 """
 from __future__ import annotations
 
@@ -184,3 +187,187 @@ def test_the_floor_fact_names_the_newest_row_and_the_records_shown_by_address():
     whole = mf.render_view_for_mode(snapshot, mode="max", owner_mode="max", window_tokens=1_050_000, known_window=True,
                                     output_reserve=65_536, ratio=1.0, non_memory_tokens=syn.FIXED["main"]["max"])[2]
     assert whole["floor"]["newest_addressed_row"] is None and whole["floor"]["pointer_records"] == []
+
+
+# --- A built plan (``context_fit``): the starting mode, the checkpoint and a new route (P3 §2.6 step 4, seam 23) ---
+
+_TASK = {"type": "task", "text": "hi", "id": "tmain", "chat_id": 1}
+
+
+def _built(tmp_path, monkeypatch, *, books=80_000, ratio=None):
+    """``(core, plan(window, **kw))`` on the shared installation; Max's books grown by ``books`` characters
+    so that Max's fixed part exceeds Low's (the test repository's own books are smaller than its nav map)."""
+    import dataclasses
+    from types import SimpleNamespace
+
+    from ouroboros import context, context_fit
+    from tests._memory_view_context import world
+
+    env, memory, _rooms = world(tmp_path)
+    core = context._capture_context_core(env, memory, dict(_TASK), None, None)
+    core = dataclasses.replace(core, architecture_md=core.architecture_md + "\n\n" + "word " * (books // 5))
+    if ratio is not None:
+        monkeypatch.setattr(context_fit, "_route_calibration_ratio", lambda *_a: ratio)
+
+    def plan(window, *, status="asserted", preferred="max"):
+        evidence = SimpleNamespace(route_fp="r", status=status, stale=status != "asserted", window_tokens=window)
+        return context._build_context_fit_plan(env, core, dict(_TASK), preferred_mode=preferred,
+                                               route_resolver=lambda *_a, **_kw: ({"model": "m", "provider": "p"}, evidence))
+    return core, plan
+
+
+def _needs(core, plan):
+    """Each mode's fixed part + the shortest view + its reserve, read off a roomy plan's floor facts (ratio 1)."""
+    from ouroboros.memory_view import snapshot_from_json
+
+    roomy = plan(10_000_000)
+    minimal = mf.minimal_view_tokens(snapshot_from_json(core.memory_view_json), window_tokens=10_000_000)
+    return {mode: 10_000_000 - roomy.projection(mode).memory_facts["floor"]["physical_allowance_tokens"] + minimal
+            for mode in mf.MODES}
+
+
+def test_a_built_task_starts_in_the_first_mode_its_known_window_can_hold(tmp_path, monkeypatch):
+    core, plan = _built(tmp_path, monkeypatch)
+    need = _needs(core, plan)
+    assert need["max"] > need["low"] + 1_000 > need["nano"] + 1_000
+    for window, expected in ((need["max"] + 50, "max"), (need["max"] - 50, "low"), (need["low"] - 50, "nano")):
+        built = plan(window)
+        assert built.initial_mode == expected, (window, expected)
+        assert built.preferred_mode == "max"  # the owner's mode is not changed, only where this task starts
+        switch = built.projection(expected).memory_facts["floor"]["mode_switch"]
+        assert switch == (None if expected == "max" else {"from": "max", "to": expected})
+    # Unknown or stale evidence never lowers the mode, however small the number it carries.
+    assert plan(need["nano"] - 50, status="failed").initial_mode == "max"
+    # An owner-selected smaller mode is never raised by a roomy window.
+    assert plan(10_000_000, preferred="low").initial_mode == "low"
+
+
+def test_the_starting_mode_follows_the_routes_calibrated_estimate(tmp_path, monkeypatch):
+    core, plan = _built(tmp_path, monkeypatch)
+    border = _needs(core, plan)["max"] - 50  # by the host's raw estimate Max misses by 50 tokens
+    assert plan(border).initial_mode == "low"
+    monkeypatch.setattr("ouroboros.context_fit._route_calibration_ratio", lambda *_a: 0.98)
+    assert plan(border).initial_mode == "max"  # the route counts 2 % fewer tokens: Max fits, the books stay
+    monkeypatch.setattr("ouroboros.context_fit._route_calibration_ratio", lambda *_a: 1.02)
+    assert plan(border + 100).initial_mode == "low"  # and 2 % more: a raw fit is not a fit
+
+
+def test_the_lowered_mode_is_a_line_of_the_rooms_physical_floor_never_of_the_runtime_context(tmp_path, monkeypatch):
+    from tests._memory_view_context import section
+
+    core, plan = _built(tmp_path, monkeypatch)
+    need = _needs(core, plan)
+    for window, mode in ((need["max"] - 50, "low"), (need["max"] + 50, "max")):
+        built = plan(window)
+        block_c = built.messages_for(built.initial_mode)[0]["content"][2]["text"]
+        line = (f"This window ({window} tokens) cannot hold Max with even the shortest view of my memory; "
+                f"this task started in {mode.capitalize()}.")
+        assert (line in section(block_c, "## This room (Main)")) == (mode == "low"), mode
+        assert "### Physical floor" in section(block_c, "## This room (Main)") or mode == "max"
+        assert "cannot hold Max" not in section(block_c, "## Runtime context")
+        # The other projections of the same plan carry no such line: only the one the task starts in.
+        for other in set(mf.MODES) - {built.initial_mode}:
+            assert "cannot hold Max" not in built.projection(other).system_content_json
+
+
+def test_the_loop_reports_a_lowered_start_as_one_owner_visible_checkpoint(tmp_path, monkeypatch):
+    import json
+    import queue
+
+    import ouroboros.loop as loop
+    from ouroboros.tools.registry import ToolRegistry
+
+    class FakeLLM:
+        def default_model(self):
+            return "test-model"
+
+    monkeypatch.setattr(loop, "call_llm_with_retry", lambda *_a, **_kw: ({"role": "assistant", "content": "done"}, 0.0))
+    monkeypatch.setattr(loop, "_run_task_acceptance_review_once", lambda **_kw: False)
+    monkeypatch.setenv("OUROBOROS_TASK_REVIEW_MODE", "off")
+    core, plan = _built(tmp_path / "w", monkeypatch)
+    need = _needs(core, plan)
+    for name, window in (("lowered", need["max"] - 50), ("kept", need["max"] + 50)):
+        root = tmp_path / name
+        root.mkdir()
+        registry = ToolRegistry(repo_dir=root, drive_root=root)
+        registry._ctx.context_fit_plan = plan(window)
+        loop.run_llm_loop(messages=[{"role": "user", "content": "hi"}], tools=registry, llm=FakeLLM(), drive_logs=root,
+                          emit_progress=lambda *_a, **_kw: None, incoming_messages=queue.Queue(), task_id="t1",
+                          drive_root=root)
+        events = [json.loads(line) for line in (root / "events.jsonl").read_text(encoding="utf-8").splitlines()
+                  if '"context_fit_physical_mode"' in line] if (root / "events.jsonl").exists() else []
+        if name == "lowered":
+            assert len(events) == 1 and events[0]["type"] == "task_checkpoint"
+            assert events[0]["preferred_mode"] == "max" and events[0]["effective_mode"] == "low"
+            assert events[0]["window_tokens"] == window and events[0]["owner_visible"] is True
+        else:
+            assert events == []
+
+
+def test_a_new_route_rerenders_the_view_for_its_window_without_reading_memory_again(tmp_path, monkeypatch):
+    import ouroboros.chat_chain
+    import ouroboros.chronicle_store
+    import ouroboros.memory_view
+
+    core, plan = _built(tmp_path, monkeypatch, books=0)
+    roomy = plan(10_000_000)
+    need = _needs(core, plan)
+
+    def refuse(*_a, **_kw):
+        raise AssertionError("a new route must not read the chronicle or the chat again")
+
+    monkeypatch.setattr(ouroboros.memory_view, "capture_memory_view", refuse)
+    monkeypatch.setattr(ouroboros.chat_chain, "iter_rows", refuse)
+    monkeypatch.setattr(ouroboros.chronicle_store.ChronicleStore, "__init__", refuse)
+
+    def on(plan_, window):
+        return plan_.reproject_for_route(window_tokens=window, known_window=True, ratio=1.0, output_reserve=65_536,
+                                         tool_schemas=None)
+
+    smaller = on(roomy, need["max"] + 2_000)  # Max still fits, but not with two working margins: the floor steps in
+    steps = smaller.projection("max").memory_facts["floor"]["steps"]
+    assert smaller.initial_mode == "max" and steps and set(steps) <= {"F1", "F1b", "F3"}
+    assert roomy.projection("max").memory_facts["floor"]["steps"] == {}
+    assert smaller.projection("max").system_content_json != roomy.projection("max").system_content_json
+    assert smaller.projection("max").estimated_tokens < roomy.projection("max").estimated_tokens
+    assert smaller.core_sha256 == roomy.core_sha256 and smaller.window_tokens == need["max"] + 2_000
+    tiny = on(roomy, need["nano"] + 50)
+    assert tiny.initial_mode == "nano" and tiny.projection("nano").memory_facts["floor"]["mode_switch"] == {
+        "from": "max", "to": "nano"}
+    larger = on(smaller, 10_000_000)  # back on a roomy route: every step gone, the very texts of the first plan
+    assert larger.initial_mode == "max" and larger.projection("max").memory_facts["floor"]["steps"] == {}
+    for mode in mf.MODES:
+        assert larger.projection(mode).system_content_json == roomy.projection(mode).system_content_json
+
+
+def test_a_route_switch_lowers_the_mode_names_it_and_moves_the_view_fact_to_the_new_projection(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import ouroboros.context
+    from ouroboros.loop_model_call import _rebind_context_fit_plan
+    from ouroboros.memory_inventory import VIEW_TRACE_KEY
+    from ouroboros.tools.registry import ToolRegistry
+
+    core, plan = _built(tmp_path / "w", monkeypatch)
+    need = _needs(core, plan)
+    roomy = plan(10_000_000)
+    for name, window, mode in (("smaller", need["max"] - 50, "low"), ("same", 10_000_000, "max")):
+        root = tmp_path / name
+        root.mkdir()
+        registry = ToolRegistry(repo_dir=root, drive_root=root)
+        registry._ctx._execution_trace = {VIEW_TRACE_KEY: {"floor": {"mode": "max"}}}
+        evidence = SimpleNamespace(route_fp="r2", status="asserted", stale=False, window_tokens=window)
+        monkeypatch.setattr(ouroboros.context, "_context_fit_route",
+                            lambda *_a, **_kw: ({"model": "m2", "provider": "p"}, evidence))
+        messages = roomy.messages_for("max")
+        rebound, active = _rebind_context_fit_plan(roomy, registry, messages, model="m2", use_local=False,
+                                                   preferred_mode="max", tool_schemas=[])
+        assert active == rebound.initial_mode == mode and rebound.model == "m2"
+        assert messages[0] == rebound.projection(mode).system_message()
+        facts = registry._ctx.memory_view_facts
+        assert facts["floor"]["mode"] == mode and registry._ctx._execution_trace[VIEW_TRACE_KEY] == facts
+        logs = root / "logs" / "events.jsonl"
+        kinds = [json.loads(line).get("checkpoint_kind") for line in logs.read_text(encoding="utf-8").splitlines()]
+        assert ("context_fit_physical_mode" in kinds) == (mode == "low")
+        assert "context_fit_route_rebound" in kinds
