@@ -1,9 +1,12 @@
-281
+502
 The module map gains the chat_chain.py row: the chat generation chain
 helpers (archive order, cursor-generation resolution, the A2A-free row
 stream, immutable source retention) moved out of consolidator.py into their
 own D15 module, and the same row then names the index-free chat row
 addresses (row:<chat_id>@<ts>#<sha12>, resolved by hint, then by the archive
 rotated after the row's ts) and the stream positions shared with the legacy
-cursor. Later steps of the same memory sprint update this first line to the
+cursor. The chronicle_store.py row follows it: the append-only derived
+memory journal with its disposable SQLite index, pages sealing row sets once,
+parts folding adjacent records once, room-head checks and typed refusals.
+Later steps of the same memory sprint update this first line to the
 chapter's net growth since 1347e33bf.

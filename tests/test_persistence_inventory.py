@@ -587,7 +587,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 300 -> 303: state-initialization witness plus named review source and review_inputs.
 # 303 -> 305: immutable retention names exact text-CAS manifest versions and the
 # existing blob copy destination; both stay under the documented observability store.
-EXPECTED_SCAN_PATHS = 308
+# 308 -> 312 (memory sprint, chronicle store): ``memory/chronicle`` with its append-only
+# ``records.jsonl``, the disposable ``index.sqlite3`` and the ``.publication.lock``; one
+# section-6 row each (the directory is answered by the deeper rows).
+EXPECTED_SCAN_PATHS = 312
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

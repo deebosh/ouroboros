@@ -205,6 +205,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── consciousness_allowance.py ← Rolling-24h consciousness spend read off the usage ledger; typed `allowance_unknown` on a read failure; read by the alarm and the single admission door in `supervisor/queue.py`
       ├── room_consolidation.py ← Per-room Light draft/correction and deterministic assembly; no cross-room LLM recombine (§6)
       ├── chat_chain.py        ← The chat generation chain (archives, then live), the A2A-free row stream with the legacy cursor's positions, index-free row addresses `row:<chat_id>@<ts>#<sha12>` (hint, then the archive rotated after `ts`) and `retain_memory_source` (§6)
+      ├── chronicle_store.py   ← Append-only derived memory (`records.jsonl` authority, disposable SQLite index): pages seal row sets once, parts fold adjacent records once, room-head checks, typed refusals (§6)
       ├── consolidator.py      ← Generation cursor, explicit `[MEMORY GAP]`, and knowledge nomination outcomes in `dialogue_meta.json` (§6)
       ├── memory_nomination_receipts.py ← Source-addressed pending nominations; no cross-batch retirement (§6)
       ├── memory.py            ← Scratchpad, identity, chat history
