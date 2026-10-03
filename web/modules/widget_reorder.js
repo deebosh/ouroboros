@@ -14,8 +14,8 @@
 import { widgetKey } from './widget_list.js';
 import { applyMasonry } from './masonry.js';
 import {
-    nearestWidgetWidth, normalizeWidgetSize, ownerSpans, stepWidgetWidth, WIDGET_FULL_SPAN, WIDGET_WIDTH_STEPS,
-    widgetWidth, widthColumns,
+    nearestWidthChoice, normalizeWidgetSize, ownerSpans, stepWidgetWidth, WIDGET_FULL_SPAN, WIDGET_WIDTH_STEPS,
+    widgetWidth, widthChoices,
 } from './widget_size.js';
 
 export function normalizeWidgetOrder(value) {
@@ -171,9 +171,10 @@ const widthName = (w) => WIDTH_NAMES.get(w) || `${w} columns`;
  * key order and the owner's spans; each plan it reports sets the list's
  * `data-widget-layout` (`stack` when the list is too narrow for two columns:
  * widths do not apply there). The card menu sets a width step or `null` (the
- * author default) through `setWidth`. On a board of two or more columns the
- * edge handle drags a card between steps with a live preview (Escape cancels)
- * and its arrow keys step it (Home / End: one column / full width). Every
+ * author default) through `setWidth`, on every card. The edge handle drags a card between the widths
+ * its steps can give it, which the masonry answers for the current board,
+ * with a live preview (Escape cancels), and its arrow keys step it (Home /
+ * End: one column / full width). Every
  * change, the menu's included, is named in the live region, shows at once and
  * is saved one write at a time: changes landing meanwhile merge into the next
  * write, so a card's last width is the one stored whatever order the replies
@@ -209,9 +210,18 @@ export function createWidgetWidths(list, options) {
         status.textContent = text;
         status.dataset.tone = tone;
     };
+    // Where a card sits in a plan: its width and its share of the row.
+    const placeAt = (plan, index) => ({
+        width: plan.placements[index].width, share: plan.placements[index].span / plan.columnCount,
+    });
+    // The widths the steps can give the card at `index` of the last plan, asked of
+    // the masonry for the board as it is (an owner width can change its columns).
+    const choicesAt = (index) => widthChoices(
+        (w) => placeAt(laid.replan(index, w), index), widthOf(laid.items[index].dataset.widgetKey || ''),
+    );
     // Each masonry plan: kept for the edge drag, and the list's mode for CSS and the menu.
-    const onLayout = (plan, keys) => {
-        laid = { plan, keys };
+    const onLayout = (plan, items, replan) => {
+        laid = { plan, items, replan };
         const mode = plan.availableColumns > 1 ? 'columns' : 'stack';
         if (list.dataset.widgetLayout !== mode) list.dataset.widgetLayout = mode;
     };
@@ -299,19 +309,18 @@ export function createWidgetWidths(list, options) {
         else announce(`Width: ${widthName(next)}`);
     }
 
-    // The drag measures in the columns of the last plan: the card starts at the
-    // columns it was placed across, and each column of pointer travel is one
-    // column pitch. A step that would not change what is shown previews nothing.
+    // The drag offers the widths the steps can give this card on the board as it
+    // is: the pointer's travel moves the card's right edge, and the nearest of
+    // those widths is previewed. A width the card already has previews nothing.
     function beginDrag(event, card) {
-        const key = card.dataset.widgetKey || '';
-        const at = laid ? laid.keys.indexOf(key) : -1;
-        const plan = laid?.plan;
-        // A stack (one column) and a lone card have no other column to grow into.
-        if (drag || at < 0 || plan.columnCount < 2 || event.button !== 0) return;
+        const at = laid ? laid.items.indexOf(card) : -1;
+        if (drag || at < 0 || event.button !== 0) return;
+        const choices = choicesAt(at);
+        // No step changes this card (the only card, or a stack): nothing to drag.
+        if (choices.length < 2) return;
         event.preventDefault();
         drag = {
-            key, card, from: plan.placements[at].span, count: plan.columnCount, width: null,
-            pitch: (list.clientWidth - plan.columnWidth) / (plan.columnCount - 1),
+            key: card.dataset.widgetKey || '', card, choices, from: placeAt(laid.plan, at), width: null,
             handle: event.currentTarget, pointerId: event.pointerId, x: event.clientX,
         };
         drag.handle.setPointerCapture?.(event.pointerId);
@@ -326,8 +335,8 @@ export function createWidgetWidths(list, options) {
             cancelDrag();
             return;
         }
-        const step = nearestWidgetWidth(drag.from + (event.clientX - drag.x) / drag.pitch, drag.count);
-        const next = widthColumns(step, drag.count) === drag.from ? null : step;
+        const choice = nearestWidthChoice(drag.choices, drag.from.width + event.clientX - drag.x);
+        const next = choice.share === drag.from.share ? null : choice.w;
         if (next === drag.width) return;
         drag.width = next;
         relayout();

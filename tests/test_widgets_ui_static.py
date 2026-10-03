@@ -550,6 +550,8 @@ def test_widgets_card_width_is_owner_ui_preference():
     assert "touch-action: none;" in handle
     assert "cursor: col-resize;" in handle
     assert '.widgets-list[data-widget-layout="stack"] .widgets-card-resize {' in css
+    # The edge drag offers what each step would make of the card: the masonry answers (`replan`).
+    assert "(index, owner) => planMasonryLayout(" in _read("web/modules/masonry.js")
     assert ".widgets-list.resizing iframe {" in css
 
 

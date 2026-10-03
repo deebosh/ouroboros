@@ -154,16 +154,20 @@ function layout(container, config) {
         item.style.setProperty('--masonry-y', `${placement.top}px`);
     });
     container.style.setProperty('--masonry-h', `${plan.height}px`);
-    config.onLayout?.(plan, keys);
+    // The caller may ask what one card would be under another owner span: a
+    // width depends on the spans alone, so the same specs answer, unmeasured.
+    config.onLayout?.(plan, items, (index, owner) => planMasonryLayout(
+        width, itemSpecs.map((spec, i) => (i === index ? { ...spec, owner } : spec)), config,
+    ));
 }
 
 /**
  * Bind (once per container) and schedule a layout. A later call with
  * `options.order` replaces the key order, with `options.spans` the owner's
- * spans by key, with `options.onLayout` the callback that receives each plan
- * and its keys, and relayouts; every call returns the same idempotent
- * disposer, which disconnects the three observers, cancels a pending frame and
- * forgets the container.
+ * spans by key, with `options.onLayout` the callback that receives each plan,
+ * its items and `replan(index, owner)`, and relayouts; every call returns the
+ * same idempotent disposer, which disconnects the three observers, cancels a
+ * pending frame and forgets the container.
  */
 export function applyMasonry(container, options = {}) {
     if (!container) return () => {};

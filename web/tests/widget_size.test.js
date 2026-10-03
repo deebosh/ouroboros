@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 
 import {
     defaultWidgetWidth,
-    nearestWidgetWidth,
+    nearestWidthChoice,
     normalizeWidgetSize,
     ownerSpans,
     stepWidgetWidth,
@@ -12,7 +12,7 @@ import {
     WIDGET_SIZE_MAX_ITEMS,
     WIDGET_WIDTH_STEPS,
     widgetWidth,
-    widthColumns,
+    widthChoices,
 } from '../modules/widget_size.js';
 
 // The owner's card widths (docs/DESIGN.md "Widgets board"): a width is a column
@@ -66,22 +66,29 @@ test('width steps: 1, 2, 3 columns and Full width; keys walk them, held at both 
     assert.equal(stepWidgetWidth(5, -1), 3);
 });
 
-test('a width takes its columns of the board; a drag lands on the nearest step, the whole row is Full width', () => {
-    assert.equal(widthColumns(2, 4), 2);
-    assert.equal(widthColumns(3, 2), 2, 'clamped to the board');
-    assert.equal(widthColumns(WIDGET_FULL_SPAN, 5), 5);
-    // Four columns: 1, 2, 3 and the whole row.
-    assert.equal(nearestWidgetWidth(0.2, 4), 1);
-    assert.equal(nearestWidgetWidth(1.6, 4), 2);
-    assert.equal(nearestWidgetWidth(2.5, 4), 2, 'a tie keeps the narrower step');
-    assert.equal(nearestWidgetWidth(3.7, 4), WIDGET_FULL_SPAN);
-    assert.equal(nearestWidgetWidth(9, 4), WIDGET_FULL_SPAN);
-    // Three columns: three of them is the whole row, so a drag there is Full width.
-    assert.equal(nearestWidgetWidth(3, 3), WIDGET_FULL_SPAN);
-    assert.equal(nearestWidgetWidth(2.2, 3), 2);
-    // Five columns: four is between 3 and the row; the tie keeps 3.
-    assert.equal(nearestWidgetWidth(4, 5), 3);
-    assert.equal(nearestWidgetWidth(4.6, 5), WIDGET_FULL_SPAN);
+test('the steps\' widths on a board are its choices: equal shares are one choice, one choice means a fixed card', () => {
+    // What the masonry makes of each step for one card (width px, share of the row).
+    const place = (table) => (w) => table[w];
+    const twoCards = { 1: { width: 693, share: 1 / 2 }, 2: { width: 928, share: 2 / 3 }, 3: { width: 1045, share: 3 / 4 }, 12: { width: 1400, share: 1 } };
+    assert.deepEqual(widthChoices(place(twoCards), 1).map(({ w, width }) => [w, width]), [[1, 693], [2, 928], [3, 1045], [12, 1400]]);
+    // Three columns fill a three-column row like Full width does (rounding aside): one choice,
+    // the narrower step unless the card's current step is the other one.
+    const threeColumns = { 1: { width: 308, share: 1 / 3 }, 2: { width: 630, share: 2 / 3 }, 3: { width: 952, share: 1 }, 12: { width: 951, share: 3 / 3 } };
+    assert.deepEqual(widthChoices(place(threeColumns), 1).map(({ w }) => w), [1, 2, 3]);
+    assert.deepEqual(widthChoices(place(threeColumns), WIDGET_FULL_SPAN).map(({ w }) => w), [1, 2, WIDGET_FULL_SPAN]);
+    // The only card on a board: every step is the whole row, however it rounds.
+    const alone = { 1: { width: 1400, share: 1 }, 2: { width: 1400, share: 1 }, 3: { width: 1399, share: 1 }, 12: { width: 1400, share: 1 } };
+    assert.equal(widthChoices(place(alone), 1).length, 1);
+});
+
+test('a drag lands on the choice nearest the edge, a tie keeping the narrower', () => {
+    const choices = [{ w: 1, width: 693 }, { w: 2, width: 928 }, { w: 3, width: 1045 }, { w: 12, width: 1400 }];
+    assert.equal(nearestWidthChoice(choices, 0).w, 1);
+    assert.equal(nearestWidthChoice(choices, 900).w, 2);
+    assert.equal(nearestWidthChoice(choices, 1100).w, 3);
+    assert.equal(nearestWidthChoice(choices, 9000).w, 12);
+    assert.equal(nearestWidthChoice(choices, (928 + 1045) / 2).w, 2, 'a tie keeps the narrower');
+    assert.equal(nearestWidthChoice([{ w: 12, width: 900 }, { w: 1, width: 300 }], 600).w, 1, 'narrower by width, not by order');
 });
 
 test('the size module measures nothing and writes no DOM', () => {

@@ -123,8 +123,9 @@ function board(keys = ['demo:a', 'demo:b'], { width = 1200, spans = {} } = {}) {
     globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
     globalThis.MutationObserver = class { observe() {} disconnect() {} };
     const doc = listener();
-    const cards = keys.map((key) => {
+    const cardOf = (key) => {
         const props = new Map();
+        const attrs = new Set();
         const card = {
             dataset: { widgetKey: key },
             classList: classes(...(spans[key] === 2 ? ['widgets-card-span-2'] : [])),
@@ -132,6 +133,8 @@ function board(keys = ['demo:a', 'demo:b'], { width = 1200, spans = {} } = {}) {
             offsetHeight: 100,
             props,
             style: styleOf(props),
+            hasAttribute: (name) => attrs.has(name),
+            toggleAttribute: (name, on) => (on ? attrs.add(name) : attrs.delete(name), on),
         };
         card.handle = {
             ...listener(),
@@ -142,7 +145,8 @@ function board(keys = ['demo:a', 'demo:b'], { width = 1200, spans = {} } = {}) {
             releasePointerCapture() { this.captured = null; },
         };
         return card;
-    });
+    };
+    const cards = keys.map(cardOf);
     const status = { textContent: '', dataset: { tone: 'neutral' } };
     const list = {
         dataset: {},
@@ -172,6 +176,12 @@ function board(keys = ['demo:a', 'demo:b'], { width = 1200, spans = {} } = {}) {
     return {
         list, cards, doc, saves, status, widths, prefs: () => prefs,
         adopt(sizes) { prefs = { ...prefs, widget_size: sizes }; },
+        add(key) {
+            cards.push(cardOf(key));
+            tabs.push({ key, span: spans[key] || 1 });
+            widths.relayout();
+            return cards[cards.length - 1];
+        },
     };
 }
 
@@ -352,19 +362,19 @@ test('Home on a card the masonry widened beyond its author span stores one colum
     assert.equal(status.textContent, 'Width: 1 column');
 });
 
-test('dragging the edge previews steps in the board\'s column pitch through the masonry; drop saves, Escape cancels', async () => {
+test('dragging the edge previews the widths its steps can give through the masonry; drop saves, Escape cancels', async () => {
     const { list, cards, doc, saves, status } = board();
     const handle = cards[0].handle;
-    const pitch = 607;  // two columns of 593px and the 14px gap
+    // Two one-column cards on 1200px: the steps give the first 593, 794, 895 or 1200px.
     const down = { button: 0, pointerId: 7, clientX: 400, currentTarget: handle, preventDefault() {} };
     handle.fire('pointerdown', down);
     assert.equal(list.classList.contains('resizing'), true);
     assert.equal(handle.captured, 7);
-    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 0.6 * pitch });
-    assert.deepEqual(cards.map(width), ['1200px', '593px'], 'nearer the whole row than one column: Full width');
-    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 0.2 * pitch });
-    assert.equal(width(cards[0]), '593px', 'back over its own column: no preview');
-    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 0.9 * pitch });
+    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 607 });
+    assert.deepEqual(cards.map(width), ['1200px', '593px'], 'the right edge at the row\'s end: Full width');
+    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 80 });
+    assert.equal(width(cards[0]), '593px', 'back over its own width: no preview');
+    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 607 });
     await settle();
     assert.equal(saves.length, 0, 'a preview is not a save');
     handle.fire('pointerup', { pointerId: 7 });
@@ -376,7 +386,7 @@ test('dragging the edge previews steps in the board\'s column pitch through the 
 
     // From the whole row back toward one column, then Escape.
     handle.fire('pointerdown', { ...down, pointerId: 8 });
-    handle.fire('pointermove', { pointerId: 8, clientX: 400 - 0.7 * pitch });
+    handle.fire('pointermove', { pointerId: 8, clientX: 400 - 607 });
     assert.equal(width(cards[0]), '593px');
     const escape = { key: 'Escape', preventDefault() {}, stopPropagation() {} };
     doc.fire('keydown', escape);
@@ -400,4 +410,22 @@ test('a list too narrow for two columns is a stack: widths do not apply and the 
     widths.relayout();
     assert.equal(list.dataset.widgetLayout, 'columns');
     assert.deepEqual(cards.map(width), ['1200px', '593px']);
+});
+
+test('on a two-card board the edge drag reaches every width the menu gives, 2 and 3 columns included', async () => {
+    // Two one-column cards on a 1400px list: the plan has two columns, but an owner
+    // width changes the column count, so the steps give 693, 928, 1045 or 1400px.
+    const { cards, saves, status } = board(['demo:a', 'demo:b'], { width: 1400 });
+    const handle = cards[0].handle;
+    handle.fire('pointerdown', { button: 0, pointerId: 3, clientX: 500, currentTarget: handle, preventDefault() {} });
+    const at = (travel) => {
+        handle.fire('pointermove', { pointerId: 3, clientX: 500 + travel });
+        return width(cards[0]);
+    };
+    assert.deepEqual([at(235), at(352), at(707), at(0)], ['928px', '1045px', '1400px', '693px']);
+    at(352);
+    handle.fire('pointerup', { pointerId: 3 });
+    assert.equal(status.textContent, 'Width: 3 columns');
+    await settle();
+    assert.deepEqual(saves[0].payload, { widget_size: { 'demo:a': { w: 3, h: 0 } } });
 });

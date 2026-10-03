@@ -47,21 +47,31 @@ export function ownerSpans(sizes) {
     return Object.fromEntries(Object.entries(sizes || {}).filter(([, size]) => size?.w).map(([key, size]) => [key, size.w]));
 }
 
-/** How many of `count` columns a width takes: Full width all of them. */
-export function widthColumns(w, count) {
-    return w >= WIDGET_FULL_SPAN ? count : Math.min(w, count);
+/**
+ * What the steps can make of one card: `placeOf(w)` answers the card's width
+ * (px) and its share of the row (columns spanned / the board's columns) under
+ * step `w`; the masonry plans it, and an owner width can change the number of
+ * columns. Steps with the same share are one choice (their pixel widths differ
+ * by rounding at most), kept as the card's `current` step when it is among them
+ * and as the narrower step otherwise. One choice means no step changes the card.
+ */
+export function widthChoices(placeOf, current = 0) {
+    const choices = [];
+    for (const { w } of WIDGET_WIDTH_STEPS) {
+        const { width, share } = placeOf(w);
+        const same = choices.find((choice) => choice.share === share);
+        if (!same) choices.push({ w, width, share });
+        else if (w === current) same.w = w;
+    }
+    return choices;
 }
 
-/**
- * The step a drag of the right edge lands on: the nearest to `columns`
- * (fractional) on a board of `count` columns, a tie keeping the narrower. The
- * whole row is Full width, never a numbered step that happens to fill it.
- */
-export function nearestWidgetWidth(columns, count) {
-    const steps = WIDGET_WIDTH_STEPS.filter(({ w }) => w >= WIDGET_FULL_SPAN || w < count);
-    return steps.reduce((best, { w }) => (
-        Math.abs(widthColumns(w, count) - columns) < Math.abs(widthColumns(best, count) - columns) ? w : best
-    ), steps[0].w);
+/** The choice whose width is nearest `width` (px), a tie keeping the narrower. */
+export function nearestWidthChoice(choices, width) {
+    return choices.reduce((best, choice) => {
+        const nearer = Math.abs(choice.width - width) - Math.abs(best.width - width);
+        return nearer < 0 || (nearer === 0 && choice.width < best.width) ? choice : best;
+    });
 }
 
 /** The next step wider (`delta` > 0) or narrower than `w`, held at the first and last step. */

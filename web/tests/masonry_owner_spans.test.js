@@ -117,7 +117,7 @@ function installFrames() {
     };
 }
 
-test('applyMasonry plans with the owner spans by key and hands each plan to onLayout', () => {
+test('applyMasonry plans with the owner spans by key and hands onLayout each plan, its items and a replan', () => {
     const flush = installFrames();
     const a = fakeItem('demo:a');
     const b = fakeItem('demo:b');
@@ -130,14 +130,23 @@ test('applyMasonry plans with the owner spans by key and hands each plan to onLa
     };
     const plans = [];
     const dispose = applyMasonry(container, {
-        order: ['demo:a', 'demo:b'], spans: { 'demo:a': 12 }, onLayout: (plan, keys) => plans.push([plan, keys]),
+        order: ['demo:b', 'demo:a'], spans: { 'demo:a': 12 }, onLayout: (...args) => plans.push(args),
     });
     flush();
     assert.equal(a.props.get('--masonry-w'), '600px', 'Full width spans both tracks');
-    assert.equal(b.props.get('--masonry-y'), '114px');
+    assert.equal(a.props.get('--masonry-y'), '114px');
     assert.equal(plans.length, 1);
-    assert.deepEqual(plans[0][1], ['demo:a', 'demo:b']);
-    assert.deepEqual([plans[0][0].columnCount, plans[0][0].availableColumns], [2, 2]);
+    const [plan, items, replan] = plans[0];
+    assert.deepEqual(items, [b, a], 'the items in the planned (key) order');
+    assert.deepEqual([plan.columnCount, plan.availableColumns], [2, 2]);
+    // What a card would be under another owner span: the same answer a plan of
+    // that board gives, with nothing measured again.
+    const specs = [{ span: 1, height: 100 }, { span: 1, height: 100, owner: 12 }];
+    for (const owner of [undefined, 1, 2, 3, 12]) {
+        const asked = specs.map((spec, i) => (i === 0 ? { ...spec, owner } : spec));
+        assert.deepEqual(replan(0, owner), planMasonryLayout(600, asked), `owner ${owner}`);
+    }
+    assert.deepEqual(replan(0, undefined), plan, 'no other span: the plan itself');
     assert.deepEqual(container.dataset, {}, 'masonry writes no attribute; the caller decides what a plan means');
     // A later call replaces the spans; without them the card is back to its author span.
     applyMasonry(container, { spans: {} });
