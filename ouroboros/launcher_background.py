@@ -243,9 +243,18 @@ class Background:
         self.indicator = cls(self) if cls is not None else None
         self._asking = threading.Lock()
         self._poller = None
+        # An open request (a second launch) can arrive during the boot, before the window exists: it is
+        # kept until pywebview's ``shown`` and cancels a quiet start. Re-entrant: a POSIX signal handler
+        # runs on the thread that may hold it.
+        self._opening = threading.RLock()
+        self._open_pending = False
+        self._can_show = False
 
     def listen(self, lock_path) -> "Background":
-        """A manual second launch shows this window: a kernel event on Windows, SIGURG elsewhere."""
+        """A manual second launch shows this window: a kernel event on Windows, SIGURG elsewhere.
+
+        Installed right after the single-instance lock, before the boot; a request that comes
+        before the window can be shown is kept (``show_window``)."""
         try:
             if sys.platform == "win32":
                 from ouroboros.launcher_tray import listen_for_activation
@@ -260,7 +269,12 @@ class Background:
         return self
 
     def start_hidden(self, intent: str) -> bool:
-        """Quiet start (D3): an automatic launch with background on starts hidden; ``run`` shows it if no icon comes up."""
+        """Quiet start (D3): an automatic launch with background on starts hidden; ``run`` shows it if no icon comes up.
+
+        A manual launch that asked for the window during the boot cancels it."""
+        with self._opening:
+            if self._open_pending:
+                return False
         hidden = self.indicator is not None and intent == "automatic" and keep_running_choice() == "true"
         if hidden:
             self.indicator.begin_hidden()
@@ -269,6 +283,7 @@ class Background:
     def attach(self, window):
         self.window = window
         window.events.closing += self.closing
+        window.events.shown += self._window_shown  # set for a hidden window too (pywebview 5.4)
         if self.indicator is not None:
             window.events.before_show += self._attach_native
         return window
@@ -321,9 +336,13 @@ class Background:
         threading.Thread(target=post, name="ouroboros-indicator-panic", daemon=True).start()
 
     def show_window(self) -> None:
-        """Open the window: the icon or its Open, a banner, the Dock, a second launch."""
-        if self.window is None:
-            return
+        """Open the window: the icon or its Open, a banner, the Dock, a second launch.
+
+        Before pywebview has shown the window (hidden or not) the request is kept, never dropped."""
+        with self._opening:
+            if not self._can_show:
+                self._open_pending = True
+                return
         if self.indicator is not None:
             self.indicator.restore(self.window)
             return
@@ -340,6 +359,14 @@ class Background:
             return {"ok": bool(banner or cue.get("ok")), "status": "background", "banner": bool(banner),
                     "sound_played": bool(cue.get("sound_played"))}
         return request_native_attention(self.window.show if self.window is not None else None, sound=bool(sound))
+
+    def _window_shown(self) -> None:
+        """pywebview ``shown``: from now on a request opens the window; one kept since the boot does so now."""
+        with self._opening:
+            self._can_show = True
+            pending, self._open_pending = self._open_pending, False
+        if pending:
+            self.show_window()
 
     def _attach_native(self) -> None:
         try:

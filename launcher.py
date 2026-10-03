@@ -1229,11 +1229,12 @@ def main(argv=()):
         return
 
     import atexit
-
     atexit.register(release_pid_lock)
 
     if not automatic_launch_allowed(options.launch_intent, DATA_DIR, log):
         return
+    # Listen before the long boot: a manual second launch meanwhile is kept and opens the window once it exists.
+    background = None if _headless else Background(lambda: _on_closing(), _read_port_file, _shutdown_event).listen(PID_FILE)
 
     if not check_git():
         log.warning("Git not found.")
@@ -1565,7 +1566,6 @@ def main(argv=()):
         stop_tray_before_exit(release_pid_lock)
         os._exit(0)
 
-    background = Background(_on_closing, _read_port_file, _shutdown_event).listen(PID_FILE)
     window = webview.create_window(
         f"Ouroboros v{APP_VERSION}",
         url=url,

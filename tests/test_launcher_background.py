@@ -35,7 +35,7 @@ class Hook:
 
 class Window:
     def __init__(self, answer=None):
-        self.events = SimpleNamespace(closing=Hook(), before_show=Hook())
+        self.events = SimpleNamespace(closing=Hook(), before_show=Hook(), shown=Hook())
         self.localization = {"global.ok": "OK", "global.cancel": "Cancel"}
         self.visible, self.calls, self.answer = True, [], answer
 
@@ -105,8 +105,8 @@ def make(monkeypatch):
         created.append(background.shutdown)
         window = Window(answer)
         background.attach(window)
-        for handler in window.events.before_show.handlers:
-            handler()  # pywebview fires before_show synchronously once the native window exists
+        fire(window, "before_show")  # synchronous once the native window exists
+        fire(window, "shown")  # pywebview sets it for a hidden window too
         return background, window
 
     yield factory
@@ -115,6 +115,11 @@ def make(monkeypatch):
     for thread in threading.enumerate():
         if thread.name.startswith("ouroboros-"):
             thread.join(timeout=5)
+
+
+def fire(window, event):
+    for handler in getattr(window.events, event).handlers:
+        handler()
 
 
 def close(background, window):
@@ -502,18 +507,90 @@ def test_a_second_launch_signals_sigurg_which_an_older_launcher_survives(tmp_pat
         old.wait(timeout=10)
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="macOS uses MachSignals (D2 probe); Windows an event")
-def test_the_running_launcher_shows_its_window_on_sigurg(monkeypatch, tmp_path):
-    monkeypatch.setattr(lb, "indicator_class", lambda: None)
+def test_an_open_request_before_the_window_exists_is_kept_and_cancels_the_quiet_start(settings, monkeypatch):
+    """A manual second launch while the first copy still boots (review r1): kept, never dropped."""
+    monkeypatch.setattr(lb, "indicator_class", lambda: FakeIndicator)
+    choose(settings, "true")
+    background = lb.Background(lambda: None, lambda: 8765, threading.Event())
+    background.show_window()  # the listener's call during bootstrap: there is no window yet
+    assert background.start_hidden("automatic") is False, "the owner asked for the window"
+    window = Window()
+    background.attach(window)
+    fire(window, "before_show")
+    assert window.calls == []
+    fire(window, "shown")
+    assert window.calls == ["show"] and not background.indicator.hidden
+    background.show_window()  # once shown, a request acts at once
+    assert window.calls == ["show", "show"]
+
+    background = lb.Background(lambda: None, lambda: 8765, threading.Event())
+    assert background.start_hidden("automatic") is True  # no request yet: a quiet start
+    window = Window()
+    background.attach(window)
+    fire(window, "before_show")
+    background.show_window()  # lands after that decision, before pywebview showed the window
+    assert window.calls == []
+    fire(window, "shown")
+    assert window.calls == ["show"] and not background.indicator.hidden
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal; Windows uses its kernel event")
+def test_a_real_sigurg_during_the_boot_opens_the_window_once_it_exists(settings, monkeypatch, tmp_path):
+    """The signal.signal branch (Linux) on any POSIX host; macOS's MachSignals queues the
+    same signal until the run loop starts, after the window exists (MAC_PROBE addendum)."""
+    monkeypatch.setattr(lb, "indicator_class", lambda: FakeIndicator)
+    monkeypatch.setattr(lb, "sys", SimpleNamespace(platform="linux"))
+    choose(settings, "true")
     previous = signal.getsignal(signal.SIGURG)
-    background = lb.Background(lambda: None, lambda: 0, threading.Event())
-    background.window = Window()
     try:
-        background.listen(tmp_path / "ouroboros.pid")
-        os.kill(os.getpid(), signal.SIGURG)
-        wait_for(lambda: background.window.calls == ["show"])
+        background = lb.Background(lambda: None, lambda: 8765, threading.Event()).listen(tmp_path / "ouroboros.pid")
+        signal.raise_signal(signal.SIGURG)  # a second launch while bootstrap and the server start run
+        assert background.start_hidden("automatic") is False
+        window = Window()
+        background.attach(window)
+        fire(window, "before_show")
+        fire(window, "shown")
+        assert window.calls == ["show"]
+        signal.raise_signal(signal.SIGURG)
+        assert window.calls == ["show", "show"]
     finally:
         signal.signal(signal.SIGURG, previous)
+
+
+@pytest.mark.parametrize("headless", [False, True])
+def test_the_launcher_listens_for_a_second_launch_before_its_long_boot(monkeypatch, headless):
+    import launcher
+
+    class Boot(Exception):
+        pass
+
+    order = []
+
+    class Recorder:
+        def __init__(self, exit_launcher, read_port, shutdown_event):
+            order.append("background")
+
+        def listen(self, lock_path):
+            order.append(("listen", lock_path))
+            return self
+
+    def check_git():
+        order.append("boot")
+        raise Boot
+
+    monkeypatch.setitem(sys.modules, "webview", types.ModuleType("webview"))
+    monkeypatch.setattr(launcher, "IS_WINDOWS", False)
+    monkeypatch.setattr(launcher, "_detect_headless", lambda: None)
+    monkeypatch.setattr(launcher, "_headless", headless)
+    monkeypatch.setattr(launcher, "_external_ui", False)
+    monkeypatch.setattr(launcher, "acquire_pid_lock", lambda: True)
+    monkeypatch.setattr(launcher, "release_pid_lock", lambda: None)  # atexit keeps this stand-in
+    monkeypatch.setattr(launcher, "automatic_launch_allowed", lambda *args: True)
+    monkeypatch.setattr(launcher, "Background", Recorder)
+    monkeypatch.setattr(launcher, "check_git", check_git)
+    with pytest.raises(Boot):
+        launcher.main(["--launch-intent", "automatic"])
+    assert order == (["boot"] if headless else ["background", ("listen", launcher.PID_FILE), "boot"])
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows kernel event contract")
