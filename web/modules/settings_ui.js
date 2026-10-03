@@ -786,7 +786,9 @@ export function renderSettingsPage() {
                         <div class="settings-section-copy">
                             While this client is running, Ouroboros can pull you back to a question or a
                             finished task. Notifications arrive whether or not this window has focus, and
-                            clicking one opens its source.
+                            clicking one opens its source; a banner from the tray or menu-bar indicator
+                            opens the window as you left it. Sound silences this client's tone and the
+                            macOS sound; a Windows tray balloon follows Windows' own sound setting.
                             <br><strong>Per device, not per account:</strong> like the theme above, these choices
                             are stored by this client alone and never sent to the server.
                             Where this system exposes no notifications, or permission is denied, alerts appear

@@ -1508,7 +1508,12 @@ collapsed. The same holds for the several wire shapes a finished task has.
 **One sound.** At most one sound per event. Where the system shows a banner, the
 system owns the sound; where a desktop bridge is available, the launcher owns
 one system sound (or reports that it could not play one); otherwise the app
-plays one short tone. Never both, and the Sound choice remains authoritative.
+plays one short tone. Never both, and the Sound choice remains authoritative,
+with one stated exception: the banner the Windows notification-area icon shows
+while the window is hidden in background mode sounds by Windows' own
+notification settings (the WinForms balloon call has no silent form), so
+turning Sound off silences the page tone, the macOS sound and the Windows beep,
+not that balloon.
 
 **Each open window is its own client.** Settings, permission and the
 duplicate-collapsing that keeps one event to one notification all belong to one
@@ -1562,3 +1567,7 @@ notification, including a denied permission.
   first observed frame is its terminal — it would notify once.
 - An event that happens while the socket is down never rings: reconnect replays
   history, and history is deliberately silent.
+- The Windows notification-area balloon shown while the window is hidden in
+  background mode follows Windows' own sound setting; the client's Sound choice
+  does not silence it. A silent native send needs a direct shell call that this
+  version does not make.
