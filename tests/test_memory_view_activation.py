@@ -175,3 +175,20 @@ def test_a_journal_that_fails_while_the_story_is_read_still_leaves_a_view(tmp_pa
     monkeypatch.undo()
     healthy = mv.capture_memory_view(tmp_path, MAIN_TASK, mv.ROLE_DEFAULTS["integrator"])
     assert healthy.active and mv.render_story(healthy).startswith("## My story\n")
+
+
+def test_the_answer_path_takes_no_model_client_and_runs_no_paid_memory_upkeep():
+    """Rendering my memory is free (P3 §2.14, §5.3 item 1): the builder accepts no model client
+    or fit callback, and the assembler imports no model client or memory writer."""
+    import inspect
+
+    from ouroboros.context import build_llm_messages
+
+    params = inspect.signature(build_llm_messages).parameters
+    assert {"llm", "fit_candidate"}.isdisjoint(params) and "tool_schemas" in params
+    _tree, top, nested = _imports("context.py")
+    forbidden = ("ouroboros.llm", "ouroboros.consolidator", "ouroboros.room_consolidation", "ouroboros.chronicle_view")
+    assert not [name for name in top | nested if name.startswith(forbidden)], top | nested
+    # The guard has teeth: the retired upkeep's own import is flagged.
+    probe = ast.parse("def f():\n    from ouroboros.consolidator import maintain_memory_pressure\n")
+    assert [node.module for node in ast.walk(probe) if isinstance(node, ast.ImportFrom)][0].startswith(forbidden)

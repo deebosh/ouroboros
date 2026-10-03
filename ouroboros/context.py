@@ -1350,9 +1350,13 @@ def build_llm_messages(
     task: Dict[str, Any],
     review_context_builder: Optional[Any] = None,
     ctx: Any = None,
-    *, llm: Any = None, tool_schemas: Optional[List[Dict[str, Any]]] = None,
-    fit_candidate: Optional[Any] = None,
+    *, tool_schemas: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """The first request of a task: the plan's projection for its starting mode, and the cap info.
+
+    No model is called on this path: my memory is rendered, never prepared by a paid pass
+    (memory spec P3 §2.14); a window too small for it addresses lines and pages instead.
+    """
     # Keep the legacy public shape while publishing the immutable plan on the
     # existing ToolContext for the ordinary loop.  Commit/scope reviewers do not
     # call this builder and therefore cannot take the Low retry.
@@ -1365,46 +1369,6 @@ def build_llm_messages(
         ctx=ctx,
         tool_schemas=tool_schemas,
     )
-    maintenance = None
-    if plan.preferred_mode == "nano" and llm is not None and ctx is not None and task_input_sources(task) != "declared":
-        from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
-        from ouroboros.consolidator import maintain_memory_pressure
-        import copy
-
-        def fits() -> bool:
-            proposed = plan.messages_for("nano")
-            if fit_candidate is not None:
-                return fit_candidate(proposed, tool_schemas or []).get("accepted") is True
-            return (estimate_context_prompt_tokens(proposed, tool_schemas)
-                    + NANO_MIN_HEADROOM_TOKENS <= OWNER_NANO_TARGET_TOKENS)
-
-        if not fits():
-            canonical_root = pathlib.Path(task.get("budget_drive_root") or getattr(env, "budget_drive_root", None) or memory.drive_root)
-            working_memory = memory if memory.drive_root.resolve() == canonical_root.resolve() else Memory(drive_root=canonical_root, repo_dir=memory.repo_dir)
-            maintenance_ctx = copy.copy(ctx)
-            maintenance_ctx.drive_root = canonical_root
-            maintenance_ctx.budget_drive_root = str(canonical_root)
-            maintenance_ctx.task_id = str(task.get("id") or getattr(ctx, "task_id", "") or "context_maintenance")
-            ctx.emit_progress_fn("Shared memory is larger than this working window; consolidating complete sources before continuing.")
-
-            def rebuild_and_fit() -> bool:
-                nonlocal plan
-                plan = build_context_fit_plan(env, memory, task, review_context_builder, preferred_mode="nano", ctx=ctx,
-                                              tool_schemas=tool_schemas)
-                return fits()
-
-            maintenance = maintain_memory_pressure(working_memory, llm, maintenance_ctx, fits=rebuild_and_fit,
-                                                   current_topic=str(task.get("text") or ""))
-            from ouroboros.utils import append_jsonl
-
-            if not append_jsonl(canonical_root / "logs/events.jsonl", {
-                "ts": utc_now_iso(), "type": "context_memory_maintenance",
-                "task_id": maintenance_ctx.task_id, **maintenance,
-            }):
-                log.warning("Context memory maintenance receipt could not be written; source journals remain authoritative")
-            ctx._context_memory_maintenance = maintenance
-            if maintenance["status"] != "fitting":
-                ctx.emit_progress_fn("Shared memory remains larger than the measured working window; original sources were preserved.")
     if ctx is not None:
         ctx.context_fit_plan = plan
     messages = plan.messages_for(plan.initial_mode)
@@ -1423,8 +1387,6 @@ def build_llm_messages(
         "nano_estimated_tokens": plan.nano_projection.estimated_tokens if plan.nano_projection else None,
         "nano_calibrated_tokens": plan.nano_projection.calibrated_tokens if plan.nano_projection else None,
     }}
-    if maintenance is not None:
-        cap_info["context_memory_maintenance"] = maintenance
     view_facts = _record_memory_view(env, memory, task, ctx, plan)
     if view_facts:
         cap_info["memory_view"] = view_facts
