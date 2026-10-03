@@ -23,7 +23,8 @@ Once an activation exists the import is a no-op: the legacy files are not read a
 so a later change to them writes neither a record nor a copy. A busy
 ``.consolidation.lock`` (another importer, or the old writer of a process still
 running an earlier version during an update) answers ``import_pending``; nothing
-is lost and the next caller imports. Each memory tool activates first.
+is lost and the next caller imports. Each memory tool activates first and waits
+for a busy lock (``wait=True``), so it never reads or writes before the import.
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ouroboros.chronicle_store import source_time_span
-from ouroboros.platform_layer import file_lock_exclusive_nb, file_unlock
+from ouroboros.platform_layer import file_lock_exclusive, file_lock_exclusive_nb, file_unlock
 from ouroboros.utils import assert_test_data_path
 
 IMPORT_TASK_ID = "chronicle-import"
@@ -71,11 +72,14 @@ def legacy_frontier(store: Any) -> Dict[str, Any]:
     return dict(store.scan_state().get("legacy_frontier") or {})
 
 
-def ensure_activated(store: Any) -> Dict[str, Any]:
+def ensure_activated(store: Any, *, wait: bool = False) -> Dict[str, Any]:
     """The activation receipt, importing the legacy memory first when there is none (spec §4.6).
 
     Returns the receipt, ``{"kind": "import_pending", ...}`` while the legacy lock is
     held elsewhere, or ``{"kind": "import_refused", ...}`` with the store's typed refusal.
+    ``wait=True`` blocks on a busy lock until the other importer finishes, then finds
+    its receipt (or imports when it left none); ``import_pending`` then means only that
+    the wait itself failed. A caller that must not act before the import uses it.
     """
     active = store.activation()
     if active:
@@ -86,7 +90,7 @@ def ensure_activated(store: Any) -> Dict[str, Any]:
     fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o644)
     try:
         try:
-            file_lock_exclusive_nb(fd)
+            (file_lock_exclusive if wait else file_lock_exclusive_nb)(fd)
         except OSError:
             return {"kind": "import_pending", "reason": "legacy_memory_lock_busy"}
         try:

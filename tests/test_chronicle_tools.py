@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import pathlib
 import re
 
@@ -466,6 +467,72 @@ def test_the_first_memory_tool_call_imports_once_and_every_later_call_takes_the_
     kinds = [record["kind"] for line in (tmp_path / "memory" / "chronicle" / "records.jsonl").read_text(
         encoding="utf-8").splitlines() for record in json.loads(line)["records"]]
     assert kinds.count("activation") == 1 and kinds.count("legacy") == 1
+
+
+def _hold_import_lock(root):
+    from ouroboros.platform_layer import file_lock_exclusive_nb
+
+    path = root / "memory" / ".consolidation.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_CREAT | os.O_WRONLY, 0o644)
+    file_lock_exclusive_nb(fd)
+    return fd
+
+
+def test_a_tool_meeting_another_importer_waits_and_reads_the_imported_memory_with_its_epoch(tmp_path, monkeypatch):
+    """Two parallel first reads after an update: the second meets the first's import lock. It waits
+    and then reads the imported room, with pre-epoch rows unattributed, never "complete" over an
+    empty journal and never signing an old outgoing row as mine."""
+    from ouroboros import chronicle_import
+    from ouroboros.platform_layer import file_unlock
+
+    rows = _legacy_install(tmp_path)
+    chat(tmp_path, [{"chat_id": 1, "direction": "out", "ts": ts(3), "task_id": "kid00001", "subagent_task_id": "kid00001",
+                     "parent_task_id": "taskA001", "text": "child report"}])
+    holder = _hold_import_lock(tmp_path)
+    real_wait = chronicle_import.file_lock_exclusive
+
+    def other_importer_finishes(fd):
+        # The holder (the other first call) completes its import and releases; only then is the lock free.
+        chronicle_import._import(ChronicleStore(tmp_path))
+        file_unlock(holder)
+        os.close(holder)
+        real_wait(fd)
+
+    monkeypatch.setattr(chronicle_import, "file_lock_exclusive", other_importer_finishes)
+    listing = _memory_read(ctx_for(tmp_path))
+    assert listing.split("\n")[0] != "room 1; head 0" and "legacy legacy-b00-r1" in listing
+    assert "complete: no records after seq 0" not in listing
+    read = _memory_read(ctx_for(tmp_path), rows=True)
+    assert f"[{ts(2)}; outgoing, author not recorded; {addr(rows[1])}] Understood." in read
+    assert "; Ouroboros;" not in read
+    store = ChronicleStore(tmp_path)
+    assert [r["kind"] for r in store.records(kinds=["activation"])] == ["activation"]
+
+
+def test_a_tool_whose_import_has_not_completed_reads_and_writes_nothing_and_says_so(tmp_path, monkeypatch):
+    from ouroboros import chronicle_import
+
+    rows = _legacy_install(tmp_path)
+    monkeypatch.setattr(chronicle_import, "_import", lambda store: {
+        "kind": "import_refused", "reason": "invalid", "detail": "identity collision", "conflict_ids": ["legacy-b00-r1"]})
+    ctx = ctx_for(tmp_path)
+    replies = [json.loads(_memory_read(ctx)), json.loads(_memory_read(ctx, rows=True)),
+               json.loads(_chronicle_write(ctx, kind="note", text="for later")),
+               json.loads(_memory_mark(ctx, text="the rule", address=addr(rows[0])))]
+    for reply in replies:
+        assert reply["ok"] is False and reply["reason"] == "memory_not_activated"
+        assert "import_refused" in reply["detail"] and reply["conflict_ids"] == ["legacy-b00-r1"]
+    assert not ChronicleStore(tmp_path).log_path.exists()
+    # Without the refusal the same calls read and write as usual.
+    monkeypatch.undo()
+    assert _memory_read(ctx).startswith("room 1; head ")
+    assert write(ctx, kind="note", text="for later")["ok"]
+    # A journal lost under its index is the store's own refusal, not an argument error.
+    ChronicleStore(tmp_path).log_path.unlink()
+    lost = json.loads(_memory_read(ctx))
+    assert lost["reason"] == "memory_not_activated" and "import_failed" in lost["detail"]
+    assert "authority missing" in lost["detail"]
 
 
 # --- memory_mark ---------------------------------------------------------------------------------

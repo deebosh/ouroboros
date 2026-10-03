@@ -823,8 +823,8 @@ class ChronicleStore:
         with self._index() as db:
             return self._state(db, "activation")
 
-    def ensure_activated(self) -> Dict[str, Any]:
+    def ensure_activated(self, *, wait: bool = False) -> Dict[str, Any]:
         """The activation receipt, importing the legacy dialogue memory once (``chronicle_import``)."""
         from ouroboros.chronicle_import import ensure_activated
 
-        return ensure_activated(self)
+        return ensure_activated(self, wait=wait)

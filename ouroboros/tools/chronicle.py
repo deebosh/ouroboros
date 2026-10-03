@@ -17,7 +17,11 @@ own address. Once the chronicle is active, reading writes nothing to disk.
 
 Each tool first makes sure the chronicle is activated: the first call on an
 install imports the legacy dialogue memory once (``chronicle_import``, no model
-call), and every later call finds the receipt and goes straight on.
+call), and every later call finds the receipt and goes straight on. A call that
+meets another importer waits for it; when the import still has not completed
+the tool answers ``memory_not_activated`` and reads and writes nothing, because
+without the receipt a room would look empty and old rows would lose their
+lineage epoch.
 
 ``memory_mark`` places a bookmark in my own words on a chronicle record, a chat
 row, a task or a retained source; an optional quote must be an exact substring
@@ -51,14 +55,27 @@ def _root(ctx: Any) -> Path:
     return canonical_data_root(ctx)
 
 
+class _NotActivated(Exception):
+    """The one-time legacy import has not completed; the tool reads and writes nothing."""
+
+    def __init__(self, receipt: Dict[str, Any]):
+        super().__init__(str(receipt.get("reason") or receipt.get("kind")))
+        self.receipt = receipt
+
+
 def _activated(root: Path) -> ChronicleStore:
     """The store after the one-time legacy import (spec §4.6, K11): a repeat call is the fast path.
 
-    A busy import lock (``import_pending``) or a refused import leaves the tool working on
-    what exists; the next call imports, and nothing is lost meanwhile.
+    A busy import lock is waited for until the other importer finishes; a refused
+    or failed import raises ``_NotActivated``, so no tool reads or writes before the import.
     """
     store = ChronicleStore(root)
-    store.ensure_activated()
+    try:
+        receipt = store.ensure_activated(wait=True)
+    except ValueError as exc:  # the store's own refusal to open its journal, not an argument error
+        raise _NotActivated({"kind": "import_failed", "reason": f"{type(exc).__name__}: {exc}"}) from exc
+    if not isinstance(receipt, dict) or receipt.get("kind") != "activation":
+        raise _NotActivated(receipt if isinstance(receipt, dict) else {"kind": "import_failed"})
     return store
 
 
@@ -114,6 +131,16 @@ def _refused(ctx: Any, reason: str, detail: str = "", **fields: Any) -> str:
     payload = {"ok": False, "reason": reason, "detail": detail,
                **{key: value for key, value in fields.items() if value not in (None, (), [])}}
     return _reply(ctx, payload, code="TOOL_REPORTED_FAILURE")
+
+
+def _not_activated(ctx: Any, exc: _NotActivated) -> str:
+    receipt = exc.receipt
+    detail = "; ".join(str(part) for part in (receipt.get("kind"), receipt.get("reason"), receipt.get("detail"))
+                       if part)
+    return _refused(ctx, "memory_not_activated",
+                    f"memory is not active ({detail}): the one-time legacy memory import has not completed "
+                    "or the journal cannot be opened; nothing was read or written",
+                    conflict_ids=list(receipt.get("conflict_ids") or ()))
 
 
 def _published(ctx: Any, result: PublishResult, **extra: Any) -> str:
@@ -380,6 +407,8 @@ def _chronicle_write(ctx: Any, kind: str = "", room_id: Any = None, text: str = 
     try:
         root = _root(ctx)
         return writer(ctx, root, _activated(root), focus_signature(ctx), args)
+    except _NotActivated as exc:
+        return _not_activated(ctx, exc)
     except ValueError as exc:
         return _arg_error(ctx, str(exc))
     except (OSError, TimeoutError) as exc:
@@ -708,6 +737,8 @@ def _memory_read(ctx: Any, node_id: str = "", room_id: Any = None, after_seq: in
                               start, limit)
         else:
             text = _read_records(root, _room(ctx, root, room_id), after_seq, limit)
+    except _NotActivated as exc:
+        return _not_activated(ctx, exc)
     except chat_chain.RowAddressError as exc:
         return _arg_error(ctx, f"a row bound does not resolve: {exc.resolution.get('status')}")
     except ValueError as exc:
@@ -800,6 +831,8 @@ def _memory_mark(ctx: Any, text: str = "", node_id: str = "", address: str = "",
                 room = str(room_id).strip()
             result = store.mark(target, str(text or ""), author, room_id=room or _room(ctx, root, None),
                                 scope=str(scope or "room"), quote=quote)
+    except _NotActivated as exc:
+        return _not_activated(ctx, exc)
     except ValueError as exc:
         return _arg_error(ctx, str(exc))
     except (OSError, TimeoutError) as exc:
