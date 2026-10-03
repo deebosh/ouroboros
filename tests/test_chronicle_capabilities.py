@@ -1,7 +1,10 @@
-"""Focus signature of memory writes (memory spec §6.3, K8, orchestrator correction to the nanny test).
+"""Who may use the chronicle tools, and the focus signature of memory writes.
 
-The tool and set parity parts of this file arrive with the chronicle tools; this
-part pins who the host says wrote a knowledge note, each role both ways.
+Memory spec §5.4 (sets) and §6.3, K8 (the signature, with the orchestrator's
+correction to the nanny test). The sets: the integrating mind writes chronicle
+pages, a presence reads and marks but writes no page, a native reviewer sees
+none of the three, and only the short mark receipt is exempt from truncation.
+The delegated-child sets change in a later step of the same sprint (c7).
 """
 from __future__ import annotations
 
@@ -83,3 +86,62 @@ def test_signature_carries_task_lineage_chat_and_observed_route(tmp_path):
     ctx.current_chat_id = 3
     assert focus_signature(ctx)["focus"]["chat_id"] == 3
     assert focus_signature(_ctx(tmp_path, "solo0001"))["focus"]["root_task_id"] == "solo0001"
+
+
+# --- the chronicle tools in the capability sets (§5.4) ----------------------------------------------
+
+MEMORY_TOOLS = ("chronicle_write", "memory_read", "memory_mark")
+
+
+def test_catalog_exports_the_three_tools_once_without_an_author_field():
+    names = [entry.name for entry in tools.get_tools()]
+    assert all(names.count(name) == 1 for name in MEMORY_TOOLS)
+    for entry in tools.get_tools():
+        if entry.name in MEMORY_TOOLS:
+            parameters = entry.schema["parameters"]
+            assert parameters["additionalProperties"] is False and "author" not in parameters["properties"]
+
+
+def test_integrating_mind_writes_pages_and_presence_reads_and_marks_only():
+    from ouroboros.tool_capabilities import (
+        COGNITIVE_MEMORY_TOOL_NAMES, CORE_TOOL_NAMES, READ_ONLY_PARALLEL_TOOLS, UNTRUNCATED_TOOL_RESULTS,
+        tool_result_limit,
+    )
+
+    assert set(MEMORY_TOOLS) <= CORE_TOOL_NAMES
+    assert {"memory_read", "memory_mark"} <= COGNITIVE_MEMORY_TOOL_NAMES
+    assert "chronicle_write" not in COGNITIVE_MEMORY_TOOL_NAMES
+    # Only the short mark receipt is never cut; a read pages itself under its own cap.
+    assert "memory_mark" in UNTRUNCATED_TOOL_RESULTS
+    assert not {"chronicle_write", "memory_read"} & UNTRUNCATED_TOOL_RESULTS
+    assert tool_result_limit("memory_read") == 80_000 > tool_result_limit("chronicle_write")
+    assert "memory_read" in READ_ONLY_PARALLEL_TOOLS
+    assert not {"chronicle_write", "memory_mark"} & READ_ONLY_PARALLEL_TOOLS
+
+
+def test_presence_ceiling_reads_and_marks_memory_but_writes_no_page():
+    from ouroboros.presence_authority import build_presence_capability_ceiling, presence_ceiling_allows_tool
+    from ouroboros.presence_capabilities import PresenceProfileResolution
+    from ouroboros.presence_runtime import ResolvedPresenceRuntime
+
+    resolution = PresenceProfileResolution(
+        active=(), missing_required=(), missing_optional=(), orphaned=(),
+        runtime=ResolvedPresenceRuntime("main", 10, 10, False), profile_fingerprint="a" * 64,
+        selection_fingerprint="b" * 64, required_selections_present=True)
+    ceiling = build_presence_capability_ceiling(skill_name="community-helper", skill_content_hash="c" * 64,
+                                                state_fingerprint="d" * 64, resolution=resolution)
+    assert presence_ceiling_allows_tool(ceiling, "memory_read")
+    assert presence_ceiling_allows_tool(ceiling, "memory_mark")
+    assert not presence_ceiling_allows_tool(ceiling, "chronicle_write")
+
+
+def test_native_reviewer_sees_none_of_the_memory_tools_but_keeps_its_inspection_tools(tmp_path):
+    from ouroboros.review_native_episode import inspection_registry
+
+    data = tmp_path / "data"
+    data.mkdir()
+    registry, _ctx, schemas = inspection_registry(str(tmp_path), data)
+    names = {schema["function"]["name"] for schema in schemas}
+    assert "read_file" in names and not set(MEMORY_TOOLS) & names
+    for name in MEMORY_TOOLS:
+        assert registry.get_schema_by_name(name) is None

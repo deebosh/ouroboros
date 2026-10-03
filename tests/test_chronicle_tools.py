@@ -1,0 +1,544 @@
+"""The memory tools: chronicle_write, memory_read, memory_mark (memory spec §5).
+
+chronicle_write: a page names a range or a set of tasks and the host publishes
+the exact row set, stamped and with checked quotes; a stale room head is refused
+with ids, never text. memory_read: text with one header line per record or row,
+every mode bounded by ``tool_result_limit("memory_read")`` with its continuation
+named on the second line, and nothing written to disk. memory_mark: one target,
+an exact quote, view and release. No test calls a model or the network.
+"""
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import pathlib
+import re
+
+import pytest
+
+from ouroboros import chat_chain
+from ouroboros.chronicle_store import ChronicleStore
+from ouroboros.tool_capabilities import tool_result_limit
+from ouroboros.tools.chronicle import (
+    _chronicle_write, _memory_mark, _memory_read, check_quotes, host_stamp, page_covers,
+)
+from ouroboros.tools.registry import ToolContext
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+LIMIT = tool_result_limit("memory_read")
+LEGACY = {"kind": "legacy_helper", "writer": "old_consolidator", "attribution": "retelling by Light, not lived"}
+LIGHT = {"kind": "helper", "route": "configured-light"}
+
+
+def ctx_for(root: pathlib.Path, task_id: str = "root0001", **fields) -> ToolContext:
+    fields.setdefault("current_chat_id", 1)
+    return ToolContext(repo_dir=root, drive_root=root, task_id=task_id, **fields)
+
+
+def ts(n: int) -> str:
+    return f"2026-10-01T{n // 3600 % 24:02d}:{n // 60 % 60:02d}:{n % 60:02d}+00:00"
+
+
+def chat(root: pathlib.Path, rows) -> list:
+    path = root / "logs" / "chat.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return list(rows)
+
+
+def addr(row) -> str:
+    return chat_chain.format_address(chat_chain.row_address(row))
+
+
+def sha(row) -> str:
+    return chat_chain.source_row_id(row)
+
+
+def write(ctx, **args) -> dict:
+    return json.loads(_chronicle_write(ctx, **args))
+
+
+def snapshot(root: pathlib.Path) -> dict:
+    return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def second_line(text: str) -> str:
+    return text.split("\n", 2)[1]
+
+
+# --- chronicle_write: pages ---------------------------------------------------------------------
+
+def project_chat(root: pathlib.Path, name: str) -> int:
+    from ouroboros.projects_registry import create_project
+
+    return int(create_project(root, name)["chat_id"])
+
+
+def test_range_page_publishes_its_room_rows_as_a_set_with_stamp_and_source_facts(tmp_path):
+    side = project_chat(tmp_path, "side-room")
+    rows = chat(tmp_path, [
+        {"chat_id": 1, "direction": "in", "ts": ts(1), "text": "Please check the build", "client_message_id": "m1"},
+        {"chat_id": side, "direction": "in", "ts": ts(2), "text": "another room"},
+        {"chat_id": 1, "direction": "out", "ts": ts(3), "task_id": "taskA001", "text": "The build is red."},
+        {"chat_id": 1, "direction": "system", "ts": ts(4), "type": "task_summary", "task_id": "taskA001",
+         "summary_kind": "terminal_root_projection", "status": "failed", "outcome": "Failed",
+         "outcome_phase": "error", "reason_detail": "Reviewers rejected it.", "text": "Failed. Root task taskA001.",
+         "result_ref": {"kind": "task_result", "task_id": "taskA001", "reader": "get_task_result"}},
+    ])
+    ctx = ctx_for(tmp_path)
+    reply = write(ctx, kind="page", text="I found the build red; the reviewers rejected my fix.",
+                  covers={"from": addr(rows[0]), "to": addr(rows[3])})
+    assert reply["ok"] and reply["reason"] == "saved" and reply["kind"] == "page" and reply["room_id"] == "1"
+    assert reply["sequence"] == reply["room_head"] and reply["rows"] == 3
+    assert reply["first"] == addr(rows[0]) and reply["last"] == addr(rows[3])
+    assert reply["coverage_facts"]["by_author"] == {"host": 1, "human": 1, "ouroboros": 1}
+    assert reply["stamp"] == {"failed": 1}
+    page = ChronicleStore(tmp_path).get(reply["node_id"])
+    # The other room's row between the bounds is not this room's and is not sealed.
+    assert page["covers"]["rows"] == [sha(rows[0]), sha(rows[2]), sha(rows[3])]
+    assert page["covers"]["mode"] == "range" and page["covers"]["stream_span"] == [0, 3]
+    assert page["covers"]["task_ids"] == ["taskA001"]
+    assert page["host_stamp"]["tasks"] == [{
+        "task_id": "taskA001", "status": "failed", "outcome": "Failed", "outcome_phase": "error",
+        "source": "terminal_root_projection", "review_verdict": "Reviewers rejected it.",
+        "result_ref": {"kind": "task_result", "task_id": "taskA001", "reader": "get_task_result"}}]
+    assert page["author"]["kind"] == "mind" and page["author"]["focus"]["role"] == "root"
+    assert page["author"]["task_id"] == "root0001"
+    assert ChronicleStore(tmp_path).sealed_row_refs(str(side)) == set()
+
+
+def test_task_page_takes_task_rows_and_bound_owner_words_and_leaves_an_interleaved_task_open(tmp_path):
+    ask_a = {"chat_id": 1, "direction": "in", "ts": ts(1), "text": "Fix the login", "client_message_id": "mA"}
+    ask_b = {"chat_id": 1, "direction": "in", "ts": ts(2), "text": "Draft the release note", "client_message_id": "mB"}
+    unbound = {"chat_id": 1, "direction": "in", "ts": ts(3), "text": "ok thanks", "client_message_id": "mC"}
+    origin = {"chat_id": 1, "client_message_id": "mA", "ts": ts(1),
+              "text_sha256": hashlib.sha256(b"Fix the login").hexdigest()}
+    rows = chat(tmp_path, [
+        ask_a, ask_b, unbound,
+        {"chat_id": 1, "direction": "out", "ts": ts(4), "task_id": "taskA001", "text": "Login fixed.",
+         "origin_message_ref": origin},
+        {"chat_id": 1, "direction": "out", "ts": ts(5), "task_id": "taskB001", "text": "Release note drafted."},
+        {"chat_id": 1, "direction": "out", "ts": ts(6), "task_id": "kidA0001", "root_task_id": "taskA001",
+         "parent_task_id": "taskA001", "subagent_task_id": "kidA0001", "text": "Child report."},
+    ])
+    annotations = tmp_path / "logs" / "chat_annotations.jsonl"
+    annotations.write_text(json.dumps({"ts": ts(2), "type": "chat_annotation", "client_message_id": "mB",
+                                       "action": "promote_chat_to_task", "target": "taskB001",
+                                       "status": "scheduled"}) + "\n", encoding="utf-8")
+    ctx = ctx_for(tmp_path)
+    covered = page_covers(tmp_path, "1", task_ids=["taskA001"])
+    assert [row for _address, row in covered["rows"]] == [rows[0], rows[3], rows[5]]
+    first = write(ctx, kind="page", text="I fixed the login; my child reported.", covers={"task_ids": ["taskA001"]})
+    assert first["ok"] and first["rows"] == 3
+    assert first["coverage_facts"]["by_author"] == {"child": 1, "human": 1, "ouroboros": 1}
+    # The interleaved task's page passes: its rows were never sealed by the first page.
+    second = write(ctx, kind="page", text="I drafted the release note.", covers={"task_ids": ["taskB001"]})
+    assert second["ok"] and second["rows"] == 2  # promote annotation binds the owner's words
+    sealed = ChronicleStore(tmp_path).sealed_row_refs("1")
+    assert sha(unbound) not in sealed and sha(ask_a) in sealed and sha(ask_b) in sealed
+    # A range over rows the task pages hold is refused with their ids, never their text.
+    again = json.loads(_chronicle_write(ctx, kind="page", text="dup", covers={"from": addr(rows[0]),
+                                                                              "to": addr(rows[1])}))
+    assert again["ok"] is False and again["reason"] == "already_sealed"
+    assert again["conflict_ids"] == [first["node_id"], second["node_id"]]
+    assert "login" not in json.dumps(again).lower()
+
+
+def test_stale_expected_sequence_returns_the_head_and_ids_without_text_and_a_current_one_saves(tmp_path):
+    rows = chat(tmp_path, [{"chat_id": 1, "direction": "in", "ts": ts(n), "text": f"owner words {n}"}
+                           for n in range(1, 5)])
+    ctx = ctx_for(tmp_path)
+    head = int(re.match(r"room 1; head (\d+)", _memory_read(ctx)).group(1))
+    assert head == 0
+    other = write(ctx, kind="note", text="SECRET-NOTE-TEXT for my future self")
+    assert other["ok"] and other["room_head"] == other["sequence"]
+    stale = json.loads(_chronicle_write(ctx, kind="page", text="based on an old head",
+                                        covers={"from": addr(rows[0]), "to": addr(rows[1])},
+                                        expected_sequence=head))
+    assert stale["ok"] is False and stale["reason"] == "revision_conflict"
+    assert stale["current_head"] == other["sequence"] and stale["conflict_ids"] == [other["node_id"]]
+    assert "SECRET-NOTE-TEXT" not in json.dumps(stale)
+    assert ChronicleStore(tmp_path).records("1", kinds=["page"]) == []
+    fresh = write(ctx, kind="page", text="based on the current head",
+                  covers={"from": addr(rows[0]), "to": addr(rows[1])}, expected_sequence=other["sequence"])
+    assert fresh["ok"] and fresh["sequence"] == fresh["room_head"] > other["sequence"]
+    # Without expected_sequence a page of another arc is not held back by the head.
+    free = write(ctx, kind="page", text="another arc", covers={"from": addr(rows[2]), "to": addr(rows[3])})
+    assert free["ok"]
+
+
+def test_forged_quote_is_refused_and_an_exact_quote_by_its_speaker_passes(tmp_path):
+    rows = chat(tmp_path, [
+        {"chat_id": 1, "direction": "in", "ts": ts(1), "text": "Ship it only after the tests pass."},
+        {"chat_id": 1, "direction": "out", "ts": ts(2), "task_id": "taskA001", "text": "I will run them first."},
+    ])
+    ctx = ctx_for(tmp_path)
+    covers = {"from": addr(rows[0]), "to": addr(rows[1])}
+    owner = {"address": addr(rows[0]), "text": "only after the tests pass", "speaker": "human"}
+    for forged in ({**owner, "speaker": "ouroboros"}, {**owner, "text": "ship it now"},
+                   {**owner, "address": addr(rows[1])}):
+        refused = json.loads(_chronicle_write(ctx, kind="page", text="t", covers=covers, quotes=[forged]))
+        assert refused["ok"] is False and refused["reason"] == "quote_mismatch"
+        assert check_quotes(tmp_path, [owner, forged]) == (False, 1)
+    assert ChronicleStore(tmp_path).records("1", kinds=["page"]) == []
+    mine = {"address": addr(rows[1]), "text": "I will run them first.", "speaker": "ouroboros"}
+    assert check_quotes(tmp_path, [owner, mine]) == (True, None)
+    saved = write(ctx, kind="page", text="The owner set a condition; I promised to test first.", covers=covers,
+                  quotes=[owner, mine])
+    assert saved["ok"]
+    assert ChronicleStore(tmp_path).get(saved["node_id"])["quotes"] == [owner, mine]
+    # A page without quotes is published as well: the host inserts no words itself.
+    assert write(ctx, kind="note", text="n")["ok"]
+
+
+def test_note_is_written_and_a_later_page_of_its_task_covers_it_once(tmp_path):
+    rows = chat(tmp_path, [{"chat_id": 1, "direction": "out", "ts": ts(n), "task_id": "root0001",
+                            "text": f"step {n}"} for n in range(1, 5)])
+    ctx = ctx_for(tmp_path)
+    note = write(ctx, kind="note", text="Open thread: the owner still owes a decision on pricing.")
+    assert note["ok"] and note["kind"] == "note"
+    stored = ChronicleStore(tmp_path).get(note["node_id"])
+    assert stored["task_id"] == "root0001" and stored["room_id"] == "1" and stored["author"]["kind"] == "mind"
+    first = write(ctx, kind="page", text="first arc", covers={"from": addr(rows[0]), "to": addr(rows[1])})
+    assert first["notes"] == 1
+    assert f"note:{note['node_id']}" in ChronicleStore(tmp_path).sealed_row_refs("1")
+    # The same task's later arc does not take the already sealed note again.
+    later = write(ctx, kind="page", text="second arc", covers={"from": addr(rows[2]), "to": addr(rows[3])})
+    assert later["ok"] and later["notes"] == 0
+
+
+def test_default_room_is_own_room_and_chat_id_zero_is_an_address(tmp_path):
+    assert write(ctx_for(tmp_path, current_chat_id=0), kind="note", text="hidden")["room_id"] == "0"
+    meta_only = ctx_for(tmp_path, current_chat_id=None, task_metadata={"chat_id": 0})
+    assert write(meta_only, kind="note", text="hidden too")["room_id"] == "0"
+    assert write(meta_only, kind="note", text="explicit", room_id="12")["room_id"] == "12"
+    assert _memory_read(ctx_for(tmp_path, current_chat_id=0)).startswith("room 0; head ")
+    nowhere = ctx_for(tmp_path, current_chat_id=None)
+    refused = _chronicle_write(nowhere, kind="note", text="lost")
+    assert "TOOL_ARG_ERROR" in refused and "room_id is required" in refused
+    assert write(nowhere, kind="note", text="addressed", room_id="7")["room_id"] == "7"
+
+
+def test_part_correction_and_decision_go_through_the_store_rules(tmp_path):
+    store, ctx = ChronicleStore(tmp_path), ctx_for(tmp_path)
+    for block in (0, 1):
+        assert store.publish([{"id": f"legacy-b{block:02d}-r5", "kind": "legacy", "room_id": "5",
+                               "text": f"retelling {block}", "author": LEGACY,
+                               "metadata": {"legacy_type": "era", "legacy_block": block}}]).ok
+    head = store.room_head("5")
+    unbased = json.loads(_chronicle_write(ctx, kind="part", text="fold", member_ids=["legacy-b00-r5"]))
+    assert unbased["reason"] == "revision_required" and unbased["current_head"] == head
+    # The members' own room is the default, not this task's room.
+    part = write(ctx, kind="part", text="I lived 30.07-25.09 like this.", member_ids=["legacy-b00-r5"],
+                 expected_sequence=head)
+    assert part["ok"] and part["room_id"] == "5"
+    assert json.loads(_chronicle_write(ctx, kind="part", text="again", member_ids=["legacy-b00-r5"],
+                                       expected_sequence=part["room_head"]))["reason"] == "already_folded"
+    first = write(ctx, kind="correction", target_id="legacy-b01-r5", text="It was 26.09, not 25.09.")
+    assert first["ok"] and first["revision"] == first["node_id"]
+    again = json.loads(_chronicle_write(ctx, kind="correction", target_id="legacy-b01-r5", text="second"))
+    assert again["reason"] == "revision_required" and again["current_revision"] == first["node_id"]
+    assert write(ctx, kind="correction", target_id="legacy-b01-r5", text="second",
+                 expected_revision=first["node_id"])["ok"]
+    draft = store.publish_page(room_id="5", text="Light's draft", author=LIGHT,
+                               covers={"mode": "range", "rows": ["r1"], "stream_span": [3, 3]})
+    assert draft.ok
+    decided = write(ctx, kind="decision", target_id=draft.record["id"], accepted=False, reason="wrong period")
+    assert decided["ok"] and decided["kind"] == "decision"
+    assert all(record["id"] != draft.record["id"] for record in store.room_records("5"))
+    assert "TOOL_ARG_ERROR" in _chronicle_write(ctx, kind="decision", target_id=draft.record["id"])
+    assert "TOOL_ARG_ERROR" in _chronicle_write(ctx, kind="essay", text="x")
+
+
+# --- memory_read ---------------------------------------------------------------------------------
+
+def test_room_read_is_text_with_the_head_line_and_one_header_per_record(tmp_path):
+    rows = chat(tmp_path, [{"chat_id": 1, "direction": "in", "ts": ts(1), "text": "owner words"}])
+    ctx = ctx_for(tmp_path)
+    page = write(ctx, kind="page", text="PAGE TEXT\nsecond line", covers={"from": addr(rows[0]), "to": addr(rows[0])})
+    mark = json.loads(_memory_mark(ctx, text="MARK TEXT", node_id=page["node_id"], quote="PAGE TEXT"))
+    text = _memory_read(ctx)
+    lines = text.split("\n")
+    assert lines[0] == f"room 1; head {page['sequence']}"
+    assert lines[1].startswith(f"complete: no records after seq {mark['sequence']}")
+    assert lines[2].startswith(f"[page {page['node_id']}; room 1; mind (root root0001); final; covers ")
+    assert lines[2].endswith(f"seq {page['sequence']}]") and lines[3:5] == ["PAGE TEXT", "second line"]
+    assert lines[5].startswith(f"[mark {mark['mark_id']}; room 1;") and lines[6:] == ["MARK TEXT", "quote: PAGE TEXT"]
+    with pytest.raises(ValueError):
+        json.loads(text)
+    assert _memory_read(ctx, after_seq=mark["sequence"]).split("\n")[1].startswith("complete: no records after")
+
+
+def test_rows_read_attributes_each_row_by_its_source_fields_as_text(tmp_path):
+    rows = chat(tmp_path, [
+        {"chat_id": 1, "direction": "system", "type": "quiz_answer", "ts": ts(1),
+         "quiz": {"quiz_id": "q1", "question": "Which?", "options": [{"label": "Alpha"}, {"label": "Beta"}],
+                  "answered_index": 1}, "client_message_id": "quiz_answer:q1"},
+        {"chat_id": 1, "direction": "system", "type": "task_summary", "summary_kind": "host_task_facts", "ts": ts(2),
+         "task_id": "taskA001", "status": "completed", "outcome": "Done", "outcome_phase": "done", "text": "",
+         "result_ref": {"kind": "task_result", "task_id": "taskA001", "reader": "get_task_result"}},
+        {"chat_id": 1, "direction": "out", "ts": ts(3), "task_id": "kid00001", "subagent_task_id": "kid00001",
+         "parent_task_id": "taskA001", "text": "child report"},
+        {"chat_id": 1, "direction": "out", "ts": ts(4), "task_id": "taskA001", "text": "my answer"},
+    ])
+    text = _memory_read(ctx_for(tmp_path), rows=True)
+    lines = text.split("\n")
+    assert lines[0] == "room 1; rows" and lines[1].startswith("complete: no further rows")
+    assert lines[2].startswith(f"[{ts(1)}; Owner; {addr(rows[0])}] ") and "Beta" in lines[2]
+    assert lines[3] == (f"[{ts(2)}; host; {addr(rows[1])}] host facts for taskA001: status=completed; outcome=Done; "
+                        "phase=done; result: get_task_result(task_id=taskA001)")
+    assert lines[4].startswith(f"[{ts(3)}; child kid00001 of taskA001; ") and lines[4].endswith("child report")
+    assert lines[5] == f"[{ts(4)}; Ouroboros; {addr(rows[3])}] my answer"
+    assert "Ouroboros" not in "".join(lines[2:5])
+    only = _memory_read(ctx_for(tmp_path), rows=True, task_id="kid00001").split("\n")
+    assert only[0] == "room 1; rows; task_id kid00001" and len(only) == 3
+    bounded = _memory_read(ctx_for(tmp_path), rows=True, **{"from": addr(rows[1]), "to": addr(rows[2])})
+    assert len(bounded.split("\n")) == 4
+    missing = _memory_read(ctx_for(tmp_path), rows=True, **{"from": "row:1@" + ts(9) + "#" + "a" * 12})
+    assert "TOOL_ARG_ERROR" in missing and "row_missing" in missing
+
+
+def test_node_read_shows_stamp_original_and_corrections_with_the_acting_revision(tmp_path):
+    chat(tmp_path, [{"chat_id": 1, "direction": "out", "ts": ts(1), "task_id": "taskA001", "text": "done"}])
+    ctx = ctx_for(tmp_path)
+    page = write(ctx, kind="page", text="ORIGINAL", covers={"task_ids": ["taskA001"]})
+    fix = write(ctx, kind="correction", target_id=page["node_id"], text="CORRECTED")
+    text = _memory_read(ctx, node_id=page["node_id"])
+    lines = text.split("\n")
+    assert lines[0].startswith(f"[page {page['node_id']}; room 1;")
+    assert f"revision {fix['node_id']} (corrected by mind (root root0001))" in lines[0]
+    assert "stamp: 1 tasks, not_recorded 1" in lines[0] and lines[1].endswith("complete")
+    assert "stamp taskA001: status=not_recorded" in text
+    assert "text:\nORIGINAL" in text and f"correction {fix['node_id']} by mind (root root0001)" in text
+    assert text.rstrip().endswith("CORRECTED")
+    assert "TOOL_ARG_ERROR" in _memory_read(ctx, node_id="no-such-node")
+    assert "TOOL_ARG_ERROR" in _memory_read(ctx, node_id=page["node_id"], rows=True)
+
+
+def _parse_window(text: str):
+    match = re.match(r"chars (\d+)–(\d+) of (\d+); (?:next_start=(\d+)|complete)", second_line(text))
+    assert match, second_line(text)
+    return int(match[1]), int(match[2]), int(match[3]), match[4]
+
+
+def test_every_read_mode_stays_within_the_limit_names_its_continuation_and_writes_nothing(tmp_path):
+    """Acceptance: a 10 000-row room, a record larger than a page, Main-sized legacy records,
+    a row larger than a page and a retained source, read to the end page by page."""
+    room = [{"chat_id": 1, "direction": "in" if n % 2 else "out", "ts": ts(n), "task_id": f"t{n // 50:04d}",
+             "text": f"row {n} " + "words " * (n % 40)} for n in range(10_000)]
+    side = project_chat(tmp_path, "giant-room")
+    giant = {"chat_id": side, "direction": "out", "ts": ts(1), "text": "G" * (LIMIT * 2 + 17)}
+    after_giant = {"chat_id": side, "direction": "in", "ts": ts(2), "text": "after the giant"}
+    chat(tmp_path, [*room, giant, after_giant])
+    store = ChronicleStore(tmp_path)
+    sizes = [61_000, 47_500, 33_000, 21_000, 12_310, 9_000, 4_000, 2_000, 1_000]  # 190 810 chars of Main
+    for block, size in enumerate(sizes):
+        assert store.publish([{"id": f"legacy-b{block:02d}-r1", "kind": "legacy", "room_id": "1", "author": LEGACY,
+                               "text": f"[{block}]" + "x" * (size - 4),
+                               "metadata": {"legacy_type": "era", "legacy_block": block}}]).ok
+    huge_note = "N" * (LIMIT + 5_000)
+    ctx = ctx_for(tmp_path)
+    note = write(ctx, kind="note", text=huge_note)
+    source = chat_chain.retain_memory_source(ctx, "probe", ("S" * (LIMIT + 123)).encode("utf-8"), "md")
+    store.records()  # the disposable index is current before the snapshot
+    before = snapshot(tmp_path)
+
+    seen, frm, pages = [], None, 0  # rows: 10 000 rows of Main, older to newer
+    while True:
+        text = _memory_read(ctx, rows=True, **({"from": frm} if frm else {}))
+        pages += 1
+        assert len(text) <= LIMIT and text.split("\n")[0] == "room 1; rows" + (f"; from {frm}" if frm else "")
+        seen += [line for line in text.split("\n")[2:] if line.startswith("[")]
+        cont = second_line(text)
+        if cont.startswith("complete"):
+            break
+        frm = re.match(r"next: from=(\S+) ", cont).group(1)
+    assert pages > 5 and len(seen) == 10_000
+    assert [line.split("; ")[2].rstrip("]").split("] ")[0] for line in seen][:2] == [addr(room[0]), addr(room[1])]
+    assert seen[-1].endswith(room[-1]["text"])
+
+    gathered, start = "", 0  # one row larger than a page, by character window
+    while True:
+        text = _memory_read(ctx, rows=True, room_id=str(side), **({"from": addr(giant)}), start=start)
+        assert len(text) <= LIMIT
+        gathered += text.split("\n")[2].split(") ", 1)[1]
+        cont = second_line(text)
+        found = re.match(r"next: from=(\S+) start=(\d+)", cont)
+        if not found:  # the giant's rest fits: the page goes on to the next row
+            assert cont.startswith("complete") and text.endswith(after_giant["text"])
+            gathered = gathered.split("\n", 1)[0]
+            break
+        start = int(found.group(2))
+    assert gathered == giant["text"]
+
+    listed, after = [], 0  # room records: Main-sized legacy and a note larger than a page
+    while True:
+        text = _memory_read(ctx, room_id="1", after_seq=after)
+        assert len(text) <= LIMIT and text.startswith("room 1; head ")
+        listed += re.findall(r"^\[(?:legacy|note) (\S+);", text, flags=re.M)
+        cont = second_line(text)
+        if cont.startswith("complete"):
+            break
+        after = int(re.match(r"next_after_seq=(\d+):", cont).group(1))
+    assert listed == [f"legacy-b{b:02d}-r1" for b in range(len(sizes))] + [note["node_id"]]
+    stub = _memory_read(ctx, room_id="1", after_seq=store.get("legacy-b08-r1")["sequence"])
+    assert f"memory_read(node_id={note['node_id']}) pages it" in stub and huge_note[:100] not in stub
+
+    for read, original in ((lambda s: _memory_read(ctx, node_id=note["node_id"], start=s), huge_note),
+                           (lambda s: _memory_read(ctx, source_ref=source, start=s), "S" * (LIMIT + 123))):
+        body, start = "", 0
+        while True:
+            text = read(start)
+            assert len(text) <= LIMIT
+            first, end, total, nxt = _parse_window(text)
+            body += text.split("\n", 2)[2]
+            if nxt is None:
+                break
+            start = int(nxt)
+        assert original in body
+    assert snapshot(tmp_path) == before  # reading wrote nothing
+
+
+def test_reading_without_a_chronicle_creates_none(tmp_path):
+    chat(tmp_path, [{"chat_id": 1, "direction": "in", "ts": ts(1), "text": "hello"}])
+    before = snapshot(tmp_path)
+    ctx = ctx_for(tmp_path)
+    assert _memory_read(ctx).split("\n")[:2] == ["room 1; head 0", "complete: no records after seq 0 (older to newer)"]
+    assert "hello" in _memory_read(ctx, rows=True)
+    assert snapshot(tmp_path) == before and not (tmp_path / "memory").exists()
+
+
+# --- memory_mark ---------------------------------------------------------------------------------
+
+def test_mark_targets_take_exact_quotes_and_refuse_invented_ones(tmp_path):
+    rows = chat(tmp_path, [
+        {"chat_id": 1, "direction": "in", "ts": ts(1), "text": "Never push on Fridays."},
+        {"chat_id": 1, "direction": "out", "ts": ts(2), "task_id": "taskA001", "text": "progress"},
+        {"chat_id": 1, "direction": "out", "ts": ts(3), "task_id": "taskA001", "text": "Final: shipped Monday."},
+    ])
+    ctx = ctx_for(tmp_path)
+    note = write(ctx, kind="note", text="The owner's rule about Fridays.")
+    source = chat_chain.retain_memory_source(ctx, "probe", json.dumps({"rows": [{"text": "line one\nline two"}]})
+                                             .encode("utf-8"), "json")
+    targets = [({"node_id": note["node_id"]}, "rule about Fridays"), ({"address": addr(rows[0])}, "push on Fridays"),
+               ({"task_id": "taskA001"}, "shipped Monday"), ({"source_ref": source}, "line one\nline two")]
+    for target, quote in targets:
+        bad = json.loads(_memory_mark(ctx, text="why it matters", quote="invented words", **target))
+        assert bad["ok"] is False and bad["reason"] == "quote_mismatch"
+        good = json.loads(_memory_mark(ctx, text="why it matters", quote=quote, **target))
+        assert good["ok"] and good["operation"] == "mark" and "why it matters" not in json.dumps(good)
+    marks = ChronicleStore(tmp_path).active_marks("1")
+    assert [m["quote"] for m in marks] == [quote for _t, quote in targets]
+    assert marks[1]["target_ref"]["row_sha256"] == sha(rows[0]) and marks[2]["target_ref"] == {
+        "kind": "task", "task_id": "taskA001"}
+    assert all(m["author"]["focus"]["role"] == "root" for m in marks)
+    # The task's earlier progress row is not its final words.
+    assert json.loads(_memory_mark(ctx, text="x", task_id="taskA001", quote="progress"))["reason"] == "quote_mismatch"
+    assert "TOOL_ARG_ERROR" in _memory_mark(ctx, text="x", node_id=note["node_id"], task_id="taskA001")
+    assert "TOOL_ARG_ERROR" in _memory_mark(ctx, text="x")
+    missing = json.loads(_memory_mark(ctx, text="x", address="row:1@" + ts(9) + "#" + "b" * 12))
+    assert missing["ok"] is False and missing["reason"] == "row_missing"
+
+
+def test_mark_view_and_release_including_an_imported_nomination(tmp_path):
+    store, ctx = ChronicleStore(tmp_path), ctx_for(tmp_path)
+    assert store.publish([{"id": "legacy-nomination-0123456789abcdef", "kind": "mark", "room_id": "legacy",
+                           "scope": "global", "author": LEGACY, "text": "Nominated: people/rowan",
+                           "target_ref": {"kind": "task_source", "path": "x", "location": "pending/0"},
+                           "visibility": "full", "quote": None}]).ok
+    note = write(ctx, kind="note", text="verbatim words")
+    mark = json.loads(_memory_mark(ctx, text="keep", node_id=note["node_id"], quote="verbatim words"))
+    assert json.loads(_memory_mark(ctx, mark_id=mark["mark_id"], visibility="meaning"))["reason"] == "invalid"
+    view = json.loads(_memory_mark(ctx, mark_id=mark["mark_id"], visibility="meaning", reason="room for work"))
+    assert view["ok"] and view["operation"] == "mark_view" and view["mark_id"] == mark["mark_id"]
+    listed = _memory_read(ctx)
+    assert "visibility meaning" in listed and "quote: verbatim words" not in listed
+    assert "legacy-nomination-0123456789abcdef" in listed  # a global mark is in every room
+    released = json.loads(_memory_mark(ctx, release_id="legacy-nomination-0123456789abcdef",
+                                       reason="published the note myself"))
+    assert released["ok"] and released["operation"] == "mark_release"
+    assert [m["id"] for m in store.active_marks("1")] == [mark["mark_id"]]
+    assert json.loads(_memory_mark(ctx, release_id=mark["mark_id"]))["reason"] == "invalid"  # a reason is required
+
+
+# --- host facts helpers and boundaries ------------------------------------------------------------
+
+def test_host_stamp_prefers_terminal_then_host_facts_then_task_result(tmp_path):
+    from ouroboros.task_result_schema import SCHEMA_VERSION_KEY, TASK_RESULT_SCHEMA_VERSION
+    from ouroboros.task_results import task_result_path
+
+    path = task_result_path(tmp_path, "fromfile", create=True)
+    path.write_text(json.dumps({SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION, "task_id": "fromfile",
+                                "status": "cancelled"}), encoding="utf-8")
+    facts = {"type": "task_summary", "summary_kind": "host_task_facts", "task_id": "both", "status": "completed",
+             "outcome": "Done", "outcome_phase": "done"}
+    terminal = {**facts, "summary_kind": "terminal_root_projection", "status": "failed", "outcome_phase": "error"}
+    stamp = host_stamp(tmp_path, ["both", "facts", "fromfile", "nowhere"],
+                       rows=[({}, terminal), ({}, facts), ({}, {**facts, "task_id": "facts"})])
+    by_task = {entry["task_id"]: entry for entry in stamp["tasks"]}
+    assert by_task["both"]["source"] == "terminal_root_projection" and by_task["both"]["status"] == "failed"
+    assert by_task["facts"]["source"] == "host_task_facts"
+    assert by_task["fromfile"]["source"] == "task_results" and by_task["fromfile"]["status"] == "cancelled"
+    assert by_task["nowhere"] == {"task_id": "nowhere", "status": "not_recorded"}
+    assert path.exists()  # the strict read never moves a result
+
+
+def test_tools_module_imports_no_retired_memory_machinery_and_lazy_domains_stay_lazy():
+    tree = ast.parse((REPO / "ouroboros" / "tools" / "chronicle.py").read_text(encoding="utf-8"))
+    top, nested = set(), set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            top.add(node.module)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module and node.module not in top:
+            nested.add(node.module)
+    forbidden = {"ouroboros.chronicle_view", "ouroboros.chronicle_sources", "ouroboros.room_consolidation",
+                 "ouroboros.consolidator", "ouroboros.llm", "ouroboros.memory_guidance"}
+    assert not (top | nested) & forbidden
+    lazy = {"ouroboros.dialogue_evidence", "ouroboros.project_dialogue", "ouroboros.projects_registry",
+            "ouroboros.task_results", "ouroboros.artifacts"}
+    assert lazy <= nested and not lazy & top
+
+
+# --- through the registry (root task) --------------------------------------------------------------
+
+@pytest.fixture
+def chronicle_policy_skip(monkeypatch):
+    """Stand-in for the three safety.py POLICY_SKIP rows the integrator adds in P6 (OA-13b).
+
+    Remove in P6: without it each call through ToolRegistry falls to DEFAULT_POLICY
+    (a paid safety check), which a test must never reach.
+    """
+    from ouroboros.safety import POLICY_SKIP, TOOL_POLICY
+
+    for name in ("chronicle_write", "memory_read", "memory_mark"):
+        monkeypatch.setitem(TOOL_POLICY, name, POLICY_SKIP)
+
+
+def test_registry_root_writes_to_the_canonical_data_root_and_reads_back(tmp_path, chronicle_policy_skip):
+    from ouroboros.tools.registry import ToolRegistry
+
+    canonical, own = tmp_path / "canonical", tmp_path / "own-drive"
+    canonical.mkdir()
+    own.mkdir()
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=own)
+    registry.set_context(ToolContext(repo_dir=tmp_path, drive_root=own, task_id="root0001", current_chat_id=1,
+                                     task_metadata={"budget_drive_root": str(canonical)}))
+    for name in ("chronicle_write", "memory_read", "memory_mark"):
+        schema = registry.get_schema_by_name(name)
+        assert schema is not None and "author" not in schema["function"]["parameters"]["properties"]
+    note = json.loads(registry.execute("chronicle_write", {"kind": "note", "text": "kept in the canonical root"}))
+    assert note["ok"]
+    assert json.loads(registry.execute("memory_mark", {"text": "remember", "node_id": note["node_id"]}))["ok"]
+    assert ChronicleStore(canonical).get(note["node_id"])["text"] == "kept in the canonical root"
+    assert not (own / "memory" / "chronicle").exists()
+    result = registry.execute_result("memory_read", {})
+    assert result.status == "ok" and result.text.startswith("room 1; head ")
+    assert "kept in the canonical root" in result.text
+    rows = chat(canonical, [{"chat_id": 1, "direction": "in", "ts": ts(n), "text": f"words {n}"} for n in (1, 2)])
+    ranged = registry.execute_result("memory_read", {"rows": True, "from": addr(rows[1]), "to": addr(rows[1])})
+    assert ranged.status == "ok" and ranged.text.split("\n")[2:] == [f"[{ts(2)}; User; {addr(rows[1])}] words 2"]

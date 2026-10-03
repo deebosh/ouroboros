@@ -243,6 +243,10 @@ def _knowledge_list(ctx: ToolContext, scope: str = "") -> str:
 
 
 def get_tools() -> List[ToolEntry]:
+    # The chronicle tools ride this module's export: the packaged build's frozen
+    # module list already names it, and tools/chronicle.py has no get_tools of its own.
+    from ouroboros.tools.chronicle import chronicle_tools
+
     topic = {"type": "string", "description": "Shelf-relative topic path without .md; nested paths and Unicode names are supported; no scope prefixes (global/, project/)."}
     scope = {"type": "string", "description": "global or project:<exact project id>. Omitted uses this task's project shelf, otherwise global. Global knowledge remains explicitly reachable from a project. Understanding of people and relationships, and anything that should outlive the project, belongs in global. Reserved topics (improvement-backlog, overview, patterns) always resolve to global."}
     return [
@@ -270,4 +274,4 @@ def get_tools() -> List[ToolEntry]:
             "description": "List the selected knowledge shelf with authored summaries and source links. This generated inventory is separate from the shared authored overview.",
             "parameters": {"type": "object", "properties": {"scope": scope}, "required": []},
         }, _knowledge_list),
-    ]
+    ] + chronicle_tools()

@@ -456,6 +456,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   ├── vision.py        ← Vision LLM tools for browser screenshots and uploaded images
       │   ├── vision_process.py ← Tracked vision-child IPC: validated model/physical-attempt receipts, result recovery and parent-owned cancellation
       │   ├── knowledge.py     ← Persistent topic-based knowledge files with an auto-maintained index
+      │   ├── chronicle.py     ← `chronicle_write`/`memory_read`/`memory_mark`, exported by knowledge.py: host-expanded page row sets, task stamps, checked quotes; reads paged at the source (§6)
       │   ├── memory_tools.py  ← Memory registry tools for tracking data sources, gaps, and trust
       │   ├── health.py        ← Codebase health tool: complexity metrics and self-assessment
       │   ├── compact_context.py ← LLM-requested tool-history compaction trigger; stores the pending request for the next round

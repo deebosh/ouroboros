@@ -14,9 +14,13 @@ OWNER_DELIVERY_TOOL_NAMES: frozenset[str] = frozenset({
 # carries it — the main chat, a project room, and an admitted presence
 # conversation, whose ceiling compiles this set in
 # ouroboros/presence_authority.py::build_presence_capability_ceiling.
+# Reading the chronicle and marking what matters belong here; sealing chronicle
+# pages (chronicle_write) is the integrating mind's and stays in the core set,
+# so a presence writes knowledge about people and marks, not pages.
 COGNITIVE_MEMORY_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledge_read", "knowledge_write", "knowledge_list",
     "update_scratchpad", "update_identity", "chat_history",
+    "memory_read", "memory_mark",
 })
 
 CORE_TOOL_NAMES: frozenset[str] = frozenset({
@@ -57,6 +61,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset({
     "list_projects", "route_to_project", "promote_chat_to_task", "steer_task",
     "ensure_project_scope",
     *COGNITIVE_MEMORY_TOOL_NAMES,
+    "chronicle_write",
     "recent_tasks", "live_roots", "update_focus",
     "web_search",
     "browse_page", "browser_action", "analyze_screenshot", "view_image",
@@ -188,7 +193,7 @@ READ_ONLY_PARALLEL_TOOLS: frozenset[str] = frozenset({
     "search_code", "query_code", "recent_tasks",
     "web_search", "chat_history",
     "vcs_status", "vcs_diff", "service_status", "service_logs",
-    "get_task_result", "list_projects",
+    "get_task_result", "list_projects", "memory_read",
 })
 
 # Enqueue-only tools safe to emit in parallel within one tool-call round.
@@ -219,6 +224,8 @@ UNTRUNCATED_TOOL_RESULTS: frozenset[str] = frozenset({
     "wait_task",
     "wait_tasks",
     "await_messages",
+    # A short receipt (id, operation, room); it never echoes the mark's text.
+    "memory_mark",
 })
 
 # Cognitive artifacts must not be truncated.
@@ -272,6 +279,10 @@ TOOL_RESULT_LIMITS: dict[str, int] = {
     "apply_patch": 80_000,
     "edit_batch": 80_000,
     "write_file": 80_000,
+    # memory_read pages itself at the source under this cap and names its
+    # continuation; it is never in UNTRUNCATED_TOOL_RESULTS (a whole room is
+    # millions of characters).
+    "memory_read": 80_000,
 }
 
 DEFAULT_TOOL_RESULT_LIMIT: int = 15_000

@@ -1,4 +1,4 @@
-759
+965
 The module map gains the chat_chain.py row: the chat generation chain
 helpers (archive order, cursor-generation resolution, the A2A-free row
 stream, immutable source retention) moved out of consolidator.py into their
@@ -11,5 +11,8 @@ parts folding adjacent records once, room-head checks and typed refusals.
 The chronicle_import.py row names the one model-free import of the legacy
 dialogue memory: a legacy record per room section with its positional
 raw_range, nominations as global marks, the legacy_frontier scan state and
-the activation receipt. Later steps of the same memory sprint update this
-first line to the chapter's net growth since 1347e33bf.
+the activation receipt. The tools/ section gains the chronicle.py row: the
+three memory tools (chronicle_write, memory_read, memory_mark) exported
+through knowledge.py, with host-expanded page row sets, task stamps, checked
+quotes and reads paged at the source. Later steps of the same memory sprint
+update this first line to the chapter's net growth since 1347e33bf.
