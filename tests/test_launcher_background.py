@@ -439,6 +439,31 @@ def test_macos_quit_requests_are_marked_before_pywebviews_closing_runs(monkeypat
     assert window.localization == {"global.ok": "OK", "global.cancel": "Cancel"}, "labels restored"
 
 
+@pytest.mark.parametrize("intent,answered,expected", [
+    ("automatic", True, []),  # a sign-in start of a second copy stays quiet
+    ("owner", True, ["activate"]),  # a manual one shows the running window
+    ("owner", False, ["activate", "notice window"]),  # nobody answered: the old notice
+])
+def test_second_launch_shows_the_running_window_only_when_manual(monkeypatch, caplog, intent, answered, expected):
+    import launcher
+
+    calls = []
+    fake_webview = types.ModuleType("webview")
+    fake_webview.create_window = lambda *args, **kwargs: calls.append("notice window")
+    fake_webview.start = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "webview", fake_webview)
+    monkeypatch.setattr(launcher, "IS_WINDOWS", False)
+    monkeypatch.setattr(launcher, "_detect_headless", lambda: None)
+    monkeypatch.setattr(launcher, "_headless", False)
+    monkeypatch.setattr(launcher, "_external_ui", False)
+    monkeypatch.setattr(launcher, "acquire_pid_lock", lambda: False)
+    monkeypatch.setattr(launcher, "activate_running_instance",
+                        lambda lock: calls.append("activate") or answered)
+    launcher.main(["--launch-intent", intent])
+    assert calls == expected
+    assert "Another instance already running." in caplog.text
+
+
 def test_a_losing_launcher_leaves_the_holders_pid_readable(tmp_path):
     """A manual second launch signals the PID in the lock file, so the loser must not erase it."""
     lock = tmp_path / "ouroboros.pid"
