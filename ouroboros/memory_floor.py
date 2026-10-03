@@ -12,15 +12,22 @@ minus the reply reserve and the working margins (``MEMORY_VIEW_WORKING_MARGINS``
 people's words only to the window minus the reply reserve (D-1); an owner-selected Low or
 Nano target, with its own margins (``MODE_TARGET_WORKING_MARGINS``), bounds the steps of
 ``MODE_TARGET_STEPS`` alone (the owner's answer B; D-32, D-37). An unknown window takes no
-window step. Rendering stays ``memory_view``'s; nothing here reads the chronicle,
-publishes a record or calls a model.
+window step. ``render_view_for_mode`` is the whole floor decision of one mode's
+projection (story text, room text and the floor fact the task trace keeps).
+
+``physical_mode`` lowers a task's starting mode (Max, Low, Nano) only when the fixed part
+of the preferred mode with the shortest view of my memory cannot fit the window minus the
+reply reserve on the route's calibrated estimate (§2.6 step 4, D-25): all of my memory is
+already addresses and the request still cannot be sent. Rendering stays
+``memory_view``'s; nothing here reads the chronicle, publishes a record or calls a model.
 """
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from ouroboros import context_budget
+from ouroboros.chat_chain import parse_address
 from ouroboros import memory_view as mv
 from ouroboros.utils import estimate_tokens
 
@@ -34,6 +41,7 @@ LADDER = ("F1", "F1b", "F3", "F5", "F4", "F2", "F6", "F7")
 MODE_TARGET_STEPS = ("F1", "F1b", "F3", "F5", "F4")
 # People's words become addresses only when the window minus the reply reserve cannot hold them (D-1).
 PEOPLE_STEPS = ("F6", "F7")
+MODES = ("max", "low", "nano")  # the starting-mode order the window may lower through
 _COLLAPSING = ("F1", "F1b")  # many elements, one line: the first element carries it
 _SHOWN = (("F2", "{} of my replies"), ("F7", "{} lines of people in this room"),
           ("F6", "{} lines of people in other rooms"), ("F4", "{} records of this room's page"),
@@ -151,3 +159,79 @@ def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
     if mode == "nano":
         lines.append("(memory_read is reachable through enable_tools)")
     return "\n".join(lines)
+
+
+def view_facts(snapshot: mv.MemoryViewSnapshot, level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
+               allowances: Mapping[str, Optional[int]], target_tokens: Optional[int] = None,
+               lowered_from: Optional[str] = None) -> Dict[str, Any]:
+    """The floor fact of one projection (P3 §2.13, P4 §4.3): steps, boundaries, what is shown by address.
+
+    ``newest_addressed_row`` is the newest row of this room that F1, F2 or F7 shows only by
+    address; ``pointer_records`` the records F4 and F5 show by a pointer. No list of rows.
+    """
+    gone = {step: set(ids) for step, ids in level.addressed}
+    room = snapshot.room or {}
+    rows = [(item["last_pos"], item["last"]) for item in room.get("lane2") or () if item["first"] in gone.get("F1", ())]
+    rows += [(item["pos"], item["address"]) for item in room.get("lane1") or ()
+             if item["address"] in gone.get("F2", set()) | gone.get("F7", set())]
+    status = snapshot.legacy_blocks or {}
+    return {"role": snapshot.spec.role, "room_id": snapshot.spec.room_id,
+            "floor": {"steps": dict(level.steps), "window_tokens": window_tokens, "mode": mode,
+                      "allowance_tokens": allowances.get("margin"), "physical_allowance_tokens": allowances.get("physical"),
+                      "target_tokens": target_tokens, "budget_allowance_tokens": allowances.get("budget"),
+                      "by_budget": level.by_budget, "mode_switch": {"from": lowered_from, "to": mode} if lowered_from else None,
+                      "newest_addressed_row": parse_address(max(rows)[1]) if rows else None,
+                      "pointer_records": [ident for step, ids in level.addressed if step in ("F4", "F5") for ident in ids]},
+            "story_status": {"folded": status.get("folded", 0), "total": status.get("total", 0)}}
+
+
+def render_view_for_mode(snapshot: mv.MemoryViewSnapshot, *, mode: str, owner_mode: str, window_tokens: Optional[int],
+                         known_window: bool, output_reserve: Optional[int], ratio: float, non_memory_tokens: int,
+                         lowered_from: Optional[str] = None) -> Tuple[str, str, Dict[str, Any]]:
+    """``(story text, room text, facts)`` of one mode's projection, the floor decided once.
+
+    The window counts only when known and fresh (``known_window``). An owner target binds
+    only the mode the owner selected: task-local Low and a mode the window lowered have
+    none. The reply reserve is the mode's (Nano keeps its own headroom).
+    """
+    target, reserve = context_budget.context_mode_limits(mode, owner_mode, output_reserve)
+    target = target if mode == owner_mode else None
+    window = int(window_tokens) if known_window and window_tokens else None
+    allowances = floor_allowances(window_tokens=window, output_reserve_tokens=reserve, non_memory_tokens=non_memory_tokens,
+                                  target_tokens=target, calibration_ratio=ratio)
+    level = fit_memory_view(snapshot, allowances)
+    note = floor_note(level, window_tokens=window, mode=mode, target_tokens=target, lowered_from=lowered_from)
+    return (mv.render_story(snapshot, level), mv.render_room(snapshot, level, floor_note=note),
+            view_facts(snapshot, level, window_tokens=window, mode=mode, allowances=allowances, target_tokens=target,
+                       lowered_from=lowered_from))
+
+
+def minimal_view_tokens(snapshot: mv.MemoryViewSnapshot, *, window_tokens: Optional[int] = None) -> int:
+    """The shortest view of my memory: every degradable element by address, with the longest floor note."""
+    taken: Dict[str, List[str]] = {}
+    for step, ident, _whole, _short in floor_elements(snapshot):  # grouped in ladder order
+        taken.setdefault(step, []).append(ident)
+    level = mv.FloorLevel(tuple((step, tuple(ids)) for step, ids in taken.items()))
+    note = floor_note(level, window_tokens=window_tokens, mode="nano", lowered_from="max")
+    return view_tokens(mv.render_story(snapshot, level)) + view_tokens(mv.render_room(snapshot, level, floor_note=note))
+
+
+def physical_mode(preferred: str, fixed_tokens_by_mode: Mapping[str, int], minimal_view_tokens: int, *,
+                  window_tokens: Optional[int], known_window: bool, reserve_by_mode: Mapping[str, Optional[int]],
+                  calibration_ratio: float = 1.0) -> str:
+    """The first of the preferred mode and the smaller ones whose fixed part and shortest view fit.
+
+    Measured by the one capacity frame on the calibrated estimate: the window minus the
+    mode's reply reserve, no working margin. An unknown window keeps the preferred mode;
+    when even Nano cannot fit, Nano is sent as it is.
+    """
+    if not known_window or not window_tokens or preferred not in MODES:
+        return preferred
+    candidates = MODES[MODES.index(preferred):]
+    for mode in candidates:
+        frame = context_budget.request_context_budget(
+            window_tokens=window_tokens, output_reserve_tokens=reserve_by_mode.get(mode),
+            non_memory_tokens=fixed_tokens_by_mode[mode] + minimal_view_tokens, calibration_ratio=calibration_ratio)
+        if frame["free_tokens"] is not None and frame["free_tokens"] >= 0:  # free space: no working margin in it
+            return mode
+    return candidates[-1]

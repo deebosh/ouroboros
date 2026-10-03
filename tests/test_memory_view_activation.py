@@ -138,10 +138,12 @@ def test_the_view_imports_no_model_client_or_retired_memory_machinery_and_crosse
 
 
 def test_the_floor_imports_no_model_client_and_reads_nothing_of_its_own():
-    _tree, top, nested = _imports("memory_floor.py")
+    tree, top, nested = _imports("memory_floor.py")
     imported = top | nested
     assert not [name for name in imported if name.startswith(("ouroboros.llm", "ouroboros.consolidator"))], imported
-    assert {"ouroboros.chronicle_store", "ouroboros.chat_chain", "ouroboros.memory_inventory"}.isdisjoint(imported)
+    assert {"ouroboros.chronicle_store", "ouroboros.memory_inventory"}.isdisjoint(imported)
+    chain = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module == "ouroboros.chat_chain"]
+    assert [alias.name for node in chain for alias in node.names] == ["parse_address"]  # a parser, not a reader
     assert "ouroboros" in top  # memory_view and context_budget, the view's renderer and the one budget frame
 
 
