@@ -129,6 +129,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | OUROBOROS_OR_PROVIDER | "" | OpenRouter provider-routing preference merged into requests |
 | OUROBOROS_SEARCH_CODE_WALL_SEC | 45 | search_code wall-clock budget |
 | OUROBOROS_PRESENTATION | (unset) | Env-only: launcher-exported presentation (`desktop_window`/`browser_fallback`/external `android_app`; absent renders `web`) |
+| OUROBOROS_DESKTOP_BACKGROUND | (unset) | Env-only: `1` when the desktop launcher can keep running with its window hidden (Windows, macOS); without it the keep-running control is unavailable |
 | OUROBOROS_EXTERNAL_HOST_UPDATE | (unset) | Env-only: selected external-host installer supporting read-only `--check`; no second Git updater |
 | OUROBOROS_EXTERNAL_HOST_RESULT | (unset) | Env-only: launcher-verified installed-artifact/input/source facts for one core generation; not a reusable persisted PASS |
 | OUROBOROS_USER_FILES_ROOT | "" (home) | Env-only: user_files jail root (empty = `$HOME`) |
