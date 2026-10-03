@@ -3,6 +3,7 @@ import { PAGE_ICONS } from './page_icons.js';
 import { renderAgentAccountsSection, renderAgentsServiceBanner } from './harness_accounts.js';
 import { renderReviewerSlotsSection } from './reviewer_slots.js';
 import { renderSubagentsSection } from './subagents_settings.js';
+import { languageBlockHtml } from './settings_language.js';
 import { modelRolesHost } from './model_roles.js';
 import { bindSecretReveal } from './settings_secrets.js';
 
@@ -762,6 +763,8 @@ export function renderSettingsPage() {
                 </section>
 
                 <section class="settings-panel" data-settings-panel="appearance">
+                    ${languageBlockHtml()}
+
                     <div class="form-section">
                         <h3>Theme</h3>
                         <div class="settings-section-copy">

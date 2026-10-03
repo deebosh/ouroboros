@@ -278,6 +278,15 @@ export const apiClient = {
     /** @returns {Promise<import('./api_types.js').UiPreferencesResponse>} */
     uiPreferences: (init = {}) => fetchJson('/api/ui/preferences', { cache: 'no-store', ...init }),
     saveUiPreferences: (payload) => jsonPost('/api/ui/preferences', payload),
+    /** @returns {Promise<import('./ui_i18n_types.js').UiI18nResponse>} */
+    uiI18n: () => fetchJson('/api/ui/i18n', { cache: 'no-store' }),
+    /** @param {string|import('./ui_i18n_types.js').UiI18nLanguageRequest} payload */
+    saveUiLanguage: (payload) => jsonPost('/api/ui/i18n/language', typeof payload === 'string' ? { language: payload } : payload),
+    /** @param {import('./ui_i18n_types.js').UiI18nMissingRequest} payload */
+    reportI18nMissing: (payload) => jsonPost('/api/ui/i18n/missing', payload),
+    importI18n: (memoryDocument) => jsonPost('/api/ui/i18n/import', memoryDocument),
+    exportI18nUrl: (language = '') => `/api/ui/i18n/export${language ? `?language=${encodeURIComponent(language)}` : ''}`,
+    regenerateI18n: (payload = {}) => jsonPost('/api/ui/i18n/regenerate', payload),
     /** @returns {Promise<import('./api_types.js').DesktopAutostartResponse>} */
     desktopAutostart: () => fetchJson('/api/desktop/autostart', { cache: 'no-store' }),
     /** @returns {Promise<import('./api_types.js').DesktopAutostartResponse>} */

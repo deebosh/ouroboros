@@ -14,6 +14,31 @@ from typing import Any
 from starlette.routing import BaseRoute, Route, WebSocketRoute
 
 
+def _ui_client_routes() -> list[BaseRoute]:
+    """The browser client's own state: per-client UI preferences and the install's
+    interface language with its translation memory (``/api/ui/*``)."""
+    from ouroboros.gateway.ui_i18n import (
+        api_ui_i18n_export_get,
+        api_ui_i18n_get,
+        api_ui_i18n_import_post,
+        api_ui_i18n_language_post,
+        api_ui_i18n_missing_post,
+        api_ui_i18n_regenerate_post,
+    )
+    from ouroboros.gateway.ui_preferences import api_ui_preferences_get, api_ui_preferences_post
+
+    return [
+        Route("/api/ui/preferences", endpoint=api_ui_preferences_get, methods=["GET"]),
+        Route("/api/ui/preferences", endpoint=api_ui_preferences_post, methods=["POST"]),
+        Route("/api/ui/i18n", endpoint=api_ui_i18n_get, methods=["GET"]),
+        Route("/api/ui/i18n/language", endpoint=api_ui_i18n_language_post, methods=["POST"]),
+        Route("/api/ui/i18n/missing", endpoint=api_ui_i18n_missing_post, methods=["POST"]),
+        Route("/api/ui/i18n/import", endpoint=api_ui_i18n_import_post, methods=["POST"]),
+        Route("/api/ui/i18n/export", endpoint=api_ui_i18n_export_get, methods=["GET"]),
+        Route("/api/ui/i18n/regenerate", endpoint=api_ui_i18n_regenerate_post, methods=["POST"]),
+    ]
+
+
 def collect_routes(
     *,
     data_dir: pathlib.Path,
@@ -125,7 +150,6 @@ def collect_routes(
         api_tasks_create,
         api_tasks_list,
     )
-    from ouroboros.gateway.ui_preferences import api_ui_preferences_get, api_ui_preferences_post
     from ouroboros.gateway import desktop_autostart as desktop_host
     from ouroboros.gateway.onboarding_host import onboarding_page
     from ouroboros.gateway.settings import (
@@ -216,8 +240,7 @@ def collect_routes(
         Route("/api/settings", endpoint=settings_get, methods=["GET"]),
         Route("/api/settings", endpoint=settings_post, methods=["POST"]),
         Route("/api/settings/secret", endpoint=api_settings_secret, methods=["POST"]),
-        Route("/api/ui/preferences", endpoint=api_ui_preferences_get, methods=["GET"]),
-        Route("/api/ui/preferences", endpoint=api_ui_preferences_post, methods=["POST"]),
+        *_ui_client_routes(),
         Route("/api/desktop/autostart", endpoint=desktop_host.api_desktop_autostart_get, methods=["GET"]),
         Route("/api/desktop/autostart", endpoint=desktop_host.api_desktop_autostart_post, methods=["POST"]),
         Route("/api/desktop/background", endpoint=desktop_host.api_desktop_background_get, methods=["GET"]),

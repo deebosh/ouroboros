@@ -30,6 +30,7 @@ import { createModelRolesEditor, modelRoleMap } from './model_roles.js';
 import { PROCESSING_PREFERENCE_KEY, MODEL_PROCESSING_PREFERENCES_KEY } from './route_editor_primitives.js';
 import { collectSafeFieldValues, normalizeTone, renderSafeField, setInlineStatus, revealNewRow } from './ui_helpers.js';
 import { extensionActionStatus } from './extension_status_text.js';
+import { bindLanguageSettings } from './settings_language.js';
 import { resetSecretReveals } from './settings_secrets.js';
 
 let markSettingsDirty = () => {};
@@ -471,6 +472,9 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     // Notification preferences are client-local for the same reason; the module
     // owns delegated handlers, so mounting only paints current state.
     getNotifier().mountSettings(page);
+    // The interface language is an install-wide setting with its own endpoint; the block
+    // saves on change and never marks the Settings draft dirty.
+    const disposeLanguage = bindLanguageSettings(page);
     bindAutostartControl(page); // host OS entry applied on click, never in the draft; self-disposing
     const disposeLocalModel = bindLocalModelControls({ state,
         onApplication: (local) => syncRestartState({ ...restartState, local_model: local }) });
@@ -1135,6 +1139,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     // ask the owner to discard "unsaved settings" that do not exist.
     const onServerSettingEdited = (event) => {
         if (event?.target?.closest?.('[data-notify-settings], [data-autostart-settings]')) return;
+        if (event?.target?.closest?.('[data-i18n-settings]')) return;   // the interface language saves through its own endpoint
         onSettingsEdited();
     };
     page.addEventListener('input', onServerSettingEdited);
@@ -1200,6 +1205,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         disposeSettingsTabs();
         window.removeEventListener('beforeunload', beforeUnload);
         disposeLocalModel();
+        disposeLanguage();
         disposeRestartReconnect?.();
         accountModelCatalog.dispose();
         restartReadSequence += 1;

@@ -1,4 +1,5 @@
 import { escapeHtmlAttr, escapeHtmlText as escapeHtml } from './utils.js';
+import { tr } from './i18n.js';
 import { showToast } from './toast.js';
 import { downloadViaHostBridge, normalizeTone, openViaHostBridge } from './ui_helpers.js';
 import { MAX_LINK_ACTIONS } from './api_types.js';
@@ -411,7 +412,7 @@ export function createChatMedia({
         };
         const syncPlay = () => {
             play.textContent = media.paused ? '▶' : '❚❚';
-            play.setAttribute('aria-label', media.paused ? 'Play' : 'Pause');
+            play.setAttribute('aria-label', media.paused ? tr('media.play', 'Play') : tr('media.pause', 'Pause'));
         };
         const toggle = async () => {
             try {
@@ -455,7 +456,7 @@ export function createChatMedia({
         if (mute) listen(mute, 'click', () => {
             media.muted = !media.muted;
             mute.textContent = media.muted ? '🔇' : '🔊';
-            mute.setAttribute('aria-label', media.muted ? 'Unmute' : 'Mute');
+            mute.setAttribute('aria-label', media.muted ? tr('media.unmute', 'Unmute') : tr('media.mute', 'Mute'));
         });
         if (fullscreen) listen(fullscreen, 'click', async () => {
             try {
@@ -484,33 +485,33 @@ export function createChatMedia({
             ? `<audio preload="metadata" src="${escapeHtmlAttr(src)}"></audio>`
             : `<video preload="metadata" src="${escapeHtmlAttr(src)}" playsinline></video>`;
         const videoControls = audio ? '' : `
-            <button type="button" data-media-action="speed" aria-label="Cycle playback speed">×1</button>
-            <select class="chat-media-rate-menu" aria-label="Playback speed">
+            <button type="button" data-media-action="speed" aria-label="${escapeHtmlAttr(tr('media.cycle_speed', 'Cycle playback speed'))}">×1</button>
+            <select class="chat-media-rate-menu" aria-label="${escapeHtmlAttr(tr('media.playback_speed', 'Playback speed'))}">
                 ${SPEEDS.map((rate) => `<option value="${rate}">×${rate}</option>`).join('')}
             </select>
-            <button type="button" data-media-action="repeat" aria-label="Repeat">↻</button>
-            <button type="button" data-media-action="mute" aria-label="Mute">🔊</button>
-            <button type="button" data-media-action="fullscreen" aria-label="Enter fullscreen">⛶</button>`;
+            <button type="button" data-media-action="repeat" aria-label="${escapeHtmlAttr(tr('media.repeat', 'Repeat'))}">↻</button>
+            <button type="button" data-media-action="mute" aria-label="${escapeHtmlAttr(tr('media.mute', 'Mute'))}">🔊</button>
+            <button type="button" data-media-action="fullscreen" aria-label="${escapeHtmlAttr(tr('media.enter_fullscreen', 'Enter fullscreen'))}">⛶</button>`;
         return `<div class="chat-media-player${audio ? ' is-audio' : ''}">
             ${title ? `<div class="chat-media-title">${escapeHtml(title)}</div>` : ''}
             <div class="chat-media-stage">${media}</div>
             <div class="chat-media-controls">
-                <button type="button" data-media-action="play" aria-label="Play">▶</button>
-                <input class="chat-media-progress" type="range" min="0" max="100" value="0" step="0.1" aria-label="Media progress">
+                <button type="button" data-media-action="play" aria-label="${escapeHtmlAttr(tr('media.play', 'Play'))}">▶</button>
+                <input class="chat-media-progress" type="range" min="0" max="100" value="0" step="0.1" aria-label="${escapeHtmlAttr(tr('media.progress', 'Media progress'))}">
                 <span class="chat-media-time">0:00 / 0:00</span>
                 ${videoControls}
-                <button type="button" data-media-action="download" aria-label="Download media">↓</button>
+                <button type="button" data-media-action="download" aria-label="${escapeHtmlAttr(tr('media.download_media', 'Download media'))}">↓</button>
             </div>
         </div>`;
     }
 
     function photoActionsHtml() {
         return `<details class="chat-photo-actions">
-            <summary aria-label="Photo actions" aria-haspopup="menu" aria-expanded="false">•••</summary>
-            <div class="chat-photo-menu ui-popup" role="menu" aria-label="Photo actions" hidden>
-                <button type="button" role="menuitem" data-photo-action="open">Open in new tab</button>
-                <button type="button" role="menuitem" data-photo-action="download">Download</button>
-                <button type="button" role="menuitem" data-photo-action="copy">Copy to clipboard</button>
+            <summary aria-label="${escapeHtmlAttr(tr('media.photo_actions', 'Photo actions'))}" aria-haspopup="menu" aria-expanded="false">•••</summary>
+            <div class="chat-photo-menu ui-popup" role="menu" aria-label="${escapeHtmlAttr(tr('media.photo_actions', 'Photo actions'))}" hidden>
+                <button type="button" role="menuitem" data-photo-action="open">${escapeHtml(tr('media.open_in_new_tab', 'Open in new tab'))}</button>
+                <button type="button" role="menuitem" data-photo-action="download">${escapeHtml(tr('media.download', 'Download'))}</button>
+                <button type="button" role="menuitem" data-photo-action="copy">${escapeHtml(tr('media.copy_to_clipboard', 'Copy to clipboard'))}</button>
             </div>
         </details>`;
     }
@@ -724,7 +725,7 @@ export function createChatMedia({
             if (!existing.querySelector('.chat-group-title')) {
                 const title = document.createElement('div');
                 title.className = 'chat-group-title';
-                title.textContent = kind === 'photos' ? 'Multiple images' : 'Multiple files';
+                title.textContent = kind === 'photos' ? tr('media.multiple_images', 'Multiple images') : tr('media.multiple_files', 'Multiple files');
                 grid.before(title);
             }
             stampNodeTimestamp(existing, msg.ts || '', { anchor: true });
@@ -754,8 +755,8 @@ export function createChatMedia({
         button.type = 'button';
         button.className = 'chat-message-copy';
         button.innerHTML = COPY_ICON_SVG;
-        button.title = 'Copy';
-        button.setAttribute('aria-label', 'Copy message');
+        button.title = tr('code.copy', 'Copy');
+        button.setAttribute('aria-label', tr('media.copy_message', 'Copy message'));
         const writeFallback = () => {
             const area = document.createElement('textarea');
             area.className = 'chat-copy-fallback';
@@ -782,12 +783,12 @@ export function createChatMedia({
                 ok = false;
             }
             button.textContent = ok ? '✓' : '✗';
-            button.title = ok ? 'Message copied' : 'Copy failed';
-            button.setAttribute('aria-label', ok ? 'Message copied' : 'Copy failed');
+            button.title = ok ? tr('media.message_copied', 'Message copied') : tr('media.copy_failed', 'Copy failed');
+            button.setAttribute('aria-label', ok ? tr('media.message_copied', 'Message copied') : tr('media.copy_failed', 'Copy failed'));
             later(() => {
                 button.innerHTML = COPY_ICON_SVG;
-                button.title = 'Copy';
-                button.setAttribute('aria-label', 'Copy message');
+                button.title = tr('code.copy', 'Copy');
+                button.setAttribute('aria-label', tr('media.copy_message', 'Copy message'));
             }, 1500, button);
         });
         // The bubble class reserves a timestamp gutter under the icon (style.css).

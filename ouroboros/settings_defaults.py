@@ -145,8 +145,15 @@ SETTINGS_DEFAULTS = {**UPDATE_SETTINGS_DEFAULTS,
     # Hard ceiling (seconds) a provider call waits for a concurrency slot when the task has
     # NO deadline; past it the call proceeds WITHOUT a slot (never blocks forever). SSOT here.
     "OUROBOROS_MODEL_SLOT_MAX_WAIT_SEC": 180,
+    # The owner's interface language for this install: a BCP-47 tag ("ru", "pt-BR", "art-x-<slug>"
+    # for an invented language); "" = not chosen, the English source renders. Written by
+    # POST /api/ui/i18n/language, read live by the SPA and the Telegram skill, by the mind at its
+    # next attempt (ouroboros/ui_language.py, ouroboros/i18n_memory.py). Never an enumeration.
+    "OUROBOROS_UI_LANGUAGE": "",
     # LIGHT one-shot ceilings (naming, its gateway wait, the update letter): SSOT here, never consumer magic numbers.
     "OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC": 120,
+    # One translation-generator batch call (ui_translation.py): slot wait and provider call together.
+    "OUROBOROS_UI_TRANSLATION_TIMEOUT_SEC": 120,
     "OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC": 60,
     "OUROBOROS_PROJECT_NAMING_ASYNC_TIMEOUT_SEC": 8,
     # Skill lifecycle lane deadline (wedged-job loud-failure bound).
@@ -486,7 +493,13 @@ _DISK_AUTHORED_SETTINGS = ("OUROBOROS_CONTEXT_MODE", "OUROBOROS_CONTEXT_MODE_AUT
 
 # ENDPOINT-AUTHORED, DISK-ONLY: install-time facts POST /api/onboarding/complete alone writes. The ratchets above are
 # disk-authored yet DO project once the file carries them; these never leave disk in EITHER direction — an env timestamp alone closed the onboarding window on a fresh install, and an env marker was then persisted by a save.
-ENDPOINT_AUTHORED_SETTINGS = frozenset({"OUROBOROS_SUBSCRIPTION_PRESET_VERSION", "OUROBOROS_SUBAGENT_PRESET_RECEIPT", "OUROBOROS_ONBOARDING_COMPLETED_AT"})
+ENDPOINT_AUTHORED_SETTINGS = frozenset({"OUROBOROS_SUBSCRIPTION_PRESET_VERSION", "OUROBOROS_SUBAGENT_PRESET_RECEIPT",
+                                        "OUROBOROS_ONBOARDING_COMPLETED_AT"})
+# ENDPOINT-WRITTEN, PROJECTED: one endpoint owns the write (the generic save skips the key and names the writer in
+# `ignored_keys`, so a language change always creates the memory header, fires the hooks and broadcasts), yet the value
+# projects to the environment like any setting: a restart, the worker and the Telegram bridge read it (the disk-only set above lost it).
+ENDPOINT_WRITTEN_SETTINGS = frozenset({"OUROBOROS_UI_LANGUAGE"})
+ENDPOINT_WRITERS = {"OUROBOROS_UI_LANGUAGE": "POST /api/ui/i18n/language"}
 
 
 # Settings keys deliberately NOT projected into the environment. Everything else in SETTINGS_DEFAULTS IS

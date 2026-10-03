@@ -123,6 +123,11 @@ def test_ui_preferences_round_trip_and_normalization(tmp_path):
         assert client.post("/api/ui/preferences", json={"project_seen_revision": {"racer": "bad"}}).status_code == 400
         assert client.post("/api/ui/preferences", json={"unknown": True}).status_code == 400
 
+        # The interface language is an install-wide SETTING (OUROBOROS_UI_LANGUAGE via
+        # /api/ui/i18n/language), never a UI preference: here it is an unknown key.
+        assert client.post("/api/ui/preferences", json={"language": "ru"}).status_code == 400
+        assert "language" not in client.get("/api/ui/preferences").json()
+
 
 def test_empty_chat_welcome_preference_round_trip_and_refusals(tmp_path):
     from starlette.testclient import TestClient
