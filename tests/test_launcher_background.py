@@ -210,6 +210,34 @@ def test_close_with_background_on_hides_behind_a_live_indicator(settings, monkey
     assert background.events == []
 
 
+def test_the_window_is_hidden_outside_the_indicators_state_lock(settings, monkeypatch, make):
+    """On Windows hide() is a synchronous Invoke onto the UI thread, which may be waiting for that lock."""
+    choose(settings, "true")
+    background, window = make()
+    free = []
+
+    def hide():
+        lock = background.indicator._state_lock
+        free.append(lock.acquire(blocking=False))
+        if free[-1]:
+            lock.release()
+        Window.hide(window)
+
+    window.hide = hide
+    assert close(background, window) is False and free == [True]
+    assert background.indicator.hidden and window.calls == ["hide"]
+
+    background, window = make()
+
+    def hide_while_the_icon_dies():
+        Window.hide(window)
+        background.indicator._stopped()  # the pump died between the decision and the commit
+
+    window.hide = hide_while_the_icon_dies
+    close(background, window)
+    assert background.events == ["exit"] and not background.indicator.hidden, "no hidden window without its icon"
+
+
 def test_no_indicator_means_close_quits_even_when_background_is_on(settings, monkeypatch, make):
     choose(settings, "true")
 

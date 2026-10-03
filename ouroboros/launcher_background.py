@@ -151,10 +151,21 @@ class Indicator:
         return started
 
     def hide_on_close(self, window) -> bool:
+        """Hide for a close; False (the close quits) when there is no live icon to come back through.
+
+        ``hide()`` runs outside the state lock: on Windows it is a synchronous Invoke onto the UI
+        thread, which may itself be waiting for this lock in a second close. The hidden state is
+        committed under the lock only if the icon is still live; otherwise the close quits."""
+        if not self.ready.is_set() or self.background.shutdown.is_set():
+            return False
+        try:
+            window.hide()
+        except Exception:
+            log.warning("Could not hide the window; closing it quits.", exc_info=True)
+            return False
         with self._state_lock:
             if not self.ready.is_set() or self.background.shutdown.is_set():
-                return False
-            window.hide()
+                return False  # the icon went away while hiding: never a hidden window without it
             self._hidden = True
             return True
 
