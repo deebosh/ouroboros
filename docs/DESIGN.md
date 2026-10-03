@@ -1244,9 +1244,10 @@ widget's content belongs to its author.
   (1, 2, 3 columns, Full width and Reset size) beside a framed card's launch
   policy, so a touch screen, a keyboard or the mini app — no hover there, and
   a vertical drag collapses it — can size any card; on a narrow list the menu
-  says that widths apply when the list is wide. On a board of two or more
-  columns a card's right edge can also be dragged between steps (Escape
-  cancels) or stepped with its arrow keys.
+  says that widths apply when the list is wide. Wherever a step would change a
+  card's width, its right edge can also be dragged between the widths the
+  steps give it (Escape cancels) or stepped with its arrow keys; the only card
+  on a board, which every step leaves the whole row, offers no edge.
 - **Arranging never restarts a widget.** Reordering, resizing or a change of
   the column count changes only where a card is painted; a running widget
   keeps its frame and its state. Keyboard focus keeps the card's original

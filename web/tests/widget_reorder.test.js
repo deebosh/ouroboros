@@ -429,3 +429,24 @@ test('on a two-card board the edge drag reaches every width the menu gives, 2 an
     await settle();
     assert.deepEqual(saves[0].payload, { widget_size: { 'demo:a': { w: 3, h: 0 } } });
 });
+
+test('the only card on a wide board has no edge to drag; the menu still sizes it; a second card brings the edge back', async () => {
+    for (const spans of [{}, { 'demo:solo': 2 }]) {
+        const { list, cards, saves, widths, add } = board(['demo:solo'], { width: 1400, spans });
+        const solo = cards[0];
+        assert.equal(list.dataset.widgetLayout, 'columns', 'a wide list, not a stack: the menu note stays hidden');
+        assert.equal(solo.hasAttribute('data-widget-width-fixed'), true, 'every step is the whole row');
+        let prevented = false;
+        solo.handle.fire('pointerdown', { button: 0, pointerId: 4, clientX: 500, currentTarget: solo.handle, preventDefault() { prevented = true; } });
+        assert.deepEqual([list.classList.contains('resizing'), prevented], [false, false]);
+        widths.setWidth('demo:solo', 2);
+        await settle();
+        assert.deepEqual(saves[0].payload, { widget_size: { 'demo:solo': { w: 2, h: 0 } } }, 'the menu keeps saving');
+        // A second card: a step can now change the first card, so its edge is offered again.
+        const other = add('demo:other');
+        assert.equal(solo.hasAttribute('data-widget-width-fixed'), false);
+        assert.equal(other.hasAttribute('data-widget-width-fixed'), false);
+        solo.handle.fire('pointerdown', { button: 0, pointerId: 5, clientX: 500, currentTarget: solo.handle, preventDefault() {} });
+        assert.equal(list.classList.contains('resizing'), true);
+    }
+});

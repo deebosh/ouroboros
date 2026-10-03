@@ -549,8 +549,12 @@ def test_widgets_card_width_is_owner_ui_preference():
     handle = css.split(".widgets-card-resize {", 1)[1].split("}", 1)[0]
     assert "touch-action: none;" in handle
     assert "cursor: col-resize;" in handle
-    assert '.widgets-list[data-widget-layout="stack"] .widgets-card-resize {' in css
-    # The edge drag offers what each step would make of the card: the masonry answers (`replan`).
+    assert '.widgets-list[data-widget-layout="stack"] .widgets-card-resize,' in css
+    # A card no step can widen or narrow (the only card on a wide board) offers no
+    # edge: the masonry answers what each step would make of it (`replan`), and the
+    # card, not the list, carries the mark, so the menu keeps its wide-list note off.
+    assert "item.toggleAttribute('data-widget-width-fixed', fixed);" in reorder
+    assert ".widgets-card[data-widget-width-fixed] .widgets-card-resize {" in css
     assert "(index, owner) => planMasonryLayout(" in _read("web/modules/masonry.js")
     assert ".widgets-list.resizing iframe {" in css
 

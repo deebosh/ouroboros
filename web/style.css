@@ -5320,7 +5320,9 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 
 /* The width handle: a thin strip on the card's right edge, the edge vocabulary
    of the side-panel `.resize-handle`. A list too narrow for two columns
-   ignores widths and has no handle; the card menu sets widths everywhere. */
+   ignores widths, and a card no step can widen or narrow (the only card on the
+   board) is width-fixed: neither offers the handle; the card menu sets widths
+   everywhere. */
 .widgets-card-resize {
     position: absolute;
     top: 0;
@@ -5345,7 +5347,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     outline-offset: -2px;
 }
 
-.widgets-list[data-widget-layout="stack"] .widgets-card-resize {
+.widgets-list[data-widget-layout="stack"] .widgets-card-resize,
+.widgets-card[data-widget-width-fixed] .widgets-card-resize {
     display: none;
 }
 

@@ -170,8 +170,10 @@ const widthName = (w) => WIDTH_NAMES.get(w) || `${w} columns`;
  * `relayout()` binds the edge handles of new cards and hands the masonry the
  * key order and the owner's spans; each plan it reports sets the list's
  * `data-widget-layout` (`stack` when the list is too narrow for two columns:
- * widths do not apply there). The card menu sets a width step or `null` (the
- * author default) through `setWidth`, on every card. The edge handle drags a card between the widths
+ * widths do not apply there) and marks `data-widget-width-fixed` on a card no
+ * step can widen or narrow (the only card on the board), whose edge CSS hides.
+ * The card menu sets a width step or `null` (the author default) through
+ * `setWidth`, on every card. The edge handle drags a card between the widths
  * its steps can give it, which the masonry answers for the current board,
  * with a live preview (Escape cancels), and its arrow keys step it (Home /
  * End: one column / full width). Every
@@ -219,11 +221,16 @@ export function createWidgetWidths(list, options) {
     const choicesAt = (index) => widthChoices(
         (w) => placeAt(laid.replan(index, w), index), widthOf(laid.items[index].dataset.widgetKey || ''),
     );
-    // Each masonry plan: kept for the edge drag, and the list's mode for CSS and the menu.
+    // Each masonry plan: kept for the edge drag; the list's mode for CSS and the
+    // menu; and on each card whether any step could change its width.
     const onLayout = (plan, items, replan) => {
         laid = { plan, items, replan };
         const mode = plan.availableColumns > 1 ? 'columns' : 'stack';
         if (list.dataset.widgetLayout !== mode) list.dataset.widgetLayout = mode;
+        items.forEach((item, index) => {
+            const fixed = choicesAt(index).length < 2;
+            if (item.hasAttribute('data-widget-width-fixed') !== fixed) item.toggleAttribute('data-widget-width-fixed', fixed);
+        });
     };
     const relayout = () => {
         list.querySelectorAll('[data-widget-resize-handle]').forEach(bindHandle);
