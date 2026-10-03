@@ -92,6 +92,10 @@ def test_range_page_publishes_its_room_rows_as_a_set_with_stamp_and_source_facts
          "outcome_phase": "error", "reason_detail": "Reviewers rejected it.", "text": "Failed. Root task taskA001.",
          "result_ref": {"kind": "task_result", "task_id": "taskA001", "reader": "get_task_result"}},
     ])
+    from ouroboros.task_results import write_task_result
+
+    # No row carries lineage yet, so the epoch is the chain end: my final is mine by its task result.
+    write_task_result(tmp_path, "taskA001", "failed", result="The build is red.")
     ctx = ctx_for(tmp_path)
     reply = write(ctx, kind="page", text="I found the build red; the reviewers rejected my fix.",
                   covers={"from": addr(rows[0]), "to": addr(rows[3])})
@@ -194,6 +198,12 @@ def test_forged_quote_is_refused_and_an_exact_quote_by_its_speaker_passes(tmp_pa
         assert check_quotes(tmp_path, [owner, forged]) == (False, 1)
     assert ChronicleStore(tmp_path).records("1", kinds=["page"]) == []
     mine = {"address": addr(rows[1]), "text": "I will run them first.", "speaker": "ouroboros"}
+    # No row carries lineage, so my reply precedes the epoch: without a task result it is not mine.
+    assert check_quotes(tmp_path, [owner, mine]) == (False, 1)
+    assert check_quotes(tmp_path, [owner, {**mine, "speaker": "unattributed"}]) == (True, None)
+    from ouroboros.task_results import write_task_result
+
+    write_task_result(tmp_path, "taskA001", "completed", result="Tests first.")
     assert check_quotes(tmp_path, [owner, mine]) == (True, None)
     saved = write(ctx, kind="page", text="The owner set a condition; I promised to test first.", covers=covers,
                   quotes=[owner, mine])
@@ -308,6 +318,35 @@ def test_rows_read_attributes_each_row_by_its_source_fields_as_text(tmp_path):
     assert len(bounded.split("\n")) == 4
     missing = _memory_read(ctx_for(tmp_path), rows=True, **{"from": "row:1@" + ts(9) + "#" + "a" * 12})
     assert "TOOL_ARG_ERROR" in missing and "row_missing" in missing
+
+
+def test_an_install_without_any_lineage_row_attributes_old_outgoing_rows_by_task_results_only(tmp_path):
+    """An update from a version that never recorded a child's lineage: no row proves which old
+    outgoing row was mine, so the task results decide and the rest is unattributed. Rows written
+    after activation carry lineage when a child wrote them, so a lineage-free one is mine."""
+    from ouroboros.task_result_schema import SCHEMA_VERSION_KEY, TASK_RESULT_SCHEMA_VERSION
+    from ouroboros.task_results import task_result_path
+
+    rows = chat(tmp_path, [
+        {"chat_id": 1, "direction": "in", "ts": ts(1), "text": "Review the patch."},
+        {"chat_id": 1, "direction": "out", "ts": ts(2), "task_id": "kid00001",
+         "text": "## Summary Child review: the patch is unsafe."},
+        {"chat_id": 1, "direction": "out", "ts": ts(3), "task_id": "kid00002", "text": "## Summary Second look."},
+        {"chat_id": 1, "direction": "out", "ts": ts(4), "task_id": "root0001", "text": "Done."},
+    ])
+    for task_id, fields in (("root0001", {}), ("kid00002", {"parent_task_id": "root0001", "root_task_id": "root0001",
+                                                             "delegation_role": "subagent"})):
+        task_result_path(tmp_path, task_id).write_text(json.dumps({
+            SCHEMA_VERSION_KEY: TASK_RESULT_SCHEMA_VERSION, "task_id": task_id, "status": "completed", **fields}),
+            encoding="utf-8")
+    ctx = ctx_for(tmp_path)
+    lines = _memory_read(ctx, rows=True).split("\n")[2:]
+    assert lines[1].startswith(f"[{ts(2)}; outgoing, author not recorded; {addr(rows[1])}]")
+    assert lines[2].startswith(f"[{ts(3)}; child kid00002 of root0001; ")
+    assert lines[3] == f"[{ts(4)}; Ouroboros; {addr(rows[3])}] Done."
+    assert ChronicleStore(tmp_path).activation()["metadata"]["lineage_epoch"]["pos"] == 4
+    later = chat(tmp_path, [{"chat_id": 1, "direction": "out", "ts": ts(5), "task_id": "root0002", "text": "Next."}])
+    assert _memory_read(ctx, rows=True).split("\n")[-1] == f"[{ts(5)}; Ouroboros; {addr(later[0])}] Next."
 
 
 def test_node_read_shows_stamp_original_and_corrections_with_the_acting_revision(tmp_path):

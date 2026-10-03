@@ -392,13 +392,14 @@ def row_author(row: Mapping[str, Any], *, pos: int | None = None, lineage_epoch:
     outgoing row with a delegated child's lineage), ``helper`` (the retired Light
     retelling), ``host`` (every other ``system`` row), ``ouroboros`` or
     ``unattributed``. ``lineage_epoch`` (``{"pos", ...}``, the first row that
-    carries lineage, recorded by the import as a data fact) splits outgoing rows
-    without lineage: before it a row is the root's own words only when
-    ``lineage_lookup(task_id)`` (a ``resolve_task_lineage`` projection or ``None``)
-    says so, a child's evidence when it names a child, and otherwise
-    ``unattributed`` — never silently "Ouroboros". That rule needs the row's
-    stream ``pos``: with an epoch and no ``pos`` such a row raises ``TypeError``.
-    Without an epoch (lineage recorded from the first row) ``pos`` is not needed.
+    carries lineage, else the chain end at activation, recorded by the import as
+    a data fact) splits outgoing rows without lineage: before it a row is the
+    root's own words only when ``lineage_lookup(task_id)`` (a
+    ``resolve_task_lineage`` projection or ``None``) says so, a child's evidence
+    when it names a child, and otherwise ``unattributed`` — never silently
+    "Ouroboros". That rule needs the row's stream ``pos``: with an epoch and no
+    ``pos`` such a row raises ``TypeError``. Without an epoch (the chain was
+    empty at activation, or the chronicle is not active) ``pos`` is not needed.
     """
     if row.get("type") == "quiz_answer":
         return {"kind": "human", "label": "Owner", "via": "quiz"}

@@ -35,8 +35,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from ouroboros import chat_chain
+from ouroboros.chronicle_import import row_lineage
 from ouroboros.chronicle_store import SPEAKERS, ChronicleStore, PublishResult, source_time_span, verify_quotes
-from ouroboros.dialogue_provenance import render_row_text, row_author, task_lineage_lookup
+from ouroboros.dialogue_provenance import render_row_text, row_author
 from ouroboros.knowledge import focus_signature
 from ouroboros.tool_capabilities import tool_result_limit
 from ouroboros.tools.registry import ToolEntry
@@ -95,16 +96,6 @@ def _room(ctx: Any, root: Path, room_id: Any) -> str:
     if own is None:
         raise ValueError("room_id is required: this task has no room address")
     return str(own)
-
-
-def _lineage(root: Path) -> Dict[str, Any]:
-    """``row_author`` keywords: the activation's lineage epoch (a data fact) and a strict lookup."""
-    store = _existing_store(root)
-    receipt = (store.activation() if store is not None else None) or {}
-    epoch = (receipt.get("metadata") or {}).get("lineage_epoch")
-    if not isinstance(epoch, dict) or type(epoch.get("pos")) is not int:
-        return {}
-    return {"lineage_epoch": epoch, "lineage_lookup": task_lineage_lookup(root)}
 
 
 def _author_of(row: Dict[str, Any], pos: Optional[int], lineage: Dict[str, Any]) -> Dict[str, Any]:
@@ -234,7 +225,7 @@ def page_covers(root: Any, room_id: Any, *, from_addr: Any = None, to_addr: Any 
     bound the room's stream inclusively; ``task_ids`` takes those tasks' rows and the
     owner's words bound to them. Unresolved bounds raise ``chat_chain.RowAddressError``.
     """
-    covers, facts, rows = _expand(Path(root), str(room_id), _lineage(Path(root)), from_addr=from_addr,
+    covers, facts, rows = _expand(Path(root), str(room_id), row_lineage(Path(root)), from_addr=from_addr,
                                   to_addr=to_addr, task_ids=task_ids)
     return {"covers": covers, "coverage_facts": facts, "rows": [(address, row) for address, row, _p in rows]}
 
@@ -324,7 +315,7 @@ def check_quotes(root: Any, quotes: Any) -> Tuple[bool, Optional[int]]:
 
     ``(True, None)`` or ``(False, index of the first failing quote)``.
     """
-    resolver = _quote_resolver(Path(root), _lineage(Path(root)))
+    resolver = _quote_resolver(Path(root), row_lineage(Path(root)))
     for index, quote in enumerate(quotes or ()):
         if verify_quotes([quote], resolver) is not None:
             return False, index
@@ -337,7 +328,7 @@ def _write_page(ctx: Any, root: Path, store: ChronicleStore, author: Dict[str, A
     covers_arg = a["covers"]
     if not isinstance(covers_arg, dict):
         return _arg_error(ctx, "a page needs covers: {from, to} row addresses or {task_ids}")
-    room, lineage = _room(ctx, root, a["room_id"]), _lineage(root)
+    room, lineage = _room(ctx, root, a["room_id"]), row_lineage(root)
     try:
         covers, facts, rows = _expand(root, room, lineage, from_addr=covers_arg.get("from"),
                                       to_addr=covers_arg.get("to"), task_ids=covers_arg.get("task_ids"))
@@ -364,7 +355,7 @@ def _write_part(ctx: Any, root: Path, store: ChronicleStore, author: Dict[str, A
     if room is None or str(room).strip() == "":
         first = store.get(str(members[0]))  # the members' own room unless one is named
         room = first["room_id"] if first else _room(ctx, root, None)
-    resolver = _quote_resolver(root, _lineage(root))
+    resolver = _quote_resolver(root, row_lineage(root))
     return _published(ctx, store.publish_part(room_id=room, text=a["text"], member_ids=[str(m) for m in members],
                                               author=author, expected_sequence=a["expected_sequence"],
                                               quotes=a["quotes"] or (), quote_resolver=resolver))
@@ -592,7 +583,7 @@ def _read_rows(root: Path, room: str, bounds: Dict[str, Any], start: int, limit:
         int(room)
     except ValueError as exc:
         raise ValueError("rows are read from a chat room: room_id is its numeric chat id") from exc
-    lineage = _lineage(root)
+    lineage = row_lineage(root)
     task_id = str(bounds.get("task_id") or "")
     source = chat_chain.iter_room_rows(root, room, from_addr=bounds.get("from") or None,
                                        to_addr=bounds.get("to") or None, task_ids=[task_id] if task_id else None,

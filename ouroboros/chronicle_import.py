@@ -17,7 +17,10 @@ sum, so it surfaces as ``unknown`` too. An unreadable or unresolvable cursor mak
 frontier ``unknown`` at the chain end observed now, beside a ``cursor_gap`` record.
 Pending knowledge nominations become global marks the mind releases. The receipt
 records the first row that carries delegation lineage (``lineage_epoch``) and the
-chain end, both data facts that later attribution and open-row readers use.
+chain end, both data facts that later attribution and open-row readers use. When no
+row carries lineage yet, the epoch is the chain end: nothing proves that the rows
+already written came from a version that recorded a child's lineage, so their
+outgoing rows are attributed by task results, never assumed to be my own words.
 
 Once an activation exists the import is a no-op: the legacy files are not read again,
 so a later change to them writes neither a record nor a copy. A busy
@@ -35,7 +38,7 @@ import pathlib
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ouroboros.chronicle_store import source_time_span
+from ouroboros.chronicle_store import ChronicleStore, source_time_span
 from ouroboros.platform_layer import file_lock_exclusive, file_lock_exclusive_nb, file_unlock
 from ouroboros.utils import assert_test_data_path
 
@@ -70,6 +73,21 @@ def legacy_frontier(store: Any) -> Dict[str, Any]:
     activation.
     """
     return dict(store.scan_state().get("legacy_frontier") or {})
+
+
+def row_lineage(root: Any) -> Dict[str, Any]:
+    """``row_author`` keywords from the activation receipt: its lineage epoch (a data fact) and
+    a strict task-result lookup. Empty before activation, and where the chain was empty then;
+    a reader never creates the chronicle to ask.
+    """
+    from ouroboros.dialogue_provenance import task_lineage_lookup
+
+    store = ChronicleStore(root)
+    receipt = (store.activation() if store.log_path.exists() else None) or {}
+    epoch = (receipt.get("metadata") or {}).get("lineage_epoch")
+    if not isinstance(epoch, dict) or type(epoch.get("pos")) is not int:
+        return {}
+    return {"lineage_epoch": epoch, "lineage_lookup": task_lineage_lookup(root)}
 
 
 def ensure_activated(store: Any, *, wait: bool = False) -> Dict[str, Any]:
@@ -308,8 +326,9 @@ def _cursor_start(root: pathlib.Path, meta: Optional[Dict[str, Any]], has_blocks
 def _survey(root: pathlib.Path, wanted: Set[int], start: Optional[pathlib.Path],
             offset: int) -> Tuple[List[Any], Kept, Optional[Dict[str, Any]], int]:
     """One pass over the chat stream: ``ts`` by position, the rows at ``wanted`` positions (plus
-    the last row covered by the old cursor and the chain's last row), the first row carrying
-    delegation lineage, and the cursor's stream position (rows before its generation + offset).
+    the last row covered by the old cursor and the chain's last row), the lineage epoch (the
+    first row carrying delegation lineage, else the chain end when rows exist), and the
+    cursor's stream position (rows before its generation + offset).
     """
     from ouroboros.chat_chain import _stream_rows, chat_chain_paths, generation_signatures, row_address
     from ouroboros.dialogue_provenance import _LINEAGE_FIELDS  # the fields row_author reads (spec §6.2)
@@ -332,11 +351,14 @@ def _survey(root: pathlib.Path, wanted: Set[int], start: Optional[pathlib.Path],
         if pos in wanted:
             kept[pos] = here
         if epoch is None and any(str(row.get(key) or "").strip() for key in _LINEAGE_FIELDS):
-            epoch = {"pos": pos, "ts": str(row.get("ts") or ""), "address": row_address(row, gen=gen, line=line)}
+            epoch = {"pos": pos, "ts": str(row.get("ts") or ""), "address": row_address(row, gen=gen, line=line),
+                     "basis": "first_lineage_row"}
         stamps.append(row.get("ts"))
         previous = here
     if previous is not None:
         kept[len(stamps) - 1] = previous
+    if epoch is None and stamps:  # no row proves lineage was recorded: every row so far precedes the epoch
+        epoch = {"pos": len(stamps), "ts": None, "address": None, "basis": "chain_end"}
     if cursor < 0:  # the cursor's generation holds no row yet
         cursor = len(stamps) + offset
     return stamps, kept, epoch, cursor

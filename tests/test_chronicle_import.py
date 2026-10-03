@@ -174,14 +174,20 @@ def test_raw_range_is_exact_only_when_the_counts_meet_the_cursor_without_gaps(tm
     assert frontier["status"] == "exact" and frontier["pos"] == (6 if change == "cursor_live_end" else 5)
 
 
-def test_lineage_epoch_is_the_first_row_carrying_delegation_lineage(tmp_path):
+def test_lineage_epoch_is_the_first_row_carrying_delegation_lineage_else_the_chain_end(tmp_path):
     _world(tmp_path, lineage_at=5)
     epoch = ChronicleStore(tmp_path).ensure_activated()["metadata"]["lineage_epoch"]
-    assert epoch["pos"] == 5 and epoch["ts"] == "2026-09-01T02:00:05+00:00"
+    assert epoch["pos"] == 5 and epoch["ts"] == "2026-09-01T02:00:05+00:00" and epoch["basis"] == "first_lineage_row"
     assert _pos(tmp_path, epoch["address"]) == 5
-    other = tmp_path / "plain"
-    _world(other)
-    assert ChronicleStore(other).ensure_activated()["metadata"]["lineage_epoch"] is None
+    # No row proves that lineage was recorded: every row written so far precedes the epoch.
+    plain = tmp_path / "plain"
+    rows = _world(plain)
+    assert ChronicleStore(plain).ensure_activated()["metadata"]["lineage_epoch"] == {
+        "pos": len(rows), "ts": None, "address": None, "basis": "chain_end"}
+    # An install with no chat row at activation has no earlier period at all.
+    empty = tmp_path / "empty"
+    (empty / "logs").mkdir(parents=True)
+    assert ChronicleStore(empty).ensure_activated()["metadata"]["lineage_epoch"] is None
 
 
 # --- idempotent, and never re-read after activation ------------------------------------------------
