@@ -379,6 +379,71 @@ def test_rejected_drafts_cannot_be_members_and_a_rejected_part_unfolds(tmp_path)
     assert refolded.ok
 
 
+def test_a_folded_draft_is_rejected_only_after_its_part_and_an_unfolded_one_at_once(tmp_path):
+    store = ChronicleStore(tmp_path)
+    first = page(store, "r1", "r2", at=0, author=LIGHT).record
+    second = page(store, "r3", at=2, author=LIGHT).record
+    loose = page(store, "r9", at=9, author=LIGHT).record
+    # An unfolded draft is rejected at once and its rows are open again.
+    assert store.decide(loose["id"], False, MIND, "wrong arc").ok
+    assert store.sealed_row_refs("r") == {"r1", "r2", "r3"}
+    fold = store.publish_part(room_id="r", text="Light's fold", member_ids=[first["id"], second["id"]], author=LIGHT,
+                              expected_sequence=store.room_head("r"))
+    assert fold.ok
+    # A folded draft would stop acting inside an acting part: refused with the part's id, rows still sealed.
+    folded = store.decide(first["id"], False, MIND, "loses the owner's words")
+    assert (folded.ok, folded.reason, folded.conflict_ids) == (False, "already_folded", (fold.record["id"],))
+    assert store.sealed_row_refs("r") == {"r1", "r2", "r3"}
+    assert store.publish_page(room_id="r", text="mine", covers=covers("r1", "r2"), author=MIND).reason == "already_sealed"
+    # Rejecting the part first unfolds it; then the draft is rejected and its rows reopen.
+    assert store.decide(fold.record["id"], False, MIND, "folds a wrong draft").ok
+    assert store.decide(first["id"], False, MIND, "loses the owner's words").ok
+    assert store.sealed_row_refs("r") == {"r3"}
+    assert store.publish_page(room_id="r", text="mine", covers=covers("r1", "r2"), author=MIND).ok
+    # Accepting a folded draft unfolds nothing and passes.
+    mine = store.publish_part(room_id="r", text="my fold", member_ids=[second["id"]], author=MIND,
+                              expected_sequence=store.room_head("r"))
+    assert mine.ok and store.decide(second["id"], True, MIND, "faithful").ok
+
+
+def test_a_part_carries_its_members_period_from_pages_and_from_legacy_raw_ranges(tmp_path):
+    store = ChronicleStore(tmp_path)
+
+    def span(start, end):
+        return {"start": f"2026-09-{start:02d}T00:00:00+00:00", "end": f"2026-09-{end:02d}T00:00:00+00:00",
+                "incomplete": False}
+
+    def section(block, raw_span, status="exact"):
+        raw = {"status": status, "pos": [block * 10, block * 10 + 10] if raw_span else None, "first": None,
+               "last": None, "ts_span": raw_span}
+        result = store.publish([{"id": f"legacy-b{block:02d}-rr", "kind": "legacy", "room_id": "r",
+                                 "text": f"retelling {block}", "author": LEGACY, "covers": {"room_id": "r", "raw_range": raw},
+                                 "metadata": {"legacy_type": "summary", "legacy_block": block}}])
+        assert result.ok, result
+        return result.record["id"]
+
+    # Legacy sections keep their period inside raw_range; the part reads it there.
+    blocks = [section(0, span(1, 2)), section(1, span(3, 4))]
+    of_legacy = store.publish_part(room_id="r", text="blocks 0-1", member_ids=blocks, author=MIND,
+                                   expected_sequence=store.room_head("r"))
+    assert of_legacy.ok and of_legacy.record["covers"]["stream_span"] == [0, 20]
+    assert of_legacy.record["covers"]["ts_span"] == {"start": "2026-09-01T00:00:00+00:00",
+                                                     "end": "2026-09-04T00:00:00+00:00", "incomplete": False}
+    # A section whose range is unknown leaves the part's period incomplete, never invented.
+    unknown = [section(2, span(5, 6)), section(3, None, status="unknown")]
+    partial = store.publish_part(room_id="r", text="blocks 2-3", member_ids=unknown, author=MIND,
+                                 expected_sequence=store.room_head("r"))
+    assert partial.ok and partial.record["covers"]["ts_span"] == {
+        "start": "2026-09-05T00:00:00+00:00", "end": "2026-09-06T00:00:00+00:00", "incomplete": True}
+    # Pages keep their period in covers, as before.
+    pages = [store.publish_page(room_id="r", text=f"p{n}", covers={**covers(f"a{n}", at=40 + n), "ts_span": span(n, n)},
+                                author=MIND).record["id"] for n in (7, 8)]
+    of_pages = store.publish_part(room_id="r", text="pages", member_ids=pages, author=MIND,
+                                  expected_sequence=store.room_head("r"))
+    assert of_pages.ok and of_pages.record["covers"]["ts_span"] == {
+        "start": "2026-09-07T00:00:00+00:00", "end": "2026-09-08T00:00:00+00:00", "incomplete": False}
+
+
 def test_room_head_guards_publication_without_a_lock_across_reasoning(tmp_path):
     store = ChronicleStore(tmp_path)
     seen = store.room_head("r")

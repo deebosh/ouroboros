@@ -17,7 +17,8 @@ folds adjacent effective records of one lower level of its room (pages, legacy
 sections or parts), each at most once (``folded``). A helper's page or part is
 a draft that acts at once; the mind's ``decision`` accepts or rejects it, and a
 rejected draft stops acting, so its rows are open and its members unfolded
-again. Only the mind corrects, beside the original.
+again; a draft already folded into a part is not rejected while that part acts
+(``already_folded``). Only the mind corrects, beside the original.
 
 Every precondition is checked inside the same publication lock, and a refusal
 is a typed ``PublishResult`` (not an exception) carrying the current revision
@@ -576,6 +577,11 @@ class ChronicleStore:
         prior = db.execute("SELECT id FROM records WHERE target=? AND kind='decision'", (target["id"],)).fetchone()
         if prior:
             return _refuse("invalid", "the draft is already decided", conflict_ids=(prior[0],))
+        holder = db.execute("SELECT part_id FROM folded WHERE member_id=?", (target["id"],)).fetchone()
+        if holder and not record["accepted"]:
+            # A rejected draft stops acting, so it cannot stay a member of an acting part.
+            return _refuse("already_folded", "the draft is folded into a part: reject that part first when it "
+                           "is a helper's draft, or correct this draft beside its original", conflict_ids=(holder[0],))
         return None
 
     def _rule_mark(self, db, record):
@@ -695,7 +701,9 @@ class ChronicleStore:
         spans = [s for s in (self._stream_span(m) for m in members) if s]
         if spans:
             covers["stream_span"] = [min(s[0] for s in spans), max(s[1] for s in spans)]
-        stamps = [(m.get("covers") or {}).get("ts_span") or {} for m in members]
+        # A legacy section keeps its period inside its raw_range; a page or part, in covers.
+        stamps = [(m.get("covers") or {}).get("ts_span") or ((m.get("covers") or {}).get("raw_range") or {}).get(
+            "ts_span") or {} for m in members]
         covers["ts_span"] = source_time_span([t.get(k) for t in stamps for k in ("start", "end") if t.get(k)],
                                              incomplete=any(not t or t.get("incomplete") for t in stamps))
         return covers
