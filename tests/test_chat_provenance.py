@@ -8,21 +8,6 @@ from ouroboros.dialogue_provenance import render_row_text, row_author
 from ouroboros.memory import Memory
 
 
-def test_summarize_chat_marks_system_entries(tmp_path):
-    memory = Memory(drive_root=tmp_path)
-    summary = memory.summarize_chat([
-        {
-            "ts": "2026-03-19T16:53:30.629879+00:00",
-            "direction": "system",
-            "type": "task_summary",
-            "text": "The user requested a restart of the scenario.",
-        }
-    ])
-
-    assert "📋 16:53 [task_summary] The user requested a restart of the scenario." in summary
-    assert "[User]" not in summary
-
-
 def test_chat_history_marks_system_entries(tmp_path):
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)

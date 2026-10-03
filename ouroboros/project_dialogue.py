@@ -308,38 +308,6 @@ def room_membership(chat_id: int, project_chat_ids: set, source_refs: list,
     return matches
 
 
-def project_recent_dialogue(
-    memory: Any, project_chat_id: int, max_entries: int,
-) -> tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
-    """Focused recent rows plus retention-proof cross-thread owner origins."""
-    from ouroboros.projects_registry import all_task_bindings
-
-    try:
-        bound = all_task_bindings(memory.drive_root)
-    except Exception:
-        bound = {}
-    refs = source_refs_for_project(memory.drive_root, project_chat_id)
-    matches = room_membership(project_chat_id, {project_chat_id}, refs, bound)
-    entries, coverage = memory.read_unconsolidated_chat(
-        memory.load_dialogue_meta(), max_entries,
-        predicate=lambda row: matches(_row_chat_id(row), row),
-    )
-    present_ref_keys = set()
-    for entry in entries:
-        present_ref_keys.update(_entry_source_identities(entry))
-    retained: List[Dict[str, Any]] = []
-    for origin in project_origin_rows(memory.drive_root, project_chat_id):
-        ref = origin.get("ref") if isinstance(origin.get("ref"), dict) else {}
-        if _source_ref_identity(ref) in present_ref_keys:
-            continue
-        retained.append({
-            "chat_id": ref.get("chat_id"), "client_message_id": ref.get("client_message_id"),
-            "ts": ref.get("ts"), "direction": "in", "text": origin.get("text"),
-            "project_origin_projection": True,
-        })
-    return entries, coverage, retained
-
-
 def _source_ref_identity(ref: Dict[str, Any]) -> Optional[tuple]:
     try:
         chat_id = int(ref.get("chat_id") or 0)
@@ -1581,7 +1549,7 @@ __all__ = ["AGENT_RECEIPT_ID_PREFIX", "announce_project_started",
     "entry_matches_source_ref", "latest_chat_annotations",
     "enqueue_project_completion_summary", "project_completion_delivery_outcome",
     "completion_status_label", "outcome_phase", "owner_message_ref_is_valid",
-    "project_origin_rows", "project_question_pointer", "project_recent_dialogue",
+    "project_origin_rows", "project_question_pointer",
     "routing_options_with_labels", "routing_target_label", "resolve_owner_message_source",
     "source_refs_for_project",
 ]

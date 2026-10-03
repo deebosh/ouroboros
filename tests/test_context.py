@@ -624,67 +624,6 @@ def test_project_room_keeps_the_retention_proof_cross_room_directive_once(tmp_pa
     assert "### Words that started this work (retention-proof)" in room
 
 
-def test_automatic_recent_context_reads_only_bounded_generation_suffix(tmp_path, monkeypatch):
-    import pathlib
-
-    from ouroboros.memory import Memory, _AUTOMATIC_CHAT_GENERATIONS
-
-    logs, archive = tmp_path / "logs", tmp_path / "archive"
-    logs.mkdir(parents=True)
-    archive.mkdir()
-    for index in range(10):
-        (archive / f"chat_20260820T{index:02d}0000.jsonl").write_text(
-            json.dumps({"direction": "in", "text": f"archive-{index}"}) + "\n",
-            encoding="utf-8",
-        )
-    (logs / "chat.jsonl").write_text(
-        json.dumps({"direction": "in", "text": "live-latest"}) + "\n",
-        encoding="utf-8",
-    )
-    memory = Memory(tmp_path)
-    reads = []
-    original = memory._read_chat_generation
-
-    def _counted(path, **kwargs):
-        reads.append(path)
-        return original(path, **kwargs)
-
-    monkeypatch.setattr(memory, "_read_chat_generation", _counted)
-    entries, coverage = memory.read_unconsolidated_chat({}, 20)
-
-    assert len(reads) <= _AUTOMATIC_CHAT_GENERATIONS
-    assert entries[-1]["text"] == "live-latest"
-    assert coverage["omitted_matching_rows_unknown"] is True
-    assert any(gap["kind"] == "unscanned_unconsolidated_generations" for gap in coverage["gaps"])
-    assert [pathlib.Path(row["path"]).name for row in coverage["generations"]] == [
-        "chat_20260820T080000.jsonl", "chat_20260820T090000.jsonl", "chat.jsonl",
-    ]
-
-
-def test_automatic_recent_context_materializes_a_bounded_row_suffix(tmp_path):
-    from ouroboros.memory import Memory
-
-    logs = tmp_path / "logs"
-    logs.mkdir(parents=True)
-    (logs / "chat.jsonl").write_text(
-        "".join(
-            json.dumps({"direction": "in", "text": f"row-{index}"}) + "\n"
-            for index in range(20_000)
-        ),
-        encoding="utf-8",
-    )
-
-    entries, coverage = Memory(tmp_path).read_unconsolidated_chat({}, 1)
-
-    assert [entry["text"] for entry in entries] == ["row-19999"]
-    assert coverage["generations"][0]["rows"] <= 100
-    assert coverage["omitted_matching_rows_unknown"] is True
-    assert any(
-        gap["kind"] in {"generation_prefix_unscanned", "generation_tail_rows_unscanned"}
-        for gap in coverage["gaps"]
-    )
-
-
 def test_chat_history_surfaces_malformed_gap_even_when_search_matches_nothing(tmp_path):
     from ouroboros.memory import Memory
 
@@ -715,32 +654,6 @@ def test_archive_only_chat_chain_is_complete_while_live_file_is_absent(tmp_path)
 
     assert [entry["text"] for entry in entries] == ["archive-only"]
     assert coverage["gaps"] == []
-
-
-def test_missing_cursor_generation_hot_path_never_replays_full_archive(tmp_path, monkeypatch):
-    from ouroboros.memory import Memory
-
-    logs = tmp_path / "logs"
-    logs.mkdir(parents=True)
-    (logs / "chat.jsonl").write_text(
-        json.dumps({"direction": "in", "text": "bounded-live"}) + "\n",
-        encoding="utf-8",
-    )
-    memory = Memory(drive_root=tmp_path)
-
-    def _forbidden_full_replay(**_kwargs):
-        raise AssertionError("automatic gap recovery must not scan every archive generation")
-
-    monkeypatch.setattr(memory, "read_chat_generations", _forbidden_full_replay)
-    entries, coverage = memory.read_unconsolidated_chat({
-        "last_consolidated_offset": 50,
-        "chat_log_signature": {"first_line_sha256": "f" * 64, "size": 999},
-    }, 20)
-
-    assert [entry["text"] for entry in entries] == ["bounded-live"]
-    assert coverage["omitted_matching_rows_unknown"] is True
-    assert coverage["gaps"][0]["kind"] == "consolidation_cursor_generation_missing"
-    assert coverage["reader"] == "chat_history(count, offset, search)"
 
 
 def test_runtime_section_carries_official_update_fact(tmp_path, monkeypatch):

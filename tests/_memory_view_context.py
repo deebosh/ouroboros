@@ -35,3 +35,12 @@ def section(text: str, heading: str) -> str:
     start = text.index(heading)
     end = text.find("\n## ", start + len(heading))
     return text[start:] if end < 0 else text[start:end]
+
+
+def room_text(root: pathlib.Path, task: Dict[str, Any] | None = None) -> str:
+    """What the next turn of ``task`` (Main by default) reads of its room: the view's room block, no floor."""
+    from ouroboros import memory_view as mv
+
+    task = task or {"id": "next-turn", "chat_id": 1}
+    snapshot = mv.capture_memory_view(root, task, mv.view_spec_for_task(task, root))
+    return mv.render_room(snapshot)

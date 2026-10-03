@@ -1,8 +1,9 @@
 """Full room evidence retains conversations beyond consolidation and rotation."""
 from __future__ import annotations
 
-from ouroboros.memory import Memory
-from ouroboros.project_dialogue import build_owner_message_ref, project_recent_dialogue
+from ouroboros.chronicle_store import ChronicleStore
+from ouroboros.memory_inventory import open_room_rows
+from ouroboros.project_dialogue import build_owner_message_ref
 from ouroboros.projects_registry import bind_task_to_project, create_project
 from ouroboros.utils import append_jsonl, atomic_write_json
 
@@ -19,9 +20,9 @@ def test_full_room_includes_rotated_consolidated_dialogue_and_child_lineage(tmp_
     live = tmp_path / "logs" / "chat.jsonl"
     append_jsonl(live, {"ts": "2026-09-03T01:00:00Z", "chat_id": 1, "direction": "out", "text": "Child explanation", "task_id": "child", "root_task_id": "parent"})
     atomic_write_json(tmp_path / "memory" / "dialogue_meta.json", {"consolidated_chat_lines": 100000})
-    # Full reader ignores the consolidation cursor's bounded recent window.
-    memory = Memory(tmp_path)
-    recent, _, _ = project_recent_dialogue(memory, project["chat_id"], 10**9)
+    # The full reader ignores what the memory view counts as retold before the update (its open rows).
+    ChronicleStore(tmp_path).ensure_activated()
+    recent = open_room_rows(tmp_path, project["chat_id"])
     source = read_room_source(tmp_path, project["chat_id"])
     assert "Original choice" in source["text"] and "I need a plan" in source["text"]
     assert "Option A saves time; option B keeps flexibility" in source["text"]

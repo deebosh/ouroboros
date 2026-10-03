@@ -284,11 +284,6 @@ CONTINUATION_NARRATIVE_LEGACY_GENERATIONS = 3
 CONTINUATION_NARRATIVE_LEGACY_TAIL_BYTES = 512 * 1024
 CONTINUATION_NARRATIVE_LEGACY_MAX_ROWS = 5_000
 
-# Raw recent-dialogue tail shown when no valid consolidation can represent older
-# dialogue. The universal temporal renderer remains issue #220; this PR neither
-# shortens nor reinterprets that horizon.
-MAX_RECENT_CHAT_TAIL = 1000
-
 # --- Native image blocks (v6.26.0 multimodal chat) ---------------------------
 # Char-equivalent for ONE image block in chars/4 token estimates (~1.1K tokens):
 # vision models bill per tile, not per base64 char.
@@ -368,8 +363,8 @@ PROGRESS_LOG_WARN_BYTES = 8_000_000
 SCHEDULED_TASKS_WARN_BYTES = 2_000_000
 # Compact root-task -> skill review index used by acceptance packet assembly.
 SKILL_REVIEW_ROOT_TASKS_WARN_BYTES = 20_000_000
-# ``chat_history`` can deliberately replay the archive chain, while ordinary
-# context reads only the unconsolidated generation suffix.  Warn before an
+# ``chat_history`` can deliberately replay the archive chain, while the memory
+# view reads only rows after the retold-memory frontier.  Warn before an
 # explicit full-history read becomes seconds-scale; this is observability, not
 # a retention gate and never shortens the memory horizon.
 CHAT_ARCHIVE_SCAN_WARN_BYTES = 100_000_000

@@ -584,37 +584,6 @@ def test_suppressed_message_promote_is_designed_absence(tmp_path, monkeypatch):
     assert project_binding_for_task(tmp_path, "sup-1")["origin_absent"] == "mid_task_no_origin"
 
 
-def test_context_reader_follows_mid_archive_consolidation_cursor(tmp_path):
-    """The context reader follows the frozen legacy cursor through the generation chain."""
-    from ouroboros.chat_chain import _chat_log_signature
-    from ouroboros.memory import Memory
-
-    logs = tmp_path / "logs"
-    archive_dir = tmp_path / "archive"
-    logs.mkdir()
-    archive_dir.mkdir()
-    archive = archive_dir / "chat_20260820T010000.jsonl"
-    archive.write_text(_entries(0, 5, "old"), encoding="utf-8")
-    live = logs / "chat.jsonl"
-    live.write_text(_entries(100, 5, "new"), encoding="utf-8")
-    entries, coverage = Memory(tmp_path).read_unconsolidated_chat({
-        "last_consolidated_offset": 3,
-        "chat_log_signature": _chat_log_signature(archive),
-    }, 100)
-
-    assert [row["text"] for row in entries] == [
-        "old 3", "old 4", "new 100", "new 101", "new 102", "new 103", "new 104",
-    ]
-    assert coverage["gaps"] == []
-
-
-def _entries(start, count, tag):
-    return "".join(
-        json.dumps({"ts": f"2026-07-19T10:{i:02d}:00Z", "direction": "in", "text": f"{tag} {start + i}"}) + "\n"
-        for i in range(count)
-    )
-
-
 def test_lens_over_cap_origins_emit_disclosed_omission_note(tmp_path):
     """Triad r3: past the synthesis cap the omission is DISCLOSED (count + durable
     source named), never a silent cut."""

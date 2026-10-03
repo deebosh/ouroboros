@@ -17,6 +17,14 @@ def _chronicle_view(row):
     return f"{header} {text}"
 
 
+def _view_line(row):
+    """The line the memory view prints for an open row of lane 1 (``memory_view._row_line``)."""
+    from ouroboros import chat_chain
+    from ouroboros.dialogue_provenance import render_memory_row
+
+    return render_memory_row(chat_chain.row_address(row), row, author=row_author(row), indent="  ")
+
+
 def _row(state):
     return {
         "ts": "2026-01-02T03:04:05Z", "direction": "out", "chat_id": 73,
@@ -36,7 +44,7 @@ def test_outgoing_destination_and_state_survive_all_memory_views(tmp_path, state
     row = _row(state)
     memory = Memory(tmp_path)
     append_jsonl(tmp_path / "logs/chat.jsonl", row)
-    for view in (memory.summarize_chat([row]), memory.chat_history(count=10), _chronicle_view(row)):
+    for view in (_view_line(row), memory.chat_history(count=10), _chronicle_view(row)):
         assert "The exact message" in view
         assert "provider=chat-provider" in view
         assert "account=account-1" in view
@@ -55,6 +63,12 @@ def test_failed_send_is_a_system_fact_not_confirmed_speech(state):
     assert Memory._format_chat_line(row, compact=True).startswith("📋")
     author = row_author(row)
     assert author["kind"] == "host" and "Ouroboros" not in author["label"]
+    # In the view it is a typed fact of its task's lane-2 line: the state and the address, no JSON (P3 §2.4).
+    from ouroboros import memory_view
+    from ouroboros.memory_inventory import row_meta
+
+    assert memory_view._typed_fact(row_meta(row)) == "delivery " + state
+    assert memory_view._typed_fact(row_meta({**row, "type": "task_summary"})) == ""
 
 
 def test_ordinary_owner_reply_format_is_unchanged():
@@ -73,7 +87,7 @@ def test_attachment_and_mail_receipt_facts_do_not_disappear_from_memory(tmp_path
     }
     memory = Memory(tmp_path)
     append_jsonl(tmp_path / "logs/chat.jsonl", row)
-    for view in (memory.summarize_chat([row]), memory.chat_history(count=10), _chronicle_view(row)):
+    for view in (_view_line(row), memory.chat_history(count=10), _chronicle_view(row)):
         assert "Delivery details:" in view and "report.pdf" in view
         assert "reader@example.org" in view and "Requested report" in view
         assert "provider acceptance only" in view

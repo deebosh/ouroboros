@@ -26,7 +26,7 @@ def test_agent_context_budget_values_pinned():
     for retired in ("BG_CONTEXT_WARN_CHARS", "BG_CONTEXT_MAX_CHARS", "BG_STATE_JSON_WARN_CHARS", "BG_OBSERVATIONS_WARN_BYTES"):
         assert not hasattr(cb, retired), retired  # a wake-up is a Main turn under Main's budgets
     assert cb.LARGE_CONTEXT_SECTION_CHARS == 200_000
-    assert cb.MAX_RECENT_CHAT_TAIL == 1000
+    assert not hasattr(cb, "MAX_RECENT_CHAT_TAIL")  # the request reads no chat tail (memory spec P3 §2.14)
     assert cb.CHAT_ARCHIVE_SCAN_WARN_BYTES == 100_000_000
     assert not hasattr(cb, "CONTEXT_SOFT_CAP_TOKENS")
     # Structural low-water divisor of the automatic reclaim pass (12.5 % of the
@@ -101,12 +101,20 @@ def test_call_sites_import_the_ssot_names():
         assert name not in loop_src
     assert "OWNER_LOW_TARGET_TOKENS" in _src("ouroboros/context_fit.py")
 
-    # The request reads no chat tail: the open conversation is the memory view's.
+    # The request reads no chat tail: the open conversation is the memory view's, and the
+    # readers of the frozen consolidation cursor's tail are gone with it (P3 §2.14).
+    from ouroboros.memory import Memory
+
     ctx_recent_src = _src("ouroboros/context.py")
     assert "MAX_RECENT_CHAT_TAIL" not in ctx_recent_src
     assert "read_unconsolidated_chat" not in ctx_recent_src
     assert "capture_memory_view" in ctx_recent_src
-    assert "last_consolidated_offset" in _src("ouroboros/memory.py")
+    memory_src = _src("ouroboros/memory.py")
+    assert "last_consolidated_offset" not in memory_src and "_AUTOMATIC_CHAT_" not in memory_src
+    for retired in ("read_unconsolidated_chat", "summarize_chat", "format_blocks_as_markdown", "era_host_note"):
+        assert not hasattr(Memory, retired), retired
+    for kept in ("chat_history", "load_dialogue_blocks", "_durable_dialogue_gaps", "_format_chat_line"):
+        assert hasattr(Memory, kept), kept  # chat_history still reads them
 
     ctx_src = _src("ouroboros/context.py")
     assert "LARGE_CONTEXT_SECTION_CHARS" in ctx_src
