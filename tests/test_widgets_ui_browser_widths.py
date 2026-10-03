@@ -1,20 +1,18 @@
-"""Widgets board browser smoke: ordered rows with the owner's width steps.
+"""Widgets board browser smoke: today's masonry with the owner's column spans.
 
 On chromium and webkit, against a real server with real module frames and real
 declarative cards of very different heights (a 720px game-like frame, a short
-metric, a long route-backed table, an auto-height module): the cards stand in
-rows of the 12-column board in the owner's order at the author's default
-widths; content growth makes only its own card taller and moves no card
-sideways; the card menu, the right-edge drag and its arrow keys set width steps,
-each named in the live region, stored in ``ui_preferences.widget_size`` (Reset
-size deletes one) that a window
-reload restores; a narrow window stacks the cards in one column in the same
-order, hides the edge handle, and its menu says widths apply when the list is
-wide. Through all of it every card keeps its DOM node and every frame its
-window (a moved or re-inserted <iframe> would reload). Screenshots of the
-board, the open menu and the stacked column go to the evidence directory. Kept
-apart from the lifecycle / geometry suites so none of them grows past the
-size-ratchet band (docs/DESIGN.md "Widgets board")."""
+metric, a long route-backed table, an auto-height module): untouched, the
+masonry packs the cards in the owner's order at their authors' spans (two
+columns for `span: 2`, one otherwise); the card menu, the right-edge drag and
+its arrow keys set a card's span — 1, 2, 3 columns or Full width, each named in
+the live region — stored in ``ui_preferences.widget_size`` (Reset size deletes
+one) that a window reload restores; a list too narrow for two columns is a
+stack in the same order whose menu says widths apply when the list is wide.
+Through all of it every card keeps its DOM node and every frame its window (a
+moved or re-inserted <iframe> would reload). Screenshots of the board, the open
+menu and the stack go to the evidence directory (docs/DESIGN.md "Widgets
+board")."""
 
 from __future__ import annotations
 
@@ -128,7 +126,7 @@ def _write_board_widget_extension(data_dir: pathlib.Path) -> str:
 
 @pytest.mark.ui_browser
 @pytest.mark.parametrize("browser_name", ("chromium", "webkit"))
-def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, browser_name):
+def test_ui_smoke_widget_board_masonry_and_owner_widths(direct_server_with_data, browser_name):
     pytest.importorskip("playwright.sync_api", reason="Playwright is not installed")
     from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
@@ -158,20 +156,11 @@ def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, br
             key,
         )
 
-    def widths(page) -> dict:
-        return page.evaluate(
-            """(keys) => Object.fromEntries(Object.entries(keys).map(([tab, key]) => [
-                tab, document.querySelector(`[data-widget-key="${key}"]`).style.getPropertyValue('--widget-w'),
-            ]))""",
-            key,
-        )
-
     def list_width(page) -> float:
         return page.evaluate("document.getElementById('widgets-list').getBoundingClientRect().width")
 
-    def columns(page, count: int) -> float:
-        pitch = (list_width(page) + GAP_PX) / 12
-        return count * pitch - GAP_PX
+    def layout(page) -> str:
+        return page.evaluate("document.getElementById('widgets-list').dataset.widgetLayout || ''")
 
     def status(page) -> str:
         return page.locator("[data-widget-arrange-status]").text_content()
@@ -186,6 +175,13 @@ def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, br
                 return size === null ? saved === undefined : (!!saved && saved.w === size.w && saved.h === 0);
             }""",
             arg=[key[tab], size],
+            timeout=5_000,
+        )
+
+    def wait_width(page, tab: str, width: float) -> None:
+        page.wait_for_function(
+            "([selector, width]) => Math.abs(document.querySelector(selector).getBoundingClientRect().width - width) <= 1.5",
+            arg=[card(tab), width],
             timeout=5_000,
         )
 
@@ -234,28 +230,25 @@ def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, br
                 )
                 assert toggled == 200
                 open_widgets(page)
-                assert page.evaluate("document.getElementById('widgets-list').dataset.widgetLayout") == "grid"
-                assert widths(page) == {"game": "8", "gauge": "4", "grow": "4", "issues": "4", "notes": "4"}
+                page.wait_for_function("document.getElementById('widgets-list').dataset.widgetLayout === 'columns'", timeout=5_000)
                 mark_frames(page)
                 dom_before = node_order(page)
 
-                # Rows in the owner's order (no order saved yet: the list's order): the
-                # 8-column game and the gauge share row one, the other three row two.
+                # Untouched: today's masonry at the authors' spans. Six asked-for columns on a
+                # list with room for three: the game spans two, every other card one.
                 box = rects(page)
-                assert same(box["game"]["width"], columns(page, 8)) and same(box["gauge"]["width"], columns(page, 4))
-                assert same(box["game"]["y"], box["gauge"]["y"]) and box["gauge"]["x"] > box["game"]["x"]
-                row_two = [box[tab] for tab in ("grow", "issues", "notes")]
-                assert all(same(item["y"], row_two[0]["y"]) for item in row_two)
-                assert [item["x"] for item in row_two] == sorted(item["x"] for item in row_two)
-                assert same(row_two[0]["y"], max(box["game"]["y"] + box["game"]["height"], box["gauge"]["y"] + box["gauge"]["height"]) + GAP_PX)
-                # Each card keeps its own content height: the long table is much
-                # taller than the note beside it, the gauge much shorter than the game.
+                column = box["gauge"]["width"]
+                assert same(column, (list_width(page) + GAP_PX) / 3 - GAP_PX)
+                assert same(box["game"]["width"], 2 * column + GAP_PX)
+                for tab in ("grow", "issues", "notes"):
+                    assert same(box[tab]["width"], column), tab
+                # Cards keep their own content height; the masonry stacks them by it.
                 assert box["issues"]["height"] > box["notes"]["height"] + 400
                 assert box["gauge"]["height"] < box["game"]["height"] - 400
+                assert page.evaluate("document.getElementById('widgets-list').style.getPropertyValue('--masonry-h')")
                 page.screenshot(path=str(evidence_dir / f"widget-board-{browser_name}.png"), full_page=True)
 
-                # Content growth: only the grown card gets taller; nothing moves sideways
-                # or changes width, and its row neighbours keep their tops.
+                # Content growth relayouts the masonry; the grown frame keeps its window.
                 frame_before = page.locator(f"{card('grow')} iframe").evaluate("frame => frame.getBoundingClientRect().height")
                 page.frame_locator(f"{card('grow')} iframe").locator("#grow").click()
                 page.wait_for_function(
@@ -263,68 +256,65 @@ def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, br
                     arg=[card("grow"), frame_before],
                     timeout=10_000,
                 )
-                grown = rects(page)
-                for tab, item in grown.items():
-                    assert same(item["x"], box[tab]["x"]) and same(item["width"], box[tab]["width"]), tab
-                    assert same(item["y"], box[tab]["y"]), tab
-                assert grown["grow"]["height"] > box["grow"]["height"] + 300
+                assert rects(page)["grow"]["height"] > box["grow"]["height"] + 300
                 assert frames_kept(page)
 
-                # The card menu: the gauge goes full width, on its own row under the game.
+                # The card menu: one column is checked; Full width spans every column.
                 page.locator(f"{card('gauge')} [data-widget-menu-trigger]").click()
                 menu = page.locator("body > .skills-card-menu-dialog[open]")
                 menu.wait_for()
-                assert menu.locator('[data-widget-size="4"]').get_attribute("aria-checked") == "true"
+                assert menu.locator('[data-widget-size="1"]').get_attribute("aria-checked") == "true"
                 assert menu.locator("[data-widget-size-note]").is_hidden()
                 page.screenshot(path=str(evidence_dir / f"widget-board-menu-{browser_name}.png"))
                 menu.locator('[data-widget-size="12"]').click()
                 wait_saved(page, "gauge", {"w": 12})
+                wait_width(page, "gauge", list_width(page))
                 assert status(page) == "Width: full width", "a menu choice is named like a key or a drag"
-                after = rects(page)
-                assert widths(page)["gauge"] == "12" and same(after["gauge"]["width"], list_width(page))
-                assert after["gauge"]["y"] > after["game"]["y"] + after["game"]["height"]
 
-                # The right edge drags between steps: two columns wider lands on Half.
+                # The right edge drags in the board's column pitch: one column wider is two.
                 page.evaluate("(selector) => document.querySelector(selector).scrollIntoView({block: 'start'})", card("issues"))
                 handle = page.locator(f"{card('issues')} [data-widget-resize-handle]").bounding_box()
                 x, y = handle["x"] + handle["width"] / 2, handle["y"] + 60
-                pitch = (list_width(page) + GAP_PX) / 12
                 page.mouse.move(x, y)
                 page.mouse.down()
-                page.mouse.move(x + 2 * pitch, y, steps=8)
+                page.mouse.move(x + column + GAP_PX, y, steps=8)
                 page.mouse.up()
-                wait_saved(page, "issues", {"w": 6})
-                assert same(rects(page)["issues"]["width"], columns(page, 6))
+                wait_saved(page, "issues", {"w": 2})
+                wait_width(page, "issues", 2 * column + GAP_PX)
+                assert status(page) == "Width: 2 columns"
 
-                # Its arrow keys step the width and the live region names the step.
+                # Its arrow keys step 1 -> 2 -> 3 -> Full width, Home back to one column.
                 page.locator(f"{card('notes')} [data-widget-resize-handle]").focus()
                 page.keyboard.press("ArrowRight")
-                wait_saved(page, "notes", {"w": 6})
+                wait_saved(page, "notes", {"w": 2})
+                assert status(page) == "Width: 2 columns"
+                page.keyboard.press("ArrowRight")
+                wait_saved(page, "notes", {"w": 3})
                 page.keyboard.press("End")
                 wait_saved(page, "notes", {"w": 12})
+                assert status(page) == "Width: full width"
                 page.keyboard.press("Home")
-                wait_saved(page, "notes", {"w": 4})
-                assert status(page) == "Width: one third"
+                wait_saved(page, "notes", {"w": 1})
+                assert status(page) == "Width: 1 column"
 
-                # Reset size returns the gauge to its author default.
+                # Reset size returns the gauge to its author's one column.
                 choose(page, "gauge", "reset")
                 wait_saved(page, "gauge", None)
-                assert widths(page)["gauge"] == "4"
+                wait_width(page, "gauge", column)
                 assert frames_kept(page)
                 assert node_order(page) == dom_before, "arranging never moves a card node"
-                arranged = widths(page)
                 pixels = rects(page)
 
                 # A window reload reads the same widths back from the server.
                 page.reload(wait_until="domcontentloaded", timeout=30_000)
                 open_widgets(page)
-                assert widths(page) == arranged == {"game": "8", "gauge": "4", "grow": "4", "issues": "6", "notes": "4"}
-                assert saved_sizes(page) == {key["issues"]: {"w": 6, "h": 0}, key["notes"]: {"w": 4, "h": 0}}
+                assert saved_sizes(page) == {key["issues"]: {"w": 2, "h": 0}, key["notes"]: {"w": 1, "h": 0}}
+                wait_width(page, "issues", pixels["issues"]["width"])
                 for tab, item in rects(page).items():
                     assert same(item["width"], pixels[tab]["width"]), tab
 
-                # Narrow: one stacked column in the same order, no edge handle, the menu
-                # says widths apply when wide; a width chosen there is stored, not shown.
+                # Narrow: a stack in the same order, no edge handle, the menu says widths
+                # apply when the list is wide; a width chosen there is stored, not shown.
                 mark_frames(page)
                 page.set_viewport_size({"width": 600, "height": 900})
                 page.wait_for_function("document.getElementById('widgets-list').dataset.widgetLayout === 'stack'", timeout=5_000)
@@ -336,16 +326,16 @@ def test_ui_smoke_widget_board_rows_and_owner_widths(direct_server_with_data, br
                 page.locator(f"{card('gauge')} [data-widget-menu-trigger]").click()
                 page.locator("body > .skills-card-menu-dialog[open] [data-widget-size-note]").wait_for(state="visible")
                 page.screenshot(path=str(evidence_dir / f"widget-board-stack-menu-{browser_name}.png"))
-                page.locator('body > .skills-card-menu-dialog[open] [data-widget-size="6"]').click()
-                wait_saved(page, "gauge", {"w": 6})
-                assert status(page) == "Width: half", "on the stacked column the menu is the only path"
+                page.locator('body > .skills-card-menu-dialog[open] [data-widget-size="2"]').click()
+                wait_saved(page, "gauge", {"w": 2})
+                assert status(page) == "Width: 2 columns", "on a narrow list the menu is the only path"
                 assert same(rects(page)["gauge"]["width"], list_width(page))
                 assert frames_kept(page)
 
                 page.set_viewport_size({"width": 1280, "height": 800})
-                page.wait_for_function("document.getElementById('widgets-list').dataset.widgetLayout === 'grid'", timeout=5_000)
-                assert widths(page)["gauge"] == "6"
-                assert same(rects(page)["gauge"]["width"], columns(page, 6))
+                page.wait_for_function("document.getElementById('widgets-list').dataset.widgetLayout === 'columns'", timeout=5_000)
+                wide = rects(page)
+                assert same(wide["gauge"]["width"], 2 * wide["notes"]["width"] + GAP_PX)
                 assert frames_kept(page)
             finally:
                 browser.close()
