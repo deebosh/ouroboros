@@ -453,7 +453,8 @@ export function createNotifier({
                     if (destroyed) return;
                     nativeAttention = Boolean(result?.ok);
                     attentionStatus = String(result?.status || 'unavailable');
-                    if (decision.sound && result?.sound_played !== true) tone();
+                    // A native banner owns its sound (queued: not reported as played); no page tone after it.
+                    if (decision.sound && result?.sound_played !== true && result?.banner !== true) tone();
                     syncSettings();
                 }).catch(() => { if (!destroyed && decision.sound) tone(); });
             } catch { if (decision.sound) tone(); }

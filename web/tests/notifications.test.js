@@ -418,6 +418,36 @@ test('in-app fallback tone is used when native window attention cannot play soun
     notifier.destroy();
 });
 
+test('a native banner from the launcher owns the sound: the page adds no tone after it', async () => {
+    let oscillators = 0;
+    class FakeAudioContext {
+        constructor() { this.currentTime = 0; this.destination = {}; }
+        resume() {}
+        createOscillator() { oscillators += 1; return { connect() {}, start() {}, stop() {} }; }
+        createGain() { return { gain: { value: 0 }, connect() {} }; }
+    }
+    const tonesFor = async (answer) => {
+        oscillators = 0;
+        const notifier = createNotifier({
+            storage: fakeStorage({ [NOTIFY_PREFS_KEY]: JSON.stringify(ON) }),
+            notificationCtor: undefined,
+            audioContextCtor: FakeAudioContext,
+            hostApi: { request_attention: () => answer, notify_owner: () => answer },
+            showToast: () => {},
+            documentRef: fakeDocument(),
+        });
+        notifier.handleFrame({ role: 'system', system_type: 'task_summary', task_id: 'b' }, { kind: 'chat', isMain: true });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        notifier.destroy();
+        return oscillators;
+    };
+    // Windows, window hidden: the balloon is queued and the OS plays its sound.
+    assert.equal(await tonesFor({ ok: true, status: 'background', banner: true, sound_played: false }), 0);
+    // macOS, window hidden: a Dock badge is no banner; the launcher's own sound counts, a failed one does not.
+    assert.equal(await tonesFor({ ok: true, status: 'background', banner: false, sound_played: true }), 0);
+    assert.equal(await tonesFor({ ok: true, status: 'background', banner: false, sound_played: false }), 1);
+});
+
 test('a banner click focuses the window and hands the target to navigation', () => {
     const fx = notifierFixture();
     fx.notifier.handleFrame(

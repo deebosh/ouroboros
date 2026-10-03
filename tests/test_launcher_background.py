@@ -16,12 +16,20 @@ import sys
 import threading
 import time
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from ouroboros import launcher_background as lb
 from ouroboros import platform_layer
+
+NODE_BIN = (
+    str(Path.home() / ".claudexor" / "node" / "bin" / "node")
+    if (Path.home() / ".claudexor" / "node" / "bin" / "node").exists()
+    else "node"
+)
+WEB_ROOT = Path(__file__).resolve().parents[1] / "web"
 
 
 class Hook:
@@ -385,6 +393,49 @@ def test_a_hidden_window_comes_back_when_its_indicator_dies(settings, monkeypatc
     window.show = cannot_show
     background.indicator._stopped()
     assert background.events == ["exit"], "never a hidden process without a way back"
+
+
+def _page_tones(answer: dict) -> int:
+    """The real page notifier (node) given this launcher answer: how many tones it plays itself."""
+    script = """
+import { createNotifier, NOTIFY_PREFS_KEY, DEFAULT_NOTIFY_PREFS } from './modules/notifications.js';
+let raw = '';
+for await (const chunk of process.stdin) raw += chunk;
+const answer = JSON.parse(raw);
+let tones = 0;
+class Audio {
+    constructor() { this.currentTime = 0; this.destination = {}; }
+    resume() {}
+    createOscillator() { tones += 1; return { connect() {}, start() {}, stop() {}, frequency: {} }; }
+    createGain() { return { gain: { value: 0 }, connect() {} }; }
+}
+const prefs = JSON.stringify({ ...DEFAULT_NOTIFY_PREFS, enabled: true });
+const notifier = createNotifier({
+    storage: { getItem: (key) => (key === NOTIFY_PREFS_KEY ? prefs : null), setItem() {} },
+    notificationCtor: undefined, audioContextCtor: Audio, showToast: () => null,
+    documentRef: { addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [] },
+    hostApi: { request_attention: () => answer, notify_owner: () => answer },
+});
+notifier.handleFrame({ role: 'system', system_type: 'task_summary', task_id: 'boundary' }, { kind: 'chat', isMain: true });
+await new Promise((resolve) => setTimeout(resolve, 20));
+notifier.destroy();
+process.stdout.write(JSON.stringify({ tones }));
+"""
+    result = subprocess.run([NODE_BIN, "--input-type=module", "-e", script], input=json.dumps(answer),
+                            text=True, capture_output=True, cwd=WEB_ROOT, timeout=60, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)["tones"]
+
+
+def test_the_page_plays_no_second_sound_after_the_launchers_banner(settings, monkeypatch, make):
+    """Python to JS: the real attention() answer for a queued banner (WindowsTray.notify with a live icon)."""
+    choose(settings, "true")
+    background, window = make()
+    close(background, window)  # hidden on purpose; FakeIndicator.notify queues a banner
+    answer = background.attention(True, "Task finished", "")  # the real request_native_attention, sound off
+    assert answer == {"ok": True, "status": "background", "banner": True, "sound_played": False}, "never claims it played"
+    assert _page_tones(answer) == 0, "the banner owns the sound"
+    assert _page_tones({**answer, "banner": False}) == 1, "no banner and no system sound: the page's one tone"
 
 
 def test_attention_never_raises_a_window_hidden_on_purpose(settings, monkeypatch, make):
