@@ -58,6 +58,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `/api/onboarding/subagents/preview` | `gateway.onboarding.api_onboarding_subagents_preview` |
 | GET | `/api/settings` | `gateway.settings.api_settings_get` |
 | POST | `/api/settings` | `gateway.settings.api_settings_post` |
+| POST | `/api/settings/secret` | `gateway.settings_secrets.api_settings_secret` |
 | GET | `/api/reviewer-slots` | `gateway.settings.api_reviewer_slots` |
 | GET | `/api/claudexor/status` | `gateway.claudexor_accounts.api_claudexor_status` |
 | POST | `/api/claudexor/quota/refresh` | `gateway.claudexor_quota.api_claudexor_quota_refresh` |
@@ -77,6 +78,8 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `/api/owner/capability-ack` | `gateway.settings.api_acknowledge_capability` |
 | GET | `/api/ui/preferences` | `gateway.ui_preferences.api_ui_preferences_get` |
 | POST | `/api/ui/preferences` | `gateway.ui_preferences.api_ui_preferences_post` |
+| GET | `/api/desktop/autostart` | `gateway.desktop_autostart.api_desktop_autostart_get`: host OS `{state}`, plus `reason` when unavailable |
+| POST | `/api/desktop/autostart` | `gateway.desktop_autostart.api_desktop_autostart_post`: exactly `{enabled: boolean}`, returns observed `{state}`; 400 invalid body, 409 unavailable, 500 OS failure; public `owner_audit`, no settings mirror |
 | GET | `/api/model-catalog` | `gateway.models.api_model_catalog` |
 | POST | `/api/openai-compatible/models` | `gateway.models.api_openai_compatible_models` |
 | POST | `/api/providers/test` | `gateway.models.api_provider_test` |
@@ -138,6 +141,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/delivery` | `gateway.host_service._api_presence_delivery` |
 | GET | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/work/{work_ref}` | `gateway.host_service._api_presence_work` |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/ui/ws-message` | `gateway.host_service._api_ws_message` |
+| POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/notify` | `gateway.host_notify._api_notify` (`notify_owner` grant: one signed `skill_notice` System row in the owner's chat; no model turn) |
 | WS | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/events` | `gateway.host_service._ws_events` |
 
 Rationale: `server.py` owns process startup/lifespan/static mounting, while `gateway/*` owns browser-facing HTTP/WS contracts; this keeps UI and runtime coupling explicit and testable.

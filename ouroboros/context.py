@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import get_context_mode
+from ouroboros.desktop_autostart import runtime_facts as desktop_runtime_facts
 from ouroboros.context_budget import (
     LARGE_CONTEXT_SECTION_CHARS,
     MAX_RECENT_CHAT_TAIL,
@@ -358,14 +359,12 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
             "allowed_resources": task.get("allowed_resources"),
             "context": task.get("context"),
         },
-        # Server-process presentation posture (launcher-exported; absent = a
-        # web/headless serving process). This is the PROCESS's shell, NOT the
-        # surface the owner's current message came from — that per-message fact
-        # is `owner_client` below. (The former `is_desktop` flag read
-        # OUROBOROS_DESKTOP_MODE, which no producer ever set — retired.)
+        # Host shell/lifecycle, not the sender's per-message `owner_client`.
+        # Launcher-exported presentation is absent on web/headless processes.
         "runtime_env": {
             "presentation": os.environ.get("OUROBOROS_PRESENTATION", "").strip() or "web",
             "platform": sys.platform,
+            **desktop_runtime_facts(),
         },
     }
     runtime_data.update(_task_authority_projection(env, task))
@@ -806,7 +805,7 @@ def build_memory_sections(memory: Memory, partition: str = "all", durable_dialog
     return sections
 
 
-def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 10) -> str:
+def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 20) -> str:
     if not entries:
         return ""
 
@@ -968,13 +967,13 @@ def build_recent_sections(
         sections.append(f"## Supervisor ({coverage_line(supervisor_coverage)})\n\n" + supervisor_summary)
 
     reflections_entries = memory.read_task_recent("task_reflections.jsonl", "", 20)[0]
-    reflections_text = _format_recent_reflections(reflections_entries, limit=10)
+    reflections_text = _format_recent_reflections(reflections_entries, limit=20)
     if reflections_text:
         sections.append("## Execution reflections\n\n" + reflections_text)
 
     # Read-back of the project's OWN full reflections (F5 wrote them to the
     # project drive; the canonical tail above carries only pointer rows). Same
-    # bounds as the canonical read: last 20 rows, 10 rendered.
+    # bounds as the canonical read: last 20 rows, all 20 rendered.
     _pid = str(project_id or "").strip()
     if _pid:
         try:
@@ -984,7 +983,7 @@ def build_recent_sections(
             project_rows = list(iter_jsonl_objects(
                 project_reflections_path(_pid), max_entries=20,
             ))
-            project_text = _format_recent_reflections(project_rows, limit=10)
+            project_text = _format_recent_reflections(project_rows, limit=20)
             if project_text:
                 sections.append(
                     f"## Project execution reflections (this project's own: {_pid})\n\n"

@@ -1,5 +1,50 @@
 # DEPLOYMENT.md — Deployment Notes
 
+## Container Restart Policy and Panic
+
+The Docker image starts `server.py` directly. Set
+`OUROBOROS_LAUNCH_INTENT=automatic` and use `restart: on-failure` so an
+automatic restart preserves Panic. The server uses the launcher's existing
+Panic check before runtime startup: it leaves the stop marker intact and
+exits 0. Panic itself still exits 99; Docker may restart it once, then the
+automatic entry exits cleanly and `on-failure` leaves it stopped.
+
+For an image built as `ouroboros-web`, a Compose service can use:
+
+```yaml
+services:
+  ouroboros:
+    image: ouroboros-web
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      OUROBOROS_DATA_DIR: /data
+      OUROBOROS_LAUNCH_INTENT: automatic
+    volumes:
+      - ouroboros-data:/data
+    restart: on-failure
+volumes:
+  ouroboros-data:
+```
+
+An absent intent or `OUROBOROS_LAUNCH_INTENT=owner` keeps explicit owner startup
+available. To resume the stopped example with the same data volume:
+
+```bash
+docker compose run --rm --service-ports -e OUROBOROS_LAUNCH_INTENT=owner ouroboros
+```
+
+This runs a foreground owner session; `--rm` disables its restart policy and
+removes that container on exit, while the named data volume survives. An
+ordinary `docker start` retains the configured automatic intent and therefore
+does not resume Panic. Do not delete the stop marker to resume.
+
+`always` and `unless-stopped` can keep restarting the process after its clean
+exit; the marker stays intact, but these policies do not provide the supported
+stopped-container behavior. Without automatic intent, restart policies can
+still consume the marker and resume the server. See Docker's
+[restart policy documentation](https://docs.docker.com/engine/containers/start-containers-automatically/).
+
 ## Trusted Docker / Kubernetes Non-Local Binds
 
 By default, saving `OUROBOROS_SERVER_HOST=0.0.0.0` through the Settings UI

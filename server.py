@@ -26,6 +26,7 @@ from ouroboros.server_auth import (
     validate_network_auth_configuration,
 )
 from ouroboros.server_entrypoint import bound_service_socket, find_free_port, parse_server_args, write_port_file
+from ouroboros.launcher_bootstrap import automatic_launch_allowed
 from ouroboros.server_web import NoCacheStaticFiles, make_index_page, resolve_web_dir
 from ouroboros.usage_accounting import ensure_legacy_imported
 from ouroboros.task_finalization import host_operation_reply_kwargs
@@ -1320,9 +1321,9 @@ async def lifespan(app):
 
     if not _exit_signalled.is_set():
         _supervisor_stop.clear()  # a fresh lifespan owns a fresh generation (symmetric with the teardown set)
-    if has_startup_ready_provider(settings):
-        _start_supervisor_if_needed(settings)
-    else:
+    # A provider-ready boot starts the supervisor after the extension reload below.
+    startup_provider_ready = has_startup_ready_provider(settings)
+    if not startup_provider_ready:
         _supervisor_ready.set()
         _supervisor_init_done.set()
         log.info("No supported provider or local routing configured. Supervisor not started.")
@@ -1401,7 +1402,7 @@ async def lifespan(app):
     # Startup-only: after the prior process generation is gone, finalize orphaned
     # RUNNING results and resolve an indeterminate post-task synthesis phase.
     # The periodic zombie sweep intentionally does not perform this recovery.
-    if not has_startup_ready_provider(settings):
+    if not startup_provider_ready:
         _run_startup_task_recovery(
             lifespan_drive_root, REPO_DIR, skip_live_data=pytest_default_real_data_dir,
             prior_worker_pids=None if pytest_default_real_data_dir else _startup_worker_pids(lifespan_drive_root),
@@ -1423,6 +1424,9 @@ async def lifespan(app):
             _reload_extensions(lifespan_drive_root, _load_settings, repo_path=repo_path or None)
     except Exception:
         log.error("Extension reload_all at startup failed", exc_info=True)
+    # Only now: the first tick may consume an overdue note; a bus subscriber attached later never sees it.
+    if startup_provider_ready:
+        _start_supervisor_if_needed(settings)
 
     try:
         from ouroboros.mcp_client import (
@@ -1659,6 +1663,8 @@ def _emergency_process_cleanup(*, port_sweep: bool = True) -> None:
         pass
 
 def main() -> int:
+    if not automatic_launch_allowed(os.environ.get("OUROBOROS_LAUNCH_INTENT", "owner"), DATA_DIR, log):
+        return 0
     # A benchmark-owned child may receive an integrity pin from its parent.
     # Verify the exact bytes before even resolving the saved bind host; a
     # malformed/replaced snapshot must not be converted into product defaults.

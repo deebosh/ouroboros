@@ -180,6 +180,17 @@ label, control and optional `.ui-field-help`. A placeholder is an example,
 never the field's only name. Help and validation belong to that field without
 changing the alignment of neighboring controls and their actions.
 
+**Secret visibility has one meaning across Settings.** Show reveals the complete
+current value as selectable, read-only text below the unchanged editing field;
+long values wrap within the column. An edited value is shown from the local
+draft; an untouched saved value is read only when requested. A prefix or a
+configured-value placeholder is never a successful reveal. Hide removes that
+text and retains the draft. Viewing changes neither the dirty state nor the
+values submitted by Save or Test. Editing, clearing, reloading or leaving the
+page closes the reveal, and a late read cannot reopen it. Built-in, custom,
+skill-requested and MCP token fields use the same interaction; loading Settings
+keeps saved secrets masked. Pending reads and failures are shown at the field.
+
 Short fixed choices keep native selects, including the platform's own popup.
 A control never widens its column: a select shows its chosen label on one
 line, clipped at its own edge, and the full label stays in the platform's
@@ -544,6 +555,17 @@ model-authored bytes in Ouroboros's voice: the Project question mirror and the P
 completion mirror). New host producers stamp both fields. Relays
 preserve them through live delivery, persistence and history. Model narration,
 proactive replies and questions remain model-authored even when typed.
+
+Authorship also has a time axis. Ouroboros's voice means *the model, now*. Words
+the mind wrote earlier for a later moment — a note left with
+`schedule_followup(notify=true)` — reach the owner at that moment as a System row
+(`system_type="reminder"`), never as a live reply: the host prepends one signature
+line, `Reminder · Ouroboros · written <when> · for <when>` (plus `· delivered
+<when>` when downtime held it back), and keeps the words verbatim. The host does
+not rewrite, summarize or re-time them; the next turn reads the row as a host fact
+(`📋 [reminder]`), so Ouroboros knows what the owner was shown. A skill holding the
+owner's `notify_owner` grant speaks the same way in its own name: a
+`skill_notice` System row signed `Notice · <skill>`.
 
 Formatting is asymmetric: assistant text always uses the sanitized chat markdown
 renderer regardless of `markdown`; ordinary System text is escaped unless
@@ -1357,6 +1379,8 @@ engineering rules; no second policy list may exist.
 never *look, I am still working*. It exists so the owner can leave the window
 and still be reached by a question or a finished task.
 
+**Startup & background.** Settings → Behavior owns host lifecycle choices, separate from the client-local Appearance controls. Sign-in startup is off until the owner opts in and always names the computer running Ouroboros, even in a remote client. OS registration is the truth: another copy, an OS-disabled entry and an unavailable app build remain visible rather than becoming a saved-settings guess. Automatic startup preserves Panic stops and saved pauses; an explicit owner start releases Panic. Closing the desktop window still exits; keeping it running after close has no control yet. Android deliberately keeps its existing automatic boot entry by default, with the same Panic-preservation contract.
+
 **When the client runs.** Notifications are a property of a running client. This
 version adds no tray agent, no background process and no push channel, so
 closing Ouroboros ends them. The existing Telegram bridge remains the separate
@@ -1377,6 +1401,7 @@ exceptions.
 | A question or decision is waiting | required | a confirmed lifecycle fact: the question carries a positive wait |
 | A task finished or stopped | required | a positive typed terminal fact on a ROOT task |
 | Messages Ouroboros sends while working | LLM-first | Ouroboros chose to speak outside the turn's answer (a proactive message in its room or as a Main notice, or an optional question) |
+| A note Ouroboros left for this moment, or a granted skill's notice (same toggle) | LLM-first; owner grant | when it wrote the note, Ouroboros chose to leave these words for this time; a skill speaks only under the owner's `notify_owner` grant; the host only shows the signed `reminder`/`skill_notice` row |
 | Ordinary replies in Main | separate toggle | an ordinary finished reply in the Main thread |
 
 *Required* means the application asks for delivery from its own state rather
