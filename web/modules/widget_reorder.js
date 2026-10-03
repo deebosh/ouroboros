@@ -303,7 +303,8 @@ export function createWidgetWidths(list, options) {
         const key = card.dataset.widgetKey || '';
         const at = laid ? laid.keys.indexOf(key) : -1;
         const plan = laid?.plan;
-        if (drag || at < 0 || plan.columnCount < 2 || event.button !== 0 || list.dataset.widgetLayout === 'stack') return;
+        // A stack (one column) and a lone card have no other column to grow into.
+        if (drag || at < 0 || plan.columnCount < 2 || event.button !== 0) return;
         event.preventDefault();
         drag = {
             key, card, from: plan.placements[at].span, count: plan.columnCount, width: null,

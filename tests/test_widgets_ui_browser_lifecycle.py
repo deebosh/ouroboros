@@ -692,8 +692,8 @@ def test_ui_smoke_widget_retain_keeps_running_across_pages(direct_server_with_da
             card("kept"),
         )
 
-    def board_rank(page, tab_id: str) -> str:
-        return page.locator(card(tab_id)).evaluate("node => node.style.getPropertyValue('--widget-order')")
+    def masonry_x(page, tab_id: str) -> str:
+        return page.locator(card(tab_id)).evaluate("node => node.style.getPropertyValue('--masonry-x')")
 
     def dom_index(page, tab_id: str) -> int:
         return page.evaluate(
@@ -780,12 +780,12 @@ def test_ui_smoke_widget_retain_keeps_running_across_pages(direct_server_with_da
                 # Home brings it first) while its node stays where it is and its frame
                 # never reloads.
                 page.wait_for_function(
-                    "(selector) => document.querySelector(selector)?.style.getPropertyValue('--widget-order') !== ''",
+                    "(selector) => document.querySelector(selector)?.style.getPropertyValue('--masonry-x') !== ''",
                     arg=card("kept"),
                     timeout=5_000,
                 )
-                rank_before = board_rank(page, "kept")
-                key_press = "Home" if rank_before != "0" else "End"
+                x_before = masonry_x(page, "kept")
+                key_press = "Home" if x_before != "0px" else "End"
                 index_before = dom_index(page, "kept")
                 page.locator(f"{card('kept')} [data-widget-reorder-handle]").focus()
                 page.keyboard.press(key_press)
@@ -799,12 +799,12 @@ def test_ui_smoke_widget_retain_keeps_running_across_pages(direct_server_with_da
                     timeout=5_000,
                 )
                 page.wait_for_function(
-                    "([selector, before]) => document.querySelector(selector)?.style.getPropertyValue('--widget-order') !== before",
-                    arg=[card("kept"), rank_before],
+                    "([selector, before]) => document.querySelector(selector)?.style.getPropertyValue('--masonry-x') !== before",
+                    arg=[card("kept"), x_before],
                     timeout=5_000,
                 )
                 if key_press == "Home":
-                    assert board_rank(page, "kept") == "0", board_rank(page, "kept")
+                    assert masonry_x(page, "kept") == "0px", masonry_x(page, "kept")
                 assert dom_index(page, "kept") == index_before, "a reorder must not move the card node"
                 assert frame_count(page, "kept") == 1
                 assert same_frame(page)

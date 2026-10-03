@@ -13,7 +13,7 @@ import {
     WIDGET_START_MODES,
     withWidgetStartMode,
 } from '../modules/widget_card.js';
-import { WIDGET_WIDTH_STEPS } from '../modules/widget_grid.js';
+import { WIDGET_WIDTH_STEPS } from '../modules/widget_size.js';
 
 function tab(render, overrides = {}) {
     return { key: 'demo:main', skill: 'demo', tab_id: 'main', title: 'Demo', render, ...overrides };

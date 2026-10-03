@@ -81,15 +81,18 @@ test('a widget that appears joins the end, even when its key sorts before the ca
     assert.deepEqual(keysOf(sortTabsByWidgetOrder(listed, [])), ['a:main', 'm:main', 'z:main']);
 });
 
-test('the reorder module moves keys only: no node insertion or move API, no masonry import', () => {
+test('the reorder module moves keys only: no node insertion or move API; the masonry places the cards', () => {
     const source = readFileSync(new URL('../modules/widget_reorder.js', import.meta.url), 'utf8');
-    for (const forbidden of ['.before(', '.after(', '.prepend(', '.append(', 'insertBefore', 'appendChild', 'replaceWith', "from './masonry.js'"]) {
+    assert.match(source, /applyMasonry\(list, \{ order: options\.tabs\(\)\.map\(widgetKey\), spans, onLayout \}\)/);
+    for (const forbidden of ['.before(', '.after(', '.prepend(', '.append(', 'insertBefore', 'appendChild', 'replaceWith']) {
         assert.equal(source.includes(forbidden), false, `widget_reorder.js must not use ${forbidden}`);
     }
     assert.match(source, /export function bindWidgetCardReorder\(list, currentOrder, onOrderChange\)/);
 });
 
 // --- card widths -------------------------------------------------------------
+// The widths controller over the real masonry (web/modules/masonry.js): frames
+// run at once, so every relayout is visible in the cards' `--masonry-w`.
 
 function listener() {
     const handlers = new Map();
@@ -101,28 +104,36 @@ function listener() {
     };
 }
 
-function classes() {
-    const set = new Set();
+function classes(...names) {
+    const set = new Set(names);
     return { set, add: (name) => set.add(name), remove: (name) => set.delete(name), contains: (name) => set.has(name) };
 }
 
-function board(keys = ['demo:a', 'demo:b'], { width = 1200 } = {}) {
-    globalThis.requestAnimationFrame = () => 1;
+function styleOf(props) {
+    return {
+        getPropertyValue: (name) => props.get(name) || '',
+        setProperty: (name, value) => props.set(name, value),
+        removeProperty: (name) => props.delete(name),
+    };
+}
+
+function board(keys = ['demo:a', 'demo:b'], { width = 1200, spans = {} } = {}) {
+    globalThis.requestAnimationFrame = (callback) => { callback(); return 1; };
     globalThis.cancelAnimationFrame = () => {};
-    globalThis.ResizeObserver = class { observe() {} disconnect() {} };
-    globalThis.getComputedStyle = () => ({ columnGap: '14px' });
+    globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+    globalThis.MutationObserver = class { observe() {} disconnect() {} };
     const doc = listener();
     const cards = keys.map((key) => {
         const props = new Map();
         const card = {
             dataset: { widgetKey: key },
-            classList: classes(),
+            classList: classes(...(spans[key] === 2 ? ['widgets-card-span-2'] : [])),
             isConnected: true,
+            offsetHeight: 100,
             props,
-            style: { getPropertyValue: (name) => props.get(name) || '', setProperty: (name, value) => props.set(name, value) },
-            hasAttribute: () => false,
+            style: styleOf(props),
         };
-        const handle = {
+        card.handle = {
             ...listener(),
             captured: null,
             closest: (selector) => (selector === '[data-widget-key]' ? card : null),
@@ -130,20 +141,22 @@ function board(keys = ['demo:a', 'demo:b'], { width = 1200 } = {}) {
             hasPointerCapture(id) { return this.captured === id; },
             releasePointerCapture() { this.captured = null; },
         };
-        card.handle = handle;
         return card;
     });
+    const status = { textContent: '', dataset: { tone: 'neutral' } };
     const list = {
         dataset: {},
         classList: classes(),
         clientWidth: width,
         ownerDocument: doc,
+        parentElement: { querySelector: (selector) => (selector === '[data-widget-arrange-status]' ? status : null) },
         querySelectorAll: (selector) => (selector === '[data-widget-resize-handle]' ? cards.map((card) => card.handle) : cards),
+        contains: (item) => cards.includes(item),
+        style: styleOf(new Map()),
     };
     const saves = [];
-    const status = { textContent: '', dataset: { tone: 'neutral' } };
     let prefs = { widget_size: {} };
-    const tabs = keys.map((key) => ({ key, span: 1 }));
+    const tabs = keys.map((key) => ({ key, span: spans[key] || 1 }));
     const widths = createWidgetWidths(list, {
         tabs: () => tabs,
         prefs: () => prefs,
@@ -154,7 +167,6 @@ function board(keys = ['demo:a', 'demo:b'], { width = 1200 } = {}) {
             saves.push({ payload, ...settle });
             return done;
         },
-        status,
     });
     widths.relayout();
     return {
@@ -165,6 +177,7 @@ function board(keys = ['demo:a', 'demo:b'], { width = 1200 } = {}) {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const key = (name, extra = {}) => ({ key: name, preventDefault() { this.prevented = true; }, ...extra });
+const width = (card) => card.props.get('--masonry-w');
 const deferred = () => {
     let resolve;
     const promise = new Promise((done) => { resolve = done; });
@@ -173,44 +186,46 @@ const deferred = () => {
 
 test('a width from the menu shows at once, saves one write at a time and merges what lands meanwhile', async () => {
     const { cards, saves, widths, prefs } = board();
-    assert.equal(cards[0].props.get('--widget-w'), '4', 'the author span is the starting width');
+    // Two one-column cards share the 1200px list in halves.
+    assert.deepEqual(cards.map(width), ['593px', '593px'], 'the author span is the starting width');
     widths.setWidth('demo:a', 12);
-    assert.equal(cards[0].props.get('--widget-w'), '12');
+    assert.deepEqual(cards.map(width), ['1200px', '593px'], 'Full width: the whole row, the other card unchanged');
     assert.deepEqual(prefs().widget_size, { 'demo:a': { w: 12, h: 0 } });
     await settle();
     assert.deepEqual(saves.map((save) => save.payload), [{ widget_size: { 'demo:a': { w: 12, h: 0 } } }]);
     // Three changes while the first write is out: one merged write follows it.
-    widths.setWidth('demo:b', 6);
-    widths.setWidth('demo:a', 8);
+    widths.setWidth('demo:b', 2);
+    widths.setWidth('demo:a', 3);
     widths.setWidth('demo:b', null);
     await settle();
     assert.equal(saves.length, 1, 'never two writes in flight');
     // A list read that began before these changes cannot undo them.
-    assert.deepEqual(widths.readSizes({ 'demo:a': { w: 4 }, 'demo:b': { w: 12 }, 'other:c': { w: 6 } }), {
-        'demo:a': { w: 8, h: 0 }, 'other:c': { w: 6, h: 0 },
+    assert.deepEqual(widths.readSizes({ 'demo:a': { w: 1 }, 'demo:b': { w: 12 }, 'other:c': { w: 2 } }), {
+        'demo:a': { w: 3, h: 0 }, 'other:c': { w: 2, h: 0 },
     });
     saves[0].resolve({ ok: true });
     await settle();
-    assert.deepEqual(saves[1].payload, { widget_size: { 'demo:b': null, 'demo:a': { w: 8, h: 0 } } });
-    assert.equal(cards[1].props.get('--widget-w'), '4', 'Reset: back to the author span');
+    assert.deepEqual(saves[1].payload, { widget_size: { 'demo:b': null, 'demo:a': { w: 3, h: 0 } } });
+    // Three of four columns, and Reset puts the other card back on its author's one column.
+    assert.deepEqual(cards.map(width), ['895px', '289px']);
     saves[1].resolve({ ok: true });
     await settle();
-    assert.deepEqual(widths.readSizes({ 'demo:a': { w: 8, h: 0 } }), { 'demo:a': { w: 8, h: 0 } });
+    assert.deepEqual(widths.readSizes({ 'demo:a': { w: 3, h: 0 } }), { 'demo:a': { w: 3, h: 0 } });
 });
 
 test('a failed save stays visible, rides along with the next change and clears once saved', async () => {
     const { saves, status, widths } = board();
-    widths.setWidth('demo:a', 6);
+    widths.setWidth('demo:a', 2);
     await settle();
     saves[0].reject(new Error('HTTP 500'));
     await settle();
     assert.deepEqual([status.textContent, status.dataset.tone], ['Size not saved: HTTP 500', 'error']);
     assert.equal(saves.length, 1, 'nothing retries on its own');
     // A list read still shows the width that failed to save.
-    assert.deepEqual(widths.readSizes({}), { 'demo:a': { w: 6, h: 0 } });
-    widths.setWidth('demo:b', 8);
+    assert.deepEqual(widths.readSizes({}), { 'demo:a': { w: 2, h: 0 } });
+    widths.setWidth('demo:b', 3);
     await settle();
-    assert.deepEqual(saves[1].payload, { widget_size: { 'demo:a': { w: 6, h: 0 }, 'demo:b': { w: 8, h: 0 } } });
+    assert.deepEqual(saves[1].payload, { widget_size: { 'demo:a': { w: 2, h: 0 }, 'demo:b': { w: 3, h: 0 } } });
     saves[1].resolve({ ok: true });
     await settle();
     assert.deepEqual([status.textContent, status.dataset.tone], ['', 'neutral']);
@@ -235,7 +250,7 @@ test('an old list reply that lands after a confirmed width write keeps the new w
     const [, prefs] = await reading;
     adopt(readSizes(prefs.widget_size));
     widths.relayout();
-    assert.equal(cards[0].props.get('--widget-w'), '12', 'the stored width stays on screen');
+    assert.equal(width(cards[0]), '1200px', 'the stored width stays on screen');
 });
 
 test('a read that began before a write completed shows it; a read begun after is the stored truth', async () => {
@@ -245,9 +260,9 @@ test('a read that began before a write completed shows it; a read begun after is
     await settle();
     saves[0].resolve({ ok: true });
     await settle();
-    assert.deepEqual(early({ 'other:c': { w: 6 } }), { 'demo:a': { w: 12, h: 0 }, 'other:c': { w: 6, h: 0 } });
+    assert.deepEqual(early({ 'other:c': { w: 2 } }), { 'demo:a': { w: 12, h: 0 }, 'other:c': { w: 2, h: 0 } });
     // Begun after the write: the reply as stored, another window's later change included.
-    assert.deepEqual(widths.beginRead()({ 'demo:a': { w: 6, h: 0 } }), { 'demo:a': { w: 6, h: 0 } });
+    assert.deepEqual(widths.beginRead()({ 'demo:a': { w: 2, h: 0 } }), { 'demo:a': { w: 2, h: 0 } });
     // A Reset written while a read was out is not undone by its reply either.
     const out = widths.beginRead();
     widths.setWidth('demo:a', null);
@@ -274,62 +289,63 @@ test('a failed save keeps its notice until a write succeeds: no step announced m
     // A new step rides along with the failed width; while that write is out the notice stays.
     handle.fire('keydown', key('ArrowLeft'));
     await settle();
-    assert.deepEqual(saves[1].payload, { widget_size: { 'demo:a': { w: 8, h: 0 } } });
+    assert.deepEqual(saves[1].payload, { widget_size: { 'demo:a': { w: 3, h: 0 } } });
     assert.deepEqual([status.textContent, status.dataset.tone], notice);
     saves[1].resolve({ ok: true });
     await settle();
     assert.deepEqual([status.textContent, status.dataset.tone], ['', 'neutral']);
     handle.fire('keydown', key('ArrowLeft'));
-    assert.equal(status.textContent, 'Width: half', 'steps are named again once nothing failed is left');
+    assert.equal(status.textContent, 'Width: 2 columns', 'steps are named again once nothing failed is left');
 });
 
 test('a width picked from the card menu is named in the live region like a key or a drag', () => {
-    // The menu calls setWidth (web/modules/widget_card.js); on the stacked column it is the only path.
+    // The menu calls setWidth (web/modules/widget_card.js); on a narrow list it is the only path.
     const { status, widths } = board();
-    widths.setWidth('demo:a', 6);
-    assert.deepEqual([status.textContent, status.dataset.tone], ['Width: half', 'neutral']);
+    widths.setWidth('demo:a', 2);
+    assert.deepEqual([status.textContent, status.dataset.tone], ['Width: 2 columns', 'neutral']);
     widths.setWidth('demo:a', null);
-    assert.equal(status.textContent, 'Width: one third', 'Reset size names the author default');
+    assert.equal(status.textContent, 'Width: 1 column', 'Reset size names the author default');
 });
 
-test('the edge handle keys step the width and announce it; other keys and modifiers pass through', async () => {
+test('the edge handle keys step through 1, 2, 3 columns and Full width and announce it; other keys pass through', async () => {
     const { cards, saves, status } = board();
     const handle = cards[0].handle;
     const right = key('ArrowRight');
     handle.fire('keydown', right);
     assert.equal(right.prevented, true);
-    assert.equal(cards[0].props.get('--widget-w'), '6');
-    assert.equal(status.textContent, 'Width: half');
+    assert.deepEqual([width(cards[0]), status.textContent], ['794px', 'Width: 2 columns']);
+    handle.fire('keydown', key('ArrowRight'));
+    assert.deepEqual([width(cards[0]), status.textContent], ['895px', 'Width: 3 columns']);
     handle.fire('keydown', key('End'));
-    assert.equal(cards[0].props.get('--widget-w'), '12');
-    assert.equal(status.textContent, 'Width: full width');
+    assert.deepEqual([width(cards[0]), status.textContent], ['1200px', 'Width: full width']);
     handle.fire('keydown', key('Home'));
-    assert.equal(cards[0].props.get('--widget-w'), '4');
+    assert.deepEqual([width(cards[0]), status.textContent], ['593px', 'Width: 1 column']);
     const left = key('ArrowLeft');
     handle.fire('keydown', left);
     assert.equal(left.prevented, true, 'held at the first step, still answered');
+    assert.equal(status.textContent, 'Width: 1 column');
     for (const ignored of [key('ArrowDown'), key('Enter'), key('ArrowRight', { altKey: true }), key('ArrowRight', { metaKey: true })]) {
         handle.fire('keydown', ignored);
         assert.equal(ignored.prevented, undefined, ignored.key);
     }
-    assert.equal(cards[0].props.get('--widget-w'), '4');
+    assert.equal(width(cards[0]), '593px');
     await settle();
     assert.equal(saves.length, 1, 'the keys share the one-at-a-time write');
 });
 
-test('dragging the edge previews width steps on that card only; drop saves, Escape cancels', async () => {
+test('dragging the edge previews steps in the board\'s column pitch through the masonry; drop saves, Escape cancels', async () => {
     const { list, cards, doc, saves, status } = board();
     const handle = cards[0].handle;
-    const pitch = (1200 + 14) / 12;
+    const pitch = 607;  // two columns of 593px and the 14px gap
     const down = { button: 0, pointerId: 7, clientX: 400, currentTarget: handle, preventDefault() {} };
     handle.fire('pointerdown', down);
     assert.equal(list.classList.contains('resizing'), true);
     assert.equal(handle.captured, 7);
-    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 1.6 * pitch });
-    assert.equal(cards[0].props.get('--widget-w'), '6', 'the nearest step to 5.6 columns');
-    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 9 * pitch });
-    assert.equal(cards[0].props.get('--widget-w'), '12');
-    assert.equal(cards[1].props.get('--widget-w'), '4', 'no other card is touched');
+    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 0.6 * pitch });
+    assert.deepEqual(cards.map(width), ['1200px', '593px'], 'nearer the whole row than one column: Full width');
+    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 0.2 * pitch });
+    assert.equal(width(cards[0]), '593px', 'back over its own column: no preview');
+    handle.fire('pointermove', { pointerId: 7, clientX: 400 + 0.9 * pitch });
     await settle();
     assert.equal(saves.length, 0, 'a preview is not a save');
     handle.fire('pointerup', { pointerId: 7 });
@@ -339,20 +355,30 @@ test('dragging the edge previews width steps on that card only; drop saves, Esca
     await settle();
     assert.deepEqual(saves[0].payload, { widget_size: { 'demo:a': { w: 12, h: 0 } } });
 
+    // From the whole row back toward one column, then Escape.
     handle.fire('pointerdown', { ...down, pointerId: 8 });
-    handle.fire('pointermove', { pointerId: 8, clientX: 400 - 7 * pitch });
-    assert.equal(cards[0].props.get('--widget-w'), '4');
+    handle.fire('pointermove', { pointerId: 8, clientX: 400 - 0.7 * pitch });
+    assert.equal(width(cards[0]), '593px');
     const escape = { key: 'Escape', preventDefault() {}, stopPropagation() {} };
     doc.fire('keydown', escape);
-    assert.equal(cards[0].props.get('--widget-w'), '12', 'Escape restores the saved width');
+    assert.equal(width(cards[0]), '1200px', 'Escape restores the saved width');
     assert.equal(doc.handlers.get('keydown').length, 0, 'the drag releases its document listener');
     handle.fire('pointerup', { pointerId: 8 });
     saves[0].resolve({ ok: true });
     await settle();
     assert.equal(saves.length, 1);
+});
 
-    // The stacked column has no widths to drag.
-    list.dataset.widgetLayout = 'stack';
-    handle.fire('pointerdown', { ...down, pointerId: 9 });
+test('a list too narrow for two columns is a stack: widths do not apply and the edge does not drag', () => {
+    const { list, cards, widths } = board(['demo:a', 'demo:b'], { width: 500 });
+    assert.equal(list.dataset.widgetLayout, 'stack');
+    widths.setWidth('demo:a', 12);
+    assert.deepEqual(cards.map(width), ['500px', '500px'], 'every card is the column');
+    cards[0].handle.fire('pointerdown', { button: 0, pointerId: 9, clientX: 100, currentTarget: cards[0].handle, preventDefault() {} });
     assert.equal(list.classList.contains('resizing'), false);
+    // Wide again: the board and the stored width come back.
+    list.clientWidth = 1200;
+    widths.relayout();
+    assert.equal(list.dataset.widgetLayout, 'columns');
+    assert.deepEqual(cards.map(width), ['1200px', '593px']);
 });
