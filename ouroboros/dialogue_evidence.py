@@ -38,19 +38,17 @@ def _chat_id(row: dict) -> int:
 
 
 def _row_projection(row: dict, stream: str, ordinal: int, root: Any = None) -> dict:
-    from ouroboros.dialogue_provenance import dialogue_author
+    from ouroboros.dialogue_provenance import row_author
 
     result = {key: row[key] for key in _ROW_FACTS if key in row}
     result.update(stream=stream, source_ordinal=ordinal)
     result["text"] = str(row.get("content", row.get("text", "")) or "")
-    if row.get("type") == "quiz_answer":
-        result["author"] = "Owner"
-    elif stream == "mailbox":
+    # One attribution source (memory spec §6.1): a quiz answer is the Owner's, a
+    # mailbox delivery keeps its own provenance, every other row is signed by its fields.
+    if stream == "mailbox" and row.get("type") != "quiz_answer":
         result["author"] = str(row.get("provenance") or "Owner")
-    elif row.get("direction") == "in":
-        result["author"] = dialogue_author(row)
     else:
-        result["author"] = "System" if row.get("direction") == "system" else "Ouroboros"
+        result["author"] = row_author(row)["label"]
     # Payload bytes are never interpreted as dialogue. Existing attachment
     # manifests carry the owner-visible file names alongside custody handles.
     attachments = row.get("attachment_manifest")

@@ -187,12 +187,13 @@ def _knowledge_write(
             return f"✅ Knowledge '{sanitized}' merged into the global backlog ({merged} item(s))."
         # The turn is the writer; the route stamp is the route that ANSWERED the
         # loop's last round (provider + resolved model, account when Claudexor
-        # served it), recorded by the loop, otherwise honestly unknown.
+        # served it), recorded by the loop, otherwise honestly unknown. The host
+        # signs which focus wrote it (memory spec §6.3).
         result = knowledge_store.write_knowledge_note(
             _address(ctx, sanitized, scope), content, mode, expected_revision,
             str(getattr(ctx, "task_id", "") or ""), old_str, writer="turn",
             route=(getattr(ctx, "_accumulated_usage", None) or {}).get("_observed_route") or None,
-            summary=summary,
+            summary=summary, focus=knowledge_store.focus_signature(ctx)["focus"],
         )
     except ValueError as exc:
         return _publish_tool_result(ctx, ToolResult(
