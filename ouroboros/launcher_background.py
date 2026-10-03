@@ -277,8 +277,7 @@ class Background:
         """``webview.start(func=...)``: bring the icon up when background is on."""
         if self.indicator is None or (keep_running_choice() != "true" and not self.indicator.hidden):
             return
-        if self.indicator.start():
-            self._watch()
+        self._indicator_up()  # the state poller starts only once the icon is visible
         if self.indicator.hidden:
             self.indicator.show_if_unavailable(self.window)
 

@@ -267,10 +267,16 @@ def test_quiet_start_needs_both_checkboxes_and_a_live_indicator(settings, monkey
     background.run()
     assert window.calls == ["show"] and not background.indicator.hidden
 
-    background, window = make()
+    class SlowIcon(FakeIndicator):
+        def _launch(self):  # like the real pumps: visible a moment after start() returns
+            threading.Timer(0.02, self.ready.set).start()
+            return True
+
+    background, window = make(indicator=SlowIcon)
     assert background.start_hidden("automatic")
     background.run()
     assert window.calls == [] and background.indicator.hidden and background.indicator.ready.is_set()
+    assert background._poller is not None and background._poller.is_alive(), "the state line keeps updating"
 
 
 def test_a_hidden_window_comes_back_when_its_indicator_dies(settings, monkeypatch, make):
