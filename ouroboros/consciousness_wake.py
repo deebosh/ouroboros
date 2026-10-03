@@ -751,7 +751,7 @@ def bind_wake_observation(drive_root: Any, task: Dict[str, Any], observation: Wa
     reference when it cannot fit (``loop_model_call``). Only exact source readback
     permits accepting a compact boundary. Failure leaves full input and no advance.
     """
-    from ouroboros.consolidator import retain_memory_source
+    from ouroboros.chat_chain import retain_memory_source
     from ouroboros.artifacts import read_actor_source_bytes
     from types import SimpleNamespace
 

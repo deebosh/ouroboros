@@ -388,7 +388,7 @@ def matching_project_origin(entry: dict, refs: list) -> str:
 
 def resolve_owner_message_source(drive_root: Any, ref: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Stream the exact named owner source across the durable generation chain."""
-    from ouroboros.consolidator import _ordered_chat_generation_paths
+    from ouroboros.chat_chain import _ordered_chat_generation_paths
 
     live = pathlib.Path(drive_root) / "logs" / "chat.jsonl"
     ref_key = _source_ref_identity(ref)

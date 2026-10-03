@@ -587,7 +587,7 @@ class Memory:
         generation horizon instead of silently treating the mutable live file
         as the whole biography.
         """
-        from ouroboros.consolidator import _ordered_chat_generation_paths
+        from ouroboros.chat_chain import _ordered_chat_generation_paths
 
         live = self.logs_path("chat.jsonl")
         return _ordered_chat_generation_paths(live)
@@ -658,7 +658,7 @@ class Memory:
                 "reader": "chat_history(count, offset, search)",
             }
             try:
-                from ouroboros.consolidator import _resolve_generation_segments
+                from ouroboros.chat_chain import _resolve_generation_segments
 
                 _segments, _offset, cursor_gap = _resolve_generation_segments(
                     self.load_dialogue_meta(), self.logs_path("chat.jsonl"),
@@ -748,7 +748,7 @@ class Memory:
         predicate: Optional[Callable[[Dict[str, Any]], bool]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Read the exact generation-aware suffix owned by consolidation."""
-        from ouroboros.consolidator import _resolve_generation_segments
+        from ouroboros.chat_chain import _resolve_generation_segments
 
         live = self.logs_path("chat.jsonl")
         scan_rows = max(100, min(

@@ -798,7 +798,7 @@ def test_reflection_preparation_failure_degrades_the_checkpoint_with_a_typed_row
     ``completed`` over a stage that lost its work. Through the REAL adapters (no stub
     of ``generate_reflection``) the placeholder carries a typed row: degraded, nothing
     skipped, no reflection call bought, and the promotion stage still runs."""
-    from ouroboros import consolidator, post_task_synthesis, reflection
+    from ouroboros import chat_chain, post_task_synthesis, reflection
 
     f = phase
     monkeypatch.setattr(pipeline, "_run_reflection", post_task_synthesis._run_reflection)
@@ -808,7 +808,7 @@ def test_reflection_preparation_failure_degrades_the_checkpoint_with_a_typed_row
         f.stages.append("retain")
         raise RuntimeError("retention store unwritable")
 
-    monkeypatch.setattr(consolidator, "retain_memory_source", unwritable)
+    monkeypatch.setattr(chat_chain, "retain_memory_source", unwritable)
     entries = []
     monkeypatch.setattr(reflection, "append_reflection_routed", lambda _env, _task, entry: entries.append(entry))
     launch(f)

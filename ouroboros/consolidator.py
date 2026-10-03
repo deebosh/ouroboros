@@ -5,8 +5,8 @@ import os
 import pathlib
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
-from ouroboros import room_consolidation
+from ouroboros import chat_chain, room_consolidation
+from ouroboros.chat_chain import _chat_log_signature, _read_chat_entries, _resolve_generation_segments
 from ouroboros.utils import append_jsonl, atomic_write_json, replace_atomic, utc_now_iso, read_text, extract_trailing_json_object
 
 from ouroboros.platform_layer import (
@@ -85,64 +85,6 @@ def _emit_event(logs_dir: pathlib.Path, kind: str, **fields: Any) -> None:
         append_jsonl(logs_dir / "events.jsonl", {"ts": utc_now_iso(), "type": kind, **fields})
     except Exception:
         log.debug("Failed to emit %s event", kind, exc_info=True)
-
-
-def retain_memory_source(context: Any, source_id: str, data: bytes, extension: str = "md") -> Dict[str, Any]:
-    """Use existing immutable source storage with a reader valid after this task."""
-    from ouroboros.artifacts import store_actor_source_bytes, task_artifact_dir_path
-    root, task_id = pathlib.Path(context.drive_root).resolve(), str(context.task_id or "consolidation")
-    ref = store_actor_source_bytes(root, task_id, category="context_checkpoints",
-                                  source_id=source_id, data=data, extension=extension)
-    path = task_artifact_dir_path(root, task_id, create=False) / ref["path"]
-    return {**ref, "task_id": task_id, "canonical_root": str(root), "read": {"tool": "read_file",
-            "arguments": {"root": "runtime_data", "path": path.relative_to(root).as_posix(), "start_line": 1}}}
-
-
-def _ordered_chat_generation_paths(source_path: pathlib.Path) -> List[pathlib.Path]:
-    """Return the consolidator-owned physical chat chain, oldest to live."""
-    archive_dir = source_path.parent.parent / "archive"
-    try:
-        archives = sorted(archive_dir.glob("chat_*.jsonl"), key=lambda p: p.name)
-    except OSError:
-        archives = []
-    return [*archives, source_path]
-
-
-def _resolve_generation_segments(
-    meta: Dict[str, Any], source_path: pathlib.Path,
-) -> Tuple[List[pathlib.Path], int, bool]:
-    """Generation-aware consolidation cursor (v6.73.0).
-
-    The cursor (``last_consolidated_offset`` + ``chat_log_signature``) points into
-    ONE log generation. Rotation moves that generation to ``archive/chat_<ts>.jsonl``
-    verbatim, so the stored first-line hash locates it in the ordered archive chain
-    and consolidation continues over ``archives[i:] + live`` — the pre-rotation
-    tail (and any number of intervening rotations) is consolidated, never dropped.
-    Returns ``(ordered segments, offset into their concatenation, gap_detected)``;
-    ``gap_detected`` is True only when the stored generation no longer exists
-    anywhere (manual deletion/corruption — archives are never auto-pruned).
-    """
-    last_offset = int(meta.get("last_consolidated_offset", 0) or 0)
-    stored_sig = meta.get("chat_log_signature") or {}
-    stored_first = str(stored_sig.get("first_line_sha256") or "") if isinstance(stored_sig, dict) else ""
-    live_sig = _chat_log_signature(source_path)
-    archives = _ordered_chat_generation_paths(source_path)[:-1]
-    if not stored_first:
-        # Uninitialized cursor. Any archives that already exist rotated BEFORE
-        # the first consolidation ever ran — they are unconsolidated by
-        # definition, so the whole ordered chain is the window (offset 0).
-        # A nonzero offset WITHOUT a signature is an ambiguous pre-signature
-        # legacy shape: keep the historical live-only behavior for it.
-        if last_offset == 0 and archives:
-            return [*archives, source_path], 0, False
-        return [source_path], last_offset, False
-    if stored_first == str(live_sig.get("first_line_sha256") or ""):
-        return [source_path], last_offset, False
-    for index, archive_path in enumerate(archives):
-        sig = _chat_log_signature(archive_path)
-        if str(sig.get("first_line_sha256") or "") == stored_first:
-            return [*archives[index:], source_path], last_offset, False
-    return [source_path], 0, True
 
 
 def should_consolidate(
@@ -671,7 +613,7 @@ class KnowledgeReadContext:
                 # the very window the actor just reclaimed.
                 receipt = {key: facts_receipt[key] for key in (
                     "status", "checkpoint_ref", "view_revision", "reclaimed_tokens", "fit") if key in facts_receipt}
-                receipt["receipt_ref"] = retain_memory_source(self.context, "memory_context_view",
+                receipt["receipt_ref"] = chat_chain.retain_memory_source(self.context, "memory_context_view",
                     json.dumps(facts_receipt, ensure_ascii=False).encode("utf-8"), "json")
                 if applied.status in {"applied", "no_op"}:
                     before = candidate[:-len(rows)]  # the new completed batch is preserved verbatim
@@ -873,7 +815,7 @@ def _call_consolidation_llm(
         except SummarizerContextOverflow:
             if knowledge is None:
                 raise
-            source_ref = source_ref or retain_memory_source(knowledge.context, label, prompt.encode("utf-8"))
+            source_ref = source_ref or chat_chain.retain_memory_source(knowledge.context, label, prompt.encode("utf-8"))
             knowledge.required_source = source_ref
             pointer = (f"Complete source and instructions for {label} are retained here. "
                        "Read the whole source through read_file in ranges before your final response. "
@@ -921,7 +863,7 @@ def _call_consolidation_llm(
             content = msg.get("content") or ""
             if content.strip():
                 if knowledge and not knowledge.source_complete():
-                    response_ref = retain_memory_source(knowledge.context, "incomplete_memory_response", content.encode("utf-8"))
+                    response_ref = chat_chain.retain_memory_source(knowledge.context, "incomplete_memory_response", content.encode("utf-8"))
                     return "", {**_merge_consolidation_usage(*usages), "_consolidation_errors": [{
                         "kind": "source_incomplete", "label": label,
                         "message": "The complete retained source was not delivered; originals are preserved.",
@@ -979,7 +921,7 @@ def _compress_blocks_to_era(
     knowledge_context: Any = None,
 ) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
     """Retain the exact source run, then compress it room by room; failure keeps the originals."""
-    source_ref = (retain_memory_source(knowledge_context, "chronicle_blocks",
+    source_ref = (chat_chain.retain_memory_source(knowledge_context, "chronicle_blocks",
                   json.dumps(blocks, ensure_ascii=False).encode("utf-8"), "json") if knowledge_context else None)
     era, usage = room_consolidation.compress_blocks_to_era(
         _light_call(llm_client, knowledge_context, {}), blocks,
@@ -1129,7 +1071,7 @@ def maintain_memory_pressure(memory: Any, llm_client: Any, context: Any, *,
         return result()
     identity = "## Current task\n" + current_topic if current_topic else ""
     if memory.identity_path().exists():
-        identity_ref = retain_memory_source(context, "maintenance_identity", memory.identity_path().read_bytes())
+        identity_ref = chat_chain.retain_memory_source(context, "maintenance_identity", memory.identity_path().read_bytes())
         identity += "\nExact identity source, available through read_file; no identity rewrite is authorized here:\n" + json.dumps(identity_ref)
     if chat.exists() or blocks.exists():
         from ouroboros.memory_nomination_receipts import DialogueMetaUnreadable
@@ -1167,7 +1109,7 @@ def maintain_memory_pressure(memory: Any, llm_client: Any, context: Any, *,
         if not (shelf / "overview.md").exists():
             prompt += "\nNo authored overview exists. This is the complete legacy inventory/context source, " \
                       "not an authored summary; create an honest overview after reading it:\n" + read_text(shelf / "index-full.md")
-        source_ref = retain_memory_source(context, "knowledge_maintenance", prompt.encode("utf-8"))
+        source_ref = chat_chain.retain_memory_source(context, "knowledge_maintenance", prompt.encode("utf-8"))
         raw, usage = _call_consolidation_llm(llm_client, prompt, "Knowledge maintenance", knowledge=knowledge, source_ref=source_ref)
         usages.append(usage)
         action = {"owner": "knowledge_maintenance", "source_ref": source_ref, "usage": usage}
@@ -1355,37 +1297,10 @@ def _load_meta(path: pathlib.Path) -> Dict[str, Any]:
     return load_meta(path)
 
 
-from ouroboros.utils import jsonl_generation_signature as _chat_log_signature
-
-
 def _count_lines(path: pathlib.Path) -> int:
     with path.open("r", encoding="utf-8") as f:
         return sum(1 for line in f if line.strip())
 
-
-def _read_chat_entries(path: pathlib.Path) -> List[Dict[str, Any]]:
-    if not path.exists():
-        return []
-    # Full project awareness (v6.32.0): the one identity's consolidated dialogue
-    # (dialogue_blocks.json) is its WHOLE conversation — main + project threads —
-    # because Ouroboros is one awareness/biography across direct chat, project
-    # rooms, and background consciousness (BIBLE P1). Only A2A virtual-transport
-    # ids are excluded (machine-to-machine traffic, not the human dialogue). This
-    # MUST match memory.read_jsonl_tail_after_offset so the shared consolidation
-    # offset indexes the same stream.
-    entries = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
-            if not is_a2a_chat_id(entry.get("chat_id", 1)):
-                entries.append(entry)
-    return entries
 
 def _rebuild_knowledge_index(knowledge_dir: pathlib.Path, *, _locked: bool = False) -> None:
     """Compatibility entrypoint; the common knowledge owner renders every index."""
