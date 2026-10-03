@@ -316,9 +316,10 @@ touching state or re-arming loops. A module widget's disposer is the ordered
 dispose with acknowledgement (the sequence and `WIDGET_DISPOSE_ACK_TIMEOUT_MS`:
 ARCHITECTURE §3 "Skills and Widgets") — that bounded wait is not the forbidden
 shape, because its handlers live only until the settle promise the page tracks
-per card key resolves; the card grid's `applyWidgetGrid` returns an idempotent
-disposer for its ResizeObserver, and a card drag releases its pointer capture
-and document key listener when it ends or is cancelled.
+per card key resolves; the Widgets board's `applyWidgetGrid` returns an
+idempotent disposer for its list-width observer and pending frame, and a width
+drag releases its pointer capture and document key listener when it ends or is
+cancelled.
 
 Enforcement (honest disclosure): the deterministic leak test runs in the
 release-tier `ui_browser` lane, not at commit tier; commit-tier coverage is

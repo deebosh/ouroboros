@@ -1186,6 +1186,50 @@ and post-task checkpoint, not the presence of answer text or a cost estimate.
 Failed main work stays visibly failed after history reload while post-work
 controls remain live; the unfinished checkpoint never erases the outcome.
 
+### Widgets board
+
+The Widgets page is a board of live cards. The owner arranges the board; each
+widget's content belongs to its author.
+
+- **Rows in the owner's order.** Cards stand in rows on a 12-column base, in
+  the order the owner set with a card's move handle; a card that does not fit
+  the rest of a row starts the next one. Nothing is measured to place a card,
+  so a card whose content grows only makes its own row taller and never sends
+  a neighbour to another column. A new widget joins the end of the order. A
+  widget whose skill is off is not drawn; its place in the order and its width
+  stay stored for its return, and nothing is reserved meanwhile.
+- **Gaps belong to the owner.** A short card beside a tall one leaves space
+  under it (cards align to the top of their row), and widths that do not fill
+  a row leave the rest of it empty. The owner closes a gap by choosing widths;
+  the board never repacks cards out of order to hide one.
+- **Width is a step, the owner's over the author's.** A card is One third,
+  Half, Two thirds or Full width of a row. Until the owner picks one, the
+  author's `span` decides: `1` is a third, `2` two thirds. The owner's choice
+  holds for that card on every screen of the installation until Reset size
+  returns the author's default.
+- **Height follows content.** A card is as tall as its widget: a table shows
+  every row, a framed widget its declared or reported frame height
+  (`docs/CREATING_SKILLS.md`). No card is pinned to a height.
+- **A narrow list is one column.** Below 720px of list width — a phone, the
+  Telegram mini app, a narrow window, a wide side panel — the cards stack at
+  full width in the same order and widths do not apply; the board returns
+  when the list is wide again. The list's own width decides, not the viewport.
+- **The card menu works on every surface.** Every card's ⋮ menu carries Size
+  (the four steps and Reset size) beside a framed card's launch policy, so a
+  touch screen, a keyboard or the mini app — no hover there, and a vertical
+  drag collapses it — can size any card; on the stacked column the menu says
+  that widths apply when the list is wide. On the desktop board a card's right
+  edge can also be dragged between steps (Escape cancels) or stepped with its
+  arrow keys.
+- **Arranging never restarts a widget.** Reordering, resizing or switching
+  between board and column changes only where a card is painted; a running
+  widget keeps its frame and its state. Keyboard focus keeps the card's
+  original position until the window reloads.
+- **One arrangement per installation.** Order and widths are owner UI state
+  stored on the server, the same for every window and device of the
+  installation; when two windows arrange at once the last change wins. A
+  width that failed to save stays on screen and says so under the list.
+
 ## 6. Account group / row anatomy
 
 For a repeated identity row (a connected agent account, a reviewer slot,

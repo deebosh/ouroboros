@@ -1032,13 +1032,12 @@ is the only hook into it.
 These geometry keys are valid only for framed `iframe` and `module` renders;
 declarative renders remain content-driven and reject them.
 
-The card around your widget belongs to the owner: on the Widgets grid the
-owner moves and resizes every card, and that cell and size persist per card
-(`ui_preferences.widget_layout`). `span` (1 or 2) and `height` only size a card
-the owner has not arranged yet — a third or two thirds of the desktop grid,
-and enough rows for the declared frame height (the 320px floor for an
-auto-height module or a declarative widget). Content taller than its card
-scrolls inside the card body; it never grows the card or moves another one.
+Any render kind may add `span`: `1` (the default) or `2`, the card's starting
+width on the Widgets board — a third or two thirds of a row (`grid_span` is
+read as an alias; a larger number counts as `2`, anything else as `1`). It is
+a default only: the owner's width from the card menu or the card's edge wins
+for that card until the owner resets it, and the card's height always follows
+its content (the board: `docs/DESIGN.md` "Widgets board").
 
 For auto-height module CSS, prefer one owner of padding and box geometry between
 `body` and `#root`, and choose `border-box` deliberately. Nested percentage
