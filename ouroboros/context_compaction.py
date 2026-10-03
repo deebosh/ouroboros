@@ -490,6 +490,10 @@ def _call_summarizer(
         "reasoning_effort": str(spec.get("effort") or "low"),
         "max_tokens": int(spec.get("output_budget") or _SUMMARY_OUTPUT_TOKENS),
         "use_local": use_local,
+        # One sticky session per data root: without it a system-less prompt gets
+        # no OpenRouter session_id/OpenAI key, so sibling map/fold calls may land
+        # on different upstream caches.
+        "cache_affinity": "" if use_local else f"context_compaction:{drive_root}",
     }
 
     if not use_local:

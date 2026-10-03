@@ -760,12 +760,12 @@ def _call_consolidation_llm(
     from math import ceil
     from ouroboros.capability_evidence import is_known
     from ouroboros.context_budget import SummarizerContextOverflow
-    from ouroboros.context_fit import (
-        _failed_route_evidence, _route_calibration_ratio, estimate_context_prompt_tokens, resolve_context_fit_route,
-    )
+    from ouroboros.context_fit import (_failed_route_evidence, _route_calibration_ratio,
+                                       estimate_context_prompt_tokens, resolve_context_fit_route)
     from ouroboros.tools.compact_context import record_context_view
     from ouroboros.model_wait import current_model_wait
     from ouroboros.provider_models import parse_claudexor_model, provider_for_model
+    from ouroboros.tool_access import canonical_data_root
 
     facts: Dict[str, Any] = {}
     prepared_values: Dict[str, Any] = {}
@@ -846,8 +846,7 @@ def _call_consolidation_llm(
         return values
 
     def fit_candidate(messages: list, tools: list) -> Dict[str, Any]:
-        # Reuse the captured preparation facts; binary-searching a view performs
-        # no catalog/network reads and never changes the operation's model route.
+        # Reuse captured preparation facts: a view search reads no catalog/network and keeps the model route.
         tokens = ceil(estimate_context_prompt_tokens(
             messages, tools, provider=facts.get("provider", ""),
             reasoning_effort=prepared_values.get("reasoning_effort")) * facts.get("measurement_density", 1.0))
@@ -864,6 +863,7 @@ def _call_consolidation_llm(
         # recorded under one binding never suppresses the retry under another.
         values = dict(messages=[{"role": "user", "content": prompt}],
                       model_role="light", tools=knowledge.tools if knowledge else None,
+                      cache_affinity=f"memory_preparation:{canonical_data_root(knowledge.context)}" if knowledge else "",
                       reasoning_effort=reasoning_effort, max_tokens=16384,
                       **_light_dispatch_binding())
         # Carry part-to-part evidence only on initial preparation. A wait's

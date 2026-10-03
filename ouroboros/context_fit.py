@@ -342,8 +342,9 @@ def _render_context_system_content(
     static_parts.extend(core.reference_book_errors)
     # Stable governance/policy is first; mutable task evidence is last: the
     # cache-friendly ordering for Anthropic-style breakpoints. OpenAI's public API
-    # (and the Codex backend) caches the whole leading system section as one unit,
-    # so their send copies keep only block 0 there (declared in ``system_message``).
+    # (and the Codex backend) looks a cache up only at the end of the leading system
+    # group, so their send copies keep only block 0 there (declared in
+    # ``system_message``); OpenRouter's explicit breakpoints also keep block 1 apart.
     return [
         {
             "type": "text",
