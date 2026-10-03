@@ -1207,6 +1207,67 @@ and post-task checkpoint, not the presence of answer text or a cost estimate.
 Failed main work stays visibly failed after history reload while post-work
 controls remain live; the unfinished checkpoint never erases the outcome.
 
+### Widgets board
+
+The Widgets page is a board of live cards. The owner arranges the board; each
+widget's content belongs to its author.
+
+- **A masonry in the owner's order.** Cards are packed into columns the way a
+  Pinterest board is: in the order the owner set with each card's move handle,
+  every card goes to the lowest free place its width fits, so cards of
+  different heights stack without the voids of a row layout. The board decides
+  how many columns it has from the list's width and from the widths its cards
+  ask for. A board where the owner has set no width is exactly the board
+  before owner widths existed. A new widget joins the end of the order; the
+  order is stored when the owner moves a card, so after a window reload the
+  widgets added since the last move follow the stored ones alphabetically. A
+  widget whose skill is off is not drawn; its place in the order (moving the
+  other cards keeps its slot) and its width stay stored for its return, and
+  nothing is reserved meanwhile.
+- **Width is a column span, the owner's over the author's.** A card spans 1,
+  2 or 3 columns, or Full width. Until the owner picks one, the author's `span`
+  decides (`1` one column, `2` two), and the board may widen a lone one-column
+  card beside wide ones to fill its lane. The board never widens or narrows a
+  width the owner chose, except that no card is wider than the board: 3
+  columns on a board of 2 is the whole row. Full width is always the whole
+  row. Because the column count follows the widths the cards ask for, a
+  card's width can make the other cards' columns wider or narrower. The
+  owner's choice holds for that card on every screen of the installation
+  until Reset size returns the author's default.
+- **Widths that do not tile leave gaps; the board does not backfill.** A
+  card that cannot fit beside the cards above it starts below them: a
+  3-column card after a 2-column one on a 4-column board leaves the column
+  beside the first card empty above it. The board never repacks cards out of
+  the owner's order to hide such a gap; the owner closes it by changing a
+  width or the order.
+- **Height follows content.** A card is as tall as its widget: a table shows
+  every row, a framed widget its declared or reported frame height
+  (`docs/CREATING_SKILLS.md`). No card is pinned to a height. When a card
+  grows or shrinks, the masonry packs again, so cards after it can move,
+  even to another column.
+- **A narrow list is one column.** When the list is too narrow for two
+  columns of 280px — a phone, the Telegram mini app, a narrow window — the
+  cards stack at full width in the same order and widths do not apply; the
+  board returns when the list is wide again. The list's own width decides,
+  not the viewport.
+- **The card menu works on every surface.** Every card's ⋮ menu carries Size
+  (1, 2, 3 columns, Full width and Reset size) beside a framed card's launch
+  policy, so a touch screen, a keyboard or the mini app — no hover there, and
+  a vertical drag collapses it — can size any card; on a narrow list the menu
+  says that widths apply when the list is wide. Wherever a step would change a
+  card's width, its right edge can also be dragged between the widths the
+  steps give it (Escape cancels) or stepped with its arrow keys; the only card
+  on a board, which every step leaves the whole row, offers no edge.
+- **Arranging never restarts a widget.** Reordering, resizing or a change of
+  the column count changes only where a card is painted; a running widget
+  keeps its frame and its state. Keyboard focus keeps the card's original
+  position until the window reloads.
+- **One arrangement per installation.** Order and widths are owner UI state
+  stored on the server, the same for every window and device of the
+  installation; when two windows arrange at once the last change wins. A
+  width that failed to save stays on screen and says so under the list until
+  a later width change saves it; nothing retries on its own.
+
 ## 6. Account group / row anatomy
 
 For a repeated identity row (a connected agent account, a reviewer slot,
