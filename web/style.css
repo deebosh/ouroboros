@@ -5482,6 +5482,12 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     white-space: nowrap;
 }
 
+/* One check column, so a plain item (Reset size) lines up with the radios. */
+.widgets-menu-check {
+    flex: 0 0 auto;
+    width: 1em;
+}
+
 .widgets-menu-item[aria-checked="false"] .widgets-menu-check {
     visibility: hidden;
 }
