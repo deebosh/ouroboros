@@ -1514,8 +1514,8 @@ def main(argv=()):
 
         def open_external_url(self, url: str) -> dict:
             return _open_external_url(url)
-        def request_attention(self, sound: bool = True, title: str = "", body: str = "") -> dict:
-            return background.attention(bool(sound), str(title or ""), str(body or ""))
+        def request_attention(self, sound: bool = True, title: str = "", body: str = "", cue_when_visible: bool = True) -> dict:
+            return background.attention(bool(sound), str(title or ""), str(body or ""), bool(cue_when_visible))
         notify_owner = request_attention  # newer pages send the alert text; older launchers lack this name
 
         def save_bytes_to_downloads(self, filename: str, b64: str) -> dict:

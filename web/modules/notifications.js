@@ -420,35 +420,55 @@ export function createNotifier({
         }
     }
 
+    function showBanner(decision) {
+        try {
+            // The OS owns the banner's sound; `silent` honours the toggle
+            // so the owner never hears two sounds for one event.
+            const note = new notificationCtor(decision.title, {
+                body: decision.body || undefined,
+                tag: decision.key,
+                silent: !decision.sound,
+            });
+            note.onclick = () => {
+                try { focusWindow(); } catch { /* a blocked focus is not fatal */ }
+                try { activate?.(decision.target, decision); } catch { /* navigation is best-effort */ }
+                try { note.close?.(); } catch { /* already closed */ }
+            };
+            return true;
+        } catch {
+            return false; // the in-app path takes over
+        }
+    }
+
     function deliver(decision) {
         const banner = supported() && permission() === 'granted';
-        if (banner) {
-            try {
-                // The OS owns the banner's sound; `silent` honours the toggle
-                // so the owner never hears two sounds for one event.
-                const note = new notificationCtor(decision.title, {
-                    body: decision.body || undefined,
-                    tag: decision.key,
-                    silent: !decision.sound,
-                });
-                note.onclick = () => {
-                    try { focusWindow(); } catch { /* a blocked focus is not fatal */ }
-                    try { activate?.(decision.target, decision); } catch { /* navigation is best-effort */ }
-                    try { note.close?.(); } catch { /* already closed */ }
-                };
-                return 'banner';
-            } catch {
-                // Fall through to the in-app path below.
-            }
-        }
         const api = hostApi || shellBridgeApi(globalThis);
-        const nativeCue = typeof api?.request_attention === 'function';
-        if (nativeCue) {
+        if (banner && typeof api?.notify_owner === 'function') {
+            // A launcher that can hide its window on purpose answers first: hidden, its own native
+            // signal is the one that opens the window (focus() cannot undo a hide); visible, it does
+            // nothing (last argument) and the browser banner owns the sound, with no raise.
+            const answer = (result) => {
+                if (destroyed) return;
+                if (result?.status === 'background') inApp(decision, api, result);
+                else if (!showBanner(decision)) inApp(decision, api);
+            };
+            try {
+                void Promise.resolve(api.notify_owner(Boolean(decision.sound), decision.title, decision.body || '', false))
+                    .then(answer, () => answer(null));
+            } catch { answer(null); }
+            return 'host';
+        }
+        if (banner && showBanner(decision)) return 'banner';
+        return inApp(decision, api);
+    }
+
+    function inApp(decision, api, answered = null) {
+        if (answered || typeof api?.request_attention === 'function') {
             try {
                 // A newer launcher takes the (privacy-filtered) text for its banner while its window is hidden on purpose.
-                const cue = typeof api.notify_owner === 'function'
+                const cue = answered || (typeof api.notify_owner === 'function'
                     ? api.notify_owner(Boolean(decision.sound), decision.title, decision.body || '')
-                    : api.request_attention(Boolean(decision.sound));
+                    : api.request_attention(Boolean(decision.sound)));
                 void Promise.resolve(cue).then((result) => {
                     if (destroyed) return;
                     nativeAttention = Boolean(result?.ok);

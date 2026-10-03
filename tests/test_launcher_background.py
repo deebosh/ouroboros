@@ -450,11 +450,18 @@ def test_attention_never_raises_a_window_hidden_on_purpose(settings, monkeypatch
     assert ("banner", "Task finished", "Report ready") in background.events
     assert cues == [(None, False)], "the banner owns its sound; no second one"
     assert result["status"] == "background" and result["ok"] and result["banner"]
+    cues.clear()
+    assert background.attention(True, "Task finished", "", False)["status"] == "background", \
+        "a page with its own browser banner asks first: hidden, the native signal is placed all the same"
+    assert cues == [(None, False)] and window.calls == ["hide"]
 
     background.show_window()  # the banner or the icon was clicked
     cues.clear()
     background.attention(True)
     assert cues == [(window.show, True)], "a visible window keeps today's raise-and-sound cue"
+    cues.clear()
+    assert background.attention(True, "Task finished", "", False) == {"ok": False, "status": "visible"}
+    assert cues == [], "visible and the page shows its own banner: no raise, no second sound"
 
 
 def test_panic_removes_the_indicator_without_waiting_and_before_the_lock(monkeypatch):

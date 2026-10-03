@@ -317,7 +317,7 @@ test('desktop host attention is requested once without replacing banner delivery
     notifier.destroy();
 });
 
-test('banner owns sound, while silent in-app delivery still raises the window', () => {
+test('with an older launcher (no notify_owner, so no background mode) the banner owns sound', () => {
     let calls = 0;
     class FakeNotification {
         static permission = 'granted';
@@ -334,7 +334,7 @@ test('banner owns sound, while silent in-app delivery still raises the window', 
         { role: 'system', system_type: 'task_summary', task_id: 'banner-1' },
         { kind: 'chat', isMain: true },
     ).surface, 'banner');
-    assert.equal(calls, 0, 'banner sound stays with the Notification API');
+    assert.equal(calls, 0, 'its window is never hidden on purpose: banner sound stays with the Notification API');
     bannerNotifier.destroy();
 
     let soundValue = null;
@@ -352,6 +352,65 @@ test('banner owns sound, while silent in-app delivery still raises the window', 
     ).surface, 'in_app');
     assert.equal(soundValue, false);
     silentNotifier.destroy();
+});
+
+test('with banner permission, a launcher that can hide its window answers before any browser banner', async () => {
+    const calls = [];
+    const banners = [];
+    const toasts = [];
+    let oscillators = 0;
+    class GrantedNotification {
+        static permission = 'granted';
+        constructor(title, options) { banners.push({ title, options }); }
+        close() {}
+    }
+    class FakeAudioContext {
+        constructor() { this.currentTime = 0; this.destination = {}; }
+        resume() {}
+        createOscillator() { oscillators += 1; return { connect() {}, start() {}, stop() {} }; }
+        createGain() { return { gain: { value: 0 }, connect() {} }; }
+    }
+    const make = (notifyOwner) => createNotifier({
+        storage: fakeStorage({ [NOTIFY_PREFS_KEY]: JSON.stringify(ON) }),
+        notificationCtor: GrantedNotification,
+        audioContextCtor: FakeAudioContext,
+        showToast: (line) => { toasts.push(line); },
+        documentRef: fakeDocument(),
+        hostApi: {
+            request_attention: (...args) => { calls.push(['request_attention', ...args]); return { ok: true }; },
+            notify_owner: (...args) => { calls.push(['notify_owner', ...args]); return notifyOwner(); },
+        },
+    });
+    const deliver = async (notifier, id) => {
+        const out = notifier.handleFrame({ role: 'system', system_type: 'task_summary', task_id: id }, { kind: 'chat', isMain: true });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        notifier.destroy();
+        return out.surface;
+    };
+    const asked = [['notify_owner', true, 'Task finished', '', false]];
+
+    // Hidden on purpose: the launcher's own banner (it opens the window) and no browser banner,
+    // whose focus() cannot undo a hide; the queued banner owns the sound, so no page tone.
+    assert.equal(await deliver(make(() => ({ ok: true, status: 'background', banner: true, sound_played: false })), 'h'), 'host');
+    assert.deepEqual(calls, asked);
+    assert.equal(banners.length, 0);
+    assert.equal(oscillators, 0);
+    assert.deepEqual(toasts, ['Task finished'], 'the alert waits in the window too');
+
+    // Visible: the launcher does nothing (no raise, no system sound); the browser banner owns the sound.
+    calls.length = 0;
+    toasts.length = 0;
+    assert.equal(await deliver(make(() => ({ ok: false, status: 'visible' })), 'v'), 'host');
+    assert.deepEqual(calls, asked, 'never the raise-and-sound cue for a visible window');
+    assert.equal(banners.length, 1);
+    assert.equal(banners[0].options.silent, false);
+    assert.equal(oscillators, 0, 'one sound: the banner\'s');
+    assert.equal(toasts.length, 0);
+
+    // A launcher that cannot answer: the browser banner, as before.
+    calls.length = 0;
+    assert.equal(await deliver(make(() => Promise.reject(new Error('bridge gone'))), 'r'), 'host');
+    assert.equal(banners.length, 2);
 });
 
 test('a launcher that takes the alert text gets it; an older one keeps the sound-only call', () => {

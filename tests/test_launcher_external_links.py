@@ -77,10 +77,11 @@ def test_main_bridge_request_attention_delegates_to_the_background_policy(monkey
     namespace = {
         "_open_external_url": launcher._open_external_url,
         "background": type("Background", (), {
-            "attention": lambda self, sound, title, body: seen.append((sound, title, body)) or {"ok": True}})(),
+            "attention": lambda self, *args: seen.append(args) or {"ok": True}})(),
     }
     exec(compile(ast.Module(body=[node], type_ignores=[]), "MainApi", "exec"), namespace)
     api = namespace["MainApi"]()
     assert api.request_attention(False) == {"ok": True}  # an older page: sound only
     assert api.notify_owner(1, "Task finished", None) == {"ok": True}
-    assert seen == [(False, "", ""), (True, "Task finished", "")]
+    assert api.notify_owner(True, "Task finished", "", False) == {"ok": True}  # a page with its own banner asks first
+    assert seen == [(False, "", "", True), (True, "Task finished", "", True), (True, "Task finished", "", False)]

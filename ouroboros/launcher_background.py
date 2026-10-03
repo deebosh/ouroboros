@@ -388,13 +388,17 @@ class Background:
         except Exception:
             log.warning("Could not show the window.", exc_info=True)
 
-    def attention(self, sound: bool = True, title: str = "", body: str = "") -> dict:
-        """The bridge's alert cue (D7): never raises a window the owner hid on purpose."""
+    def attention(self, sound: bool = True, title: str = "", body: str = "", cue_when_visible: bool = True) -> dict:
+        """The bridge's alert cue (D7): never raises a window the owner hid on purpose. A page that
+        will show its own browser banner asks first with ``cue_when_visible=False``: a visible
+        window then gets nothing from here (that banner owns the sound) and answers "visible"."""
         if self.indicator is not None and self.indicator.hidden:
             banner = self.indicator.notify(title or "Ouroboros", body or "Something needs your attention.")
             cue = request_native_attention(None, sound=bool(sound) and not banner)
             return {"ok": bool(banner or cue.get("ok")), "status": "background", "banner": bool(banner),
                     "sound_played": bool(cue.get("sound_played"))}
+        if not cue_when_visible:
+            return {"ok": False, "status": "visible"}
         return request_native_attention(self.window.show if self.window is not None else None, sound=bool(sound))
 
     def _window_shown(self) -> None:

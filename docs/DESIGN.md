@@ -1460,7 +1460,10 @@ notification may raise a visible window and ask the operating system for one
 standard sound. A window the owner hid in background mode is never raised by an
 alert: Windows shows a banner from its notification-area icon, macOS marks and
 bounces the Dock icon with the system sound, and the window opens from that
-banner, the indicator or the Dock. These are native attention cues, not proof
+banner, the indicator or the Dock. That holds with browser notifications allowed
+too: the page asks the launcher before showing a browser banner, whose click
+could not bring a hidden window back; a visible window keeps the browser banner,
+which owns the sound. These are native attention cues, not proof
 that a system banner was delivered; unsupported or older launchers fall back to
 the browser banner or in-app toast and report that capability honestly.
 
