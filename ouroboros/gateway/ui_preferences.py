@@ -19,13 +19,12 @@ DEFAULT_UI_PREFERENCES: dict[str, Any] = {
     # checked against live widgets, so a temporarily disabled or removed skill keeps
     # the owner's choice instead of losing it with the next discovery.
     "widget_start_mode": {},
-    # Owner arrangement of the Widgets desktop grid, keyed like widget_start_mode:
-    # {"x", "y", "w", "h"} in grid cells (column / row of the top-left cell, width
-    # in columns, height in rows). Out-of-range values are clamped into the grid
-    # (web/modules/widget_grid.js mirrors the bounds); keys are never checked
-    # against live widgets; the Widgets client retires only confirmed-disabled
-    # cards, while temporary loader absence leaves their cells intact.
-    "widget_layout": {},
+    # Owner width of a Widgets card, keyed like widget_start_mode: {"w": columns of
+    # the 12-column board, "h": 0}. ``h`` is reserved for a pinned card height and is
+    # stored as 0 until that exists. A POST merges by key and a null value deletes
+    # one (the card falls back to its author ``span``); keys are never checked
+    # against live widgets. Semantics: docs/DESIGN.md "Widgets board".
+    "widget_size": {},
     "nested_subagents_expanded": False,
     # Resizable side sections (0 = use the CSS default). Clamped to sane ranges so
     # a stored value can never collapse or run away with the layout.
@@ -46,11 +45,8 @@ _KNOWN_KEYS = frozenset(DEFAULT_UI_PREFERENCES)
 _MAX_WIDGET_ORDER_ITEMS = 200
 _MAX_WIDGET_START_MODE_ITEMS = 200
 _MAX_WIDGET_KEY_LENGTH = 200
-_MAX_WIDGET_LAYOUT_ITEMS = 200
-WIDGET_GRID_COLUMNS = 12
-WIDGET_GRID_MIN_W = 3
-WIDGET_GRID_MIN_H, WIDGET_GRID_MAX_H = 4, 48
-WIDGET_GRID_MAX_Y = 10000
+_MAX_WIDGET_SIZE_ITEMS = 200
+WIDGET_GRID_COLUMNS = 12  # mirrored by web/modules/widget_grid.js
 _SIDEBAR_WIDTH_MIN, _SIDEBAR_WIDTH_MAX = 180, 560
 _PROJECT_PANEL_WIDTH_MIN, _PROJECT_PANEL_WIDTH_MAX = 320, 1100
 _MAX_PROJECT_CURSORS = 1000
@@ -84,19 +80,23 @@ def _normalize_width(value: Any, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
-def _normalize_widget_slot(value: Any) -> dict[str, int]:
-    """One grid slot: four integers, clamped into the grid (x follows the clamped width)."""
-    if not isinstance(value, dict) or not all(
-        isinstance(value.get(name), int) and not isinstance(value.get(name), bool) for name in ("x", "y", "w", "h")
-    ):
-        raise ValueError("widget_layout values must be objects of integer x, y, w, h")
-    w = max(WIDGET_GRID_MIN_W, min(WIDGET_GRID_COLUMNS, value["w"]))
-    return {
-        "x": max(0, min(WIDGET_GRID_COLUMNS - w, value["x"])),
-        "y": max(0, min(WIDGET_GRID_MAX_Y, value["y"])),
-        "w": w,
-        "h": max(WIDGET_GRID_MIN_H, min(WIDGET_GRID_MAX_H, value["h"])),
-    }
+def _normalize_widget_size(value: Any) -> dict[str, dict[str, int] | None]:
+    """Owner card widths clamped to the board; ``None`` is a key a POST deletes."""
+    if not isinstance(value, dict):
+        raise ValueError("widget_size must be an object of {widget_key: {w, h}}")
+    sizes: dict[str, dict[str, int] | None] = {}
+    for widget_key, size in list(value.items())[:_MAX_WIDGET_SIZE_ITEMS]:
+        key = str(widget_key or "").strip()
+        if not key or len(key) > _MAX_WIDGET_KEY_LENGTH:
+            continue
+        if size is None:
+            sizes[key] = None
+            continue
+        w, h = (size.get("w"), size.get("h", 0)) if isinstance(size, dict) else (None, None)
+        if not all(isinstance(n, int) and not isinstance(n, bool) for n in (w, h)):
+            raise ValueError("widget_size values must be null or objects of integer w and h")
+        sizes[key] = {"w": max(1, min(WIDGET_GRID_COLUMNS, w)), "h": 0}
+    return sizes
 
 
 def _normalize_preferences(
@@ -145,19 +145,9 @@ def _normalize_preferences(
                     )
                 modes[key] = mode
             prefs["widget_start_mode"] = modes
-    if "widget_layout" in raw:
-        value = raw.get("widget_layout")
-        if value is None:
-            prefs["widget_layout"] = {}
-        elif not isinstance(value, dict):
-            raise ValueError("widget_layout must be an object of {widget_key: {x, y, w, h}}")
-        else:
-            slots: dict[str, dict[str, int]] = {}
-            for widget_key, slot in list(value.items())[:_MAX_WIDGET_LAYOUT_ITEMS]:
-                key = str(widget_key or "").strip()
-                if key and len(key) <= _MAX_WIDGET_KEY_LENGTH:
-                    slots[key] = _normalize_widget_slot(slot)
-            prefs["widget_layout"] = slots
+    if "widget_size" in raw:
+        value = raw.get("widget_size")
+        prefs["widget_size"] = {} if value is None else _normalize_widget_size(value)
     if "nested_subagents_expanded" in raw:
         value = raw.get("nested_subagents_expanded")
         if not isinstance(value, bool):
@@ -209,23 +199,13 @@ def _stored_preferences(path: pathlib.Path) -> dict[str, Any]:
     """Saved preferences. ``welcome`` has no Settings control and is edited by hand, so
     a value the POST contract would refuse reads as the default instead of taking every
     other key down with it; the next write stores that default."""
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        stored = None  # Only absence means fresh defaults; unreadable bytes never do.
-    else:
-        stored = read_json_dict(path)
-        if stored is None:
-            raise TimeoutError("stored UI preferences are unreadable")
+    stored = read_json_dict(path)
     if stored is not None and "welcome" in stored:
         try:
             _normalize_preferences({"welcome": stored["welcome"]}, fill_defaults=False)
         except ValueError:
             stored = {key: value for key, value in stored.items() if key != "welcome"}
-    try:
-        return _normalize_preferences(stored)
-    except ValueError as exc:
-        raise TimeoutError("stored UI preferences are invalid") from exc
+    return _normalize_preferences(stored)
 
 
 async def api_ui_preferences_get(request: Request) -> JSONResponse:
@@ -235,31 +215,22 @@ async def api_ui_preferences_get(request: Request) -> JSONResponse:
         prefs = _stored_preferences(path)
         return JSONResponse(prefs)
     except Exception:
-        return json_error("UI preferences unavailable; retry without replacing saved layout", 503)
+        return JSONResponse(dict(DEFAULT_UI_PREFERENCES))
 
 
 async def api_ui_preferences_post(request: Request) -> JSONResponse:
     body = await request_json_or(request, None)
     if not isinstance(body, dict):
         return json_error("request body must be a JSON object", 400)
-    unknown = sorted(set(body) - _KNOWN_KEYS - {"widget_layout_if"})
+    unknown = sorted(set(body) - _KNOWN_KEYS)
     if unknown:
         return json_error(f"unknown ui preference key: {unknown[0]}", 400)
     drive_root = request_drive_root(request)
     path = pathlib.Path(drive_root) / "state" / "ui_preferences.json"
     try:
-        # An arrangement carries its observed map; a second window cannot put
-        # a disabled card's released slot back via a stale whole-map POST.
-        basis = body.get("widget_layout_if")
-        if "widget_layout_if" in body and "widget_layout" not in body:
-            return json_error("widget_layout_if requires widget_layout", 400)
-        if "widget_layout_if" in body:
-            basis = _normalize_preferences({"widget_layout": basis}, fill_defaults=False)["widget_layout"]
         with _preferences_lock(path):
             prefs = _stored_preferences(path)
-            if "widget_layout_if" in body and prefs["widget_layout"] != basis:
-                return json_error("Widget layout changed in another window; reload Widgets before editing", 409)
-            incoming = _normalize_preferences({key: val for key, val in body.items() if key != "widget_layout_if"}, fill_defaults=False)
+            incoming = _normalize_preferences(body, fill_defaults=False)
             if "project_seen_revision" in incoming:
                 from ouroboros.projects_registry import get_project
 
@@ -276,6 +247,18 @@ async def api_ui_preferences_post(request: Request) -> JSONResponse:
                     # ensure tombstones/unknown ids are not newly admitted here.
                     merged = dict(list(merged.items())[-_MAX_PROJECT_CURSORS:])
                 prefs["project_seen_revision"] = merged
+            if "widget_size" in incoming:
+                # Merge by card: a write names only the cards it changes, a null value
+                # deletes one, a null map clears them all. A changed key moves last,
+                # so the bound keeps the most recently sized cards.
+                sizes = {} if body.get("widget_size") is None else {
+                    key: size for key, size in prefs["widget_size"].items() if size is not None
+                }
+                for key, size in incoming.pop("widget_size").items():
+                    sizes.pop(key, None)
+                    if size is not None:
+                        sizes[key] = size
+                prefs["widget_size"] = dict(list(sizes.items())[-_MAX_WIDGET_SIZE_ITEMS:])
             prefs.update(incoming)
             atomic_write_json(path, prefs, trailing_newline=True)
     except ValueError as exc:

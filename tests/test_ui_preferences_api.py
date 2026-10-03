@@ -11,23 +11,6 @@ from starlette.applications import Starlette
 from ouroboros.gateway.router import collect_routes
 
 
-def test_unreadable_stored_preferences_never_become_empty_layout(tmp_path):
-    from starlette.testclient import TestClient
-
-    app = Starlette(routes=collect_routes(data_dir=tmp_path))
-    app.state.drive_root = tmp_path
-    path = tmp_path / "state" / "ui_preferences.json"
-    path.parent.mkdir(parents=True)
-    invalid = b'{"widget_layout":'
-    path.write_bytes(invalid)
-    with TestClient(app) as client:
-        assert client.get("/api/ui/preferences").status_code == 503
-        assert client.post("/api/ui/preferences", json={"widget_layout": {"visible": {"x": 0, "y": 0, "w": 4, "h": 8}}}).status_code == 503
-        assert path.read_bytes() == invalid
-        path.write_text(json.dumps({"widget_layout": {"hidden": {"x": 4, "y": 0, "w": 4, "h": 8}}}), encoding="utf-8")
-        assert "hidden" in client.get("/api/ui/preferences").json()["widget_layout"]
-
-
 def test_ui_preferences_round_trip_and_normalization(tmp_path):
     from starlette.testclient import TestClient
 
@@ -41,7 +24,7 @@ def test_ui_preferences_round_trip_and_normalization(tmp_path):
         assert initial.json() == {
             "widget_order": [],
             "widget_start_mode": {},
-            "widget_layout": {},
+            "widget_size": {},
             "nested_subagents_expanded": False,
             "sidebar_width": 0,
             "project_panel_width": 0,
@@ -312,117 +295,98 @@ def test_ui_preferences_widget_start_mode_override(tmp_path):
         assert all(many[key] == mode for key, mode in kept.items())
 
 
-def test_ui_preferences_widget_layout_cells(tmp_path):
-    """Owner Widgets grid cells: persisted per card key, whole-map replace, clamped
-    into the grid, transiently absent keys retained until a confirmed disable,
-    bounded like the other per-card maps."""
+def test_ui_preferences_widget_size_merges_by_card_and_clamps(tmp_path):
+    """Owner Widgets card widths: a POST merges by card key and null deletes one,
+    widths clamp to the 12-column board, the reserved height stays 0, keys are
+    never checked against live widgets, the map is bounded, and there is no
+    conditional write: the last write wins, like widget_order."""
     from starlette.testclient import TestClient
 
     app = Starlette(routes=collect_routes(data_dir=tmp_path))
     app.state.drive_root = tmp_path
     with TestClient(app) as client:
-        assert client.get("/api/ui/preferences").json()["widget_layout"] == {}
+        def sizes():
+            return client.get("/api/ui/preferences").json()["widget_size"]
 
-        layout = {
-            "game:main": {"x": 0, "y": 0, "w": 8, "h": 11},
-            "gauge:live": {"x": 8, "y": 0, "w": 4, "h": 8},
-            "gone_skill:old": {"x": 0, "y": 11, "w": 12, "h": 4},
+        assert sizes() == {}
+        first = client.post("/api/ui/preferences", json={"widget_size": {
+            "game:main": {"w": 12, "h": 0}, "gone_skill:old": {"w": 6, "h": 0},
+        }})
+        assert first.status_code == 200
+        assert first.json()["widget_size"] == {"game:main": {"w": 12, "h": 0}, "gone_skill:old": {"w": 6, "h": 0}}
+        # Merge: a write names only the card it changes; the others stay.
+        second = client.post("/api/ui/preferences", json={"widget_size": {"gauge:live": {"w": 4}}})
+        assert second.json()["widget_size"] == {
+            "game:main": {"w": 12, "h": 0}, "gone_skill:old": {"w": 6, "h": 0}, "gauge:live": {"w": 4, "h": 0},
         }
-        saved = client.post(
-            "/api/ui/preferences",
-            json={"widget_layout": layout, "widget_order": ["game:main", "gauge:live"]},
-        )
-        assert saved.status_code == 200
-        assert saved.json()["widget_layout"] == layout
-        assert saved.json()["widget_order"] == ["game:main", "gauge:live"]
-        # A revisit (and a restart: the file is the store) reads the same cells back.
-        assert client.get("/api/ui/preferences").json()["widget_layout"] == layout
+        # A null value deletes one key (the card falls back to its author span).
+        assert client.post("/api/ui/preferences", json={"widget_size": {"gone_skill:old": None}}).json()["widget_size"] == {
+            "game:main": {"w": 12, "h": 0}, "gauge:live": {"w": 4, "h": 0},
+        }
+        # Other keys leave the sizes alone, and a size write leaves the order alone.
+        assert client.post("/api/ui/preferences", json={"widget_order": ["gauge:live", "game:main"]}).json()["widget_size"] == sizes()
+        assert client.post("/api/ui/preferences", json={"widget_size": {"game:main": {"w": 8, "h": 0}}}).json()["widget_order"] == [
+            "gauge:live", "game:main",
+        ]
+        # The file is the store: a revisit (and a restart) reads the same widths back.
         stored = json.loads((tmp_path / "state" / "ui_preferences.json").read_text(encoding="utf-8"))
-        assert stored["widget_layout"] == layout
+        assert stored["widget_size"] == {"game:main": {"w": 8, "h": 0}, "gauge:live": {"w": 4, "h": 0}}
 
-        # The Widgets client binds a whole-map replacement to the layout it read.
-        # A stale window cannot resurrect a disabled card's retired slot.
-        compacted = {"game:main": layout["game:main"], "gauge:live": layout["gauge:live"]}
-        assert client.post("/api/ui/preferences", json={
-            "widget_layout": compacted, "widget_layout_if": layout,
-        }).status_code == 200
-        stale = client.post("/api/ui/preferences", json={
-            "widget_layout": layout, "widget_layout_if": layout,
-        })
-        assert stale.status_code == 409
-        assert client.get("/api/ui/preferences").json()["widget_layout"] == compacted
-        # Narrow-screen order-only writes carry that same layout basis. A stale
-        # second window must not put the retired card back into widget_order.
-        assert client.post("/api/ui/preferences", json={
-            "widget_layout": layout, "widget_layout_if": layout,
-            "widget_order": ["gone_skill:old", "gauge:live", "game:main"],
-        }).status_code == 409
-        assert client.get("/api/ui/preferences").json()["widget_order"] == ["game:main", "gauge:live"]
-        assert client.post("/api/ui/preferences", json={"widget_layout_if": compacted}).status_code == 400
-        layout = compacted
-
-        # Other keys leave the layout alone; a layout write replaces the whole map.
-        other = client.post("/api/ui/preferences", json={"widget_start_mode": {"game:main": "retain"}})
-        assert other.json()["widget_layout"] == layout
-        replaced = client.post("/api/ui/preferences", json={"widget_layout": {"game:main": {"x": 2, "y": 3, "w": 6, "h": 6}}})
-        assert replaced.json()["widget_layout"] == {"game:main": {"x": 2, "y": 3, "w": 6, "h": 6}}
-        assert replaced.json()["widget_start_mode"] == {"game:main": "retain"}
-
-        # Out-of-range cells clamp into the grid (x follows the clamped width);
-        # keys are trimmed, blank / oversized keys and extra fields are dropped.
-        clamped = client.post(
-            "/api/ui/preferences",
-            json={"widget_layout": {
-                " wide:card ": {"x": 11, "y": -5, "w": 99, "h": 0, "z": 7},
-                "tiny:card": {"x": 11, "y": 20000, "w": 1, "h": 500},
-                "": {"x": 0, "y": 0, "w": 4, "h": 4},
-                "x" * 201: {"x": 0, "y": 0, "w": 4, "h": 4},
-            }},
-        )
+        # Out-of-range widths clamp to 1..12; h is reserved and stored as 0; keys are
+        # trimmed; blank and oversized keys and extra fields are dropped.
+        clamped = client.post("/api/ui/preferences", json={"widget_size": {
+            " wide:card ": {"w": 99, "h": 640, "x": 3}, "tiny:card": {"w": -5}, "": {"w": 4}, "x" * 201: {"w": 4},
+        }})
         assert clamped.status_code == 200
-        assert clamped.json()["widget_layout"] == {
-            "wide:card": {"x": 0, "y": 0, "w": 12, "h": 4},
-            "tiny:card": {"x": 9, "y": 10000, "w": 3, "h": 48},
+        assert {key: clamped.json()["widget_size"][key] for key in ("wide:card", "tiny:card")} == {
+            "wide:card": {"w": 12, "h": 0}, "tiny:card": {"w": 1, "h": 0},
         }
+        assert "" not in clamped.json()["widget_size"] and "x" * 201 not in clamped.json()["widget_size"]
 
-        # Any other shape is a 400 and stores nothing.
+        # Any other shape is a 400 and stores nothing; the PR-era condition key is unknown.
+        before = sizes()
         for bad in (
-            {"widget_layout": ["game:main"]},
-            {"widget_layout": "grid"},
-            {"widget_layout": {"game:main": [0, 0, 4, 4]}},
-            {"widget_layout": {"game:main": {"x": 0, "y": 0, "w": 4}}},
-            {"widget_layout": {"game:main": {"x": "0", "y": 0, "w": 4, "h": 4}}},
-            {"widget_layout": {"game:main": {"x": 0.5, "y": 0, "w": 4, "h": 4}}},
-            {"widget_layout": {"game:main": {"x": True, "y": 0, "w": 4, "h": 4}}},
-            {"widget_layouts": {}},
+            {"widget_size": ["game:main"]},
+            {"widget_size": "wide"},
+            {"widget_size": {"game:main": [4, 0]}},
+            {"widget_size": {"game:main": {"h": 0}}},
+            {"widget_size": {"game:main": {"w": "4"}}},
+            {"widget_size": {"game:main": {"w": 4.5}}},
+            {"widget_size": {"game:main": {"w": True}}},
+            {"widget_size": {"game:main": {"w": 4, "h": None}}},
+            {"widget_sizes": {}},
+            {"widget_size": {"game:main": {"w": 4}}, "widget_layout_if": {}},
         ):
             assert client.post("/api/ui/preferences", json=bad).status_code == 400, bad
-        assert set(client.get("/api/ui/preferences").json()["widget_layout"]) == {"wide:card", "tiny:card"}
+        assert sizes() == before
 
-        assert client.post("/api/ui/preferences", json={"widget_layout": None}).json()["widget_layout"] == {}
-        many = {f"skill:{i}": {"x": 0, "y": i * 4, "w": 4, "h": 4} for i in range(250)}
-        bounded = client.post("/api/ui/preferences", json={"widget_layout": many})
-        assert bounded.status_code == 200
-        assert list(bounded.json()["widget_layout"]) == list(many)[:200]
+        # A null map clears every width.
+        assert client.post("/api/ui/preferences", json={"widget_size": None}).json()["widget_size"] == {}
+        # Bounded at 200 keys; the most recently changed cards are the ones kept.
+        many = {f"skill:{i}": {"w": 4, "h": 0} for i in range(250)}
+        bounded = client.post("/api/ui/preferences", json={"widget_size": many})
+        assert list(bounded.json()["widget_size"]) == list(many)[:200]
+        newest = client.post("/api/ui/preferences", json={"widget_size": {"late:card": {"w": 6}}}).json()["widget_size"]
+        assert len(newest) == 200
+        assert list(newest)[-1] == "late:card" and "skill:0" not in newest
 
 
-def test_widget_grid_bounds_have_one_value_in_python_and_the_browser():
-    """The server clamps with the same bounds the browser grid plans with."""
-    import re
-    from pathlib import Path
+def test_corrupt_stored_preferences_read_as_defaults(tmp_path):
+    """The preferences file is shared (project read cursors, panel widths, the
+    empty-Main welcome); a corrupt one reads as defaults instead of failing the
+    whole surface, and the next write replaces it."""
+    from starlette.testclient import TestClient
 
-    from ouroboros.gateway import ui_preferences as prefs
+    app = Starlette(routes=collect_routes(data_dir=tmp_path))
+    app.state.drive_root = tmp_path
+    path = tmp_path / "state" / "ui_preferences.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{"widget_size":')
+    with TestClient(app) as client:
+        read = client.get("/api/ui/preferences")
+        assert read.status_code == 200
+        assert read.json()["widget_size"] == {} and read.json()["sidebar_width"] == 0
+        written = client.post("/api/ui/preferences", json={"widget_size": {"game:main": {"w": 6, "h": 0}}})
+        assert written.status_code == 200
+        assert json.loads(path.read_text(encoding="utf-8"))["widget_size"] == {"game:main": {"w": 6, "h": 0}}
 
-    source = (Path(__file__).resolve().parent.parent / "web" / "modules" / "widget_grid.js").read_text(encoding="utf-8")
-
-    def js(name: str) -> int:
-        match = re.search(rf"export const {name} = (\d+);", source)
-        assert match, name
-        return int(match.group(1))
-
-    assert js("WIDGET_GRID_COLUMNS") == prefs.WIDGET_GRID_COLUMNS
-    assert js("WIDGET_GRID_MIN_W") == prefs.WIDGET_GRID_MIN_W
-    assert js("WIDGET_GRID_MIN_H") == prefs.WIDGET_GRID_MIN_H
-    assert js("WIDGET_GRID_MAX_H") == prefs.WIDGET_GRID_MAX_H
-    assert js("WIDGET_GRID_MAX_Y") == prefs.WIDGET_GRID_MAX_Y
-    assert js("WIDGET_LAYOUT_MAX_ITEMS") == prefs._MAX_WIDGET_LAYOUT_ITEMS
