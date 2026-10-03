@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ouroboros.tools.tool_result import ToolResult, _publish_tool_result
+from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, completed_local_read, publish_no_effect
 
 import copy
 import json
@@ -546,7 +546,7 @@ def _write_file(
 ) -> str:
     normalized, block = _access_or_block(ctx, root, "write")
     if block:
-        return block
+        return publish_no_effect(ctx, block, tool_name="write_file")
     try:
         if _resolved_binding is None and files:
             bindings: ResolvedResourceBinding | tuple[ResolvedResourceBinding, ...] = tuple(
@@ -718,7 +718,7 @@ def _edit_text(
     cyber = mode_has_unrestricted_agency(get_runtime_mode())
     normalized, block = _access_or_block(ctx, root, "edit")
     if block:
-        return block
+        return publish_no_effect(ctx, block, tool_name="edit_text")
     try:
         binding = _direct_resource_binding(
             ctx, _resolved_binding, root=normalized, operation="edit", path=path,
@@ -726,7 +726,7 @@ def _edit_text(
         )
     except Exception as exc:
         prefix = "SKILL_PAYLOAD_ARG_ERROR" if normalized == "skill_payload" else "EDIT_TEXT_ERROR"
-        return f"⚠️ {prefix}: {exc}"
+        return publish_no_effect(ctx, f"⚠️ {prefix}: {exc}", tool_name="edit_text")
     reason = block_reason_for_path(ctx, binding.target_path, "write", binding)
     protected_block = (
         f"⚠️ EDIT_TEXT_BLOCKED: protected artifact path blocked: {reason}" if reason else ""
@@ -792,15 +792,20 @@ def _edit_text(
             block_reason = artifact_store_path_block_reason(target, base_path=binding.base_path)
             if block_reason:
                 return f"⚠️ EDIT_TEXT_BLOCKED: artifact_store path blocked: {block_reason}"
-        text = target.read_text(encoding="utf-8")
+        try:
+            text = target.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return publish_no_effect(ctx, f"⚠️ EDIT_TEXT_ERROR: file not found: {_root_display_path(normalized, path)}", tool_name="edit_text")
+        except OSError as exc:
+            return publish_no_effect(ctx, f"⚠️ EDIT_TEXT_ERROR: {type(exc).__name__}: {exc}", tool_name="edit_text")
         new_text, match_error = _str_match_replace(
             text, old_str, new_str, _root_display_path(normalized, path), "EDIT_TEXT_ERROR"
         )
         if match_error:
-            return match_error
+            return publish_no_effect(ctx, match_error, tool_name="edit_text")
         # Exact replace and full overwrite share the intentional-shrink contract.
         if (shrink := _check_data_shrink_guard(target, new_text, force)):
-            return shrink
+            return publish_no_effect(ctx, shrink, tool_name="edit_text")
         constraint = normalize_task_constraint(getattr(ctx, "task_constraint", None))
         repair = selected_payload and constraint and constraint.has_selected_skill
         if repair:
@@ -858,6 +863,7 @@ from ouroboros.code_search_rg import (  # noqa: E402
 )
 
 
+@completed_local_read
 def _code_search(ctx: ToolContext, query: str, path: str = ".",
                  regex: bool = False, max_results: int = 200,
                  include: str = "", root: str = "active_workspace",
@@ -1120,11 +1126,13 @@ def _forward_to_worker(
     ctx: ToolContext, task_id: str, message: str, relayed_from_task_id: str = "",
 ) -> str:
     """Write task context to the recipient's mailbox, never owner text.
-    Descendants receive ancestor/relayed context; parent/sibling contributions
-    retain their relation. Listed roots and inline Presence receive independent
-    task context. Receipts prove persistence, not a read, in the recipient's drive."""
+    Descendants receive ancestor/relayed context; contributions inside one tree
+    (parent, sibling, any task sharing the root) retain their relation. Listed
+    roots and inline Presence receive independent task context. Receipts prove
+    persistence, not a read, in the recipient's drive."""
     from ouroboros.owner_mailbox import (
-        PROVENANCE_INDEPENDENT_TASK, PROVENANCE_PEER_TASK, TASK_MESSAGE_MAX_CHARS, write_task_message,
+        PEER_RELATION_LABELS, PROVENANCE_INDEPENDENT_TASK, PROVENANCE_PEER_TASK, TASK_MESSAGE_MAX_CHARS,
+        write_task_message,
     )
     from ouroboros.peer_roster import (
         durable_descendant_of, independent_message_target, peer_contribution_admission,
@@ -1175,9 +1183,10 @@ def _forward_to_worker(
     relation = ""
     listed_root = None
     if not durable_descendant_of(status_drive_root, tid, data, current_task_id):
-        # A peer inside the tree (the caller's parent or sibling) before the host
-        # roster; its typed admission (relay refused, cancel state read strictly)
-        # lives beside the roster's other addressability rules in peer_roster.
+        # A peer inside the tree (the caller's parent, a sibling, or any task sharing
+        # its root) before the host roster; its typed admission (relay refused, cancel
+        # state read strictly) lives beside the roster's other addressability rules
+        # in peer_roster.
         relation, refusal = peer_contribution_admission(
             status_drive_root, current_task_id, metadata, tid, data, relayed_from=relayed_from)
         if refusal is not None:
@@ -1187,8 +1196,9 @@ def _forward_to_worker(
         else:
             listed_root = independent_message_target(status_drive_root, tid, data)
             if listed_root is None:
-                return (f"⚠️ TASK_FORBIDDEN: task {tid} is neither a descendant, the parent nor a sibling "
-                        "of the current task, nor an active independent root the host lists or an inline Presence mailbox.")
+                return (f"⚠️ TASK_FORBIDDEN: task {tid} is neither a descendant of the current task, nor a task "
+                        "in its tree (the parent nor a sibling nor any task sharing its root), nor an active "
+                        "independent root the host lists or an inline Presence mailbox.")
             if relayed_from:
                 return f"⚠️ TASK_FORBIDDEN: a relayed message reaches only your own descendants; task {tid} is an independent recipient."
             provenance = PROVENANCE_INDEPENDENT_TASK
@@ -1241,17 +1251,26 @@ def _forward_to_worker(
                 "(independent_task, never owner text). This proves persistence, not that its model read it; "
                 "if the turn continues, its checkpoint can read it. "
                 f"execution_observation={observation}. Files cannot be attached to messages between tasks.")
+    # A Presence root reached from inside its own tree keeps the shared execution
+    # observation on the receipt (persistence proof, not a read), as the roster path gives it.
+    presence = data.get("execution_observation") if provenance == PROVENANCE_PEER_TASK else None
+    observed = (f" execution_observation={json.dumps(presence, ensure_ascii=False, sort_keys=True)}."
+                if isinstance(presence, dict) and presence.get("kind") == "presence" else "")
+    as_peer = PEER_RELATION_LABELS.get(relation, {}).get("receipt") or relation
     if receipt == MAIL_QUEUED:
-        as_from = (f" as a message from a peer task (your {relation}; never owner text or an ancestor's steering)"
+        as_from = (f" as a message from a peer task ({as_peer}; never owner text or an ancestor's steering)"
                    if provenance == PROVENANCE_PEER_TASK else " as a message from this task (never owner text)"
                    if listed_root is not None else "")
         return (f"Message forwarded to task {tid}: written to its mailbox{as_from} ({MAIL_QUEUED}); task {tid} has not "
                 "started, so nothing has read it: it reads it when it starts, and if it ends unstarted its result keeps "
-                "it as unread mail. Files cannot be attached to messages between tasks.")
+                f"it as unread mail.{observed} Files cannot be attached to messages between tasks.")
     if provenance == PROVENANCE_PEER_TASK:
+        # A Presence turn may already be over: persistence is proven, a read is not.
+        read_note = ("This proves persistence, not that its model read it; if the turn continues, "
+                     "its checkpoint can read it." if observed else "it reads it at its next checkpoint.")
         return (f"Message forwarded to task {tid}: written to its mailbox as a message from a peer task "
-                f"(your {relation}; never owner text or an ancestor's steering); it reads it at its next "
-                "checkpoint. Files cannot be attached to messages between tasks.")
+                f"({as_peer}; never owner text or an ancestor's steering){'.' if observed else ';'} "
+                f"{read_note}{observed} Files cannot be attached to messages between tasks.")
     if listed_root is not None:
         return (f"Message forwarded to task {tid}: written to its mailbox as a message from this task "
                 "(never owner text); it reads it at its next checkpoint. Files cannot be attached to messages between tasks.")
@@ -1424,11 +1443,12 @@ def get_tools() -> List[ToolEntry]:
             "name": "forward_to_worker",
             "description": (
                 "Write an addressed task-tree message into a running or queued task's mailbox: a child "
-                "or descendant of yours (delivered as the ancestor's message), your own parent "
-                "or a sibling (delivered as a message from a peer task naming the relation — "
-                "a contribution it weighs, never steering; relay is refused there), or any active "
-                "independent root the host lists or a source-bound inline Presence turn (a message "
-                "from an independent task). Presence observation gaps are disclosed; a write never "
+                "or descendant of yours (delivered as the ancestor's message), any other task in your "
+                "tree — your parent, a sibling, or any task sharing your root (delivered as a message "
+                "from a peer task naming the relation — a contribution it weighs, never steering; relay "
+                "is refused there), or any active independent root the host lists or a source-bound "
+                "inline Presence turn (a message from an independent task). Presence observation gaps "
+                "are disclosed, also when the Presence root is in your own tree; a write never "
                 "proves a read. It is never labelled owner dialogue, files cannot be attached, the body "
                 "is limited to 8000 chars (longer is refused, never truncated), and the "
                 "result says written, not read: a running task drains it at its next checkpoint, a queued "

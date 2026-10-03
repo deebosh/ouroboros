@@ -13,14 +13,12 @@ from starlette.responses import Response
 
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.gateway._helpers import (
-    _TAIL_WINDOW_START_BYTES,
-    coerce_int,
-    read_rotated_jsonl_entries,
+    _TAIL_WINDOW_START_BYTES, coerce_int, read_rotated_jsonl_entries,
 )
 from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint  # noqa: F401 — historical import path (router)
 from ouroboros.gateway.history_paging import (
     HistoryCursorError, deferred_before, history_page_coverage, history_page_tokens, progress_quota_predicate,
-    replay_evidence_rows, room_view_fingerprint, select_history_page,
+    replay_evidence_rows, room_view_fingerprint, select_history_page, latest_arrival, PROJECTION_FAILED,
 )
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
@@ -118,12 +116,6 @@ _SKILL_REVIEW_INT_FIELDS = ("review_round", "snapshot_attempt")
 _SKILL_REVIEW_BOOL_FIELDS = ("snapshot_revised",)
 
 
-def _review_executions(value: Any) -> list[Dict[str, str]]:
-    from ouroboros.review_execution_projection import normalize_review_executions
-
-    return normalize_review_executions(value)
-
-
 def _stored_chat_id(value: Any, default: int = 1) -> int:
     """Coerce a stored route while preserving explicit panel chat zero."""
     if value is None or value == "":
@@ -137,8 +129,8 @@ def _stored_chat_id(value: Any, default: int = 1) -> int:
 def _project_history_context(
     data_dir: pathlib.Path,
     thread_id: int,
-) -> tuple[set[int], list[dict], Dict[str, Any], Dict[str, int]]:
-    """Load the read-only Project history lenses (synchronous).
+) -> tuple[set[int], list[dict], Dict[str, Any], Dict[str, int], bool]:
+    """Load the read-only Project history lenses (synchronous) and whether the registry classified every room.
 
     Runs inside the endpoint's single ``asyncio.to_thread`` assembly call
     (perf2 P3), so the loads stay off the event loop without per-load thread
@@ -146,12 +138,12 @@ def _project_history_context(
     (v6.90.x P2): `_bound_project_chat` previously re-read
     state/project_task_bindings.json for every uncached (task, parent, root)
     lineage key — up to three file reads per history row."""
-    try:
-        from ouroboros.projects_registry import reserved_project_chat_ids
+    from ouroboros.projects_registry import reserved_project_chat_ids
 
-        project_chat_ids = reserved_project_chat_ids(data_dir)
-    except Exception:
-        project_chat_ids = set()
+    try:
+        project_chat_ids, classified = reserved_project_chat_ids(data_dir, strict=True), True
+    except Exception:  # the rooms its readable rows name are still Projects; any other is unknown
+        project_chat_ids, classified = reserved_project_chat_ids(data_dir), False
     source_refs: list[dict] = []
     if thread_id in project_chat_ids:
         try:
@@ -172,7 +164,7 @@ def _project_history_context(
         bindings_by_task = all_task_bindings(data_dir)
     except Exception:
         bindings_by_task = {}
-    return project_chat_ids, source_refs, annotations, bindings_by_task
+    return project_chat_ids, source_refs, annotations, bindings_by_task, classified
 
 
 def _user_annotation(
@@ -334,7 +326,7 @@ def _copy_task_summary_metadata(rec: Dict[str, Any], entry: Dict[str, Any]) -> N
             rec[key] = dict(entry[key])
     if entry.get("suggested_name"):
         rec["suggested_name"] = str(entry["suggested_name"])
-    for key in ("tool_calls", "rounds", "tool_errors", "routing_tool_calls"):
+    for key in ("tool_calls", "rounds", "tool_errors", "routing_tool_calls", "completion_tool_calls"):
         if key in entry:
             rec[key] = None if entry[key] is None else int(entry[key])
     if "tool_call_counts" in entry:
@@ -497,6 +489,9 @@ def _annotate_terminal_task_truth(
                     terminal_truth["history_retention"] = retention
                 if result.get("reason_code"):
                     terminal_truth["reason_code"] = str(result.get("reason_code") or "")
+                from ouroboros.owner_continue import continuation_offer
+
+                terminal_truth["continuation_offer"] = continuation_offer(result, task_id)
                 # Persisted cost truth overrides the row fallback via message.update().
                 # ABI-3 conversion resolves legacy pairs deprecated-wins and emits
                 # only honest names.
@@ -863,7 +858,9 @@ def _collect_chat_rows(
                     rec[key] = coerce_int(entry.get(key), 0)
                 for key in _SKILL_REVIEW_BOOL_FIELDS:
                     rec[key] = bool(entry.get(key))
-                rec["executions"] = _review_executions(entry.get("executions"))
+                from ouroboros.review_execution_projection import normalize_review_executions
+
+                rec["executions"] = normalize_review_executions(entry.get("executions"))
             # Delivered document rows carry lightweight media metadata (no
             # base64); surface a msg_type + download_url so the frontend
             # rebuilds the file bubble on reload instead of a bare text line.
@@ -914,14 +911,16 @@ def _collect_chat_rows(
             if "task_terminal_status" in entry:
                 rec["task_terminal_status"] = str(entry.get("task_terminal_status") or "")
             _copy_task_summary_metadata(rec, entry)
-            # Lineage, the origin label, and the host's card placement (card_row /
-            # card_row_id) — a stored key is replayed verbatim, an absent one is omitted.
-            for field in (*SUBAGENT_MESSAGE_FIELDS, "initiator", "card_row", "card_row_id", "card_row_revision", "narration"):
+            # Lineage, the origin label, the host's card placement (card_row / card_row_id) and a late-review
+            # row's evidence pointer (#1369, stored on that type only) replay verbatim; an absent key is omitted.
+            for field in (*SUBAGENT_MESSAGE_FIELDS, "initiator", "card_row", "card_row_id", "card_row_revision",
+                          "late_evidence", "narration"):
                 if field in entry:
                     rec[field] = entry[field]
             combined.append(rec)
     except Exception as exc:
         log.warning("Failed to read chat history: %s", exc)
+        stream_gaps = {*stream_gaps, PROJECTION_FAILED}  # rows after the fault are missing: never a clean window
     return (combined, chat_quota_rows, stream_gaps) if include_gaps else (combined, chat_quota_rows)
 
 
@@ -1017,11 +1016,8 @@ def _collect_progress_rows(
             combined.append(rec)
     except Exception as exc:
         log.warning("Failed to read progress log: %s", exc)
-    return (
-        (combined, progress_quota_rows, stream_gaps)
-        if include_gaps
-        else (combined, progress_quota_rows)
-    )
+        stream_gaps = {*stream_gaps, PROJECTION_FAILED}
+    return (combined, progress_quota_rows, stream_gaps) if include_gaps else (combined, progress_quota_rows)
 
 
 def _fold_task_bound_skill_reviews(combined: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
@@ -1031,6 +1027,8 @@ def _fold_task_bound_skill_reviews(combined: list[Dict[str, Any]]) -> list[Dict[
     replays Skill history and never claims an authoritative total beyond the
     references present in this Chat window.
     """
+    from ouroboros.review_execution_projection import normalize_review_executions
+
     groups: Dict[tuple[str, str, str], list[tuple[int, Dict[str, Any]]]] = {}
     for index, row in enumerate(combined):
         if row.get("is_progress") or str(row.get("system_type") or "") != "skill_review":
@@ -1075,7 +1073,7 @@ def _fold_task_bound_skill_reviews(combined: list[Dict[str, Any]]) -> list[Dict[
                 # terminal text is therefore the only useful attempt body.
                 "text": str(row.get("text") or ""),
                 "superseded": position < len(surviving_rows) - 1,
-                "executions": _review_executions(row.get("executions")),
+                "executions": normalize_review_executions(row.get("executions")),
                 **_history_identity(row),
             }
             for key in _SKILL_REVIEW_STRING_FIELDS:
@@ -1167,6 +1165,7 @@ def _apply_window_quotas(
     combined: list,
     n_human: int,
     n_progress: int,
+    result_cache: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> tuple[list, Dict[str, Dict[str, Any]], bool, bool, bool, str, set]:
     """Quota slicing, origin fallback, and the lineage floor/cap (perf2 P3).
 
@@ -1308,7 +1307,7 @@ def _apply_window_quotas(
     # about the task's card — the client refuses role+task_id as a conclusion for
     # the same reason — so counting those would let a parent with no closable fact
     # re-anchor a finished swarm, the zombie the floor existed to prevent.
-    result_cache: Dict[str, Dict[str, Any]] = {}
+    result_cache = {} if result_cache is None else result_cache
     anchored_children: set = set()
     child_rows = [
         m for m in (*lineage_rows, *human_tail, *other_tail)
@@ -1458,7 +1457,7 @@ def _assemble_history_response(
     Room lenses, source reads, projection, terminal truth and JSON encoding all
     stay off the event loop. Both selectors use the same row transformers.
     """
-    project_chat_ids, project_source_refs, chat_annotations, bindings_by_task = (
+    project_chat_ids, project_source_refs, chat_annotations, bindings_by_task, classified = (
         _project_history_context(data_dir, thread_id)
     )
     row_matches_thread = _make_thread_filter(
@@ -1494,13 +1493,14 @@ def _assemble_history_response(
     lifecycle_row = _active_lifecycle_row(row_matches_thread) if not cursor else None
     if lifecycle_row is not None:
         combined.append(lifecycle_row)
-    if recent:
-        (
-            messages, result_cache, human_rows_dropped, lineage_truncated,
-            review_overlays_truncated, floor, anchored_children,
-        ) = _apply_window_quotas(
-            data_dir, thread_id, project_chat_ids, combined, n_human, n_progress
-        )
+    result_cache: Dict[str, Dict[str, Any]] = {}  # every task result below is read once per request
+    arrival = latest_arrival(combined, page, data_dir, row_matches_thread, _stored_chat_id, chat_gaps, lambda task_id: (
+        _load_terminal_result(data_dir, task_id, result_cache))) if thread_id in project_chat_ids else (
+        {} if classified or thread_id == 1 else {"latest_message": None})  # an unclassified room may be a Project
+    if recent:  # arrival is named above, before the tail and the annotation
+        (messages, result_cache, human_rows_dropped, lineage_truncated, review_overlays_truncated, floor,
+         anchored_children) = _apply_window_quotas(
+            data_dir, thread_id, project_chat_ids, combined, n_human, n_progress, result_cache)
         for source in ("chat", "progress"):
             before[source] = deferred_before(source, selections[source][0], candidates, messages, before[source])
     else:
@@ -1508,7 +1508,7 @@ def _assemble_history_response(
         # floor would permanently remove children whose parent is on another
         # page; the keyed replay joins that topology without granting liveness.
         messages = sorted(combined, key=lambda row: row.get("ts", ""))
-        result_cache, floor, anchored_children = {}, "", set()
+        floor, anchored_children = "", set()
         human_rows_dropped = lineage_truncated = review_overlays_truncated = False
 
     # Annotate only emitted rows; an absent summary must not strand a card.
@@ -1539,14 +1539,14 @@ def _assemble_history_response(
             human_rows_dropped, lineage_truncated, review_overlays_truncated,
             stream_gaps,
         ) if recent else {"complete": False, "truncated_by": ["page", *(
-            f"{source}_{gap}" for source in ("chat", "progress") for gap in sorted(selections[source][2])
+            f"{source}_{gap}" for source in ("chat", "progress") for gap in sorted(stream_gaps[source])
         )]}
     if tokens["has_more"]:
         window["complete"] = False
         window["truncated_by"] = window["truncated_by"] or ["quota"]
     payload = {
         "messages": messages,
-        "window": window,
+        "window": {**window, **arrival},
         "coverage": history_page_coverage(page, stream_gaps),
         **tokens,
     }

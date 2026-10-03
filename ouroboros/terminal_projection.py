@@ -31,7 +31,8 @@ def _settled(row: dict) -> bool:
     re-runs), so it owes no terminal projection even when an earlier release already recorded readiness."""
     from ouroboros.task_status import SETTLED_STATUSES
 
-    return row.get("status") in SETTLED_STATUSES and not is_reconciled_presence_placeholder(row)
+    return (row.get("status") in SETTLED_STATUSES and not is_reconciled_presence_placeholder(row)
+            and row.get("admission_outcome") != "never_admitted")
 
 
 def _lineage(tid: str, row: dict) -> dict:
@@ -60,8 +61,10 @@ def _files_ready(root: Any, tid: str, row: dict) -> bool:
 
 
 def _open(row: dict) -> bool:
+    from ouroboros.post_task_checkpoint import post_task_synthesis_is_open
+
     checkpoint = row.get("root_phase_checkpoint") or {}
-    return checkpoint.get("post_task_synthesis") in {"pending_once", "running"}
+    return post_task_synthesis_is_open(checkpoint.get("post_task_synthesis"))
 
 
 @contextmanager

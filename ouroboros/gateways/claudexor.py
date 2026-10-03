@@ -163,12 +163,26 @@ def run_failure_cause(failure: Any) -> str:
     """What the engine REPORTED about a failed run (``failure.safeMessage``), whitespace-
     collapsed, secret-redacted and strictly bounded; "" when it reported nothing. An OPAQUE
     fact: stored and displayed, never parsed or branched on (BIBLE P5) — presence is the
-    only test a caller may make."""
+    only test a caller may make; a person's quote separates the host's own cut from the
+    engine's words through ``reported_cause_words``."""
     from ouroboros.utils import sanitize_tool_result_for_log, truncate_within_limit
 
     words = (failure if isinstance(failure, dict) else {}).get("safeMessage")
     return truncate_within_limit(
         sanitize_tool_result_for_log(" ".join(str(words or "").split())), REPORTED_CAUSE_CHARS)
+
+
+def reported_cause_words(cause: Any) -> tuple[str, bool]:
+    """``(words, shortened)`` of a stored ``run_failure_cause``: the engine's words
+    without the bound's own omission marker (``truncate_within_limit``), and whether
+    that bound cut them. The words were whitespace-collapsed before the bound, so a
+    newline can only open the host's marker; the engine's words are never read."""
+    text = str(cause or "")
+    words, marker, length = text.rpartition(
+        f"\n⚠️ OMISSION NOTE: truncated at {REPORTED_CAUSE_CHARS} chars; original length ")
+    if marker and "\n" not in words and length.isdigit() and int(length) > len(text) == REPORTED_CAUSE_CHARS:
+        return words, True
+    return text, False
 
 
 def run_failure_error(run_id: str, run_state: str, failure: Any) -> ClaudexorUnavailable:
@@ -560,6 +574,38 @@ class ClaudexorGateway:
                              **({"timeout_sec": timeout_sec} if timeout_sec is not None else {}))
         return body if isinstance(body, dict) else {}
 
+    def ask_input_limits(self) -> Dict[str, Dict[str, Any]]:
+        """Declared native text limits with the engine's ordinary ASK framing.
+
+        This catalog projection covers initial attempts, including thread turns.
+        Missing/unknown units or framing remain unknown, never a model window.
+        """
+        limits: Dict[str, Dict[str, Any]] = {}
+        for row in self.agent_capabilities().get("harnesses") or []:
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            for value in row.get("inputLimits") or []:
+                if not isinstance(value, dict):
+                    continue
+                framing = value.get("askPromptBudget")
+                if (value.get("scope") != "turn_text" or value.get("unit") != "unicode_scalars"
+                        or not isinstance(framing, dict)
+                        or framing.get("shape") != "ordinary_initial_attempt"):
+                    continue
+                bound, overhead = value.get("limit"), framing.get("engineOverheadMax")
+                if (type(bound) is not int or bound <= 0 or type(overhead) is not int or overhead < 0
+                        or not isinstance(value.get("source"), str) or not value["source"]
+                        or not isinstance(value.get("verified_against"), str) or not value["verified_against"]):
+                    continue
+                candidate = {**value, "askPromptBudget": dict(framing),
+                             "prompt_budget": max(0, bound - overhead),
+                             "engine_version": self.engine_version,
+                             "engine_build_sha": self.engine_build_sha}
+                route_id = str(row["id"])
+                if route_id not in limits or candidate["prompt_budget"] < limits[route_id]["prompt_budget"]:
+                    limits[route_id] = candidate
+        return limits
+
     # Model operations use the same private control transport, not Agent runs
     # or the redacted/size-capped artifact surface. Callers own all admission,
     # waiting, billing and explicit acknowledgement. The engine owns account
@@ -727,7 +773,8 @@ class ClaudexorGateway:
         The agent-capability catalog is a derived projection that deliberately
         drops the manifest's transport flags (``json_schema_output``,
         ``interactive``); this is the surface that still carries them, so
-        transport-capability questions are asked here, not of the catalog.
+        these transport questions are asked here. The catalog's explicit
+        ``inputLimits`` projection separately includes engine ASK framing.
         """
         body = self._request("GET", "/v2/harnesses")
         rows = body.get("harnesses") if isinstance(body, dict) else None

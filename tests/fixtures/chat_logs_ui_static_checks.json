@@ -1083,7 +1083,7 @@
     "id": "test_cancel_run_confirm_and_cascade",
     "path": "web/modules/task_control_menu.js",
     "kind": "contains",
-    "value": "cancelTask(id, { cascade: true, stopPolicy: stopPolicyFor(action) })"
+    "value": "cancelTask(id, { cascade: true, stopPolicy: stopPolicyFor(action),\n            stopActionId: pendingStopActions.get(key) })"
   },
   {
     "id": "test_inflight_keyed_final_scoped_conclusion",
@@ -1221,7 +1221,7 @@
     "id": "test_chat_block_chrome_follows_work",
     "path": "web/modules/chat.js",
     "kind": "contains",
-    "value": "    function blockHasWork(record) {\n        const id = record.groupId;\n        // No lane is always shown: the retired bg-consciousness card kind is gone.\n        return record.reviewController?.groups.size > 0"
+    "value": "    function blockHasWork(record) {\n        const id = record.groupId;\n        // Visibility depends on work, never the lane.\n        return record.reviewController?.groups.size > 0"
   },
   {
     "id": "test_chat_block_chrome_follows_work",

@@ -1,6 +1,6 @@
 # Rules by change class
 
-This chapter gives one rule section per change class: tool registration, skill payloads, the live E2E stand, light mode and deliverables, retention, delegated subagents, cancellation, onboarding and settings, transport and late-result custody, LLM calls, timeout/wait control, and loop/acceptance state machines. Each section names its enforcing tests or gates, or marks rules as review-only; check a change against its applicable classes.
+Rules by change class: tool registration, skill payloads, the live E2E stand, light mode and deliverables, retention, delegated subagents, cancellation, onboarding and settings, transport and late-result custody, LLM calls, timeout/wait control, and loop/acceptance state machines. Each section names its enforcing tests or gates, or marks rules as review-only; check a change against its applicable classes.
 
 `docs/CHECKLISTS.md` remains the only reviewer scorer; its `development_compliance` item points at this handbook as a whole.
 
@@ -83,7 +83,7 @@ Admit an attempt only while settled spend plus in-flight reservations plus its o
 
 #### Reports, focused verification and CI
 
-Run roots are append-only outside `repo/` and live `data/`; the focused contracts are the `tests/test_e2e_live_*` modules plus `tests/test_server_runner_absorb_wait.py`, and the `e2e-live` CI job runs only on its nightly cron or an explicit `e2e_live=true` dispatch — see devtools/e2e_live/README.md#reports-focused-verification-and-ci.
+Run roots are append-only outside `repo/` and live `data/`; the focused contracts are the `tests/test_e2e_live_*` modules plus `tests/test_server_runner_absorb_wait.py`, and the `e2e-live` CI job runs only on an explicit `e2e_live=true` dispatch — see devtools/e2e_live/README.md#reports-focused-verification-and-ci.
 
 ### Light mode and external deliverables
 
@@ -172,6 +172,9 @@ Run roots are append-only outside `repo/` and live `data/`; the focused contract
   bucket=..., skill_name=...)` — and the api-route advisory successor is the
   native inspection episode (`review_native_episode.py`). Do not resurrect the
   name.
+- `run_ci_tests` is a retired tool name with no alias and no compatibility
+  shim; `get_github_checks` succeeds it for reading a commit's checks, and
+  `docs/CHECKLISTS_ARCHIVE.md` records the outcomes that have no successor.
 - Successor parity: a tool may be called replaced, retired or migrated only
   after a persistent golden test proves every user-visible target class the
   predecessor supported through the successor to the final outcome;
@@ -340,10 +343,9 @@ and 23 (`delegated_transport`), both critical. The imperatives:
   `prune_orphans` and genesis excepted)
   (`tests/test_snapshot_file_inputs.py`, `tests/test_subagent_worktrees_lock_scope.py`).
 - Outcome honesty: a delegating parent must not produce a clean no-tool final
-  answer while direct children run undecided — one bounded absorption
-  reminder, then best-effort (`children_unabsorbed`); the delivery candidate
-  is HELD while that gate is open, and the delivery-control instruction never
-  rides the reminder round (`tests/test_v6570_swarm_honesty.py`). `wait_tasks`
+  answer while direct children run undecided. Hold finish until an exact disposition
+  or explicit unfinished stop; reminder counts never terminate the task. Keep selected
+  bytes and children intact (`tests/test_completion_selection.py`). `wait_tasks`
   stays batch-compact;
   `control_task_results._wait_for_tasks` owns its projection, documented under
   ARCHITECTURE's "Waiting on children"; full untruncated handoff belongs to `get_task_result` and a settled `wait_task`, and the
@@ -416,15 +418,15 @@ The imperatives:
   validates through the DURABLE result unconditionally (ARCHITECTURE §10 "Key
   Invariants" 15); only `interrupted` keeps its restore-path exemption, and
   the legacy `cancel_requested` status survives on a read path only.
-- `stop_policy` is an axis on the durable intent, and the owner hurry control
-  is a typed TASK-LOCAL owner-mailbox control — never a chat message, a global
-  settings mutation or a review-gate weakening. Every same-id requeue producer
+- `stop_policy` is an axis on the durable intent; the owner hurry control is a
+  typed TASK-LOCAL owner-mailbox control — never a chat message, global
+  settings mutation or review-gate weakening. Every same-id requeue producer
   calls the ONE shared `owner_hurry.retry_reset`; the durable hurry projection
-  writes only through `update_json_locked` on the `owner_hurry` keys, never
+  writes only via `update_json_locked` on `owner_hurry` keys, never
   `write_task_result`; UI surfaces share `web/modules/task_control_menu.js`;
-  queue-owned hurry admission initializes only an absent pooled result through
-  the task-result writer's atomic `create_only` branch, and direct turns stay
-  outside it.
+  queue-owned Pause/Hurry admission atomically `create_only`-writes an absent
+  pooled result from exact admitted lineage/budget/source facts; terminal rows
+  win; direct turns/billing stay outside.
 - Code owners stay narrow behind one public queue/lifecycle surface:
   retry-aware target/subtree-liveness in `supervisor/queue_transitions.py`,
   capture-miss terminalization/publication in
@@ -586,13 +588,12 @@ Settings, accounts and shared controls. Tests: `test_owner_settings_write_seam.p
   existence, preview or matching prompt prose alone grants authority —
   missing/partial/error/mismatched custody never buys another same-operation
   dispatch.
-- Managed unknown-outcome recovery uses the existing transport-wait owner
-  (`loop_transport.py`) with non-generating upstream observations (what proves
-  recovery and what cannot: ARCHITECTURE §6 "Caller-owned subscription model
-  calls"): keep the old outcome/cost unknown, apply current
-  budget/Stop/deadline before dispatch, and let a control-channel outage first
-  rejoin the same accepted operation. No scheduler, provider/model table, paid
-  readiness probe or automatic manual-restart recovery is introduced.
+- Unknown-outcome recovery is typed (`loop_transport.new_generation_after_unknown`),
+  not silence: configured routes, then transport-wait observations (ARCHITECTURE §6);
+  inline Presence retains its contract. Old outcome/cost stay unknown;
+  new attempts get their own identity and facts-only input; a control-link or read
+  failure only rejoins (`same_operation_recoverable`).
+  No scheduler, pass counter or paid probe (`test_unknown_fallback_first.py`).
 - `delegate_wait` supervision's observation beat is separate from its HTTP
   read allowance, and a typed read-only-retryable transport failure is a quiet
   observation hole, not a wake (the per-class reasons and the once-per-episode
@@ -650,7 +651,8 @@ and what enforces each.
   Density evidence never crosses models. Proven no-send returns the local attempt
   claim even if bounded ledger release fails; the reservation and capture then remain.
   Unknown or dispatched claims stay charged.
-- Resource refusals wait inside the live call, before helper catch-all blocks, on the
+- Resource refusals try configured routes first, never sleep to a reset, and
+  wait inside the live call, before helper catch-all blocks, on the
   existing task owner, mailbox, clocks and settings writer. Reviewer calls use their
   panel's operation wait (§6 Already-paid operations), preserving original task money
   and controls. Reprepare wake input against the new route's tools/capacity/reserve
@@ -797,7 +799,7 @@ and what enforces each.
   alone to exceed the window); quota/auth/billing, hard bad-request and
   request-too-large are non-retryable as-is (exact category, recovery hint); a typed
   408/429/5xx or a proven pre-dispatch failure may retry; a dispatched request with no
-  terminal outcome stops same-model and cross-model sends until reconciled. Who may
+  terminal outcome is never resent as is; only an eligible unknown permits a NEW generation. Who may
   repeat after a typed transport death, how often, on whose row, what ends the round:
   ARCHITECTURE §6 "Context fitting, retry, and compaction"
   (`tests/test_transport_death_retry.py`). Call-site rules: decide `retry_same_request`
@@ -809,8 +811,8 @@ and what enforces each.
   untouched); generic transient/empty-response backoffs keep their contract. A budget
   refusal does NOT un-count: the budget rail cannot prove the repeat never left the
   host (`llm.chat` retries on the wire before a later reservation can refuse), so the
-  attempt stays booked and the budget terminal ends the round. Every caller outside the
-  interactive primary rail keeps `transport_death_retries=0`; no
+  attempt stays booked and the budget terminal ends the round. Every caller outside
+  inline Presence's primary rail keeps `transport_death_retries=0`; no
   consumed/terminal/patch-disposition predicate gates a session supervisor's cognition,
   and a successful live-leaf hold closes any prior transport episode so its
   acknowledged wake alone resumes the model.
@@ -943,8 +945,8 @@ and what enforces each.
   final-answer path unless that invariant is explicitly tested and documented.
 - Keep a complete loop-local `DeliveryCandidate`; sticky host-control provenance survives
   replacement (`ouroboros/loop_delivery.py`; ARCHITECTURE §6 "Task lifecycle").
-  FORCED resolution: pure, no retry; honor valid keep/replace, preserve malformed controls'
-  candidate with a typed degraded reason; no protocol JSON in chat/durable results.
+  Forced resolution is pure, with no retry: the same action/answer/hash request selects
+  complete bytes; malformed or historical controls stay private and retain the candidate.
   Distinguish consumed owner source from changed requirements; effective criteria and
   material effects (nominated reads included) define the subject; ingress generations
   preserve unread order. Status/narration/working-view changes buy no review. Finalize
@@ -994,12 +996,11 @@ and what enforces each.
   ARCHITECTURE §6 Task acceptance owns waiting, fences, `previous_revision_accepted`
   and `late_settlement`. Freeze request/roster; collect pending paid panels at $0 before
   new evidence or `review_cycles_exhausted`. Reauthoring loses no verdict; settlement
-  wakes carry verdicts regardless of Main's draft. Re-offer only changed control bytes;
-  spent repair stays spent, typed host refusal spends none. Ready feedback skips parking
-  only. Complete prose is valid; optional keep/replace/finish defaults pending-review
-  choice to wait. Preserve effect/owner/child gates, source acknowledgement and forced
-  rails; context mail wakes without owner revision. Empty/malformed controls keep the
-  answer (`test_acceptance_optional_control.py`). Text-only rewrites reuse ready/pending
+  wakes carry verdicts regardless of Main's draft. Every held prose round appends
+  assistant+host rows; rich facts change only when their inputs do. Main selects complete
+  bytes or an offered hash through finish_task; pending-review defaults to wait. Preserve
+  effect/owner/child gates, source acknowledgement and forced rails; context mail grants
+  no owner revision. Refused selections preserve the answer (`test_completion_selection.py`). Text-only rewrites reuse ready/pending
   PASS; changed subject/owner source does not (`_deliver_under_running_panel`). Blocking
   waits; Cyber Pro does not; Advisory finish needs explicit `"pending_review":"finish"`.
   Bind operation wait before windows with original money/deadline/Stop; read back the
@@ -1012,8 +1013,9 @@ and what enforces each.
   Pass late evidence to an admissible cognition turn; settlement starts none. Workers
   never author Main's candidate/decision or make reviewers open delegations; subtree,
   status, findings and Cyber authority stay distinct (BIBLE P0).
-- Delivery-control JSON governs only tool-less final responses; retention leaves tools
-  available. Changed criteria/material evidence mean a new subject even with kept text,
+- One completion request serves native tools, legacy explicit review actions, Presence
+  and pure forced extraction. Retention leaves tools available. Changed criteria/material
+  evidence mean a new subject even with kept text,
   never old verdict authority. Source acknowledgement infers no semantic change from
   generation. File/diff requests impose no commit-or-revert rule; self-modification
   keeps reviewed commits (BIBLE P0/P3).

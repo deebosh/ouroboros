@@ -888,6 +888,13 @@ def effective_task_result(
                 merged_retry["retry_lineage"] = lineage
                 merged_retry.setdefault("original_task_id", task_id)
                 merged_retry.setdefault("supersedes_task_id", task_id)
+                # The retry answer does not erase the original's unknown effects.
+                # Invocation IDs and their original task/attempt attribution stay
+                # factual disclosure only, never authority to repeat an operation.
+                retired = result.get("retired_tool_invocations") or {}
+                if retired:
+                    merged_retry["retired_tool_invocations"] = {
+                        **retired, **(merged_retry.get("retired_tool_invocations") or {})}
                 # GR6-5b: the interrupted original's unreconciled delegated
                 # runs are a fact about runs that may STILL be live — the
                 # retry projection must not drop the disclosure the raw row
@@ -982,6 +989,9 @@ def effective_task_result(
         queue_status, queue_task = _queue_task_status(queue_snapshot, task_id)
         if queue_status and queue_status != "unknown":
             merged["status"] = _merge_queue_status(parent_status, queue_status, queue_task)
+            from ouroboros.project_admission import project_hold_fact
+
+            merged["project_admission_hold"] = project_hold_fact(queue_task)
             for key in (
                 "parent_task_id",
                 "root_task_id",
