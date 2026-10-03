@@ -447,11 +447,12 @@ def _covers_summary(record: Dict[str, Any]) -> str:
 
 
 def _stamp_summary(stamp: Any) -> str:
+    """``stamp: <task_id>=<status>, …`` (spec §5.2): which covered task failed shows in the listing."""
     tasks = stamp.get("tasks") if isinstance(stamp, dict) else None
     if not isinstance(tasks, list) or not tasks:
         return ""
-    counts = Counter(str(entry.get("status") or "unknown") for entry in tasks if isinstance(entry, dict))
-    return f"stamp: {len(tasks)} tasks, " + ", ".join(f"{status} {n}" for status, n in sorted(counts.items()))
+    return "stamp: " + ", ".join(f"{entry.get('task_id') or '?'}={entry.get('status') or 'unknown'}"
+                                 for entry in tasks if isinstance(entry, dict))
 
 
 def _target_label(target: Any) -> str:

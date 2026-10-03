@@ -240,26 +240,15 @@ def _cursor(raw: Dict[str, bytes], errors: Dict[str, str]) -> Optional[Dict[str,
         return None
     if "meta" not in raw:
         return {}
-    from ouroboros.memory_nomination_receipts import _pending
-
-    def unique(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
-        result: Dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate cursor key: {key}")
-            result[key] = value
-        return result
+    from ouroboros.memory_nomination_receipts import parse_meta
 
     try:
-        meta = json.loads(raw["meta"], object_pairs_hook=unique)
-        if not isinstance(meta, dict):
-            raise ValueError("legacy cursor is not an object")
+        meta = parse_meta(raw["meta"])  # strict: duplicate keys and malformed nominations are refused
         offset = meta.get("last_consolidated_offset", 0)
         if type(offset) is not int or offset < 0:
             raise ValueError("legacy cursor offset is invalid")
         if not isinstance(meta.get("chat_log_signature", {}), dict):
             raise ValueError("legacy cursor generation is invalid")
-        _pending(meta)
     except ValueError as exc:
         errors["meta"] = str(exc)
         return None
@@ -294,8 +283,11 @@ def room_sections(block: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _is_gap(block: Dict[str, Any], section: Dict[str, Any]) -> bool:
-    return bool(block.get("gap_id") or block.get("type") == "gap" or _GAP_MARK in str(block.get("content") or "")
-                or _GAP_MARK in section["content"])
+    """A gap by the old writer's typed facts (``gap_id``, ``type == "gap"``) or by content that
+    BEGINS with its marker; a retelling that only mentions the marker is not a gap."""
+    return bool(block.get("gap_id") or block.get("type") == "gap"
+                or str(block.get("content") or "").lstrip().startswith(_GAP_MARK)
+                or section["content"].lstrip().startswith(_GAP_MARK))
 
 
 def _bounds(sizes: List[int]) -> List[Tuple[int, int]]:

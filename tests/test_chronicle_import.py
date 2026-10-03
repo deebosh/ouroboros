@@ -146,8 +146,11 @@ def test_each_room_section_is_one_legacy_record_aligned_to_the_stream_by_positio
 @pytest.mark.parametrize("change, exact", [
     (None, True),
     ("count", False),          # the counts no longer meet the cursor
-    ("gap", False),            # a block retells a gap
-    ("gap_id", False),
+    ("gap", False),            # a room section begins with the gap marker
+    ("gap_block", False),      # an old gap block: its content begins with the marker, after whitespace
+    ("gap_id", False),         # the old writer's typed facts
+    ("gap_type", False),
+    ("gap_mentioned", True),   # a retelling that discusses the marker mid-text is not a gap
     ("not_int", False),        # a count that is not an integer
     ("cursor_live_end", False),  # the same counts, a cursor further on
 ])
@@ -155,8 +158,15 @@ def test_raw_range_is_exact_only_when_the_counts_meet_the_cursor_without_gaps(tm
     blocks = _blocks((3, 1) if change == "count" else (3, 2))
     if change == "gap":
         blocks[1]["rooms"][0]["content"] = "[MEMORY GAP] lost hours"
+    elif change == "gap_block":
+        blocks[1]["content"] = "\n  [MEMORY GAP] Legacy durable discontinuity."
     elif change == "gap_id":
         blocks[1]["gap_id"] = "g1"
+    elif change == "gap_type":
+        blocks[1]["type"] = "gap"
+    elif change == "gap_mentioned":
+        blocks[0]["content"] = "### Block one: the owner asked why a [MEMORY GAP] line appears"
+        blocks[1]["rooms"][0]["content"] = "I explained the marker: [MEMORY GAP] opens a record of lost rows."
     elif change == "not_int":
         blocks[0]["message_count"] = "3"
     _chat(tmp_path)
@@ -169,6 +179,9 @@ def test_raw_range_is_exact_only_when_the_counts_meet_the_cursor_without_gaps(tm
     if not exact:
         unknown = {"status": "unknown", "pos": None, "first": None, "last": None, "ts_span": None}
         assert all(r["covers"]["raw_range"] == unknown for r in _legacy(store))
+    # Only the block that IS a gap is typed one; mentioning the marker types nothing.
+    is_gap = change in ("gap", "gap_block", "gap_id", "gap_type")
+    assert {r["id"] for r in _by_type(store, "gap")} == ({"legacy-b01-r1"} if is_gap else set())
     # The frontier follows the readable cursor whatever the blocks say.
     frontier = ci.legacy_frontier(store)
     assert frontier["status"] == "exact" and frontier["pos"] == (6 if change == "cursor_live_end" else 5)

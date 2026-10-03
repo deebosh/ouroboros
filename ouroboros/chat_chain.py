@@ -243,7 +243,12 @@ def _rotated_at(path: pathlib.Path) -> Optional[_dt.datetime]:
 
 def _search(root: pathlib.Path, sigs: List[Tuple[pathlib.Path, str]],
             wanted: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
-    """Archive rotated at or after the row's second, then forward to the live file."""
+    """Archive rotated at or after the row's second, then forward to the live file.
+
+    When that finds no row with this chat id and ts, the earlier archives are read too,
+    nearest first: a rotation stamps the archive name before it waits for the append
+    lock, so a row appended during that wait can carry a later second than its archive.
+    """
     moment = parse_deadline_ts(wanted["ts"])
     first = 0
     if moment is not None:
@@ -256,27 +261,33 @@ def _search(root: pathlib.Path, sigs: List[Tuple[pathlib.Path, str]],
     matches: List[Tuple[pathlib.Path, str, int, Dict[str, Any]]] = []
     others: List[Dict[str, Any]] = []
     unreadable: List[Dict[str, Any]] = []
-    for path, gen in sigs[first:]:
-        try:
-            with path.open("rb") as handle:
-                for line, raw in enumerate(handle, 1):
-                    if needle is not None and needle not in raw:
-                        continue
-                    row = _decoded(raw)
-                    if row is None:
-                        if raw.strip():
-                            unreadable.append({"path": _relative(root, path), "line": line})
-                        continue
-                    if not _same_row(row, wanted):
-                        continue
-                    if source_row_id(row).startswith(wanted["row_sha256"]):
-                        matches.append((path, gen, line, row))
-                    else:
-                        others.append(row_address(row, gen=gen, line=line))
-        except OSError as exc:
-            unreadable.append({"path": _relative(root, path), "error": type(exc).__name__})
-        if matches:
-            break  # The generation holding the first match closes the search.
+
+    def scan(generations: Iterable[Tuple[pathlib.Path, str]]) -> None:
+        for path, gen in generations:
+            try:
+                with path.open("rb") as handle:
+                    for line, raw in enumerate(handle, 1):
+                        if needle is not None and needle not in raw:
+                            continue
+                        row = _decoded(raw)
+                        if row is None:
+                            if raw.strip():
+                                unreadable.append({"path": _relative(root, path), "line": line})
+                            continue
+                        if not _same_row(row, wanted):
+                            continue
+                        if source_row_id(row).startswith(wanted["row_sha256"]):
+                            matches.append((path, gen, line, row))
+                        else:
+                            others.append(row_address(row, gen=gen, line=line))
+            except OSError as exc:
+                unreadable.append({"path": _relative(root, path), "error": type(exc).__name__})
+            if matches:
+                return  # The generation holding the first match closes the search.
+
+    scan(sigs[first:])
+    if not matches and not others:
+        scan(reversed(sigs[:first]))
     distinct = {}
     for path, gen, line, row in matches:
         distinct.setdefault(source_row_id(row), row_address(row, gen=gen, line=line))

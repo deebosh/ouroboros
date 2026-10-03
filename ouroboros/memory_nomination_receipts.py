@@ -9,7 +9,6 @@ as empty, so no nomination silently disappears.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 
@@ -20,8 +19,8 @@ class DialogueMetaUnreadable(ValueError):
     """Existing cursor or nomination obligations cannot be safely interpreted."""
 
 
-def load_meta(path: Path) -> dict[str, Any]:
-    """An absent cursor is new; an unreadable existing cursor is not empty.
+def parse_meta(raw: bytes) -> dict[str, Any]:
+    """The cursor's bytes as an object; unreadable bytes are never an empty cursor.
 
     This file holds the only index of the pending nominations; a permissive JSON
     read would report them as absent. Reject duplicate keys as well: the second
@@ -36,17 +35,9 @@ def load_meta(path: Path) -> dict[str, Any]:
         return result
 
     try:
-        with path.open("r", encoding="utf-8") as source:
-            value = json.load(source, object_pairs_hook=unique_pairs)
-    except FileNotFoundError:
-        # A dangling link is an existing, unreadable source, not a new cursor.
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            return {}
-        raise DialogueMetaUnreadable("Dialogue meta exists but cannot be read") from None
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise DialogueMetaUnreadable(f"Dialogue meta unreadable: {type(exc).__name__}") from exc
+        value = json.loads(raw, object_pairs_hook=unique_pairs)
+    except (UnicodeError, ValueError) as exc:
+        raise DialogueMetaUnreadable(f"Dialogue meta unreadable: {type(exc).__name__}: {exc}") from exc
     if not isinstance(value, dict):
         raise DialogueMetaUnreadable("Dialogue meta must be a JSON object")
     _pending(value)  # Corrupt obligations are refused, never read as none.

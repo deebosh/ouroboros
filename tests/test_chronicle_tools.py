@@ -358,7 +358,7 @@ def test_node_read_shows_stamp_original_and_corrections_with_the_acting_revision
     lines = text.split("\n")
     assert lines[0].startswith(f"[page {page['node_id']}; room 1;")
     assert f"revision {fix['node_id']} (corrected by mind (root root0001))" in lines[0]
-    assert "stamp: 1 tasks, not_recorded 1" in lines[0] and lines[1].endswith("complete")
+    assert "stamp: taskA001=not_recorded;" in lines[0] and lines[1].endswith("complete")
     assert "stamp taskA001: status=not_recorded" in text
     assert "text:\nORIGINAL" in text and f"correction {fix['node_id']} by mind (root root0001)" in text
     assert text.rstrip().endswith("CORRECTED")

@@ -293,16 +293,28 @@ def test_a_wrong_hint_is_ignored_and_the_search_decides(tmp_path):
         assert found_row == row and found["line"] == address["hint"]["line"]
 
 
-def test_the_hint_is_used_and_the_search_starts_at_the_archive_rotated_after_the_row(tmp_path):
+def test_the_hint_is_used_and_a_row_stamped_during_rotation_resolves_from_the_earlier_archive(tmp_path):
     live, archive = _layout(tmp_path)
-    # Rotation names the archive from the clock that stamped its rows, truncated to the second.
-    _append(archive / "chat_20260901T000000.jsonl", _msg("2026-09-01T00:00:00.900000+00:00", "same second"),
-            _msg("2026-09-05T00:00:00+00:00", "stamped after its rotation"))
-    _append(live, _msg("2026-09-06T00:00:00+00:00", "live"))
-    (same, _row, _pos), (late, late_row, _pos2), _live = list(cc.iter_rows(tmp_path))
+    # Rotation names the archive from the clock, truncated to the second, BEFORE it waits for
+    # the append lock: a row appended during that wait carries a later second than its archive.
+    _append(archive / "chat_20261001T120000.jsonl", _msg("2026-10-01T12:00:00.900000+00:00", "same second"),
+            _msg("2026-10-01T12:00:01.200000+00:00", "appended while the rotation waited"))
+    _append(archive / "chat_20261001T130000.jsonl", _msg("2026-10-01T12:30:00+00:00", "next archive"))
+    _append(live, _msg("2026-10-02T00:00:00+00:00", "live"))
+    (same, _row, _pos), (late, late_row, late_pos), _next, _live = list(cc.iter_rows(tmp_path))
     _ok(tmp_path, cc.format_address(same))
-    assert cc.resolve_row(tmp_path, late)[0] == late_row
-    assert cc.resolve_row(tmp_path, cc.format_address(late)) == (None, {"status": "row_missing"})
+    assert cc.resolve_row(tmp_path, late)[0] == late_row  # the hint
+    text = cc.format_address(late)  # every address a tool prints is this text form, without a hint
+    found_row, found = _ok(tmp_path, text)
+    assert found_row == late_row and found["path"] == "archive/chat_20261001T120000.jsonl" and found["line"] == 2
+    assert [row["text"] for _a, row, _p in cc.iter_rows(tmp_path, from_addr=text)][:2] == [
+        "appended while the rotation waited", "next archive"]
+    assert cc.stream_position_of(tmp_path, text) == late_pos == 1
+    # The wider search still answers a typed refusal for a row no generation holds.
+    never = cc.row_address(_msg("2026-10-01T12:00:01.300000+00:00", "never written"))
+    assert cc.resolve_row(tmp_path, cc.format_address(never)) == (None, {"status": "row_missing"})
+    forged = cc.row_address({**late_row, "text": "never said"})
+    assert cc.resolve_row(tmp_path, cc.format_address(forged))[1]["status"] == "row_mismatch"
 
 
 def test_address_survives_rotation_and_a_copied_data_directory(tmp_path):

@@ -16,7 +16,7 @@ import pytest
 
 from ouroboros import consolidator as c
 from ouroboros import context_health
-from ouroboros.memory_nomination_receipts import DialogueMetaUnreadable, load_meta
+from ouroboros.memory_nomination_receipts import DialogueMetaUnreadable, parse_meta
 from ouroboros.tools.registry import ToolContext
 from ouroboros.utils import atomic_write_json
 
@@ -78,9 +78,8 @@ def test_health_carries_no_retired_dialogue_writer_state(tmp_path, meta):
 
 def test_frozen_cursor_reads_strictly(tmp_path):
     path = tmp_path / "dialogue_meta.json"
-    assert load_meta(path) == {}  # absent: a fresh install, not a loss
     atomic_write_json(path, {"last_consolidated_offset": 42, "pending_knowledge_nominations": [{"id": "a:0:0"}]})
-    assert load_meta(path)["last_consolidated_offset"] == 42
+    assert parse_meta(path.read_bytes())["last_consolidated_offset"] == 42
 
 
 @pytest.mark.parametrize("bad_bytes", [b'{"pending_knowledge_nominations":[{"id":"old"}]',
@@ -88,9 +87,21 @@ def test_frozen_cursor_reads_strictly(tmp_path):
                                        b'{"pending_knowledge_nominations":[],"pending_knowledge_nominations":[]}',
                                        b'{"pending_knowledge_nominations":{"not":"a list"}}',
                                        b'{"pending_knowledge_nominations":[{"id":"a"},{"id":"a"}]}'])
-def test_unreadable_frozen_cursor_is_never_read_as_empty(tmp_path, bad_bytes):
-    path = tmp_path / "dialogue_meta.json"
-    path.write_bytes(bad_bytes)
+def test_unreadable_frozen_cursor_is_never_read_as_empty(bad_bytes):
     with pytest.raises(DialogueMetaUnreadable):
-        load_meta(path)
-    assert path.read_bytes() == bad_bytes
+        parse_meta(bad_bytes)
+
+
+def test_the_import_reads_the_cursor_through_the_same_strict_parser(monkeypatch):
+    """One strict reader: the chronicle import refuses exactly what ``parse_meta`` refuses."""
+    from ouroboros import chronicle_import, memory_nomination_receipts
+
+    seen = []
+    real = memory_nomination_receipts.parse_meta
+    monkeypatch.setattr(memory_nomination_receipts, "parse_meta", lambda raw: (seen.append(raw), real(raw))[1])
+    good = b'{"last_consolidated_offset": 3, "pending_knowledge_nominations": [{"id": "a:0:0"}]}'
+    errors = {}
+    assert chronicle_import._cursor({"meta": good}, errors)["last_consolidated_offset"] == 3 and not errors
+    bad = b'{"pending_knowledge_nominations":[{"id":"a"},{"id":"a"}]}'
+    assert chronicle_import._cursor({"meta": bad}, errors) is None and "Duplicate" in errors["meta"]
+    assert seen == [good, bad]
