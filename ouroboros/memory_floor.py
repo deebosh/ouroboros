@@ -1,0 +1,153 @@
+"""The physical floor of the memory view: what of my memory a request shows only by address (P3 §2.6).
+
+The view's structure decides what it holds; the floor only takes away, and only when that
+structure does not fit. ``fit_memory_view`` walks the ladder once, element by element,
+while the view is larger than the boundary of the element's step, and every element it
+takes is drawn as an address line with its period: the horizon stays, the granularity
+changes. No search, no second render to choose a level, nothing added to fill room.
+
+Three boundaries, each in estimator tokens of memory (``context_budget.request_context_budget``):
+host facts, room headers, retold pointers, pages and my own replies answer to the window
+minus the reply reserve and the working margins (``MEMORY_VIEW_WORKING_MARGINS``);
+people's words only to the window minus the reply reserve (D-1); an owner-selected Low or
+Nano target, with its own margins (``MODE_TARGET_WORKING_MARGINS``), bounds the steps of
+``MODE_TARGET_STEPS`` alone (the owner's answer B; D-32, D-37). An unknown window takes no
+window step. Rendering stays ``memory_view``'s; nothing here reads the chronicle,
+publishes a record or calls a model.
+"""
+from __future__ import annotations
+
+import json
+from typing import Dict, List, Mapping, Optional, Tuple
+
+from ouroboros import context_budget
+from ouroboros import memory_view as mv
+from ouroboros.utils import estimate_tokens
+
+# The ladder (D-37), old before new and people last: host fact lines of this room's tasks
+# (F1), other live rooms without notes (F1b), retold-memory pointers as one line per room
+# (F3), my oldest pages and parts (F5), this room's retold page (F4), my longest replies
+# (F2), then people's words: other rooms' (F6, only when the view shows them) and this room's (F7).
+LADDER = ("F1", "F1b", "F3", "F5", "F4", "F2", "F6", "F7")
+# The only steps an owner-selected Low or Nano target takes (D-37): facts, headers,
+# pointers and old retold memory; my replies and people's words answer to the window alone.
+MODE_TARGET_STEPS = ("F1", "F1b", "F3", "F5", "F4")
+# People's words become addresses only when the window minus the reply reserve cannot hold them (D-1).
+PEOPLE_STEPS = ("F6", "F7")
+_COLLAPSING = ("F1", "F1b")  # many elements, one line: the first element carries it
+_SHOWN = (("F2", "{} of my replies"), ("F7", "{} lines of people in this room"),
+          ("F6", "{} lines of people in other rooms"), ("F4", "{} records of this room's page"),
+          ("F5", "{} pages or parts of my story"), ("F3", "the retold records of {} rooms (one line per room)"),
+          ("F1", "{} task fact lines"), ("F1b", "{} other open rooms"))
+
+
+def view_tokens(text: str) -> int:
+    """The host's estimate of a text inside a request: its JSON-escaped characters / 4."""
+    return estimate_tokens(json.dumps(str(text), ensure_ascii=False)) if text else 0
+
+
+def floor_elements(snapshot: mv.MemoryViewSnapshot) -> List[Tuple[str, str, str, str]]:
+    """``(step, element id, whole text, address line)`` of what the floor may address, in ladder order.
+
+    Inside a step oldest first; my replies longest first, then oldest. Where a step folds
+    many elements into one line (F1, F1b) the first carries that line. An element whose
+    address line is not shorter than its text is not degradable. Never here: identity,
+    knowledge, marks, notes, the words that started the work, a helper's owner words, this
+    room's header, a retold room's one line, the F1b summary.
+    """
+    if not snapshot.active:
+        return []
+    room = snapshot.room or {}
+    lane1, lane2 = room.get("lane1") or [], room.get("lane2") or []
+    quiet = [item for item in snapshot.live_rooms if not item["notes"] and not item["words"]]
+    mine = sorted((item for item in lane1 if item["kind"] == "ouroboros"), key=lambda item: (-item["chars"], item["pos"]))
+    words = sorted((word for item in snapshot.live_rooms for word in item["words"]), key=lambda word: word["pos"])
+    steps = {
+        "F1": [(item["first"], item["line"], "" if i else mv._facts_line(room, [item])) for i, item in enumerate(lane2)],
+        "F1b": [(item["room_id"], "\n".join(mv._live_room(item)), "" if i else mv._rooms_line([item]))
+                for i, item in enumerate(quiet)],
+        "F3": [(room_id, "\n".join(map(mv._pointer_line, group)), mv._room_pointer(group))
+               for room_id, group in mv._pointer_rooms(snapshot.story).items()],
+        "F5": [(entry["id"], "\n".join(mv._page_lines(entry)), mv._page_pointer(entry))
+               for entry in snapshot.story if entry.get("kind") != "legacy"],
+        "F4": [(item["id"], mv._retold(item), mv._retold(item, True))
+               for item in [*room.get("legacy", ()), *room.get("under_parts", ())]],
+        "F2": [(item["address"], item["line"], mv._row_pointer(item, "my reply")) for item in mine],
+        "F6": [(word["address"], word["line"], mv._row_pointer(word, "words")) for word in words],
+        "F7": [(item["address"], item["line"], mv._row_pointer(item, "words"))
+               for item in lane1 if item["kind"] != "ouroboros"],
+    }
+    return [(step, ident, whole, short) for step in LADDER for ident, whole, short in steps[step]
+            if step in _COLLAPSING or len(short) < len(whole)]
+
+
+def degradable_elements(snapshot: mv.MemoryViewSnapshot) -> List[Tuple[str, str, int, int]]:
+    """``(step, element id, tokens whole, tokens by address)`` in ladder order: each element's known saving."""
+    return [(step, ident, view_tokens(whole), view_tokens(short))
+            for step, ident, whole, short in floor_elements(snapshot)]
+
+
+def floor_allowances(*, window_tokens: Optional[int], output_reserve_tokens: Optional[int], non_memory_tokens: int,
+                     target_tokens: Optional[int] = None, calibration_ratio: float = 1.0) -> Dict[str, Optional[int]]:
+    """The memory allowances of the three boundaries (``None``: not known, so no step answers to it).
+
+    ``margin``: the window minus the reply reserve and the working margins; ``physical``: the
+    window minus the reply reserve; ``budget``: an owner-selected target with its own margins.
+    """
+    frame = dict(output_reserve_tokens=output_reserve_tokens, non_memory_tokens=non_memory_tokens,
+                 calibration_ratio=calibration_ratio)
+    window = context_budget.request_context_budget(
+        window_tokens=window_tokens, margin_count=context_budget.MEMORY_VIEW_WORKING_MARGINS, **frame)
+    budget = context_budget.request_context_budget(
+        window_tokens=window_tokens, target_tokens=target_tokens,
+        margin_count=context_budget.MODE_TARGET_WORKING_MARGINS, **frame)["with_margin_tokens"] if target_tokens else None
+    return {"margin": window["with_margin_tokens"], "physical": window["without_margin_tokens"], "budget": budget}
+
+
+def fit_memory_view(snapshot: mv.MemoryViewSnapshot, allowances: Mapping[str, Optional[int]]) -> mv.FloorLevel:
+    """One pass down the ladder: an element becomes an address while the view exceeds its step's boundary.
+
+    People's words answer to ``physical``, every other step to ``margin`` and, in
+    ``MODE_TARGET_STEPS``, also to ``budget``. Each element saves its known difference;
+    the view is measured once, in full, and never rendered again to choose.
+    """
+    current = view_tokens(mv.render_story(snapshot)) + view_tokens(mv.render_room(snapshot))
+    taken: Dict[str, List[str]] = {}
+    by_budget = 0
+    for step, ident, whole, short in degradable_elements(snapshot):
+        window = allowances.get("physical" if step in PEOPLE_STEPS else "margin")
+        budget = allowances.get("budget") if step in MODE_TARGET_STEPS else None
+        over_window = window is not None and current > window
+        if not over_window and not (budget is not None and current > budget):
+            continue
+        current -= whole - short
+        taken.setdefault(step, []).append(ident)
+        by_budget += not over_window
+    return mv.FloorLevel(tuple((step, tuple(taken[step])) for step in LADDER if step in taken), by_budget=by_budget)
+
+
+def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str, target_tokens: Optional[int] = None,
+               lowered_from: Optional[str] = None) -> str:
+    """``### Physical floor``: a fact and a possibility for the mind, exactly when a step past F1/F1b ran
+    or the window lowered the task's starting mode; never an instruction or a threshold."""
+    counts = dict(level.steps)
+    asked = set(counts) - set(_COLLAPSING)
+    if not asked and not lowered_from:
+        return ""
+    lines, name = ["### Physical floor"], mode.capitalize()
+    if asked:
+        bounds = ([f"this window ({window_tokens} tokens, {name})"] if sum(counts.values()) > level.by_budget else []) + (
+            [f"the {name} mode budget ({target_tokens} tokens)"] if level.by_budget else [])
+        subject = " and ".join(bounds)
+        shown = ", ".join(text.format(counts[step]) for step, text in _SHOWN if counts.get(step))
+        lines.append(f"{subject[0].upper()}{subject[1:]} {'do' if len(bounds) > 1 else 'does'} not hold all of my "
+                     "memory verbatim. Shown above only by "
+                     f"address: {shown}. Nothing is lost: memory_read reads each. Sealing a closed part of the open "
+                     "conversation as a page (chronicle_write kind=page) or folding old pages (kind=part) brings it "
+                     "back in my own words.")
+    if lowered_from:
+        lines.append(f"This window ({window_tokens} tokens) cannot hold {lowered_from.capitalize()} with even the "
+                     f"shortest view of my memory; this task started in {name}.")
+    if mode == "nano":
+        lines.append("(memory_read is reachable through enable_tools)")
+    return "\n".join(lines)

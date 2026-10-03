@@ -137,6 +137,14 @@ def test_the_view_imports_no_model_client_or_retired_memory_machinery_and_crosse
     assert any(isinstance(node, ast.ImportFrom) and node.module.startswith(forbidden) for node in ast.walk(probe))
 
 
+def test_the_floor_imports_no_model_client_and_reads_nothing_of_its_own():
+    _tree, top, nested = _imports("memory_floor.py")
+    imported = top | nested
+    assert not [name for name in imported if name.startswith(("ouroboros.llm", "ouroboros.consolidator"))], imported
+    assert {"ouroboros.chronicle_store", "ouroboros.chat_chain", "ouroboros.memory_inventory"}.isdisjoint(imported)
+    assert "ouroboros" in top  # memory_view and context_budget, the view's renderer and the one budget frame
+
+
 def test_the_view_takes_open_and_folded_from_the_inventory_and_reads_no_row_stream_of_its_own():
     tree, _top, _nested = _imports("memory_view.py")
     names = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}

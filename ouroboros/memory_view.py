@@ -14,7 +14,8 @@ Presence turn, which sees its own conversation.
 activates the chronicle exactly once (the one legacy import, no model call). Until that
 import has completed the view says so in one visible line, reads no chain and never
 fails the task. What of memory is open and what is folded comes from
-``memory_inventory`` only.
+``memory_inventory`` only; what a window shows only by an address line is
+``memory_floor``'s verdict, a ``FloorLevel``.
 
 The story block depends only on the chronicle, the registry's room labels and the
 configured helper route: the same bytes for Main, any room's root, consciousness and
@@ -309,6 +310,14 @@ def _legacy_period(pointer: Mapping[str, Any]) -> str:
     return "period known from the retelling text only"
 
 
+def _legacy_span(pointer: Mapping[str, Any]) -> List[str]:
+    """``[start, end]`` minutes of an exact raw range with both bounds, else ``[]`` (the floor merges them)."""
+    raw = _mapping(_mapping(pointer.get("covers")).get("raw_range"))
+    span = _mapping(raw.get("ts_span"))
+    return [_minute(span["start"]), _minute(span["end"])] if (
+        raw.get("status") == "exact" and span.get("start") and span.get("end")) else []
+
+
 def _gap_detail(store: ChronicleStore, pointer: Mapping[str, Any]) -> str:
     record = store.get(pointer["node_id"]) or {}
     return str(_mapping(record.get("metadata")).get("source_gap") or "the old writer marked this period as a gap")
@@ -373,7 +382,7 @@ def _capture_story(store: ChronicleStore, root: pathlib.Path,
         gap = pointer.get("kind") == "gap" or pointer.get("legacy_type") in ("gap", "cursor_gap")
         entry = {"kind": "legacy", "id": unit.record_id, "room_id": unit.room_id, "block": unit.block,
                  "label": str(pointer.get("label") or label(unit.room_id)), "period": _legacy_period(pointer),
-                 "rows": unit.rows if unit.raw == "exact" else None,
+                 "span": _legacy_span(pointer), "rows": unit.rows if unit.raw == "exact" else None,
                  "gap": _gap_detail(store, pointer) if gap else ""}
         story.append(entry)
         if unit.refusal:
@@ -426,13 +435,24 @@ def _row_texts(root: pathlib.Path, entries: List[Entry]) -> Dict[str, Dict[str, 
     return rows
 
 
-def _row_line(entry: Entry, author: Mapping[str, Any], texts: Mapping[str, Dict[str, Any]]) -> str:
+def _row_head(entry: Entry, author: Mapping[str, Any]) -> str:
+    """``[<ts>; <author>; row:…]`` from a row's facts alone: the header of its line and of its address line."""
     address, meta, _pos = entry
-    row = texts.get(address["row_sha256"])
+    return f"[{meta.get('ts') or 'time not recorded'}; {author.get('label')}; {chat_chain.format_address(address)}]"
+
+
+def _row_line(entry: Entry, author: Mapping[str, Any], texts: Mapping[str, Dict[str, Any]]) -> str:
+    row = texts.get(entry[0]["row_sha256"])
     if row is None:
-        return (f"[{meta.get('ts') or 'time not recorded'}; {author.get('label')}; "
-                f"{chat_chain.format_address(address)}] (row unreadable by its address)")
-    return render_memory_row(address, row, author=author, indent=INDENT)
+        return _row_head(entry, author) + " (row unreadable by its address)"
+    return render_memory_row(entry[0], row, author=author, indent=INDENT)
+
+
+def _spoken(entry: Entry, author: Mapping[str, Any], texts: Mapping[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """A verbatim lane-1 line with the facts its address line needs (head, size, position)."""
+    return {"line": _row_line(entry, author, texts), "head": _row_head(entry, author), "kind": author.get("kind"),
+            "address": chat_chain.format_address(entry[0]), "ts": entry[1].get("ts"),
+            "chars": entry[1].get("text_chars", 0), "pos": entry[2]}
 
 
 def _typed_fact(meta: Mapping[str, Any]) -> str:
@@ -511,16 +531,14 @@ def _lanes(root: pathlib.Path, entries: List[Entry], lineage: Mapping[str, Any])
                 not task and cls["author"].get("kind") == "host"):
             needed.append(entry)
     texts = _row_texts(root, needed)
-    lane1 = [{"line": _row_line(entry, cls["author"], texts), "kind": cls["author"].get("kind"),
-              "address": chat_chain.format_address(entry[0]), "ts": entry[1].get("ts"),
-              "chars": entry[1].get("text_chars", 0), "pos": entry[2]} for entry, cls in classed if cls["lane"] == 1]
+    lane1 = [_spoken(entry, cls["author"], texts) for entry, cls in classed if cls["lane"] == 1]
     lane2 = []
     for pos, task, loose in order:
         rows = groups[task] if task else [loose]
         line = _task_line(task, rows, texts) if task else _loose_line(loose[0], loose[1], texts)
         lane2.append({"line": line, "task": task, "ts": rows[0][0][1].get("ts"), "pos": pos,
-                      "first": chat_chain.format_address(rows[0][0][0]),
-                      "last": chat_chain.format_address(rows[-1][0][0])})
+                      "first": chat_chain.format_address(rows[0][0][0]), "last_ts": rows[-1][0][1].get("ts"),
+                      "last": chat_chain.format_address(rows[-1][0][0]), "last_pos": rows[-1][0][2]})
     return lane1, lane2
 
 
@@ -591,7 +609,7 @@ def _live_rooms(root: pathlib.Path, spec: ViewSpec, label: Callable[..., str], b
         words = []
         if spec.live_rooms == "lines_with_words" and people:
             texts = _row_texts(root, [entry for entry, _cls in people])
-            words = [_row_line(entry, cls["author"], texts) for entry, cls in people]
+            words = [_spoken(entry, cls["author"], texts) for entry, cls in people]
         sample = next((meta for _address, meta, _pos in reversed(entries) if meta.get("transport")), None)
         rooms.append({"room_id": room, "label": label(room, sample), "key": entries[-1][2] if entries else -1,
                       "first": _minute(entries[0][1].get("ts")) if entries else "",
@@ -685,11 +703,19 @@ def capture_memory_view(drive_root: Any, task: Mapping[str, Any], spec: ViewSpec
 
 @dataclasses.dataclass(frozen=True)
 class FloorLevel:
-    """The physical floor's steps and how many elements each turns into addresses (``(("F1", 7),)``).
+    """The physical floor's verdict: per step, the ids of the elements shown only by address.
 
-    The empty level is the full view; the ladder that fills it lives beside the floor.
+    The empty level is the full view; ``memory_floor.fit_memory_view`` fills it in ladder
+    order. ``by_budget`` counts the elements only an owner-selected mode target took (the
+    window alone would have kept them).
     """
-    steps: Tuple[Tuple[str, int], ...] = ()
+    addressed: Tuple[Tuple[str, Tuple[str, ...]], ...] = ()
+    by_budget: int = 0
+
+    @property
+    def steps(self) -> Tuple[Tuple[str, int], ...]:
+        """``(("F1", 7), ("F2", 1))``: how many elements each step turned into addresses."""
+        return tuple((step, len(ids)) for step, ids in self.addressed)
 
 
 FULL_VIEW = FloorLevel()
@@ -706,6 +732,39 @@ def _pointer_line(entry: Mapping[str, Any]) -> str:
     return f"- {entry['label']}; {entry['period']}; {rows}{read}"
 
 
+def _pointer_rooms(story: Any) -> Dict[str, List[Dict[str, Any]]]:
+    rooms: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in story:
+        if entry.get("kind") == "legacy" and not entry.get("gap"):
+            rooms.setdefault(str(entry["room_id"]), []).append(entry)
+    return rooms
+
+
+def _room_pointer(entries: List[Dict[str, Any]]) -> str:
+    """A room's retold records as one line: the room, its whole period, every id (F3)."""
+    spans = [entry["span"] for entry in entries if entry.get("span")]
+    period = "; ".join(([f"{min(s[0] for s in spans)} → {max(s[1] for s in spans)}"] if spans else [])
+                       + sorted({entry["period"] for entry in entries if not entry.get("span")}))
+    return (f"- {entries[0]['label']}; {period}; {len(entries)} retold record{'' if len(entries) == 1 else 's'}: "
+            + ", ".join(entry["id"] for entry in entries) + "; memory_read(node_id=<id>) reads each")
+
+
+def _pointer_lines(pointers: List[Dict[str, Any]], rooms: Any) -> List[str]:
+    """The pointers in story order; a room the floor took is one line where its first pointer stood."""
+    grouped, lines = _pointer_rooms(pointers), []
+    for entry in pointers:
+        room = str(entry["room_id"])
+        if entry.get("gap") or room not in rooms:
+            lines.append(_pointer_line(entry))
+        elif grouped[room][0] is entry:
+            lines.append(_room_pointer(grouped[room]))
+    return lines
+
+
+def _page_pointer(entry: Mapping[str, Any]) -> str:
+    return f"- {entry['label']}; {entry['period']}; {entry['kind']} {entry['id']}; memory_read(node_id='{entry['id']}')"
+
+
 def _page_lines(entry: Mapping[str, Any]) -> List[str]:
     lines = ["", f"### {entry['label']} · {entry['period']} · {entry['kind']} {entry['id']}", _indented(entry["text"])]
     if entry.get("status") == "draft":
@@ -719,6 +778,43 @@ def _page_lines(entry: Mapping[str, Any]) -> List[str]:
         verb = "correction by me of" if fix["kind"] == "correction" else "my rejection of the draft"
         lines.append(f"- {verb} {fix['target']}:\n{_indented(fix['text'])}")
     return lines
+
+
+def _retold(item: Mapping[str, Any], short: bool = False) -> str:
+    """A record of this room's page (retold, or a page under a part), whole or by address (F4)."""
+    head = (f"#### {item['kind']} {item['id']} — {item['period']} — under part {item['part']}" if item.get("part")
+            else f"#### {item['id']} — {item['period']}")
+    return f"{head} — memory_read(node_id='{item['id']}')" if short else f"{head}\n{_indented(item['text'])}"
+
+
+def _row_pointer(item: Mapping[str, Any], what: str) -> str:
+    return f"{item['head']} ({what}, {item['chars']} chars — read by address)"
+
+
+def _facts_line(room: Mapping[str, Any], items: List[Dict[str, Any]]) -> str:
+    """The earliest task lines of this room as one address line with their period (F1)."""
+    last = max(items, key=lambda item: item["last_pos"])
+    return (f"{len(items)} earlier task{'' if len(items) == 1 else 's'}, {_minute(items[0]['ts'] or '?')} → "
+            f"{_minute(last['last_ts'] or '?')}: memory_read(room_id='{room['room_id']}', rows=true, "
+            f"from='{items[0]['first']}', to='{last['last']}')")
+
+
+def _rooms_line(rooms: List[Dict[str, Any]]) -> str:
+    """Other live rooms without notes as one line: their period and every id (F1b)."""
+    return (f"{len(rooms)} more open room{'' if len(rooms) == 1 else 's'} without notes; "
+            f"{min(room['first'] for room in rooms)} → {max(room['last'] for room in rooms)}; "
+            "memory_read(room_id=<id>, rows=true) reads each: " + ", ".join(room["room_id"] for room in rooms))
+
+
+def _live_room(room: Mapping[str, Any], spoken: Any = frozenset()) -> List[str]:
+    if room["rows"]:
+        lines = [f"### {room['label']} — open {room['first']} → {room['last']}; people {room['people']}, "
+                 f"mine {room['mine']}, task facts {room['facts']}", f"memory_read(room_id='{room['room_id']}', rows=true)"]
+    else:
+        lines = [f"### {room['label']} — no open rows; my notes not yet sealed: {len(room['notes'])}",
+                 f"memory_read(room_id='{room['room_id']}')"]
+    return lines + _note_lines(room["notes"]) + [
+        _row_pointer(word, "words") if word["address"] in spoken else word["line"] for word in room["words"]]
 
 
 def _status_lines(status: Mapping[str, Any], refusals: Tuple[Dict[str, Any], ...]) -> List[str]:
@@ -740,8 +836,9 @@ def _status_lines(status: Mapping[str, Any], refusals: Tuple[Dict[str, Any], ...
 def render_story(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW) -> str:
     """Block B's tail, ``## My story``: retold-memory pointers, then my pages and parts, then the status.
 
-    Its bytes depend only on the chronicle, the room labels and the helper route.
-    ``level`` is the physical floor's (the empty level renders the full view).
+    Its bytes depend only on the chronicle, the room labels, the helper route and
+    ``level`` (the physical floor's; the empty level renders the full view): F3 turns a
+    room's pointers into one line, F5 my oldest pages into address lines.
     """
     spec = snapshot.spec
     if not spec.story:
@@ -749,14 +846,20 @@ def render_story(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW) ->
     if not snapshot.active:
         return (f"## My story — unavailable now ({snapshot.store_status.get('reason')})\n\n"
                 f"The old memory files are untouched: read_file(root='runtime_data', path='{LEGACY_FILE}').")
+    gone = dict(level.addressed)
     pointers = [entry for entry in snapshot.story if entry.get("kind") == "legacy"]
     pages = [entry for entry in snapshot.story if entry.get("kind") != "legacy"]
     lines = ["## My story", "", _STORY_INTRO]
     if pointers:
         lines += ["", "### Old memory retold by a helper before the update (not lived; read by id)"]
-        lines += [_pointer_line(entry) for entry in pointers]
+        lines += _pointer_lines(pointers, set(gone.get("F3", ())))
+    shown = set(gone.get("F5", ()))
+    if shown:  # the oldest pages: a prefix of the story order
+        lines += ["", "### My older pages and parts, by address"]
+        lines += [_page_pointer(entry) for entry in pages if entry["id"] in shown]
     for entry in pages:
-        lines += _page_lines(entry)
+        if entry["id"] not in shown:
+            lines += _page_lines(entry)
     if not snapshot.story:
         lines += ["", "No page or part is sealed yet."]
     lines += _status_lines(snapshot.legacy_blocks, snapshot.fallback_refusals)
@@ -778,30 +881,26 @@ def _marks_text(marks: Tuple[Dict[str, Any], ...]) -> str:
     return "\n".join(lines)
 
 
-def _live_text(rooms: Tuple[Dict[str, Any], ...]) -> str:
+def _live_text(rooms: Tuple[Dict[str, Any], ...], gone: Mapping[str, List[str]]) -> str:
+    quiet, spoken = set(gone.get("F1b", ())), set(gone.get("F6", ()))
     lines = ["## Live rooms", "", "Other rooms with open rows or notes not yet sealed, oldest last activity first."]
+    if quiet:
+        lines += ["", _rooms_line([room for room in rooms if room["room_id"] in quiet])]
     for room in rooms:
-        if room["rows"]:
-            lines += ["", f"### {room['label']} — open {room['first']} → {room['last']}; people {room['people']}, "
-                          f"mine {room['mine']}, task facts {room['facts']}",
-                      f"memory_read(room_id='{room['room_id']}', rows=true)"]
-        else:
-            lines += ["", f"### {room['label']} — no open rows; my notes not yet sealed: {len(room['notes'])}",
-                      f"memory_read(room_id='{room['room_id']}')"]
-        lines += _note_lines(room["notes"]) + list(room["words"])
+        if room["room_id"] not in quiet:
+            lines += ["", *_live_room(room, spoken)]
     return "\n".join(lines)
 
 
-def _room_text(room: Mapping[str, Any]) -> str:
+def _room_text(room: Mapping[str, Any], gone: Mapping[str, List[str]]) -> str:
     """``## This room (<label>) — head <n>``: the room page, the words that started it, my notes, two lanes."""
+    retold, mine, people, facts = (set(gone.get(step, ())) for step in ("F4", "F2", "F7", "F1"))
     lines = [f"## This room ({room['label']}) — head {room['head']}"]
     if room["legacy"]:
         lines += ["", "### Retold before the update (helper retelling, not lived)"]
-        lines += [f"#### {item['id']} — {item['period']}\n{_indented(item['text'])}" for item in room["legacy"]]
+        lines += [_retold(item, item["id"] in retold) for item in room["legacy"]]
     if room["under_parts"]:
-        lines += ["", "### Pages under my parts"]
-        lines += [f"#### {item['kind']} {item['id']} — {item['period']} — under part {item['part']}\n"
-                  f"{_indented(item['text'])}" for item in room["under_parts"]]
+        lines += ["", "### Pages under my parts"] + [_retold(item, item["id"] in retold) for item in room["under_parts"]]
     if room["origins"]:
         lines += ["", "### Words that started this work (retention-proof)"]
         lines += [f"[{item['ts'] or 'time not recorded'}; owner; {item['ref']}] " + _indented(item["text"]).lstrip()
@@ -810,23 +909,26 @@ def _room_text(room: Mapping[str, Any]) -> str:
         lines += ["", "### My notes not yet sealed"] + _note_lines(room["notes"])
     if room["lane1"]:
         lines += ["", f"### Open conversation since {room['since']} (verbatim: people and my replies)"]
-        lines += [item["line"] for item in room["lane1"]]
+        lines += [_row_pointer(item, "my reply") if item["address"] in mine else _row_pointer(item, "words")
+                  if item["address"] in people else item["line"] for item in room["lane1"]]
     if room["lane2"]:
+        early = [item for item in room["lane2"] if item["first"] in facts]
         lines += ["", "### Task facts of this conversation (host; one line per task; a row:… address reads with "
                       f"memory_read(room_id='{room['room_id']}', rows=true, from=<address>, to=<address>))"]
-        lines += [item["line"] for item in room["lane2"]]
+        lines += ([_facts_line(room, early)] if early else []) + [
+            item["line"] for item in room["lane2"] if item["first"] not in facts]
     if len(lines) == 1:
         lines += ["", "Nothing open, retold or noted in this room."]
     return "\n".join(lines)
 
 
-def render_room(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW, *, window_tokens: Optional[int] = None,
-                mode: str = "max") -> str:
+def render_room(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW, *, floor_note: str = "") -> str:
     """Block C's memory middle: a helper's owner words, marks, live rooms and this room.
 
-    ``level``, ``window_tokens`` and ``mode`` are the physical floor's (the empty level
-    renders the full view). Before the import has completed the room is one line
-    naming the reason and a reader that works without the chronicle.
+    ``level`` is the physical floor's (the empty level renders the full view);
+    ``floor_note`` (``### Physical floor``) closes the room, or the live rooms when the
+    view has no room. Before the import has completed the room is one line naming the
+    reason and a reader that works without the chronicle.
     """
     parts = [snapshot.owner_words]
     room = snapshot.room
@@ -836,12 +938,14 @@ def render_room(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW, *, 
                          f"activated ({snapshot.store_status.get('reason')}); read it: chat_history(count=100) — every "
                          f"room, newest first; this room is chat_id {room['room_id']}.")
         return "\n\n".join(part for part in parts if part)
+    gone = dict(level.addressed)
     if snapshot.marks:
         parts.append(_marks_text(snapshot.marks))
     if snapshot.live_rooms:
-        parts.append(_live_text(snapshot.live_rooms))
+        parts.append(_live_text(snapshot.live_rooms, gone))
     if room:
-        parts.append(_room_text(room))
+        parts.append(_room_text(room, gone))
+    parts.append(floor_note)
     return "\n\n".join(part for part in parts if part)
 
 
