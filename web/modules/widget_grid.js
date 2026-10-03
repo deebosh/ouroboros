@@ -1,34 +1,29 @@
-/* Widgets card grid: the owner's desktop arrangement of the cards as stable
-   cells of a 12-column grid — each card at a fixed column and row with a
-   fixed width and height in grid units (`ui_preferences.widget_layout`, keyed
-   like `widget_order`) — and the one stacked column a narrow list falls back
-   to. Nothing here measures a card: a placement is a pure function of the
-   saved slots, the key order and each card's declared default size, so
-   content that grows, shrinks or starts never moves or resizes a card; a card
-   whose content is taller than its cell scrolls inside its body.
-   `applyWidgetGrid` writes a placement ONLY as custom properties —
-   `--widget-col/-row/-w/-h` and `--widget-order` on each card — plus the
-   `data-widget-layout` mode on the list, which one static rule set in
-   web/style.css turns into grid lines. No node is ever moved, so a running
-   <iframe> is never reloaded by a move, a resize or a mode switch.
-   The bounds mirror ouroboros/gateway/ui_preferences.py. */
+/* Widgets board (docs/DESIGN.md "Widgets board"): the cards stand in rows on a
+   12-column grid in the owner's `widget_order`, each as wide as the owner's
+   width (`ui_preferences.widget_size`) or, until the owner picks one, the
+   author's `span` (1: a third of a row, 2: two thirds), and as tall as its own
+   content; a row is as tall as its tallest card. A list narrower than
+   WIDGET_GRID_STACK_BELOW_PX stacks the cards in one column and ignores widths.
+   Nothing here measures a card or moves a node: `applyWidgetGrid` writes ONLY
+   custom properties — `--widget-w` and `--widget-order` on each card — and the
+   list's `data-widget-layout` mode, which static rules in web/style.css turn
+   into grid placement, so a reorder, a resize or a mode switch never reloads a
+   running <iframe>. The bounds mirror ouroboros/gateway/ui_preferences.py. */
 
-import { frameHeight } from './widget_module.js';
+import { widgetKey } from './widget_list.js';
 
 export const WIDGET_GRID_COLUMNS = 12;
-export const WIDGET_GRID_MIN_W = 3;
-export const WIDGET_GRID_MIN_H = 4;
-export const WIDGET_GRID_MAX_H = 48;
-export const WIDGET_GRID_MAX_Y = 10000;
-export const WIDGET_LAYOUT_MAX_ITEMS = 200;
+export const WIDGET_SIZE_MAX_ITEMS = 200;
 const WIDGET_KEY_MAX_LENGTH = 200;
-// One grid row and the gap between rows / columns (`.widgets-list` in
-// web/style.css), and the card chrome — padding, border, head — that a default
-// height adds above the declared body.
-export const WIDGET_GRID_ROW_PX = 40;
-export const WIDGET_GRID_GAP_PX = 14;
-const WIDGET_CARD_CHROME_PX = 72;
-// Below this list width the grid falls back to one stacked column. The band
+// The owner's width steps. Rows close as 4 + 8, 6 + 6, 4 + 4 + 4 or 12; a
+// third beside a half leaves the two-column gap the owner chose.
+export const WIDGET_WIDTH_STEPS = Object.freeze([
+    { w: 4, label: 'One third' },
+    { w: 6, label: 'Half' },
+    { w: 8, label: 'Two thirds' },
+    { w: 12, label: 'Full width' },
+]);
+// Below this list width the board falls back to one stacked column. The band
 // around it keeps a scrollbar that appears or leaves with the other mode's
 // height from flipping the mode straight back.
 export const WIDGET_GRID_STACK_BELOW_PX = 720;
@@ -36,194 +31,40 @@ const WIDGET_GRID_MODE_BAND_PX = 24;
 
 const bound = new WeakMap();
 
-function boundedInt(value, lo, hi) {
-    return Math.max(lo, Math.min(hi, Math.trunc(Number(value) || 0)));
-}
-
-/** One saved slot clamped into the grid; null for anything but four integers. */
-export function normalizeWidgetSlot(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    if (!['x', 'y', 'w', 'h'].every((name) => Number.isInteger(value[name]))) return null;
-    const w = boundedInt(value.w, WIDGET_GRID_MIN_W, WIDGET_GRID_COLUMNS);
-    return {
-        x: boundedInt(value.x, 0, WIDGET_GRID_COLUMNS - w),
-        y: boundedInt(value.y, 0, WIDGET_GRID_MAX_Y),
-        w,
-        h: boundedInt(value.h, WIDGET_GRID_MIN_H, WIDGET_GRID_MAX_H),
-    };
-}
-
-/** The saved `widget_layout` map, bounded the way the server stores it. */
-export function normalizeWidgetLayout(value) {
-    const layout = {};
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return layout;
-    for (const [rawKey, rawSlot] of Object.entries(value).slice(0, WIDGET_LAYOUT_MAX_ITEMS)) {
+/** The saved `widget_size` map, bounded the way the server stores it. */
+export function normalizeWidgetSize(value) {
+    const sizes = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return sizes;
+    for (const [rawKey, size] of Object.entries(value).slice(0, WIDGET_SIZE_MAX_ITEMS)) {
         const key = String(rawKey || '').trim();
-        const slot = normalizeWidgetSlot(rawSlot);
-        if (key && key.length <= WIDGET_KEY_MAX_LENGTH && slot) layout[key] = slot;
+        if (!key || key.length > WIDGET_KEY_MAX_LENGTH || !Number.isInteger(size?.w)) continue;
+        sizes[key] = { w: Math.max(1, Math.min(WIDGET_GRID_COLUMNS, size.w)), h: 0 };
     }
-    return layout;
+    return sizes;
 }
 
-/**
- * A card's size before the owner sets one: a third of the grid, two thirds for
- * a `span: 2` card, and enough rows for its declared frame height (the frame
- * floor for a declarative card or an auto-height module) under the card head.
- */
-export function defaultWidgetSize(tab) {
-    const span = Number(tab?.span || tab?.grid_span || 1);
-    const body = frameHeight(tab?.render || {});
-    const pitch = WIDGET_GRID_ROW_PX + WIDGET_GRID_GAP_PX;
-    return {
-        w: span >= 2 ? 8 : 4,
-        h: boundedInt(Math.ceil((body + WIDGET_CARD_CHROME_PX + WIDGET_GRID_GAP_PX) / pitch), WIDGET_GRID_MIN_H, WIDGET_GRID_MAX_H),
-    };
+/** The author's default width: a third of a row, two thirds for `span: 2`. */
+export function defaultWidgetWidth(tab) {
+    return Number(tab?.span || tab?.grid_span || 1) >= 2 ? 8 : 4;
 }
 
-// Row occupancy as one column bitmask per row, so a fit test or a placement
-// costs the card's height, not the number of cards already placed.
-function occupancy() {
-    const rows = [];
-    const mask = (slot) => ((1 << slot.w) - 1) << slot.x;
-    return {
-        fits(slot) {
-            for (let row = slot.y; row < slot.y + slot.h; row += 1) {
-                if ((rows[row] || 0) & mask(slot)) return false;
-            }
-            return true;
-        },
-        take(slot) {
-            for (let row = slot.y; row < slot.y + slot.h; row += 1) rows[row] = (rows[row] || 0) | mask(slot);
-            return slot;
-        },
-        free(slot) {
-            for (let row = slot.y; row < slot.y + slot.h; row += 1) rows[row] = (rows[row] || 0) & ~mask(slot);
-        },
-    };
+/** A card's width in board columns: the owner's width over the author's default. */
+export function widgetWidth(tab, sizes) {
+    return sizes?.[widgetKey(tab)]?.w || defaultWidgetWidth(tab);
 }
 
-// The slot in its own columns, at its own row or pushed straight down to the
-// first row where it overlaps nothing placed before it. Never up, never sideways.
-function settle(grid, slot) {
-    let y = slot.y;
-    while (!grid.fits({ ...slot, y })) y += 1;
-    return grid.take({ ...slot, y });
+/** The width step nearest to a column count (a drag ends between steps). */
+export function nearestWidgetWidth(columns) {
+    return WIDGET_WIDTH_STEPS.reduce((best, { w }) => (
+        Math.abs(w - columns) < Math.abs(best - columns) ? w : best
+    ), WIDGET_WIDTH_STEPS[0].w);
 }
 
-function byCell([aKey, a], [bKey, b]) {
-    return a.y - b.y || a.x - b.x || (aKey < bKey ? -1 : aKey > bKey ? 1 : 0);
-}
-
-/**
- * Every card's cell. Saved slots (including temporarily absent cards) reserve
- * their cells first, in reading order, each at its own cell or pushed straight
- * down past an overlap; only visible cards enter the result. Unsaved cards pack
- * first-fit BELOW the retained arrangement, never inside the owner's composition. `cards` is
- * `[{ key, w, h }]` in key order (w/h: the default size); returns a Map
- * key → { x, y, w, h } in the same order. No measured size is an input.
- */
-export function planWidgetGrid(cards, layout = {}) {
-    const grid = occupancy();
-    const placements = new Map();
-    // Reserve retained but temporarily absent cards too. A newly appearing card
-    // must not be pinned across a slot whose owner is merely missing in this read.
-    const saved = Object.entries(normalizeWidgetLayout(layout)).sort(byCell);
-    const visible = new Set(cards.map((card) => card.key));
-    let floor = 0;
-    for (const [key, slot] of saved) {
-        const placed = settle(grid, slot);
-        if (visible.has(key)) placements.set(key, placed);
-        floor = Math.max(floor, placed.y + placed.h);
-    }
-    for (const card of cards) {
-        if (placements.has(card.key)) continue;
-        const w = boundedInt(card.w, WIDGET_GRID_MIN_W, WIDGET_GRID_COLUMNS);
-        const h = boundedInt(card.h, WIDGET_GRID_MIN_H, WIDGET_GRID_MAX_H);
-        let placed = null;
-        for (let y = floor; !placed; y += 1) {
-            for (let x = 0; x + w <= WIDGET_GRID_COLUMNS && !placed; x += 1) {
-                if (grid.fits({ x, y, w, h })) placed = grid.take({ x, y, w, h });
-            }
-        }
-        placements.set(card.key, placed);
-    }
-    return new Map(cards.map((card) => [card.key, placements.get(card.key)]));
-}
-
-function sameSlot(a, b) {
-    return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
-}
-
-/**
- * One owner move or resize: `key` takes `slot` (clamped into the grid) and
- * every other card keeps its cell unless it would overlap, in which case it
- * is pushed straight down — in reading order, so a pushed card pushes the
- * cards below it in turn. Nothing is compacted upwards. Returns the SAME Map
- * when the slot does not change, so callers test identity for "changed".
- */
-export function arrangeWidgetSlot(placements, key, slot) {
-    const current = placements.get(key);
-    const next = normalizeWidgetSlot(slot);
-    if (!current || !next || sameSlot(current, next)) return placements;
-    const grid = occupancy();
-    const result = new Map([[key, grid.take(next)]]);
-    [...placements].filter(([other]) => other !== key).sort(byCell)
-        .forEach(([other, cell]) => result.set(other, settle(grid, cell)));
-    return new Map([...placements.keys()].map((other) => [other, result.get(other)]));
-}
-
-/** Keys by the cell they start in: top to bottom, then left to right. */
-export function widgetReadingOrder(placements) {
-    return [...placements].sort(byCell).map(([key]) => key);
-}
-
-/** Only an explicit installed-skill disabled fact releases an absent card. */
-export function confirmedDisabledWidgetKeys(savedKeys, liveKeys, skills) {
-    if (!Array.isArray(skills)) return [];
-    const live = new Set(liveKeys);
-    const disabled = new Set(skills.filter((skill) => skill?.enabled === false && !skill.identity_collision)
-        .map((skill) => skill.name));
-    return savedKeys.filter((key) => !live.has(key) && disabled.has(key.split(':', 1)[0]));
-}
-
-/** Pin shown cards; retain absent, not-confirmed-disabled keys unchanged. */
-export function widgetLayoutFromPlacements(placements, previous = {}) {
-    const entries = [...placements].map(([key, { x, y, w, h }]) => [key, { x, y, w, h }]);
-    for (const [key, slot] of Object.entries(normalizeWidgetLayout(previous))) {
-        if (!placements.has(key)) entries.push([key, slot]);
-    }
-    return Object.fromEntries(entries.slice(0, WIDGET_LAYOUT_MAX_ITEMS));
-}
-
-/**
- * Release only confirmed-disabled keys, never a card temporarily absent from
- * the live list. Survivors' existing cells are reserved before any compaction:
- * a card may move to a free EARLIER cell, but may not displace another card.
- */
-export function compactWidgetLayout(cards, previous, disabledKeys) {
-    const layout = normalizeWidgetLayout(previous);
-    const disabled = new Set(disabledKeys);
-    const missing = Object.entries(layout).filter(([key]) => disabled.has(key)).sort(byCell);
-    if (!missing.length) return null;
-    const visible = new Set(cards.map((card) => card.key));
-    const vacancy = missing[0][1];
-    const grid = occupancy();
-    const result = new Map(Object.entries(layout).filter(([key]) => !disabled.has(key)));
-    for (const slot of result.values()) grid.take(slot);
-    for (const [key, slot] of [...result].filter(([key]) => visible.has(key)).sort(byCell)) {
-        if (byCell([key, slot], missing[0]) <= 0) continue;
-        grid.free(slot);
-        let placed = null;
-        for (let y = vacancy.y; y <= slot.y && !placed; y += 1) {
-            for (let x = 0; x + slot.w <= WIDGET_GRID_COLUMNS && !placed; x += 1) {
-                if (y === slot.y && x >= slot.x) break;
-                const candidate = { ...slot, x, y };
-                if (grid.fits(candidate)) placed = candidate;
-            }
-        }
-        result.set(key, grid.take(placed || slot));
-    }
-    return Object.fromEntries(result);
+/** The next step wider (`delta` > 0) or narrower than `w`, held at the first and last step. */
+export function stepWidgetWidth(w, delta) {
+    const steps = WIDGET_WIDTH_STEPS.map((step) => step.w);
+    if (delta > 0) return steps.find((step) => step > w) ?? steps[steps.length - 1];
+    return steps.slice().reverse().find((step) => step < w) ?? steps[0];
 }
 
 /** `grid` or `stack` for a list this wide; a zero width (a hidden page) keeps the mode. */
@@ -234,34 +75,29 @@ export function widgetGridMode(width, previous = 'grid') {
     return width < WIDGET_GRID_STACK_BELOW_PX - half ? 'stack' : 'grid';
 }
 
-// Only a changed value is written, so an unchanged plan touches no style attribute.
-function writeCell(style, slot, rank) {
-    const [col, row, w, h, order] = [slot.x + 1, slot.y + 1, slot.w, slot.h, rank].map(String);
-    if (style.getPropertyValue('--widget-col') !== col) style.setProperty('--widget-col', col);
-    if (style.getPropertyValue('--widget-row') !== row) style.setProperty('--widget-row', row);
-    if (style.getPropertyValue('--widget-w') !== w) style.setProperty('--widget-w', w);
-    if (style.getPropertyValue('--widget-h') !== h) style.setProperty('--widget-h', h);
-    if (style.getPropertyValue('--widget-order') !== order) style.setProperty('--widget-order', order);
+/** One card's width, written only when it changed (a drag preview uses it too). */
+export function setWidgetCardWidth(card, w) {
+    if (card.style.getPropertyValue('--widget-w') !== String(w)) card.style.setProperty('--widget-w', String(w));
 }
 
 /**
- * Bind (once per list) and write a placement: grid lines per card, and the
- * card's rank in `order` for the stacked column. A card marked
- * `data-widget-removed` (its frame still stopping in order) keeps the cell it
- * had. The list's one ResizeObserver only switches `data-widget-layout`
- * between `grid` and `stack` by the list's own width — no card size feeds
- * back into it — one frame later, because the switch changes the observed
- * list's height and a change inside the callback would be an observer loop.
- * Every call returns the list's one idempotent disposer.
+ * Bind (once per list) and write the board: each card's width and its rank in
+ * `tabs` (already in the owner's order). A card marked `data-widget-removed`
+ * (its frame still stopping in order) keeps what it had. The list's one
+ * ResizeObserver only switches `data-widget-layout` between `grid` and
+ * `stack` by the list's own width — no card size feeds back into it — one
+ * frame later, because the switch changes the observed list's height and a
+ * change inside the callback would be an observer loop. Every call returns the
+ * list's one idempotent disposer.
  */
-export function applyWidgetGrid(container, { placements = new Map(), order = [] } = {}) {
-    if (!container) return () => {};
-    let entry = bound.get(container);
+export function applyWidgetGrid(list, { tabs = [], sizes = {} } = {}) {
+    if (!list) return () => {};
+    let entry = bound.get(list);
     if (!entry) {
         let frame = 0;
         const syncMode = () => {
-            const mode = widgetGridMode(container.clientWidth, container.dataset.widgetLayout || 'grid');
-            if (container.dataset.widgetLayout !== mode) container.dataset.widgetLayout = mode;
+            const mode = widgetGridMode(list.clientWidth, list.dataset.widgetLayout || 'grid');
+            if (list.dataset.widgetLayout !== mode) list.dataset.widgetLayout = mode;
         };
         const observer = new ResizeObserver(() => {
             if (!frame) frame = requestAnimationFrame(() => {
@@ -270,24 +106,28 @@ export function applyWidgetGrid(container, { placements = new Map(), order = [] 
             });
         });
         entry = {
+            syncMode,
             dispose() {
-                if (bound.get(container) !== entry) return;
-                bound.delete(container);
+                if (bound.get(list) !== entry) return;
+                bound.delete(list);
                 observer.disconnect();
                 if (frame) cancelAnimationFrame(frame);
                 frame = 0;
             },
         };
-        bound.set(container, entry);
-        observer.observe(container);
-        syncMode();
+        bound.set(list, entry);
+        observer.observe(list);
     }
-    const rank = new Map(order.map((key, index) => [key, index]));
-    container.querySelectorAll('[data-widget-key]').forEach((card) => {
-        const key = card.dataset.widgetKey || '';
-        const slot = placements.get(key);
-        if (!slot || card.hasAttribute('data-widget-removed')) return;
-        writeCell(card.style, slot, rank.has(key) ? rank.get(key) : order.length);
+    // Every write re-reads the width too: a page shown again may have been
+    // resized while hidden, and its first paint must not use the old mode.
+    entry.syncMode();
+    const byKey = new Map(tabs.map((tab, rank) => [widgetKey(tab), { tab, rank }]));
+    list.querySelectorAll('[data-widget-key]').forEach((card) => {
+        const placed = byKey.get(card.dataset.widgetKey || '');
+        if (!placed || card.hasAttribute('data-widget-removed')) return;
+        setWidgetCardWidth(card, widgetWidth(placed.tab, sizes));
+        const rank = String(placed.rank);
+        if (card.style.getPropertyValue('--widget-order') !== rank) card.style.setProperty('--widget-order', rank);
     });
     return entry.dispose;
 }

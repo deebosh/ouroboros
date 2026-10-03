@@ -390,3 +390,20 @@ def test_corrupt_stored_preferences_read_as_defaults(tmp_path):
         assert written.status_code == 200
         assert json.loads(path.read_text(encoding="utf-8"))["widget_size"] == {"game:main": {"w": 6, "h": 0}}
 
+
+def test_widget_board_bounds_have_one_value_in_python_and_the_browser():
+    """The server clamps with the bounds the browser board normalizes with."""
+    import re
+    from pathlib import Path
+
+    from ouroboros.gateway import ui_preferences as prefs
+
+    source = (Path(__file__).resolve().parent.parent / "web" / "modules" / "widget_grid.js").read_text(encoding="utf-8")
+
+    def js(name: str) -> int:
+        match = re.search(rf"export const {name} = (\d+);", source)
+        assert match, name
+        return int(match.group(1))
+
+    assert js("WIDGET_GRID_COLUMNS") == prefs.WIDGET_GRID_COLUMNS
+    assert js("WIDGET_SIZE_MAX_ITEMS") == prefs._MAX_WIDGET_SIZE_ITEMS

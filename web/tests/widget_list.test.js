@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    confirmedDisabledLayoutKeys,
     planWidgetListPatch,
     widgetCardSignature,
     widgetKey,
@@ -24,16 +23,6 @@ function tab(overrides = {}) {
         ...overrides,
     };
 }
-
-test('only an authoritative disabled-skill read releases a missing card', async () => {
-    const prefs = { widget_layout: { 'demo:main': { x: 0, y: 0, w: 4, h: 8 } }, widget_order: ['demo:main'] };
-    assert.deepEqual(await confirmedDisabledLayoutKeys({ extensions: async () => ({
-        skills: [{ name: 'demo', enabled: false }],
-    }) }, [], prefs), ['demo:main']);
-    assert.deepEqual(await confirmedDisabledLayoutKeys({ extensions: async () => { throw Error('offline'); } }, [], prefs), []);
-    assert.deepEqual(await confirmedDisabledLayoutKeys({ extensions: async () => ({ skills: [] }) }, [], prefs), []);
-    assert.deepEqual(await confirmedDisabledLayoutKeys({ extensions: async () => { throw Error('should not read'); } }, [tab()], prefs), []);
-});
 
 test('widgetKey prefers the server key and falls back to skill:tab_id', () => {
     assert.equal(widgetKey(tab()), 'demo:main');

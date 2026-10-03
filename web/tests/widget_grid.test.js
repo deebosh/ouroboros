@@ -4,256 +4,82 @@ import { readFileSync } from 'node:fs';
 
 import {
     applyWidgetGrid,
-    arrangeWidgetSlot,
-    defaultWidgetSize,
-    normalizeWidgetLayout,
-    normalizeWidgetSlot,
-    planWidgetGrid,
-    compactWidgetLayout,
-    confirmedDisabledWidgetKeys,
+    defaultWidgetWidth,
+    nearestWidgetWidth,
+    normalizeWidgetSize,
+    setWidgetCardWidth,
+    stepWidgetWidth,
     WIDGET_GRID_COLUMNS,
-    WIDGET_GRID_MAX_H,
-    WIDGET_GRID_MAX_Y,
-    WIDGET_GRID_MIN_H,
-    WIDGET_GRID_MIN_W,
-    WIDGET_LAYOUT_MAX_ITEMS,
+    WIDGET_GRID_STACK_BELOW_PX,
+    WIDGET_SIZE_MAX_ITEMS,
+    WIDGET_WIDTH_STEPS,
     widgetGridMode,
-    widgetLayoutFromPlacements,
-    widgetReadingOrder,
+    widgetWidth,
 } from '../modules/widget_grid.js';
 
-// Widgets grid: every card keeps a stable cell and a fixed size in grid units
-// (`ui_preferences.widget_layout`); nothing measured is ever an input, and the
-// plan reaches the DOM only as custom properties — no node is moved.
+// Widgets board (docs/DESIGN.md "Widgets board"): rows on a 12-column grid in
+// the owner's order, each card as wide as the owner's step over the author's
+// `span`, as tall as its content. Nothing measured is an input, and the board
+// reaches the DOM only as custom properties: no node is moved.
 
-const slots = (placements) => Object.fromEntries(placements);
-const card = (key, w = 4, h = 8) => ({ key, w, h });
+const tab = (key, span) => ({ key, skill: key.split(':')[0], tab_id: key.split(':')[1], span });
 
-test('a saved slot is four integers clamped into the grid; anything else is no slot', () => {
-    assert.deepEqual(normalizeWidgetSlot({ x: 2, y: 5, w: 6, h: 10 }), { x: 2, y: 5, w: 6, h: 10 });
-    // Width first, then x follows the clamped width; y and h clamp to their bounds.
-    assert.deepEqual(normalizeWidgetSlot({ x: 11, y: -3, w: 40, h: 999 }), { x: 0, y: 0, w: WIDGET_GRID_COLUMNS, h: WIDGET_GRID_MAX_H });
-    assert.deepEqual(normalizeWidgetSlot({ x: 11, y: WIDGET_GRID_MAX_Y + 5, w: 1, h: 0 }), { x: WIDGET_GRID_COLUMNS - WIDGET_GRID_MIN_W, y: WIDGET_GRID_MAX_Y, w: WIDGET_GRID_MIN_W, h: WIDGET_GRID_MIN_H });
-    for (const bad of [null, [], 'x', { x: 0, y: 0, w: 4 }, { x: 0, y: 0, w: 4, h: 1.5 }, { x: '0', y: 0, w: 4, h: 8 }, { x: true, y: 0, w: 4, h: 8 }]) {
-        assert.equal(normalizeWidgetSlot(bad), null, JSON.stringify(bad));
-    }
+test('a saved width clamps to the board, h stays 0, anything but an integer w is no size', () => {
+    assert.deepEqual(normalizeWidgetSize({
+        'a:main': { w: 6, h: 0 },
+        ' b:main ': { w: 99, h: 640 },
+        'c:main': { w: -3 },
+        'd:main': { w: '4' },
+        'e:main': { w: 4.5 },
+        'f:main': null,
+        '': { w: 4 },
+        [`${'x'.repeat(201)}`]: { w: 4 },
+    }), { 'a:main': { w: 6, h: 0 }, 'b:main': { w: WIDGET_GRID_COLUMNS, h: 0 }, 'c:main': { w: 1, h: 0 } });
+    for (const bad of [null, undefined, [], 'wide', 4]) assert.deepEqual(normalizeWidgetSize(bad), {});
+    const many = Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`s:${i}`, { w: 4 }]));
+    assert.equal(Object.keys(normalizeWidgetSize(many)).length, WIDGET_SIZE_MAX_ITEMS);
 });
 
-test('the saved layout map is bounded like the server stores it', () => {
-    assert.deepEqual(normalizeWidgetLayout(null), {});
-    assert.deepEqual(normalizeWidgetLayout([]), {});
-    assert.deepEqual(normalizeWidgetLayout({
-        ' demo:a ': { x: 0, y: 0, w: 4, h: 8 },
-        '': { x: 0, y: 0, w: 4, h: 8 },
-        ['x'.repeat(201)]: { x: 0, y: 0, w: 4, h: 8 },
-        'demo:bad': { x: 'no' },
-    }), { 'demo:a': { x: 0, y: 0, w: 4, h: 8 } });
-    const many = Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`demo:${i}`, { x: 0, y: i, w: 4, h: 4 }]));
-    assert.equal(Object.keys(normalizeWidgetLayout(many)).length, WIDGET_LAYOUT_MAX_ITEMS);
+test('the author span is the default width and the owner width wins over it', () => {
+    assert.equal(defaultWidgetWidth(tab('a:main', 1)), 4);
+    assert.equal(defaultWidgetWidth(tab('a:main', 2)), 8);
+    assert.equal(defaultWidgetWidth({ grid_span: 2 }), 8);
+    assert.equal(defaultWidgetWidth({}), 4);
+    assert.equal(defaultWidgetWidth(null), 4);
+    const sizes = { 'a:main': { w: 12, h: 0 } };
+    assert.equal(widgetWidth(tab('a:main', 1), sizes), 12);
+    assert.equal(widgetWidth(tab('b:main', 2), sizes), 8, 'a size for another card never leaks');
+    assert.equal(widgetWidth({ skill: 'a', tab_id: 'main' }, sizes), 12, 'skill:tab_id is the key fallback');
 });
 
-test('a card without a saved slot is sized from its span and declared frame height, never its content', () => {
-    // 320 px frame floor + card chrome → 8 rows of 40 px with 14 px gaps.
-    assert.deepEqual(defaultWidgetSize({ render: { kind: 'module', entry: 'w.js' } }), { w: 4, h: 8 });
-    assert.deepEqual(defaultWidgetSize({ span: 2, render: { kind: 'module', entry: 'w.js' } }), { w: 8, h: 8 });
-    assert.deepEqual(defaultWidgetSize({ grid_span: 2, render: { kind: 'iframe', route: 'v', height: 480 } }), { w: 8, h: 11 });
-    assert.deepEqual(defaultWidgetSize({ render: { kind: 'declarative', components: [] } }), { w: 4, h: 8 });
-    assert.equal(defaultWidgetSize({ render: { kind: 'module', entry: 'w.js', height: 8192 } }).h, WIDGET_GRID_MAX_H);
+test('width steps: a third, a half, two thirds, full; a drag lands on the nearest, keys walk them', () => {
+    assert.deepEqual(WIDGET_WIDTH_STEPS.map((step) => step.w), [4, 6, 8, 12]);
+    assert.deepEqual(WIDGET_WIDTH_STEPS.map((step) => step.label), ['One third', 'Half', 'Two thirds', 'Full width']);
+    assert.equal(nearestWidgetWidth(-3), 4);
+    assert.equal(nearestWidgetWidth(4.9), 4);
+    assert.equal(nearestWidgetWidth(5.2), 6);
+    assert.equal(nearestWidgetWidth(7), 6, 'a tie keeps the narrower step');
+    assert.equal(nearestWidgetWidth(10.1), 12);
+    assert.equal(nearestWidgetWidth(99), 12);
+    assert.equal(stepWidgetWidth(4, 1), 6);
+    assert.equal(stepWidgetWidth(8, 1), 12);
+    assert.equal(stepWidgetWidth(12, 1), 12, 'held at the last step');
+    assert.equal(stepWidgetWidth(8, -1), 6);
+    assert.equal(stepWidgetWidth(4, -1), 4, 'held at the first step');
+    // A width between steps (a hand-edited file) steps to its neighbours.
+    assert.equal(stepWidgetWidth(5, 1), 6);
+    assert.equal(stepWidgetWidth(5, -1), 4);
 });
 
-test('cards without saved slots pack first-fit in key order', () => {
-    const plan = planWidgetGrid([card('a', 8), card('b'), card('c'), card('d', 8, 4)]);
-    assert.deepEqual([...plan.keys()], ['a', 'b', 'c', 'd']);
-    assert.deepEqual(slots(plan), {
-        a: { x: 0, y: 0, w: 8, h: 8 },
-        b: { x: 8, y: 0, w: 4, h: 8 },
-        c: { x: 0, y: 8, w: 4, h: 8 },
-        d: { x: 4, y: 8, w: 8, h: 4 },
-    });
-    // Deterministic: the same inputs give the same cells on every revisit.
-    assert.deepEqual(slots(planWidgetGrid([card('a', 8), card('b'), card('c'), card('d', 8, 4)])), slots(plan));
-});
-
-test('saved slots win exactly; an overlap is pushed straight down; unsaved cards go below the saved arrangement', () => {
-    const layout = {
-        a: { x: 6, y: 3, w: 6, h: 5 },
-        b: { x: 0, y: 0, w: 3, h: 4 },
-        // Overlaps a (stale or clamped slot): keeps its columns, moves below a.
-        c: { x: 8, y: 4, w: 4, h: 4 },
-    };
-    const plan = planWidgetGrid([card('a'), card('b'), card('c'), card('new')], layout);
-    assert.deepEqual(slots(plan), {
-        a: { x: 6, y: 3, w: 6, h: 5 },
-        b: { x: 0, y: 0, w: 3, h: 4 },
-        c: { x: 8, y: 8, w: 4, h: 4 },
-        // Not inside the owner's composition (the free cells at x 3..5 stay free).
-        new: { x: 0, y: 12, w: 4, h: 8 },
-    });
-});
-
-test('adding, removing or updating other cards never moves a saved card', () => {
-    const layout = {
-        a: { x: 0, y: 0, w: 6, h: 6 },
-        b: { x: 6, y: 0, w: 6, h: 10 },
-        c: { x: 0, y: 6, w: 6, h: 4 },
-    };
-    const base = slots(planWidgetGrid([card('a'), card('b'), card('c')], layout));
-    const added = slots(planWidgetGrid([card('a'), card('z', 12, 20), card('b'), card('c')], layout));
-    assert.deepEqual({ a: added.a, b: added.b, c: added.c }, base);
-    assert.deepEqual(added.z, { x: 0, y: 10, w: 12, h: 20 });
-    // A removed card leaves its cell empty; nothing is compacted into it.
-    const removed = slots(planWidgetGrid([card('b'), card('c')], layout));
-    assert.deepEqual(removed, { b: base.b, c: base.c });
-    // A changed declaration (span, declared height) only changes the DEFAULT size.
-    const updated = slots(planWidgetGrid([card('a', 12, 40), card('b', 3, 4), card('c')], layout));
-    assert.deepEqual(updated, base);
-    // An absent card still reserves its retained slot, without rendering it.
-    assert.deepEqual(slots(planWidgetGrid([card('c')], layout)), { c: base.c });
-});
-
-test('a temporarily absent card reserves its slot before a new card is pinned', () => {
-    const layout = {
-        a: { x: 0, y: 12, w: 4, h: 8 },
-        b: { x: 4, y: 0, w: 4, h: 8 },
-    };
-    const whileAbsent = planWidgetGrid([card('b'), card('c')], layout);
-    assert.deepEqual(slots(whileAbsent), {
-        b: layout.b,
-        c: { x: 0, y: 20, w: 4, h: 8 },
-    });
-    const pinned = widgetLayoutFromPlacements(whileAbsent, layout);
-    assert.deepEqual(pinned.a, layout.a);
-    assert.deepEqual(slots(planWidgetGrid([card('a'), card('b'), card('c')], pinned)), {
-        a: layout.a, b: layout.b, c: pinned.c,
-    });
-});
-
-test('a move pushes the cards in its way straight down, in cascade, and compacts nothing', () => {
-    const plan = planWidgetGrid([card('a'), card('b'), card('c')], {
-        a: { x: 0, y: 0, w: 4, h: 4 },
-        b: { x: 4, y: 0, w: 4, h: 4 },
-        c: { x: 4, y: 4, w: 4, h: 4 },
-    });
-    const moved = arrangeWidgetSlot(plan, 'a', { x: 3, y: 1, w: 4, h: 4 });
-    assert.deepEqual(slots(moved), {
-        a: { x: 3, y: 1, w: 4, h: 4 },
-        b: { x: 4, y: 5, w: 4, h: 4 },
-        c: { x: 4, y: 9, w: 4, h: 4 },
-    });
-    assert.deepEqual(slots(plan).a, { x: 0, y: 0, w: 4, h: 4 }, 'the input map is never mutated');
-    // Moving down leaves the old cells empty; the cards above do not follow.
-    const down = arrangeWidgetSlot(plan, 'b', { x: 4, y: 20, w: 4, h: 4 });
-    assert.deepEqual(slots(down), { a: slots(plan).a, b: { x: 4, y: 20, w: 4, h: 4 }, c: slots(plan).c });
-});
-
-test('an unchanged, clamped-to-unchanged or unknown move returns the same map', () => {
-    const plan = planWidgetGrid([card('a'), card('b')]);
-    assert.equal(arrangeWidgetSlot(plan, 'a', { ...plan.get('a') }), plan);
-    assert.equal(arrangeWidgetSlot(plan, 'a', { ...plan.get('a'), x: -4, y: -1 }), plan);
-    assert.equal(arrangeWidgetSlot(plan, 'zzz', { x: 0, y: 0, w: 4, h: 4 }), plan);
-    assert.equal(arrangeWidgetSlot(plan, 'a', { x: 0, y: 0 }), plan);
-});
-
-test('a resize is bounded and pushes what it grows into', () => {
-    const plan = planWidgetGrid([card('a'), card('b')], { a: { x: 0, y: 0, w: 4, h: 4 }, b: { x: 0, y: 4, w: 4, h: 4 } });
-    const taller = arrangeWidgetSlot(plan, 'a', { x: 0, y: 0, w: 4, h: 6 });
-    assert.deepEqual(slots(taller), { a: { x: 0, y: 0, w: 4, h: 6 }, b: { x: 0, y: 6, w: 4, h: 4 } });
-    const tiny = arrangeWidgetSlot(plan, 'a', { x: 0, y: 0, w: 1, h: 1 });
-    assert.deepEqual(tiny.get('a'), { x: 0, y: 0, w: WIDGET_GRID_MIN_W, h: WIDGET_GRID_MIN_H });
-});
-
-test('reading order and the pinned layout write', () => {
-    const plan = planWidgetGrid([card('a'), card('b'), card('c')], {
-        a: { x: 6, y: 4, w: 4, h: 4 },
-        b: { x: 0, y: 4, w: 4, h: 4 },
-        c: { x: 8, y: 0, w: 4, h: 4 },
-    });
-    assert.deepEqual(widgetReadingOrder(plan), ['c', 'b', 'a']);
-    const previous = { gone: { x: 0, y: 0, w: 12, h: 4 } };
-    const layout = widgetLayoutFromPlacements(plan, previous);
-    assert.deepEqual(Object.keys(layout), ['a', 'b', 'c', 'gone']);
-    assert.deepEqual(layout.gone, previous.gone);
-    const crowded = new Map(Array.from({ length: 250 }, (_, i) => [`new:${i}`, { x: 0, y: i, w: 4, h: 4 }]));
-    assert.equal(Object.keys(widgetLayoutFromPlacements(crowded)).length, WIDGET_LAYOUT_MAX_ITEMS);
-});
-
-test('only a confirmed disabled skill releases a slot, not a temporarily missing tab', () => {
-    const saved = ['live:one', 'missing:one', 'disabled:one'];
-    const live = ['live:one'];
-    assert.deepEqual(confirmedDisabledWidgetKeys(saved, live, null), []);
-    assert.deepEqual(confirmedDisabledWidgetKeys(saved, live, [
-        { name: 'missing', enabled: true }, { name: 'disabled', enabled: false },
-    ]), ['disabled:one']);
-    assert.deepEqual(confirmedDisabledWidgetKeys(saved, live, [
-        { name: 'disabled', enabled: false, identity_collision: true },
-    ]), []);
-    const previous = Object.fromEntries(saved.map((key, x) => [key, { x: x * 4, y: 0, w: 4, h: 4 }]));
-    const compacted = compactWidgetLayout([card('live:one')], previous, ['disabled:one']);
-    assert.deepEqual(compacted['missing:one'], previous['missing:one']);
-    assert.equal(compacted['disabled:one'], undefined);
-    assert.equal(compactWidgetLayout([card('live:one')], previous, []), null);
-});
-
-test('disabling releases a saved slot, compacts later cards, and re-enabling starts below them', () => {
-    const all = [card('a'), card('b'), card('c')];
-    const previous = widgetLayoutFromPlacements(planWidgetGrid(all));
-    const remaining = all.slice(1);
-    const compacted = compactWidgetLayout(remaining, previous, ['a']);
-    assert.deepEqual(Object.keys(compacted), ['b', 'c']);
-    assert.deepEqual(compacted.b, previous.a);
-    assert.deepEqual(compacted.c, previous.b);
-    assert.equal(compactWidgetLayout(remaining, compacted, ['a']), null);
-    const reenabled = planWidgetGrid(all, compacted);
-    assert.equal(reenabled.get('a').y, previous.a.h, 'returning card must be placed by the owner');
-    assert.deepEqual(reenabled.get('b'), compacted.b);
-    assert.deepEqual(reenabled.get('c'), compacted.c);
-});
-
-test('compaction reserves later cells: a wide survivor never gets pushed down', () => {
-    const layout = {
-        gone: { x: 0, y: 0, w: 4, h: 4 },
-        wide: { x: 4, y: 0, w: 8, h: 8 },
-        lower: { x: 0, y: 4, w: 4, h: 4 },
-    };
-    const compacted = compactWidgetLayout([card('wide'), card('lower')], layout, ['gone']);
-    assert.deepEqual(compacted.wide, layout.wide);
-    assert.deepEqual(compacted.lower, { x: 0, y: 0, w: 4, h: 4 });
-});
-
-test('compaction leaves cards before the vacancy and their sizes intact', () => {
-    const layout = {
-        a: { x: 0, y: 0, w: 4, h: 5 },
-        gone: { x: 4, y: 0, w: 4, h: 5 },
-        b: { x: 8, y: 0, w: 4, h: 7 },
-        c: { x: 0, y: 7, w: 8, h: 9 },
-    };
-    const compacted = compactWidgetLayout([card('a'), card('b'), card('c')], layout, ['gone']);
-    assert.deepEqual(compacted.a, layout.a);
-    assert.deepEqual(compacted.b, { x: 4, y: 0, w: 4, h: 7 }, 'the vacancy is occupied without changing its height');
-    assert.equal(compacted.c.h, 9);
-});
-
-test('a reload restores the same cells from the stored JSON', () => {
-    const cards = [card('a'), card('b', 8), card('c')];
-    const arranged = arrangeWidgetSlot(planWidgetGrid(cards), 'c', { x: 2, y: 3, w: 6, h: 10 });
-    const stored = JSON.parse(JSON.stringify({ widget_layout: widgetLayoutFromPlacements(arranged, {}) }));
-    const revisit = planWidgetGrid(cards, normalizeWidgetLayout(stored.widget_layout));
-    assert.deepEqual(slots(revisit), slots(arranged));
-    // …and again with the cards arriving in another key order.
-    assert.deepEqual(slots(planWidgetGrid(cards.slice().reverse(), stored.widget_layout)), slots(arranged));
-});
-
-test('the narrow fallback switches by list width with a band against scrollbar flapping', () => {
+test('grid or stack by the list width, with a band that keeps a scrollbar from flapping it', () => {
+    assert.equal(WIDGET_GRID_STACK_BELOW_PX, 720);
     assert.equal(widgetGridMode(1200), 'grid');
-    assert.equal(widgetGridMode(500), 'stack');
-    assert.equal(widgetGridMode(0, 'stack'), 'stack', 'a hidden page keeps its mode');
-    assert.equal(widgetGridMode(0), 'grid');
-    // Inside the band, the previous mode holds.
-    assert.equal(widgetGridMode(715, 'grid'), 'grid');
-    assert.equal(widgetGridMode(715, 'stack'), 'stack');
-    assert.equal(widgetGridMode(725, 'stack'), 'stack');
+    assert.equal(widgetGridMode(708, 'grid'), 'grid');
     assert.equal(widgetGridMode(707, 'grid'), 'stack');
+    assert.equal(widgetGridMode(731, 'stack'), 'stack');
     assert.equal(widgetGridMode(732, 'stack'), 'grid');
+    assert.equal(widgetGridMode(0, 'stack'), 'stack', 'a hidden list keeps its mode');
+    assert.equal(widgetGridMode(Number.NaN, 'grid'), 'grid');
 });
 
 // --- DOM writer ------------------------------------------------------------
@@ -268,14 +94,14 @@ function fakeCard(key, { removed = false } = {}) {
         style: {
             getPropertyValue: (name) => props.get(name) || '',
             setProperty: (name, value) => { writes.push(name); props.set(name, value); },
-            removeProperty: () => { throw new Error('the grid never removes a placement'); },
+            removeProperty: () => { throw new Error('the board never removes a property'); },
         },
         hasAttribute: (name) => removed && name === 'data-widget-removed',
-        get offsetHeight() { throw new Error('the grid must never measure a card'); },
-        getBoundingClientRect() { throw new Error('the grid must never measure a card'); },
+        get offsetHeight() { throw new Error('the board must never measure a card'); },
+        getBoundingClientRect() { throw new Error('the board must never measure a card'); },
     };
     for (const name of ['before', 'after', 'append', 'prepend', 'remove', 'replaceWith', 'insertBefore', 'appendChild']) {
-        node[name] = () => { throw new Error(`the grid must not call ${name}`); };
+        node[name] = () => { throw new Error(`the board must not call ${name}`); };
     }
     return node;
 }
@@ -319,36 +145,54 @@ function installObserver() {
     return observers;
 }
 
-test('applyWidgetGrid writes cells only as custom properties and never measures or moves a card', () => {
+test('applyWidgetGrid writes width and order only as custom properties and never measures or moves a card', () => {
     installObserver();
     const a = fakeCard('demo:a');
     const b = fakeCard('demo:b');
     const retiring = fakeCard('demo:gone', { removed: true });
+    // DOM order differs from the owner's order: the order is a property, not a node move.
     const list = fakeList([b, retiring, a]);
-    const placements = planWidgetGrid([card('demo:a', 8), card('demo:b')]);
-    const dispose = applyWidgetGrid(list, { placements, order: ['demo:a', 'demo:b'] });
-    assert.deepEqual(Object.fromEntries(a.props), {
-        '--widget-col': '1', '--widget-row': '1', '--widget-w': '8', '--widget-h': '8', '--widget-order': '0',
-    });
-    assert.deepEqual(Object.fromEntries(b.props), {
-        '--widget-col': '9', '--widget-row': '1', '--widget-w': '4', '--widget-h': '8', '--widget-order': '1',
-    });
-    assert.equal(retiring.props.size, 0, 'a card whose frame is still stopping keeps the cell it had');
+    const tabs = [tab('demo:a', 2), tab('demo:b', 1)];
+    const dispose = applyWidgetGrid(list, { tabs, sizes: { 'demo:b': { w: 12, h: 0 } } });
+    assert.deepEqual(Object.fromEntries(a.props), { '--widget-w': '8', '--widget-order': '0' });
+    assert.deepEqual(Object.fromEntries(b.props), { '--widget-w': '12', '--widget-order': '1' });
+    assert.equal(retiring.props.size, 0, 'a card whose frame is still stopping keeps what it had');
     assert.equal(list.dataset.widgetLayout, 'grid');
-    // Unchanged placement: no property is written again.
+    // An unchanged board writes nothing again; a changed width writes that card only.
     const before = a.writes.length + b.writes.length;
-    applyWidgetGrid(list, { placements, order: ['demo:a', 'demo:b'] });
+    applyWidgetGrid(list, { tabs, sizes: { 'demo:b': { w: 12, h: 0 } } });
     assert.equal(a.writes.length + b.writes.length, before);
+    applyWidgetGrid(list, { tabs, sizes: {} });
+    assert.deepEqual(b.writes.slice(-1), ['--widget-w']);
+    assert.equal(b.props.get('--widget-w'), '4', 'Reset: back to the author span');
+    assert.equal(a.writes.length, 2);
+    setWidgetCardWidth(a, 6);
+    assert.equal(a.props.get('--widget-w'), '6');
     dispose();
+});
+
+test('a card carries only its own facts: with 18 cards each holds its width and a distinct rank, nothing shared', () => {
+    installObserver();
+    const keys = Array.from({ length: 18 }, (_, i) => `skill${i}:main`);
+    const cards = keys.map((key) => fakeCard(key));
+    const list = fakeList(cards.slice().reverse());
+    applyWidgetGrid(list, { tabs: keys.map((key, i) => tab(key, i % 2 ? 2 : 1)), sizes: {} });
+    for (const node of cards) assert.deepEqual([...node.props.keys()].sort(), ['--widget-order', '--widget-w']);
+    assert.equal(new Set(cards.map((node) => node.props.get('--widget-order'))).size, 18);
+    // The one board-wide fact, the layout mode, lives on the list, never on a card.
+    assert.equal(list.dataset.widgetLayout, 'grid');
+    const lone = fakeCard('skill0:main');
+    applyWidgetGrid(fakeList([lone]), { tabs: [tab('skill0:main', 1)], sizes: {} });
+    assert.deepEqual(Object.fromEntries(lone.props), Object.fromEntries(cards[0].props));
 });
 
 test('the list width alone switches grid and stack; one observer per list, one idempotent disposer', () => {
     const observers = installObserver();
     const a = fakeCard('demo:a');
     const list = fakeList([a], 1200);
-    const placements = planWidgetGrid([card('demo:a')]);
-    const dispose = applyWidgetGrid(list, { placements, order: ['demo:a'] });
-    assert.equal(applyWidgetGrid(list, { placements, order: ['demo:a'] }), dispose);
+    const tabs = [tab('demo:a', 1)];
+    const dispose = applyWidgetGrid(list, { tabs });
+    assert.equal(applyWidgetGrid(list, { tabs }), dispose);
     assert.equal(observers.length, 1);
     assert.equal(observers[0].target, list);
     list.clientWidth = 480;
@@ -358,30 +202,27 @@ test('the list width alone switches grid and stack; one observer per list, one i
     assert.equal(observers.pending(), 1, 'triggers before the frame coalesce');
     observers.flush();
     assert.equal(list.dataset.widgetLayout, 'stack');
-    // The card's cell is untouched by the switch: the stack reads it from CSS.
-    assert.equal(a.props.get('--widget-col'), '1');
+    assert.equal(a.props.get('--widget-w'), '4', 'the width stays stored on the card; the stack ignores it in CSS');
+    list.clientWidth = 1000;
+    applyWidgetGrid(list, { tabs });
+    assert.equal(list.dataset.widgetLayout, 'grid', 'a write re-reads the width: a page shown again never paints the old mode');
     list.clientWidth = 0;
     observers[0].callback();
     observers.flush();
-    assert.equal(list.dataset.widgetLayout, 'stack', 'a hidden list keeps its mode');
-    list.clientWidth = 1000;
-    observers[0].callback();
-    observers.flush();
-    assert.equal(list.dataset.widgetLayout, 'grid');
+    assert.equal(list.dataset.widgetLayout, 'grid', 'a hidden list keeps its mode');
     observers[0].callback();
     dispose();
     dispose();
     assert.equal(observers[0].disconnected, true);
     assert.equal(observers.pending(), 0, 'the disposer cancels a pending switch');
-    // Forgotten: the next call binds afresh.
-    const next = applyWidgetGrid(list, { placements, order: ['demo:a'] });
+    const next = applyWidgetGrid(list, { tabs });
     assert.notEqual(next, dispose);
     assert.equal(observers.length, 2);
     next();
     assert.equal(typeof applyWidgetGrid(null), 'function');
 });
 
-test('the grid modules measure nothing and have no node insertion or move API', () => {
+test('the board modules measure no card and have no node insertion or move API', () => {
     for (const file of ['widget_grid.js', 'widget_reorder.js']) {
         const source = readFileSync(new URL(`../modules/${file}`, import.meta.url), 'utf8');
         for (const forbidden of ['.before(', '.after(', '.prepend(', '.append(', 'insertBefore', 'appendChild', 'replaceWith', '.remove()', 'offsetHeight', 'scrollHeight', "from './masonry.js'"]) {
@@ -389,5 +230,7 @@ test('the grid modules measure nothing and have no node insertion or move API', 
         }
     }
     const grid = readFileSync(new URL('../modules/widget_grid.js', import.meta.url), 'utf8');
-    assert.equal(grid.includes('getBoundingClientRect'), false, 'placement never measures');
+    for (const measured of ['getBoundingClientRect', 'getComputedStyle', 'ResizeObserver(run', 'MutationObserver']) {
+        assert.equal(grid.includes(measured), false, `the board never uses ${measured}`);
+    }
 });

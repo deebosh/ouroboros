@@ -329,10 +329,10 @@ _WIDGET_TEMPORAL_TRACE_SCRIPT = r"""
     const start = () => {
         const observer = new MutationObserver((records) => {
             records.forEach((row) => {
-                // The grid writes a card's cell as custom properties on the card
-                // (web/modules/widget_grid.js), and only when the plan changes.
+                // The board writes a card's width and order as custom properties on
+                // the card (web/modules/widget_grid.js), and only when they change.
                 if (row.type === 'attributes' && row.target.matches?.('.widgets-card')) {
-                    record('layout', row.target, {row: row.target.style.getPropertyValue('--widget-row')});
+                    record('layout', row.target, {width: row.target.style.getPropertyValue('--widget-w')});
                 }
             });
             scan();
@@ -755,7 +755,7 @@ def test_ui_smoke_module_widget_temporal_convergence(direct_server_with_data, br
         assert quiet, diagnostic
         assert not _has_sustained_alternation(heights), diagnostic
         assert not _has_sustained_alternation(sibling_pairs), diagnostic
-        # Content-height independence: a frame growing or shrinking writes no cell.
+        # Content-height independence: a frame growing or shrinking writes no layout.
         layout_count = sum(row["kind"] == "layout" for row in trace["events"])
         if layout_writes is not None:
             assert layout_count == layout_writes, diagnostic
