@@ -204,7 +204,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── consciousness_authority.py ← The three autonomy levels of a wake (observe/act/full) and their consequences — `disabled_tools`, bound at dispatch only so the prompt prefix matches an owner turn's, `runtime_mode_cap=light` below Full, and Observe's argument-level narrowing of the mutating names it keeps (§6 Background consciousness and Evolution)
       ├── consciousness_allowance.py ← Rolling-24h consciousness spend read off the usage ledger; typed `allowance_unknown` on a read failure; read by the alarm and the single admission door in `supervisor/queue.py`
       ├── room_consolidation.py ← Per-room Light draft/correction and deterministic assembly; no cross-room LLM recombine (§6)
-      ├── chat_chain.py        ← The chat generation chain (archives, then live), the A2A-free row stream and `retain_memory_source` (§6)
+      ├── chat_chain.py        ← The chat generation chain (archives, then live), the A2A-free row stream with the legacy cursor's positions, index-free row addresses `row:<chat_id>@<ts>#<sha12>` (hint, then the archive rotated after `ts`) and `retain_memory_source` (§6)
       ├── consolidator.py      ← Generation cursor, explicit `[MEMORY GAP]`, and knowledge nomination outcomes in `dialogue_meta.json` (§6)
       ├── memory_nomination_receipts.py ← Source-addressed pending nominations; no cross-batch retirement (§6)
       ├── memory.py            ← Scratchpad, identity, chat history
