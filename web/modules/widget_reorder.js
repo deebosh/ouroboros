@@ -292,7 +292,10 @@ export function createWidgetWidths(list, options) {
         }[event.key];
         if (!w || next === undefined) return;
         event.preventDefault();
-        if (next !== w) setWidth(key, next);
+        // A card with no owner width may be shown wider than its author's span
+        // (the masonry widens a lone narrow card): a key that names that span is
+        // then a choice to store, not a repeat of what is already on screen.
+        if (next !== w || !Object.hasOwn(sizes(), key)) setWidth(key, next);
         else announce(`Width: ${widthName(next)}`);
     }
 

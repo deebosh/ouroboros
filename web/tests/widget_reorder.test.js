@@ -333,6 +333,25 @@ test('the edge handle keys step through 1, 2, 3 columns and Full width and annou
     assert.equal(saves.length, 1, 'the keys share the one-at-a-time write');
 });
 
+test('Home on a card the masonry widened beyond its author span stores one column and narrows it', async () => {
+    // Two wide cards and one narrow card on a four-column board: the masonry
+    // shows the lone narrow card two columns wide while the owner has set no width.
+    const { cards, saves, status, prefs } = board(['demo:a', 'demo:b', 'demo:c'], {
+        width: 1112, spans: { 'demo:a': 2, 'demo:b': 2 },
+    });
+    assert.deepEqual(cards.map(width), ['548px', '548px', '548px'], 'the lone narrow card is widened');
+    cards[2].handle.fire('keydown', key('Home'));
+    assert.deepEqual([width(cards[2]), status.textContent], ['267px', 'Width: 1 column']);
+    assert.deepEqual(prefs().widget_size, { 'demo:c': { w: 1, h: 0 } });
+    await settle();
+    assert.deepEqual(saves.map((save) => save.payload), [{ widget_size: { 'demo:c': { w: 1, h: 0 } } }]);
+    // Once the owner's one column is stored, the same key only names it again.
+    cards[2].handle.fire('keydown', key('ArrowLeft'));
+    await settle();
+    assert.equal(saves.length, 1);
+    assert.equal(status.textContent, 'Width: 1 column');
+});
+
 test('dragging the edge previews steps in the board\'s column pitch through the masonry; drop saves, Escape cancels', async () => {
     const { list, cards, doc, saves, status } = board();
     const handle = cards[0].handle;
