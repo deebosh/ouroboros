@@ -23,6 +23,7 @@ already addresses and the request still cannot be sent. Rendering stays
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -204,6 +205,18 @@ def render_view_for_mode(snapshot: mv.MemoryViewSnapshot, *, mode: str, owner_mo
     return (mv.render_story(snapshot, level), mv.render_room(snapshot, level, floor_note=note),
             view_facts(snapshot, level, window_tokens=window, mode=mode, allowances=allowances, target_tokens=target,
                        lowered_from=lowered_from))
+
+
+def view_receipt(snapshot: mv.MemoryViewSnapshot, story: str, room: str, facts: Mapping[str, Any]) -> Dict[str, Any]:
+    """A projection's view fact (P3 §2.13): the floor fact plus the spec, the chronicle's state and block sizes.
+
+    ``role``, ``room_id``, ``floor`` and ``story_status`` are what a task trace keeps
+    (``memory_inventory.VIEW_TRACE_KEY``); the rest is the receipt's (estimator tokens).
+    """
+    return {**facts, "spec": dataclasses.asdict(snapshot.spec), "store_status": dict(snapshot.store_status),
+            "legacy_frontier_status": snapshot.frontier.get("status"),
+            "blocks": {"story_tokens": view_tokens(story), "room_tokens": view_tokens(room),
+                       "live_rooms": len(snapshot.live_rooms), "marks": len(snapshot.marks)}}
 
 
 def minimal_view_tokens(snapshot: mv.MemoryViewSnapshot, *, window_tokens: Optional[int] = None) -> int:

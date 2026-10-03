@@ -580,10 +580,14 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
                              "lane1": [], "lane2": []}
     if spec.room_page:
         folded = {unit.record_id for unit in memory_inventory.legacy_units(store, root) if unit.folded}
+        retold = [record for record in records if record["kind"] in ("legacy", "gap")]
+        if room == MAIN_ROOM:  # the retired flat summary predates rooms and was Main's memory: first (P3 §9.9)
+            retold[:0] = [record for record in store.room_records(LEGACY_ROOM_ID)
+                          if record["kind"] == "legacy" and _mapping(record.get("metadata")).get("legacy_type") == "flat"]
         facts["legacy"] = [{"id": record["id"], "text": str(record.get("current_text") or ""),
                             "period": _legacy_period({"covers": record.get("covers"), "range_text": _mapping(
                                 record.get("metadata")).get("legacy_range_text")})}
-                           for record in records if record["kind"] in ("legacy", "gap") and record["id"] not in folded]
+                           for record in retold if record["id"] not in folded]
         facts["under_parts"] = [{"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
                                  "period": _period(_mapping(record.get("covers")).get("ts_span")),
                                  "text": str(record.get("current_text") or "")}
@@ -978,7 +982,7 @@ def working_sources_line(spec: ViewSpec, snapshot: Optional[MemoryViewSnapshot] 
     else:
         missing.append("other rooms' pages")
     (loaded if spec.knowledge else missing).append("knowledge (overview, index, patterns)")
-    if spec.owner_words:
+    if spec.owner_words and (snapshot is None or snapshot.owner_words):  # named only when the block was drawn
         loaded.append("the words of my human that caused this work")
     missing += ["the global scratchpad", "earlier task reports"]
     return ("## Working sources\n\n"

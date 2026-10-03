@@ -174,6 +174,9 @@ class ContextFitProjection:
     calibration_ratio: float
     fits_known_window: Optional[bool]
     user_content_json: Optional[str] = None
+    # The memory view's fact of this projection (``memory_floor.view_receipt``): role,
+    # room, floor steps and boundaries, block sizes; empty without a view (declared input).
+    memory_facts: Mapping[str, Any] = field(default_factory=dict)
 
     def system_message(self) -> Dict[str, Any]:
         from ouroboros.llm_messages import STABLE_PREFIX_BLOCKS_KEY
@@ -315,6 +318,11 @@ class ContextCore:
     reference_books: Tuple[ReferenceBook, ...] = ()
     compact_reference_docs: bool = False
     reference_book_errors: Tuple[str, ...] = ()
+    # Knowledge (overview, index, patterns, project journal) leading the changing block.
+    dynamic_head_text: str = ""
+    # The captured memory view (``memory_view.snapshot_json``); each projection renders
+    # it for its own mode and window. Empty: no memory view (a declared-input child).
+    memory_view_json: str = ""
 
 
 def _render_context_system_content(
@@ -322,7 +330,14 @@ def _render_context_system_content(
     core: ContextCore,
     *,
     mode: str,
+    story: str = "",
+    room: str = "",
 ) -> List[Dict[str, Any]]:
+    """``[A▸, B▸, C]``: governance and books; identity with my story; knowledge, my rooms and runtime facts.
+
+    ``story`` and ``room`` are the memory view rendered for this projection's mode and
+    window (``memory_floor.render_view_for_mode``); empty without a view.
+    """
     # D-ARCH (owner, 2026-08-08): the reference-doc form follows the RENDERED
     # mode directly — ARCHITECTURE is full in max for every task class and the
     # nav map in low; DEVELOPMENT inclusion is the caller's mode-independent
@@ -353,10 +368,10 @@ def _render_context_system_content(
         },
         {
             "type": "text",
-            "text": core.semi_stable_text,
+            "text": "\n\n".join(part for part in (core.semi_stable_text, story) if part),
             "cache_control": {"type": "ephemeral"},
         },
-        {"type": "text", "text": core.dynamic_text},
+        {"type": "text", "text": "\n\n".join(part for part in (core.dynamic_head_text, room, core.dynamic_text) if part)},
     ]
 
 
@@ -757,8 +772,15 @@ def build_context_fit_plan(
     *,
     preferred_mode: str,
     route_resolver: Callable[..., Tuple[Dict[str, Any], Any]],
+    tool_schemas: Optional[List[Dict[str, Any]]] = None,
 ) -> ContextFitPlan:
-    """Deterministically project one captured core into ordinary-task Max and Low."""
+    """Deterministically project one captured core into ordinary-task Max, Low and Nano.
+
+    Each mode renders the captured memory view against its own fixed part: the books
+    of its view, the tool schemas it would send (``tool_schemas``, Nano's selection of
+    them) and its reply reserve; the physical floor decides what of my memory that
+    mode shows only by address (``memory_floor.render_view_for_mode``).
+    """
     preferred = str(preferred_mode or "max").strip().lower()
     if preferred not in {"low", "max", "nano"}:
         preferred = "max"
@@ -790,18 +812,40 @@ def build_context_fit_plan(
     known_window = is_known(evidence, require_fresh=True)
     rendered = {}
     input_source = None
+    snapshot = None
+    if core.memory_view_json:
+        from ouroboros.memory_view import snapshot_from_json
+
+        snapshot = snapshot_from_json(core.memory_view_json)
+
+    def _estimate(system_content: List[Dict[str, Any]]) -> int:
+        return estimate_context_prompt_tokens([{"role": "system", "content": system_content},
+                                               {"role": "user", "content": user_content}])
+
+    def _memory(mode: str, view_mode: str) -> Tuple[str, str, Dict[str, Any]]:
+        if snapshot is None:
+            return "", "", {}
+        from ouroboros import memory_floor
+        from ouroboros.tool_policy import select_tool_schemas
+
+        if view_mode not in rendered:  # the fixed part without my memory, per book view
+            rendered[view_mode] = _estimate(_render_context_system_content(env, core, mode=view_mode))
+        schemas = list(select_tool_schemas(tool_schemas or [], context_mode=mode).schemas)
+        story, room, facts = memory_floor.render_view_for_mode(
+            snapshot, mode=mode, owner_mode=preferred, window_tokens=int(evidence.window_tokens or 0),
+            known_window=known_window, output_reserve=output_reserve, ratio=ratio,
+            non_memory_tokens=rendered[view_mode] + tool_schema_tokens(schemas))
+        return story, room, memory_floor.view_receipt(snapshot, story, room, facts)
 
     def _projection(mode: str) -> ContextFitProjection:
         nonlocal input_source
         from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
 
         view_mode = "low" if core.compact_reference_docs or mode == "nano" else mode
-        if view_mode not in rendered:
-            system_content = _render_context_system_content(env, core, mode=view_mode)
-            messages = [{"role": "system", "content": system_content}, {"role": "user", "content": user_content}]
-            rendered[view_mode] = (json.dumps(system_content, ensure_ascii=False, sort_keys=True),
-                                   estimate_context_prompt_tokens(messages))
-        system_content_json, estimated = rendered[view_mode]
+        story, room, memory_facts = _memory(mode, view_mode)
+        system_content = _render_context_system_content(env, core, mode=view_mode, story=story, room=room)
+        system_content_json = json.dumps(system_content, ensure_ascii=False, sort_keys=True)
+        estimated = _estimate(system_content)
         user_projection = None
         target = OWNER_NANO_TARGET_TOKENS if mode == "nano" else None
         if preferred == "nano" and target is not None and estimated + NANO_MIN_HEADROOM_TOKENS > target:
@@ -844,6 +888,7 @@ def build_context_fit_plan(
             calibration_ratio=ratio,
             fits_known_window=fits,
             user_content_json=user_projection,
+            memory_facts=memory_facts,
         )
 
     max_projection = _projection("max")
@@ -861,7 +906,9 @@ def build_context_fit_plan(
             "architecture_md": core.architecture_md,
             "development_md": core.development_md,
             "semi_stable_text": core.semi_stable_text,
+            "dynamic_head_text": core.dynamic_head_text,
             "dynamic_text": core.dynamic_text,
+            "memory_view_json": core.memory_view_json,
             "user_content": user_content,
             "docs_need_development": core.docs_need_development,
             "compact_reference_docs": core.compact_reference_docs,

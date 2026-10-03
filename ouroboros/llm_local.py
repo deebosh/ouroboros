@@ -97,7 +97,7 @@ _LOCAL_COMPACTION_MODES = {
         "Use a larger-context model or read the source file directly if this section becomes necessary.",
     ),
     "semi_stable": (
-        {"Identity", "My story", "Shared understanding"},
+        {"Identity", "My story", "My story — unavailable now", "Shared understanding"},
         "Identity, my story and the shared understanding were preserved; non-core stable memory "
         "sections were compacted for local execution.",
     ),
@@ -107,8 +107,6 @@ _LOCAL_COMPACTION_MODES = {
             "Marks I keep in view",
             "This room",
             "Scratchpad",
-            "Dialogue History",
-            "Dialogue Summary",
             "Memory Registry (what I know / don't know)",
             "Drive state",
             "Runtime context",

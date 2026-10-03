@@ -19,14 +19,16 @@ from typing import Any, List
 from ouroboros.reference_books import ReferenceBook, compose_book, load_reference_book, overview_book
 
 # Protected core: always rendered in full, in every context mode. Encoded as
-# data so a drift-guard test can assert no future change demotes it.
+# data so a drift-guard test can assert no future change demotes it. The marks I
+# keep in view never become addresses (``memory_floor`` has no step for them);
+# conversations are the memory view's, whose physical floor alone degrades them.
 TIER0_ALWAYS_FULL = frozenset({
     "system",
     "bible",
     "identity",
     "scratchpad",
     "knowledge_index",
-    "recent_dialogue",
+    "memory_marks",
 })
 
 

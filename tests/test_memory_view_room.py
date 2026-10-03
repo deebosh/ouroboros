@@ -143,6 +143,12 @@ def test_the_working_sources_line_lists_exactly_what_the_spec_loads():
             assert "knowledge (overview, index, patterns)" not in new_missing
     nanny = mv.working_sources_line(dataclasses.replace(mv.ROLE_DEFAULTS["nanny"], room_id="1"))
     assert "the top level of your story" in nanny.split(" Not loaded: ", 1)[1]
+    # With a captured view the owner's words are named only when their block was drawn.
+    words = "the words of my human that caused this work"
+    drawn = mv.MemoryViewSnapshot(spec=child, store_status={"state": "active"}, frontier={}, owner_words="W")
+    absent = dataclasses.replace(drawn, owner_words="")
+    assert words in mv.working_sources_line(child, drawn).split(" Not loaded: ", 1)[0]
+    assert words not in mv.working_sources_line(child, absent)
 
 
 # --- the live part on a richer installation ------------------------------------------------------
@@ -376,6 +382,29 @@ def test_this_room_has_its_head_retold_records_origin_words_and_notes(tmp_path):
     note = store.write_note(room_id="1", task_id="root1", text="Keep root1 in mind.", author=shared.MIND)
     _snap, noted = _view(tmp_path, MAIN_TASK)
     assert f"note {note.record['id']} by root on " in _section(noted, "### My notes not yet sealed")
+
+
+def test_main_room_page_shows_the_retired_flat_summary_whole_and_no_other_room_or_mixed_block_does(tmp_path):
+    """P3 §9.9: the flat summary predates rooms and was Main's memory: whole in Main's room page,
+    a pointer everywhere else; a room-less old block keeps its pointer only (unknown provenance)."""
+    import json
+
+    rooms = shared.world(tmp_path, flat="The retired flat summary of everything.", activate=False)
+    path = tmp_path / "memory" / "dialogue_blocks.json"
+    blocks = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps([*blocks, {"type": "era", "message_count": 0, "content": "A room-less era."}]),
+                    encoding="utf-8")
+    assert ChronicleStore(tmp_path).ensure_activated()["kind"] == "activation"
+    main = mv.capture_memory_view(tmp_path, MAIN_TASK, mv.view_spec_for_task(MAIN_TASK, tmp_path))
+    bound = {"id": "bound", "chat_id": 1}
+    alpha = mv.capture_memory_view(tmp_path, bound, mv.view_spec_for_task(bound, tmp_path))
+    retold = _section(mv.render_room(main), "### Retold before the update (helper retelling, not lived)")
+    assert retold.index("  The retired flat summary of everything.") < retold.index("  Main talk.")  # oldest first
+    assert "A room-less era." not in mv.render_room(main)
+    assert "The retired flat summary" not in mv.render_room(alpha) and str(rooms["alpha"]) in alpha.spec.room_id
+    story = mv.render_story(main)
+    assert "The retired flat summary" not in story and "memory_read(node_id='legacy-flat-" in story
+    assert "Unknown provenance [legacy mixed record]" in story
 
 
 def test_each_role_sees_its_parts_of_the_live_view(tmp_path):

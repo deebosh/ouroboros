@@ -6,9 +6,9 @@ import json
 import pytest
 
 from ouroboros import projects_registry
-from ouroboros.context import build_recent_sections
 from ouroboros.dialogue_provenance import RoomLabelResolver, render_row_text, row_author
 from ouroboros.memory import Memory
+from tests._memory_view_context import blocks, section
 
 
 def _write_chat(root, rows):
@@ -25,9 +25,16 @@ def _registry(root, projects):
     return path
 
 
-def _recent(memory, chat_id):
-    sections = build_recent_sections(memory, None, thread_chat_id=chat_id)
-    return next(s for s in sections if s.startswith("## Recent chat\n"))
+def _view(tmp_path, chat_id):
+    """The changing block of a task in ``chat_id``'s room over the drive of ``_drive``."""
+    from tests.test_cache_optimization import _make_env_and_memory
+
+    env, memory = _make_env_and_memory(tmp_path)
+    return blocks(env, memory, {"id": f"task-{chat_id}", "chat_id": chat_id})[2]
+
+
+def _drive(tmp_path):
+    return tmp_path / "drive"
 
 
 def test_room_resolution_is_current_read_only_and_not_lineage(tmp_path, monkeypatch):
@@ -81,52 +88,55 @@ def test_unknown_address_never_defaults_to_main(entry, label):
     assert RoomLabelResolver(projects=[]).label(entry) == label
 
 
-def test_actual_main_context_opts_in_once_and_keeps_existing_visibility(tmp_path, monkeypatch):
-    _registry(tmp_path, [{"id": "alpha", "chat_id": 1500, "name": "Alpha"}])
+def test_actual_main_context_names_every_room_by_its_registry_label(tmp_path):
+    """Main keeps its own rows verbatim and names every other live room in one labelled line;
+    the registry is only read, A2A never enters and the hidden partition is not Main's."""
+    root = _drive(tmp_path)
+    path = _registry(root, [{"id": "alpha", "chat_id": 1500, "name": "Alpha"}])
+    ts = "2026-01-01T00:0{}:00+00:00"
     rows = [
-        {"chat_id": 1, "direction": "in", "text": "MAIN", "project_id": "alpha"},
-        {"chat_id": 1500, "direction": "out", "text": "PROJECT"},
-        {"chat_id": 987654, "direction": "system", "text": "UNKNOWN"},
-        {"direction": "in", "text": "MISSING"},
-        {"chat_id": 0, "direction": "system", "text": "HIDDEN"},
-        {"chat_id": -10, "direction": "in", "text": "A2A EXCLUDED"},
+        {"chat_id": 1, "direction": "in", "text": "MAIN", "project_id": "alpha", "ts": ts.format(1)},
+        {"chat_id": 1500, "direction": "out", "text": "PROJECT", "ts": ts.format(2)},
+        {"chat_id": 987654, "direction": "system", "text": "UNKNOWN", "ts": ts.format(3)},
+        {"direction": "in", "text": "MISSING", "ts": ts.format(4)},
+        {"chat_id": 0, "direction": "system", "text": "HIDDEN", "ts": ts.format(5)},
+        {"chat_id": -10, "direction": "in", "text": "A2A EXCLUDED", "ts": ts.format(6)},
     ]
-    _write_chat(tmp_path, rows)
-    memory = Memory(tmp_path)
-    expected_rows, _ = memory.read_unconsolidated_chat({}, 1000)
-    read = projects_registry.list_reserved_projects
-    calls = []
-    monkeypatch.setattr(projects_registry, "list_reserved_projects", lambda root: (calls.append(root), read(root))[1])
-    recent = _recent(memory, 1)
-    assert calls == [tmp_path]
-    assert recent == "## Recent chat\n\n" + memory.summarize_chat(
-        expected_rows, include_room_labels=True, room_resolver=RoomLabelResolver(projects=read(tmp_path)),
-    )
-    for marker in ("[room=Main]", "[room=Project Alpha [chat_id=1500]]",
-                   "[room=Unknown room [chat_id=987654]]", "[room=Unresolved room [chat_id=missing]]"):
-        assert marker in recent
-    assert "A2A EXCLUDED" not in recent
-    assert recent.index("MAIN") < recent.index("PROJECT") < recent.index("UNKNOWN") < recent.index("MISSING")
+    _write_chat(root, rows)
+    before = path.read_bytes()
+    changing = _view(tmp_path, 1)
+    room, live = section(changing, "## This room (Main)"), section(changing, "## Live rooms")
+    assert path.read_bytes() == before
+    assert "] MAIN" in room and "] MISSING" in room and room.index("] MAIN") < room.index("] MISSING")
+    assert "] UNKNOWN" in room  # a non-Project chat's unbound row is Main's too
+    assert "PROJECT" not in changing and "HIDDEN" not in room and "A2A EXCLUDED" not in changing
+    for label in ("### Project Alpha [chat_id=1500] — open", "### Unknown room [chat_id=987654] — open"):
+        assert label in live, label
+    assert "Main — open" not in live  # the current room is not one of the other rooms
 
 
 @pytest.mark.parametrize("ambiguous", [False, True])
-def test_focused_project_and_explicit_history_remain_byte_identical(tmp_path, monkeypatch, ambiguous):
+def test_project_room_and_explicit_history_keep_the_row_author_and_its_body(tmp_path, monkeypatch, ambiguous):
     monkeypatch.setattr("ouroboros.memory._chat_history_snapshot_id", lambda *_: "fixture")
+    root = _drive(tmp_path)
     projects = [{"id": "alpha", "chat_id": 1500, "name": "Alpha"}]
     if ambiguous:
         projects.append({"id": "beta", "chat_id": 1500, "name": "Beta"})
-    _registry(tmp_path, projects)
+    _registry(root, projects)
     base = {"ts": "2026-01-01T00:01:00Z", "direction": "in", "sender_label": "Alex"}
-    _write_chat(tmp_path, [
+    _write_chat(root, [
         {**base, "chat_id": 1, "text": "main"},
         {**base, "chat_id": 1500, "text": "project\nsecond line", "transport": {"provider": "mail"}},
         {**base, "chat_id": 1501, "text": "sibling"},
         {**base, "chat_id": -10, "text": "a2a"},
     ])
-    memory = Memory(tmp_path)
-    assert _recent(memory, 1500).encode() == (
-        "## Recent chat\n\n← 00:01 [Alex [provider=mail]] project\nsecond line"
-    ).encode()
+    label = "Ambiguous room [chat_id=1500]" if ambiguous else "Project Alpha [chat_id=1500]"
+    room = section(_view(tmp_path, 1500), f"## This room ({label})")
+    # Label uncertainty never widens the room: only its own row, its author with the transport fact.
+    assert "; Alex [provider=mail]; row:1500@2026-01-01T00:01:00Z#" in room
+    assert "] project\n  second line" in room
+    assert "] main" not in room and "sibling" not in room and "a2a" not in room
+    memory = Memory(root)
     expected_history = (
         "Showing 3 of 3 messages; 0 older remain. Continue with offset=3, snapshot=fixture."
         " Pagination used a live offset; repeating an offset without the returned snapshot"

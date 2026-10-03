@@ -101,9 +101,11 @@ def test_call_sites_import_the_ssot_names():
         assert name not in loop_src
     assert "OWNER_LOW_TARGET_TOKENS" in _src("ouroboros/context_fit.py")
 
+    # The request reads no chat tail: the open conversation is the memory view's.
     ctx_recent_src = _src("ouroboros/context.py")
-    assert "MAX_RECENT_CHAT_TAIL" in ctx_recent_src
-    assert "read_unconsolidated_chat" in ctx_recent_src
+    assert "MAX_RECENT_CHAT_TAIL" not in ctx_recent_src
+    assert "read_unconsolidated_chat" not in ctx_recent_src
+    assert "capture_memory_view" in ctx_recent_src
     assert "last_consolidated_offset" in _src("ouroboros/memory.py")
 
     ctx_src = _src("ouroboros/context.py")

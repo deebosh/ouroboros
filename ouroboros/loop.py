@@ -429,6 +429,10 @@ def run_llm_loop(
     (active_model, active_effort, active_use_local, _preferred_context_mode, active_context_mode,
      context_fit_plan) = _initial_round_route(ctx, llm, initial_effort)
     llm_trace: Dict[str, Any] = {"reasoning_notes": [], "tool_calls": []}
+    if isinstance(getattr(ctx, "memory_view_facts", None), dict):  # this task's view fact (P4 reads it)
+        from ouroboros.memory_inventory import VIEW_TRACE_KEY
+
+        llm_trace[VIEW_TRACE_KEY] = dict(ctx.memory_view_facts)
     accumulated_usage: Dict[str, Any] = {"_task_attempt": getattr(ctx, "task_attempt", None)}
     ctx._accumulated_usage = accumulated_usage
     invalidate_task_cache_splits(task_id or getattr(ctx, "task_id", ""))  # rebuilt attempt = new prefix
