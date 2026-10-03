@@ -532,12 +532,13 @@ _lock_fd: Any = None
 
 
 def pid_lock_acquire(path: str) -> bool:
-    """Acquire an exclusive PID lock, closing the fd on lock failure."""
+    """Exclusive PID lock; a loser closes its fd and never truncates the holder's PID (second-launch signal)."""
     global _lock_fd
     fd_obj = None
     try:
-        fd_obj = open(path, "w")
+        fd_obj = open(path, "a")
         file_lock_exclusive_nb(fd_obj.fileno())
+        fd_obj.truncate(0)
         fd_obj.write(str(os.getpid()))
         fd_obj.flush()
         # Promote to global only after lock and PID write both succeed.
