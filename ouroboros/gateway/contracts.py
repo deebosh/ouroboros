@@ -905,6 +905,7 @@ class UiPreferencesResponse(TypedDict):
     ok: NotRequired[bool]
     widget_order: list[str]
     widget_start_mode: dict[str, Literal["auto", "manual", "retain"]]  # owner per-card launch-policy override
+    widget_size: dict[str, dict[str, int]]  # owner Widgets card width: {w: masonry columns the card spans, 12 = full width; h: 0}
     nested_subagents_expanded: bool
     sidebar_width: int  # px; 0 = CSS default (resizable side sections, v6.33.0)
     project_panel_width: int  # px; 0 = CSS default
@@ -1545,8 +1546,7 @@ __all__ = [
     "OnboardingPresetFailureResponse",
     "OnboardingPresetProjection",
     "SettingsPostCommitFailureResponse",
-    "SkillGrantResponse",
-    "SkillDeleteResponse",
+    "SkillGrantResponse", "SkillDeleteResponse",
     "UiPreferencesResponse", "DesktopAutostartResponse",
     "GitLogResponse",
     "EvolutionDataResponse",
