@@ -855,6 +855,7 @@ def _dispatch_round_model(
     elif ctx.task_type == "presence":
         ctx.tools._ctx._deferred_resource_refusal = None
     previous_call = ctx.accumulated_usage.get("_last_llm_call_meta")
+    ctx.tools._ctx._usable_main_capture = None
     from ouroboros.acceptance_settlement import expose_acceptance_feedback
 
     import copy
@@ -906,6 +907,7 @@ def _dispatch_round_model(
             send_clock_policy=main_clock_policy(
                 getattr(ctx.tools._ctx, "task_metadata", {}), task_type=ctx.task_type),
         )
+    capture = _loop().last_physical_attempt_capture()
     if primary and deferral is not None and deferral.fact and result[0] is None:
         ctx.tools._ctx._deferred_resource_refusal = deferral
         if not waiter.waits_allowed:  # typed at once: the terminal may come before any chain
@@ -943,6 +945,8 @@ def _dispatch_round_model(
             and call.get("round_id") == f"{execution_id}:round:{ctx.round_idx}"
             and call.get("llm_call_id")):
         call["usable_solve_response"] = True
+        if capture is not None and capture.physical_context is not None and capture.physical_context.round_id == call["round_id"]:
+            ctx.tools._ctx._usable_main_capture = capture
     return result
 
 
@@ -1029,6 +1033,10 @@ def _run_main_reclaim(
     passes = _loop()._context_reclaim_passes(ctx.tools._ctx)
     if key in passes:
         return None
+    economic_deficit = int(measurement.target_deficit_tokens or 0)
+    physical_deficit = int(measurement.capacity_deficit_tokens or 0)
+    # A soft economic target cannot veto useful relief of physical pressure.
+    deficit = 0 if minimum_goal_tokens else physical_deficit or economic_deficit
     request = ContextReclaimRequest(
         route_fp=measurement.route_fp,
         round_id=measurement.round_id,
@@ -1048,6 +1056,8 @@ def _run_main_reclaim(
         task_id=ctx.task_id,
         negative_memo=reclaim_negative_memo(ctx.tools._ctx),
         trace_refs_by_tool_call_id=reclaim_trace_refs(ctx.tools._ctx),
+        exposed_units=(getattr(ctx.tools._ctx, "_last_context_observation", {}) or {}).get("exposed_units", []),
+        automatic_deficit_tokens=deficit,
     )
     passes.add(key)
     # The checkpoint is written only after non-empty selection and immediately
@@ -1067,8 +1077,6 @@ def _run_main_reclaim(
     # boundary, so the landing is re-measured on the SAME fit basis as the trigger
     # and "reached the boundary" stays distinct from "achieved the margin"
     # (reclaimed == deficit is AT the boundary, not below it).
-    deficit = max(int(measurement.target_deficit_tokens or 0),
-                  int(measurement.capacity_deficit_tokens or 0))
     requested_margin = int(request.reclaim_goal_tokens) - deficit
     landed = measurement
     if receipt.status == "applied":
@@ -1097,6 +1105,7 @@ def _run_main_reclaim(
         "reclaimed_tokens": receipt.reclaimed_tokens,
         "goal_reached": receipt.goal_reached,
         "checkpoint_ref": receipt.checkpoint_ref,
+        "reclaim_fit": receipt.fit,
         "deficit_tokens": deficit,
         "requested_margin_tokens": requested_margin,
         "achieved_headroom_tokens": headroom,
@@ -1105,6 +1114,22 @@ def _run_main_reclaim(
         "rounds_since_previous_pass": (
             int(ctx.round_idx) - int(previous_round) if previous_round is not None else None),
     })
+    if (receipt.fit or {}).get("reason") == "automatic_reclaim_unreachable":
+        # One anchored notice per route/boundary; repeated impossible rounds
+        # update the existing checkpoint rail rather than growing the transcript.
+        marker = (f"[Context reclaim facts: {measurement.route_fp}; "
+                  f"target={measurement.target_total_tokens}; capacity={measurement.capacity_total_tokens}]")
+        if not any(message.get("role") == "user" and isinstance(message.get("content"), str)
+                   and message["content"].startswith(marker) for message in ctx.messages):
+            ctx.messages.append({"role": "user", "content": (
+                f"{marker} At round {ctx.round_idx}, on the {measurement.measurement_basis} estimate "
+                f"(density {measurement.measurement_density}), removing all eligible exposed sources could "
+                f"free at most {receipt.fit['maximum_reclaim_tokens']} tokens, below the triggering "
+                f"deficit of {deficit}. Input was {measurement.estimated_input_tokens} tokens plus "
+                f"{measurement.response_reserve_tokens} reserved for output. The host kept earlier records "
+                "and unconsumed sources and skipped the helper call. These are estimates, not a provider refusal. "
+                "Choose how to reshape your working view or recover sources; later measurements are in the "
+                "task checkpoints. This is a host fact, not an owner instruction.")})
     return receipt
 
 
@@ -1359,6 +1384,10 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     if overflow_fit is None:
         return msg, cost, ctx.active_context_mode
     key = _fit_key(overflow_fit)
+    if key not in _loop()._context_reclaim_materializations(ctx.tools._ctx):
+        # A skipped (unreachable or empty) automatic pass did not consume the
+        # physical recovery work: the refusal may still shrink exposed raw units.
+        _loop()._context_reclaim_passes(ctx.tools._ctx).discard(key)
     if key not in _loop()._context_reclaim_passes(ctx.tools._ctx):
         # The provider proved the prediction short by an unknown amount: request a
         # low-water-sized pass, never a token-sized one, so the single strict-shrink
