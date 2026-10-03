@@ -49,18 +49,32 @@ def background_env(presentation: str) -> dict:
     return {BACKGROUND_ENV: "1" if presentation == "desktop_window" and sys.platform in ("win32", "darwin") else ""}
 
 
+WORKING_PHASES = ("thinking", "working", "finalizing")  # the page's own set (web/modules/project_activity.js)
+
+
 def status_line(port: int) -> str:
-    """The indicator's state line, read from the server's own ``/api/state``."""
+    """The indicator's state line from the server's own ``/api/state``: work only from confirmed phases,
+    and an unknown state said as unknown (not ready, an error, an incomplete census, an unknown phase)."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{int(port)}/api/state", timeout=5) as response:
-            rows = [row for row in json.loads(response.read().decode("utf-8")).get("active_chat_activities") or []
-                    if isinstance(row, dict)]
+            state = json.loads(response.read().decode("utf-8"))
+        rows = state["active_chat_activities"]
+        phases = [str(row.get("phase") or "") for row in rows]
     except Exception:
-        return "Ouroboros: stopped"
-    working = sum(1 for row in rows if row.get("phase") not in ("queued", "budget_paused"))
+        return "Ouroboros: not responding"
+    if state.get("supervisor_error"):
+        return "Ouroboros: error, tasks are not running"
+    if state.get("supervisor_ready") is not True:
+        return "Ouroboros: starting"
+    if state.get("active_chat_activities_complete") is not True or not set(phases) <= {
+            *WORKING_PHASES, "queued", "budget_pausing", "budget_paused"}:
+        return "Ouroboros: activity unconfirmed"
+    working = sum(phase in WORKING_PHASES for phase in phases)
     if working:
         return f"Ouroboros: working on {working} task{'' if working == 1 else 's'}"
-    return "Ouroboros: paused" if any(row.get("phase") == "budget_paused" for row in rows) else "Ouroboros: waiting"
+    if "budget_pausing" in phases:  # settling its Pause: neither working nor paused yet, as on the page
+        return "Ouroboros: pausing"
+    return "Ouroboros: paused" if "budget_paused" in phases else "Ouroboros: waiting"
 
 
 def signin_startup_on(port: int) -> bool:

@@ -441,30 +441,38 @@ def test_turning_background_off_removes_the_icon_only_while_the_window_is_visibl
     assert ("dispose", 0.0) in background.events and not background.indicator.ready.is_set()
 
 
-@pytest.mark.parametrize("rows,line", [
-    (None, "Ouroboros: stopped"),
-    ([], "Ouroboros: waiting"),
-    ([{"phase": "queued"}], "Ouroboros: waiting"),
-    ([{"phase": "working"}, {"phase": "finalizing"}, {"phase": "queued"}], "Ouroboros: working on 2 tasks"),
-    ([{"phase": "working"}], "Ouroboros: working on 1 task"),
-    ([{"phase": "budget_paused"}], "Ouroboros: paused"),
+READY = {"supervisor_ready": True, "supervisor_error": None, "active_chat_activities_complete": True}
+
+
+def census(*phases, **facts):
+    return {**READY, "active_chat_activities": [{"phase": phase} for phase in phases], **facts}
+
+
+@pytest.mark.parametrize("body,line", [
+    (OSError("refused"), "Ouroboros: not responding"),  # refused, timed out (a busy server is not "stopped")
+    (b"<html>", "Ouroboros: not responding"),
+    (census(), "Ouroboros: waiting"),
+    (census("queued"), "Ouroboros: waiting"),
+    (census("working", "finalizing", "thinking", "queued"), "Ouroboros: working on 3 tasks"),
+    (census("working"), "Ouroboros: working on 1 task"),
+    (census("budget_paused"), "Ouroboros: paused"),
+    (census("budget_pausing", "budget_paused"), "Ouroboros: pausing"),  # settling a Pause is not work (page)
+    (census("working", "budget_pausing"), "Ouroboros: working on 1 task"),
+    # What the server says it does not know is neither "waiting" nor "working" (review r1).
+    (census(supervisor_ready=False, supervisor_error="Supervisor init failed: boom"),
+     "Ouroboros: error, tasks are not running"),
+    (census(supervisor_ready=False), "Ouroboros: starting"),
+    (census(active_chat_activities_complete=False), "Ouroboros: activity unconfirmed"),
+    (census("unknown", active_chat_activities_complete=False), "Ouroboros: activity unconfirmed"),
+    (census("unknown"), "Ouroboros: activity unconfirmed"),
+    (census("working", active_chat_activities_complete=False), "Ouroboros: activity unconfirmed"),
 ])
-def test_the_state_line_reads_the_servers_own_activity(monkeypatch, rows, line):
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
-        def read(self):
-            return json.dumps({"active_chat_activities": rows}).encode()
-
+def test_the_state_line_reads_the_servers_own_activity(monkeypatch, body, line):
     def urlopen(url, timeout):
         assert url == "http://127.0.0.1:8765/api/state"
-        if rows is None:
-            raise OSError("refused")
-        return Response()
+        if isinstance(body, Exception):
+            raise body
+        return Answer(body if isinstance(body, bytes) else json.dumps(body).encode())
 
     monkeypatch.setattr(lb.urllib.request, "urlopen", urlopen)
     assert lb.status_line(8765) == line
