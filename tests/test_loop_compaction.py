@@ -33,7 +33,7 @@ def _fit(
         rendered_mode=mode,
         estimated_input_tokens=estimated_input,
         response_reserve_tokens=65_536,
-        target_total_tokens=200_000 if profile == "owner_low" else None,
+        target_total_tokens=250_000 if profile == "owner_low" else None,
         capacity_total_tokens=500_000,
         measurement_basis="cold_estimate",
         measurement_density=1.0,
@@ -112,7 +112,7 @@ def _failed_capture(*, profile="owner_max", mode="max", reserve=65_536, size=1_0
         measurement_basis="cold_estimate",
         route_fp="route-a",
         round_id="exec:round:1",
-        target_total_tokens=200_000 if profile == "owner_low" else None,
+        target_total_tokens=250_000 if profile == "owner_low" else None,
         capacity_total_tokens=500_000,
         context_target_miss=False,
         automatic_pass_used=False,
@@ -245,14 +245,14 @@ def _applied_receipt(*, reclaimed: int, goal_reached: bool):
     )
 
 
-# Owner Low: the 200,000 target binds (capacity 500,000); its input boundary is
-# 200,000 - 65,536 = 134,464 estimated tokens; margin = ceil(200,000 / 8) = 25,000.
-_LOW_BOUNDARY_INPUT = 200_000 - 65_536
+# Owner Low: the 250,000 target binds (capacity 500,000); its input boundary is
+# 250,000 - 65,536 = 184,464 estimated tokens; margin = ceil(250,000 / 8) = 31,250.
+_LOW_BOUNDARY_INPUT = 250_000 - 65_536
 
 
 @pytest.mark.parametrize("landed_input,headroom,reached,below", [
     (_LOW_BOUNDARY_INPUT, 0, True, False),  # reclaimed == deficit: AT the boundary, not below
-    (_LOW_BOUNDARY_INPUT - 25_000, 25_000, True, True),  # the full margin achieved
+    (_LOW_BOUNDARY_INPUT - 31_250, 31_250, True, True),  # the full margin achieved
     (_LOW_BOUNDARY_INPUT - 12_000, 12_000, True, False),  # under-landed: reached, margin missed
     (_LOW_BOUNDARY_INPUT + 2_000, -2_000, False, False),  # still above the boundary
 ])
@@ -263,9 +263,9 @@ def test_reclaim_checkpoint_separates_boundary_from_low_water(
 
     context = _ctx(tmp_path, preferred="low", mode="low")
     disposition = _fit(
-        action="reclaim_once", profile="owner_low", mode="low", goal=10_000 + 25_000,
+        action="reclaim_once", profile="owner_low", mode="low", goal=10_000 + 31_250,
         target_deficit=10_000, capacity_deficit=0, estimated_input=_LOW_BOUNDARY_INPUT + 10_000,
-        low_water_margin=25_000,
+        low_water_margin=31_250,
     )
     landed = _fit(
         action="send", profile="owner_low", mode="low", used=True, estimated_input=landed_input,
@@ -287,8 +287,8 @@ def test_reclaim_checkpoint_separates_boundary_from_low_water(
     event = events[-1]
     assert event["checkpoint_kind"] == "context_reclaim_automatic"
     assert event["deficit_tokens"] == 10_000
-    assert event["requested_margin_tokens"] == 25_000
-    assert event["reclaim_goal_tokens"] == 35_000
+    assert event["requested_margin_tokens"] == 31_250
+    assert event["reclaim_goal_tokens"] == 41_250
     assert event["achieved_headroom_tokens"] == headroom
     assert event["boundary_reached"] is reached
     assert event["below_boundary"] is below
@@ -304,9 +304,9 @@ def test_reclaim_checkpoint_counts_rounds_since_the_previous_pass_without_remeas
     context = replace(_ctx(tmp_path, preferred="low", mode="low"), round_idx=9)
     context.tools._ctx._context_reclaim_last_pass_round = 3
     disposition = _fit(
-        action="reclaim_once", profile="owner_low", mode="low", goal=10_000 + 25_000,
+        action="reclaim_once", profile="owner_low", mode="low", goal=10_000 + 31_250,
         target_deficit=10_000, capacity_deficit=0, estimated_input=_LOW_BOUNDARY_INPUT + 10_000,
-        low_water_margin=25_000,
+        low_water_margin=31_250,
     )
     disposition = replace(
         disposition, measurement=replace(disposition.measurement, round_id="exec:round:9"),
@@ -333,7 +333,7 @@ def test_reclaim_checkpoint_counts_rounds_since_the_previous_pass_without_remeas
     assert event["achieved_headroom_tokens"] == -10_000
     assert event["boundary_reached"] is False
     assert event["below_boundary"] is False
-    assert event["requested_margin_tokens"] == 25_000
+    assert event["requested_margin_tokens"] == 31_250
     assert context.tools._ctx._context_reclaim_last_pass_round == 9
 
 
@@ -345,9 +345,9 @@ def test_reclaim_checkpoint_reports_an_unmeasurable_landing_as_unknown(tmp_path,
 
     context = _ctx(tmp_path, preferred="low", mode="low")
     disposition = _fit(
-        action="reclaim_once", profile="owner_low", mode="low", goal=10_000 + 25_000,
+        action="reclaim_once", profile="owner_low", mode="low", goal=10_000 + 31_250,
         target_deficit=10_000, capacity_deficit=0, estimated_input=_LOW_BOUNDARY_INPUT + 10_000,
-        low_water_margin=25_000,
+        low_water_margin=31_250,
     )
     events = []
     monkeypatch.setattr(
@@ -364,7 +364,7 @@ def test_reclaim_checkpoint_reports_an_unmeasurable_landing_as_unknown(tmp_path,
     assert events[-1]["achieved_headroom_tokens"] is None
     assert events[-1]["boundary_reached"] is None
     assert events[-1]["below_boundary"] is None
-    assert events[-1]["requested_margin_tokens"] == 25_000
+    assert events[-1]["requested_margin_tokens"] == 31_250
 
 
 def test_overflow_minimum_goal_is_low_water_sized_even_without_a_predicted_deficit(
@@ -387,12 +387,12 @@ def test_overflow_minimum_goal_is_low_water_sized_even_without_a_predicted_defic
 
     monkeypatch.setattr(loop, "compact_tool_history_llm", compact)
     monkeypatch.setattr(loop, "_emit_checkpoint_event", lambda _q, _t, _d, data: events.append(data))
-    minimum = max(1, reclaim_low_water_margin(200_000, 500_000))  # what the overflow path passes
+    minimum = max(1, reclaim_low_water_margin(250_000, 500_000))  # what the overflow path passes
     loop._run_main_reclaim(context, disposition, minimum_goal_tokens=minimum)
 
-    assert requests == [25_000]
+    assert requests == [31_250]
     assert events[-1]["deficit_tokens"] == 0
-    assert events[-1]["requested_margin_tokens"] == 25_000
+    assert events[-1]["requested_margin_tokens"] == 31_250
     assert events[-1]["achieved_headroom_tokens"] == 500
     assert events[-1]["boundary_reached"] is True
     assert events[-1]["below_boundary"] is False
@@ -983,4 +983,4 @@ def test_unmaterialized_automatic_pass_leaves_physical_overflow_recovery(tmp_pat
     msg, _cost, _mode = loop._call_round_model(context)
 
     assert msg["content"] == "fits" and sends == [False, True]
-    assert reclaims == ([0] if materialized else [0, max(1, reclaim_low_water_margin(200_000, 500_000))])
+    assert reclaims == ([0] if materialized else [0, max(1, reclaim_low_water_margin(250_000, 500_000))])
