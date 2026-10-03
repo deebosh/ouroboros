@@ -5274,40 +5274,27 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     padding: 0;
 }
 
-/* Widgets board (docs/DESIGN.md "Widgets board"). Rows on a 12-column grid:
-   web/modules/widget_grid.js writes ONLY `--widget-w` (columns) and
-   `--widget-order` (the owner's order) on each card and `data-widget-layout`
-   on the list; these static rules apply them. Cards keep their content height
-   and align to the top of their row; nothing is measured, and a reorder or a
-   resize never moves a DOM node (a moved <iframe> would reload). The stacked
-   column of a narrow list ignores widths. */
+/* Widgets page. Masonry (web/modules/masonry.js) measures and packs the cards
+   and writes the result ONLY as custom properties — `--masonry-h` on the list,
+   `--masonry-w/-x/-y` on each card; these static rules apply them. Cards are
+   positioned by transform in the owner's key order, so a reorder never moves a
+   DOM node (a moved <iframe> would reload). The owner's column spans reach the
+   masonry plan, not these rules (docs/DESIGN.md "Widgets board"). */
 
 .widgets-list {
-    display: grid;
-    grid-template-columns: repeat(12, minmax(0, 1fr));
-    gap: 14px;
-    align-items: start;
+    position: relative;
     margin-top: 16px;
-}
-
-.widgets-list > :not(.widgets-card) {
-    grid-column: 1 / -1;
+    height: var(--masonry-h, auto);
 }
 
 .widgets-card {
-    position: relative;
-    grid-column: span var(--widget-w, 4);
-    order: var(--widget-order, 0);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: var(--masonry-w, auto);
+    transform: translate(var(--masonry-x, 0px), var(--masonry-y, 0px));
     padding: 14px;
     backdrop-filter: blur(12px);
-}
-
-.widgets-list[data-widget-layout="stack"] {
-    grid-template-columns: minmax(0, 1fr);
-}
-
-.widgets-list[data-widget-layout="stack"] > .widgets-card {
-    grid-column: 1 / -1;
 }
 
 .widgets-card.dragging {
@@ -5332,8 +5319,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
 }
 
 /* The width handle: a thin strip on the card's right edge, the edge vocabulary
-   of the side-panel `.resize-handle`. The stacked column ignores widths and
-   has no handle; the card menu sets widths on every surface. */
+   of the side-panel `.resize-handle`. A list too narrow for two columns
+   ignores widths and has no handle; the card menu sets widths everywhere. */
 .widgets-card-resize {
     position: absolute;
     top: 0;
@@ -5380,8 +5367,8 @@ textarea.chat-input::placeholder { color: var(--text-muted); }
     margin-top: 12px;
 }
 
-/* Each card is its own stacking context (backdrop-filter), so an open card
-   menu would otherwise paint under a later sibling card. */
+/* Each card is its own stacking context (transform + backdrop-filter), so an
+   open card menu would otherwise paint under a later sibling card. */
 .widgets-card:has(.skills-card-menu-dialog[open]) {
     z-index: 1;
 }

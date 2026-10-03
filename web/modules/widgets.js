@@ -73,8 +73,10 @@ function renderCardHtml(tab) {
     const subtitle = tab.skill && tab.skill !== title
         ? `<span class="widgets-card-source">from ${escapeHtml(tab.skill)}</span>`
         : '';
+    const span = Number(tab.span || tab.grid_span || 1);
+    const spanClass = span >= 2 ? ' widgets-card-span-2' : '';
     return `
-        <article class="widgets-card" data-widget-key="${escapeHtml(widgetKey(tab))}">
+        <article class="widgets-card${spanClass}" data-widget-key="${escapeHtml(widgetKey(tab))}">
             <div class="widgets-card-head">
                 <div class="widgets-card-title">
                     <strong>${escapeHtml(title)}</strong>
@@ -1185,8 +1187,8 @@ function retireCard(card, settling) {
 // changed are replaced — a running one retires first while its fresh card is
 // inserted beside it and mounts once the stop settled (`mountTrackedTab` waits
 // on the same settle promise) — new cards are appended, every other card keeps
-// its DOM node. No node ever moves: the visible order is the board's
-// `--widget-order` (widget_grid.js), and a moved <iframe> would reload.
+// its DOM node. No node ever moves: the visible order is the masonry key order,
+// and a moved <iframe> would reload. The list's masonry relayouts on the mutation.
 function patchWidgetCards(list, previousTabs, nextTabs) {
     const plan = planWidgetListPatch(previousTabs, nextTabs);
     for (const key of plan.removed) {
@@ -1297,13 +1299,12 @@ export function initWidgets(ctx = {}) {
     // its frame while Widgets is hidden; every other mounted card is stopped.
     const retainsWhileHidden = (key) => isRetainedWidget(tabByKey(key), uiPreferences);
     const keptRunning = () => Array.from(widgetDisposers.keys()).filter(retainsWhileHidden);
-    // The complete visible key order (`lastTabs` already carries `widget_order`)
-    // and the owner's widths: the board writes both as custom properties only.
+    // The complete visible key order (`lastTabs` already carries `widget_order`) and the
+    // owner's widths: masonry packs the cards by them; no DOM node is ever moved for it.
     const currentWidgetOrder = () => (lastTabs || []).map(widgetKey);
     const widths = createWidgetWidths(list, {
         tabs: () => lastTabs || [], prefs: () => uiPreferences, save: (payload) => apiClient.saveUiPreferences(payload),
         adopt(widgetSize) { uiPreferences = { ...uiPreferences, widget_size: widgetSize }; },
-        status: list.parentElement.querySelector('[data-widget-arrange-status]'),
     });
     const relayout = widths.relayout;
 
@@ -1459,9 +1460,8 @@ export function initWidgets(ctx = {}) {
         }
     }
 
-    // A reorder (handle drag / keys) hands over the next order of the shown cards:
-    // merge it into the stored order (a card not on screen keeps its slot),
-    // re-sort the last good list, relayout in place, persist. No node moves.
+    // A reorder (handle drag / keys) hands over the next order of the shown cards: merge it
+    // into the stored order (a card not on screen keeps its slot), re-sort, relayout, persist.
     function persistWidgetOrder(order) {
         const normalized = mergeWidgetOrder(uiPreferences.widget_order, order);
         uiPreferences = { ...uiPreferences, widget_order: normalized };

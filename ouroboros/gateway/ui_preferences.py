@@ -19,9 +19,9 @@ DEFAULT_UI_PREFERENCES: dict[str, Any] = {
     # checked against live widgets, so a temporarily disabled or removed skill keeps
     # the owner's choice instead of losing it with the next discovery.
     "widget_start_mode": {},
-    # Owner width of a Widgets card, keyed like widget_start_mode: {"w": columns of
-    # the 12-column board, "h": 0}. ``h`` is reserved for a pinned card height and is
-    # stored as 0 until that exists. A POST merges by key and a null value deletes
+    # Owner width of a Widgets card, keyed like widget_start_mode: {"w": masonry columns
+    # the card spans, 12 = full width; "h": 0}. ``h`` is reserved for a pinned card height
+    # and is stored as 0 until that exists. A POST merges by key and a null value deletes
     # one (the card falls back to its author ``span``); keys are never checked
     # against live widgets. Semantics: docs/DESIGN.md "Widgets board".
     "widget_size": {},
@@ -46,7 +46,7 @@ _MAX_WIDGET_ORDER_ITEMS = 200
 _MAX_WIDGET_START_MODE_ITEMS = 200
 _MAX_WIDGET_KEY_LENGTH = 200
 _MAX_WIDGET_SIZE_ITEMS = 200
-WIDGET_GRID_COLUMNS = 12  # mirrored by web/modules/widget_grid.js
+WIDGET_GRID_COLUMNS = 12  # the bound of w and its full-width value (web/modules/widget_size.js WIDGET_FULL_SPAN)
 _SIDEBAR_WIDTH_MIN, _SIDEBAR_WIDTH_MAX = 180, 560
 _PROJECT_PANEL_WIDTH_MIN, _PROJECT_PANEL_WIDTH_MAX = 320, 1100
 _MAX_PROJECT_CURSORS = 1000

@@ -1436,7 +1436,7 @@
  * @typedef {Object} UiPreferencesResponse
  * @property {string[]} widget_order
  * @property {Object.<string,'auto'|'manual'|'retain'>} widget_start_mode  // owner per-card launch-policy override, keyed "<skill>:<tab_id>"
- * @property {Object.<string,{w:number,h:number}>} widget_size  // owner Widgets card width per card: w board columns, h 0 (reserved)
+ * @property {Object.<string,{w:number,h:number}>} widget_size  // owner Widgets card width: w masonry columns the card spans (12 = full width), h 0 (reserved)
  * @property {boolean} nested_subagents_expanded
  * @property {number} sidebar_width  // px; 0 = CSS default (v6.33.0)
  * @property {number} project_panel_width  // px; 0 = CSS default

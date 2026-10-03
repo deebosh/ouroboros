@@ -4,9 +4,8 @@
    itself — its shared deadline, its sibling-abort policy and the controller
    lifecycle navigation and disposal cancel through.
    Card order is deliberately NOT part of the list signature — `widget_order`
-   is a separate, cheap fact the page applies through the board's
-   `--widget-order` (web/modules/widget_grid.js), never by moving or
-   rebuilding nodes. */
+   is a separate, cheap fact the page applies through the masonry key order,
+   never by moving or rebuilding nodes. */
 
 import { WIDGET_REQUEST_TIMEOUT_MS, withWidgetRequestTimeout } from './widget_job.js';
 

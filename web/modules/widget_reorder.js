@@ -3,7 +3,7 @@
    into the stored order (a card not on screen keeps its slot), the drag /
    keyboard reorder handles, and the card widths (`createWidgetWidths`: the
    card menu, the edge handle and its keys over `ui_preferences.widget_size`).
-   Nothing here moves an <article>: the board (web/modules/widget_grid.js)
+   Nothing here moves an <article>: the masonry (web/modules/masonry.js)
    places the cards by custom properties, so a running frame — retained or
    not — is never reloaded by a reorder or a resize. widgets.js owns persisting
    the order through `/api/ui/preferences`. Disclosed residual: the Tab / focus
@@ -12,10 +12,11 @@
    through the handle follows the key order. */
 
 import { widgetKey } from './widget_list.js';
+import { applyMasonry } from './masonry.js';
 import {
-    applyWidgetGrid, nearestWidgetWidth, normalizeWidgetSize, setWidgetCardWidth, stepWidgetWidth,
-    WIDGET_GRID_COLUMNS, WIDGET_WIDTH_STEPS, widgetWidth,
-} from './widget_grid.js';
+    nearestWidgetWidth, normalizeWidgetSize, ownerSpans, stepWidgetWidth, WIDGET_FULL_SPAN, WIDGET_WIDTH_STEPS,
+    widgetWidth, widthColumns,
+} from './widget_size.js';
 
 export function normalizeWidgetOrder(value) {
     if (!Array.isArray(value)) return [];
@@ -158,36 +159,40 @@ export function bindWidgetCardReorder(list, currentOrder, onOrderChange) {
 }
 
 const WIDTH_NAMES = new Map(WIDGET_WIDTH_STEPS.map(({ w, label }) => [w, label.toLowerCase()]));
-const widthName = (w) => WIDTH_NAMES.get(w) || `${w} of ${WIDGET_GRID_COLUMNS} columns`;
+const widthName = (w) => WIDTH_NAMES.get(w) || `${w} columns`;
 
 /**
  * The card widths of one Widgets list. `options.tabs()` — the shown cards in
  * key order; `options.prefs()` — the page's current `ui_preferences`;
  * `options.adopt(sizes)` replaces its `widget_size`; `options.save(payload)`
- * POSTs; `options.status` — the page's live region.
+ * POSTs. The live region is the list's `[data-widget-arrange-status]` sibling.
  *
- * `relayout()` binds the edge handles of new cards and writes the board. The
- * card menu sets a width step or `null` (the author default) through
- * `setWidth`. On the desktop board the edge handle drags a card between width
- * steps with a live preview (Escape cancels) and its arrow keys step it (Home /
- * End: narrowest / full width); the stacked column ignores widths and hides
- * the handle. Every change, the menu's included, is named in the live region,
- * shows at once and is saved one write at a time: changes landing meanwhile
- * merge into the next write, so a card's last width is the one stored whatever
- * order the replies arrive in. A list read takes its reader from `beginRead()`
- * as it begins, so its reply never undoes a width written while it was out. A
- * failed write stays on screen with its notice (no step announced meanwhile
- * replaces it) and rides along with the next change's write until one
- * succeeds; nothing retries on its own.
+ * `relayout()` binds the edge handles of new cards and hands the masonry the
+ * key order and the owner's spans; each plan it reports sets the list's
+ * `data-widget-layout` (`stack` when the list is too narrow for two columns:
+ * widths do not apply there). The card menu sets a width step or `null` (the
+ * author default) through `setWidth`. On a board of two or more columns the
+ * edge handle drags a card between steps with a live preview (Escape cancels)
+ * and its arrow keys step it (Home / End: one column / full width). Every
+ * change, the menu's included, is named in the live region, shows at once and
+ * is saved one write at a time: changes landing meanwhile merge into the next
+ * write, so a card's last width is the one stored whatever order the replies
+ * arrive in. A list read takes its reader from `beginRead()` as it begins, so
+ * its reply never undoes a width written while it was out. A failed write
+ * stays on screen with its notice (no step announced meanwhile replaces it)
+ * and rides along with the next change's write until one succeeds; nothing
+ * retries on its own.
  */
 export function createWidgetWidths(list, options) {
     const boundHandles = new WeakSet();
+    const status = list.parentElement?.querySelector('[data-widget-arrange-status]') || null;
     let drag = null;
     let saving = null;
     let queued = null;
     let unsaved = null;
     let failed = false;
-    let disposeGrid = null;
+    let disposeBoard = null;
+    let laid = null;
     // Completed writes, counted, and each key's last written size stamped with
     // that count: a read that began at count `since` shows what was written after.
     let writes = 0;
@@ -200,13 +205,21 @@ export function createWidgetWidths(list, options) {
         return tab ? widgetWidth(tab, sizes()) : 0;
     };
     const announce = (text, tone = 'neutral') => {
-        if (!options.status || (failed && tone !== 'error')) return;
-        options.status.textContent = text;
-        options.status.dataset.tone = tone;
+        if (!status || (failed && tone !== 'error')) return;
+        status.textContent = text;
+        status.dataset.tone = tone;
+    };
+    // Each masonry plan: kept for the edge drag, and the list's mode for CSS and the menu.
+    const onLayout = (plan, keys) => {
+        laid = { plan, keys };
+        const mode = plan.availableColumns > 1 ? 'columns' : 'stack';
+        if (list.dataset.widgetLayout !== mode) list.dataset.widgetLayout = mode;
     };
     const relayout = () => {
         list.querySelectorAll('[data-widget-resize-handle]').forEach(bindHandle);
-        if (!drag) disposeGrid = applyWidgetGrid(list, { tabs: options.tabs(), sizes: sizes() });
+        const spans = ownerSpans(sizes());
+        if (drag?.width) spans[drag.key] = drag.width;
+        disposeBoard = applyMasonry(list, { order: options.tabs().map(widgetKey), spans, onLayout });
     };
 
     const flush = () => {
@@ -234,7 +247,7 @@ export function createWidgetWidths(list, options) {
             });
     };
 
-    /** A card's width in board columns, or `null` for its author default; the live region names it. */
+    /** A card's width in columns, or `null` for its author default; the live region names it. */
     function setWidth(key, w) {
         const size = w === null ? null : { w, h: 0 };
         const next = { ...sizes() };
@@ -275,7 +288,7 @@ export function createWidgetWidths(list, options) {
         const w = widthOf(key);
         const next = {
             ArrowLeft: stepWidgetWidth(w, -1), ArrowRight: stepWidgetWidth(w, 1),
-            Home: WIDGET_WIDTH_STEPS[0].w, End: WIDGET_GRID_COLUMNS,
+            Home: WIDGET_WIDTH_STEPS[0].w, End: WIDGET_FULL_SPAN,
         }[event.key];
         if (!w || next === undefined) return;
         event.preventDefault();
@@ -283,14 +296,19 @@ export function createWidgetWidths(list, options) {
         else announce(`Width: ${widthName(next)}`);
     }
 
+    // The drag measures in the columns of the last plan: the card starts at the
+    // columns it was placed across, and each column of pointer travel is one
+    // column pitch. A step that would not change what is shown previews nothing.
     function beginDrag(event, card) {
-        const start = widthOf(card.dataset.widgetKey || '');
-        if (drag || !start || event.button !== 0 || list.dataset.widgetLayout === 'stack') return;
+        const key = card.dataset.widgetKey || '';
+        const at = laid ? laid.keys.indexOf(key) : -1;
+        const plan = laid?.plan;
+        if (drag || at < 0 || plan.columnCount < 2 || event.button !== 0 || list.dataset.widgetLayout === 'stack') return;
         event.preventDefault();
-        const gap = parseFloat(getComputedStyle(list).columnGap) || 0;
         drag = {
-            key: card.dataset.widgetKey, card, start, width: start, handle: event.currentTarget,
-            pointerId: event.pointerId, x: event.clientX, pitch: (list.clientWidth + gap) / WIDGET_GRID_COLUMNS,
+            key, card, from: plan.placements[at].span, count: plan.columnCount, width: null,
+            pitch: (list.clientWidth - plan.columnWidth) / (plan.columnCount - 1),
+            handle: event.currentTarget, pointerId: event.pointerId, x: event.clientX,
         };
         drag.handle.setPointerCapture?.(event.pointerId);
         list.classList.add('resizing');
@@ -304,8 +322,11 @@ export function createWidgetWidths(list, options) {
             cancelDrag();
             return;
         }
-        drag.width = nearestWidgetWidth(drag.start + (event.clientX - drag.x) / drag.pitch);
-        setWidgetCardWidth(drag.card, drag.width);
+        const step = nearestWidgetWidth(drag.from + (event.clientX - drag.x) / drag.pitch, drag.count);
+        const next = widthColumns(step, drag.count) === drag.from ? null : step;
+        if (next === drag.width) return;
+        drag.width = next;
+        relayout();
     }
 
     function finishDrag() {
@@ -334,11 +355,8 @@ export function createWidgetWidths(list, options) {
     function onDragEnd(event) {
         if (!drag || event.pointerId !== drag.pointerId) return;
         const done = finishDrag();
-        if (done.width === done.start) {
-            relayout();
-            return;
-        }
-        setWidth(done.key, done.width);
+        if (done.width === null) relayout();
+        else setWidth(done.key, done.width);
     }
 
     function bindHandle(handle) {
@@ -361,7 +379,7 @@ export function createWidgetWidths(list, options) {
         beginRead,
         dispose() {
             cancelDrag();
-            disposeGrid?.();
+            disposeBoard?.();
         },
     };
 }

@@ -2,8 +2,8 @@
    launch policy (and whether it keeps the card running while Widgets is
    hidden), the card's ONE primary control (Start / Stop) and the facade a
    stopped card shows in place of its frame; for every card the card menu —
-   the launch policy of a framed card and the owner's width steps (the board:
-   web/modules/widget_grid.js).
+   the launch policy of a framed card and the owner's width steps (column
+   spans: web/modules/widget_size.js).
    widgets.js owns the registry and decides WHEN a card mounts or stops; this
    module only renders and reads the controls. Declarative cards are host-drawn
    and get only the menu's width steps. */
@@ -12,7 +12,7 @@ import { PAGE_ICONS } from './page_icons.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
 import { widgetKey } from './widget_list.js';
 import { frameHeight, setFrameHeight } from './widget_module.js';
-import { WIDGET_WIDTH_STEPS } from './widget_grid.js';
+import { WIDGET_WIDTH_STEPS } from './widget_size.js';
 import { bindMenu } from './ui_interactions.js';
 
 // Mirrors the validator's WIDGET_START_MODES (ouroboros/extension_ui_validation.py,
