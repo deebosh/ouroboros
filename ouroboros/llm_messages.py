@@ -21,10 +21,10 @@ from ouroboros.llm_attempt import _VALID_CACHE_TTLS
 from ouroboros.provider_models import normalize_model_identity
 
 # The Main context builder's declaration on its leading system message: how many leading
-# text blocks are byte-stable across conversations (governance). A provider that looks a
-# cache up only at the end of the leading system group keeps only those blocks there, each
-# as its own system item (``split_leading_system_prefix``). Host-only metadata: popped
-# from every send copy.
+# text blocks are byte-stable across conversations (governance and books; with a memory
+# view, identity and my sealed story too: two). A provider that reads a cache only inside
+# the leading system group keeps only those blocks there, each as its own system item
+# (``split_leading_system_prefix``). Host-only metadata: popped from every send copy.
 STABLE_PREFIX_BLOCKS_KEY = "_stable_prefix_blocks"
 
 # Byte-stable provenance header of the projected host-context notice (no clocks, hashes

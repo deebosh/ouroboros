@@ -5,7 +5,9 @@ books (A, marked), identity with my story (B, marked), then knowledge, my rooms 
 facts (C, unmarked). B depends only on the chronicle, identity, WORLD, the deep review and the
 catalog: the same bytes for Main, a Project's root and a wake. Knowledge edits change only C;
 a new page changes B and never A. Anthropic keeps four breakpoints (tools, A, B, the task seal);
-the view fact of the first send reaches the cap info, the task context, one event and the trace.
+Codex and direct OpenAI keep A and B as two system items and C as one notice (their cache is
+read only inside the leading system group, by prefix: measured 2026-10-03); the view fact of
+the first send reaches the cap info, the task context, one event and the trace.
 Fixture: ``tests._memory_inventory_shared`` (three rooms besides Main, legacy memory).
 """
 from __future__ import annotations
@@ -227,3 +229,65 @@ def test_the_task_trace_keeps_the_view_fact_of_its_request(tmp_path, monkeypatch
             messages=[{"role": "user", "content": "hi"}], tools=registry, llm=FakeLLM(), drive_logs=root,
             emit_progress=lambda *_a, **_kw: None, incoming_messages=queue.Queue(), task_id="t1", drive_root=root)
         assert trace.get(VIEW_TRACE_KEY) == given
+
+
+def _codex_wire(messages):
+    from ouroboros.llm_claudexor import _request
+
+    target = {"source": "codex", "resolved_model": "gpt-6-sol", "usage_model": "claudexor::codex=gpt-6-sol"}
+    payload = _request(target, copy.deepcopy(messages), None, {"reasoning_effort": "high", "model_role": "main"})
+    return payload["messages"], target
+
+
+def test_codex_keeps_identity_and_my_story_in_the_leading_system_group(tmp_path):
+    """L2: system(A), system(B), one notice(C), the task. A knowledge edit changes only the
+    notice; a new page changes B's item and never A's; round 2 extends round 1 byte for byte."""
+    from ouroboros.llm_messages import HOST_CONTEXT_NOTICE_BEFORE_TASK
+    from tests.test_memory_view_story import _page
+
+    env, memory, _rooms = world(tmp_path)
+    messages, _cap = _messages(env, memory, MAIN)
+    wire, target = _codex_wire(messages)
+    assert [message["role"] for message in wire] == ["system", "system", "user", "user"]
+    assert target["wire_layout"] == {"system_prefix_split": True, "moved_blocks": 1}
+    a, b, c = (block["text"] for block in messages[0]["content"])
+    assert wire[0]["content"] == [{"type": "text", "text": a}] and wire[1]["content"] == [{"type": "text", "text": b}]
+    assert "## My story" in wire[1]["content"][0]["text"]
+    notice = wire[2]["content"]
+    assert HOST_CONTEXT_NOTICE_BEFORE_TASK in notice and notice.endswith(c)
+    assert "## My story" not in notice and "## Shared understanding" in notice
+
+    round2 = messages + [{"role": "assistant", "content": "working"}, {"role": "user", "content": "go on"}]
+    wire2, _target = _codex_wire(round2)
+    assert wire2[:len(wire)] == wire
+
+    (memory.drive_root / "memory" / "knowledge" / "overview.md").write_text(
+        "# Overview\n\nWhat is true now: the cache keeps my story.\n", encoding="utf-8")
+    edited, _target = _codex_wire(_messages(env, memory, MAIN)[0])
+    assert edited[:2] == wire[:2] and edited[2] != wire[2]
+
+    _page(memory.drive_root, "1", 11, 12, text="A page appended to my story.")
+    paged, _target = _codex_wire(_messages(env, memory, MAIN)[0])
+    assert paged[0] == wire[0] and paged[1] != wire[1]
+    assert "A page appended to my story." in paged[1]["content"][0]["text"]
+
+
+def test_direct_openai_and_openrouter_keep_the_two_system_items_and_one_notice(tmp_path, monkeypatch):
+    from ouroboros.llm import LLMClient
+    from ouroboros.llm_messages import HOST_CONTEXT_NOTICE_BEFORE_TASK
+
+    monkeypatch.setattr(LLMClient, "_SUPPORTED_PARAMS_FETCHED", True, raising=False)
+    monkeypatch.setattr("ouroboros.pricing._fetch_live_rows", lambda *_a, **_kw: {})
+    env, memory, _rooms = world(tmp_path)
+    messages, _cap = _messages(env, memory, MAIN)
+    a, b, c = (block["text"] for block in messages[0]["content"])
+    client = LLMClient(api_key="unused")
+    for model, key in (("openai::gpt-6-sol", "OPENAI_API_KEY"), ("openai/gpt-6-sol", "OPENROUTER_API_KEY")):
+        monkeypatch.setenv(key, "unused")
+        target = client._resolve_remote_target(model)
+        wire = client._build_remote_kwargs(target, copy.deepcopy(messages), "high", 512, "auto", None, None,
+                                           skip_capability_fetch=True)["messages"]
+        assert [message["role"] for message in wire] == ["system", "system", "user", "user"], model
+        assert [block["text"] for block in wire[0]["content"]] == [a] and [block["text"] for block in wire[1]["content"]] == [b]
+        assert HOST_CONTEXT_NOTICE_BEFORE_TASK in wire[2]["content"] and wire[2]["content"].endswith(c)
+        assert target["wire_layout"] == {"system_prefix_split": True, "moved_blocks": 1}

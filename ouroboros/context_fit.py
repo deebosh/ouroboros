@@ -181,11 +181,18 @@ class ContextFitProjection:
     def system_message(self) -> Dict[str, Any]:
         from ouroboros.llm_messages import STABLE_PREFIX_BLOCKS_KEY
 
-        # Declared for the OpenAI-family and Claudexor send projection (llm_messages.split_leading_system_prefix):
-        # block 0 (SYSTEM.md, BIBLE, reference docs) is byte-stable across conversations, while
-        # the semi-stable memory block changes with every consolidation (8 of 59 Aika events),
-        # so keeping it in the cached unit would lose the whole unit on those events.
-        return {"role": "system", "content": json.loads(self.system_content_json), STABLE_PREFIX_BLOCKS_KEY: 1}
+        # Declared for the OpenAI-family and Claudexor send projection (llm_messages.split_leading_system_prefix).
+        # The Codex backend reads another conversation's cache only inside the leading
+        # system group, by prefix up to the first change; a notice after it is never read
+        # (measured 2026-10-03, 26 calls: system(A)+system(B)+notice(C) kept A and B both
+        # on a knowledge edit and on a page appended to B; B as a notice kept A alone).
+        # So block 0 (SYSTEM.md, BIBLE, books) and block 1 (identity and my sealed story)
+        # both stay system items, and block 2 (knowledge, rooms, runtime facts), new with
+        # every task, travels as the one notice. An empty block 1 is never an item of its own.
+        content = json.loads(self.system_content_json)
+        second = content[1] if isinstance(content, list) and len(content) > 2 else None
+        stable = 2 if isinstance(second, dict) and str(second.get("text") or "").strip() else 1
+        return {"role": "system", "content": content, STABLE_PREFIX_BLOCKS_KEY: stable}
 
 
 @dataclass(frozen=True)
@@ -357,9 +364,9 @@ def _render_context_system_content(
     static_parts.extend(core.reference_book_errors)
     # Stable governance/policy is first; mutable task evidence is last: the
     # cache-friendly ordering for Anthropic-style breakpoints. OpenAI's public API
-    # (and the Codex backend) looks a cache up only at the end of the leading system
-    # group, so their send copies keep only block 0 there (declared in
-    # ``system_message``); OpenRouter's explicit breakpoints also keep block 1 apart.
+    # and the Codex backend read a cache only inside the leading system group, so
+    # their send copies keep blocks 0 and 1 there and the rest as one notice
+    # (declared in ``system_message``); OpenRouter's explicit breakpoints mark both.
     return [
         {
             "type": "text",
