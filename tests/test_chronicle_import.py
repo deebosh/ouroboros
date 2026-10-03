@@ -429,6 +429,22 @@ def test_one_room_twice_in_a_block_keeps_both_sections(tmp_path):
         "legacy-b01-r1": "An era of Main."}
 
 
+def test_room_sections_lives_in_the_import_and_never_guesses_a_room():
+    """The old writer's ``room_sections`` moved here with its pseudo-room when the writer went:
+    typed ``rooms`` become one section each; a block without them is one legacy mixed section."""
+    typed = {"message_count": 3, "content": "both", "rooms": [
+        {"room_id": "1", "label": "Main", "message_count": 2, "content": "Main part."},
+        {"room_id": "1500", "message_count": 1, "content": "Project part."}]}
+    assert ci.room_sections(typed) == [
+        {"room_id": "1", "label": "Main", "message_count": 2, "content": "Main part."},
+        {"room_id": "1500", "label": "1500", "message_count": 1, "content": "Project part."}]
+    for untyped in ({"message_count": 4, "content": "An era."},
+                    {"message_count": 4, "content": "An era.", "rooms": [{"room_id": 1, "content": "bad id"}]}):
+        assert ci.room_sections(untyped) == [{"room_id": ci.LEGACY_ROOM_ID, "label": ci.LEGACY_ROOM_LABEL,
+                                              "message_count": 4, "content": "An era."}]
+    assert not (REPO / "ouroboros" / "room_consolidation.py").exists()
+
+
 # --- no model, no model client ----------------------------------------------------------------------
 
 def test_the_import_loads_no_model_client(tmp_path):

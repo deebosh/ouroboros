@@ -13,7 +13,11 @@ revision or room head and the conflicting ids, never their text.
 JSON. Every mode bounds itself at the source to ``tool_result_limit`` and names
 its continuation on the second line (``next_after_seq``, ``next: from=…`` or
 ``next_start``); a single record or row larger than one page is reached by its
-own address. Reading writes nothing to disk.
+own address. Once the chronicle is active, reading writes nothing to disk.
+
+Each tool first makes sure the chronicle is activated: the first call on an
+install imports the legacy dialogue memory once (``chronicle_import``, no model
+call), and every later call finds the receipt and goes straight on.
 
 ``memory_mark`` places a bookmark in my own words on a chronicle record, a chat
 row, a task or a retained source; an optional quote must be an exact substring
@@ -47,8 +51,19 @@ def _root(ctx: Any) -> Path:
     return canonical_data_root(ctx)
 
 
+def _activated(root: Path) -> ChronicleStore:
+    """The store after the one-time legacy import (spec §4.6, K11): a repeat call is the fast path.
+
+    A busy import lock (``import_pending``) or a refused import leaves the tool working on
+    what exists; the next call imports, and nothing is lost meanwhile.
+    """
+    store = ChronicleStore(root)
+    store.ensure_activated()
+    return store
+
+
 def _existing_store(root: Path) -> Optional[ChronicleStore]:
-    """The store only when its journal exists, so a read never creates the chronicle."""
+    """The store only when its journal exists; a reader never creates the chronicle itself."""
     store = ChronicleStore(root)
     return store if store.log_path.exists() else None
 
@@ -364,7 +379,7 @@ def _chronicle_write(ctx: Any, kind: str = "", room_id: Any = None, text: str = 
             "expected_sequence": expected_sequence, "accepted": accepted, "reason": reason}
     try:
         root = _root(ctx)
-        return writer(ctx, root, ChronicleStore(root), focus_signature(ctx), args)
+        return writer(ctx, root, _activated(root), focus_signature(ctx), args)
     except ValueError as exc:
         return _arg_error(ctx, str(exc))
     except (OSError, TimeoutError) as exc:
@@ -683,6 +698,7 @@ def _memory_read(ctx: Any, node_id: str = "", room_id: Any = None, after_seq: in
     limit = tool_result_limit("memory_read")
     try:
         root = _root(ctx)
+        _activated(root)
         if source_ref:
             text = _read_source(root, source_ref, start, limit)
         elif node_id:
@@ -765,7 +781,7 @@ def _memory_mark(ctx: Any, text: str = "", node_id: str = "", address: str = "",
                  mark_id: str = "", visibility: str = "", release_id: str = "", reason: str = "") -> str:
     try:
         root = _root(ctx)
-        store, author = ChronicleStore(root), focus_signature(ctx)
+        store, author = _activated(root), focus_signature(ctx)
         if mark_id:
             result = store.set_mark_view(str(mark_id), str(visibility or ""), author, str(reason or ""))
         elif release_id:

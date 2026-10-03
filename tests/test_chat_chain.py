@@ -157,19 +157,18 @@ def test_moved_helpers_are_defined_once_in_chat_chain():
     assert not set(MOVED) & _top_level_names(_module_ast("ouroboros/consolidator.py"))
 
 
-def test_legacy_writer_binds_the_chain_helpers_without_a_facade():
+def test_consolidator_keeps_no_chain_helper_after_the_writer_is_retired():
+    """The old dialogue writer bound three chain helpers; it is gone, so consolidator binds none
+    of them (no facade left behind) and reaches the chain only as the ``chat_chain`` module."""
     import ouroboros.consolidator as cons
 
-    source = (REPO / "ouroboros/consolidator.py").read_text(encoding="utf-8")
     imported = [node for node in _module_ast("ouroboros/consolidator.py").body
                 if isinstance(node, ast.ImportFrom) and node.module == "ouroboros.chat_chain"]
-    assert [sorted(alias.name for alias in node.names) for node in imported] == [
-        ["_chat_log_signature", "_read_chat_entries", "_resolve_generation_segments"]]
-    line = source.splitlines()[imported[0].lineno - 1]
-    assert "noqa" not in line
-    for name in ("_chat_log_signature", "_read_chat_entries", "_resolve_generation_segments"):
-        assert getattr(cons, name) is getattr(cc, name)
-    assert not hasattr(cons, "retain_memory_source") and not hasattr(cons, "_ordered_chat_generation_paths")
+    assert imported == []
+    for name in ("_chat_log_signature", "_read_chat_entries", "_resolve_generation_segments",
+                 "retain_memory_source", "_ordered_chat_generation_paths"):
+        assert not hasattr(cons, name) and hasattr(cc, name)
+    assert cons.chat_chain is cc
 
 
 def _retain_bindings(relative: str) -> tuple[list[int], list[int], int]:

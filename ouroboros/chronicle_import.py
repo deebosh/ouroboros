@@ -21,8 +21,9 @@ chain end, both data facts that later attribution and open-row readers use.
 
 Once an activation exists the import is a no-op: the legacy files are not read again,
 so a later change to them writes neither a record nor a copy. A busy
-``.consolidation.lock`` (another importer, or the old writer of a process being
-updated) answers ``import_pending``; nothing is lost and the next caller imports.
+``.consolidation.lock`` (another importer, or the old writer of a process still
+running an earlier version during an update) answers ``import_pending``; nothing
+is lost and the next caller imports. Each memory tool activates first.
 """
 from __future__ import annotations
 
@@ -49,6 +50,9 @@ _GAP_MARK = "[MEMORY GAP]"
 _NOMINATIONS = "pending_knowledge_nominations"
 _LAST_UNPUBLISHED = "last_unpublished_nominations"
 _UNKNOWN_RANGE = {"status": "unknown", "pos": None, "first": None, "last": None, "ts_span": None}
+# A legacy record without typed room sections is one section of explicitly unknown provenance.
+LEGACY_ROOM_ID = "legacy"
+LEGACY_ROOM_LABEL = "Unknown provenance [legacy mixed record]"
 
 Kept = Dict[int, Tuple[str, int, Dict[str, Any]]]
 
@@ -94,9 +98,7 @@ def ensure_activated(store: Any) -> Dict[str, Any]:
 
 
 def _import(store: Any) -> Dict[str, Any]:
-    # room_sections and its pseudo-room move into this module when the old writer goes (spec §8.1).
     from ouroboros import chat_chain
-    from ouroboros.room_consolidation import LEGACY_ROOM_ID, LEGACY_ROOM_LABEL, room_sections
 
     root = pathlib.Path(store.data_root)
     context = SimpleNamespace(drive_root=root, task_id=IMPORT_TASK_ID)
@@ -248,6 +250,25 @@ def _flat(raw: Dict[str, bytes], errors: Dict[str, str]) -> str:
     except UnicodeDecodeError as exc:
         errors["flat"] = str(exc)
         return ""
+
+
+def room_sections(block: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Typed room sections of a stored legacy block; a block without them is one legacy mixed section.
+
+    The old writer stamped ``rooms`` on every block it summarized room by room; an older
+    block or an era keeps its complete content as one section of unknown provenance,
+    never a guessed label.
+    """
+    rooms = block.get("rooms")
+    if isinstance(rooms, list) and rooms and all(
+        isinstance(room, dict) and isinstance(room.get("room_id"), str) and isinstance(room.get("content"), str)
+        for room in rooms
+    ):
+        return [{"room_id": room["room_id"], "label": str(room.get("label") or room["room_id"]),
+                 "message_count": int(room.get("message_count") or 0), "content": room["content"]}
+                for room in rooms]
+    return [{"room_id": LEGACY_ROOM_ID, "label": LEGACY_ROOM_LABEL,
+             "message_count": int(block.get("message_count") or 0), "content": str(block.get("content") or "")}]
 
 
 def _is_gap(block: Dict[str, Any], section: Dict[str, Any]) -> bool:

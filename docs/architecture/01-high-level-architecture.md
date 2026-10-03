@@ -203,12 +203,11 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── consciousness_wake.py ← Complete wake USER input and wake_task_metadata authority envelope; physical chat cursor plus transition inventory; exact pageable source when actual capacity requires it (§6)
       ├── consciousness_authority.py ← The three autonomy levels of a wake (observe/act/full) and their consequences — `disabled_tools`, bound at dispatch only so the prompt prefix matches an owner turn's, `runtime_mode_cap=light` below Full, and Observe's argument-level narrowing of the mutating names it keeps (§6 Background consciousness and Evolution)
       ├── consciousness_allowance.py ← Rolling-24h consciousness spend read off the usage ledger; typed `allowance_unknown` on a read failure; read by the alarm and the single admission door in `supervisor/queue.py`
-      ├── room_consolidation.py ← Per-room Light draft/correction and deterministic assembly; no cross-room LLM recombine (§6)
       ├── chat_chain.py        ← The chat generation chain (archives, then live), the A2A-free row stream with the legacy cursor's positions, index-free row addresses `row:<chat_id>@<ts>#<sha12>` (hint, then the archive rotated after `ts`) and `retain_memory_source` (§6)
       ├── chronicle_store.py   ← Append-only derived memory (`records.jsonl` authority, disposable SQLite index): pages seal row sets once, parts fold adjacent records once, room-head checks, typed refusals (§6)
       ├── chronicle_import.py  ← One model-free import of the legacy dialogue memory: a `legacy` record per room section with its positional `raw_range`, nominations as global marks, the `legacy_frontier` scan state and the activation receipt (§6)
-      ├── consolidator.py      ← Generation cursor, explicit `[MEMORY GAP]`, and knowledge nomination outcomes in `dialogue_meta.json` (§6)
-      ├── memory_nomination_receipts.py ← Source-addressed pending nominations; no cross-batch retirement (§6)
+      ├── consolidator.py      ← Shared Light transport, scratchpad and knowledge upkeep for reflection and pressure; no dialogue writer (§6)
+      ├── memory_nomination_receipts.py ← Strict read of the frozen cursor's pending nominations, imported once as marks (§6)
       ├── memory.py            ← Scratchpad, identity, chat history
       ├── knowledge.py         ← `ouroboros/knowledge.py`: linked-Markdown note addressing, exact source reads, generated shelf indexes for global and project knowledge, and revision-checked writes, so concurrent cognition cannot silently overwrite a newer note (§6 Durable memory and project focus)
       ├── memory_journal_compaction.py ← Startup read-only size facts (`memory_journal_observation`); new history stays complete, old digests unrecoverable
@@ -698,8 +697,9 @@ Bundled resources use the CLI / Headless Boundary lookup order rather than assum
 │   ├── memory/
 │   │   ├── identity.md            ← durable identity
 │   │   ├── scratchpad.md          ← auto-generated from scratchpad_blocks.json (rendered newest-first; FIFO eviction of the oldest blocks until BOTH the 10-block count cap and the SCRATCHPAD_MAX_CONTENT_CHARS content cap hold)
-│   │   ├── dialogue_blocks.json   ← consolidated dialogue memory blocks (dialogue_summary.md remains a read-only legacy fallback when present)
-│   │   ├── dialogue_meta.json     ← consolidation cursor/metadata for the dialogue blocks
+│   │   ├── dialogue_blocks.json   ← legacy dialogue blocks (and dialogue_summary.md), frozen; read once by the chronicle import
+│   │   ├── dialogue_meta.json     ← legacy cursor and pending nominations, frozen; read once by the chronicle import
+│   │   ├── chronicle/             ← records.jsonl (append-only derived memory, the authority), index.sqlite3 (disposable), .publication.lock
 │   │   ├── WORLD.md               ← host profile generated on first run
 │   │   ├── knowledge/             ← topic files + auto-maintained index; patterns.md (Pattern Register), improvement-backlog.md (backlog SSOT), *_journal.jsonl + *history.jsonl provenance
 │   │   ├── deep_review.md         ← written by the deep-self-review task

@@ -1,12 +1,20 @@
 import json
 from types import SimpleNamespace
 
-from ouroboros.consolidator import _format_entries_for_block
 from ouroboros.dialogue_provenance import (
     dialogue_author,
     presence_provenance_from_task,
 )
 from ouroboros.memory import Memory
+
+
+def _chronicle_view(row):
+    """One chat row as ``memory_read`` renders it — the successor of the retired block formatter."""
+    from ouroboros import chat_chain
+    from ouroboros.tools.chronicle import _row_line
+
+    header, text = _row_line(chat_chain.row_address(row), row, 0, {})
+    return f"{header} {text}"
 
 
 def _row():
@@ -30,7 +38,7 @@ def test_presence_provenance_survives_recent_and_consolidated_rendering():
     expected = "Alex [provider=telegram; account=bot-1; conversation=room-1; thread=topic-1]"
     assert dialogue_author(_row()) == expected
     assert expected in Memory._format_chat_line(_row(), compact=False)
-    assert expected in _format_entries_for_block([_row()])
+    assert expected in _chronicle_view(_row())
 
 
 def _presence_task():

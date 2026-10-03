@@ -2,7 +2,7 @@
 
 The LLM-heavy best-effort memory work the post-task orchestrator
 (``agent_task_pipeline._run_post_task_processing_async``) dispatches after a
-task ends: the tool-trace summary, the free host facts row, chat/scratchpad
+task ends: the tool-trace summary, the free host facts row, scratchpad
 consolidation, the execution reflection with its child-task evidence, the
 durable improvement backlog and reflection memory actions, plus the shared
 pre-synthesis usage snapshot and the compact review projection those prompts
@@ -612,74 +612,6 @@ def _post_task_paid_interruption(errors: Any) -> str:
             return str(row["kind"])
     unresolved = [row for row in rows if not row.get("resolution")]
     return str((unresolved[-1].get("kind") or "stage_error")) if unresolved else ""
-
-
-def _run_chat_consolidation(env, memory, llm, task, drive_logs):
-    """Run dialogue-block consolidation inside the root post-task worker."""
-    try:
-        from ouroboros import consolidator as _c
-
-        should_consolidate = _c.should_consolidate
-        consolidate = _c.consolidate
-        chat_path = drive_logs / "chat.jsonl"
-        blocks_path = env.drive_path("memory") / "dialogue_blocks.json"
-        meta_path = env.drive_path("memory") / "dialogue_meta.json"
-        if should_consolidate(meta_path, chat_path):
-            _id, _ident, _llm, _logs = task.get("id"), memory.load_identity(), llm, drive_logs
-            from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
-
-            base_scope = current_usage_scope()
-            chat_scope = (
-                replace(base_scope, category="consolidation", source="chat_consolidation")
-                if base_scope is not None
-                else UsageScope(
-                    drive_root=task.get("budget_drive_root") or env.drive_root,
-                    task_id=str(_id or ""),
-                    root_task_id=str(task.get("root_task_id") or _id or ""),
-                    category="consolidation",
-                    source="chat_consolidation",
-                )
-            )
-
-            with usage_scope(chat_scope):
-                from ouroboros.tools.registry import ToolContext
-                knowledge_context = ToolContext(
-                    repo_dir=getattr(env, "repo_dir", env.drive_root),
-                    drive_root=pathlib.Path(task.get("budget_drive_root") or env.drive_root),
-                    budget_drive_root=str(task.get("budget_drive_root") or env.drive_root),
-                    task_id=str(_id or ""), project_id=str(task.get("project_id") or ""))
-                u = consolidate(chat_path=chat_path, blocks_path=blocks_path,
-                                meta_path=meta_path, llm_client=_llm, identity_text=_ident,
-                                knowledge_context=knowledge_context,
-                                room_registry_root=knowledge_context.budget_drive_root)
-            if u:
-                # A run that produced no block and a run that never happened look the
-                # same in this stream without a written count; last_error_kind names the
-                # LAST error any attempt recorded (recovered splits keep theirs), which
-                # is weaker than "the run failed" and is reported under that honest name.
-                errors = u.get("_consolidation_errors") or []
-                from ouroboros.room_consolidation import consolidation_coverage
-
-                # Coverage is measured from the run's own per-unit facts (no new
-                # ledger); cost stays None when any call's spend is unknown.
-                append_jsonl(_logs / "events.jsonl", {"ts": utc_now_iso(),
-                    "type": "chat_block_consolidation", "task_id": _id,
-                    "blocks_written": u.get("_blocks_written"),
-                    "last_error_kind": (errors[-1] or {}).get("kind") if errors else None,
-                    "coverage": consolidation_coverage(u.get("_coverage")),
-                    "cost_usd": (
-                        round(float(u["cost"]), 6)
-                        if u.get("cost") is not None
-                        else None
-                    )})
-                if u.get("cost") or u.get("prompt_tokens"):
-                    from supervisor.state import update_budget_from_usage
-                    update_budget_from_usage(u)
-                return _post_task_paid_interruption(errors)
-    except Exception as error:
-        propagate_paid_interruption(error)
-        log.warning("Chat block consolidation setup failed", exc_info=True)
-        return "stage_setup_failed"  # an ordinary failure isolated to this stage, never `completed`
 
 
 def _run_scratchpad_consolidation(env: Any, memory: Any, llm: Any) -> None:

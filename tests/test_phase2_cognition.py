@@ -69,7 +69,6 @@ def test_root_checkpoint_prevents_a_second_facts_row_and_buys_no_summary(tmp_pat
     llm = Llm()
     monkeypatch.setattr(llm_mod, "LLMClient", lambda: llm)
     monkeypatch.setattr(memory_mod, "Memory", lambda **_kwargs: object())
-    monkeypatch.setattr(pipeline, "_run_chat_consolidation", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_run_scratchpad_consolidation", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_run_reflection", lambda *_a, **_k: None)
     monkeypatch.setattr(pipeline, "_update_improvement_backlog", lambda *_a, **_k: 0)

@@ -239,8 +239,6 @@ def _run_post_task_processing_async(
             # the root checkpoint non-final until consolidation, reflection,
             # and promotion have all stopped billing.
             stages: List[tuple[str, Callable[[], Any]]] = [
-                ("chat_consolidation", lambda: _run_chat_consolidation(
-                    env, task_memory, llm_client, task_snapshot, drive_logs)),
                 ("scratchpad_consolidation", lambda: _run_scratchpad_consolidation(
                     env, task_memory, llm_client)),
                 ("reflection", (lambda: finish_published_reflection(env, task_snapshot, result["reflection_entry"]))
@@ -1462,7 +1460,6 @@ from ouroboros.post_task_synthesis import (  # noqa: E402, F401 -- intentional p
     _compact_review_projection,
     _record_task_facts,
     _post_task_paid_interruption,
-    _run_chat_consolidation,
     _run_scratchpad_consolidation,
     _run_reflection,
     finish_published_reflection,

@@ -1,4 +1,9 @@
-"""Existing Light memory operations relieve measured pressure without losing sources."""
+"""Existing Light memory operations relieve measured pressure without losing sources.
+
+The pressure batch reads the scratchpad and the authored overview; the old dialogue
+writer it used to call first is retired, so dialogue pressure buys no Light call and
+the frozen legacy dialogue files stay byte-identical.
+"""
 import hashlib
 import json
 
@@ -27,13 +32,9 @@ class SourceReader:
     def finish(self, prompt):
         if self.answer:
             return self.answer
-        if prompt.startswith("Compare this draft memory"):
-            return "I retain the beginning, middle and last event, checked against the complete source."
         if "scratchpad working memory has" in prompt:
             return json.dumps({"knowledge_entries": [], "compressed_block": "I retain the beginning, middle and last event, including unresolved questions."})
-        if prompt.startswith("Compress these older memory blocks"):
-            return "### Era\nI retain the beginning, middle and last event across the complete dated span."
-        return "### Block\nI remember the complete episode including its final unresolved decision."
+        return "I remember the complete episode including its final unresolved decision."
 
     def chat(self, **kwargs):
         self.calls.append(kwargs)
@@ -112,67 +113,59 @@ def test_unread_initial_source_cannot_authorize_a_reflection_action(tmp_path, fi
     assert (tmp_path / entry["source_ref"]["read"]["arguments"]["path"]).exists()
 
 
-@pytest.mark.parametrize("legacy_gap", [False, True])
-def test_pressure_reduces_whole_chronicle_and_one_huge_block_before_normal_send(tmp_path, fit, legacy_gap):
+def test_pressure_relieves_the_scratchpad_and_leaves_frozen_dialogue_memory_alone(tmp_path, fit):
     fit.window = 50000
     memory, ctx = setup_memory(tmp_path)
     identity_before = memory.identity_path().read_bytes()
     blocks = [{"ts": "2024-01-01", "range": "2024-01-01", "type": "summary", "message_count": 100,
                "content": "BEGINNING. " + "History before gap. " * 9000},
-              {"gap_id": "known-gap", "content": "[MEMORY GAP] An authentic discontinuity", "range": "2025-01-01"},
-              {"ts": "2026-01-01", "range": "2026-01-01", "type": "summary", "message_count": 100,
-               "content": "Middle. " + "History after gap. " * 9000 + "LAST EVENT."}]
-    if legacy_gap:
-        blocks[1].pop("gap_id")
-    path = tmp_path / "memory/dialogue_blocks.json"
-    c.atomic_write_json(path, blocks)
+              {"gap_id": "known-gap", "content": "[MEMORY GAP] An authentic discontinuity", "range": "2025-01-01"}]
+    frozen = {name: tmp_path / "memory" / name for name in ("dialogue_blocks.json", "dialogue_meta.json")}
+    c_json = json.dumps(blocks).encode("utf-8")
+    frozen["dialogue_blocks.json"].write_bytes(c_json)
+    frozen["dialogue_meta.json"].write_bytes(b'{"last_consolidated_offset": 0}')
+    before = {name: path.read_bytes() for name, path in frozen.items()}
     scratch = {"ts": "2026-09-01", "source": "task", "content": "Active complete source. " * 15000 + "FINAL QUESTION."}
     memory.mutate_scratchpad_blocks(lambda _current: [scratch])
+
     def fits():
-        messages = [{"role": "system", "content": memory.identity_path().read_text(encoding="utf-8") + path.read_text(encoding="utf-8") + memory.scratchpad_path().read_text(encoding="utf-8")}]
+        messages = [{"role": "system", "content": memory.identity_path().read_text(encoding="utf-8")
+                     + memory.scratchpad_path().read_text(encoding="utf-8")}]
         return estimate_context_prompt_tokens(messages) < 2000
     assert not fits() and not c.should_consolidate_scratchpad(memory)
     actor = SourceReader(tmp_path, fit.window)
     result = c.maintain_memory_pressure(memory, actor, ctx, fits=fits, current_topic="CURRENT GOAL: resolve the outstanding research question.")
     assert result["status"] == "fitting", result
     assert fits() and memory.identity_path().read_bytes() == identity_before
-    assert result["changed_sources"]
+    assert [action["owner"] for action in result["actions"]] == ["scratchpad_consolidation"]
     assert result["usage"]["cost"] == pytest.approx(len(actor.calls) * 0.01)
-    saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved[1] == blocks[1] and len(saved) == 3
-    for original, compressed in ((blocks[0], saved[0]), (blocks[2], saved[2])):
-        ref = compressed["source_ref"]
-        assert json.loads((tmp_path / ref["read"]["arguments"]["path"]).read_text(encoding="utf-8")) == [original]
     journal = [json.loads(line) for line in memory.journal_path().read_text(encoding="utf-8").splitlines()]
     assert next(row for row in journal if row["type"] == "blocks_consolidated")["source_blocks"] == [scratch]
-    # Two contiguous runs: each is compressed and then corrected against its complete
-    # sections through the retained-source route, plus the scratchpad source.
-    assert len(actor.sources) == 5 and all(actor.received)
-    assert all("CURRENT GOAL: resolve the outstanding research question." in source for source in actor.received)
-    # The caller can now construct its normal first request; maintenance has
-    # not changed the identity or truncated any original source to achieve fit.
-    assert estimate_context_prompt_tokens([{"role": "system", "content": path.read_text(encoding="utf-8") + memory.load_scratchpad()}]) < 2000
+    # Only the scratchpad source was retained and read; it carries the current goal.
+    assert len(actor.sources) == 1 and all(actor.received)
+    assert "CURRENT GOAL: resolve the outstanding research question." in actor.received[0]
+    assert {name: path.read_bytes() for name, path in frozen.items()} == before
+    assert all(str(frozen["dialogue_blocks.json"]) != row["path"] for row in result["changed_sources"])
 
 
-def test_force_tail_is_explicit_and_advances_a_huge_short_dialogue_once(tmp_path, fit):
+def test_dialogue_pressure_buys_no_light_call_and_keeps_every_source(tmp_path, fit):
+    """With nothing but a huge dialogue under pressure, no Light call is bought: the old
+    writer is retired, and the frozen cursor is neither read for work nor written."""
     memory, ctx = setup_memory(tmp_path)
     chat = tmp_path / "logs/chat.jsonl"
     chat.parent.mkdir()
-    rows = [{"text": "Huge single message. " * 10000, "chat_id": 1, "ts": "2026-09-13T01:00:00Z"}]
-    chat.write_text(json.dumps(rows[0]) + "\n")
-    blocks, meta = tmp_path / "memory/dialogue_blocks.json", tmp_path / "memory/dialogue_meta.json"
-    assert not c.should_consolidate(meta, chat)
-    actor = SourceReader(tmp_path, fit.window)
-    assert c.consolidate(chat, blocks, meta, actor, knowledge_context=ctx) is None
-    assert not actor.calls
+    chat.write_text(json.dumps({"text": "Huge single message. " * 10000, "chat_id": 1,
+                                "ts": "2026-09-13T01:00:00Z"}) + "\n", encoding="utf-8")
     before = chat.read_bytes()
-    result = c.maintain_memory_pressure(memory, actor, ctx,
-        fits=lambda: meta.exists() and json.loads(meta.read_text(encoding="utf-8")).get("last_consolidated_offset") == 1)
-    assert result["status"] == "fitting"
+
+    class NoCall:
+        def chat(self, **_kwargs):
+            raise AssertionError("dialogue pressure must not buy a Light call")
+    result = c.maintain_memory_pressure(memory, NoCall(), ctx, fits=lambda: False)
+    assert result["status"] == "no_progress" and not result["actions"] and not result["changed_sources"]
     assert chat.read_bytes() == before
-    assert len(actor.calls) == 2  # one draft and its correction; the tail now fits, so no era call
-    assert sum(row["message_count"] for row in json.loads(blocks.read_text(encoding="utf-8"))) == 1
-    assert not c.should_consolidate(meta, chat)
+    assert not (tmp_path / "memory/dialogue_blocks.json").exists()
+    assert not (tmp_path / "memory/dialogue_meta.json").exists()
 
 
 def test_pressure_uses_read_revision_to_rewrite_the_authored_overview(tmp_path, fit):

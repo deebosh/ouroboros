@@ -1,8 +1,12 @@
-"""Only actual Nano startup relieves measured source pressure before Main."""
+"""Only actual Nano startup relieves measured source pressure before Main.
+
+The pressure batch no longer has a dialogue branch (the old writer is retired): dialogue
+pressure buys nothing, scratchpad pressure is still relieved, and Max or a pure preview
+never starts a maintenance model.
+"""
 
 import json
 
-import pytest
 
 from ouroboros import context
 from ouroboros.context_fit import estimate_context_prompt_tokens
@@ -25,10 +29,33 @@ def _setup(tmp_path):
     return env, memory, task, ctx, raw
 
 
-def test_actual_nano_preparation_consolidates_complete_source_before_returning(tmp_path, fit, monkeypatch):
-    fit.window = 50000
+def test_nano_dialogue_pressure_buys_no_maintenance_call_and_keeps_main(tmp_path, fit, monkeypatch):
+    """The retired dialogue writer was the Nano pressure branch for chat: a huge dialogue
+    now buys no Light call, the chat stays byte-identical and Main still gets its request."""
     env, memory, task, ctx, raw = _setup(tmp_path)
     monkeypatch.setattr(context, "get_context_mode", lambda: "nano")
+    actor = SourceReader(env.drive_root, fit.window)
+    messages, info = context.build_llm_messages(
+        env, memory, task, ctx=ctx, llm=actor, tool_schemas=[],
+        fit_candidate=lambda _messages, _tools: {"accepted": False},
+    )
+    receipt = info["context_memory_maintenance"]
+    assert receipt["status"] == "no_progress" and not receipt["actions"]
+    assert not actor.calls
+    assert messages[-1]["content"] == task["text"]
+    assert (env.drive_root / "logs/chat.jsonl").read_text() == raw
+    assert not (env.drive_root / "memory/dialogue_blocks.json").exists()
+    assert not (env.drive_root / "memory/dialogue_meta.json").exists()
+
+
+def test_nano_scratchpad_pressure_still_consolidates_before_returning(tmp_path, fit, monkeypatch):
+    fit.window = 50000
+    env, memory, task, ctx, _raw = _setup(tmp_path)
+    (env.drive_root / "logs/chat.jsonl").write_text("", encoding="utf-8")
+    memory.mutate_scratchpad_blocks(lambda _current: [
+        {"ts": "2026-09-01", "source": "task", "content": "Active complete source. " * 15000 + "FINAL QUESTION."}])
+    monkeypatch.setattr(context, "get_context_mode", lambda: "nano")
+
     def fits(messages, tools):
         measured = estimate_context_prompt_tokens(messages, tools)
         return {"accepted": measured < 16000, "input_tokens": measured, "strict_bound_proven": False}
@@ -37,43 +64,11 @@ def test_actual_nano_preparation_consolidates_complete_source_before_returning(t
     assert not fits(before.messages_for("nano"), [])["accepted"]
     messages, info = context.build_llm_messages(env, memory, task, ctx=ctx, llm=actor,
                                                tool_schemas=[], fit_candidate=fits)
-    assert info["context_memory_maintenance"]["status"] == "fitting"
-    assert fits(messages, [])["accepted"]
-    assert (env.drive_root / "logs/chat.jsonl").read_text() == raw
-    assert actor.calls and info["context_memory_maintenance"]["usage"]["cost"] > 0
-    events = [json.loads(line) for line in (env.drive_root / "logs/events.jsonl").read_text().splitlines()]
-    receipt = next(row for row in events if row.get("type") == "context_memory_maintenance")
-    assert receipt["task_id"] == task["id"] and receipt["changed_sources"]
-    assert receipt["status"] == "fitting"
-    assert messages[-1]["content"] == task["text"]
-    # Repeated preparation sees the consolidated source; it does not buy another maintenance run.
-    calls = len(actor.calls)
-    context.build_llm_messages(env, memory, task, ctx=ctx, llm=actor, tool_schemas=[], fit_candidate=fits)
-    assert len(actor.calls) == calls
-
-
-@pytest.mark.parametrize("broken", [b"{bad", b"[]", b'{"pending_knowledge_nominations":[],"pending_knowledge_nominations":[]}'])
-def test_nano_unreadable_dialogue_meta_withholds_maintenance_not_main(tmp_path, fit, monkeypatch, broken):
-    env, memory, task, ctx, chat_before = _setup(tmp_path)
-    meta = env.drive_root / "memory/dialogue_meta.json"
-    meta.write_bytes(broken)
-    monkeypatch.setattr(context, "get_context_mode", lambda: "nano")
-    actor = SourceReader(env.drive_root, fit.window)
-    messages, info = context.build_llm_messages(
-        env, memory, task, ctx=ctx, llm=actor, tool_schemas=[],
-        fit_candidate=lambda _messages, _tools: {"accepted": False},
-    )
     receipt = info["context_memory_maintenance"]
-    assert receipt["status"] == "no_progress"
-    assert receipt["usage"]["_consolidation_errors"][0]["kind"] == "dialogue_meta_unreadable"
+    assert receipt["status"] == "fitting", receipt
+    assert [action["owner"] for action in receipt["actions"]] == ["scratchpad_consolidation"]
+    assert fits(messages, [])["accepted"] and actor.calls
     assert messages[-1]["content"] == task["text"]
-    assert meta.read_bytes() == broken
-    assert (env.drive_root / "logs/chat.jsonl").read_text() == chat_before
-    assert not actor.calls
-    events = [json.loads(line) for line in (env.drive_root / "logs/events.jsonl").read_text().splitlines()]
-    assert any(row.get("type") == "context_memory_maintenance" and
-               row["usage"]["_consolidation_errors"][0]["kind"] == "dialogue_meta_unreadable"
-               for row in events)
 
 
 def test_max_and_pure_preview_never_start_a_maintenance_model(tmp_path, fit, monkeypatch):

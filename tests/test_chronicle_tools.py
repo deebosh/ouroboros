@@ -4,8 +4,10 @@ chronicle_write: a page names a range or a set of tasks and the host publishes
 the exact row set, stamped and with checked quotes; a stale room head is refused
 with ids, never text. memory_read: text with one header line per record or row,
 every mode bounded by ``tool_result_limit("memory_read")`` with its continuation
-named on the second line, and nothing written to disk. memory_mark: one target,
-an exact quote, view and release. No test calls a model or the network.
+named on the second line, and nothing written to disk once the chronicle is
+active. memory_mark: one target, an exact quote, view and release. Each tool's
+first call activates the chronicle (the one legacy import); later calls take the
+fast path. No test calls a model or the network.
 """
 from __future__ import annotations
 
@@ -129,6 +131,11 @@ def test_task_page_takes_task_rows_and_bound_owner_words_and_leaves_an_interleav
     annotations.write_text(json.dumps({"ts": ts(2), "type": "chat_annotation", "client_message_id": "mB",
                                        "action": "promote_chat_to_task", "target": "taskB001",
                                        "status": "scheduled"}) + "\n", encoding="utf-8")
+    from ouroboros.task_results import write_task_result
+
+    # The first tool call activates the chronicle, and its lineage epoch is this chain's
+    # first child row: the root's earlier final is attributed by its recorded task result.
+    write_task_result(tmp_path, "taskA001", "completed", result="Login fixed.")
     ctx = ctx_for(tmp_path)
     covered = page_covers(tmp_path, "1", task_ids=["taskA001"])
     assert [row for _address, row in covered["rows"]] == [rows[0], rows[3], rows[5]]
@@ -403,13 +410,62 @@ def test_every_read_mode_stays_within_the_limit_names_its_continuation_and_write
     assert snapshot(tmp_path) == before  # reading wrote nothing
 
 
-def test_reading_without_a_chronicle_creates_none(tmp_path):
+def test_reading_on_a_fresh_install_activates_once_then_reads_write_nothing(tmp_path):
     chat(tmp_path, [{"chat_id": 1, "direction": "in", "ts": ts(1), "text": "hello"}])
-    before = snapshot(tmp_path)
     ctx = ctx_for(tmp_path)
+    assert not (tmp_path / "memory" / "chronicle").exists()
     assert _memory_read(ctx).split("\n")[:2] == ["room 1; head 0", "complete: no records after seq 0 (older to newer)"]
+    store = ChronicleStore(tmp_path)
+    receipt = store.activation()
+    assert receipt and receipt["metadata"]["imported_records"] == 0 and receipt["metadata"]["paid_calls"] == 0
+    before = snapshot(tmp_path)
     assert "hello" in _memory_read(ctx, rows=True)
-    assert snapshot(tmp_path) == before and not (tmp_path / "memory").exists()
+    assert _memory_read(ctx).startswith("room 1; head 0")
+    assert snapshot(tmp_path) == before  # after activation, reading writes nothing
+
+
+def _legacy_install(root):
+    """Legacy dialogue memory the old writer left: two chat rows, one block over both, its cursor."""
+    rows = chat(root, [{"chat_id": 1, "direction": "in", "ts": ts(1), "text": "Never push on Fridays."},
+                       {"chat_id": 1, "direction": "out", "ts": ts(2), "task_id": "taskA001", "text": "Understood."}])
+    (root / "memory").mkdir(parents=True, exist_ok=True)
+    (root / "memory" / "dialogue_blocks.json").write_text(json.dumps([{
+        "ts": ts(3), "type": "summary", "range": "r", "message_count": 2,
+        "rooms": [{"room_id": "1", "label": "Main", "message_count": 2, "content": "I learned the Friday rule."}],
+        "content": "I learned the Friday rule."}]), encoding="utf-8")
+    (root / "memory" / "dialogue_meta.json").write_text(json.dumps({
+        "last_consolidated_offset": 2,
+        "chat_log_signature": chat_chain._chat_log_signature(root / "logs" / "chat.jsonl")}), encoding="utf-8")
+    return rows
+
+
+@pytest.mark.parametrize("first", ["chronicle_write", "memory_read", "memory_mark"])
+def test_the_first_memory_tool_call_imports_once_and_every_later_call_takes_the_fast_path(tmp_path, monkeypatch, first):
+    """K11: each of the three tools starts by activating the chronicle. Whichever comes first
+    imports the legacy memory (no model call); a repeat of any tool finds the receipt and
+    imports nothing again."""
+    from ouroboros import chronicle_import
+
+    rows = _legacy_install(tmp_path)
+    imports = []
+    real_import = chronicle_import._import
+    monkeypatch.setattr(chronicle_import, "_import", lambda store: (imports.append(1), real_import(store))[1])
+    ctx = ctx_for(tmp_path)
+    calls = {"chronicle_write": lambda: write(ctx, kind="note", text="A note for later."),
+             "memory_read": lambda: _memory_read(ctx),
+             "memory_mark": lambda: json.loads(_memory_mark(ctx, text="the rule", address=addr(rows[0])))}
+    assert not (tmp_path / "memory" / "chronicle").exists()
+    calls[first]()
+    store = ChronicleStore(tmp_path)
+    receipt = store.activation()
+    assert imports == [1] and receipt and receipt["metadata"]["paid_calls"] == 0
+    assert store.get("legacy-b00-r1")["text"] == "I learned the Friday rule."
+    for name in ("chronicle_write", "memory_read", "memory_mark"):
+        calls[name]()
+    assert imports == [1] and store.activation() == receipt
+    kinds = [record["kind"] for line in (tmp_path / "memory" / "chronicle" / "records.jsonl").read_text(
+        encoding="utf-8").splitlines() for record in json.loads(line)["records"]]
+    assert kinds.count("activation") == 1 and kinds.count("legacy") == 1
 
 
 # --- memory_mark ---------------------------------------------------------------------------------
