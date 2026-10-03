@@ -1379,12 +1379,12 @@ engineering rules; no second policy list may exist.
 never *look, I am still working*. It exists so the owner can leave the window
 and still be reached by a question or a finished task.
 
-**Startup & background.** Settings → Behavior owns host lifecycle choices, separate from the client-local Appearance controls. Sign-in startup is off until the owner opts in and always names the computer running Ouroboros, even in a remote client. OS registration is the truth: another copy, an OS-disabled entry and an unavailable app build remain visible rather than becoming a saved-settings guess. Automatic startup preserves Panic stops and saved pauses; an explicit owner start releases Panic. Closing the desktop window still exits; keeping it running after close has no control yet. Android deliberately keeps its existing automatic boot entry by default, with the same Panic-preservation contract.
+**Startup & background.** Settings → Behavior owns host lifecycle choices, separate from the client-local Appearance controls. Sign-in startup is off until the owner opts in and always names the computer running Ouroboros, even in a remote client. OS registration is the truth: another copy, an OS-disabled entry and an unavailable app build remain visible rather than becoming a saved-settings guess. Automatic startup preserves Panic stops and saved pauses; an explicit owner start releases Panic. The second control, *keep Ouroboros running in the background when the window is closed*, is also off until chosen and lives in the host's settings. Until the owner decides, the first close of the desktop window asks once — Ouroboros will keep working in the background (tasks, schedules, Telegram): keep it running, or quit? — and the answer becomes that checkbox; dismissing the question quits. While it is on, closing hides the window behind a live indicator (the Windows notification-area icon; the macOS menu-bar item and Dock) whose menu shows the real state and offers Open, Panic and Quit; if no indicator appears the close quits, so a hidden process always has a visible way back. Quit, Cmd+Q and signing out always quit, unasked. A sign-in start stays hidden only when both checkboxes are on and the indicator actually appeared; there is no third "start minimized" setting. Linux shows the background control as not available yet and closing quits there. Android deliberately keeps its existing automatic boot entry by default, with the same Panic-preservation contract.
 
-**When the client runs.** Notifications are a property of a running client. This
-version adds no tray agent, no background process and no push channel, so
-closing Ouroboros ends them. The existing Telegram bridge remains the separate
-path that reaches the owner while nothing is open.
+**When the client runs.** Notifications are a property of a running client, and
+there is no push channel. On the desktop the Telegram bridge runs inside the same
+server, so it reaches the owner while the window is closed only in background
+mode; quitting ends it together with the server.
 
 **Focus does not suppress, and neither does a closed room.** While a category is
 on, its event notifies whether or not the window has focus and whether or not
@@ -1453,13 +1453,16 @@ the conversation. No reply is composed from the banner.
 owner turns message text on, because a banner can appear on a shared screen.
 
 **Deliberately absent.** No numeric badge, no repeated reminder, no inline
-reply, no tray icon, no Telegram escalation, and no promise of a native
-Notification Center/toast banner or attention after the application closes.
-When the packaged desktop launcher exposes its optional `request_attention`
-bridge, a live notification may raise that window and ask the operating system
-for one standard sound. This is a native attention cue, not proof that a
-system banner was delivered; unsupported or older launchers fall back to the
-browser banner or in-app toast and report that capability honestly.
+reply, no Telegram escalation, and no promise of a native Notification
+Center/toast banner or attention after the application quits. When the packaged
+desktop launcher exposes its optional `request_attention` bridge, a live
+notification may raise a visible window and ask the operating system for one
+standard sound. A window the owner hid in background mode is never raised by an
+alert: Windows shows a banner from its notification-area icon, macOS marks and
+bounces the Dock icon with the system sound, and the window opens from that
+banner, the indicator or the Dock. These are native attention cues, not proof
+that a system banner was delivered; unsupported or older launchers fall back to
+the browser banner or in-app toast and report that capability honestly.
 
 **Settings.** The controls live on **Settings → Appearance**, under the theme
 block, and are stored per client exactly like the appearance choice: the desktop

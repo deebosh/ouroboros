@@ -63,7 +63,8 @@ from ouroboros.launcher_onboarding import (
     prepare_first_run_settings as _prepare_first_run_settings,
     present_first_run_onboarding as _present_first_run_onboarding,
 )
-from ouroboros.launcher_tray import WindowsTray, activate_existing_tray, request_tray_cleanup, stop_tray_before_exit
+from ouroboros.launcher_background import (Background, activate_running_instance, background_env,
+                                           request_tray_cleanup, stop_tray_before_exit)
 from ouroboros.launcher_server_reaper import (
     reap_same_install_strays as _reap_same_install_strays_impl,
 )
@@ -97,7 +98,6 @@ from ouroboros.platform_layer import (
     subprocess_new_group_kwargs,
     terminate_job,
     terminate_process_group_id,
-    request_native_attention,
 )
 from ouroboros.utils import atomic_write_json, utc_now_iso
 
@@ -114,7 +114,6 @@ _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) i
 # seal and triggers AppTranslocation. Uses the same data_dir/state/pycache
 # convention as launcher_bootstrap.embedded_python_env so caches land outside the
 # bundle. setdefault keeps any explicit caller override.
-os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 _pycache_dir = DATA_DIR / "state" / "pycache"
 try:
     _pycache_dir.mkdir(parents=True, exist_ok=True)
@@ -409,6 +408,7 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
         str(os.environ.get("OUROBOROS_PRESENTATION") or "web")
         if _external_ui else "browser_fallback" if _headless else "desktop_window"
     )
+    env.update(background_env(env["OUROBOROS_PRESENTATION"]))  # can this launcher keep running with its window hidden
     if _external_host_update is not None:
         env["OUROBOROS_EXTERNAL_HOST_UPDATE"] = str(_external_host_update)
         env["OUROBOROS_EXTERNAL_HOST_RESULT"] = json.dumps(_external_host_result)
@@ -651,8 +651,6 @@ def _wait_for_server(port: int, timeout: float = 30.0, abort_event=None) -> bool
     ``abort_event`` (headless mode) lets a shutdown signal cut the wait short:
     the handlers only set the event, so without this check a SIGTERM during
     startup would still sit out the full readiness timeout."""
-    import urllib.request
-
     url = f"http://127.0.0.1:{port}/api/health"
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -784,7 +782,8 @@ def agent_lifecycle_loop(port: int = AGENT_SERVER_PORT) -> None:
 
         if exit_code == PANIC_EXIT_CODE:
             log.info("Panic stop (exit code %d) — shutting down completely.", PANIC_EXIT_CODE)
-            _shutdown_event.set(); request_tray_cleanup()
+            _shutdown_event.set()
+            request_tray_cleanup()  # Panic removes the indicator without waiting for it
             # The agent (server child) already exited; tear down any orphans and
             # force-exit the whole process. _webview_window.destroy() from this
             # supervisor thread cannot end the main-thread Cocoa webview loop on
@@ -1188,7 +1187,9 @@ def main(argv=()):
         import webview
 
     if not acquire_pid_lock():
-        if IS_WINDOWS and not _headless and activate_existing_tray(PID_FILE): return
+        log.error("Another instance already running.")
+        if options.launch_intent == "automatic" or (not _headless and activate_running_instance(PID_FILE)):
+            return  # a sign-in start stays quiet; a manual launch showed the running window
         if _headless:
             # The lock loss usually races the FIRST launcher's bootstrap
             # (repeated Open clicks): the port file may be absent (unlinked
@@ -1512,8 +1513,9 @@ def main(argv=()):
 
         def open_external_url(self, url: str) -> dict:
             return _open_external_url(url)
-        def request_attention(self, sound: bool = True) -> dict:
-            return request_native_attention(_webview_window.show if _webview_window else None, sound=bool(sound))
+        def request_attention(self, sound: bool = True, title: str = "", body: str = "") -> dict:
+            return background.attention(bool(sound), str(title or ""), str(body or ""))
+        notify_owner = request_attention  # newer pages send the alert text; older launchers lack this name
 
         def save_bytes_to_downloads(self, filename: str, b64: str) -> dict:
             try:
@@ -1555,17 +1557,6 @@ def main(argv=()):
         # Never returns: keep-alive loop + teardown + sys.exit inside.
         _run_headless_main(url, actual_port, lifecycle_thread)
 
-    window = webview.create_window(
-        f"Ouroboros v{APP_VERSION}",
-        url=url,
-        js_api=MainApi(),
-        width=1100,
-        height=750,
-        min_size=(800, 500),
-        background_color="#0d0b0f",
-        text_select=True, hidden=IS_WINDOWS and options.launch_intent == "automatic",
-    )
-
     def _on_closing() -> None:
         log.info("Window closing — graceful shutdown.")
         _shutdown_event.set()
@@ -1574,10 +1565,19 @@ def main(argv=()):
         stop_tray_before_exit(release_pid_lock)
         os._exit(0)
 
-    _webview_window = window  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
-    tray = WindowsTray(lambda: _webview_window, _on_closing, PID_FILE, _shutdown_event) if IS_WINDOWS else None
-    window.events.closing += tray.attach(window, initially_hidden=options.launch_intent == "automatic") if tray else _on_closing
-    webview.start(func=tray.show_if_unavailable, args=[window], debug=False, private_mode=False) if tray and options.launch_intent == "automatic" else webview.start(debug=False, private_mode=False)
+    background = Background(_on_closing, _read_port_file, _shutdown_event).listen(PID_FILE)
+    window = webview.create_window(
+        f"Ouroboros v{APP_VERSION}",
+        url=url,
+        js_api=MainApi(),
+        width=1100,
+        height=750,
+        min_size=(800, 500),
+        background_color="#0d0b0f",
+        text_select=True, hidden=background.start_hidden(options.launch_intent),
+    )
+    _webview_window = background.attach(window)  # Persist cookies and website data (ouroboros.theme); rebuild/limits: ARCHITECTURE §3.
+    webview.start(func=background.run, debug=False, private_mode=False)
 
 
 if __name__ == "__main__":

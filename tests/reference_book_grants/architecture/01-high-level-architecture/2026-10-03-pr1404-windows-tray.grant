@@ -1,2 +1,2 @@
-153
-Retain PR #1404 module-map row for the Windows tray module when merging the sign-in startup candidate.
+750
+Desktop background mode: the launcher_background/indicator module rows, the keep-running control and its availability fact, and the second-launch sentence (PR #1404).

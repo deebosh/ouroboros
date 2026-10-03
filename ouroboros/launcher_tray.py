@@ -1,20 +1,28 @@
-"""Windows desktop tray and same-install window activation.
+"""Windows background indicator: a notification-area icon on its own STA thread.
 
-The named auto-reset kernel event exists only while its owning launcher holds a
-handle. Its name is derived from the installation's PID-lock path; it is not a
-persistent file, and a crashed owner cannot leave a stale activation request.
-WinForms and Win32 are imported only on the Windows desktop path.
+Created only while background mode is on (``launcher_background``). A window close is
+decided in the form's own FormClosing handler, the one place that sees its CloseReason
+(pywebview's ``closing`` event does not): only the owner's close may hide the window or
+ask, while sign-out, shutdown and Task Manager closes always quit. The named auto-reset
+kernel event behind a manual second launch exists only while its owning launcher holds
+a handle; its name derives from the installation's PID-lock path, so it is not a
+persistent file and a crashed owner cannot leave a stale request. WinForms and Win32
+load only on Windows.
 """
 
 import hashlib
 import logging
 import os
+import queue
 import sys
 import threading
 import time
 
+from ouroboros.launcher_background import Indicator
+
 log = logging.getLogger("launcher.tray")
-_active_tray = None
+# pywebview's WinForms confirmation is a fixed OK/Cancel box, so the text names the buttons.
+_CONSENT_BUTTONS = "\n\nOK keeps it running in the background. Cancel quits."
 
 
 def _event_name(lock_path):
@@ -45,7 +53,7 @@ def _kernel():
 
 
 def activate_existing_tray(lock_path, *, timeout=3.0):
-    """Ask this installation's live tray to show its window; no second UI.
+    """Ask this installation's running launcher to show its window; no second UI.
 
     Lock losers during bootstrap may race event creation. A failed/unsupported
     signal falls through to the existing already-running notice, never success.
@@ -63,94 +71,90 @@ def activate_existing_tray(lock_path, *, timeout=3.0):
             finally:
                 kernel.CloseHandle(handle)
         if time.monotonic() >= deadline:
-            log.warning("Running desktop tray did not accept activation request.")
+            log.warning("Running desktop launcher did not accept the activation request.")
             return False
         time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
 
-def request_tray_cleanup():
-    """Begin icon disposal while the launcher still has other cleanup to do."""
-    if _active_tray is not None:
+def listen_for_activation(lock_path, on_request, shutdown_event) -> bool:
+    """Own the installation's activation event for as long as this launcher runs."""
+    kernel = _kernel()
+    handle = kernel.CreateEventW(None, False, False, _event_name(lock_path)) if kernel else None
+    if not handle:
+        log.warning("Second-launch activation is unavailable; a second launch shows the old notice.")
+        return False
+
+    def wait() -> None:
         try:
-            _active_tray.stop(wait=0)
-        except Exception:
-            log.warning("Tray cleanup request failed; Panic continues.", exc_info=True)
+            while not shutdown_event.is_set():
+                if kernel.WaitForSingleObject(handle, 500) == 0:
+                    on_request()
+        finally:
+            kernel.CloseHandle(handle)
+
+    threading.Thread(target=wait, name="ouroboros-activation", daemon=True).start()
+    return True
 
 
-def stop_tray_before_exit(release_lock, *, wait=0.5):
-    """Remove the icon before normal Exit; Panic never waits on the tray."""
-    tray = _active_tray
-    if tray is not None:
-        try:
-            tray.stop(wait=wait)
-        except Exception:
-            log.warning("Tray cleanup failed before process exit.", exc_info=True)
-    release_lock()
+class WindowsTray(Indicator):
+    decides_natively = True
 
-
-class WindowsTray:
-    def __init__(self, get_window, exit_launcher, lock_path, shutdown_event):
-        self.get_window = get_window
-        self.exit_launcher = exit_launcher
-        self.lock_path = lock_path
-        self.shutdown_event = shutdown_event
-        self.ready = threading.Event()
-        self._stop = threading.Event()
-        self._disposed = threading.Event()
-        self._hidden = False
-        self._recovering = False
-        self._state_lock = threading.Lock()
+    def __init__(self, background):
+        super().__init__(background)
         self._sta_id = None
         self._icon = None
-        self._event_handle = None
-        self._kernel_api = None
+        self._disposed = threading.Event()
+        self._balloons = queue.SimpleQueue()
+        self._status = "Ouroboros"
 
-    def attach(self, window, *, initially_hidden=False):
-        """Return the pywebview closing handler; failed setup keeps normal exit."""
-        global _active_tray
-        self._hidden = initially_hidden
-        if self.start():
-            _active_tray = self
+    def attach_native(self, window):
+        from System.Windows.Forms import CloseReason  # pywebview's WinForms backend loaded the assembly
 
-        def closing():
-            if self.hide_on_close(window):
-                return False  # pywebview closing cancellation contract
-            return self.exit_launcher()
+        background = self.background
 
-        return closing
+        def form_closing(sender, args):
+            if args.CloseReason != CloseReason.UserClosing:
+                background.quit.set()  # sign-out, shutdown, Task Manager: never cancelled, never asked
+                background.exit_launcher()
+            elif background.window_closed() is False:
+                args.Cancel = True
 
-    def start(self):
-        try:
-            kernel = _kernel()
-            if kernel is None:
-                return False
-            import clr
-            clr.AddReference("System.Windows.Forms")
-            clr.AddReference("System.Drawing")
-            clr.AddReference("System.Threading")
-            from System.Drawing import Icon, SystemIcons
-            from System.Threading import ApartmentState, Thread, ThreadStart
-            from System.Windows.Forms import (Application, ApplicationContext, ContextMenuStrip,
-                                              MouseButtons, NotifyIcon, Timer, ToolStripMenuItem)
-            handle = kernel.CreateEventW(None, False, False, _event_name(self.lock_path))
-            if not handle:
-                raise OSError("Cannot create desktop activation event")
-            self._event_handle = handle
-            self._kernel_api = kernel
-        except Exception:
-            log.warning("Tray unavailable; window close will exit normally.", exc_info=True)
+        window.native.FormClosing += form_closing
+
+    def notify(self, title, body):
+        if not self.ready.is_set():
             return False
+        self._balloons.put((title, body))  # shown by the STA tick; the OS plays the banner's sound
+        return True
+
+    def set_status(self, text):
+        self._status = text
+
+    def confirm(self, window, title, message):
+        return bool(window.create_confirmation_dialog(title, message + _CONSENT_BUTTONS))
+
+    def _dispose(self, wait):
+        if wait and self._sta_id != threading.get_ident() and not self._disposed.wait(wait):
+            log.warning("Tray icon removal unconfirmed before process exit.")
+
+    def _launch(self):
+        if sys.platform != "win32":
+            return False
+        import clr
+
+        clr.AddReference("System.Windows.Forms")
+        clr.AddReference("System.Drawing")
+        clr.AddReference("System.Threading")
+        from System.Drawing import Icon, SystemIcons
+        from System.Threading import ApartmentState, Thread, ThreadStart
+        from System.Windows.Forms import (Application, ApplicationContext, ContextMenuStrip, MouseButtons,
+                                          NotifyIcon, Timer, ToolStripMenuItem, ToolStripSeparator, ToolTipIcon)
+
+        background = self.background
+        self._disposed.clear()
 
         def restore(sender=None, args=None):
-            window = self.get_window()
-            if window is not None:
-                try:
-                    window.show()
-                except Exception:
-                    log.warning("Tray could not show window; activation may be retried.", exc_info=True)
-                else:
-                    with self._state_lock:
-                        self._hidden = False
+            background.show_window()
 
         def dispose_icon():
             icon = self._icon
@@ -161,13 +165,13 @@ class WindowsTray:
             self.ready.clear()
             self._disposed.set()
 
-        def exit_clicked(sender, args):
+        def quit_clicked(sender, args):
             self._stop.set()
             try:
-                dispose_icon()  # STA, before launcher os._exit (finally may never run)
+                dispose_icon()  # STA, before the launcher's os._exit (finally may never run)
             except Exception:
-                log.warning("Tray icon removal failed before Exit.", exc_info=True)
-            self.exit_launcher()
+                log.warning("Tray icon removal failed before Quit.", exc_info=True)
+            background.request_quit()
 
         def pump():
             timer = None
@@ -175,12 +179,16 @@ class WindowsTray:
             self._sta_id = threading.get_ident()
             try:
                 menu = ContextMenuStrip()
-                open_item = ToolStripMenuItem("Open Ouroboros")
-                open_item.Click += restore
-                exit_item = ToolStripMenuItem("Exit")
-                exit_item.Click += exit_clicked
-                menu.Items.Add(open_item)
-                menu.Items.Add(exit_item)
+                state_item = ToolStripMenuItem(self._status)
+                state_item.Enabled = False
+                menu.Items.Add(state_item)
+                menu.Items.Add(ToolStripSeparator())
+                for text, handler in (("Open Ouroboros", restore),
+                                      ("Panic", lambda sender, args: background.request_panic()),
+                                      ("Quit Ouroboros", quit_clicked)):
+                    item = ToolStripMenuItem(text)
+                    item.Click += handler
+                    menu.Items.Add(item)
                 icon = NotifyIcon()
                 self._icon = icon
                 icon.Icon = SystemIcons.Application
@@ -194,33 +202,39 @@ class WindowsTray:
                             break
                         except Exception:
                             log.warning("Tray icon asset unreadable: %s", candidate, exc_info=True)
-                icon.Text = "Ouroboros — running"
+                icon.Text = self._status[:63]
                 icon.ContextMenuStrip = menu
+
                 def mouse_click(sender, args):
                     if args.Button == MouseButtons.Left:
                         restore()
+
                 icon.MouseClick += mouse_click
-                icon.MouseDoubleClick += restore
+                icon.BalloonTipClicked += restore
                 context = ApplicationContext()
                 timer = Timer()
                 timer.Interval = 200
 
                 def tick(sender, args):
-                    if self._stop.is_set() or self.shutdown_event.is_set():
+                    if self._stop.is_set() or background.shutdown.is_set():
                         dispose_icon()
                         Application.ExitThread()
-                    else:
-                        if self._kernel_api.WaitForSingleObject(self._event_handle, 0) == 0:
-                            restore()
-                        if icon.Visible:
-                            self.ready.set()
+                        return
+                    if state_item.Text != self._status:
+                        state_item.Text = self._status
+                        icon.Text = self._status[:63]  # the notification-area tooltip limit
+                    while not self._balloons.empty():
+                        title, body = self._balloons.get_nowait()
+                        icon.ShowBalloonTip(5000, title, body, ToolTipIcon.Info)
+                    if icon.Visible:
+                        self.ready.set()
 
                 timer.Tick += tick
                 timer.Start()
                 icon.Visible = True
                 Application.Run(context)
             except Exception:
-                log.warning("Tray pump failed; window close will exit normally.", exc_info=True)
+                log.warning("Tray pump failed; window close will quit.", exc_info=True)
             finally:
                 if timer is not None:
                     for operation in (timer.Stop, timer.Dispose):
@@ -237,72 +251,9 @@ class WindowsTray:
                         owned_icon.Dispose()
                     except Exception:
                         log.warning("Tray icon asset cleanup failed.", exc_info=True)
-                self._kernel_api.CloseHandle(self._event_handle)
-                self._pump_stopped()
+                self._stopped()
 
-        try:
-            thread = Thread(ThreadStart(pump))
-            thread.SetApartmentState(ApartmentState.STA)
-            thread.Start()
-        except Exception:
-            kernel.CloseHandle(handle)
-            log.warning("Tray STA thread could not start.", exc_info=True)
-            return False
+        thread = Thread(ThreadStart(pump))
+        thread.SetApartmentState(ApartmentState.STA)
+        thread.Start()
         return True
-
-    def stop(self, *, wait=0.0):
-        self.ready.clear()
-        self._stop.set()
-        if wait and self._sta_id != threading.get_ident():
-            if not self._disposed.wait(wait):
-                log.warning("Tray icon removal unconfirmed before process exit.")
-
-    def show_if_unavailable(self, window):
-        """On automatic launch, expose the hidden window if no live icon appears."""
-        if not self.ready.wait(3.0) or self._stop.is_set() or self.shutdown_event.is_set():
-            self._show_or_exit(window)
-
-    def _show_or_exit(self, window):
-        if self.shutdown_event.is_set():
-            return
-        with self._state_lock:
-            if not self._hidden or self._recovering:
-                return  # another recovery already made the window visible
-            self._recovering = True
-        log.warning("Desktop tray unavailable; showing the window.")
-        try:
-            for attempt in range(2):
-                try:
-                    window.show()
-                except Exception:
-                    log.error("Desktop tray could not show its window.", exc_info=True)
-                    if attempt == 0 and not self.shutdown_event.wait(0.1):
-                        continue
-                    if not self.shutdown_event.is_set():
-                        self.exit_launcher()  # no usable UI: do not leave a hidden owner running
-                else:
-                    with self._state_lock:
-                        self._hidden = False
-                break
-        finally:
-            with self._state_lock:
-                self._recovering = False
-
-    def _pump_stopped(self):
-        with self._state_lock:
-            self.ready.clear()
-            must_restore = self._hidden and not self._stop.is_set() and not self.shutdown_event.is_set()
-        if must_restore:
-            window = self.get_window()
-            if window is None:
-                self.exit_launcher()
-            else:
-                self._show_or_exit(window)
-
-    def hide_on_close(self, window):
-        with self._state_lock:
-            if not self.ready.is_set() or self.shutdown_event.is_set():
-                return False
-            window.hide()
-            self._hidden = True
-            return True
