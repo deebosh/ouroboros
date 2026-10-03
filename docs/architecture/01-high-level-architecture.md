@@ -209,6 +209,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── chronicle_import.py  ← One model-free import of the legacy dialogue memory: a `legacy` record per room section with its positional `raw_range`, nominations as global marks, the `legacy_frontier` scan state and the activation receipt (§6)
       ├── consolidator.py      ← Shared Light transport, scratchpad and knowledge upkeep for reflection and pressure; no dialogue writer (§6)
       ├── memory_nomination_receipts.py ← Strict read of the frozen cursor's pending nominations, imported once as marks (§6)
+      ├── memory_inventory.py  ← What of memory is open or folded, computed once: a room's chat rows after the legacy frontier outside its sealed set (an incremental row projection), and a legacy unit folded by a part or by pages sealing all its rows (§6)
       ├── memory.py            ← Scratchpad, identity, chat history
       ├── knowledge.py         ← `ouroboros/knowledge.py`: linked-Markdown note addressing, exact source reads, generated shelf indexes for global and project knowledge, and revision-checked writes, so concurrent cognition cannot silently overwrite a newer note (§6 Durable memory and project focus)
       ├── memory_journal_compaction.py ← Startup read-only size facts (`memory_journal_observation`); new history stays complete, old digests unrecoverable
