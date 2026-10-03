@@ -72,6 +72,36 @@ class FakeIndicator(lb.Indicator):
         return True
 
 
+SIGN_IN = lb.signin_startup_on  # the real reader; the autouse fixture stands it in
+
+
+class Answer:
+    """A stand-in ``urlopen`` response carrying ``body``."""
+
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self):
+        return self.body
+
+
+@pytest.fixture(autouse=True)
+def no_real_server(monkeypatch):
+    """No test here may reach a real server (the live install listens on 8765): HTTP is refused
+    unless a test answers it, and sign-in startup reads "on" unless a test asks the real reader."""
+    def refused(*_args, **_kwargs):
+        raise OSError("no server in these tests")
+
+    monkeypatch.setattr(lb.urllib.request, "urlopen", refused)
+    monkeypatch.setattr(lb, "signin_startup_on", lambda port: True)
+
+
 @pytest.fixture
 def settings(tmp_path, monkeypatch):
     from ouroboros import config as cfg
@@ -250,8 +280,36 @@ def test_tray_panic_posts_the_servers_emergency_stop_and_shows_the_window_on_fai
     assert background.events == []
 
 
-def test_quiet_start_needs_both_checkboxes_and_a_live_indicator(settings, monkeypatch, make):
-    for value, intent, indicator, expected in [
+@pytest.mark.parametrize("answer,hidden", [
+    ({"state": "on"}, True),
+    ({"state": "off"}, False),
+    ({"state": "disabled_by_os"}, False),
+    ({"state": "other_copy"}, False),
+    ({"state": "unavailable", "reason": "Available only when the host runs the packaged desktop app."}, False),
+    (OSError("refused"), False),  # a failed read
+    (b"<html>", False),
+])
+def test_a_quiet_start_needs_sign_in_startup_on_as_the_os_reports_it(settings, monkeypatch, make, answer, hidden):
+    asked = []
+
+    def urlopen(url, timeout):
+        asked.append(url)
+        if isinstance(answer, Exception):
+            raise answer
+        return Answer(answer if isinstance(answer, bytes) else json.dumps(answer).encode())
+
+    choose(settings, "true")
+    background, _window = make()
+    monkeypatch.setattr(lb.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(lb, "signin_startup_on", SIGN_IN)
+    assert background.start_hidden("owner") is False and asked == [], "a manual launch never asks and is shown"
+    assert background.start_hidden("automatic") is hidden
+    assert asked == ["http://127.0.0.1:8765/api/desktop/autostart"]  # the server's own autostart_status()
+    assert background.indicator.hidden is hidden
+
+
+def test_quiet_start_needs_an_automatic_launch_background_on_and_a_live_indicator(settings, monkeypatch, make):
+    for value, intent, indicator, expected in [  # sign-in startup reads "on" here (fixture)
         ("true", "automatic", FakeIndicator, True),
         ("true", "owner", FakeIndicator, False),  # a manual launch always shows the window
         ("false", "automatic", FakeIndicator, False),

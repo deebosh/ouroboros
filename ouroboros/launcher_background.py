@@ -63,6 +63,17 @@ def status_line(port: int) -> str:
     return "Ouroboros: paused" if any(row.get("phase") == "budget_paused" for row in rows) else "Ouroboros: waiting"
 
 
+def signin_startup_on(port: int) -> bool:
+    """Sign-in startup as the OS reports it (``desktop_autostart.autostart_status``), asked of the server:
+    the packaged-launcher facts it needs live in the server's environment, not in this process."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{int(port)}/api/desktop/autostart", timeout=10) as response:
+            return json.loads(response.read().decode("utf-8")).get("state") == "on"
+    except Exception:
+        log.warning("Sign-in startup state unreadable; the window is shown.", exc_info=True)
+        return False
+
+
 def activate_running_instance(lock_path) -> bool:
     """A manual second launch asks the running launcher to show its window; False: nobody answered."""
     if sys.platform == "win32":
@@ -269,13 +280,14 @@ class Background:
         return self
 
     def start_hidden(self, intent: str) -> bool:
-        """Quiet start (D3): an automatic launch with background on starts hidden; ``run`` shows it if no icon comes up.
-
-        A manual launch that asked for the window during the boot cancels it."""
+        """Quiet start (D3): an automatic launch starts hidden only with both checkboxes on, sign-in startup as
+        the OS reports it and background; ``run`` shows it if no icon comes up. Any other state, a failed
+        read, or a manual launch that asked for the window during the boot shows it."""
         with self._opening:
             if self._open_pending:
                 return False
-        hidden = self.indicator is not None and intent == "automatic" and keep_running_choice() == "true"
+        hidden = (self.indicator is not None and intent == "automatic" and keep_running_choice() == "true"
+                  and signin_startup_on(self.read_port()))
         if hidden:
             self.indicator.begin_hidden()
         return hidden
