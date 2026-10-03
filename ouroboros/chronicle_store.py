@@ -814,3 +814,9 @@ class ChronicleStore:
     def activation(self) -> Optional[Dict[str, Any]]:
         with self._index() as db:
             return self._state(db, "activation")
+
+    def ensure_activated(self) -> Dict[str, Any]:
+        """The activation receipt, importing the legacy dialogue memory once (``chronicle_import``)."""
+        from ouroboros.chronicle_import import ensure_activated
+
+        return ensure_activated(self)

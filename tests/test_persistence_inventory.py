@@ -590,7 +590,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 308 -> 312 (memory sprint, chronicle store): ``memory/chronicle`` with its append-only
 # ``records.jsonl``, the disposable ``index.sqlite3`` and the ``.publication.lock``; one
 # section-6 row each (the directory is answered by the deeper rows).
-EXPECTED_SCAN_PATHS = 312
+# 312 -> 313 (memory sprint, legacy import): ``memory/.consolidation.lock``, the legacy
+# writer's flock that the one-time chronicle import also takes, now spelled from the data
+# root; its own section-6 row.
+EXPECTED_SCAN_PATHS = 313
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
