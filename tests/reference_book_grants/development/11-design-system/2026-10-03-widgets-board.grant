@@ -1,0 +1,2 @@
+344
+Replace the masonry rule and its "CSS Grid row packing leaves gaps" motivation with the board rule and the honest motivation (gaps are accepted and owned by the owner's widths), the card-label scale rule, the widget_size preference, and the board browser lane in the Widgets enforcement list.

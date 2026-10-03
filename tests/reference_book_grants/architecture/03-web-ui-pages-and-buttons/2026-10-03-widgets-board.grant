@@ -1,0 +1,2 @@
+500
+Replace the masonry sentence with the board's mechanism and rationale: the widget_size key, custom-property-only rows on a 12-column grid, the list-width observer instead of @container, why rows replace measured packing, and the merge-by-key width write; DESIGN owns the board semantics.
