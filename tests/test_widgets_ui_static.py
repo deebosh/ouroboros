@@ -600,6 +600,13 @@ def test_widgets_card_order_is_owner_ui_preference():
     assert "event.key === 'ArrowUp'" in reorder
     assert "apiClient.uiPreferences()" in source
     assert "apiClient.saveUiPreferences({ widget_order: normalized })" in source
+    # A reorder of the shown cards is merged into the stored order (a card that
+    # is off keeps its slot); a card the order lacks keeps its shown place and a
+    # new one joins the end (docs/DESIGN.md "Widgets board").
+    assert "export function mergeWidgetOrder(stored, shown)" in reorder
+    assert "const normalized = mergeWidgetOrder(uiPreferences.widget_order, order);" in source
+    assert "export function sortTabsByWidgetOrder(tabs, order, shown = [])" in reorder
+    assert "uiPreferences.widget_order, currentWidgetOrder()," in source
     assert "export function moveWidgetKey(order, key, toIndex)" in reorder
     assert "export function bindWidgetCardReorder(list, currentOrder, onOrderChange)" in reorder
     assert "bindWidgetCardReorder(list, currentWidgetOrder, persistWidgetOrder);" in source

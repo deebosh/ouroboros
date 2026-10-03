@@ -25,7 +25,7 @@ import {
     WIDGET_START_MODES,
     withWidgetStartMode,
 } from './widget_card.js';
-import { bindWidgetCardReorder, createWidgetWidths, normalizeWidgetOrder, sortTabsByWidgetOrder } from './widget_reorder.js';
+import { bindWidgetCardReorder, createWidgetWidths, mergeWidgetOrder, normalizeWidgetOrder, sortTabsByWidgetOrder } from './widget_reorder.js';
 import {
     apiClient,
     apiFetch,
@@ -1388,7 +1388,7 @@ export function initWidgets(ctx = {}) {
                 }
                 const tabs = sortTabsByWidgetOrder(
                     Array.isArray(data.ui_tabs) ? data.ui_tabs : [],
-                    uiPreferences.widget_order,
+                    uiPreferences.widget_order, currentWidgetOrder(),
                 );
                 const signature = widgetTabsSignature(tabs);
                 if (hasCards() && tabs.length) {
@@ -1458,14 +1458,13 @@ export function initWidgets(ctx = {}) {
         }
     }
 
-    // A reorder (handle drag / keys) hands over the next key order: remember it,
+    // A reorder (handle drag / keys) hands over the next order of the shown cards:
+    // merge it into the stored order (a card not on screen keeps its slot),
     // re-sort the last good list, relayout in place, persist. No node moves.
     function persistWidgetOrder(order) {
-        const normalized = normalizeWidgetOrder(order);
+        const normalized = mergeWidgetOrder(uiPreferences.widget_order, order);
         uiPreferences = { ...uiPreferences, widget_order: normalized };
-        if (lastTabs) {
-            lastTabs = sortTabsByWidgetOrder(lastTabs, normalized);
-        }
+        if (lastTabs) lastTabs = sortTabsByWidgetOrder(lastTabs, normalized);
         relayout();
         apiClient.saveUiPreferences({ widget_order: normalized }).catch((err) => {
             console.warn('Failed to save widget order', err);

@@ -1,5 +1,6 @@
 /* Widgets card arrangement by the owner: the `widget_order` preference applied
-   to the card list, the pure key-order move behind a reorder, the drag /
+   to the card list, the pure key-order move behind a reorder and its merge
+   into the stored order (a card not on screen keeps its slot), the drag /
    keyboard reorder handles, and the card widths (`createWidgetWidths`: the
    card menu, the edge handle and its keys over `ui_preferences.widget_size`).
    Nothing here moves an <article>: the board (web/modules/widget_grid.js)
@@ -28,14 +29,38 @@ export function normalizeWidgetOrder(value) {
         });
 }
 
-export function sortTabsByWidgetOrder(tabs, order) {
-    const rank = new Map(normalizeWidgetOrder(order).map((key, idx) => [key, idx]));
+/**
+ * The cards in the owner's order. A card the order does not hold yet keeps the
+ * place this window last showed it in (`shown`), and a card new to both joins
+ * the end, so a widget that appears never lands at its listing place (the
+ * server lists by key) ahead of the cards already on screen.
+ */
+export function sortTabsByWidgetOrder(tabs, order, shown = []) {
+    const known = normalizeWidgetOrder([...normalizeWidgetOrder(order), ...normalizeWidgetOrder(shown)]);
+    const rank = new Map(known.map((key, idx) => [key, idx]));
     return tabs.map((tab, originalIndex) => ({ tab, originalIndex })).sort((a, b) => {
         const aRank = rank.has(widgetKey(a.tab)) ? rank.get(widgetKey(a.tab)) : Number.MAX_SAFE_INTEGER;
         const bRank = rank.has(widgetKey(b.tab)) ? rank.get(widgetKey(b.tab)) : Number.MAX_SAFE_INTEGER;
         if (aRank !== bRank) return aRank - bRank;
         return a.originalIndex - b.originalIndex;
     }).map((item) => item.tab);
+}
+
+/**
+ * The stored order after the owner rearranged the shown cards into `shown`:
+ * every slot that holds a shown key takes the next key of `shown`, so a key
+ * not on screen (its skill is off) keeps its slot for its return; shown keys
+ * the stored order lacks take new slots at its end. Stored `[A, H, B]` with
+ * `[B, A]` shown becomes `[B, H, A]`. "Not on screen" is the only signal.
+ */
+export function mergeWidgetOrder(stored, shown) {
+    const visible = normalizeWidgetOrder(shown);
+    const onScreen = new Set(visible);
+    const kept = normalizeWidgetOrder(stored);
+    const keptKeys = new Set(kept);
+    let next = 0;
+    return [...kept, ...visible.filter((key) => !keptKeys.has(key))]
+        .map((key) => (onScreen.has(key) ? visible[next++] : key));
 }
 
 /**

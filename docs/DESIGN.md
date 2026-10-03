@@ -1195,9 +1195,12 @@ widget's content belongs to its author.
   the order the owner set with a card's move handle; a card that does not fit
   the rest of a row starts the next one. Nothing is measured to place a card,
   so a card whose content grows only makes its own row taller and never sends
-  a neighbour to another column. A new widget joins the end of the order. A
-  widget whose skill is off is not drawn; its place in the order and its width
-  stay stored for its return, and nothing is reserved meanwhile.
+  a neighbour to another column. A new widget joins the end of the order; the
+  order is stored when the owner moves a card, so after a window reload the
+  widgets added since the last move follow the stored ones alphabetically. A
+  widget whose skill is off is not drawn; its place in the order (moving the
+  other cards keeps its slot) and its width stay stored for its return, and
+  nothing is reserved meanwhile.
 - **Gaps belong to the owner.** A short card beside a tall one leaves space
   under it (cards align to the top of their row), and widths that do not fill
   a row leave the rest of it empty. The owner closes a gap by choosing widths;

@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { createWidgetWidths, moveWidgetKey, normalizeWidgetOrder, sortTabsByWidgetOrder } from '../modules/widget_reorder.js';
+import {
+    createWidgetWidths, mergeWidgetOrder, moveWidgetKey, normalizeWidgetOrder, sortTabsByWidgetOrder,
+} from '../modules/widget_reorder.js';
 
 // Widgets lifecycle phase 3: a reorder is a pure move in the KEY order; the
 // handles never move an <article> (a moved <iframe> reloads). The card widths
@@ -37,6 +39,45 @@ test('normalizeWidgetOrder and sortTabsByWidgetOrder keep the phase-2 contract',
     assert.deepEqual(normalizeWidgetOrder('nope'), []);
     const tabs = [{ key: 'x' }, { key: 'y' }, { key: 'z' }];
     assert.deepEqual(sortTabsByWidgetOrder(tabs, ['z']).map((tab) => tab.key), ['z', 'x', 'y']);
+});
+
+const keysOf = (tabs) => tabs.map((tab) => tab.key);
+const tabsOf = (...keys) => keys.map((key) => ({ key }));
+
+test('a reorder of the shown cards keeps every stored key that is not on screen in its slot', () => {
+    // Stored [A, H, B]; H's skill is off; the owner moves B before A.
+    assert.deepEqual(mergeWidgetOrder(['a', 'h', 'b'], ['b', 'a']), ['b', 'h', 'a']);
+    // Stored [A, B, C]; B is off; C moves up: B keeps the middle slot, never the end.
+    assert.deepEqual(mergeWidgetOrder(['a', 'b', 'c'], ['c', 'a']), ['c', 'b', 'a']);
+    // A shown card the stored order lacks takes a new slot at its end first.
+    assert.deepEqual(mergeWidgetOrder(['a', 'h', 'b'], ['n', 'a', 'b']), ['n', 'h', 'a', 'b']);
+    // Nothing stored yet: the shown order is the order.
+    assert.deepEqual(mergeWidgetOrder([], ['c', 'a']), ['c', 'a']);
+    assert.deepEqual(mergeWidgetOrder(null, ['c', 'a']), ['c', 'a']);
+    // Both inputs are normalised, neither is mutated.
+    const stored = [' a ', 'h', 'a', 'b'];
+    assert.deepEqual(mergeWidgetOrder(stored, ['b', 'a', 'b']), ['b', 'h', 'a']);
+    assert.deepEqual(stored, [' a ', 'h', 'a', 'b']);
+});
+
+test('disable a widget, reorder the others, enable it again: it is back in its old slot', () => {
+    const stored = ['s:A', 's:B', 's:C', 's:D'];
+    // B's skill is off: the board shows A, C, D, and the owner moves D before C.
+    const shown = keysOf(sortTabsByWidgetOrder(tabsOf('s:A', 's:C', 's:D'), stored));
+    const written = mergeWidgetOrder(stored, moveWidgetKey(shown, 's:D', shown.indexOf('s:C')));
+    assert.deepEqual(written, ['s:A', 's:B', 's:D', 's:C']);
+    // B's skill is on again: it stands between A and D, where it stood.
+    assert.deepEqual(keysOf(sortTabsByWidgetOrder(tabsOf('s:A', 's:B', 's:C', 's:D'), written)), written);
+});
+
+test('a widget that appears joins the end, even when its key sorts before the cards on screen', () => {
+    // The server lists by key; nothing is arranged yet and this window shows m, z.
+    const listed = tabsOf('a:main', 'm:main', 'z:main');
+    assert.deepEqual(keysOf(sortTabsByWidgetOrder(listed, [], ['m:main', 'z:main'])), ['m:main', 'z:main', 'a:main']);
+    // The stored order still wins; the shown order places only the keys it lacks.
+    assert.deepEqual(keysOf(sortTabsByWidgetOrder(listed, ['z:main'], ['m:main', 'z:main'])), ['z:main', 'm:main', 'a:main']);
+    // A window's first list (nothing shown yet) keeps the listing order.
+    assert.deepEqual(keysOf(sortTabsByWidgetOrder(listed, [])), ['a:main', 'm:main', 'z:main']);
 });
 
 test('the reorder module moves keys only: no node insertion or move API, no masonry import', () => {
