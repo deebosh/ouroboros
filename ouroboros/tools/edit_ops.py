@@ -57,6 +57,7 @@ import textwrap
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from ouroboros.tools.arg_feedback import payload_item_feedback, with_argument_notes
 from ouroboros.config import get_runtime_mode
 from ouroboros.runtime_mode_policy import (
     core_patch_notice,
@@ -75,6 +76,24 @@ from ouroboros.tools.registry import ToolContext, ToolEntry, active_repo_dir_for
 from ouroboros.utils import safe_relpath, write_text
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Payload item vocabulary (shared with core._write_file)
+# ---------------------------------------------------------------------------
+
+# The ONE declaration of the `edits` item shape: the published schema in
+# get_tools() and the pre-edit guard both DERIVE from it, so the declared shape
+# cannot drift from what the tool reads. `count` is optional; the rest are required.
+_EDIT_BATCH_ITEM_PROPERTIES: Dict[str, Dict[str, Any]] = {
+    "path": {"type": "string"},
+    "old_str": {"type": "string"},
+    "new_str": {"type": "string"},
+    "count": {"type": "integer", "default": 1,
+              "description": "Exact number of occurrences expected AND replaced."},
+}
+_EDIT_BATCH_ITEM_KEYS: Tuple[str, ...] = tuple(_EDIT_BATCH_ITEM_PROPERTIES)
+_EDIT_BATCH_ITEM_REQUIRED: Tuple[str, ...] = ("path", "old_str", "new_str")
 
 
 # ---------------------------------------------------------------------------
@@ -666,11 +685,19 @@ def _apply_patch(
     root: str = "active_workspace",
     _resolved_binding: ResolvedResourceBinding | tuple[ResolvedResourceBinding, ...] | None = None,
 ) -> str:
+    def no_effect(text: str) -> str:
+        # Only Phase 1 owns this proof: no planned mutation has run yet.
+        from ouroboros.tools.tool_result import LegacyTextResultAdapter, _publish_tool_result, _replace_tool_result
+
+        result = LegacyTextResultAdapter.from_text("apply_patch", text)
+        return _publish_tool_result(ctx, _replace_tool_result(
+            result, meta_updates={"operation_outcome": "completed_no_effect"}))
+
     if not patch or not patch.strip():
-        return "⚠️ APPLY_PATCH_ERROR: patch is required."
+        return no_effect("⚠️ APPLY_PATCH_ERROR: patch is required.")
     ops, err = _parse_patch(patch)
     if err:
-        return err
+        return no_effect(err)
 
     # Phase 1: resolve + validate everything BEFORE any write (atomicity).
     planned_writes: List[Tuple[pathlib.Path, str, str]] = []  # (target, rel_path, content)
@@ -684,7 +711,7 @@ def _apply_patch(
         else ((_resolved_binding,) if _resolved_binding is not None else ())
     )
     if supplied_bindings and len(supplied_bindings) != len(ops):
-        return "⚠️ APPLY_PATCH_ERROR: internal target binding count mismatch."
+        return no_effect("⚠️ APPLY_PATCH_ERROR: internal target binding count mismatch.")
     binding_iter = iter(supplied_bindings)
     mutation_binding: ResolvedResourceBinding | None = None
     for op in ops:
@@ -696,11 +723,11 @@ def _apply_patch(
             _resolved_binding=next(binding_iter, None),
         )
         if terr:
-            return terr
+            return no_effect(terr)
         mutation_binding = mutation_binding or item_binding
         if op.kind == "add":
             if rel in seen or target.exists():
-                return (
+                return no_effect(
                     f"⚠️ APPLY_PATCH_ERROR: Add File {op.path}: file already exists. "
                     "Use '*** Update File:' to modify it."
                 )
@@ -713,7 +740,7 @@ def _apply_patch(
             continue
         if op.kind == "delete":
             if not target.exists():
-                return f"⚠️ APPLY_PATCH_ERROR: Delete File {op.path}: file not found."
+                return no_effect(f"⚠️ APPLY_PATCH_ERROR: Delete File {op.path}: file not found.")
             planned_deletes.append((target, rel))
             summaries.append(f"✅ Deleted {rel}")
             continue
@@ -722,14 +749,14 @@ def _apply_patch(
             content = seen[rel]
         else:
             if not target.exists():
-                return f"⚠️ APPLY_PATCH_ERROR: Update File {op.path}: file not found."
+                return no_effect(f"⚠️ APPLY_PATCH_ERROR: Update File {op.path}: file not found.")
             try:
                 content = target.read_text(encoding="utf-8")
             except Exception as e:  # noqa: BLE001 - report unreadable target
-                return f"⚠️ APPLY_PATCH_ERROR: cannot read {op.path}: {e}"
+                return no_effect(f"⚠️ APPLY_PATCH_ERROR: cannot read {op.path}: {e}")
         new_content, notes, herr = _apply_hunks_to_text(content, op.hunks, rel)
         if herr:
-            return f"⚠️ APPLY_PATCH_ERROR: {herr}\nNothing was applied (the patch is atomic)."
+            return no_effect(f"⚠️ APPLY_PATCH_ERROR: {herr}\nNothing was applied (the patch is atomic).")
         seen[rel] = new_content
         planned_writes.append((target, rel, new_content))
         added = sum(1 for h in op.hunks for p, _ in h.lines if p == "+")
@@ -782,6 +809,11 @@ def _edit_batch(
 ) -> str:
     if not edits or not isinstance(edits, list):
         return "⚠️ EDIT_BATCH_ERROR: edits must be a non-empty array."
+    item_refusal, notes = payload_item_feedback(
+        ctx, edits, _EDIT_BATCH_ITEM_PROPERTIES, item_label="edit", options={"root": root},
+    )
+    if item_refusal:
+        return item_refusal
     contents: Dict[str, str] = {}
     targets: Dict[str, pathlib.Path] = {}
     applied: List[str] = []
@@ -795,9 +827,6 @@ def _edit_batch(
     mutation_binding: ResolvedResourceBinding | None = None
     located = 0  # misses diagnosed so far (bounded per call)
     for idx, edit in enumerate(edits, 1):
-        if not isinstance(edit, dict):
-            errors.append(f"edit {idx}: must be an object")
-            continue
         item_binding = next(binding_iter, None)
         path = str(edit.get("path", "") or "")
         old_str = edit.get("old_str", "")
@@ -872,11 +901,11 @@ def _edit_batch(
             )
         changed.append(rel)
     footer = _finish_mutation(ctx, changed, "edit_batch", mutation_binding)
-    return (
+    return with_argument_notes(ctx, (
         f"✅ edit_batch applied {len(applied)} edit(s) across {len(changed)} file(s):\n"
         + "\n".join("  " + a for a in applied)
         + f"\n{footer}"
-    )
+    ), notes)
 
 
 # ---------------------------------------------------------------------------
@@ -896,9 +925,8 @@ def _syntax_check(rel: str, content: str) -> str:
         # compile() raises a bare ValueError for content Python cannot even scan
         # (a NUL byte, for one). Report it against the format actually checked —
         # "not valid JSON" for a .py file sends the fix in the wrong direction.
-        if rel.endswith(".py"):
-            return f"content is not valid Python source: {e}"
-        return f"content is not valid JSON: {e}"
+        kind = "Python source" if rel.endswith(".py") else "JSON"
+        return f"content is not valid {kind}: {e}"
     except Exception:
         return ""
     return ""
@@ -980,13 +1008,9 @@ def get_tools() -> List[ToolEntry]:
                 "use count>1 for identical repeated edits instead of many edit_text calls."
             ),
             "parameters": {"type": "object", "properties": {
-                "edits": {"type": "array", "items": {"type": "object", "properties": {
-                    "path": {"type": "string"},
-                    "old_str": {"type": "string"},
-                    "new_str": {"type": "string"},
-                    "count": {"type": "integer", "default": 1,
-                              "description": "Exact number of occurrences expected AND replaced."},
-                }, "required": ["path", "old_str", "new_str"]}},
+                "edits": {"type": "array", "items": {"type": "object",
+                    "properties": {k: dict(v) for k, v in _EDIT_BATCH_ITEM_PROPERTIES.items()},
+                    "required": list(_EDIT_BATCH_ITEM_REQUIRED)}},
                 "root": {"type": "string", "enum": ["active_workspace", "system_repo"], "default": "active_workspace"},
             }, "required": ["edits"]},
         }, _edit_batch, is_code_tool=True, mutates_worktree=True),

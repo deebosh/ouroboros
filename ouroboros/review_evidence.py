@@ -741,7 +741,9 @@ def collect_review_evidence(
     holds only rows this task owns (plus legacy rows with no recorded owner),
     while another task's rows on the same checkout are carried separately under
     ``foreign_advisory_runs`` so a reader cannot mistake them for this task's
-    own work.
+    own work. The repository stale marker is attributed the same way: shown to
+    every task on the checkout, with ``stale_task_id``/``stale_attribution``
+    naming whose mutation or review wrote it.
     """
     from ouroboros.review_state import (
         _LEGACY_CURRENT_REPO_KEY,
@@ -807,6 +809,8 @@ def collect_review_evidence(
             "bypass_reason": str(getattr(current_run, "bypass_reason", "") or ""),
             "stale_reason": str(getattr(state, "last_stale_reason", "") or "") if stale_matches_repo else "",
             "stale_ts": str(getattr(state, "last_stale_from_edit_ts", "") or "") if stale_matches_repo else "",
+            # Whose mutation or review wrote the marker; it never hides the marker.
+            **{key: value if stale_matches_repo else "" for key, value in state.stale_marker_provenance(task_id).items()},
         },
         "recent_attempts": [_attempt_to_dict(item) for item in (scoped_attempts[-max_attempts:] if max_attempts > 0 else [])],
         "omitted_attempts": max(0, len(scoped_attempts) - max_attempts) if max_attempts > 0 else len(scoped_attempts),
@@ -899,9 +903,14 @@ def format_review_evidence_for_prompt(
     *,
     max_chars: int = 0,
     acceptance_panels: Any = None,
+    plan_review: Any = None,
     **_kwargs,
 ) -> str:
     """Format review evidence as JSON for prompt injection.
+
+    ``plan_review`` is the task's plan-review facts slice (``plan_review_facts``),
+    already bounded by its builder: it leads the text and consumes none of
+    ``max_chars``, which keeps bounding the commit/advisory and acceptance evidence.
 
     When *max_chars* is 0 (default) the full JSON is returned — no truncation.
     Callers that inject evidence into bounded prompts (summaries, reflections)
@@ -988,9 +997,12 @@ def format_review_evidence_for_prompt(
             truncate_review_artifact(foreign_section, limit=max(1, room))
             if max_chars > 0 and len(foreign_section) > max(1, room) else foreign_section
         )
-    if not sections:
-        return "(no commit/advisory review evidence recorded for this task)"
-    return "\n\n".join(sections)
+    body = "\n\n".join(sections) if sections else "(no commit/advisory review evidence recorded for this task)"
+    if isinstance(plan_review, dict) and plan_review:
+        from ouroboros.plan_review_facts import render_plan_review_section
+
+        return render_plan_review_section(plan_review) + "\n\n" + body
+    return body
 
 
 def _attempt_to_dict(item: Any) -> Dict[str, Any]:

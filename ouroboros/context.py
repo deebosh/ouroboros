@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from ouroboros.config import get_context_mode
+from ouroboros.desktop_autostart import runtime_facts as desktop_runtime_facts
 from ouroboros.context_budget import (
     LARGE_CONTEXT_SECTION_CHARS,
     MAX_RECENT_CHAT_TAIL,
@@ -215,29 +216,28 @@ def _scheduled_tasks_digest(env: Any, *, limit: int = 8) -> Optional[Dict[str, A
     except Exception:
         log.debug("Failed to read scheduled tasks for context digest", exc_info=True)
         return None
-    tasks = [
-        t for t in (data.get("tasks") or [])
-        if isinstance(t, dict) and t.get("enabled", True)
-    ]
+    from supervisor.followup_policy import observed_store
+    from supervisor.queue_schedules import schedule_lifecycle_status
+    root = pathlib.Path(env.drive_path("state/scheduled_tasks.json")).parent.parent
+    data = observed_store(root, data)
+    # A deleted row still finishing accepted work stays in view until it goes.
+    tasks = [t for t in data.get("tasks", []) if isinstance(t, dict) and (t.get("enabled", True)
+             or t.get("followup_hold") or t.get("followup_wait") or t.get("delete_requested_at"))]
     if not tasks:
         return None
-    digest: List[Dict[str, Any]] = []
+    out: Dict[str, Any] = {"active": [], "held": [], "waiting": []}
     for record in tasks[:limit]:
-        trigger = record.get("trigger") if isinstance(record.get("trigger"), dict) else {}
-        entry = {
-            "id": str(record.get("id") or ""),
-            "name": str(record.get("name") or ""),
-            "timezone": str(record.get("timezone") or "") or "local",
-            "next_run_at": str(record.get("next_run_at") or ""),
-        }
-        if str(trigger.get("type") or "cron") == "once":
-            # One-shot records (schedule_followup) have no cron cadence: project
-            # the fire instant instead of an empty-string cron.
-            entry["run_at"] = str(trigger.get("run_at") or "")
-        else:
-            entry["cron"] = str(trigger.get("expr") or record.get("cron") or "")
-        digest.append(entry)
-    out: Dict[str, Any] = {"active": digest}
+        trigger = record.get("trigger") or {}
+        status = schedule_lifecycle_status(record)
+        entry = {"id": record.get("id"), "name": record.get("name"), "status": status,
+                 "relation": record.get("relation"), "followup_hold": record.get("followup_hold"),
+                 "followup_wait": record.get("followup_wait"), "hold_persisted": record.get("hold_persisted"),
+                 "timezone": record.get("timezone") or "local", "next_run_at": record.get("next_run_at") or ""}
+        entry["run_at" if trigger.get("type") == "once" else "cron"] = trigger.get("run_at" if trigger.get("type") == "once" else "expr", "")
+        if status == "delete_pending":
+            out.setdefault("delete_pending", []).append(entry)
+            continue
+        out["held" if record.get("followup_hold") else "waiting" if record.get("followup_wait") else "active"].append(entry)
     if len(tasks) > limit:
         out["omitted_count"] = len(tasks) - limit
     return out
@@ -269,6 +269,7 @@ from ouroboros.context_runtime_facts import (  # noqa: E402,F401 — re-exported
     _queue_context_fact,
     _runtime_budget_info,
     task_execution_clock_fact,
+    task_schedule_fact,
 )
 
 
@@ -354,17 +355,16 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
             "budget_drive_root": task.get("budget_drive_root"),
             "deadline_at": task.get("deadline_at"),
             **task_execution_clock_fact(task, ctx),
+            **task_schedule_fact(task),
             "allowed_resources": task.get("allowed_resources"),
             "context": task.get("context"),
         },
-        # Server-process presentation posture (launcher-exported; absent = a
-        # web/headless serving process). This is the PROCESS's shell, NOT the
-        # surface the owner's current message came from — that per-message fact
-        # is `owner_client` below. (The former `is_desktop` flag read
-        # OUROBOROS_DESKTOP_MODE, which no producer ever set — retired.)
+        # Host shell/lifecycle, not the sender's per-message `owner_client`.
+        # Launcher-exported presentation is absent on web/headless processes.
         "runtime_env": {
             "presentation": os.environ.get("OUROBOROS_PRESENTATION", "").strip() or "web",
             "platform": sys.platform,
+            **desktop_runtime_facts(),
         },
     }
     runtime_data.update(_task_authority_projection(env, task))
@@ -400,11 +400,14 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
     try:
         from ouroboros.config import get_allow_mutative_subagents
         from ouroboros.contracts.task_constraint import VALID_WRITE_SURFACES
+        from ouroboros.workspace_copies import workspace_copy_source_is_system
 
+        copy_source_is_system = workspace_copy_source_is_system(ctx or env, str(task.get("workspace_root") or ""))
         runtime_data["capabilities"] = {
             "allow_mutative_subagents": bool(get_allow_mutative_subagents()),
             "mutative_subagent_surfaces": sorted(
-                s for s in VALID_WRITE_SURFACES if get_allow_mutative_subagents(s)
+                s for s in VALID_WRITE_SURFACES
+                if get_allow_mutative_subagents(s, source_is_system_repo=copy_source_is_system)
             ),
             "write_surfaces": sorted(VALID_WRITE_SURFACES),
             "web_search_backend": runtime_setting("OUROBOROS_WEBSEARCH_BACKEND", "auto"),
@@ -417,7 +420,8 @@ def build_runtime_section(env: Any, task: Dict[str, Any], *, ctx: Any = None, sc
                 "applies to every surface; when it is empty the runtime mode decides, "
                 "SURFACE-AWARE: advanced/pro/cyber_pro allow every surface, light allows "
                 "external_workspace/genesis — they build outside the Ouroboros runtime — "
-                "and keeps self_worktree off). mutative_subagent_surfaces lists what is "
+                "including isolated project copies; own-body self_worktree stays off). "
+                "mutative_subagent_surfaces lists what is "
                 "actually schedulable RIGHT NOW. Read THIS before declaring you cannot "
                 "spawn acting subagents."
             ),
@@ -801,7 +805,7 @@ def build_memory_sections(memory: Memory, partition: str = "all", durable_dialog
     return sections
 
 
-def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 10) -> str:
+def _format_recent_reflections(entries: List[Dict[str, Any]], limit: int = 20) -> str:
     if not entries:
         return ""
 
@@ -963,13 +967,13 @@ def build_recent_sections(
         sections.append(f"## Supervisor ({coverage_line(supervisor_coverage)})\n\n" + supervisor_summary)
 
     reflections_entries = memory.read_task_recent("task_reflections.jsonl", "", 20)[0]
-    reflections_text = _format_recent_reflections(reflections_entries, limit=10)
+    reflections_text = _format_recent_reflections(reflections_entries, limit=20)
     if reflections_text:
         sections.append("## Execution reflections\n\n" + reflections_text)
 
     # Read-back of the project's OWN full reflections (F5 wrote them to the
     # project drive; the canonical tail above carries only pointer rows). Same
-    # bounds as the canonical read: last 20 rows, 10 rendered.
+    # bounds as the canonical read: last 20 rows, all 20 rendered.
     _pid = str(project_id or "").strip()
     if _pid:
         try:
@@ -979,7 +983,7 @@ def build_recent_sections(
             project_rows = list(iter_jsonl_objects(
                 project_reflections_path(_pid), max_entries=20,
             ))
-            project_text = _format_recent_reflections(project_rows, limit=10)
+            project_text = _format_recent_reflections(project_rows, limit=20)
             if project_text:
                 sections.append(
                     f"## Project execution reflections (this project's own: {_pid})\n\n"
