@@ -1,0 +1,207 @@
+"""Block B of the memory view, ``## My story`` (``ouroboros.memory_view.render_story``).
+
+Pointers to the retold old memory come first, then my pages and parts of every room in
+stream order (never by publication time); a record folded into a part shows only through
+the part, and the mind's corrections and rejections of a part's members stand under it.
+What is folded is ``memory_inventory``'s one rule. The block is byte-identical for every
+integrator and depends on no capture time, task, room or chat row. Each rule is pinned
+in both directions on a fixture with three rooms besides Main and twenty rows.
+"""
+from __future__ import annotations
+
+import re
+
+from ouroboros import chat_chain
+from ouroboros import memory_view as mv
+from ouroboros.chronicle_store import ChronicleStore
+from tests import _memory_inventory_shared as shared
+
+MAIN = {"id": "turn0001", "chat_id": 1}
+HELPER = {"kind": "helper", "route": "configured-light"}
+
+
+def _snapshot(root, task=MAIN):
+    return mv.capture_memory_view(root, task, mv.view_spec_for_task(task, root))
+
+
+def _story(root, task=MAIN) -> str:
+    return mv.render_story(_snapshot(root, task))
+
+
+def _page(root, room, first, last, *, author=shared.MIND, text=None):
+    from ouroboros.tools.chronicle import page_covers
+
+    addresses = {pos: address for address, _row, pos in chat_chain.iter_rows(root)}
+    covers = page_covers(root, room, from_addr=addresses[first], to_addr=addresses[last])["covers"]
+    result = ChronicleStore(root).publish_page(room_id=room, text=text or f"Page {room} {first}-{last}.",
+                                               covers=covers, author=author)
+    assert result.ok, result
+    return result.record["id"]
+
+
+def _part(root, room, members, text="A part of my story."):
+    store = ChronicleStore(root)
+    result = store.publish_part(room_id=room, text=text, member_ids=members, author=shared.MIND,
+                                expected_sequence=store.room_head(room))
+    assert result.ok, result
+    return result.record["id"]
+
+
+def _headers(text):
+    return [line for line in text.split("\n") if line.startswith("### ")]
+
+
+def _fold_block_zero(root, rooms):
+    _page(root, str(rooms["alpha"]), 2, 5)
+    _page(root, "777", 4, 4)
+    _page(root, "1", 0, 5)
+
+
+def test_pointers_come_first_then_pages_of_all_rooms_by_stream_position_not_publication(tmp_path):
+    rooms = shared.world(tmp_path)
+    alpha, beta = str(rooms["alpha"]), str(rooms["beta"])
+    # Published newest stream first: sequence and record time run against the stream.
+    late = _page(tmp_path, beta, 14, 14)
+    early = _page(tmp_path, "1", 10, 12)
+    middle = _page(tmp_path, alpha, 13, 13)
+    text = _story(tmp_path)
+    headers = _headers(text)
+    assert headers[0] == "### Old memory retold by a helper before the update (not lived; read by id)"
+    assert [header.rsplit(" ", 1)[1] for header in headers[1:]] == [early, middle, late]
+    assert headers[1].startswith("### Main · 2026-09-03 00:00 → 2026-09-03 00:02 · page ")
+    assert headers[3].startswith(f"### Project Beta [chat_id={beta}] · ")
+    pointer = "- Main; 2026-09-01 00:00 → 2026-09-01 00:05; 4 rows retold; memory_read(node_id='legacy-b00-r1')"
+    assert pointer in text.split("\n") and text.index(pointer) < text.index(headers[1])
+
+
+def test_a_part_shows_its_members_do_not_and_corrections_of_members_stand_under_it(tmp_path):
+    shared.world(tmp_path)
+    first, second = _page(tmp_path, "1", 10, 11), _page(tmp_path, "1", 12, 12)
+    plain = _part(tmp_path, "1", [first, second])
+    text = _story(tmp_path)
+    assert f"part {plain}" in text and first not in text and second not in text
+    assert "correction by me of" not in text  # no correction, no line
+    store = ChronicleStore(tmp_path)
+    assert store.correct(first, "The first page, said right.", shared.MIND,
+                         expected_sequence=store.room_head("1")).ok
+    corrected = _story(tmp_path)
+    assert f"- correction by me of {first}:\n  The first page, said right." in corrected
+    assert corrected.count("correction by me of") == 1 and second not in corrected  # no cascade
+
+
+def test_the_one_folded_rule_removes_a_pointer_only_when_every_row_is_sealed_and_counts_the_block(tmp_path):
+    rooms = shared.world(tmp_path)
+    before = _story(tmp_path)
+    assert "folded 0 of 2 blocks" in before and "memory_read(node_id='legacy-b00-r777')" in before
+    _page(tmp_path, str(rooms["alpha"]), 2, 5)
+    _page(tmp_path, "1", 0, 1)  # Main's rows of block zero are 0, 1, 4 and 5: a partial page folds nothing
+    partial = _story(tmp_path)
+    assert "memory_read(node_id='legacy-b00-r1')" in partial and "folded 0 of 2 blocks" in partial
+    assert f"memory_read(node_id='legacy-b00-r{rooms['alpha']}')" not in partial
+    _page(tmp_path, "1", 4, 5)
+    _page(tmp_path, "777", 4, 4)
+    folded = _story(tmp_path)
+    assert "legacy-b00-" not in folded and "folded 1 of 2 blocks" in folded
+    # A record without rows folds only through a part, and the part then tells that period.
+    assert "memory_read(node_id='legacy-b01-r1')" in folded
+    part = _part(tmp_path, "1", ["legacy-b01-r1"], text="Main was quiet that day.")
+    assert "legacy-b01-r1'" not in _story(tmp_path) and f"part {part}" in _story(tmp_path)
+
+
+def test_the_status_line_lives_while_old_memory_is_open_and_names_what_is_left(tmp_path):
+    rooms = shared.world(tmp_path)
+    status = [line for line in _story(tmp_path).split("\n") if line.startswith("Story status:")]
+    assert len(status) == 1 and "folded 0 of 2 blocks; 6 retold records are still open (12 rows," in status[0]
+    assert "helper route " in status[0] and "pages sealed by me: 0." in status[0]
+    _fold_block_zero(tmp_path, rooms)
+    _page(tmp_path, str(rooms["alpha"]), 6, 7)
+    _page(tmp_path, str(rooms["beta"]), 8, 9)
+    _part(tmp_path, "1", ["legacy-b01-r1"])
+    done = _story(tmp_path)
+    assert "Story status:" not in done and "Old memory retold" not in done  # the visible end of the transition
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    shared.world(fresh, legacy=False)
+    assert "Story status:" not in _story(fresh) and "No page or part is sealed yet." in _story(fresh)
+
+
+def test_a_helper_refusal_receipt_is_one_line_after_the_status_and_absent_without_one(tmp_path):
+    rooms = shared.world(tmp_path)
+    assert "A helper could not fold" not in _story(tmp_path)
+    unit = f"legacy-b01-r{rooms['beta']}"
+    receipt = {"input_sha256": "e" * 64, "kind": "context_overflow", "at": "2026-10-03T00:00:00+00:00",
+               "response_ref": {"path": "x.md", "read": {"tool": "read_file", "arguments": {
+                   "root": "runtime_data", "path": "task_results/fallback/x.md"}}}}
+    assert ChronicleStore(tmp_path).publish([], scan_state={"fallback_refusals": {unit: receipt}}).ok
+    lines = _story(tmp_path).split("\n")
+    refusal = [line for line in lines if line.startswith("A helper could not fold")]
+    assert refusal == ["A helper could not fold: Beta; 2026-09-02 00:00 → 2026-09-02 00:03; context_overflow; "
+                       "its answer: read_file(root='runtime_data', path='task_results/fallback/x.md')"]
+    assert lines.index(refusal[0]) == next(i for i, line in enumerate(lines) if line.startswith("Story status:")) + 1
+
+
+def test_drafts_rejections_corrections_and_indented_texts(tmp_path):
+    shared.world(tmp_path)
+    store = ChronicleStore(tmp_path)
+    draft = _page(tmp_path, "1", 10, 10, author=HELPER, text="A helper's page.\n## Not a section")
+    text = _story(tmp_path)
+    assert "(draft by a helper (Light), not yet accepted or rejected by me)" in text
+    assert "  A helper's page.\n  ## Not a section" in text and "\n## Not a section" not in text
+    assert store.decide(draft, False, shared.MIND, "wrong reading").ok
+    assert draft not in _story(tmp_path)  # a rejected draft does not act
+    accepted = _page(tmp_path, "1", 10, 10, author=HELPER, text="A better helper page.")
+    assert store.decide(accepted, True, shared.MIND, "right").ok
+    assert "(drafted by a helper (Light), accepted by me)" in _story(tmp_path)
+    mine = _page(tmp_path, "1", 11, 12, text="My own page.")
+    result = store.correct(mine, "My own page, corrected.", shared.MIND, expected_sequence=store.room_head("1"))
+    text = _story(tmp_path)
+    assert "  My own page, corrected." in text and "  My own page.\n" not in text
+    assert f"(corrected by me: {result.record['id']})" in text
+    assert text.count("(draft by a helper") == 0
+
+
+def test_the_story_is_byte_identical_for_every_integrator_and_changes_only_with_the_chronicle(tmp_path, monkeypatch):
+    rooms = shared.world(tmp_path)
+    _page(tmp_path, str(rooms["alpha"]), 13, 13)
+    tasks = [MAIN, {"id": "rootA001", "chat_id": rooms["alpha"]}, {"id": "rootB001", "chat_id": rooms["beta"]},
+             {"id": "wake0001", "chat_id": 1, "metadata": {"usage_category": "consciousness"}},
+             {"id": "pres0001", "chat_id": 555, "metadata": {"presence": {"binding_id": "b"}}},
+             {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent"}]
+    clock = iter(f"2026-10-0{n}T00:00:00+00:00" for n in range(1, 9))
+    monkeypatch.setattr("ouroboros.utils.utc_now_iso", lambda: next(clock))
+    stories = {task["id"]: _story(tmp_path, task) for task in tasks}
+    assert len(set(stories.values())) == 1, stories.keys()
+    story = stories["turn0001"]
+    assert '{"' not in story and " ago" not in story and "captured" not in story.lower()
+    assert not [line for line in story.split("\n") if re.match(r"\s*\d+[.)] ", line)]  # no ordinals
+    assert "turn0001" not in story and "rootA001" not in story
+    shared.append(tmp_path / "logs" / "chat.jsonl", shared.msg("2026-09-04T00:00:00+00:00", "a new word"))
+    (tmp_path / "memory" / "knowledge").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "memory" / "knowledge" / "topic.md").write_text("a knowledge note", encoding="utf-8")
+    assert _story(tmp_path) == story  # a chat row or a knowledge note is not the story
+    _page(tmp_path, str(rooms["beta"]), 14, 14)
+    assert _story(tmp_path) != story  # a new page is
+    nanny = {"id": "nan00001", "chat_id": 1, "delegation_role": "subagent",
+             "configured_subagent": {"route": {"kind": "agent_session"}}}
+    assert _story(tmp_path, nanny) == ""
+
+
+def test_an_import_not_completed_names_its_reason_and_the_untouched_old_file(tmp_path, monkeypatch):
+    shared.world(tmp_path, activate=False)
+    monkeypatch.setattr(ChronicleStore, "ensure_activated",
+                        lambda self, **kw: {"kind": "import_pending", "reason": "legacy_memory_lock_busy"})
+    text = _story(tmp_path)
+    assert text.split("\n")[0] == "## My story — unavailable now (legacy_memory_lock_busy)"
+    assert "read_file(root='runtime_data', path='memory/dialogue_blocks.json')" in text
+
+
+def test_gaps_unknown_ranges_and_the_flat_file_are_pointers_with_honest_periods(tmp_path):
+    shared.world(tmp_path, cursor=False, flat="The flat old summary.")
+    lines = _story(tmp_path).split("\n")
+    gap = [line for line in lines if line.startswith("- memory gap: ")]
+    assert len(gap) == 1 and gap[0].startswith(
+        "- memory gap: Unknown provenance [legacy mixed record]; period known from the retelling text only; "
+        "the old cursor file is missing while legacy blocks exist; memory_read(node_id='legacy-cursor-gap-")
+    assert "- Main; 2026-09-01 00:00 - 00:05 (block period); memory_read(node_id='legacy-b00-r1')" in lines
+    assert any(line.startswith("- Unknown provenance [legacy mixed record]; period known from the retelling text "
+                               "only; memory_read(node_id='legacy-flat-") for line in lines)

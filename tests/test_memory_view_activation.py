@@ -135,3 +135,33 @@ def test_the_view_imports_no_model_client_or_retired_memory_machinery_and_crosse
     # The guard has teeth: the same check flags a module that imports the model client.
     probe = ast.parse("from ouroboros.llm import LLMClient\n")
     assert any(isinstance(node, ast.ImportFrom) and node.module.startswith(forbidden) for node in ast.walk(probe))
+
+
+def test_the_view_takes_open_and_folded_from_the_inventory_and_reads_no_row_stream_of_its_own():
+    tree, _top, _nested = _imports("memory_view.py")
+    names = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    names |= {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert {"legacy_units", "legacy_progress"} <= names  # the one folded rule, consumed
+    own = {"iter_rows", "iter_room_rows", "_stream_rows", "_exact_range", "_legacy_row_sets", "_legacy_stream"}
+    assert not own & names, own & names
+    # The guard has teeth: a module that walks the chain itself is flagged.
+    probe = ast.parse("from ouroboros import chat_chain\nrows = chat_chain.iter_rows(root)\n")
+    assert own & {node.attr for node in ast.walk(probe) if isinstance(node, ast.Attribute)}
+
+
+def test_a_journal_that_fails_while_the_story_is_read_still_leaves_a_view(tmp_path, monkeypatch):
+    from ouroboros import memory_inventory
+
+    shared.world(tmp_path)
+
+    def broken(*_a, **_k):
+        raise ValueError("chronicle authority shortened")
+
+    monkeypatch.setattr(memory_inventory, "legacy_units", broken)
+    snapshot = mv.capture_memory_view(tmp_path, MAIN_TASK, mv.ROLE_DEFAULTS["integrator"])
+    assert snapshot.store_status == {"state": "journal_unreadable",
+                                     "reason": "ValueError: chronicle authority shortened"}
+    assert mv.render_story(snapshot).startswith("## My story — unavailable now (ValueError: chronicle authority")
+    monkeypatch.undo()
+    healthy = mv.capture_memory_view(tmp_path, MAIN_TASK, mv.ROLE_DEFAULTS["integrator"])
+    assert healthy.active and mv.render_story(healthy).startswith("## My story\n")
