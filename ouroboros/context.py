@@ -1329,11 +1329,9 @@ def _capture_context_core(
     if is_child:
         dynamic_parts.append(
             "## Working sources\n\n"
-            "The shared biography is loaded above; your own recent process (progress, tools, events) "
-            "is loaded below. Your parent's selected discussion and working sources are in this "
-            "assignment's context. Other raw conversations, the global scratchpad and earlier task "
-            "reports are not preloaded: use chat_history, knowledge_read, get_task_result or ask "
-            "your parent for exact sources when useful."
+            "Below is your own recent process (progress, tools, events). Work from this assignment "
+            "first — it is written to be enough; read memory or sources only to fill a gap it "
+            "leaves, and name what you read in your report."
         )
         # A child keeps its own process memory too (owner decision 2026-09-22):
         # its execution drive holds exactly its worker rows, progress is canonical.

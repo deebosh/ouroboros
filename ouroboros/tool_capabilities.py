@@ -83,9 +83,9 @@ META_TOOL_NAMES: frozenset[str] = frozenset({
 
 LOCAL_READONLY_SUBAGENT_MODE: str = "local_readonly_subagent"
 
-# V1 subagents are read-only against local Ouroboros state. Browser interaction
-# remains available by explicit product decision, so this mode is not a remote
-# website sandbox.
+# V1 subagents are read-only against local Ouroboros state, except the signed
+# knowledge notes and memory marks below. Browser interaction remains available
+# by explicit product decision, so this mode is not a remote website sandbox.
 LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "finish_task",
     # switch_model changes COGNITIVE POWER, not authority: a child that started on
@@ -94,7 +94,10 @@ LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "switch_model",
     "read_file", "list_files", "search_code", "query_code",
     "vcs_status", "vcs_diff",
-    "knowledge_read", "knowledge_list",
+    # Memory: a child reads, writes knowledge notes and marks in its own name (the
+    # host signs both with its focus); identity, scratchpad and chronicle pages stay
+    # with the integrating mind, which receives the child's result as a report.
+    "knowledge_read", "knowledge_list", "knowledge_write", "memory_read", "memory_mark",
     "chat_history", "recent_tasks", "get_task_result", "wait_task", "wait_tasks",
     "await_messages",
     "escalate",
@@ -134,10 +137,11 @@ ACTING_SUBAGENT_MODE: str = "acting_subagent"
 # (isolated self_worktree / shared external_workspace) and run shell/services there.
 # They explicitly CANNOT commit the live body (commit_reviewed /
 # vcs_commit_reviewed), run runtime control, touch the skills lifecycle, enable
-# tools, or write cognitive memory (update_identity/update_scratchpad/
-# knowledge_write). The parent integrates and is the sole committer. Extension /
-# MCP tools are denied unless explicitly granted per-child via
-# TaskConstraint.external_tool_grants.
+# tools, or write identity, scratchpad or chronicle pages (update_identity /
+# update_scratchpad / chronicle_write). Knowledge notes and memory marks they may
+# write in their own name: the host signs both with the child's focus. The parent
+# integrates and is the sole committer. Extension / MCP tools are denied unless
+# explicitly granted per-child via TaskConstraint.external_tool_grants.
 ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "finish_task",
     # switch_model changes COGNITIVE POWER, not authority: a child that started on
@@ -157,7 +161,8 @@ ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "forward_to_worker", "peek_task", "cancel_task", "discard_child_result",
     "resume_child_task",
     "verify_and_record",
-    "knowledge_read", "knowledge_list",
+    "knowledge_read", "knowledge_list", "knowledge_write", "memory_read", "memory_mark",
+    "chat_history",
     "tree_note", "tree_read", "override_delegation_constraint",
     # Same nanny verbs, same host-derived profile — an acting child hosts a
     # workspace_write session confined to a private snapshot of its own write

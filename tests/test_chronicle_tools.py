@@ -542,3 +542,83 @@ def test_registry_root_writes_to_the_canonical_data_root_and_reads_back(tmp_path
     rows = chat(canonical, [{"chat_id": 1, "direction": "in", "ts": ts(n), "text": f"words {n}"} for n in (1, 2)])
     ranged = registry.execute_result("memory_read", {"rows": True, "from": addr(rows[1]), "to": addr(rows[1])})
     assert ranged.status == "ok" and ranged.text.split("\n")[2:] == [f"[{ts(2)}; User; {addr(rows[1])}] words 2"]
+
+
+# --- delegated children (§5.4; R3: both child sets, OA-5: pages stay with the parent) ---------------
+
+CHILD_META = {"delegation_role": "subagent", "parent_task_id": "root0001", "root_task_id": "root0001"}
+
+
+def test_both_child_sets_read_write_knowledge_and_mark_and_neither_seals_pages():
+    from ouroboros.tool_capabilities import (
+        ACTING_SUBAGENT_TOOL_NAMES, COGNITIVE_MEMORY_TOOL_NAMES, LOCAL_READONLY_SUBAGENT_TOOL_NAMES,
+    )
+
+    memory_names = COGNITIVE_MEMORY_TOOL_NAMES | {"chronicle_write"}
+    child_memory = {"knowledge_read", "knowledge_list", "knowledge_write", "memory_read", "memory_mark", "chat_history"}
+    # Parity: a read-only and an acting child hold the same memory tools; chat_history is new for acting.
+    assert LOCAL_READONLY_SUBAGENT_TOOL_NAMES & memory_names == child_memory
+    assert ACTING_SUBAGENT_TOOL_NAMES & memory_names == child_memory
+    for name in ("chronicle_write", "update_identity", "update_scratchpad"):
+        assert name not in LOCAL_READONLY_SUBAGENT_TOOL_NAMES and name not in ACTING_SUBAGENT_TOOL_NAMES
+
+
+def test_readonly_child_registry_writes_signed_memory_and_is_refused_pages_identity_and_scratchpad(
+        tmp_path, chronicle_policy_skip):
+    from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.tools.registry import ToolRegistry
+
+    note = write(ctx_for(tmp_path), kind="note", text="the parent's note")
+    assert note["ok"]
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    registry.set_context(ToolContext(
+        repo_dir=tmp_path, drive_root=tmp_path, task_id="kid00001", current_chat_id=1,
+        task_metadata=dict(CHILD_META),
+        task_constraint=TaskConstraint(mode="local_readonly_subagent", allow_enable=False)))
+    for name in ("knowledge_write", "memory_mark", "memory_read"):
+        assert registry.get_schema_by_name(name) is not None
+    for name in ("chronicle_write", "update_identity", "update_scratchpad"):
+        assert registry.get_schema_by_name(name) is None
+    # Allowed: a mark and a knowledge note, both signed with the child's focus.
+    mark = json.loads(registry.execute("memory_mark", {"text": "the decision", "node_id": note["node_id"]}))
+    assert mark["ok"]
+    focus = ChronicleStore(tmp_path).get(mark["mark_id"])["author"]["focus"]
+    assert focus["role"] == "child" and focus["parent_task_id"] == "root0001"
+    saved = registry.execute("knowledge_write", {"topic": "people/rowan", "content": "Short reports.", "mode": "append"})
+    assert "saved" in saved and "BLOCKED" not in saved
+    # Refused: a chronicle page, identity and scratchpad stay with the integrating parent.
+    identity, scratchpad = tmp_path / "memory" / "identity.md", tmp_path / "memory" / "scratchpad.md"
+    for path in (identity, scratchpad):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("unchanged", encoding="utf-8")
+    for name, args in (("chronicle_write", {"kind": "note", "text": "must not land"}),
+                       ("update_identity", {"content": "must not land"}),
+                       ("update_scratchpad", {"content": "must not land"})):
+        assert "LOCAL_READONLY_SUBAGENT_BLOCKED" in registry.execute(name, args)
+    notes = [record["id"] for record in ChronicleStore(tmp_path).room_records("1") if record["kind"] == "note"]
+    assert notes == [note["node_id"]]
+    assert identity.read_text(encoding="utf-8") == scratchpad.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_acting_child_registry_reads_chat_history_and_writes_memory_but_no_page(
+        tmp_path, monkeypatch, chronicle_policy_skip):
+    from ouroboros.contracts.task_constraint import TaskConstraint
+    from ouroboros.tools.registry import ToolRegistry
+
+    monkeypatch.setenv("OUROBOROS_RUNTIME_MODE", "advanced")
+    repo, data, worktree = tmp_path / "repo", tmp_path / "data", tmp_path / "wt"
+    for path in (repo, data, worktree):
+        path.mkdir()
+    chat(data, [{"chat_id": 1, "direction": "in", "ts": ts(1), "text": "the owner's words"}])
+    registry = ToolRegistry(repo_dir=repo, drive_root=data)
+    registry.set_context(ToolContext(
+        repo_dir=repo, drive_root=data, task_id="kid00002", current_chat_id=1,
+        task_metadata=dict(CHILD_META), workspace_root=str(worktree), workspace_mode="self_worktree",
+        task_constraint=TaskConstraint(mode="acting_subagent", surface="self_worktree", write_root=str(worktree))))
+    for name in ("chat_history", "knowledge_write", "memory_mark", "memory_read"):
+        assert registry.get_schema_by_name(name) is not None
+    history = registry.execute("chat_history", {"count": 5})
+    assert "the owner's words" in history and "ACTING_SUBAGENT_BLOCKED" not in history
+    assert registry.get_schema_by_name("chronicle_write") is None
+    assert "ACTING_SUBAGENT_BLOCKED" in registry.execute("chronicle_write", {"kind": "note", "text": "must not land"})
+    assert not (data / "memory" / "chronicle" / "records.jsonl").exists()
