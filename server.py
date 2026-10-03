@@ -93,6 +93,7 @@ from ouroboros.server_maintenance import (  # noqa: F401
     _startup_prune_sweeps,
     _startup_worktree_prune,
 )
+from ouroboros.ui_translation import start_background as _start_ui_translation
 from ouroboros.server_restart import (  # noqa: F401
     _live_running_task_ids, _managed_update_pending_kwargs,
     _perform_owner_restart, _safe_restart_serialized,
@@ -1415,8 +1416,7 @@ async def lifespan(app):
             get_skills_repo_path,
             load_settings as _load_settings,
         )
-        from ouroboros.extension_loader import reload_all as _reload_extensions
-        from ouroboros.extension_loader import set_ws_broadcaster as _set_extension_ws_broadcaster
+        from ouroboros.extension_loader import reload_all as _reload_extensions, set_ws_broadcaster as _set_extension_ws_broadcaster
         _set_extension_ws_broadcaster(broadcast_ws_sync)
         repo_path = get_skills_repo_path()
         if pytest_default_real_data_dir:
@@ -1425,6 +1425,7 @@ async def lifespan(app):
             _reload_extensions(lifespan_drive_root, _load_settings, repo_path=repo_path or None)
     except Exception:
         log.error("Extension reload_all at startup failed", exc_info=True)
+    if not pytest_default_real_data_dir: _start_ui_translation(lifespan_drive_root, _supervisor_stop)  # after the skills registered their tables; fail-soft, no model call; no batch starts once teardown began  # noqa: E701
     # Only now: the first tick may consume an overdue note; a bus subscriber attached later never sees it.
     if startup_provider_ready:
         _start_supervisor_if_needed(settings)
@@ -1440,8 +1441,7 @@ async def lifespan(app):
         log.warning("MCP startup reconfigure failed", exc_info=True)
 
     try:
-        from ouroboros.config import get_skills_repo_path
-        from ouroboros.config import load_settings as _load_settings
+        from ouroboros.config import get_skills_repo_path, load_settings as _load_settings
         from ouroboros.extension_reconcile_queue import extension_reconcile_pickup_loop
 
         if pytest_default_real_data_dir:

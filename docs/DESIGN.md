@@ -556,6 +556,16 @@ completion mirror). New host producers stamp both fields. Relays
 preserve them through live delivery, persistence and history. Model narration,
 proactive replies and questions remain model-authored even when typed.
 
+Language follows the same line. The install's interface language
+(`OUROBOROS_UI_LANGUAGE`, Settings → Appearance → Language) translates chrome and
+System voice at render — status words, cause sentences and question status by their
+stable code (`tr`), labels and help copy by their rendered English (the overlay), a
+relayed host sentence by its exact text (`tx`) — from a translation memory the install
+generated or imported, never from a dictionary in the repository. Model-authored text,
+owner-supplied names, logs and code are never translated, and durable rows keep the
+English with their typed codes; a string the memory lacks stays English rather than
+blank or guessed.
+
 Authorship also has a time axis. Ouroboros's voice means *the model, now*. Words
 the mind wrote earlier for a later moment — a note left with
 `schedule_followup(notify=true)` — reach the owner at that moment as a System row

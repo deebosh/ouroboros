@@ -9,6 +9,7 @@ import {
     readCompletionAnswer,
 } from './onboarding_agents_step.js';
 import { escapeHtmlAttr as escapeHtml } from './utils.js';
+import { bindLanguageSettings, languageBlockHtml, saveLanguageChoice } from './settings_language.js';
 import { installAltMenuSuppression, installDesktopShellLinkInterceptor } from './ui_helpers.js';
 import { createModelRolesEditor, modelRolesHost, modelRoleMap, parseModelSource } from './model_roles.js';
 import { availableSubagentsEditorHost } from './subagents_settings.js';
@@ -107,6 +108,7 @@ import { accountRowFacts } from './harness_accounts.js';
     let modelCatalog = {};
     let catalogRequest = null;
     let disposed = false;
+    let disposeLanguage = null;
     let catalogGeneration = 0;
     const stepScrollPositions = new Map();
     const modelRoles = createModelRolesEditor({ hostId: 'onboarding-model-roles', onChange: (settings) => {
@@ -381,9 +383,7 @@ import { accountRowFacts } from './harness_accounts.js';
         const filename = trim(state.localFilename);
         if (!source && !filename) return '';
         for (const [presetId, preset] of Object.entries(LOCAL_PRESETS)) {
-            if (source === trim(preset.source) && filename === trim(preset.filename)) {
-                return presetId;
-            }
+            if (source === trim(preset.source) && filename === trim(preset.filename)) return presetId;
         }
         return 'custom';
     }
@@ -420,27 +420,19 @@ import { accountRowFacts } from './harness_accounts.js';
             if (trim(state.minimaxRegion) && !['global_en', 'cn_zh'].includes(trim(state.minimaxRegion).toLowerCase())) {
                 return 'MiniMax Region must be global_en or cn_zh.';
             }
-            if (localSource && !hasRemote && trim(state.localRoutingMode) === 'cloud') {
-                return 'Local-only setups must route at least one model to the local runtime.';
-            }
-        if (localSource && localSource.includes('/') && !isLocalFilesystemSource(localSource) && !localFilename) {
-            return 'Local HuggingFace sources need a GGUF filename.';
-        }
+            if (localSource && !hasRemote && trim(state.localRoutingMode) === 'cloud') return 'Local-only setups must route at least one model to the local runtime.';
+        if (localSource && localSource.includes('/') && !isLocalFilesystemSource(localSource) && !localFilename) return 'Local HuggingFace sources need a GGUF filename.';
         if (localSource && (!Number.isInteger(Number(state.localContextLength)) || Number(state.localContextLength) <= 0)) {
             return 'Local context length must be a positive integer.';
         }
-        if (localSource && !Number.isInteger(Number(state.localGpuLayers))) {
-            return 'Local GPU layers must be an integer.';
-        }
+        if (localSource && !Number.isInteger(Number(state.localGpuLayers))) return 'Local GPU layers must be an integer.';
         return '';
     }
 
     function validateModelsStep() {
         // Only Main is required; the remaining active slots are optional or
         // already carry a default. Don't force the owner to fill every slot.
-        if (!trim(state.mainModel)) {
-            return 'Confirm the Main model before starting Ouroboros.';
-        }
+        if (!trim(state.mainModel)) return 'Confirm the Main model before starting Ouroboros.';
         const { source } = parseModelSource(state.mainModel);
         const supported = source.startsWith('subscription:')
             ? modelSources.some((entry) => entry.id === source.slice(13) && state.agentsConnected.includes(entry.credentialHarness))
@@ -452,9 +444,7 @@ import { accountRowFacts } from './harness_accounts.js';
     }
 
     function validateReviewStep() {
-        if (!['advisory', 'blocking'].includes(trim(state.reviewEnforcement))) {
-            return 'Choose advisory or blocking review mode.';
-        }
+        if (!['advisory', 'blocking'].includes(trim(state.reviewEnforcement))) return 'Choose advisory or blocking review mode.';
         return '';
     }
 
@@ -463,9 +453,7 @@ import { accountRowFacts } from './harness_accounts.js';
             if (hasModelSubscription() && !hasApiAccess() && state[field.stateKey] === '') continue;
             const value = Number(state[field.stateKey]);
             const min = Number(field.min || 0.01);
-            if (!Number.isFinite(value) || value < min) {
-                return `${field.title || field.label || 'Budget'} must be greater than zero.`;
-            }
+            if (!Number.isFinite(value) || value < min) return `${field.title || field.label || 'Budget'} must be greater than zero.`;
         }
         return '';
     }
@@ -667,9 +655,7 @@ import { accountRowFacts } from './harness_accounts.js';
             || state.availableSubagents?.items || []).length;
         const actors = `${actorCount} Available subagent${actorCount === 1 ? '' : 's'}`;
         if (!labels.length) return `${actors} · API/local access only`;
-        if (state.skipSubscriptionPresets) {
-            return `${actors} · ${labels.join(', ')} connected · automatic subscription preset skipped`;
-        }
+        if (state.skipSubscriptionPresets) return `${actors} · ${labels.join(', ')} connected · automatic subscription preset skipped`;
         return `${actors} · ${labels.join(', ')} connected`;
     }
 
@@ -995,6 +981,7 @@ import { accountRowFacts } from './harness_accounts.js';
                 </div>
             </div>
             <div class="summary-card">${summaryRowsHtml()}</div>
+            ${languageBlockHtml({ onboarding: true })}
             ${state.recoveryPrepared ? `<div class="wizard-inline-note">Automatic subscription presets were skipped. ${state.recoveryMain === mainBinding() ? 'Reviewers were assigned to Main.' : 'Main changed; reviewers keep the assignments shown above. Use Main for reviewers again if you want to update them.'} Check the assignments, then Start Ouroboros to save this draft. Later changes in Settings are manual.</div>` : ''}
         `;
     }
@@ -1090,6 +1077,8 @@ import { accountRowFacts } from './harness_accounts.js';
             </div>
         `;
         bindEvents();
+        disposeLanguage?.();   // the Language block lives on the summary step only; its binder owns its listeners
+        disposeLanguage = state.currentStep === 'summary' && !state.completedRestartMode ? bindLanguageSettings(root, { staged: state.languageChoice, stage: (value) => { state.languageChoice = value; } }) : null;
         renderLocalStatus();
     }
 
@@ -1400,19 +1389,15 @@ import { accountRowFacts } from './harness_accounts.js';
     }
 
     async function checkSaveStatus() {
-        // Completion answered 503 `settings_save_timeout`: its body kept running
-        // in the server past the shared writer bound, so whether the bytes
-        // landed is UNKNOWN (`saved: null`) and a retry would be a second write.
-        // Re-read the readiness probe the overlay itself gates on — 204 means a
-        // startup-ready provider is on disk, i.e. the transaction landed — and
-        // proceed exactly as a completion receipt would; otherwise stay open.
+        // Completion answered 503 `settings_save_timeout`: its body kept running in the server past the shared writer
+        // bound, so whether the bytes landed is UNKNOWN (`saved: null`) and a retry would be a second write. Re-read the
+        // readiness probe the overlay itself gates on — 204 means a startup-ready provider is on disk, i.e. the
+        // transaction landed — and proceed exactly as a completion receipt would; otherwise stay open.
         state.error = '';
         render();
         let status = 0;
         try {
-            const response = await fetch('/api/onboarding', {
-                method: 'GET', headers: { Accept: 'application/json' },
-            });
+            const response = await fetch('/api/onboarding', { method: 'GET', headers: { Accept: 'application/json' } });
             status = response.status;
         } catch (error) {
             state.error = `Could not check the save status: ${String(error?.message || error)}. Try again in a moment.`;
@@ -1420,6 +1405,11 @@ import { accountRowFacts } from './harness_accounts.js';
             return;
         }
         if (status === 204) {
+            // The transaction landed. Its staged language needs the settings lock the finishing save may still hold: while that writer answers busy, stay with the draft so the next check applies it.
+            if (!(await applyStagedLanguage())) {
+                state.error = 'Setup is saved. The interface language is still being applied — check again in a moment. If this repeats, choose English or a code such as pt-BR in the control above and check again.';
+                return render();
+            }
             state.saveUnknown = false;
             await agentsStep?.disposeForCompletion();
             agentsStep = null;
@@ -1432,8 +1422,7 @@ import { accountRowFacts } from './harness_accounts.js';
             });
             return;
         }
-        state.error = 'Setup is not complete yet — the save may still be running in the '
-            + 'server. Check again in a moment; if it never completes, finish setup again.';
+        state.error = 'Setup is not complete yet — the save may still be running in the server. Check again in a moment; if it never completes, finish setup again.';
         render();
     }
 
@@ -1470,8 +1459,18 @@ import { accountRowFacts } from './harness_accounts.js';
         return answer.receipt;
     }
 
+    // The summary step's Language control stages its choice (a write before completion would create settings.json ahead of the
+    // transaction and disqualify the fresh-install defaults); it goes through the one writer once the save is KNOWN to have landed.
+    // Answers false only when that writer was busy (HTTP 503: another save holds the settings document) — the one failure a retry fixes.
+    async function applyStagedLanguage() {
+        const choice = trim(state.languageChoice);
+        if (!choice) return true;
+        try { await saveLanguageChoice(choice); state.languageChoice = ''; return true; } catch (error) { console.warn('onboarding: language not applied yet; choose it in Settings → Appearance', error); return error?.status !== 503; }
+    }
+
     async function saveWizardPayload(payload) {
         const result = await completeOnboardingAtomically(payload);
+        await applyStagedLanguage();
         await agentsStep?.disposeForCompletion();
         agentsStep = null;
         announceCompletion(result);
@@ -1533,6 +1532,7 @@ import { accountRowFacts } from './harness_accounts.js';
             // wrote nothing, so the offered escape is honest: finish without the
             // agent defaults and keep everything editable in Settings.
             const notice = completionFailureNotice(error);
+            if (notice.saved) await applyStagedLanguage();   // the settings landed (a later step failed): the staged language goes with them
             state.saving = false;
             state.presetFailure = notice.canSkip ? { code: notice.code } : null;
             state.saveUnknown = Boolean(notice.saveUnknown);
@@ -1590,6 +1590,7 @@ import { accountRowFacts } from './harness_accounts.js';
     window.addEventListener('pagehide', (event) => {
         if (event.persisted) return;
         disposed = true;
+        disposeLanguage?.();
         catalogGeneration += 1;
         catalogRequest?.controller.abort();
         modelRoles.destroy();

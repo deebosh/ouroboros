@@ -420,6 +420,17 @@ class TestRuntimeEnvSection:
         assert "owner_client" not in data
         assert "owner_client_note" not in data
 
+    def test_ui_language_fact_names_the_tag_and_whether_it_was_chosen(self, tmp_path, monkeypatch):
+        from ouroboros.context import build_runtime_section
+
+        env = self._make_env(tmp_path)
+        monkeypatch.setenv("OUROBOROS_UI_LANGUAGE", "")
+        data = json.loads(build_runtime_section(env, {"id": "t5", "type": "task"}).split("## Runtime context\n\n", 1)[1])
+        assert data["ui_language"] == {"tag": "en", "chosen": False}
+        monkeypatch.setenv("OUROBOROS_UI_LANGUAGE", "ru")
+        data = json.loads(build_runtime_section(env, {"id": "t6", "type": "task"}).split("## Runtime context\n\n", 1)[1])
+        assert data["ui_language"] == {"tag": "ru", "chosen": True}
+
     def test_owner_client_channel_fact_stamped_by_external_admission(self, tmp_path):
         from ouroboros.context import build_runtime_section
 
