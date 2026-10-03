@@ -22,5 +22,12 @@
     window.__OURO_ONBOARDING_BOOTSTRAP__ = __ONBOARDING_BOOTSTRAP__;
   </script>
   <script type="module" src="/static/modules/onboarding_wizard.js"></script>
+  <script type="module">
+    // The wizard paints from the same translation memory as the SPA: an install with an
+    // imported pack or an existing dictionary is translated from the first screen; with
+    // nothing on disk the English source renders.
+    import { bootLanguage } from '/static/modules/i18n.js';
+    bootLanguage();
+  </script>
 </body>
 </html>

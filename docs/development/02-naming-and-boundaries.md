@@ -3,7 +3,13 @@
 This chapter owns the rules that keep the body legible from outside: naming and entity types, dependency direction, the CLI and headless contract, cognitive quality, LLM-first affordances, the documentation contract, generality, pricing, and the anti-patterns that have cost this system real incidents. Each rule names the test, gate or CI lane that enforces it, or says that only review does.
 
 - Code identifiers, comments, docstrings, commit messages and user-facing
-  product UI strings are English.
+  product UI strings are English **source** copy. A non-English owner reads the
+  install's translation memory (`state/i18n/<tag>.json`, generated or imported;
+  ARCHITECTURE §1 `i18n_memory.py`), never a locale file in the repository: no
+  language is enumerated in code, durable rows keep English plus typed codes,
+  surfaces translate at render. A host presenter already on screen (an open
+  question card's status line) repaints on its next lifecycle update, not at the
+  instant of a language switch; new cards and re-renders read the new dictionary.
 - Follow PEP 8 (`snake_case`, `PascalCase`, `UPPER_SNAKE_CASE`); name the
   observable responsibility and authority, not the implementation fashion, and
   prefer a function module over a class with no lifecycle.

@@ -114,6 +114,8 @@ _MOVED_OWNERS = {
     "CLAUDEXOR_ADMISSION_WAIT_SEC": settings_defaults,
     "CLAUDEXOR_ADMISSION_POLL_SEC": settings_defaults,
     "ENDPOINT_AUTHORED_SETTINGS": settings_defaults,
+    "ENDPOINT_WRITTEN_SETTINGS": settings_defaults,
+    "ENDPOINT_WRITERS": settings_defaults,
     # v6.104.0 upstream: the OpenRouter shipped-model defaults arrive in the
     # vocabulary leaf the v7 split created for exactly this class of fact.
     "OPENROUTER_DEFAULTS": settings_defaults,
@@ -211,6 +213,7 @@ _MOVED_OWNERS = {
     "get_task_idle_timeout_sec": runtime_limits,
     "get_vision_caption_timeout_sec": runtime_limits,
     "get_update_letter_timeout_sec": runtime_limits,
+    "get_ui_translation_timeout_sec": runtime_limits,
     "get_websearch_timeout_sec": runtime_limits,
 }
 
