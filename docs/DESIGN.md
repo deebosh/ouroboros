@@ -1447,7 +1447,10 @@ honest consequence of per-client settings, not a bug we have hidden.
 
 **Click goes to the source.** A notification opens the question or the result it
 is about — the Project room and the exact question when it has one, otherwise
-the conversation. No reply is composed from the banner.
+the conversation. No reply is composed from the banner. The one exception is the
+banner the desktop indicator itself shows while the window is hidden in
+background mode (Windows): its click opens the window as it was left and does not
+navigate.
 
 **Content is private by default.** Only the kind of event is shown until the
 owner turns message text on, because a banner can appear on a shared screen.
