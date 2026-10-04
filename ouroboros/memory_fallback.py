@@ -41,6 +41,7 @@ from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 from ouroboros import chat_chain, memory_inventory
 from ouroboros.chronicle_import import row_lineage
 from ouroboros.chronicle_store import ChronicleStore, PublishResult, source_time_span
+from ouroboros.consolidator import LIGHT_ANSWER_CEILING_TOKENS
 from ouroboros.dialogue_provenance import memory_row_header, render_memory_row, render_row_text, row_class
 from ouroboros.memory_inventory import OpenSegment, ShortageFact, shortage_from_trace
 from ouroboros.utils import extract_trailing_json_object, utc_now_iso
@@ -49,7 +50,7 @@ log = logging.getLogger(__name__)
 
 FALLBACK_REFUSALS_KEY = "fallback_refusals"  # the chronicle scan-state key this writer owns
 LABEL = "memory_fallback_page"
-ANSWER_RESERVE_TOKENS = 16384  # the answer ceiling ``consolidator._call_consolidation_llm`` sends
+ANSWER_RESERVE_TOKENS = LIGHT_ANSWER_CEILING_TOKENS  # the answer ceiling the Light transport sends
 INDENT = "  "
 # A refusal of these kinds is a fact about this input on this route: paying again changes nothing.
 RECEIPT_KINDS = frozenset({"context_overflow", "output_truncated", "empty_summary", "invalid", "quote_mismatch",

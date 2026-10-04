@@ -18,6 +18,10 @@ from ouroboros.utils import append_jsonl, utc_now_iso, extract_trailing_json_obj
 
 log = logging.getLogger(__name__)
 
+# The answer ceiling of every call of the common Light transport: the transport sends it and a
+# writer fitting its input to the Light window reserves it (``memory_fallback``).
+LIGHT_ANSWER_CEILING_TOKENS = 16384
+
 
 def _consolidation_route() -> Tuple[str, bool]:
     """Resolve summaries through the configured Light lane.
@@ -433,7 +437,7 @@ def _call_consolidation_llm(
         values = dict(messages=[{"role": "user", "content": prompt}],
                       model_role="light", tools=knowledge.tools if knowledge else None,
                       cache_affinity=f"memory_preparation:{canonical_data_root(knowledge.context)}" if knowledge else "",
-                      reasoning_effort=reasoning_effort, max_tokens=16384,
+                      reasoning_effort=reasoning_effort, max_tokens=LIGHT_ANSWER_CEILING_TOKENS,
                       **_light_dispatch_binding())
         # Carry part-to-part evidence only on initial preparation. A wait's
         # reprepare without an observed receipt rediscovers Auto after rotation.

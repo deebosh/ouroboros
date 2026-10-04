@@ -470,6 +470,24 @@ def test_a_budget_refusal_on_the_wire_is_returned_as_budget_exhausted(tmp_path, 
     assert (run.outcome, run.kind) == ("failed", "budget_exhausted") and _receipts(tmp_path) == {}
 
 
+def test_the_answer_reserve_is_the_ceiling_the_light_transport_sends(tmp_path, monkeypatch, light):
+    from ouroboros import consolidator
+
+    shared.world(tmp_path)
+    _consciousness(monkeypatch, False)
+    llm, sent = _Light(), []
+    real_chat = llm.chat
+
+    def chat(**kwargs):
+        sent.append(kwargs.get("max_tokens"))
+        return real_chat(**kwargs)
+
+    llm.chat = chat
+    assert _run(tmp_path, llm).outcome == "published"
+    # One number: the window the helper fits its input to leaves room for exactly what is sent.
+    assert sent == [mf.ANSWER_RESERVE_TOKENS] == [consolidator.LIGHT_ANSWER_CEILING_TOKENS]
+
+
 def test_a_busy_writer_lock_skips_the_call_and_a_live_owner_never_goes_stale(tmp_path, monkeypatch, light):
     from ouroboros.platform_layer import acquire_exclusive_file_lock, release_exclusive_file_lock
 
