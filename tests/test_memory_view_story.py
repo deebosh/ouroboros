@@ -159,6 +159,12 @@ def test_a_helper_refusal_receipt_is_one_line_after_the_status_and_absent_withou
     assert refusal == ["A helper could not fold: Beta; 2026-09-02 00:02 → 2026-09-02 00:03; context_overflow; "
                        "its answer: read_file(root='runtime_data', path='task_results/fallback/x.md')"]
     assert lines.index(refusal[0]) == next(i for i, line in enumerate(lines) if line.startswith("Story status:")) + 1
+    # A receipt without a readable answer says so; the retelling's own id is not the helper's answer.
+    bare = {**receipt, "response_ref": {}}
+    assert ChronicleStore(tmp_path).publish([], scan_state={"fallback_refusals": {unit: bare}}).ok
+    refusal = [line for line in _story(tmp_path).split("\n") if line.startswith("A helper could not fold")]
+    assert refusal == ["A helper could not fold: Beta; 2026-09-02 00:02 → 2026-09-02 00:03; context_overflow; "
+                       "its answer was not retained"]
 
 
 def test_drafts_rejections_corrections_and_indented_texts(tmp_path):

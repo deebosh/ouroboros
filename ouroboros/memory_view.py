@@ -829,11 +829,10 @@ def _status_lines(status: Mapping[str, Any], refusals: Tuple[Dict[str, Any], ...
                  f"{status['open_records']} retold records are still open ({status['open_rows']} rows, "
                  f"{status['open_chars']} chars of retelling; helper route {status['helper_route']}); "
                  f"pages sealed by me: {status['pages_by_me']}."]
-    for refusal in refusals:
-        read = (f"read_file(root='runtime_data', path='{refusal['path']}')" if refusal.get("path")
-                else f"memory_read(node_id='{refusal['id']}')")
-        lines.append(f"A helper could not fold: {refusal['label']}; {refusal['period']}; {refusal['kind']}; "
-                     f"its answer: {read}")
+    for refusal in refusals:  # the retelling's own id is not the helper's answer
+        read = (f"its answer: read_file(root='runtime_data', path='{refusal['path']}')" if refusal.get("path")
+                else "its answer was not retained")
+        lines.append(f"A helper could not fold: {refusal['label']}; {refusal['period']}; {refusal['kind']}; {read}")
     return lines
 
 
