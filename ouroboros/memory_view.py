@@ -420,7 +420,7 @@ def _row_texts(root: pathlib.Path, entries: List[Entry]) -> Dict[str, Dict[str, 
             wanted.setdefault(str(hint.get("gen") or ""), {})[hint["line"]] = address["row_sha256"]
     paths = {sig: path for path, sig in chat_chain.generation_signatures(root)}
     rows: Dict[str, Dict[str, Any]] = {}
-    for gen, lines in wanted.items():
+    for gen, lines, last in ((gen, lines, max(lines)) for gen, lines in wanted.items()):  # max once, not per line
         if gen not in paths:
             continue
         with paths[gen].open("rb") as handle:
@@ -429,7 +429,7 @@ def _row_texts(root: pathlib.Path, entries: List[Entry]) -> Dict[str, Dict[str, 
                 row = chat_chain._decoded(raw) if sha else None
                 if row is not None and chat_chain.source_row_id(row) == sha:
                     rows[sha] = row
-                if number >= max(lines):
+                if number >= last:
                     break
     for address, _meta, _pos in entries:
         if address["row_sha256"] not in rows:

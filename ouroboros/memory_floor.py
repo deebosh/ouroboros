@@ -201,8 +201,8 @@ def view_facts(snapshot: mv.MemoryViewSnapshot, level: mv.FloorLevel, *, window_
     gone = {step: set(ids) for step, ids in level.addressed}
     room = snapshot.room or {}
     rows = [(item["last_pos"], item["last"]) for item in room.get("lane2") or () if item["first"] in gone.get("F1", ())]
-    rows += [(item["pos"], item["address"]) for item in room.get("lane1") or ()
-             if item["address"] in gone.get("F2", set()) | gone.get("F7", set())]
+    addressed = gone.get("F2", set()) | gone.get("F7", set())  # once, not per lane-1 row
+    rows += [(item["pos"], item["address"]) for item in room.get("lane1") or () if item["address"] in addressed]
     status = snapshot.legacy_blocks or {}
     return {"role": snapshot.spec.role, "room_id": snapshot.spec.room_id,
             "floor": {"steps": dict(level.steps), "window_tokens": window_tokens, "mode": mode,
