@@ -58,18 +58,23 @@ def pages(root, **params):
     pytest.fail("cursor did not reach physical exhaustion")
 
 
-def test_full_history_beyond_both_caps_and_five_archives_with_equal_timestamps(tmp_path):
+def test_full_conversation_beyond_both_caps_and_five_archives_with_equal_timestamps(tmp_path):
+    """Every conversation row is reachable, whatever the archive count and however the
+    timestamps tie; narration rides only on the newest page, so no older page holds
+    narration alone (owner decision 2026-10-05: each press shows older messages)."""
     for source, count in (("chat", 360), ("progress", 145)):
         for segment in range(5):
             write(tmp_path / "archive" / f"{source}_20260901T00000{segment}.jsonl",
                   [row(segment * count + index, source) for index in range(count)])
         write(tmp_path / "logs" / f"{source}.jsonl", [row(5 * count, source)])
     loaded = list(pages(tmp_path))
-    messages = [message for page in loaded for message in page["messages"]]
-    assert len(messages) == 1801 + 726
-    assert len({message["history_id"] for message in messages}) == len(messages)
-    assert {message["text"] for message in messages} >= {"human-0", "human-1800", "progress-0", "progress-725"}
-    assert all(message["history_position"]["source"] in {"chat", "progress"} for message in messages)
+    chat = [message for page in loaded for message in page["messages"] if not message["is_progress"]]
+    assert len(chat) == 1801 and len({message["history_id"] for message in chat}) == 1801
+    assert {message["text"] for message in chat} >= {"human-0", "human-1800"}
+    narration = [message for message in loaded[0]["messages"] if message["is_progress"]]
+    assert narration and narration[-1]["text"] == "progress-725"
+    assert not any(message["is_progress"] for page in loaded[1:] for message in page["messages"])
+    assert all(page["messages"] for page in loaded)
     assert loaded[0]["window"]["complete"] is False
     assert loaded[-1]["window"]["complete"] is False  # last page is not the whole history
 
@@ -84,16 +89,18 @@ def test_quota_deferred_backdated_system_row_is_not_skipped(tmp_path):
     assert "backdated final" in {message["text"] for page in loaded for message in page["messages"]}
 
 
-def test_lineage_cap_does_not_permanently_remove_older_rows(tmp_path):
+def test_lineage_cap_keeps_the_newest_rows_and_discloses_the_cap(tmp_path):
+    """Narration and lineage ride only on the newest page; a swarm larger than the
+    cap keeps its newest lineage there, and the window says the cap cut it."""
     write(tmp_path / "logs" / "progress.jsonl", [
         row(index, "progress", delegation_role="subagent", parent_task_id="parent",
             task_id="child", subagent_event="running") for index in range(310)
     ])
     loaded = list(pages(tmp_path))
-    messages = [message for page in loaded for message in page["messages"]]
-    assert len(loaded[0]["messages"]) == 300
-    assert len(messages) == 310
-    assert all(message["parent_task_id"] == "parent" for message in messages)
+    assert len(loaded) == 1 and len(loaded[0]["messages"]) == 300
+    assert loaded[0]["messages"][-1]["text"] == "progress-309"
+    assert "lineage_cap" in loaded[0]["window"]["truncated_by"]
+    assert all(message["parent_task_id"] == "parent" for message in loaded[0]["messages"])
 
 
 def test_sparse_project_opens_at_its_rows_without_parsing_other_rooms_archives(tmp_path, monkeypatch):
@@ -132,8 +139,9 @@ def test_frozen_page_and_older_cursor_survive_rotation_and_live_append(tmp_path)
     assert [message["history_id"] for message in replayed["messages"]] == original_ids
     older = list(pages(tmp_path, cursor=first["next_cursor"]))
     all_messages = first["messages"] + [message for page in older for message in page["messages"]]
-    assert len(all_messages) == 500
-    assert len({message["history_id"] for message in all_messages}) == 500
+    chat = [message for message in all_messages if not message["is_progress"]]
+    assert len(chat) == 400 and len({message["history_id"] for message in chat}) == 400
+    assert not any(message["is_progress"] for page in older for message in page["messages"])
     assert not any("new-live" in message["text"] for message in all_messages)
 
 

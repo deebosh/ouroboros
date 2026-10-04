@@ -350,31 +350,6 @@ test('an older page that shows the late answer on screen is an arrival without a
     assert.equal((await r.instance.refreshHistory({ revision: 4 })).read, true);
 });
 
-// A reopened room first returns to its saved place. Until it is there, the rows
-// painted meanwhile are not where the reader is: a saved page that cannot be read
-// keeps the place pending, and the reader's own gesture then decides.
-test('a saved place still being restored is not reading; the reader\'s own gesture decides', async (t) => {
-    let arrivals = 0;
-    const r = room(t, { onReadingLatest: () => { arrivals += 1; }, initialScrollState: {
-        scrollTop: 0, stick: false, historyAnchor: null, history: { focus: 0, pages: [{
-            id: 'history-page-1-0', chain: 1, index: 0, requestCursor: 'saved:0', nextCursor: null,
-            hasMore: false, rows: 1 }] } } });
-    r.server.pageFails = true;
-    r.server.rows = [row(1)];
-    r.server.window = { complete: true, truncated_by: [], latest_message: { history_id: 'chat:1', out_of_order: false } };
-    const opened = await r.instance.refreshHistory({ revision: 1 });
-    assert.deepEqual(r.shown(), ['chat:1'], 'the newest message is painted, on screen');
-    assert.deepEqual([opened.painted, opened.read], [true, false], 'but the reader\'s place is not settled');
-    r.scroll(0);
-    assert.equal(arrivals, 0, 'a scroll while the saved place is pending is no arrival');
-    for (const handler of r.messages.listeners.get('wheel') || []) {
-        handler({ type: 'wheel', deltaY: 1, target: r.messages, timeStamp: 0 });
-    }
-    r.scroll(0);
-    assert.equal(arrivals, 1, 'the reader\'s own gesture ends the restoration: they are at the newest message');
-    assert.equal((await r.instance.refreshHistory({ revision: 1 })).read, true);
-});
-
 // The page is applied before the frame that draws it; the controls and the
 // viewport settle in that frame, without a scroll to report the reader.
 test('an older page takes the edge again once drawn', async (t) => {

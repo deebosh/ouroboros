@@ -220,12 +220,12 @@ test('delayed latest cannot certify newer retained recent rows until the physica
     assert.ok(f.bubbles().some(node => node.dataset.historyId === 'chat:190'));
     assert.match(f.note().textContent, /Shown messages may have gaps/);
     assert.doesNotMatch(f.note().textContent, /Beginning/);
-    const stale = f.instance.refreshHistory({ revision: 4 });
-    await settle();
-    const fill = f.clickRetry();
-    await settle(); f.reads[5].ok(covered(100, 200, 200, 190)); await fill;
-    f.reads[4].ok(covered(180, 200, 200, 195)); await stale;
-    assert.equal(f.bubbles().some(node => node.dataset.historyId === 'chat:195'), false,
-        'an ordinary read superseded by latest cannot mount unowned stale rows');
+    // The gap lies toward the present, so ↓ closes it with one latest read;
+    // `Load more history` only ever reads older pages (owner decision 2026-10-05).
+    globalThis.document.byId.get('chat-scroll-bottom').click();
+    await settle(); await settle();
+    assert.equal(f.reads.length, 5, '↓ asked for the present');
+    f.reads[4].ok(covered(100, 200, 200, 190));
+    await settle(); await settle();
     assert.equal(f.note().textContent, 'Beginning of saved history');
 });

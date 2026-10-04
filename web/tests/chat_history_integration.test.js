@@ -80,14 +80,12 @@ const sparseRoom = (t, floor = 5) => fixture(t,
         return page([], `page:empty-${index}`, index < floor ? `before:${index + 1}` : null);
     });
 
-test('a sparse room walks to its floor without minting a Load-newer control', async (t) => {
+test('a sparse room walks to its floor in one gesture without minting a Load-newer control', async (t) => {
     const f = sparseRoom(t);
     await f.refresh();
     await scrollEdge(f);
-    assert.deepEqual(f.calls, [null, 'before:1', 'before:2'], 'one gesture performs a bounded sparse traversal');
-    await scrollEdge(f);
-    await scrollEdge(f);
-    assert.deepEqual(f.calls, [null, 'before:1', 'before:2', 'before:3', 'before:4', 'before:5']);
+    assert.deepEqual(f.calls, [null, 'before:1', 'before:2', 'before:3', 'before:4', 'before:5'],
+        'a press or gesture keeps reading until rows land or history ends: never an empty press');
     const controls = f.messages.querySelector('.chat-load-older');
     assert.equal((f.messages.parentNode.querySelector('.chat-panel-statusbar').querySelector('.chat-load-older-note') || f.messages.querySelector('.chat-load-older').querySelector('.chat-load-older-note')).textContent, 'Some saved history is not loaded. Shown messages may have gaps.');
     assert.equal(controls.querySelector('.chat-load-older-btn').hidden, true);
@@ -108,7 +106,7 @@ test('a walked-out sparse room asks for nothing more, however often the reader s
     assert.equal(f.messages.querySelector('.chat-load-newer'), null);
 });
 
-test('at the bottom edge a released page returns by its exact handle and closes the gap', async (t) => {
+test('reading to the oldest page hides the button; ↓ returns to the present with one read', async (t) => {
     // Reading protection pins any row the reader can see; park every history row
     // off-screen so the page budget, not the viewport, decides what is released.
     const oldRect = ElementStub.prototype.getBoundingClientRect;
@@ -132,15 +130,37 @@ test('at the bottom edge a released page returns by its exact handle and closes 
     assert.deepEqual(f.calls, [null, 'before:1', 'before:2', 'before:3']);
     assert.equal(f.bubbles().filter(node => node.dataset.historyId === 'chat:900').length, 1,
         'the recent rows stay mounted after the pager released their page');
-    // Near the bottom without being at the top: only the newer edge is live here.
-    await f.clickOlder(); // ambiguous synthetic geometry uses the common button
-    assert.deepEqual(f.calls, [null, 'before:1', 'before:2', 'before:3', 'page:recent'],
-        'the released page is refetched by its own frozen handle, page zero first');
+    const button = f.messages.querySelector('.chat-load-older').querySelector('.chat-load-older-btn');
+    assert.equal(button.hidden, true, 'nothing older remains, and the button never turns into a way to newer pages');
+    globalThis.document.byId.get('chat-scroll-bottom').click();
+    for (let n = 0; n < 20; n += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(f.calls.slice(4), [null], '↓ returns to the present by one latest read');
     const ids = [...f.messages.querySelectorAll('[data-history-id]')].map(node => node.dataset.historyId);
     assert.equal(new Set(ids).size, ids.length, 'a replayed page mounts no duplicate row');
-    const spent = f.calls.length;
-    for (let n = 0; n < 3; n += 1) await scrollEdge(f, 200);
-    assert.equal(f.calls.length, spent, 'with the gap closed the bottom edge asks for nothing');
+});
+
+test('Load more history only ever reads older pages, however deep the reader goes', async (t) => {
+    // The livelock of 2026-10-02: a 3-page cache released page zero, the button
+    // then read it back as "newer", the next press re-read the deep page, forever.
+    const oldRect = ElementStub.prototype.getBoundingClientRect;
+    ElementStub.prototype.getBoundingClientRect = function () {
+        return this.dataset.historyId
+            ? { top: 1000, bottom: 1020, left: 0, right: 100, width: 100, height: 20 }
+            : oldRect.call(this);
+    };
+    t.after(() => { ElementStub.prototype.getBoundingClientRect = oldRect; });
+    const deep = 7;
+    const f = fixture(t, page([row('chat:9000', 'Newest')], 'page:recent', 'before:1'), (cursor) => {
+        const index = Number(cursor.split(':').at(-1));
+        return page([row(`chat:${9000 - index * 10}`, `Older ${index}`)], `page:${index}`,
+            index < deep ? `before:${index + 1}` : null);
+    });
+    await f.refresh();
+    for (let press = 1; press <= deep; press += 1) await f.clickOlder();
+    assert.deepEqual(f.calls, [null, ...Array.from({ length: deep }, (_, index) => `before:${index + 1}`)],
+        'each press read the next older page; none re-read a newer one');
+    const button = f.messages.querySelector('.chat-load-older').querySelector('.chat-load-older-btn');
+    assert.equal(button.hidden, true, 'at the beginning of history the button leaves');
 });
 
 test('live message adopts its physical history identity without replacing the visible bubble', async (t) => {
