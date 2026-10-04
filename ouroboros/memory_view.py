@@ -369,7 +369,7 @@ def _story_pages(store: ChronicleStore, label: Callable[..., str]) -> Tuple[List
                 "period": _period(covers.get("ts_span")), "text": str(record.get("current_text") or ""),
                 "status": str(record.get("status") or ""), "signer": draft_signer(record.get("author")),
                 "revision": record["revision"] if record.get("revision") != record["id"] else "",
-                "stamp": _stamp_summary(record.get("host_stamp")), "fixes": _fixes(record, fixes)}))
+                "stamp": _stamp_summary(record.get("host_stamp")), "fixes": _fixes(record, fixes), "quotes": record.get("quotes") or []}))
     return [entry for _key, entry in sorted(keyed, key=lambda pair: pair[0])], mine
 
 
@@ -774,7 +774,7 @@ def _page_pointer(entry: Mapping[str, Any]) -> str:
 
 
 def _page_lines(entry: Mapping[str, Any]) -> List[str]:
-    lines = ["", f"### {entry['label']} · {entry['period']} · {entry['kind']} {entry['id']}", _indented(entry["text"])]
+    lines = ["", f"### {entry['label']} · {entry['period']} · {entry['kind']} {entry['id']}", _indented(entry["text"]), *(f"- quote ({q.get('speaker')}, {q.get('address')}): {q.get('text')}" for q in entry.get("quotes") or ())]
     if entry.get("status") == "draft":
         lines.append(f"(draft by a helper ({entry.get('signer') or 'Light'}), not yet accepted or rejected by me)")
     elif entry.get("status") == "accepted":

@@ -238,3 +238,26 @@ def test_gaps_unknown_ranges_and_the_flat_file_are_pointers_with_honest_periods(
     assert "- Main; 2026-09-01 00:00 - 00:05 (block period); memory_read(node_id='legacy-b00-r1')" in lines
     assert any(line.startswith("- Unknown provenance [legacy mixed record]; period known from the retelling text "
                                "only; memory_read(node_id='legacy-flat-") for line in lines)
+
+
+def test_a_pages_verified_quotes_stand_under_its_text_and_a_page_without_quotes_shows_none(tmp_path):
+    """Review fix (simulated triad, scope intent_alignment): a helper writes people's words only
+    through its quotes (D-4), so the story shows each verified quote under the page's text and the
+    floor measures it with the page; a page without quotes renders as before."""
+    from ouroboros.chronicle_import import row_lineage
+    from ouroboros.tools.chronicle import _quote_resolver, page_covers
+
+    shared.world(tmp_path)
+    plain = _page(tmp_path, "1", 10, 10, author=HELPER, text="The room started.")
+    addresses = {pos: address for address, _row, pos in chat_chain.iter_rows(tmp_path)}
+    covers = page_covers(tmp_path, "1", from_addr=addresses[11], to_addr=addresses[11])["covers"]
+    quote = {"address": chat_chain.format_address(addresses[11]), "text": "next please", "speaker": "human"}
+    result = ChronicleStore(tmp_path).publish_page(room_id="1", text="The owner asked to go on.", covers=covers,
+                                                   author=HELPER, quotes=[quote],
+                                                   quote_resolver=_quote_resolver(tmp_path, row_lineage(tmp_path)))
+    assert result.ok, result
+    text = _story(tmp_path)
+    block = text.split(f"page {result.record['id']}", 1)[1]
+    assert block.split("\n")[1:3] == ["  The owner asked to go on.", f"- quote (human, {quote['address']}): next please"]
+    plain_block = text.split(f"page {plain}", 1)[1].split("### ", 1)[0]
+    assert "The room started." in plain_block and "- quote (" not in plain_block
