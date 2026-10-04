@@ -575,7 +575,7 @@ def _publish(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, draf
     if unit.kind == "part":
         return store.publish_part(room_id=unit.room_id, text=answer["text"], member_ids=list(draft.member_ids),
                                   author=author, expected_sequence=unit.head_sequence, quotes=answer["quotes"],
-                                  metadata={**metadata, "host_stamp": draft.stamp}, quote_resolver=resolver)
+                                  metadata=metadata, host_stamp=draft.stamp, quote_resolver=resolver)
     return store.publish_page(room_id=unit.room_id, text=answer["text"], covers=draft.covers, author=author,
                               quotes=answer["quotes"], host_stamp=draft.stamp, metadata=metadata,
                               quote_resolver=resolver)

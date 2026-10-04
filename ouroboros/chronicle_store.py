@@ -361,8 +361,13 @@ class ChronicleStore:
     def publish_part(self, *, room_id: Any, text: str, member_ids: List[str], author: Dict[str, Any],
                      expected_sequence: Optional[int], quotes: Iterable[Dict[str, Any]] = (),
                      metadata: Optional[Dict[str, Any]] = None,
-                     quote_resolver: Optional[QuoteResolver] = None) -> PublishResult:
-        """Fold adjacent effective records of one lower level; the room head it read is required."""
+                     quote_resolver: Optional[QuoteResolver] = None,
+                     host_stamp: Optional[Dict[str, Any]] = None) -> PublishResult:
+        """Fold adjacent effective records of one lower level; the room head it read is required.
+
+        ``host_stamp`` (a helper's part: its members' stamps folded by ``part_stamp``) lies
+        where a page keeps its own, so a later fold, the view and ``memory_read`` read it.
+        """
         room = str(room_id)
         quotes = list(quotes or ())
         refusal = verify_quotes(quotes, quote_resolver)
@@ -376,6 +381,8 @@ class ChronicleStore:
                       "covers": self._part_covers(db, member_ids), "metadata": metadata or {}}
             if quotes:
                 record["quotes"] = quotes
+            if host_stamp is not None:
+                record["host_stamp"] = host_stamp
             return self._commit(db, [record], quotes_verified=True,
                                 pre=lambda: self._head_refusal(db, room, expected_sequence))
 

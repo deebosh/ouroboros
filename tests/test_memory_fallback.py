@@ -351,9 +351,54 @@ def test_a_narrative_shortage_folds_adjacent_records_into_a_part_bound_to_the_ro
     assert run.outcome == "published" and run.unit.kind == "part", run
     [part] = _drafts(tmp_path)
     assert part["kind"] == "part" and part["covers"]["member_ids"] == ["legacy-b00-r1", "legacy-b01-r1"]
-    assert part["author"]["writer"] == "fallback_part" and set(part["metadata"]["host_stamp"]) >= {"tasks", "counts"}
+    assert part["author"]["writer"] == "fallback_part" and set(part["host_stamp"]) >= {"tasks", "counts"}
+    assert "host_stamp" not in part["metadata"]  # one place for every stamp: where a page keeps its own
     assert "Main talk." in llm.prompts[0] and "Main was quiet." in llm.prompts[0]
     assert "leave quotes empty" in llm.prompts[0] and "Quote the decisive words" not in llm.prompts[0]
+
+
+def test_a_failed_task_survives_a_helper_part_folded_again_and_shows_in_the_view(tmp_path, monkeypatch, light):
+    """Review fix (simulated triad, scope implicit_contracts): a helper part's stamp lies where
+    every reader looks, so failed page -> helper part -> helper part keeps the failure, and the
+    view and memory_read print it. Other side: a part over members without failures stamps none."""
+    from ouroboros import memory_view as mv
+    from ouroboros.terminal_projection import part_stamp
+    from ouroboros.tools.chronicle import _memory_read
+    from ouroboros.tools.registry import ToolContext
+
+    shared.world(tmp_path)
+    _consciousness(monkeypatch, False)
+    store = ChronicleStore(tmp_path)
+    failed = {"task_id": "t-failed", "status": "failed", "outcome_phase": "failed", "source": "task_results"}
+    done = {"task_id": "t-done", "status": "completed", "outcome_phase": "done", "source": "terminal_root_projection"}
+    pages = []
+    for n, entry in enumerate((failed, done, done)):
+        published = store.publish_page(room_id="1", text=f"page {n}", author=shared.MIND,
+                                       covers={"mode": "range", "rows": [f"r{n}"], "stream_span": [100 + n, 100 + n]},
+                                       host_stamp={"tasks": [entry]})
+        assert published.ok, published
+        pages.append(published.record["id"])
+
+    def helper_part(members):
+        unit = mf.FallbackUnit(kind="part", room_id="1", key="k", member_ids=tuple(members),
+                               head_sequence=store.room_head("1"))
+        draft = mf.build_writer_input(tmp_path, store, unit, budget_tokens=None)
+        published = mf._publish(tmp_path, store, unit, draft, {"text": "A helper's fold.", "quotes": []},
+                                 {"model": "test/light"}, {"model": "test/light"})
+        assert published.ok, published
+        return published.record
+
+    lower = helper_part(pages[:2])
+    assert [entry["task_id"] for entry in lower["host_stamp"]["tasks"]] == ["t-failed"]
+    upper = helper_part([lower["id"]])
+    assert [entry["task_id"] for entry in upper["host_stamp"]["tasks"]] == ["t-failed"]
+    story = mv.render_story(mv.capture_memory_view(tmp_path, {"id": "turn0001", "chat_id": 1},
+                                                   mv.view_spec_for_task({"id": "turn0001", "chat_id": 1}, tmp_path)))
+    assert f"part {upper['id']}" in story and "failed 1" in story
+    read = _memory_read(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="root0001", current_chat_id=1),
+                        node_id=upper["id"])
+    assert "t-failed" in read
+    assert part_stamp([store.get(pages[2])["host_stamp"]])["tasks"] == []  # a done task alone keeps no entry
 
 
 def test_a_part_draft_with_a_stale_room_head_is_a_conflict_without_receipt(tmp_path, monkeypatch, light):
