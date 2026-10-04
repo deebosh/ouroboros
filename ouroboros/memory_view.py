@@ -17,11 +17,11 @@ fails the task. What of memory is open and what is folded comes from
 ``memory_inventory`` only; what a window shows only by an address line is
 ``memory_floor``'s verdict, a ``FloorLevel``.
 
-The story block depends only on the chronicle, the registry's room labels and the
-configured helper route: the same bytes for Main, any room's root, consciousness and
-Presence, with no capture time, task id, room, JSON, relative time or ordinal. Texts of
-records keep their words and are indented by two spaces, so their own ``## `` lines
-never read as sections.
+The story block depends only on the chronicle, the room labels, the helper route and the
+floor, with no capture time, task id, JSON, relative time or ordinal: in Max, or while no
+owner Low/Nano budget step reaches it (that budget weighs the whole view, the room too), the
+same bytes for Main, any room's root, consciousness and Presence. Texts of records keep their
+words and are indented by two spaces, so their own ``## `` lines never read as sections.
 
 Nothing here publishes a record or calls a model.
 """
