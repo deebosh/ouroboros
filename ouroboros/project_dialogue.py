@@ -890,24 +890,6 @@ def canonical_task_summary_reached_chat(result: Dict[str, Any], chat_id: Any) ->
     return str(row_chat) == str(chat_id)
 
 
-def append_authored_task_summary(
-    canonical_root: Any, result_root: Any, row: Dict[str, Any], *, status: str = "",
-) -> bool:
-    """Append the authored row and persist its identical continuation narrative."""
-    appended = append_canonical_task_summary(canonical_root, row)
-    persist_continuation_narrative(
-        result_root,
-        str(row.get("task_id") or ""),
-        str(row.get("text") or ""),
-        summary_id=str(row.get("summary_id") or ""),
-        summary_kind=str(row.get("summary_kind") or ""),
-        result_ref=row.get("result_ref") if isinstance(row.get("result_ref"), dict) else {},
-        source_coverage=row.get("source_coverage") if isinstance(row.get("source_coverage"), dict) else {},
-        status=status,
-    )
-    return appended
-
-
 def _narrative_result_ref_is_valid(value: Any, task_id: str) -> bool:
     if not isinstance(value, dict):
         return False
@@ -937,61 +919,6 @@ def continuation_narrative_is_valid(value: Any, task_id: str) -> bool:
         and _narrative_result_ref_is_valid(coverage.get("task_result"), tid)
         and coverage.get("task_result") == result_ref
     )
-
-
-def persist_continuation_narrative(
-    drive_root: Any,
-    task_id: str,
-    text: str,
-    *,
-    summary_id: str,
-    summary_kind: str,
-    result_ref: Dict[str, Any],
-    source_coverage: Dict[str, Any],
-    status: str = "",
-) -> bool:
-    """Persist the exact authored summary through the task-result lock."""
-    tid = str(task_id or "").strip()
-    narrative = {
-        "text": str(text or ""),
-        "task_id": tid,
-        "summary_id": str(summary_id or ""),
-        "summary_kind": str(summary_kind or ""),
-        "result_ref": dict(result_ref) if isinstance(result_ref, dict) else {},
-        "source_coverage": dict(source_coverage) if isinstance(source_coverage, dict) else {},
-        "written_at": utc_now_iso(),
-    }
-    if not tid or not continuation_narrative_is_valid(narrative, tid):
-        return False
-    try:
-        from ouroboros.task_results import load_task_result, write_task_result
-
-        existing = load_task_result(drive_root, tid) or {}
-        if not existing and not str(status or "").strip():
-            return False
-        requested_status = str(status or existing.get("status") or "running")
-
-        def _project(current: Dict[str, Any], _patch: Dict[str, Any]) -> Dict[str, Any]:
-            current_narrative = current.get("continuation_narrative")
-            if continuation_narrative_is_valid(current_narrative, tid):
-                # The summary id is task-unique.  A second post-task worker must
-                # not race a complete narrative with a partial/empty rewrite.
-                return {
-                    "status": str(current.get("status") or requested_status),
-                    "continuation_narrative": dict(current_narrative),
-                }
-            return {
-                "status": str(current.get("status") or requested_status),
-                "continuation_narrative": dict(narrative),
-            }
-
-        write_task_result(
-            drive_root, tid, requested_status, _field_projector=_project,
-        )
-        return True
-    except Exception:
-        log.warning("Failed to persist continuation narrative for %s", tid, exc_info=True)
-        return False
 
 
 def _bounded_chat_tail_rows(
@@ -1544,7 +1471,7 @@ def announce_project_started(
 
 
 __all__ = ["AGENT_RECEIPT_ID_PREFIX", "announce_project_started",
-    "append_authored_task_summary", "append_chat_annotation", "append_canonical_task_summary",
+    "append_chat_annotation", "append_canonical_task_summary",
     "append_terminal_task_projection", "build_owner_message_ref", "chat_annotation_receipt",
     "entry_matches_source_ref", "latest_chat_annotations",
     "enqueue_project_completion_summary", "project_completion_delivery_outcome",

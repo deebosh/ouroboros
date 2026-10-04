@@ -2,7 +2,8 @@
 
 The LLM-heavy best-effort memory work the post-task orchestrator
 (``agent_task_pipeline._run_post_task_processing_async``) dispatches after a
-task ends: the tool-trace summary, the free host facts row, scratchpad
+task ends: the tool-trace summary, the free host facts row, the fallback
+memory draft (only while consciousness is off), scratchpad
 consolidation, the execution reflection with its child-task evidence, the
 durable improvement backlog and reflection memory actions, plus the shared
 pre-synthesis usage snapshot and the compact review projection those prompts
@@ -612,6 +613,49 @@ def _post_task_paid_interruption(errors: Any) -> str:
             return str(row["kind"])
     unresolved = [row for row in rows if not row.get("resolution")]
     return str((unresolved[-1].get("kind") or "stage_error")) if unresolved else ""
+
+
+def _run_memory_fallback_draft(env: Any, task: Dict[str, Any], llm: Any, drive_logs: pathlib.Path,
+                               llm_trace: Dict[str, Any]) -> str:
+    """Run the fallback memory draft (``memory_fallback``) inside the root post-task worker.
+
+    With consciousness on it reads one state and makes no call. Otherwise at most one
+    Light call, scoped and billed as consolidation; a refusal with a receipt and a
+    returned failure read ``degraded``, a budget or unknown-provider kind interrupts.
+    """
+    try:
+        from ouroboros import memory_fallback
+        from ouroboros.usage_accounting import UsageScope, current_usage_scope, usage_scope
+
+        base_scope = current_usage_scope()
+        scope = (replace(base_scope, category="consolidation", source="memory_fallback") if base_scope is not None
+                 else UsageScope(drive_root=env.drive_root, category="consolidation", source="memory_fallback"))
+        with usage_scope(scope):
+            run = memory_fallback.run_fallback_draft(env, task, llm, drive_logs, llm_trace)
+        usage = run.usage
+        if usage and (usage.get("cost") or usage.get("prompt_tokens")):
+            from supervisor.state import update_budget_from_usage
+            update_budget_from_usage(usage)
+        if run.outcome in ("consciousness_on", "not_activated", "nothing"):
+            return ""
+        from ouroboros.knowledge import observed_route_stamp
+
+        reason = (run.kind if run.outcome == "refused"
+                  else _post_task_paid_interruption(run.errors) if run.outcome == "failed" else "")
+        try:
+            append_jsonl(pathlib.Path(drive_logs) / "events.jsonl", {
+                "ts": utc_now_iso(), "type": "memory_fallback_draft", "task_id": str(task.get("id") or ""),
+                "unit": run.unit.describe() if run.unit else None, "outcome": run.outcome, "kind": run.kind or None,
+                "record_id": run.record_id or None, "input_tokens": run.input_tokens,
+                "accounted_upper_bound_usd": round(float(usage["cost"]), 6) if usage.get("cost") is not None else None,
+                "route": observed_route_stamp(usage) if usage else None})
+        except Exception:
+            log.debug("memory_fallback_draft event was not recorded", exc_info=True)
+        return reason
+    except Exception as error:
+        propagate_paid_interruption(error)
+        log.debug("Fallback memory draft setup failed", exc_info=True)
+        return "stage_setup_failed"
 
 
 def _run_scratchpad_consolidation(env: Any, memory: Any, llm: Any) -> None:

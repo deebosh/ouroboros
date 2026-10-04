@@ -532,7 +532,8 @@ def _inflight_synthesis(monkeypatch, tmp_path, task_id=TURN_ID):
     def _stage(name):
         def _f(*a, **k):
             calls.append(name)
-            if name == "scratchpad_consolidation":  # the first paid late stage
+            # The paid stage held open; memory_fallback_draft runs first and, with no journal here, makes no call.
+            if name == "scratchpad_consolidation":
                 arrived.set()
                 assert release.wait(30), "stage gate never released"
             return {"reflection": "x", "backlog_candidates": [], "memory_actions": []} if name == "reflection" else None

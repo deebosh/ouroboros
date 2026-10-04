@@ -1,6 +1,6 @@
 """The shared Light call (``_call_consolidation_llm``): complete requests, measured fit, typed failures.
 
-Reflection, scratchpad consolidation and knowledge maintenance send through this one
+Reflection and scratchpad consolidation send through this one
 call. The old dialogue writer that split blocks around it is retired, so every test
 here sends one request directly. ``_LLM``, ``fit``, ``_paths`` and ``_write_chat`` are
 shared helpers other memory tests import.

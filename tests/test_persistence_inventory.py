@@ -596,6 +596,12 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 313 -> 312 (memory sprint, memory view): the request no longer reads ``memory/dialogue_summary.md``
 # (the retired flat summary is a chronicle legacy record, imported with the blocks; its row merged
 # into theirs).
+# 312 -> 311 (memory sprint, memory writers): the removed memory pressure upkeep was the only code
+# spelling ``memory/knowledge/overview.md``; the mind still writes the note through the knowledge
+# shelf, whose section-6 row covers it.
+# 311 -> 312 (memory sprint, memory writers): ``memory/chronicle/.fallback.lock``, the fallback memory
+# writer's no-wait lock between two roots' drafts; its own section-6 row (its refusal receipts live in the
+# journal's scan state, the ``records.jsonl`` row).
 EXPECTED_SCAN_PATHS = 312
 
 # Scanned paths that must always be present — guards the scanner itself

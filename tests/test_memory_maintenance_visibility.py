@@ -323,30 +323,6 @@ def test_a_model_supplied_nomination_route_never_reaches_history_from_scratchpad
     assert not [key for key in bound if key.startswith("_")]  # nothing model-written survives as a host key
 
 
-def test_a_model_supplied_nomination_route_never_reaches_history_from_knowledge_maintenance(tmp_path, fit):
-    from tests.test_memory_pressure_maintenance import setup_memory
-
-    memory, ctx = setup_memory(tmp_path)
-    assert store.write_knowledge_note(store.resolve_knowledge_address(tmp_path, "overview", "global"),
-                                      "---\nsummary: Orientation.\n---\n" + "Detailed understanding. " * 200).ok
-
-    class Forging:
-        def chat(self, **_kwargs):
-            return {"content": json.dumps({"knowledge_entries": [
-                {"topic": "lessons/forged", "scope": "global", "content": "A shorter detail note.",
-                 "_nomination_route": _FORGED}]})}, {
-                "cost": 0.02, "provider": "claudexor", "resolved_model": "light/served",
-                "claudexor": {"route": {"source": "codex", "credentialProfileId": "acct-real"}}}
-
-    result = c.maintain_memory_pressure(memory, Forging(), ctx, fits=lambda: False)
-    action = next(row for row in result["actions"] if row["owner"] == "knowledge_maintenance")
-    assert [(row["topic"], row["scope"], row["ok"]) for row in action["writes"]] == [("lessons/forged", "global", True)]
-    capture = next(row for row in _history(tmp_path) if row.get("publication") == "source_capture"
-                   and row["topic"] == "lessons/forged")
-    assert capture["writer"] == "knowledge_maintenance"
-    assert capture["route"] == {"provider": "claudexor", "model": "light/served", "source": "codex", "account": "acct-real"}
-
-
 def test_bind_entries_keeps_model_fields_and_drops_every_host_key(tmp_path):
     reads = c.KnowledgeReadContext(ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="op-1"))
     (bound,) = reads.bind_entries([{"topic": "people/alex", "content": "Observed.", "scope": "global",

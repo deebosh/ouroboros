@@ -1,12 +1,11 @@
-"""Light memory operations shared by reflection, scratchpad upkeep and knowledge maintenance.
+"""Light memory operations shared by reflection and scratchpad upkeep.
 
 The old dialogue writer (summary blocks of a hundred chat rows, eras, its cursor
 and nominations) is gone: the chronicle imports what it wrote once
 (``chronicle_import``) and the mind writes its own pages. What remains is the
 common Light transport (``_call_consolidation_llm`` with its route, fit and typed
 failures), the read context that binds knowledge nominations to what an
-operation actually read, scratchpad consolidation, the measured-pressure batch
-(scratchpad and overview) and the knowledge-note writer.
+operation actually read, scratchpad consolidation and the knowledge-note writer.
 """
 import hashlib
 import json
@@ -15,9 +14,13 @@ import pathlib
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ouroboros import chat_chain
-from ouroboros.utils import append_jsonl, utc_now_iso, read_text, extract_trailing_json_object
+from ouroboros.utils import append_jsonl, utc_now_iso, extract_trailing_json_object
 
 log = logging.getLogger(__name__)
+
+# The answer ceiling of every call of the common Light transport: the transport sends it and a
+# writer fitting its input to the Light window reserves it (``memory_fallback``).
+LIGHT_ANSWER_CEILING_TOKENS = 16384
 
 
 def _consolidation_route() -> Tuple[str, bool]:
@@ -302,8 +305,8 @@ tentative interpretations with their source — is ordinary knowledge to nominat
 a pattern across several moments is worth more than one; revise the existing note rather than minting a rule,
 and an explicit standing request stays explicit. Author a YAML summary for a new or meaningfully revised note —
 the summary is what stays resident in the index — and revise it when the note's meaning changes.
-The note overview (scope global) is the shared orientation loaded into every future context; keep it
-current, and when none exists and this episode gives real understanding, create it after reading the index.
+The note overview (scope global) is written by the acting mind; if this run changed what it says,
+name the stale passage in the text you return — do not nominate overview.
 Scope is a separate field, never a topic prefix.
 Do not treat the generated index or earlier previews as authored truth. Patterns and
 improvement-backlog retain their dedicated semantic maintainers; nominate ordinary
@@ -434,7 +437,7 @@ def _call_consolidation_llm(
         values = dict(messages=[{"role": "user", "content": prompt}],
                       model_role="light", tools=knowledge.tools if knowledge else None,
                       cache_affinity=f"memory_preparation:{canonical_data_root(knowledge.context)}" if knowledge else "",
-                      reasoning_effort=reasoning_effort, max_tokens=16384,
+                      reasoning_effort=reasoning_effort, max_tokens=LIGHT_ANSWER_CEILING_TOKENS,
                       **_light_dispatch_binding())
         # Carry part-to-part evidence only on initial preparation. A wait's
         # reprepare without an observed receipt rediscovers Auto after rotation.
@@ -540,70 +543,6 @@ def _call_consolidation_llm(
     fact = dict(facts, kind=kind, label=label, message=sanitize_tool_result_for_log(message), preflight_only=preflight)
     log.warning("%s failed (%s): %s", label, kind, fact["message"])
     return "", {**_merge_consolidation_usage(*usages, usage), "_consolidation_errors": [fact]}
-
-
-def maintain_memory_pressure(memory: Any, llm_client: Any, context: Any, *,
-                             fits: Callable[[], bool], current_topic: str = "") -> Dict[str, Any]:
-    """One existing maintenance batch, called only after measured core pressure.
-
-    The caller's callback only rebuilds/measures. It owns the normal send and
-    decides whether remaining immutable context fits; this helper has no cadence.
-    """
-    shelf = pathlib.Path(memory.drive_root) / "memory/knowledge"
-    tracked = [memory.scratchpad_blocks_path(), memory.scratchpad_path(),
-               shelf / "overview.md", shelf / "index-full.md", memory.identity_path()]
-    def snapshot() -> Dict[str, Any]:
-        result = {}
-        for path in tracked:
-            raw = path.read_bytes() if path.exists() else None
-            result[str(path)] = {"sha256": hashlib.sha256(raw).hexdigest() if raw is not None else None,
-                                 "bytes": len(raw) if raw is not None else 0}
-        return result
-    before, actions, usages = snapshot(), [], []
-    def result() -> Dict[str, Any]:
-        after = snapshot()
-        changed = [{"path": path, "before": before[path], "after": after[path]}
-                   for path in before if before[path] != after[path]]
-        return {"status": "fitting" if fits() else "progress" if changed else "no_progress",
-                "actions": actions, "changed_sources": changed, "usage": _merge_consolidation_usage(*usages)}
-    if fits():
-        return result()
-    identity = "## Current task\n" + current_topic if current_topic else ""
-    if memory.identity_path().exists():
-        identity_ref = chat_chain.retain_memory_source(context, "maintenance_identity", memory.identity_path().read_bytes())
-        identity += "\nExact identity source, available through read_file; no identity rewrite is authorized here:\n" + json.dumps(identity_ref)
-    if memory.load_scratchpad_blocks():
-        usage = consolidate_scratchpad(memory, shelf, llm_client, identity,
-                                        pressure=True, knowledge_context=context)
-        if usage is not None:
-            usages.append(usage)
-        actions.append({"owner": "scratchpad_consolidation", "usage": usage})
-        if fits() or (usage or {}).get("_consolidation_errors"):
-            return result()
-    if (shelf / "overview.md").exists() or (shelf / "index-full.md").exists():
-        knowledge = KnowledgeReadContext(context, "knowledge_maintenance")
-        prompt = KNOWLEDGE_MAINTENANCE_PROMPT + (
-            "\nThe shared memory projection exceeds the current task's measured working window. "
-            "Read the complete global overview with knowledge_read, then nominate edits making the authored "
-            "overview shorter while preserving the whole scope of current understanding and source-relative links to details. "
-            "Do not remove useful uncertainty or evidence merely to save space. Use ordinary knowledge notes "
-            "for detail when useful. Return JSON: {\"knowledge_entries\": [...]}.\n" + identity)
-        if not (shelf / "overview.md").exists():
-            prompt += "\nNo authored overview exists. This is the complete legacy inventory/context source, " \
-                      "not an authored summary; create an honest overview after reading it:\n" + read_text(shelf / "index-full.md")
-        source_ref = chat_chain.retain_memory_source(context, "knowledge_maintenance", prompt.encode("utf-8"))
-        raw, usage = _call_consolidation_llm(llm_client, prompt, "Knowledge maintenance", knowledge=knowledge, source_ref=source_ref)
-        usages.append(usage)
-        action = {"owner": "knowledge_maintenance", "source_ref": source_ref, "usage": usage}
-        if raw.strip():
-            try:
-                entries = knowledge.bind_entries(json.loads(raw).get("knowledge_entries"))
-                action["writes"] = _write_knowledge_entries(shelf, entries, context=context, stamp={
-                    "writer": "knowledge_maintenance", "route": _route_stamp(usage), "writer_input_ref": source_ref})
-            except (ValueError, TypeError, AttributeError) as exc:
-                action["error"] = str(exc)
-        actions.append(action)
-    return result()
 
 
 def _rebuild_knowledge_index(knowledge_dir: pathlib.Path, *, _locked: bool = False) -> None:
@@ -779,8 +718,12 @@ def _write_knowledge_entries(
     ``KnowledgeReadContext.bind_entries`` strips every underscore key a model
     supplied — so the writer never trusts model output for it. A note this operation
     read (``expected_revision``) takes anchored ``edits`` (+ ``summary``), never whole ``content``;
-    an unread topic is create-only (``nomination_write_form`` owns the shape)."""
-    from ouroboros.knowledge import KnowledgeAddress, nomination_write_form, sanitize_topic, write_knowledge_note
+    an unread topic is create-only (``nomination_write_form`` owns the shape). Every caller is a
+    Light operation (reflection, scratchpad consolidation), and the overview is written by the
+    acting mind (``knowledge_write``), so a nominated overview is refused as
+    ``overview_is_mind_authored`` while the rest of its batch is written as usual."""
+    from ouroboros.knowledge import (KnowledgeAddress, OVERVIEW_TOPIC, nomination_write_form, sanitize_topic,
+                                     write_knowledge_note)
     from ouroboros.tools.knowledge import _address, _record_backlog_history
 
     outcomes = []
@@ -789,6 +732,10 @@ def _write_knowledge_entries(
             outcomes.append({"topic": "", "ok": False, "reason": "malformed_nomination"})
             continue
         topic, content, revision = entry.get("topic"), entry.get("content"), entry.get("expected_revision")
+        if isinstance(topic, str) and topic.strip() == OVERVIEW_TOPIC:  # a global-only topic (D-33)
+            outcomes.append({"topic": OVERVIEW_TOPIC, "scope": "global", "ok": False,
+                             "reason": "overview_is_mind_authored"})
+            continue
         try:
             form = nomination_write_form(entry)  # every refusal still leaves this entry's one outcome
             topic = sanitize_topic(topic)
