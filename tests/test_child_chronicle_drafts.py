@@ -4,8 +4,8 @@ Through the real ToolRegistry: both child sets see ``chronicle_write``; a child'
 is a helper's draft signed with the child's focus (role, task, route) that acts at once until
 the integrating mind's ``decision``; a child's part folds only legacy sections and its own
 drafts; a child's note, correction or decision, or its part over the mind's or another
-writer's records, is refused ``not_integrator`` and nothing lands in the journal; the root
-still writes as the mind. The
+writer's records, is refused ``not_integrator`` and nothing lands in the journal; a child
+whose contract withholds ``chronicle_write`` drafts nothing; the root still writes as the mind. The
 view and ``memory_read`` name a child's draft by the child and a Light draft by Light. Each
 rule is pinned in both directions; no test calls a model or the network.
 """
@@ -130,6 +130,22 @@ def test_a_childs_note_correction_and_decision_are_refused_and_nothing_lands(dat
     assert call(root, kind="correction", target_id=mine["node_id"], text="corrected")["ok"]
     assert call(root, kind="decision", target_id=draft["node_id"], accepted=True, reason="right")["ok"]
     assert status_of(data, draft["node_id"]) == "accepted"
+
+
+@pytest.mark.parametrize("mode", [READONLY, ACTING])
+def test_a_child_whose_contract_withholds_chronicle_write_drafts_nothing(data, monkeypatch, mode):
+    """D-44: without the tool a child cannot draft; the host refuses the call and nothing lands."""
+    rows = chat(data)
+    page = {"kind": "page", "text": "What the child closed.", "covers": {"from": addr(rows[0]), "to": addr(rows[1])}}
+    withheld = {**CHILD_META, "task_contract": {"disabled_tools": ["chronicle_write"]}}
+    kid = registry_for(data, "kid00001", withheld, mode, monkeypatch)
+    assert kid.get_schema_by_name("chronicle_write") is None
+    refused = kid.execute("chronicle_write", page)
+    assert '"ok": true' not in refused and "disabled_tools" in refused
+    assert journal(data) == ""  # no record, no activation
+    # The other side: the same child holding the tool drafts the same page.
+    drafted = call(registry_for(data, "kid00001", CHILD_META, mode, monkeypatch), **page)
+    assert drafted["ok"] and status_of(data, drafted["node_id"]) == "draft"
 
 
 def test_a_childs_refused_note_does_not_activate_the_chronicle(data, monkeypatch):

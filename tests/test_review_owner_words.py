@@ -235,10 +235,23 @@ def test_the_advisory_run_hands_the_runs_words_to_the_prompt(tmp_path, monkeypat
 
 def test_reviewers_get_no_memory_or_story(tmp_path, monkeypatch):
     """OA-6: the reviewer is independent (subject + contract); the words are the only addition."""
-    prompt, _stable, task = _triad_prompt(tmp_path, monkeypatch, "root")
-    assert OWNER in task
-    for absent in ("## Memory", "## Chronicle", "## Dialogue History", "## Working sources"):
-        assert absent not in task
+    from tests._memory_view_context import blocks, world
+
+    review_root, mind_root = tmp_path / "review", tmp_path / "mind"
+    review_root.mkdir()
+    mind_root.mkdir()
+    headings = ("## Identity", "## My story", "## This room", "## Working sources", "## Dialogue History")
+    for delivery in (None, ""):  # the retrieving rows' session task (the default), then the packet seat
+        if delivery is not None:
+            monkeypatch.setattr("ouroboros.reviewer_slot_config.DEFAULT_TRIAD_DELIVERY", delivery)
+        prompt, _stable, task = _triad_prompt(review_root, monkeypatch, "root")
+        assert OWNER in prompt + task
+        for heading in headings:
+            assert heading not in prompt and heading not in task
+    # The headings are the memory's real ones: the integrating mind's own request carries the first three.
+    env, memory, _rooms = world(mind_root)
+    a, b, c, _cap = blocks(env, memory, {"id": "turn0001", "chat_id": 1})
+    assert all(heading in a + b + c for heading in headings[:3])
 
 
 # --- plan review --------------------------------------------------------------------------------------------
