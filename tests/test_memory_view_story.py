@@ -110,6 +110,21 @@ def test_a_part_shows_its_members_do_not_and_corrections_of_members_stand_under_
     assert corrected.count("correction by me of") == 1 and second not in corrected  # no cascade
 
 
+def test_a_correction_of_a_page_folded_twice_stands_under_the_surviving_part(tmp_path):
+    """Review fix (simulated triad): D-18 through nested parts. page -> part -> part, then the
+    page is corrected: the outer part shows it; the inner part (folded) does not appear."""
+    shared.world(tmp_path)
+    page = _page(tmp_path, "1", 10, 11)
+    inner = _part(tmp_path, "1", [page])
+    outer = _part(tmp_path, "1", [inner], text="An older part of my story.")
+    assert "correction by me of" not in _story(tmp_path)
+    store = ChronicleStore(tmp_path)
+    assert store.correct(page, "The page, said right.", shared.MIND, expected_sequence=store.room_head("1")).ok
+    text = _story(tmp_path)
+    assert f"part {outer}" in text and f"part {inner}" not in text
+    assert f"- correction by me of {page}:\n  The page, said right." in text and text.count("correction by me of") == 1
+
+
 def test_the_one_folded_rule_removes_a_pointer_only_when_every_row_is_sealed_and_counts_the_block(tmp_path):
     rooms = shared.world(tmp_path)
     before = _story(tmp_path)

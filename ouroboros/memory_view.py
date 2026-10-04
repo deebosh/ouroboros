@@ -336,9 +336,9 @@ def _stamp_summary(stamp: Any) -> str:
     return f"host stamp: {len(tasks)} tasks — " + ", ".join(f"{status} {n}" for status, n in sorted(counts.items()))
 
 
-def _fixes(record: Mapping[str, Any], fixes: Mapping[str, List[Dict[str, Any]]]) -> List[Dict[str, str]]:
-    """The mind's corrections and rejections aimed at a part's members, one per record (D-18)."""
-    members = (_mapping(record.get("covers")).get("member_ids") or []) if record.get("kind") == "part" else []
+def _fixes(store: ChronicleStore, record: Mapping[str, Any], fixes: Mapping[str, List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+    """The mind's corrections and rejections aimed at a part's members, nested parts' too, one per record (D-18)."""
+    members = store.folded_members(record["id"]) if record.get("kind") == "part" else []
     return [{"kind": fix["kind"], "target": str(member), "text": str(fix.get("text") or fix.get("reason") or "")}
             for member in members for fix in fixes.get(str(member), ())]
 
@@ -369,7 +369,7 @@ def _story_pages(store: ChronicleStore, label: Callable[..., str]) -> Tuple[List
                 "period": _period(covers.get("ts_span")), "text": str(record.get("current_text") or ""),
                 "status": str(record.get("status") or ""), "signer": draft_signer(record.get("author")),
                 "revision": record["revision"] if record.get("revision") != record["id"] else "",
-                "stamp": _stamp_summary(record.get("host_stamp")), "fixes": _fixes(record, fixes), "quotes": record.get("quotes") or []}))
+                "stamp": _stamp_summary(record.get("host_stamp")), "fixes": _fixes(store, record, fixes), "quotes": record.get("quotes") or []}))
     return [entry for _key, entry in sorted(keyed, key=lambda pair: pair[0])], mine
 
 

@@ -796,6 +796,18 @@ class ChronicleStore:
             effective = [r for r in (self._interpret(db, row) for row in rows) if r.get("status") != "rejected"]
             return sorted(effective, key=lambda r: self._order_key(db, r, cache))
 
+    def folded_members(self, part_id: Any) -> List[str]:
+        """Every record under a part through nested parts: its own members first, then theirs (D-18)."""
+        with self._index() as db:
+            out, todo = [], [str(part_id)]
+            while todo:
+                part = self._get(db, todo.pop(0)) or {}
+                covers = part.get("covers") if part.get("kind") == "part" and isinstance(part.get("covers"), dict) else {}
+                members = [str(member) for member in covers.get("member_ids") or ()]
+                out += members
+                todo += members
+            return out
+
     def sealed_row_refs(self, room_id: Any) -> set:
         """Row refs (``row_sha256`` and ``note:<id>``) the room's acting pages seal; the rest is open."""
         with self._index() as db:
