@@ -7,11 +7,11 @@ takes is drawn as an address line with its period: the horizon stays, the granul
 changes. No search, no second render to choose a level, nothing added to fill room.
 
 Three boundaries, each in estimator tokens of memory (``context_budget.request_context_budget``):
-host facts, room headers, retold pointers, pages and my own replies answer to the window
-minus the reply reserve and the working margins (``MEMORY_VIEW_WORKING_MARGINS``);
-people's words only to the window minus the reply reserve (D-1); an owner-selected Low or
-Nano target, with its own margins (``MODE_TARGET_WORKING_MARGINS``), bounds the steps of
-``MODE_TARGET_STEPS`` alone (the owner's answer B; D-32, D-37). An unknown window takes no
+host facts, room headers, retold pointers and pages answer to the window minus the reply
+reserve and the working margins (``MEMORY_VIEW_WORKING_MARGINS``); my own replies and
+people's words only to the window minus the reply reserve (D-1, D-37); an owner-selected
+Low or Nano target, with its own margins (``MODE_TARGET_WORKING_MARGINS``), bounds the
+steps of ``MODE_TARGET_STEPS`` alone (the owner's answer B; D-32, D-37). An unknown window takes no
 window step. ``render_view_for_mode`` is the whole floor decision of one mode's
 projection (story text, room text and the floor fact the task trace keeps).
 
@@ -41,8 +41,9 @@ LADDER = ("F1", "F1b", "F3", "F5", "F4", "F2", "F6", "F7")
 # The only steps an owner-selected Low or Nano target takes (D-37): facts, headers,
 # pointers and old retold memory; my replies and people's words answer to the window alone.
 MODE_TARGET_STEPS = ("F1", "F1b", "F3", "F5", "F4")
-# People's words become addresses only when the window minus the reply reserve cannot hold them (D-1).
-PEOPLE_STEPS = ("F6", "F7")
+# Both sides of the conversation, my replies and people's words, become addresses only when the
+# window minus the reply reserve cannot hold them (D-1, D-37): never for the working margins.
+WINDOW_ONLY_STEPS = ("F2", "F6", "F7")
 MODES = ("max", "low", "nano")  # the starting-mode order the window may lower through
 _COLLAPSING = ("F1", "F1b")  # many elements, one line: the first element carries it
 _SHOWN = (("F2", "{} of my replies"), ("F7", "{} lines of people in this room"),
@@ -117,7 +118,7 @@ def floor_allowances(*, window_tokens: Optional[int], output_reserve_tokens: Opt
 def fit_memory_view(snapshot: mv.MemoryViewSnapshot, allowances: Mapping[str, Optional[int]]) -> mv.FloorLevel:
     """One pass down the ladder: an element becomes an address while the view exceeds its step's boundary.
 
-    People's words answer to ``physical``, every other step to ``margin`` and, in
+    My replies and people's words answer to ``physical``, every other step to ``margin`` and, in
     ``MODE_TARGET_STEPS``, also to ``budget``. Each element saves its known difference;
     the view is measured once, in full, and never rendered again to choose.
     """
@@ -125,7 +126,7 @@ def fit_memory_view(snapshot: mv.MemoryViewSnapshot, allowances: Mapping[str, Op
     taken: Dict[str, List[str]] = {}
     by_budget = 0
     for step, ident, whole, short in degradable_elements(snapshot):
-        window = allowances.get("physical" if step in PEOPLE_STEPS else "margin")
+        window = allowances.get("physical" if step in WINDOW_ONLY_STEPS else "margin")
         budget = allowances.get("budget") if step in MODE_TARGET_STEPS else None
         over_window = window is not None and current > window
         if not over_window and not (budget is not None and current > budget):

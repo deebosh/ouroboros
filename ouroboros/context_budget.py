@@ -61,12 +61,12 @@ RECLAIM_LOW_WATER_DIVISOR = 8
 # each. One is the level an in-task reclaim pass lands on (its goal is the
 # deficit plus one level), the other is room for the work between two passes;
 # with less, the first tool results of a task would re-arm a paid reclaim. The
-# floor turns host facts, room headers, my own replies, legacy pointers and old
-# pages into addresses only when the view does not fit the window minus the
-# reply reserve and this room; people's words become addresses only when the
-# window minus the reply reserve cannot hold them. It never adds memory to fill
-# the room. Structural constant, not a setting; tests/test_context_budget_ssot.py
-# pins it.
+# floor turns host facts, room headers, legacy pointers and old pages into
+# addresses only when the view does not fit the window minus the reply reserve
+# and this room; my own replies and people's words become addresses only when
+# the window minus the reply reserve cannot hold them. It never adds memory to
+# fill the room. Structural constant, not a setting;
+# tests/test_context_budget_ssot.py pins it.
 MEMORY_VIEW_WORKING_MARGINS = 2
 
 # Low-water levels left to the work under an owner-selected Low or Nano target

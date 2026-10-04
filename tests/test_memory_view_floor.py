@@ -1,8 +1,8 @@
 """The physical floor of the memory view (``ouroboros.memory_floor``; P3 §2.6, D-1, D-37).
 
 Without a shortage the view is whole; with one, elements become address lines strictly
-down the ladder F1, F1b, F3, F5, F4, F2, F6, F7, people's words last and only against the
-window minus the reply reserve. Every element the floor takes is still named by its
+down the ladder F1, F1b, F3, F5, F4, F2, F6, F7, my replies and people's words last and only
+against the window minus the reply reserve. Every element the floor takes is still named by its
 address with its period, and what never degrades stays. Each rule is pinned in both
 directions on synthetic snapshots of capture shape (377 pointers in 78 rooms, a dozen or
 twenty live rooms, lanes of real size) and once on a captured installation.
@@ -96,20 +96,19 @@ def test_steps_run_strictly_down_the_ladder_element_by_element():
     assert seen[0] == () and seen[-1] == tuple(mf.LADDER)
 
 
-def test_peoples_words_answer_only_to_the_window_minus_the_reply_reserve():
+def test_my_replies_and_peoples_words_answer_only_to_the_window_minus_the_reply_reserve():
     snapshot = _rich()
     full = _tokens(snapshot)
-    # No room for the working margins, but the window minus the reserve holds the whole view:
+    # No room for the working margins, but the window minus the reserve holds the whole view (D-37):
     kept = mf.fit_memory_view(snapshot, _window(0, physical=full))
     names = [name for name, _n in kept.steps]
-    assert names == ["F1", "F1b", "F3", "F5", "F4", "F2"]
+    assert names == ["F1", "F1b", "F3", "F5", "F4"]
     room = mv.render_room(snapshot, kept)
-    for word in [w for live in snapshot.live_rooms for w in live["words"]] + [
-            item for item in snapshot.room["lane1"] if item["kind"] == "human"]:
-        assert word["line"] in room  # people's words stay verbatim
-    # A window that cannot hold them even after F1-F5 and F2: F6, then F7, last.
+    for word in [w for live in snapshot.live_rooms for w in live["words"]] + list(snapshot.room["lane1"]):
+        assert word["line"] in room  # both sides of the conversation stay verbatim
+    # A window that cannot hold them even after F1-F5: my replies (F2), then F6, then F7, last.
     taken = mf.fit_memory_view(snapshot, _window(0, physical=0))
-    assert [name for name, _n in taken.steps][-2:] == ["F6", "F7"]
+    assert [name for name, _n in taken.steps][-3:] == ["F2", "F6", "F7"]
     room = mv.render_room(snapshot, taken)
     assert all(item["line"] not in room and item["head"] in room for item in snapshot.room["lane1"])
     # Between the two: F6 (other rooms' people) goes before F7 (this room's people).
@@ -233,9 +232,11 @@ def test_an_owner_target_takes_only_its_steps_and_names_the_mode_budget():
     text = mf.floor_note(level, window_tokens=1_050_000, mode="low", target_tokens=250_000)
     assert text.startswith("### Physical floor\nThe Low mode budget (250000 tokens) does not hold") and "window" not in \
         text.split("\n")[1].split(" does ")[0]
-    # The window alone, short as the budget was, also takes my replies (and, physically, people's words).
+    # The working margins alone take what the budget takes, never my replies; the window minus the reserve
+    # takes them too (and, last, people's words).
     windowed = mf.fit_memory_view(snapshot, {"margin": 0, "physical": 10**9, "budget": None})
-    assert "F2" in dict(windowed.steps) and windowed.by_budget == 0
+    assert "F2" not in dict(windowed.steps) and windowed.steps and windowed.by_budget == 0
+    assert "F2" in dict(mf.fit_memory_view(snapshot, {"margin": 0, "physical": 0, "budget": None}).steps)
     both = mv.FloorLevel(windowed.addressed, by_budget=1)
     assert "This window (1050000 tokens, Low) and the Low mode budget (250000 tokens) do not hold" in mf.floor_note(
         both, window_tokens=1_050_000, mode="low", target_tokens=250_000)

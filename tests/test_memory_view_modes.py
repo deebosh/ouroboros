@@ -58,17 +58,16 @@ def test_every_actor_window_and_mode_starts_in_a_request_that_fits():
 
 
 @pytest.mark.parametrize("window", [640_000, 500_000])
-def test_in_the_500k_to_640k_band_max_holds_and_peoples_words_stay_verbatim(window):
+def test_in_the_500k_to_640k_band_max_holds_and_the_conversation_stays_verbatim(window):
     snapshot = syn.actor("main")
     mode, total, _story, room, facts = _start("main", window, "max", snapshot=snapshot)
     assert mode == "max" and total + 65_536 <= window
     steps = facts["floor"]["steps"]
-    assert "F6" not in steps and "F7" not in steps
-    for item in snapshot.room["lane1"]:
-        if item["kind"] == "human":
-            assert item["line"] in room
-    if window == 500_000:  # the working margins still take host facts, pointers, the retold page and my replies
-        assert list(steps) == ["F1", "F1b", "F3", "F4", "F2"]
+    assert "F2" not in steps and "F6" not in steps and "F7" not in steps  # D-37: the window alone takes them
+    for item in snapshot.room["lane1"]:  # people's words and my replies
+        assert item["line"] in room
+    if window == 500_000:  # the working margins still take host facts, pointers and the retold page
+        assert list(steps) == ["F1", "F1b", "F3", "F4"]
         assert "### Physical floor\nThis window (500000 tokens, Max) does not hold" in room
 
 
@@ -84,8 +83,12 @@ def test_where_even_f1_to_f5_leave_too_much_peoples_words_go_last_other_rooms_fi
         return mf.render_view_for_mode(snapshot, mode="max", owner_mode="max", window_tokens=window, known_window=True,
                                        output_reserve=65_536, ratio=1.0, non_memory_tokens=fixed)[2]["floor"]["steps"]
 
-    roomy = steps(fixed + 65_536 + 40_000)  # after F1-F5 and F2 the words fit the window minus the reserve
-    assert "F6" not in roomy and "F7" not in roomy and "F2" in roomy
+    roomy = steps(fixed + 65_536 + 40_000)  # after F1-F5 the conversation fits the window minus the reserve
+    assert "F2" not in roomy and "F6" not in roomy and "F7" not in roomy
+    margins = mf.fit_memory_view(snapshot, {"margin": 0, "physical": 10**9, "budget": None})
+    held = mf.view_tokens(mf.mv.render_story(snapshot, margins)) + mf.view_tokens(mf.mv.render_room(snapshot, margins))
+    mine = steps(fixed + 65_536 + held - 1)  # one token short after F1-F5: my longest reply goes first, words stay
+    assert "F2" in mine and "F6" not in mine and "F7" not in mine
     tight = steps(fixed + 65_536 + 9_000)  # after F1-F5 and F2 the words still do not fit
     assert list(tight) == ["F1", "F3", "F4", "F2", "F6", "F7"]  # every live room shows words: no F1b
     some = steps(fixed + 65_536 + 13_000)  # other rooms' words make room before this room's
@@ -176,11 +179,15 @@ def test_the_floor_fact_names_the_newest_row_and_the_records_shown_by_address():
     snapshot = syn.actor("main")
     _mode, _total, _story, _room, facts = _start("main", 200_000, "max", snapshot=snapshot)
     floor = facts["floor"]
-    assert {"F1", "F3", "F4", "F2"} <= set(floor["steps"]) and "F7" not in floor["steps"]
+    assert {"F1", "F3", "F4"} <= set(floor["steps"]) and "F2" not in floor["steps"] and "F7" not in floor["steps"]
     lane1, lane2 = snapshot.room["lane1"], snapshot.room["lane2"]
-    newest = max([(item["last_pos"], item["last"]) for item in lane2]
-                 + [(item["pos"], item["address"]) for item in lane1 if item["kind"] == "ouroboros"])
+    newest = max((item["last_pos"], item["last"]) for item in lane2)
     assert floor["newest_addressed_row"] == chat_chain.parse_address(newest[1])
+    # A reply the window took (F2) is a row shown only by address, as a task line (F1) is.
+    reply = max((item for item in lane1 if item["kind"] == "ouroboros"), key=lambda item: item["pos"])
+    by_reply = mf.view_facts(snapshot, mf.mv.FloorLevel((("F2", (reply["address"],)),)), window_tokens=200_000,
+                             mode="max", allowances={})
+    assert by_reply["floor"]["newest_addressed_row"] == chat_chain.parse_address(reply["address"])
     assert floor["pointer_records"] == [item["id"] for item in snapshot.room["legacy"]][:floor["steps"]["F4"]]
     assert facts["room_id"] == "1" and facts["role"] == "integrator"
     assert facts["story_status"] == {"folded": 0, "total": 23}
