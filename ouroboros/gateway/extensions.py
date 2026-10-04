@@ -209,21 +209,15 @@ async def api_extensions_index(request: Request) -> JSONResponse:
     """Return discovered extensions plus live loader snapshot.
 
     The synchronous body runs in a worker thread and reuses discovered skills
-    to avoid repeated filesystem walks during Widgets/Skills refresh.
+    to avoid repeated filesystem walks during Widgets/Skills refresh. A passive
+    read (DEVELOPMENT "Passive GET"): a dead ``running`` review job is healed by
+    its owners (boot, the maintenance pass, the next review start), never here.
     """
     try:
-        import asyncio
-
         from ouroboros.config import get_skills_repo_path
-        from ouroboros.skill_review_runner import reconcile_stale_review_jobs
 
         drive_root = _request_drive_root(request)
         repo_path = get_skills_repo_path()
-        await asyncio.to_thread(
-            reconcile_stale_review_jobs,
-            drive_root,
-            repo_path=repo_path,
-        )
         payload = await asyncio.to_thread(_build_extensions_index, drive_root, repo_path)
         return JSONResponse(payload)
     except Exception as exc:
@@ -759,15 +753,11 @@ async def api_owner_skill_attest_review(request: Request) -> JSONResponse:
     return JSONResponse(payload, status_code=200 if payload.get("ok") else int(payload.get("status_code") or 409))
 
 
-async def api_skill_lifecycle_queue(request: Request) -> JSONResponse:
-    """GET /api/skills/lifecycle-queue — recent mutating skill operations."""
+async def api_skill_lifecycle_queue(_request: Request) -> JSONResponse:
+    """GET /api/skills/lifecycle-queue — recent mutating skill operations.
 
-    try:
-        from ouroboros.skill_review_runner import reconcile_stale_review_jobs
-
-        await asyncio.to_thread(reconcile_stale_review_jobs, _request_drive_root(request))
-    except Exception:
-        log.debug("stale review job reconciliation failed", exc_info=True)
+    The queue snapshot only: polled every second while a lifecycle action is
+    pending, so it heals nothing (the review-job owners do)."""
     return JSONResponse(queue_snapshot())
 
 

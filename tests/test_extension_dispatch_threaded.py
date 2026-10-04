@@ -177,21 +177,20 @@ def test_skill_reconcile_runs_on_worker_thread(tmp_path, monkeypatch):
     assert reconcile_threads and all(thread_id != loop_thread for thread_id in reconcile_threads)
 
 
-def test_lifecycle_queue_reconcile_runs_on_worker_thread(tmp_path, monkeypatch):
+def test_lifecycle_queue_endpoint_does_not_reconcile_review_jobs(tmp_path, monkeypatch):
     import ouroboros.gateway.extensions as extensions_api
     import ouroboros.skill_review_runner as runner
 
     (tmp_path / "drive").mkdir()
     (tmp_path / "repo").mkdir()
-    loop_thread = threading.get_ident()
-    reconcile_threads = []
+    reconcile_calls = []
 
     def reconcile_stale_review_jobs(*_args, **_kwargs):
-        reconcile_threads.append(threading.get_ident())
+        reconcile_calls.append(threading.get_ident())
 
     monkeypatch.setattr(runner, "reconcile_stale_review_jobs", reconcile_stale_review_jobs)
 
     response = asyncio.run(extensions_api.api_skill_lifecycle_queue(_skill_request(tmp_path)))
 
     assert "active" in _decode_response(response)
-    assert reconcile_threads and all(thread_id != loop_thread for thread_id in reconcile_threads)
+    assert reconcile_calls == []

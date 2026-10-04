@@ -415,7 +415,9 @@ def test_api_extensions_index_uses_one_request_local_repo_identity(
 
     assert response.status_code == 200
     assert config_reads == [request_repo]
-    assert reconcile_calls == [(drive_root, request_repo)]
+    # A passive read: the review-job heal belongs to boot, the maintenance pass
+    # and the next review start, never to the Skills list GET.
+    assert reconcile_calls == []
     assert build_calls == [(drive_root, request_repo)]
 
 
@@ -1809,7 +1811,12 @@ def test_api_skill_review_offloads_to_thread_and_returns_outcome(tmp_path, monke
         _stop_patches(patches)
 
 
-def test_lifecycle_queue_endpoint_marks_stale_review_job_interrupted(tmp_path, monkeypatch):
+def test_lifecycle_queue_endpoint_leaves_stale_review_job_to_its_owners(tmp_path, monkeypatch):
+    """The queue GET is polled every second during a lifecycle action; it reads
+    the snapshot and heals nothing — ``reconcile_stale_review_jobs`` (boot, the
+    maintenance pass) still heals the same dead job."""
+    from ouroboros.skill_review_runner import reconcile_stale_review_jobs
+
     client, drive_root, patches = _make_client(tmp_path, monkeypatch)
     job_dir = drive_root / "state" / "skills" / "alpha"
     job_dir.mkdir(parents=True)
@@ -1828,10 +1835,16 @@ def test_lifecycle_queue_endpoint_marks_stale_review_job_interrupted(tmp_path, m
         ),
         encoding="utf-8",
     )
+    before = job_path.read_bytes()
     monkeypatch.setattr("ouroboros.skill_review_runner._pid_alive", lambda _pid: False)
     try:
         resp = client.get("/api/skills/lifecycle-queue")
         assert resp.status_code == 200
+        assert "active" in resp.json()
+        assert job_path.read_bytes() == before
+        assert not (drive_root / "logs" / "progress.jsonl").exists()
+
+        assert reconcile_stale_review_jobs(drive_root, repo_path="") == 1
         data = json.loads(job_path.read_text(encoding="utf-8"))
         assert data["status"] == "interrupted"
         assert data["interrupt_reason"] == "owner_process_exited"
