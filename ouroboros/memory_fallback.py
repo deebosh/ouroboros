@@ -18,8 +18,8 @@ The draft acts at once under the helper's name (``author.kind == "helper"``) unt
 mind accepts, rejects or corrects it. A page carries no ``expected_sequence`` (an
 unrelated record of a live room never voids it; a double cover is ``already_sealed``);
 a part carries the room head read at selection. Rows the helper received only by
-address, and the mind's notes it never reads, are not covered: they stay open (owner
-decision D-17).
+address, and the mind's notes it never reads, are not covered: they stay open, since a
+page seals only what its writer actually read.
 
 One call, no retry: a refusal on the same input and the same Light route is recorded in
 the chronicle's scan state (``fallback_refusals``, with the raw answer retained) and that
@@ -281,7 +281,7 @@ class WriterInput:
     input_tokens: Optional[int]
     covers: Optional[Dict[str, Any]] = None  # a page's covers: rows read verbatim or as their task's stamp line
     positions: Dict[str, int] = field(default_factory=dict)  # row_sha256 -> stream pos (quotes of pre-epoch rows)
-    addressed_rows: Tuple[str, ...] = ()  # shown only by address: not covered, they stay open (D-17)
+    addressed_rows: Tuple[str, ...] = ()  # shown only by address: not read, so not covered; they stay open
     stamp: Optional[Dict[str, Any]] = None  # a page's host stamp, a part's ``part_stamp``
     member_ids: Tuple[str, ...] = ()  # a part's members (a prefix of the unit's when the window is short)
 
@@ -451,7 +451,7 @@ def _floor(items: List[_Row], budget: Optional[int], measure: Callable[[str], in
 
 
 def _trimmed(covers: Dict[str, Any], kept: List[_Row]) -> Dict[str, Any]:
-    """The covers of the rows read: never a row given only by address, never a mind note (D-17).
+    """The covers of the rows read: never a row given only by address, never a mind note.
 
     The helper's input holds no note of the mind, so its draft seals none; a note stays
     open and in the view until a page of the mind covers it.

@@ -251,7 +251,7 @@ def test_the_next_turn_reads_the_note_as_a_host_fact(host):
 
     _note(host.queue)
     host.queue.check_scheduled_tasks()
-    rendered = room_text(host.root)  # the room of Main's next turn (memory spec P3 §2.4: a notice by its words)
+    rendered = room_text(host.root)  # the room of Main's next turn: a notice shows by its words
     [line] = [line for line in rendered.splitlines() if "Reminder · Ouroboros · written " in line]
     assert line.startswith("[") and "; host" in line.split("]", 1)[0], line
     assert "Call mother" in rendered and "; Ouroboros;" not in line  # a host fact, never my speech

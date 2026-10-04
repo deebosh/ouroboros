@@ -134,7 +134,7 @@ BAND_PATHS = {
     "ouroboros/observability.py": "Owns forensic call and blob storage, exact-version readers and result-reference custody; graph traversal is independently owned by source_retention.",
     "ouroboros/preflight_runner.py": None,
     "ouroboros/presence_runner.py": "Presence turn admission, durable retry identity and transport custody remain one owner; separating them now would duplicate the gate and receipt seam.",
-    "ouroboros/project_dialogue.py": "Shrank INTO the band from 1555 lines: the dead authored_root_summary writer was removed (memory writers, P4); no new content.",
+    "ouroboros/project_dialogue.py": "Shrank INTO the band from 1587 lines: the dead authored_root_summary writer was removed with the old dialogue memory writer; no new content.",
     "ouroboros/projects_registry.py": "Execution admission protocol now has its own shared owner; registry retains persistence, bindings and identity projections.",
     "ouroboros/reflection.py": "TZ-3 PR-1: reflection now stamps typed skip events, writer/route provenance and the project-vs-canonical reflection locator on its memory actions (948->1017); one owner for reflection generation and its memory-action application, no new subsystem",
     "ouroboros/request_wire_receipts.py": "Wire candidates and semantic-success receipts share one exact serializer digest owner.",

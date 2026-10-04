@@ -1,4 +1,4 @@
-"""The memory tools: chronicle_write, memory_read, memory_mark (memory spec §5).
+"""The memory tools: chronicle_write, memory_read, memory_mark.
 
 chronicle_write: a page names a range or a set of tasks and the host publishes
 the exact row set, stamped and with checked quotes; a stale room head is refused
@@ -185,7 +185,7 @@ def test_stale_expected_sequence_returns_the_head_and_ids_without_text_and_a_cur
 
 
 def test_a_quote_of_a_bold_row_holds_without_the_markers_and_a_changed_word_does_not(tmp_path):
-    """D-65 on the real resolver (the one the Light helper's draft is checked with): the row's words
+    """On the real resolver (the one the Light helper's draft is checked with): the row's words
     copied without its ``**`` pass, with them too; a changed word is refused."""
     rows = chat(tmp_path, [{"chat_id": 1, "direction": "in", "ts": ts(1),
                             "text": "Merge it, **but not** before the red checks are green."}])
@@ -255,7 +255,7 @@ def test_default_room_is_own_room_and_chat_id_zero_is_an_address(tmp_path):
 
 
 def test_a_room_name_is_refused_with_the_repair_and_never_read_or_written_as_a_room(tmp_path):
-    """Review fix (simulated triad): ``room_id='Main'`` read as an empty room and wrote a note
+    """Regression: ``room_id='Main'`` read as an empty room and wrote a note
     into a phantom room; now each mode refuses it naming the repair, while a chat id (negative
     or zero included) and ``legacy`` still address rooms."""
     ctx = ctx_for(tmp_path)
@@ -508,7 +508,7 @@ def _legacy_install(root):
 
 @pytest.mark.parametrize("first", ["chronicle_write", "memory_read", "memory_mark"])
 def test_the_first_memory_tool_call_imports_once_and_every_later_call_takes_the_fast_path(tmp_path, monkeypatch, first):
-    """K11: each of the three tools starts by activating the chronicle. Whichever comes first
+    """Each of the three tools starts by activating the chronicle. Whichever comes first
     imports the legacy memory (no model call); a repeat of any tool finds the receipt and
     imports nothing again."""
     from ouroboros import chronicle_import
@@ -720,7 +720,7 @@ def test_registry_root_writes_to_the_canonical_data_root_and_reads_back(tmp_path
     assert ranged.status == "ok" and ranged.text.split("\n")[2:] == [f"[{ts(2)}; User; {addr(rows[1])}] words 2"]
 
 
-# --- delegated children (§5.4; R3: both child sets; D-44: pages and parts only as the child's drafts) ---
+# --- delegated children (both child sets; pages and parts only as the child's drafts) --------------
 
 CHILD_META = {"delegation_role": "subagent", "parent_task_id": "root0001", "root_task_id": "root0001"}
 

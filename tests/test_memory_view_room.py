@@ -158,7 +158,7 @@ def test_the_working_sources_line_lists_exactly_what_the_spec_loads():
 
 
 def test_before_activation_the_role_line_names_no_memory_item_as_loaded():
-    """§2.10: the line cannot disagree with the view; until the import the view holds none of my memory."""
+    """The line cannot disagree with the view; until the import the view holds none of my memory."""
     child = dataclasses.replace(mv.ROLE_DEFAULTS["child"], room_id="1")
     items = ("the top level of your story", "the page of your parent's room Project Alpha",
              "the words that started that work", "the memory marks of that room and global ones")
@@ -423,7 +423,7 @@ def test_this_room_has_its_head_retold_records_origin_words_and_notes(tmp_path):
 
 
 def test_main_room_page_shows_the_room_less_retellings_whole_to_its_integrator_and_a_pointer_elsewhere(tmp_path):
-    """P3 §9.9 (D-65): the flat summary and a room-less era predate rooms and were Main's memory: whole in
+    """The flat summary and a room-less era predate rooms and were Main's memory: whole in
     Main's room page, under their own label, for Main's integrator; a pointer in the story, and nothing more
     for a helper in Main, another room or consciousness."""
     import json
@@ -495,7 +495,7 @@ def test_each_role_sees_its_parts_of_the_live_view(tmp_path):
 
 def test_a_helpers_owner_words_are_indented_and_survive_local_compaction(tmp_path):
     """A line of the owner's own that starts with '## ' stays inside the words; the local model's compaction
-    keeps the section, as it keeps this room and the marks (P5 §2.3: the words never degrade)."""
+    keeps the section, as it keeps this room and the marks (the owner's words never degrade)."""
     from ouroboros.llm_local import _compact_local_text, _split_markdown_sections
     from ouroboros.owner_words import render_owner_words
 
@@ -540,8 +540,8 @@ def test_the_view_and_memory_read_print_a_row_with_one_grammar(tmp_path):
 
 
 def test_a_nanny_keeps_its_rooms_sealed_pages_on_its_room_page_and_a_child_reads_them_in_its_story(tmp_path):
-    """Review fix (simulated triad): a nanny starts without the story (2A) but with its room's page
-    (CONSENSUS §3); once the room is sealed into pages, those pages are the room page — never
+    """Regression: a nanny starts without the story but with its room's page, the
+    conversation it works in; once the room is sealed into pages, those pages are the room page — never
     \"Nothing open, retold or noted\". A child keeps them in its story, not twice."""
     from ouroboros.tools.chronicle import page_covers
 
@@ -556,7 +556,7 @@ def test_a_nanny_keeps_its_rooms_sealed_pages_on_its_room_page_and_a_child_reads
     assert "I sealed the opening of Main." in _section(nanny_text, "### Pages of this room")
     child, child_text = _view(tmp_path, base)
     assert "I sealed the opening of Main." in mv.render_story(child) and "### Pages of this room" not in child_text
-    # A helper's draft reaches the nanny with its evidence, as the story prints it (delta review): who drafted it,
+    # A helper's draft reaches the nanny with its evidence, as the story prints it: who drafted it,
     # the host stamp of its tasks and the verified words it quotes — never as unattributed prose.
     from ouroboros.chronicle_import import row_lineage
     from ouroboros.tools.chronicle import _quote_resolver
@@ -572,8 +572,8 @@ def test_a_nanny_keeps_its_rooms_sealed_pages_on_its_room_page_and_a_child_reads
     page = _section(nanny_text, "### Pages of this room")
     assert "A helper says the work finished." in page and f"- quote (human, {quote['address']}): {quote['text']}" in page
     assert "(draft by a helper (Light), not yet accepted or rejected by me)" in page and "failed 1" in page
-    # Order stays the room's record order (F4 takes the room page oldest first, D-37): a page folded later into a
-    # part stands after the older top-level pages, not before them (second delta review).
+    # Order stays the room's record order (F4 takes the room page oldest first): a page folded later into a
+    # part stands after the older top-level pages, not before them.
     store = ChronicleStore(tmp_path)
     covers = page_covers(tmp_path, "1", from_addr=_addr(rows[3]), to_addr=_addr(rows[3]))["covers"]
     newer = store.publish_page(room_id="1", text="A newer page.", covers=covers, author=shared.MIND)
@@ -586,8 +586,8 @@ def test_a_nanny_keeps_its_rooms_sealed_pages_on_its_room_page_and_a_child_reads
 
 
 def test_a_storyless_room_page_keeps_story_order_when_an_older_period_is_sealed_later(tmp_path):
-    """Review fix (simulated triad, delta 3): a nanny's room page is in story (stream) order, not publication order,
-    so F4 (oldest first, D-37) addresses the older period first even when its page was published after a newer one."""
+    """Regression: a nanny's room page is in story (stream) order, not publication order,
+    so F4 (oldest first) addresses the older period first even when its page was published after a newer one."""
     from ouroboros.tools.chronicle import page_covers
 
     _rooms, rows = _install(tmp_path)

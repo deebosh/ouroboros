@@ -946,7 +946,7 @@ def test_unmaterialized_automatic_pass_leaves_physical_overflow_recovery(tmp_pat
     wrote no checkpoint (unreachable or nothing exposed) does not consume the round's
     physical recovery, so an actual overflow still requests its low-water pass; a pass that
     did materialize keeps the one-pass latch and is never repeated. Only the pass after the
-    provider's typed refusal carries ``provider_refused`` (D-69); the proactive one never does."""
+    provider's typed refusal carries ``provider_refused``; the proactive one never does."""
     from ouroboros import loop
 
     context = _ctx(tmp_path, preferred="low", mode="low")

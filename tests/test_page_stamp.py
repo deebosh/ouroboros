@@ -1,11 +1,11 @@
-"""A memory page's host stamp comes from ``terminal_projection.stamp_facts`` (memory spec §5).
+"""A memory page's host stamp comes from ``terminal_projection.stamp_facts``.
 
-P2's ``host_stamp`` body moved without changing its order or format: per task its
+The original ``host_stamp`` body moved without changing its order or format: per task its
 terminal projection row, then its host facts row (both among the page's already-read
 rows; a repeated row of one task takes the last), then the strict task result (the
 file never moves), else ``not_recorded``; there is no pass over the chat chain.
 ``host_stamp`` stays the same call with the same ``{tasks, computed_at}`` result.
-The entries keep every P2 key and gain only optional facts copied from the same
+The entries keep every original key and gain only optional facts copied from the same
 source: ``outcome_final``, ``reason_code``, ``objective_status`` and the source
 row's ``source_address``; the full ``outcome_axes`` never enter a stamp.
 ``part_stamp`` summarizes member page stamps and keeps every failure in full.
@@ -25,7 +25,7 @@ from ouroboros.tools.chronicle import _chronicle_write, host_stamp, page_covers
 from ouroboros.tools.registry import ToolContext
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-P2_KEYS = {"task_id", "status", "outcome", "outcome_phase", "source", "result_ref", "review_verdict"}
+ORIGINAL_KEYS = {"task_id", "status", "outcome", "outcome_phase", "source", "result_ref", "review_verdict"}
 OPTIONAL = {"outcome_final", "reason_code", "objective_status", "source_address"}
 
 
@@ -63,8 +63,8 @@ def facts_row(scratch: pathlib.Path, tid: str, n: int, **usage) -> dict:
     return {**json.loads((root / "logs" / "chat.jsonl").read_text(encoding="utf-8")), "ts": ts(n)}
 
 
-def p2_host_stamp(root, task_ids, *, rows=()):
-    """P2's host_stamp body (tools/chronicle.py:233-287 at 4dc962d66), frozen here as the parity witness."""
+def original_host_stamp(root, task_ids, *, rows=()):
+    """The original host_stamp body (tools/chronicle.py:233-287 at 4dc962d66), frozen here as the parity witness."""
     from ouroboros.project_dialogue import OUTCOME_PHASE_HEADLINE, outcome_phase
     from ouroboros.task_results import load_task_result
 
@@ -137,9 +137,9 @@ def four_sources(tmp_path: pathlib.Path):
     return rows, found
 
 
-# --- parity with P2 and the order of sources -------------------------------------------------------
+# --- parity with the original stamp and the order of sources ----------------------------------------
 
-def test_host_stamp_keeps_p2_order_and_format_for_all_four_sources(tmp_path):
+def test_host_stamp_keeps_its_original_order_and_format_for_all_four_sources(tmp_path):
     rows, found = four_sources(tmp_path)
     ids = found["covers"]["task_ids"]
     assert ids == ["both", "facts", "fromfile", "nowhere", "kid1"]
@@ -147,10 +147,10 @@ def test_host_stamp_keeps_p2_order_and_format_for_all_four_sources(tmp_path):
     before = result_file.read_bytes()
     stamp = host_stamp(tmp_path, ids, rows=found["rows"])
     assert set(stamp) == {"tasks", "computed_at"}
-    old = p2_host_stamp(tmp_path, ids, rows=found["rows"])
+    old = original_host_stamp(tmp_path, ids, rows=found["rows"])
     assert [entry["task_id"] for entry in stamp["tasks"]] == [entry["task_id"] for entry in old] == ids
     for new, before_move in zip(stamp["tasks"], old):
-        assert {key: new[key] for key in before_move} == before_move  # every P2 key and value, unchanged
+        assert {key: new[key] for key in before_move} == before_move  # every original key and value, unchanged
         assert set(new) - set(before_move) <= OPTIONAL
     by_task = {entry["task_id"]: entry for entry in stamp["tasks"]}
     # 1: the terminal projection wins over host facts and the task result; the retry's later row wins.
@@ -168,7 +168,7 @@ def test_host_stamp_keeps_p2_order_and_format_for_all_four_sources(tmp_path):
     # A child task is stamped from its own terminal projection.
     assert by_task["kid1"]["source"] == "terminal_result_projection" and by_task["kid1"]["outcome_phase"] == "done"
     assert all(set(entry) >= {"task_id", "status"} for entry in stamp["tasks"])
-    assert all(set(entry) >= P2_KEYS - {"review_verdict"} for entry in stamp["tasks"] if entry["task_id"] != "nowhere")
+    assert all(set(entry) >= ORIGINAL_KEYS - {"review_verdict"} for entry in stamp["tasks"] if entry["task_id"] != "nowhere")
 
 
 def test_the_last_terminal_row_of_a_task_is_its_stamp_either_way(tmp_path):
@@ -227,7 +227,7 @@ def test_optional_facts_are_copied_from_the_source_and_the_axes_stay_there(tmp_p
     # A row without its optional facts gives an entry without them; a malformed address gives none.
     bare = {"type": "task_summary", "summary_kind": "terminal_root_projection", "task_id": "t3",
             "status": "completed", "outcome": "Done", "outcome_phase": "done"}
-    assert set(stamp_facts(tmp_path, ["t3"], rows=[({}, bare)])["t3"]) == P2_KEYS - {"review_verdict"}
+    assert set(stamp_facts(tmp_path, ["t3"], rows=[({}, bare)])["t3"]) == ORIGINAL_KEYS - {"review_verdict"}
 
 
 # --- trap (b): a page that says done over a failed task -------------------------------------------

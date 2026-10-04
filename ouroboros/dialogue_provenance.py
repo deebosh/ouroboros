@@ -332,7 +332,7 @@ def dialogue_text(entry: Mapping[str, Any]) -> str:
 
 
 # Source attribution of one canonical chat row: who wrote it is read from the row's
-# own fields, never from its text (memory spec §6.1). The fields a delegated child's
+# own fields, never from its text, which anyone can imitate. The fields a delegated child's
 # message carries (``SUBAGENT_MESSAGE_FIELDS``); a row with none of them predates the
 # lineage epoch or is the root's own speech.
 _LINEAGE_FIELDS = ("subagent_task_id", "delegation_role", "parent_task_id")
@@ -386,7 +386,7 @@ def _pre_epoch_author(row: Mapping[str, Any], lineage_lookup: Any) -> dict[str, 
 
 def row_author(row: Mapping[str, Any], *, pos: int | None = None, lineage_epoch: Mapping[str, Any] | None = None,
                lineage_lookup: Any = None) -> dict[str, Any]:
-    """Who wrote one canonical chat row, as ``{"kind", "label", ...}`` (memory spec §6.1).
+    """Who wrote one canonical chat row, as ``{"kind", "label", ...}``, read from its fields alone.
 
     ``kind`` is ``human`` (``in`` rows and an owner's quiz answer), ``child`` (an
     outgoing row with a delegated child's lineage), ``helper`` (the retired Light
@@ -447,7 +447,7 @@ def _question_text(row: Mapping[str, Any], quiz: Mapping[str, Any]) -> str:
 
 
 def _host_facts_text(row: Mapping[str, Any]) -> str:
-    """A host facts row has no text: its status fields and result address are the text (K7)."""
+    """A host facts row has no text: its status fields and result address are the text."""
     task_id = _text(row.get("task_id"))
     facts = "; ".join(f"{label}={_text(row.get(key))}" for label, key in _HOST_FACT_FIELDS if _text(row.get(key)))
     ref = _mapping(row.get("result_ref"))
@@ -474,7 +474,7 @@ def render_row_text(row: Mapping[str, Any]) -> str:
         return str(row.get("text", "")) + f"\n[Delivery details: {_detail_words(message, '; ')}]"
     quiz = row.get("quiz")
     if row.get("type") == "quiz_answer" and isinstance(quiz, dict):
-        from ouroboros.tools.plan_dialogue import _quiz_text  # D15->D06 is lazy-only (K3)
+        from ouroboros.tools.plan_dialogue import _quiz_text  # D15->D06 is allowed only as a lazy import
 
         return _quiz_text(dict(row))
     if row.get("type") == "quiz" and isinstance(quiz, dict):

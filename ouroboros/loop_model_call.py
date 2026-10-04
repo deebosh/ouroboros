@@ -643,7 +643,7 @@ def _rebind_context_fit_plan(
 
 
 def _adopt_view_facts(tool_ctx: Any, plan: Any, mode: str) -> None:
-    """The view fact of the projection now sent: on the task context and in the task trace (P3 §2.13)."""
+    """The view fact of the projection now sent: on the task context and in the task trace."""
     receipt = dict(getattr(plan.projection(mode), "memory_facts", None) or {})
     if not receipt:
         return
@@ -657,7 +657,7 @@ def _adopt_view_facts(tool_ctx: Any, plan: Any, mode: str) -> None:
 
 
 def _emit_physical_mode(event_queue: Any, task_id: str, drive_logs: Any, plan: Any, mode: str) -> None:
-    """The known window lowered the mode this plan starts in (P3 §2.6 step 4): one owner-visible checkpoint.
+    """The known window lowered this plan's starting mode (no shorter view fit): one owner-visible checkpoint.
 
     The sent projection's own fact says so (``mode_switch``); a lower mode a task kept from before
     (task-local Low after an overflow, an earlier route's choice) is not this window's doing.
@@ -1406,7 +1406,7 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
         # low-water-sized pass, never a token-sized one, so the single strict-shrink
         # retry has real headroom (the goal already carries the margin when the
         # measurement itself found a deficit). Its typed refusal (checked above) is
-        # what lets this pass re-fold earlier capsules after every raw source (D-69).
+        # what lets this pass re-fold earlier capsules after every raw source.
         from ouroboros.context_fit import reclaim_low_water_margin
 
         landed = overflow_fit.measurement

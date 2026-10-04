@@ -642,7 +642,7 @@ def shortage_from_trace(trace: Any) -> Optional[ShortageFact]:
 
 # What a wake observes of the journal: the records that change what my memory says or keeps in
 # view. A mark's release is one, with who released it: any focus, a helper included, may release
-# any mark, a global one too (D-68). The import's legacy sections, gaps and activation receipt
+# any mark, a global one too. The import's legacy sections, gaps and activation receipt
 # are standing inventory (the view's pointers), and a mark's view only changes how much of an
 # observed mark is shown.
 CHANGE_KINDS = ("page", "part", "note", "correction", "decision", "mark", "mark_release")

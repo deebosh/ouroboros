@@ -1,10 +1,9 @@
 """What a delegated child and its parent are told about the child's memory rights.
 
-Memory spec §5.4, K5 and R3: both delegated-child sets carry knowledge_write and
-memory_mark (the host signs both with the child's focus); D-44 (D-50 C5/C6) adds
-chronicle_write for the child's own drafts of pages and parts, which the
-integrating mind accepts or rejects, while identity and scratchpad stay with the
-parent. The child's and the nanny's ``## Working sources`` line is the Opus R3
+Both delegated-child sets carry knowledge_write and memory_mark (the host signs
+both with the child's focus) and chronicle_write for the child's own drafts of
+pages and parts, which the integrating mind accepts or rejects, while identity and scratchpad stay with the
+parent. The child's and the nanny's ``## Working sources`` line is the child
 role text plus one sentence about those drafts; the assignment phrases of both
 branches and the schedule_subagent description say the same and no longer claim
 the child "cannot write cognitive memory" or that chronicle pages stay with the
@@ -86,7 +85,7 @@ def test_child_working_sources_line_is_the_role_text_and_a_root_has_none(tmp_pat
         text = _system_text(tmp_path / name, task)
         section = text[text.index("## Working sources"):].split("\n## ", 1)[0]
         # The pinned lowercase phrase (tests/test_recent_sections_per_task.py) stays inside the new line,
-        # and the draft right (D-44) is its one added sentence, at the end.
+        # and the draft right is its one added sentence, at the end.
         assert ROLE_TEXT in section and "your own recent process" in section
         assert section.rstrip().endswith(ROLE_TEXT + " " + DRAFT_RIGHT)
         for stale in ("not preloaded", "Your parent's selected discussion", "shared biography"):

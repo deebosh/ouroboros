@@ -41,7 +41,7 @@ def test_capture_selects_channels_without_removing_governance_or_own_process(tmp
     assert "You are Ouroboros." in text and "Principle 0: Agency" in text
     assert "DECLARED_QUESTION" in text and "DECLARED_COMMON_FACTS" in text
     assert "DECLARED_CONSTRAINT" in text and "OWN_PROCESS" in text
-    # A child's memory view holds no knowledge (P5: read by knowledge_read), whatever the selection.
+    # A child's memory view holds no knowledge (it reads it with knowledge_read), whatever the selection.
     knowledge = omitted[1]
     assert knowledge not in text and knowledge not in calls
     for marker in omitted:

@@ -1,4 +1,4 @@
-"""Reviewers see the owner's words that caused the work (P5 §2.5, OA-6).
+"""Reviewers see the owner's words that caused the work.
 
 The triad, scope and advisory reviewers read the change against the author's intent;
 ``build_goal_section`` now adds, right after that intent, the host-attested words of
@@ -8,7 +8,7 @@ An empty section keeps every prompt byte-identical to a review without it, and t
 words ride the dynamic half, so the cache-marked prefixes of the triad and the scope
 brief do not move. The plan review puts them right after its objective; a replay of
 the same author request takes the recorded words, so an owner letter between waves
-cannot mint a paid wave. Reviewers still get no memory and no story (OA-6).
+cannot mint a paid wave. Reviewers still get no memory and no story: they stay independent.
 Every rule is checked in both directions.
 """
 from __future__ import annotations
@@ -234,7 +234,7 @@ def test_the_advisory_run_hands_the_runs_words_to_the_prompt(tmp_path, monkeypat
 
 
 def test_reviewers_get_no_memory_or_story(tmp_path, monkeypatch):
-    """OA-6: the reviewer is independent (subject + contract); the words are the only addition."""
+    """The reviewer is independent (subject + contract); the words are the only addition."""
     from tests._memory_view_context import blocks, world
 
     review_root, mind_root = tmp_path / "review", tmp_path / "mind"

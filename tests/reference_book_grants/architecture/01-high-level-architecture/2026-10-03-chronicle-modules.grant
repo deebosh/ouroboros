@@ -21,5 +21,5 @@ memory_nomination_receipts.py row (strict read of the frozen cursor's
 nominations), marks dialogue_blocks.json and dialogue_meta.json in the data
 layout as frozen legacy read once by the import, and adds the chronicle/ row
 (records.jsonl, index.sqlite3, .publication.lock). Later steps of the same
-memory sprint update this first line to the chapter's net growth since
+memory change update this first line to the chapter's net growth since
 1347e33bf.

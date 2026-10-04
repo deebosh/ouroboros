@@ -356,7 +356,7 @@ def reconcile_terminal_projections(drive_root: Any) -> int:
     return settled
 
 
-# --- the host stamp of a memory page (memory spec §5) ------------------------------------------
+# --- the host stamp of a memory page ------------------------------------------------------------
 
 _TERMINAL_SUMMARIES = frozenset({"terminal_root_projection", "terminal_result_projection"})
 

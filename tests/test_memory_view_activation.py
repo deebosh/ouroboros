@@ -178,7 +178,7 @@ def test_a_journal_that_fails_while_the_story_is_read_still_leaves_a_view(tmp_pa
 
 
 def test_the_answer_path_takes_no_model_client_and_runs_no_paid_memory_upkeep():
-    """Rendering my memory is free (P3 §2.14, §5.3 item 1): the builder accepts no model client
+    """Rendering my memory is free, never a paid pass: the builder accepts no model client
     or fit callback, and the assembler imports no model client or memory writer."""
     import inspect
 

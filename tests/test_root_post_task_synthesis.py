@@ -566,7 +566,7 @@ def test_child_legacy_usage_does_not_claim_a_subtree_snapshot(tmp_path, monkeypa
     assert "accounted_upper_bound_usd_with_children" not in row and "cost_snapshot_at" not in row
 
 
-# --- the retired dialogue writer (memory spec §7.3 invariant 10) ------------------------------
+# --- the retired dialogue writer: a root's post-phase buys no dialogue Light call ---------------
 
 class _RecordingLight:
     """Every Light send of the post-task phase: scratchpad upkeep answers JSON, reflection prose."""
@@ -681,7 +681,7 @@ class _RecordingLightWithDrafts(_RecordingLight):
 @pytest.mark.parametrize("consciousness", [False, True])
 def test_the_one_memory_light_call_of_a_root_is_the_fallback_draft_and_only_while_consciousness_is_off(
         tmp_path, monkeypatch, consciousness):
-    """Invariant 10, conditioned (P4): with consciousness off and unfolded old periods of blocks 1-22, a
+    """The one exception to that rule, and its condition: with consciousness off and unfolded old periods of blocks 1-22, a
     queued root's post-phase sends exactly one memory Light call, the fallback draft of one period, which
     stands as a helper draft; with consciousness on the same root sends none and writes nothing."""
     import ouroboros.llm as llm_mod

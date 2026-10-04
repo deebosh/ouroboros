@@ -44,7 +44,7 @@ def _row_projection(row: dict, stream: str, ordinal: int, root: Any = None, *, p
     result = {key: row[key] for key in _ROW_FACTS if key in row}
     result.update(stream=stream, source_ordinal=ordinal)
     result["text"] = str(row.get("content", row.get("text", "")) or "")
-    # One attribution source (memory spec §6.1): a quiz answer is the Owner's, a
+    # One attribution source, the row's own fields: a quiz answer is the Owner's, a
     # mailbox delivery keeps its own provenance, every other row is signed by its fields
     # and, for a chat row with a stream position, by the activation's lineage epoch.
     if stream == "mailbox" and row.get("type") != "quiz_answer":

@@ -76,7 +76,7 @@ def test_pointers_come_first_then_pages_of_all_rooms_by_stream_position_not_publ
 
 
 def test_a_pointers_period_is_its_rooms_own_rows_and_without_rows_the_marked_block_period(tmp_path):
-    """D-9: a retold record names the period of its room's rows, not its block's; a room with no row in
+    """A retold record names the period of its room's rows, not its block's; a room with no row in
     its block names the block's period, marked as such. The story and the room page say the same."""
     rooms = shared.world(tmp_path)
     alpha = rooms["alpha"]
@@ -101,7 +101,7 @@ def test_a_pointers_period_is_its_rooms_own_rows_and_without_rows_the_marked_blo
 
 
 def test_a_room_less_pointer_names_the_old_writers_count_and_length_never_zero_rows(tmp_path):
-    """D-65: a record without rows of its room (a mixed era) says what its address holds — the old writer's
+    """A record without rows of its room (a mixed era) says what its address holds — the old writer's
     message count and the retelling's length — instead of «0 rows retold»; with rows it names the rows."""
     import json
 
@@ -137,7 +137,7 @@ def test_a_part_shows_its_members_do_not_and_corrections_of_members_stand_under_
 
 
 def test_a_correction_of_a_page_folded_twice_stands_under_the_surviving_part(tmp_path):
-    """Review fix (simulated triad): D-18 through nested parts. page -> part -> part, then the
+    """Regression: a correction reaches through nested parts. page -> part -> part, then the
     page is corrected: the outer part shows it; the inner part (folded) does not appear."""
     shared.world(tmp_path)
     page = _page(tmp_path, "1", 10, 11)
@@ -226,7 +226,7 @@ def test_drafts_rejections_corrections_and_indented_texts(tmp_path):
     assert "  My own page, corrected." in text and "  My own page.\n" not in text
     assert f"(corrected by me: {result.record['id']})" in text
     assert text.count("(draft by a helper") == 0
-    # A delegated child's draft is signed by the child, not by Light (D-44).
+    # A delegated child's draft is signed by the child, not by Light.
     child = {"kind": "helper", "task_id": "kid00001", "route": {}, "focus": {"role": "child", "task_id": "kid00001"}}
     _page(tmp_path, "1", 19, 19, author=child, text="A child's page.")
     text = _story(tmp_path)
@@ -284,8 +284,8 @@ def test_gaps_unknown_ranges_and_the_flat_file_are_pointers_with_honest_periods(
 
 
 def test_a_pages_verified_quotes_stand_under_its_text_and_a_page_without_quotes_shows_none(tmp_path):
-    """Review fix (simulated triad, scope intent_alignment): a helper writes people's words only
-    through its quotes (D-4), so the story shows each verified quote under the page's text and the
+    """Regression: a helper writes people's words only
+    through its quotes, so the story shows each verified quote under the page's text and the
     floor measures it with the page; a page without quotes renders as before."""
     from ouroboros.chronicle_import import row_lineage
     from ouroboros.tools.chronicle import _quote_resolver, page_covers

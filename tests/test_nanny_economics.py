@@ -135,7 +135,7 @@ def test_direct_start_request_carries_complete_normalized_contract_authority(tmp
     marker = "HOST TASK CONTRACT AUTHORITY (complete normalized JSON; exact strings are authority):\n"
     payload = request["instructions"].split(marker, 1)[1]
     normalized, end = json.JSONDecoder().raw_decode(payload)
-    # The owner's words that caused the work follow the contract (P5 §2.4).
+    # The owner's words that caused the work follow the contract.
     assert payload[end:].startswith("\n\n") and "words of my human" in payload[end:]
 
     assert normalized["context"] == context

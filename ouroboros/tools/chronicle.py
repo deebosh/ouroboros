@@ -1,4 +1,4 @@
-"""Memory tools over the chronicle: ``chronicle_write``, ``memory_read``, ``memory_mark`` (memory spec §5).
+"""Memory tools over the chronicle: ``chronicle_write``, ``memory_read``, ``memory_mark``.
 
 The mind writes its own records; the host signs them (``focus_signature``) and
 expands what a page covers. A page names a range of its room (``from``/``to``
@@ -9,7 +9,7 @@ counts each row's source class, stamps every covered task with the host's own
 facts and verifies the quotes the writer chose. A refusal names the current
 revision or room head and the conflicting ids, never their text.
 
-A delegated child or nanny is not the integrating mind (D-44): the host signs its
+A delegated child or nanny is not the integrating mind: the host signs its
 page or part as a helper's draft carrying its own focus, which acts at once until
 the mind's ``decision``; its note, correction or decision is refused
 ``not_integrator`` before anything is read or written, and so is its part over
@@ -71,7 +71,7 @@ class _NotActivated(Exception):
 
 
 def _activated(root: Path) -> ChronicleStore:
-    """The store after the one-time legacy import (spec §4.6, K11): a repeat call is the fast path.
+    """The store after the one-time legacy import: a repeat call is the fast path.
 
     A busy import lock is waited for until the other importer finishes; a refused
     or failed import raises ``_NotActivated``, so no tool reads or writes before the import.
@@ -161,7 +161,7 @@ def _published(ctx: Any, result: PublishResult, **extra: Any) -> str:
                   meta={"chronicle_record_id": str(record.get("id") or ""), "memory_written": True})
 
 
-# --- page coverage, host stamp, quotes (also used by the Light fallback writer, P4) --------------
+# --- page coverage, host stamp, quotes (also used by the Light fallback writer) -------------------
 
 def _task_rows(root: Path, room: str, task_ids: Iterable[Any]) -> List[Tuple[Dict[str, Any], Dict[str, Any], int]]:
     """Rows of these tasks (own, parent or root lineage) plus the owner's words bound to them.
@@ -318,7 +318,7 @@ def _write_page(ctx: Any, root: Path, store: ChronicleStore, author: Dict[str, A
 
 
 def _own_or_legacy(record: Optional[Dict[str, Any]], author: Dict[str, Any]) -> bool:
-    """Whether a delegated focus may fold this member: a legacy section or its own draft (D-44).
+    """Whether a delegated focus may fold this member: a legacy section or its own draft, never the mind's records.
 
     A missing id is left to the store's own ``target_missing`` refusal.
     """
@@ -334,7 +334,7 @@ def _write_part(ctx: Any, root: Path, store: ChronicleStore, author: Dict[str, A
     if not isinstance(members, list) or not members:
         return _arg_error(ctx, "a part needs member_ids: adjacent records of one lower level of one room")
     foreign = [str(m) for m in members if author["kind"] == "helper" and not _own_or_legacy(store.get(str(m)), author)]
-    if foreign:  # the mind's pages and other writers' records are folded by the integrating mind (D-44)
+    if foreign:  # the mind's pages and other writers' records are folded by the integrating mind
         return _refused(ctx, "not_integrator",
                         f"a delegated {author['focus']['role']} folds into its draft part only legacy sections and "
                         "its own drafts; folding other records is the integrating mind's to do, so put it in your "
@@ -371,7 +371,7 @@ def _write_decision(ctx: Any, root: Path, store: ChronicleStore, author: Dict[st
 
 _WRITERS = {"page": _write_page, "part": _write_part, "note": _write_note,
             "correction": _write_correction, "decision": _write_decision}
-# A delegated focus is not the integrating mind (D-44): it drafts pages and parts under its own
+# A delegated focus is not the integrating mind: it drafts pages and parts under its own
 # signature (a part over legacy sections and its own drafts only, ``_write_part``), and the mind
 # accepts or rejects them; notes, corrections and decisions stay the mind's.
 _DRAFTING_ROLES = frozenset({"child", "nanny"})
@@ -464,7 +464,7 @@ def _covers_summary(record: Dict[str, Any]) -> str:
 
 
 def _stamp_summary(stamp: Any) -> str:
-    """``stamp: <task_id>=<status>, …`` (spec §5.2): which covered task failed shows in the listing."""
+    """``stamp: <task_id>=<status>, …``: which covered task failed shows in the listing."""
     tasks = stamp.get("tasks") if isinstance(stamp, dict) else None
     if not isinstance(tasks, list) or not tasks:
         return ""

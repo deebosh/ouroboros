@@ -151,7 +151,7 @@ def test_the_next_turn_reads_a_notice_as_a_host_fact(tmp_path: pathlib.Path, cha
 
     client, _app = _client(tmp_path)
     assert client.post("/notify", headers=HEADERS, json={"text": "Meeting in 15 min"}).status_code == 200
-    rendered = room_text(tmp_path)  # the room of Main's next turn (memory spec P3 §2.4: a notice by its words)
+    rendered = room_text(tmp_path)  # the room of Main's next turn: a notice shows by its words
     [line] = [line for line in rendered.splitlines() if "Notice · cal" in line]
     assert "; host" in line.split("]", 1)[0] and "; Ouroboros;" not in line, line
 

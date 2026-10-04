@@ -287,7 +287,7 @@ def test_native_loop_retains_first_position_then_cooperates_over_http(tmp_path, 
                 # The SAME exclusion predicate is RED for the ordinary baseline.
                 with pytest.raises(AssertionError):
                     assert all(marker not in text for marker in FORBIDDEN)
-                # A helper's view keeps knowledge out of the request (memory spec P3 §2.10, D-10): it reads it on demand.
+                # A helper's view keeps knowledge out of the request: it reads it on demand.
                 knowledge = ("INHERITED_GLOBAL_KNOWLEDGE", "INHERITED_PROJECT_KNOWLEDGE", "INHERITED_WORKPAD")
                 assert all(marker in text for marker in FORBIDDEN if marker not in ("OTHER_TASK_PROCESS", *knowledge)), n
                 assert not any(marker in text for marker in knowledge), n

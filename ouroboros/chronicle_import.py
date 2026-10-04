@@ -66,7 +66,7 @@ def _digest(value: Any) -> str:
 
 
 def legacy_frontier(store: Any) -> Dict[str, Any]:
-    """The first chat-stream position the legacy memory does not represent (spec §4.5).
+    """The first chat-stream position the legacy memory does not represent: where open rows begin.
 
     ``{"status": "exact"|"unknown", "pos", "last_covered", "chat_log_signature", "offset"}``;
     under ``unknown`` the position is the chain end observed at activation. Empty before
@@ -91,7 +91,7 @@ def row_lineage(root: Any) -> Dict[str, Any]:
 
 
 def ensure_activated(store: Any, *, wait: bool = False) -> Dict[str, Any]:
-    """The activation receipt, importing the legacy memory first when there is none (spec §4.6).
+    """The activation receipt, importing the legacy memory first when there is none (the import runs once).
 
     Returns the receipt, ``{"kind": "import_pending", ...}`` while the legacy lock is
     held elsewhere, or ``{"kind": "import_refused", ...}`` with the store's typed refusal.
@@ -323,7 +323,7 @@ def _survey(root: pathlib.Path, wanted: Set[int], start: Optional[pathlib.Path],
     cursor's stream position (rows before its generation + offset).
     """
     from ouroboros.chat_chain import _stream_rows, chat_chain_paths, generation_signatures, row_address
-    from ouroboros.dialogue_provenance import _LINEAGE_FIELDS  # the fields row_author reads (spec §6.2)
+    from ouroboros.dialogue_provenance import _LINEAGE_FIELDS  # the fields row_author reads
 
     order = {path: index for index, path in enumerate(chat_chain_paths(root))}
     wanted = set(wanted)
@@ -400,7 +400,7 @@ def _cursor_gap(refs: Dict[str, Dict[str, Any]], reason: str, chain_end: Dict[st
 
 
 def _nomination_marks(refs: Dict[str, Dict[str, Any]], meta: Dict[str, Any], room: str) -> List[Dict[str, Any]]:
-    """Each pending nomination, and an unpublished last batch, as one global mark (spec §4.1, C7, K10)."""
+    """Each pending nomination, and an unpublished last batch, as one global mark: none is lost in the import."""
     marks = []
 
     def mark(key: str, location: str, text: str) -> None:

@@ -26,7 +26,7 @@ def test_agent_context_budget_values_pinned():
     for retired in ("BG_CONTEXT_WARN_CHARS", "BG_CONTEXT_MAX_CHARS", "BG_STATE_JSON_WARN_CHARS", "BG_OBSERVATIONS_WARN_BYTES"):
         assert not hasattr(cb, retired), retired  # a wake-up is a Main turn under Main's budgets
     assert cb.LARGE_CONTEXT_SECTION_CHARS == 200_000
-    assert not hasattr(cb, "MAX_RECENT_CHAT_TAIL")  # the request reads no chat tail (memory spec P3 §2.14)
+    assert not hasattr(cb, "MAX_RECENT_CHAT_TAIL")  # the request reads no chat tail: the memory view holds the open conversation
     assert cb.CHAT_ARCHIVE_SCAN_WARN_BYTES == 100_000_000
     assert not hasattr(cb, "CONTEXT_SOFT_CAP_TOKENS")
     # Structural low-water divisor of the automatic reclaim pass (12.5 % of the
@@ -102,7 +102,7 @@ def test_call_sites_import_the_ssot_names():
     assert "OWNER_LOW_TARGET_TOKENS" in _src("ouroboros/context_fit.py")
 
     # The request reads no chat tail: the open conversation is the memory view's, and the
-    # readers of the frozen consolidation cursor's tail are gone with it (P3 §2.14).
+    # readers of the frozen consolidation cursor's tail are gone with it.
     from ouroboros.memory import Memory
 
     ctx_recent_src = _src("ouroboros/context.py")

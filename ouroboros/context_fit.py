@@ -260,8 +260,8 @@ class ContextFitPlan:
         """This plan on another route's window: each mode's view, fit and starting mode measured anew.
 
         The view is re-rendered from ``core.memory_view_json`` (chronicle and chat not read again), from
-        ``start_mode`` (the task's mode; default ``preferred_mode``), which the window may lower (P3 §2.6
-        step 4); the owner's ``preferred_mode`` alone carries a target. Without a core texts are re-measured.
+        ``start_mode`` (the task's mode; default ``preferred_mode``), lowered only if the shortest memory view
+        cannot fit the window; the owner's ``preferred_mode`` alone carries a target. Without a core texts are re-measured.
         """
         from dataclasses import replace
 
@@ -950,7 +950,7 @@ def build_context_fit_plan(
     nano_projection = _projection("nano")
     # Prediction may request mutable-history reclaim but never changes the owner's document
     # projection, with one physical exception: a known window that cannot hold the preferred
-    # mode with even the shortest view of my memory (``initial_mode``, P3 §2.6 step 4).
+    # mode with even the shortest view of my memory (``initial_mode``).
     # Otherwise task-local Low is authorized only after a real provider overflow on this route.
 
     core_payload = json.dumps(

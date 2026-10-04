@@ -1,4 +1,4 @@
-"""How my story names the old memory a helper retold before the update (memory spec P3 §2.2, §2.6 F3).
+"""How my story names the old memory a helper retold before the update, and how the floor shortens it.
 
 A retold record is one line that says what its address holds: the room, the period, how
 many of that room's chat rows it retells (where none is established, the old writer's own

@@ -1,4 +1,4 @@
-"""The overview is the acting mind's own words; a Light helper never writes it (D-33).
+"""The overview is the acting mind's own words; a Light helper never writes it.
 
 The overview note is "what I hold true now", loaded into every context. Both Light
 operations that nominate knowledge, scratchpad consolidation and post-task

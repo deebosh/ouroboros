@@ -1,4 +1,4 @@
-"""Where the memory view sits in a request, and what each block's bytes depend on (memory spec P3 §2.1, §2.9).
+"""Where the memory view sits in a request, and what each block's bytes depend on.
 
 A built request is one system message of three text blocks and the task: governance and the
 books (A, marked), identity with my story (B, marked), then knowledge, my rooms and the runtime

@@ -97,8 +97,8 @@ LOCAL_READONLY_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({
     "vcs_status", "vcs_diff",
     # Memory: a child reads, writes knowledge notes and marks in its own name (the
     # host signs both with its focus) and publishes chronicle pages and parts only as
-    # drafts signed with its focus (D-44: tools/chronicle.py refuses its note,
-    # correction and decision); the integrating mind accepts or rejects the drafts,
+    # drafts signed with its focus (it is not the integrating mind, so tools/chronicle.py
+    # refuses its note, correction and decision); the integrating mind accepts or rejects the drafts,
     # keeps identity and scratchpad, and receives the child's result as a report.
     "knowledge_read", "knowledge_list", "knowledge_write", "memory_read", "memory_mark", "chronicle_write",
     "chat_history", "recent_tasks", "get_task_result", "wait_task", "wait_tasks",
@@ -144,7 +144,7 @@ ACTING_SUBAGENT_MODE: str = "acting_subagent"
 # Knowledge notes and memory marks they may write in their own name: the host
 # signs both with the child's focus. chronicle_write publishes only their drafts of
 # pages and parts, which the integrating mind accepts or rejects; a note, correction
-# or decision is the mind's (tools/chronicle.py, D-44). The parent
+# or decision is the mind's (tools/chronicle.py refuses them). The parent
 # integrates and is the sole committer. Extension / MCP tools are denied unless
 # explicitly granted per-child via TaskConstraint.external_tool_grants.
 ACTING_SUBAGENT_TOOL_NAMES: frozenset[str] = frozenset({

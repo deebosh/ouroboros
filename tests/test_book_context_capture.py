@@ -78,8 +78,8 @@ def test_child_keeps_biography_and_book_orientation_in_max(tmp_path):
     assert "Full mechanism and WHY." not in text
     assert "Parent's unselected current working note." not in text
     assert "Unselected raw parent conversation." not in text
-    # The child role line is the P2 literal: it no longer names tools or claims the
-    # parent's selected discussion is attached (that claim was false, P2 §5.4).
+    # The child role line is carried verbatim: it no longer names tools or claims the
+    # parent's selected discussion is attached (that claim was false: nothing attached it).
     assert "Work from this assignment first" in text and "name what you read in your report" in text
     assert "The shared biography is loaded above" not in text
     assert "parent's selected discussion" not in text

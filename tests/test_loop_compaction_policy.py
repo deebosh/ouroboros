@@ -98,7 +98,7 @@ def test_old_main_trigger_authorities_are_deleted():
     assert "round_idx > 6" not in source
 
 
-# --- D-69: earlier capsules are re-folded only after the provider's own refusal -----------------
+# --- earlier capsules are re-folded only after the provider's own refusal ----------------------
 
 def _long_earlier_capsule(run, monkeypatch):
     """Put an earlier capsule whose retelling is long enough to shrink again at messages[2]."""
@@ -128,7 +128,7 @@ def _long_earlier_capsule(run, monkeypatch):
 
 @pytest.mark.parametrize("refused", [False, True])
 def test_only_a_provider_refusal_refolds_earlier_capsules(real_main_reclaim, monkeypatch, refused):
-    """D-69, both directions: a pass the raw sources cannot satisfy keeps the earlier capsule
+    """Both directions: a pass the raw sources cannot satisfy keeps the earlier capsule
     unless the provider itself refused the request; after that typed refusal the capsule is
     re-folded as the last resort, after the raw unit although it stands earlier."""
     from ouroboros import context_compaction as cc, loop
@@ -157,7 +157,7 @@ def test_only_a_provider_refusal_refolds_earlier_capsules(real_main_reclaim, mon
 
 
 def test_refusal_takes_raw_sources_before_earlier_capsules(real_main_reclaim, monkeypatch):
-    """D-69: after a refusal, a goal the raw sources reach leaves the earlier capsule alone."""
+    """After a refusal, a goal the raw sources reach leaves the earlier capsule alone."""
     from ouroboros import loop
 
     run = real_main_reclaim

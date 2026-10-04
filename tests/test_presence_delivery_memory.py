@@ -63,7 +63,7 @@ def test_failed_send_is_a_system_fact_not_confirmed_speech(state):
     assert Memory._format_chat_line(row, compact=True).startswith("📋")
     author = row_author(row)
     assert author["kind"] == "host" and "Ouroboros" not in author["label"]
-    # In the view it is a typed fact of its task's lane-2 line: the state and the address, no JSON (P3 §2.4).
+    # In the view it is a typed fact of its task's lane-2 line: the state and the address, no JSON.
     from ouroboros import memory_view
     from ouroboros.memory_inventory import row_meta
 
@@ -91,7 +91,7 @@ def test_attachment_and_mail_receipt_facts_do_not_disappear_from_memory(tmp_path
         assert "Delivery details:" in view and "report.pdf" in view
         assert "reader@example.org" in view and "Requested report" in view
         assert "provider acceptance only" in view
-    # Memory text (the view's line and memory_read) carries the details as words, never JSON (P3 §2.4);
+    # Memory text (the view's line and memory_read) carries the details as words, never JSON;
     # chat_history keeps its raw details.
     for view in (_view_line(row), _chronicle_view(row)):
         assert "{" not in view and "[Delivery details: attachments filename report.pdf, mime_type application/pdf; " \

@@ -214,8 +214,8 @@ def _record_delegation_constraint(
         log.debug("Failed to record delegation constraint for %s", task_id, exc_info=True)
 
 
-# Both delegated-child sets carry knowledge_write, memory_mark and chronicle_write
-# (memory spec §5.4; D-44): the host signs those writes with the child's focus, and
+# Both delegated-child sets carry knowledge_write, memory_mark and chronicle_write,
+# always in the child's own name: the host signs those writes with the child's focus, and
 # chronicle_write publishes only the child's drafts of pages and parts, which the
 # integrating mind accepts or rejects. Identity and scratchpad stay with the parent,
 # which receives the result as a report.

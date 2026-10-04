@@ -533,7 +533,7 @@ def test_quotes_are_verified_through_the_injected_resolver_before_the_lock(tmp_p
 
 
 def test_a_quote_is_exact_up_to_emphasis_markers_and_a_changed_word_is_refused(tmp_path):
-    """D-65: a helper that copied a row's words without its bold is not refused; any other change still is,
+    """A helper that copied a row's words without its bold is not refused; any other change still is,
     with the same refusal. The markers are set aside on both sides; underscores inside a word are no marker."""
     store = ChronicleStore(tmp_path)
     rows = {"row:1@t1#aaaaaaaaaaaa": ("This removes the product fork, **but not** the red checks; call memory_read.",

@@ -1,4 +1,4 @@
-"""The resident memory view of the acting mind: one render for every role (memory spec P3 §2).
+"""The resident memory view of the acting mind: one render for every role.
 
 The view replaces the old dialogue history and chat tail in a request. Block B carries my
 story (``## My story``); block C the live part (``## Marks I keep in view``,
@@ -63,7 +63,7 @@ TYPED_HOST_FACTS: Mapping[str, str] = MappingProxyType({
 _TERMINAL = frozenset({"terminal_root_projection", "terminal_result_projection"})
 # The host's facts row; a ``task_summary`` without a kind is the old writer's model prose, never a status.
 _HOST_FACTS, _KINDLESS = frozenset({"host_task_facts"}), frozenset({"", None})
-# The delegated child's role text (memory spec P2 §5, Opus R3), carried verbatim, then its draft right (D-44).
+# The delegated child's role text, carried verbatim, then its draft right: it publishes only drafts in its own name.
 CHILD_ROLE_TEXT = ("Work from this assignment first — it is written to be enough; read memory or sources only to "
                    "fill a gap it leaves, and name what you read in your report. " + CHILD_DRAFT_RIGHT)
 
@@ -117,7 +117,7 @@ def _labeler(root: pathlib.Path) -> Callable[..., str]:
 
 @dataclasses.dataclass(frozen=True)
 class ViewSpec:
-    """What one request's memory view holds (P3 §2.10; helpers' composition is P5's)."""
+    """What one request's memory view holds; a helper's composition is set by its role defaults."""
     role: str
     story: bool = True  # block B: the top level of my story
     room_id: Optional[str] = None  # the current room; None: no ``## This room``
@@ -305,7 +305,7 @@ def _activation(store: ChronicleStore) -> Dict[str, Any]:
 # --- the story: legacy pointers, pages and parts ---------------------------------------------------
 
 def _legacy_period(pointer: Mapping[str, Any], rows: Any = None) -> str:
-    """The pointer's period: its room's own rows (``LegacyUnit.ts_span``), else its block's, marked so (D-9)."""
+    """The pointer's period: its room's own rows (``LegacyUnit.ts_span``), else its block's, labelled as the block's."""
     if _mapping(rows).get("start") or _mapping(rows).get("end"):
         return _period(rows)
     raw = _mapping(_mapping(pointer.get("covers")).get("raw_range"))
@@ -338,7 +338,7 @@ def _stamp_summary(stamp: Any) -> str:
 
 
 def _fixes(store: ChronicleStore, record: Mapping[str, Any], fixes: Mapping[str, List[Dict[str, Any]]]) -> List[Dict[str, str]]:
-    """The mind's corrections and rejections aimed at a part's members, nested parts' too, one per record (D-18)."""
+    """The mind's corrections and rejections aimed at a part's members, nested parts' too, one per record."""
     members = store.folded_members(record["id"]) if record.get("kind") == "part" else []
     return [{"kind": fix["kind"], "target": str(member), "text": str(fix.get("text") or fix.get("reason") or "")}
             for member in members for fix in fixes.get(str(member), ())]
@@ -587,7 +587,7 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
     if spec.room_page:
         units = {unit.record_id: unit for unit in memory_inventory.legacy_units(store, root)}
         retold = [record for record in records if record["kind"] in ("legacy", "gap")]
-        if room == MAIN_ROOM and spec.role not in _HELPERS:  # P3 §9.9: the room-less retellings (the flat summary,
+        if room == MAIN_ROOM and spec.role not in _HELPERS:  # the room-less retellings (the flat summary,
             # a mixed era) predate rooms and were Main's memory: whole and first; a helper keeps only its pointer
             retold[:0] = [record for record in store.room_records(LEGACY_ROOM_ID) if record["kind"] == "legacy"
                           and _mapping(record.get("metadata")).get("legacy_type") not in ("gap", "cursor_gap")]
@@ -596,7 +596,7 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
                                     "legacy_range_text")}, getattr(unit, "ts_span", None)),
                             "of": LEGACY_ROOM_LABEL if str(record.get("room_id")) == LEGACY_ROOM_ID else ""}
                            for record in retold if not getattr(unit := units.get(record["id"]), "folded", False)]
-        own = {} if spec.story else {e["id"]: {**e, "part": None} for e in _story_pages(store, label)[0] if e["room_id"] == room}  # walked in story order (D-37)
+        own = {} if spec.story else {e["id"]: {**e, "part": None} for e in _story_pages(store, label)[0] if e["room_id"] == room}  # story order: the floor takes the oldest first
         facts["under_parts"] = [own.get(record["id"]) or {"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
                                  "period": _period(_mapping(record.get("covers")).get("ts_span")), "text": str(record.get("current_text") or "")}
                                 for record in (records if spec.story else store.pages_of_room(room)) if record["kind"] in ("page", "part") and (record.get("folded_into") or record["id"] in own)]

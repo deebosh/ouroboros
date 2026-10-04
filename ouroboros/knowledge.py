@@ -67,7 +67,7 @@ def observed_route_stamp(usage: Any) -> Any:
 
 
 def focus_signature(ctx: Any) -> Dict[str, Any]:
-    """The host's signature of the focus that writes a memory record (memory spec §6.3).
+    """The host's signature of the focus that writes a memory record, never the writer's own claim.
 
     ``{"kind": "mind", "focus": {role, task_id, parent_task_id, root_task_id,
     chat_id}, "task_id", "route"}``. The role is read from host-copied task

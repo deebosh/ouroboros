@@ -1,4 +1,4 @@
-"""A wake's view of the memory journal: the accepted sequence, exact reads, disclosed gaps (P4 §2.2).
+"""A wake's view of the memory journal: the accepted sequence, exact reads, disclosed gaps.
 
 ``observe_wake`` lists the journal records written after the sequence the last ACCEPTED wake
 observed (``memory_inventory.memory_changes``), one line of text with the exact read of each

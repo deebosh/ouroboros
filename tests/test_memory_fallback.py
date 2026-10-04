@@ -224,7 +224,7 @@ def test_rows_given_only_by_address_stay_open_and_people_stay_verbatim(tmp_path,
     assert draft["metadata"]["addressed_rows"] == [chat_chain.format_address(big)]
     assert big["row_sha256"] not in draft["covers"]["rows"]
     assert _addresses(tmp_path)[21]["row_sha256"] in draft["covers"]["rows"]
-    assert [pos for _a, _m, pos in mi.open_room_rows(tmp_path, "1")] == [20]  # D-17: addressed is not covered
+    assert [pos for _a, _m, pos in mi.open_room_rows(tmp_path, "1")] == [20]  # a row seen only by address is not covered
     # With a window that holds everything nothing is addressed (the other side).
     light.window = 1_000_000
     ChronicleStore(tmp_path).decide(draft["id"], False, shared.MIND, "redo it whole")
@@ -260,7 +260,7 @@ def test_the_input_holds_the_owners_words_behind_the_units_tasks_and_the_minds_g
     assert "Alpha worked." in llm.prompts[0] and "Beta asked." not in llm.prompts[0]
     assert "remembering" not in llm.prompts[0]
     assert "Quote the decisive words" in llm.prompts[0]  # a page quotes them; a part, without rows, does not
-    assert "A quote is copied character for character, markdown included (**, _, `)." in llm.prompts[0]  # D-65
+    assert "A quote is copied character for character, markdown included (**, _, `)." in llm.prompts[0]  # markup is part of the words
     # The mind's own note on remembering is read into the input as its authored guidance.
     note = tmp_path / "memory" / "knowledge" / "remembering.md"
     note.parent.mkdir(parents=True, exist_ok=True)
@@ -284,7 +284,7 @@ def test_a_helper_draft_never_seals_a_mind_note_it_did_not_read(tmp_path, monkey
     [draft] = _drafts(tmp_path)
     assert "the real reason was X" not in llm.prompts[0]
     assert ref not in draft["covers"]["rows"] and draft["covers"]["note_ids"] == []
-    assert ref not in ChronicleStore(tmp_path).sealed_row_refs(alpha)  # D-17: the note stays open in the view
+    assert ref not in ChronicleStore(tmp_path).sealed_row_refs(alpha)  # unread, so the note stays open in the view
     # The mind's own page over the same rows covers the note it can read (the other side).
     ChronicleStore(tmp_path).decide(draft["id"], False, shared.MIND, "my own page instead")
     page = _mind_page(tmp_path, alpha, 6, 7)
@@ -317,7 +317,7 @@ def test_an_unreadable_oldest_stretch_lets_the_next_open_stretch_be_drafted(tmp_
 
 
 def test_the_longest_fitting_prefix_is_found_by_bisection_with_the_linear_answer():
-    """Review fix (simulated triad): step (2) of the helper's floor recomposed the whole input once per
+    """Regression: step (2) of the helper's floor recomposed the whole input once per
     dropped row (quadratic: 19 s for 3 000 rows); it now bisects the monotone fit. Same answer as the
     linear walk, logarithmically many compositions; one row that never fits still leaves one row."""
     calls = []
@@ -377,7 +377,7 @@ def test_a_narrative_shortage_folds_adjacent_records_into_a_part_bound_to_the_ro
 
 
 def test_a_failed_task_survives_a_helper_part_folded_again_and_shows_in_the_view(tmp_path, monkeypatch, light):
-    """Review fix (simulated triad, scope implicit_contracts): a helper part's stamp lies where
+    """Regression: a helper part's stamp lies where
     every reader looks, so failed page -> helper part -> helper part keeps the failure, and the
     view and memory_read print it. Other side: a part over members without failures stamps none."""
     from ouroboros import memory_view as mv
@@ -421,7 +421,7 @@ def test_a_failed_task_survives_a_helper_part_folded_again_and_shows_in_the_view
 
 
 def test_a_helper_part_may_carry_its_members_verified_quotes_and_without_any_it_quotes_nothing(tmp_path, monkeypatch, light):
-    """Review fix (simulated triad): a part over pages that quote decisive words shows each member's
+    """Regression: a part over pages that quote decisive words shows each member's
     quotes and lets the helper copy them (verified again at publication), so the words survive the
     fold; members without quotes keep the instruction to leave quotes empty."""
     from ouroboros.chronicle_import import row_lineage

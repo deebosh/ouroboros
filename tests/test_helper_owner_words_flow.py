@@ -1,4 +1,4 @@
-"""The owner's words ride down the task tree by value (P5 §2.3).
+"""The owner's words ride down the task tree by value.
 
 ``schedule_subagent`` computes them once from what the parent holds and carries them
 in the existing tree-origin channel (``origin_metadata``) and the child's requested

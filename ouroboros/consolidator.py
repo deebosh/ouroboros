@@ -732,7 +732,7 @@ def _write_knowledge_entries(
             outcomes.append({"topic": "", "ok": False, "reason": "malformed_nomination"})
             continue
         topic, content, revision = entry.get("topic"), entry.get("content"), entry.get("expected_revision")
-        if isinstance(topic, str) and topic.strip() == OVERVIEW_TOPIC:  # a global-only topic (D-33)
+        if isinstance(topic, str) and topic.strip() == OVERVIEW_TOPIC:  # global, and only the acting mind writes it
             outcomes.append({"topic": OVERVIEW_TOPIC, "scope": "global", "ok": False,
                              "reason": "overview_is_mind_authored"})
             continue

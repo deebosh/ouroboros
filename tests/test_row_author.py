@@ -1,4 +1,4 @@
-"""Source attribution of canonical chat rows (memory spec §6.1, consensus §9.7, C3, K3, K7).
+"""Source attribution of canonical chat rows: who wrote a row is read from its fields, never its text.
 
 Every class is checked both ways: the rule fires on its own row and a neighbouring
 row without the deciding field keeps its own signature, so deleting a rule turns a
@@ -197,7 +197,7 @@ def test_row_projection_delegates_signature_and_keeps_owner_and_mailbox():
     assert _row_projection({"direction": "in", "text": "hi"}, "chat", 1)["author"] == "User"
 
 
-# --- K3: dialogue_provenance (D15) reaches D06/D07/D17 only inside functions ---------------------------
+# --- dialogue_provenance (D15) reaches D06/D07/D17 only inside functions --------------------------------
 
 _LAZY_ONLY_TARGETS = {"D06", "D07", "D17"}
 

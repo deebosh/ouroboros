@@ -1361,8 +1361,8 @@ def build_llm_messages(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """The first request of a task: the plan's projection for its starting mode, and the cap info.
 
-    No model is called on this path: my memory is rendered, never prepared by a paid pass
-    (memory spec P3 §2.14); a window too small for it addresses lines and pages instead.
+    No model is called on this path: my memory is rendered, never prepared by a paid pass;
+    a window too small for it addresses lines and pages instead.
     """
     # Keep the legacy public shape while publishing the immutable plan on the
     # existing ToolContext for the ordinary loop.  Commit/scope reviewers do not

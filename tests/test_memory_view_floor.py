@@ -1,4 +1,4 @@
-"""The physical floor of the memory view (``ouroboros.memory_floor``; P3 §2.6, D-1, D-37).
+"""The physical floor of the memory view (``ouroboros.memory_floor``).
 
 Without a shortage the view is whole; with one, elements become address lines strictly
 down the ladder F1, F1b, F3, F5, F4, F2, F6, F7, my replies and people's words last and only
@@ -75,7 +75,7 @@ def test_the_allowances_are_the_one_budget_frame_with_and_without_the_working_ma
     assert allowances["budget"] is None
     low = mf.floor_allowances(window_tokens=1_050_000, output_reserve_tokens=65_536, non_memory_tokens=0,
                               target_tokens=cb.OWNER_LOW_TARGET_TOKENS)
-    assert low["budget"] == 250_000 - 65_536 - 31_250  # one landing level under the target (D-38)
+    assert low["budget"] == 250_000 - 65_536 - 31_250  # one landing level under the target
 
 
 def test_steps_run_strictly_down_the_ladder_element_by_element():
@@ -99,7 +99,7 @@ def test_steps_run_strictly_down_the_ladder_element_by_element():
 def test_my_replies_and_peoples_words_answer_only_to_the_window_minus_the_reply_reserve():
     snapshot = _rich()
     full = _tokens(snapshot)
-    # No room for the working margins, but the window minus the reserve holds the whole view (D-37):
+    # No room for the working margins, but the window minus the reserve holds the whole view:
     kept = mf.fit_memory_view(snapshot, _window(0, physical=full))
     names = [name for name, _n in kept.steps]
     assert names == ["F1", "F1b", "F3", "F5", "F4"]

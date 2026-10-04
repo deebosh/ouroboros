@@ -87,7 +87,7 @@ def test_light_nominations_inherit_the_rule(tmp_path):
     """Light nominates through `_write_knowledge_entries`, which shares `_address`,
     so the consolidator cannot mint a per-project note of a reserved topic: a
     nominated `patterns` note from a project room lands on the global shelf. The
-    overview itself is the acting mind's (D-33): a Light nomination of it is
+    overview itself is the acting mind's own words: a Light nomination of it is
     refused, while the room note beside it is written."""
     from ouroboros.consolidator import _write_knowledge_entries
 

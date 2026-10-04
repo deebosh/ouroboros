@@ -501,7 +501,7 @@ def test_sse_follow_tick_reads_only_appended_bytes_and_zero_artifact_work(
 
 
 def test_the_chronicle_journal_is_an_enrolled_hot_store_that_warns_only_past_its_threshold(tmp_path, monkeypatch):
-    """Review fix (simulated triad): the memory journal is read on every task context, so it
+    """The memory journal is read on every task context, so it
     is enrolled in the hot-store tripwire (DEVELOPMENT 03 projection-over-replay rule): quiet
     at or below its threshold, one WARNING past it."""
     from ouroboros import context_budget

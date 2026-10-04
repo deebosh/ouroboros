@@ -1,15 +1,15 @@
 """The floor by mode and the physical starting mode (``memory_floor.render_view_for_mode``, ``physical_mode``).
 
-On synthetic actors of the sizes of P3 §0.2 (Main, a Project room, consciousness, a child
+On synthetic actors of the sizes measured on the owner's copy (Main, a Project room, consciousness, a child
 whose parent is in a Project or in Main, a nanny) every cell of eight windows by three
 preferred modes starts in a mode whose request plus Nano's headroom fits the window. The
 starting mode drops only when the shortest view of my memory cannot fit, judged on the
 route's calibrated estimate; an unknown window keeps the preferred mode and takes no
 step. An owner-selected Low or Nano target is a second boundary for its own steps
-only; task-local Low and a mode the window lowered have none (the owner's answer B,
-D-32, D-37). A built plan starts in that mode, says so in the room's ``### Physical floor``
+only; task-local Low and a mode the window lowered have none (only the owner's own choice
+carries a target). A built plan starts in that mode, says so in the room's ``### Physical floor``
 (never in the runtime context) and in one owner-visible checkpoint, and a new route re-renders
-the view for its own window from the captured snapshot, reading no memory again (seam 23).
+the view for its own window from the captured snapshot, reading no memory again.
 Each rule is pinned in both directions.
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ def test_every_actor_window_and_mode_starts_in_a_request_that_fits():
                 assert facts["floor"]["mode"] == mode and facts["floor"]["window_tokens"] == window
     assert misses == []
     assert len(modes) == 6 * 8 * 3
-    # The window lowers Max only where it physically must (P3 §0.3): Main keeps Max from 500k up, drops to Low at
+    # The window lowers Max only where it physically must: Main keeps Max from 500k up, drops to Low at
     # 400k-200k, to Nano at 128k; a child keeps Max everywhere.
     assert [modes[("main", w, "max")] for w in WINDOWS] == ["max"] * 4 + ["low"] * 3 + ["nano"]
     assert {modes[("child_project", w, "max")] for w in WINDOWS} == {"max"}
@@ -63,7 +63,7 @@ def test_in_the_500k_to_640k_band_max_holds_and_the_conversation_stays_verbatim(
     mode, total, _story, room, facts = _start("main", window, "max", snapshot=snapshot)
     assert mode == "max" and total + 65_536 <= window
     steps = facts["floor"]["steps"]
-    assert "F2" not in steps and "F6" not in steps and "F7" not in steps  # D-37: the window alone takes them
+    assert "F2" not in steps and "F6" not in steps and "F7" not in steps  # the window alone takes them
     for item in snapshot.room["lane1"]:  # people's words and my replies
         assert item["line"] in room
     if window == 500_000:  # the working margins still take host facts, pointers and the retold page
@@ -147,7 +147,7 @@ def test_an_owner_low_target_takes_only_its_steps_and_task_local_low_has_none():
     steps = facts["floor"]["steps"]
     assert steps and set(steps) <= set(mf.MODE_TARGET_STEPS) and facts["floor"]["by_budget"] == sum(steps.values())
     assert facts["floor"]["target_tokens"] == cb.OWNER_LOW_TARGET_TOKENS
-    assert facts["floor"]["budget_allowance_tokens"] == budget - 31_250  # one landing level under the target (D-38)
+    assert facts["floor"]["budget_allowance_tokens"] == budget - 31_250  # one landing level under the target
     for item in snapshot.room["lane1"]:  # people's words and my replies: the window alone may take them
         assert item["line"] in room
     assert "The Low mode budget (250000 tokens) does not hold all of my memory verbatim" in room
@@ -202,7 +202,7 @@ def test_the_floor_fact_names_the_newest_row_and_the_records_shown_by_address():
     assert whole["floor"]["newest_addressed_row"] is None and whole["floor"]["pointer_records"] == []
 
 
-# --- A built plan (``context_fit``): the starting mode, the checkpoint and a new route (P3 §2.6 step 4, seam 23) ---
+# --- A built plan (``context_fit``): the starting mode, the checkpoint and a new route ---
 
 _TASK = {"type": "task", "text": "hi", "id": "tmain", "chat_id": 1}
 
@@ -387,7 +387,7 @@ def test_a_route_switch_lowers_the_mode_names_it_and_moves_the_view_fact_to_the_
 
 
 def test_a_nano_the_window_chose_is_measured_against_the_window_alone(monkeypatch, tmp_path):
-    """The task trace's measurement of a Nano the window chose has Nano's reserve and no owner target (D-32)."""
+    """The task trace's measurement of a Nano the window chose has Nano's reserve and no owner target."""
     from types import SimpleNamespace
 
     from ouroboros import capability_evidence
@@ -414,7 +414,7 @@ def test_a_nano_the_window_chose_is_measured_against_the_window_alone(monkeypatc
 
 def test_a_route_switch_keeps_the_owners_mode_and_starts_from_the_tasks_own(tmp_path, monkeypatch):
     """A rebind on the task's current mode keeps the plan's owner mode: a Low the window or an overflow chose
-    gets no Low budget (D-32), the same window renders the same bytes, and no second checkpoint is sent."""
+    gets no Low budget (it is not the owner's choice), the same window renders the same bytes, and no second checkpoint is sent."""
     import json
     from types import SimpleNamespace
 

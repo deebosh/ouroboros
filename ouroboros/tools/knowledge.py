@@ -188,7 +188,7 @@ def _knowledge_write(
         # The turn is the writer; the route stamp is the route that ANSWERED the
         # loop's last round (provider + resolved model, account when Claudexor
         # served it), recorded by the loop, otherwise honestly unknown. The host
-        # signs which focus wrote it (memory spec §6.3).
+        # signs which focus wrote it (``focus_signature``), never the writer's own claim.
         result = knowledge_store.write_knowledge_note(
             _address(ctx, sanitized, scope), content, mode, expected_revision,
             str(getattr(ctx, "task_id", "") or ""), old_str, writer="turn",

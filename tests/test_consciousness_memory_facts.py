@@ -1,4 +1,4 @@
-"""What a wake observes of memory and what it may write there (P4 §2.2, findings 14 and 23).
+"""What a wake observes of memory and what it may write there.
 
 A wake sees the main view (open conversation, the earlier memory, drafts, refusals) and, as
 events, only the journal records written after the accepted sequence, under their own header.
@@ -117,7 +117,7 @@ def test_standing_inventory_is_never_an_event(tmp_path):
 
 
 def test_a_released_mark_is_a_change_that_names_who_released_it(tmp_path):
-    """D-68: a helper keeps its right to release any mark, the mind's global one included, and the
+    """A helper keeps its right to release any mark, the mind's global one included, and the
     next wake sees that release with its author. No release, no line; the mind's own release of a
     room mark is the same kind of line (one rule for every focus)."""
     from ouroboros.tools.chronicle import _memory_mark

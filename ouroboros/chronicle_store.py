@@ -132,8 +132,8 @@ def _author_problem(author: Any) -> str:
     return ""
 
 
-# The one sentence a delegated child's or nanny's role line adds about the chronicle (D-44, D-50 C6):
-# tools/chronicle.py signs its page or part as a helper's draft; the integrating mind decides.
+# The one sentence a delegated child's or nanny's role line adds about the chronicle: a helper is not
+# the integrating mind, so tools/chronicle.py signs its page or part as a draft and the mind decides.
 CHILD_DRAFT_RIGHT = ("You may also publish chronicle pages and parts as drafts in your own name; the integrating "
                      "mind accepts or rejects them.")
 
@@ -780,7 +780,7 @@ class ChronicleStore:
 
     def records(self, room_id: Any = None, *, kinds: Optional[Iterable[str]] = None,
                 after_seq: int = 0) -> List[Dict[str, Any]]:
-        """Records in publication order; the caller bounds a page (C12)."""
+        """Records in publication order; the caller bounds a page."""
         where, args = ["sequence > ?"], [int(after_seq)]
         if room_id is not None:
             where.append("room=?")
@@ -817,7 +817,7 @@ class ChronicleStore:
             return sorted(effective, key=lambda r: self._order_key(db, r, cache))
 
     def folded_members(self, part_id: Any) -> List[str]:
-        """Every record under a part through nested parts: its own members first, then theirs (D-18)."""
+        """Every record under a part through nested parts: its own members first, then theirs."""
         with self._index() as db:
             out, todo = [], [str(part_id)]
             while todo:

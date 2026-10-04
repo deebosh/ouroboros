@@ -1,4 +1,4 @@
-"""The physical floor of the memory view: what of my memory a request shows only by address (P3 §2.6).
+"""The physical floor of the memory view: what of my memory a request shows only by address.
 
 The view's structure decides what it holds; the floor only takes away, and only when that
 structure does not fit. ``fit_memory_view`` walks the ladder once, element by element,
@@ -9,18 +9,21 @@ changes. No search, no second render to choose a level, nothing added to fill ro
 Three boundaries, each in estimator tokens of memory (``context_budget.request_context_budget``):
 host facts, room headers, retold pointers and pages answer to the window minus the reply
 reserve and the working margins (``MEMORY_VIEW_WORKING_MARGINS``); my own replies and
-people's words only to the window minus the reply reserve (D-1, D-37); an owner-selected
-Low or Nano target, with its own margins (``MODE_TARGET_WORKING_MARGINS``), bounds the
-steps of ``MODE_TARGET_STEPS`` alone (the owner's answer B; D-32, D-37). An unknown window takes no
-window step. ``render_view_for_mode`` is the whole floor decision of one mode's
-projection (story text, room text and the floor fact the task trace keeps).
+people's words only to the window minus the reply reserve, so a margin never costs the
+conversation itself; an owner-selected Low or Nano target, with its own margins
+(``MODE_TARGET_WORKING_MARGINS``), bounds the steps of ``MODE_TARGET_STEPS`` alone: a chosen
+target trims facts, headers and retold memory, never the conversation. An unknown window
+takes no window step.
+``render_view_for_mode`` is the whole floor decision of one mode's projection (story text,
+room text and the floor fact the task trace keeps).
 
 ``physical_mode`` lowers a task's starting mode (Max, Low, Nano) only when the fixed part
 of the preferred mode with the shortest view of my memory cannot fit the window minus the
-reply reserve on the route's calibrated estimate (§2.6 step 4, D-25): all of my memory is
-already addresses and the request still cannot be sent. ``mode_views`` renders every mode of
-one plan and picks that starting mode (a new route re-renders it from the same snapshot). Rendering stays
-``memory_view``'s; nothing here reads the chronicle, publishes a record or calls a model.
+reply reserve on the route's calibrated estimate (estimator tokens scaled by the route's measured
+ratio): all of my memory is already addresses and the request still cannot be sent.
+``mode_views`` renders every mode of one plan and picks that starting mode (a new route
+re-renders it from the same snapshot). Rendering stays ``memory_view``'s; nothing here reads
+the chronicle, publishes a record or calls a model.
 """
 from __future__ import annotations
 
@@ -34,16 +37,16 @@ from ouroboros import memory_view as mv
 from ouroboros import memory_view_legacy as legacy
 from ouroboros.utils import estimate_tokens
 
-# The ladder (D-37), old before new and people last: host fact lines of this room's tasks
+# The ladder, old before new and people last: host fact lines of this room's tasks
 # (F1), other live rooms without notes (F1b), retold-memory pointers as one line per room
 # (F3), my oldest pages and parts (F5), this room's retold page (F4), my longest replies
 # (F2), then people's words: other rooms' (F6, only when the view shows them) and this room's (F7).
 LADDER = ("F1", "F1b", "F3", "F5", "F4", "F2", "F6", "F7")
-# The only steps an owner-selected Low or Nano target takes (D-37): facts, headers,
+# The only steps an owner-selected Low or Nano target takes: facts, headers,
 # pointers and old retold memory; my replies and people's words answer to the window alone.
 MODE_TARGET_STEPS = ("F1", "F1b", "F3", "F5", "F4")
 # Both sides of the conversation, my replies and people's words, become addresses only when the
-# window minus the reply reserve cannot hold them (D-1, D-37): never for the working margins.
+# window minus the reply reserve cannot hold them: never for the working margins.
 WINDOW_ONLY_STEPS = ("F2", "F6", "F7")
 MODES = ("max", "low", "nano")  # the starting-mode order the window may lower through
 _COLLAPSING = ("F1", "F1b")  # many elements, one line: the first element carries it
@@ -194,7 +197,7 @@ def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
 def view_facts(snapshot: mv.MemoryViewSnapshot, level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
                allowances: Mapping[str, Optional[int]], target_tokens: Optional[int] = None,
                lowered_from: Optional[str] = None) -> Dict[str, Any]:
-    """The floor fact of one projection (P3 §2.13, P4 §4.3): steps, boundaries, what is shown by address.
+    """The floor fact of one projection, kept in the task trace: steps, boundaries, what is shown by address.
 
     ``newest_addressed_row`` is the newest row of this room that F1, F2 or F7 shows only by
     address; ``pointer_records`` the records F4 and F5 show by a pointer. No list of rows.
@@ -247,7 +250,7 @@ def trace_facts(receipt: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def view_receipt(snapshot: mv.MemoryViewSnapshot, story: str, room: str, facts: Mapping[str, Any]) -> Dict[str, Any]:
-    """A projection's view fact (P3 §2.13): the floor fact plus the spec, the chronicle's state and block sizes.
+    """A projection's view fact: the floor fact plus the spec, the chronicle's state and block sizes.
 
     ``role``, ``room_id``, ``floor`` and ``story_status`` are what a task trace keeps
     (``memory_inventory.VIEW_TRACE_KEY``); the rest is the receipt's (estimator tokens).

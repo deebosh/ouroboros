@@ -1,4 +1,4 @@
-"""What a delegated child, its sibling and a forked child start with (memory spec P5 §4.2, §5.2).
+"""What a delegated child, its sibling and a forked child start with.
 
 Children are scheduled by the real ``schedule_subagent`` and their first request is built
 by ``context.build_llm_messages``, as their worker builds it. Two children of different
@@ -165,7 +165,7 @@ def test_a_child_starts_with_a_visible_gap_when_its_chronicle_cannot_be_read(tmp
     assert "### Retold before the update" in healthy_c and "not activated yet" not in healthy_c
 
 
-# --- §5.2: a forked child reads its story and its room page from the canonical root -------------------
+# --- a forked child reads its story and its room page from the canonical root -------------------------
 
 def test_a_forked_child_reads_its_story_and_room_page_canonically_not_from_its_own_drive(tmp_path):
     import json

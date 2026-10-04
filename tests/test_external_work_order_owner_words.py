@@ -1,4 +1,4 @@
-"""The owner's words in a configured session's work order and a direct start (P5 §2.4).
+"""The owner's words in a configured session's work order and a direct start.
 
 A task scheduled with the words carries them right after PARENT CONTEXT / REFERENCES;
 a task scheduled before the field keeps the exact bytes and fingerprint it had, so a
@@ -144,7 +144,7 @@ def test_a_direct_start_appends_the_words_after_the_host_contract(tmp_path):
 
 
 def test_a_declared_work_order_holds_no_words_and_its_receipt_names_them(tmp_path):
-    """P5 §9 p. 4: a declared child keeps its parent's selection; the words ride its task, unread."""
+    """A declared child keeps its parent's selection; the words ride its task, unread."""
     marker = "HOST TASK CONTRACT AUTHORITY (complete normalized JSON; exact strings are authority):\n"
     root = _root(tmp_path)
     _event, _stored, declared = _schedule(root, input_sources="declared")

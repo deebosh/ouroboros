@@ -368,7 +368,7 @@ SKILL_REVIEW_ROOT_TASKS_WARN_BYTES = 20_000_000
 # memory/chronicle/records.jsonl is my memory's only authority and is never rotated
 # (records are never rewritten). Every task context decodes each acting page and part
 # body from its index (memory_view._story_pages), and an owner's install imports about
-# 4.4 MB of legacy memory at activation (testrig, 2026-10-04). 64MB is ~15x that: past
+# 4.4 MB of legacy memory at activation (measured on a copy, 2026-10-04). 64MB is ~15x that: past
 # it, decoding the story on every task context stops being free and a projection of the
 # acting records is due. Observability, never a retention gate: nothing is cut.
 CHRONICLE_JOURNAL_WARN_BYTES = 64_000_000

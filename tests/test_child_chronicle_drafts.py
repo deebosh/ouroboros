@@ -1,4 +1,4 @@
-"""A delegated child or nanny publishes chronicle pages and parts only as its own drafts (D-44, D-50 C5).
+"""A delegated child or nanny publishes chronicle pages and parts only as its own drafts: it is not the integrating mind.
 
 Through the real ToolRegistry: both child sets see ``chronicle_write``; a child's page or part
 is a helper's draft signed with the child's focus (role, task, route) that acts at once until
@@ -134,7 +134,7 @@ def test_a_childs_note_correction_and_decision_are_refused_and_nothing_lands(dat
 
 @pytest.mark.parametrize("mode", [READONLY, ACTING])
 def test_a_child_whose_contract_withholds_chronicle_write_drafts_nothing(data, monkeypatch, mode):
-    """D-44: without the tool a child cannot draft; the host refuses the call and nothing lands."""
+    """Without the tool a child cannot draft; the host refuses the call and nothing lands."""
     rows = chat(data)
     page = {"kind": "page", "text": "What the child closed.", "covers": {"from": addr(rows[0]), "to": addr(rows[1])}}
     withheld = {**CHILD_META, "task_contract": {"disabled_tools": ["chronicle_write"]}}

@@ -1,7 +1,7 @@
 """Who may use the chronicle tools, and the focus signature of memory writes.
 
-Memory spec §5.4 (sets) and §6.3, K8 (the signature, with the orchestrator's
-correction to the nanny test). The sets: the integrating mind writes chronicle
+The host signs every memory write with the writer's focus (only a configured agent
+session child is a nanny; an API child is a child). The sets: the integrating mind writes chronicle
 pages, a presence reads and marks but writes no page, a delegated child reads,
 writes knowledge and marks and drafts pages and parts in its own name (its sets
 are pinned in test_chronicle_tools.py, its drafts in
@@ -90,7 +90,7 @@ def test_signature_carries_task_lineage_chat_and_observed_route(tmp_path):
     assert focus_signature(_ctx(tmp_path, "solo0001"))["focus"]["root_task_id"] == "solo0001"
 
 
-# --- the chronicle tools in the capability sets (§5.4) ----------------------------------------------
+# --- the chronicle tools in the capability sets ---------------------------------------------------
 
 MEMORY_TOOLS = ("chronicle_write", "memory_read", "memory_mark")
 
@@ -142,7 +142,7 @@ def test_native_reviewer_sees_none_of_the_memory_tools_but_keeps_its_inspection_
     from ouroboros.tool_capabilities import LOCAL_READONLY_SUBAGENT_TOOL_NAMES
 
     # The child set the reviewer is cut from now carries knowledge_write, memory_read, memory_mark and
-    # chronicle_write (a child's drafts, D-44); the reviewer's disabled_tools takes them away with every
+    # chronicle_write (a child's drafts only); the reviewer's disabled_tools takes them away with every
     # other non-inspection name.
     hidden = set(MEMORY_TOOLS) | {"knowledge_write"}
     assert hidden <= LOCAL_READONLY_SUBAGENT_TOOL_NAMES

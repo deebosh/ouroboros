@@ -1,4 +1,4 @@
-"""Two writers on one room: the acting mind, consciousness and the fallback helper (memory spec P4 §2.7).
+"""Two writers on one room: the acting mind, consciousness and the fallback helper.
 
 Overlap is decided mechanically by the chronicle: a page whose row set meets another page's is
 ``already_sealed`` (a page needs no room head), a part read against a stale head is

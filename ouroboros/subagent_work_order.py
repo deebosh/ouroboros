@@ -102,7 +102,8 @@ def _owner_words_section(task: Mapping[str, Any]) -> str:
     Both the payload (nested ``metadata``) and the flat task-metadata/record shapes
     give the same bytes, so a source-range check never sees a digest mismatch. A
     declared task carries the field too, but its receipt names the words among the
-    omitted inputs, so its work order holds none (P5 §9 p. 4).
+    omitted inputs, so its work order holds none: it keeps its parent's selection and the
+    words ride its task unread.
     """
     from ouroboros.contracts.task_contract import task_input_sources
     from ouroboros.owner_words import render_owner_words, task_governing_words

@@ -1,7 +1,7 @@
 """Synthetic memory-view snapshots of real shape and chosen size, for the floor and mode tests.
 
 A snapshot is plain data (``memory_view.MemoryViewSnapshot``), so the floor can be pinned
-at the sizes of the owner's copy (P3 §0.2) without a chronicle: 377 retold-memory pointers
+at the sizes measured on the owner's copy without a chronicle: 377 retold-memory pointers
 in 78 rooms, twelve marks, a dozen live rooms, the current room's retold page, its open
 conversation and one line per task. Shapes follow ``capture_memory_view`` exactly; a
 capture-shape test in ``test_memory_view_floor`` keeps the two from drifting.
@@ -118,7 +118,7 @@ OWNER_WORDS = "## Owner words that caused this work\n\nHost fact, carried by val
 
 
 def actor(name: str) -> mv.MemoryViewSnapshot:
-    """The memory of one actor at the sizes of P3 §0.2 (estimator tokens, not o200k)."""
+    """The memory of one actor at the sizes measured on the owner's copy (estimator tokens, not o200k)."""
     main_lane = [spoken(0, "human", 400), spoken(1, "ouroboros", 5_600), spoken(2, "human", 1_600),
                  spoken(3, "ouroboros", 1_200)]
     project_lane = [spoken(i, "human" if i % 2 else "ouroboros", 1_100) for i in range(5)]
@@ -141,7 +141,7 @@ def actor(name: str) -> mv.MemoryViewSnapshot:
                     owner_words=OWNER_WORDS)
 
 
-# The request without its memory, by mode, in estimator tokens (P3 §0.2/§0.3: tools, books by mode,
+# The request without its memory, by mode, in estimator tokens (measured on the owner's copy: tools, books by mode,
 # identity, knowledge, base sections, the task); a helper's books are always the navigation.
 FIXED = {
     "main": {"max": 337_554, "low": 114_375, "nano": 72_895},

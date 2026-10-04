@@ -795,7 +795,7 @@ def _select_units(
         measurement_density=request.measurement_density))
     # Earlier records are residue, not fresh sources for another helper retelling. Only the
     # provider's own refusal of this request lets an automatic pass re-fold them, as the last
-    # resort after every raw source (D-69). Keep the general unit reader broad for explicit
+    # resort after every raw source. Keep the general unit reader broad for explicit
     # authored views and restore.
     if automatic:
         units = ([unit for unit in units if unit.generation == 0]
