@@ -991,6 +991,8 @@ def _reprepare_waiting_main(ctx: _RoundModelCallContext, kwargs: dict):
     ctx.active_model, ctx.active_use_local = model, use_local
     ctx.tools._ctx.active_model = model
     ctx.tools._ctx.active_use_local = use_local
+    if _fit_route_tool_ceiling(ctx):  # an owner's switch may land on a route with a schema ceiling
+        kwargs["tools"] = ctx.tool_schemas
     trace = getattr(ctx.tools._ctx, "_execution_trace", {})
     _pending_model_wait_handover(
         ctx.tools._ctx,
@@ -1348,19 +1350,20 @@ def _project_wake_input(ctx: _RoundModelCallContext, *, overflowed: bool = False
     return True
 
 
-def _fit_route_tool_ceiling(ctx: _RoundModelCallContext) -> None:
+def _fit_route_tool_ceiling(ctx: _RoundModelCallContext) -> bool:
     """Keep the resident schemas within the acting route's physical ceiling (OpenAI: 128).
 
     In place, before measurement, so the fit, the priced candidate and the send carry
     one list and discovery reports true residency. Names left out earlier and loaded
     again by the actor stay; the newly left-out names reach the actor as a fact.
+    Called by every Main round and by a wait's reprepare; True when the list changed.
     """
     from ouroboros.provider_models import tool_schema_limit
     from ouroboros.tool_policy import fit_tool_schemas_to_limit, route_tool_limit_notice
 
     schemas, limit = ctx.tool_schemas, tool_schema_limit(ctx.active_model, use_local=ctx.active_use_local)
     if limit is None or schemas is None or len(schemas) <= limit:
-        return
+        return False
     earlier = frozenset(getattr(ctx.tools._ctx, "_route_left_out_tool_names", ()) or ())
     total = len(schemas)
     schemas[:], left_out = fit_tool_schemas_to_limit(schemas, limit, keep=earlier)
@@ -1368,6 +1371,7 @@ def _fit_route_tool_ceiling(ctx: _RoundModelCallContext) -> None:
     invalidate_task_cache_splits(ctx.task_id)
     _loop()._append_or_merge_user_message(
         ctx.messages, route_tool_limit_notice(ctx.active_model, limit, total, left_out))
+    return True
 
 
 def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
