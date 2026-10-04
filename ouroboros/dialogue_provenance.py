@@ -456,8 +456,22 @@ def _host_facts_text(row: Mapping[str, Any]) -> str:
     return f"host facts for {task_id or '(task not recorded)'}: " + "; ".join(part for part in (facts, result) if part)
 
 
+def _detail_words(value: Any, sep: str = ", ") -> str:
+    """A delivery detail as words: ``key value`` pairs (by key) and list items joined by ``sep``, never JSON."""
+    if isinstance(value, Mapping):
+        return sep.join(f"{key} {_detail_words(value[key])}" for key in sorted(value, key=str)
+                        if value[key] not in (None, "", [], {}))
+    if isinstance(value, (list, tuple)):
+        return sep.join(_detail_words(item) for item in value)
+    return str(value)
+
+
 def render_row_text(row: Mapping[str, Any]) -> str:
-    """The text of one chat row without JSON: quiz options and answers, and empty host facts, as words."""
+    """The text of one chat row without JSON: quiz options and answers, empty host facts and
+    a Presence delivery's details, as words (``chat_history`` keeps ``dialogue_text``)."""
+    message = _mapping(_mapping(row.get("transport")).get("message"))
+    if row.get("type") == "presence_delivery" and message:
+        return str(row.get("text", "")) + f"\n[Delivery details: {_detail_words(message, '; ')}]"
     quiz = row.get("quiz")
     if row.get("type") == "quiz_answer" and isinstance(quiz, dict):
         from ouroboros.tools.plan_dialogue import _quiz_text  # D15->D06 is lazy-only (K3)

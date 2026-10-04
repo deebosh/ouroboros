@@ -91,6 +91,12 @@ def test_attachment_and_mail_receipt_facts_do_not_disappear_from_memory(tmp_path
         assert "Delivery details:" in view and "report.pdf" in view
         assert "reader@example.org" in view and "Requested report" in view
         assert "provider acceptance only" in view
+    # Memory text (the view's line and memory_read) carries the details as words, never JSON (P3 §2.4);
+    # chat_history keeps its raw details.
+    for view in (_view_line(row), _chronicle_view(row)):
+        assert "{" not in view and "[Delivery details: attachments filename report.pdf, mime_type application/pdf; " \
+            "provider_message_id provider-42; recipients reader@example.org; subject Requested report]" in view
+    assert '"filename": "report.pdf"' in memory.chat_history(count=10)
     assert "report.pdf" in memory.chat_history(count=10, search="report.pdf")
     legacy = {**row, "type": ""}
     assert "Delivery details:" not in Memory._format_chat_line(legacy, compact=True)
