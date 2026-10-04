@@ -567,8 +567,10 @@ def _fit_output_payload(target: Dict[str, Any], payload: Dict[str, Any], api_sur
     if provider == "local":
         limit_enforced = measured["input_is_exact"] and (target.get("local_input_measurement") or {}).get("output_limit_enforced") is True
     nano = target.get("context_mode") == "nano"
+    # Only the owner's Nano is bounded by its target; a Nano the window chose answers to the window alone.
+    owner_nano = nano and getattr(current_physical_attempt_context(), "profile", "owner_nano") != "task_local_nano"
     fit = resolve_call_context_fit(**measured, caller_max_tokens=payload[field],
-        total_target_tokens=OWNER_NANO_TARGET_TOKENS if nano else None,
+        total_target_tokens=OWNER_NANO_TARGET_TOKENS if owner_nano else None,
         minimum_free_tokens=NANO_MIN_HEADROOM_TOKENS if nano else 0, output_limit_enforced=limit_enforced,
         reasoning_included_in_limit=True if limit_enforced else None)
     facts = asdict(fit)

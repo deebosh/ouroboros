@@ -371,3 +371,29 @@ def test_a_route_switch_lowers_the_mode_names_it_and_moves_the_view_fact_to_the_
         kinds = [json.loads(line).get("checkpoint_kind") for line in logs.read_text(encoding="utf-8").splitlines()]
         assert ("context_fit_physical_mode" in kinds) == (mode == "low")
         assert "context_fit_route_rebound" in kinds
+
+
+def test_a_nano_the_window_chose_is_measured_against_the_window_alone(monkeypatch, tmp_path):
+    """The task trace's measurement of a Nano the window chose has Nano's reserve and no owner target (D-32)."""
+    from types import SimpleNamespace
+
+    from ouroboros import capability_evidence
+    from ouroboros.context_fit import measure_main_fit
+    from ouroboros.loop_model_call import _main_context_profile
+
+    assert _main_context_profile(SimpleNamespace(preferred_mode="nano"), "nano") == "owner_nano"
+    assert _main_context_profile(SimpleNamespace(preferred_mode="max"), "nano") == "task_local_nano"
+    assert _main_context_profile(SimpleNamespace(preferred_mode="low"), "nano") == "task_local_nano"
+    monkeypatch.setattr(capability_evidence, "resolve_main_token_density", lambda *_a, **_kw: (1.0, "cold_estimate"))
+    core, plan = _built(tmp_path, monkeypatch)
+    built = plan(200_000)
+    messages = built.messages_for("nano") + [{"role": "user", "content": "x" * 400_000}]  # ≈100k: over 85k, under 200k
+
+    def measure(profile):
+        return measure_main_fit(built, messages, [], drive_root=tmp_path, profile=profile, rendered_mode="nano",
+                                round_id="e:round:1")
+
+    window, owner = measure("task_local_nano"), measure("owner_nano")
+    assert window.measurement.response_reserve_tokens == owner.measurement.response_reserve_tokens == cb.NANO_MIN_HEADROOM_TOKENS
+    assert window.measurement.target_total_tokens is None and window.action == "send"
+    assert owner.measurement.target_total_tokens == cb.OWNER_NANO_TARGET_TOKENS and owner.action == "reclaim_once"

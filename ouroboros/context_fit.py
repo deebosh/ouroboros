@@ -37,7 +37,7 @@ def extract_plain_text_from_content(content: Any) -> str:
 
     return _extract_plain_text_from_content(content)
 
-ContextProfile = Literal["owner_max", "owner_low", "owner_nano", "task_local_low"]
+ContextProfile = Literal["owner_max", "owner_low", "owner_nano", "task_local_low", "task_local_nano"]
 MeasurementBasis = Literal["fresh_route_usage", "fresh_model_usage", "cold_estimate"]
 
 
@@ -280,7 +280,7 @@ class ContextFitPlan:
                                          system, projection.user_content_json or self.user_content_json))
             calibrated = int(int(projection.estimated_tokens or 0) * ratio) if projection is not None else 0
             return projection and replace(projection, calibrated_tokens=calibrated, calibration_ratio=ratio, fits_known_window=_fits_window(
-                projection.mode, calibrated, window_tokens, known_window, output_reserve))
+                projection.mode, calibrated, window_tokens, known_window, output_reserve, self.preferred_mode))
 
         return replace(self, initial_mode=start, window_tokens=window_tokens, output_reserve_tokens=output_reserve,
                        max_projection=project(self.max_projection), low_projection=project(self.low_projection),
@@ -676,7 +676,7 @@ def measure_main_fit(
         provider=plan.provider,
         reasoning_effort=reasoning_effort,
     ) * density))
-    reserve = NANO_MIN_HEADROOM_TOKENS if profile == "owner_nano" else int(plan.output_reserve_tokens or 0)
+    reserve = NANO_MIN_HEADROOM_TOKENS if profile.endswith("_nano") else int(plan.output_reserve_tokens or 0)
     total = estimated_input + reserve
     target = (OWNER_NANO_TARGET_TOKENS if profile == "owner_nano"
               else OWNER_LOW_TARGET_TOKENS if profile == "owner_low" else None)
@@ -812,11 +812,11 @@ def main_output_reserve_tokens(*, use_local: bool) -> int:
     return MAIN_LOOP_MAX_TOKENS
 
 
-def _fits_window(mode: str, calibrated: int, window_tokens: int, known: bool, output_reserve: int) -> Optional[bool]:
-    from ouroboros.context_budget import NANO_MIN_HEADROOM_TOKENS, OWNER_NANO_TARGET_TOKENS
+def _fits_window(mode: str, calibrated: int, window: int, known: bool, reserve: int, owner: str) -> Optional[bool]:
+    from ouroboros.context_budget import context_mode_limits
 
-    capacity = min(OWNER_NANO_TARGET_TOKENS, int(window_tokens)) if mode == "nano" else int(window_tokens or 0)
-    return calibrated + (NANO_MIN_HEADROOM_TOKENS if mode == "nano" else output_reserve) <= capacity if known else None
+    target, reserve = context_mode_limits(mode, owner, reserve)  # only the owner's Nano frames it (Low's is elastic)
+    return calibrated + reserve <= (min(target, int(window or 0)) if target and mode == "nano" else int(window or 0)) if known else None
 
 
 def _request_tokens(system_content: List[Dict[str, Any]], user_content_json: str) -> int:
@@ -940,7 +940,7 @@ def build_context_fit_plan(
             estimated_tokens=estimated,
             calibrated_tokens=calibrated,
             calibration_ratio=ratio,
-            fits_known_window=_fits_window(mode, calibrated, int(evidence.window_tokens or 0), known_window, output_reserve),
+            fits_known_window=_fits_window(mode, calibrated, evidence.window_tokens, known_window, output_reserve, preferred),
             user_content_json=user_projection,
             memory_facts=memory_facts,
         )

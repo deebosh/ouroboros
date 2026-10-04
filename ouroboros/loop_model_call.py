@@ -733,8 +733,8 @@ def _context_fit_round_id(ctx: _RoundModelCallContext) -> str:
 
 
 def _main_context_profile(plan: Any, rendered_mode: str) -> str:
-    if rendered_mode == "nano":
-        return "owner_nano"
+    if rendered_mode == "nano":  # the owner's Nano carries its target; a Nano the window chose, the window alone
+        return "owner_nano" if str(getattr(plan, "preferred_mode", "")) == "nano" else "task_local_nano"
     if rendered_mode != "low":
         return "owner_max"
     # Effective Low is the sizing authority even when a bare env override

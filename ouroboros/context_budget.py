@@ -80,10 +80,12 @@ MODE_TARGET_WORKING_MARGINS = 1
 
 
 def context_mode_limits(mode: str, owner_mode: str, output_reserve_tokens: int) -> Tuple[Optional[int], int]:
-    """``(owner target, reply reserve)`` of a rendered mode; task-local Low keeps Max's window."""
-    target = {"low": OWNER_LOW_TARGET_TOKENS, "nano": OWNER_NANO_TARGET_TOKENS}.get(mode)
-    if mode == "low" and owner_mode == "max":
-        target = None
+    """``(owner target, reply reserve)`` of a rendered mode.
+
+    A target binds only the mode the owner selected: task-local Low and a mode the
+    window lowered keep the window alone. Nano keeps its own headroom either way.
+    """
+    target = {"low": OWNER_LOW_TARGET_TOKENS, "nano": OWNER_NANO_TARGET_TOKENS}.get(mode) if mode == owner_mode else None
     return target, NANO_MIN_HEADROOM_TOKENS if mode == "nano" else output_reserve_tokens
 
 

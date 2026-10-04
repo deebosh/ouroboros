@@ -197,7 +197,6 @@ def render_view_for_mode(snapshot: mv.MemoryViewSnapshot, *, mode: str, owner_mo
     none. The reply reserve is the mode's (Nano keeps its own headroom).
     """
     target, reserve = context_budget.context_mode_limits(mode, owner_mode, output_reserve)
-    target = target if mode == owner_mode else None
     window = int(window_tokens) if known_window and window_tokens else None
     allowances = floor_allowances(window_tokens=window, output_reserve_tokens=reserve, non_memory_tokens=non_memory_tokens,
                                   target_tokens=target, calibration_ratio=ratio)
