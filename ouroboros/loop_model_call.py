@@ -403,8 +403,10 @@ def _run_cross_model_fallback_chain(
         tools._ctx.messages = messages
         tools._ctx.active_context_mode = active_context_mode
         _restore_context_fit_usage(accumulated_usage, primary_context_usage)
-        if resident[0] is not None and resident[0] != tool_schemas and deferred_candidate is not candidate_call:
+        if (resident[0] is not None and resident[0] != tool_schemas and fallback_messages is not messages
+                and deferred_candidate is not candidate_call):
             # Its ceiling fit left with its transcript copy, notice included; the next route gets the list it had.
+            # (A same-family candidate wrote its notice into the shared transcript, so its fit stays with it.)
             tool_schemas[:], tools._ctx._route_left_out_tool_names = resident
             invalidate_task_cache_splits(task_id)
         if _walk_fenced(tools._ctx, accumulated_usage):

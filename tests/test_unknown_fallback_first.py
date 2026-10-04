@@ -160,16 +160,21 @@ def test_fallback_can_recover_during_an_existing_primary_outage(data_root, tmp_p
     assert [row["state"] for row in _ledger(data_root)].count("unresolved") == 2
 
 
-@pytest.mark.parametrize("ceiling_route_answers", [False, True])
-def test_a_ceiling_routes_tool_fit_stays_only_if_that_route_answers(data_root, tmp_path, monkeypatch, ceiling_route_answers):
-    """A direct-OpenAI candidate fits the shared resident list and tells its own transcript copy. If it
-    answers, both are adopted; if it fails, the copy goes and the fit with it, so the next route sends
-    the whole list it had and reads no notice about schemas it still has."""
+@pytest.mark.parametrize("primary,ceiling_route_answers", [
+    (PRIMARY, False), (PRIMARY, True), ("openai/gpt-5.6-luna", False),
+])
+def test_a_ceiling_routes_tool_fit_stays_only_where_its_notice_stays(data_root, tmp_path, monkeypatch, primary,
+                                                                     ceiling_route_answers):
+    """A direct-OpenAI candidate fits the shared resident list and writes its notice into its transcript. A
+    cross-family candidate writes into its own copy: if it answers, both are adopted; if it fails, the copy goes
+    and the fit with it, so the next route sends the whole list and reads no notice. A same-family candidate
+    writes into the shared transcript, so its fit stays with its notice even when it fails."""
     from ouroboros import provider_models
 
     monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "openai::fb-direct,fb/two")
     monkeypatch.setitem(provider_models.PROVIDER_TOOL_SCHEMA_LIMITS, "openai", 100)
-    llm = _RouteLLM(data_root, **{PRIMARY: [_death], "openai::fb-direct": [] if ceiling_route_answers else [_death]})
+    llm = _RouteLLM(data_root, **{primary: [_death], "openai::fb-direct": [] if ceiling_route_answers else [_death]})
+    llm.default_model = lambda: primary
     original, sent = llm.chat, []
 
     def chat(**kwargs):
@@ -183,8 +188,10 @@ def test_a_ceiling_routes_tool_fit_stays_only_if_that_route_answers(data_root, t
     left_out = getattr(registry._ctx, "_route_left_out_tool_names", None) or set()
     if ceiling_route_answers:
         assert text == "answer from openai::fb-direct" and not rest and len(left_out) == whole - 100
-    else:
+    elif primary == PRIMARY:
         assert text == "answer from fb/two" and rest == [("fb/two", whole, False)] and not left_out
+    else:
+        assert text == "answer from fb/two" and rest == [("fb/two", 100, True)] and len(left_out) == whole - 100
 
 
 def test_non_unknown_candidate_failure_cannot_buy_a_forced_summary_after_unknown():
