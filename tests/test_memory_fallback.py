@@ -459,3 +459,43 @@ def test_the_writer_never_nominates_knowledge_or_touches_the_old_dialogue_files(
     assert _run(tmp_path, _Light()).outcome == "published"
     assert {name: (tmp_path / "memory" / name).read_bytes() for name in frozen} == frozen
     assert not (tmp_path / "memory" / "knowledge").exists()
+
+
+# --- the post-task stage adapter ---------------------------------------------------------------------
+
+def test_the_stage_records_its_event_with_the_accounted_bound_and_charges_the_budget(tmp_path, monkeypatch, light):
+    from supervisor import state
+    from ouroboros import post_task_synthesis as pts
+
+    shared.world(tmp_path)
+    _consciousness(monkeypatch, False)
+    charged = []
+    monkeypatch.setattr(state, "update_budget_from_usage", charged.append)
+    env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path)
+    task = {"id": "root-task", "budget_drive_root": str(tmp_path)}
+    assert pts._run_memory_fallback_draft(env, task, _Light(), tmp_path / "logs", {}) == ""
+    events = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    [event] = [row for row in events if row.get("type") == "memory_fallback_draft"]
+    assert event["outcome"] == "published" and event["record_id"] == _drafts(tmp_path)[0]["id"]
+    assert event["accounted_upper_bound_usd"] == 0.0125 and "cost_usd" not in event
+    assert event["route"] == {"provider": "openrouter", "model": "test/light"} and event["unit"]["kind"] == "legacy"
+    assert len(charged) == 1 and charged[0]["cost"] == 0.0125
+    # A refusal reads degraded (its kind); with consciousness on the stage is silent and free.
+    assert pts._run_memory_fallback_draft(env, task, _Light("no json"), tmp_path / "logs", {}) == "invalid"
+    _consciousness(monkeypatch, True)
+    lines = (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8")
+    assert pts._run_memory_fallback_draft(env, task, _Light(), tmp_path / "logs", {}) == ""
+    assert (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8") == lines and len(charged) == 2
+
+
+@pytest.mark.parametrize("kind", ["budget_exhausted", "provider_outcome_unknown", "provider_error"])
+def test_the_stage_reads_a_returned_failure_with_the_post_task_classifier(tmp_path, monkeypatch, light, kind):
+    from ouroboros import consolidator
+    from ouroboros import post_task_synthesis as pts
+
+    shared.world(tmp_path)
+    _consciousness(monkeypatch, False)
+    monkeypatch.setattr(consolidator, "_call_consolidation_llm", lambda *a, **k: (
+        "", {"cost": None, "_consolidation_errors": [{"kind": kind}]}))
+    env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path)
+    assert pts._run_memory_fallback_draft(env, {"id": "r"}, _Light(), tmp_path / "logs", {}) == kind
