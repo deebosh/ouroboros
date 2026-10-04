@@ -100,7 +100,12 @@ shared `OUROBOROS_REVIEW_MAX_CYCLES` (`ouroboros/review_cycles.py`).
 mode's projection of the two books (ARCHITECTURE §6 "Context fitting, retry, and
 compaction"); Max binds `DEVELOPMENT.md` to the active repository — a path fact,
 never a guess from message text. Tier-0 identity and constitutional context
-stays full in every mode. Predicted Max pressure never swaps in Low documents:
+stays full in every mode. Predicted Max pressure never swaps in Low documents,
+with one physical exception: when the route window is known and even the
+shortest memory view (every floor step applied) with the books, tools and reply
+reserve cannot fit on the calibrated estimate — a refusal that is inevitable —
+the task starts in the next physically possible mode (Max → Low → Nano,
+`memory_floor.physical_mode`, checkpoint `context_fit_physical_mode`). Otherwise
 only actual provider overflow may use a task-local Low projection, then at most
 one same-route strictly-smaller call, and none of it changes owner mode or P3
 commit/scope review. Disclosed residual: an explicit per-task handbook override
