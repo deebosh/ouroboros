@@ -2314,7 +2314,7 @@ export function createChatInstance({
         const sender = senderLabel(role, isProgress, systemType, {
             source, senderLabel: senderLabelOverride, senderSessionId, initiator,
         }, chatSessionId);
-        if (role === 'system' && systemType === 'task_pause_notice') text = tx(text);
+        if (role === 'system' && ['task_pause_notice', 'legacy_memory_notice'].includes(systemType)) text = tx(text);
         const richMarkdown = role !== 'user' && systemType !== 'skill_review' && (role !== 'system' || markdown === true);
         const rendered = role === 'user'
             ? escapeHtml(text)

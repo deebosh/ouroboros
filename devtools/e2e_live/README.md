@@ -202,7 +202,12 @@ The `.github/workflows/ci.yml` `e2e-live` job runs only on an explicit
 tag, and checks out the dispatched SHA (`gh workflow run CI --ref ouroboros
 -f e2e_live=true` tests the development tip). It runs one SM1 attempt with
 `--self-mod --total-budget 30 --per-task-usd 15`, reserving $30 for its two
-roots. The owner supplies `OUROBOROS_E2E_LIVE_OPENROUTER_KEY`; its absence
+roots, and `--task-timeout 4500` (75 minutes: at 2400 all four runs hit the
+deadline, and the traced one spent ~21 minutes on edits and ~17 on the review
+path before a review wave was cut off, #1501). The job's `timeout-minutes`
+outlasts the stand's own worst-case waits, so the stand's verdict and traces,
+not a job kill, end the run. The owner supplies
+`OUROBOROS_E2E_LIVE_OPENROUTER_KEY`; its absence
 produces the honest green summary `skipped: secret
 OUROBOROS_E2E_LIVE_OPENROUTER_KEY not configured`, not a claimed run.
 Upload the manifest, index, lane results, screenshots and each lane's
