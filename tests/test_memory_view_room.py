@@ -424,8 +424,9 @@ def test_this_room_has_its_head_retold_records_origin_words_and_notes(tmp_path):
 
 def test_main_room_page_shows_the_room_less_retellings_whole_to_its_integrator_and_a_pointer_elsewhere(tmp_path):
     """The flat summary and a room-less era predate rooms and were Main's memory: whole in
-    Main's room page, under their own label, for Main's integrator; a pointer in the story, and nothing more
-    for a helper in Main, another room or consciousness."""
+    Main's room page, under their own label, for Main's integrator and for a child that starts with the top
+    level of the life account; a pointer in the story, and nothing more, for a nanny in Main, another room or
+    consciousness."""
     import json
 
     rooms = shared.world(tmp_path, flat="The retired flat summary of everything.", activate=False)
@@ -448,16 +449,24 @@ def test_main_room_page_shows_the_room_less_retellings_whole_to_its_integrator_a
     assert "The retired flat summary" not in story and "memory_read(node_id='legacy-flat-" in story
     assert "memory_read(node_id='legacy-b02-rlegacy')" in story and "A room-less era." not in story
     others = {"bound": {"id": "bound", "chat_id": 1},  # bound to alpha
-              "child": {"id": "kid1", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1"},
+              "nanny": {"id": "n1", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1", **NANNY_ROUTE},
               "wake": {"id": "w1", "chat_id": 1, "metadata": {"usage_category": "consciousness"}}}
     for name, task in others.items():
         snapshot = mv.capture_memory_view(tmp_path, task, mv.view_spec_for_task(task, tmp_path))
         room = mv.render_room(snapshot)
         assert "A room-less era." not in room and "The retired flat summary" not in room, name
-        assert "memory_read(node_id='legacy-b02-rlegacy')" in mv.render_story(snapshot), name
-        assert snapshot.spec.room_id == {"bound": str(rooms["alpha"]), "child": "1", "wake": None}[name]
-    child =mv.capture_memory_view(tmp_path, others["child"], mv.view_spec_for_task(others["child"], tmp_path))
-    assert "## This room (Main)" in mv.render_room(child) and "  Main talk." in mv.render_room(child)
+        story = mv.render_story(snapshot)
+        if name == "nanny":  # a nanny carries no story at all, so not even the pointer
+            assert story == "" and "legacy-b02-rlegacy" not in room, name
+        else:
+            assert "memory_read(node_id='legacy-b02-rlegacy')" in story, name
+        assert snapshot.spec.room_id == {"bound": str(rooms["alpha"]), "nanny": "1", "wake": None}[name]
+    # A child starts with the top level of the life account, so Main's room-less retellings stand whole on its page.
+    kid = {"id": "kid1", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1"}
+    child = mv.capture_memory_view(tmp_path, kid, mv.view_spec_for_task(kid, tmp_path))
+    room = mv.render_room(child)
+    assert "## This room (Main)" in room and "  Main talk." in room
+    assert "  A room-less era." in room and "  The retired flat summary of everything." in room
 
 
 def test_each_role_sees_its_parts_of_the_live_view(tmp_path):

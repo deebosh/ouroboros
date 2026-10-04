@@ -139,7 +139,7 @@ ROLE_DEFAULTS: Mapping[str, ViewSpec] = MappingProxyType({
     "nanny": ViewSpec("nanny", story=False, room_lanes=False, live_rooms="none", marks="room_and_global",
                       knowledge=False, owner_words=True),
 })
-_ROOMLESS, _HELPERS = frozenset({"consciousness"}), frozenset({"child", "nanny"})
+_ROOMLESS = frozenset({"consciousness"})
 _FIELDS = {field.name: field.type for field in dataclasses.fields(ViewSpec)}
 
 
@@ -587,8 +587,9 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
     if spec.room_page:
         units = {unit.record_id: unit for unit in memory_inventory.legacy_units(store, root)}
         retold = [record for record in records if record["kind"] in ("legacy", "gap")]
-        if room == MAIN_ROOM and spec.role not in _HELPERS:  # the room-less retellings (the flat summary,
-            # a mixed era) predate rooms and were Main's memory: whole and first; a helper keeps only its pointer
+        if room == MAIN_ROOM and spec.role != "nanny":  # the room-less retellings (the flat summary, a mixed
+            # era) predate rooms and were Main's memory: whole and first for every focus that starts with the top
+            # level of the life account (a child included); a nanny carries no life account and keeps the pointer
             retold[:0] = [record for record in store.room_records(LEGACY_ROOM_ID) if record["kind"] == "legacy"
                           and _mapping(record.get("metadata")).get("legacy_type") not in ("gap", "cursor_gap")]
         facts["legacy"] = [{"id": record["id"], "text": str(record.get("current_text") or ""), "period": _legacy_period(
