@@ -21,6 +21,8 @@ them a second time:
 - A **shortage** is the view's floor fact in a task's trace (``VIEW_TRACE_KEY``) read as a
   writer's cue: open rows of a room shown only by address, or old narrative shown only by
   pointer because the window could not hold it.
+- The **journal changes** since an accepted wake are the records written after its accepted
+  sequence, one line of text each with the exact read of the record and of its target.
 
 Rows come from a process-local projection over the chat chain with
 ``chat_chain``'s own row rule and stream positions. It starts at the generation of
@@ -623,3 +625,74 @@ def shortage_from_trace(trace: Any) -> Optional[ShortageFact]:
         if records:
             return ShortageFact("narrative", pointer_records=records, **common)
     return None
+
+
+# --- journal changes since an accepted wake -----------------------------------------------------------
+
+# What a wake observes of the journal: the records that change what my memory says or keeps in
+# view. The import's legacy sections, gaps and activation receipt are standing inventory (the
+# view's pointers), and a mark's view or release is a decision about a mark already observed.
+CHANGE_KINDS = ("page", "part", "note", "correction", "decision", "mark")
+
+
+def _read_call(record_id: Any) -> str:
+    return f"memory_read(node_id='{record_id}')"
+
+
+def _author_words(author: Any) -> str:
+    author = author if isinstance(author, Mapping) else {}
+    kind = str(author.get("kind") or "unknown author")
+    if kind == "mind":
+        focus = author.get("focus") if isinstance(author.get("focus"), Mapping) else {}
+        return f"mind ({focus.get('role') or 'focus not recorded'}, task {author.get('task_id') or 'not recorded'})"
+    detail = author.get("writer") or author.get("operation") or author.get("attribution") or ""
+    return f"{kind} ({detail})" if detail else kind
+
+
+def _change_line(record: Mapping[str, Any]) -> str:
+    """One journal record as a line of text: what it is, whose, and the exact reads of it and its target."""
+    kind, author = str(record.get("kind")), record.get("author")
+    covers = record.get("covers") if isinstance(record.get("covers"), Mapping) else {}
+    draft = " draft" if kind in ("page", "part") and isinstance(author, Mapping) and author.get("kind") == "helper" else ""
+    where = "global" if kind == "mark" and record.get("scope") == "global" else f"in room {record.get('room_id')}"
+    rows, members = covers.get("count", len(covers.get("rows") or ())), len(covers.get("member_ids") or ())
+    what = {"page": f"seals {rows} row{'' if rows == 1 else 's'}",
+            "part": f"folds {members} record{'' if members == 1 else 's'}",
+            "decision": "accepts the draft" if record.get("accepted") else "rejects the draft",
+            "correction": "corrects its target"}.get(kind, "")
+    target = record.get("target_id")
+    if kind == "mark":
+        ref = record.get("target_ref") if isinstance(record.get("target_ref"), Mapping) else {}
+        target = ref.get("id") if ref.get("kind") == "chronicle" else None
+    return (f"- {kind}{draft} {record.get('id')} {where}, by {_author_words(author)}" + (f": {what}" if what else "")
+            + f"; {_read_call(record.get('id'))}" + (f"; target {_read_call(target)}" if target else ""))
+
+
+def memory_changes(root: Any, boundary: Any, gaps: set) -> Tuple[List[Tuple[str, None, str]], Any, Optional[Dict[str, Any]]]:
+    """``(events, boundary to accept, window)``: the journal records written since an accepted wake.
+
+    Each event is ``("memory_change", None, line)`` for a record of ``CHANGE_KINDS`` after the
+    accepted ``{sequence, record_id}``, in publication order; source dates do not order
+    publication. Without an accepted position the current one is the baseline and nothing
+    earlier is inventoried (the window says so). Without a journal there are no events and
+    nothing is created: the boundary is sequence 0. A read failure, or an accepted position
+    whose record no longer matches, is a disclosed gap and the accepted boundary stays.
+    """
+    empty = {"sequence": 0, "record_id": None}
+    store = ChronicleStore(root)
+    try:
+        if not store.log_path.exists():
+            if isinstance(boundary, Mapping) and boundary.get("sequence"):
+                raise ValueError("accepted memory source is missing")
+            return [], empty, None  # an empty install gets no memory directory or index
+        records, current = store.observation_snapshot(boundary)
+        window = {"lower": boundary.get("sequence") if isinstance(boundary, Mapping) else current["sequence"],
+                  "upper": current["sequence"], "last_record_id": current["record_id"],
+                  "basis": "accepted_sequence" if boundary is not None else "initial_baseline"}
+        events = [("memory_change", None, _change_line(record)) for record in records
+                  if record.get("kind") in CHANGE_KINDS]
+        return events, current, window
+    except Exception as exc:  # a disclosed gap beats a missing wake
+        gaps.add(f"memory changes unreadable: {type(exc).__name__}; accepted sequence retained")
+        lower = boundary.get("sequence") if isinstance(boundary, Mapping) else None
+        return [], boundary, {"basis": "unreadable", "lower": lower}

@@ -196,6 +196,10 @@ def test_the_readers_publish_nothing(tmp_path):
     mi.legacy_progress(mi.legacy_units(ChronicleStore(tmp_path), tmp_path))
     mi.oldest_open_segment(tmp_path, ChronicleStore(tmp_path), "1")
     mi.oldest_open_segment(tmp_path, ChronicleStore(tmp_path), str(rooms["alpha"]), pos_range=(0, 6))
+    gaps = set()
+    events, current, _window = mi.memory_changes(tmp_path, None, gaps)
+    assert mi.memory_changes(tmp_path, {"sequence": 0, "record_id": None}, gaps)[0] == [] and not gaps
+    assert events == [] and current["sequence"] > 0  # the import is in the journal, but no change to observe
     assert (chronicle / "records.jsonl").read_bytes() == log
     assert sorted(path.name for path in chronicle.iterdir()) == files
 
