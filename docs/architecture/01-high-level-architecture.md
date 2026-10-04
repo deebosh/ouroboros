@@ -256,7 +256,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── configured_subagents.py ← Canonical `OUROBOROS_SUBAGENTS` parser/serializer: strict validation, stable ids, fingerprinting; owner free text is never host-parsed
       ├── subagent_runtime.py  ← Immutable task-start subagent snapshots, exact `subagent_id` selection, typed alternatives, bounded legacy-input seam
       ├── subagent_route_health.py ← Route health: the ONE manifest reader behind every delegated dispatch
-      ├── subagent_work_order.py ← Complete chosen work-order compiler and normalized host authority without arbitrary admission cuts
+      ├── subagent_work_order.py ← Complete chosen work-order compiler, normalized host authority and the owner's originating words, without arbitrary admission cuts
       ├── subagent_bootstrap.py ← Host pre-start of the exact snapshotted leaf BEFORE the first metered round, through the same wrapper as `delegate_start(prompt="")`; the host never waits (`configured_session_started`); only a definite typed refusal ends unrun at $0 — everything ambiguous wakes the model (§6 Delegated subagents)
       ├── delegate_supervision.py ← Event-only sleeping-nanny loop: quiet windows renew without a model call; a meaningful event (or one reasoned checkpoint) triggers a durable wake with read-only coordination context (`time.state = "not_set"` rather than a latched anchor) (§6 Delegated subagents; `usage_attempts.lock` recovery: Platform substrate below)
       ├── delegate_start_instructions.py ← Stable host start instructions + a complete separately-hashed coordination appendix; host pre-start sends no appendix
