@@ -15,7 +15,8 @@ detached seed of the checked-out sha; the run size is FEASIBLE under the cap by
 the stand's own worst-case reservation rule computed from the code (a set that
 can never be admitted would be a red run by construction); artifacts are
 uploaded even on failure and never include a lane settings file (0600, carries
-the key); and the step summary renders EVERY manifest shape — verdicts on
+the key) or a lane data tree — the lane servers' journals travel only as the
+stand's key-redacted traces/ bundle; and the step summary renders EVERY manifest shape — verdicts on
 completion, the typed refusal or error otherwise — and never fails on its own.
 """
 
@@ -221,8 +222,12 @@ def test_artifacts_upload_even_on_failure_and_never_a_lane_settings_file():
     rel = [path[len(root):] for path in paths]
     assert "run_manifest.json" in rel and "lanes/*/result.json" in rel
     assert any(path.endswith(".png") for path in rel), rel
+    # The lane servers' journals travel ONLY as the stand's key-redacted traces/ bundle
+    # (devtools/e2e_live/traces.py): the one recursive glob, never a lane's data/ tree.
+    assert "lanes/*/traces/**" in rel, rel
     for path in rel:
-        assert "**" not in path and "settings" not in path and not path.endswith("/*"), path
+        assert "settings" not in path and not path.endswith("/*") and "data" not in path.split("/"), path
+        assert "**" not in path or path == "lanes/*/traces/**", path
     assert upload["with"]["if-no-files-found"] in ("warn", "ignore")
     summary = next(step for step in steps if "GITHUB_STEP_SUMMARY" in str(step.get("run", ""))
                    and SKIP_LINE not in str(step.get("run", "")))
