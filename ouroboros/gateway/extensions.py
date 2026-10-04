@@ -640,7 +640,10 @@ async def api_extension_dispatch(request: Request) -> Response:
     try:
         from ouroboros.extension_process_runner import disclose_inprocess_extension_dispatch
 
-        disclose_inprocess_extension_dispatch(
+        # A ledger append under the money lock for an extension holding a funded
+        # provider key: a lock wait, so it runs off the event loop.
+        await asyncio.to_thread(
+            disclose_inprocess_extension_dispatch,
             spec,
             drive_root=drive_root,
             surface_kind="route",
@@ -1000,11 +1003,12 @@ async def api_skill_reconcile(request: Request) -> JSONResponse:
         state.get("action"),
         state.get("reason"),
     )
-    # Reconcile can flip grants/load state, so refresh schedule readiness now.
+    # Reconcile can flip grants/load state, so refresh schedule readiness now —
+    # off the event loop: the resync waits for the supervisor queue lock.
     try:
         from supervisor.queue import resync_skill_schedules
 
-        resync_skill_schedules(drive_root)
+        await asyncio.to_thread(resync_skill_schedules, drive_root)
     except Exception:
         log.debug("api_skill_reconcile schedule sync failed", exc_info=True)
     return JSONResponse(extension_reconcile_receipt(skill_name, state))
