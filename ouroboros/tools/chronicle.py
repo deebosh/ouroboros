@@ -12,7 +12,8 @@ revision or room head and the conflicting ids, never their text.
 A delegated child or nanny is not the integrating mind (D-44): the host signs its
 page or part as a helper's draft carrying its own focus, which acts at once until
 the mind's ``decision``; its note, correction or decision is refused
-``not_integrator`` before anything is read or written.
+``not_integrator`` before anything is read or written, and so is its part over
+records other than legacy sections and its own drafts.
 
 ``memory_read`` answers in text, one header line per record or row, and never
 JSON. Every mode bounds itself at the source to ``tool_result_limit`` and names
@@ -353,10 +354,28 @@ def _write_page(ctx: Any, root: Path, store: ChronicleStore, author: Dict[str, A
                       stamp=dict(sorted(statuses.items())))
 
 
+def _own_or_legacy(record: Optional[Dict[str, Any]], author: Dict[str, Any]) -> bool:
+    """Whether a delegated focus may fold this member: a legacy section or its own draft (D-44).
+
+    A missing id is left to the store's own ``target_missing`` refusal.
+    """
+    if record is None or record.get("kind") == "legacy":
+        return True
+    signer = record.get("author") if isinstance(record.get("author"), dict) else {}
+    return signer.get("kind") == "helper" and isinstance(signer.get("focus"), dict) and (
+        str(signer.get("task_id") or "") == str(author.get("task_id") or ""))
+
+
 def _write_part(ctx: Any, root: Path, store: ChronicleStore, author: Dict[str, Any], a: Dict[str, Any]) -> str:
     members = a["member_ids"]
     if not isinstance(members, list) or not members:
         return _arg_error(ctx, "a part needs member_ids: adjacent records of one lower level of one room")
+    foreign = [str(m) for m in members if author["kind"] == "helper" and not _own_or_legacy(store.get(str(m)), author)]
+    if foreign:  # the mind's pages and other writers' records are folded by the integrating mind (D-44)
+        return _refused(ctx, "not_integrator",
+                        f"a delegated {author['focus']['role']} folds into its draft part only legacy sections and "
+                        "its own drafts; folding other records is the integrating mind's to do, so put it in your "
+                        "report. Nothing was written", conflict_ids=foreign)
     room = a["room_id"]
     if room is None or str(room).strip() == "":
         first = store.get(str(members[0]))  # the members' own room unless one is named
@@ -390,7 +409,8 @@ def _write_decision(ctx: Any, root: Path, store: ChronicleStore, author: Dict[st
 _WRITERS = {"page": _write_page, "part": _write_part, "note": _write_note,
             "correction": _write_correction, "decision": _write_decision}
 # A delegated focus is not the integrating mind (D-44): it drafts pages and parts under its own
-# signature, and the mind accepts or rejects them; notes, corrections and decisions stay the mind's.
+# signature (a part over legacy sections and its own drafts only, ``_write_part``), and the mind
+# accepts or rejects them; notes, corrections and decisions stay the mind's.
 _DRAFTING_ROLES = frozenset({"child", "nanny"})
 _DRAFT_KINDS = frozenset({"page", "part"})
 
@@ -935,7 +955,7 @@ def chronicle_tools() -> List[ToolEntry]:
     return [
         ToolEntry("chronicle_write", schema(
             "chronicle_write",
-            "Write my own chronicle record: seal a page over a room's closed arcs (the host expands covers into the exact row set, stamps each covered task with its recorded outcome and checks quotes), fold adjacent records into a part, keep a note for my future self, correct a record beside its original, or accept/reject a helper's draft. A delegated child or nanny publishes pages and parts only as drafts signed in its own name for the integrating mind to accept or reject (its note, correction or decision is refused: not_integrator). Records are never rewritten. A refusal returns the current revision or room head and the conflicting ids; read them with memory_read.",
+            "Write my own chronicle record: seal a page over a room's closed arcs (the host expands covers into the exact row set, stamps each covered task with its recorded outcome and checks quotes), fold adjacent records into a part, keep a note for my future self, correct a record beside its original, or accept/reject a helper's draft. A delegated child or nanny publishes pages and parts only as drafts signed in its own name for the integrating mind to accept or reject; its part folds only legacy sections and its own drafts (its note, correction or decision, or a part over other records, is refused: not_integrator). Records are never rewritten. A refusal returns the current revision or room head and the conflicting ids; read them with memory_read.",
             write, ["kind"]), _chronicle_write),
         ToolEntry("memory_read", schema(
             "memory_read",

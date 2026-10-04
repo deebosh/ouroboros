@@ -2,8 +2,10 @@
 
 Through the real ToolRegistry: both child sets see ``chronicle_write``; a child's page or part
 is a helper's draft signed with the child's focus (role, task, route) that acts at once until
-the integrating mind's ``decision``; a child's note, correction or decision is refused
-``not_integrator`` and nothing lands in the journal; the root still writes as the mind. The
+the integrating mind's ``decision``; a child's part folds only legacy sections and its own
+drafts; a child's note, correction or decision, or its part over the mind's or another
+writer's records, is refused ``not_integrator`` and nothing lands in the journal; the root
+still writes as the mind. The
 view and ``memory_read`` name a child's draft by the child and a Light draft by Light. Each
 rule is pinned in both directions; no test calls a model or the network.
 """
@@ -26,6 +28,7 @@ CHILD_META = {"delegation_role": "subagent", "parent_task_id": "root0001", "root
 NANNY_META = {**CHILD_META, "configured_subagent": {"route": {"kind": "agent_session"}}}
 LIGHT = {"kind": "helper", "writer": "fallback_page", "route": {"model": "configured-light"},
          "attribution": "helper draft, not lived"}
+LEGACY = {"kind": "legacy_helper", "writer": "old_consolidator", "attribution": "retelling by Light, not lived"}
 READONLY = "local_readonly_subagent"
 ACTING = "acting_subagent"
 
@@ -137,22 +140,64 @@ def test_a_childs_refused_note_does_not_activate_the_chronicle(data, monkeypatch
     assert (data / "memory" / "chronicle" / "records.jsonl").exists()
 
 
-def test_a_childs_part_is_a_draft_and_the_minds_rejection_unfolds_its_members(data, monkeypatch):
+def folded_into(root: pathlib.Path) -> dict:
+    return {record["id"]: record.get("folded_into") for record in ChronicleStore(root).room_records("1")}
+
+
+def legacy_sections(root: pathlib.Path) -> list:
+    """Two adjacent legacy sections of room 1, as the one-time import lays them down."""
+    ids = [f"legacy-b{block:02d}-r1" for block in (0, 1)]
+    assert ChronicleStore(root).publish([{"id": rid, "kind": "legacy", "room_id": "1", "text": f"old era {n}",
+                                          "author": LEGACY, "metadata": {"legacy_type": "era", "legacy_block": n}}
+                                         for n, rid in enumerate(ids)]).ok
+    return ids
+
+
+def test_a_childs_part_folds_legacy_and_its_own_drafts_and_the_minds_rejection_unfolds_them(data, monkeypatch):
     rows = chat(data)
     root = registry_for(data, "root0001")
-    first = call(root, kind="page", text="first", covers={"from": addr(rows[0]), "to": addr(rows[1])})
-    second = call(root, kind="page", text="second", covers={"from": addr(rows[2]), "to": addr(rows[3])})
+    assert call(root, kind="page", text="the mind's page", covers={"from": addr(rows[0]), "to": addr(rows[1])})["ok"]
+    old = legacy_sections(data)
     kid = registry_for(data, "kid00001", CHILD_META, READONLY, monkeypatch)
-    part = call(kid, kind="part", text="The child's fold.", member_ids=[first["node_id"], second["node_id"]],
-                expected_sequence=second["room_head"])
+    part = call(kid, kind="part", text="The old era, folded.", member_ids=old,
+                expected_sequence=ChronicleStore(data).room_head("1"))
     assert part["ok"] and part["kind"] == "part"
     assert ChronicleStore(data).get(part["node_id"])["author"]["kind"] == "helper"
     assert status_of(data, part["node_id"]) == "draft"
-    folded = {record["id"]: record.get("folded_into") for record in ChronicleStore(data).room_records("1")}
-    assert folded[first["node_id"]] == folded[second["node_id"]] == part["node_id"]
+    assert folded_into(data)[old[0]] == folded_into(data)[old[1]] == part["node_id"]
+    # Its own drafts fold the same way.
+    mine = [call(kid, kind="page", text=f"my page {n}", covers={"from": addr(rows[n]), "to": addr(rows[n + 1])})
+            for n in (2, 4)]
+    own = call(kid, kind="part", text="My two pages.", member_ids=[page["node_id"] for page in mine],
+               expected_sequence=mine[1]["room_head"])
+    assert own["ok"] and status_of(data, own["node_id"]) == "draft"
     assert call(root, kind="decision", target_id=part["node_id"], accepted=False, reason="not my reading")["ok"]
-    folded = {record["id"]: record.get("folded_into") for record in ChronicleStore(data).room_records("1")}
-    assert part["node_id"] not in folded and not folded[first["node_id"]] and not folded[second["node_id"]]
+    folded = folded_into(data)
+    assert part["node_id"] not in folded and not folded[old[0]] and not folded[old[1]]
+
+
+def test_a_childs_part_over_the_minds_or_anothers_records_is_refused_and_nothing_lands(data, monkeypatch):
+    rows = chat(data, count=8)
+    root = registry_for(data, "root0001")
+    first = call(root, kind="page", text="first", covers={"from": addr(rows[0]), "to": addr(rows[1])})
+    second = call(root, kind="page", text="second", covers={"from": addr(rows[2]), "to": addr(rows[3])})
+    other = call(registry_for(data, "kid00002", CHILD_META, READONLY, monkeypatch), kind="page", text="a sibling's",
+                 covers={"from": addr(rows[4]), "to": addr(rows[5])})
+    kid = registry_for(data, "kid00001", CHILD_META, READONLY, monkeypatch)
+    mine = call(kid, kind="page", text="mine", covers={"from": addr(rows[6]), "to": addr(rows[7])})
+    assert first["ok"] and second["ok"] and other["ok"] and mine["ok"]
+    head, before = ChronicleStore(data).room_head("1"), journal(data)
+    for members, foreign in (([first["node_id"], second["node_id"]], [first["node_id"], second["node_id"]]),
+                             ([other["node_id"], mine["node_id"]], [other["node_id"]])):
+        refused = call(kid, kind="part", text="The child's fold.", member_ids=members, expected_sequence=head)
+        assert refused["ok"] is False and refused["reason"] == "not_integrator"
+        assert refused["conflict_ids"] == foreign and "Nothing was written" in refused["detail"]
+    assert journal(data) == before and not any(folded_into(data).values())
+    # The other side: the integrating mind folds its own pages.
+    part = call(root, kind="part", text="The mind's fold.", member_ids=[first["node_id"], second["node_id"]],
+                expected_sequence=head)
+    assert part["ok"] and status_of(data, part["node_id"]) == "final"
+    assert folded_into(data)[first["node_id"]] == part["node_id"]
 
 
 def test_the_view_and_memory_read_name_a_childs_draft_by_the_child_and_lights_by_light(data, monkeypatch):
