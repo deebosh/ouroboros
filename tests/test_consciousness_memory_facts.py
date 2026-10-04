@@ -116,6 +116,38 @@ def test_standing_inventory_is_never_an_event(tmp_path):
     assert after.counts() == {"memory_change": 1} and f"page {new['id']} in room 1" in after.events[0][2]
 
 
+def test_a_released_mark_is_a_change_that_names_who_released_it(tmp_path):
+    """D-68: a helper keeps its right to release any mark, the mind's global one included, and the
+    next wake sees that release with its author. No release, no line; the mind's own release of a
+    room mark is the same kind of line (one rule for every focus)."""
+    from ouroboros.tools.chronicle import _memory_mark
+    from ouroboros.tools.registry import ToolContext
+
+    shared.world(tmp_path)
+    store = ChronicleStore(tmp_path)
+    answer = store.mark({"kind": "task", "task_id": "t-answer"}, "The owner answered: fold the old memory",
+                        WAKE_MIND, room_id="1", scope="global").record
+    kept = store.mark({"kind": "task", "task_id": "t-kept"}, "Keep this in view", WAKE_MIND, room_id="1").record
+    accepted = bind(tmp_path, observe(tmp_path), "wake-baseline")
+    assert observe(tmp_path, accepted).counts() == {}  # the marks stand before the accepted wake
+    child = ToolContext(repo_dir=tmp_path, drive_root=tmp_path, task_id="kid-1", current_chat_id=1,
+                        task_metadata={"delegation_role": "subagent", "parent_task_id": "t1"})
+    released = json.loads(_memory_mark(child, release_id=answer["id"], reason="Looked settled to me"))
+    assert released["ok"] and released["operation"] == "mark_release"  # the helper's right is unchanged
+    release = next(record for record in store.records() if record["kind"] == "mark_release")
+    after_child = observe(tmp_path, accepted)
+    assert after_child.counts() == {"memory_change": 1}
+    line = after_child.events[0][2]
+    assert line.startswith(f"- mark_release {release['id']} global, by mind (child, task kid-1): releases its target mark")
+    assert line.endswith(f"target memory_read(node_id='{answer['id']}')")
+    assert "Looked settled" not in line and "fold the old memory" not in line  # the wake reads the record
+    assert store.release_mark(kept["id"], WAKE_MIND, "Done with it").ok
+    lines = [text for kind, _offset, text in observe(tmp_path, accepted).events if kind == "memory_change"]
+    assert lines[0] == line and lines[1].startswith("- mark_release ")
+    assert " in room 1, by mind (consciousness, task wake-1): releases its target mark" in lines[1]
+    assert lines[1].endswith(f"target memory_read(node_id='{kept['id']}')")
+
+
 def _without_memory(monkeypatch):
     monkeypatch.setattr(mi, "memory_changes", lambda _root, boundary, _gaps: ([], boundary, None))
 

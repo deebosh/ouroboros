@@ -641,9 +641,11 @@ def shortage_from_trace(trace: Any) -> Optional[ShortageFact]:
 # --- journal changes since an accepted wake -----------------------------------------------------------
 
 # What a wake observes of the journal: the records that change what my memory says or keeps in
-# view. The import's legacy sections, gaps and activation receipt are standing inventory (the
-# view's pointers), and a mark's view or release is a decision about a mark already observed.
-CHANGE_KINDS = ("page", "part", "note", "correction", "decision", "mark")
+# view. A mark's release is one, with who released it: any focus, a helper included, may release
+# any mark, a global one too (D-68). The import's legacy sections, gaps and activation receipt
+# are standing inventory (the view's pointers), and a mark's view only changes how much of an
+# observed mark is shown.
+CHANGE_KINDS = ("page", "part", "note", "correction", "decision", "mark", "mark_release")
 
 
 def _read_call(record_id: Any) -> str:
@@ -660,17 +662,21 @@ def _author_words(author: Any) -> str:
     return f"{kind} ({detail})" if detail else kind
 
 
-def _change_line(record: Mapping[str, Any]) -> str:
-    """One journal record as a line of text: what it is, whose, and the exact reads of it and its target."""
+def _change_line(record: Mapping[str, Any], released: Optional[Mapping[str, Any]] = None) -> str:
+    """One journal record as a line of text: what it is, whose, and the exact reads of it and its target.
+
+    ``released`` is the mark a ``mark_release`` takes away; its scope says where the release acts.
+    """
     kind, author = str(record.get("kind")), record.get("author")
     covers = record.get("covers") if isinstance(record.get("covers"), Mapping) else {}
     draft = " draft" if kind in ("page", "part") and isinstance(author, Mapping) and author.get("kind") == "helper" else ""
-    where = "global" if kind == "mark" and record.get("scope") == "global" else f"in room {record.get('room_id')}"
+    scoped = record if kind == "mark" else released if isinstance(released, Mapping) else {}
+    where = "global" if scoped.get("scope") == "global" else f"in room {record.get('room_id')}"
     rows, members = covers.get("count", len(covers.get("rows") or ())), len(covers.get("member_ids") or ())
     what = {"page": f"seals {rows} row{'' if rows == 1 else 's'}",
             "part": f"folds {members} record{'' if members == 1 else 's'}",
             "decision": "accepts the draft" if record.get("accepted") else "rejects the draft",
-            "correction": "corrects its target"}.get(kind, "")
+            "correction": "corrects its target", "mark_release": "releases its target mark"}.get(kind, "")
     target = record.get("target_id")
     if kind == "mark":
         ref = record.get("target_ref") if isinstance(record.get("target_ref"), Mapping) else {}
@@ -700,8 +706,9 @@ def memory_changes(root: Any, boundary: Any, gaps: set) -> Tuple[List[Tuple[str,
         window = {"lower": boundary.get("sequence") if isinstance(boundary, Mapping) else current["sequence"],
                   "upper": current["sequence"], "last_record_id": current["record_id"],
                   "basis": "accepted_sequence" if boundary is not None else "initial_baseline"}
-        events = [("memory_change", None, _change_line(record)) for record in records
-                  if record.get("kind") in CHANGE_KINDS]
+        events = [("memory_change", None, _change_line(record, store.get(str(record.get("target_id") or ""))
+                                                       if record.get("kind") == "mark_release" else None))
+                  for record in records if record.get("kind") in CHANGE_KINDS]
         return events, current, window
     except Exception as exc:  # a disclosed gap beats a missing wake
         gaps.add(f"memory changes unreadable: {type(exc).__name__}; accepted sequence retained")

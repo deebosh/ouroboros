@@ -9,8 +9,8 @@ announce a transition) and, by identity, the transitions the task results themse
 a task's terminal, a card's closed state, a late acceptance settlement — whether or not any
 chat row announced them (an orphan sweep, a lost ``task_done``, an expired card) — and the
 memory journal records written after the accepted sequence (``memory_inventory.memory_changes``:
-pages, parts, drafts, notes, corrections, decisions, marks; one line of text and an exact read
-each; what still stands open is the view's, not an event). The whole inventory of answerable
+pages, parts, drafts, notes, corrections, decisions, marks, mark releases; one line of text, its
+author and an exact read each; what still stands open is the view's, not an event). The whole inventory of answerable
 owner cards follows. What the wake accepts is a chain position plus the transition identities
 of every observed task (``_transitions_since``) and the last observed journal sequence, not
 the alarm's finish time, so a fact written during a wake, or written late with an older stamp,
