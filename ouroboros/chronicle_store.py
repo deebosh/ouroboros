@@ -14,7 +14,8 @@ A record is never rewritten. A ``page`` seals a SET of row refs of its room
 a page whose set intersects an already sealed set is refused
 ``already_sealed``; ``covers.stream_span[0]`` only orders pages. A ``part``
 folds adjacent effective records of one lower level of its room (pages, legacy
-sections or parts), each at most once (``folded``). A helper's page or part is
+sections or parts), each at most once (``folded``). A helper's page or part (the
+Light writer's, or a delegated child's or nanny's signed with its focus) is
 a draft that acts at once; the mind's ``decision`` accepts or rejects it, and a
 rejected draft stops acting, so its rows are open and its members unfolded
 again; a draft already folded into a part is not rejected while that part acts
@@ -128,6 +129,21 @@ def _author_problem(author: Any) -> str:
         if not isinstance(focus, dict) or not _nonblank(focus.get("role")) or not _nonblank(author.get("task_id")):
             return "a mind author carries focus.role and task_id"
     return ""
+
+
+def draft_signer(author: Any) -> str:
+    """Who signed a helper's draft page or part, as the view and ``memory_read`` name it.
+
+    A delegated child or nanny drafts under the focus the host signed (``child, task
+    <id>``); a helper author without a focus is the Light writer (``Light``).
+    """
+    author = author if isinstance(author, dict) else {}
+    focus = author.get("focus") if isinstance(author.get("focus"), dict) else {}
+    role = str(focus.get("role") or "").strip()
+    if not role:
+        return "Light"
+    task = str(author.get("task_id") or focus.get("task_id") or "").strip()
+    return f"{role}, task {task}" if task else role
 
 
 def verify_quotes(quotes: Any, resolver: Optional[QuoteResolver]) -> Optional[PublishResult]:

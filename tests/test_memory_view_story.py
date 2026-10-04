@@ -185,6 +185,12 @@ def test_drafts_rejections_corrections_and_indented_texts(tmp_path):
     assert "  My own page, corrected." in text and "  My own page.\n" not in text
     assert f"(corrected by me: {result.record['id']})" in text
     assert text.count("(draft by a helper") == 0
+    # A delegated child's draft is signed by the child, not by Light (D-44).
+    child = {"kind": "helper", "task_id": "kid00001", "route": {}, "focus": {"role": "child", "task_id": "kid00001"}}
+    _page(tmp_path, "1", 19, 19, author=child, text="A child's page.")
+    text = _story(tmp_path)
+    assert "(draft by a helper (child, task kid00001), not yet accepted or rejected by me)" in text
+    assert text.count("(draft by a helper") == 1 and "(draft by a helper (Light)" not in text
 
 
 def test_the_story_is_byte_identical_for_every_integrator_and_changes_only_with_the_chronicle(tmp_path, monkeypatch):

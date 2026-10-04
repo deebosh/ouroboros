@@ -3,8 +3,9 @@
 Memory spec §5.4 (sets) and §6.3, K8 (the signature, with the orchestrator's
 correction to the nanny test). The sets: the integrating mind writes chronicle
 pages, a presence reads and marks but writes no page, a delegated child reads,
-writes knowledge and marks but no page (its sets are pinned in
-test_chronicle_tools.py), a native reviewer sees none of the memory writers or
+writes knowledge and marks and drafts pages and parts in its own name (its sets
+are pinned in test_chronicle_tools.py, its drafts in
+test_child_chronicle_drafts.py), a native reviewer sees none of the memory writers or
 readers, and only the short mark receipt is exempt from truncation.
 """
 from __future__ import annotations
@@ -140,10 +141,11 @@ def test_native_reviewer_sees_none_of_the_memory_tools_but_keeps_its_inspection_
     from ouroboros.review_native_episode import inspection_registry
     from ouroboros.tool_capabilities import LOCAL_READONLY_SUBAGENT_TOOL_NAMES
 
-    # The child set the reviewer is cut from now carries knowledge_write, memory_read and memory_mark;
-    # the reviewer's disabled_tools takes them away with every other non-inspection name.
+    # The child set the reviewer is cut from now carries knowledge_write, memory_read, memory_mark and
+    # chronicle_write (a child's drafts, D-44); the reviewer's disabled_tools takes them away with every
+    # other non-inspection name.
     hidden = set(MEMORY_TOOLS) | {"knowledge_write"}
-    assert hidden - {"chronicle_write"} <= LOCAL_READONLY_SUBAGENT_TOOL_NAMES
+    assert hidden <= LOCAL_READONLY_SUBAGENT_TOOL_NAMES
     data = tmp_path / "data"
     data.mkdir()
     registry, _ctx, schemas = inspection_registry(str(tmp_path), data)

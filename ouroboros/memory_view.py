@@ -38,7 +38,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from ouroboros import chat_chain, memory_inventory
 from ouroboros.chronicle_import import LEGACY_ROOM_ID, LEGACY_ROOM_LABEL, legacy_frontier, row_lineage
-from ouroboros.chronicle_store import ChronicleStore
+from ouroboros.chronicle_store import ChronicleStore, draft_signer
 from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
 from ouroboros.dialogue_provenance import (RoomLabelResolver, is_presence_task, render_memory_row, render_row_text,
                                            row_class)
@@ -367,7 +367,7 @@ def _story_pages(store: ChronicleStore, label: Callable[..., str]) -> Tuple[List
                 "kind": record["kind"], "id": record["id"], "room_id": room,
                 "label": str(_mapping(record.get("metadata")).get("room_label") or label(room)),
                 "period": _period(covers.get("ts_span")), "text": str(record.get("current_text") or ""),
-                "status": str(record.get("status") or ""),
+                "status": str(record.get("status") or ""), "signer": draft_signer(record.get("author")),
                 "revision": record["revision"] if record.get("revision") != record["id"] else "",
                 "stamp": _stamp_summary(record.get("host_stamp")), "fixes": _fixes(record, fixes)}))
     return [entry for _key, entry in sorted(keyed, key=lambda pair: pair[0])], mine
@@ -776,9 +776,9 @@ def _page_pointer(entry: Mapping[str, Any]) -> str:
 def _page_lines(entry: Mapping[str, Any]) -> List[str]:
     lines = ["", f"### {entry['label']} · {entry['period']} · {entry['kind']} {entry['id']}", _indented(entry["text"])]
     if entry.get("status") == "draft":
-        lines.append("(draft by a helper (Light), not yet accepted or rejected by me)")
+        lines.append(f"(draft by a helper ({entry.get('signer') or 'Light'}), not yet accepted or rejected by me)")
     elif entry.get("status") == "accepted":
-        lines.append("(drafted by a helper (Light), accepted by me)")
+        lines.append(f"(drafted by a helper ({entry.get('signer') or 'Light'}), accepted by me)")
     facts = [entry.get("stamp") or "", f"corrected by me: {entry['revision']}" if entry.get("revision") else ""]
     if any(facts):
         lines.append("(" + "; ".join(fact for fact in facts if fact) + ")")

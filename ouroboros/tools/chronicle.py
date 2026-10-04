@@ -9,6 +9,11 @@ counts each row's source class, stamps every covered task with the host's own
 facts and verifies the quotes the writer chose. A refusal names the current
 revision or room head and the conflicting ids, never their text.
 
+A delegated child or nanny is not the integrating mind (D-44): the host signs its
+page or part as a helper's draft carrying its own focus, which acts at once until
+the mind's ``decision``; its note, correction or decision is refused
+``not_integrator`` before anything is read or written.
+
 ``memory_read`` answers in text, one header line per record or row, and never
 JSON. Every mode bounds itself at the source to ``tool_result_limit`` and names
 its continuation on the second line (``next_after_seq``, ``next: from=…`` or
@@ -36,7 +41,8 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tupl
 
 from ouroboros import chat_chain
 from ouroboros.chronicle_import import row_lineage
-from ouroboros.chronicle_store import SPEAKERS, ChronicleStore, PublishResult, source_time_span, verify_quotes
+from ouroboros.chronicle_store import (SPEAKERS, ChronicleStore, PublishResult, draft_signer, source_time_span,
+                                       verify_quotes)
 from ouroboros.dialogue_provenance import memory_row_header, render_row_text, row_author
 from ouroboros.knowledge import focus_signature
 from ouroboros.tool_capabilities import tool_result_limit
@@ -383,6 +389,26 @@ def _write_decision(ctx: Any, root: Path, store: ChronicleStore, author: Dict[st
 
 _WRITERS = {"page": _write_page, "part": _write_part, "note": _write_note,
             "correction": _write_correction, "decision": _write_decision}
+# A delegated focus is not the integrating mind (D-44): it drafts pages and parts under its own
+# signature, and the mind accepts or rejects them; notes, corrections and decisions stay the mind's.
+_DRAFTING_ROLES = frozenset({"child", "nanny"})
+_DRAFT_KINDS = frozenset({"page", "part"})
+
+
+def _signed_author(ctx: Any, kind: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """``(author, "")`` as the host signs this write, or ``(None, role)`` when this focus may not write ``kind``.
+
+    The root, Main and consciousness write as the mind. A delegated child or nanny
+    publishes a page or part as a helper's draft carrying its own focus, task and
+    route, which the model never chooses.
+    """
+    author = focus_signature(ctx)
+    role = author["focus"]["role"]
+    if role not in _DRAFTING_ROLES:
+        return author, ""
+    if kind not in _DRAFT_KINDS:
+        return None, role
+    return {**author, "kind": "helper"}, ""
 
 
 def _chronicle_write(ctx: Any, kind: str = "", room_id: Any = None, text: str = "", covers: Any = None,
@@ -392,12 +418,18 @@ def _chronicle_write(ctx: Any, kind: str = "", room_id: Any = None, text: str = 
     writer = _WRITERS.get(str(kind or ""))
     if writer is None:
         return _arg_error(ctx, "kind is page, part, note, correction or decision")
+    author, role = _signed_author(ctx, str(kind))
+    if author is None:
+        return _refused(ctx, "not_integrator",
+                        f"a delegated {role} publishes pages and parts only as drafts in its own name, which the "
+                        f"integrating mind accepts or rejects; a {kind} is the integrating mind's to write, so put "
+                        "it in your report. Nothing was written")
     args = {"room_id": room_id, "text": text, "covers": covers, "member_ids": member_ids, "quotes": quotes,
             "task_id": task_id, "target_id": target_id, "expected_revision": expected_revision,
             "expected_sequence": expected_sequence, "accepted": accepted, "reason": reason}
     try:
         root = _root(ctx)
-        return writer(ctx, root, _activated(root), focus_signature(ctx), args)
+        return writer(ctx, root, _activated(root), author, args)
     except _NotActivated as exc:
         return _not_activated(ctx, exc)
     except ValueError as exc:
@@ -414,6 +446,8 @@ def _author_label(author: Any) -> str:
     if kind == "mind":
         focus = author.get("focus") if isinstance(author.get("focus"), dict) else {}
         return f"mind ({focus.get('role') or 'focus not recorded'} {author.get('task_id') or ''})".replace(" )", ")")
+    if kind == "helper" and isinstance(author.get("focus"), dict):  # a delegated child's or nanny's draft
+        return f"helper ({draft_signer(author)})"
     detail = author.get("attribution") or author.get("operation") or author.get("writer") or ""
     return f"{kind} ({detail})" if detail else kind
 
@@ -901,7 +935,7 @@ def chronicle_tools() -> List[ToolEntry]:
     return [
         ToolEntry("chronicle_write", schema(
             "chronicle_write",
-            "Write my own chronicle record: seal a page over a room's closed arcs (the host expands covers into the exact row set, stamps each covered task with its recorded outcome and checks quotes), fold adjacent records into a part, keep a note for my future self, correct a record beside its original, or accept/reject a helper's draft. Records are never rewritten. A refusal returns the current revision or room head and the conflicting ids; read them with memory_read.",
+            "Write my own chronicle record: seal a page over a room's closed arcs (the host expands covers into the exact row set, stamps each covered task with its recorded outcome and checks quotes), fold adjacent records into a part, keep a note for my future self, correct a record beside its original, or accept/reject a helper's draft. A delegated child or nanny publishes pages and parts only as drafts signed in its own name for the integrating mind to accept or reject (its note, correction or decision is refused: not_integrator). Records are never rewritten. A refusal returns the current revision or room head and the conflicting ids; read them with memory_read.",
             write, ["kind"]), _chronicle_write),
         ToolEntry("memory_read", schema(
             "memory_read",
