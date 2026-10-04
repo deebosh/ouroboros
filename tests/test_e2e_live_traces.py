@@ -33,8 +33,10 @@ NOT_TRACED = ["settings.json", f"{FORK}/settings.json", "memory/identity.md", "o
 
 
 def _write(path: pathlib.Path, text: str) -> None:
+    """LF bytes on every platform: write_text would turn each "\\n" into "\\r\\n" on Windows, and the
+    tests compare exact bytes and sizes."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_bytes(text.encode("utf-8"))
 
 
 def _data_root(tmp_path: pathlib.Path, *, planted: str = "") -> pathlib.Path:
