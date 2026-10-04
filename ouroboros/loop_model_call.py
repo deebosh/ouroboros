@@ -352,6 +352,8 @@ def _run_cross_model_fallback_chain(
                                      or _route_follows(rows[index + 1:])),
             )
         tried.append(fallback_model)
+        resident = (None if tool_schemas is None else list(tool_schemas),
+                    getattr(tools._ctx, "_route_left_out_tool_names", None))
         msg, _cost, candidate_mode = _loop()._call_round_model(candidate_call)
         if deferred is None and msg is None:
             # Each fallback clears the transient context slot before its own send. Keep the
@@ -401,6 +403,10 @@ def _run_cross_model_fallback_chain(
         tools._ctx.messages = messages
         tools._ctx.active_context_mode = active_context_mode
         _restore_context_fit_usage(accumulated_usage, primary_context_usage)
+        if resident[0] is not None and resident[0] != tool_schemas and deferred_candidate is not candidate_call:
+            # Its ceiling fit left with its transcript copy, notice included; the next route gets the list it had.
+            tool_schemas[:], tools._ctx._route_left_out_tool_names = resident
+            invalidate_task_cache_splits(task_id)
         if _walk_fenced(tools._ctx, accumulated_usage):
             break
         _cooled(fallback_model, fallback_use_local, fallback_role)

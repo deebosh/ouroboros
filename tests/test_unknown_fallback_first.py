@@ -160,6 +160,33 @@ def test_fallback_can_recover_during_an_existing_primary_outage(data_root, tmp_p
     assert [row["state"] for row in _ledger(data_root)].count("unresolved") == 2
 
 
+@pytest.mark.parametrize("ceiling_route_answers", [False, True])
+def test_a_ceiling_routes_tool_fit_stays_only_if_that_route_answers(data_root, tmp_path, monkeypatch, ceiling_route_answers):
+    """A direct-OpenAI candidate fits the shared resident list and tells its own transcript copy. If it
+    answers, both are adopted; if it fails, the copy goes and the fit with it, so the next route sends
+    the whole list it had and reads no notice about schemas it still has."""
+    from ouroboros import provider_models
+
+    monkeypatch.setenv("OUROBOROS_MODEL_FALLBACKS", "openai::fb-direct,fb/two")
+    monkeypatch.setitem(provider_models.PROVIDER_TOOL_SCHEMA_LIMITS, "openai", 100)
+    llm = _RouteLLM(data_root, **{PRIMARY: [_death], "openai::fb-direct": [] if ceiling_route_answers else [_death]})
+    original, sent = llm.chat, []
+
+    def chat(**kwargs):
+        sent.append((kwargs["model"], len(kwargs["tools"] or []), "tool schemas in one request" in str(kwargs["messages"])))
+        return original(**kwargs)
+
+    llm.chat = chat
+    text, _usage, _trace, registry = _run(tmp_path, llm, direct=True)
+    (_primary, whole, _), (ceiling, fitted, told), *rest = sent
+    assert ceiling == "openai::fb-direct" and whole > 100 and fitted == 100 and told
+    left_out = getattr(registry._ctx, "_route_left_out_tool_names", None) or set()
+    if ceiling_route_answers:
+        assert text == "answer from openai::fb-direct" and not rest and len(left_out) == whole - 100
+    else:
+        assert text == "answer from fb/two" and rest == [("fb/two", whole, False)] and not left_out
+
+
 def test_non_unknown_candidate_failure_cannot_buy_a_forced_summary_after_unknown():
     from ouroboros.loop_llm_call import provider_no_call_source
 
