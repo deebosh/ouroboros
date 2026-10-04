@@ -311,3 +311,29 @@ def test_unreadable_archive_directory_reports_the_same_gap_on_every_carrier(tmp_
         assert coverage["gaps"] == ["unreadable_source"] and coverage["archives_available"] == 0
         assert row["tool_evidence"]["observations"][0]["key"] == f"tool:{task}:{task}-call"
     assert listed.count("tools") == 1, "the one enumeration's gap is replayed to every task"
+
+
+def test_evidence_carrier_takes_only_the_terminal_facts_the_chat_reads(tmp_path):
+    truth = {"_schema_version": 1, "status": "completed", "chat_id": 1, "reason_code": "finished",
+             "accounted_upper_bound_usd": 1.25, "cost_final": True, "metadata": {"initiator": "consciousness"},
+             "review_projection": {"panels": []}, "model_execution": {"model": "m"}, "cancel_origin": {"by": "owner"}}
+    _write(tmp_path / "logs/chat.jsonl", [
+        {"direction": "out", "task_id": "bare", "text": "Speech only", "ts": TS, "chat_id": 1},
+        {"direction": "system", "type": "task_summary", "task_id": "summarized", "text": "", "ts": TS, "chat_id": 1}])
+    _write(tmp_path / "logs/tools.jsonl", [_tool("bare"), _tool("summarized")])
+    for task in ("bare", "summarized"):
+        _write(tmp_path / f"task_results/{task}.json", [{**truth, "task_id": task}])
+    rows = {row["task_id"]: row for row in _read_wide(tmp_path)["messages"]
+            if row.get("system_type") in {"task_evidence", "task_summary"}}
+    carrier, summary = rows["bare"], rows["summarized"]
+    assert carrier["system_type"] == "task_evidence" and summary["system_type"] == "task_summary"
+    # The facts the chat reads from a carrier (admitCardMetadata and the pass-0 scan) stay on it.
+    assert carrier["task_terminal_status"] == "completed"
+    for row in (carrier, summary):
+        assert row["outcome_final"] is True and row["_is_direct_chat"] is False
+        assert row["tool_evidence"]["observations"][0]["key"] == f"tool:{row['task_id']}:{row['task_id']}-call"
+    whole_truth = ("review_projection", "outcome_axes", "outcome_phase", "model_execution", "cancel_origin", "reason_code",
+                   "initiator", "continuation_offer", "accounted_upper_bound_usd", "cost_final")
+    assert all(key in summary for key in whole_truth), [key for key in whole_truth if key not in summary]
+    assert not any(key in carrier for key in whole_truth), [key for key in whole_truth if key in carrier]
+    assert "history_retention" not in carrier
