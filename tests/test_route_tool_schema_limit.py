@@ -86,12 +86,16 @@ def test_main_fits_its_resident_list_in_place_and_names_what_it_left_out():
     assert "enable_tools" in str(notice)
     assert ctx.tools._ctx._route_left_out_tool_names == {left_out}
 
-    # The actor loads it again (enable_tools appends): it stays, another one goes.
+    # The actor loads it again (enable_tools appends): it stays, another one goes, and one new notice names it.
     resident.append(_schema(left_out))
     rows = len(ctx.messages)
     loop_model_call._fit_route_tool_ceiling(ctx)
     assert len(resident) == 128 and left_out in _names(resident)
-    assert len(ctx.messages) >= rows and len(ctx.tools._ctx._route_left_out_tool_names) == 2
+    (second,) = ctx.tools._ctx._route_left_out_tool_names - {left_out}
+    assert len(ctx.messages) == rows + 1 and f"Not loaded for now: {second}." in ctx.messages[-1]["content"]
+    assert "this task had 129 loaded" in ctx.messages[-1]["content"]
+    loop_model_call._fit_route_tool_ceiling(ctx)  # within the ceiling now: no third notice
+    assert len(ctx.messages) == rows + 1
 
 
 def test_a_schema_the_actor_enabled_stays_though_no_fit_left_it_out_before(tmp_path, monkeypatch):
