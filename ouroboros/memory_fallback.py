@@ -77,6 +77,8 @@ _QUOTES = ("Quote the decisive words — what was asked, decided, promised or re
            "speaker: the author class written first in the row's brackets — human, ouroboros, child, host, "
            "helper or unattributed.\n")
 _NO_QUOTES = "No chat rows are supplied here, so leave quotes empty.\n"
+_MEMBER_QUOTES = ("No chat rows are supplied here: quote only by copying a quote shown under a record below exactly, "
+                  "with its address and speaker, into quotes.\n")
 _ANSWER = ('Answer with one JSON object and nothing else: {"text": "<the account>", "quotes": [{"address": '
            '"row:…", "text": "<exact words>", "speaker": "<class>"}]}')
 
@@ -505,13 +507,15 @@ def _part_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
     members = [records.get(ident) for ident in unit.member_ids]
     if not members or any(member is None for member in members):
         return None
-    head = _head(root, _PART, _NO_QUOTES)
+    head = _head(root, _PART, _MEMBER_QUOTES if any(member.get("quotes") for member in members) else _NO_QUOTES)
 
     def compose(k: int) -> Tuple[str, Dict[str, Any]]:
         stamp = part_stamp(member.get("host_stamp") for member in members[:k])
         blocks = [f"### {m['kind']} {m['id']} — by {memory_inventory._author_words(m.get('current_author'))}"
                   + (" — earlier helper retelling, not a source, may be wrong" if m["kind"] == "legacy" else "")
-                  + "\n" + _indented(m.get("current_text")) for m in members[:k]]
+                  + "\n" + _indented(m.get("current_text"))
+                  + "".join(f"\nquote ({q.get('speaker')}, {q.get('address')}): {q.get('text')}" for q in m.get("quotes") or ())
+                  for m in members[:k]]
         counts = "; ".join(f"{c['tasks']} from {c['source'] or 'nothing recorded'}, phase {c['outcome_phase'] or 'not recorded'}"
                            for c in stamp["counts"])
         lines = [_stamp_line(entry, 0) for entry in stamp["tasks"]]

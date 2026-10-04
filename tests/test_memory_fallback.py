@@ -401,6 +401,41 @@ def test_a_failed_task_survives_a_helper_part_folded_again_and_shows_in_the_view
     assert part_stamp([store.get(pages[2])["host_stamp"]])["tasks"] == []  # a done task alone keeps no entry
 
 
+def test_a_helper_part_may_carry_its_members_verified_quotes_and_without_any_it_quotes_nothing(tmp_path, monkeypatch, light):
+    """Review fix (simulated triad): a part over pages that quote decisive words shows each member's
+    quotes and lets the helper copy them (verified again at publication), so the words survive the
+    fold; members without quotes keep the instruction to leave quotes empty."""
+    from ouroboros.chronicle_import import row_lineage
+    from ouroboros.tools.chronicle import _quote_resolver, page_covers
+
+    shared.world(tmp_path)
+    _consciousness(monkeypatch, False)
+    store = ChronicleStore(tmp_path)
+    addresses = {pos: address for address, _row, pos in chat_chain.iter_rows(tmp_path)}
+    quote = {"address": chat_chain.format_address(addresses[11]), "text": "next please", "speaker": "human"}
+    resolver = _quote_resolver(tmp_path, row_lineage(tmp_path))
+    pages = []
+    for first, last, quotes in ((10, 10, []), (11, 11, [quote])):
+        covers = page_covers(tmp_path, "1", from_addr=addresses[first], to_addr=addresses[last])["covers"]
+        published = store.publish_page(room_id="1", text=f"page {first}", covers=covers, author=shared.MIND,
+                                       quotes=quotes, quote_resolver=resolver)
+        assert published.ok, published
+        pages.append(published.record["id"])
+
+    def fold(members, answer):
+        unit = mf.FallbackUnit(kind="part", room_id="1", key="k", member_ids=tuple(members),
+                               head_sequence=store.room_head("1"))
+        draft = mf.build_writer_input(tmp_path, store, unit, budget_tokens=None)
+        return draft, mf._publish(tmp_path, store, unit, draft, answer, {"model": "test/light"}, {"model": "test/light"})
+
+    plain_input = mf.build_writer_input(tmp_path, store, mf.FallbackUnit(kind="part", room_id="1", key="k",
+                                                                          member_ids=(pages[0],)), budget_tokens=None)
+    assert "leave quotes empty" in plain_input.prompt and "quote (" not in plain_input.prompt
+    draft, published = fold(pages, {"text": "The owner moved the work on.", "quotes": [quote]})
+    assert f"quote (human, {quote['address']}): next please" in draft.prompt and "leave quotes empty" not in draft.prompt
+    assert published.ok and published.record["quotes"] == [quote]
+
+
 def test_a_part_draft_with_a_stale_room_head_is_a_conflict_without_receipt(tmp_path, monkeypatch, light):
     shared.world(tmp_path)
     _consciousness(monkeypatch, False)
