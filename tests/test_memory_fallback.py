@@ -488,6 +488,33 @@ def test_the_unit_is_chosen_under_the_writer_lock(tmp_path, monkeypatch, light):
     assert _run(tmp_path, again).unit.record_id == beta_unit and len(again.prompts) == 1
 
 
+def test_a_paid_answer_whose_publication_raises_is_billed_without_a_receipt(tmp_path, monkeypatch, light):
+    from supervisor import state
+    from ouroboros import post_task_synthesis as pts
+
+    shared.world(tmp_path)
+    _consciousness(monkeypatch, False)
+    charged, real_publish = [], mf._publish
+    monkeypatch.setattr(state, "update_budget_from_usage", charged.append)
+
+    def busy(*_a, **_k):
+        raise TimeoutError("the publication lock stayed busy")
+
+    monkeypatch.setattr(mf, "_publish", busy)
+    env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path)
+    task = {"id": "root-task", "budget_drive_root": str(tmp_path)}
+    assert pts._run_memory_fallback_draft(env, task, _Light(), tmp_path / "logs", {}) == "publish_failed"
+    assert len(charged) == 1 and charged[0]["cost"] == 0.0125
+    assert _drafts(tmp_path) == [] and _receipts(tmp_path) == {}
+    events = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    [event] = [row for row in events if row.get("type") == "memory_fallback_draft"]
+    assert (event["outcome"], event["kind"]) == ("failed", "publish_failed")
+    # A busy lock is no fact about the input: the next root drafts the same unit and publishes it.
+    monkeypatch.setattr(mf, "_publish", real_publish)
+    assert pts._run_memory_fallback_draft(env, task, _Light(), tmp_path / "logs", {}) == ""
+    assert len(_drafts(tmp_path)) == 1 and len(charged) == 2
+
+
 def test_the_writer_never_nominates_knowledge_or_touches_the_old_dialogue_files(tmp_path, monkeypatch, light):
     from ouroboros import consolidator, knowledge
 

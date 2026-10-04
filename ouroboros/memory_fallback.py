@@ -643,7 +643,13 @@ def run_fallback_draft(env: Any, task: Mapping[str, Any], llm: Any, drive_logs: 
         answer = _parse(text)
         if answer is None:
             return _refuse(root, store, run, draft, "invalid", bound, task_id, text)
-        result = _publish(root, store, unit, draft, answer, usage, bound)
+        try:
+            result = _publish(root, store, unit, draft, answer, usage, bound)
+        except Exception as error:  # e.g. a busy publication lock: a returned failure, so the paid call is billed
+            log.debug("fallback writer: publication raised", exc_info=True)
+            run.kind = "publish_failed"
+            run.errors = [{"kind": run.kind, "label": LABEL, "message": f"{type(error).__name__}: {error}"}]
+            return run
         if result.ok:
             _set_refusal(store, unit.key, None)
             run.outcome, run.record_id = "published", str((result.record or {}).get("id") or "")
