@@ -222,9 +222,9 @@ def _built(tmp_path, monkeypatch, *, books=80_000, ratio=None):
     if ratio is not None:
         monkeypatch.setattr(context_fit, "_route_calibration_ratio", lambda *_a: ratio)
 
-    def plan(window, *, status="asserted", preferred="max"):
+    def plan(window, *, status="asserted", preferred="max", tool_schemas=None):
         evidence = SimpleNamespace(route_fp="r", status=status, stale=status != "asserted", window_tokens=window)
-        return context._build_context_fit_plan(env, core, dict(_TASK), preferred_mode=preferred,
+        return context._build_context_fit_plan(env, core, dict(_TASK), preferred_mode=preferred, tool_schemas=tool_schemas,
                                                route_resolver=lambda *_a, **_kw: ({"model": "m", "provider": "p"}, evidence))
     return core, plan
 
@@ -424,7 +424,9 @@ def test_a_route_switch_keeps_the_owners_mode_and_starts_from_the_tasks_own(tmp_
 
     core, plan = _built(tmp_path / "w", monkeypatch)
     need = _needs(core, plan)
-    lowered, roomy, owner_low = plan(need["max"] - 50), plan(10_000_000), plan(10_000_000, preferred="low")
+    # Built with the schemas the rebind sends (none), so the same window can render the same bytes.
+    lowered, roomy, owner_low = (plan(need["max"] - 50, tool_schemas=[]), plan(10_000_000, tool_schemas=[]),
+                                 plan(10_000_000, preferred="low", tool_schemas=[]))
     assert lowered.initial_mode == "low" and roomy.initial_mode == "max" and owner_low.initial_mode == "low"
     for name, built, window in (("lowered", lowered, need["max"] - 50), ("task_local", roomy, 10_000_000),
                                 ("owner_low", owner_low, 10_000_000)):

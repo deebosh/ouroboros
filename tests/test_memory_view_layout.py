@@ -210,7 +210,7 @@ def test_a_nano_floor_names_only_the_path_its_own_request_sends(tmp_path, monkey
     """The real path: the schemas come from the task's registry under the owner's mode, as the agent
     passes them (``initial_tool_schemas``), and the plan's Nano projection is the request. A Nano
     the window chose for the owner's Max sends a child list_available_tools alone: its floor names
-    that and the parent, never enable_tools. The owner's Nano sends the child enable_tools, and a
+    that and the parent, never enable_tools or chronicle_write. The owner's Nano sends the child enable_tools, and a
     root always: their floor says memory_read is reachable through it."""
     from types import SimpleNamespace
 
@@ -246,6 +246,8 @@ def test_a_nano_floor_names_only_the_path_its_own_request_sends(tmp_path, monkey
     floor = section(built.messages_for("nano")[0]["content"][2]["text"], "### Physical floor")
     sent = select_tool_schemas(schemas, context_mode="nano").chosen
     assert "memory_read" not in sent and ("enable_tools" in floor) == ("enable_tools" in sent), (sent, floor)
+    # Sealing is offered only to a request that can call chronicle_write (sent, or loaded by enable_tools).
+    assert ("chronicle_write kind=page" in floor) == bool({"chronicle_write", "enable_tools"} & set(sent)), floor
     if (actor, owner) == ("child", "max"):
         assert sent == ("list_available_tools",)
         assert floor.rstrip().endswith("list_available_tools shows what this task can call, and my parent task can "

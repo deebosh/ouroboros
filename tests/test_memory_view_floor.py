@@ -236,20 +236,40 @@ def test_the_nano_floor_names_the_path_to_memory_read_that_its_request_sends():
 
     unknown = note(None)
     assert unknown.startswith("### Physical floor\n") and "enable_tools" not in unknown and "parent" not in unknown
+    head = unknown[:unknown.index(" Sealing a closed part")]  # the same fact without the chronicle_write sentence
     assert note(("compact_context", "list_available_tools", "enable_tools")) == (
         unknown + "\n(memory_read is reachable through enable_tools)")
     listing = note(("list_available_tools",))
-    path = listing[len(unknown) + 1:]
-    assert listing.startswith(unknown + "\n") and "enable_tools" not in listing
+    path = listing[len(head) + 1:]
+    assert listing.startswith(head + "\n") and "enable_tools" not in listing
     assert path == ("(memory_read is not among this request's tools; list_available_tools shows what this task "
                     "can call, and my parent task can read any address I name to it)")
     bare = note(())  # a request that sends neither names only the parent
-    assert bare == (unknown + "\n(memory_read is not among this request's tools; my parent task can read any "
+    assert bare == (head + "\n(memory_read is not among this request's tools; my parent task can read any "
                     "address I name to it)")
-    for carried in (("memory_read",), ("memory_read", "enable_tools", "list_available_tools")):
+    for carried in (("memory_read", "chronicle_write"), ("memory_read", "enable_tools", "list_available_tools")):
         assert note(carried) == unknown, carried  # the request sends memory_read itself: no path to name
+    assert note(("memory_read",)) == head
     for mode in ("max", "low"):  # outside Nano the request sends its permitted schemas: no path line
-        assert note(("list_available_tools",), mode=mode) == note(None, mode=mode), mode
+        assert note(("list_available_tools", "chronicle_write"), mode=mode) == note(None, mode=mode), mode
+
+
+def test_the_floor_offers_sealing_only_when_its_request_can_call_chronicle_write():
+    """chronicle_write is named exactly when the request sends it, or enable_tools that loads it, in
+    every mode; a request without both (a child the window lowered to Nano sends list_available_tools
+    alone) still reads that nothing is lost, and is never offered a tool it cannot call."""
+    level = mv.FloorLevel((("F5", ("p1",)),))
+    for mode in mf.MODES:
+        def note(names):
+            return mf.floor_note(level, window_tokens=128_000, mode=mode, tool_names=names,
+                                 lowered_from=None if mode == "max" else "max")
+
+        for names in (None, ("chronicle_write",), ("compact_context", "list_available_tools", "enable_tools")):
+            assert "as a page (chronicle_write kind=page) or folding old pages (kind=part)" in note(names), (mode, names)
+        for names in (("list_available_tools",), (), ("memory_read", "knowledge_read")):
+            text = note(names)
+            assert "Nothing is lost: memory_read reads each." in text, (mode, names)
+            assert "chronicle_write" not in text and "kind=part" not in text, (mode, names)
 
 
 def test_the_shortest_view_counts_the_longest_path_line():
@@ -264,9 +284,11 @@ def test_the_shortest_view_counts_the_longest_path_line():
         return mf.view_tokens(mv.render_story(snapshot, level)) + mf.view_tokens(
             mv.render_room(snapshot, level, floor_note=note))
 
-    totals = {names: shortest(names) for names in (None, (), ("enable_tools",), ("list_available_tools",))}
-    assert totals[("list_available_tools",)] > totals[("enable_tools",)] > totals[None]
-    assert mf.minimal_view_tokens(snapshot, window_tokens=128_000) == max(totals.values())
+    longest = ("chronicle_write", "list_available_tools")  # the sealing sentence and the longest path line
+    totals = {names: shortest(names) for names in (None, (), ("enable_tools",), ("list_available_tools",), longest)}
+    assert totals[longest] > totals[("list_available_tools",)] > totals[()]
+    assert totals[longest] > totals[("enable_tools",)] > totals[None]
+    assert mf.minimal_view_tokens(snapshot, window_tokens=128_000) == max(totals.values()) == totals[longest]
 
 
 def test_an_owner_target_takes_only_its_steps_and_names_the_mode_budget():

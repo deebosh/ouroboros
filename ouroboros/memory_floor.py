@@ -50,8 +50,10 @@ _SHOWN = (("F2", "{} of my replies"), ("F7", "{} lines of people in this room"),
           ("F6", "{} lines of people in other rooms"), ("F4", "{} records of this room's page"),
           ("F5", "{} pages or parts of my story"), ("F3", "the retold records of {} rooms (one line per room)"),
           ("F1", "{} task fact lines"), ("F1b", "{} other open rooms"))
-# One name set per line ``memory_read_path`` can print: the shortest view takes the longest.
-_PATH_CASES = ((), ("enable_tools",), ("list_available_tools",))
+# One name set per closing ``floor_note`` can print (``memory_read_path``, with or without the
+# chronicle_write sentence): the shortest view takes the longest.
+_PATH_CASES = ((), ("enable_tools",), ("list_available_tools",), ("chronicle_write", "list_available_tools"))
+_SEALING_TOOLS = frozenset({"chronicle_write", "enable_tools"})  # sent, or loadable through enable_tools
 
 
 def view_tokens(text: str) -> int:
@@ -161,7 +163,10 @@ def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
                lowered_from: Optional[str] = None, tool_names: Optional[Iterable[str]] = None) -> str:
     """``### Physical floor``: a fact and a possibility for the mind, exactly when a step past F1/F1b ran
     or the window lowered the task's starting mode; never an instruction or a threshold. In Nano it
-    closes with how this request reaches ``memory_read`` (``tool_names``: the schemas it sends)."""
+    closes with how this request reaches ``memory_read`` (``tool_names``: the schemas it sends). The
+    sealing possibility is named only when the request can call ``chronicle_write``: it sends it or
+    ``enable_tools`` (unknown schemas keep it); like the path line, a fact of the request, not a role."""
+    names = None if tool_names is None else tuple(tool_names)
     counts = dict(level.steps)
     asked = set(counts) - set(_COLLAPSING)
     if not asked and not lowered_from:
@@ -172,15 +177,16 @@ def floor_note(level: mv.FloorLevel, *, window_tokens: Optional[int], mode: str,
             [f"the {name} mode budget ({target_tokens} tokens)"] if level.by_budget else [])
         subject = " and ".join(bounds)
         shown = ", ".join(text.format(counts[step]) for step, text in _SHOWN if counts.get(step))
+        sealing = (" Sealing a closed part of the open conversation as a page (chronicle_write kind=page) or folding "
+                   "old pages (kind=part) brings it back in my own words."
+                   if names is None or _SEALING_TOOLS & set(names) else "")
         lines.append(f"{subject[0].upper()}{subject[1:]} {'do' if len(bounds) > 1 else 'does'} not hold all of my "
-                     "memory verbatim. Shown above only by "
-                     f"address: {shown}. Nothing is lost: memory_read reads each. Sealing a closed part of the open "
-                     "conversation as a page (chronicle_write kind=page) or folding old pages (kind=part) brings it "
-                     "back in my own words.")
+                     f"memory verbatim. Shown above only by address: {shown}. Nothing is lost: memory_read reads "
+                     f"each.{sealing}")
     if lowered_from:
         lines.append(f"This window ({window_tokens} tokens) cannot hold {lowered_from.capitalize()} with even the "
                      f"shortest view of my memory; this task started in {name}.")
-    path = memory_read_path(tool_names) if mode == "nano" else ""
+    path = memory_read_path(names) if mode == "nano" else ""
     return "\n".join(lines + [path] if path else lines)
 
 
