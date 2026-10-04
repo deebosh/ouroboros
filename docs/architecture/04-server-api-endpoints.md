@@ -78,8 +78,16 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `/api/owner/capability-ack` | `gateway.settings.api_acknowledge_capability` |
 | GET | `/api/ui/preferences` | `gateway.ui_preferences.api_ui_preferences_get` |
 | POST | `/api/ui/preferences` | `gateway.ui_preferences.api_ui_preferences_post` |
+| GET | `/api/ui/i18n` | `gateway.ui_i18n.api_ui_i18n_get` — the install's interface language and its translation memory; a read never starts generation |
+| POST | `/api/ui/i18n/language` | `gateway.ui_i18n.api_ui_i18n_language_post` — choose the language (locked owner-settings write of `OUROBOROS_UI_LANGUAGE`; broadcasts `ui_language_changed`) |
+| POST | `/api/ui/i18n/missing` | `gateway.ui_i18n.api_ui_i18n_missing_post` — strings the renderer could not translate, shape-filtered and bounded, queued for the generator |
+| POST | `/api/ui/i18n/import` | `gateway.ui_i18n.api_ui_i18n_import_post` — an enterprise or community memory file (schema 1); owner pins stay |
+| GET | `/api/ui/i18n/export` | `gateway.ui_i18n.api_ui_i18n_export_get` — the memory file as a download |
+| POST | `/api/ui/i18n/regenerate` | `gateway.ui_i18n.api_ui_i18n_regenerate_post` — drop generated entries, keep owner and imported ones |
 | GET | `/api/desktop/autostart` | `gateway.desktop_autostart.api_desktop_autostart_get`: host OS `{state}`, plus `reason` when unavailable |
 | POST | `/api/desktop/autostart` | `gateway.desktop_autostart.api_desktop_autostart_post`: exactly `{enabled: boolean}`, returns observed `{state}`; 400 invalid body, 409 unavailable, 500 OS failure; public `owner_audit`, no settings mirror |
+| GET | `/api/desktop/background` | `gateway.desktop_autostart.api_desktop_background_get`: keep running after the window closes, `{state: unavailable\|off\|on}` plus `reason` when unavailable |
+| POST | `/api/desktop/background` | `gateway.desktop_autostart.api_desktop_background_post`: exactly `{enabled: boolean}`; writes `OUROBOROS_DESKTOP_KEEP_RUNNING` under the document lock; 400/409 `saved=false`, 503 contended lock; `owner_audit` |
 | GET | `/api/model-catalog` | `gateway.models.api_model_catalog` |
 | POST | `/api/openai-compatible/models` | `gateway.models.api_openai_compatible_models` |
 | POST | `/api/providers/test` | `gateway.models.api_provider_test` |
@@ -137,6 +145,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | GET | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/chat/operations/{operation_ref:path}` | `gateway.host_service._api_chat_operation` (the calling skill's own accepted message: pending, running with its task or turn, the durable answer, or the terminal task status) |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/chat/cancel` | `gateway.host_service._api_chat_cancel` (the existing cancellation owner on work that message started; a typed outcome, never a cancellation that did not happen) |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/chat/decision` | `gateway.host_service._api_chat_decision` (the `task_decision.answer_decision` ingress relayed for a transport skill) |
+| POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/ui/language` | `gateway.host_service._api_ui_language` (the owner's interface-language choice relayed for a transport skill under `inject_chat`; the `ui_i18n.choose_language` writer the browser's `/api/ui/i18n/language` uses, typed refusals passed through) |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/turn` | `gateway.host_service._api_presence_turn` |
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/delivery` | `gateway.host_service._api_presence_delivery` |
 | GET | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/presence/work/{work_ref}` | `gateway.host_service._api_presence_work` |
@@ -144,9 +153,7 @@ Every `/api/files/*` operation resolves its requested path and refuses the opera
 | POST | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/notify` | `gateway.host_notify._api_notify` (`notify_owner` grant: one signed `skill_notice` System row in the owner's chat; no model turn) |
 | WS | `127.0.0.1:${OUROBOROS_HOST_SERVICE_PORT:-8767}/events` | `gateway.host_service._ws_events` |
 
-Rationale: `server.py` owns process startup/lifespan/static mounting, while `gateway/*` owns browser-facing HTTP/WS contracts; this keeps UI and runtime coupling explicit and testable.
-
-
+`server.py` owns startup/lifespan/static files; `gateway/*` owns HTTP/WS. Update status, log-tail and schedule-list reads run off-loop; passive status generates no letter.
 
 Cancel accepts optional `cascade`, `stop_policy` and `stop_action_id` (≤200 characters). Reuse identity for the same action after uncertain response; later Stop uses a new ID. Legacy omission keeps existing ingress semantics without exact replay assurance.
 

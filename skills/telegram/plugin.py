@@ -32,7 +32,7 @@ from .lib.telegram_state import (
     _mirror_progress_enabled, _render_subagent_card, _data_dir,
     _jsonl_tail, _load_runtime_state, _read_json_file, _child_row_held_for_root,
 )
-from .lib import telegram_inbound, telegram_quiz
+from .lib import telegram_i18n, telegram_inbound, telegram_quiz
 from .lib.telegram_health import _collect_health, _build_menu_tasks
 from .lib.telegram_notifier import _make_notifier
 from .lib.miniapp_registration import _read_status, register as register_miniapp
@@ -122,14 +122,14 @@ def _build_menu_keyboard(command_mode: str, lang: str = "en") -> tuple[str, list
             [[{"text": t["btn_settings"], "callback_data": "nav:settings"}]],
         )
 
-    header = t["menu_title"].format(command_mode=command_mode, lang=lang.upper())
+    header = t.format("menu_title", command_mode=command_mode, language=telegram_i18n.label(lang))
     keyboard = [
         [
             {"text": t["btn_metrics"], "callback_data": "nav:status"},
             {"text": t["btn_mind"], "callback_data": "nav:mind"},
         ],
         [
-            {"text": "📋 Задачи" if lang == "ru" else "📋 Tasks", "callback_data": "nav:tasks"},
+            {"text": t["btn_tasks"], "callback_data": "nav:tasks"},
         ],
         [
             {"text": t["btn_settings"], "callback_data": "nav:settings"},
@@ -141,7 +141,7 @@ def _build_menu_keyboard(command_mode: str, lang: str = "en") -> tuple[str, list
 def _build_menu_status(command_mode: str, lang: str = "en", info_text: str = "") -> tuple[str, list[list[dict]]]:
     """Return status header and keyboard with Refresh and Back button."""
     t = _LOCALIZED_TEXTS[lang]
-    header = t["metrics_title"].format(info_text=info_text)
+    header = t.format("metrics_title", info_text=info_text)
     keyboard = [
         [{"text": t["btn_refresh"], "callback_data": "cmd_act:update_status"}],
         [{"text": t["btn_back"], "callback_data": "nav:menu"}]
@@ -153,9 +153,9 @@ def _build_menu_mind(command_mode: str, lang: str = "en", bg_enabled: bool = Fal
     """Return mind controlling header and buttons."""
     t = _LOCALIZED_TEXTS[lang]
     state_str = t["mind_state_active"] if bg_enabled else t["mind_state_sleeping"]
-    header = t["mind_title"].format(state_str=state_str)
+    header = t.format("mind_title", state_str=state_str)
     if thoughts_text:
-        header += t["mind_thoughts"].format(thoughts_text=thoughts_text)
+        header += t.format("mind_thoughts", thoughts_text=thoughts_text)
 
     row = []
     if command_mode == _COMMAND_MODE_FULL:
@@ -214,23 +214,24 @@ def _load_recent_thoughts(api) -> str:
         return f"_Failed to read log: {exc}_"
 
 
-def _bot_commands(command_mode: str) -> list:
-    """Telegram '/' menu command list. Owner-control commands appear only in
-    full_access — they already forward via the raw-command path, so listing them
-    here just makes them discoverable/tappable (no new authority)."""
+def _bot_commands(command_mode: str, lang: str = "") -> list:
+    """Telegram '/' menu command list in the install language. Owner-control commands
+    appear only in full_access — they already forward via the raw-command path, so
+    listing them here just makes them discoverable/tappable (no new authority)."""
+    t = _LOCALIZED_TEXTS[lang]
     cmds = [
-        {"command": "menu", "description": "Interactive panel / Меню"},
-        {"command": "language", "description": "Select language / Выбор языка"},
-        {"command": "status", "description": "Request status / Статус"},
-        {"command": "help", "description": "Usage guide / Справка"},
+        {"command": "menu", "description": t["cmd_menu"]},
+        {"command": "language", "description": t["cmd_language"]},
+        {"command": "status", "description": t["cmd_status"]},
+        {"command": "help", "description": t["cmd_help"]},
     ]
     if command_mode == _COMMAND_MODE_FULL:
         cmds += [
-            {"command": "evolve", "description": "Start an evolution campaign / Запустить эволюцию"},
-            {"command": "bg", "description": "Background consciousness on/off / Фоновое сознание"},
-            {"command": "review", "description": "Run a self-review / Само-ревью"},
-            {"command": "restart", "description": "Restart the agent / Перезапуск"},
-            {"command": "panic", "description": "Emergency stop / Аварийный стоп"},
+            {"command": "evolve", "description": t["cmd_evolve"]},
+            {"command": "bg", "description": t["cmd_bg"]},
+            {"command": "review", "description": t["cmd_review"]},
+            {"command": "restart", "description": t["cmd_restart"]},
+            {"command": "panic", "description": t["cmd_panic"]},
         ]
     return cmds
 
@@ -253,18 +254,65 @@ def _build_menu_settings(api, command_mode: str, lang: str = "en") -> tuple[str,
     return header, keyboard
 
 
-def _build_language_keyboard(lang: str = "en") -> tuple[str, list[list[dict]]]:
-    """Return (header_text, inline_keyboard_rows) for language selection."""
+def _build_language_keyboard(lang: str = "") -> tuple[str, list[list[dict]]]:
+    """(header_text, inline_keyboard_rows) for the install's interface language: English,
+    every language with a translation memory on disk (the current one marked), and the
+    hint that any other language is one ``/language <name>`` away."""
     t = _LOCALIZED_TEXTS[lang]
-    header = t["lang_title"]
-    rows = [
-        [
-            {"text": t["lang_en"], "callback_data": "set_lang:en"},
-            {"text": t["lang_ru"], "callback_data": "set_lang:ru"}
-        ],
-        [{"text": t["btn_back"], "callback_data": "nav:menu"}]
-    ]
+    header = t.format("lang_title", language=telegram_i18n.label(lang))
+    rows = [[{"text": t["lang_english"], "callback_data": "set_lang:en"}]]
+    for item in telegram_i18n.known_languages():
+        tag = str(item.get("language") or "")
+        if not tag or telegram_i18n.english(tag):
+            continue
+        mark = "• " if tag == lang else ""
+        rows.append([{"text": f"{mark}{item.get('label') or tag}", "callback_data": f"set_lang:{tag}"}])
+    rows.append([{"text": t["btn_back"], "callback_data": "nav:menu"}])
     return header, rows
+
+
+async def _choose_language(api, requested: str, lang: str, notify) -> str:
+    """Relay the owner's choice (a tag, a name, a description) to the host's ONE language
+    writer (Host Service ``/ui/language`` → ``ui_i18n.choose_language``) and tell the owner
+    through ``notify(text)``. Returns the tag now in effect, or "" when nothing changed."""
+    t = _LOCALIZED_TEXTS[lang]
+    try:
+        status, body = await _host_post(api, "/ui/language", {"language": requested})
+    except Exception as exc:
+        await notify(t.format("lang_failed", reason=type(exc).__name__))
+        return ""
+    if status < 400:
+        new_lang = str(body.get("language") or "")
+        await notify(_LOCALIZED_TEXTS[new_lang].format("lang_changed", language=telegram_i18n.label(new_lang)))
+        return new_lang
+    code = str(body.get("code") or "")
+    if code == "language_needs_model":
+        await notify(t["lang_needs_model"])
+    else:
+        await notify(t.format("lang_failed", reason=str(body.get("error") or body.get("message") or status)))
+    return ""
+
+
+async def _migrate_bridge_language(api, settings: Dict[str, Any], lang: str) -> str:
+    """Once: the bridge's retired private ``TELEGRAM_LANGUAGE`` becomes the install's
+    interface language (an owner who chose Russian here before the install-wide language
+    existed keeps Russian — now everywhere). Marked done whatever the host answered, so a
+    refusal is logged once and never retried on every start."""
+    target = telegram_i18n.migration_target(settings)
+    if not target:
+        return lang
+    try:
+        status, body = await _host_post(api, "/ui/language", {"language": target})
+    except Exception as exc:
+        api.log("warning", f"Telegram language migration deferred ({type(exc).__name__}); retried at the next start.")
+        return lang
+    outcome = str(body.get("language") or target) if status < 400 else f"refused:{body.get('code') or status}"
+    merge_settings(pathlib.Path(api.get_state_dir()), {"TELEGRAM_LANGUAGE_MIGRATED": outcome})
+    if status < 400:
+        api.log("info", f"The bridge language {target} became the install's interface language.")
+        return str(body.get("language") or target)
+    api.log("warning", f"Telegram language migration refused by the host ({outcome}).")
+    return lang
 
 
 def _bridge_status(api) -> dict[str, Any]:
@@ -496,7 +544,7 @@ async def _compile_status_text(api, lang: str = "en") -> str:
         bg_status_raw = t["bg_active_label"] if bg_enabled else t["bg_sleeping_label"]
 
     spent_spec = "unavailable" if spent_usd is None else f"{spent_usd:.4f}"
-    unbounded = "без лимита" if lang == "ru" else "unbounded"
+    unbounded = t["budget_unbounded"]
     total_spec = (
         "unavailable" if total_budget is None
         else unbounded if total_budget <= 0
@@ -508,18 +556,8 @@ async def _compile_status_text(api, lang: str = "en") -> str:
         else f"{max(0.0, total_budget - spent_usd):.4f}"
     )
 
-    template = t["metrics_budget_status"]
-    template = template.replace("{spent_usd:.4f}", "{spent_usd_str}")
-    template = template.replace("{total_budget:.2f}", "{total_budget_str}")
-    template = template.replace("{rem:.4f}", "{rem_str}")
-
-    status_str = template.format(
-        spent_usd_str=spent_spec,
-        total_budget_str=total_spec,
-        rem_str=rem_spec,
-        branch=branch,
-        bg_status=bg_status_raw
-    )
+    status_str = t.format("metrics_budget_status", spent_usd=spent_spec, total_budget=total_spec, rem=rem_spec,
+                          branch=branch, bg_status=bg_status_raw)
     status_str += "\n" + await asyncio.to_thread(_collect_health, api, lang)
     return status_str
 
@@ -530,9 +568,9 @@ def _poller_preferences(api):
     maximum = _setting_int(settings, "TELEGRAM_MAX_UPDATES_PER_POLL", 20, minimum=1, maximum=100)
     mode = str(settings.get("TELEGRAM_COMMAND_MODE") or _COMMAND_MODE_FULL).strip().lower()
     mode = mode if mode in _VALID_COMMAND_MODES else _COMMAND_MODE_STRICT
-    language = str(settings.get("TELEGRAM_LANGUAGE") or "en").strip().lower()
-    language = language if language in ("en", "ru") else "en"
-    return settings, pinned, maximum, mode, language
+    # The install's interface language: one choice for the web UI, the desktop window and
+    # this bot (OUROBOROS_UI_LANGUAGE); "" reads as English.
+    return settings, pinned, maximum, mode, telegram_i18n.language()
 
 
 async def _authorized_owner(api, client, update, pinned_chat: str, lang: str) -> str | None:
@@ -576,7 +614,7 @@ async def _validate_bot(api, client, command_mode: str, lang: str) -> None:
     # appear in full_access — they already forward via the raw-command
     # path; listing them here just makes them discoverable/tappable.
     try:
-        await client.call("setMyCommands", data={"commands": json.dumps(_bot_commands(command_mode))})
+        await client.call("setMyCommands", data={"commands": json.dumps(_bot_commands(command_mode, lang))})
         api.log("info", "Telegram bot commands configured successfully")
     except Exception as exc:
         api.log("warning", f"Failed to set Telegram bot commands: {exc}")
@@ -588,6 +626,7 @@ async def _validate_bot(api, client, command_mode: str, lang: str) -> None:
 async def _start_poller(api):
     try:
         _settings, pinned_chat, max_updates, command_mode, lang = _poller_preferences(api)
+        lang = await _migrate_bridge_language(api, _settings, lang)
         client = _telegram_client(api)
         offset = _load_offset(api)
         try:
@@ -775,17 +814,18 @@ async def _poller(api) -> None:
 
                         # --- Handle language selection buttons ---
                         if cb_data.startswith("set_lang:"):
-                            new_lang = cb_data.split(":", 1)[1]
-                            if new_lang in ("en", "ru"):
-                                merge_settings(pathlib.Path(api.get_state_dir()), {"TELEGRAM_LANGUAGE": new_lang})
+                            requested = cb_data.split(":", 1)[1]
 
+                            async def _toast(text: str, _cb_id: str = cb_id) -> None:
+                                await client.answer_callback_query(_cb_id, text=text)
+
+                            new_lang = await _choose_language(api, requested, lang, _toast)
+                            if new_lang or requested == "en":
                                 lang = new_lang
-                                await client.answer_callback_query(cb_id, text=_LOCALIZED_TEXTS[lang]["lang_changed"])
-
-                                # Smoothly return to menu panel in updated language
-                                header, keyboard = _build_menu_keyboard(command_mode, lang)
-                                await _edit_panel(api, client, cb_chat_id, cb_message_id, header, keyboard)
-                                continue
+                            # Smoothly return to menu panel in the language now in effect
+                            header, keyboard = _build_menu_keyboard(command_mode, lang)
+                            await _edit_panel(api, client, cb_chat_id, cb_message_id, header, keyboard)
+                            continue
 
                         # --- Quiz answers (#472): a tapped option reaches the host's
                         # decision ingress; the owner is already verified above.
@@ -799,7 +839,7 @@ async def _poller(api) -> None:
                         if cb_data.startswith(("set_model:", "set_budget:")):
                             await client.answer_callback_query(
                                 cb_id,
-                                text=("Используйте Mini App." if lang == "ru" else "Use the Mini App."),
+                                text=_LOCALIZED_TEXTS[lang]["use_miniapp"],
                             )
                             continue
 
@@ -815,11 +855,7 @@ async def _poller(api) -> None:
                     )
                     if authorized_chat:
                         try:
-                            notice = (
-                                "Не удалось передать это обновление Telegram в Ouroboros."
-                                if lang == "ru"
-                                else "Could not deliver that Telegram update to Ouroboros."
-                            )
+                            notice = _LOCALIZED_TEXTS[lang]["update_failed"]
                             await client.send_message(int(authorized_chat), notice)
                         except Exception:
                             api.log("warning", "Telegram update failure notice could not be delivered.")
@@ -876,12 +912,22 @@ async def _handle_owner_message(
             await client.send_message(chat_id, header)
         return
 
-    # Handle /language command locally — always allowed
+    # Handle /language locally — always allowed. Bare: the keyboard. With an argument
+    # ("/language Quenya", "/language pt-BR", "/language invent a language and translate
+    # everything into it"): the owner's words go to the host's one language writer.
     is_lang_cmd = _is_exact_bot_command(cleaned_text, "/language")
     if is_lang_cmd:
         header, keyboard = _build_language_keyboard(lang)
         await client.send_message_with_inline_keyboard(chat_id, header, keyboard)
         return
+    if cleaned_text.startswith("/language ") or cleaned_text.startswith("/language@"):
+        requested = text.split(None, 1)[1].strip() if len(text.split(None, 1)) > 1 else ""
+        if requested:
+            async def _reply(message: str) -> None:
+                await client.send_message(chat_id, message)
+
+            await _choose_language(api, requested, lang, _reply)
+            return
 
     # Handle /help command locally — always allowed
     is_help_cmd = _is_exact_bot_command(cleaned_text, "/help")
@@ -982,7 +1028,7 @@ def _make_outbound(api):
             chat_id = _target_chat(local_settings, event)
             if not chat_id:
                 return
-            lang = str(local_settings.get("TELEGRAM_LANGUAGE") or "en").strip().lower()
+            lang = telegram_i18n.language()
 
             # Subagent lifecycle → one dedicated bubble per subagent, edited in
             # place across its lifecycle (not a flood of new messages). Since 6.22
@@ -1144,17 +1190,18 @@ def _make_document(api):
                     task_id = str(event.get("task_id") or file_ref.get("task_id") or "")
                     source = await asyncio.to_thread(resolve_task_file_reference, _data_dir(api), task_id, file_ref)
                     if file_ref["size"] > _MAX_TELEGRAM_UPLOAD_BYTES:
-                        notice = f"{filename} is saved in Ouroboros. This file exceeds the Telegram upload limit and cannot be mirrored here."
+                        t = _LOCALIZED_TEXTS[telegram_i18n.language()]
+                        notice = t.format("file_too_large_notice", filename=filename)
                         status = await asyncio.to_thread(_read_status, api)
                         if status.get("state") == "ready" and status.get("public_url"):
                             try:
                                 await client.send_message_with_inline_keyboard(chat_id, notice,
-                                    [[{"text": "Open Ouroboros", "web_app": {"url": status["public_url"]}}]])
+                                    [[{"text": t["btn_open_app"], "web_app": {"url": status["public_url"]}}]])
                                 return
                             except TelegramRequestRejected as exc:
                                 if not exc.plain_retry_safe:
                                     raise
-                        await client.send_message(chat_id, notice + " Open the app to download it.", parse_mode="")
+                        await client.send_message(chat_id, notice + " " + t["file_open_app_hint"], parse_mode="")
                         return
                     file_handle = source.open("rb")
                     file_bytes = file_handle
@@ -1329,6 +1376,7 @@ def _make_quiz_state(api):
 
 
 def register(api):
+    telegram_i18n.configure(_data_dir(api))
     api.register_supervised_task("poller", _make_poller(api), restart_policy="on_failure", max_restarts=10)
     api.register_supervised_task("notifier", _make_notifier(api, trust_env=_HONOR_ENV_PROXIES), restart_policy="on_failure", max_restarts=10)
     api.subscribe_event("chat.outbound", _make_outbound(api))
@@ -1375,12 +1423,6 @@ def register(api):
                                  "Leave empty to keep the saved proxy. Disable and re-enable the skill after changing it."},
                         {"name": "clear_telegram_proxy", "label": "Clear saved Telegram proxy", "type": "checkbox",
                          "help": "Remove the proxy instead of replacing it."},
-                        {"name": "TELEGRAM_LANGUAGE", "label": "Language / Язык", "type": "select",
-                         "options": [
-                             {"value": "en", "label": "🇬🇧 English"},
-                             {"value": "ru", "label": "🇷🇺 Русский"},
-                         ],
-                         "placeholder": "en"},
                         {"name": "TELEGRAM_COMMAND_MODE", "label": "Command mode", "type": "select",
                          "options": [
                              {"value": "full_access", "label": "Full access (default)"},

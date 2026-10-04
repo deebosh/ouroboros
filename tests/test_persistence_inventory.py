@@ -602,7 +602,9 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 311 -> 312 (memory sprint, memory writers): ``memory/chronicle/.fallback.lock``, the fallback memory
 # writer's no-wait lock between two roots' drafts; its own section-6 row (its refusal receipts live in the
 # journal's scan state, the ``records.jsonl`` row).
-EXPECTED_SCAN_PATHS = 312
+# 312 -> 314 (target merge 8d612997c): the two paths the target added on its own
+# 308 -> 310 step land beside the memory sprint's four.
+EXPECTED_SCAN_PATHS = 314
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts

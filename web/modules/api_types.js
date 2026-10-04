@@ -1,4 +1,4 @@
-/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`. */
+/** Dependency-free JSDoc mirror of `ouroboros.gateway.contracts`; the interface-language envelopes (`UiI18n*`) sit in ./ui_i18n_types.js. */
 /**
  * @typedef {Object} CostPresentation
  * @property {'own'|'root_tree'} scope
@@ -1405,7 +1405,6 @@
  * @property {string=} archived_at
  * @property {string=} archived_reason
  */
-
 /**
  * Same request/live-attempt or already armed latch returns one acknowledgement with duplicate=true.
  * @typedef {Object} TaskHurryResponse
@@ -1437,6 +1436,7 @@
  * @typedef {Object} UiPreferencesResponse
  * @property {string[]} widget_order
  * @property {Object.<string,'auto'|'manual'|'retain'>} widget_start_mode  // owner per-card launch-policy override, keyed "<skill>:<tab_id>"
+ * @property {Object.<string,{w:number,h:number}>} widget_size  // owner Widgets card width: w masonry columns the card spans (12 = full width), h 0 (reserved)
  * @property {boolean} nested_subagents_expanded
  * @property {number} sidebar_width  // px; 0 = CSS default (v6.33.0)
  * @property {number} project_panel_width  // px; 0 = CSS default
@@ -1445,7 +1445,7 @@
  * @property {boolean=} ok
  */
 /**
- * Host sign-in registration as its OS reports it; `reason` only when unavailable.
+ * Host sign-in registration as its OS reports it, or (/api/desktop/background) the keep-running choice; `reason` only when unavailable.
  * @typedef {Object} DesktopAutostartResponse
  * @property {'unavailable'|'off'|'on'|'other_copy'|'disabled_by_os'} state
  * @property {string=} reason
@@ -1541,24 +1541,24 @@
  */
 
 /**
- * The LLM-written update letter, delivered inside the ordinary
- * `/api/update/status` and `/api/update/check` payloads as the additive
- * `letter` key (absent or null when the install has none). It outlives the
- * update it describes: `relation` says what the running checkout is to the
- * letter's target, and the panel relabels the paragraph instead of deleting
- * it.
+ * LLM-written update letter in `/api/update/status` and `/api/update/check`.
+ * The additive `letter` is absent/null without a stored letter. It outlives its update;
+ * `relation` compares startup source to target so the panel can relabel it instead of deleting it.
  *
  * @typedef {Object} UpdateLetter
  * @property {'ready'|'failed'} state
- * @property {'pending'|'applied'|'superseded'|'other'} relation  offered now / already the running version / a newer target appeared after it was written / HEAD moved elsewhere
- * @property {string} text  markdown, one short paragraph; may be empty when a failed write has no previous good letter
+ * @property {'pending'|'applied'|'superseded'|'other'} relation  offered now / included in running source / newer target appeared / source moved elsewhere
+ * @property {string} text  markdown; may be empty when a failed write has no previous good letter
  * @property {string} author_version  the Ouroboros version that wrote it
  * @property {string} target_version  the version it describes
  * @property {string} written_at  ISO 8601
- * @property {''|'no_credentials'|'budget_exhausted'|'context_overflow'|'timeout'|'material_unavailable'|'output_truncated'|'provider_unavailable'|'empty_response'} error_kind
+ * @property {''|'no_credentials'|'budget_exhausted'|'context_overflow'|'timeout'|'material_unavailable'|'output_truncated'|'provider_unavailable'|'empty_response'|'runtime_source_unavailable'} error_kind
  * @property {string} error_text  short, secret-free; empty when state is ready
  * @property {{base_sha: string, target_sha: string, update_channel: string, target_ref: string}} key  the exact range the letter was written for
  * @property {boolean} has_last_good  `text` is the previous good letter kept through a failed rewrite; `relation`, `key` and the provenance describe THAT letter, not the range that failed
+ * @property {boolean} description_current  successful shown text covers the exact running-source to checked-target range
+ * @property {string} failed_at  ISO 8601 time of the failed attempt, independent of the shown text's written_at
+ * @property {({base_sha: string, target_sha: string, update_channel: string, target_ref: string}|null)} latest_failed_key  the failed attempt's range, never the provenance of retained text
  */
 
 export const MAX_LINK_ACTIONS = 12;

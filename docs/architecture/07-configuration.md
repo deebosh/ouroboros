@@ -94,6 +94,8 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC | 60 | Project-naming call ceiling |
 | OUROBOROS_PROJECT_NAMING_ASYNC_TIMEOUT_SEC | 8 | Inline naming bound when a card becomes a project (`gateway/projects.py`); a direct Main turn is named in the background once it starts working (`spawn_turn_namer`, bounded by `OUROBOROS_PROJECT_NAMING_TIMEOUT_SEC` + 30 s) |
 | OUROBOROS_UPDATE_LETTER_TIMEOUT_SEC | 120 | Update-letter LIGHT one-shot ceiling, slot wait and provider call together (`update_letter.py`) |
+| OUROBOROS_UI_TRANSLATION_TIMEOUT_SEC | 120 | One translation-generator batch call, slot wait and provider call together (`ui_translation.py`); the output budget per batch is the module constant `UI_TRANSLATION_MAX_TOKENS` |
+| OUROBOROS_UI_LANGUAGE | "" | The owner's interface language for this install: a BCP-47 tag (`ru`, `pt-BR`, `art-x-<slug>` for an invented language), an open set; `""` = not chosen (the English source renders), `en` = chosen English. Written only by `POST /api/ui/i18n/language` through the locked owner writer (`ENDPOINT_WRITTEN_SETTINGS`: the generic settings save skips it and names the writer in `ignored_keys`), yet exported to the environment like any other setting, so a restart, the worker and the Telegram skill read the choice; read live by the gateway and the Telegram skill, by the mind's runtime block at its next attempt (`ui_language.py`, `i18n_memory.py`, §3 Settings and onboarding) |
 | OUROBOROS_FALLBACK_COOLDOWN_ENABLED | true | 429-aware per-process model cooldown |
 | OUROBOROS_FALLBACK_COOLDOWN_SEC | 120 | Cooldown window |
 | OUROBOROS_FALLBACK_ATTEMPTS_PER_MODEL | 1 | Attempts per model in the fallback walk |
@@ -129,6 +131,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | OUROBOROS_OR_PROVIDER | "" | OpenRouter provider-routing preference merged into requests |
 | OUROBOROS_SEARCH_CODE_WALL_SEC | 45 | search_code wall-clock budget |
 | OUROBOROS_PRESENTATION | (unset) | Env-only: launcher-exported presentation (`desktop_window`/`browser_fallback`/external `android_app`; absent renders `web`) |
+| OUROBOROS_DESKTOP_BACKGROUND | (unset) | Env-only: `1` when the desktop launcher can keep running with its window hidden (Windows, macOS); without it the keep-running control is unavailable |
 | OUROBOROS_EXTERNAL_HOST_UPDATE | (unset) | Env-only: selected external-host installer supporting read-only `--check`; no second Git updater |
 | OUROBOROS_EXTERNAL_HOST_RESULT | (unset) | Env-only: launcher-verified installed-artifact/input/source facts for one core generation; not a reusable persisted PASS |
 | OUROBOROS_USER_FILES_ROOT | "" (home) | Env-only: user_files jail root (empty = `$HOME`) |
@@ -210,6 +213,7 @@ A registry of `config.SETTINGS_DEFAULTS` (exact defaults canonical in `settings_
 | OUROBOROS_EVOLUTION_PERSISTENT_OBJECTIVE | "" | Owner-only persistent campaign bias; still passes review gates |
 | LOCAL_MODEL_PORT | 8766 | Local-model server port |
 | OUROBOROS_HOST_SERVICE_PORT | 8767 | Host Service port (loopback-only; §12) |
+| OUROBOROS_DESKTOP_KEEP_RUNNING | false | Desktop window close keeps Ouroboros running in the background (Windows, macOS; `launcher_background.py`). Disk-authored consent: absent until the owner chooses in Behavior or answers the first close's one question (`GET/POST /api/desktop/background`) |
 | OUROBOROS_PRESENCE_MAX_ACTIVE | 2 | Cross-process Presence turn cap (UI-bounded 1–20) |
 | LOCAL_MODEL_CHAT_FORMAT | "" | Local-model chat template override |
 | GITHUB_TOKEN | "" | GitHub token (push/PR/issues) |

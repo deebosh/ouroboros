@@ -114,6 +114,8 @@ _MOVED_OWNERS = {
     "CLAUDEXOR_ADMISSION_WAIT_SEC": settings_defaults,
     "CLAUDEXOR_ADMISSION_POLL_SEC": settings_defaults,
     "ENDPOINT_AUTHORED_SETTINGS": settings_defaults,
+    "ENDPOINT_WRITTEN_SETTINGS": settings_defaults,
+    "ENDPOINT_WRITERS": settings_defaults,
     # v6.104.0 upstream: the OpenRouter shipped-model defaults arrive in the
     # vocabulary leaf the v7 split created for exactly this class of fact.
     "OPENROUTER_DEFAULTS": settings_defaults,
@@ -211,6 +213,7 @@ _MOVED_OWNERS = {
     "get_task_idle_timeout_sec": runtime_limits,
     "get_vision_caption_timeout_sec": runtime_limits,
     "get_update_letter_timeout_sec": runtime_limits,
+    "get_ui_translation_timeout_sec": runtime_limits,
     "get_websearch_timeout_sec": runtime_limits,
 }
 
@@ -323,5 +326,6 @@ def test_settings_extraction_size_bounds_have_meaningful_headroom():
     assert counts["ouroboros.config"] <= 1000
     assert all(count <= 1000 for count in counts.values())
     # 500 -> 520: the Z.ai direct provider adds its key and plan rows to the leaf (PR #1207).
-    assert counts["ouroboros.settings_defaults"] <= 520
+    # 520 -> 521: the desktop keep-running consent key's default row (PR #1404; its disk-authored entry adds none).
+    assert counts["ouroboros.settings_defaults"] <= 521
     assert (PACKAGE / "config.py").is_file()
