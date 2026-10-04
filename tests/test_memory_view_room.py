@@ -425,8 +425,8 @@ def test_this_room_has_its_head_retold_records_origin_words_and_notes(tmp_path):
 def test_main_room_page_shows_the_room_less_retellings_whole_to_its_integrator_and_a_pointer_elsewhere(tmp_path):
     """The flat summary and a room-less era predate rooms and were Main's memory: whole in
     Main's room page, under their own label, for Main's integrator and for a child that starts with the top
-    level of the life account; a pointer in the story, and nothing more, for a nanny in Main, another room or
-    consciousness."""
+    level of the life account; a pointer in the story, and nothing more, for another room or consciousness;
+    nothing at all for a nanny in Main, which carries no story."""
     import json
 
     rooms = shared.world(tmp_path, flat="The retired flat summary of everything.", activate=False)
