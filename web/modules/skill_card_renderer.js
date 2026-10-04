@@ -392,7 +392,7 @@ export function renderInstalledSkillCard(skill, reviewingSkills = new Set(), rep
     </article>`;
 }
 
-/** Patch only state/queue-derived facts; forms, disclosure and open menus keep identity. */
+/** Patch only state/queue/action-derived facts; forms, disclosure and open menus keep identity. */
 export function patchInstalledSkillEnrichment(card, skill, reviewing, repairing, live, options, menu = card) {
     const template = card.ownerDocument.createElement('template');
     template.innerHTML = renderInstalledSkillCard(skill, reviewing, repairing, live, options);
@@ -407,12 +407,19 @@ export function patchInstalledSkillEnrichment(card, skill, reviewing, repairing,
             if (target.getAttribute(attr.name) !== attr.value) target.setAttribute(attr.name, attr.value);
         }
     }
-    for (const selector of ['.skills-status-chip', '.skills-primary-action', '[data-skill-errors]', '.skills-card-desc']) {
+    // An action in flight marks the card and shows its progress row without a list read.
+    for (const name of ['data-reviewing', 'data-repairing']) {
+        if (next.hasAttribute(name)) card.setAttribute(name, next.getAttribute(name));
+        else card.removeAttribute(name);
+    }
+    for (const selector of ['.skills-status-chip', '.skills-primary-action', '[data-skill-errors]', '.skills-card-desc', '.skills-review-progress']) {
         const target = card.querySelector(selector), source = next.querySelector(selector);
         if (!target && source) {
-            // Only virtual queue rows gain a new action or description here.
-            (selector === '.skills-primary-action' ? card.querySelector('.skills-card-toggle')
-                : card.querySelector('.skills-card-title')).appendChild(source);
+            // Only virtual queue rows gain a new action or description here; a
+            // progress row goes under the header, where a fresh render puts it.
+            if (selector === '.skills-primary-action') card.querySelector('.skills-card-toggle').appendChild(source);
+            else if (selector === '.skills-review-progress') (card.querySelector('.skills-lock-hint') || card.querySelector('.skills-card-head')).after(source);
+            else card.querySelector('.skills-card-title').appendChild(source);
         } else if (target && !source) target.remove();
         else if (target && source) {
             attributes(target, source, target.tagName === 'BUTTON' && target.dataset.skillAction === source.dataset.skillAction);
