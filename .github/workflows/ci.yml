@@ -637,6 +637,31 @@ jobs:
           OUROBOROS_DATA_DIR: ${{ runner.temp }}/ouroboros-e2e-cancel/data
           OUROBOROS_SETTINGS_PATH: ${{ runner.temp }}/ouroboros-e2e-cancel/data/settings.json
         run: python -m pytest tests/test_e2e_cancellation_scenarios.py -o addopts="" -o faulthandler_timeout=540 -q
+      # The scenario servers' journals are this lane's traces: without them a red
+      # scenario names an assertion and nothing of what its server did (owner,
+      # 2026-10-04). The servers' data roots are pytest tmp_path trees, not the
+      # OUROBOROS_* roots above (tests/conftest.py isolates every test FROM
+      # those): bare pytest makes its session root `ouroboros-pytest-*` in the
+      # runner's default temp directory, /tmp. Journals and task results only,
+      # with the segments a server rotated past 800 KB into data/archive/ (no
+      # benchmark sentinel here, supervisor/state.py rotate_jsonl_log_if_needed);
+      # a settings file is never uploaded (the lane is keyless; the rule holds).
+      # Diagnostics only, like test-evidence: a failed upload never reddens the
+      # job, so the two scenario passes alone decide it and the release bar.
+      - name: Upload the scenario servers' traces (journals, task results)
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: system-e2e-traces
+          overwrite: true
+          path: |
+            /tmp/ouroboros-pytest-*/**/data/logs/**
+            /tmp/ouroboros-pytest-*/**/data/task_results/**
+            /tmp/ouroboros-pytest-*/**/data/archive/*.jsonl
+            !/tmp/ouroboros-pytest-*/**/settings.json
+          if-no-files-found: warn
+          retention-days: 30
 
   # ──────────────────────────────────────────────────────────────────
   # Manual (paid): the LIVE E2E stand (devtools/e2e_live/run_live_lanes.py)
@@ -691,7 +716,10 @@ jobs:
   # webkit. The run root is under runner.temp (the stand refuses a root inside
   # the repo), the lane settings file (0600, carries the key) is NEVER
   # uploaded: the artifact globs name the manifest, the result index, each
-  # lane's result.json and its screenshots only — no `lanes/**`.
+  # lane's result.json, its screenshots and its traces/ bundle (the lane
+  # server's journals, written key-redacted by the stand and withheld when the
+  # key survives redaction: devtools/e2e_live/traces.py) — no `lanes/**`,
+  # never a lane's data/ directory.
   # ──────────────────────────────────────────────────────────────────
   e2e-live:
     name: e2e-live (SM1 x1 — largest subset feasible under the $30 cap)
@@ -803,8 +831,11 @@ jobs:
               with open(path, "a", encoding="utf-8") as fh:
                   fh.write(text)
           PY
-      - name: Upload run artifacts (manifest, lane results, screenshots)
+      # Diagnostics only: a failed upload never reddens the job; the stand's exit
+      # is the verdict.
+      - name: Upload run artifacts (manifest, lane results, screenshots, traces)
         if: always() && env.HAS_E2E_LIVE_KEY == 'true'
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-live-run
@@ -814,6 +845,7 @@ jobs:
             ${{ runner.temp }}/e2e_live/result_index.jsonl
             ${{ runner.temp }}/e2e_live/lanes/*/result.json
             ${{ runner.temp }}/e2e_live/lanes/*/shots/*.png
+            ${{ runner.temp }}/e2e_live/lanes/*/traces/**
           if-no-files-found: warn
           retention-days: 30
 
