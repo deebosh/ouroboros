@@ -464,12 +464,12 @@ def test_wake_context_carries_a_complete_dialogue_block_without_a_gap(tmp_path):
     _legacy_memory(tmp_path, {"content": "Complete consolidated biography block."})
     _write_schedules(tmp_path, 8)
     story = _story(_wake_context(tmp_path))
-    # The wake has no current room: the retold block (no rooms: an old mixed record) is one
-    # pointer of my story, one read away; its words are not in the wake's view.
-    assert "- Unknown provenance [legacy mixed record]; " in story
-    assert "memory_read(node_id='legacy-b00-rlegacy')" in story
+    # The wake has no current room but integrates my life: the retold first block (no rooms: an
+    # old mixed record) is whole in my story, headed by its id and provenance, never a gap.
+    assert "#### legacy-b00-rlegacy — " in story and " — Unknown provenance [legacy mixed record] — " in story
+    assert "\n  Complete consolidated biography block." in story
     assert "memory gap" not in story and "[MEMORY GAP]" not in story
-    assert "Complete consolidated biography block." not in story
+    assert "memory_read(node_id='legacy-b00-rlegacy')" not in story  # whole, so no pointer line repeats it
 
 
 def test_wake_context_discloses_a_durable_dialogue_gap(tmp_path):

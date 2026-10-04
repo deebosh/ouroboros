@@ -21,10 +21,12 @@ def test_the_open_conversation_starts_after_the_legacy_frontier(tmp_path):
     env, memory, _rooms = world(tmp_path)
     shared.append(memory.drive_root / "logs" / "chat.jsonl",
                   shared.msg("2026-09-03T00:10:00+00:00", "agent traffic after", chat_id=-5))
-    _a, _b, changing, _cap = blocks(env, memory, {"id": "tmain", "chat_id": 1})
+    _a, identity, changing, _cap = blocks(env, memory, {"id": "tmain", "chat_id": 1})
     room = section(changing, "## This room (Main)")
     assert "] next please" in room and "] and more" in room  # after the frontier: verbatim
-    assert "Main talk." in room  # before it: the retold record of this room, whole
+    # before it: the retold records of this room, whole; the first block's in my story, not repeated on the page
+    assert "\n  Main talk." in section(identity, "## My story") and "Main talk." not in room
+    assert "Main was quiet." in room
     for retold in ("] hello\n", "] hello back", "alpha question", "agent traffic"):
         assert retold not in changing, retold
 
@@ -41,9 +43,10 @@ def test_main_sees_other_rooms_as_lines_and_a_project_task_its_own_room(tmp_path
     assert "alpha again" not in main and "beta again" not in main  # other rooms' words stay lines
     assert "] next please" in section(main, "## This room (Main)")
 
-    _a, _b, bound, _cap = blocks(env, memory, {"id": "bound", "chat_id": 1})  # bound to alpha, written in Main
+    _a, identity, bound, _cap = blocks(env, memory, {"id": "bound", "chat_id": 1})  # bound to alpha, written in Main
     room = section(bound, f"## This room ({alpha})")
-    assert "] alpha again" in room and "Alpha began." in room
+    assert "] alpha again" in room and "Alpha worked." in room
+    assert "\n  Alpha began." in section(identity, "## My story") and "Alpha began." not in room  # first block: story
     assert "next please" not in bound and "beta again" not in bound
     assert "### Main — open" in section(bound, "## Live rooms")
 
