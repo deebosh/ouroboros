@@ -257,6 +257,12 @@ def _describe_bg_consciousness_state(requested_enabled: bool | None) -> dict:
         status, detail = "allowance_unknown", f"The usage ledger could not be read ({snapshot.get('last_error') or 'unknown error'}); retry at {next_at}."
     elif outcome.startswith("rejected:"):
         status, detail = "wake_rejected", f"The last wake-up was refused ({outcome.split(':', 1)[1]}); next attempt at {next_at}."
+    elif outcome in {"paused", "pausing"}:
+        status = "wake_paused"
+        detail = (f"The last wake-up returned while {outcome}; its task card shows the current state. "
+                  f"Next wake check at {next_at}.")
+    elif outcome == "unknown":
+        status, detail = "wake_outcome_unknown", f"The last wake-up's outcome is unconfirmed; next check at {next_at}."
     elif outcome == "failed":
         status, detail = "wake_failed", f"The last wake-up failed ({snapshot.get('last_error') or 'runner error'}); next attempt at {next_at}, backing off."
     else:
@@ -605,13 +611,12 @@ def _bootstrap_supervisor_repo(settings: dict, git_ops_module=None):
     return False, f"Local-dev import test failed (rc={import_result.get('returncode', -1)})"
 
 
-def _initialize_runtime_state(settings: dict) -> None:
-    """The ONE explicit state initializer, run before chat ingress can record or bind
-    anything (#1307). An unavailable state is disclosed loudly and never minted; the
-    supervisor still serves independent work, chat and diagnosis."""
+def _initialize_runtime_state(settings: dict, *, stop_requested=None) -> None:
+    """Initialize before ingress; unavailable controls stay unknown while independent work continues."""
     from supervisor.state import init as state_init, init_state
 
-    state_init(DATA_DIR, float(settings.get("TOTAL_BUDGET", SETTINGS_DEFAULTS["TOTAL_BUDGET"])))
+    state_init(DATA_DIR, float(settings.get("TOTAL_BUDGET", SETTINGS_DEFAULTS["TOTAL_BUDGET"])),
+               stop_requested=stop_requested)
     boot_state = init_state()
     if boot_state.quality not in {"current", "recovered"}:
         log.critical("Runtime state is %s (%s): owner binding, evolution and consciousness "
@@ -642,7 +647,7 @@ def _run_supervisor(settings: dict) -> None:
         ensure_legacy_imported(pathlib.Path(DATA_DIR))
         from supervisor.state import control_is, load_state, save_state, update_state
         from supervisor.state import append_jsonl, update_budget_from_usage, rotate_chat_log_if_needed, rotate_jsonl_log_if_needed
-        _initialize_runtime_state(settings)
+        _initialize_runtime_state(settings, stop_requested=lambda stop=_watchdog_stop: any(e.is_set() for e in (stop, _supervisor_stop, _restart_requested, _exit_signalled)))
 
         from supervisor.message_bus import LocalChatBridge, init as bus_init
 
@@ -715,7 +720,7 @@ def _run_supervisor(settings: dict) -> None:
         )
         _resume_interrupted_project_deletions()
         _startup_prune_sweeps(preserve_task_sources=bool(
-            recovered_files["unresolved"] or recovered_files["protected"] or recovered_files["errors"]))
+            recovered_files["unresolved"] or recovered_files["protected"] or recovered_files["errors"]), recovery_report=recovered_files)
         _startup_worktree_prune()
 
         _prune_delegated_snapshots()

@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 
 import { createChatInstance } from '../modules/chat.js';
 import { applyPayload, flushMisses, setMissTransport } from '../modules/i18n.js';
+import { installDom as installHistoryDom } from './chat_dom_fixture.js';
 
 // Source pins below match across line breaks; normalize CRLF so a Windows
 // checkout (core.autocrlf) reads the same bytes the regexes were written for.
@@ -687,29 +688,24 @@ test('chat bubble heading ladder is scoped in style.css', () => {
     assert.match(richSource, /querySelectorAll\('h1, h2, h3, h4, h5, h6'\)[\s\S]{0,160}Math\.min\(Number\(heading\.tagName\.slice\(1\)\), 3\)/);
 });
 
-test('a host notice concludes a replayed card and keeps its markdown', async () => {
-    // A terminal text the host wrote alone is projected as role=system with NO
-    // system_type — exactly the shape replay needs to treat it as the task's
-    // last word — and, unlike the salvage receipt, it keeps its markdown so the
-    // host's own code spans do not render escaped.
-    assert.match(chatSource, /const plainUntypedFinal = !msg\.system_type && !msg\.msg_type;/);
-    assert.match(
-        chatSource,
-        /\(msg\.role === 'assistant' \|\| msg\.role === 'system'\)\n\s+&& \(positiveTaskTerminalFact\(msg\) \|\| plainUntypedFinal\)/,
-    );
-
-    const { prior, mount } = installDom();
+for (const unfinished of [false, true]) test(`untyped System replay keeps markdown and ${unfinished ? 'preserves known unfinished work' : 'concludes a legacy card'}`, async () => {
+    // The legacy host final has no system_type; a saved nonterminal task fact
+    // prevents that shape from falsely settling work. Both retain rich System text.
+    const messages = [
+        { role: 'assistant', is_progress: true, text: 'Reading the task sources', ts: '2026-09-03T00:00:00Z' },
+        { role: 'system', markdown: true, text: 'Host notice line one\nline two', ts: '2026-09-03T00:00:01Z' },
+    ].map(row => ({ ...row, chat_id: 2, task_id: 'notice-task', ...(unfinished ? { task_phase: 'unfinished' } : {}) }));
+    const { prior, mount } = installHistoryDom(async url => ({ ok: true, json: async () =>
+        String(url).startsWith('/api/chat/history') ? { messages, window: { complete: true } } : { active_direct_turns: [] } }));
     let instance;
     try {
-        const made = makeInstance(mount);
-        instance = made.instance;
-        made.handlers.get('chat')({
-            chat_id: 2, role: 'system', markdown: true, task_id: 'notice-task',
-            content: 'Task rejected line one\nline two',
-            ts: '2026-09-03T00:00:01Z',
-        });
+        ({ instance } = makeInstance(mount));
+        await instance.refreshHistory({ revision: 1 });
+        const card = findCard(globalThis.document.byId.get('chat-messages'), 'notice-task');
+        assert.ok(card, 'the real replay creates the task card from its recorded progress');
+        assert.equal(card.dataset.finished, unfinished ? '0' : '1');
         const bubble = findBubble('system');
-        assert.match(bubble.innerHTML, /Task rejected line one<br>line two/);
+        assert.match(bubble.innerHTML, /Host notice line one<br>line two/);
         assert.equal(bubble.getAttribute('data-chat-markdown-enhanced'), 'true');
     } finally {
         instance?.destroy();
