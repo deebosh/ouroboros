@@ -595,7 +595,7 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
         facts["under_parts"] = [{"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
                                  "period": _period(_mapping(record.get("covers")).get("ts_span")),
                                  "text": str(record.get("current_text") or "")}
-                                for record in records if record["kind"] in ("page", "part") and record.get("folded_into")]
+                                for record in records if record["kind"] in ("page", "part") and (record.get("folded_into") or not spec.story)]
         facts["notes"] = list(notes.get(room, ()))
     if spec.origin_words and room.lstrip("-").isdigit() and int(room) in memory_inventory.membership_facts(
             root).project_chat_ids:
@@ -906,8 +906,8 @@ def _room_text(room: Mapping[str, Any], gone: Mapping[str, List[str]]) -> str:
     if room["legacy"]:
         lines += ["", "### Retold before the update (helper retelling, not lived)"]
         lines += [_retold(item, item["id"] in retold) for item in room["legacy"]]
-    if room["under_parts"]:
-        lines += ["", "### Pages under my parts"] + [_retold(item, item["id"] in retold) for item in room["under_parts"]]
+    lines += (["", "### Pages under my parts" if all(i["part"] for i in room["under_parts"]) else "### Pages of this room",
+               *(_retold(item, item["id"] in retold) for item in room["under_parts"])] if room["under_parts"] else [])
     if room["origins"]:
         lines += ["", "### Words that started this work (retention-proof)"]
         lines += [f"[{item['ts'] or 'time not recorded'}; owner; {item['ref']}] " + _indented(item["text"]).lstrip()

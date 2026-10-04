@@ -469,6 +469,7 @@ def test_each_role_sees_its_parts_of_the_live_view(tmp_path):
     nanny_task = {**child_task, "id": "nan9", "configured_subagent": {"route": {"kind": "agent_session"}}}
     nanny, nanny_text = _view(tmp_path, nanny_task)
     assert mv.render_story(nanny) == "" and "Find the cause" in nanny_text and "### Retold before the update" in nanny_text
+    assert "### Pages of this room" not in nanny_text and "### Pages of this room" not in child_text  # nothing sealed yet
     line = mv.working_sources_line(child.spec, child)
     assert "the words of my human that caused this work" in line and "the page of your parent's room Main" in line
     assert "the words that started that work" not in line  # Main holds no Project origin to show
@@ -521,3 +522,22 @@ def test_the_view_and_memory_read_print_a_row_with_one_grammar(tmp_path):
     assert snapshot.room["lane1"]
     for item in snapshot.room["lane1"]:
         assert item["line"].replace("\n" + mv.INDENT, "\n") in read, item["line"]
+
+
+def test_a_nanny_keeps_its_rooms_sealed_pages_on_its_room_page_and_a_child_reads_them_in_its_story(tmp_path):
+    """Review fix (simulated triad): a nanny starts without the story (2A) but with its room's page
+    (CONSENSUS §3); once the room is sealed into pages, those pages are the room page — never
+    \"Nothing open, retold or noted\". A child keeps them in its story, not twice."""
+    from ouroboros.tools.chronicle import page_covers
+
+    _rooms, rows = _install(tmp_path)
+    covers = page_covers(tmp_path, "1", from_addr=_addr(rows[0]), to_addr=_addr(rows[1]))["covers"]
+    sealed = ChronicleStore(tmp_path).publish_page(room_id="1", text="I sealed the opening of Main.", covers=covers,
+                                                   author=shared.MIND)
+    assert sealed.ok, sealed
+    base = {"id": "kid9", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1"}
+    nanny, nanny_text = _view(tmp_path, {**base, "id": "nan9", "configured_subagent": {"route": {"kind": "agent_session"}}})
+    assert mv.render_story(nanny) == ""
+    assert "I sealed the opening of Main." in _section(nanny_text, "### Pages of this room")
+    child, child_text = _view(tmp_path, base)
+    assert "I sealed the opening of Main." in mv.render_story(child) and "### Pages of this room" not in child_text
