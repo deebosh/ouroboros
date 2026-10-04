@@ -777,7 +777,7 @@ def request_process_tree_kill(proc, *, job_handle=None) -> dict:
 
 
 def kill_process_tree(proc: subprocess.Popen, *, exclude_pids: "set[int] | None" = None) -> None:
-    """Kill captured descendants; retained subtrees prevent an indiscriminate group kill."""
+    """Capture then kill; retain caller-selected branches (selective PIDs on Windows)."""
     kill_pid_tree(proc.pid, exclude_pids=exclude_pids, include_process_group=True)
 
 
@@ -939,7 +939,7 @@ def force_kill_pid(pid: int) -> None:
 
 def kill_pid_tree(pid: int, exclude_pids: "set[int] | None" = None, *,
                   include_process_group: bool = False) -> None:
-    """Kill a captured tree, retaining excluded subtrees; optionally include its unspared group."""
+    """Caller selects retained subtrees; PID callers kill selectively, Popen also uses unspared groups."""
     if IS_WINDOWS and not exclude_pids:
         try:
             _hidden_run(["taskkill", "/F", "/T", "/PID", str(pid)],

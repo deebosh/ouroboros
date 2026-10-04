@@ -560,26 +560,24 @@ class StashRestoreResult:
 
 def _stash_recovery_note(stash_sha: str) -> str:
     return (f"the original local changes remain in stash {stash_sha[:12]} "
-            f"(rescue-local-{stash_sha[:12]}); inspect the current files before "
+            "and current files should be inspected before "
             f"recovering with `git stash apply {stash_sha}`")
 
 
 def restore_update_stash(
     stash_sha: str, context: str = "", *, before_cleanup=None,
 ) -> StashRestoreResult:
-    """Apply the exact pinned object; NEVER automatically drop an update stash.
+    """Apply the exact stash object; NEVER automatically drop an update stash.
 
     Transaction callers record intent before entering here and retain diagnostics
     through ``before_cleanup`` before resetting a failed partial apply. Cleanup is
     allowed only after a clean starting tree and is itself verified. A missing list
-    entry says nothing about restoration: the exact pinned object is the carrier.
+    entry says nothing about restoration: the exact object is the carrier.
     """
-    from supervisor.update_merge import create_rescue_local_ref
-
     if not stash_sha:
         return StashRestoreResult("not_needed")
-    if _rev_parse(stash_sha) != stash_sha or not create_rescue_local_ref(stash_sha):
-        return StashRestoreResult("incomplete", f"could not verify and pin update stash {stash_sha}")
+    if _rev_parse(stash_sha) != stash_sha:
+        return StashRestoreResult("incomplete", f"could not verify update stash {stash_sha}")
     recovery = _stash_recovery_note(stash_sha)
     rc_s, dirty, status_error = _g.git_capture(["git", "status", "--porcelain"])
     if rc_s != 0:
@@ -625,7 +623,7 @@ def restore_stash_with_marker(tx: Dict[str, Any], context: str) -> StashRestoreR
     ``stash_restore`` is schema-2 evidence: old strict readers refuse it. Legacy
     ``stash_restored`` still means a successful recorded apply, never its intent.
     An interrupted apply/cleanup is NOT replayed: once the store works again the
-    pinned backup is handed back with an honest unknown-outcome note, preserving
+    saved backup is handed back with an honest unknown-outcome note, preserving
     both the current files and any subsequent owner edits.
     """
     from supervisor import update_merge as _um
@@ -648,8 +646,8 @@ def restore_stash_with_marker(tx: Dict[str, Any], context: str) -> StashRestoreR
         if record.get("status") in {"restored", "preserved"}:
             result = StashRestoreResult(record["status"], record.get("note", ""), record.get("evidence", {}))
         elif record:
-            if _rev_parse(stash_sha) != stash_sha or not _um.create_rescue_local_ref(stash_sha):
-                return StashRestoreResult("incomplete", f"interrupted restore: could not verify and pin stash {stash_sha}")
+            if _rev_parse(stash_sha) != stash_sha:
+                return StashRestoreResult("incomplete", f"interrupted restore: could not verify stash {stash_sha}")
             result = StashRestoreResult(
                 "preserved", "the automatic restore was interrupted; its result is unconfirmed and current files were left unchanged; "
                 + _stash_recovery_note(stash_sha)

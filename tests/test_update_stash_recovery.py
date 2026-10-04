@@ -1,6 +1,7 @@
 """Real-Git preservation and crash boundaries of the managed-update stash owner."""
 
 import json
+import sys
 
 import pytest
 
@@ -93,10 +94,12 @@ def test_each_consumer_retains_failed_marker_and_replay_preserves_later_edits(tm
         return real_capture(cmd)
 
     monkeypatch.setattr(git_ops, "git_capture", capture)
-    resumed = update_merge.finalize_managed_update_on_boot(
-        supervisor_ready=True, running_source_sha=tx["pre_update_sha"] if consumer == "rollback" else "",
-    )
+    resumed = update_merge.finalize_managed_update_on_boot(supervisor_ready=True)
     assert "unconfirmed" in resumed["stash_note"]
+    if consumer == "rollback":
+        assert update_merge.read_update_tx()["phase"] == update_merge.MARKER_CLEANUP_RETRY_PHASE
+        resumed = update_merge.finalize_managed_update_on_boot(supervisor_ready=True)
+        assert resumed["finalized"] is True and not resumed.get("rolled_back")
     assert update_merge.read_update_tx() == {}
     assert (repo / "a.txt").read_text(encoding="utf-8") == "owner work plus later edits\n"
     assert (repo / "later.txt").read_text(encoding="utf-8") == "later untracked\n"
@@ -180,7 +183,7 @@ def test_write_ahead_failure_does_not_apply_or_clear_and_retry_still_restores(tm
 def _conflict(tmp_path, monkeypatch):
     repo, branch = _init_repo(tmp_path)
     _point_at(monkeypatch, tmp_path, repo, branch)
-    path = " conflict\nname.txt "
+    path = "conflict 'named' file.txt" if sys.platform == "win32" else " conflict\nname.txt "
     (repo / path).write_text("base\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "conflict base")
@@ -272,6 +275,52 @@ def test_missing_stash_list_entry_uses_pinned_object_and_missing_object_stays_in
     assert missing["reason"] == "stash_recovery_incomplete"
     assert update_merge.active_update_tx()
     assert (repo / "a.txt").read_text(encoding="utf-8") == "owner work\n"
+
+
+def test_pin_failed_gateway_unwind_still_returns_local_work(tmp_path, monkeypatch):
+    repo, branch = _init_repo(tmp_path)
+    _point_at(monkeypatch, tmp_path, repo, branch)
+    pre = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    (repo / "a.txt").write_text("owner work\n", encoding="utf-8")
+    (repo / "scratch.txt").write_text("owner scratch\n", encoding="utf-8")
+    real_capture, failed_pins = git_ops.git_capture, []
+
+    def fail_pin(cmd):
+        if cmd[:3] == ["git", "branch", "-f"]:
+            failed_pins.append(cmd)
+            return 1, "", "ref write denied"
+        return real_capture(cmd)
+
+    monkeypatch.setattr(git_ops, "git_capture", fail_pin)
+    monkeypatch.setattr(control, "_respawn_workers_after_failed_update", lambda: None)
+    tx, response = control._stash_local_work_fenced(
+        branch=branch, base_sha=pre, target_sha=pre, plan={},
+    )
+    body = json.loads(response.body)
+    assert tx is None and response.status_code == 409 and "pin" in body["error"]
+    assert "local changes restored" in body["stash_note"]
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "owner work\n"
+    assert (repo / "scratch.txt").read_text(encoding="utf-8") == "owner scratch\n"
+    assert len(failed_pins) == 1  # restore did not impose another ref-write gate
+    sha = _git(repo, "stash", "list", "--format=%H").stdout.strip()
+    assert sha and _git(repo, "rev-parse", "--verify", "rescue-local-" + sha[:12]).returncode != 0
+    assert not update_merge.active_update_tx()
+
+
+def test_interrupted_restore_preserves_exact_stash_without_repin(tmp_path, monkeypatch):
+    repo, tx = _fixture(tmp_path, monkeypatch, "boot_preapply")
+    assert _git(repo, "branch", "-D", "rescue-local-" + tx["stash_sha"][:12]).returncode == 0
+    tx["stash_restore"] = {"status": "applying", "stash_sha": tx["stash_sha"]}
+    update_merge.write_update_tx(tx)
+    (repo / "late.txt").write_text("later work\n", encoding="utf-8")
+    monkeypatch.setattr(update_merge, "create_rescue_local_ref", lambda *_a: pytest.fail("restore tried to repin"))
+    result = update_merge.finalize_managed_update_on_boot()
+    assert result["stash_restore_status"] == "preserved" and "unconfirmed" in result["stash_note"]
+    assert "git stash apply " + tx["stash_sha"] in result["stash_note"]
+    assert "rescue-local-" not in result["stash_note"]
+    assert (repo / "late.txt").read_text(encoding="utf-8") == "later work\n"
+    assert tx["stash_sha"] in _git(repo, "stash", "list", "--format=%H").stdout
+    assert not update_merge.active_update_tx()
 
 
 def test_event_append_failure_retries_only_disclosure(tmp_path, monkeypatch):
@@ -407,19 +456,33 @@ def test_restart_keeps_ordinary_boot_smoke_but_never_resets_pending_restore(tmp_
         assert ok is True and calls == [{"reason": "owner_restart", "unsynced_policy": "rescue_and_reset"}]
 
 
-def _boot_chain(tmp_path, monkeypatch, *, already_on_pre=False):
+def _checkout_state(tmp_path, monkeypatch, tx):
+    from supervisor import state
+
+    data = tmp_path / "data"
+    for name, path in {"DRIVE_ROOT": data, "STATE_PATH": data / "state/state.json",
+                       "STATE_LAST_GOOD_PATH": data / "state/state.last_good.json",
+                       "STATE_LOCK_PATH": data / "locks/state.lock"}.items():
+        monkeypatch.setattr(state, name, path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    assert state.init_state().quality == "current"
+    state.update_state(lambda row: row.update(current_sha=tx["target_sha"],
+                                             current_branch=tx["pre_update_branch"], evolution_cycle=17))
+    return state
+
+
+def _boot_chain(tmp_path, monkeypatch, *, fixture=None):
     """Real Git/bootstrap/finalizer with process exit, feeds and dependencies inert."""
     import server
     from ouroboros import update_letter
     from supervisor import evolution_lifecycle
 
-    repo, tx = _fixture(tmp_path, monkeypatch, "rollback")
+    repo, tx = fixture or _fixture(tmp_path, monkeypatch, "rollback")
     (repo / ".git" / git_ops.MANAGED_REPO_META_NAME).write_text(json.dumps({
         "managed_local_branch": tx["pre_update_branch"], "managed_local_stable_branch": "stable",
     }), encoding="utf-8")
-    baseline = [tx["pre_update_sha"] if already_on_pre else tx["target_sha"]]
+    state = _checkout_state(tmp_path, monkeypatch, tx)
     restarts = []
-    monkeypatch.setattr(server, "server_source_baseline", lambda: baseline[0])
     monkeypatch.setattr(server, "REPO_DIR", repo)
     monkeypatch.setattr(server, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(server, "_runtime_branch_defaults", lambda: (tx["pre_update_branch"], "stable"))
@@ -433,7 +496,6 @@ def _boot_chain(tmp_path, monkeypatch, *, already_on_pre=False):
     monkeypatch.setattr(git_ops, "_has_remote", lambda *_a: False)
     monkeypatch.setattr(git_ops, "sync_runtime_dependencies", lambda **_kw: (True, "fixture"))
     monkeypatch.setattr(git_ops, "import_test", lambda: {"ok": True})
-    monkeypatch.setattr(git_ops, "update_state", lambda *_a: None)
     monkeypatch.setattr(git_ops, "compute_managed_update_status", lambda **_kw: {"available": False})
     monkeypatch.setattr(update_letter, "refresh_after_check", lambda *_a: None)
     monkeypatch.setattr(update_letter, "runtime_status", lambda value: value)
@@ -441,11 +503,14 @@ def _boot_chain(tmp_path, monkeypatch, *, already_on_pre=False):
     monkeypatch.setattr(evolution_lifecycle, "pause_evolution_campaign", lambda *_a: None)
     monkeypatch.setenv("OUROBOROS_MANAGED_BY_LAUNCHER", "1")
     monkeypatch.delenv("OUROBOROS_DISABLE_MANAGED_UPDATES", raising=False)
-    return server, repo, tx, baseline, restarts
+    return server, repo, tx, state, restarts
 
 
 def test_boot_rollback_restored_work_survives_its_required_restart(tmp_path, monkeypatch):
-    server, repo, tx, baseline, restarts = _boot_chain(tmp_path, monkeypatch)
+    from supervisor import worker_pool_lifecycle, workers
+
+    server, repo, tx, state, restarts = _boot_chain(tmp_path, monkeypatch)
+    assert state.load_state()["current_sha"] == tx["target_sha"]
     server._boot_managed_update_tasks()
     assert restarts == [True]
     assert (repo / "a.txt").read_text(encoding="utf-8") == "owner work\n"
@@ -458,7 +523,6 @@ def test_boot_rollback_restored_work_survives_its_required_restart(tmp_path, mon
 
     # The new process first bootstraps, THEN finishes the handoff. A missing
     # marker here used to let actual managed bootstrap reset/clean both files.
-    baseline[0] = tx["pre_update_sha"]
     (repo / "a.txt").write_text("owner work plus later edit\n", encoding="utf-8")
     bootstrap_ok, _ = server._bootstrap_supervisor_repo({})
     assert bootstrap_ok is False  # the existing phase gate skips checkout/reset
@@ -467,6 +531,11 @@ def test_boot_rollback_restored_work_survives_its_required_restart(tmp_path, mon
     assert (repo / "a.txt").read_text(encoding="utf-8") == "owner work plus later edit\n"
     assert (repo / "scratch.txt").read_text(encoding="utf-8") == "owner scratch\n"
     assert tx["stash_sha"] in _git(repo, "stash", "list", "--format=%H").stdout
+    saved = json.loads(state.STATE_PATH.read_text(encoding="utf-8"))
+    assert saved["current_sha"] == tx["pre_update_sha"] and saved["current_branch"] == tx["pre_update_branch"]
+    assert saved["evolution_cycle"] == 17
+    monkeypatch.setattr(workers, "REPO_DIR", repo)
+    assert worker_pool_lifecycle._worker_sha_relation(saved["current_sha"], tx["pre_update_sha"])["relation"] == "equal"
 
     # After the pending handoff closes, unrelated later manual Restart keeps
     # its established reset policy. This fix grants no permanent dirty bypass.
@@ -475,12 +544,60 @@ def test_boot_rollback_restored_work_survives_its_required_restart(tmp_path, mon
     assert not (repo / "scratch.txt").exists()
 
 
-def test_boot_already_started_from_pre_update_source_finishes_without_restart(tmp_path, monkeypatch):
-    server, repo, tx, _baseline, restarts = _boot_chain(tmp_path, monkeypatch, already_on_pre=True)
+def test_assisted_boot_with_pre_update_head_reexecs_once_after_rollback(tmp_path, monkeypatch):
+    from ouroboros import server_process
+    from tests.test_update_merge_assisted import _materialized_conflict_tx
+
+    repo, _branch, plan, tx = _materialized_conflict_tx(tmp_path, monkeypatch)
+    _stub_worker_gates(monkeypatch)
+    tx["resolution_attempts"] = 4
+    update_merge.write_update_tx(tx)
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == plan["base_sha"]
+    assert update_merge._merge_head_sha() == plan["target_sha"]
+    assert _git(repo, "status", "--porcelain").stdout.strip()
+    assert (repo / "a.txt").read_text(encoding="utf-8") != "base\n"
+    monkeypatch.setattr(server_process, "_source_baseline", plan["base_sha"])
+    server, repo, tx, _state, restarts = _boot_chain(tmp_path, monkeypatch, fixture=(repo, tx))
     server._boot_managed_update_tasks()
-    assert not restarts and not update_merge.active_update_tx()
+    assert restarts == [True] and update_merge.active_update_tx()
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "base\n"
+    assert update_merge._merge_head_sha() == ""
+    assert server._bootstrap_supervisor_repo({})[0] is False
+    server._boot_managed_update_tasks()
+    assert restarts == [True] and not update_merge.active_update_tx()
+
+
+def test_failed_rollback_does_not_stamp_an_unreached_checkout(tmp_path, monkeypatch):
+    repo, tx = _fixture(tmp_path, monkeypatch, "rollback")
+    state = _checkout_state(tmp_path, monkeypatch, tx)
+    before = state.STATE_PATH.read_bytes()
+    real_capture = git_ops.git_capture
+
+    def fail_checkout(cmd):
+        return (1, "", "checkout denied") if cmd[:3] == ["git", "checkout", "-B"] else real_capture(cmd)
+
+    monkeypatch.setattr(git_ops, "git_capture", fail_checkout)
+    assert update_merge.rollback_managed_update("checkout-failure")[0] is False
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == tx["target_sha"]
+    assert state.STATE_PATH.read_bytes() == before
+
+
+def test_unavailable_state_is_disclosed_without_blocking_verified_rollback(tmp_path, monkeypatch, caplog):
+    from supervisor.state import StateUnavailable
+
+    repo, tx = _fixture(tmp_path, monkeypatch, "rollback")
+    state = _checkout_state(tmp_path, monkeypatch, tx)
+    before = state.STATE_PATH.read_bytes()
+
+    def unavailable(_mutate):
+        raise StateUnavailable("lock_timeout", "injected")
+
+    monkeypatch.setattr(git_ops, "update_state", unavailable)
+    ok, _note = update_merge.rollback_managed_update("state-unavailable", reopen_writer_admission=False)
+    assert ok is True and "Checkout facts not recorded in state" in caplog.text
+    assert state.STATE_PATH.read_bytes() == before
     assert (repo / "a.txt").read_text(encoding="utf-8") == "owner work\n"
-    assert (repo / "scratch.txt").read_text(encoding="utf-8") == "owner scratch\n"
+    assert update_merge.read_update_tx()["gate_blocked_reason"] == "rollback_restart_pending"
 
 
 @pytest.mark.parametrize("fail_stage", ["event", "handoff"])

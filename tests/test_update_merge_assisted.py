@@ -845,10 +845,10 @@ def test_boot_rolls_back_when_recovered_pre_restart_smoke_fails(
         "pre_update_branch": head,
     })
 
-    result = update_merge.finalize_managed_update_on_boot(supervisor_ready=True, running_source_sha=cur)
+    result = update_merge.finalize_managed_update_on_boot(supervisor_ready=True)
 
     assert result["rolled_back"] is True
-    assert update_merge.read_update_tx_strict()[0] == "absent"
+    assert update_merge.read_update_tx()["phase"] == update_merge.MARKER_CLEANUP_RETRY_PHASE
 
 
 def test_assisted_commit_publishes_smoke_proof_only_after_pass(monkeypatch):
@@ -956,9 +956,9 @@ def test_rollback_disarms_replay_before_touching_dirty_tree(tmp_path, monkeypatc
     assert blocked["gate_blocked_detail"] == detail
 
     monkeypatch.setattr(git_ops, "_clear_update_intent", lambda: True)
-    recovered = update_merge.finalize_managed_update_on_boot(supervisor_ready=True, running_source_sha=pre)
+    recovered = update_merge.finalize_managed_update_on_boot(supervisor_ready=True)
     assert recovered["rolled_back"] is True
-    assert update_merge.read_update_tx_strict()[0] == "absent"
+    assert update_merge.read_update_tx()["phase"] == update_merge.MARKER_CLEANUP_RETRY_PHASE
 
 
 def test_restart_smoke_syncs_dependencies_before_code_checks(monkeypatch):

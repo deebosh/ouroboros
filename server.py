@@ -45,7 +45,7 @@ from ouroboros.server_process import (  # noqa: F401
     _request_restart_exit, _restart_requested,
     _supervisor_stop, _exit_signalled,
     _SignalStopServer, _embedded_uvicorn_server,
-    capture_server_source_baseline, server_source_baseline, server_stop_source, log,
+    capture_server_source_baseline, server_stop_source, log,
 )
 from ouroboros.server_routing_context import (  # noqa: F401
     _active_direct_roots,
@@ -1124,7 +1124,7 @@ def _boot_managed_update_tasks() -> None:
         from supervisor.update_merge import active_update_tx, finalize_managed_update_on_boot
 
         result = finalize_managed_update_on_boot(
-            supervisor_ready=_wait_for_supervisor_update_finalize(), running_source_sha=server_source_baseline()
+            supervisor_ready=_wait_for_supervisor_update_finalize()
         )
         stash_note = str(result.get("stash_note") or "")
         if stash_note:

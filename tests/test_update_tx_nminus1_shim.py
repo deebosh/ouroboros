@@ -186,10 +186,10 @@ def test_n_minus_1_pending_smoke_failure_rolls_back(tmp_path, monkeypatch):
         "merge_commit": cur, "pre_update_sha": cur, "pre_update_branch": head,
     })
 
-    result = update_merge.finalize_managed_update_on_boot(supervisor_ready=True, running_source_sha=cur)
+    result = update_merge.finalize_managed_update_on_boot(supervisor_ready=True)
 
     assert result["rolled_back"] is True
-    assert update_merge.read_update_tx_strict()[0] == "absent"
+    assert update_merge.read_update_tx()["phase"] == update_merge.MARKER_CLEANUP_RETRY_PHASE
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() == cur
 
 
@@ -250,10 +250,10 @@ def test_n_minus_1_rolling_back_resumes_the_rollback(tmp_path, monkeypatch):
         "pre_update_sha": cur, "pre_update_branch": head,
     })
 
-    result = update_merge.finalize_managed_update_on_boot(supervisor_ready=True, running_source_sha=cur)
+    result = update_merge.finalize_managed_update_on_boot(supervisor_ready=True)
 
     assert result["rolled_back"] is True
-    assert update_merge.read_update_tx_strict()[0] == "absent"
+    assert update_merge.read_update_tx()["phase"] == update_merge.MARKER_CLEANUP_RETRY_PHASE
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() == cur
 
 

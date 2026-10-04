@@ -533,6 +533,11 @@ def _finish_rollback(
     """Finish the effect, retaining boot custody until the restored process starts."""
     if not result.complete:
         return False, result.note
+    from supervisor.git_ops_reset import _record_checkout_facts
+
+    # The next bootstrap preserves the handoff instead of checking out again.
+    # Publish the verified checkout through the same owner as ordinary reset.
+    _record_checkout_facts({"current_branch": branch, "current_sha": pre})
     stash_note = result.note
     gate_reason = "managed_update:rollback"
     try:
@@ -1263,15 +1268,12 @@ def _recover_replace_on_boot(tx: Dict[str, Any], supervisor_ready: bool) -> Dict
     return {"finalized": False, "rolled_back": ok, "msg": msg, "stash_note": msg}
 
 
-def finalize_managed_update_on_boot(
-    supervisor_ready: bool = True, *, running_source_sha: str = "",
-) -> Dict[str, Any]:
+def finalize_managed_update_on_boot(supervisor_ready: bool = True) -> Dict[str, Any]:
     """Finish boot recovery under one update lock, never raising.
 
-    The server supplies its captured startup checkout, not a loaded-module
-    attestation. A rollback to that same source can finish without re-exec;
-    unknown/different source retains custody through the required restart.
-    Legacy callers may omit the source fact and conservatively retain custody.
+    Every completed boot rollback retains custody for one re-exec: HEAD may
+    equal pre_update_sha while imported files came from an assisted merge.
+    The restored generation clears the existing handoff without another reset.
     """
     lock_fh = None
     try:
@@ -1279,18 +1281,7 @@ def finalize_managed_update_on_boot(
             lock_fh = acquire_update_lock()
         except RuntimeError:
             return {"finalized": False, "reason": "update lock held by an active apply"}
-        result = _finalize_managed_update_locked(supervisor_ready)
-        if result.get("rolled_back") is True and running_source_sha:
-            status, tx = read_update_tx_strict()
-            if (status == "valid" and tx.get("phase") == MARKER_CLEANUP_RETRY_PHASE
-                    and tx.get("gate_blocked_reason") == "rollback_restart_pending"
-                    and tx.get("pre_update_sha") == running_source_sha):
-                if not clear_update_tx():
-                    return {**result, "rolled_back": False, "reason": "rollback_marker_cleanup_failed"}
-                from supervisor.workers import open_repo_writer_admission
-
-                open_repo_writer_admission(expected_reason="managed_update:rollback")
-        return result
+        return _finalize_managed_update_locked(supervisor_ready)
     except Exception:
         _g.log.warning("finalize_managed_update_on_boot failed", exc_info=True)
         return {"finalized": False, "error": "exception"}

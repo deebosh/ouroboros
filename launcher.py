@@ -394,6 +394,7 @@ def start_agent(port: int = AGENT_SERVER_PORT) -> subprocess.Popen:
     env["OUROBOROS_MANAGED_REPO_DIR"] = str(REPO_DIR.resolve())
     # Launcher-owned presentation is re-stamped for every generation; other hosts default
     # to web. After a killed launcher it can remain stale until the next owned reap.
+    # Env-only: a SETTINGS_DEFAULTS entry would pop an injected value when absent on disk.
     env["OUROBOROS_PRESENTATION"] = (
         str(os.environ.get("OUROBOROS_PRESENTATION") or "web")
         if _external_ui else "browser_fallback" if _headless else "desktop_window"
