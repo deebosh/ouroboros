@@ -131,6 +131,12 @@ def _author_problem(author: Any) -> str:
     return ""
 
 
+# The one sentence a delegated child's or nanny's role line adds about the chronicle (D-44, D-50 C6):
+# tools/chronicle.py signs its page or part as a helper's draft; the integrating mind decides.
+CHILD_DRAFT_RIGHT = ("You may also publish chronicle pages and parts as drafts in your own name; the integrating "
+                     "mind accepts or rejects them.")
+
+
 def draft_signer(author: Any) -> str:
     """Who signed a helper's draft page or part, as the view and ``memory_read`` name it.
 

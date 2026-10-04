@@ -16,7 +16,8 @@ OWNER_DELIVERY_TOOL_NAMES: frozenset[str] = frozenset({
 # ouroboros/presence_authority.py::build_presence_capability_ceiling.
 # Reading the chronicle and marking what matters belong here; sealing chronicle
 # pages (chronicle_write) is the integrating mind's and stays in the core set,
-# so a presence writes knowledge about people and marks, not pages.
+# so a presence writes knowledge about people and marks, not pages (a delegated
+# child's sets below carry it for the child's own drafts only).
 COGNITIVE_MEMORY_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledge_read", "knowledge_write", "knowledge_list",
     "update_scratchpad", "update_identity", "chat_history",

@@ -38,7 +38,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from ouroboros import chat_chain, memory_inventory
 from ouroboros.chronicle_import import LEGACY_ROOM_ID, LEGACY_ROOM_LABEL, legacy_frontier, row_lineage
-from ouroboros.chronicle_store import ChronicleStore, draft_signer
+from ouroboros.chronicle_store import CHILD_DRAFT_RIGHT, ChronicleStore, draft_signer
 from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
 from ouroboros.dialogue_provenance import (RoomLabelResolver, is_presence_task, render_memory_row, render_row_text,
                                            row_class)
@@ -62,9 +62,9 @@ TYPED_HOST_FACTS: Mapping[str, str] = MappingProxyType({
 _TERMINAL = frozenset({"terminal_root_projection", "terminal_result_projection"})
 # The host's facts row; a ``task_summary`` without a kind is the old writer's model prose, never a status.
 _HOST_FACTS, _KINDLESS = frozenset({"host_task_facts"}), frozenset({"", None})
-# The delegated child's role text (memory spec P2 §5, Opus R3), carried verbatim.
+# The delegated child's role text (memory spec P2 §5, Opus R3), carried verbatim, then its draft right (D-44).
 CHILD_ROLE_TEXT = ("Work from this assignment first — it is written to be enough; read memory or sources only to "
-                   "fill a gap it leaves, and name what you read in your report.")
+                   "fill a gap it leaves, and name what you read in your report. " + CHILD_DRAFT_RIGHT)
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

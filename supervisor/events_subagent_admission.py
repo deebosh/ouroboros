@@ -214,12 +214,16 @@ def _record_delegation_constraint(
         log.debug("Failed to record delegation constraint for %s", task_id, exc_info=True)
 
 
-# Both delegated-child sets carry knowledge_write and memory_mark (memory spec
-# §5.4): the host signs those writes with the child's focus. Identity, scratchpad
-# and chronicle pages stay with the parent, which receives the result as a report.
+# Both delegated-child sets carry knowledge_write, memory_mark and chronicle_write
+# (memory spec §5.4; D-44): the host signs those writes with the child's focus, and
+# chronicle_write publishes only the child's drafts of pages and parts, which the
+# integrating mind accepts or rejects. Identity and scratchpad stay with the parent,
+# which receives the result as a report.
 _CHILD_MEMORY_SENTENCE = (
     "Knowledge notes and memory marks may be written in your own name; the host signs "
-    "them with your focus. Your result goes to your parent as a report."
+    "them with your focus. Chronicle pages and parts you may publish only as drafts in "
+    "your own name; the integrating mind accepts or rejects them. Your result goes to "
+    "your parent as a report."
 )
 
 
@@ -277,8 +281,8 @@ def _compose_subagent_text(
             # changes land, never that the child executes them natively itself
             # (the dispatch-time executor note owns execution framing).
             "All changes land inside the write root only. Do NOT commit, run review / "
-            "runtime / skills lifecycle, enable tools, or write identity, scratchpad or "
-            "chronicle pages. " + _CHILD_MEMORY_SENTENCE + " Your "
+            "runtime / skills lifecycle, enable tools, or write identity or scratchpad. "
+            + _CHILD_MEMORY_SENTENCE + " Your "
             "Git changes are recorded as a workspace.patch; ordinary-folder outputs use their "
             "registered file artifacts. Isolated self_worktree changes are applied; shared "
             "external_workspace files are verified without reapplying. "

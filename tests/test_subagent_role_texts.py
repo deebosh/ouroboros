@@ -1,13 +1,15 @@
 """What a delegated child and its parent are told about the child's memory rights.
 
 Memory spec §5.4, K5 and R3: both delegated-child sets carry knowledge_write and
-memory_mark (the host signs both with the child's focus), while identity,
-scratchpad and chronicle pages stay with the parent. The child's
-``## Working sources`` line is the Opus R3 role text; the assignment phrases of
-both branches and the schedule_subagent description say the same and no longer
-claim the child "cannot write cognitive memory". Each check has both sides: the
-new words are present, the false ones are gone, and a root never gets the child's
-line.
+memory_mark (the host signs both with the child's focus); D-44 (D-50 C5/C6) adds
+chronicle_write for the child's own drafts of pages and parts, which the
+integrating mind accepts or rejects, while identity and scratchpad stay with the
+parent. The child's and the nanny's ``## Working sources`` line is the Opus R3
+role text plus one sentence about those drafts; the assignment phrases of both
+branches and the schedule_subagent description say the same and no longer claim
+the child "cannot write cognitive memory" or that chronicle pages stay with the
+parent. Each check has both sides: the new words are present, the false ones are
+gone, and a root never gets the child's line.
 """
 from __future__ import annotations
 
@@ -19,8 +21,13 @@ ROLE_TEXT = (
     "Work from this assignment first — it is written to be enough; read memory or sources only to fill a "
     "gap it leaves, and name what you read in your report."
 )
+DRAFT_RIGHT = ("You may also publish chronicle pages and parts as drafts in your own name; the integrating mind "
+               "accepts or rejects them.")
 MEMORY_SENTENCE = "Knowledge notes and memory marks may be written in your own name"
-FALSE_CLAIMS = ("write cognitive memory", "data/memory state")
+DRAFT_SENTENCE = ("Chronicle pages and parts you may publish only as drafts in your own name; the integrating mind "
+                  "accepts or rejects them.")
+FALSE_CLAIMS = ("write cognitive memory", "data/memory state", "chronicle pages stay with the parent",
+                "scratchpad or chronicle pages", "(it cannot write local state")
 
 
 def _env(tmp_path: pathlib.Path):
@@ -72,16 +79,20 @@ def _system_text(tmp_path: pathlib.Path, task: dict) -> str:
 
 
 def test_child_working_sources_line_is_the_role_text_and_a_root_has_none(tmp_path):
-    child = _system_text(tmp_path / "child", {
-        "id": "kid00001", "type": "task", "text": "work", "delegation_role": "subagent",
-        "parent_task_id": "root0001", "root_task_id": "root0001"})
-    section = child[child.index("## Working sources"):].split("\n## ", 1)[0]
-    # The pinned lowercase phrase (tests/test_recent_sections_per_task.py) stays inside the new line.
-    assert ROLE_TEXT in section and "your own recent process" in section
-    for stale in ("not preloaded", "Your parent's selected discussion", "shared biography"):
-        assert stale not in section
+    child_task = {"id": "kid00001", "type": "task", "text": "work", "delegation_role": "subagent",
+                  "parent_task_id": "root0001", "root_task_id": "root0001"}
+    nanny_task = {**child_task, "id": "nan00001", "configured_subagent": {"route": {"kind": "agent_session"}}}
+    for name, task in (("child", child_task), ("nanny", nanny_task)):
+        text = _system_text(tmp_path / name, task)
+        section = text[text.index("## Working sources"):].split("\n## ", 1)[0]
+        # The pinned lowercase phrase (tests/test_recent_sections_per_task.py) stays inside the new line,
+        # and the draft right (D-44) is its one added sentence, at the end.
+        assert ROLE_TEXT in section and "your own recent process" in section
+        assert section.rstrip().endswith(ROLE_TEXT + " " + DRAFT_RIGHT)
+        for stale in ("not preloaded", "Your parent's selected discussion", "shared biography"):
+            assert stale not in section
     root = _system_text(tmp_path / "root", {"id": "root0001", "type": "task", "text": "work"})
-    assert "## Working sources" not in root and ROLE_TEXT not in root
+    assert "## Working sources" not in root and ROLE_TEXT not in root and DRAFT_RIGHT not in root
 
 
 def test_both_assignment_branches_grant_signed_memory_and_drop_the_old_bans():
@@ -92,21 +103,25 @@ def test_both_assignment_branches_grant_signed_memory_and_drop_the_old_bans():
     readonly = _compose_subagent_text("obj", role="researcher", expected_output="out", constraints="", context="")
     for text in (acting, readonly):
         assert MEMORY_SENTENCE in text and "the host signs them with your focus" in text
+        assert DRAFT_SENTENCE in text
         assert "Your result goes to your parent as a report." in text
         for claim in FALSE_CLAIMS:
             assert claim not in text
     # What stays forbidden is still said in each branch.
-    assert "Do NOT commit" in acting and "write identity, scratchpad or chronicle pages" in acting
+    assert "Do NOT commit" in acting and "or write identity or scratchpad." in acting
     assert "Do not write local repo/data state" in readonly and "tree_note" in readonly
 
 
-def test_schedule_subagent_tells_the_parent_children_write_signed_memory_but_not_its_pages():
+def test_schedule_subagent_tells_the_parent_children_write_signed_memory_and_drafts_but_not_identity():
     from ouroboros.tools.control import get_tools
 
     description = next(entry.schema for entry in get_tools() if entry.name == "schedule_subagent")["description"]
     # Addressed to the parent, so "their own name" where the child's assignment says "your own name".
     assert "children may write knowledge notes and memory marks in their own name" in description
-    assert "identity, scratchpad and chronicle pages stay with the parent" in description
+    assert ("publish chronicle pages and parts only as drafts, which the integrating mind accepts or rejects "
+            "(chronicle_write kind=decision)") in description
+    assert "identity and scratchpad stay with the parent" in description
+    assert "apart from knowledge notes, memory marks and chronicle drafts in its own name" in description
     assert "Mutative children cannot commit or enable tools" in description
     for claim in FALSE_CLAIMS:
         assert claim not in description
