@@ -6,7 +6,7 @@ import { openConfirmDialog } from './confirm_dialog.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
 import { apiClient, apiFetch } from './api_client.js';
-import { patchInstalledSkillEnrichment, renderInstalledSkillCard, renderSkillHubBadges } from './skill_card_renderer.js';
+import { patchInstalledSkillEnrichment, renderInstalledSkillCard, renderReviewFindingsList, renderSkillHubBadges } from './skill_card_renderer.js';
 import { hubFactsPending } from './hub_sync.js';
 import { runSkillPublishFlow } from './skill_publish_flow.js';
 import { installedTime } from './ui_helpers.js';
@@ -934,14 +934,23 @@ function attachActionHandlers(container, renderFn, reviewingSkills, repairingSki
             if (refreshNeeded) renderFn();
         }
     };
-    const handlers = [['change', onChange], ['keydown', onKeydown], ['submit', onSubmit], ['click', onClick]];
-    handlers.forEach(([type, handler]) => container.addEventListener(type, handler));
+    // A findings block is rendered collapsed with its summary only; its list
+    // is built on the first open from the row already in memory. `toggle`
+    // does not bubble, so the container listens in the capture phase.
+    const onToggle = (event) => {
+        const details = event.target;
+        if (!details?.dataset?.skillFindings || !details.open || details.childElementCount > 1) return;
+        const skill = skillsSnapshot?.rawSkills?.find((row) => row?.name === details.dataset.skillFindings);
+        details.insertAdjacentHTML('beforeend', renderReviewFindingsList(skill));
+    };
+    const handlers = [['change', onChange], ['keydown', onKeydown], ['submit', onSubmit], ['click', onClick], ['toggle', onToggle, true]];
+    handlers.forEach(([type, handler, capture]) => container.addEventListener(type, handler, capture));
     return { closeMenus: closeSkillMenus,
         menuFor: card => card.contains(activeMenu?.trigger) ? activeMenu.popover : null,
         beforeReplace(card) { if (!card || card.contains(activeMenu?.trigger)) closeSkillMenus(); },
         destroy() {
         closeSkillMenus();
-        handlers.forEach(([type, handler]) => container.removeEventListener(type, handler));
+        handlers.forEach(([type, handler, capture]) => container.removeEventListener(type, handler, capture));
     } };
 }
 
