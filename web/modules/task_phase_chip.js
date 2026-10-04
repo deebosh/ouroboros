@@ -35,10 +35,12 @@ export function pausePhaseLabel(phase, cause = '') {
 }
 
 export function activityWaitPhase(activity = {}) {
-    if (activity.required_question_unavailable) return 'unknown';
-    const question = activity.required_question;
-    return question?.owner_wait_state === 'waiting' && !question.wait_ended_at
-        && !['answered', 'expired_terminal', 'superseded'].includes(question.quiz_state) ? 'owner_wait' : '';
+    const question = activity.owner_wait ?? activity.required_question;
+    if (question?.owner_wait_state === 'resumed' || question?.wait_ended_at
+        || ['answered', 'expired_terminal', 'superseded'].includes(question?.quiz_state)) return '';
+    if (question?.owner_wait_state === 'waiting') return 'owner_wait';
+    if (activity.required_question_unavailable || question) return 'unknown';
+    return '';
 }
 
 // Pure desired-chip projection. Terminal truth wins; while unfinished, an

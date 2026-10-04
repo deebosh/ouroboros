@@ -619,16 +619,13 @@ def _publish_child_verification_receipts(
 
 
 def _copy_child_artifacts_to_parent(
-    parent_drive_root: pathlib.Path,
-    task_id: str,
-    child_drive: pathlib.Path,
-    artifacts: List[Dict[str, Any]],
+    parent_drive_root: pathlib.Path, task_id: str,
+    child_drive: pathlib.Path, artifacts: List[Dict[str, Any]],
     *, promotion: Dict[str, Any] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Copy-back's file publication: a child-store file keeps its store relpath (a nested
-    row gains ``relpath``); an immutable capture publishes only its recorded bytes and never
-    replaces different canonical bytes, a mutable one publishes its current bytes after the
-    differing prior copy is versioned; a failed copy keeps its row plus a pending ref."""
+    """Copy back at child-store relpaths (nested rows gain ``relpath``). Immutable
+    bytes stay exact; differing mutable copies are versioned first. A failure
+    keeps the original row and a pending reference."""
     from ouroboros.artifacts import (
         ArtifactIdentityError, _archive_previous_artifact_version, copy_artifact_file, stream_artifact_file,
     )
@@ -645,24 +642,20 @@ def _copy_child_artifacts_to_parent(
             rebased.append(item)
             continue
         src = pathlib.Path(raw_path)
-        src = (src if src.is_absolute() else child_drive / raw_path).resolve(strict=False)
+        source = src = (src if src.is_absolute() else child_drive / raw_path).resolve(strict=False)
         if is_verification_receipts_path(child_drive, task_id, src):
             # Receipt union has its own locked writer; never replace its rows.
             continue
         expected = item if item.get("immutable") else None
-        source = src
-        if src.is_relative_to(parent_base):
-            dest = src
-        else:
-            dest = parent_dir / (src.relative_to(child_base) if src.is_relative_to(child_base) else src.name)
+        dest = (src if src.is_relative_to(parent_base) else
+                parent_dir / (src.relative_to(child_base) if src.is_relative_to(child_base) else src.name))
         canonical_candidate = dest
-        if not src.is_relative_to(parent_base):
-            if expected is not None and dest.exists() and dest.resolve(strict=False) != src:
-                try:
-                    stream_artifact_file(dest, expected=item)
-                    src = dest  # Exact canonical bytes already survive this copy-back.
-                except OSError:
-                    dest = dest.with_name(f"{src.stem}_{sha256(str(src).encode('utf-8')).hexdigest()[:8]}{src.suffix}")
+        if dest != src and expected is not None and dest.exists() and dest.resolve(strict=False) != src:
+            try:
+                stream_artifact_file(dest, expected=item)
+                src = dest  # Exact canonical bytes already survive this copy-back.
+            except OSError:
+                dest = dest.with_name(f"{src.stem}_{sha256(str(src).encode('utf-8')).hexdigest()[:8]}{src.suffix}")
         try:
             if expected is None and dest != src and dest.is_file() and not dest.is_symlink():
                 _archive_previous_artifact_version(pathlib.Path(parent_drive_root), task_id, dest, src)

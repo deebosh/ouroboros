@@ -95,11 +95,11 @@ export function evidenceLinkHtml(evidenceRef) {
         : '';
 }
 
-// A host-placed card row (timeline or Reviews) as its timeline summary: the first line
-// heads, `card_row_id` is the row's stable identity, and a late-review row carries its
-// record link (`cardRowEvidenceRef`).
+// A placed row's first line heads; card_row_id keeps identity, and late reviews
+// retain their record link. Only typed host pause copy enters the translator.
 export function cardRowSummary(msg, phase, rawTs = '') {
-    const lines = String(msg.text ?? msg.content ?? '').split('\n');
+    const text = String(msg.text ?? msg.content ?? '');
+    const lines = (msg.role === 'system' && msg.system_type === 'task_pause_notice' ? tx(text) : text).split('\n');
     const rowId = String(msg.card_row_id || '').trim() || `${String(msg.system_type || '').trim()}|${rawTs}`;
     return {
         phase, headline: lines[0].trim(), body: lines.slice(1).join('\n').trim(), dedupeKey: `cardrow|${rowId}`,
@@ -263,17 +263,12 @@ const perToolLine = (entries) => entries
     .map(([name, n]) => (n > 1 ? `${name} ×${n}` : name)).join(' · ');
 
 export function toolEvidenceIncomplete(coverage) {
-    return Boolean(coverage && (coverage.gaps?.length || coverage.archives_bounded
-        || coverage.archives_available > coverage.archives || coverage.live_size > coverage.live_window
-        || coverage.matched > coverage.shown || coverage.source && !Number.isFinite(coverage.live_size)));
+    return Boolean(coverage && (coverage.gaps?.length || coverage.matched > coverage.shown
+        || coverage.source && !Number.isFinite(coverage.live_size)));
 }
 
-/**
- * The block's one tool row, built from the live map and the host's totals
- * together: the host answers what it stated, the live map answers the rest.
- * The closed row carries the counts only (summary outranks details); the
- * per-tool names live behind Expand, so the row stays one line either way.
- */
+// One tool row combines host counts with invocation facts; names and read scope
+// live behind Expand. A bounded read is not an unknown invocation outcome.
 export function toolEvidenceView(fold = null) {
     const live = fold?.calls instanceof Map ? [...fold.calls.values()] : [];
     const host = fold?.host || null;
@@ -282,6 +277,8 @@ export function toolEvidenceView(fold = null) {
     // Frozen totals count model wait errors. Canonical evidence reports operation
     // outcomes; a bounded partial read discloses its gap instead of reviving waits.
     const partial = toolEvidenceIncomplete(fold?.coverage) || Boolean(fold?.coverage) && observed < calls;
+    const bounded = fold?.coverage && (fold.coverage.archives_bounded || fold.coverage.archives_available > fold.coverage.archives
+        || fold.coverage.live_size > fold.coverage.live_window);
     // Only settled, individually identified calls can supersede an aggregate
     // host error. Partial replay and legacy start-only rows have no such proof.
     const outcomesKnown = calls > 0 && live.length === calls && !(fold?.legacy?.calls)
@@ -298,10 +295,11 @@ export function toolEvidenceView(fold = null) {
             : ((!host && live.some((call) => call.status === 'calling')) ? 'calling' : 'result'),
         headline: headline + (errors > 0 ? ` · ${fmt(errors === 1 ? '{n} error' : '{n} errors', { n: errors })}` : '')
             + (live.some(call => call.waitEnded) || fold?.legacy?.wait_ended ? ` · ${tr('task.tools.wait_ended', 'wait ended')}` : '')
-            + (calls && (live.some(call => call.status === 'unknown') || fold?.legacy?.unknown || partial)
+            + (calls && (live.some(call => ['unknown', 'wait_ended'].includes(call.status)) || fold?.legacy?.unknown || fold?.coverage && observed < calls)
                 ? ` · ${tr('task.tools.outcome_unknown', 'outcome unknown')}` : ''),
         body: '',
-        fullBody: (partial ? tr('task.tools.incomplete', 'Invocation evidence is incomplete.')
+        fullBody: (partial || bounded ? (partial ? tr('task.tools.incomplete', 'Invocation evidence is incomplete.')
+            : tr('task.tools.bounded_window', 'Only recent tool history was read.'))
             + (fold?.coverage?.source ? ` ${fmt('Source: {source}.', { source: fold.coverage.source })}` : '') + ' ' : '')
             + perToolLine(host?.counts && typeof host.counts === 'object'
             ? Object.entries(host.counts) : [...liveCounts]),
@@ -1335,6 +1333,7 @@ export function computeHydratedDirectActivities(existingMap, turnsList, chatId, 
             phase: turn.phase || 'thinking',
             ...(turn.pause_cause ? { pause_cause: turn.pause_cause } : {}),
             ...(turn.required_question ? { required_question: turn.required_question } : {}),
+            ...(turn.owner_wait ? { owner_wait: turn.owner_wait } : {}),
             ...(turn.required_question_unavailable ? { required_question_unavailable: true } : {}),
             ...(turn.project_admission_hold ? { project_admission_hold: turn.project_admission_hold } : {}),
             clientMessageId: turn.client_message_id || nextMap.get(aid)?.clientMessageId || '',

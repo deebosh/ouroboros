@@ -80,6 +80,7 @@
  */
 /**
  * @typedef {Object} ActiveChatActivity
+ * @property {Object=} owner_wait  // quiz-bound state, quiz_state and optional wait_ended_at, independent of Project detail
  * @property {Object=} project_admission_hold  // accepted unstarted work waiting for original Project authority
  * @property {string=} pause_cause  // budget | owner | restart | sleep | unknown; display only
  * @property {Object=} required_question  // read-only pointer to the current required Project quiz
@@ -1567,7 +1568,6 @@ export const MAX_QUIZ_OPTIONS = 6;
 // truncates; cards must offer only comments the ingress can deliver verbatim.
 export const MAX_DECISION_COMMENT = 2000;
 export const GATEWAY_CONTRACT_VERSION = '7.5.1';
-
 /**
  * @typedef {Object} ChatHistoryPosition
  * @property {'chat'|'progress'} source

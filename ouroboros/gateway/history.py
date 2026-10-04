@@ -391,15 +391,12 @@ def _annotate_terminal_task_truth(
 ) -> None:
     """Project task truth AFTER quotas, paying only for represented/current tasks.
 
-    Cost/axes/review attach to the in-window summary or latest progress, not an
-    evicted row. ``result_cache`` shares reads with the pre-floor lineage pass.
-    A task without a suitable row gets an inert tool-evidence carrier.
-
-    The precomputed ``floor``/``anchored_children`` extend progress anchoring
-    to chat finals: strip unanchored pre-floor child identity AFTER legacy
-    injection, so an absent swarm cannot remint an orphaned Working parent.
-    Anchoring means a live child, represented/live immediate parent, or their
-    transitive children (#496); this strip adds no reads.
+    Cost/axes/review use the in-window summary/latest progress; absent rows get
+    inert tool-evidence carriers. Results share the pre-floor lineage cache.
+    Precomputed floor/anchored_children strip unanchored pre-floor child identity
+    AFTER legacy injection, preventing orphaned Working parents. Anchoring is a
+    live child, represented/live immediate parent or its transitive children
+    (#496); stripping adds no reads.
     """
 
     try:
@@ -412,13 +409,15 @@ def _annotate_terminal_task_truth(
 
         # Carriers are host projections after physical selection, not synthetic
         # conversation. A user's row keeps its authorship and physical identity.
-        represented = {}
+        represented, tool_counts = {}, {}
         carriers = {}
         for message in combined:
             task_id = str(message.get("task_id") or "")
             if not task_id or message.get("system_type") == "project_question_pointer":
                 continue
             represented.setdefault(task_id, str(message.get("ts") or ""))
+            if type(message.get("tool_calls")) is int:
+                tool_counts[task_id] = max(tool_counts.get(task_id, 0), message["tool_calls"])
             progress, summary = bool(message.get("is_progress")), message.get("system_type") == "task_summary"
             if progress:
                 progress_task_ids.add(task_id)
@@ -432,11 +431,18 @@ def _annotate_terminal_task_truth(
             represented.setdefault(task_id, ts)
         tool_evidence_by_task = replay_evidence_for_tasks(data_dir, represented)
         for task_id, evidence in tool_evidence_by_task.items():
+            result = _load_terminal_result(data_dir, task_id, cache)
+            observations = result.get("completion_observations") or {}
+            deliveries = observations.get("delivery_counts", {}) if isinstance(observations, dict) else {}
+            counts = [result.get("tool_calls"), tool_counts.get(task_id)]
+            if isinstance(deliveries, dict):
+                counts.append(sum(row["calls"] for row in deliveries.values()
+                                  if isinstance(row, dict) and type(row.get("calls")) is int and row["calls"] > 0))
+            known_calls = max((n for n in counts if type(n) is int and n > 0), default=0)
             coverage = evidence.get("coverage") or {}
-            incomplete = (coverage.get("gaps") or coverage.get("archives_bounded")
-                          or coverage.get("archives_available", 0) > coverage.get("archives", 0)
-                          or coverage.get("live_size", 0) > coverage.get("live_window", 0)
-                          or coverage.get("matched", 0) > coverage.get("shown", 0))
+            # Global byte/archive bounds do not establish missing calls for
+            # this task. Positive task counts and actual read gaps do.
+            incomplete = (coverage.get("gaps") or max(known_calls, coverage.get("matched", 0)) > coverage.get("shown", 0))
             if task_id not in carriers and (evidence.get("observations") or evidence.get("legacy", {}).get("calls") or incomplete):
                 carrier = {"task_id": task_id, "ts": represented[task_id], "role": "system",
                            "system_type": "task_evidence", "text": "", "is_progress": False, "narration": False}
@@ -445,6 +451,8 @@ def _annotate_terminal_task_truth(
                 result_task_ids.add(task_id)
             if task_id in carriers:
                 carriers[task_id]["tool_evidence"] = evidence
+                if known_calls:
+                    carriers[task_id]["tool_calls"] = known_calls
         terminal_status_by_task: Dict[str, str] = {}
         terminal_truth_by_task: Dict[str, Dict[str, Any]] = {}
         terminal_receipt_by_task: Dict[str, Dict[str, Any]] = {}
@@ -524,10 +532,8 @@ def _annotate_terminal_task_truth(
                 suggested_name_by_task[task_id] = suggested_name
             live = task_id in finalizing_tasks or (status and status not in FINAL_STATUSES)
             if live and task_id in progress_task_ids:
-                # #469: a root still running or finalizing replays the SAME
-                # non-final subtree ceiling its heartbeat pushes live, from the
-                # one cost owner (cost_final=False, partial); a subtree with no
-                # attributable rows stays absent — unknown is never zero.
+                # Live/replay share the non-final subtree ceiling (#469);
+                # absent attributable rows remain unknown, never zero.
                 live_cost_by_task[task_id] = live_root_cost_projection(
                     task_id, result, {}, data_dir,
                 )
@@ -1228,17 +1234,11 @@ def _apply_window_quotas(
     )
     progress = sorted((m for m in combined if m.get("is_progress")), key=lambda m: m.get("ts", ""))
     human_tail = human[-n_human:] if n_human > 0 else []
-    # MAJOR review fix: the n_human slice also drops direction:"system" rows
-    # (e.g. the per-task task_summary), which the reader's in/out quota
-    # predicate does NOT count — so the stream cause alone could report a
-    # "complete" window while the slice silently cut system rows. Any actual
-    # drop by this slice is a "quota" truncation, independent of direction.
+    # The human slice also drops System rows uncounted by the in/out reader;
+    # any drop therefore marks quota truncation, independent of direction.
     human_rows_dropped = len(human) > len(human_tail)
-    # v6.73.0 retention-proof origin projection: a Project's start message is
-    # synthesized from the binding's own source_text when its canonical row is
-    # not among the rows ACTUALLY EMITTED (rotated past the archive window OR
-    # pruned by the n_human tail). Post-quota, identity-deduped, hard-capped
-    # with a disclosed omission note (helper below the endpoint factory).
+    # A Project origin absent from emitted rows uses binding-retained source_text:
+    # post-quota, identity-deduped, capped with disclosed omissions.
     if thread_id in project_chat_ids and n_human > 0:
         try:
             synthesized = _origin_fallback_rows(data_dir, thread_id, list(human_tail))

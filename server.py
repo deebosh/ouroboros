@@ -612,9 +612,7 @@ def _bootstrap_supervisor_repo(settings: dict, git_ops_module=None):
 
 
 def _initialize_runtime_state(settings: dict, *, stop_requested=None) -> None:
-    """The ONE explicit state initializer, run before chat ingress can record or bind
-    anything (#1307). An unavailable state is disclosed loudly and never minted; the
-    supervisor still serves independent work, chat and diagnosis."""
+    """Initialize before ingress; unavailable controls stay unknown while independent work continues."""
     from supervisor.state import init as state_init, init_state
 
     state_init(DATA_DIR, float(settings.get("TOTAL_BUDGET", SETTINGS_DEFAULTS["TOTAL_BUDGET"])),

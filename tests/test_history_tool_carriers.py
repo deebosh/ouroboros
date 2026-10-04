@@ -148,14 +148,50 @@ def test_current_root_narration_outside_page_keeps_evidence_without_fake_cursor(
     assert all("history_id" not in row for row in older["messages"] if row.get("system_type") == "task_evidence")
 
 
-def test_empty_bounded_replay_is_carried_as_incomplete(tmp_path):
+@pytest.mark.parametrize("witness", ["summary", "result", "parent_delivery"])
+def test_empty_known_missing_replay_is_carried_as_incomplete(tmp_path, witness):
     _write(tmp_path / "logs/chat.jsonl", [{"direction": "out", "task_id": "root", "text": "Saved speech", "ts": TS}])
+    if witness == "summary":
+        _write(tmp_path / "logs/chat.jsonl", [{"direction": "system", "type": "task_summary", "task_id": "root",
+                                               "text": "", "tool_calls": 1, "ts": TS}])
+    else:
+        fields = {"tool_calls": 1} if witness == "result" else {
+            "completion_observations": {"delivery_counts": {"send_message": {"calls": 1}}}}
+        _write(tmp_path / "task_results/root.json", [{"_schema_version": 1, "task_id": "root", "status": "completed", "chat_id": 1, **fields}])
+        if witness == "parent_delivery":
+            _write(tmp_path / "logs/chat.jsonl", [])
+            _write(tmp_path / "logs/progress.jsonl", [{"task_id": "child", "parent_task_id": "root",
+                "delegation_role": "subagent", "subagent_event": "completed", "content": "Child finished", "ts": TS}])
     for index in range(4):
         _write(tmp_path / "archive" / f"tools_{index}.jsonl", [_tool("root" if index == 0 else "other")])
     carrier = _read(tmp_path)["messages"][-1]
-    assert carrier["system_type"] == "task_evidence"
+    assert carrier["system_type"] == ("task_summary" if witness == "summary" else "task_evidence")
+    assert carrier["tool_calls"] == 1
     assert carrier["tool_evidence"]["observations"] == []
     assert carrier["tool_evidence"]["coverage"]["archives_bounded"] is True
+
+
+@pytest.mark.parametrize("archive_count", [0, 3, 4, 12])
+def test_unrelated_archive_bound_does_not_invent_tool_work(tmp_path, archive_count):
+    _write(tmp_path / "logs/chat.jsonl", [{"direction": "out", "task_id": "greeting", "text": "Hello", "ts": TS}])
+    for index in range(archive_count):
+        _write(tmp_path / "archive" / f"tools_{index:02}.jsonl", [_tool("other")])
+    [reply] = _read(tmp_path)["messages"]
+    assert reply["text"] == "Hello" and reply["role"] == "assistant"
+    assert "tool_calls" not in reply, "absence of a task witness is never a zero count"
+    evidence = replay_evidence_for_tasks(tmp_path, ["greeting"])["greeting"]
+    assert evidence["coverage"]["archives_bounded"] is (archive_count > 3), "raw read bounds remain honest"
+
+
+def test_empty_reader_gap_still_has_an_inert_carrier(tmp_path, monkeypatch):
+    _write(tmp_path / "logs/chat.jsonl", [{"direction": "out", "task_id": "root", "text": "Saved speech", "ts": TS}])
+    monkeypatch.setattr("ouroboros.tool_call_log.replay_evidence_for_tasks", lambda _root, _ids: {
+        "root": {"observations": [], "legacy": {"calls": 0}, "coverage": {
+            "source": "logs/tools.jsonl", "gaps": ["read_failed"], "shown": 0, "matched": 0}}})
+    carrier = _read(tmp_path)["messages"][-1]
+    assert carrier["system_type"] == "task_evidence"
+    assert carrier["tool_evidence"]["coverage"]["gaps"] == ["read_failed"]
+    assert "tool_calls" not in carrier and "history_id" not in carrier
 
 
 def test_shared_noisy_log_windows_are_decoded_once_per_request(tmp_path, monkeypatch):

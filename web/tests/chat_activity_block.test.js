@@ -61,7 +61,7 @@ Object.defineProperty(ElementStub.prototype, 'innerHTML', {
 const TS = '2026-09-15T12:00:00Z';
 const TASK = 'turn-a';
 
-function fixture(history = [], detail = { active_direct_turns: [] }) {
+function fixture(history = [], detail = { active_direct_turns: [] }, chatId = 1) {
     let historyReads = 0;
     const requests = [];
     const env = installDom(async (url) => {
@@ -78,7 +78,7 @@ function fixture(history = [], detail = { active_direct_turns: [] }) {
         ws: { on(type, fn) { handlers.set(type, fn); return () => handlers.delete(type); },
             isConnected: () => true, send() {} },
         state: { activePage: 'chat', projectChatIds: new Set(), unreadCount: 0 },
-        updateUnreadBadge() {}, chatId: 1, idPrefix: 'chat', mountEl: env.mount,
+        updateUnreadBadge() {}, chatId, idPrefix: 'chat', mountEl: env.mount,
         stateSnapshots: { begin: () => ({ generation: ++generation, requestedAt: Date.now() }), gate() { return Promise.resolve(this.begin()); },
             isCurrent: () => true, apply() {} },
     });
@@ -92,8 +92,8 @@ function fixture(history = [], detail = { active_direct_turns: [] }) {
         status: () => env.mount.querySelector('.status-badge')?.textContent,
         typingHidden: () => messages.children
             .find((node) => String(node.className || '').includes('typing-bubble'))?.style.display === 'none',
-        emit: (type, row) => handlers.get(type)({ chat_id: 1, ts: TS, ...row }),
-        log: (row) => handlers.get('log')({ chat_id: 1, data: { task_id: TASK, ts: TS, ...invocation(row), ...row } }),
+        emit: (type, row) => handlers.get(type)({ chat_id: chatId, ts: TS, ...row }),
+        log: (row) => handlers.get('log')({ chat_id: chatId, data: { task_id: TASK, ts: TS, ...invocation(row), ...row } }),
         census: (rows) => instance.hydrateStateSnapshot({
             active_chat_activities: rows, active_chat_activities_complete: true, supervisor_ready: true,
         }, Infinity, ++generation),
@@ -122,7 +122,7 @@ test('inert tool carrier restores a speechless card without invented narration o
 test('empty incomplete tool evidence stays visible and never reads as zero calls', async () => {
     const f = fixture([toolCarrier({ observations: [], legacy: { calls: 0 }, coverage: {
         source: 'logs/tools.jsonl', live_size: 0, live_window: 0, archives_bounded: true,
-        archives: 3, archives_available: 4, shown: 0, matched: 0 } })]);
+        archives: 3, archives_available: 4, shown: 0, matched: 0, gaps: ['unreadable_source'] } })]);
     try {
         await f.instance.refreshHistory({ revision: 1 });
         assert.ok(f.card());
@@ -142,7 +142,66 @@ test('a bounded physical window still settles all identified calls of a known ta
     ], coverage: { live_size: 1000, live_window: 500, source: 'logs/tools.jsonl' } } });
     assert.equal(view.errors, 0, 'verified late settlement retires the provisional wait error');
     assert.match(view.headline, /wait ended/);
-    assert.match(view.fullBody, /incomplete/, 'physical coverage remains independently disclosed');
+    assert.doesNotMatch(view.fullBody, /incomplete/);
+    assert.match(view.fullBody, /Only recent tool history was read/);
+    assert.doesNotMatch(view.headline, /outcome unknown/);
+    assert.equal(record.toolFold.coverage.live_window, 500, 'physical read bounds remain separate raw evidence');
+});
+
+for (const archives of [0, 3, 4, 12]) test(`global tool read bounds preserve settled outcomes and receipt-only visibility: archives=${archives}`, async () => {
+    const coverage = { source: 'logs/tools.jsonl', live_size: 1000, live_window: 500,
+        archives: Math.min(archives, 3), archives_available: archives, archives_bounded: archives > 3, matched: 0, shown: 0 };
+    const record = {};
+    const view = noteToolHostMetrics(record, { calls: 2, evidence: { coverage, observations: ['one', 'two'].map(key =>
+        ({ key, tool: 'route_to_project', fact: 'settled', status: 'ok', receipt: true })) } });
+    assert.equal(view.headline, '2 tool calls');
+    assert.equal(view.receipt, true);
+    assert.match(view.fullBody, /Only recent tool history was read/);
+    const f = fixture([{ role: 'assistant', task_id: TASK, text: 'Hello', ts: TS },
+        toolCarrier({ coverage, observations: [] })]);
+    try {
+        await f.instance.refreshHistory({ revision: 1 });
+        assert.equal(f.card(), null, 'ordinary bounded history invents no tool-only card for speech');
+    } finally { f.close(); }
+});
+
+test('positive per-task missing counts and actual read gaps remain visible independently of outcomes', () => {
+    const coverage = { source: 'logs/tools.jsonl', live_size: 10, live_window: 10, shown: 0, matched: 0, archives_bounded: true };
+    const empty = noteToolHostMetrics({}, { calls: 2, evidence: { coverage, observations: [] } });
+    assert.match(empty.headline, /2 tool calls.*outcome unknown/);
+    assert.match(empty.fullBody, /incomplete/);
+    for (const fact of ['started', 'wait_ended']) {
+        const view = noteToolHostMetrics({}, { evidence: { coverage,
+            observations: [{ key: fact, tool: 'read_file', fact, status: 'unknown' }] } });
+        assert.match(view.headline, /outcome unknown/);
+    }
+});
+
+for (const chatId of [1, 1234]) test(`canonical owner wait settles without a Project-pointer dependency in room ${chatId}`, async () => {
+    const f = fixture([toolCarrier({ observations: [{ key: 'one', tool: 'read_file', fact: 'settled', status: 'ok' }] },
+        { chat_id: chatId })], { active_direct_turns: [] }, chatId);
+    try {
+        await f.instance.refreshHistory({ revision: 1 });
+        const row = { activity_id: TASK, chat_id: chatId, kind: 'managed_task', phase: 'working',
+            required_question_unavailable: true, owner_wait: { owner_wait_state: 'waiting', quiz_state: 'open' } };
+        f.census([row]);
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Waiting for your answer');
+        assert.equal(f.status(), 'Waiting for your answer');
+        for (const owner_wait of [{ owner_wait_state: 'waiting', quiz_state: 'answered' },
+            { owner_wait_state: 'resumed', quiz_state: 'open' }, { wait_ended_at: TS, quiz_state: 'open' }]) {
+            f.census([{ ...row, owner_wait }]);
+            assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Working');
+            assert.equal(f.status(), 'Working...');
+        }
+        f.census([{ ...row, owner_wait: undefined }]);
+        assert.equal(f.status(), 'Activity unconfirmed');
+        f.census([{ ...row, owner_wait: { quiz_state: 'unknown' }, required_question_unavailable: false }]);
+        assert.equal(f.status(), 'Activity unconfirmed', 'unreadable wait facts do not imply resumed work');
+        f.census([{ ...row, phase: 'budget_paused', pause_cause: 'sleep' }]);
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Paused · sleep');
+        f.census([{ ...row, owner_wait: undefined, required_question_unavailable: false }]);
+        assert.equal(f.status(), 'Working...', 'no quiz evidence invents no wait');
+    } finally { f.close(); }
 });
 
 test('ordinary unfinished speech cannot settle the evidence card', async () => {

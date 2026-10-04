@@ -3,6 +3,7 @@ import { bindMarkdownTables, destroyChatMarkdown, enhanceChatMarkdown, mountChat
 import { renderPageHeader } from './page_header.js';
 import { PAGE_ICONS } from './page_icons.js';
 import { showToast } from './toast.js';
+import { tx } from './i18n.js';
 import { decorateProjectRow, syncSavedProjectContext } from './project_answer.js';
 import { createProjectHandoffs, receiptNotice } from './project_handoff.js';
 import { bindComposerFileTargets, cleanupUploadedAttachments, createChatMedia, showTaskIncidentToast } from './chat_media.js';
@@ -2293,11 +2294,8 @@ export function createChatInstance({
                 skillReview: opts.skillReview || null,
                 evidenceRef: opts.evidenceRef || null,
             });
-            // Mirror the sessionStorage slice(-200): the in-memory copy exists
-            // only to feed that snapshot, so it obeys the same cap (P3).
-            if (persistedHistory.length > 200) {
-                persistedHistory.splice(0, persistedHistory.length - 200);
-            }
+            // Match the persisted-history cap.
+            if (persistedHistory.length > 200) persistedHistory.splice(0, persistedHistory.length - 200);
             if (!_historyReplayActive) persistVisibleHistory();
         }
 
@@ -2316,6 +2314,7 @@ export function createChatInstance({
         const sender = senderLabel(role, isProgress, systemType, {
             source, senderLabel: senderLabelOverride, senderSessionId, initiator,
         }, chatSessionId);
+        if (role === 'system' && systemType === 'task_pause_notice') text = tx(text);
         const richMarkdown = role !== 'user' && systemType !== 'skill_review' && (role !== 'system' || markdown === true);
         const rendered = role === 'user'
             ? escapeHtml(text)
@@ -2327,7 +2326,7 @@ export function createChatInstance({
         const timeFmt = formatMsgTime(ts);
         const timeHtml = timeFmt ? `<div class="msg-time" title="${escapeHtmlAttr(timeFmt.full)}">${escapeHtml(timeFmt.short)}</div>` : '';
         const pendingHtml = pending ? `<div class="msg-pending">Queued until reconnect</div>` : '';
-        // A placed row with no card keeps the record link its card row would offer.
+        // Preserve the card's source link in a standalone row.
         bubble.innerHTML = `
             <div class="sender">${escapeHtml(sender)}</div>
             <div class="message${richMarkdown ? ' ui-rich-content' : ''}">${rendered}</div>

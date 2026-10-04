@@ -39,11 +39,14 @@ def _clock(monkeypatch):
             return cls.instant.astimezone(tz) if tz else cls.instant.replace(tzinfo=None)
 
     Clock.instant = Clock(2026, 9, 27, 12, tzinfo=datetime.timezone.utc)
+    from ouroboros import retention
     from supervisor import schedule_time
 
     clock_module = SimpleNamespace(datetime=Clock, timezone=datetime.timezone, timedelta=datetime.timedelta)
     for module in (queue_schedules, occurrence, schedule_time):
         monkeypatch.setattr(module, "datetime", clock_module)
+    # GC must use the fixture clock too, not expire receipts by the real date.
+    monkeypatch.setattr(retention, "time", SimpleNamespace(time=lambda: Clock.instant.timestamp()))
     return Clock
 
 
