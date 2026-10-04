@@ -112,7 +112,8 @@ def test_range_page_publishes_its_room_rows_as_a_set_with_stamp_and_source_facts
     assert page["host_stamp"]["tasks"] == [{
         "task_id": "taskA001", "status": "failed", "outcome": "Failed", "outcome_phase": "error",
         "source": "terminal_root_projection", "review_verdict": "Reviewers rejected it.",
-        "result_ref": {"kind": "task_result", "task_id": "taskA001", "reader": "get_task_result"}}]
+        "result_ref": {"kind": "task_result", "task_id": "taskA001", "reader": "get_task_result"},
+        "source_address": addr(rows[3])}]
     assert page["author"]["kind"] == "mind" and page["author"]["focus"]["role"] == "root"
     assert page["author"]["task_id"] == "root0001"
     assert ChronicleStore(tmp_path).sealed_row_refs(str(side)) == set()
@@ -662,7 +663,7 @@ def test_tools_module_imports_no_retired_memory_machinery_and_lazy_domains_stay_
                  "ouroboros.consolidator", "ouroboros.llm", "ouroboros.memory_guidance"}
     assert not (top | nested) & forbidden
     lazy = {"ouroboros.dialogue_evidence", "ouroboros.project_dialogue", "ouroboros.projects_registry",
-            "ouroboros.task_results", "ouroboros.artifacts"}
+            "ouroboros.terminal_projection", "ouroboros.artifacts"}
     assert lazy <= nested and not lazy & top
 
 

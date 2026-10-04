@@ -45,7 +45,6 @@ from ouroboros.tools.tool_result import ToolResult, _publish_tool_result, comple
 from ouroboros.utils import utc_now_iso
 
 _LINEAGE = ("task_id", "parent_task_id", "root_task_id")
-_TERMINAL_SUMMARIES = frozenset({"terminal_root_projection", "terminal_result_projection"})
 _ORDER = "older to newer"
 
 # --- shared --------------------------------------------------------------------------------------
@@ -230,61 +229,17 @@ def page_covers(root: Any, room_id: Any, *, from_addr: Any = None, to_addr: Any 
     return {"covers": covers, "coverage_facts": facts, "rows": [(address, row) for address, row, _p in rows]}
 
 
-def _stamp_entry(task_id: str, row: Dict[str, Any], source: str) -> Dict[str, Any]:
-    entry = {"task_id": task_id, "status": str(row.get("status") or ""), "outcome": str(row.get("outcome") or ""),
-             "outcome_phase": str(row.get("outcome_phase") or ""), "source": source,
-             "result_ref": row.get("result_ref") or {"kind": "task_result", "task_id": task_id,
-                                                      "reader": "get_task_result"}}
-    if row.get("reason_detail"):
-        entry["review_verdict"] = str(row["reason_detail"])
-    return entry
-
-
-def _result_entry(root: Path, task_id: str) -> Dict[str, Any]:
-    from ouroboros.project_dialogue import OUTCOME_PHASE_HEADLINE, outcome_phase
-    from ouroboros.task_results import load_task_result  # D15->D17 is lazy-only
-
-    try:
-        result = load_task_result(root, task_id, strict=True)  # strict: never moves the file
-    except (OSError, ValueError):
-        result = None
-    if not isinstance(result, dict) or not result:
-        return {"task_id": task_id, "status": "not_recorded"}
-    try:
-        phase = outcome_phase(result, {})
-    except (KeyError, TypeError, ValueError, AttributeError):
-        phase = ""
-    return _stamp_entry(task_id, {**result, "outcome_phase": phase,
-                                  "outcome": OUTCOME_PHASE_HEADLINE.get(phase, "")}, "task_results")
-
-
 def host_stamp(root: Any, task_ids: Iterable[Any], *, rows: Iterable[Any] = ()) -> Dict[str, Any]:
     """The host's facts about each covered task, so a page cannot silently call a failure done.
 
-    Per task, first match wins: its terminal projection row, then its host facts row
-    (both among ``rows``, the page's already-read ``(address, row)`` pairs), then the
-    strict task result, else ``not_recorded``.
+    ``{"tasks": [...], "computed_at"}``. The facts are ``terminal_projection.stamp_facts``:
+    per task, its terminal projection row, then its host facts row (both among ``rows``,
+    the page's already-read ``(address, row)`` pairs), then the strict task result,
+    else ``not_recorded``.
     """
-    terminal: Dict[str, Dict[str, Any]] = {}
-    host_facts: Dict[str, Dict[str, Any]] = {}
-    for entry in rows:
-        row = entry[1]
-        task = str(row.get("task_id") or "")
-        if row.get("type") != "task_summary" or not task:
-            continue
-        if row.get("summary_kind") in _TERMINAL_SUMMARIES:
-            terminal[task] = row
-        elif row.get("summary_kind") == "host_task_facts":
-            host_facts[task] = row
-    stamped = []
-    for task in dict.fromkeys(str(t) for t in task_ids if str(t or "")):
-        if task in terminal:
-            stamped.append(_stamp_entry(task, terminal[task], str(terminal[task]["summary_kind"])))
-        elif task in host_facts:
-            stamped.append(_stamp_entry(task, host_facts[task], "host_task_facts"))
-        else:
-            stamped.append(_result_entry(Path(root), task))
-    return {"tasks": stamped, "computed_at": utc_now_iso()}
+    from ouroboros.terminal_projection import stamp_facts  # D15->D17 is lazy-only
+
+    return {"tasks": list(stamp_facts(root, task_ids, rows=rows).values()), "computed_at": utc_now_iso()}
 
 
 def _quote_resolver(root: Path, lineage: Dict[str, Any],
