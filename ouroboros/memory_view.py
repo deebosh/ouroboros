@@ -595,7 +595,7 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
         facts["under_parts"] = [{"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
                                  "period": _period(_mapping(record.get("covers")).get("ts_span")),
                                  "text": str(record.get("current_text") or "")}
-                                for record in records if record["kind"] in ("page", "part") and (record.get("folded_into") or not spec.story)]
+                                for record in records if record["kind"] in ("page", "part") and record.get("folded_into")] + ([] if spec.story else [{**entry, "part": None} for entry in _story_pages(store, label)[0] if entry["room_id"] == room])
         facts["notes"] = list(notes.get(room, ()))
     if spec.origin_words and room.lstrip("-").isdigit() and int(room) in memory_inventory.membership_facts(
             root).project_chat_ids:
@@ -789,10 +789,10 @@ def _page_lines(entry: Mapping[str, Any]) -> List[str]:
 
 
 def _retold(item: Mapping[str, Any], short: bool = False) -> str:
-    """A record of this room's page (retold, or a page under a part), whole or by address (F4)."""
+    """A record of this room's page (retold, under a part, or a storyless view's own page with its evidence), whole or by address (F4)."""
     head = (f"#### {item['kind']} {item['id']} — {item['period']} — under part {item['part']}" if item.get("part")
             else f"#### {item['id']} — {item['period']}")
-    return f"{head} — memory_read(node_id='{item['id']}')" if short else f"{head}\n{_indented(item['text'])}"
+    return f"{head} — memory_read(node_id='{item['id']}')" if short else "\n".join([f"{head}\n{_indented(item['text'])}", *(_page_lines(item)[3:] if "stamp" in item else ())])
 
 
 def _row_pointer(item: Mapping[str, Any], what: str) -> str:

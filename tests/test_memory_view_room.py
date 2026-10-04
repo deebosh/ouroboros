@@ -541,3 +541,19 @@ def test_a_nanny_keeps_its_rooms_sealed_pages_on_its_room_page_and_a_child_reads
     assert "I sealed the opening of Main." in _section(nanny_text, "### Pages of this room")
     child, child_text = _view(tmp_path, base)
     assert "I sealed the opening of Main." in mv.render_story(child) and "### Pages of this room" not in child_text
+    # A helper's draft reaches the nanny with its evidence, as the story prints it (delta review): who drafted it,
+    # the host stamp of its tasks and the verified words it quotes — never as unattributed prose.
+    from ouroboros.chronicle_import import row_lineage
+    from ouroboros.tools.chronicle import _quote_resolver
+
+    covers = page_covers(tmp_path, "1", from_addr=_addr(rows[2]), to_addr=_addr(rows[2]))["covers"]
+    quote = {"address": _addr(rows[0]), "text": "please look", "speaker": "human"}
+    draft = ChronicleStore(tmp_path).publish_page(
+        room_id="1", text="A helper says the work finished.", covers=covers, author={"kind": "helper", "route": "light"},
+        quotes=[quote], host_stamp={"tasks": [{"task_id": "t9", "status": "failed", "outcome_phase": "failed"}]},
+        quote_resolver=_quote_resolver(tmp_path, row_lineage(tmp_path)))
+    assert draft.ok, draft
+    _nanny, nanny_text = _view(tmp_path, {**base, "id": "nan9", "configured_subagent": {"route": {"kind": "agent_session"}}})
+    page = _section(nanny_text, "### Pages of this room")
+    assert "A helper says the work finished." in page and f"- quote (human, {quote['address']}): {quote['text']}" in page
+    assert "(draft by a helper (Light), not yet accepted or rejected by me)" in page and "failed 1" in page
