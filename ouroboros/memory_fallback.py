@@ -71,7 +71,8 @@ _COMMON = ("A task's outcome is its host stamp: never call a task done, accepted
            "done and how it ended, what stays open.\n"
            "Quote the words of people and of Ouroboros only through the quotes field; in the text, say it in "
            "your own words.\n")
-_QUOTES = ("Each quote is an exact substring of one supplied row, with that row's address (row:…) and its "
+_QUOTES = ("Quote the decisive words — what was asked, decided, promised or refused — exactly in quotes.\n"
+           "Each quote is an exact substring of one supplied row, with that row's address (row:…) and its "
            "speaker: the author class written first in the row's brackets — human, ouroboros, child, host, "
            "helper or unattributed.\n")
 _NO_QUOTES = "No chat rows are supplied here, so leave quotes empty.\n"
