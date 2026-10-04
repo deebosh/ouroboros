@@ -945,7 +945,8 @@ def test_unmaterialized_automatic_pass_leaves_physical_overflow_recovery(tmp_pat
     """Both directions of the latch release in ``_call_round_model``: an automatic pass that
     wrote no checkpoint (unreachable or nothing exposed) does not consume the round's
     physical recovery, so an actual overflow still requests its low-water pass; a pass that
-    did materialize keeps the one-pass latch and is never repeated."""
+    did materialize keeps the one-pass latch and is never repeated. Only the pass after the
+    provider's typed refusal carries ``provider_refused`` (D-69); the proactive one never does."""
     from ouroboros import loop
 
     context = _ctx(tmp_path, preferred="low", mode="low")
@@ -964,7 +965,7 @@ def test_unmaterialized_automatic_pass_leaves_physical_overflow_recovery(tmp_pat
 
     def reclaim(ctx, disposition, **kwargs):
         key = (disposition.measurement.route_fp, disposition.measurement.round_id)
-        reclaims.append(kwargs.get("minimum_goal_tokens", 0))
+        reclaims.append((kwargs.get("minimum_goal_tokens", 0), kwargs.get("provider_refused", False)))
         ctx.tools._ctx._context_reclaim_passes.add(key)
         if materialized:
             loop._context_reclaim_materializations(ctx.tools._ctx).add(key)
@@ -983,4 +984,5 @@ def test_unmaterialized_automatic_pass_leaves_physical_overflow_recovery(tmp_pat
     msg, _cost, _mode = loop._call_round_model(context)
 
     assert msg["content"] == "fits" and sends == [False, True]
-    assert reclaims == ([0] if materialized else [0, max(1, reclaim_low_water_margin(250_000, 500_000))])
+    assert reclaims == ([(0, False)] if materialized
+                        else [(0, False), (max(1, reclaim_low_water_margin(250_000, 500_000)), True)])
