@@ -1354,8 +1354,9 @@ def _fit_route_tool_ceiling(ctx: _RoundModelCallContext) -> bool:
     """Keep the resident schemas within the acting route's physical ceiling (OpenAI: 128).
 
     In place, before measurement, so the fit, the priced candidate and the send carry
-    one list and discovery reports true residency. Names left out earlier and loaded
-    again by the actor stay; the newly left-out names reach the actor as a fact.
+    one list and discovery reports true residency. Names the actor loaded through
+    enable_tools in this run, and names left out earlier, stay; the newly left-out
+    names reach the actor as a fact.
     Called by every Main round and by a wait's reprepare; True when the list changed.
     """
     from ouroboros.provider_models import tool_schema_limit
@@ -1365,8 +1366,9 @@ def _fit_route_tool_ceiling(ctx: _RoundModelCallContext) -> bool:
     if limit is None or schemas is None or len(schemas) <= limit:
         return False
     earlier = frozenset(getattr(ctx.tools._ctx, "_route_left_out_tool_names", ()) or ())
+    loaded = frozenset(getattr(ctx.tools._ctx, "_actor_loaded_tool_names", ()) or ())
     total = len(schemas)
-    schemas[:], left_out = fit_tool_schemas_to_limit(schemas, limit, keep=earlier)
+    schemas[:], left_out = fit_tool_schemas_to_limit(schemas, limit, keep=earlier | loaded)
     ctx.tools._ctx._route_left_out_tool_names = earlier | set(left_out)
     invalidate_task_cache_splits(ctx.task_id)
     _loop()._append_or_merge_user_message(

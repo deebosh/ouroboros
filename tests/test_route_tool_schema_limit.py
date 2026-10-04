@@ -94,6 +94,34 @@ def test_main_fits_its_resident_list_in_place_and_names_what_it_left_out():
     assert len(ctx.messages) >= rows and len(ctx.tools._ctx._route_left_out_tool_names) == 2
 
 
+def test_a_schema_the_actor_enabled_stays_though_no_fit_left_it_out_before(tmp_path, monkeypatch):
+    """A cold continuation keeps only its fitted list and a late-registered tool was never left out:
+    what enable_tools loads in this run is the actor's choice, so the ceiling keeps it."""
+    from ouroboros import loop, provider_models
+    from ouroboros.tool_policy import initial_tool_schemas
+    from ouroboros.tools.registry import ToolRegistry
+
+    registry = ToolRegistry(repo_dir=tmp_path, drive_root=tmp_path)
+    catalog = initial_tool_schemas(registry)
+    unpinned = [name for name in _names(catalog) if name not in PINNED]
+    chosen, tail = unpinned[-1], unpinned[-2]
+    resident = [schema for schema in catalog if schema["function"]["name"] != chosen]
+    monkeypatch.setitem(provider_models.PROVIDER_TOOL_SCHEMA_LIMITS, "openai", len(resident))  # at the ceiling
+    loop._setup_dynamic_tools(registry, resident, [])
+    assert "registered late" in registry.execute("enable_tools", {"tools": chosen})
+    ctx = _round_ctx(resident)
+    ctx.tools = registry
+    loop_model_call._fit_route_tool_ceiling(ctx)
+    assert chosen in _names(resident) and tail not in _names(resident)
+    assert registry._ctx._route_left_out_tool_names == {tail}
+
+    # The same list with that schema appended by the host, not loaded by the actor: the tail rule applies.
+    hosted = _round_ctx([*[schema for schema in catalog if schema["function"]["name"] != chosen],
+                         next(schema for schema in catalog if schema["function"]["name"] == chosen)])
+    loop_model_call._fit_route_tool_ceiling(hosted)
+    assert chosen not in _names(hosted.tool_schemas) and tail in _names(hosted.tool_schemas)
+
+
 def test_main_leaves_fitting_catalogs_and_other_routes_untouched():
     for schemas, model, use_local in ((_catalog(128), OPENAI_MAIN, False),
                                       (_catalog(129), "openai/gpt-5.6-luna", False),
