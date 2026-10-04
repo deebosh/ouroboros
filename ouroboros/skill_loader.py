@@ -685,10 +685,8 @@ def requested_core_setting_keys(env_keys: List[str]) -> List[str]:
         from ouroboros.config import SETTINGS_DEFAULTS, load_settings
         settings = load_settings()
         custom_secret_upper = {
-            str(key).upper()
-            for key in settings
-            if str(key).upper() not in SETTINGS_DEFAULTS
-            and str(key).upper().replace("_", "").isalnum()
+            str(key).upper() for key in settings
+            if str(key).upper() not in SETTINGS_DEFAULTS and str(key).upper().replace("_", "").isalnum()
         }
     except Exception:
         custom_secret_upper = set()
