@@ -304,3 +304,5 @@ def test_pending_local_work_is_projected_without_exposing_raw_transaction(monkey
     assert "stash_restore" not in payload["update_tx"]
     tx.pop("stash_restore")
     assert "local_work_recovery" not in control._managed_update_payload(fetch=False, include_tags=False)["update_tx"]
+    tx.update(phase="marker_cleanup_retry", gate_blocked_reason="rollback_restart_pending")
+    assert control._managed_update_payload(fetch=False, include_tags=False)["update_tx"]["local_work_recovery"] is True

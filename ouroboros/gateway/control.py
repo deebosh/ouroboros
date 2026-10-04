@@ -77,7 +77,8 @@ def _managed_update_payload(*, fetch: bool, include_tags: bool) -> dict[str, Any
             "phase": str(tx.get("phase") or ""),
             "task_id": str(tx.get("task_id") or ""),
             "restart_required": bool(tx.get("restart_required")),
-            **({"local_work_recovery": True} if tx.get("stash_restore") else {}),
+            **({"local_work_recovery": True} if tx.get("stash_restore")
+               or tx.get("gate_blocked_reason") == "rollback_restart_pending" else {}),
         }
         if tx
         else {"active": False}

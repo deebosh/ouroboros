@@ -45,7 +45,7 @@ from ouroboros.server_process import (  # noqa: F401
     _request_restart_exit, _restart_requested,
     _supervisor_stop, _exit_signalled,
     _SignalStopServer, _embedded_uvicorn_server,
-    capture_server_source_baseline, server_stop_source, log,
+    capture_server_source_baseline, server_source_baseline, server_stop_source, log,
 )
 from ouroboros.server_routing_context import (  # noqa: F401
     _active_direct_roots,
@@ -1116,10 +1116,10 @@ def _boot_managed_update_tasks() -> None:
     """Finalize a pending update, restart after rollback, then refresh its feed."""
     try:
         from supervisor.git_ops import compute_managed_update_status
-        from supervisor.update_merge import finalize_managed_update_on_boot
+        from supervisor.update_merge import active_update_tx, finalize_managed_update_on_boot
 
         result = finalize_managed_update_on_boot(
-            supervisor_ready=_wait_for_supervisor_update_finalize()
+            supervisor_ready=_wait_for_supervisor_update_finalize(), running_source_sha=server_source_baseline()
         )
         stash_note = str(result.get("stash_note") or "")
         if stash_note:
@@ -1135,9 +1135,9 @@ def _boot_managed_update_tasks() -> None:
                     send_with_budget(owner_chat, f"📦 Managed update: {stash_note}", role="system", system_type="managed_update_notice")
             except Exception:
                 log.debug("stash note owner notification failed", exc_info=True)
-        if result.get("rolled_back") is True:
-            # This generation imported the rejected candidate. Preserve queued roots
-            # through shutdown, then exec the restored code instead of limping on.
+        if result.get("rolled_back") is True and active_update_tx():
+            # Completed restore custody survives re-exec; the restored generation
+            # clears it without another checkout or restart.
             from supervisor.workers import close_repo_writer_admission
 
             close_repo_writer_admission("managed_update:rollback_restart")

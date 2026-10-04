@@ -779,7 +779,7 @@ def test_pending_boot_smoke_not_finalized_on_failed_supervisor(tmp_path, monkeyp
     assert update_merge.read_update_tx()["boot_attempts"] == 1
     res2 = update_merge.finalize_managed_update_on_boot(supervisor_ready=False)
     assert res2.get("rolled_back") is True, res2
-    assert update_merge.read_update_tx_strict()[0] == "absent"
+    assert update_merge.read_update_tx()["phase"] == update_merge.MARKER_CLEANUP_RETRY_PHASE
 
 
 def test_healthy_boot_clears_replace_intent_before_finalizing(tmp_path, monkeypatch):
@@ -845,7 +845,7 @@ def test_boot_rolls_back_when_recovered_pre_restart_smoke_fails(
         "pre_update_branch": head,
     })
 
-    result = update_merge.finalize_managed_update_on_boot(supervisor_ready=True)
+    result = update_merge.finalize_managed_update_on_boot(supervisor_ready=True, running_source_sha=cur)
 
     assert result["rolled_back"] is True
     assert update_merge.read_update_tx_strict()[0] == "absent"
@@ -883,7 +883,7 @@ def test_assisted_commit_crash_before_gates_rolls_back(tmp_path, monkeypatch):
 
     assert result.get("rolled_back") is True, result
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() == plan["base_sha"]
-    assert update_merge.read_update_tx_strict()[0] == "absent"
+    assert update_merge.read_update_tx()["phase"] == update_merge.MARKER_CLEANUP_RETRY_PHASE
 
 
 def test_replace_crash_before_checkout_preserves_dirty_tree(tmp_path, monkeypatch):
@@ -956,7 +956,7 @@ def test_rollback_disarms_replay_before_touching_dirty_tree(tmp_path, monkeypatc
     assert blocked["gate_blocked_detail"] == detail
 
     monkeypatch.setattr(git_ops, "_clear_update_intent", lambda: True)
-    recovered = update_merge.finalize_managed_update_on_boot(supervisor_ready=True)
+    recovered = update_merge.finalize_managed_update_on_boot(supervisor_ready=True, running_source_sha=pre)
     assert recovered["rolled_back"] is True
     assert update_merge.read_update_tx_strict()[0] == "absent"
 
@@ -1065,7 +1065,7 @@ def test_boot_recovery_rolls_back_interrupted_materialization(tmp_path, monkeypa
     assert result.get("rolled_back") is True, result
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() == plan["base_sha"]
     assert update_merge._merge_head_sha() == ""
-    assert update_merge.read_update_tx_strict()[0] == "absent"
+    assert update_merge.read_update_tx()["phase"] == update_merge.MARKER_CLEANUP_RETRY_PHASE
     assert gate_calls == [("close", "managed_update:rollback")]
 
 

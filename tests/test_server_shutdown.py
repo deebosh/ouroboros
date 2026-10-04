@@ -343,8 +343,9 @@ def test_successful_boot_rollback_requests_restart_and_preserves_queue(monkeypat
     monkeypatch.setattr(server, "_wait_for_supervisor_update_finalize", lambda: False)
     monkeypatch.setattr(
         update_merge, "finalize_managed_update_on_boot",
-        lambda supervisor_ready: {"finalized": False, "rolled_back": True},
+        lambda supervisor_ready, **_kwargs: {"finalized": False, "rolled_back": True},
     )
+    monkeypatch.setattr(update_merge, "active_update_tx", lambda: {"phase": "marker_cleanup_retry"})
     monkeypatch.setattr(workers, "close_repo_writer_admission", lambda reason: calls.append(("gate", reason)))
     monkeypatch.setattr(server, "_request_restart_exit", lambda: calls.append(("restart", "")))
     monkeypatch.setattr(
@@ -369,7 +370,7 @@ def test_failed_boot_rollback_does_not_restart(monkeypatch):
     monkeypatch.setattr(server, "_wait_for_supervisor_update_finalize", lambda: False)
     monkeypatch.setattr(
         update_merge, "finalize_managed_update_on_boot",
-        lambda supervisor_ready: {"finalized": False, "rolled_back": False},
+        lambda supervisor_ready, **_kwargs: {"finalized": False, "rolled_back": False},
     )
     monkeypatch.setattr(
         git_ops, "compute_managed_update_status",
