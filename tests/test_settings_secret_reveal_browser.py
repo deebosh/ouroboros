@@ -254,6 +254,7 @@ def test_settings_paints_and_saves_while_the_installed_skill_list_is_held(direct
                 page.wait_for_timeout(50)
             assert len(held) == 1, "Reload reads the list once more, beside the document"
             expect(page.locator("#btn-save-settings")).to_be_enabled()
+            page.click('[data-settings-tab="advanced"]')  # the repo field lives on Advanced
             page.locator("#s-gh-repo").fill("owner/held-proof")
             expect(page.locator("#settings-unsaved-indicator")).to_have_class(re.compile(r"\bis-visible\b"))
             held.pop().fulfill(json=listing)
