@@ -1,8 +1,8 @@
 """A knowledge nomination binds only the revision its own operation completely read.
 
-Reflection, scratchpad consolidation and knowledge maintenance send one Light operation
-(``_call_consolidation_llm`` with a ``KnowledgeReadContext``); the retired dialogue writer's
-draft/correction pair was one more such operation. The host credits a read only for the
+Reflection and scratchpad consolidation send one Light operation (``_call_consolidation_llm``
+with a ``KnowledgeReadContext``); the retired dialogue writer's draft/correction pair and the
+retired pressure maintenance were more such operations. The host credits a read only for the
 characters actually delivered, binds that revision to the nomination, and the common
 writer then requires it for every existing note: no read, a partial read or a stale read
 never lands a change, an existing note changes only by anchored edits, and a newer

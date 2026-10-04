@@ -207,7 +207,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── chat_chain.py        ← The chat generation chain (archives, then live), the A2A-free row stream with the legacy cursor's positions, index-free row addresses `row:<chat_id>@<ts>#<sha12>` (hint, then the archive rotated after `ts`) and `retain_memory_source` (§6)
       ├── chronicle_store.py   ← Append-only derived memory (`records.jsonl` authority, disposable SQLite index): pages seal row sets once, parts fold adjacent records once, room-head checks, typed refusals (§6)
       ├── chronicle_import.py  ← One model-free import of the legacy dialogue memory: a `legacy` record per room section with its positional `raw_range`, nominations as global marks, the `legacy_frontier` scan state and the activation receipt (§6)
-      ├── consolidator.py      ← Shared Light transport, scratchpad and knowledge upkeep for reflection and pressure; no dialogue writer (§6)
+      ├── consolidator.py      ← Shared Light transport, scratchpad and knowledge upkeep for reflection; no dialogue writer (§6)
       ├── memory_nomination_receipts.py ← Strict read of the frozen cursor's pending nominations, imported once as marks (§6)
       ├── memory_inventory.py  ← What of memory is open or folded, computed once: a room's chat rows after the legacy frontier outside its sealed set (an incremental row projection), and a legacy unit folded by a part or by pages sealing all its rows (§6)
       ├── memory.py            ← Scratchpad, identity, chat history

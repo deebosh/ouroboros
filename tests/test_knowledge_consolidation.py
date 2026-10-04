@@ -1,7 +1,7 @@
 """Light revises actual current knowledge in the same existing memory operation.
 
-Reflection, scratchpad consolidation and knowledge maintenance are those operations
-now; the retired dialogue writer's nomination-debt receipts left with it.
+Reflection and scratchpad consolidation are those operations now (the pressure maintenance
+is retired too); the retired dialogue writer's nomination-debt receipts left with it.
 """
 
 from __future__ import annotations
