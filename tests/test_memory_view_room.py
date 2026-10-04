@@ -8,6 +8,7 @@ rule is pinned in both directions on a fixture with three rooms besides Main.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from types import SimpleNamespace
 
@@ -112,6 +113,10 @@ def test_an_explicit_spec_is_taken_after_its_fields_check_and_a_bad_one_falls_ba
             assert mv.view_spec_for_task({**task, "memory_view": bad}, tmp_path) == dataclasses.replace(
                 mv.ROLE_DEFAULTS["child"], room_id="1"), bad
     assert caplog.text.count("memory_view of task c1 refused") == 4
+    events = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    refused = [event for event in events if event.get("type") == "context_memory_view_spec_refused"]
+    assert [(event["task_id"], event["role"]) for event in refused] == [("c1", "child")] * 4
+    assert refused[0]["reason"] == "unknown ViewSpec field(s): stories"  # an accepted spec writes no event
 
 
 # --- the helper's role line -----------------------------------------------------------------------

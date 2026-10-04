@@ -42,6 +42,7 @@ from ouroboros.chronicle_store import ChronicleStore
 from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
 from ouroboros.dialogue_provenance import (RoomLabelResolver, is_presence_task, render_memory_row, render_row_text,
                                            row_class)
+from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -215,8 +216,8 @@ def view_room_id(task: Mapping[str, Any], ctx: Any, drive_root: Any, *, project_
 def view_spec_for_task(task: Mapping[str, Any], drive_root: Any, *, ctx: Any = None) -> ViewSpec:
     """The role's default spec, or the task's explicit ``memory_view`` after its fields check.
 
-    An explicit spec with an unknown field or value is not used: the role default is,
-    and the refusal is logged. Every role but consciousness gets its current room.
+    An explicit spec with an unknown field or value is not used: the role default is, and the
+    refusal is one event in ``logs/events.jsonl``. Every role but consciousness gets its current room.
     """
     role = view_role(task)
     spec = ROLE_DEFAULTS[role]
@@ -225,6 +226,8 @@ def view_spec_for_task(task: Mapping[str, Any], drive_root: Any, *, ctx: Any = N
         problem = _explicit_problem(explicit)
         if problem:
             log.warning("memory_view of task %s refused, role default used: %s", task.get("id"), problem)
+            append_jsonl(pathlib.Path(drive_root) / "logs" / "events.jsonl", {"ts": utc_now_iso(), "role": role, "reason": problem,
+                         "type": "context_memory_view_spec_refused", "task_id": str(task.get("id") or "")})
         else:
             spec = dataclasses.replace(spec, **dict(explicit))
     if spec.room_id is not None:
