@@ -596,7 +596,10 @@ def scan_data_paths(root: pathlib.Path = REPO) -> frozenset[str]:
 # 313 -> 312 (memory sprint, memory view): the request no longer reads ``memory/dialogue_summary.md``
 # (the retired flat summary is a chronicle legacy record, imported with the blocks; its row merged
 # into theirs).
-EXPECTED_SCAN_PATHS = 312
+# 312 -> 311 (memory sprint, memory writers): the removed memory pressure upkeep was the only code
+# spelling ``memory/knowledge/overview.md``; the mind still writes the note through the knowledge
+# shelf, whose section-6 row covers it.
+EXPECTED_SCAN_PATHS = 311
 
 # Scanned paths that must always be present — guards the scanner itself
 # against a silent regression that would shrink coverage while keeping counts
