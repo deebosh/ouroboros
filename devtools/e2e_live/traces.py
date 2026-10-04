@@ -24,11 +24,12 @@ from devtools.benchmarks.common.secrets import credential_fingerprint
 
 TRACES_DIR = "traces"
 # Relative to a drive root: the lane's own and each headless task's forked one (FORK_ROOTS).
-TRACE_GLOBS = ("logs/*.jsonl", "logs/*.log", "task_results/*.json", "state/advisory_review.json",
+TRACE_GLOBS = ("logs/*.jsonl", "logs/*.log", "logs/*.log.[0-9]*", "task_results/*.json", "state/advisory_review.json",
                "state/usage_attempts.jsonl", "state/queue_snapshot.json", "state/evolution_campaign.json",
                "observability/calls/*/*.json")
 FORK_ROOTS = "state/headless_tasks/*/data"
-JOURNAL_SUFFIXES = (".jsonl", ".log")   # line-oriented: the only files cut to a tail
+# Line-oriented: the only files cut to a tail, with the numbered backups server.py's rotating handler leaves.
+JOURNAL_SUFFIXES = (".jsonl", ".log")
 # One lane's bound. A stub SM1 lane leaves about 1.5 MB of these files and a paid lane's tool outputs run to tens of
 # MB; 200 MiB per lane keeps the largest run (MAX_LANES = 6) near 1.2 GiB, minutes of upload from a hosted runner,
 # and a lane that still exceeds it keeps the NEWEST part of every journal, the end where a deadline or stall shows.
@@ -87,7 +88,7 @@ def _sources(data_root: pathlib.Path) -> list[tuple[pathlib.Path, pathlib.Path]]
 
 def _write_bundle(sources: list, dest: pathlib.Path, replacements: list, limit: int) -> dict:
     sizes = {rel: src.stat().st_size for src, rel in sources}
-    journals = {rel: size for rel, size in sizes.items() if rel.suffix in JOURNAL_SUFFIXES}
+    journals = {rel: size for rel, size in sizes.items() if _is_journal(rel)}
     fixed = sum(size for rel, size in sizes.items() if rel not in journals)
     keep = _tail_budgets(journals, limit - fixed) if sum(sizes.values()) > limit else journals
     dest.mkdir(parents=True, exist_ok=True)
@@ -110,6 +111,12 @@ def _write_bundle(sources: list, dest: pathlib.Path, replacements: list, limit: 
         target.write_bytes(data)
         total, redacted = total + len(data), redacted + hits
     return {"files": len(sources), "bytes": total, "redacted": redacted, "limit_bytes": limit, "truncated": truncated}
+
+
+def _is_journal(rel: pathlib.Path) -> bool:
+    """``*.jsonl``/``*.log``, or a rotated ``<name>.log.<n>`` backup; a JSON file never is."""
+    rotated = rel.suffix[1:].isdigit() and rel.with_suffix("").suffix in JOURNAL_SUFFIXES
+    return rel.suffix in JOURNAL_SUFFIXES or rotated
 
 
 def _tail_budgets(sizes: dict, budget: int) -> dict:

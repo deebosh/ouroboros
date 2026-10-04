@@ -162,7 +162,7 @@ is explicitly unavailable, never passed.
 
 After the lane server stops, on every outcome, `traces.py` copies its
 journals into `lanes/<id>_a<n>/traces/` with the data-root layout kept:
-`logs/*.jsonl` and `logs/*.log`, `task_results/*.json`,
+`logs/*.jsonl`, `logs/*.log` with the rotated `server.log.<n>` backups, `task_results/*.json`,
 `state/{advisory_review.json,usage_attempts.jsonl,queue_snapshot.json,evolution_campaign.json}`
 and the observability call manifests `observability/calls/*/*.json`, for
 the lane root and every `state/headless_tasks/<id>/data` fork. Never
