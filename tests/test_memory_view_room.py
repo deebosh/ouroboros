@@ -329,6 +329,20 @@ def test_lane_two_is_one_host_line_per_root_task_with_typed_facts_by_address(tmp
     assert '{"' not in joined and "Delivery details" not in joined and "Late review evidence:" not in joined
 
 
+def test_an_old_task_summary_without_a_kind_is_model_prose_and_never_a_status(tmp_path):
+    """The old writer's task_summary rows carry no summary kind and were written by a model: the lane-2 line
+    takes its status from fields; a Project's completion row, written by the host without a kind, stays one."""
+    rooms, rows = _install(tmp_path)
+    shared.append(tmp_path / "logs" / "chat.jsonl", shared.msg(_ts(28), "OLD MODEL PROSE OF ROOT7", direction="system",
+                                                             type="task_summary", task_id="root7", status="completed"))
+    _snapshot, text = _view(tmp_path, MAIN_TASK)
+    lane2 = _section(text, "### Task facts of this conversation").split("\n")[1:]
+    root7 = next(line for line in lane2 if "; host; task root7]" in line)
+    assert root7.startswith(f"[{_ts(28)}; host; task root7] running or unreported; last row task_summary by ")
+    assert "OLD MODEL PROSE" not in text
+    root6 = next(line for line in lane2 if "; host; task root6]" in line)
+    assert root6.startswith(f"[{_ts(25)}; host; task root6] Project X › root6 · Cancelled; ")
+
 def test_a_page_seals_rows_only_in_its_room_and_a_row_in_two_rooms_stays_open_in_the_other(tmp_path):
     from ouroboros.tools.chronicle import page_covers
 

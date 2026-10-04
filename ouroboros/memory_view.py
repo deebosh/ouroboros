@@ -59,7 +59,8 @@ TYPED_HOST_FACTS: Mapping[str, str] = MappingProxyType({
     "acceptance_late_settlement": "late review evidence", "presence_delivery": "delivery",
     "cancel_receipt": "cancel receipt", "custody_notice": "custody notice", "terminal_incident": "terminal incident"})
 _TERMINAL = frozenset({"terminal_root_projection", "terminal_result_projection"})
-_HOST_FACTS = frozenset({"host_task_facts", "", None})
+# The host's facts row; a ``task_summary`` without a kind is the old writer's model prose, never a status.
+_HOST_FACTS, _KINDLESS = frozenset({"host_task_facts"}), frozenset({"", None})
 # The delegated child's role text (memory spec P2 §5, Opus R3), carried verbatim.
 CHILD_ROLE_TEXT = ("Work from this assignment first — it is written to be enough; read memory or sources only to "
                    "fill a gap it leaves, and name what you read in your report.")
@@ -469,9 +470,9 @@ def _task_line(root_id: str, group: List[Tuple[Entry, Dict[str, Any]]], texts: M
         return next((entry for entry, _cls in reversed(group) if entry[1].get("type") == kind
                      and entry[1].get("summary_kind") in kinds and str(entry[1].get("task_id") or "") == task), None)
 
-    # The terminal projection, else a Project's completion row pinned to Main, else the host's
-    # facts row (older ones carry no summary kind); a helper's retelling is never a status.
-    chosen = (summary(_TERMINAL, root_id) or summary(_HOST_FACTS, root_id, "project_completion_summary")
+    # The terminal projection, else a Project's completion row pinned to Main (the host writes it
+    # without a kind), else the host's facts row; a helper's retelling is never a status.
+    chosen = (summary(_TERMINAL, root_id) or summary(_KINDLESS, root_id, "project_completion_summary")
               or summary(_HOST_FACTS, root_id))
     if chosen is not None:
         status = _indented(render_row_text(texts.get(chosen[0]["row_sha256"]) or chosen[1])).lstrip()
