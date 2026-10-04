@@ -17,7 +17,8 @@ The draft acts at once under the helper's name (``author.kind == "helper"``) unt
 mind accepts, rejects or corrects it. A page carries no ``expected_sequence`` (an
 unrelated record of a live room never voids it; a double cover is ``already_sealed``);
 a part carries the room head read at selection. Rows the helper received only by
-address are not covered: they stay open (owner decision D-17).
+address, and the mind's notes it never reads, are not covered: they stay open (owner
+decision D-17).
 
 One call, no retry: a refusal on the same input and the same Light route is recorded in
 the chronicle's scan state (``fallback_refusals``, with the raw answer retained) and that
@@ -441,11 +442,14 @@ def _floor(items: List[_Row], budget: Optional[int], measure: Callable[[str], in
 
 
 def _trimmed(covers: Dict[str, Any], kept: List[_Row]) -> Dict[str, Any]:
-    """The covers of the rows read, without those given only by address (D-17)."""
+    """The covers of the rows read: never a row given only by address, never a mind note (D-17).
+
+    The helper's input holds no note of the mind, so its draft seals none; a note stays
+    open and in the view until a page of the mind covers it.
+    """
     shas = [item.entry[0]["row_sha256"] for item in kept]
-    notes = [ref for ref in covers.get("rows") or () if str(ref).startswith("note:")]
-    return {**covers, "rows": shas + notes, "first": kept[0].entry[0], "last": kept[-1].entry[0], "count": len(kept),
-            "task_ids": list(dict.fromkeys(item.task for item in kept if item.task)),
+    return {**covers, "rows": shas, "note_ids": [], "first": kept[0].entry[0], "last": kept[-1].entry[0],
+            "count": len(kept), "task_ids": list(dict.fromkeys(item.task for item in kept if item.task)),
             "ts_span": source_time_span(item.entry[1].get("ts") for item in kept),
             "stream_span": [kept[0].entry[2], kept[-1].entry[2]]}
 
@@ -479,8 +483,7 @@ def _page_input(root: pathlib.Path, store: ChronicleStore, unit: FallbackUnit, b
     covers = read["covers"]
     if n < len(items):
         covers = page_covers(root, unit.room_id, from_addr=items[0].entry[0], to_addr=items[n - 1].entry[0])["covers"]
-    if addressed:
-        covers = _trimmed(covers, kept)
+    covers = _trimmed(covers, kept)
     stamp = host_stamp(root, covers["task_ids"], rows=[(item.entry[0], item.entry[1]) for item in kept])
     prompt = _compose(head, label, items, n, addressed, owners, refs,
                       {entry["task_id"]: entry for entry in stamp["tasks"]}, tail)

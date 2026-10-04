@@ -269,6 +269,26 @@ def test_the_input_holds_the_owners_words_behind_the_units_tasks_and_the_minds_g
     assert "Name who decided, and quote the deciding words." in llm.prompts[0]
 
 
+def test_a_helper_draft_never_seals_a_mind_note_it_did_not_read(tmp_path, monkeypatch, light):
+    rooms = shared.world(tmp_path)
+    alpha = str(rooms["alpha"])
+    _consciousness(monkeypatch, False)
+    note = ChronicleStore(tmp_path).write_note(room_id=alpha, task_id="bound", text="the real reason was X",
+                                               author=shared.MIND)
+    assert note.ok, note
+    ref = f"note:{note.record['id']}"
+    llm = _Light()
+    assert _run(tmp_path, llm).outcome == "published"
+    [draft] = _drafts(tmp_path)
+    assert "the real reason was X" not in llm.prompts[0]
+    assert ref not in draft["covers"]["rows"] and draft["covers"]["note_ids"] == []
+    assert ref not in ChronicleStore(tmp_path).sealed_row_refs(alpha)  # D-17: the note stays open in the view
+    # The mind's own page over the same rows covers the note it can read (the other side).
+    ChronicleStore(tmp_path).decide(draft["id"], False, shared.MIND, "my own page instead")
+    page = _mind_page(tmp_path, alpha, 6, 7)
+    assert ref in page["covers"]["rows"] and ref in ChronicleStore(tmp_path).sealed_row_refs(alpha)
+
+
 # --- the draft and its publication -------------------------------------------------------------------
 
 def test_a_page_draft_survives_an_unrelated_record_of_its_room(tmp_path, monkeypatch, light):
