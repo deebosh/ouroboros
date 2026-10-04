@@ -242,6 +242,20 @@ def test_default_room_is_own_room_and_chat_id_zero_is_an_address(tmp_path):
     assert write(nowhere, kind="note", text="addressed", room_id="7")["room_id"] == "7"
 
 
+def test_a_room_name_is_refused_with_the_repair_and_never_read_or_written_as_a_room(tmp_path):
+    """Review fix (simulated triad): ``room_id='Main'`` read as an empty room and wrote a note
+    into a phantom room; now each mode refuses it naming the repair, while a chat id (negative
+    or zero included) and ``legacy`` still address rooms."""
+    ctx = ctx_for(tmp_path)
+    for refused in (_chronicle_write(ctx, kind="note", text="lost", room_id="Main"),
+                    _chronicle_write(ctx, kind="page", text="lost", room_id="Main", covers={"task_ids": ["t1"]}),
+                    _memory_read(ctx, room_id="Main"), _memory_read(ctx, room_id="Main", rows=True)):
+        assert "TOOL_ARG_ERROR" in refused and "room_id 'Main' is not a room address" in refused
+    assert ChronicleStore(tmp_path).room_records("Main") == []
+    assert write(ctx, kind="note", text="kept", room_id="-1001")["room_id"] == "-1001"
+    assert _memory_read(ctx, room_id="legacy").startswith("room legacy; head ")
+
+
 def test_part_correction_and_decision_go_through_the_store_rules(tmp_path):
     store, ctx = ChronicleStore(tmp_path), ctx_for(tmp_path)
     for block in (0, 1):

@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from ouroboros import chat_chain
-from ouroboros.chronicle_import import row_lineage
+from ouroboros.chronicle_import import LEGACY_ROOM_ID, row_lineage
 from ouroboros.chronicle_store import (SPEAKERS, ChronicleStore, PublishResult, draft_signer, source_time_span,
                                        verify_quotes)
 from ouroboros.dialogue_provenance import memory_row_header, render_row_text, row_author
@@ -93,9 +93,17 @@ def _existing_store(root: Path) -> Optional[ChronicleStore]:
 
 
 def _room(ctx: Any, root: Path, room_id: Any) -> str:
-    """An explicit room, else this task's own room; chat id 0 is an address, not absence."""
+    """An explicit room, else this task's own room; chat id 0 is an address, not absence.
+
+    A room is its chat id as text (or ``legacy``, the old memory's mixed room): a name such
+    as ``Main`` is refused with the repair, never read as an empty room or written into one.
+    """
     if room_id is not None and str(room_id).strip() != "":
-        return str(room_id).strip()
+        room = str(room_id).strip()
+        if room != LEGACY_ROOM_ID and not room.lstrip("-").isdigit():
+            raise ValueError(f"room_id {room!r} is not a room address: a room is its chat id as text, as "
+                             "memory_read and my memory view print it (or 'legacy' for the old memory)")
+        return room
     from ouroboros.dialogue_evidence import own_room_chat  # D15->D06 is lazy-only
 
     own = own_room_chat(ctx, root)
