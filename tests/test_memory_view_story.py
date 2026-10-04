@@ -74,6 +74,27 @@ def test_pointers_come_first_then_pages_of_all_rooms_by_stream_position_not_publ
     assert pointer in text.split("\n") and text.index(pointer) < text.index(headers[1])
 
 
+def test_a_pointers_period_is_its_rooms_own_rows_and_without_rows_the_marked_block_period(tmp_path):
+    """D-9: a retold record names the period of its room's rows, not its block's; a room with no row in
+    its block names the block's period, marked as such. The story and the room page say the same."""
+    rooms = shared.world(tmp_path)
+    alpha = rooms["alpha"]
+    lines = _story(tmp_path).split("\n")
+    # The transport's one row of block zero is at 00:04, Alpha's rows of block one end at 00:01.
+    assert "- Transport; 2026-09-01 00:04 → 2026-09-01 00:04; 1 row retold; memory_read(node_id='legacy-b00-r777')" in lines
+    assert (f"- Alpha; 2026-09-02 00:00 → 2026-09-02 00:01; 2 rows retold; memory_read(node_id='legacy-b01-r{alpha}')"
+            in lines)
+    # Main's rows span the whole first block: the same minutes, and no mark.
+    assert "- Main; 2026-09-01 00:00 → 2026-09-01 00:05; 4 rows retold; memory_read(node_id='legacy-b00-r1')" in lines
+    # Main has no row in the second block: that block's period, marked.
+    quiet = "2026-09-02 00:00 → 2026-09-02 00:03 (block period)"
+    assert f"- Main; {quiet}; 0 rows retold; memory_read(node_id='legacy-b01-r1')" in lines
+    assert sum("(block period)" in line for line in lines if line.startswith("- ")) == 1
+    room = mv.render_room(_snapshot(tmp_path))
+    assert f"#### legacy-b01-r1 — {quiet}" in room
+    assert "#### legacy-b00-r1 — 2026-09-01 00:00 → 2026-09-01 00:05\n" in room
+
+
 def test_a_part_shows_its_members_do_not_and_corrections_of_members_stand_under_it(tmp_path):
     shared.world(tmp_path)
     first, second = _page(tmp_path, "1", 10, 11), _page(tmp_path, "1", 12, 12)
@@ -135,7 +156,7 @@ def test_a_helper_refusal_receipt_is_one_line_after_the_status_and_absent_withou
     assert ChronicleStore(tmp_path).publish([], scan_state={"fallback_refusals": {unit: receipt}}).ok
     lines = _story(tmp_path).split("\n")
     refusal = [line for line in lines if line.startswith("A helper could not fold")]
-    assert refusal == ["A helper could not fold: Beta; 2026-09-02 00:00 → 2026-09-02 00:03; context_overflow; "
+    assert refusal == ["A helper could not fold: Beta; 2026-09-02 00:02 → 2026-09-02 00:03; context_overflow; "
                        "its answer: read_file(root='runtime_data', path='task_results/fallback/x.md')"]
     assert lines.index(refusal[0]) == next(i for i, line in enumerate(lines) if line.startswith("Story status:")) + 1
 

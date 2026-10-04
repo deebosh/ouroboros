@@ -299,23 +299,23 @@ def _activation(store: ChronicleStore) -> Dict[str, Any]:
 
 # --- the story: legacy pointers, pages and parts ---------------------------------------------------
 
-def _legacy_period(pointer: Mapping[str, Any]) -> str:
-    """The pointer's period: its exact raw range's time span, else the old writer's range text."""
+def _legacy_period(pointer: Mapping[str, Any], rows: Any = None) -> str:
+    """The pointer's period: its room's own rows (``LegacyUnit.ts_span``), else its block's, marked so (D-9)."""
+    if _mapping(rows).get("start") or _mapping(rows).get("end"):
+        return _period(rows)
     raw = _mapping(_mapping(pointer.get("covers")).get("raw_range"))
     span = _mapping(raw.get("ts_span"))
     if raw.get("status") == "exact" and (span.get("start") or span.get("end")):
-        return _period(span)
+        return _period(span) + " (block period)"
     if pointer.get("range_text"):
         return f"{pointer['range_text']} (block period)"
     return "period known from the retelling text only"
 
 
-def _legacy_span(pointer: Mapping[str, Any]) -> List[str]:
-    """``[start, end]`` minutes of an exact raw range with both bounds, else ``[]`` (the floor merges them)."""
-    raw = _mapping(_mapping(pointer.get("covers")).get("raw_range"))
-    span = _mapping(raw.get("ts_span"))
-    return [_minute(span["start"]), _minute(span["end"])] if (
-        raw.get("status") == "exact" and span.get("start") and span.get("end")) else []
+def _legacy_span(rows: Any) -> List[str]:
+    """``[start, end]`` minutes of the room's own rows with both bounds, else ``[]`` (the floor merges them)."""
+    span = _mapping(rows)
+    return [_minute(span["start"]), _minute(span["end"])] if span.get("start") and span.get("end") else []
 
 
 def _gap_detail(store: ChronicleStore, pointer: Mapping[str, Any]) -> str:
@@ -381,8 +381,8 @@ def _capture_story(store: ChronicleStore, root: pathlib.Path,
         pointer = pointers.get(unit.record_id) or {"node_id": unit.record_id}
         gap = pointer.get("kind") == "gap" or pointer.get("legacy_type") in ("gap", "cursor_gap")
         entry = {"kind": "legacy", "id": unit.record_id, "room_id": unit.room_id, "block": unit.block,
-                 "label": str(pointer.get("label") or label(unit.room_id)), "period": _legacy_period(pointer),
-                 "span": _legacy_span(pointer), "rows": unit.rows if unit.raw == "exact" else None,
+                 "label": str(pointer.get("label") or label(unit.room_id)), "period": _legacy_period(pointer, unit.ts_span),
+                 "span": _legacy_span(unit.ts_span), "rows": unit.rows if unit.raw == "exact" else None,
                  "gap": _gap_detail(store, pointer) if gap else ""}
         story.append(entry)
         if unit.refusal:
@@ -579,15 +579,15 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
                              "legacy": [], "under_parts": [], "notes": [], "origins": [], "since": "",
                              "lane1": [], "lane2": []}
     if spec.room_page:
-        folded = {unit.record_id for unit in memory_inventory.legacy_units(store, root) if unit.folded}
+        units = {unit.record_id: unit for unit in memory_inventory.legacy_units(store, root)}
         retold = [record for record in records if record["kind"] in ("legacy", "gap")]
         if room == MAIN_ROOM:  # the retired flat summary predates rooms and was Main's memory: first (P3 §9.9)
             retold[:0] = [record for record in store.room_records(LEGACY_ROOM_ID)
                           if record["kind"] == "legacy" and _mapping(record.get("metadata")).get("legacy_type") == "flat"]
-        facts["legacy"] = [{"id": record["id"], "text": str(record.get("current_text") or ""),
-                            "period": _legacy_period({"covers": record.get("covers"), "range_text": _mapping(
-                                record.get("metadata")).get("legacy_range_text")})}
-                           for record in retold if record["id"] not in folded]
+        facts["legacy"] = [{"id": record["id"], "text": str(record.get("current_text") or ""), "period": _legacy_period(
+                                {"covers": record.get("covers"), "range_text": _mapping(record.get("metadata")).get(
+                                    "legacy_range_text")}, getattr(unit, "ts_span", None))}
+                           for record in retold if not getattr(unit := units.get(record["id"]), "folded", False)]
         facts["under_parts"] = [{"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
                                  "period": _period(_mapping(record.get("covers")).get("ts_span")),
                                  "text": str(record.get("current_text") or "")}

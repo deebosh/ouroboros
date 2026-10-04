@@ -40,7 +40,7 @@ from typing import Any, Dict, FrozenSet, List, Mapping, NamedTuple, Optional, Tu
 
 from ouroboros import chat_chain
 from ouroboros.chronicle_import import legacy_frontier
-from ouroboros.chronicle_store import ChronicleStore
+from ouroboros.chronicle_store import ChronicleStore, source_time_span
 from ouroboros.contracts.chat_id_policy import HIDDEN_CHAT_ID, is_a2a_chat_id
 
 # The key of the memory view's last-capture fact in a task's ``llm_trace``.
@@ -55,7 +55,7 @@ _META_FIELDS = ("chat_id", "ts", "type", "direction", "task_id", "parent_task_id
                 "client_message_id", "subagent_task_id", "delegation_role", "subagent_role", "initiator",
                 "summary_kind", "sender_label", "username", "author", "source", "transport",
                 "status", "outcome", "outcome_phase", "reason_code", "result_ref")
-_MEMBERSHIP_FIELDS = ("chat_id", "type", "task_id", "parent_task_id", "root_task_id", "source_keys")
+_MEMBERSHIP_FIELDS = ("chat_id", "ts", "type", "task_id", "parent_task_id", "root_task_id", "source_keys")
 
 Entry = Tuple[Dict[str, Any], Dict[str, Any], int]
 
@@ -356,10 +356,11 @@ class LegacyUnit:
     retelling_chars: int  # the imported retelling's length (a later correction is not counted)
     folded: bool
     refusal: Optional[Dict[str, Any]]  # the fallback writer's refusal receipt for this unit, if any
+    ts_span: Optional[Dict[str, Any]] = None  # ``source_time_span`` of the room's own rows; None without rows
 
 
 _LEGACY_ROWS: Dict[str, Tuple[Tuple[str, ...], int, List[Tuple[str, Dict[str, Any]]]]] = {}
-_LEGACY_SETS: Dict[str, Tuple[Tuple[Any, ...], Dict[str, FrozenSet[str]]]] = {}
+_LEGACY_SETS: Dict[str, Tuple[Tuple[Any, ...], Dict[str, Tuple[FrozenSet[str], Optional[Dict[str, Any]]]]]] = {}
 _RETELLING_CHARS: Dict[str, Dict[str, int]] = {}
 _UNITS: Dict[str, Tuple[Tuple[Any, ...], List[LegacyUnit]]] = {}
 
@@ -399,8 +400,8 @@ def _legacy_stream(root: pathlib.Path, stop: int) -> Tuple[Tuple[str, ...], List
 
 
 def _legacy_row_sets(root: pathlib.Path, ranges: Dict[str, Tuple[str, Tuple[int, int]]],
-                     facts: MembershipFacts) -> Dict[str, FrozenSet[str]]:
-    """``record id -> row_sha256 set`` of each exact unit: its range's rows that belong to its room."""
+                     facts: MembershipFacts) -> Dict[str, Tuple[FrozenSet[str], Optional[Dict[str, Any]]]]:
+    """``record id -> (row_sha256 set, time span of those rows)`` of each exact unit: its range's rows of its room."""
     if not ranges:
         return {}
     stop = max(end for _room, (_start, end) in ranges.values())
@@ -411,15 +412,16 @@ def _legacy_row_sets(root: pathlib.Path, ranges: Dict[str, Tuple[str, Tuple[int,
     if cached is not None and cached[0] == key:
         return cached[1]
     rooms_at: Dict[int, FrozenSet[str]] = {}
-    sets: Dict[str, FrozenSet[str]] = {}
+    sets: Dict[str, Tuple[FrozenSet[str], Optional[Dict[str, Any]]]] = {}
     for record_id, (room, (start, end)) in ranges.items():
-        members = set()
+        members, stamps = set(), []
         for pos in range(max(start, 0), min(end, len(stream))):
             if pos not in rooms_at:
                 rooms_at[pos] = rooms_of_row(stream[pos][1], facts)
             if room in rooms_at[pos]:
                 members.add(stream[pos][0])
-        sets[record_id] = frozenset(members)
+                stamps.append(stream[pos][1].get("ts"))
+        sets[record_id] = (frozenset(members), source_time_span(stamps) if stamps else None)
     _LEGACY_SETS[str(root.resolve())] = (key, sets)
     return sets
 
@@ -458,7 +460,7 @@ def legacy_units(store: ChronicleStore, root: Any) -> List[LegacyUnit]:
     units = []
     for pointer in pointers:
         record_id, room = pointer["node_id"], str(pointer["room_id"])
-        rows = row_sets.get(record_id, frozenset())
+        rows, span = row_sets.get(record_id, (frozenset(), None))
         uncovered = len(rows - _sealed(store, room, authority)) if rows else 0
         refusal = refusals.get(record_id)
         block = pointer.get("legacy_block")
@@ -467,7 +469,7 @@ def legacy_units(store: ChronicleStore, root: Any) -> List[LegacyUnit]:
             raw="exact" if record_id in ranges else "unknown", rows=len(rows), uncovered=uncovered,
             retelling_chars=chars.get(record_id, 0),
             folded=bool(pointer.get("folded_into")) or (bool(rows) and uncovered == 0),
-            refusal=dict(refusal) if isinstance(refusal, dict) else None))
+            refusal=dict(refusal) if isinstance(refusal, dict) else None, ts_span=span))
     _UNITS[str(root.resolve())] = (key, units)
     return list(units)
 
