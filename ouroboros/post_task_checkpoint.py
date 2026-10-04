@@ -150,11 +150,11 @@ def update_late_phase_pause(drive_root: Any, task_id: str,
 class LatePhaseRun:
     """What one root late phase already holds, carried across an owner Pause.
 
-    Two stage-owned facts, never request replay: ``marks`` name completed steps
-    whose effects must not repeat (a backlog append, a promotion step), and
-    ``drafts`` keep a confirmed consolidation draft whose correction the Pause
-    stopped, keyed by its room unit (``room_consolidation.summarize_source``).
-    A resumed correction checks that draft against the CURRENT source.
+    Stage-owned facts, never request replay: ``marks`` name completed steps
+    whose effects must not repeat (a backlog append, a promotion step).
+    ``drafts`` held the retired dialogue writer's confirmed room drafts; no stage
+    writes it any more, and it stays only so a phase parked by an earlier
+    version still loads.
     """
 
     def __init__(self, marks: Any = (), drafts: Any = None) -> None:
@@ -253,6 +253,7 @@ def project_replica_task_result_fields(
     # The receiving drive's first accepted terminal transition owns provenance,
     # including its absence on historical rows; replicas cannot originate it.
     overlay.pop("canonical_terminal_projection_origin", None)
+    overlay.pop("pause_notices", None)  # confirmed host transitions alone own pending chat disclosure
     # Unread-mail custody is a union: a stale replica never drops a canonical row.
     from ouroboros.task_custody import merge_unread_mail
 

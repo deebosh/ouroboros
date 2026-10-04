@@ -1,8 +1,9 @@
 """Compact, stat-invalidated result facts for interactive read projections.
 
 The files and their schema readers remain authoritative. This process-local
-memo serves name ordering, SSE lineage discovery and Main's newest-result
-selection; selected full results still pass the existing admission reader.
+memo serves name ordering, child and SSE lineage discovery, and Main's newest
+results; selected full results still pass the existing admission reader.
+Every query enumerates and stats the whole directory, including in-place repairs.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ _RESULT_FACT_KEYS = (
     # reads.
     "project_id",
     "root_task_id", "child_drive_root", "headless_child_drive_root",
+    "superseded_by", "retry_task_id",
 )
 
 
@@ -91,9 +93,43 @@ def raw_result_facts(results_dir: pathlib.Path, *, reader=None) -> tuple[Dict[st
             or isinstance(contract, dict) and "capability_ceiling" in contract
         )
         facts["schema_refusal"] = task_result_schema_refusal(data)
+        facts["pause_notice_pending"] = bool(data.get("pause_notices"))
         rows[name] = facts
         _RAW_TS_MEMO[key] = (signature, tuple(facts.items()))
     return rows, malformed
+
+
+def selected_task_results(drive_root: pathlib.Path, may_match) -> List[dict]:
+    """Select bodies from compact facts, keeping the full scan's schema admission.
+
+    Refused and unreadable candidates reach admission even without matching
+    lineage. A repaired row is tested again after admission, and quarantine
+    remains one batched event, exactly as in ``list_task_results``.
+    """
+    from ouroboros.task_results import (
+        _admit_task_result, _emit_quarantine_event, list_task_results, task_results_dir,
+    )
+
+    directory = task_results_dir(drive_root, create=False)
+    try:
+        facts, malformed = raw_result_facts(directory)
+    except OSError:
+        return [row for row in list_task_results(drive_root) if may_match(row)]
+    names = set(malformed) | {name for name, row in facts.items()
+                              if row.get("schema_refusal") or may_match(row)}
+    rows, quarantined = [], []
+    for name in sorted(names):
+        path = directory / name
+        data = read_json_dict(path)
+        if data is None and not path.is_file():
+            continue
+        data, moved = _admit_task_result(path, data, path.stem, strict=False, noun="task result")
+        if moved:
+            quarantined.append({"task_id": path.stem, "reason": moved})
+        if data is not None and may_match(data):
+            rows.append(data)
+    _emit_quarantine_event(drive_root, quarantined)
+    return rows
 
 
 def _raw_sorted_result_names(results_dir: pathlib.Path) -> tuple[List[str], List[str]]:

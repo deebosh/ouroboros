@@ -43,7 +43,7 @@ otherwise the view is partial and the consumer remains non-final or abstains.
 
 | Surface | Canonical source and owner | Bounded projection | Actor-readable source/ref | Decision and retention rule |
 |---|---|---|---|---|
-| Owner authority and biography | Canonical `logs/chat.jsonl`, archive generations, and `memory/dialogue_blocks.json` owned by the canonical drive | Main/Project context sections and archive-aware history windows | Existing `chat_history`/archive readers with generation and gap metadata | A known gap is disclosed; summaries/blocks never replace exact current owner directives. Raw generations and durable blocks follow their existing retention owner. |
+| Owner authority and biography | Canonical `logs/chat.jsonl`, archive generations, and `memory/chronicle/records.jsonl` (the retold `dialogue_blocks.json` stays read-only legacy) owned by the canonical drive | the memory view (`memory_view.py`) and archive-aware history windows | Existing `chat_history`/archive readers with generation and gap metadata | A known gap is disclosed; summaries/blocks never replace exact current owner directives. Raw generations and durable blocks follow their existing retention owner. |
 | Shared understanding and knowledge summaries | `memory/knowledge/overview.md` and each note's authored YAML `summary`, owned by the canonical drive | The resident `## Shared understanding` section and the summary line of every knowledge-index row | `knowledge_read(topic=..., scope='global')`; `knowledge_list` | A missing overview renders as a visible gap line, never a silent omission; summaries stay resident whether or not an overview exists; a body-only rewrite keeps the previous summary |
 | Execution evidence | Task results, observability call manifests/blobs, service logs, and process-custody records | Status cards, terminal rows, bounded tails, and compact child summaries | Exact artifact/blob/service-log refs carried by the task result or canonical promotion | A projection cannot certify a missing child/source. Referenced sources and every task-owned physical call survive child-drive GC; disposable execution scratch follows unified GC. An omitted-to-artifact verification ledger stub carries only its re-projected `summary`; entries and axes are read from the artifact file it points at. |
 | Terminal task/project memory | Root terminal result plus existing task/project summary producers | Cognitive Main terminal summaries and the two Project-root UI lifecycle rows (started + terminal completion) | Task-result ID, project binding, and summary/source refs | Summary is a biography projection, not raw evidence; summary and reflection consume the same frozen origin, owner and verification inputs, with intact decision provenance and positive zero exits. Terminal outcomes, including failed/cancelled/degraded, remain retained through their canonical result owner. |
@@ -73,8 +73,8 @@ projections, preserving native seals.
 `history_retention` adopts answers/files/attachments; receipts keep their union
 owner. Existing `child_ref_promotion` holds sources across restart for off-loop
 retention. Publication rechecks CURRENT; generation close stops at nodes.
-Readers resolve retained children. Unchanged unavailable sources wait on cheap
-file/result/inventory facts per process/generation; repairs reopen work, transient
+Readers resolve retained children. Unchanged unavailable sources and typed immutable-artifact identity failures wait on cheap
+source/destination/result/reference/inventory facts per process/generation; repairs reopen work, transient
 I/O and explicit retries remain real. No hold is released by this cache. Identical
 projections/diagnostics are reused. GC rechecks inventory before deletion; this does
 not prove quiescence of forgotten late tool futures. No new store/scheduler/ledger.
