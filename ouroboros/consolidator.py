@@ -301,8 +301,8 @@ tentative interpretations with their source — is ordinary knowledge to nominat
 a pattern across several moments is worth more than one; revise the existing note rather than minting a rule,
 and an explicit standing request stays explicit. Author a YAML summary for a new or meaningfully revised note —
 the summary is what stays resident in the index — and revise it when the note's meaning changes.
-The note overview (scope global) is the shared orientation loaded into every future context; keep it
-current, and when none exists and this episode gives real understanding, create it after reading the index.
+The note overview (scope global) is written by the acting mind; if this run changed what it says,
+name the stale passage in the text you return — do not nominate overview.
 Scope is a separate field, never a topic prefix.
 Do not treat the generated index or earlier previews as authored truth. Patterns and
 improvement-backlog retain their dedicated semantic maintainers; nominate ordinary
@@ -714,8 +714,12 @@ def _write_knowledge_entries(
     ``KnowledgeReadContext.bind_entries`` strips every underscore key a model
     supplied — so the writer never trusts model output for it. A note this operation
     read (``expected_revision``) takes anchored ``edits`` (+ ``summary``), never whole ``content``;
-    an unread topic is create-only (``nomination_write_form`` owns the shape)."""
-    from ouroboros.knowledge import KnowledgeAddress, nomination_write_form, sanitize_topic, write_knowledge_note
+    an unread topic is create-only (``nomination_write_form`` owns the shape). Every caller is a
+    Light operation (reflection, scratchpad consolidation), and the overview is written by the
+    acting mind (``knowledge_write``), so a nominated overview is refused as
+    ``overview_is_mind_authored`` while the rest of its batch is written as usual."""
+    from ouroboros.knowledge import (KnowledgeAddress, OVERVIEW_TOPIC, nomination_write_form, sanitize_topic,
+                                     write_knowledge_note)
     from ouroboros.tools.knowledge import _address, _record_backlog_history
 
     outcomes = []
@@ -724,6 +728,10 @@ def _write_knowledge_entries(
             outcomes.append({"topic": "", "ok": False, "reason": "malformed_nomination"})
             continue
         topic, content, revision = entry.get("topic"), entry.get("content"), entry.get("expected_revision")
+        if isinstance(topic, str) and topic.strip() == OVERVIEW_TOPIC:  # a global-only topic (D-33)
+            outcomes.append({"topic": OVERVIEW_TOPIC, "scope": "global", "ok": False,
+                             "reason": "overview_is_mind_authored"})
+            continue
         try:
             form = nomination_write_form(entry)  # every refusal still leaves this entry's one outcome
             topic = sanitize_topic(topic)

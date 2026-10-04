@@ -85,7 +85,9 @@ def test_overview_written_from_a_project_room_is_read_back_globally(tmp_path):
 
 def test_light_nominations_inherit_the_rule(tmp_path):
     """Light nominates through `_write_knowledge_entries`, which shares `_address`,
-    so the consolidator cannot mint a per-project overview either."""
+    so the consolidator cannot mint a per-project note of a reserved topic. The
+    overview itself is the acting mind's (D-33): a Light nomination of it is
+    refused, while the room note beside it is written."""
     from ouroboros.consolidator import _write_knowledge_entries
 
     ctx = project_ctx(tmp_path)
@@ -96,9 +98,11 @@ def test_light_nominations_inherit_the_rule(tmp_path):
         {"topic": "room-notes", "content": "# Room\n\nProject detail.\n"},
     ], context=ctx)
 
-    assert (shared["topic"], shared["scope"], shared["ok"]) == ("overview", "global", True)
+    assert (shared["topic"], shared["scope"], shared["ok"]) == ("overview", "global", False)
+    assert shared["reason"] == "overview_is_mind_authored"
     assert (room["topic"], room["scope"], room["ok"]) == ("room-notes", "project:demo", True)
-    assert (tmp_path / "memory" / "knowledge" / "overview.md").exists()
+    assert not (tmp_path / "memory" / "knowledge" / "overview.md").exists()
+    assert not (shelf / "overview.md").exists()
     assert (shelf / "room-notes.md").exists()
 
 
