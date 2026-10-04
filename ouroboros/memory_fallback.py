@@ -75,7 +75,8 @@ _COMMON = ("A task's outcome is its host stamp: never call a task done, accepted
 _QUOTES = ("Quote the decisive words — what was asked, decided, promised or refused — exactly in quotes.\n"
            "Each quote is an exact substring of one supplied row, with that row's address (row:…) and its "
            "speaker: the author class written first in the row's brackets — human, ouroboros, child, host, "
-           "helper or unattributed.\n")
+           "helper or unattributed.\n"
+           "A quote is copied character for character, markdown included (**, _, `).\n")
 _NO_QUOTES = "No chat rows are supplied here, so leave quotes empty.\n"
 _MEMBER_QUOTES = ("No chat rows are supplied here: quote only by copying a quote shown under a record below exactly, "
                   "with its address and speaker, into quotes.\n")

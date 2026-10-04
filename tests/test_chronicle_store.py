@@ -532,6 +532,39 @@ def test_quotes_are_verified_through_the_injected_resolver_before_the_lock(tmp_p
     assert store.log_path.read_bytes().count(b"\n") == 2
 
 
+def test_a_quote_is_exact_up_to_emphasis_markers_and_a_changed_word_is_refused(tmp_path):
+    """D-65: a helper that copied a row's words without its bold is not refused; any other change still is,
+    with the same refusal. The markers are set aside on both sides; underscores inside a word are no marker."""
+    store = ChronicleStore(tmp_path)
+    rows = {"row:1@t1#aaaaaaaaaaaa": ("This removes the product fork, **but not** the red checks; call memory_read.",
+                                      "ouroboros"),
+            "row:1@t2#bbbbbbbbbbbb": ("This removes the product fork, but not the red checks.", "ouroboros")}
+    resolver = rows.get
+
+    def quote(address, text):
+        return {"address": address, "text": text, "speaker": "ouroboros"}
+
+    bold, plain = "row:1@t1#aaaaaaaaaaaa", "row:1@t2#bbbbbbbbbbbb"
+    for kept in (quote(bold, "the product fork, **but not** the red"), quote(bold, "the product fork, but not the red"),
+                 quote(bold, "fork, *but not* the"), quote(plain, "the product fork, **but not** the red"),
+                 quote(bold, "call memory_read.")):
+        assert store_verify(kept, resolver) is None, kept
+    for changed in (quote(bold, "the product fork, but now the red"), quote(bold, "the product fork but not the red"),
+                    quote(bold, "the red checks, but not"), quote(bold, "call memoryread."),
+                    quote(plain, "the product fork, **but not** the green")):
+        refused = store_verify(changed, resolver)
+        assert (refused.reason, refused.detail) == ("quote_mismatch",
+                                                    "quotes[0]: the text is not an exact substring of that row"), changed
+    published = page(store, "q1", quotes=[quote(bold, "the product fork, but not the red")], quote_resolver=resolver)
+    assert published.ok and published.record["quotes"][0]["text"] == "the product fork, but not the red"
+
+
+def store_verify(quote, resolver):
+    from ouroboros.chronicle_store import verify_quotes
+
+    return verify_quotes([quote], resolver)
+
+
 def test_mark_targets_are_checked_inside_the_publication(tmp_path):
     store = ChronicleStore(tmp_path)
     kept = note(store, "The owner chose the narrow fix")
