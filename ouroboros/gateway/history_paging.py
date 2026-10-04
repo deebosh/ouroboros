@@ -1,4 +1,11 @@
-"""Physical continuation over the existing retained chat/progress JSONL chains."""
+"""A room's own pages over the existing retained chat/progress JSONL chains.
+
+A page is counted in the room's rows, never in bytes of the shared chain: the
+newest page holds the room's newest rows however far back they lie, and each
+older page the next older ones (owner decisions 2026-10-05, DESIGN "History
+edges"). Archives a Project's lens rules out are skipped unread
+(``history_segments``); only a physical read ceiling can end a page early.
+"""
 
 from __future__ import annotations
 
@@ -12,13 +19,15 @@ from pathlib import Path
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
 from ouroboros.gateway import _helpers
 from ouroboros.gateway._helpers import _TAIL_WINDOW_START_BYTES
+from ouroboros.gateway.history_segments import segment_summary
 from ouroboros.jsonl_tail import JsonlChainSnapshot
 from ouroboros.subagent_messages import CARD_ROW_PLACEMENTS, is_task_card_message, subagent_message_meta
 
 _SOURCES = ("chat", "progress")
 _READ_BYTES = 64 * 1024
-_PAGE_SCAN_BYTES = 512 * 1024
-_PAGE_SCAN_ROWS = 1000
+# Physical bound on the bytes one request parses per stream; the cursor resumes
+# where a read stopped, so it bounds latency, never what a room can reach.
+_READ_CEILING_BYTES = 16 * 1024 * 1024
 _CHAIN_WITNESSES = 16
 # A projection that failed part-way: the rows after the failing one are missing
 # from the response, so neither its coverage nor its newest arrival is known.
@@ -161,38 +170,54 @@ class HistorySource(JsonlChainSnapshot):
         newline = data.find(b"\n")
         return end if newline < 0 else start + newline + 1
 
-    def recent(self, want, counts):
-        """The existing recent byte-window and three-archive selection, with ids."""
-        entries, before, archive_count = [], self.upper, 0
+    def _ruled_out(self, index, lens):
+        """A closed archive whose summary proves it holds none of the room's rows."""
+        path, stat, live = self.snapshot["entries"][index]
+        if lens is None or live:
+            return False
+        summary = segment_summary(path, stat)
+        return summary is not None and not lens(summary)
+
+    def recent(self, want, counts, lens=None):
+        """The room's newest rows: the live tail, then whole archives newest-first
+        until ``want`` counted rows, the chain's start or the read ceiling."""
+        entries, before, counted, read = [], self.upper, 0, 0
         gaps = self._boundary_gaps(self.upper)
         for index in reversed(range(len(self.snapshot["entries"]))):
             base, end = self.segment(index)
             if base >= self.upper:
                 continue
-            was_live = self.snapshot["entries"][index][2]
-            if not was_live:
-                if sum(map(counts, entries)) >= want or archive_count >= 3:
-                    break
-                archive_count += 1
-            window = _TAIL_WINDOW_START_BYTES if was_live else end - base
+            live = self.snapshot["entries"][index][2]
+            if not live and (counted >= want or read >= _READ_CEILING_BYTES):
+                break  # the live tail is always read: its overlays need no quota
+            if self._ruled_out(index, lens):
+                before = base
+                continue
+            window = _TAIL_WINDOW_START_BYTES if live else end - base
             while True:
                 start = self._aligned_start(max(base, end - window), end, base)
                 selected = self._entries(start, end, gaps)
-                if start == base or sum(map(counts, selected)) >= want:
+                found = sum(map(counts, selected))
+                if start == base or counted + found >= want:
                     break
                 window *= 2
+            counted, read = counted + found, read + end - start
             entries = selected + entries
             before = start
         return entries, before, gaps
 
-    def older(self, before, want, counts):
-        """Consume one backward page; foreign/invalid bytes advance the position."""
+    def older(self, before, want, counts, lens=None):
+        """Consume one backward page of ``want`` counted rows; foreign/invalid bytes
+        and ruled-out archives advance the position, the read ceiling ends it early."""
         if want <= 0:
             return [], before, set()
-        selected, gaps, counted, scanned, scanned_rows = [], self._boundary_gaps(before), 0, 0, 0
-        while before > 0 and scanned < _PAGE_SCAN_BYTES and scanned_rows < _PAGE_SCAN_ROWS:
+        selected, gaps, counted, read = [], self._boundary_gaps(before), 0, 0
+        while before > 0 and read < _READ_CEILING_BYTES:
             index = bisect_left(self.snapshot["ends"], before)
             base, _end = self.segment(index)
+            if self._ruled_out(index, lens):
+                before = base
+                continue
             window = _READ_BYTES
             while True:
                 start = self._aligned_start(max(base, before - window), before, base)
@@ -202,13 +227,12 @@ class HistorySource(JsonlChainSnapshot):
             entries = self._entries(start, before, gaps)
             for entry in reversed(entries):
                 selected.append(entry)
-                scanned += before - entry["history_position"]["offset"]
+                read += before - entry["history_position"]["offset"]
                 before = entry["history_position"]["offset"]
-                scanned_rows += 1
                 counted += bool(counts(entry))
-                if counted >= want or scanned >= _PAGE_SCAN_BYTES or scanned_rows >= _PAGE_SCAN_ROWS:
+                if counted >= want or read >= _READ_CEILING_BYTES:
                     return list(reversed(selected)), before, gaps
-            scanned += before - start
+            read += before - start
             before = start
         return list(reversed(selected)), before, gaps
 
@@ -244,7 +268,8 @@ def chain_witness(reader):
     return ".".join(witnesses[-_CHAIN_WITNESSES:]) or "empty"
 
 
-def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, caps):
+def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, caps, lens=None):
+    """``lens``: the room's archive filter (``history_segments.room_segment_lens``)."""
     continuation = decode_cursor(cursor, thread_id, view) if cursor else None
     if continuation:
         quotas = continuation["quotas"]
@@ -266,9 +291,9 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
             if continuation and continuation["kind"] == "page":
                 selections[source] = reader.replay(continuation["lower"][source], page_ends[source])
             elif continuation:
-                selections[source] = reader.older(page_ends[source], quotas[quota], predicates[source])
+                selections[source] = reader.older(page_ends[source], quotas[quota], predicates[source], lens)
             else:
-                selections[source] = reader.recent(quotas[quota], predicates[source])
+                selections[source] = reader.recent(quotas[quota], predicates[source], lens)
         except OSError:
             if continuation:
                 raise
@@ -278,7 +303,7 @@ def select_history_page(data_dir, thread_id, view, cursor, quotas, predicates, c
         before[source] = selections[source][1]
     return {"v": 1, "chat_id": thread_id, "view": view, "upper": upper, "unfinished": unfinished,
             "quotas": quotas, "recent": recent, "replayed": bool(continuation),
-            "quiet": bool(continuation and continuation["quiet"]),
+            "quiet": bool(continuation and continuation["quiet"]), "lens": lens,
             "selections": selections, "before": before, "page_ends": page_ends, "chains": chains}
 
 
@@ -415,7 +440,7 @@ def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, pro
     which cannot see what arrived after its frozen boundary.
 
     Card rows, a child's words and the owner's own messages can fill the recent
-    selection's quota. One bounded older read (``older``'s own byte and row bound)
+    selection's quota. One older read of the room (``older``'s read ceiling)
     then names the newest stored message before it — ``out_of_order``, since this
     read cannot place it relative to the bottom — or proves the chat holds none
     (absent); an unreadable row reached first leaves the arrival unknown. Its
@@ -464,7 +489,7 @@ def latest_arrival(rows, page, data_dir, row_matches_thread, stored_chat_id, pro
         message = _stored_message(row_matches_thread, stored_chat_id, child)
         try:
             entries, before, gaps = HistorySource(data_dir / "logs" / "chat.jsonl", "chat", end).older(
-                start, 1, message)
+                start, 1, message, page.get("lens"))
         except OSError:
             return {"latest_message": None}
         found = next(filter(message, entries), None)  # ``older`` stops at the newest one

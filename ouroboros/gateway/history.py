@@ -12,14 +12,13 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from ouroboros.contracts.chat_id_policy import is_a2a_chat_id
-from ouroboros.gateway._helpers import (
-    _TAIL_WINDOW_START_BYTES, coerce_int, read_rotated_jsonl_entries,
-)
+from ouroboros.gateway._helpers import coerce_int, read_rotated_jsonl_entries
 from ouroboros.gateway.cost_breakdown import make_cost_breakdown_endpoint  # noqa: F401 — historical import path (router)
 from ouroboros.gateway.history_paging import (
     HistoryCursorError, deferred_before, history_page_coverage, history_page_tokens, progress_quota_predicate,
     replay_evidence_rows, room_view_fingerprint, select_history_page, latest_arrival, PROJECTION_FAILED,
 )
+from ouroboros.gateway.history_segments import room_segment_lens
 from ouroboros.cost_projection import carry_cost_meta, live_root_cost_projection
 from ouroboros.outcomes import normalize_outcome_axes
 from ouroboros.history_retention import retention_summary
@@ -47,10 +46,6 @@ _MAX_N_HUMAN = 1500
 _MAX_N_PROGRESS = 600
 # Bound subagent lineage so a huge swarm fan-out can't balloon the response.
 _LINEAGE_CAP = 300
-# Mirror of read_rotated_jsonl_entries' max_archives default: the rotated
-# backfill never consults more than this many newest archive segments, so a
-# quota the newest segments cannot satisfy is an "archive_floor" truncation.
-_ARCHIVE_BACKFILL_CAP = 3
 
 
 _PROGRESS_META_FIELDS = (
@@ -633,42 +628,16 @@ def _annotate_terminal_task_truth(
         log.debug("Failed to annotate terminal task status in history: %s", exc)
 
 
-def _stream_truncation_cause(
-    filtered_rows: int,
-    quota: int,
-    live_size: int,
-    archives_total: int,
-) -> Optional[str]:
+def _stream_truncation_cause(filtered_rows: int, quota: int, reached_start: bool) -> Optional[str]:
     """Name the loss of matching rows, or return None when complete.
 
-    Excess rows mean quota slicing. At the quota, completeness requires the
-    entire unarchived stream to fit the first live byte window. Below quota,
-    the whole live file and up to _ARCHIVE_BACKFILL_CAP archives were read;
-    only archives beyond that cap can remain (archive_floor).
+    Excess rows mean quota slicing. Otherwise the room read is complete only when
+    it ran back to the stream's start: its quota or read ceiling may leave older
+    rows behind ("quota"). A zero quota requests nothing and loses nothing.
     """
-    if filtered_rows > quota:
+    if filtered_rows > quota or not (reached_start or quota == 0):
         return "quota"
-    if filtered_rows == quota and filtered_rows > 0:
-        if archives_total == 0 and live_size <= _TAIL_WINDOW_START_BYTES:
-            return None
-        return "quota"
-    if archives_total > _ARCHIVE_BACKFILL_CAP:
-        return "archive_floor"
     return None
-
-
-def _live_log_size(path: pathlib.Path) -> int:
-    try:
-        return pathlib.Path(path).stat().st_size
-    except OSError:
-        return 0
-
-
-def _archive_segment_count(archive_dir: pathlib.Path, prefix: str) -> int:
-    try:
-        return sum(1 for _ in pathlib.Path(archive_dir).glob(f"{prefix}_*.jsonl"))
-    except Exception:
-        return 0
 
 
 def _make_thread_filter(
@@ -1386,9 +1355,7 @@ def _window_metadata(
     progress_quota_rows: int,
     n_human: int,
     n_progress: int,
-    chat_path: pathlib.Path,
-    progress_path: pathlib.Path,
-    archive_dir: pathlib.Path,
+    reached_start: Dict[str, bool],
     human_rows_dropped: bool,
     lineage_truncated: bool,
     review_overlays_truncated: bool,
@@ -1397,21 +1364,15 @@ def _window_metadata(
     """Additive window metadata (perf2 P3; frozen contract extended explicitly).
 
     The reader learns WHETHER this window is the complete reachable history
-    and WHAT bounded it — the quota tail slice ("quota"), the bounded archive
-    backfill ("archive_floor"), or the lineage cap ("lineage_cap"). The client
+    and WHAT bounded it — the quota tail slice or a read that stopped before
+    the stream's start ("quota"), or the lineage cap ("lineage_cap"). The client
     gates its "Load older" affordance on this instead of guessing; no existing
     field changes meaning."""
     truncated_by: list[str] = []
     for cause in (
         "quota" if human_rows_dropped else None,
-        _stream_truncation_cause(
-            chat_quota_rows, n_human, _live_log_size(chat_path),
-            _archive_segment_count(archive_dir, "chat"),
-        ),
-        _stream_truncation_cause(
-            progress_quota_rows, n_progress, _live_log_size(progress_path),
-            _archive_segment_count(archive_dir, "progress"),
-        ),
+        _stream_truncation_cause(chat_quota_rows, n_human, reached_start["chat"]),
+        _stream_truncation_cause(progress_quota_rows, n_progress, reached_start["progress"]),
         "quota" if review_overlays_truncated else None,
         "lineage_cap" if lineage_truncated else None,
     ):
@@ -1451,7 +1412,8 @@ def _assemble_history_response(
                                {"human": n_human, "progress": n_progress},
                                {"chat": _chat_quota_predicate(row_matches_thread),
                                 "progress": progress_quota_predicate(row_matches_thread, _stored_chat_id)},
-                               {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS})
+                               {"human": _MAX_N_HUMAN, "progress": _MAX_N_PROGRESS},
+                               room_segment_lens(thread_id, project_chat_ids, project_source_refs, bindings_by_task))
     selections, before, recent = page["selections"], page["before"], page["recent"]
     n_human, n_progress = page["quotas"]["human"], page["quotas"]["progress"]
     historical_terminals: Dict[str, dict] = {}
@@ -1536,7 +1498,7 @@ def _assemble_history_response(
     stream_gaps = {"chat": chat_gaps | selections["chat"][2], "progress": progress_gaps | selections["progress"][2]}
     window = _window_metadata(
             chat_quota_rows, progress_quota_rows, n_human, n_progress,
-            chat_path, progress_path, archive_dir,
+            {source: selections[source][1] == 0 for source in ("chat", "progress")},
             human_rows_dropped, lineage_truncated, review_overlays_truncated,
             stream_gaps,
         ) if recent else {"complete": False, "truncated_by": ["page", *(
