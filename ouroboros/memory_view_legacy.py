@@ -1,16 +1,27 @@
-"""How my story names the old memory a helper retold before the update, and how the floor shortens it.
+"""How my story shows the old memory a helper retold before the update, and how the floor shortens it.
 
-A retold record is one line that says what its address holds: the room, the period, how
-many of that room's chat rows it retells (where none is established, the old writer's own
-message count) and the length of the retelling, then the ``memory_read`` call that reads
-it. A journal gap is named with its detail. Under the physical floor (F3) a room's records
-are one line: the room, its whole period, their total length and every id.
+A retold record of the first block (the retelling of the time before rooms had memory of
+their own, one record per room) is whole in the story of a focus that integrates my life
+(``memory_view.INTEGRATING``): its id, period, room and length as a header, then its
+words. Every other retold record is one line that says what its address holds: the room,
+the period, how many of that room's chat rows it retells (where none is established, the
+old writer's own message count) and the length of the retelling, then the ``memory_read``
+call that reads it. A journal gap is named with its detail. Under the physical floor (F3)
+a room's records, whole ones included, are one line: the room, its whole period, their
+total length and every id.
 
 Only facts of the record, never a reason to read it. Nothing here reads a file.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping
+
+INDENT = "  "
+
+
+def indented(text: Any) -> str:
+    """A record's words, each line indented: its own ``## …`` lines never become sections."""
+    return "\n".join(INDENT + line if line else line for line in str(text or "").split("\n"))
 
 
 def _count(n: int, noun: str) -> str:
@@ -36,6 +47,14 @@ def pointer_line(entry: Mapping[str, Any]) -> str:
     return f"- {entry['label']}; {entry['period']}; {retold_size(entry)}; {read}"
 
 
+def retold_record(entry: Mapping[str, Any]) -> str:
+    """A retold record as the full story shows it: whole when the capture kept its words, else its pointer line."""
+    if entry.get("gap") or not entry.get("text"):
+        return pointer_line(entry)
+    return (f"#### {entry['id']} — {entry['period']} — {entry['label']} — {retold_size(entry)}\n"
+            + indented(entry["text"]))
+
+
 def pointer_rooms(story: Any) -> Dict[str, List[Dict[str, Any]]]:
     rooms: Dict[str, List[Dict[str, Any]]] = {}
     for entry in story:
@@ -55,13 +74,13 @@ def room_pointer(entries: List[Dict[str, Any]]) -> str:
             + ", ".join(entry["id"] for entry in entries) + "; memory_read(node_id=<id>) reads each")
 
 
-def pointer_lines(pointers: List[Dict[str, Any]], rooms: Any) -> List[str]:
-    """The pointers in story order; a room the floor took is one line where its first pointer stood."""
-    grouped, lines = pointer_rooms(pointers), []
-    for entry in pointers:
+def retold_lines(retold: List[Dict[str, Any]], rooms: Any) -> List[str]:
+    """The retold records in story order; a room the floor took is one line where its first record stood."""
+    grouped, lines = pointer_rooms(retold), []
+    for entry in retold:
         room = str(entry["room_id"])
         if entry.get("gap") or room not in rooms:
-            lines.append(pointer_line(entry))
+            lines.append(retold_record(entry))
         elif grouped[room][0] is entry:
             lines.append(room_pointer(grouped[room]))
     return lines

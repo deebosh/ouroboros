@@ -88,10 +88,12 @@ def test_children_of_two_trees_share_block_b_and_siblings_share_the_room_page_an
     views = {name: _start(env, payload) for name, payload in (("first", first), ("second", second), ("cousin", cousin))}
     _a_main, b_main, _c_main, _cap = blocks(env, memory, MAIN)
 
-    # B: one story whatever the tree, the mind's own, and no fact of the child in it.
+    # B: one story whatever the tree, the mind's own, and no fact of the child in it; it names by pointer the
+    # first block of the old retelling that Main reads whole.
     assert views["first"][1] == views["second"][1] == views["cousin"][1]
-    story = section(views["first"][1], "## My story")
-    assert story.startswith("## My story\n") and story == section(b_main, "## My story")
+    story, main_story = section(views["first"][1], "## My story"), section(b_main, "## My story")
+    assert story.startswith("## My story\n") and "memory_read(node_id='legacy-b00-r1')" in story
+    assert "  Main talk." in main_story and "Main talk." not in story
     assert views["first"][0] == views["second"][0] == views["cousin"][0]  # A: governance and the books' maps
     for payload in (first, second, cousin):
         assert payload["id"] not in views["first"][1] and payload["id"] in _start(env, payload)[2]
@@ -196,9 +198,10 @@ def test_a_forked_child_reads_its_story_and_room_page_canonically_not_from_its_o
     a, b, c, _cap = _start(env, child)
     assert "FORK DRIVE" not in a + b + c
     _a_main, b_main, _c_main, _cap = blocks(env, memory, MAIN)
-    assert section(b, "## My story") == section(b_main, "## My story")  # the mind's story, canonically
     alpha = f"## This room (Project Alpha [chat_id={rooms['alpha']}])"
     canonical_view = mv.capture_memory_view(canonical, child, spec)
+    assert section(b, "## My story").rstrip("\n") == mv.render_story(canonical_view)  # the mind's story, canonically
+    assert section(b, "## My story") != section(b_main, "## My story")  # a child's: the first block by pointer
     assert section(c, alpha).rstrip("\n") == section(mv.render_room(canonical_view), alpha)
     assert "Alpha began." in section(c, alpha)  # the canonical retelling of the room
     assert _files(fork / "memory" / "chronicle") == before  # the fork's own memory is untouched

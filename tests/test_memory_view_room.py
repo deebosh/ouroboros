@@ -414,8 +414,14 @@ def test_this_room_has_its_head_retold_records_origin_words_and_notes(tmp_path):
     _snap, again = _view(tmp_path, {"id": "ra1", "chat_id": rooms["alpha"]})
     assert "### Words that started this work" not in again and shared.ORIGIN in _section(again, "### Open conversation")
     main_snapshot, main_text = _view(tmp_path, MAIN_TASK)
-    retold = _section(main_text, "### Retold before the update (helper retelling, not lived)")
-    assert "#### legacy-b00-r1 — 2026-09-05 10:00 → 2026-09-05 10:01\n  Old Main talk." in retold
+    whole = "#### legacy-b00-r1 — 2026-09-05 10:00 → 2026-09-05 10:01"
+    # Main's integrator reads its first-block retelling whole in the story, so the room page does not repeat it;
+    # a view without the story reads it on the room page.
+    assert whole + " — Main — 2 rows retold in 14 chars\n  Old Main talk." in mv.render_story(main_snapshot)
+    assert "### Retold before the update" not in main_text and "Old Main talk." not in main_text
+    retold = _section(_view(tmp_path, MAIN_TASK, story=False)[1],
+                      "### Retold before the update (helper retelling, not lived)")
+    assert whole + "\n  Old Main talk." in retold
     assert "### Words that started this work" not in main_text  # Main is no Project
     note = store.write_note(room_id="1", task_id="root1", text="Keep root1 in mind.", author=shared.MIND)
     _snap, noted = _view(tmp_path, MAIN_TASK)
@@ -438,10 +444,11 @@ def test_main_room_page_shows_the_room_less_retellings_whole_to_its_integrator_a
     main = mv.capture_memory_view(tmp_path, MAIN_TASK, mv.view_spec_for_task(MAIN_TASK, tmp_path))
     retold = _section(mv.render_room(main), "### Retold before the update (helper retelling, not lived)")
     for words in ("  The retired flat summary of everything.", "  A room-less era."):
-        assert retold.index(words) < retold.index("  Main talk.")  # older than the rooms: first
+        assert retold.index(words) < retold.index("  Main was quiet.")  # older than the rooms: first
     era = "#### legacy-b02-rlegacy — period known from the retelling text only — Unknown provenance [legacy mixed record]"
     assert era + "\n  A room-less era." in retold
-    assert "#### legacy-b00-r1 — 2026-09-01 00:00 → 2026-09-01 00:05\n" in retold  # Main's own: no label
+    assert "#### legacy-b01-r1 — 2026-09-02 00:00 → 2026-09-02 00:03 (block period)\n" in retold  # Main's own: no label
+    assert "Main talk." not in retold  # the first block is whole in the story, not repeated here
     # By address (F4) the line says what it holds.
     short = mv.render_room(main, mv.FloorLevel(addressed=(("F4", ("legacy-b02-rlegacy",)),)))
     assert era + " — 16 chars — memory_read(node_id='legacy-b02-rlegacy')" in short and "  A room-less era." not in short

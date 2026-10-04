@@ -20,8 +20,10 @@ fails the task. What of memory is open and what is folded comes from
 The story block depends only on the chronicle, the room labels, the helper route and the
 floor, with no capture time, task id, JSON, relative time or ordinal: in Max, or while no
 owner Low/Nano budget step reaches it (that budget weighs the whole view, the room too), the
-same bytes for Main, any room's root, consciousness and Presence. Texts of records keep their
-words and are indented by two spaces, so their own ``## `` lines never read as sections.
+same bytes for Main, any room's root, consciousness and Presence (``INTEGRATING``: they read the
+first block of the old retelling whole, so the room page does not repeat it; a child names it by
+pointer). Texts of records keep their words and are indented by two spaces, so their own ``## ``
+lines never read as sections.
 
 Nothing here publishes a record or calls a model.
 """
@@ -42,17 +44,19 @@ from ouroboros.chronicle_store import CHILD_DRAFT_RIGHT, ChronicleStore, draft_s
 from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
 from ouroboros.dialogue_provenance import (RoomLabelResolver, is_presence_task, render_memory_row, render_row_text,
                                            row_class)
-from ouroboros.memory_view_legacy import pointer_lines
+from ouroboros.memory_view_legacy import INDENT, indented as _indented, retold_lines
 from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
 
 MAIN_ROOM = str(WEB_UI_CHAT_ID)
 ROLES = ("integrator", "consciousness", "presence", "child", "nanny")
+# The focuses that integrate my life read the first block of the old retelling (the time before rooms had memory
+# of their own, which the fallback writer never folds) whole in their story; a child and a nanny do not.
+INTEGRATING = ("integrator", "consciousness", "presence")
 LIVE_ROOMS = ("none", "lines", "lines_with_words")
 MARKS = ("all", "room_and_global", "none")
 LEGACY_FILE = "memory/dialogue_blocks.json"
-INDENT = "  "
 # A task's typed host facts its lane-2 line names by type and address, never by text or JSON:
 # the late review the owner did not see, a failed or uncertain send, a cancel receipt (it may
 # carry an unreviewed model draft), a custody notice and a terminal incident (the old passive
@@ -70,11 +74,6 @@ CHILD_ROLE_TEXT = ("Work from this assignment first — it is written to be enou
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
-
-
-def _indented(text: Any) -> str:
-    """A record's words, each line indented: its own ``## …`` lines never become sections."""
-    return "\n".join(INDENT + line if line else line for line in str(text or "").split("\n"))
 
 
 def _minute(value: Any) -> str:
@@ -374,11 +373,17 @@ def _story_pages(store: ChronicleStore, label: Callable[..., str]) -> Tuple[List
     return [entry for _key, entry in sorted(keyed, key=lambda pair: pair[0])], mine
 
 
-def _capture_story(store: ChronicleStore, root: pathlib.Path,
-                   label: Callable[..., str]) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
-    """``(story entries, story status, helper refusals)``; folded or not is ``memory_inventory``'s verdict."""
+def _capture_story(store: ChronicleStore, root: pathlib.Path, label: Callable[..., str], *,
+                   whole_first: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
+    """``(story entries, story status, helper refusals)``; folded or not is ``memory_inventory``'s verdict.
+
+    ``whole_first`` (an integrating focus): a record of the first block keeps its current words, so it renders whole.
+    """
     pointers = {pointer["node_id"]: pointer for pointer in store.legacy_pointer_rows()}
     units = memory_inventory.legacy_units(store, root)
+    first = sorted({unit.room_id for unit in units if whole_first and unit.block == 0 and not unit.folded})
+    words = {record["id"]: str(record.get("current_text") or "") for room in first
+             for record in store.room_records(room) if record["kind"] == "legacy"}
     story, refusals = [], []
     for unit in units:
         if unit.folded:
@@ -390,6 +395,8 @@ def _capture_story(store: ChronicleStore, root: pathlib.Path,
                  "span": _legacy_span(unit.ts_span), "rows": unit.rows if unit.raw == "exact" else None,
                  "chars": unit.retelling_chars, "messages": pointer.get("messages"),
                  "gap": _gap_detail(store, pointer) if gap else ""}
+        if unit.block == 0 and not gap and unit.record_id in words:
+            entry["text"] = words[unit.record_id]
         story.append(entry)
         if unit.refusal:
             read = _mapping(_mapping(_mapping(unit.refusal.get("response_ref")).get("read")).get("arguments"))
@@ -576,8 +583,11 @@ def _origins(root: pathlib.Path, room: str, lane_rows: List[Entry]) -> List[Dict
 
 def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, label: Callable[..., str],
                   entries: List[Entry], notes: Mapping[str, List[Dict[str, Any]]],
-                  lineage: Mapping[str, Any]) -> Dict[str, Any]:
-    """The current room: its head, page (retold records, pages under parts, notes), origin words and lanes."""
+                  lineage: Mapping[str, Any], whole: Any = frozenset()) -> Dict[str, Any]:
+    """The current room: its head, page (retold records, pages under parts, notes), origin words and lanes.
+
+    A retold record my story already shows whole (``whole``: the first block, to an integrating focus) is not repeated.
+    """
     room = str(spec.room_id)
     records = store.room_records(room)
     sample = next((meta for _address, meta, _pos in reversed(entries) if meta.get("transport")), None)
@@ -597,7 +607,8 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
                                 {"covers": record.get("covers"), "range_text": _mapping(record.get("metadata")).get(
                                     "legacy_range_text")}, getattr(unit, "ts_span", None)),
                             "of": LEGACY_ROOM_LABEL if str(record.get("room_id")) == LEGACY_ROOM_ID else ""}
-                           for record in retold if not getattr(unit := units.get(record["id"]), "folded", False)]
+                           for record in retold if not getattr(unit := units.get(record["id"]), "folded", False)
+                           and record["id"] not in whole]
         own = {} if spec.story else {e["id"]: {**e, "part": None} for e in _story_pages(store, label)[0] if e["room_id"] == room}  # story order: the floor takes the oldest first
         facts["under_parts"] = [own.get(record["id"]) or {"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
                                  "period": _period(_mapping(record.get("covers")).get("ts_span")), "text": str(record.get("current_text") or "")}
@@ -666,8 +677,8 @@ def _capture_marks(store: ChronicleStore, spec: ViewSpec, label: Callable[..., s
     return sorted(entries, key=lambda entry: (entry["scope"] == "global", "" if entry["scope"] == "global" else entry["room"]))
 
 
-def _capture_live(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec,
-                  label: Callable[..., str]) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+def _capture_live(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, label: Callable[..., str],
+                  whole: Any = frozenset()) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """``(this room, live rooms, marks)`` of one capture, from one read of the open rows."""
     lineage = row_lineage(root)
     notes = _notes_by_room(store) if spec.room_page or spec.live_rooms != "none" else {}
@@ -677,7 +688,7 @@ def _capture_live(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec,
         by_room = {spec.room_id: memory_inventory.open_room_rows(root, spec.room_id)}
     else:
         by_room = {}
-    room = (_capture_room(store, root, spec, label, by_room.get(spec.room_id, []), notes, lineage)
+    room = (_capture_room(store, root, spec, label, by_room.get(spec.room_id, []), notes, lineage, whole)
             if spec.room_id is not None else None)
     live = _live_rooms(root, spec, label, by_room, notes, lineage) if spec.live_rooms != "none" else []
     return room, live, _capture_marks(store, spec, label)
@@ -700,8 +711,10 @@ def capture_memory_view(drive_root: Any, task: Mapping[str, Any], spec: ViewSpec
     try:
         store = ChronicleStore(root)
         frontier = legacy_frontier(store)
-        story, story_status, refusals = _capture_story(store, root, label) if spec.story else ([], {}, [])
-        room, live, marks = _capture_live(store, root, spec, label)
+        story, story_status, refusals = (_capture_story(store, root, label, whole_first=spec.role in INTEGRATING)
+                                         if spec.story else ([], {}, []))
+        room, live, marks = _capture_live(store, root, spec, label, {entry["id"] for entry in story if entry.get("text")
+                                                                     and entry.get("kind") == "legacy"})
     except Exception as exc:  # a journal that turns unreadable mid-capture still leaves a view with its reason
         log.warning("memory view: the chronicle could not be read", exc_info=True)
         return MemoryViewSnapshot(spec=spec, store_status={"state": "journal_unreadable",
@@ -811,11 +824,13 @@ def _status_lines(status: Mapping[str, Any], refusals: Tuple[Dict[str, Any], ...
 
 
 def render_story(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW) -> str:
-    """Block B's tail, ``## My story``: retold-memory pointers, then my pages and parts, then the status.
+    """Block B's tail, ``## My story``: the retold old memory, then my pages and parts, then the status.
 
-    Its bytes depend only on the chronicle, the room labels, the helper route and
-    ``level`` (the physical floor's; the empty level renders the full view): F3 turns a
-    room's pointers into one line, F5 my oldest pages into address lines.
+    A retold record of the first block is whole to an integrating focus, every other one a
+    pointer. Its bytes depend only on the chronicle, the room labels, the helper route,
+    whether the focus integrates and ``level`` (the physical floor's; the empty level renders
+    the full view): F3 turns a room's retold records into one line, F5 my oldest pages into
+    address lines.
     """
     spec = snapshot.spec
     if not spec.story:
@@ -828,8 +843,11 @@ def render_story(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW) ->
     pages = [entry for entry in snapshot.story if entry.get("kind") != "legacy"]
     lines = ["## My story", "", _STORY_INTRO]
     if pointers:
-        lines += ["", "### Old memory retold by a helper before the update (not lived; read by id)"]
-        lines += pointer_lines(pointers, set(gone.get("F3", ())))
+        taken = set(gone.get("F3", ()))
+        whole = any(entry.get("text") and str(entry["room_id"]) not in taken for entry in pointers)
+        lines += ["", "### Old memory retold by a helper before the update (not lived; "
+                      + ("its first block whole, the later ones read by id)" if whole else "read by id)")]
+        lines += retold_lines(pointers, taken)
     shown = set(gone.get("F5", ()))
     if shown:  # the oldest pages: a prefix of the story order
         lines += ["", "### My older pages and parts, by address"]

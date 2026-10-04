@@ -342,6 +342,33 @@ def test_the_floor_runs_on_a_captured_view(tmp_path):
     assert mv.snapshot_from_json(mv.snapshot_json(snapshot)) == snapshot  # the new facts survive the core's JSON
 
 
+def test_an_owner_target_takes_the_whole_first_block_into_its_rooms_line_and_the_window_alone_keeps_it(tmp_path):
+    """The first block an integrator reads whole is retold memory like the rest: an owner's Low or Nano target takes
+    it with its room's later records into the room's one line (F3), with no step or boundary of its own; without a
+    shortage it stays whole. A child's F3 element is its pointers, as before."""
+    rooms = shared.world(tmp_path)
+    alpha = str(rooms["alpha"])
+    task = {"id": "turn0001", "chat_id": 1}
+    snapshot = mv.capture_memory_view(tmp_path, task, mv.view_spec_for_task(task, tmp_path))
+    f3 = {ident: (whole, short) for step, ident, whole, short in mf.floor_elements(snapshot) if step == "F3"}
+    assert "\n  Alpha began." in f3[alpha][0] and "Alpha began." not in f3[alpha][1]
+    assert f"legacy-b00-r{alpha}, legacy-b01-r{alpha}; memory_read(node_id=<id>) reads each" in f3[alpha][1]
+    assert mf.fit_memory_view(snapshot, NONE) == mv.FULL_VIEW and "  Alpha began." in mv.render_story(snapshot)
+    level = mf.fit_memory_view(snapshot, {"margin": 10**9, "physical": 10**9, "budget": 0})
+    taken = set(dict(level.addressed)["F3"])
+    assert {"1", alpha} <= taken and set(dict(level.steps)) <= set(mf.MODE_TARGET_STEPS)
+    assert level.by_budget == sum(count for _step, count in level.steps)
+    story = mv.render_story(snapshot, level)
+    assert "Alpha began." not in story and "Main talk." not in story and f3[alpha][1] in story.split("\n")
+    # A record whose room line is not shorter than its words stays whole (the floor's one rule for every element).
+    assert "777" not in taken and "777" not in f3 and "\n  A transport line." in story
+    assert "(not lived; read by id)" in mv.render_story(snapshot, mv.FloorLevel((("F3", (*taken, "777")),)))
+    kid = {"id": "kid1", "chat_id": 1, "delegation_role": "subagent"}
+    child = mv.capture_memory_view(tmp_path, kid, mv.view_spec_for_task(kid, tmp_path))
+    pointers = {ident: whole for step, ident, whole, _short in mf.floor_elements(child) if step == "F3"}
+    assert "Alpha began." not in pointers[alpha] and f"memory_read(node_id='legacy-b00-r{alpha}')" in pointers[alpha]
+
+
 def _numbers(name):
     tree = ast.parse((REPO / "ouroboros" / name).read_text(encoding="utf-8"))
     budgets = {cb.OWNER_LOW_TARGET_TOKENS, cb.OWNER_NANO_TARGET_TOKENS, cb.NANO_MIN_HEADROOM_TOKENS, 65_536,

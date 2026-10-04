@@ -1,11 +1,13 @@
 """Block B of the memory view, ``## My story`` (``ouroboros.memory_view.render_story``).
 
-Pointers to the retold old memory come first, then my pages and parts of every room in
-stream order (never by publication time); a record folded into a part shows only through
-the part, and the mind's corrections and rejections of a part's members stand under it.
-What is folded is ``memory_inventory``'s one rule. The block is byte-identical for every
-integrator and depends on no capture time, task, room or chat row. Each rule is pinned
-in both directions on a fixture with three rooms besides Main and twenty rows.
+The retold old memory comes first (to an integrating focus the first block of every room
+whole, every later record a pointer; a child names the first block by pointer too), then
+my pages and parts of every room in stream order (never by publication time); a record
+folded into a part shows only through the part, and the mind's corrections and rejections
+of a part's members stand under it. What is folded is ``memory_inventory``'s one rule. The
+block is byte-identical for every integrator and depends on no capture time, task, room or
+chat row. Each rule is pinned in both directions on a fixture with three rooms besides Main
+and twenty rows.
 """
 from __future__ import annotations
 
@@ -17,7 +19,9 @@ from ouroboros.chronicle_store import ChronicleStore
 from tests import _memory_inventory_shared as shared
 
 MAIN = {"id": "turn0001", "chat_id": 1}
+KID = {"id": "kid00001", "chat_id": 1, "delegation_role": "subagent"}
 HELPER = {"kind": "helper", "route": "configured-light"}
+OLD = "### Old memory retold by a helper before the update (not lived; "
 
 
 def _snapshot(root, task=MAIN):
@@ -66,21 +70,27 @@ def test_pointers_come_first_then_pages_of_all_rooms_by_stream_position_not_publ
     middle = _page(tmp_path, alpha, 13, 13)
     text = _story(tmp_path)
     headers = _headers(text)
-    assert headers[0] == "### Old memory retold by a helper before the update (not lived; read by id)"
+    assert headers[0] == OLD + "its first block whole, the later ones read by id)"
     assert [header.rsplit(" ", 1)[1] for header in headers[1:]] == [early, middle, late]
     assert headers[1].startswith("### Main · 2026-09-03 00:00 → 2026-09-03 00:02 · page ")
     assert headers[3].startswith(f"### Project Beta [chat_id={beta}] · ")
-    pointer = ("- Main; 2026-09-01 00:00 → 2026-09-01 00:05; 4 rows retold in 10 chars; "
-               "memory_read(node_id='legacy-b00-r1')")
-    assert pointer in text.split("\n") and text.index(pointer) < text.index(headers[1])
+    whole = "#### legacy-b00-r1 — 2026-09-01 00:00 → 2026-09-01 00:05 — Main — 4 rows retold in 10 chars\n  Main talk."
+    pointer = ("- Main; 2026-09-02 00:00 → 2026-09-02 00:03 (block period); no row of this room in that period; "
+               "retold in 15 chars; memory_read(node_id='legacy-b01-r1')")
+    assert whole in text and text.index(whole) < text.index(pointer) < text.index(headers[1])
+    # A child names the first block by pointer, under the plain heading.
+    kid = _story(tmp_path, KID)
+    assert _headers(kid)[0] == OLD + "read by id)" and "Main talk." not in kid
+    assert kid.index(pointer) < kid.index(headers[1])
 
 
 def test_a_pointers_period_is_its_rooms_own_rows_and_without_rows_the_marked_block_period(tmp_path):
     """A retold record names the period of its room's rows, not its block's; a room with no row in
-    its block names the block's period, marked as such. The story and the room page say the same."""
+    its block names the block's period, marked as such. The story and the room page say the same:
+    a child's pointers and room page, the whole first block of an integrator's story."""
     rooms = shared.world(tmp_path)
     alpha = rooms["alpha"]
-    lines = _story(tmp_path).split("\n")
+    lines = _story(tmp_path, KID).split("\n")
     # The transport's one row of block zero is at 00:04, Alpha's rows of block one end at 00:01.
     assert ("- Transport; 2026-09-01 00:04 → 2026-09-01 00:04; 1 row retold in 17 chars; "
             "memory_read(node_id='legacy-b00-r777')") in lines
@@ -95,9 +105,15 @@ def test_a_pointers_period_is_its_rooms_own_rows_and_without_rows_the_marked_blo
             "memory_read(node_id='legacy-b01-r1')") in lines
     assert not [line for line in lines if "0 rows retold" in line]
     assert sum("(block period)" in line for line in lines if line.startswith("- ")) == 1
-    room = mv.render_room(_snapshot(tmp_path))
+    room = mv.render_room(_snapshot(tmp_path, KID))
     assert f"#### legacy-b01-r1 — {quiet}" in room
     assert "#### legacy-b00-r1 — 2026-09-01 00:00 → 2026-09-01 00:05\n" in room
+    # An integrator reads the first block whole in its story under the same periods; its room page does not repeat it.
+    story, main_room = _story(tmp_path), mv.render_room(_snapshot(tmp_path))
+    assert ("#### legacy-b00-r777 — 2026-09-01 00:04 → 2026-09-01 00:04 — Transport — 1 row retold in 17 chars\n"
+            "  A transport line.") in story
+    assert "#### legacy-b00-r1 — 2026-09-01 00:00 → 2026-09-01 00:05 — Main — 4 rows retold in 10 chars\n" in story
+    assert f"#### legacy-b01-r1 — {quiet}" in main_room and "legacy-b00-r1" not in main_room
 
 
 def test_a_room_less_pointer_names_the_old_writers_count_and_length_never_zero_rows(tmp_path):
@@ -116,8 +132,8 @@ def test_a_room_less_pointer_names_the_old_writers_count_and_length_never_zero_r
     era = [line for line in lines if "legacy-b01-rlegacy" in line]
     assert era == ["- Unknown provenance [legacy mixed record]; 2026-09-02 00:00 → 2026-09-02 00:03 (block period); "
                    "4 messages retold (the old writer's count) in 29 chars; memory_read(node_id='legacy-b01-rlegacy')"]
-    assert ("- Main; 2026-09-01 00:00 → 2026-09-01 00:05; 4 rows retold in 10 chars; "
-            "memory_read(node_id='legacy-b00-r1')") in lines  # rows of its room: the rows, not the old count
+    assert ("#### legacy-b00-r1 — 2026-09-01 00:00 → 2026-09-01 00:05 — Main — 4 rows retold in 10 chars"
+            ) in lines  # rows of its room: the rows, not the old count
     assert f"legacy-b01-r{rooms['alpha']}" not in "\n".join(lines)
 
 
@@ -154,12 +170,12 @@ def test_a_correction_of_a_page_folded_twice_stands_under_the_surviving_part(tmp
 def test_the_one_folded_rule_removes_a_pointer_only_when_every_row_is_sealed_and_counts_the_block(tmp_path):
     rooms = shared.world(tmp_path)
     before = _story(tmp_path)
-    assert "folded 0 of 2 blocks" in before and "memory_read(node_id='legacy-b00-r777')" in before
+    assert "folded 0 of 2 blocks" in before and "#### legacy-b00-r777 — " in before
     _page(tmp_path, str(rooms["alpha"]), 2, 5)
     _page(tmp_path, "1", 0, 1)  # Main's rows of block zero are 0, 1, 4 and 5: a partial page folds nothing
     partial = _story(tmp_path)
-    assert "memory_read(node_id='legacy-b00-r1')" in partial and "folded 0 of 2 blocks" in partial
-    assert f"memory_read(node_id='legacy-b00-r{rooms['alpha']}')" not in partial
+    assert "#### legacy-b00-r1 — " in partial and "folded 0 of 2 blocks" in partial
+    assert f"legacy-b00-r{rooms['alpha']}" not in partial and "Alpha began." not in partial
     _page(tmp_path, "1", 4, 5)
     _page(tmp_path, "777", 4, 4)
     folded = _story(tmp_path)
@@ -244,8 +260,12 @@ def test_the_story_is_byte_identical_for_every_integrator_and_changes_only_with_
     clock = iter(f"2026-10-0{n}T00:00:00+00:00" for n in range(1, 9))
     monkeypatch.setattr("ouroboros.utils.utc_now_iso", lambda: next(clock))
     stories = {task["id"]: _story(tmp_path, task) for task in tasks}
+    kid = stories.pop("kid00001")  # a child names the first block by pointer: its own bytes, the same for every child
     assert len(set(stories.values())) == 1, stories.keys()
     story = stories["turn0001"]
+    assert kid != story and "  Main talk." in story and "Main talk." not in kid
+    assert "memory_read(node_id='legacy-b00-r1')" in kid and "memory_read(node_id='legacy-b00-r1')" not in story
+    assert kid == _story(tmp_path, {**KID, "id": "kid00002", "chat_id": rooms["beta"]})
     assert '{"' not in story and " ago" not in story and "captured" not in story.lower()
     assert not [line for line in story.split("\n") if re.match(r"\s*\d+[.)] ", line)]  # no ordinals
     assert "turn0001" not in story and "rootA001" not in story
@@ -258,6 +278,37 @@ def test_the_story_is_byte_identical_for_every_integrator_and_changes_only_with_
     nanny = {"id": "nan00001", "chat_id": 1, "delegation_role": "subagent",
              "configured_subagent": {"route": {"kind": "agent_session"}}}
     assert _story(tmp_path, nanny) == ""
+
+
+def test_an_integrating_focus_reads_the_first_block_of_every_room_whole_and_a_later_block_by_pointer(tmp_path):
+    """The first block of the old retelling (the time before rooms had memory of their own) is whole in the
+    story of Main, a root, consciousness and Presence, for every room; a later block of the same room stays a
+    pointer. A child names the first block by pointer and a nanny has no story. The room page never repeats
+    what the story shows whole: a root reads its own first block once, a child reads it on the room page."""
+    rooms = shared.world(tmp_path)
+    alpha = rooms["alpha"]
+    whole = (f"#### legacy-b00-r{alpha} — 2026-09-01 00:02 → 2026-09-01 00:05 — Alpha — 3 rows retold in 12 chars\n"
+             "  Alpha began.")
+    first = (f"- Alpha; 2026-09-01 00:02 → 2026-09-01 00:05; 3 rows retold in 12 chars; "
+             f"memory_read(node_id='legacy-b00-r{alpha}')")
+    later = (f"- Alpha; 2026-09-02 00:00 → 2026-09-02 00:01; 2 rows retold in 13 chars; "
+             f"memory_read(node_id='legacy-b01-r{alpha}')")
+    root = {"id": "rootA001", "chat_id": alpha}
+    for task in (MAIN, root, {"id": "wake0001", "chat_id": 1, "metadata": {"usage_category": "consciousness"}},
+                 {"id": "pres0001", "chat_id": 555, "metadata": {"presence": {"binding_id": "b"}}}):
+        text = _story(tmp_path, task)
+        lines = text.split("\n")
+        assert whole in text and later in lines and first not in lines, task["id"]
+        assert "Alpha worked." not in text and "Beta asked." not in text, task["id"]  # a later block: its pointer only
+    kid = _story(tmp_path, KID)
+    assert first in kid.split("\n") and later in kid.split("\n") and "Alpha began." not in kid
+    nanny = {"id": "nan00001", "chat_id": 1, "delegation_role": "subagent",
+             "configured_subagent": {"route": {"kind": "agent_session"}}}
+    assert _story(tmp_path, nanny) == "" and "Alpha began." not in mv.render_room(_snapshot(tmp_path, nanny))
+    root_room = mv.render_room(_snapshot(tmp_path, root))
+    assert "Alpha began." not in root_room and "  Alpha worked." in root_room  # its first block is in the story
+    kid_room = mv.render_room(_snapshot(tmp_path, {**KID, "id": "kid00003", "chat_id": alpha}))
+    assert "  Alpha began." in kid_room and "  Alpha worked." in kid_room
 
 
 def test_an_import_not_completed_names_its_reason_and_the_untouched_old_file(tmp_path, monkeypatch):
@@ -277,8 +328,10 @@ def test_gaps_unknown_ranges_and_the_flat_file_are_pointers_with_honest_periods(
         "- memory gap: Unknown provenance [legacy mixed record]; period known from the retelling text only; "
         "the old cursor file is missing while legacy blocks exist; memory_read(node_id='legacy-cursor-gap-")
     # Rows not established: the old writer's own count, then the length; the flat file has only its length.
+    assert ("#### legacy-b00-r1 — 2026-09-01 00:00 - 00:05 (block period) — Main — 4 messages retold (the old "
+            "writer's count) in 10 chars") in lines
     assert ("- Main; 2026-09-01 00:00 - 00:05 (block period); 4 messages retold (the old writer's count) in 10 chars; "
-            "memory_read(node_id='legacy-b00-r1')") in lines
+            "memory_read(node_id='legacy-b00-r1')") in _story(tmp_path, KID).split("\n")
     assert any(line.startswith("- Unknown provenance [legacy mixed record]; period known from the retelling text "
                                "only; retold in 21 chars; memory_read(node_id='legacy-flat-") for line in lines)
 

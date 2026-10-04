@@ -38,7 +38,7 @@ from ouroboros import memory_view_legacy as legacy
 from ouroboros.utils import estimate_tokens
 
 # The ladder, old before new and people last: host fact lines of this room's tasks
-# (F1), other live rooms without notes (F1b), retold-memory pointers as one line per room
+# (F1), other live rooms without notes (F1b), retold records, the whole first block too, as one line per room
 # (F3), my oldest pages and parts (F5), this room's retold page (F4), my longest replies
 # (F2), then people's words: other rooms' (F6, only when the view shows them) and this room's (F7).
 LADDER = ("F1", "F1b", "F3", "F5", "F4", "F2", "F6", "F7")
@@ -85,7 +85,7 @@ def floor_elements(snapshot: mv.MemoryViewSnapshot) -> List[Tuple[str, str, str,
         "F1": [(item["first"], item["line"], "" if i else mv._facts_line(room, [item])) for i, item in enumerate(lane2)],
         "F1b": [(item["room_id"], "\n".join(mv._live_room(item)), "" if i else mv._rooms_line([item]))
                 for i, item in enumerate(quiet)],
-        "F3": [(room_id, "\n".join(map(legacy.pointer_line, group)), legacy.room_pointer(group))
+        "F3": [(room_id, "\n".join(map(legacy.retold_record, group)), legacy.room_pointer(group))
                for room_id, group in legacy.pointer_rooms(snapshot.story).items()],
         "F5": [(entry["id"], "\n".join(mv._page_lines(entry)), mv._page_pointer(entry))
                for entry in snapshot.story if entry.get("kind") != "legacy"],
