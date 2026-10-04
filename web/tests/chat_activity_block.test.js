@@ -63,7 +63,9 @@ const TASK = 'turn-a';
 
 function fixture(history = [], detail = { active_direct_turns: [] }) {
     let historyReads = 0;
+    const requests = [];
     const env = installDom(async (url) => {
+        requests.push(String(url));
         const isHistory = String(url).startsWith('/api/chat/history');
         if (isHistory) historyReads++;
         return { ok: true, json: async () => isHistory
@@ -83,7 +85,7 @@ function fixture(history = [], detail = { active_direct_turns: [] }) {
     const messages = document.byId.get('chat-messages');
     const nodes = (node) => [node, ...(node?.children || []).flatMap(nodes)];
     return {
-        instance, messages, historyReads: () => historyReads,
+        instance, messages, requests, historyReads: () => historyReads,
         card: (id = TASK) => walkCard(messages, id),
         rows: (id = TASK) => nodes(walkCard(messages, id)).filter((n) => n.classList?.contains('chat-live-line')),
         meta: (id = TASK) => walkCard(messages, id)?.querySelector('[data-live-meta]')?.innerHTML || '',
@@ -98,6 +100,109 @@ function fixture(history = [], detail = { active_direct_turns: [] }) {
         close() { instance.destroy(); restoreDom(env.prior); },
     };
 }
+
+const toolCarrier = (evidence, extra = {}) => ({ task_id: TASK, role: 'system', system_type: 'task_evidence',
+    text: '', ts: TS, narration: false, tool_evidence: evidence, ...extra });
+
+test('inert tool carrier restores a speechless card without invented narration or activity', async () => {
+    const f = fixture([toolCarrier({ observations: [{ key: 'one', tool: 'read_file', fact: 'settled', status: 'ok' }] })]);
+    try {
+        await f.instance.refreshHistory({ revision: 1 });
+        assert.ok(f.card());
+        assert.match(f.rows().map(row => row.innerHTML).join(' '), /1 tool call/);
+        assert.equal(f.card().querySelector('[data-live-phase]').hidden, true, 'history alone confers no liveness');
+        assert.equal(f.card().querySelector('[data-resume-run]'), null);
+        assert.equal(f.card().querySelector('[data-cancel-run]'), null);
+        assert.equal(f.card().querySelector('[data-live-title]').textContent, '');
+        assert.equal(f.messages.children.filter(row => row.classList.contains('chat-bubble')
+            && !row.classList.contains('typing-bubble')).length, 0);
+    } finally { f.close(); }
+});
+
+test('empty incomplete tool evidence stays visible and never reads as zero calls', async () => {
+    const f = fixture([toolCarrier({ observations: [], legacy: { calls: 0 }, coverage: {
+        source: 'logs/tools.jsonl', live_size: 0, live_window: 0, archives_bounded: true,
+        archives: 3, archives_available: 4, shown: 0, matched: 0 } })]);
+    try {
+        await f.instance.refreshHistory({ revision: 1 });
+        assert.ok(f.card());
+        const text = f.rows().map(row => row.innerHTML).join(' ');
+        assert.match(text, /Tool history incomplete/);
+        assert.doesNotMatch(text, /0 tool calls/);
+        f.census([{ activity_id: TASK, chat_id: 1, kind: 'managed_task', phase: 'working' }]);
+        assert.equal(f.historyReads(), 1, 'census updates never replay tool history');
+    } finally { f.close(); }
+});
+
+test('a bounded physical window still settles all identified calls of a known task total', () => {
+    const record = {};
+    const view = noteToolHostMetrics(record, { calls: 1, errors: 1, evidence: { observations: [
+        { key: 'one', tool: 'read_file', fact: 'wait_ended', status: 'unknown' },
+        { key: 'one', tool: 'read_file', fact: 'settled', status: 'ok' },
+    ], coverage: { live_size: 1000, live_window: 500, source: 'logs/tools.jsonl' } } });
+    assert.equal(view.errors, 0, 'verified late settlement retires the provisional wait error');
+    assert.match(view.headline, /wait ended/);
+    assert.match(view.fullBody, /incomplete/, 'physical coverage remains independently disclosed');
+});
+
+test('ordinary unfinished speech cannot settle the evidence card', async () => {
+    const f = fixture([
+        { role: 'assistant', task_id: TASK, text: 'I have started reading', ts: TS, task_phase: 'unfinished' },
+        toolCarrier({ observations: [{ key: 'one', tool: 'read_file', fact: 'started', status: 'unknown' }] },
+            { task_phase: 'unfinished' }),
+    ]);
+    try {
+        await f.instance.refreshHistory({ revision: 1 });
+        assert.equal(f.card().dataset.finished, '0');
+        assert.equal(f.card().querySelector('[data-live-phase]').hidden, true);
+        f.census([{ activity_id: TASK, chat_id: 1, kind: 'managed_task', phase: 'queued' }]);
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Queued');
+        assert.equal(f.status(), 'Queued...');
+    } finally { f.close(); }
+});
+
+test('current confirmed pause exposes direct Resume with its cause and keeps refusal visible', async () => {
+    const f = fixture([toolCarrier({ observations: [{ key: 'one', tool: 'read_file', fact: 'settled', status: 'ok' }] })]);
+    try {
+        document.body = new ElementStub('body', document);
+        await f.instance.refreshHistory({ revision: 1 });
+        const row = { activity_id: TASK, chat_id: 1, kind: 'direct_chat', phase: 'budget_paused', pause_cause: 'owner' };
+        f.census([row]);
+        const button = f.card().querySelector('[data-resume-run]');
+        assert.ok(button);
+        assert.equal(button.textContent, 'Resume');
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Paused · owner pause');
+        await button.listeners.get('click')[0]({ stopPropagation() {} });
+        assert.equal(f.requests.filter(url => url.endsWith(`/tasks/${TASK}/resume`)).length, 1);
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Paused · owner pause', 'a refusal invents no Running state');
+        for (const phase of ['budget_pausing', 'queued', 'working', 'unknown']) {
+            f.census([{ ...row, phase }]);
+            assert.equal(f.card().querySelector('[data-resume-run]'), null, phase);
+            assert.ok(f.card().querySelector('[data-cancel-run]'), `${phase}: positive current root remains stoppable`);
+        }
+        f.census([]);
+        assert.equal(f.card().querySelector('[data-cancel-run]'), null, 'complete census absence revokes the new authority');
+        await button.listeners.get('click')[0]({ stopPropagation() {} });
+        assert.equal(f.requests.filter(url => url.endsWith(`/tasks/${TASK}/resume`)).length, 1, 'detached stale button cannot resume');
+    } finally { f.close(); }
+});
+
+test('required answer, unavailable wait, and parallel active work keep separate header truth', async () => {
+    const f = fixture([toolCarrier({ observations: [{ key: 'one', tool: 'read_file', fact: 'settled', status: 'ok' }] })]);
+    try {
+        await f.instance.refreshHistory({ revision: 1 });
+        const row = { activity_id: TASK, chat_id: 1, kind: 'managed_task', phase: 'working',
+            required_question: { owner_wait_state: 'waiting', quiz_state: 'open' } };
+        f.census([row]);
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Waiting for your answer');
+        assert.equal(f.status(), 'Waiting for your answer');
+        f.census([row, { activity_id: 'another', chat_id: 1, kind: 'managed_task', phase: 'working' }]);
+        assert.equal(f.status(), 'Working...', 'one waiting task cannot hide another task working');
+        f.census([{ ...row, required_question: null, required_question_unavailable: true }]);
+        assert.equal(f.card().querySelector('[data-live-phase]').textContent, 'Activity unconfirmed');
+        assert.equal(f.status(), 'Activity unconfirmed');
+    } finally { f.close(); }
+});
 
 const direct = (id = TASK) => [{ activity_id: id, chat_id: 1, kind: 'direct_chat', phase: 'thinking' }];
 const managed = (id = TASK) => [{ activity_id: id, chat_id: 1, kind: 'managed_task', phase: 'working' }];

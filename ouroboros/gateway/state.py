@@ -364,6 +364,26 @@ def _managed_task_budget_pausing(drive_root: Any, row: Dict[str, Any], task_id: 
         return None
 
 
+def _activity_pause_cause(row: dict, fence: dict) -> str:
+    """Explain a parked census row from its existing typed control, never its phase name."""
+    hold = row.get("_budget_pause_hold") or {}
+    if isinstance(hold, dict) and hold.get("reason") == "owner_restart_hold":
+        return "restart"
+    if fence.get("cause") == "owner_pause":
+        return "owner"
+    pause = row.get("_budget_pause") or row.get("budget_pause") or {}
+    reason = pause.get("reason") if isinstance(pause, dict) else None
+    if reason in {"budget", "owner", "sleep"}:
+        return reason
+    if isinstance(pause, dict) and pause.get("status") == "paused_before_dispatch":
+        return "budget"
+    if row.get("reason_code") in {"budget_paused", "budget_exhausted"}:
+        return "budget"
+    if row.get("reason_code") == "owner_paused":
+        return "owner"
+    return "unknown"
+
+
 def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *, direct_turns=None, availability=None) -> list:
     """Direct turns plus ROOT managed queue tasks as ONE activity list.
 
@@ -431,6 +451,9 @@ def _chat_activities_snapshot_safe(drive_root: Any, task_bindings: Any = None, *
                 "client_message_id": "",
                 "kind": "direct_chat" if row.get("_is_direct_chat") else "managed_task",
                 "phase": phase,
+                **({"pause_cause": _activity_pause_cause(
+                    row, fence_rows.get(str(row.get("root_task_id") or task_id), {}))}
+                   if phase in {"budget_paused", "budget_pausing"} else {}),
                 "started_at": started_at,
                 "task_attempt": int(row.get("_attempt") or 1),
                 **({"model_waits": row["model_waits"]} if row.get("model_waits") else {}),

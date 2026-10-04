@@ -368,6 +368,8 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── terminal_cost_reconciliation.py ← Usage recovery/projection (§6)
       ├── task_continuation.py ← Durable review continuation state
       ├── task_results.py      ← Durable task results `task_results/<id>.json`; the locked `task_acceptance_review_accounting` claim (minted at first physical reviewer dispatch; a claim without a recoverable terminal host run is UNKNOWN, never permission to re-dispatch); the read-only root review-capacity projection is WALLET and cancellation only (`root_task_id`, `cap_cycles`, `claimed_cycles`, `remaining_cycles`, `binding_seen`, `dedupe`, `state`, `reason`), no time axis (§6 Task acceptance)
+      ├── task_result_facts.py ← One stat-invalidated compact memo for list ordering, child selection, SSE discovery and Main routing; selected bodies still use schema/effective readers
+      ├── pause_notices.py ← Confirmed-pause System disclosures: task-owned pending episodes, saved-chat receipts and off-loop local replay; no new outbox
       ├── task_result_schema.py ← Task-result schema admission: the `_schema_version` stamp, the classifier, and the quarantine an unstamped, future, malformed or retired-key row lands in
       ├── task_status.py       ← Effective status/lineage/waits; root/task/attempt-bound execution_owner and dated execution_observation separate lifecycle from liveness (§5); only pooled owners enter worker-boot orphan inference. task_has_live_queue_ownership: §10 invariant 14
       ├── git_shell_policy.py  ← Shell Git argv checks
@@ -406,7 +408,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       │   ├── contracts.py     ← Active WS/HTTP envelope contract owner
       │   ├── decision_contracts.py ← Typed request/response contracts for decision families, re-exported by contracts.py; each ingress owns runtime validation
       │   ├── endpoint_index.py ← `HTTP_ENDPOINTS` index (re-exported by contracts.py); routers own the Route objects
-      │   ├── schema.py, task_list_scan.py ← The executable gateway contract — JSON Schema derived from the TypedDicts, validating ingress — and the stat-invalidated compact result facts shared by list ordering, SSE discovery and Main routing
+      │   ├── schema.py ← Executable gateway contract: JSON Schema derived from TypedDicts, validating ingress
       │   ├── router.py        ← Starlette route collector for /api/* and /ws (§4)
       │   ├── ws.py            ← WS manager, extension WS dispatch (a synchronous in-process handler runs in a worker thread like the HTTP dispatcher, so one skill's blocking callback never stalls the ASGI loop), broadcast (§4 WebSocket protocol)
       │   ├── state.py         ← /api/health + /api/state

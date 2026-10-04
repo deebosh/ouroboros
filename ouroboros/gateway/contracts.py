@@ -729,7 +729,7 @@ class ActiveChatActivity(ActiveDirectTurn):
     required_question: NotRequired[Dict[str, Any]]
     required_question_unavailable: NotRequired[bool]
     project_admission_hold: NotRequired[Dict[str, Any]]
-
+    pause_cause: NotRequired[str]  # budget | owner | restart | sleep | unknown; display only
 
 class StateResponse(TypedDict):
     """Shape of ``GET /api/state`` (happy path)."""

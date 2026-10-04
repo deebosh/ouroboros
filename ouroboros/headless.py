@@ -308,6 +308,7 @@ def prune_task_trees(
     *,
     retention_days: Optional[int] = None,
     now: Optional[float] = None,
+    exclude_root_ids: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
     """Prune ephemeral task-tree ledgers once the root is terminal or absent and
     older than GC retention; durable project memory is outside this plane."""
@@ -326,6 +327,9 @@ def prune_task_trees(
             continue
         root_id = tree_dir.name
         report["scanned"] += 1
+        if root_id in (exclude_root_ids or ()):
+            report["skipped"].append({"root_task_id": root_id, "reason": "source_recovery_pending"})
+            continue
         try:
             dir_mtime = tree_dir.stat().st_mtime
             result = _effective_task_result(parent, root_id)
@@ -625,7 +629,9 @@ def _copy_child_artifacts_to_parent(
     row gains ``relpath``); an immutable capture publishes only its recorded bytes and never
     replaces different canonical bytes, a mutable one publishes its current bytes after the
     differing prior copy is versioned; a failed copy keeps its row plus a pending ref."""
-    from ouroboros.artifacts import _archive_previous_artifact_version, copy_artifact_file, stream_artifact_file
+    from ouroboros.artifacts import (
+        ArtifactIdentityError, _archive_previous_artifact_version, copy_artifact_file, stream_artifact_file,
+    )
     from ouroboros.outcome_receipt_store import is_verification_receipts_path
 
     parent_dir = task_artifacts_dir(parent_drive_root, task_id)
@@ -644,10 +650,13 @@ def _copy_child_artifacts_to_parent(
             # Receipt union has its own locked writer; never replace its rows.
             continue
         expected = item if item.get("immutable") else None
+        source = src
         if src.is_relative_to(parent_base):
             dest = src
         else:
             dest = parent_dir / (src.relative_to(child_base) if src.is_relative_to(child_base) else src.name)
+        canonical_candidate = dest
+        if not src.is_relative_to(parent_base):
             if expected is not None and dest.exists() and dest.resolve(strict=False) != src:
                 try:
                     stream_artifact_file(dest, expected=item)
@@ -661,8 +670,13 @@ def _copy_child_artifacts_to_parent(
         except OSError as exc:
             item.update(copy_status="failed", copy_error=f"{type(exc).__name__}: {exc}")
             if promotion is not None:
-                promotion["pending_refs"].append({"path": str(src), "kind": "task_artifact",
-                                                   "reason": item["copy_error"]})
+                pending = {"path": str(src), "kind": "task_artifact", "reason": item["copy_error"]}
+                if expected is not None and isinstance(exc, ArtifactIdentityError):
+                    pending.update(failure_kind="immutable_identity_mismatch", source_path=str(source),
+                                   destination_path=str(dest), canonical_path=str(canonical_candidate),
+                                   sha256=item.get("sha256"), size=item.get("size"),
+                                   failed_path=str(exc.source_path), failed_stamp=list(exc.source_stamp))
+                promotion["pending_refs"].append(pending)
             rebased.append(item)
             continue
         item.pop("copy_status", None)
