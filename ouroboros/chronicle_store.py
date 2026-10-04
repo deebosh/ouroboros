@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -152,8 +153,27 @@ def draft_signer(author: Any) -> str:
     return f"{role}, task {task}" if task else role
 
 
+# A markdown emphasis marker: a run of up to three ``*``/``_`` that opens before a word (nothing
+# word-like or ``*`` before it, a non-space after it) or closes after one. ``memory_read``,
+# ``2*3`` and a ``* `` bullet carry no marker; ``**but not**`` and ``_this_`` do.
+_EMPHASIS = re.compile(r"(?<![\w*])[*_]{1,3}(?![*_\s])|(?<=[^*_\s])[*_]{1,3}(?![\w*])")
+
+
+def quote_in(quote: str, source: str) -> bool:
+    """Whether ``quote`` is ``source``'s words, exact up to markdown emphasis markers on either side.
+
+    Words, punctuation, spacing and order stay exact: only ``**``, ``__`` and a single
+    ``*``/``_`` around words are set aside, so a helper that copied a row's words without
+    its bold is not refused, while a changed word still is.
+    """
+    if quote in source:
+        return True
+    plain = _EMPHASIS.sub("", quote)
+    return bool(plain.strip()) and plain in _EMPHASIS.sub("", source)
+
+
 def verify_quotes(quotes: Any, resolver: Optional[QuoteResolver]) -> Optional[PublishResult]:
-    """Each quote is an exact substring of the row at its address, spoken by the named class.
+    """Each quote is the words of the row at its address (``quote_in``), spoken by the named class.
 
     ``resolver(address)`` returns ``(rendered row text, author kind)`` or ``None``;
     it reads chat rows, so it runs before the publication lock is taken.
@@ -174,7 +194,7 @@ def verify_quotes(quotes: Any, resolver: Optional[QuoteResolver]) -> Optional[Pu
         if resolved is None:
             return _refuse("quote_mismatch", f"{where}: the address resolves to no chat row")
         rendered, speaker = resolved
-        if quote["text"] not in str(rendered):
+        if not quote_in(str(quote["text"]), str(rendered)):
             return _refuse("quote_mismatch", f"{where}: the text is not an exact substring of that row")
         if speaker != quote["speaker"]:
             return _refuse("quote_mismatch", f"{where}: that row is spoken by {speaker}, not {quote['speaker']}")
@@ -824,6 +844,7 @@ class ChronicleStore:
             pointers.append({"node_id": row["id"], "kind": row["kind"], "room_id": row["room_id"],
                              "label": meta.get("label"), "legacy_type": meta.get("legacy_type"),
                              "legacy_block": meta.get("legacy_block"), "range_text": meta.get("legacy_range_text"),
+                             "messages": meta.get("room_message_count"),  # the old writer's own count for the room
                              "covers": row.get("covers"), "revision": row["revision"],
                              "folded_into": row["folded_into"], "sequence": row["sequence"]})
         return sorted(pointers, key=lambda p: (p["legacy_block"] if type(p["legacy_block"]) is int else _NO_BLOCK,

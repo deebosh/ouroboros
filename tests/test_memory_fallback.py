@@ -260,6 +260,7 @@ def test_the_input_holds_the_owners_words_behind_the_units_tasks_and_the_minds_g
     assert "Alpha worked." in llm.prompts[0] and "Beta asked." not in llm.prompts[0]
     assert "remembering" not in llm.prompts[0]
     assert "Quote the decisive words" in llm.prompts[0]  # a page quotes them; a part, without rows, does not
+    assert "A quote is copied character for character, markdown included (**, _, `)." in llm.prompts[0]  # D-65
     # The mind's own note on remembering is read into the input as its authored guidance.
     note = tmp_path / "memory" / "knowledge" / "remembering.md"
     note.parent.mkdir(parents=True, exist_ok=True)
@@ -372,6 +373,7 @@ def test_a_narrative_shortage_folds_adjacent_records_into_a_part_bound_to_the_ro
     assert "host_stamp" not in part["metadata"]  # one place for every stamp: where a page keeps its own
     assert "Main talk." in llm.prompts[0] and "Main was quiet." in llm.prompts[0]
     assert "leave quotes empty" in llm.prompts[0] and "Quote the decisive words" not in llm.prompts[0]
+    assert "markdown included" not in llm.prompts[0]  # no rows, no quotes to copy
 
 
 def test_a_failed_task_survives_a_helper_part_folded_again_and_shows_in_the_view(tmp_path, monkeypatch, light):

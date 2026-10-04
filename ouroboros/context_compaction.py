@@ -788,14 +788,18 @@ def _select_units(
     spec: Mapping[str, Any],
     exposed_units: Optional[Sequence[Mapping[str, Any]]] = None,
     automatic: bool = False,
+    provider_refused: bool = False,
 ) -> Tuple[Optional[_Selection], ReclaimStatus]:
     units = list(_atomic_units(
         messages, trace_refs_by_tool_call_id=trace_refs_by_tool_call_id,
         measurement_density=request.measurement_density))
-    # Earlier records are residue, not fresh sources for another helper retelling.
-    # Keep the general unit reader broad for explicit authored views and restore.
+    # Earlier records are residue, not fresh sources for another helper retelling. Only the
+    # provider's own refusal of this request lets an automatic pass re-fold them, as the last
+    # resort after every raw source (D-69). Keep the general unit reader broad for explicit
+    # authored views and restore.
     if automatic:
-        units = [unit for unit in units if unit.generation == 0]
+        units = ([unit for unit in units if unit.generation == 0]
+                 + ([unit for unit in units if unit.generation] if provider_refused else []))
     if exposed_units is not None or automatic:
         exposed = {(ref.get("unit_id"), ref.get("raw_sha256")) for ref in (exposed_units or ())}
         units = [unit for unit in units if (unit.unit_id, unit.raw_sha256) in exposed]
@@ -1164,6 +1168,7 @@ def compact_tool_history_llm(
     fit_candidate: Optional[Callable[[list, list], Mapping[str, Any]]] = None,
     exposed_units: Optional[Sequence[Mapping[str, Any]]] = None,
     automatic_deficit_tokens: Optional[int] = None,
+    provider_refused: bool = False,
 ) -> Tuple[list, ContextReclaimReceipt, Optional[Dict[str, Any]]]:
     """Return a candidate and receipt; the caller owns atomic view publication.
 
@@ -1176,6 +1181,8 @@ def compact_tool_history_llm(
     newly exposed raw units are eligible, and an unreachable measured deficit
     returns facts before any checkpoint or paid helper call. Zero means that
     a real overflow has not supplied a measurable deficit, not that no shrink helps.
+    ``provider_refused`` (the provider's typed refusal of this very request) also
+    admits earlier capsules, after every raw unit, as the last resort.
     """
 
     before_sha = context_reclaim_transcript_sha256(messages)
@@ -1211,6 +1218,7 @@ def compact_tool_history_llm(
         spec=spec,
         exposed_units=exposed_units,
         automatic=automatic_deficit_tokens is not None,
+        provider_refused=provider_refused,
     )
     reclaim_fit = None
     if automatic_deficit_tokens is not None:
@@ -1308,8 +1316,9 @@ def compact_tool_history_llm(
         # unit summaries without another paid fold, and keep each original unit
         # individually restorable. An owner/control turn or retained unit breaks
         # adjacency, so grouping cannot move information across those boundaries.
+        # Ranges follow the transcript, not the selection's raw-first order.
         groups: list[list[_SelectedUnit]] = []
-        for item in selection.units:
+        for item in sorted(selection.units, key=lambda item: item.unit.start):
             if item.unit.start not in replacements:
                 continue
             if groups and groups[-1][-1].unit.end + 1 == item.unit.start:
@@ -1321,9 +1330,11 @@ def compact_tool_history_llm(
             start, end = group[0].unit.start, group[-1].unit.end
             unit = _unit_from_slice(messages, start, end, trace_refs_by_tool_call_id=trace_refs,
                                     measurement_density=effective_request.measurement_density)
-            unit = replace(unit, source_refs=_unique_refs([*unit.source_refs, *(
-                {"checkpoint_ref": checkpoint_ref, "unit_id": item.unit.unit_id,
-                 "raw_sha256": item.unit.raw_sha256} for item in group)]))
+            # A re-folded earlier capsule (after a provider refusal) keeps counting its generations.
+            unit = replace(unit, generation=max(item.unit.generation for item in group),
+                           source_refs=_unique_refs([*unit.source_refs, *(
+                               {"checkpoint_ref": checkpoint_ref, "unit_id": item.unit.unit_id,
+                                "raw_sha256": item.unit.raw_sha256} for item in group)]))
             text = "\n\n".join(
                 f"Source unit {item.unit.unit_id}:\n"
                 + replacements[item.unit.start][1][0]["content"][0]["text"].partition("\n")[2]

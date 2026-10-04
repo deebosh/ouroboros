@@ -197,7 +197,7 @@ def test_what_never_degrades_stays_at_the_bottom_of_the_ladder():
     assert "### Words that started this work (retention-proof)" in room and "Start this project. ooo" in room
     assert "### My notes not yet sealed\nnote note-here-0 by root" in room
     assert "## This room (Main) — head 7" in room
-    assert re.search(r"^- .*; \d+ retold records: .*reads each$", story, re.M)  # one line per retold room
+    assert re.search(r"^- .*; \d+ retold records( in \d+ chars)?: .*reads each$", story, re.M)  # one line per retold room
     assert re.search(r"^\d+ more open rooms without notes; ", room, re.M)
 
 
@@ -337,7 +337,7 @@ def test_the_floor_runs_on_a_captured_view(tmp_path):
         assert step == "F1" or ident in story + room, (step, ident)
     lane2 = snapshot.room["lane2"]
     assert f"from='{lane2[0]['first']}', to='{max(lane2, key=lambda item: item['last_pos'])['last']}')" in room
-    assert "retold records: legacy-b00-r1, legacy-b01-r1; " in story  # Main's two retold records, one line
+    assert "2 retold records in 25 chars: legacy-b00-r1, legacy-b01-r1; " in story  # Main's two, one line, their length
     assert "next please" in room and "beta again" in room  # short words cost less verbatim than by address
     assert mv.snapshot_from_json(mv.snapshot_json(snapshot)) == snapshot  # the new facts survive the core's JSON
 

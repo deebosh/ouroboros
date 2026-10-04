@@ -31,6 +31,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from ouroboros import context_budget
 from ouroboros.chat_chain import parse_address
 from ouroboros import memory_view as mv
+from ouroboros import memory_view_legacy as legacy
 from ouroboros.utils import estimate_tokens
 
 # The ladder (D-37), old before new and people last: host fact lines of this room's tasks
@@ -81,8 +82,8 @@ def floor_elements(snapshot: mv.MemoryViewSnapshot) -> List[Tuple[str, str, str,
         "F1": [(item["first"], item["line"], "" if i else mv._facts_line(room, [item])) for i, item in enumerate(lane2)],
         "F1b": [(item["room_id"], "\n".join(mv._live_room(item)), "" if i else mv._rooms_line([item]))
                 for i, item in enumerate(quiet)],
-        "F3": [(room_id, "\n".join(map(mv._pointer_line, group)), mv._room_pointer(group))
-               for room_id, group in mv._pointer_rooms(snapshot.story).items()],
+        "F3": [(room_id, "\n".join(map(legacy.pointer_line, group)), legacy.room_pointer(group))
+               for room_id, group in legacy.pointer_rooms(snapshot.story).items()],
         "F5": [(entry["id"], "\n".join(mv._page_lines(entry)), mv._page_pointer(entry))
                for entry in snapshot.story if entry.get("kind") != "legacy"],
         "F4": [(item["id"], mv._retold(item), mv._retold(item, True))

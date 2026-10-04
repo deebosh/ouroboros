@@ -184,6 +184,18 @@ def test_stale_expected_sequence_returns_the_head_and_ids_without_text_and_a_cur
     assert free["ok"]
 
 
+def test_a_quote_of_a_bold_row_holds_without_the_markers_and_a_changed_word_does_not(tmp_path):
+    """D-65 on the real resolver (the one the Light helper's draft is checked with): the row's words
+    copied without its ``**`` pass, with them too; a changed word is refused."""
+    rows = chat(tmp_path, [{"chat_id": 1, "direction": "in", "ts": ts(1),
+                            "text": "Merge it, **but not** before the red checks are green."}])
+    owner = {"address": addr(rows[0]), "speaker": "human"}
+    for text in ("Merge it, but not before", "Merge it, **but not** before", "red checks are green."):
+        assert check_quotes(tmp_path, [{**owner, "text": text}]) == (True, None), text
+    for text in ("Merge it, but now before", "Merge it but not before", "before the green checks"):
+        assert check_quotes(tmp_path, [{**owner, "text": text}]) == (False, 0), text
+
+
 def test_forged_quote_is_refused_and_an_exact_quote_by_its_speaker_passes(tmp_path):
     rows = chat(tmp_path, [
         {"chat_id": 1, "direction": "in", "ts": ts(1), "text": "Ship it only after the tests pass."},

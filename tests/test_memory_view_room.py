@@ -422,9 +422,10 @@ def test_this_room_has_its_head_retold_records_origin_words_and_notes(tmp_path):
     assert f"note {note.record['id']} by root on " in _section(noted, "### My notes not yet sealed")
 
 
-def test_main_room_page_shows_the_retired_flat_summary_whole_and_no_other_room_or_mixed_block_does(tmp_path):
-    """P3 §9.9: the flat summary predates rooms and was Main's memory: whole in Main's room page,
-    a pointer everywhere else; a room-less old block keeps its pointer only (unknown provenance)."""
+def test_main_room_page_shows_the_room_less_retellings_whole_to_its_integrator_and_a_pointer_elsewhere(tmp_path):
+    """P3 §9.9 (D-65): the flat summary and a room-less era predate rooms and were Main's memory: whole in
+    Main's room page, under their own label, for Main's integrator; a pointer in the story, and nothing more
+    for a helper in Main, another room or consciousness."""
     import json
 
     rooms = shared.world(tmp_path, flat="The retired flat summary of everything.", activate=False)
@@ -434,15 +435,29 @@ def test_main_room_page_shows_the_retired_flat_summary_whole_and_no_other_room_o
                     encoding="utf-8")
     assert ChronicleStore(tmp_path).ensure_activated()["kind"] == "activation"
     main = mv.capture_memory_view(tmp_path, MAIN_TASK, mv.view_spec_for_task(MAIN_TASK, tmp_path))
-    bound = {"id": "bound", "chat_id": 1}
-    alpha = mv.capture_memory_view(tmp_path, bound, mv.view_spec_for_task(bound, tmp_path))
     retold = _section(mv.render_room(main), "### Retold before the update (helper retelling, not lived)")
-    assert retold.index("  The retired flat summary of everything.") < retold.index("  Main talk.")  # oldest first
-    assert "A room-less era." not in mv.render_room(main)
-    assert "The retired flat summary" not in mv.render_room(alpha) and str(rooms["alpha"]) in alpha.spec.room_id
+    for words in ("  The retired flat summary of everything.", "  A room-less era."):
+        assert retold.index(words) < retold.index("  Main talk.")  # older than the rooms: first
+    era = "#### legacy-b02-rlegacy — period known from the retelling text only — Unknown provenance [legacy mixed record]"
+    assert era + "\n  A room-less era." in retold
+    assert "#### legacy-b00-r1 — 2026-09-01 00:00 → 2026-09-01 00:05\n" in retold  # Main's own: no label
+    # By address (F4) the line says what it holds.
+    short = mv.render_room(main, mv.FloorLevel(addressed=(("F4", ("legacy-b02-rlegacy",)),)))
+    assert era + " — 16 chars — memory_read(node_id='legacy-b02-rlegacy')" in short and "  A room-less era." not in short
     story = mv.render_story(main)
     assert "The retired flat summary" not in story and "memory_read(node_id='legacy-flat-" in story
-    assert "Unknown provenance [legacy mixed record]" in story
+    assert "memory_read(node_id='legacy-b02-rlegacy')" in story and "A room-less era." not in story
+    others = {"bound": {"id": "bound", "chat_id": 1},  # bound to alpha
+              "child": {"id": "kid1", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1"},
+              "wake": {"id": "w1", "chat_id": 1, "metadata": {"usage_category": "consciousness"}}}
+    for name, task in others.items():
+        snapshot = mv.capture_memory_view(tmp_path, task, mv.view_spec_for_task(task, tmp_path))
+        room = mv.render_room(snapshot)
+        assert "A room-less era." not in room and "The retired flat summary" not in room, name
+        assert "memory_read(node_id='legacy-b02-rlegacy')" in mv.render_story(snapshot), name
+        assert snapshot.spec.room_id == {"bound": str(rooms["alpha"]), "child": "1", "wake": None}[name]
+    child =mv.capture_memory_view(tmp_path, others["child"], mv.view_spec_for_task(others["child"], tmp_path))
+    assert "## This room (Main)" in mv.render_room(child) and "  Main talk." in mv.render_room(child)
 
 
 def test_each_role_sees_its_parts_of_the_live_view(tmp_path):

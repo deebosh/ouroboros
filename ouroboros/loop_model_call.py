@@ -1038,6 +1038,7 @@ def _run_main_reclaim(
     disposition: Any,
     *,
     minimum_goal_tokens: int = 0,
+    provider_refused: bool = False,
 ) -> Any:
     measurement = disposition.measurement
     key = _fit_key(disposition)
@@ -1069,6 +1070,7 @@ def _run_main_reclaim(
         trace_refs_by_tool_call_id=reclaim_trace_refs(ctx.tools._ctx),
         exposed_units=(getattr(ctx.tools._ctx, "_last_context_observation", {}) or {}).get("exposed_units", []),
         automatic_deficit_tokens=deficit,
+        provider_refused=provider_refused,
     )
     passes.add(key)
     # The checkpoint is written only after non-empty selection and immediately
@@ -1403,12 +1405,14 @@ def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
         # The provider proved the prediction short by an unknown amount: request a
         # low-water-sized pass, never a token-sized one, so the single strict-shrink
         # retry has real headroom (the goal already carries the margin when the
-        # measurement itself found a deficit).
+        # measurement itself found a deficit). Its typed refusal (checked above) is
+        # what lets this pass re-fold earlier capsules after every raw source (D-69).
         from ouroboros.context_fit import reclaim_low_water_margin
 
         landed = overflow_fit.measurement
         _loop()._run_main_reclaim(ctx, overflow_fit, minimum_goal_tokens=max(
-            1, reclaim_low_water_margin(landed.target_total_tokens, landed.capacity_total_tokens)))
+            1, reclaim_low_water_margin(landed.target_total_tokens, landed.capacity_total_tokens)),
+            provider_refused=True)
         overflow_fit = _measure_after_reclaim(ctx)
         if overflow_fit is None:
             return msg, cost, ctx.active_context_mode
