@@ -557,3 +557,14 @@ def test_a_nanny_keeps_its_rooms_sealed_pages_on_its_room_page_and_a_child_reads
     page = _section(nanny_text, "### Pages of this room")
     assert "A helper says the work finished." in page and f"- quote (human, {quote['address']}): {quote['text']}" in page
     assert "(draft by a helper (Light), not yet accepted or rejected by me)" in page and "failed 1" in page
+    # Order stays the room's record order (F4 takes the room page oldest first, D-37): a page folded later into a
+    # part stands after the older top-level pages, not before them (second delta review).
+    store = ChronicleStore(tmp_path)
+    covers = page_covers(tmp_path, "1", from_addr=_addr(rows[3]), to_addr=_addr(rows[3]))["covers"]
+    newer = store.publish_page(room_id="1", text="A newer page.", covers=covers, author=shared.MIND)
+    part = store.publish_part(room_id="1", text="A part over the newer page.", member_ids=[newer.record["id"]],
+                              author=shared.MIND, expected_sequence=store.room_head("1"))
+    assert newer.ok and part.ok, (newer, part)
+    nanny, _text = _view(tmp_path, {**base, "id": "nan9", "configured_subagent": {"route": {"kind": "agent_session"}}})
+    assert [item["id"] for item in nanny.room["under_parts"]] == [
+        sealed.record["id"], draft.record["id"], newer.record["id"], part.record["id"]]
