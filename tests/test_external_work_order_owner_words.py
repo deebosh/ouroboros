@@ -151,3 +151,22 @@ def test_the_authority_fingerprint_does_not_move_with_the_words(tmp_path):
     assert authority_fingerprint_from_context(root) == before
     root.task_contract = {**root.task_contract, "objective": "A different objective"}
     assert authority_fingerprint_from_context(root) != before  # the fingerprint is live on its own inputs
+
+
+def test_the_parent_is_told_what_a_child_and_a_session_start_with():
+    """The parameter texts the parent reads say what the host guarantees and what it must write itself."""
+    from ouroboros.tools import delegate
+    from ouroboros.tools.control import get_tools
+
+    schedule = next(tool for tool in get_tools() if tool.name == "schedule_subagent").schema["parameters"]["properties"]
+    start = next(tool for tool in delegate.get_tools() if tool.name == "delegate_start")
+    prompt = start.schema["parameters"]["properties"]["prompt"]["description"]
+    context, selection = schedule["context"]["description"], schedule["input_sources"]["description"]
+    for text in (context, selection, prompt):
+        assert "my human's originating words" in text
+    assert "write the orientation it lacks" in context and "none of my memory" in context
+    assert "why the work exists" in prompt and "the host supplies the canonical work order" in prompt
+    assert selection.startswith("Omit or shared: the child starts with ") and "one read away" in selection
+    # The declared half keeps its own contract: no automatic shared memory, the assignment governs exchange.
+    declared = selection.split("declared selects only the authored ", 1)[1]
+    assert "excludes automatic shared memory" in declared and "originating words" not in declared
