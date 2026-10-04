@@ -399,7 +399,7 @@ class _SignalStopServer(uvicorn.Server):
             if sys.platform == "win32":
                 import ctypes
                 import msvcrt
-                # Popen(stdin=None) uses the Win32 table, not only the CRT fd table.
+                # Default child stdin uses the Win32 table, not only the CRT fd table.
                 kernel = ctypes.WinDLL("kernel32", use_last_error=True)
                 kernel.SetStdHandle.argtypes = (ctypes.c_uint32, ctypes.c_void_p)
                 kernel.SetStdHandle.restype = ctypes.c_int
