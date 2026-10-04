@@ -74,7 +74,7 @@ MEMORY_VIEW_WORKING_MARGINS = 2
 # reserve). One level keeps a Low view at most 250 000 - 65 536 - 31 250 =
 # 153 214 estimated input tokens and a Nano view 85 000 - 8 192 - 10 625 =
 # 66 183, so an in-task reclaim pass still has a level to land on below the
-# target; 0 makes the target a plain frame. The owner's answer is pending; the
+# target; 0 makes the target a plain frame. The owner chose one level; the
 # value changes here and only here (tests/test_context_budget_ssot.py pins it).
 MODE_TARGET_WORKING_MARGINS = 1
 

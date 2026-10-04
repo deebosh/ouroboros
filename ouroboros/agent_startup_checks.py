@@ -807,7 +807,8 @@ def hot_store_growth_notes(env: Any) -> list:
             "WARNING: HOT STORE GROWTH — archive/chat_*.jsonl totals "
             f"{archive_size / 1_000_000:.1f} MB (threshold "
             f"{CHAT_ARCHIVE_SCAN_WARN_BYTES // 1_000_000} MB). Ordinary context reads "
-            "the consolidation-owned suffix; explicit chat_history replay scans this chain. "
+            "only rows after the legacy frontier; explicit chat_history, memory_read(rows=true) "
+            "and page covers replay this chain. "
             "Investigate archive indexing/compaction without shortening the memory horizon."
         )
     # Custody replay walks the whole events chain (live + rotated segments), so

@@ -13,7 +13,9 @@ them a second time:
   ``raw_range`` within its room. It is **folded** when it is a member of an acting
   part, or when it has rows and every one of them is sealed. A unit without rows (an
   unknown range, a gap, the mixed pseudo-room ``legacy``, a room with no row in its
-  block) folds only through a part: an empty set is never "all covered".
+  block) folds only through a part: an empty set is never "all covered". A journal
+  ``gap`` (a torn line of the chronicle itself) is not a member the store folds, so it
+  stays a pointer: readable and correctable, never folded.
 - A **period** (a block of the old memory) is folded when every unit of it is.
 - An **open segment** is the oldest run of a room's open rows (after the frontier, or within
   one legacy unit's range) with no sealed row inside: what one page may seal without being
