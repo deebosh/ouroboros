@@ -584,11 +584,18 @@ def test_the_stage_records_its_event_with_the_accounted_bound_and_charges_the_bu
 
     shared.world(tmp_path)
     _consciousness(monkeypatch, False)
-    charged = []
+    from ouroboros.usage_accounting import current_usage_scope
+
+    charged, scopes = [], []
     monkeypatch.setattr(state, "update_budget_from_usage", charged.append)
     env = SimpleNamespace(drive_root=tmp_path, repo_dir=tmp_path)
     task = {"id": "root-task", "budget_drive_root": str(tmp_path)}
-    assert pts._run_memory_fallback_draft(env, task, _Light(), tmp_path / "logs", {}) == ""
+    before = current_usage_scope()
+    llm = _Light(during=lambda: scopes.append(current_usage_scope()))
+    assert pts._run_memory_fallback_draft(env, task, llm, tmp_path / "logs", {}) == ""
+    # The call is spent as consolidation of this stage; the scope ends with the stage (both sides).
+    assert [(scope.category, scope.source) for scope in scopes] == [("consolidation", "memory_fallback")]
+    assert current_usage_scope() is before and (before is None or before.source != "memory_fallback")
     events = [json.loads(line) for line in (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     [event] = [row for row in events if row.get("type") == "memory_fallback_draft"]
     assert event["outcome"] == "published" and event["record_id"] == _drafts(tmp_path)[0]["id"]
