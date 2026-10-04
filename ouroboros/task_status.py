@@ -29,6 +29,7 @@ from ouroboros.post_task_checkpoint import (
     _TERMINAL_ACCOUNTING_SCRUB_FIELDS,
     project_replica_task_result_fields,
 )
+from ouroboros.task_result_facts import selected_task_results
 from ouroboros.task_results import (
     STATUS_CANCEL_REQUESTED,
     STATUS_CANCELLED,
@@ -40,7 +41,6 @@ from ouroboros.task_results import (
     STATUS_RUNNING,
     STATUS_SCHEDULED,
     cancellation_blocks_child_result,
-    list_task_results,
     load_task_result,
     validate_task_id,
 )
@@ -1247,8 +1247,7 @@ def find_child_tasks(
             materialize_artifacts=materialize_artifacts,
             _events_index=events_index,
         )
-        for item in list_task_results(pathlib.Path(drive_root))
-        if _raw_row_may_match(item)
+        for item in selected_task_results(pathlib.Path(drive_root), _raw_row_may_match)
     ):
         tid = str(row.get("task_id") or "")
         if not tid or tid == excluded:
