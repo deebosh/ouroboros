@@ -6,7 +6,9 @@ the owner the work answers (``owner_words.owner_words_text``: a root's own corpu
 child's inherited words, an absence line with the host marker when there are none).
 An empty section keeps every prompt byte-identical to a review without it, and the
 words ride the dynamic half, so the cache-marked prefixes of the triad and the scope
-brief do not move. Reviewers still get no memory and no story (OA-6).
+brief do not move. The plan review puts them right after its objective; a replay of
+the same author request takes the recorded words, so an owner letter between waves
+cannot mint a paid wave. Reviewers still get no memory and no story (OA-6).
 Every rule is checked in both directions.
 """
 from __future__ import annotations
@@ -18,6 +20,11 @@ import pytest
 
 from ouroboros import owner_words as ow
 from ouroboros.tools.review_helpers import build_goal_section
+from ouroboros.utils import append_jsonl
+from tests.test_plan_review_engine import CLEAN, DECK_SPEC, _call, _state, _user_text
+from tests.test_plan_review_engine import harness as _plan_review_harness
+
+harness = _plan_review_harness  # the plan-review fixture, under the name its tests take
 
 OWNER = "Fix the login timeout,\nand keep the old cookie name"
 CHILD_ASSIGNMENT = "Collect the timeout traces"
@@ -232,3 +239,88 @@ def test_reviewers_get_no_memory_or_story(tmp_path, monkeypatch):
     assert OWNER in task
     for absent in ("## Memory", "## Chronicle", "## Dialogue History", "## Working sources"):
         assert absent not in task
+
+
+# --- plan review --------------------------------------------------------------------------------------------
+
+LATER = "Add the charts too"
+_PACKET = dict(objective="Deliver the thing", goal="Ship the deck", plan_prose="Outline first", spec=DECK_SPEC,
+               prior_cycles=[], dispositions=[], spec_delta=None, root_exploration_log="explored")
+
+
+def _plan_ctx(harness, kind="root"):
+    ctx = harness.make_ctx()
+    ctx.current_chat_id = 1
+    attrs = _attrs(kind)
+    ctx.task_metadata = {**ctx.task_metadata, **attrs["task_metadata"]}
+    ctx._owner_directives = [dict(row) for row in attrs["_owner_directives"]]
+    return ctx
+
+
+def test_the_plan_packet_puts_the_words_after_the_objective_and_never_trims_them(harness):
+    from ouroboros.tools.plan_dialogue import attach_own_dialogue, fit_dialogue_view
+    from ouroboros.tools.plan_packet import build_plan_review_user_content, plan_user_stable_len
+
+    ctx = _plan_ctx(harness)
+    for text in ("ROW_ONE", "ROW_TWO", "ROW_THREE"):
+        append_jsonl(harness.drive / "logs" / "chat.jsonl", {"direction": "in", "chat_id": 1, "text": text})
+    manifest = attach_own_dialogue(ctx, harness.drive, {}, "a" * 64, persist=True)
+    words = ow.owner_words_text(ctx, audience="plan")
+    assert manifest["owner_words"] == words and OWNER in words and "not the owner's" not in words
+    assert words.startswith("## Words of my human that caused this work (verbatim, host-attested)\n"
+                            "They state what was asked; the objective above is the author's account of this task.")
+    packet = build_plan_review_user_content(manifest=manifest, **_PACKET)
+    order = ["## TASK OBJECTIVE", words, "## SPEC", "## OWN ROOM DIALOGUE", "## ROOT EXPLORATION LOG"]
+    assert [packet.index(part) for part in order] == sorted(packet.index(part) for part in order)
+    assert packet.index(words) < plan_user_stable_len(packet)  # the cache-stable half
+    bare = build_plan_review_user_content(manifest={k: v for k, v in manifest.items() if k != "owner_words"}, **_PACKET)
+    assert OWNER not in bare and bare == packet.replace(f"{words}\n\n", "", 1)
+    # The tightest fit trims the conversation to nothing and leaves the words whole.
+    fitted, facts = fit_dialogue_view(packet, manifest["own_dialogue"], 1)
+    assert facts["conversation_rows"] == 3 and facts["conversation_inline_rows"] == 0 and "ROW_ONE" not in fitted
+    assert words in fitted and fitted.index(words) < fitted.index("## SPEC")
+
+
+def test_a_letter_between_waves_keeps_the_recorded_words_until_the_author_asks_anew(harness, monkeypatch):
+    from ouroboros.tools import plan_review_artifacts
+    from ouroboros.tools.plan_dialogue import attach_own_dialogue
+    from ouroboros.tools.plan_evidence import evidence_manifest_hash
+
+    substrate = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    ctx = _plan_ctx(harness)
+    _call(ctx)
+    first, words = _state(harness)["waves"][-1], ow.owner_words_text(ctx, audience="plan")
+    assert words in _user_text(substrate.calls[0]["request"].messages[1]["content"])
+    ctx._owner_directives.append({"source": "owner_mailbox", "content": LATER})
+    _call(ctx)  # the same author request after the owner's letter
+    replay = _state(harness)["waves"][-1]
+    assert replay["request_fingerprint"] == first["request_fingerprint"]
+    assert replay["evidence_manifest_hash"] == first["evidence_manifest_hash"]
+    assert _state(harness)["cycles_paid"] == 1 and len(substrate.calls) == 1
+    recorded = attach_own_dialogue(ctx, harness.drive, {}, first["author_request_fingerprint"])
+    assert recorded["owner_words"] == words and LATER not in words
+    assert LATER in ow.owner_words_text(ctx, audience="plan")  # the run itself did hear the letter
+    # A wave recorded before the words existed replays without a section, with its hash.
+    real = plan_review_artifacts.authority_wave
+
+    def recorded_without_words(*args, **kwargs):
+        exact = real(*args, **kwargs)
+        full = {k: v for k, v in (exact.get("evidence_manifest_full") or {}).items() if k != "owner_words"}
+        return {**exact, "evidence_manifest_full": full}
+
+    monkeypatch.setattr(plan_review_artifacts, "authority_wave", recorded_without_words)
+    old = attach_own_dialogue(ctx, harness.drive, {}, first["author_request_fingerprint"])
+    assert "owner_words" not in old and evidence_manifest_hash(old) == evidence_manifest_hash(recorded)
+    monkeypatch.setattr(plan_review_artifacts, "authority_wave", real)
+    _call(ctx, plan="Revise the outline to add the charts.")  # a new author request reads the words now
+    revised = _user_text(substrate.calls[1]["request"].messages[1]["content"])
+    assert ow.owner_words_text(ctx, audience="plan") in revised and LATER in revised
+    assert _state(harness)["cycles_paid"] == 2
+
+
+def test_a_consciousness_plan_names_the_absence(harness):
+    substrate = harness.install({"s1": CLEAN, "s2": CLEAN, "s3": CLEAN})
+    _call(_plan_ctx(harness, "conscious"))
+    packet = _user_text(substrate.calls[0]["request"].messages[1]["content"])
+    assert packet.index("## TASK OBJECTIVE") < packet.index(ABSENT_CONSCIOUS) < packet.index("## SPEC")
+    assert "## Words of my human" not in packet
