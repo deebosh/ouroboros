@@ -42,6 +42,7 @@ from ouroboros.chronicle_store import CHILD_DRAFT_RIGHT, ChronicleStore, draft_s
 from ouroboros.contracts.chat_id_policy import WEB_UI_CHAT_ID
 from ouroboros.dialogue_provenance import (RoomLabelResolver, is_presence_task, render_memory_row, render_row_text,
                                            row_class)
+from ouroboros.memory_view_legacy import pointer_lines
 from ouroboros.utils import append_jsonl, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -138,7 +139,7 @@ ROLE_DEFAULTS: Mapping[str, ViewSpec] = MappingProxyType({
     "nanny": ViewSpec("nanny", story=False, room_lanes=False, live_rooms="none", marks="room_and_global",
                       knowledge=False, owner_words=True),
 })
-_ROOMLESS = frozenset({"consciousness"})
+_ROOMLESS, _HELPERS = frozenset({"consciousness"}), frozenset({"child", "nanny"})
 _FIELDS = {field.name: field.type for field in dataclasses.fields(ViewSpec)}
 
 
@@ -387,6 +388,7 @@ def _capture_story(store: ChronicleStore, root: pathlib.Path,
         entry = {"kind": "legacy", "id": unit.record_id, "room_id": unit.room_id, "block": unit.block,
                  "label": str(pointer.get("label") or label(unit.room_id)), "period": _legacy_period(pointer, unit.ts_span),
                  "span": _legacy_span(unit.ts_span), "rows": unit.rows if unit.raw == "exact" else None,
+                 "chars": unit.retelling_chars, "messages": pointer.get("messages"),
                  "gap": _gap_detail(store, pointer) if gap else ""}
         story.append(entry)
         if unit.refusal:
@@ -585,12 +587,14 @@ def _capture_room(store: ChronicleStore, root: pathlib.Path, spec: ViewSpec, lab
     if spec.room_page:
         units = {unit.record_id: unit for unit in memory_inventory.legacy_units(store, root)}
         retold = [record for record in records if record["kind"] in ("legacy", "gap")]
-        if room == MAIN_ROOM:  # the retired flat summary predates rooms and was Main's memory: first (P3 §9.9)
-            retold[:0] = [record for record in store.room_records(LEGACY_ROOM_ID)
-                          if record["kind"] == "legacy" and _mapping(record.get("metadata")).get("legacy_type") == "flat"]
+        if room == MAIN_ROOM and spec.role not in _HELPERS:  # P3 §9.9: the room-less retellings (the flat summary,
+            # a mixed era) predate rooms and were Main's memory: whole and first; a helper keeps only its pointer
+            retold[:0] = [record for record in store.room_records(LEGACY_ROOM_ID) if record["kind"] == "legacy"
+                          and _mapping(record.get("metadata")).get("legacy_type") not in ("gap", "cursor_gap")]
         facts["legacy"] = [{"id": record["id"], "text": str(record.get("current_text") or ""), "period": _legacy_period(
                                 {"covers": record.get("covers"), "range_text": _mapping(record.get("metadata")).get(
-                                    "legacy_range_text")}, getattr(unit, "ts_span", None))}
+                                    "legacy_range_text")}, getattr(unit, "ts_span", None)),
+                            "of": LEGACY_ROOM_LABEL if str(record.get("room_id")) == LEGACY_ROOM_ID else ""}
                            for record in retold if not getattr(unit := units.get(record["id"]), "folded", False)]
         facts["under_parts"] = [{"id": record["id"], "kind": record["kind"], "part": record["folded_into"],
                                  "period": _period(_mapping(record.get("covers")).get("ts_span")),
@@ -731,44 +735,6 @@ _STORY_INTRO = ("Sealed pages and parts, oldest first; each is mine unless marke
                 "memory_read away by its id.")
 
 
-def _pointer_line(entry: Mapping[str, Any]) -> str:
-    read = f"memory_read(node_id='{entry['id']}')"
-    if entry.get("gap"):
-        return f"- memory gap: {entry['label']}; {entry['period']}; {entry['gap']}; {read}"
-    count = entry.get("rows")
-    rows = f"{count} row{'' if count == 1 else 's'} retold; " if count is not None else ""
-    return f"- {entry['label']}; {entry['period']}; {rows}{read}"
-
-
-def _pointer_rooms(story: Any) -> Dict[str, List[Dict[str, Any]]]:
-    rooms: Dict[str, List[Dict[str, Any]]] = {}
-    for entry in story:
-        if entry.get("kind") == "legacy" and not entry.get("gap"):
-            rooms.setdefault(str(entry["room_id"]), []).append(entry)
-    return rooms
-
-
-def _room_pointer(entries: List[Dict[str, Any]]) -> str:
-    """A room's retold records as one line: the room, its whole period, every id (F3)."""
-    spans = [entry["span"] for entry in entries if entry.get("span")]
-    period = "; ".join(([f"{min(s[0] for s in spans)} → {max(s[1] for s in spans)}"] if spans else [])
-                       + sorted({entry["period"] for entry in entries if not entry.get("span")}))
-    return (f"- {entries[0]['label']}; {period}; {len(entries)} retold record{'' if len(entries) == 1 else 's'}: "
-            + ", ".join(entry["id"] for entry in entries) + "; memory_read(node_id=<id>) reads each")
-
-
-def _pointer_lines(pointers: List[Dict[str, Any]], rooms: Any) -> List[str]:
-    """The pointers in story order; a room the floor took is one line where its first pointer stood."""
-    grouped, lines = _pointer_rooms(pointers), []
-    for entry in pointers:
-        room = str(entry["room_id"])
-        if entry.get("gap") or room not in rooms:
-            lines.append(_pointer_line(entry))
-        elif grouped[room][0] is entry:
-            lines.append(_room_pointer(grouped[room]))
-    return lines
-
-
 def _page_pointer(entry: Mapping[str, Any]) -> str:
     return f"- {entry['label']}; {entry['period']}; {entry['kind']} {entry['id']}; memory_read(node_id='{entry['id']}')"
 
@@ -789,10 +755,11 @@ def _page_lines(entry: Mapping[str, Any]) -> List[str]:
 
 
 def _retold(item: Mapping[str, Any], short: bool = False) -> str:
-    """A record of this room's page (retold, or a page under a part), whole or by address (F4)."""
+    """A record of this room's page (retold, or a page under a part), whole or by address with its length (F4)."""
     head = (f"#### {item['kind']} {item['id']} — {item['period']} — under part {item['part']}" if item.get("part")
-            else f"#### {item['id']} — {item['period']}")
-    return f"{head} — memory_read(node_id='{item['id']}')" if short else f"{head}\n{_indented(item['text'])}"
+            else f"#### {item['id']} — {item['period']}" + (f" — {item['of']}" if item.get("of") else ""))
+    return (f"{head} — {len(item['text'])} chars — memory_read(node_id='{item['id']}')" if short
+            else f"{head}\n{_indented(item['text'])}")
 
 
 def _row_pointer(item: Mapping[str, Any], what: str) -> str:
@@ -859,7 +826,7 @@ def render_story(snapshot: MemoryViewSnapshot, level: FloorLevel = FULL_VIEW) ->
     lines = ["## My story", "", _STORY_INTRO]
     if pointers:
         lines += ["", "### Old memory retold by a helper before the update (not lived; read by id)"]
-        lines += _pointer_lines(pointers, set(gone.get("F3", ())))
+        lines += pointer_lines(pointers, set(gone.get("F3", ())))
     shown = set(gone.get("F5", ()))
     if shown:  # the oldest pages: a prefix of the story order
         lines += ["", "### My older pages and parts, by address"]

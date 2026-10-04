@@ -824,6 +824,7 @@ class ChronicleStore:
             pointers.append({"node_id": row["id"], "kind": row["kind"], "room_id": row["room_id"],
                              "label": meta.get("label"), "legacy_type": meta.get("legacy_type"),
                              "legacy_block": meta.get("legacy_block"), "range_text": meta.get("legacy_range_text"),
+                             "messages": meta.get("room_message_count"),  # the old writer's own count for the room
                              "covers": row.get("covers"), "revision": row["revision"],
                              "folded_into": row["folded_into"], "sequence": row["sequence"]})
         return sorted(pointers, key=lambda p: (p["legacy_block"] if type(p["legacy_block"]) is int else _NO_BLOCK,

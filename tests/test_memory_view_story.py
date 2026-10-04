@@ -70,7 +70,8 @@ def test_pointers_come_first_then_pages_of_all_rooms_by_stream_position_not_publ
     assert [header.rsplit(" ", 1)[1] for header in headers[1:]] == [early, middle, late]
     assert headers[1].startswith("### Main · 2026-09-03 00:00 → 2026-09-03 00:02 · page ")
     assert headers[3].startswith(f"### Project Beta [chat_id={beta}] · ")
-    pointer = "- Main; 2026-09-01 00:00 → 2026-09-01 00:05; 4 rows retold; memory_read(node_id='legacy-b00-r1')"
+    pointer = ("- Main; 2026-09-01 00:00 → 2026-09-01 00:05; 4 rows retold in 10 chars; "
+               "memory_read(node_id='legacy-b00-r1')")
     assert pointer in text.split("\n") and text.index(pointer) < text.index(headers[1])
 
 
@@ -81,18 +82,43 @@ def test_a_pointers_period_is_its_rooms_own_rows_and_without_rows_the_marked_blo
     alpha = rooms["alpha"]
     lines = _story(tmp_path).split("\n")
     # The transport's one row of block zero is at 00:04, Alpha's rows of block one end at 00:01.
-    assert "- Transport; 2026-09-01 00:04 → 2026-09-01 00:04; 1 row retold; memory_read(node_id='legacy-b00-r777')" in lines
-    assert (f"- Alpha; 2026-09-02 00:00 → 2026-09-02 00:01; 2 rows retold; memory_read(node_id='legacy-b01-r{alpha}')"
-            in lines)
+    assert ("- Transport; 2026-09-01 00:04 → 2026-09-01 00:04; 1 row retold in 17 chars; "
+            "memory_read(node_id='legacy-b00-r777')") in lines
+    assert (f"- Alpha; 2026-09-02 00:00 → 2026-09-02 00:01; 2 rows retold in 13 chars; "
+            f"memory_read(node_id='legacy-b01-r{alpha}')") in lines
     # Main's rows span the whole first block: the same minutes, and no mark.
-    assert "- Main; 2026-09-01 00:00 → 2026-09-01 00:05; 4 rows retold; memory_read(node_id='legacy-b00-r1')" in lines
-    # Main has no row in the second block: that block's period, marked.
+    assert ("- Main; 2026-09-01 00:00 → 2026-09-01 00:05; 4 rows retold in 10 chars; "
+            "memory_read(node_id='legacy-b00-r1')") in lines
+    # Main has no row in the second block: that block's period, marked, and what its address holds.
     quiet = "2026-09-02 00:00 → 2026-09-02 00:03 (block period)"
-    assert f"- Main; {quiet}; 0 rows retold; memory_read(node_id='legacy-b01-r1')" in lines
+    assert (f"- Main; {quiet}; no row of this room in that period; retold in 15 chars; "
+            "memory_read(node_id='legacy-b01-r1')") in lines
+    assert not [line for line in lines if "0 rows retold" in line]
     assert sum("(block period)" in line for line in lines if line.startswith("- ")) == 1
     room = mv.render_room(_snapshot(tmp_path))
     assert f"#### legacy-b01-r1 — {quiet}" in room
     assert "#### legacy-b00-r1 — 2026-09-01 00:00 → 2026-09-01 00:05\n" in room
+
+
+def test_a_room_less_pointer_names_the_old_writers_count_and_length_never_zero_rows(tmp_path):
+    """D-65: a record without rows of its room (a mixed era) says what its address holds — the old writer's
+    message count and the retelling's length — instead of «0 rows retold»; with rows it names the rows."""
+    import json
+
+    rooms = shared.world(tmp_path, activate=False)
+    path = tmp_path / "memory" / "dialogue_blocks.json"
+    blocks = json.loads(path.read_text(encoding="utf-8"))
+    blocks[1] = {"type": "era", "range": "2026-09-02 00:00 - 00:03", "message_count": 4,
+                 "content": "A mixed era of four messages."}  # the same count: the ranges stay exact
+    path.write_text(json.dumps(blocks), encoding="utf-8")
+    assert ChronicleStore(tmp_path).ensure_activated()["kind"] == "activation"
+    lines = _story(tmp_path).split("\n")
+    era = [line for line in lines if "legacy-b01-rlegacy" in line]
+    assert era == ["- Unknown provenance [legacy mixed record]; 2026-09-02 00:00 → 2026-09-02 00:03 (block period); "
+                   "4 messages retold (the old writer's count) in 29 chars; memory_read(node_id='legacy-b01-rlegacy')"]
+    assert ("- Main; 2026-09-01 00:00 → 2026-09-01 00:05; 4 rows retold in 10 chars; "
+            "memory_read(node_id='legacy-b00-r1')") in lines  # rows of its room: the rows, not the old count
+    assert f"legacy-b01-r{rooms['alpha']}" not in "\n".join(lines)
 
 
 def test_a_part_shows_its_members_do_not_and_corrections_of_members_stand_under_it(tmp_path):
@@ -250,9 +276,11 @@ def test_gaps_unknown_ranges_and_the_flat_file_are_pointers_with_honest_periods(
     assert len(gap) == 1 and gap[0].startswith(
         "- memory gap: Unknown provenance [legacy mixed record]; period known from the retelling text only; "
         "the old cursor file is missing while legacy blocks exist; memory_read(node_id='legacy-cursor-gap-")
-    assert "- Main; 2026-09-01 00:00 - 00:05 (block period); memory_read(node_id='legacy-b00-r1')" in lines
+    # Rows not established: the old writer's own count, then the length; the flat file has only its length.
+    assert ("- Main; 2026-09-01 00:00 - 00:05 (block period); 4 messages retold (the old writer's count) in 10 chars; "
+            "memory_read(node_id='legacy-b00-r1')") in lines
     assert any(line.startswith("- Unknown provenance [legacy mixed record]; period known from the retelling text "
-                               "only; memory_read(node_id='legacy-flat-") for line in lines)
+                               "only; retold in 21 chars; memory_read(node_id='legacy-flat-") for line in lines)
 
 
 def test_a_pages_verified_quotes_stand_under_its_text_and_a_page_without_quotes_shows_none(tmp_path):
