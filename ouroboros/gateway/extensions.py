@@ -383,7 +383,14 @@ def _build_extensions_index(drive_root, repo_path):
             ),
             "review_findings": list(s.review.findings or []),
             "skill_review": skill_review_ui_projection(drive_root, s.name),
-            "grants": grant_status_for_skill(drive_root, s),
+            # An extension row reuses the grant status its runtime state computed
+            # above (same function, same drive_root and skill): one settings
+            # read per skill, not two.
+            "grants": (
+                runtime_states[s.name]["grant_status"]
+                if s.name in runtime_states
+                else grant_status_for_skill(drive_root, s)
+            ),
         })
         presence_runtime = presence_runtime_card_projection(drive_root, s)
         if presence_runtime is not None:

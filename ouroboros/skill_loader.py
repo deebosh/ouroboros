@@ -677,6 +677,8 @@ def save_review_state(
 
 def requested_core_setting_keys(env_keys: List[str]) -> List[str]:
     """Return manifest-requested setting keys that require explicit owner grants."""
+    if not env_keys:
+        return []  # nothing requested, nothing to classify: no settings read
     forbidden_upper = {key.upper() for key in FORBIDDEN_SKILL_SETTINGS}
     requestable_when_absent = {"TELEGRAM_BOT_TOKEN"}
     try:
