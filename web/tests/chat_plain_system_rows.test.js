@@ -655,7 +655,7 @@ test('render arm order and enhancement guard are pinned in source', () => {
         chatSource.indexOf('const timeFmt =', chatSource.indexOf("const rendered = role === 'user'")),
     );
     assert.match(ternary, /renderSkillReviewDisclosure\(text, opts\.skillReview \|\| null\)/);
-    assert.match(ternary, /role === 'system' && systemType !== 'skill_review' && markdown !== true\n\s+\? escapeHtml\(HOST_SENTENCE_ROWS\.has\(systemType\) \? tx\(text\) : text\)/);
+    assert.match(ternary, /role === 'system' && systemType !== 'skill_review' && markdown !== true\n\s+\? escapeHtml\(text\)/);
     assert.match(chatSource, /: renderChatMarkdown\(text\);/);
     // The enhancement pass skips exactly the plain-system case.
     assert.match(
