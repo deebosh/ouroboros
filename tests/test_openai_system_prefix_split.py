@@ -798,6 +798,12 @@ def test_an_empty_block_one_is_never_declared_or_sent_as_a_system_item(monkeypat
     assert [message["role"] for message in wire] == ["system", "user", "user"]
     assert wire[0] == {"role": "system", "content": [{"type": "text", "text": STABLE}]}
     assert wire[1] == {"role": "user", "content": _notice(HOST_CONTEXT_NOTICE_BEFORE_TASK, EVIDENCE)}
+    # Review fix (simulated triad): OpenRouter keeps marked blocks as their own items
+    # (keep_marked), and an empty marked block 1 is still never one of them.
+    routed = _target(monkeypatch, client, "openai/gpt-6-sol", _OPENROUTER)
+    wire = _build(client, routed, plan.messages_for("max"))["messages"]
+    assert [message["role"] for message in wire] == ["system", "user", "user"]
+    assert wire[0]["content"][0]["text"] == STABLE and routed["wire_layout"]["moved_blocks"] == 1
     assert _plan(_system_blocks()).max_projection.system_message()[STABLE_PREFIX_BLOCKS_KEY] == 2
 
 

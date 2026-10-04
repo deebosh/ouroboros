@@ -84,7 +84,8 @@ def split_leading_system_prefix(
         and isinstance(block.get("text"), str) for block in content
     ):
         return messages, 0
-    while keep_marked and declared < len(content) and isinstance(content[declared].get("cache_control"), dict):
+    while (keep_marked and declared < len(content) and isinstance(content[declared].get("cache_control"), dict)
+           and content[declared]["text"].strip()):  # an empty block is never a system item of its own
         declared += 1
     moved = [block["text"] for block in content[declared:] if block["text"].strip()]
     if not moved:
