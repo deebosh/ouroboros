@@ -800,29 +800,28 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         }
     }
 
+    // Skill-requested keys and extension settings sections come from the
+    // installed-skill list, a read the settings document never waits for; a
+    // hidden page skips it altogether, since every page show reloads.
+    const settingsPageActive = () => state?.activePage === 'settings';
+
     async function loadSettings() {
         resetSecretReveals(page);
         const sequence = ++loadSequence;
         const restartSequence = ++restartReadSequence;
         const revision = draftRevision;
-        const [data, extData] = await Promise.all([
-            apiClient.settings(),
-            apiClient.extensions().catch(() => ({})),
-        ]);
+        const extensionsRead = settingsPageActive() ? apiClient.extensions().catch(() => ({})) : null;
+        const data = await apiClient.settings();
         if (!data || typeof data !== 'object' || Array.isArray(data) || data.error) {
             throw new Error(data?.error || 'The server did not return a settings document.');
         }
         if (restartSequence === restartReadSequence) syncRestartState(data._meta?.restart_state);
-        const sections = Array.isArray(extData?.live?.settings_sections)
-            ? extData.live.settings_sections
-            : [];
         if (sequence !== loadSequence || revision !== draftRevision) return false;
         currentSettings = data;
         applySettings(data);
-        renderRequestedSkillSecrets(page, extData.skills || [], data);
         renderCustomSecrets(page, data);
         // This confirmed document can already be edited and saved. Optional
-        // reviewer/status reads must not hold its baseline or Save capability.
+        // reviewer/status/skill reads must not hold its baseline or Save capability.
         settingsLoaded = true;
         saveOutcomeUnknown = false;
         validationAttempted = false;
@@ -831,12 +830,20 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         armCleanBaselineOnStatusSettle(revision);
         _renderNetworkHint(data._meta);
         syncSettingsLoadState();
-        // Extension settings forms read their stored values before rendering:
-        // that is optional enrichment too, and it must not delay the clean
-        // baseline above or absorb an owner edit made while it was pending.
+        // The skill-requested rows and the extension settings forms (which read
+        // their stored values before rendering) are optional enrichment: it must
+        // not delay the clean baseline above or absorb an owner edit made while
+        // it was pending, so it lands only on an unchanged draft.
         const isCurrent = () => sequence === loadSequence && revision === draftRevision;
-        await Promise.all([renderExtensionSettingsSections(page, sections, { isCurrent }), reloadReviewerSlots({ isCurrent }), reloadSubagentsSection()]);
-        if (sequence !== loadSequence || revision !== draftRevision) {
+        const enrichment = [reloadReviewerSlots({ isCurrent }), reloadSubagentsSection()];
+        const extData = await extensionsRead;
+        if (extData && isCurrent()) {
+            renderRequestedSkillSecrets(page, extData.skills || [], data);
+            const sections = Array.isArray(extData.live?.settings_sections) ? extData.live.settings_sections : [];
+            enrichment.push(renderExtensionSettingsSections(page, sections, { isCurrent }));
+        }
+        await Promise.all(enrichment);
+        if (!isCurrent()) {
             updateSettingsDirtyState();
             return false;
         }
@@ -1162,7 +1169,10 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
         markSettingsDirty();
     });
 
+    // Skill lifecycle events reload only a visible page; the page-show
+    // handler below reloads on entry, so a hidden page reads nothing.
     window.addEventListener('ouro:skill-lifecycle', (event) => {
+        if (!settingsPageActive()) return;
         const action = String(event.detail?.action || 'skills changed');
         refreshSettingsAfterExtensionChange(action);
     });
@@ -1173,6 +1183,7 @@ export function initSettings({ state, setBeforePageLeave, ws } = {}) {
     });
     if (ws && typeof ws.on === 'function') {
         ws.on('extension_lifecycle', (event) => {
+            if (!settingsPageActive()) return;
             const action = String(event?.action || 'extension lifecycle');
             refreshSettingsAfterExtensionChange(action);
         });
