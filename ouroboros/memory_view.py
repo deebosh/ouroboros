@@ -280,7 +280,7 @@ def _owner_words_block(task: Mapping[str, Any]) -> str:
     meta = _mapping(task.get("metadata"))
     root = str(task.get("root_task_id") or meta.get("root_task_id") or "")
     rows, absent = task_governing_words(task)
-    return render_owner_words(rows, absent, audience="child", root_task_id=root)
+    return render_owner_words(rows, absent, audience="child", root_task_id=root, indent=INDENT)
 
 
 def _activation(store: ChronicleStore) -> Dict[str, Any]:

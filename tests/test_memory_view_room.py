@@ -458,6 +458,28 @@ def test_each_role_sees_its_parts_of_the_live_view(tmp_path):
     assert "the words that started that work" in alpha_child
 
 
+def test_a_helpers_owner_words_are_indented_and_survive_local_compaction(tmp_path):
+    """A line of the owner's own that starts with '## ' stays inside the words; the local model's compaction
+    keeps the section, as it keeps this room and the marks (P5 §2.3: the words never degrade)."""
+    from ouroboros.llm_local import _compact_local_text, _split_markdown_sections
+    from ouroboros.owner_words import render_owner_words
+
+    _install(tmp_path)
+    said = "Find the cause\n## not a heading of the request"
+    child_task = {"id": "kid9", "chat_id": 1, "delegation_role": "subagent", "root_task_id": "root1", "metadata": {
+        "governing_owner_words": [{"text": said, "source": "initial_user", "task_id": "root1"}]}}
+    _child, child_text = _view(tmp_path, child_task)
+    assert "\n  Find the cause\n  ## not a heading of the request" in child_text
+    titles = [title for title, _body in _split_markdown_sections(child_text)[1]]
+    assert "not a heading of the request" not in titles
+    assert titles[0] == "Words of my human that caused this work (verbatim)"
+    compacted = _compact_local_text(child_text, "dynamic")
+    assert "## not a heading of the request" in compacted and "Compacted for local-model context" not in \
+        compacted.split("## Marks I keep in view")[0]
+    # The indent is the view's: every other audience prints the words as recorded.
+    rows = [{"text": said, "source": "initial_user", "task_id": "root1"}]
+    assert "\nFind the cause\n## not a heading" in render_owner_words(rows, audience="reviewer")
+
 def test_before_activation_the_room_is_one_line_with_a_reader_that_works_without_the_chronicle(tmp_path, monkeypatch):
     shared.projects(tmp_path)
     monkeypatch.setattr(ChronicleStore, "ensure_activated",

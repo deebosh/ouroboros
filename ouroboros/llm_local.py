@@ -104,6 +104,7 @@ _LOCAL_COMPACTION_MODES = {
     "dynamic": (
         {
             "Shared understanding",
+            "Words of my human that caused this work",
             "Marks I keep in view",
             "This room",
             "Scratchpad",

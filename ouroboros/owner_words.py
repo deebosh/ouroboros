@@ -239,8 +239,12 @@ def task_owner_words(drive_root: Any, task_id: str, *,
     return [], _absent_marker(record)
 
 
-def render_owner_words(rows: Any, absent: str = "", *, audience: str, root_task_id: str = "") -> str:
-    """One verbatim section for a child, a session, a reviewer, a plan review or the page writer."""
+def render_owner_words(rows: Any, absent: str = "", *, audience: str, root_task_id: str = "", indent: str = "") -> str:
+    """One verbatim section for a child, a session, a reviewer, a plan review or the page writer.
+
+    ``indent`` prefixes every line of the words (the memory view's two spaces), so a line of
+    the owner's own that starts with ``## `` never reads as a section of the request.
+    """
     if audience not in _HEADINGS:
         raise ValueError(f"unknown owner-words audience {audience!r}; expected one of {sorted(_HEADINGS)}")
     rows = [row for row in (rows if isinstance(rows, list) else []) if isinstance(row, Mapping)
@@ -253,7 +257,8 @@ def render_owner_words(rows: Any, absent: str = "", *, audience: str, root_task_
         source, task_id = str(row.get("source") or ""), str(row.get("task_id") or "")
         stamp = [str(row.get("ts") or ""), "owner", f"{source} of task {task_id}" if task_id else source,
                  str(row.get("ref") or "")]
-        blocks.append("[" + " · ".join(part for part in stamp if part) + "]\n" + str(row["text"]))
+        words = "\n".join(indent + line if line else line for line in str(row["text"]).split("\n"))
+        blocks.append("[" + " · ".join(part for part in stamp if part) + "]\n" + words)
     return f"{_HEADINGS[audience]}\n{_FRAMES[audience].format(origin=origin)}\n" + "\n\n".join(blocks)
 
 
