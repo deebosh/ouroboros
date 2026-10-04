@@ -642,7 +642,9 @@ jobs:
       # 2026-10-04). The servers' data roots are pytest tmp_path trees, not the
       # OUROBOROS_* roots above (tests/conftest.py isolates every test FROM
       # those): bare pytest makes its session root `ouroboros-pytest-*` in the
-      # runner's default temp directory, /tmp. Journals and task results only;
+      # runner's default temp directory, /tmp. Journals and task results only,
+      # with the segments a server rotated past 800 KB into data/archive/ (no
+      # benchmark sentinel here, supervisor/state.py rotate_jsonl_log_if_needed);
       # a settings file is never uploaded (the lane is keyless; the rule holds).
       # Diagnostics only, like test-evidence: a failed upload never reddens the
       # job, so the two scenario passes alone decide it and the release bar.
@@ -656,6 +658,7 @@ jobs:
           path: |
             /tmp/ouroboros-pytest-*/**/data/logs/**
             /tmp/ouroboros-pytest-*/**/data/task_results/**
+            /tmp/ouroboros-pytest-*/**/data/archive/*.jsonl
             !/tmp/ouroboros-pytest-*/**/settings.json
           if-no-files-found: warn
           retention-days: 30

@@ -188,7 +188,10 @@ def test_the_scheduled_lane_uploads_its_servers_traces_and_never_a_settings_file
     lines = [line.strip() for line in str(upload["with"]["path"]).splitlines() if line.strip()]
     root = "/tmp/ouroboros-pytest-*/"
     includes = [line for line in lines if not line.startswith("!")]
-    assert includes == [f"{root}**/data/logs/**", f"{root}**/data/task_results/**"], includes
+    # A keyless server carries no benchmark sentinel, so its journals past 800 KB rotate into
+    # data/archive/<prefix>_<ts>.jsonl (supervisor/state.py): the head of a long journal lives there.
+    assert includes == [f"{root}**/data/logs/**", f"{root}**/data/task_results/**",
+                        f"{root}**/data/archive/*.jsonl"], includes
     assert [line for line in lines if line.startswith("!")] == [f"!{root}**/settings.json"], lines
     # The root is the one conftest creates for a bare run, in the runner's default temp dir.
     conftest = (REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")

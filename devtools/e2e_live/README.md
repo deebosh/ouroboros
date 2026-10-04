@@ -209,4 +209,6 @@ with `gh run download <run-id> -n e2e-live-run`. The summary renders
 verdicts or the typed refusal/error without changing the stand's exit
 verdict. Browser PR proof and the keyless system-E2E schedule retain their
 separate existing CI owners; the latter uploads its scenario servers'
-`data/logs/` and `data/task_results/` as `system-e2e-traces`.
+`data/logs/`, `data/task_results/` and the journal segments rotated into
+`data/archive/*.jsonl` as `system-e2e-traces`. Both uploads are
+diagnostics: a failed upload never reddens its job.
