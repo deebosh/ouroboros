@@ -210,6 +210,7 @@ server.py (Starlette+uvicorn) ← HTTP + WebSocket on configurable host:port (de
       ├── consolidator.py      ← Shared Light transport, scratchpad and knowledge upkeep for reflection; no dialogue writer (§6)
       ├── memory_nomination_receipts.py ← Strict read of the frozen cursor's pending nominations, imported once as marks (§6)
       ├── memory_inventory.py  ← What of memory is open or folded, computed once: a room's chat rows after the legacy frontier outside its sealed set (an incremental row projection), and a legacy unit folded by a part or by pages sealing all its rows (§6)
+      ├── memory_fallback.py   ← While consciousness is off, one signed Light helper draft per root task: the room's oldest open stretch the view showed by address, a part over narrative it showed by pointer, or (after a queued task) the oldest unfolded old period of blocks 1-22; a refusal on the same input and route is a receipt, never a repeat (§6)
       ├── memory.py            ← Scratchpad, identity, chat history
       ├── knowledge.py         ← `ouroboros/knowledge.py`: linked-Markdown note addressing, exact source reads, generated shelf indexes for global and project knowledge, and revision-checked writes, so concurrent cognition cannot silently overwrite a newer note (§6 Durable memory and project focus)
       ├── memory_journal_compaction.py ← Startup read-only size facts (`memory_journal_observation`); new history stays complete, old digests unrecoverable
