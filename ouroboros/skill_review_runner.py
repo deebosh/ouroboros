@@ -31,6 +31,7 @@ from ouroboros.skill_loader import (
     skill_identity_collision_names,
     skill_review_gate,
     skill_state_dir,
+    skill_state_dir_path,
 )
 from ouroboros.skill_review import (
     SkillReviewOutcome,
@@ -61,8 +62,13 @@ _STALE_REVIEW_JOB_SEC = int(os.environ.get("OUROBOROS_SKILL_REVIEW_JOB_STALE_SEC
 ReviewImpl = Callable[..., SkillReviewOutcome]
 
 
+_REVIEW_JOB_FILENAME = "review_job.json"
+
+
 def review_job_state_path(drive_root: pathlib.Path, skill_name: str) -> pathlib.Path:
-    return skill_state_dir(pathlib.Path(drive_root), skill_name) / "review_job.json"
+    """The job file for writers (creates the state dir); readers that must not
+    materialize state resolve it through ``skill_state_dir_path``."""
+    return skill_state_dir(pathlib.Path(drive_root), skill_name) / _REVIEW_JOB_FILENAME
 
 
 def _write_review_job(path: pathlib.Path, data: Dict[str, Any]) -> None:
@@ -119,7 +125,8 @@ def skill_review_ui_projection(
     read writes nothing — boot, the maintenance pass and the next review start
     persist the interruption."""
     cache_key = (str(drive_root), str(skill_name))
-    job_path = review_job_state_path(drive_root, skill_name)
+    # Non-creating: a list read must not leave state/skills/<name>/ behind.
+    job_path = skill_state_dir_path(pathlib.Path(drive_root), skill_name) / _REVIEW_JOB_FILENAME
     stamp = (
         _file_stamp(job_path),
         _file_stamp(skill_review_history.review_history_path(drive_root, skill_name)),
