@@ -429,8 +429,13 @@ def test_main_normal_exit_does_not_run_emergency_cleanup(monkeypatch, tmp_path):
     class FakeServer:
         def __init__(self, _config):
             self.should_exit = False
+            self.stop_watcher_bound = False
+
+        def watch_launcher_stop(self):
+            self.stop_watcher_bound = True
 
         def run(self, *, sockets):
+            assert self.stop_watcher_bound
             assert len(sockets) == 1 and sockets[0].getsockname()[1] > 0
             return None
 
@@ -463,8 +468,13 @@ def test_main_graceful_restart_cleanup_avoids_port_sweep(monkeypatch, tmp_path):
     class FakeServer:
         def __init__(self, _config):
             self.should_exit = False
+            self.stop_watcher_bound = False
+
+        def watch_launcher_stop(self):
+            self.stop_watcher_bound = True
 
         def run(self, *, sockets):
+            assert self.stop_watcher_bound
             assert len(sockets) == 1 and sockets[0].getsockname()[1] > 0
             server._restart_requested.set()
             return None

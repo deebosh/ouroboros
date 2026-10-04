@@ -14,6 +14,7 @@ import logging
 import os
 import pathlib
 import re
+import sys
 import threading
 from contextlib import nullcontext
 from typing import Callable
@@ -40,6 +41,7 @@ _supervisor_stop = threading.Event()
 # PROCESS is exiting. Unlike ``_supervisor_stop`` it is never cleared — a settings
 # save that lands mid-teardown must not revive a supervisor generation (#1142).
 _exit_signalled = threading.Event()
+_stop_source = "external_signal"
 
 
 # Set only when the OWNER asked for the restart (the chat Restart button, and the
@@ -342,6 +344,11 @@ def runtime_service_identity(drive_root: pathlib.Path, port: int,
     return _custodied_local_model(drive_root, port, host_matches)
 
 
+def server_stop_source() -> str:
+    """Diagnostic stop ingress; no effect on custody or restart policy."""
+    return _stop_source
+
+
 class _SignalStopServer(uvicorn.Server):
     """uvicorn.Server whose SIGTERM/SIGINT handler stops the supervisor loop AT THE SIGNAL.
 
@@ -354,10 +361,44 @@ class _SignalStopServer(uvicorn.Server):
     the loop, and the lifespan ``finally`` still sets the event on every path.
     """
 
+    def request_shutdown(self) -> None:
+        """The same irreversible stop for OS signals and the launcher's owned pipe."""
+        global _stop_source
+        _stop_source = "launcher_quit"
+        _exit_signalled.set()
+        _supervisor_stop.set()
+        self.should_exit = True
+
     def handle_exit(self, sig: int, frame) -> None:
+        # Let uvicorn see the previous should_exit value (repeated SIGINT forces exit).
+        global _stop_source
+        _stop_source = "external_signal"
         _exit_signalled.set()
         _supervisor_stop.set()
         super().handle_exit(sig, frame)
+
+    def watch_launcher_stop(self) -> None:
+        """Windows has no SIGTERM handler path; consume its launcher's private stdin.
+
+        Opt-in only: direct servers retain their stdin. EOF is not a Quit command.
+        Consume the environment flag before spawning workers so their children cannot
+        mistake inherited stdin for a launcher command channel. Older launchers still
+        use their existing signals/forced-stop behavior until their package is updated.
+        """
+        if os.environ.pop("OUROBOROS_LAUNCHER_STOP_STDIN", "") != "1":
+            return
+        stream = getattr(sys.stdin, "buffer", None)
+        if stream is None:
+            return
+
+        def receive() -> None:
+            try:
+                if stream.readline(5) == b"quit\n":
+                    self.request_shutdown()
+            except (OSError, ValueError):
+                log.warning("Launcher stop pipe closed without a Quit request", exc_info=True)
+
+        threading.Thread(target=receive, name="launcher-stop", daemon=True).start()
 
 
 def _embedded_uvicorn_server(config: "uvicorn.Config") -> "uvicorn.Server":

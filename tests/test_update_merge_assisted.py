@@ -315,40 +315,32 @@ def test_cleanup_only_gate_block_retries_the_marker_and_never_rolls_back(tmp_pat
     )
 
 
-def test_restore_skips_drop_when_the_stash_list_changed_mid_restore(tmp_path, monkeypatch):
-    """A concurrent stash push between the apply and the drop shifts every
-    selector: the restore must then KEEP the entry (litter) rather than drop a
-    selector that may now name someone else's work."""
+def test_restore_keeps_both_update_and_interleaved_foreign_stash(tmp_path, monkeypatch):
+    """No positional drop exists, so an external stash push cannot lose its entry."""
     repo, head = _init_repo(tmp_path)
     _point_at(monkeypatch, tmp_path, repo, head)
-    (repo / "work.txt").write_text("ours\n")
+    (repo / "work.txt").write_text("ours\n", encoding="utf-8")
     status, our_sha, error = update_merge.stash_local_changes_for_update("race-test")
     assert status == "ok" and our_sha, error
-
     real_capture = git_ops.git_capture
-    state = {"list_calls": 0}
+    calls = []
 
     def racing_capture(cmd):
-        if cmd[:3] == ["git", "stash", "list"] and "--format=%H %gd" in cmd:
-            state["list_calls"] += 1
-            if state["list_calls"] == 2:
-                # Interleave a foreign push right before the post-apply re-list.
-                (repo / "foreign.txt").write_text("someone else\n")
-                subprocess.run(["git", "-C", str(repo), "stash", "push",
-                                "--include-untracked", "-m", "foreign",
-                                "--", "foreign.txt"],
-                               capture_output=True, text=True)
-        return real_capture(cmd)
+        calls.append(cmd)
+        result = real_capture(cmd)
+        if cmd[:3] == ["git", "stash", "apply"]:
+            (repo / "foreign.txt").write_text("someone else\n", encoding="utf-8")
+            assert _git(repo, "stash", "push", "--include-untracked", "-m", "foreign",
+                        "--", "foreign.txt").returncode == 0
+        return result
 
     monkeypatch.setattr(git_ops, "git_capture", racing_capture)
-
-    restored, note = update_merge.restore_update_stash(our_sha, context="race")
-
-    assert restored, note
-    assert (repo / "work.txt").read_text() == "ours\n"
+    result = update_merge.restore_update_stash(our_sha, context="race")
+    assert result.status == "restored", result
+    assert (repo / "work.txt").read_text(encoding="utf-8") == "ours\n"
     shas = _git(repo, "stash", "list", "--format=%H").stdout.split()
-    assert our_sha in shas, "our entry was dropped despite the shifted list"
-    assert len(shas) == 2  # the foreign entry survived too
+    assert our_sha in shas and len(shas) == 2
+    assert not any(cmd[:3] == ["git", "stash", "drop"] for cmd in calls)
 
 
 def test_boot_backfill_reprojects_before_pinning_m0(tmp_path, monkeypatch):
@@ -413,7 +405,7 @@ def test_restore_with_marker_refuses_a_dirty_tree(tmp_path, monkeypatch):
     (repo / "late.txt").write_text("late human edit\n")  # tree dirty again
     tx = {"stash_sha": stash_sha}
 
-    note = update_merge.restore_stash_with_marker(tx, "unwind-test")
+    note = update_merge.restore_stash_with_marker(tx, "unwind-test").note
 
     assert "NOT auto-applied" in note and stash_sha[:12] in note
     assert (repo / "late.txt").read_text() == "late human edit\n"
@@ -473,13 +465,13 @@ def test_live_unmerged_paths_error_is_not_no_conflicts(monkeypatch):
     from supervisor import update_candidate
 
     monkeypatch.setattr(
-        update_candidate._g, "git_capture", lambda cmd: (1, "", "boom")
+        update_candidate._g, "_run_git_process_bounded", lambda cmd, **kw: (1, b"", b"boom")
     )
     assert update_candidate.live_unmerged_paths() is None
 
 
 def test_marker_guarded_restore_replay_does_not_wipe_restored_work(tmp_path, monkeypatch):
-    """Crash between the stash apply and its drop: the tx carries
+    """Crash after the stash apply was recorded: the tx carries
     stash_restored=True, so a replayed restore must be a no-op — never a
     conflicting re-apply whose cleanup resets the already-restored copy."""
     repo, head = _init_repo(tmp_path)
@@ -497,7 +489,7 @@ def test_marker_guarded_restore_replay_does_not_wipe_restored_work(tmp_path, mon
     # Simulate post-restore progress that a naive re-apply would clobber.
     (repo / "work.txt").write_text("owner work + more\n")
     note2 = update_merge.restore_stash_with_marker(tx, "replay")
-    assert note2 == ""  # marker short-circuits: no re-apply, no reset
+    assert note2.status == "restored"  # recorded outcome: no re-apply, no reset
     assert (repo / "work.txt").read_text() == "owner work + more\n", (note1, note2)
 
 

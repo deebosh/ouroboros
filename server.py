@@ -45,7 +45,7 @@ from ouroboros.server_process import (  # noqa: F401
     _request_restart_exit, _restart_requested,
     _supervisor_stop, _exit_signalled,
     _SignalStopServer, _embedded_uvicorn_server,
-    capture_server_source_baseline, log,
+    capture_server_source_baseline, server_stop_source, log,
 )
 from ouroboros.server_routing_context import (  # noqa: F401
     _active_direct_roots,
@@ -1497,7 +1497,7 @@ async def lifespan(app):
                     {
                         "ts": utc_now_iso(),
                         "type": "server_shutdown",
-                        "cause": "restart_requested" if restart_requested else "external_signal",
+                        "cause": "restart_requested" if restart_requested else server_stop_source(),
                         "restart_exit": restart_requested,
                     },
                 )
@@ -1699,11 +1699,11 @@ def main() -> int:
         log_level="warning",
         ws_ping_interval=20,
         ws_ping_timeout=20,
-        # Bound the open HTTP/WS drain so the lifespan teardown (terminal custody) starts inside
-        # the launcher's stop budget instead of leaving terminalization to the next boot (#1142).
+        # Leave time for terminal custody inside the launcher stop budget (#1142).
         timeout_graceful_shutdown=SERVER_GRACEFUL_SHUTDOWN_TIMEOUT_SEC,
     )
     server = _SignalStopServer(config)
+    server.watch_launcher_stop()
     _uvicorn_exited = threading.Event()
 
     def _check_restart():
