@@ -177,7 +177,9 @@ deleted and `result.json` records `traces: {published: false, reason:
 redacted, limit_bytes, truncated}`. A bundle above 200 MiB
 (`BUNDLE_LIMIT_BYTES`) keeps the newest tail of each journal, opened by a
 `trace_truncated` line and listed in `truncated`; JSON files are never cut.
-A lane that never started records `reason: "lane_not_started"`.
+A lane that never started records `reason: "lane_not_started"`, one
+without a data root `"no_data_root"`, and a failed copy `"collect_error"`
+with its key-redacted error.
 
 The watcher reports lane state, spend/cap and free disk on `/` and `/mnt/data`.
 Key headroom is an informational probe on its own thread, with an eight-second

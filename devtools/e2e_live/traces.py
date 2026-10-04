@@ -30,9 +30,10 @@ TRACE_GLOBS = ("logs/*.jsonl", "logs/*.log", "logs/*.log.[0-9]*", "task_results/
 FORK_ROOTS = "state/headless_tasks/*/data"
 # Line-oriented: the only files cut to a tail, with the numbered backups server.py's rotating handler leaves.
 JOURNAL_SUFFIXES = (".jsonl", ".log")
-# One lane's bound. A stub SM1 lane leaves about 1.5 MB of these files and a paid lane's tool outputs run to tens of
-# MB; 200 MiB per lane keeps the largest run (MAX_LANES = 6) near 1.2 GiB, minutes of upload from a hosted runner,
-# and a lane that still exceeds it keeps the NEWEST part of every journal, the end where a deadline or stall shows.
+# One attempt's bound (a bundle is written per attempt, not per concurrent lane). A stub SM1 lane leaves about 1.5 MB
+# of these files and a paid lane's tool outputs run to tens of MB; 200 MiB keeps the CI run (one SM1 attempt) at
+# 200 MiB and the full operator set (nine attempts) at 1.8 GiB, minutes of upload from a hosted runner, and a bundle
+# that still exceeds it keeps the NEWEST part of every journal, the end where a deadline or stall shows.
 BUNDLE_LIMIT_BYTES = 200 * 2**20
 # Settings keys whose values are credentials (provider keys, tokens, passwords). Suffixes, not ``"TOKEN" in name``:
 # ``*_MAX_TOKENS`` holds a number that must not be scrubbed out of every journal.
