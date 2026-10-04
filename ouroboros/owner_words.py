@@ -97,10 +97,17 @@ def _ctx_metadata(ctx: Any) -> Mapping[str, Any]:
 
 
 def directive_owner_rows(ctx: Any) -> List[Dict[str, str]]:
-    """The owner-sourced rows of the run's retained corpus, verbatim (images by reference)."""
+    """The owner-sourced rows of the run's retained corpus, verbatim (images by reference).
+
+    The door-stamped first message is the door's own record of it (``origin_message_text``)
+    when the door kept one: the host may have prefixed a notice of its own to that user
+    turn (a Swarm initiative), never to the door's text.
+    """
     from ouroboros.review_evidence_sections import _owner_content_projection
 
     origin_ref = _mapping(_ctx_metadata(ctx).get("origin_message_ref"))
+    door_text = _ctx_metadata(ctx).get("origin_message_text")
+    door_text = door_text if isinstance(door_text, str) and door_text.strip() else None
     task_id = str(getattr(ctx, "task_id", "") or "")
     rows = []
     for item in getattr(ctx, "_owner_directives", None) or []:
@@ -108,7 +115,8 @@ def directive_owner_rows(ctx: Any) -> List[Dict[str, str]]:
             continue
         stamped = item["source"] == "initial_user" and origin_ref
         msg_id = str(item.get("msg_id") or "")
-        rows.append(_row(_owner_content_projection(item.get("content")), source=item["source"], carrier="ctx",
+        content = door_text if stamped and door_text is not None else item.get("content")
+        rows.append(_row(_owner_content_projection(content), source=item["source"], carrier="ctx",
                          task_id=task_id, ts=origin_ref.get("ts") if stamped else "",
                          ref=_chat_ref(origin_ref) if stamped else (f"msg {msg_id}" if msg_id else "")))
     return _deduped(rows)
