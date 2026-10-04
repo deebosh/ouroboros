@@ -315,6 +315,23 @@ def test_an_unreadable_oldest_stretch_lets_the_next_open_stretch_be_drafted(tmp_
     assert llm.prompts == []
 
 
+def test_the_longest_fitting_prefix_is_found_by_bisection_with_the_linear_answer():
+    """Review fix (simulated triad): step (2) of the helper's floor recomposed the whole input once per
+    dropped row (quadratic: 19 s for 3 000 rows); it now bisects the monotone fit. Same answer as the
+    linear walk, logarithmically many compositions; one row that never fits still leaves one row."""
+    calls = []
+
+    def compose(n, addressed, refs):
+        calls.append(n)
+        return "x" * (100 * n)
+
+    items = [SimpleNamespace(pointer="", line="x" * 100) for _ in range(3_000)]
+    n, addressed, refs = mf._floor(items, 40_000, len, compose)
+    assert (n, addressed) == (400, set()) and len(calls) <= 40, len(calls)
+    calls.clear()
+    assert mf._floor(items, 50, len, compose)[0] == 1 and len(calls) <= 40
+
+
 # --- the draft and its publication -------------------------------------------------------------------
 
 def test_a_page_draft_survives_an_unrelated_record_of_its_room(tmp_path, monkeypatch, light):

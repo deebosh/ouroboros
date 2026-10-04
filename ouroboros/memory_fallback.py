@@ -436,8 +436,11 @@ def _floor(items: List[_Row], budget: Optional[int], measure: Callable[[str], in
 
     addressed = addressing(n)
     if not fits(len(compose(n, addressed, False))):
-        while n > 1 and not fits(len(compose(n, set(own), False))):  # (2) the longest prefix that can fit
-            n -= 1
+        low, high = 1, n  # (2) the longest prefix that can fit; more rows never compose shorter: bisect
+        while low < high:
+            mid = (low + high + 1) // 2
+            low, high = (mid, high) if fits(len(compose(mid, set(own), False))) else (low, mid - 1)
+        n = low
         addressed = addressing(n)
     if not fits(len(compose(n, addressed, False))):
         refs = True  # (3)
