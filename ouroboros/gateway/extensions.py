@@ -247,14 +247,9 @@ def _build_extensions_index(drive_root, repo_path):
         skill for skill in skills
         if not bool(getattr(skill, "identity_collision", False))
     ]
-    try:
-        from supervisor.queue import sync_skill_schedules
-
-        # Empty inventory retires vanished skills; collision placeholders keep
-        # prior rows for ambiguous identities while unique peers still sync.
-        sync_skill_schedules(skills, drive_root=drive_root)
-    except Exception:
-        log.debug("Failed to sync skill schedules", exc_info=True)
+    # No schedule sync here: it takes the supervisor queue lock and the schedule
+    # file lock, so a read would wait on every holder. The scheduler tick and
+    # the lifecycle actions mirror manifest schedules.
     runtime_states = {
         s.name: runtime_state_for_loaded_skill(s, drive_root, skills=skills)
         for s in unique_skills

@@ -494,7 +494,9 @@ def test_extensions_index_collision_row_skips_lifecycle_projections(
         "state": "hard_block",
         "reason": "",
     }
-    assert schedule_inputs == [[collision]]
+    # The list read syncs no schedules: the scheduler tick and the lifecycle
+    # actions own that duty.
+    assert schedule_inputs == []
     assert not (drive_root / "state").exists()
 
 
