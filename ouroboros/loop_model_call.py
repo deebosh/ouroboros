@@ -1348,12 +1348,35 @@ def _project_wake_input(ctx: _RoundModelCallContext, *, overflowed: bool = False
     return True
 
 
+def _fit_route_tool_ceiling(ctx: _RoundModelCallContext) -> None:
+    """Keep the resident schemas within the acting route's physical ceiling (OpenAI: 128).
+
+    In place, before measurement, so the fit, the priced candidate and the send carry
+    one list and discovery reports true residency. Names left out earlier and loaded
+    again by the actor stay; the newly left-out names reach the actor as a fact.
+    """
+    from ouroboros.provider_models import tool_schema_limit
+    from ouroboros.tool_policy import fit_tool_schemas_to_limit, route_tool_limit_notice
+
+    schemas, limit = ctx.tool_schemas, tool_schema_limit(ctx.active_model, use_local=ctx.active_use_local)
+    if limit is None or schemas is None or len(schemas) <= limit:
+        return
+    earlier = frozenset(getattr(ctx.tools._ctx, "_route_left_out_tool_names", ()) or ())
+    total = len(schemas)
+    schemas[:], left_out = fit_tool_schemas_to_limit(schemas, limit, keep=earlier)
+    ctx.tools._ctx._route_left_out_tool_names = earlier | set(left_out)
+    invalidate_task_cache_splits(ctx.task_id)
+    _loop()._append_or_merge_user_message(
+        ctx.messages, route_tool_limit_notice(ctx.active_model, limit, total, left_out))
+
+
 def _call_round_model(ctx: _RoundModelCallContext) -> Tuple[Any, float, str]:
     """Measure, optionally reclaim, dispatch, and recover one Main round."""
     facts = getattr(ctx.tools._ctx, "_route_facts_pending", "")
     if facts and ctx.defer_resource_wait is None:  # the acting route's first own round after a switch
         ctx.tools._ctx._route_facts_pending = ""
         _loop()._append_or_merge_user_message(ctx.messages, facts)
+    _fit_route_tool_ceiling(ctx)
     _append_routing_receipts(ctx)
     _project_wake_input(ctx)
     disposition = _loop()._measure_round_main_fit(ctx, automatic_pass_used=False)
