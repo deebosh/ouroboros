@@ -365,6 +365,13 @@ PROGRESS_LOG_WARN_BYTES = 8_000_000
 SCHEDULED_TASKS_WARN_BYTES = 2_000_000
 # Compact root-task -> skill review index used by acceptance packet assembly.
 SKILL_REVIEW_ROOT_TASKS_WARN_BYTES = 20_000_000
+# memory/chronicle/records.jsonl is my memory's only authority and is never rotated
+# (records are never rewritten). Every task context decodes each acting page and part
+# body from its index (memory_view._story_pages), and an owner's install imports about
+# 4.4 MB of legacy memory at activation (testrig, 2026-10-04). 64MB is ~15x that: past
+# it, decoding the story on every task context stops being free and a projection of the
+# acting records is due. Observability, never a retention gate: nothing is cut.
+CHRONICLE_JOURNAL_WARN_BYTES = 64_000_000
 # ``chat_history`` can deliberately replay the archive chain, while the memory
 # view reads only rows after the retold-memory frontier.  Warn before an
 # explicit full-history read becomes seconds-scale; this is observability, not
